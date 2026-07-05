@@ -30,7 +30,7 @@ Consequence: "persist the task list" has almost nothing to persist. The snapshot
 - Kill W2: on resume, compaction, or continuation in a fresh session, the model receives a compact state summary and does not re-read a transcript to recover.
 - Reduce W1: with activity auto-captured, the motivation to hand-maintain a status ledger drops (partial need-removal). Full W1 elimination is out of scope for v1.
 - Zero added model-token cost on the write path (the harness writes state).
-- No new subsystem: two small Node hooks matching the existing caveman-hook style, plus a state file format.
+- No new subsystem: two small Node hooks plus a state file format.
 
 ## Non-goals (v1)
 
@@ -48,7 +48,7 @@ Consequence: "persist the task list" has almost nothing to persist. The snapshot
 
 ## Architecture
 
-Two hooks + per-session state files plus one rolling project pointer. Both hooks are Node scripts in `$CLAUDE_CONFIG_DIR/hooks/` (the harness config dir, default `~/.claude`), reading stdin JSON and env, matching the caveman hooks.
+Two hooks + per-session state files plus one rolling project pointer. Both hooks are Node scripts in `$CLAUDE_CONFIG_DIR/hooks/` (the harness config dir, default `~/.claude`), reading stdin JSON and env.
 
 ```
 Stop hook  (session-state-writer.js)   [fires: end of every assistant turn]
@@ -76,7 +76,7 @@ SessionStart hook  (session-state-injector.js)   [fires: session start, all sour
   4. exit 0
 ```
 
-Injection contract confirmed from `caveman-activate.js`: a SessionStart hook's plain stdout is injected as context (no structured JSON required).
+Injection contract: a SessionStart hook's plain stdout is injected into the session context (documented hook behavior; no structured JSON required).
 
 ## Components
 
@@ -177,7 +177,7 @@ The convention is introduced via a single project CLAUDE.md line, reinforced by 
 ## Rollout
 
 1. Land the two hooks + state format.
-2. Wire in `$CLAUDE_CONFIG_DIR/settings.json`: add the Stop hook; add the injector as a second SessionStart command alongside caveman-activate.
+2. Wire in `$CLAUDE_CONFIG_DIR/settings.json`: add the Stop hook; append the injector as an additional SessionStart command (do not replace any existing SessionStart hook).
 3. Add the one-line CLAUDE.md tag convention.
 4. Dogfood on this project's sessions.
 5. Measure with the existing `harness/ccp_evidence.py`: transcript re-read count and `LEDGER.md`/memory edit count, before vs after.
