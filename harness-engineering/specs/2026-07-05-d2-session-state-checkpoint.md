@@ -180,7 +180,7 @@ The convention is introduced via a single project CLAUDE.md line, reinforced by 
 2. Wire in `$CLAUDE_CONFIG_DIR/settings.json`: add the Stop hook; append the injector as an additional SessionStart command (do not replace any existing SessionStart hook).
 3. Add the one-line CLAUDE.md tag convention.
 4. Dogfood on this project's sessions.
-5. Measure with the existing `harness/ccp_evidence.py`: transcript re-read count and `LEDGER.md`/memory edit count, before vs after.
+5. Measure before vs after by re-running the session-corpus diagnostic (parses session logs): transcript re-read count and `LEDGER.md`/memory edit count.
 
 ## Deferred (v2+)
 
