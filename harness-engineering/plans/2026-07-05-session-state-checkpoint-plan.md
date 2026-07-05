@@ -14,41 +14,44 @@
 - Every hook wraps its body in try/catch and calls `process.exit(0)` unconditionally — a hook failure must never block a turn or a session start.
 - Write path adds zero model tokens: the hook is a pure side effect, never prints to a turn.
 - All filesystem paths derive from stdin (`transcript_path`, `session_id`); no hardcoded project or brand paths (project-agnostic).
+- Distribution is a Claude Code plugin: hooks are declared in `plugins/session-state/hooks/hooks.json` via `${CLAUDE_PLUGIN_ROOT}` and activated by enabling the plugin — no user `settings.json` editing.
 - English-only source and comments.
 - Markdown authoring: one line per paragraph and list item (viewer soft-wraps); fenced code blocks keep literal line breaks.
-- Constants (in `hooks/lib/config.js`): `RECENCY_HOURS = 48`, `FACTS_CAP = 40`, `OPEN_LOOPS_CAP = 20`, `DECISIONS_CAP = 20`, `NEXTS_CAP = 5`.
+- Constants (in `plugins/session-state/hooks/lib/config.js`): `RECENCY_HOURS = 48`, `FACTS_CAP = 40`, `OPEN_LOOPS_CAP = 20`, `DECISIONS_CAP = 20`, `NEXTS_CAP = 5`.
 - Refinement over the spec: the machine model plus the byte-offset watermark live together in `state/<session_id>.json` (the spec's `.pos` sidecar is folded into this JSON); `state/<session_id>.md` is the rendered inject view; `state/_latest.md` is the rolling project pointer.
 
 ## File Structure
 
-All code lives in the `concord` repo under `hooks/`; installation symlinks the two entry hooks into `$CLAUDE_CONFIG_DIR/hooks/` (relative `require('./lib/...')` resolves via the symlink's real path, so `lib/` stays in the repo).
+All code lives in this repo (`concord`) under `plugins/session-state/`. The plugin's `hooks.json` invokes each entry point via `${CLAUDE_PLUGIN_ROOT}`, which Claude Code expands to the plugin's installed path at runtime, so the relative `require('./lib/...')` calls inside each hook resolve correctly with no symlink or manual wiring.
 
-- `hooks/lib/config.js` — constants and shared regexes.
-- `hooks/lib/transcript.js` — `readDelta(path, offset)`: byte-offset delta read + JSONL parse.
-- `hooks/lib/extract.js` — `extractFacts(entries)`, `extractRationale(entries)`.
-- `hooks/lib/state.js` — `emptyModel()`, `topicKey()`, `mergeModel()`, `renderMarkdown()`.
-- `hooks/session-state-writer.js` — Stop hook entry point.
-- `hooks/session-state-injector.js` — SessionStart hook entry point.
-- `hooks/test/fixtures/sample.jsonl` — real transcript lines, pinned for extractor tests.
-- `hooks/test/*.test.js` — one test file per module.
-- `hooks/install.sh` — symlink hooks, patch settings.json (with backup), print the CLAUDE.md convention line.
+- `plugins/session-state/.claude-plugin/plugin.json` — plugin manifest.
+- `plugins/session-state/hooks/hooks.json` — declares the Stop and SessionStart hooks via `${CLAUDE_PLUGIN_ROOT}`.
+- `plugins/session-state/hooks/lib/config.js` — constants and shared regexes.
+- `plugins/session-state/hooks/lib/transcript.js` — `readDelta(path, offset)`.
+- `plugins/session-state/hooks/lib/extract.js` — `extractFacts`, `extractRationale`.
+- `plugins/session-state/hooks/lib/state.js` — `emptyModel`, `topicKey`, `mergeModel`, `renderMarkdown`.
+- `plugins/session-state/hooks/session-state-writer.js` — Stop hook entry point.
+- `plugins/session-state/hooks/session-state-injector.js` — SessionStart hook entry point.
+- `plugins/session-state/hooks/test/fixtures/sample.jsonl` — pinned real transcript lines.
+- `plugins/session-state/hooks/test/*.test.js` — one test file per module.
+- `.claude-plugin/marketplace.json` — repo-root marketplace manifest listing the plugin.
 
-Working directory: a checkout of `concord`. Run tests with `node --test hooks/test/`.
+Working directory: a checkout of `concord`. Run tests with `node --test plugins/session-state/hooks/test/`.
 
 ---
 
 ### Task 1: Config + transcript delta reader
 
 **Files:**
-- Create: `hooks/lib/config.js`
-- Create: `hooks/lib/transcript.js`
-- Test: `hooks/test/transcript.test.js`
+- Create: `plugins/session-state/hooks/lib/config.js`
+- Create: `plugins/session-state/hooks/lib/transcript.js`
+- Test: `plugins/session-state/hooks/test/transcript.test.js`
 
 **Interfaces:**
 - Produces: `readDelta(transcriptPath: string, offset: number) -> { entries: object[], newOffset: number }`. Reads bytes from `offset` to EOF, parses complete JSONL lines only (a partial trailing line is left for next time), skips malformed lines, and resets to 0 if `offset > fileSize` (rewritten transcript). Missing file -> `{ entries: [], newOffset: offset }`.
 - Produces: `config` object with the Global Constraints constants plus `TAG_RE`, `MEANINGFUL_BASH_RE`, `NOISE_BASH_RE`.
 
-- [ ] **Step 1: Write `hooks/lib/config.js`**
+- [ ] **Step 1: Write `plugins/session-state/hooks/lib/config.js`**
 
 ```js
 'use strict';
@@ -65,7 +68,7 @@ module.exports = {
 };
 ```
 
-- [ ] **Step 2: Write the failing test `hooks/test/transcript.test.js`**
+- [ ] **Step 2: Write the failing test `plugins/session-state/hooks/test/transcript.test.js`**
 
 ```js
 'use strict';
@@ -124,10 +127,10 @@ test('missing file returns empty and keeps the offset', () => {
 
 - [ ] **Step 3: Run the test to verify it fails**
 
-Run: `node --test hooks/test/transcript.test.js`
+Run: `node --test plugins/session-state/hooks/test/transcript.test.js`
 Expected: FAIL — `Cannot find module '../lib/transcript'`.
 
-- [ ] **Step 4: Write `hooks/lib/transcript.js`**
+- [ ] **Step 4: Write `plugins/session-state/hooks/lib/transcript.js`**
 
 ```js
 'use strict';
@@ -177,13 +180,13 @@ module.exports = { readDelta };
 
 - [ ] **Step 5: Run the test to verify it passes**
 
-Run: `node --test hooks/test/transcript.test.js`
+Run: `node --test plugins/session-state/hooks/test/transcript.test.js`
 Expected: PASS (6 tests).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add hooks/lib/config.js hooks/lib/transcript.js hooks/test/transcript.test.js
+git add plugins/session-state/hooks/lib/config.js plugins/session-state/hooks/lib/transcript.js plugins/session-state/hooks/test/transcript.test.js
 git commit -m "feat: transcript delta reader with byte-offset watermark"
 ```
 
@@ -192,9 +195,9 @@ git commit -m "feat: transcript delta reader with byte-offset watermark"
 ### Task 2: Extractors (facts + rationale)
 
 **Files:**
-- Create: `hooks/lib/extract.js`
-- Create: `hooks/test/fixtures/sample.jsonl`
-- Test: `hooks/test/extract.test.js`
+- Create: `plugins/session-state/hooks/lib/extract.js`
+- Create: `plugins/session-state/hooks/test/fixtures/sample.jsonl`
+- Test: `plugins/session-state/hooks/test/extract.test.js`
 
 **Interfaces:**
 - Consumes: entries as returned by `readDelta` (parsed transcript objects).
@@ -203,7 +206,7 @@ git commit -m "feat: transcript delta reader with byte-offset watermark"
 
 Transcript shape (verified against real logs): an entry with `type === "assistant"` has `message.content` = an array of items; each item has `type` in `{ "thinking", "text", "tool_use" }`. A `tool_use` item is `{ type, name, input }`; a `text` item is `{ type: "text", text }`.
 
-- [ ] **Step 1: Pin a real fixture `hooks/test/fixtures/sample.jsonl`**
+- [ ] **Step 1: Pin a real fixture `plugins/session-state/hooks/test/fixtures/sample.jsonl`**
 
 Copy 4 representative lines from a real transcript so the extractor is tested against the true shape (one line each). Keep them minimal but structurally real:
 
@@ -214,7 +217,7 @@ Copy 4 representative lines from a real transcript so the extractor is tested ag
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"DECISION: [scope] chose A over B\nOPEN-LOOP: verify the injector\nNEXT: wire settings.json"}]}}
 ```
 
-- [ ] **Step 2: Write the failing test `hooks/test/extract.test.js`**
+- [ ] **Step 2: Write the failing test `plugins/session-state/hooks/test/extract.test.js`**
 
 ```js
 'use strict';
@@ -270,10 +273,10 @@ test('task tool_use becomes a task fact', () => {
 
 - [ ] **Step 3: Run the test to verify it fails**
 
-Run: `node --test hooks/test/extract.test.js`
+Run: `node --test plugins/session-state/hooks/test/extract.test.js`
 Expected: FAIL — `Cannot find module '../lib/extract'`.
 
-- [ ] **Step 4: Write `hooks/lib/extract.js`**
+- [ ] **Step 4: Write `plugins/session-state/hooks/lib/extract.js`**
 
 ```js
 'use strict';
@@ -340,13 +343,13 @@ module.exports = { extractFacts, extractRationale };
 
 - [ ] **Step 5: Run the test to verify it passes**
 
-Run: `node --test hooks/test/extract.test.js`
+Run: `node --test plugins/session-state/hooks/test/extract.test.js`
 Expected: PASS (4 tests).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add hooks/lib/extract.js hooks/test/extract.test.js hooks/test/fixtures/sample.jsonl
+git add plugins/session-state/hooks/lib/extract.js plugins/session-state/hooks/test/extract.test.js plugins/session-state/hooks/test/fixtures/sample.jsonl
 git commit -m "feat: fact and rationale extractors"
 ```
 
@@ -355,8 +358,8 @@ git commit -m "feat: fact and rationale extractors"
 ### Task 3: State model + compaction
 
 **Files:**
-- Create: `hooks/lib/state.js`
-- Test: `hooks/test/state.test.js`
+- Create: `plugins/session-state/hooks/lib/state.js`
+- Test: `plugins/session-state/hooks/test/state.test.js`
 
 **Interfaces:**
 - Consumes: rationale + facts as produced by Task 2.
@@ -365,7 +368,7 @@ git commit -m "feat: fact and rationale extractors"
 - Produces: `mergeModel(prev, { decisions, openLoops, nexts, resolved, facts }) -> model` (bounded per the caps; `resolved` closes matching open loops; decisions are latest-per-topic; facts are a ring buffer).
 - Produces: `renderMarkdown(sessionId: string, model) -> string`.
 
-- [ ] **Step 1: Write the failing test `hooks/test/state.test.js`**
+- [ ] **Step 1: Write the failing test `plugins/session-state/hooks/test/state.test.js`**
 
 ```js
 'use strict';
@@ -411,10 +414,10 @@ test('renderMarkdown includes the machine-owned header and sections', () => {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `node --test hooks/test/state.test.js`
+Run: `node --test plugins/session-state/hooks/test/state.test.js`
 Expected: FAIL — `Cannot find module '../lib/state'`.
 
-- [ ] **Step 3: Write `hooks/lib/state.js`**
+- [ ] **Step 3: Write `plugins/session-state/hooks/lib/state.js`**
 
 ```js
 'use strict';
@@ -482,13 +485,13 @@ module.exports = { emptyModel, topicKey, mergeModel, renderMarkdown };
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `node --test hooks/test/state.test.js`
+Run: `node --test plugins/session-state/hooks/test/state.test.js`
 Expected: PASS (4 tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add hooks/lib/state.js hooks/test/state.test.js
+git add plugins/session-state/hooks/lib/state.js plugins/session-state/hooks/test/state.test.js
 git commit -m "feat: bounded state model with compaction"
 ```
 
@@ -497,14 +500,14 @@ git commit -m "feat: bounded state model with compaction"
 ### Task 4: Writer hook (Stop)
 
 **Files:**
-- Create: `hooks/session-state-writer.js`
-- Test: `hooks/test/writer.test.js`
+- Create: `plugins/session-state/hooks/session-state-writer.js`
+- Test: `plugins/session-state/hooks/test/writer.test.js`
 
 **Interfaces:**
 - Consumes: `readDelta` (Task 1), `extractFacts`/`extractRationale` (Task 2), `emptyModel`/`mergeModel`/`renderMarkdown` (Task 3).
 - Behavior: reads stdin JSON `{ session_id, transcript_path }`; resolves `stateDir = dirname(transcript_path)/state`; loads `state/<id>.json` (or `emptyModel`); reads the delta from `model.offset`; merges; writes `state/<id>.json`, `state/<id>.md`, `state/_latest.md`; exits 0 always.
 
-- [ ] **Step 1: Write the failing test `hooks/test/writer.test.js`**
+- [ ] **Step 1: Write the failing test `plugins/session-state/hooks/test/writer.test.js`**
 
 ```js
 'use strict';
@@ -561,10 +564,10 @@ test('malformed stdin exits 0 without throwing', () => {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `node --test hooks/test/writer.test.js`
+Run: `node --test plugins/session-state/hooks/test/writer.test.js`
 Expected: FAIL — cannot find `session-state-writer.js`.
 
-- [ ] **Step 3: Write `hooks/session-state-writer.js`**
+- [ ] **Step 3: Write `plugins/session-state/hooks/session-state-writer.js`**
 
 ```js
 #!/usr/bin/env node
@@ -616,13 +619,13 @@ process.exit(0);
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `node --test hooks/test/writer.test.js`
+Run: `node --test plugins/session-state/hooks/test/writer.test.js`
 Expected: PASS (3 tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add hooks/session-state-writer.js hooks/test/writer.test.js
+git add plugins/session-state/hooks/session-state-writer.js plugins/session-state/hooks/test/writer.test.js
 git commit -m "feat: Stop hook writes and rolls session state"
 ```
 
@@ -631,14 +634,14 @@ git commit -m "feat: Stop hook writes and rolls session state"
 ### Task 5: Injector hook (SessionStart)
 
 **Files:**
-- Create: `hooks/session-state-injector.js`
-- Test: `hooks/test/injector.test.js`
+- Create: `plugins/session-state/hooks/session-state-injector.js`
+- Test: `plugins/session-state/hooks/test/injector.test.js`
 
 **Interfaces:**
 - Consumes: `RECENCY_HOURS` (Task 1); the files written by Task 4.
-- Behavior: reads stdin JSON `{ session_id, transcript_path, source }`; `resume`/`compact` -> print `state/<id>.md`; `startup` -> print `state/_latest.md` under a prior-session header only if its mtime is within `RECENCY_HOURS`; `clear`/other -> print nothing; exit 0 always.
+- Behavior: reads stdin JSON `{ session_id, transcript_path, source }`; `resume`/`compact` -> pick `state/<id>.md`; `startup` -> pick `state/_latest.md` under a prior-session header only if its mtime is within `RECENCY_HOURS`; the picked state (if any) plus a one-line tag-convention reminder are printed on every run (the hook's matcher restricts firing to `startup|resume|compact`); exit 0 always.
 
-- [ ] **Step 1: Write the failing test `hooks/test/injector.test.js`**
+- [ ] **Step 1: Write the failing test `plugins/session-state/hooks/test/injector.test.js`**
 
 ```js
 'use strict';
@@ -662,11 +665,12 @@ function run(input) {
   return execFileSync('node', [INJECTOR], { input: JSON.stringify(input), encoding: 'utf8' });
 }
 
-test('resume prints the session state file', () => {
+test('resume prints the session state file plus the tag convention', () => {
   const { transcript, stateDir, id } = setup();
   fs.writeFileSync(path.join(stateDir, `${id}.md`), 'STATE-BODY');
   const out = run({ session_id: id, transcript_path: transcript, source: 'resume' });
-  assert.equal(out, 'STATE-BODY');
+  assert.ok(out.includes('STATE-BODY'));
+  assert.ok(out.includes('DECISION:')); // convention reminder always present
 });
 
 test('startup prints _latest under a prior-session header when recent', () => {
@@ -675,31 +679,27 @@ test('startup prints _latest under a prior-session header when recent', () => {
   const out = run({ session_id: id, transcript_path: transcript, source: 'startup' });
   assert.ok(out.includes('Prior session state'));
   assert.ok(out.includes('ROLLING-BODY'));
+  assert.ok(out.includes('DECISION:'));
 });
 
-test('startup prints nothing when _latest is stale', () => {
+test('startup with a stale _latest emits only the convention', () => {
   const { transcript, stateDir, id } = setup();
   const p = path.join(stateDir, '_latest.md');
   fs.writeFileSync(p, 'OLD');
-  const old = Date.now() / 1000 - 72 * 3600; // 72h ago, older than RECENCY_HOURS
+  const old = Date.now() / 1000 - 72 * 3600;
   fs.utimesSync(p, old, old);
   const out = run({ session_id: id, transcript_path: transcript, source: 'startup' });
-  assert.equal(out, '');
-});
-
-test('clear prints nothing', () => {
-  const { transcript, id } = setup();
-  const out = run({ session_id: id, transcript_path: transcript, source: 'clear' });
-  assert.equal(out, '');
+  assert.ok(!out.includes('OLD'));
+  assert.ok(out.includes('DECISION:'));
 });
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `node --test hooks/test/injector.test.js`
+Run: `node --test plugins/session-state/hooks/test/injector.test.js`
 Expected: FAIL — cannot find `session-state-injector.js`.
 
-- [ ] **Step 3: Write `hooks/session-state-injector.js`**
+- [ ] **Step 3: Write `plugins/session-state/hooks/session-state-injector.js`**
 
 ```js
 #!/usr/bin/env node
@@ -708,33 +708,40 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { RECENCY_HOURS } = require('./lib/config');
 
-function main() {
-  const { session_id, transcript_path, source } = JSON.parse(fs.readFileSync(0, 'utf8'));
-  if (!transcript_path) return;
-  const stateDir = path.join(path.dirname(transcript_path), 'state');
+const CONVENTION =
+  'Tag durable decisions and open items inline so a hook can persist them across sessions: ' +
+  '`DECISION:` / `OPEN-LOOP:` / `NEXT:` / `RESOLVED:`.';
 
+function pickState(stateDir, sessionId, source) {
   if (source === 'resume' || source === 'compact') {
-    const p = path.join(stateDir, `${session_id}.md`);
-    if (fs.existsSync(p)) process.stdout.write(fs.readFileSync(p, 'utf8'));
-    return;
+    const p = path.join(stateDir, `${sessionId}.md`);
+    return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
   }
-
   if (source === 'startup') {
     const p = path.join(stateDir, '_latest.md');
     let stat;
     try {
       stat = fs.statSync(p);
     } catch (e) {
-      return;
+      return '';
     }
-    const ageHours = (Date.now() - stat.mtimeMs) / 3.6e6;
-    if (ageHours > RECENCY_HOURS) return;
+    if ((Date.now() - stat.mtimeMs) / 3.6e6 > RECENCY_HOURS) return '';
     const header =
       '# Prior session state in this project — verify relevance before relying on it\n\n';
-    process.stdout.write(header + fs.readFileSync(p, 'utf8'));
-    return;
+    return header + fs.readFileSync(p, 'utf8');
   }
-  // clear or unknown source: emit nothing
+  return '';
+}
+
+function main() {
+  const { session_id, transcript_path, source } = JSON.parse(fs.readFileSync(0, 'utf8'));
+  if (!transcript_path) return;
+  const stateDir = path.join(path.dirname(transcript_path), 'state');
+  const state = pickState(stateDir, session_id, source);
+  const parts = [];
+  if (state) parts.push(state);
+  parts.push(CONVENTION);
+  process.stdout.write(parts.join('\n\n'));
 }
 
 try {
@@ -747,100 +754,100 @@ process.exit(0);
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `node --test hooks/test/injector.test.js`
-Expected: PASS (4 tests).
+Run: `node --test plugins/session-state/hooks/test/injector.test.js`
+Expected: PASS (3 tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add hooks/session-state-injector.js hooks/test/injector.test.js
+git add plugins/session-state/hooks/session-state-injector.js plugins/session-state/hooks/test/injector.test.js
 git commit -m "feat: SessionStart hook injects session or rolling state"
 ```
 
 ---
 
-### Task 6: Install, wire, and dogfood
+### Task 6: Package as a Claude Code plugin
 
 **Files:**
-- Create: `hooks/install.sh`
-- Modify: `$CLAUDE_CONFIG_DIR/settings.json` (via the script, with a backup)
-- Modify: a project `CLAUDE.md` (add the tag-convention line)
+- Create: `plugins/session-state/.claude-plugin/plugin.json`
+- Create: `plugins/session-state/hooks/hooks.json`
+- Create: `.claude-plugin/marketplace.json`
+- Modify: `README.md` (add the plugins/ layout line and a short install note)
 
 **Interfaces:**
-- Consumes: the two hook entry points from Tasks 4-5.
+- Consumes: the two hook entry points from Tasks 4-5, wired via `plugins/session-state/hooks/hooks.json`'s `${CLAUDE_PLUGIN_ROOT}`-relative commands.
+- Produces: an installable plugin (`plugin.json` + `hooks.json`) listed in the repo-root `marketplace.json`.
 
 - [ ] **Step 1: Run the full suite green**
 
-Run: `node --test hooks/test/`
-Expected: PASS (all files, 21 tests).
+Run: `node --test plugins/session-state/hooks/test/`
+Expected: PASS, all files.
 
-- [ ] **Step 2: Write `hooks/install.sh`**
+- [ ] **Step 2: Write `plugins/session-state/.claude-plugin/plugin.json`**
+
+```json
+{
+  "name": "session-state",
+  "version": "0.1.0",
+  "description": "Persist per-session state from the transcript and re-inject it on resume, compaction, or a fresh session.",
+  "author": { "name": "arinyaho", "url": "https://github.com/arinyaho" },
+  "homepage": "https://github.com/arinyaho/concord",
+  "repository": "https://github.com/arinyaho/concord",
+  "license": "MIT",
+  "keywords": ["hooks", "session-state", "context", "harness", "claude-code"]
+}
+```
+
+- [ ] **Step 3: Write `plugins/session-state/hooks/hooks.json`**
+
+```json
+{
+  "description": "Persist per-session state from the transcript and re-inject it on session start.",
+  "hooks": {
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-state-writer.js\"" } ] }
+    ],
+    "SessionStart": [
+      { "matcher": "startup|resume|compact", "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-state-injector.js\"" } ] }
+    ]
+  }
+}
+```
+
+- [ ] **Step 4: Write the repo-root `.claude-plugin/marketplace.json`**
+
+```json
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "arinyaho-concord",
+  "description": "Harness-engineering tooling for the Claude Code workflow.",
+  "owner": { "name": "arinyaho", "url": "https://github.com/arinyaho" },
+  "plugins": [
+    {
+      "name": "session-state",
+      "description": "Persist per-session state from the transcript and re-inject it on resume, compaction, or a fresh session, so the model stops re-reading its own transcript.",
+      "author": { "name": "arinyaho" },
+      "category": "development",
+      "source": "./plugins/session-state",
+      "homepage": "https://github.com/arinyaho/concord"
+    }
+  ]
+}
+```
+
+- [ ] **Step 5: Update `README.md`**
+
+Add a line documenting the `plugins/` layout, plus a short install section: add the marketplace with `/plugin marketplace add arinyaho/concord`, then install with `/plugin install session-state@arinyaho-concord`; enabling the plugin registers the Stop and SessionStart hooks automatically, with no `settings.json` editing required.
+
+- [ ] **Step 6: Dogfood in a live session**
+
+Enable the plugin, run a session with a few tool calls and one `DECISION:` line, then end the turn. Confirm `~/.claude/projects/<slug>/state/<session_id>.md` lists the activity and the decision. Resume the session and confirm the injector output (state + tag convention) appears in context without a transcript re-read. Start a fresh session in the same project within `RECENCY_HOURS` and confirm the prior-session block plus the convention are injected.
+
+- [ ] **Step 7: Commit**
 
 ```bash
-#!/usr/bin/env bash
-# Install the session-state hooks into $CLAUDE_CONFIG_DIR and wire settings.json.
-# Idempotent: re-running relinks and re-checks the settings entries.
-set -euo pipefail
-
-CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-REPO_HOOKS="$(cd "$(dirname "$0")" && pwd)"
-HOOK_DIR="$CFG/hooks"
-SETTINGS="$CFG/settings.json"
-
-mkdir -p "$HOOK_DIR"
-ln -sf "$REPO_HOOKS/session-state-writer.js"   "$HOOK_DIR/session-state-writer.js"
-ln -sf "$REPO_HOOKS/session-state-injector.js" "$HOOK_DIR/session-state-injector.js"
-echo "linked hooks into $HOOK_DIR"
-
-# Patch settings.json (backup first). Adds a Stop hook and a SessionStart hook
-# WITHOUT removing any existing entries (e.g. another SessionStart command).
-node - "$SETTINGS" "$HOOK_DIR" <<'NODE'
-const fs = require('fs');
-const [settingsPath, hookDir] = process.argv.slice(2);
-const settings = fs.existsSync(settingsPath)
-  ? JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
-  : {};
-fs.writeFileSync(settingsPath + '.bak', JSON.stringify(settings, null, 2));
-settings.hooks = settings.hooks || {};
-const cmd = (name) => ({ type: 'command', command: `node "${hookDir}/${name}"` });
-const ensure = (event, name) => {
-  settings.hooks[event] = settings.hooks[event] || [];
-  const has = settings.hooks[event].some((g) =>
-    (g.hooks || []).some((h) => (h.command || '').includes(name)));
-  if (!has) settings.hooks[event].push({ hooks: [cmd(name)] });
-};
-ensure('Stop', 'session-state-writer.js');
-ensure('SessionStart', 'session-state-injector.js');
-fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-console.log('wired Stop + SessionStart in ' + settingsPath + ' (backup at .bak)');
-NODE
-
-echo "Add this line to your CLAUDE.md so rationale is captured:"
-echo '  - Tag durable decisions/open items inline: `DECISION:` / `OPEN-LOOP:` / `NEXT:` / `RESOLVED:` — a hook harvests them into session state.'
-```
-
-- [ ] **Step 3: Run the installer and verify wiring**
-
-Run: `bash hooks/install.sh`
-Expected: prints "linked hooks", "wired Stop + SessionStart", and the CLAUDE.md line. Confirm `$CLAUDE_CONFIG_DIR/settings.json` now has both hooks and that any pre-existing SessionStart command is still present.
-
-- [ ] **Step 4: Add the tag-convention line to a project `CLAUDE.md`**
-
-Add verbatim under a docs/behavior section:
-
-```
-- Tag durable decisions/open items inline: `DECISION:` / `OPEN-LOOP:` / `NEXT:` / `RESOLVED:` — a hook harvests them into session state.
-```
-
-- [ ] **Step 5: Dogfood in a live session**
-
-Start a session, run a few tool calls and emit one `DECISION:` line, then end the turn. Verify `~/.claude/projects/<slug>/state/<session_id>.md` exists and lists the activity + the decision. Resume the session; confirm the injector's output appears in context without a transcript re-read. Start a fresh session in the same project within `RECENCY_HOURS`; confirm the prior-session block is injected under its header.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add hooks/install.sh
-git commit -m "feat: installer wiring hooks and settings, plus dogfood steps"
+git add plugins/session-state/.claude-plugin/plugin.json plugins/session-state/hooks/hooks.json .claude-plugin/marketplace.json README.md
+git commit -m "feat: package session-state as a Claude Code plugin"
 ```
 
 ---
@@ -853,7 +860,7 @@ git commit -m "feat: installer wiring hooks and settings, plus dogfood steps"
 - Bounded compaction (facts ring, latest-per-topic decisions, resolved closes loops) -> Task 3.
 - Writer side effects + `_latest.md` roll -> Task 4. Injector resume/compact/startup gating + recency + label -> Task 5.
 - Project-agnostic paths -> every hook derives `stateDir` from `transcript_path` (Tasks 4-5).
-- Wiring without clobbering an existing SessionStart hook, CLAUDE.md convention -> Task 6.
+- Plugin packaging (hooks.json + plugin.json + marketplace.json) -> Task 6; tag convention injected by the SessionStart hook -> Task 5.
 - Zero model tokens on write -> writer never writes to stdout (Task 4).
 
 **Deferred (matches spec, not built here):** exit-status on `ran:` facts (needs tool_result correlation), `pr-link` entry-type as a PR source, PreCompact nudge, generalized in-repo corpus diagnostic.
