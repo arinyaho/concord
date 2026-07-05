@@ -7,6 +7,7 @@ This repo is the home for the "D-track": a diagnosis of recurring dysfunction in
 ## Layout
 
 - `harness-engineering/specs/` - design specs, one per fix (dated).
+- `harness-engineering/plans/` - implementation plans (TDD, bite-sized tasks).
 
 ## Track map
 
