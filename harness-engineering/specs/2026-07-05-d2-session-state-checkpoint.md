@@ -1,20 +1,20 @@
-# D2 Session-State Checkpoint — Design
+# Session-State Checkpoint — Design
 
 - Status: Draft (design approved, spec under review)
 - Date: 2026-07-05
-- Track: Harness engineering, D2 remainder (see `project_harness_engineering` memory)
+- Track: Harness engineering - the memory / ledger / doc-churn finding (D2 in the README track map)
 - Scope: v1 = Layer 1 (machine activity trail) + Layer 2 (inline-tag rationale harvest)
 
 ## Problem
 
-D2 diagnosed two recurring session wastes:
+Mining the session corpus surfaced two recurring wastes in long sessions:
 
 - **W1 — ledger/doc write churn.** The model maintains in-flight state (current
   todos, what is done, open questions, decisions) in a hand-edited prose file
   (`LEDGER.md`, and misuse of durable memory files). Observed: `LEDGER.md`
   edited 24x in one session; project memory / `MEMORY.md` edited 14-16x. Each
   edit is a read-match-replace round trip, with occasional string-not-found
-  retries (the D4 overlap).
+  retries (the edit-before-read / string-not-found waste, tracked separately).
 - **W2 — self-transcript read churn.** The model re-reads its own session
   transcript (15x in one session) to recover "where am I / what did I decide /
   what is done". Transcript files reach multiple MB, so each recovery read is
@@ -23,7 +23,7 @@ D2 diagnosed two recurring session wastes:
 
 Both are symptoms of one gap: **in-flight (tier-2) session state has no
 designated home.** Durable cross-session state (tier-1) is already handled by
-the memory files plus the `MEMORY.md` index (D2-partial re-leaned that index).
+the memory files plus the `MEMORY.md` index (an earlier pass re-leaned that index).
 Tier-2 state, having no home, sprawls into hand-edited ledgers (W1) and into the
 transcript itself, which is then re-read for recovery (W2).
 
@@ -66,8 +66,8 @@ every hook receives as `transcript_path`.
 - Cross-session state carryover between *different* session ids (a resumed
   session keeps its id, so continuity holds; merging distinct sessions is
   deferred and risky).
-- D3 session-hygiene (checkpoint/close at task boundaries) — a separate track,
-  though this mechanism feeds it.
+- Session hygiene for long resumed sessions (checkpoint/close at task
+  boundaries) - a separate track, though this mechanism feeds it.
 
 ## Behavioral contract
 
@@ -86,8 +86,8 @@ every hook receives as `transcript_path`.
 ## Architecture
 
 Two hooks + one state file per session. Both hooks are Node scripts in
-`/Users/inkme/.claude/hooks/`, reading stdin JSON and env, matching the caveman
-hooks.
+`$CLAUDE_CONFIG_DIR/hooks/` (the harness config dir, default `~/.claude`),
+reading stdin JSON and env, matching the caveman hooks.
 
 ```
 Stop hook  (d2-state-writer.js)   [fires: end of every assistant turn]
@@ -238,7 +238,7 @@ the injected payoff — not relied upon as the primary mechanism.
 ## Rollout
 
 1. Land the two hooks + state format.
-2. Wire in `/Users/inkme/.claude/settings.json`: add the Stop hook; add the
+2. Wire in `$CLAUDE_CONFIG_DIR/settings.json`: add the Stop hook; add the
    injector as a second SessionStart command alongside caveman-activate.
 3. Add the one-line CLAUDE.md tag convention.
 4. Dogfood on this project's sessions.
