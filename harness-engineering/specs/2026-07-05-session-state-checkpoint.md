@@ -49,7 +49,7 @@ Consequence: "persist the task list" has almost nothing to persist. The snapshot
 
 ## Architecture
 
-Two hooks + per-session state files plus one rolling project pointer. Both hooks are Node scripts in `$CLAUDE_CONFIG_DIR/hooks/` (the harness config dir, default `~/.claude`), reading stdin JSON and env.
+Two hooks + per-session state files plus one rolling project pointer. Both hooks are Node scripts bundled in a Claude Code plugin and declared in its `hooks/hooks.json` (referenced via `${CLAUDE_PLUGIN_ROOT}`); once the plugin is enabled the harness runs them for every session, so no user `settings.json` wiring is needed. They read stdin JSON and env.
 
 ```
 Stop hook  (session-state-writer.js)   [fires: end of every assistant turn]
@@ -64,7 +64,7 @@ Stop hook  (session-state-writer.js)   [fires: end of every assistant turn]
   8. persist new byte offset
   9. exit 0 (never block the turn)
 
-SessionStart hook  (session-state-injector.js)   [fires: session start, all sources]
+SessionStart hook  (session-state-injector.js)   [matcher: startup|resume|compact]
   stdin: { session_id, transcript_path, source, ... }
   1. resolve state dir = <dir of transcript_path>/state/
   2. pick the source file by session start reason:
@@ -72,8 +72,9 @@ SessionStart hook  (session-state-injector.js)   [fires: session start, all sour
        startup          -> state/_latest.md, only if its mtime is within
                            RECENCY_H hours; prepend a "prior session in this
                            project - verify relevance" header
-       clear            -> none
-  3. if a file was picked and exists: write it to stdout (= injected context)
+  3. write to stdout (= injected context): the picked state (if any) plus a
+     one-line reminder of the inline tag convention, so Layer 2 is delivered by
+     the harness every session rather than by a CLAUDE.md rule
   4. exit 0
 ```
 
@@ -151,7 +152,7 @@ This keeps the file small and bounded, so it never becomes a growing doc that re
   - Different risk profile: `cd` fights entrenched muscle memory (hence 193x ignored); the tag is a new, lightweight behavior with a payoff visible on every resume (self-reinforcing feedback loop).
   - Graceful degradation: if the tag is forgotten, Layer 1 facts still flow, so transcript re-reads shrink (15x -> few) rather than reappearing. The system does not break.
 
-The convention is introduced via a single project CLAUDE.md line, reinforced by the injected payoff — not relied upon as the primary mechanism.
+The convention is delivered by the SessionStart hook every session (not a static CLAUDE.md line that compaction can prune), and reinforced by the injected state payoff — so its delivery is reliable even though acting on it stays model discretion. Layer 1, not this, is the primary mechanism.
 
 ## Error handling / edge cases
 
@@ -178,8 +179,8 @@ The convention is introduced via a single project CLAUDE.md line, reinforced by 
 ## Rollout
 
 1. Land the two hooks + state format.
-2. Wire in `$CLAUDE_CONFIG_DIR/settings.json`: add the Stop hook; append the injector as an additional SessionStart command (do not replace any existing SessionStart hook).
-3. Add the one-line CLAUDE.md tag convention.
+2. Package as a Claude Code plugin: a `hooks/hooks.json` declaring the Stop and SessionStart hooks via `${CLAUDE_PLUGIN_ROOT}`, a `plugin.json`, and a repo-root `marketplace.json`. Enable it through the `/plugin` flow; no `settings.json` editing.
+3. The inline tag convention is injected by the SessionStart hook every session (no CLAUDE.md edit required).
 4. Dogfood on this project's sessions.
 5. Measure before vs after by re-running the session-corpus diagnostic (parses session logs): transcript re-read count and `LEDGER.md`/memory edit count.
 
