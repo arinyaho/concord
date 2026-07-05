@@ -3,7 +3,7 @@
 - Status: Draft (design approved, spec under review)
 - Date: 2026-07-05
 - Track: Harness engineering - the memory / ledger / doc-churn finding (D2 in the README track map)
-- Scope: v1 = Layer 1 (machine activity trail) + Layer 2 (inline-tag rationale harvest)
+- Scope: v1 = Layer 1 (machine activity trail) + Layer 2 (inline-tag rationale harvest), for same-session resume/compaction and for continuation in a fresh session
 
 ## Problem
 
@@ -27,7 +27,7 @@ Consequence: "persist the task list" has almost nothing to persist. The snapshot
 
 ## Goals
 
-- Kill W2: on resume/compact, the model receives a compact state summary and does not re-read the transcript to recover.
+- Kill W2: on resume, compaction, or continuation in a fresh session, the model receives a compact state summary and does not re-read a transcript to recover.
 - Reduce W1: with activity auto-captured, the motivation to hand-maintain a status ledger drops (partial need-removal). Full W1 elimination is out of scope for v1.
 - Zero added model-token cost on the write path (the harness writes state).
 - No new subsystem: two small Node hooks matching the existing caveman-hook style, plus a state file format.
@@ -36,19 +36,19 @@ Consequence: "persist the task list" has almost nothing to persist. The snapshot
 
 - Full elimination of W1 ledger churn (v1 reduces, does not remove).
 - LLM/semantic summarization of the transcript (v1 is mechanical extraction + inline-tag harvest only).
-- Cross-session state carryover between *different* session ids (a resumed session keeps its id, so continuity holds; merging distinct sessions is deferred and risky).
+- Reconciling state across *concurrent* live sessions in the same project (v1 accepts last-writer-wins on the rolling project pointer; see edge cases). Carryover into a fresh, non-concurrent session *is* in scope (see below).
 - Session hygiene for long resumed sessions (checkpoint/close at task boundaries) - a separate track, though this mechanism feeds it.
 
 ## Behavioral contract
 
 1. After each assistant turn, the harness appends any new activity + tagged rationale from that turn's transcript delta to a per-session state file. No model action required for the activity half.
-2. On session resume or post-compaction restart, the harness injects the current state file into context. On a fresh startup or an explicit `clear`, it injects nothing.
+2. On session resume or post-compaction restart, the harness injects this session's own state file. On a fresh startup it injects the project's most recent session state, recency-gated and labeled as prior-session context to verify. On an explicit `clear`, it injects nothing.
 3. The state file is machine-owned. The model never hand-edits it. Its size stays bounded via machine compaction.
 4. If the model tags a decision or open item inline (`DECISION:`, `OPEN-LOOP:`, `NEXT:`), that line is harvested into state. If it does not, only the activity half is captured (graceful degradation) — nothing breaks.
 
 ## Architecture
 
-Two hooks + one state file per session. Both hooks are Node scripts in `$CLAUDE_CONFIG_DIR/hooks/` (the harness config dir, default `~/.claude`), reading stdin JSON and env, matching the caveman hooks.
+Two hooks + per-session state files plus one rolling project pointer. Both hooks are Node scripts in `$CLAUDE_CONFIG_DIR/hooks/` (the harness config dir, default `~/.claude`), reading stdin JSON and env, matching the caveman hooks.
 
 ```
 Stop hook  (session-state-writer.js)   [fires: end of every assistant turn]
@@ -59,14 +59,20 @@ Stop hook  (session-state-writer.js)   [fires: end of every assistant turn]
   4. extract A (facts) from tool_use events in the delta
   5. extract B (rationale) from assistant-text lines matching the tag prefixes
   6. merge into state/<session_id>.md, compact in place, write
-  7. persist new byte offset
-  8. exit 0 (never block the turn)
+  7. copy the result to state/_latest.md (rolling project pointer)
+  8. persist new byte offset
+  9. exit 0 (never block the turn)
 
 SessionStart hook  (session-state-injector.js)   [fires: session start, all sources]
   stdin: { session_id, transcript_path, source, ... }
-  1. if source not in {resume, compact}: emit nothing, exit 0
-  2. resolve state dir, read state/<session_id>.md
-  3. if present: write it to stdout (SessionStart stdout = injected context)
+  1. resolve state dir = <dir of transcript_path>/state/
+  2. pick the source file by session start reason:
+       resume | compact -> state/<session_id>.md
+       startup          -> state/_latest.md, only if its mtime is within
+                           RECENCY_H hours; prepend a "prior session in this
+                           project - verify relevance" header
+       clear            -> none
+  3. if a file was picked and exists: write it to stdout (= injected context)
   4. exit 0
 ```
 
@@ -77,7 +83,7 @@ Injection contract confirmed from `caveman-activate.js`: a SessionStart hook's p
 ### session-state-writer.js (Stop hook)
 
 - **What:** Parse the transcript delta since last run; append facts + tagged rationale to the session state file; compact; advance the watermark.
-- **Interface:** stdin JSON `{ session_id, transcript_path }`; side effect = write `state/<session_id>.md` and `state/<session_id>.pos`; stdout ignored; exit 0 always.
+- **Interface:** stdin JSON `{ session_id, transcript_path }`; side effect = write `state/<session_id>.md`, refresh `state/_latest.md`, and update `state/<session_id>.pos`; stdout ignored; exit 0 always.
 - **Depends on:** transcript JSONL schema (tool_use entries with `name` + `input`; assistant message entries with text content).
 
 **Extractor A — facts (from tool_use in delta):**
@@ -94,9 +100,9 @@ Injection contract confirmed from `caveman-activate.js`: a SessionStart hook's p
 
 ### session-state-injector.js (SessionStart hook)
 
-- **What:** On resume/compact, print the current session state file so it enters context; recovery becomes one small read instead of a transcript re-read.
-- **Interface:** stdin JSON `{ session_id, source }`; stdout = state file contents or empty; exit 0 always.
-- **Depends on:** the state file written by the writer.
+- **What:** On resume/compact, print this session's own state file; on a fresh startup, print the project's most recent session state (recency-gated, labeled) so a session started to continue prior work still recovers without a transcript re-read.
+- **Interface:** stdin JSON `{ session_id, transcript_path, source }`; stdout = the picked state (possibly under a prior-session header) or empty; exit 0 always.
+- **Depends on:** the writer's per-session file and its `state/_latest.md` pointer.
 
 ### State file — state/<session_id>.md
 
@@ -122,6 +128,8 @@ Injection contract confirmed from `caveman-activate.js`: a SessionStart hook's p
 
 Sidecar `state/<session_id>.pos` = integer byte offset (watermark).
 
+Rolling project pointer `state/_latest.md` = a copy of the most recent session's state file in this project. The `state/` dir already lives under the project's own directory, so no project key is needed in the name; it is refreshed on every writer run (last-writer-wins across concurrent sessions).
+
 ### Compaction (inside the writer, every run)
 
 - **Open loops:** keep all unresolved; a `RESOLVED:` line removes the matching open loop; hard cap N (e.g. 20), oldest dropped with a `(...truncated)` marker.
@@ -133,7 +141,7 @@ This keeps the file small and bounded, so it never becomes a growing doc that re
 ## Data flow
 
 - **Write path (every turn):** Stop hook reads only the delta (seek to byte watermark), extracts, merges, compacts, writes. No model tokens. Cost is a tail read + small file write per turn.
-- **Read path (resume/compact only):** SessionStart hook prints one small state file into context. The model starts with its own state in hand; no transcript re-read.
+- **Read path:** on resume/compact the injector prints this session's own state; on a fresh startup it prints the recency-gated project-rolling state under a prior-session header. Either way one small file enters context; no transcript re-read.
 
 ## Hope surface (honest)
 
@@ -150,9 +158,11 @@ The convention is introduced via a single project CLAUDE.md line, reinforced by 
 - Unreadable/absent `transcript_path`: writer no-ops, exit 0 (never break a turn).
 - Malformed JSONL line: skip it, continue.
 - Large mid-session delta: byte-offset seek reads only new bytes, so cost scales with delta, not transcript size.
-- Concurrent sessions: keyed by `session_id`, no clobber.
+- Concurrent sessions in the same project: per-session files stay isolated by `session_id`; only the shared `state/_latest.md` is last-writer-wins, and the injected prior-session block is labeled "verify relevance", so a mixed pointer is low-harm.
 - Hook exceptions: caught; always exit 0 so a hook failure never blocks the turn or the session start.
 - `source = clear`: intentionally emit nothing (the user cleared context on purpose).
+- False continuity on fresh startup: `state/_latest.md` may belong to an unrelated prior task. Mitigated by the recency gate (skip if older than RECENCY_H) plus the "prior session - verify relevance" header; the block is small and the model can ignore it.
+- Transcript rewrite/truncation: the byte-offset watermark assumes an append-only transcript. If the stored offset exceeds the current file size, treat the transcript as rewritten and reset the offset to 0 (full re-scan). Whether compaction rewrites the `.jsonl` must be verified during implementation.
 
 ## Testing
 
@@ -160,7 +170,8 @@ The convention is introduced via a single project CLAUDE.md line, reinforced by 
 - **Unit — extractor B:** fixture assistant text with tagged + untagged lines -> assert only tagged lines harvested; `RESOLVED:` closes the matching open loop.
 - **Idempotency:** run the writer twice on the same transcript (watermark unchanged after first) -> no duplicate appends.
 - **Compaction:** superseded decision dropped; caps enforced; truncation marker present.
-- **Injector:** given a state file + `source=resume` -> stdout equals the file; given `source=startup` -> empty; given no file -> empty.
+- **Rolling pointer:** after a writer run, `state/_latest.md` equals the just-written session file; a later run from a second session overwrites it (last-writer-wins).
+- **Injector:** `source=resume` with a session file -> stdout equals it; `source=startup` with a recent `state/_latest.md` -> stdout is that state under the prior-session header; `source=startup` with a stale `_latest.md` -> empty; `source=clear` -> empty; no files -> empty.
 - **Integration:** point the injector at a real small session's state and confirm the emitted context is the compact summary, not the transcript.
 
 ## Rollout
@@ -176,4 +187,4 @@ The convention is introduced via a single project CLAUDE.md line, reinforced by 
 - Full W1 elimination (enforcement on hand-ledger writes, e.g. a PreToolUse guard, if the partial reduction proves insufficient).
 - PreCompact nudge: a rare, well-timed reminder to record open loops right before compaction.
 - Compaction-quality tuning (topic keying, dedup heuristics).
-- Optional cross-session carryover for the same cwd/project (currently deferred as risky).
+- Reconciling divergent state across concurrent live sessions (v1 accepts last-writer-wins on `state/_latest.md`).
