@@ -51,7 +51,7 @@ Consequence: "persist the task list" has almost nothing to persist. The snapshot
 Two hooks + one state file per session. Both hooks are Node scripts in `$CLAUDE_CONFIG_DIR/hooks/` (the harness config dir, default `~/.claude`), reading stdin JSON and env, matching the caveman hooks.
 
 ```
-Stop hook  (d2-state-writer.js)   [fires: end of every assistant turn]
+Stop hook  (session-state-writer.js)   [fires: end of every assistant turn]
   stdin: { session_id, transcript_path, ... }
   1. resolve state dir = <dir of transcript_path>/state/
   2. read byte-offset watermark for session_id (default 0)
@@ -62,7 +62,7 @@ Stop hook  (d2-state-writer.js)   [fires: end of every assistant turn]
   7. persist new byte offset
   8. exit 0 (never block the turn)
 
-SessionStart hook  (d2-state-injector.js)   [fires: session start, all sources]
+SessionStart hook  (session-state-injector.js)   [fires: session start, all sources]
   stdin: { session_id, transcript_path, source, ... }
   1. if source not in {resume, compact}: emit nothing, exit 0
   2. resolve state dir, read state/<session_id>.md
@@ -74,7 +74,7 @@ Injection contract confirmed from `caveman-activate.js`: a SessionStart hook's p
 
 ## Components
 
-### d2-state-writer.js (Stop hook)
+### session-state-writer.js (Stop hook)
 
 - **What:** Parse the transcript delta since last run; append facts + tagged rationale to the session state file; compact; advance the watermark.
 - **Interface:** stdin JSON `{ session_id, transcript_path }`; side effect = write `state/<session_id>.md` and `state/<session_id>.pos`; stdout ignored; exit 0 always.
@@ -92,7 +92,7 @@ Injection contract confirmed from `caveman-activate.js`: a SessionStart hook's p
 
 - Lines matching `^(DECISION|OPEN-LOOP|NEXT|RESOLVED):` (case-insensitive), captured verbatim minus the prefix. `RESOLVED:` closes a prior open loop.
 
-### d2-state-injector.js (SessionStart hook)
+### session-state-injector.js (SessionStart hook)
 
 - **What:** On resume/compact, print the current session state file so it enters context; recovery becomes one small read instead of a transcript re-read.
 - **Interface:** stdin JSON `{ session_id, source }`; stdout = state file contents or empty; exit 0 always.
