@@ -31,6 +31,7 @@ Consequence: "persist the task list" has almost nothing to persist. The snapshot
 - Reduce W1: with activity auto-captured, the motivation to hand-maintain a status ledger drops (partial need-removal). Full W1 elimination is out of scope for v1.
 - Zero added model-token cost on the write path (the harness writes state).
 - No new subsystem: two small Node hooks plus a state file format.
+- Project-agnostic: the hooks derive every path from `transcript_path`, so one install serves any `~/.claude` project with no per-project config or brand assumption, and each project's state stays isolated by its own directory.
 
 ## Non-goals (v1)
 
@@ -188,3 +189,4 @@ The convention is introduced via a single project CLAUDE.md line, reinforced by 
 - PreCompact nudge: a rare, well-timed reminder to record open loops right before compaction.
 - Compaction-quality tuning (topic keying, dedup heuristics).
 - Reconciling divergent state across concurrent live sessions (v1 accepts last-writer-wins on `state/_latest.md`).
+- Bringing a project-neutral session-corpus diagnostic into this repo (today it is a private, project-named script), so any project can measure the before/after.
