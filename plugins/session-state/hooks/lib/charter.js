@@ -1,8 +1,10 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const { NORTH_STAR_MAX, MIN_MSG_LEN, SESSIONS_MERGE_CAP } = require('./config');
+const { NORTH_STAR_MAX, MIN_MSG_LEN, SESSIONS_MERGE_CAP, ACTIVE_SKIP_MINUTES } = require('./config');
 const { emptyModel, mergeModel } = require('./state');
+const { readDelta } = require('./transcript');
+const { extractFacts, extractRationale } = require('./extract');
 
 function charterPath(stateDir) {
   return path.join(stateDir, 'charter.md');
@@ -161,6 +163,50 @@ function renderCharter(northStar, model) {
   return parts.concat(secs).join('\n').trimEnd() + '\n';
 }
 
+// Re-process any session whose model watermark lags its transcript (e.g. a session
+// abandoned before its Stop hook flushed the final turn). Skips the current session
+// and any transcript touched within ACTIVE_SKIP_MINUTES to avoid racing a live writer.
+function catchUpSessions(stateDir, { currentSid, now = Date.now() } = {}) {
+  const projDir = path.dirname(stateDir);
+  const activeCutoff = now - ACTIVE_SKIP_MINUTES * 60 * 1000;
+  let names;
+  try {
+    names = fs.readdirSync(stateDir);
+  } catch (e) {
+    return;
+  }
+  for (const n of names) {
+    if (!n.endsWith('.json')) continue;
+    const sid = n.slice(0, -5);
+    if (sid === currentSid) continue;
+    const tpath = path.join(projDir, `${sid}.jsonl`);
+    let tstat;
+    try {
+      tstat = fs.statSync(tpath);
+    } catch (e) {
+      continue; // no transcript for this model
+    }
+    if (tstat.mtimeMs > activeCutoff) continue; // likely live
+
+    const jsonPath = path.join(stateDir, n);
+    let model;
+    try {
+      model = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+    } catch (e) {
+      continue;
+    }
+    if ((model.offset || 0) >= tstat.size) continue; // already caught up
+
+    const { entries, newOffset } = readDelta(tpath, model.offset || 0);
+    if (entries.length === 0) continue;
+    const facts = extractFacts(entries);
+    const rationale = extractRationale(entries);
+    const merged = mergeModel(model, { ...rationale, facts });
+    merged.offset = newOffset;
+    fs.writeFileSync(jsonPath, JSON.stringify(merged));
+  }
+}
+
 module.exports = {
   charterPath,
   readNorthStar,
@@ -169,4 +215,5 @@ module.exports = {
   firstSubstantiveUserMessage,
   mergeSessions,
   renderCharter,
+  catchUpSessions,
 };

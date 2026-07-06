@@ -114,3 +114,43 @@ test('renderCharter: null north-star renders a placeholder line', () => {
   assert.ok(md.includes('# Task charter'));
   assert.ok(md.toLowerCase().includes('no north star set'));
 });
+
+test('catchUpSessions: harvests an abandoned session un-watermarked tail; idempotent', () => {
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'proj-'));
+  const dir = path.join(proj, 'state');
+  fs.mkdirSync(dir, { recursive: true });
+  // abandoned session: transcript has a tagged decision past the model offset
+  const sid = 'abandoned1';
+  const line = (o) => JSON.stringify(o) + '\n';
+  const transcript =
+    line({ type: 'assistant', message: { content: [{ type: 'text', text: 'DECISION: [x] chose B over A' }] } });
+  const tpath = path.join(proj, `${sid}.jsonl`);
+  fs.writeFileSync(tpath, transcript);
+  // stale mtime so it is not treated as active
+  const old = Date.now() - 60 * 60 * 1000;
+  fs.utimesSync(tpath, new Date(old), new Date(old));
+  fs.writeFileSync(path.join(dir, `${sid}.json`), JSON.stringify({ offset: 0, openLoops: [], decisions: [], nexts: [], facts: [] }));
+
+  charter.catchUpSessions(dir, { currentSid: 'other', now: Date.now() });
+  const after = JSON.parse(fs.readFileSync(path.join(dir, `${sid}.json`), 'utf8'));
+  assert.ok(after.decisions.includes('[x] chose B over A'));
+  assert.ok(after.offset > 0);
+
+  // idempotent: a second scan changes nothing
+  const before2 = fs.readFileSync(path.join(dir, `${sid}.json`), 'utf8');
+  charter.catchUpSessions(dir, { currentSid: 'other', now: Date.now() });
+  assert.strictEqual(fs.readFileSync(path.join(dir, `${sid}.json`), 'utf8'), before2);
+});
+
+test('catchUpSessions: skips a recently-active session (race guard)', () => {
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'proj-'));
+  const dir = path.join(proj, 'state');
+  fs.mkdirSync(dir, { recursive: true });
+  const sid = 'live1';
+  fs.writeFileSync(path.join(proj, `${sid}.jsonl`), JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'DECISION: [y] live' }] } }) + '\n');
+  fs.writeFileSync(path.join(dir, `${sid}.json`), JSON.stringify({ offset: 0, openLoops: [], decisions: [], nexts: [], facts: [] }));
+  // transcript mtime is "now" => active => skipped
+  charter.catchUpSessions(dir, { currentSid: 'other', now: Date.now() });
+  const after = JSON.parse(fs.readFileSync(path.join(dir, `${sid}.json`), 'utf8'));
+  assert.strictEqual(after.decisions.length, 0);
+});
