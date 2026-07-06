@@ -34,3 +34,9 @@ test('north-star: empty/whitespace file counts as absent', () => {
   assert.strictEqual(charter.readNorthStar(dir), null);
   assert.strictEqual(charter.writeNorthStarIfAbsent(dir, 'framing'), true);
 });
+
+test('north-star: writes are capped at NORTH_STAR_MAX', () => {
+  const dir = tmpStateDir();
+  charter.setNorthStar(dir, 'x'.repeat(5000));
+  assert.strictEqual(charter.readNorthStar(dir).length, 4000);
+});

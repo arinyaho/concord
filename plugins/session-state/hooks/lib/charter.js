@@ -17,15 +17,27 @@ function readNorthStar(stateDir) {
   }
 }
 
-// Write the draft ONLY if no non-empty north-star exists (first-writer-wins).
-// Returns whether it wrote. Parallel fresh sessions cannot clobber each other.
+// Write the draft with an atomic create-exclusive open (flag 'wx'): if charter.md
+// does not exist, exactly one parallel fresh session wins the create and the rest
+// get EEXIST -> false. This closes the cross-process TOCTOU a read-then-write leaves
+// open. If the file exists but is empty/whitespace (a degenerate state — this
+// function never writes an empty body), treat it as absent and overwrite.
 function writeNorthStarIfAbsent(stateDir, text) {
-  if (readNorthStar(stateDir) !== null) return false;
   const body = String(text || '').trim();
   if (!body) return false;
   fs.mkdirSync(stateDir, { recursive: true });
-  fs.writeFileSync(charterPath(stateDir), body.slice(0, NORTH_STAR_MAX));
-  return true;
+  const capped = body.slice(0, NORTH_STAR_MAX);
+  try {
+    fs.writeFileSync(charterPath(stateDir), capped, { flag: 'wx' });
+    return true;
+  } catch (e) {
+    if (e.code !== 'EEXIST') return false;
+    if (readNorthStar(stateDir) === null) {
+      fs.writeFileSync(charterPath(stateDir), capped);
+      return true;
+    }
+    return false;
+  }
 }
 
 // Deliberate overwrite (from the /charter command). LWW is safe here: rare, user-driven.
