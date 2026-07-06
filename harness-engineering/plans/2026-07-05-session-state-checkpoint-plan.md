@@ -28,7 +28,7 @@ All code lives in this repo (`concord`) under `plugins/session-state/`. The plug
 - `plugins/session-state/hooks/hooks.json` — declares the Stop and SessionStart hooks via `${CLAUDE_PLUGIN_ROOT}`.
 - `plugins/session-state/hooks/lib/config.js` — constants and shared regexes.
 - `plugins/session-state/hooks/lib/transcript.js` — `readDelta(path, offset)`.
-- `plugins/session-state/hooks/lib/extract.js` — `extractFacts`, `extractRationale`.
+- `plugins/session-state/hooks/lib/extract.js` — `extractFacts`, `extractRationale`, `extractRationaleText`.
 - `plugins/session-state/hooks/lib/state.js` — `emptyModel`, `topicKey`, `mergeModel`, `renderMarkdown`.
 - `plugins/session-state/hooks/session-state-writer.js` — Stop hook entry point.
 - `plugins/session-state/hooks/session-state-injector.js` — SessionStart hook entry point.
@@ -205,6 +205,7 @@ git commit -m "feat: transcript delta reader with byte-offset watermark"
 - Consumes: entries as returned by `readDelta` (parsed transcript objects).
 - Produces: `extractFacts(entries) -> string[]` (e.g. `"edited path"`, `"ran: git commit ..."`, `"task: Title [status]"`).
 - Produces: `extractRationale(entries) -> { decisions: string[], openLoops: string[], nexts: string[], resolved: string[] }`.
+- Produces: `extractRationaleText(text) -> { decisions, openLoops, nexts, resolved }` — same shape, harvested from a single text blob (the Stop hook's `last_assistant_message`).
 
 Transcript shape (verified against real logs): an entry with `type === "assistant"` has `message.content` = an array of items; each item has `type` in `{ "thinking", "text", "tool_use" }`. A `tool_use` item is `{ type, name, input }`; a `text` item is `{ type: "text", text }`.
 
@@ -341,30 +342,45 @@ function extractFacts(entries) {
   return facts;
 }
 
-// Rationale from tagged assistant-text lines.
-function extractRationale(entries) {
-  const decisions = [];
-  const openLoops = [];
-  const nexts = [];
-  const resolved = [];
-  for (const item of assistantItems(entries)) {
-    if (!item || item.type !== 'text' || typeof item.text !== 'string') continue;
-    for (const raw of item.text.split('\n')) {
-      const m = raw.trim().match(TAG_RE);
-      if (!m) continue;
-      const body = m[2].trim();
-      if (!body) continue;
-      const tag = m[1].toUpperCase();
-      if (tag === 'DECISION') decisions.push(body);
-      else if (tag === 'OPEN-LOOP') openLoops.push(body);
-      else if (tag === 'NEXT') nexts.push(body);
-      else if (tag === 'RESOLVED') resolved.push(body);
-    }
+// Harvest tagged lines from a text blob into an accumulator.
+function harvestTags(text, acc) {
+  for (const raw of String(text).split('\n')) {
+    const m = raw.trim().match(TAG_RE);
+    if (!m) continue;
+    const body = m[2].trim();
+    if (!body) continue;
+    const tag = m[1].toUpperCase();
+    if (tag === 'DECISION') acc.decisions.push(body);
+    else if (tag === 'OPEN-LOOP') acc.openLoops.push(body);
+    else if (tag === 'NEXT') acc.nexts.push(body);
+    else if (tag === 'RESOLVED') acc.resolved.push(body);
   }
-  return { decisions, openLoops, nexts, resolved };
+  return acc;
 }
 
-module.exports = { extractFacts, extractRationale };
+function emptyRationale() {
+  return { decisions: [], openLoops: [], nexts: [], resolved: [] };
+}
+
+// Rationale from tagged lines across all assistant-text items in the delta.
+function extractRationale(entries) {
+  const acc = emptyRationale();
+  for (const item of assistantItems(entries)) {
+    if (!item || item.type !== 'text' || typeof item.text !== 'string') continue;
+    harvestTags(item.text, acc);
+  }
+  return acc;
+}
+
+// Rationale from a single text blob, e.g. the Stop hook's last_assistant_message
+// (captures the just-finished turn even if it has not flushed to the transcript).
+function extractRationaleText(text) {
+  const acc = emptyRationale();
+  if (text) harvestTags(text, acc);
+  return acc;
+}
+
+module.exports = { extractFacts, extractRationale, extractRationaleText };
 ```
 
 - [ ] **Step 5: Run the test to verify it passes**
@@ -429,6 +445,12 @@ test('RESOLVED matches normalized-exact only, so a short token cannot close unre
   assert.deepEqual(m.openLoops, ['verify the injector']); // case/space-insensitive exact
 });
 
+test('open loops dedup: the same loop from two sources collapses to one', () => {
+  let m = emptyModel();
+  m = mergeModel(m, delta({ openLoops: ['verify the injector', 'verify the injector'] }));
+  assert.deepEqual(m.openLoops, ['verify the injector']);
+});
+
 test('facts are a bounded ring buffer', () => {
   let m = emptyModel();
   const many = Array.from({ length: 50 }, (_, i) => `edited f${i}.js`);
@@ -482,6 +504,19 @@ function normalizeText(s) {
   return String(s).trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
+// Keep the most-recent occurrence of each distinct item (by key), order preserved.
+function dedupeLatest(items, keyFn) {
+  const seen = new Set();
+  const out = [];
+  for (let i = items.length - 1; i >= 0; i--) {
+    const k = keyFn(items[i]);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.unshift(items[i]);
+  }
+  return out;
+}
+
 // Merge a delta into the model, applying compaction so the file stays bounded.
 function mergeModel(prev, d) {
   const m = {
@@ -492,24 +527,17 @@ function mergeModel(prev, d) {
     facts: prev.facts.slice(),
   };
 
-  // Keep the most-recent occurrence of each distinct fact, then cap, so edit
-  // churn on one file cannot evict higher-signal facts (commits, PRs).
-  const combined = m.facts.concat(d.facts);
-  const seen = new Set();
-  const distinct = [];
-  for (let i = combined.length - 1; i >= 0; i--) {
-    if (seen.has(combined[i])) continue;
-    seen.add(combined[i]);
-    distinct.unshift(combined[i]);
-  }
-  m.facts = distinct.slice(-FACTS_CAP);
+  // Keep the most-recent occurrence of each distinct item, then cap, so churn
+  // (repeated edits, or a tag harvested from both the transcript and the Stop
+  // hook's last_assistant_message) cannot evict higher-signal entries.
+  m.facts = dedupeLatest(m.facts.concat(d.facts), (f) => f).slice(-FACTS_CAP);
 
   m.openLoops = m.openLoops.concat(d.openLoops);
   for (const r of d.resolved) {
     const rn = normalizeText(r);
     m.openLoops = m.openLoops.filter((o) => normalizeText(o) !== rn);
   }
-  m.openLoops = m.openLoops.slice(-OPEN_LOOPS_CAP);
+  m.openLoops = dedupeLatest(m.openLoops, normalizeText).slice(-OPEN_LOOPS_CAP);
 
   for (const dec of d.decisions) {
     const k = topicKey(dec);
@@ -518,7 +546,7 @@ function mergeModel(prev, d) {
   }
   m.decisions = m.decisions.slice(-DECISIONS_CAP);
 
-  m.nexts = m.nexts.concat(d.nexts).slice(-NEXTS_CAP);
+  m.nexts = dedupeLatest(m.nexts.concat(d.nexts), normalizeText).slice(-NEXTS_CAP);
   return m;
 }
 
@@ -544,7 +572,7 @@ module.exports = { emptyModel, topicKey, mergeModel, renderMarkdown };
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `node --test plugins/session-state/hooks/test/state.test.js`
-Expected: PASS (6 tests).
+Expected: PASS (7 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -562,8 +590,8 @@ git commit -m "feat: bounded state model with compaction"
 - Test: `plugins/session-state/hooks/test/writer.test.js`
 
 **Interfaces:**
-- Consumes: `readDelta` (Task 1), `extractFacts`/`extractRationale` (Task 2), `emptyModel`/`mergeModel`/`renderMarkdown` (Task 3).
-- Behavior: reads stdin JSON `{ session_id, transcript_path }`; resolves `stateDir = dirname(transcript_path)/state`; loads `state/<id>.json` (or `emptyModel`); reads the delta from `model.offset`; merges; writes `state/<id>.json`, `state/<id>.md`, `state/_latest.md`; exits 0 always.
+- Consumes: `readDelta` (Task 1), `extractFacts`/`extractRationale`/`extractRationaleText` (Task 2), `emptyModel`/`mergeModel`/`renderMarkdown` (Task 3).
+- Behavior: reads stdin JSON `{ session_id, transcript_path, last_assistant_message }`; resolves `stateDir = dirname(transcript_path)/state`; loads `state/<id>.json` (or `emptyModel`); reads the delta from `model.offset`; merges; writes `state/<id>.json`, `state/<id>.md`, `state/_latest.md`; exits 0 always.
 
 - [ ] **Step 1: Write the failing test `plugins/session-state/hooks/test/writer.test.js`**
 
@@ -618,6 +646,26 @@ test('malformed stdin exits 0 without throwing', () => {
   // execFileSync throws if the process exits non-zero; absence of throw = pass.
   execFileSync('node', [WRITER], { input: 'not json' });
 });
+
+test('harvests tags from last_assistant_message and dedups against the transcript', () => {
+  const { proj, transcript, id } = setup();
+  // Transcript already carries one open loop (the flushed path)...
+  fs.writeFileSync(
+    transcript,
+    '{"type":"assistant","message":{"content":[{"type":"text","text":"OPEN-LOOP: enable the plugin"}]}}\n'
+  );
+  // ...and stdin carries the same loop (unflushed path) plus a new decision.
+  execFileSync('node', [WRITER], {
+    input: JSON.stringify({
+      session_id: id,
+      transcript_path: transcript,
+      last_assistant_message: 'OPEN-LOOP: enable the plugin\nDECISION: [scope] ship v1',
+    }),
+  });
+  const model = JSON.parse(fs.readFileSync(path.join(proj, 'state', `${id}.json`), 'utf8'));
+  assert.equal(model.openLoops.filter((o) => o === 'enable the plugin').length, 1); // deduped
+  assert.ok(model.decisions.includes('[scope] ship v1')); // harvested from stdin
+});
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -633,11 +681,11 @@ Expected: FAIL — cannot find `session-state-writer.js`.
 const fs = require('node:fs');
 const path = require('node:path');
 const { readDelta } = require('./lib/transcript');
-const { extractFacts, extractRationale } = require('./lib/extract');
+const { extractFacts, extractRationale, extractRationaleText } = require('./lib/extract');
 const { emptyModel, mergeModel, renderMarkdown } = require('./lib/state');
 
 function main() {
-  const { session_id, transcript_path } = JSON.parse(fs.readFileSync(0, 'utf8'));
+  const { session_id, transcript_path, last_assistant_message } = JSON.parse(fs.readFileSync(0, 'utf8'));
   if (!session_id || !transcript_path) return;
 
   const sid = path.basename(String(session_id));
@@ -655,11 +703,15 @@ function main() {
   }
 
   const { entries, newOffset } = readDelta(transcript_path, model.offset || 0);
-  if (entries.length) {
-    const facts = extractFacts(entries);
-    const rationale = extractRationale(entries);
-    model = mergeModel(model, { ...rationale, facts });
+  const facts = extractFacts(entries);
+  const rationale = extractRationale(entries);
+  // Also harvest tags from the just-finished turn via stdin, in case it has not
+  // yet flushed to the transcript; downstream dedup absorbs the overlap.
+  const msgRationale = extractRationaleText(last_assistant_message);
+  for (const key of ['decisions', 'openLoops', 'nexts', 'resolved']) {
+    rationale[key].push(...msgRationale[key]);
   }
+  model = mergeModel(model, { ...rationale, facts });
   model.offset = newOffset;
 
   fs.writeFileSync(jsonPath, JSON.stringify(model));
@@ -679,7 +731,7 @@ process.exit(0);
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `node --test plugins/session-state/hooks/test/writer.test.js`
-Expected: PASS (3 tests).
+Expected: PASS (4 tests).
 
 - [ ] **Step 5: Commit**
 
