@@ -49,7 +49,7 @@ Working directory: a checkout of `concord`. Run tests with `node --test plugins/
 
 **Interfaces:**
 - Produces: `readDelta(transcriptPath: string, offset: number) -> { entries: object[], newOffset: number }`. Reads bytes from `offset` to EOF, parses complete JSONL lines only (a partial trailing line is left for next time), skips malformed lines, and resets to 0 if `offset > fileSize` (rewritten transcript). Missing file -> `{ entries: [], newOffset: offset }`.
-- Produces: `config` object with the Global Constraints constants plus `TAG_RE`, `MEANINGFUL_BASH_RE`, `NOISE_BASH_RE`.
+- Produces: `config` object with the Global Constraints constants plus `TAG_RE` and `MEANINGFUL_BASH_RE`.
 
 - [ ] **Step 1: Write `plugins/session-state/hooks/lib/config.js`**
 
@@ -63,8 +63,10 @@ module.exports = {
   DECISIONS_CAP: 20,   // max decisions kept (latest per topic)
   NEXTS_CAP: 5,        // max next-step lines kept
   TAG_RE: /^(DECISION|OPEN-LOOP|NEXT|RESOLVED):\s*(.*)$/i,
-  MEANINGFUL_BASH_RE: /\b(git (commit|push|mv|rebase|merge|tag)|gh (pr|issue|release)|pytest|npm (run|test|ci|install)|pip install|cdk (deploy|synth)|amplify|make )\b/,
-  NOISE_BASH_RE: /^\s*(ls|cd|cat|echo|grep|pwd|which|head|tail|sed|awk|find)\b/,
+  // High-signal build/test/deploy/infra tools. An allowlist (not a denylist)
+  // because a bare denylist captures shell variable-assignment setup lines
+  // (VAR=/path/...) that dominate multi-line commands; those carry no action.
+  MEANINGFUL_BASH_RE: /^(git|gh|pytest|jest|vitest|npm|pnpm|yarn|pip|poetry|uv|cargo|go|mvn|gradle|make|cmake|bazel|docker|docker-compose|kubectl|helm|terraform|aws|gcloud|cdk|amplify|serverless|pulumi|ansible)\b/,
 };
 ```
 
@@ -243,6 +245,26 @@ test('facts: edits and meaningful commands, noise filtered', () => {
   assert.ok(!facts.some((f) => f.includes('ls -la'))); // noise dropped
 });
 
+test('facts: allowlist captures infra tools, drops noise and variable-assignment setup', () => {
+  const entries = [
+    { type: 'assistant', message: { content: [
+      { type: 'tool_use', name: 'Bash', input: { command: 'docker build -t x .' } },
+      { type: 'tool_use', name: 'Bash', input: { command: 'terraform apply' } },
+      { type: 'tool_use', name: 'Bash', input: { command: 'ls -la' } },
+      { type: 'tool_use', name: 'Bash', input: { command: 'F=/some/long/path' } },
+      { type: 'tool_use', name: 'Bash', input: { command: 'cd /w && git commit -m x' } },
+      { type: 'tool_use', name: 'Bash', input: { command: 'HAT="uv run --project /p hat"' } },
+    ] } },
+  ];
+  const facts = extractFacts(entries);
+  assert.ok(facts.includes('ran: docker build -t x .')); // recall: infra tool captured
+  assert.ok(facts.includes('ran: terraform apply'));
+  assert.ok(facts.includes('ran: cd /w && git commit -m x')); // captured via segment split
+  assert.ok(!facts.some((f) => f.includes('ls -la'))); // noise dropped
+  assert.ok(!facts.some((f) => f.startsWith('ran: F='))); // variable-assignment setup dropped
+  assert.ok(!facts.some((f) => f.includes('HAT='))); // tool name only inside a value -> dropped
+});
+
 test('rationale: tagged lines routed by tag', () => {
   const r = extractRationale(loadFixture());
   assert.deepEqual(r.decisions, ['[scope] chose A over B']);
@@ -280,7 +302,7 @@ Expected: FAIL — `Cannot find module '../lib/extract'`.
 
 ```js
 'use strict';
-const { TAG_RE, MEANINGFUL_BASH_RE, NOISE_BASH_RE } = require('./config');
+const { TAG_RE, MEANINGFUL_BASH_RE } = require('./config');
 
 // Flatten the content items of every assistant entry in the delta.
 function assistantItems(entries) {
@@ -302,9 +324,13 @@ function extractFacts(entries) {
     if (item.name === 'Edit' || item.name === 'Write') {
       if (input.file_path) facts.push(`edited ${input.file_path}`);
     } else if (item.name === 'Bash') {
+      // Split on &&/||/;/| and test each segment's leading token against the
+      // allowlist, so "cd dir && git commit" is captured but a VAR="...tool..."
+      // assignment (tool name only inside the value) is not.
       const cmd = String(input.command || '').split('\n')[0].trim();
-      if (cmd && MEANINGFUL_BASH_RE.test(cmd) && !NOISE_BASH_RE.test(cmd)) {
-        facts.push(`ran: ${cmd}`);
+      const segments = cmd.split(/&&|\|\||[;|]/).map((s) => s.trim());
+      if (cmd && segments.some((s) => MEANINGFUL_BASH_RE.test(s))) {
+        facts.push(`ran: ${cmd.length > 120 ? `${cmd.slice(0, 117)}...` : cmd}`);
       }
     } else if (item.name === 'TaskCreate' || item.name === 'TaskUpdate') {
       const title = input.title || input.task || input.description || '(task)';
@@ -344,7 +370,7 @@ module.exports = { extractFacts, extractRationale };
 - [ ] **Step 5: Run the test to verify it passes**
 
 Run: `node --test plugins/session-state/hooks/test/extract.test.js`
-Expected: PASS (4 tests).
+Expected: PASS (5 tests).
 
 - [ ] **Step 6: Commit**
 
@@ -392,6 +418,15 @@ test('RESOLVED closes a matching open loop', () => {
   m = mergeModel(m, delta({ openLoops: ['verify the injector'] }));
   m = mergeModel(m, delta({ resolved: ['verify the injector'] }));
   assert.deepEqual(m.openLoops, []);
+});
+
+test('RESOLVED matches normalized-exact only, so a short token cannot close unrelated loops', () => {
+  let m = emptyModel();
+  m = mergeModel(m, delta({ openLoops: ['write integration tests', 'verify the injector'] }));
+  m = mergeModel(m, delta({ resolved: ['tests'] }));
+  assert.equal(m.openLoops.length, 2); // short token closes nothing
+  m = mergeModel(m, delta({ resolved: ['Write Integration Tests'] }));
+  assert.deepEqual(m.openLoops, ['verify the injector']); // case/space-insensitive exact
 });
 
 test('facts are a bounded ring buffer', () => {
@@ -442,6 +477,11 @@ function topicKey(decision) {
   return decision.split(/\s+/).slice(0, 4).join(' ').toLowerCase();
 }
 
+// Normalize for exact open-loop/resolved matching (whitespace + case).
+function normalizeText(s) {
+  return String(s).trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
 // Merge a delta into the model, applying compaction so the file stays bounded.
 function mergeModel(prev, d) {
   const m = {
@@ -466,9 +506,8 @@ function mergeModel(prev, d) {
 
   m.openLoops = m.openLoops.concat(d.openLoops);
   for (const r of d.resolved) {
-    m.openLoops = m.openLoops.filter(
-      (o) => !(o === r || o.includes(r) || r.includes(o))
-    );
+    const rn = normalizeText(r);
+    m.openLoops = m.openLoops.filter((o) => normalizeText(o) !== rn);
   }
   m.openLoops = m.openLoops.slice(-OPEN_LOOPS_CAP);
 
@@ -505,7 +544,7 @@ module.exports = { emptyModel, topicKey, mergeModel, renderMarkdown };
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `node --test plugins/session-state/hooks/test/state.test.js`
-Expected: PASS (5 tests).
+Expected: PASS (6 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -601,10 +640,11 @@ function main() {
   const { session_id, transcript_path } = JSON.parse(fs.readFileSync(0, 'utf8'));
   if (!session_id || !transcript_path) return;
 
+  const sid = path.basename(String(session_id));
   const stateDir = path.join(path.dirname(transcript_path), 'state');
   fs.mkdirSync(stateDir, { recursive: true });
-  const jsonPath = path.join(stateDir, `${session_id}.json`);
-  const mdPath = path.join(stateDir, `${session_id}.md`);
+  const jsonPath = path.join(stateDir, `${sid}.json`);
+  const mdPath = path.join(stateDir, `${sid}.md`);
   const latestPath = path.join(stateDir, '_latest.md');
 
   let model = emptyModel();
@@ -623,7 +663,7 @@ function main() {
   model.offset = newOffset;
 
   fs.writeFileSync(jsonPath, JSON.stringify(model));
-  const md = renderMarkdown(session_id, model);
+  const md = renderMarkdown(sid, model);
   fs.writeFileSync(mdPath, md);
   fs.writeFileSync(latestPath, md);
 }
@@ -756,7 +796,7 @@ function main() {
   const { session_id, transcript_path, source } = JSON.parse(fs.readFileSync(0, 'utf8'));
   if (!transcript_path) return;
   const stateDir = path.join(path.dirname(transcript_path), 'state');
-  const state = pickState(stateDir, session_id, source);
+  const state = pickState(stateDir, path.basename(String(session_id)), source);
   const parts = [];
   if (state) parts.push(state);
   parts.push(CONVENTION);
