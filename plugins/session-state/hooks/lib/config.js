@@ -1,7 +1,6 @@
 'use strict';
 
 module.exports = {
-  RECENCY_HOURS: 48,   // startup injection skips a _latest.md older than this
   FACTS_CAP: 40,       // recent-activity ring buffer size
   OPEN_LOOPS_CAP: 20,  // max unresolved open loops kept
   DECISIONS_CAP: 20,   // max decisions kept (latest per topic)
