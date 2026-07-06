@@ -20,7 +20,7 @@ function runWriter(transcript, id) {
   });
 }
 
-test('writes state json, md, and rolling pointer', () => {
+test('writes state json and md, no rolling pointer', () => {
   const { proj, transcript, id } = setup();
   fs.writeFileSync(
     transcript,
@@ -31,7 +31,8 @@ test('writes state json, md, and rolling pointer', () => {
   const model = JSON.parse(fs.readFileSync(path.join(stateDir, `${id}.json`), 'utf8'));
   assert.ok(model.facts.includes('edited /x/a.js'));
   assert.ok(fs.readFileSync(path.join(stateDir, `${id}.md`), 'utf8').includes('edited /x/a.js'));
-  assert.ok(fs.existsSync(path.join(stateDir, '_latest.md')));
+  // _latest.md is no longer written; the injector merges on read instead.
+  assert.ok(!fs.existsSync(path.join(stateDir, '_latest.md')));
 });
 
 test('second run consumes only the delta (idempotent, no dup)', () => {
@@ -67,4 +68,25 @@ test('harvests tags from last_assistant_message and dedups against the transcrip
   const model = JSON.parse(fs.readFileSync(path.join(proj, 'state', `${id}.json`), 'utf8'));
   assert.equal(model.openLoops.filter((o) => o === 'enable the plugin').length, 1); // deduped
   assert.ok(model.decisions.includes('[scope] ship v1')); // harvested from stdin
+});
+
+test('writer: drafts north-star from first substantive user message when charter.md absent', () => {
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'wproj-'));
+  const sid = 'wsess1';
+  const tpath = path.join(proj, `${sid}.jsonl`);
+  const L = (o) => JSON.stringify(o) + '\n';
+  fs.writeFileSync(
+    tpath,
+    L({ type: 'user', message: { role: 'user', content: '<system-reminder>x</system-reminder>' } }) +
+      L({ type: 'user', message: { role: 'user', content: 'Build the task charter: preserve founding context across sessions.' } }) +
+      L({ type: 'assistant', message: { content: [{ type: 'text', text: 'DECISION: [scope] north-star + shards' }] } })
+  );
+  const input = JSON.stringify({ session_id: sid, transcript_path: tpath, last_assistant_message: '' });
+  execFileSync('node', [path.join(__dirname, '..', 'session-state-writer.js')], { input });
+
+  const northStar = fs.readFileSync(path.join(proj, 'state', 'charter.md'), 'utf8');
+  assert.ok(northStar.includes('Build the task charter'));
+  assert.ok(!northStar.toLowerCase().includes('system-reminder'));
+  // _latest.md is no longer written
+  assert.strictEqual(fs.existsSync(path.join(proj, 'state', '_latest.md')), false);
 });
