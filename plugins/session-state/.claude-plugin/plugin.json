@@ -1,7 +1,7 @@
 {
   "name": "session-state",
-  "version": "0.1.0",
-  "description": "Persist per-session state from the transcript and re-inject it on resume, compaction, or a fresh session.",
+  "version": "0.2.0",
+  "description": "Persist per-session state and a project task charter (north-star + merged decisions) from the transcript, and re-inject them on resume, compaction, or a fresh session.",
   "author": { "name": "arinyaho", "url": "https://github.com/arinyaho" },
   "homepage": "https://github.com/arinyaho/concord",
   "repository": "https://github.com/arinyaho/concord",

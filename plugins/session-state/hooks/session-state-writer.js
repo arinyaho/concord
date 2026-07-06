@@ -5,6 +5,7 @@ const path = require('node:path');
 const { readDelta } = require('./lib/transcript');
 const { extractFacts, extractRationale, extractRationaleText } = require('./lib/extract');
 const { emptyModel, mergeModel, renderMarkdown } = require('./lib/state');
+const { writeNorthStarIfAbsent, firstSubstantiveUserMessage, readNorthStar } = require('./lib/charter');
 
 function main() {
   const { session_id, transcript_path, last_assistant_message } = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -15,7 +16,6 @@ function main() {
   fs.mkdirSync(stateDir, { recursive: true });
   const jsonPath = path.join(stateDir, `${sid}.json`);
   const mdPath = path.join(stateDir, `${sid}.md`);
-  const latestPath = path.join(stateDir, '_latest.md');
 
   let model = emptyModel();
   try {
@@ -39,7 +39,17 @@ function main() {
   fs.writeFileSync(jsonPath, JSON.stringify(model));
   const md = renderMarkdown(sid, model);
   fs.writeFileSync(mdPath, md);
-  fs.writeFileSync(latestPath, md);
+
+  // Auto-draft the north-star from the first substantive user message, but ONLY when
+  // no charter.md exists yet. The absence guard is essential: without it, the full
+  // readDelta(..., 0) below would re-read and parse the ENTIRE transcript on every Stop
+  // (the full-transcript-read waste this plugin's delta-offset design exists to kill).
+  // Once the north-star exists, skip the read entirely. A wrong draft is fixed by `/charter set`.
+  if (!readNorthStar(stateDir)) {
+    const head = readDelta(transcript_path, 0).entries;
+    const firstMsg = firstSubstantiveUserMessage(head);
+    if (firstMsg) writeNorthStarIfAbsent(stateDir, firstMsg);
+  }
 }
 
 try {

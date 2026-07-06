@@ -15,15 +15,15 @@ Enabling a plugin registers its hooks automatically - no `settings.json` editing
 
 ## Plugins
 
-- `session-state` - persists a compact per-session state file from the transcript and re-injects it on resume, compaction, or a fresh session, so the model stops re-reading its own transcript to recover.
+- `session-state` - persists per-session state and a project task charter (north-star framing + merged cross-session decisions) from the transcript, and re-injects them on resume, compaction, or a fresh session, so a new session inherits the founding context instead of re-reading the transcript.
 
 ## Track map
 
-The plugins come from a diagnosis of recurring session dysfunction (the "D-track"):
+The plugins come from a diagnosis of recurring session dysfunction:
 
-- D1 - shell env re-export + `cd` tax -> ambient-env tooling (elsewhere).
-- D2 - memory / ledger / doc churn + self-transcript re-reads -> `session-state`.
-- D3 - monster resumed sessions (session hygiene).
-- D4 - Edit round-trip waste (edit-before-read, string-not-found).
+- Shell env re-export + `cd` tax -> ambient-env tooling (elsewhere).
+- Memory / ledger / doc churn + self-transcript re-reads -> `session-state`.
+- Monster resumed sessions (session hygiene).
+- Edit round-trip waste (edit-before-read, string-not-found).
 
 Design notes and implementation plans for each fix are kept local, not in this repo.
