@@ -644,7 +644,7 @@ In `hooks/session-state-writer.js`:
 (a) Add to requires:
 
 ```js
-const { writeNorthStarIfAbsent, firstSubstantiveUserMessage } = require('./lib/charter');
+const { writeNorthStarIfAbsent, firstSubstantiveUserMessage, readNorthStar } = require('./lib/charter');
 ```
 
 (b) Remove the `_latest.md` write. Delete the line:
@@ -662,13 +662,16 @@ and the line:
 (c) After the existing `fs.writeFileSync(mdPath, md);`, add the auto-draft:
 
 ```js
-  // Auto-draft the north-star from the first substantive user message, but only if
-  // no charter.md exists yet (first-writer-wins; a wrong draft is corrected by
-  // `/charter set`). Read from offset 0 so the first message is in scope even on a
-  // later Stop that would otherwise only see the delta.
-  const head = readDelta(transcript_path, 0).entries;
-  const firstMsg = firstSubstantiveUserMessage(head);
-  if (firstMsg) writeNorthStarIfAbsent(stateDir, firstMsg);
+  // Auto-draft the north-star from the first substantive user message, but ONLY when
+  // no charter.md exists yet. The absence guard is essential: without it, the full
+  // readDelta(..., 0) below would re-read and parse the ENTIRE transcript on every Stop
+  // (the full-transcript-read waste this plugin's delta-offset design exists to kill).
+  // Once the north-star exists, skip the read entirely. A wrong draft is fixed by `/charter set`.
+  if (!readNorthStar(stateDir)) {
+    const head = readDelta(transcript_path, 0).entries;
+    const firstMsg = firstSubstantiveUserMessage(head);
+    if (firstMsg) writeNorthStarIfAbsent(stateDir, firstMsg);
+  }
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -721,6 +724,17 @@ test('injector startup: emits north-star + merged decisions, not _latest.md', ()
   assert.ok(out.includes('[scope] v1 small'));
   assert.ok(out.includes('DECISION:')); // convention line still delivered
 });
+
+test('injector resume: includes the resuming session own decisions (P1 regression guard)', () => {
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'iproj2-'));
+  const dir = path.join(proj, 'state');
+  fs.mkdirSync(dir, { recursive: true });
+  const sid = 'selfSess';
+  fs.writeFileSync(path.join(dir, `${sid}.json`), JSON.stringify({ offset: 1, openLoops: ['self loop'], decisions: ['[self] my decision'], nexts: [], facts: [] }));
+  const out = runInjector({ session_id: sid, transcript_path: path.join(proj, `${sid}.jsonl`), source: 'resume' });
+  assert.ok(out.includes('[self] my decision')); // own state must survive resume
+  assert.ok(out.includes('self loop'));
+});
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -753,7 +767,7 @@ function main() {
   catchUpSessions(stateDir, { currentSid: sid });
 
   const northStar = readNorthStar(stateDir);
-  const merged = mergeSessions(stateDir, { excludeSid: sid });
+  const merged = mergeSessions(stateDir); // include self: on resume/compact we WANT the resuming session own decisions back — dedup absorbs the overlap
   const hasContent = northStar || merged.openLoops.length || merged.decisions.length || merged.nexts.length;
 
   const parts = [];
@@ -802,7 +816,7 @@ git commit -m "feat(charter): injector emits merged charter + durability scan"
 
 **Interfaces:**
 - Consumes: `readNorthStar`, `setNorthStar`, `mergeSessions`, `renderCharter` from `charter.js`.
-- Produces: a CLI. `node charter-cli.js show` prints the rendered charter; `node charter-cli.js set` reads north-star text from stdin and writes it. State dir resolution: `CHARTER_STATE_DIR` env if set (used by tests and power users), else `<homedir>/.claude/projects/<cwd-slug>/state` where slug = `process.cwd()` with `/` replaced by `-`.
+- Produces: a CLI. `node charter-cli.js show` prints the rendered charter; `node charter-cli.js set` reads north-star text from stdin and writes it. State dir resolution: `CHARTER_STATE_DIR` env if set (used by tests and power users), else `<CLAUDE_CONFIG_DIR or ~/.claude>/projects/<cwd-slug>/state`, where the slug replaces both `/` and `.` with `-` (matching Claude Code's project-dir encoding).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -848,8 +862,12 @@ const { readNorthStar, setNorthStar, mergeSessions, renderCharter } = require('.
 
 function resolveStateDir() {
   if (process.env.CHARTER_STATE_DIR) return process.env.CHARTER_STATE_DIR;
-  const slug = process.cwd().replace(/\//g, '-');
-  return path.join(os.homedir(), '.claude', 'projects', slug, 'state');
+  // Mirror Claude Code's project-dir encoding: the config dir honors CLAUDE_CONFIG_DIR,
+  // and the slug replaces BOTH '/' and '.' with '-' (a `.claude` segment becomes
+  // `--claude`). Verify against a real project dir name before shipping (Step 4b).
+  const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+  const slug = process.cwd().replace(/[/.]/g, '-');
+  return path.join(configDir, 'projects', slug, 'state');
 }
 
 function main() {
@@ -873,6 +891,11 @@ main();
 
 Run: `node --test hooks/test/charter-cli.test.js`
 Expected: PASS.
+
+- [ ] **Step 4b: Verify the slug matches Claude Code's real encoding**
+
+Run: `node -e "const p=require('node:path'),os=require('node:os');console.log(process.cwd().replace(/[/.]/g,'-'))"` from a real project dir, then `ls "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/" | grep -F "$(node -e 'console.log(process.cwd().replace(/[/.]/g,\"-\"))')"`
+Expected: the computed slug matches an existing project dir name. If not, correct the slug rule before shipping.
 
 - [ ] **Step 5: Commit**
 
@@ -912,13 +935,7 @@ Do exactly one of:
   `node "${CLAUDE_PLUGIN_ROOT}/hooks/charter-cli.js" show`
   and display its output verbatim to the user.
 
-- If the arguments start with `set `: take the text after `set ` as the new north-star and run
-  `printf '%s' '<TEXT>' | node "${CLAUDE_PLUGIN_ROOT}/hooks/charter-cli.js" set`
-  (substitute `<TEXT>`, shell-escaping single quotes). Then confirm the update.
-
-- If the arguments are `pin`: use the user's immediately-preceding message in this
-  conversation as the north-star text, and run the same `... set` pipe with that text.
-  Then confirm what was pinned.
+- If the arguments start with `set `, the new north-star is the text after `set `. If the arguments are `pin`, the new north-star is the user's immediately-preceding message in this conversation. In BOTH cases, do NOT embed that text in a shell command — it may contain quotes, `$()`, or backticks (a shell-injection surface). Instead: (1) write the north-star text to a temp file with the Write tool, e.g. `/tmp/charter-new.txt`; (2) run `node "${CLAUDE_PLUGIN_ROOT}/hooks/charter-cli.js" set < /tmp/charter-new.txt`. The CLI reads the north-star from stdin, so the user text never passes through shell quoting. Confirm the update in one line.
 
 Keep it to the single command execution and a one-line confirmation. Do not editorialize.
 ```
@@ -1012,3 +1029,5 @@ git commit -m "chore(charter): bump session-state to 0.2.0, update README"
 - Work in a git worktree off concord `main` (use `superpowers:using-git-worktrees`). Branch name suggestion: `feat/task-charter`.
 - The existing `injector.test.js` may assert removed `_latest.md`/`pickState` behavior; Task 7 Step 4 updates those assertions rather than preserving dead behavior.
 - This ships on top of `session-state`, which is enabled and dogfooded; run the full suite (Task 7 Step 5, Task 10 Step 3) before opening the PR.
+- Known limitation (cross-session RESOLVED): `mergeSessions` folds each session model with `resolved: []`, so an open loop opened in session A and RESOLVED in session B stays in A's persisted model and can surface in the union — open loops may over-report across sessions until re-resolved in a session whose model still holds them. Documented, not fixed in v1.
+- `catchUpSessions` lists all `<sid>.json` in the state dir every SessionStart — bounded per start (a readdir + stat per session), but grows with project lifetime. Acceptable (SessionStart is infrequent); add a recency gate only if a project accumulates thousands of sessions.
