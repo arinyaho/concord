@@ -63,3 +63,32 @@ test('firstSubstantiveUserMessage: array content, all-boilerplate returns null',
   ];
   assert.strictEqual(charter.firstSubstantiveUserMessage(entries), null);
 });
+
+function writeSessionModel(dir, sid, model, mtimeMs) {
+  fs.mkdirSync(dir, { recursive: true });
+  const p = path.join(dir, `${sid}.json`);
+  fs.writeFileSync(p, JSON.stringify(model));
+  if (mtimeMs) fs.utimesSync(p, new Date(mtimeMs), new Date(mtimeMs));
+}
+
+test('mergeSessions: unions decisions/openLoops across sessions, newest wins per topic', () => {
+  const dir = tmpStateDir();
+  writeSessionModel(dir, 'sessA', { openLoops: ['loop-a'], decisions: ['[scope] old scope'], nexts: [], facts: [] }, Date.now() - 20000);
+  writeSessionModel(dir, 'sessB', { openLoops: ['loop-b'], decisions: ['[scope] new scope', '[trigger] use compact'], nexts: ['ship v1'], facts: [] }, Date.now() - 10000);
+  const m = charter.mergeSessions(dir);
+  assert.ok(m.openLoops.includes('loop-a') && m.openLoops.includes('loop-b'));
+  assert.ok(m.decisions.includes('[scope] new scope')); // newest topic wins
+  assert.ok(!m.decisions.includes('[scope] old scope'));
+  assert.ok(m.decisions.includes('[trigger] use compact'));
+  assert.ok(m.nexts.includes('ship v1'));
+});
+
+test('mergeSessions: excludeSid and non-json files ignored', () => {
+  const dir = tmpStateDir();
+  writeSessionModel(dir, 'sessA', { openLoops: ['loop-a'], decisions: [], nexts: [], facts: [] });
+  writeSessionModel(dir, 'sessB', { openLoops: ['loop-b'], decisions: [], nexts: [], facts: [] });
+  fs.writeFileSync(path.join(dir, 'charter.md'), 'north star'); // must be skipped
+  const m = charter.mergeSessions(dir, { excludeSid: 'sessB' });
+  assert.ok(m.openLoops.includes('loop-a'));
+  assert.ok(!m.openLoops.includes('loop-b'));
+});

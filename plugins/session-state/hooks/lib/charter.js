@@ -1,7 +1,8 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const { NORTH_STAR_MAX, MIN_MSG_LEN } = require('./config');
+const { NORTH_STAR_MAX, MIN_MSG_LEN, SESSIONS_MERGE_CAP } = require('./config');
+const { emptyModel, mergeModel } = require('./state');
 
 function charterPath(stateDir) {
   return path.join(stateDir, 'charter.md');
@@ -92,10 +93,60 @@ function firstSubstantiveUserMessage(entries) {
   return null;
 }
 
+// List `<sid>.json` session model files, most-recent first, capped.
+function sessionModelFiles(stateDir, cap) {
+  let names;
+  try {
+    names = fs.readdirSync(stateDir);
+  } catch (e) {
+    return [];
+  }
+  const files = names
+    .filter((n) => n.endsWith('.json'))
+    .map((n) => {
+      const p = path.join(stateDir, n);
+      let mtimeMs = 0;
+      try {
+        mtimeMs = fs.statSync(p).mtimeMs;
+      } catch (e) {
+        /* ignore */
+      }
+      return { sid: n.slice(0, -5), path: p, mtimeMs };
+    })
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return files.slice(0, cap);
+}
+
+// Union the most-recent sessions' models into one, reusing mergeModel's dedup/cap/topic
+// logic. Fold oldest-first so the newest session wins per topic.
+function mergeSessions(stateDir, { excludeSid } = {}) {
+  const files = sessionModelFiles(stateDir, SESSIONS_MERGE_CAP)
+    .filter((f) => f.sid !== excludeSid)
+    .reverse(); // oldest first
+  let acc = emptyModel();
+  for (const f of files) {
+    let sm;
+    try {
+      sm = JSON.parse(fs.readFileSync(f.path, 'utf8'));
+    } catch (e) {
+      continue;
+    }
+    acc = mergeModel(acc, {
+      openLoops: sm.openLoops || [],
+      decisions: sm.decisions || [],
+      nexts: sm.nexts || [],
+      resolved: [],
+      facts: sm.facts || [],
+    });
+  }
+  return acc;
+}
+
 module.exports = {
   charterPath,
   readNorthStar,
   writeNorthStarIfAbsent,
   setNorthStar,
   firstSubstantiveUserMessage,
+  mergeSessions,
 };
