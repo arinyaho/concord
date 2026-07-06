@@ -6,6 +6,10 @@ module.exports = {
   OPEN_LOOPS_CAP: 20,  // max unresolved open loops kept
   DECISIONS_CAP: 20,   // max decisions kept (latest per topic)
   NEXTS_CAP: 5,        // max next-step lines kept
+  SESSIONS_MERGE_CAP: 25, // merge-on-read unions at most this many most-recent sessions
+  ACTIVE_SKIP_MINUTES: 5, // durability all-scan skips a session whose transcript changed this recently
+  MIN_MSG_LEN: 12,        // a user message shorter than this is not a substantive framing
+  NORTH_STAR_MAX: 4000,   // cap north-star length written to charter.md
   TAG_RE: /^(DECISION|OPEN-LOOP|NEXT|RESOLVED):\s*(.*)$/i,
   // High-signal build/test/deploy/infra tools. An allowlist (not a denylist)
   // because a bare denylist captures shell variable-assignment setup lines
