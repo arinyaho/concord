@@ -29,4 +29,9 @@ function main() {
   process.stdout.write(md);
 }
 
-main();
+try {
+  main();
+} catch (e) {
+  process.stderr.write(`charter: ${e && e.message ? e.message : e}\n`);
+  process.exit(1);
+}

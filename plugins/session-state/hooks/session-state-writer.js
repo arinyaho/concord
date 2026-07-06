@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { readDelta } = require('./lib/transcript');
 const { extractFacts, extractRationale, extractRationaleText } = require('./lib/extract');
-const { emptyModel, mergeModel, renderMarkdown } = require('./lib/state');
+const { emptyModel, mergeModel } = require('./lib/state');
 const { writeNorthStarIfAbsent, firstSubstantiveUserMessage, readNorthStar } = require('./lib/charter');
 
 function main() {
@@ -15,7 +15,6 @@ function main() {
   const stateDir = path.join(path.dirname(transcript_path), 'state');
   fs.mkdirSync(stateDir, { recursive: true });
   const jsonPath = path.join(stateDir, `${sid}.json`);
-  const mdPath = path.join(stateDir, `${sid}.md`);
 
   let model = emptyModel();
   try {
@@ -37,8 +36,6 @@ function main() {
   model.offset = newOffset;
 
   fs.writeFileSync(jsonPath, JSON.stringify(model));
-  const md = renderMarkdown(sid, model);
-  fs.writeFileSync(mdPath, md);
 
   // Auto-draft the north-star from the first substantive user message, but ONLY when
   // no charter.md exists yet. The absence guard is essential: without it, the full

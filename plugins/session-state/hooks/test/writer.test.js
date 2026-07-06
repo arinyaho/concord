@@ -20,7 +20,7 @@ function runWriter(transcript, id) {
   });
 }
 
-test('writes state json and md, no rolling pointer', () => {
+test('writes state json only, no md, no rolling pointer', () => {
   const { proj, transcript, id } = setup();
   fs.writeFileSync(
     transcript,
@@ -30,7 +30,8 @@ test('writes state json and md, no rolling pointer', () => {
   const stateDir = path.join(proj, 'state');
   const model = JSON.parse(fs.readFileSync(path.join(stateDir, `${id}.json`), 'utf8'));
   assert.ok(model.facts.includes('edited /x/a.js'));
-  assert.ok(fs.readFileSync(path.join(stateDir, `${id}.md`), 'utf8').includes('edited /x/a.js'));
+  // <sid>.md is no longer written; the injector reads <sid>.json + charter.md instead.
+  assert.ok(!fs.existsSync(path.join(stateDir, `${id}.md`)));
   // _latest.md is no longer written; the injector merges on read instead.
   assert.ok(!fs.existsSync(path.join(stateDir, '_latest.md')));
 });
