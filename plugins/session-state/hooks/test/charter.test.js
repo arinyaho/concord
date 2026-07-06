@@ -154,3 +154,23 @@ test('catchUpSessions: skips a recently-active session (race guard)', () => {
   const after = JSON.parse(fs.readFileSync(path.join(dir, `${sid}.json`), 'utf8'));
   assert.strictEqual(after.decisions.length, 0);
 });
+
+test('catchUpSessions: a malformed model file does not abort the whole scan', () => {
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'proj-'));
+  const dir = path.join(proj, 'state');
+  fs.mkdirSync(dir, { recursive: true });
+  const old = Date.now() - 60 * 60 * 1000;
+  const L = (o) => JSON.stringify(o) + '\n';
+  // malformed model: valid JSON, missing array fields -> would throw in mergeModel
+  fs.writeFileSync(path.join(proj, 'bad1.jsonl'), L({ type: 'assistant', message: { content: [{ type: 'text', text: 'DECISION: [b] bad' }] } }));
+  fs.utimesSync(path.join(proj, 'bad1.jsonl'), new Date(old), new Date(old));
+  fs.writeFileSync(path.join(dir, 'bad1.json'), JSON.stringify({ offset: 0 }));
+  // valid abandoned session
+  fs.writeFileSync(path.join(proj, 'good1.jsonl'), L({ type: 'assistant', message: { content: [{ type: 'text', text: 'DECISION: [g] good' }] } }));
+  fs.utimesSync(path.join(proj, 'good1.jsonl'), new Date(old), new Date(old));
+  fs.writeFileSync(path.join(dir, 'good1.json'), JSON.stringify({ offset: 0, openLoops: [], decisions: [], nexts: [], facts: [] }));
+
+  assert.doesNotThrow(() => charter.catchUpSessions(dir, { currentSid: 'other', now: Date.now() }));
+  const good = JSON.parse(fs.readFileSync(path.join(dir, 'good1.json'), 'utf8'));
+  assert.ok(good.decisions.includes('[g] good')); // valid session caught up despite the bad one
+});

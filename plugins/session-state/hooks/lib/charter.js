@@ -197,13 +197,19 @@ function catchUpSessions(stateDir, { currentSid, now = Date.now() } = {}) {
     }
     if ((model.offset || 0) >= tstat.size) continue; // already caught up
 
-    const { entries, newOffset } = readDelta(tpath, model.offset || 0);
-    if (entries.length === 0) continue;
-    const facts = extractFacts(entries);
-    const rationale = extractRationale(entries);
-    const merged = mergeModel(model, { ...rationale, facts });
-    merged.offset = newOffset;
-    fs.writeFileSync(jsonPath, JSON.stringify(merged));
+    try {
+      const { entries, newOffset } = readDelta(tpath, model.offset || 0);
+      if (entries.length === 0) continue;
+      const facts = extractFacts(entries);
+      const rationale = extractRationale(entries);
+      const merged = mergeModel(model, { ...rationale, facts });
+      merged.offset = newOffset;
+      fs.writeFileSync(jsonPath, JSON.stringify(merged));
+    } catch (e) {
+      // One malformed model or transient IO must not abort the whole scan —
+      // skip this session and keep catching up the rest.
+      continue;
+    }
   }
 }
 
