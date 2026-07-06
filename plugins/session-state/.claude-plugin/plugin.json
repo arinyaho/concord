@@ -1,0 +1,10 @@
+{
+  "name": "session-state",
+  "version": "0.1.0",
+  "description": "Persist per-session state from the transcript and re-inject it on resume, compaction, or a fresh session.",
+  "author": { "name": "arinyaho", "url": "https://github.com/arinyaho" },
+  "homepage": "https://github.com/arinyaho/concord",
+  "repository": "https://github.com/arinyaho/concord",
+  "license": "MIT",
+  "keywords": ["hooks", "session-state", "context", "harness", "claude-code"]
+}
