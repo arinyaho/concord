@@ -1,7 +1,7 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const { NORTH_STAR_MAX } = require('./config');
+const { NORTH_STAR_MAX, MIN_MSG_LEN } = require('./config');
 
 function charterPath(stateDir) {
   return path.join(stateDir, 'charter.md');
@@ -47,4 +47,55 @@ function setNorthStar(stateDir, text) {
   fs.writeFileSync(charterPath(stateDir), body.slice(0, NORTH_STAR_MAX));
 }
 
-module.exports = { charterPath, readNorthStar, writeNorthStarIfAbsent, setNorthStar };
+// Substrings/prefixes that mark harness-injected or tooling text, not user framing.
+// Harness-fragile by nature: extend as new injection wrappers appear.
+const BOILERPLATE = [
+  'base directory for this skill',
+  'caveat:',
+  'plugins/cache',
+  'sessionstart',
+  'userpromptsubmit hook',
+  'local-command',
+  'caveman mode',
+  '<system-reminder',
+  '<command-',
+  '<local-command',
+];
+
+function messageText(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+      .map((b) => b.text)
+      .join('\n');
+  }
+  return '';
+}
+
+function isBoilerplate(text) {
+  const low = text.trim().toLowerCase();
+  if (low.startsWith('<')) return true;
+  return BOILERPLATE.some((p) => low.includes(p));
+}
+
+// The first user message that is real framing, not harness/tooling boilerplate.
+function firstSubstantiveUserMessage(entries) {
+  for (const e of entries) {
+    const msg = (e && e.message) || {};
+    if (msg.role !== 'user') continue;
+    const text = messageText(msg.content).trim();
+    if (text.length < MIN_MSG_LEN) continue;
+    if (isBoilerplate(text)) continue;
+    return text;
+  }
+  return null;
+}
+
+module.exports = {
+  charterPath,
+  readNorthStar,
+  writeNorthStarIfAbsent,
+  setNorthStar,
+  firstSubstantiveUserMessage,
+};

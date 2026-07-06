@@ -40,3 +40,26 @@ test('north-star: writes are capped at NORTH_STAR_MAX', () => {
   charter.setNorthStar(dir, 'x'.repeat(5000));
   assert.strictEqual(charter.readNorthStar(dir).length, 4000);
 });
+
+test('firstSubstantiveUserMessage: skips boilerplate, returns first real user message', () => {
+  const entries = [
+    { type: 'user', message: { role: 'user', content: '<system-reminder>hi</system-reminder>' } },
+    { type: 'user', message: { role: 'user', content: 'Base directory for this skill: /x/y' } },
+    { type: 'user', message: { role: 'user', content: 'Caveat: local command output below' } },
+    { type: 'user', message: { role: 'user', content: 'ok' } }, // too short
+    { type: 'user', message: { role: 'user', content: 'Start the D-track charter work: preserve founding context.' } },
+    { type: 'user', message: { role: 'user', content: 'a later message' } },
+  ];
+  assert.strictEqual(
+    charter.firstSubstantiveUserMessage(entries),
+    'Start the D-track charter work: preserve founding context.'
+  );
+});
+
+test('firstSubstantiveUserMessage: array content, all-boilerplate returns null', () => {
+  const entries = [
+    { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'CAVEMAN MODE ACTIVE (lite)' }] } },
+    { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'SessionStart hook fired' }] } },
+  ];
+  assert.strictEqual(charter.firstSubstantiveUserMessage(entries), null);
+});
