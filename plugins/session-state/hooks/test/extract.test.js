@@ -21,6 +21,26 @@ test('facts: edits and meaningful commands, noise filtered', () => {
   assert.ok(!facts.some((f) => f.includes('ls -la'))); // noise dropped
 });
 
+test('facts: allowlist captures infra tools, drops noise and variable-assignment setup', () => {
+  const entries = [
+    { type: 'assistant', message: { content: [
+      { type: 'tool_use', name: 'Bash', input: { command: 'docker build -t x .' } },
+      { type: 'tool_use', name: 'Bash', input: { command: 'terraform apply' } },
+      { type: 'tool_use', name: 'Bash', input: { command: 'ls -la' } },
+      { type: 'tool_use', name: 'Bash', input: { command: 'F=/some/long/path' } },
+      { type: 'tool_use', name: 'Bash', input: { command: 'cd /w && git commit -m x' } },
+      { type: 'tool_use', name: 'Bash', input: { command: 'HAT="uv run --project /p hat"' } },
+    ] } },
+  ];
+  const facts = extractFacts(entries);
+  assert.ok(facts.includes('ran: docker build -t x .')); // recall: infra tool captured
+  assert.ok(facts.includes('ran: terraform apply'));
+  assert.ok(facts.includes('ran: cd /w && git commit -m x')); // captured via segment split
+  assert.ok(!facts.some((f) => f.includes('ls -la'))); // noise dropped
+  assert.ok(!facts.some((f) => f.startsWith('ran: F='))); // variable-assignment setup dropped
+  assert.ok(!facts.some((f) => f.includes('HAT='))); // tool name only inside a value -> dropped
+});
+
 test('rationale: tagged lines routed by tag', () => {
   const r = extractRationale(loadFixture());
   assert.deepEqual(r.decisions, ['[scope] chose A over B']);

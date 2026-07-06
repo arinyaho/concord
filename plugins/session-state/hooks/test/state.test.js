@@ -21,6 +21,15 @@ test('RESOLVED closes a matching open loop', () => {
   assert.deepEqual(m.openLoops, []);
 });
 
+test('RESOLVED matches normalized-exact only, so a short token cannot close unrelated loops', () => {
+  let m = emptyModel();
+  m = mergeModel(m, delta({ openLoops: ['write integration tests', 'verify the injector'] }));
+  m = mergeModel(m, delta({ resolved: ['tests'] }));
+  assert.equal(m.openLoops.length, 2); // short token closes nothing
+  m = mergeModel(m, delta({ resolved: ['Write Integration Tests'] }));
+  assert.deepEqual(m.openLoops, ['verify the injector']); // case/space-insensitive exact
+});
+
 test('facts are a bounded ring buffer', () => {
   let m = emptyModel();
   const many = Array.from({ length: 50 }, (_, i) => `edited f${i}.js`);

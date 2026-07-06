@@ -33,7 +33,7 @@ function main() {
   const { session_id, transcript_path, source } = JSON.parse(fs.readFileSync(0, 'utf8'));
   if (!transcript_path) return;
   const stateDir = path.join(path.dirname(transcript_path), 'state');
-  const state = pickState(stateDir, session_id, source);
+  const state = pickState(stateDir, path.basename(String(session_id)), source);
   const parts = [];
   if (state) parts.push(state);
   parts.push(CONVENTION);

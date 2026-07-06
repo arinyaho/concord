@@ -11,6 +11,11 @@ function topicKey(decision) {
   return decision.split(/\s+/).slice(0, 4).join(' ').toLowerCase();
 }
 
+// Normalize for exact open-loop/resolved matching (whitespace + case).
+function normalizeText(s) {
+  return String(s).trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
 // Merge a delta into the model, applying compaction so the file stays bounded.
 function mergeModel(prev, d) {
   const m = {
@@ -35,9 +40,8 @@ function mergeModel(prev, d) {
 
   m.openLoops = m.openLoops.concat(d.openLoops);
   for (const r of d.resolved) {
-    m.openLoops = m.openLoops.filter(
-      (o) => !(o === r || o.includes(r) || r.includes(o))
-    );
+    const rn = normalizeText(r);
+    m.openLoops = m.openLoops.filter((o) => normalizeText(o) !== rn);
   }
   m.openLoops = m.openLoops.slice(-OPEN_LOOPS_CAP);
 

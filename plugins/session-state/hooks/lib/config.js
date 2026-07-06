@@ -7,6 +7,8 @@ module.exports = {
   DECISIONS_CAP: 20,   // max decisions kept (latest per topic)
   NEXTS_CAP: 5,        // max next-step lines kept
   TAG_RE: /^(DECISION|OPEN-LOOP|NEXT|RESOLVED):\s*(.*)$/i,
-  MEANINGFUL_BASH_RE: /\b(git (commit|push|mv|rebase|merge|tag)|gh (pr|issue|release)|pytest|npm (run|test|ci|install)|pip install|cdk (deploy|synth)|amplify|make )\b/,
-  NOISE_BASH_RE: /^\s*(ls|cd|cat|echo|grep|pwd|which|head|tail|sed|awk|find)\b/,
+  // High-signal build/test/deploy/infra tools. An allowlist (not a denylist)
+  // because a bare denylist captures shell variable-assignment setup lines
+  // (VAR=/path/...) that dominate multi-line commands; those carry no action.
+  MEANINGFUL_BASH_RE: /^(git|gh|pytest|jest|vitest|npm|pnpm|yarn|pip|poetry|uv|cargo|go|mvn|gradle|make|cmake|bazel|docker|docker-compose|kubectl|helm|terraform|aws|gcloud|cdk|amplify|serverless|pulumi|ansible)\b/,
 };

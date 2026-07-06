@@ -10,10 +10,11 @@ function main() {
   const { session_id, transcript_path } = JSON.parse(fs.readFileSync(0, 'utf8'));
   if (!session_id || !transcript_path) return;
 
+  const sid = path.basename(String(session_id));
   const stateDir = path.join(path.dirname(transcript_path), 'state');
   fs.mkdirSync(stateDir, { recursive: true });
-  const jsonPath = path.join(stateDir, `${session_id}.json`);
-  const mdPath = path.join(stateDir, `${session_id}.md`);
+  const jsonPath = path.join(stateDir, `${sid}.json`);
+  const mdPath = path.join(stateDir, `${sid}.md`);
   const latestPath = path.join(stateDir, '_latest.md');
 
   let model = emptyModel();
@@ -32,7 +33,7 @@ function main() {
   model.offset = newOffset;
 
   fs.writeFileSync(jsonPath, JSON.stringify(model));
-  const md = renderMarkdown(session_id, model);
+  const md = renderMarkdown(sid, model);
   fs.writeFileSync(mdPath, md);
   fs.writeFileSync(latestPath, md);
 }

@@ -1,5 +1,5 @@
 'use strict';
-const { TAG_RE, MEANINGFUL_BASH_RE, NOISE_BASH_RE } = require('./config');
+const { TAG_RE, MEANINGFUL_BASH_RE } = require('./config');
 
 // Flatten the content items of every assistant entry in the delta.
 function assistantItems(entries) {
@@ -21,9 +21,13 @@ function extractFacts(entries) {
     if (item.name === 'Edit' || item.name === 'Write') {
       if (input.file_path) facts.push(`edited ${input.file_path}`);
     } else if (item.name === 'Bash') {
+      // Split on &&/||/;/| and test each segment's leading token against the
+      // allowlist, so "cd dir && git commit" is captured but a VAR="...tool..."
+      // assignment (tool name only inside the value) is not.
       const cmd = String(input.command || '').split('\n')[0].trim();
-      if (cmd && MEANINGFUL_BASH_RE.test(cmd) && !NOISE_BASH_RE.test(cmd)) {
-        facts.push(`ran: ${cmd}`);
+      const segments = cmd.split(/&&|\|\||[;|]/).map((s) => s.trim());
+      if (cmd && segments.some((s) => MEANINGFUL_BASH_RE.test(s))) {
+        facts.push(`ran: ${cmd.length > 120 ? `${cmd.slice(0, 117)}...` : cmd}`);
       }
     } else if (item.name === 'TaskCreate' || item.name === 'TaskUpdate') {
       const title = input.title || input.task || input.description || '(task)';

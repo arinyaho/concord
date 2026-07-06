@@ -28,7 +28,7 @@ Consequence: "persist the task list" has almost nothing to persist. The snapshot
 ## Goals
 
 - Kill W2: on resume, compaction, or continuation in a fresh session, the model receives a compact state summary and does not re-read a transcript to recover.
-- Reduce W1: with activity auto-captured, the motivation to hand-maintain a status ledger drops (partial need-removal). Full W1 elimination is out of scope for v1.
+- Partly reduce W1: auto-capturing activity removes the *recovery-motivated* slice of ledger churn (state kept only to recover later) as a byproduct of killing W2. It does NOT reliably fix in-flight todo/status churn — that would need the model to choose not to hand-maintain a ledger, the behavioral hope this track distrusts. The reliable W1 fix is deferred (see Deferred); v1 sequences W2-first because W2 has a clean enforcement mechanism whereas a hand-ledger write-guard risks false-positives on legitimate prose.
 - Zero added model-token cost on the write path (the harness writes state).
 - No new subsystem: two small Node hooks plus a state file format.
 - Project-agnostic: the hooks derive every path from `transcript_path`, so one install serves any `~/.claude` project with no per-project config or brand assumption, and each project's state stays isolated by its own directory.
@@ -91,7 +91,7 @@ Injection contract: a SessionStart hook's plain stdout is injected into the sess
 **Extractor A — facts (from tool_use in delta):**
 
 - `Edit` / `Write` -> edited file path
-- `Bash` -> command, filtered to meaningful ones (git commit/push, `gh pr`, test/pytest, cdk/amplify deploy, npm/pip); drop noise (ls, cd, cat, echo, grep)
+- `Bash` -> first line, split on `&&`/`||`/`;`/`|`; kept if any segment's leading token is a build/test/deploy/infra tool (git/gh/docker/terraform/kubectl/aws/npm/pytest/...), truncated to ~120 chars. Segment-splitting captures `cd dir && git commit`; the leading-token rule drops variable-assignment setup lines (`VAR="...tool..."`) whose tool name is only inside a value.
 - `TaskCreate` / `TaskUpdate` -> task title + status change
 - PR numbers -> parsed from `gh pr` commands or their tool_result
 - (optional) `Agent` dispatches -> subagent task label
@@ -134,7 +134,7 @@ Rolling project pointer `state/_latest.md` = a copy of the most recent session's
 
 ### Compaction (inside the writer, every run)
 
-- **Open loops:** keep all unresolved; a `RESOLVED:` line removes the matching open loop; hard cap N (e.g. 20), oldest dropped with a `(...truncated)` marker.
+- **Open loops:** keep all unresolved; a `RESOLVED:` line removes the matching open loop by normalized-exact match (whitespace/case-insensitive, so a short token cannot silently close an unrelated loop); hard cap N (e.g. 20), oldest silently dropped.
 - **Decisions:** keep the latest per topic key (text in the leading `[...]`, or first few words if untagged); cap N.
 - **Recent activity:** deduplicated ring buffer of the last N distinct facts (e.g. 40) — the most-recent occurrence of each fact is kept, so churn on one file cannot evict higher-signal facts like commits and PRs.
 
@@ -147,7 +147,7 @@ This keeps the file small and bounded, so it never becomes a growing doc that re
 
 ## Hope surface (honest)
 
-- **Layer 1 (facts) = zero-hope floor.** Pure machine extraction, no model behavior change. This is the safety net and it always runs.
+- **Layer 1 (facts) = zero-hope floor.** Pure machine extraction, no model behavior change — always runs. It is a *precision* floor, not exhaustive recall: commands are captured via a curated tool allowlist (matched per `&&`/`;`-segment), so a novel CLI is missed until added, but shell setup lines never pollute it. Edits and task changes have no such filter.
 - **Layer 2 (rationale) = one micro-convention:** tag decisions/open items inline with `DECISION:` / `OPEN-LOOP:` / `NEXT:`. This is the only "hope" in the system. It is weaker than enforcement but stronger than the failed no-`cd` rule:
   - Different risk profile: `cd` fights entrenched muscle memory (hence 193x ignored); the tag is a new, lightweight behavior with a payoff visible on every resume (self-reinforcing feedback loop).
   - Graceful degradation: if the tag is forgotten, Layer 1 facts still flow, so transcript re-reads shrink (15x -> few) rather than reappearing. The system does not break.
@@ -182,11 +182,11 @@ The convention is delivered by the SessionStart hook every session (not a static
 2. Package as a Claude Code plugin: a `hooks/hooks.json` declaring the Stop and SessionStart hooks via `${CLAUDE_PLUGIN_ROOT}`, a `plugin.json`, and a repo-root `marketplace.json`. Enable it through the `/plugin` flow; no `settings.json` editing.
 3. The inline tag convention is injected by the SessionStart hook every session (no CLAUDE.md edit required).
 4. Dogfood on this project's sessions.
-5. Measure before vs after by re-running the session-corpus diagnostic (parses session logs): transcript re-read count and `LEDGER.md`/memory edit count.
+5. Measure before vs after by re-running the session-corpus diagnostic (parses session logs): transcript re-read count and `LEDGER.md`/memory edit count. Until that diagnostic is generalized into this repo (see Deferred), these numbers are not yet produced — so v1's "killed W2 / reduced W1" is a design expectation from the corpus-mined baseline, not a measured post-fix result.
 
 ## Deferred (v2+)
 
-- Full W1 elimination (enforcement on hand-ledger writes, e.g. a PreToolUse guard, if the partial reduction proves insufficient).
+- Full W1 elimination — the reliable fix is a PreToolUse guard on hand-ledger writes (enforcement, not v1's auto-capture hope). Deferred because a write-guard risks false-positives on legitimate prose and should be sized against the before/after measurement below first.
 - PreCompact nudge: a rare, well-timed reminder to record open loops right before compaction.
 - Compaction-quality tuning beyond v1 (topic keying for near-duplicate decisions; truncating long task titles). Fact dedup already ships in v1.
 - Reconciling divergent state across concurrent live sessions (v1 accepts last-writer-wins on `state/_latest.md`).
