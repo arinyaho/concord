@@ -30,6 +30,12 @@ test('RESOLVED matches normalized-exact only, so a short token cannot close unre
   assert.deepEqual(m.openLoops, ['verify the injector']); // case/space-insensitive exact
 });
 
+test('open loops dedup: the same loop from two sources collapses to one', () => {
+  let m = emptyModel();
+  m = mergeModel(m, delta({ openLoops: ['verify the injector', 'verify the injector'] }));
+  assert.deepEqual(m.openLoops, ['verify the injector']);
+});
+
 test('facts are a bounded ring buffer', () => {
   let m = emptyModel();
   const many = Array.from({ length: 50 }, (_, i) => `edited f${i}.js`);

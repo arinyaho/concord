@@ -58,7 +58,8 @@ Stop hook  (session-state-writer.js)   [fires: end of every assistant turn]
   2. read byte-offset watermark for session_id (default 0)
   3. seek transcript_path to watermark, read new bytes, split into JSONL lines
   4. extract A (facts) from tool_use events in the delta
-  5. extract B (rationale) from assistant-text lines matching the tag prefixes
+  5. extract B (rationale) tags from the delta's assistant text AND stdin's
+     last_assistant_message (the just-finished turn, in case it has not flushed)
   6. merge into state/<session_id>.md, compact in place, write
   7. copy the result to state/_latest.md (rolling project pointer)
   8. persist new byte offset
@@ -84,8 +85,8 @@ Injection contract: a SessionStart hook's plain stdout is injected into the sess
 
 ### session-state-writer.js (Stop hook)
 
-- **What:** Parse the transcript delta since last run; append facts + tagged rationale to the session state file; compact; advance the watermark.
-- **Interface:** stdin JSON `{ session_id, transcript_path }`; side effect = write `state/<session_id>.md`, refresh `state/_latest.md`, and update `state/<session_id>.pos`; stdout ignored; exit 0 always.
+- **What:** Parse the transcript delta since last run; append facts (from tool_use) and tagged rationale (from the delta's assistant text and stdin's `last_assistant_message`) to the session state file; compact; advance the watermark. Harvesting rationale from `last_assistant_message` too removes any dependence on whether the triggering turn has flushed to the transcript before the Stop hook fires; downstream dedup absorbs the overlap.
+- **Interface:** stdin JSON `{ session_id, transcript_path, last_assistant_message }`; side effect = write `state/<session_id>.md`, refresh `state/_latest.md`, and update `state/<session_id>.pos`; stdout ignored; exit 0 always.
 - **Depends on:** transcript JSONL schema (tool_use entries with `name` + `input`; assistant message entries with text content).
 
 **Extractor A — facts (from tool_use in delta):**
@@ -134,7 +135,7 @@ Rolling project pointer `state/_latest.md` = a copy of the most recent session's
 
 ### Compaction (inside the writer, every run)
 
-- **Open loops:** keep all unresolved; a `RESOLVED:` line removes the matching open loop by normalized-exact match (whitespace/case-insensitive, so a short token cannot silently close an unrelated loop); hard cap N (e.g. 20), oldest silently dropped.
+- **Open loops:** keep all unresolved; a `RESOLVED:` line removes the matching open loop by normalized-exact match (whitespace/case-insensitive, so a short token cannot silently close an unrelated loop); deduplicated by normalized text, then hard-capped at N (e.g. 20), oldest silently dropped.
 - **Decisions:** keep the latest per topic key (text in the leading `[...]`, or first few words if untagged); cap N.
 - **Recent activity:** deduplicated ring buffer of the last N distinct facts (e.g. 40) — the most-recent occurrence of each fact is kept, so churn on one file cannot evict higher-signal facts like commits and PRs.
 

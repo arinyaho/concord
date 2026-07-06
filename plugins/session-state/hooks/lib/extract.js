@@ -38,27 +38,42 @@ function extractFacts(entries) {
   return facts;
 }
 
-// Rationale from tagged assistant-text lines.
-function extractRationale(entries) {
-  const decisions = [];
-  const openLoops = [];
-  const nexts = [];
-  const resolved = [];
-  for (const item of assistantItems(entries)) {
-    if (!item || item.type !== 'text' || typeof item.text !== 'string') continue;
-    for (const raw of item.text.split('\n')) {
-      const m = raw.trim().match(TAG_RE);
-      if (!m) continue;
-      const body = m[2].trim();
-      if (!body) continue;
-      const tag = m[1].toUpperCase();
-      if (tag === 'DECISION') decisions.push(body);
-      else if (tag === 'OPEN-LOOP') openLoops.push(body);
-      else if (tag === 'NEXT') nexts.push(body);
-      else if (tag === 'RESOLVED') resolved.push(body);
-    }
+// Harvest tagged lines from a text blob into an accumulator.
+function harvestTags(text, acc) {
+  for (const raw of String(text).split('\n')) {
+    const m = raw.trim().match(TAG_RE);
+    if (!m) continue;
+    const body = m[2].trim();
+    if (!body) continue;
+    const tag = m[1].toUpperCase();
+    if (tag === 'DECISION') acc.decisions.push(body);
+    else if (tag === 'OPEN-LOOP') acc.openLoops.push(body);
+    else if (tag === 'NEXT') acc.nexts.push(body);
+    else if (tag === 'RESOLVED') acc.resolved.push(body);
   }
-  return { decisions, openLoops, nexts, resolved };
+  return acc;
 }
 
-module.exports = { extractFacts, extractRationale };
+function emptyRationale() {
+  return { decisions: [], openLoops: [], nexts: [], resolved: [] };
+}
+
+// Rationale from tagged lines across all assistant-text items in the delta.
+function extractRationale(entries) {
+  const acc = emptyRationale();
+  for (const item of assistantItems(entries)) {
+    if (!item || item.type !== 'text' || typeof item.text !== 'string') continue;
+    harvestTags(item.text, acc);
+  }
+  return acc;
+}
+
+// Rationale from a single text blob, e.g. the Stop hook's last_assistant_message
+// (captures the just-finished turn even if it has not flushed to the transcript).
+function extractRationaleText(text) {
+  const acc = emptyRationale();
+  if (text) harvestTags(text, acc);
+  return acc;
+}
+
+module.exports = { extractFacts, extractRationale, extractRationaleText };

@@ -3,11 +3,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { readDelta } = require('./lib/transcript');
-const { extractFacts, extractRationale } = require('./lib/extract');
+const { extractFacts, extractRationale, extractRationaleText } = require('./lib/extract');
 const { emptyModel, mergeModel, renderMarkdown } = require('./lib/state');
 
 function main() {
-  const { session_id, transcript_path } = JSON.parse(fs.readFileSync(0, 'utf8'));
+  const { session_id, transcript_path, last_assistant_message } = JSON.parse(fs.readFileSync(0, 'utf8'));
   if (!session_id || !transcript_path) return;
 
   const sid = path.basename(String(session_id));
@@ -25,11 +25,15 @@ function main() {
   }
 
   const { entries, newOffset } = readDelta(transcript_path, model.offset || 0);
-  if (entries.length) {
-    const facts = extractFacts(entries);
-    const rationale = extractRationale(entries);
-    model = mergeModel(model, { ...rationale, facts });
+  const facts = extractFacts(entries);
+  const rationale = extractRationale(entries);
+  // Also harvest tags from the just-finished turn via stdin, in case it has not
+  // yet flushed to the transcript; downstream dedup absorbs the overlap.
+  const msgRationale = extractRationaleText(last_assistant_message);
+  for (const key of ['decisions', 'openLoops', 'nexts', 'resolved']) {
+    rationale[key].push(...msgRationale[key]);
   }
+  model = mergeModel(model, { ...rationale, facts });
   model.offset = newOffset;
 
   fs.writeFileSync(jsonPath, JSON.stringify(model));

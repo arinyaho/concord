@@ -16,6 +16,19 @@ function normalizeText(s) {
   return String(s).trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
+// Keep the most-recent occurrence of each distinct item (by key), order preserved.
+function dedupeLatest(items, keyFn) {
+  const seen = new Set();
+  const out = [];
+  for (let i = items.length - 1; i >= 0; i--) {
+    const k = keyFn(items[i]);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.unshift(items[i]);
+  }
+  return out;
+}
+
 // Merge a delta into the model, applying compaction so the file stays bounded.
 function mergeModel(prev, d) {
   const m = {
@@ -26,24 +39,17 @@ function mergeModel(prev, d) {
     facts: prev.facts.slice(),
   };
 
-  // Keep the most-recent occurrence of each distinct fact, then cap, so edit
-  // churn on one file cannot evict higher-signal facts (commits, PRs).
-  const combined = m.facts.concat(d.facts);
-  const seen = new Set();
-  const distinct = [];
-  for (let i = combined.length - 1; i >= 0; i--) {
-    if (seen.has(combined[i])) continue;
-    seen.add(combined[i]);
-    distinct.unshift(combined[i]);
-  }
-  m.facts = distinct.slice(-FACTS_CAP);
+  // Keep the most-recent occurrence of each distinct item, then cap, so churn
+  // (repeated edits, or a tag harvested from both the transcript and the Stop
+  // hook's last_assistant_message) cannot evict higher-signal entries.
+  m.facts = dedupeLatest(m.facts.concat(d.facts), (f) => f).slice(-FACTS_CAP);
 
   m.openLoops = m.openLoops.concat(d.openLoops);
   for (const r of d.resolved) {
     const rn = normalizeText(r);
     m.openLoops = m.openLoops.filter((o) => normalizeText(o) !== rn);
   }
-  m.openLoops = m.openLoops.slice(-OPEN_LOOPS_CAP);
+  m.openLoops = dedupeLatest(m.openLoops, normalizeText).slice(-OPEN_LOOPS_CAP);
 
   for (const dec of d.decisions) {
     const k = topicKey(dec);
@@ -52,7 +58,7 @@ function mergeModel(prev, d) {
   }
   m.decisions = m.decisions.slice(-DECISIONS_CAP);
 
-  m.nexts = m.nexts.concat(d.nexts).slice(-NEXTS_CAP);
+  m.nexts = dedupeLatest(m.nexts.concat(d.nexts), normalizeText).slice(-NEXTS_CAP);
   return m;
 }
 

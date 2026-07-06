@@ -48,3 +48,23 @@ test('malformed stdin exits 0 without throwing', () => {
   // execFileSync throws if the process exits non-zero; absence of throw = pass.
   execFileSync('node', [WRITER], { input: 'not json' });
 });
+
+test('harvests tags from last_assistant_message and dedups against the transcript', () => {
+  const { proj, transcript, id } = setup();
+  // Transcript already carries one open loop (the flushed path)...
+  fs.writeFileSync(
+    transcript,
+    '{"type":"assistant","message":{"content":[{"type":"text","text":"OPEN-LOOP: enable the plugin"}]}}\n'
+  );
+  // ...and stdin carries the same loop (unflushed path) plus a new decision.
+  execFileSync('node', [WRITER], {
+    input: JSON.stringify({
+      session_id: id,
+      transcript_path: transcript,
+      last_assistant_message: 'OPEN-LOOP: enable the plugin\nDECISION: [scope] ship v1',
+    }),
+  });
+  const model = JSON.parse(fs.readFileSync(path.join(proj, 'state', `${id}.json`), 'utf8'));
+  assert.equal(model.openLoops.filter((o) => o === 'enable the plugin').length, 1); // deduped
+  assert.ok(model.decisions.includes('[scope] ship v1')); // harvested from stdin
+});
