@@ -92,3 +92,25 @@ test('mergeSessions: excludeSid and non-json files ignored', () => {
   assert.ok(m.openLoops.includes('loop-a'));
   assert.ok(!m.openLoops.includes('loop-b'));
 });
+
+test('renderCharter: includes north-star and non-empty sections only', () => {
+  const md = charter.renderCharter('preserve founding context', {
+    openLoops: ['drift kills flat-file'],
+    decisions: ['[scope] north-star + shards'],
+    nexts: ['ship v1'],
+    facts: [],
+  });
+  assert.ok(md.includes('# Task charter'));
+  assert.ok(md.includes('preserve founding context'));
+  assert.ok(md.includes('## Open loops'));
+  assert.ok(md.includes('- drift kills flat-file'));
+  assert.ok(md.includes('## Decisions'));
+  assert.ok(md.includes('## Next'));
+  assert.ok(!md.includes('## Recent activity')); // facts not rendered in the charter view
+});
+
+test('renderCharter: null north-star renders a placeholder line', () => {
+  const md = charter.renderCharter(null, { openLoops: [], decisions: [], nexts: [], facts: [] });
+  assert.ok(md.includes('# Task charter'));
+  assert.ok(md.toLowerCase().includes('no north star set'));
+});

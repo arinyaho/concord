@@ -142,6 +142,25 @@ function mergeSessions(stateDir, { excludeSid } = {}) {
   return acc;
 }
 
+function section(title, items) {
+  if (!items || items.length === 0) return '';
+  return [`## ${title}`, ...items.map((x) => `- ${x}`), ''].join('\n');
+}
+
+// The charter view: the north-star framing plus the merged cross-session rationale.
+// Facts (activity) are deliberately excluded — the charter carries intent, not log.
+function renderCharter(northStar, model) {
+  const parts = ['# Task charter', ''];
+  parts.push(northStar ? `**North star:** ${northStar}` : '_No north star set — use `/charter set` to pin the task framing._');
+  parts.push('');
+  const secs = [
+    section('Open loops', model.openLoops),
+    section('Decisions', model.decisions),
+    section('Next', model.nexts),
+  ].filter(Boolean);
+  return parts.concat(secs).join('\n').trimEnd() + '\n';
+}
+
 module.exports = {
   charterPath,
   readNorthStar,
@@ -149,4 +168,5 @@ module.exports = {
   setNorthStar,
   firstSubstantiveUserMessage,
   mergeSessions,
+  renderCharter,
 };
