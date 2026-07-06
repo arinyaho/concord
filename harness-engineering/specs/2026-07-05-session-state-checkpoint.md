@@ -136,7 +136,7 @@ Rolling project pointer `state/_latest.md` = a copy of the most recent session's
 
 - **Open loops:** keep all unresolved; a `RESOLVED:` line removes the matching open loop; hard cap N (e.g. 20), oldest dropped with a `(...truncated)` marker.
 - **Decisions:** keep the latest per topic key (text in the leading `[...]`, or first few words if untagged); cap N.
-- **Recent activity:** ring buffer of the last N facts (e.g. 40).
+- **Recent activity:** deduplicated ring buffer of the last N distinct facts (e.g. 40) — the most-recent occurrence of each fact is kept, so churn on one file cannot evict higher-signal facts like commits and PRs.
 
 This keeps the file small and bounded, so it never becomes a growing doc that re-introduces W1.
 
@@ -188,6 +188,6 @@ The convention is delivered by the SessionStart hook every session (not a static
 
 - Full W1 elimination (enforcement on hand-ledger writes, e.g. a PreToolUse guard, if the partial reduction proves insufficient).
 - PreCompact nudge: a rare, well-timed reminder to record open loops right before compaction.
-- Compaction-quality tuning (topic keying, dedup heuristics).
+- Compaction-quality tuning beyond v1 (topic keying for near-duplicate decisions; truncating long task titles). Fact dedup already ships in v1.
 - Reconciling divergent state across concurrent live sessions (v1 accepts last-writer-wins on `state/_latest.md`).
 - Bringing a project-neutral session-corpus diagnostic into this repo (today it is a private, project-named script), so any project can measure the before/after.

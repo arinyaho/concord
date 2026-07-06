@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "arinyaho-concord",
+  "description": "Harness-engineering tooling for the Claude Code workflow.",
+  "owner": { "name": "arinyaho", "url": "https://github.com/arinyaho" },
+  "plugins": [
+    {
+      "name": "session-state",
+      "description": "Persist per-session state from the transcript and re-inject it on resume, compaction, or a fresh session, so the model stops re-reading its own transcript.",
+      "author": { "name": "arinyaho" },
+      "category": "development",
+      "source": "./plugins/session-state",
+      "homepage": "https://github.com/arinyaho/concord"
+    }
+  ]
+}

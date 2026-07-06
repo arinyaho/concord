@@ -8,6 +8,18 @@ This repo is the home for the "D-track": a diagnosis of recurring dysfunction in
 
 - `harness-engineering/specs/` - design specs, one per fix (dated).
 - `harness-engineering/plans/` - implementation plans (TDD, bite-sized tasks).
+- `plugins/` - Claude Code plugins that implement a fix (hooks, commands, etc).
+
+## Install
+
+Add the marketplace, then install the plugin you want:
+
+```
+/plugin marketplace add arinyaho/concord
+/plugin install session-state@arinyaho-concord
+```
+
+Enabling a plugin registers its hooks automatically — no `settings.json` editing required.
 
 ## Track map
 

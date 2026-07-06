@@ -36,7 +36,7 @@ All code lives in this repo (`concord`) under `plugins/session-state/`. The plug
 - `plugins/session-state/hooks/test/*.test.js` — one test file per module.
 - `.claude-plugin/marketplace.json` — repo-root marketplace manifest listing the plugin.
 
-Working directory: a checkout of `concord`. Run tests with `node --test plugins/session-state/hooks/test/`.
+Working directory: a checkout of `concord`. Run tests with `node --test plugins/session-state/hooks/test/*.test.js` (an explicit directory is not recursed by `node --test` on Node 24, so use the glob).
 
 ---
 
@@ -402,6 +402,15 @@ test('facts are a bounded ring buffer', () => {
   assert.equal(m.facts[0], 'edited f10.js'); // oldest 10 dropped
 });
 
+test('facts dedup: churn collapses and cannot evict high-signal facts', () => {
+  let m = emptyModel();
+  const churn = Array.from({ length: 45 }, () => 'edited LEDGER.md');
+  m = mergeModel(m, delta({ facts: ['ran: git commit -m x', 'ran: gh pr create', ...churn] }));
+  assert.equal(m.facts.filter((f) => f === 'edited LEDGER.md').length, 1);
+  assert.ok(m.facts.includes('ran: git commit -m x'));
+  assert.ok(m.facts.includes('ran: gh pr create'));
+});
+
 test('renderMarkdown includes the machine-owned header and sections', () => {
   const m = mergeModel(emptyModel(), delta({ decisions: ['[x] d'], facts: ['edited a'] }));
   const md = renderMarkdown('abc', m);
@@ -443,7 +452,17 @@ function mergeModel(prev, d) {
     facts: prev.facts.slice(),
   };
 
-  m.facts = m.facts.concat(d.facts).slice(-FACTS_CAP);
+  // Keep the most-recent occurrence of each distinct fact, then cap, so edit
+  // churn on one file cannot evict higher-signal facts (commits, PRs).
+  const combined = m.facts.concat(d.facts);
+  const seen = new Set();
+  const distinct = [];
+  for (let i = combined.length - 1; i >= 0; i--) {
+    if (seen.has(combined[i])) continue;
+    seen.add(combined[i]);
+    distinct.unshift(combined[i]);
+  }
+  m.facts = distinct.slice(-FACTS_CAP);
 
   m.openLoops = m.openLoops.concat(d.openLoops);
   for (const r of d.resolved) {
@@ -486,7 +505,7 @@ module.exports = { emptyModel, topicKey, mergeModel, renderMarkdown };
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `node --test plugins/session-state/hooks/test/state.test.js`
-Expected: PASS (4 tests).
+Expected: PASS (5 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -780,7 +799,7 @@ git commit -m "feat: SessionStart hook injects session or rolling state"
 
 - [ ] **Step 1: Run the full suite green**
 
-Run: `node --test plugins/session-state/hooks/test/`
+Run: `node --test plugins/session-state/hooks/test/*.test.js`
 Expected: PASS, all files.
 
 - [ ] **Step 2: Write `plugins/session-state/.claude-plugin/plugin.json`**

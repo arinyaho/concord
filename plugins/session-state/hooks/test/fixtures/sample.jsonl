@@ -1,0 +1,4 @@
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/repo/a.js"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"git commit -m \"x\"","description":"commit"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"ls -la","description":"list"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"DECISION: [scope] chose A over B\nOPEN-LOOP: verify the injector\nNEXT: wire settings.json"}]}}
