@@ -5,11 +5,11 @@
   "owner": { "name": "arinyaho", "url": "https://github.com/arinyaho" },
   "plugins": [
     {
-      "name": "session-state",
-      "description": "Persist per-session state from the transcript and re-inject it on resume, compaction, or a fresh session, so the model stops re-reading its own transcript.",
+      "name": "concord",
+      "description": "Harness-engineering tools: a per-session state checkpoint plus a cross-session task charter, persisted from the transcript and re-injected on resume, compaction, or a fresh session.",
       "author": { "name": "arinyaho" },
       "category": "development",
-      "source": "./plugins/session-state",
+      "source": "./plugins/concord",
       "homepage": "https://github.com/arinyaho/concord"
     }
   ]
