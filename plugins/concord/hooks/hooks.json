@@ -5,7 +5,10 @@
       { "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-state-writer.js\"" } ] }
     ],
     "SessionStart": [
-      { "matcher": "startup|resume|compact", "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-state-injector.js\"" } ] }
+      { "matcher": "startup|resume|compact", "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-state-injector.js\"" },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/review-injector.js\"" }
+        ] }
     ]
   }
 }
