@@ -22,7 +22,7 @@ Enabling a plugin registers its hooks automatically - no `settings.json` editing
 The plugins come from a diagnosis of recurring session dysfunction:
 
 - Shell env re-export + `cd` tax -> ambient-env tooling (elsewhere).
-- Memory / ledger / doc churn + self-transcript re-reads -> `session-state`.
+- Memory / ledger / doc churn + self-transcript re-reads -> the `concord` plugin (session-state checkpoint).
 - Monster resumed sessions (session hygiene).
 - Edit round-trip waste (edit-before-read, string-not-found).
 
