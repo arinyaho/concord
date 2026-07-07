@@ -77,41 +77,48 @@ function normalizeText(s) {
   return String(s == null ? '' : s).trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
-// LINE-NUMBER-INDEPENDENT identity+content hash for a finding. Deliberately built
-// from (gate, file, normalized span, normalized summary) -- never `line` -- so a
-// fix elsewhere in the diff that shifts line numbers cannot change a killed
-// finding's hash (the whole convergence guarantee depends on this).
-//
-// Because `finding.span` is always the CURRENT text at that location (the caller
-// re-extracts it fresh every round), this hash inherently combines the finding's
-// conceptual identity (gate/file/summary) with the span's current content: fixing
-// the code changes the span text, which changes this hash: the pre-fix hash is
-// left behind in `seen` tagged status "fixed". If an external change later
-// reverts the span back to the exact pre-fix content, recomputing this hash
-// reproduces that same pre-fix hash again -- dedupeAgainstSeen treats a "fixed"
-// match as a reopen rather than a permanent suppression (see below), so the
-// regression resurfaces instead of being silently swallowed.
+// LINE-NUMBER-INDEPENDENT content hash for a finding -- a SECONDARY signal.
+// Deliberately built from (gate, file, normalized span, normalized summary) --
+// never `line` -- so a fix elsewhere in the diff that shifts line numbers cannot
+// change it. Historically this was also the PRIMARY dedupe key, but hashing
+// summary *prose* mints a phantom "new" finding whenever an LLM rephrases the
+// same bug between rounds (found by the engine spike). Identity is now the
+// gate-emitted stable `finding.id` (see dedupeAgainstSeen); this hash survives
+// only as a secondary signal to tell a byte-identical revert apart from a
+// same-id recurrence with different content.
 function seenHash(finding) {
   const parts = [finding.gate, finding.file, normalizeText(finding.span), normalizeText(finding.summary)];
   return contentHash(parts.join('␟'));
 }
 
-// Filter raw findings against the ledger's seen set.
-//   - matches a "killed" or "parked" seen entry (adjudicated, content unchanged)
-//     -> suppressed (dropped).
-//   - matches a "fixed" seen entry -> content reverted to a previously-fixed
-//     state -> NOT suppressed; marked `reopened: true` so callers/tests can tell
-//     this apart from a first-time finding.
-//   - no match -> passes through unchanged (fresh finding).
+// Filter raw findings against the ledger's seen set. PRIMARY identity is
+// `finding.id` -- a stable slug the gate emits as part of its output contract
+// (e.g. "correctness:assignment-in-condition"), NOT a hash of prose that
+// reflows every time the LLM rephrases the same bug. `seen` entries carry both
+// `id` (primary) and `hash` (secondary, line-independent content signature).
+//   - id matches a "killed" or "parked" seen entry -> suppressed (dropped);
+//     adjudicated, and an id match is definitive regardless of minor content
+//     drift around it (renumbered lines, nearby edits).
+//   - id matches a "fixed" seen entry -> NOT suppressed; the same finding
+//     recurred after being marked fixed (an external revert, or a fix that
+//     didn't actually hold) -> `reopened: true`. `contentChanged` (derived from
+//     the secondary hash) tells the caller whether this is a byte-identical
+//     revert (`false`) or a recurrence with different content (`true`) --
+//     diagnostic only, it does not change the reopen verdict.
+//   - no id match -> passes through unchanged (fresh finding).
 function dedupeAgainstSeen(findings, seen) {
-  const bySig = new Map();
-  for (const s of seen || []) bySig.set(s.hash, s.status);
+  const byId = new Map();
+  for (const s of seen || []) byId.set(s.id, s);
   const survivors = [];
   for (const f of findings) {
-    const status = bySig.get(seenHash(f));
-    if (status === 'killed' || status === 'parked') continue;
-    if (status === 'fixed') {
-      survivors.push(Object.assign({}, f, { reopened: true }));
+    const entry = byId.get(f.id);
+    if (!entry) {
+      survivors.push(f);
+      continue;
+    }
+    if (entry.status === 'killed' || entry.status === 'parked') continue;
+    if (entry.status === 'fixed') {
+      survivors.push(Object.assign({}, f, { reopened: true, contentChanged: entry.hash !== seenHash(f) }));
       continue;
     }
     survivors.push(f);
@@ -163,13 +170,32 @@ function decideTermination(roundOutcome) {
 // Round accounting
 // ---------------------------------------------------------------------------
 
-// Starts a new round against `diffContentHash`. If it is identical to the
-// ledger's last-seen diff hash, this is a no-op round (nothing changed since the
-// last round ran) and must NOT consume budget or advance the round counter --
-// otherwise an idle resume (agent calls round-start before re-diffing) would
-// burn the budget for free. Returns a NEW ledger object (does not mutate the
-// input) plus a `noOp` flag for the caller.
+// A ledger in one of these statuses has already concluded; the loop is over.
+const TERMINAL_STATUSES = new Set(['clean', 'parked', 'abandoned']);
+
+// Starts a new round against `diffContentHash`. Returns a NEW ledger object
+// (does not mutate the input) plus three flags for the caller:
+//   - `terminal`: the ledger was ALREADY in a concluded status (clean/parked/
+//     abandoned) before this call. Round/budget are left untouched and the
+//     input ledger is returned as-is. This is the fix for the spike's
+//     off-by-one: its outer loop incremented a round counter on the very
+//     iteration that only discovered "already converged, stop" -- a
+//     terminal-state check is not a round of work and must not be counted as
+//     one. Callers should treat `terminal: true` as "stop the loop now."
+//   - `noOp`: `diffContentHash` is identical to the ledger's last-seen diff
+//     hash (nothing changed since the last round ran) -- must NOT consume
+//     budget or advance the round counter, otherwise an idle resume (agent
+//     calls round-start before re-diffing) would burn the budget for free.
+//   - `workHappened`: true exactly when this call started a REAL round (not
+//     terminal, not a no-op) -- i.e. a round in which the engine is expected to
+//     actually run the gates. Exposed separately from the `round` counter
+//     itself so a caller can distinguish "the round number advanced" from "the
+//     harness is about to do work this iteration" without re-deriving it from
+//     `noOp`/`terminal`.
 function beginRound(ledger, diffContentHash) {
+  if (TERMINAL_STATUSES.has(ledger.status)) {
+    return { ledger, noOp: true, workHappened: false, terminal: true };
+  }
   const noOp = ledger.diff_content_hash !== null && ledger.diff_content_hash === diffContentHash;
   const next = {
     ...ledger,
@@ -177,7 +203,7 @@ function beginRound(ledger, diffContentHash) {
     budget: { ...ledger.budget, spent: noOp ? ledger.budget.spent : ledger.budget.spent + 1 },
     diff_content_hash: diffContentHash,
   };
-  return { ledger: next, noOp };
+  return { ledger: next, noOp, workHappened: !noOp, terminal: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -243,7 +269,7 @@ function applyRoundOutcome(ledger, outcome) {
     byId.set(f.id, merged);
 
     if (status === 'fixed' || status === 'parked' || status === 'killed') {
-      newSeenEntries.push({ hash: seenHash(f), status });
+      newSeenEntries.push({ id: f.id, hash: seenHash(f), status });
     }
   }
 
@@ -340,6 +366,7 @@ function renderReviewReport(ledgers) {
 }
 
 module.exports = {
+  TERMINAL_STATUSES,
   ledgerPath,
   readLedger,
   writeLedger,

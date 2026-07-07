@@ -107,22 +107,37 @@ test('seenHash: different gate or file hashes differently even with identical sp
 });
 
 // ---- dedupeAgainstSeen ----
+//
+// Identity is PRIMARY-keyed on `finding.id` (the gate-emitted stable slug), not
+// on seenHash prose. This is the finding-id correction: an LLM rephrasing the
+// same bug's summary between rounds must not mint a phantom "new" finding.
+// seenHash survives as a SECONDARY signal (content-drift diagnostic only).
 
-test('dedupeAgainstSeen: a finding matching a "killed" seen entry at unchanged content is suppressed', () => {
+test('dedupeAgainstSeen: an id match on a "killed" seen entry is suppressed', () => {
   const f = finding();
-  const seen = [{ hash: review.seenHash(f), status: 'killed' }];
+  const seen = [{ id: f.id, hash: review.seenHash(f), status: 'killed' }];
   const survivors = review.dedupeAgainstSeen([f], seen);
   assert.strictEqual(survivors.length, 0);
 });
 
-test('dedupeAgainstSeen: a finding matching a "parked" seen entry at unchanged content is suppressed', () => {
+test('dedupeAgainstSeen: an id match on a "parked" seen entry is suppressed', () => {
   const f = finding();
-  const seen = [{ hash: review.seenHash(f), status: 'parked' }];
+  const seen = [{ id: f.id, hash: review.seenHash(f), status: 'parked' }];
   const survivors = review.dedupeAgainstSeen([f], seen);
   assert.strictEqual(survivors.length, 0);
 });
 
-test('dedupeAgainstSeen: a never-seen finding passes through unchanged', () => {
+test('dedupeAgainstSeen: a "killed" match is suppressed even when the summary prose is reworded (the phantom-finding bug the correction fixes)', () => {
+  const f = finding({ summary: 'assignment used where comparison intended' });
+  const reworded = finding({ summary: 'uses = instead of == in the condition' });
+  const seen = [{ id: f.id, hash: review.seenHash(f), status: 'killed' }];
+  // Different prose -> different seenHash -- but the SAME stable id -> still suppressed.
+  assert.notStrictEqual(review.seenHash(f), review.seenHash(reworded));
+  const survivors = review.dedupeAgainstSeen([reworded], seen);
+  assert.strictEqual(survivors.length, 0);
+});
+
+test('dedupeAgainstSeen: an unknown id passes through unchanged (fresh finding)', () => {
   const f = finding();
   const survivors = review.dedupeAgainstSeen([f], []);
   assert.strictEqual(survivors.length, 1);
@@ -130,23 +145,33 @@ test('dedupeAgainstSeen: a never-seen finding passes through unchanged', () => {
   assert.ok(!survivors[0].reopened);
 });
 
-test('dedupeAgainstSeen: a finding matching a "fixed" seen entry re-opens instead of being suppressed', () => {
+test('dedupeAgainstSeen: an id match on a "fixed" seen entry re-opens instead of being suppressed', () => {
   // The bug pattern was fixed (seen recorded against the pre-fix span content).
-  // A later regression reintroduces byte-identical content -> same seenHash ->
-  // must NOT stay suppressed forever, unlike killed/parked.
+  // A later regression reintroduces byte-identical content -> same id, same
+  // hash -> must NOT stay suppressed forever, unlike killed/parked.
   const f = finding();
-  const seen = [{ hash: review.seenHash(f), status: 'fixed' }];
+  const seen = [{ id: f.id, hash: review.seenHash(f), status: 'fixed' }];
   const survivors = review.dedupeAgainstSeen([f], seen);
   assert.strictEqual(survivors.length, 1);
   assert.strictEqual(survivors[0].reopened, true);
+  assert.strictEqual(survivors[0].contentChanged, false);
 });
 
-test('dedupeAgainstSeen: a fix that changes the span content is not matched by the old (pre-fix) seen hash', () => {
+test('dedupeAgainstSeen: an id match on a "fixed" seen entry re-opens even when the content has since changed (partial/regressed fix), flagged contentChanged', () => {
   const before = finding({ span: 'if (x = 1) { doThing(); }' });
-  const after = finding({ span: 'if (x === 1) { doThing(); }' });
-  const seen = [{ hash: review.seenHash(before), status: 'fixed' }];
+  const after = finding({ span: 'if (x = 1) { doOtherThing(); }' }); // same id, different span: the "fix" didn't hold
+  const seen = [{ id: before.id, hash: review.seenHash(before), status: 'fixed' }];
   const survivors = review.dedupeAgainstSeen([after], seen);
-  // Different content -> different hash -> not a seen match at all -> plain fresh finding.
+  assert.strictEqual(survivors.length, 1);
+  assert.strictEqual(survivors[0].reopened, true);
+  assert.strictEqual(survivors[0].contentChanged, true);
+});
+
+test('dedupeAgainstSeen: a different id is never matched, regardless of content overlap -- always a fresh finding', () => {
+  const before = finding({ id: 'correctness:assignment-in-condition', span: 'if (x = 1) { doThing(); }' });
+  const after = finding({ id: 'correctness:other-bug', span: 'if (x === 1) { doThing(); }' });
+  const seen = [{ id: before.id, hash: review.seenHash(before), status: 'fixed' }];
+  const survivors = review.dedupeAgainstSeen([after], seen);
   assert.strictEqual(survivors.length, 1);
   assert.ok(!survivors[0].reopened);
 });
@@ -250,6 +275,55 @@ test('beginRound: does not mutate the input ledger', () => {
   const snapshot = JSON.parse(JSON.stringify(ledger));
   review.beginRound(ledger, 'hash-1');
   assert.deepStrictEqual(ledger, snapshot);
+});
+
+test('beginRound: workHappened is true exactly for a real (non-no-op, non-terminal) round', () => {
+  const ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  const r1 = review.beginRound(ledger, 'hash-1');
+  assert.strictEqual(r1.workHappened, true);
+  assert.strictEqual(r1.terminal, false);
+  const r2 = review.beginRound(r1.ledger, 'hash-1'); // same diff -> no-op
+  assert.strictEqual(r2.workHappened, false);
+  assert.strictEqual(r2.terminal, false);
+});
+
+test('beginRound: a ledger already in a terminal status (clean) short-circuits -- terminal:true, no round/budget increment, no work', () => {
+  let ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  ledger = review.beginRound(ledger, 'hash-1').ledger;
+  ledger = { ...ledger, status: 'clean' };
+  const { ledger: next, noOp, workHappened, terminal } = review.beginRound(ledger, 'hash-2');
+  assert.strictEqual(terminal, true);
+  assert.strictEqual(workHappened, false);
+  assert.strictEqual(noOp, true);
+  assert.strictEqual(next.round, ledger.round);
+  assert.strictEqual(next.budget.spent, ledger.budget.spent);
+  assert.strictEqual(next, ledger); // returned as-is, not a new object
+});
+
+test('beginRound: terminal short-circuit also applies to parked and abandoned ledgers', () => {
+  const base = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  for (const status of ['parked', 'abandoned']) {
+    const ledger = { ...base, status };
+    const { terminal, workHappened } = review.beginRound(ledger, 'hash-1');
+    assert.strictEqual(terminal, true, `expected terminal for status ${status}`);
+    assert.strictEqual(workHappened, false, `expected no work for status ${status}`);
+  }
+});
+
+// This is the exact spike bug reproduced against the shell: an outer loop that
+// treats "round-start reported terminal" as a real round would otherwise
+// double-count. workHappened + terminal let a caller loop `while (workHappened)`
+// and never miscount the terminal-discovery iteration as a round.
+test('beginRound: a caller loop counting only workHappened rounds does not off-by-one on convergence', () => {
+  let ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  let workingRounds = 0;
+  let r = review.beginRound(ledger, 'hash-1');
+  if (r.workHappened) workingRounds++;
+  ledger = { ...r.ledger, status: 'clean' }; // round 1 converged
+  r = review.beginRound(ledger, 'hash-1'); // the loop's "are we done" check
+  if (r.workHappened) workingRounds++;
+  assert.strictEqual(workingRounds, 1);
+  assert.strictEqual(r.terminal, true);
 });
 
 // ---- findingStillOpen ----

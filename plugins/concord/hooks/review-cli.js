@@ -50,9 +50,11 @@ function main() {
     const target = payload.target || { kind: 'local', ref };
     const ledger = readLedger(stateDir, slug) || emptyLedger(target);
     const diffHash = contentHash(payload.diff || '');
-    const { ledger: next, noOp } = beginRound(ledger, diffHash);
+    const { ledger: next, noOp, workHappened, terminal } = beginRound(ledger, diffHash);
     writeLedger(stateDir, slug, next);
-    process.stdout.write(JSON.stringify({ round: next.round, noOp, status: next.status, budget: next.budget }) + '\n');
+    const out = { round: next.round, noOp, workHappened, status: next.status, budget: next.budget };
+    if (terminal) out.message = `Already ${next.status}; not starting a new round.`;
+    process.stdout.write(JSON.stringify(out) + '\n');
     return;
   }
 
