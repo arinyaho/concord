@@ -1,10 +1,10 @@
 {
   "name": "concord",
-  "version": "0.3.0",
-  "description": "A bundle of Claude Code harness-engineering tools. Currently: a per-session state checkpoint and a cross-session task charter (north-star framing + merged decisions), persisted from the transcript and re-injected on resume, compaction, or a fresh session. Grows with more harness capabilities.",
+  "version": "0.4.0",
+  "description": "A bundle of Claude Code harness-engineering tools. Currently: a per-session state checkpoint, a cross-session task charter (north-star framing + merged decisions), and a cross-session review-and-fix convergence loop that iterates a change through review gates until it ends on a real executable anchor. State is persisted from the transcript and re-injected on resume, compaction, or a fresh session. Grows with more harness capabilities.",
   "author": { "name": "arinyaho", "url": "https://github.com/arinyaho" },
   "homepage": "https://github.com/arinyaho/concord",
   "repository": "https://github.com/arinyaho/concord",
   "license": "MIT",
-  "keywords": ["hooks", "harness", "session-state", "charter", "context", "claude-code"]
+  "keywords": ["hooks", "harness", "session-state", "charter", "review", "code-review", "context", "claude-code"]
 }
