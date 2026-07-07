@@ -15,7 +15,7 @@ Enabling a plugin registers its hooks automatically - no `settings.json` editing
 
 ## Plugins
 
-- `session-state` - persists a compact per-session state file from the transcript and re-injects it on resume, compaction, or a fresh session, so the model stops re-reading its own transcript to recover.
+- `session-state` - persists per-session state and a project task charter (north-star framing + merged cross-session decisions) from the transcript, and re-injects them on resume, compaction, or a fresh session, so a new session inherits the founding context instead of re-reading the transcript.
 
 ## Track map
 

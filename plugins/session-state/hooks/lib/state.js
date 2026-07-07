@@ -62,20 +62,4 @@ function mergeModel(prev, d) {
   return m;
 }
 
-function section(title, items) {
-  return [`## ${title}`, ...items.map((x) => `- ${x}`), ''].join('\n');
-}
-
-function renderMarkdown(sessionId, m) {
-  return [
-    `# Session state — ${sessionId}`,
-    '# machine-owned - do not hand-edit',
-    '',
-    section('Open loops', m.openLoops),
-    section('Decisions', m.decisions),
-    section('Next', m.nexts),
-    section('Recent activity', m.facts),
-  ].join('\n');
-}
-
-module.exports = { emptyModel, topicKey, mergeModel, renderMarkdown };
+module.exports = { emptyModel, topicKey, mergeModel };

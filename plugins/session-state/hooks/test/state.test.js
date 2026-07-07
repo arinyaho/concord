@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { emptyModel, mergeModel, renderMarkdown } = require('../lib/state');
+const { emptyModel, mergeModel } = require('../lib/state');
 
 function delta(over) {
   return { decisions: [], openLoops: [], nexts: [], resolved: [], facts: [], ...over };
@@ -51,13 +51,4 @@ test('facts dedup: churn collapses and cannot evict high-signal facts', () => {
   assert.equal(m.facts.filter((f) => f === 'edited LEDGER.md').length, 1);
   assert.ok(m.facts.includes('ran: git commit -m x'));
   assert.ok(m.facts.includes('ran: gh pr create'));
-});
-
-test('renderMarkdown includes the machine-owned header and sections', () => {
-  const m = mergeModel(emptyModel(), delta({ decisions: ['[x] d'], facts: ['edited a'] }));
-  const md = renderMarkdown('abc', m);
-  assert.ok(md.startsWith('# Session state — abc'));
-  assert.ok(md.includes('# machine-owned - do not hand-edit'));
-  assert.ok(md.includes('## Decisions'));
-  assert.ok(md.includes('- [x] d'));
 });
