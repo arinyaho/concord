@@ -31,7 +31,7 @@ function sh(bin, args, opts = {}) {
 // `--bare` -- it demands an API key and refuses OAuth/keychain auth, per the
 // spike). The prompt is passed as a single argv element via execFileSync
 // (no shell involved) -- never interpolated into a shell command string.
-function claudeCall(prompt, opts = {}) {
+function claudeCall(repoRoot, prompt, opts = {}) {
   const args = ['-p', '--safe-mode', '--model', 'sonnet', '--output-format', 'json'];
   if (opts.permissionMode) args.push('--permission-mode', opts.permissionMode);
   if (opts.addDir) args.push('--add-dir', opts.addDir);
@@ -39,7 +39,10 @@ function claudeCall(prompt, opts = {}) {
 
   let raw;
   try {
-    raw = sh('claude', args, { stdio: ['ignore', 'pipe', 'pipe'], timeout: CLAUDE_CALL_TIMEOUT_MS });
+    // cwd pinned to repoRoot regardless of where this process itself was
+    // invoked from, so claude's Read/Edit tools resolve relative paths
+    // (finding.file) against the target repo, not this script's own cwd.
+    raw = sh('claude', args, { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'], timeout: CLAUDE_CALL_TIMEOUT_MS });
   } catch (e) {
     throw new Error(`claude -p invocation failed: ${e && e.message ? e.message : e}`);
   }
@@ -134,7 +137,7 @@ async function main() {
   const deps = {
     repoRoot,
     stateDir: resolveStateDir(),
-    runGate: claudeCall,
+    runGate: (prompt, opts) => claudeCall(repoRoot, prompt, opts),
     runDodExec: () => dodExec.runDodExec({ cwd: repoRoot, commands: dodConfig.dod, execFn: dodExec.defaultExecFn }),
     gitOps: makeGitOps(repoRoot, target),
     spanStillPresent: makeSpanStillPresent(repoRoot),

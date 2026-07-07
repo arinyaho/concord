@@ -270,7 +270,7 @@ async function runRound(deps, ledger, ctx) {
     throw new HarnessFailureError(`DoD-exec could not run: ${e && e.message ? e.message : e}`);
   }
 
-  const reviewResult = await callGate(deps, buildCorrectnessPrompt({ diff: ctx.diff, dod }), { mode: 'review' }, 'correctness');
+  const reviewResult = await callGate(deps, buildCorrectnessPrompt({ diff: ctx.diff, dod }), { mode: 'review', addDir: deps.repoRoot }, 'correctness');
   let candidateFindings;
   try {
     candidateFindings = parseGateFindings(reviewResult.text);
@@ -286,7 +286,7 @@ async function runRound(deps, ledger, ctx) {
     const verifyResult = await callGate(
       deps,
       buildVerifyPrompt({ diff: ctx.diff, findings: candidateFindings }),
-      { mode: 'verify' },
+      { mode: 'verify', addDir: deps.repoRoot },
       'verify'
     );
     let verdict;
