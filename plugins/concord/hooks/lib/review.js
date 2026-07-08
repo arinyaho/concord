@@ -44,6 +44,11 @@ function emptyLedger(target) {
     findings: [],
     seen: [],
     history: [],
+    phase: 'idle',
+    dod: null,
+    planned: [],
+    journal: [],
+    last_recorded_round: null,
   };
 }
 
@@ -200,7 +205,7 @@ function beginRound(ledger, diffContentHash) {
   const next = {
     ...ledger,
     round: noOp ? ledger.round : ledger.round + 1,
-    budget: { ...ledger.budget, spent: noOp ? ledger.budget.spent : ledger.budget.spent + 1 },
+    budget: { ...ledger.budget }, // spent is charged in record now, not here
     diff_content_hash: diffContentHash,
   };
   return { ledger: next, noOp, workHappened: !noOp, terminal: false };

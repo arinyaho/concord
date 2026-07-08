@@ -78,6 +78,15 @@ test('emptyLedger: sane defaults, status converging, every field present', () =>
   assert.deepStrictEqual(l.history, []);
 });
 
+test('emptyLedger: carries the new phase/dod/planned/journal/last_recorded_round fields', () => {
+  const l = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  assert.strictEqual(l.phase, 'idle');
+  assert.strictEqual(l.dod, null);
+  assert.deepStrictEqual(l.planned, []);
+  assert.deepStrictEqual(l.journal, []);
+  assert.strictEqual(l.last_recorded_round, null);
+});
+
 // ---- seenHash: line-number independence ----
 
 test('seenHash: identical gate/file/span/summary hash the same regardless of line number', () => {
@@ -242,13 +251,29 @@ test('decideTermination: otherwise continue (converging)', () => {
 
 // ---- beginRound: round accounting ----
 
-test('beginRound: first round on a fresh ledger increments round and spent', () => {
+test('beginRound: first round on a fresh ledger increments round but does NOT charge budget (budget is charged at record now)', () => {
   const ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
   const { ledger: next, noOp } = review.beginRound(ledger, 'hash-1');
   assert.strictEqual(noOp, false);
   assert.strictEqual(next.round, 1);
-  assert.strictEqual(next.budget.spent, 1);
+  assert.strictEqual(next.budget.spent, 0); // was 1 before this change
   assert.strictEqual(next.diff_content_hash, 'hash-1');
+});
+
+test('beginRound: advances round but does NOT charge budget (budget is charged at record now)', () => {
+  const l = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  const { ledger: after } = review.beginRound(l, 'hash1');
+  assert.strictEqual(after.round, 1);
+  assert.strictEqual(after.budget.spent, 0); // was 1 before this change
+});
+
+test('beginRound: a noOp (unchanged hash) still neither advances round nor charges budget', () => {
+  let l = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  l = review.beginRound(l, 'h').ledger;
+  const { ledger: after, noOp } = review.beginRound(l, 'h');
+  assert.strictEqual(noOp, true);
+  assert.strictEqual(after.round, 1);
+  assert.strictEqual(after.budget.spent, 0);
 });
 
 test('beginRound: unchanged diff_content_hash is a no-op round and does NOT consume budget', () => {
@@ -260,14 +285,14 @@ test('beginRound: unchanged diff_content_hash is a no-op round and does NOT cons
   assert.strictEqual(r2.budget.spent, r1.budget.spent); // budget unchanged
 });
 
-test('beginRound: a changed diff_content_hash after a no-op resumes consuming budget', () => {
+test('beginRound: a changed diff_content_hash after a no-op resumes advancing the round (still no budget charge)', () => {
   const ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
   const { ledger: r1 } = review.beginRound(ledger, 'hash-1');
   const { ledger: r2 } = review.beginRound(r1, 'hash-1'); // no-op
   const { ledger: r3, noOp } = review.beginRound(r2, 'hash-2');
   assert.strictEqual(noOp, false);
   assert.strictEqual(r3.round, r1.round + 1);
-  assert.strictEqual(r3.budget.spent, r1.budget.spent + 1);
+  assert.strictEqual(r3.budget.spent, r1.budget.spent); // budget is charged at record now, not here
 });
 
 test('beginRound: does not mutate the input ledger', () => {
@@ -413,7 +438,8 @@ test('applyRoundOutcome: a killed finding is recorded in seen and does not resur
 test('applyRoundOutcome: budget exhausted parks remaining open findings', () => {
   let ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
   ledger.budget.max_rounds = 1;
-  ledger = review.beginRound(ledger, 'hash-1').ledger; // round=1, spent=1
+  ledger = review.beginRound(ledger, 'hash-1').ledger; // round=1
+  ledger.budget.spent = 1; // budget is charged at record now, not beginRound; simulate a prior record charge
   const { ledger: after, decision } = review.applyRoundOutcome(ledger, {
     dodPassed: false,
     findings: [finding({ id: 'f3', status: 'confirmed' })],
