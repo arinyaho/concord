@@ -18,6 +18,18 @@ function run(args, opts = {}) {
   return execFileSync('node', [CLI, ...args], { encoding: 'utf8', ...opts });
 }
 
+function initRepo() {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-repo-'));
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  execFileSync('git', ['config', 'user.email', 't@t'], { cwd: repo });
+  execFileSync('git', ['config', 'user.name', 't'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n');
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'] }));
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'init'], { cwd: repo });
+  return repo;
+}
+
 test('review-cli is requirable as a module without executing main (guarded)', () => {
   assert.strictEqual(typeof cli.gitDiff, 'function');
   assert.strictEqual(typeof cli.gitIsReachable, 'function');
@@ -50,28 +62,50 @@ test('review-cli show: prints an empty/fresh ledger summary for an unknown ref',
   assert.strictEqual(parsed.round, 0);
 });
 
-test('review-cli round-start: reads target+diff JSON from stdin, persists a ledger, prints round info', () => {
+test('round-start: fresh start runs DoD, writes diff file, sets phase gates, decision work', () => {
+  const repo = initRepo();
   const dir = tmpDir();
-  const payload = JSON.stringify({ target: { kind: 'local', ref: 'feat/x', base: 'main', head_sha: 'abc' }, diff: 'diff --git a b' });
-  const out = run(['round-start', 'feat/x'], { input: payload, env: { ...process.env, REVIEW_STATE_DIR: dir } });
-  const parsed = JSON.parse(out);
-  assert.strictEqual(parsed.round, 1);
-  assert.strictEqual(parsed.noOp, false);
-
-  const slug = review.targetSlug('feat/x');
-  const ledger = review.readLedger(dir, slug);
-  assert.strictEqual(ledger.round, 1);
-  assert.strictEqual(ledger.target.head_sha, 'abc');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  // commit a change so the tree is clean but a diff vs HEAD~1 exists
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.strictEqual(out.decision, 'work');
+  assert.strictEqual(out.dodPassed, true);
+  const ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.strictEqual(ledger.phase, 'gates');
+  assert.ok(fs.existsSync(path.join(dir, `round-${ledger.round}-diff.txt`)));
 });
 
-test('review-cli round-start: a second call with the identical diff is a no-op round (no budget burn)', () => {
+test('round-start: refuses a dirty working tree on a fresh start', () => {
+  const repo = initRepo();
   const dir = tmpDir();
-  const payload = JSON.stringify({ target: { kind: 'local', ref: 'feat/x' }, diff: 'same diff' });
-  run(['round-start', 'feat/x'], { input: payload, env: { ...process.env, REVIEW_STATE_DIR: dir } });
-  const out2 = run(['round-start', 'feat/x'], { input: payload, env: { ...process.env, REVIEW_STATE_DIR: dir } });
-  const parsed2 = JSON.parse(out2);
-  assert.strictEqual(parsed2.noOp, true);
-  assert.strictEqual(parsed2.budget.spent, 1);
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'dirty\n'); // uncommitted
+  assert.throws(() => run(['round-start', 'feat/x'], { env }), /dirty/);
+});
+
+test('round-start: resume from phase fixes discards uncommitted edits and re-drives the same round at same budget', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const slug = review.targetSlug('feat/x');
+  // seed a ledger mid-round: phase fixes, round 1, a stale artifact, budget spent 1
+  let l = review.emptyLedger({ kind: 'local', ref: 'feat/x', head_sha: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim() });
+  l = review.beginRound(l, 'h').ledger; // round 1
+  l.phase = 'fixes';
+  l.budget.spent = 1;
+  l.planned = ['correctness:x'];
+  review.writeLedger(dir, slug, l);
+  fs.writeFileSync(path.join(dir, 'round-1-fix-correctness:x.json'), '{"status":"ok","edited":true}');
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'uncommitted fix\n'); // dirty from the crashed fix
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  JSON.parse(run(['round-start', 'feat/x'], { env }));
+  const after = review.readLedger(dir, slug);
+  assert.strictEqual(after.round, 1); // NOT advanced
+  assert.strictEqual(after.budget.spent, 1); // NOT re-charged
+  assert.strictEqual(after.phase, 'gates'); // re-driven
+  assert.strictEqual(cli.gitIsDirty(repo), false); // uncommitted discarded
+  assert.ok(!fs.existsSync(path.join(dir, 'round-1-fix-correctness:x.json'))); // stale artifact gone
 });
 
 test('review-cli record: applies a round outcome from stdin JSON and persists the resulting ledger', () => {
@@ -98,8 +132,11 @@ test('review-cli record: applies a round outcome from stdin JSON and persists th
 
 test('review-cli record: shell-injection-safe -- a finding summary containing shell metacharacters never reaches a shell', () => {
   const dir = tmpDir();
-  const env = { ...process.env, REVIEW_STATE_DIR: dir };
-  run(['round-start', 'feat/x'], { input: JSON.stringify({ target: { kind: 'local', ref: 'feat/x' }, diff: 'd1' }), env });
+  // round-start now drives real git in REVIEW_REPO_ROOT (no more stdin diff),
+  // so seed against a disposable temp repo instead of the ambient worktree.
+  const repo = initRepo();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  run(['round-start', 'feat/x'], { env });
   const dangerous = '`rm -rf /`; $(whoami); "; echo pwned #';
   const outcome = JSON.stringify({
     dodPassed: false,
@@ -132,13 +169,4 @@ test('review-cli unpark: reopens a parked finding', () => {
 test('review-cli: missing ref argument exits non-zero with a message on stderr', () => {
   const dir = tmpDir();
   assert.throws(() => run(['show'], { env: { ...process.env, REVIEW_STATE_DIR: dir } }));
-});
-
-test('review-cli: REVIEW_STATE_DIR overrides the cwd-derived state dir', () => {
-  const dir = tmpDir();
-  run(['round-start', 'feat/y'], {
-    input: JSON.stringify({ target: { kind: 'local', ref: 'feat/y' }, diff: 'x' }),
-    env: { ...process.env, REVIEW_STATE_DIR: dir },
-  });
-  assert.ok(fs.existsSync(review.ledgerPath(dir, review.targetSlug('feat/y'))));
 });

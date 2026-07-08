@@ -14,6 +14,7 @@ const {
   beginRound,
   applyRoundOutcome,
   unparkFinding,
+  resetUnreachable,
 } = require('./lib/review');
 
 function resolveStateDir() {
@@ -69,6 +70,28 @@ function requireRef(ref, verb) {
   if (!ref) throw new Error(`review-cli ${verb}: missing required <ref> argument`);
 }
 
+// Deletes any state-dir file for round n (diff, gate artifacts, fix artifacts)
+// so a re-driven round never reads a stale artifact left over from a crashed
+// or superseded attempt.
+function deleteRoundArtifacts(stateDir, n) {
+  let names = [];
+  try {
+    names = fs.readdirSync(stateDir);
+  } catch (e) {
+    return;
+  }
+  const prefix = `round-${n}-`;
+  for (const nm of names) {
+    if (nm.startsWith(prefix)) {
+      try {
+        fs.unlinkSync(path.join(stateDir, nm));
+      } catch (e) {
+        // best-effort cleanup
+      }
+    }
+  }
+}
+
 function main() {
   const [verb, ref, ...rest] = process.argv.slice(2);
   const stateDir = resolveStateDir();
@@ -83,16 +106,61 @@ function main() {
 
   if (verb === 'round-start') {
     requireRef(ref, 'round-start');
+    const base = rest[0];
+    const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
     const slug = targetSlug(ref);
-    const payload = readStdinJson();
-    const target = payload.target || { kind: 'local', ref };
-    const ledger = readLedger(stateDir, slug) || emptyLedger(target);
-    const diffHash = contentHash(payload.diff || '');
-    const { ledger: next, noOp, workHappened, terminal } = beginRound(ledger, diffHash);
-    writeLedger(stateDir, slug, next);
-    const out = { round: next.round, noOp, workHappened, status: next.status, budget: next.budget };
-    if (terminal) out.message = `Already ${next.status}; not starting a new round.`;
-    process.stdout.write(JSON.stringify(out) + '\n');
+    let ledger = readLedger(stateDir, slug) || emptyLedger({ kind: 'local', ref });
+
+    // Capture BEFORE any mutation. Committed fixes from a crashed round change
+    // the diff, so beginRound's noOp path (same diff hash -> no-op) cannot be
+    // relied on to re-drive the same round -- we pin round/hash ourselves below
+    // instead of calling beginRound at all on a resume.
+    const resumed = ledger.phase === 'gates' || ledger.phase === 'fixes';
+    const resumeRound = ledger.round;
+
+    if (resumed) {
+      gitCheckoutTree(repoRoot); // keep journaled commits, discard uncommitted
+      deleteRoundArtifacts(stateDir, resumeRound);
+      ledger = { ...ledger, phase: 'idle', planned: [] };
+    } else if (gitIsDirty(repoRoot)) {
+      throw new Error('round-start: working tree is dirty; commit or stash before review-until-green');
+    }
+    // Dirty check is skipped when resumed -- the checkout above already made the tree clean.
+
+    const headSha = sh('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).trim();
+    if (ledger.target && ledger.target.head_sha && !gitIsReachable(repoRoot, ledger.target.head_sha)) {
+      ledger = resetUnreachable(ledger);
+    }
+    const diff = gitDiff(repoRoot, base);
+    const diffHash = contentHash(diff);
+
+    if (resumed) {
+      // Resume re-drives round N at zero budget by pinning round/diff_content_hash
+      // directly, bypassing beginRound. This is a real work round: it proceeds to
+      // DoD + phase='gates' below, without advancing round or charging budget.
+      ledger = { ...ledger, diff_content_hash: diffHash, round: resumeRound };
+    } else {
+      deleteRoundArtifacts(stateDir, ledger.round + 1); // stale artifacts for the round about to run
+      const { ledger: begun, noOp, terminal } = beginRound(ledger, diffHash);
+      ledger = begun;
+      if (terminal) {
+        writeLedger(stateDir, slug, ledger);
+        process.stdout.write(JSON.stringify({ decision: 'terminal', status: ledger.status, round: ledger.round }) + '\n');
+        return;
+      }
+      if (noOp) {
+        writeLedger(stateDir, slug, ledger);
+        process.stdout.write(JSON.stringify({ decision: 'no-op', round: ledger.round, budget: ledger.budget }) + '\n');
+        return;
+      }
+    }
+
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(stateDir, `round-${ledger.round}-diff.txt`), diff);
+    const dod = runDod(repoRoot);
+    ledger = { ...ledger, dod, phase: 'gates', target: { ...(ledger.target || { kind: 'local', ref }), base, head_sha: headSha } };
+    writeLedger(stateDir, slug, ledger);
+    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed }) + '\n');
     return;
   }
 
