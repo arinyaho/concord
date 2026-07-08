@@ -390,7 +390,8 @@ function renderReviewReport(ledgers) {
     const open = (ledger.findings || []).filter((f) => f.status === 'open').length;
     const roundInfo = `round ${ledger.round}/${ledger.budget.max_rounds}`;
     if (ledger.status === 'converging') {
-      lines.push(`review-until-green [${ref}]: ${roundInfo}, ${open} open finding(s) -- converging; resume with \`/review-until-green resume ${ref}\`.`);
+      const ph = (ledger.phase === 'gates' || ledger.phase === 'fixes') ? `, phase ${ledger.phase}` : '';
+      lines.push(`review-until-green [${ref}]: ${roundInfo}${ph}, ${open} open finding(s) -- converging; resume with \`/review-until-green resume ${ref}\`.`);
     } else if (ledger.status === 'parked') {
       lines.push(`review-until-green [${ref}]: ${roundInfo}, ${open} open finding(s) -- parked, needs a human decision; see \`review-cli.js show ${ref}\` (unpark a finding with \`review-cli.js unpark ${ref} <findingId>\`).`);
     }

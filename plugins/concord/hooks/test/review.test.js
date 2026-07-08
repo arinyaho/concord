@@ -584,3 +584,10 @@ test('renderReviewReport: clean and abandoned ledgers are terminal and not surfa
 test('renderReviewReport: empty list renders empty string', () => {
   assert.strictEqual(review.renderReviewReport([]), '');
 });
+
+test('renderReviewReport: a converging ledger mid-round shows its phase', () => {
+  const ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  ledger.status = 'converging'; ledger.round = 2; ledger.phase = 'fixes';
+  const out = review.renderReviewReport([{ slug: 'feat-x', ledger }]);
+  assert.match(out, /phase fixes/);
+});
