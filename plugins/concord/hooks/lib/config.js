@@ -9,6 +9,8 @@ module.exports = {
   ACTIVE_SKIP_MINUTES: 5, // durability all-scan skips a session whose transcript changed this recently
   MIN_MSG_LEN: 12,        // a user message shorter than this is not a substantive framing
   NORTH_STAR_MAX: 4000,   // cap north-star length written to charter.md
+  REVIEW_MAX_ROUNDS_DEFAULT: 5, // review-until-green: default round budget before parking
+  REVIEW_PARK_BUDGET_DEFAULT: 3, // review-until-green: needs-decision parks before the circuit breaker stops the run early
   TAG_RE: /^(DECISION|OPEN-LOOP|NEXT|RESOLVED):\s*(.*)$/i,
   // High-signal build/test/deploy/infra tools. An allowlist (not a denylist)
   // because a bare denylist captures shell variable-assignment setup lines
