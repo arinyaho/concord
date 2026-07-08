@@ -7,7 +7,7 @@ const { resolveStateDirFromCwd } = require('./lib/statedir');
 const engine = require('./lib/engine');
 const dodExec = require('./lib/dod-exec');
 const config = require('./lib/config');
-const { resolveTimeoutMs, resolveRetries, isTimeoutError, callWithRetry } = require('./lib/claude-call');
+const { resolveTimeoutMs, resolveRetries, retriesForMode, isTimeoutError, callWithRetry } = require('./lib/claude-call');
 
 // Thin entry: wires the real LLM/git/process implementations behind
 // lib/engine.js's injected-dependency boundary and runs the loop for one
@@ -38,7 +38,9 @@ function claudeCall(repoRoot, prompt, opts = {}) {
   args.push('--', prompt);
 
   const timeoutMs = resolveTimeoutMs(process.env.REVIEW_CLAUDE_TIMEOUT_MS, config.REVIEW_CLAUDE_TIMEOUT_MS_DEFAULT);
-  const retries = resolveRetries(process.env.REVIEW_CLAUDE_RETRIES, config.REVIEW_CLAUDE_RETRIES_DEFAULT);
+  // Read-only gates (review/verify) may retry a transient timeout; the mutating
+  // fix gate must not (a retry could double-apply partial edits on a dirty tree).
+  const retries = retriesForMode(opts.mode, resolveRetries(process.env.REVIEW_CLAUDE_RETRIES, config.REVIEW_CLAUDE_RETRIES_DEFAULT));
 
   let raw;
   try {
