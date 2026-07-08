@@ -253,7 +253,31 @@ function main() {
     return;
   }
 
-  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | plan-fixes | record | unpark)`);
+  if (verb === 'commit-fix') {
+    requireRef(ref, 'commit-fix');
+    const id = rest[0];
+    if (!id) throw new Error('commit-fix: missing <findingId>');
+    const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
+    const slug = targetSlug(ref);
+    let ledger = readLedger(stateDir, slug);
+    if (!ledger || ledger.phase !== 'fixes') throw new Error(`commit-fix: expected phase "fixes", got "${ledger && ledger.phase}"`);
+    const n = ledger.round;
+    if ((ledger.journal || []).some((j) => j.id === id)) { process.stdout.write(JSON.stringify({ committed: false, reason: 'already journaled' }) + '\n'); return; } // idempotent
+    const fx = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-fix-${id}.json`), 'utf8')); } catch (e) { return null; } })();
+    if (fx && fx.status === 'ok' && fx.edited === true && gitIsDirty(repoRoot)) {
+      const cJson = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-correctness.json`), 'utf8')); } catch (e) { return { findings: [] }; } })();
+      const finding = (cJson.findings || []).find((f) => f.id === id) || { summary: '' };
+      const sha = gitCommitFix(repoRoot, id, finding.summary);
+      ledger = { ...ledger, journal: [...(ledger.journal || []), { id, sha }] };
+      writeLedger(stateDir, slug, ledger);
+      process.stdout.write(JSON.stringify({ committed: true, sha }) + '\n');
+    } else {
+      process.stdout.write(JSON.stringify({ committed: false, reason: 'no edit or file unchanged' }) + '\n');
+    }
+    return;
+  }
+
+  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | plan-fixes | commit-fix | record | unpark)`);
 }
 
 module.exports = { gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitCheckoutTree, runDod };

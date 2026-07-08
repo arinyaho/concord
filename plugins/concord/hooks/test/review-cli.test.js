@@ -233,3 +233,61 @@ test('plan-fixes: a changed file never examined is a harness-failure (coverage)'
     { status: 'ok', rejected: [] });
   assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure|coverage/);
 });
+
+test('commit-fix: commits one fix and journals it', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' }] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:real.json`), JSON.stringify({ status: 'ok', edited: true }));
+  const out = JSON.parse(run(['commit-fix', 'feat/x', 'correctness:real'], { env }));
+  assert.strictEqual(out.committed, true);
+  assert.match(out.sha, /^[0-9a-f]{7,40}$/);
+  const l = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.strictEqual(l.journal.length, 1);
+  assert.strictEqual(l.journal[0].id, 'correctness:real');
+});
+
+test('commit-fix: two findings in the same file get two separate commits', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [
+      { id: 'correctness:one', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' },
+      { id: 'correctness:two', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'y' } ] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  const before = Number(execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim());
+
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed-one\n');
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:one.json`), JSON.stringify({ status: 'ok', edited: true }));
+  run(['commit-fix', 'feat/x', 'correctness:one'], { env });
+  const afterFirst = Number(execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim());
+  assert.strictEqual(afterFirst, before + 1);
+
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed-two\n');
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:two.json`), JSON.stringify({ status: 'ok', edited: true }));
+  run(['commit-fix', 'feat/x', 'correctness:two'], { env });
+  const afterSecond = Number(execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim());
+  assert.strictEqual(afterSecond, afterFirst + 1);
+
+  const l = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.deepStrictEqual(l.journal.map((j) => j.id), ['correctness:one', 'correctness:two']);
+});
+
+test('commit-fix: idempotent -- a second call for an already-journaled id commits nothing new', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' }] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:real.json`), JSON.stringify({ status: 'ok', edited: true }));
+  run(['commit-fix', 'feat/x', 'correctness:real'], { env });
+  const shaCount1 = execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  const out = JSON.parse(run(['commit-fix', 'feat/x', 'correctness:real'], { env }));
+  assert.strictEqual(out.committed, false);
+  const shaCount2 = execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  assert.strictEqual(shaCount1, shaCount2);
+});
