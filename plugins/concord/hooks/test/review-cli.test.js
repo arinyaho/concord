@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const review = require('../lib/review');
+const cli = require('../review-cli'); // must be requirable without running main()
 
 const CLI = path.join(__dirname, '..', 'review-cli.js');
 
@@ -16,6 +17,30 @@ function tmpDir() {
 function run(args, opts = {}) {
   return execFileSync('node', [CLI, ...args], { encoding: 'utf8', ...opts });
 }
+
+test('review-cli is requirable as a module without executing main (guarded)', () => {
+  assert.strictEqual(typeof cli.gitDiff, 'function');
+  assert.strictEqual(typeof cli.gitIsReachable, 'function');
+  assert.strictEqual(typeof cli.runDod, 'function');
+});
+
+test('git helpers operate on a real temp repo', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-git-'));
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  execFileSync('git', ['config', 'user.email', 't@t'], { cwd: repo });
+  execFileSync('git', ['config', 'user.name', 't'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n');
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'init'], { cwd: repo });
+  assert.strictEqual(cli.gitIsDirty(repo), false);
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  assert.strictEqual(cli.gitIsDirty(repo), true);
+  const sha = cli.gitCommitFix(repo, 'correctness:x', 'fix it');
+  assert.match(sha, /^[0-9a-f]{7,40}$/);
+  assert.strictEqual(cli.gitIsReachable(repo, sha), true);
+  cli.gitCheckoutTree(repo);
+  assert.strictEqual(cli.gitIsDirty(repo), false);
+});
 
 test('review-cli show: prints an empty/fresh ledger summary for an unknown ref', () => {
   const dir = tmpDir();

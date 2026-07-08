@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 'use strict';
 const fs = require('node:fs');
+const { execFileSync } = require('node:child_process');
+const path = require('node:path');
 const { resolveStateDirFromCwd } = require('./lib/statedir');
+const dodExec = require('./lib/dod-exec');
 const {
   targetSlug,
   readLedger,
@@ -16,6 +19,41 @@ const {
 function resolveStateDir() {
   if (process.env.REVIEW_STATE_DIR) return process.env.REVIEW_STATE_DIR;
   return resolveStateDirFromCwd();
+}
+
+// Impure git/DoD boundary. lib/review.js and lib/gate-contract.js stay pure
+// (no child_process, no fs beyond ledger I/O); all process/git/DoD work for
+// the orchestrator lives here so it can be injected/tested against a real
+// temp repo without touching the caller's own working tree.
+function sh(bin, args, opts = {}) {
+  return execFileSync(bin, args, { encoding: 'utf8', maxBuffer: 20 * 1024 * 1024, ...opts });
+}
+function gitDiff(repoRoot, base) {
+  const args = base ? ['diff', `${base}...HEAD`] : ['diff', 'HEAD'];
+  return sh('git', args, { cwd: repoRoot });
+}
+function gitCommitFix(repoRoot, findingId, summary) {
+  sh('git', ['add', '-A'], { cwd: repoRoot });
+  sh('git', ['commit', '-m', `fix(review-until-green): ${findingId}\n\n${summary}`], { cwd: repoRoot });
+  return sh('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).trim();
+}
+function gitIsReachable(repoRoot, sha) {
+  try {
+    sh('git', ['merge-base', '--is-ancestor', sha, 'HEAD'], { cwd: repoRoot });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+function gitIsDirty(repoRoot) {
+  return sh('git', ['status', '--porcelain'], { cwd: repoRoot }).trim().length > 0;
+}
+function gitCheckoutTree(repoRoot) {
+  sh('git', ['checkout', '--', '.'], { cwd: repoRoot });
+}
+function runDod(repoRoot) {
+  const cfg = dodExec.loadDodConfig(repoRoot);
+  return dodExec.runDodExec({ cwd: repoRoot, commands: cfg.dod, execFn: dodExec.defaultExecFn });
 }
 
 // User/agent-supplied data (the diff, finding text, summaries) always arrives via
@@ -85,9 +123,13 @@ function main() {
   throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | record | unpark)`);
 }
 
-try {
-  main();
-} catch (e) {
-  process.stderr.write(`review-cli: ${e && e.message ? e.message : e}\n`);
-  process.exit(1);
+module.exports = { gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitCheckoutTree, runDod };
+
+if (require.main === module) {
+  try {
+    main();
+  } catch (e) {
+    process.stderr.write(`review-cli: ${e && e.message ? e.message : e}\n`);
+    process.exit(1);
+  }
 }
