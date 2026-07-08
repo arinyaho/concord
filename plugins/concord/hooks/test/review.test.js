@@ -416,6 +416,31 @@ test('decideTermination: fixedCount>0 blocks converge even with dod passed and z
   assert.strictEqual(d.continue, true);
 });
 
+test('parkBudgetExceeded: true once needs-decision parks reach the threshold', () => {
+  const ledger = review.emptyLedger({ kind: 'local', ref: 'x' });
+  ledger.findings = [
+    { id: 'correctness:a', status: 'parked', park_reason: { kind: 'needs-decision', text: 't' } },
+    { id: 'correctness:b', status: 'parked', park_reason: { kind: 'needs-decision', text: 't' } },
+  ];
+  assert.strictEqual(review.parkBudgetExceeded(ledger, 2), true);
+  assert.strictEqual(review.parkBudgetExceeded(ledger, 3), false);
+});
+
+test('resetUnreachable: fixed/parked findings go back to open, their seen entries drop, status converging', () => {
+  const ledger = review.emptyLedger({ kind: 'local', ref: 'x' });
+  ledger.status = 'parked';
+  ledger.findings = [
+    { id: 'correctness:a', status: 'fixed', fix_commit: 'sha', park_reason: null },
+    { id: 'correctness:b', status: 'open' },
+  ];
+  ledger.seen = [{ id: 'correctness:a', hash: 'h', status: 'fixed' }];
+  const out = review.resetUnreachable(ledger);
+  assert.strictEqual(out.findings.find((f) => f.id === 'correctness:a').status, 'open');
+  assert.strictEqual(out.findings.find((f) => f.id === 'correctness:a').fix_commit, null);
+  assert.strictEqual(out.seen.length, 0);
+  assert.strictEqual(out.status, 'converging');
+});
+
 test('applyRoundOutcome: a killed finding is recorded in seen and does not resurface next round', () => {
   let ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
   ledger = review.beginRound(ledger, 'hash-1').ledger;

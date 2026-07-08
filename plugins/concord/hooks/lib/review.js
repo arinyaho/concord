@@ -2,7 +2,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { REVIEW_MAX_ROUNDS_DEFAULT } = require('./config');
+const { REVIEW_MAX_ROUNDS_DEFAULT, REVIEW_PARK_BUDGET_DEFAULT } = require('./config');
 
 // Pure, unit-testable core for review-until-green. No LLM calls, no process
 // spawning, no network -- the "CLI enforces, the agent drives" model: this module
@@ -172,6 +172,30 @@ function decideTermination(roundOutcome) {
     return { continue: false, converged: false, parked: true, abandoned: false, reason: 'no progress: zero fixes and findings unchanged' };
   }
   return { continue: true, converged: false, parked: false, abandoned: false, reason: 'round produced progress or findings remain' };
+}
+
+// ---------------------------------------------------------------------------
+// Park-budget circuit breaker
+// ---------------------------------------------------------------------------
+
+function countNeedsDecisionParks(ledger) {
+  return (ledger.findings || []).filter((f) => f.status === 'parked' && f.park_reason && f.park_reason.kind === 'needs-decision').length;
+}
+
+function parkBudgetExceeded(ledger, threshold) {
+  return countNeedsDecisionParks(ledger) >= (threshold || REVIEW_PARK_BUDGET_DEFAULT);
+}
+
+// Pure reset for an unreachable recorded head_sha (rebase/force-push). The git
+// isReachable check is the CLI's job; this only performs the reset once the
+// caller has decided the recorded head is gone. Fixed/parked findings whose
+// commit shas are no longer trustworthy go back to open, and their seen entries
+// drop so the next round's gate re-detects true state against the current tree.
+function resetUnreachable(ledger) {
+  const resetIds = new Set((ledger.findings || []).filter((f) => f.status === 'fixed' || f.status === 'parked').map((f) => f.id));
+  const findings = (ledger.findings || []).map((f) => (resetIds.has(f.id) ? { ...f, status: 'open', fix_commit: null, park_reason: null } : f));
+  const seen = (ledger.seen || []).filter((s) => !resetIds.has(s.id));
+  return { ...ledger, findings, seen, status: 'converging' };
 }
 
 // ---------------------------------------------------------------------------
@@ -385,6 +409,9 @@ module.exports = {
   seenHash,
   dedupeAgainstSeen,
   decideTermination,
+  countNeedsDecisionParks,
+  parkBudgetExceeded,
+  resetUnreachable,
   beginRound,
   findingStillOpen,
   applyRoundOutcome,
