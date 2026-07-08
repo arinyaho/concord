@@ -6,14 +6,14 @@ const { execFileSync } = require('node:child_process');
 const { resolveStateDirFromCwd } = require('./lib/statedir');
 const engine = require('./lib/engine');
 const dodExec = require('./lib/dod-exec');
+const config = require('./lib/config');
+const { resolveTimeoutMs, resolveRetries, retriesForMode, isTimeoutError, callWithRetry } = require('./lib/claude-call');
 
 // Thin entry: wires the real LLM/git/process implementations behind
 // lib/engine.js's injected-dependency boundary and runs the loop for one
 // target. All the actual orchestration logic (and its tests) live in
 // lib/engine.js with fakes -- this file has none of its own logic to test in
 // isolation, only wiring.
-
-const CLAUDE_CALL_TIMEOUT_MS = 90 * 1000; // matches the spike's 90s alarm cap
 
 function resolveStateDir() {
   if (process.env.REVIEW_STATE_DIR) return process.env.REVIEW_STATE_DIR;
@@ -37,14 +37,26 @@ function claudeCall(repoRoot, prompt, opts = {}) {
   if (opts.addDir) args.push('--add-dir', opts.addDir);
   args.push('--', prompt);
 
+  const timeoutMs = resolveTimeoutMs(process.env.REVIEW_CLAUDE_TIMEOUT_MS, config.REVIEW_CLAUDE_TIMEOUT_MS_DEFAULT);
+  // Read-only gates (review/verify) may retry a transient timeout; the mutating
+  // fix gate must not (a retry could double-apply partial edits on a dirty tree).
+  const retries = retriesForMode(opts.mode, resolveRetries(process.env.REVIEW_CLAUDE_RETRIES, config.REVIEW_CLAUDE_RETRIES_DEFAULT));
+
   let raw;
   try {
     // cwd pinned to repoRoot regardless of where this process itself was
     // invoked from, so claude's Read/Edit tools resolve relative paths
     // (finding.file) against the target repo, not this script's own cwd.
-    raw = sh('claude', args, { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'], timeout: CLAUDE_CALL_TIMEOUT_MS });
+    // A spawn timeout is retried (isTimeoutError) before giving up; other
+    // errors (auth/tool) fail fast.
+    raw = callWithRetry(
+      () => sh('claude', args, { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'], timeout: timeoutMs }),
+      { retries, shouldRetry: isTimeoutError },
+    );
   } catch (e) {
-    throw new Error(`claude -p invocation failed: ${e && e.message ? e.message : e}`);
+    const timedOut = isTimeoutError(e);
+    const detail = timedOut ? ` (timed out after ${timeoutMs}ms; ${retries} retr${retries === 1 ? 'y' : 'ies'} exhausted -- raise REVIEW_CLAUDE_TIMEOUT_MS for large diffs)` : '';
+    throw new Error(`claude -p invocation failed${detail}: ${e && e.message ? e.message : e}`);
   }
   let parsed;
   try {
