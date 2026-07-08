@@ -1,5 +1,5 @@
 ---
-description: Drive a branch or PR to done -- iterate it through review gates AND apply fixes, looping until it converges clean on an executable check (or parks for a human decision), with loop state persisted across sessions. A review-AND-FIX convergence loop, not a one-shot review. Use when the user wants a change taken all the way to passing -- "review and fix my branch until it passes", "converge this PR", "keep reviewing and fixing until green", "get this to LGTM", "run review until green". For a single review pass with no fixes, use /code-review instead; this command also FIXES and LOOPS.
+description: Repeatedly review a branch or PR, fix what the review finds, and re-check -- looping until the tests actually pass, or handing back the few things a person has to decide. The loop's state is saved, so a later session picks up where this one stopped. It reviews AND fixes AND repeats, unlike a one-shot review. Use when the user wants a change taken all the way to passing -- "review and fix my branch until it passes", "keep reviewing and fixing until it's green", "make this mergeable", "get this to LGTM", "run review until green". For a single review with no fixes, use /code-review instead.
 argument-hint: "[target | resume <ref>]"
 ---
 
