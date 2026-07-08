@@ -196,6 +196,27 @@ test('plan-fixes: returns confirmed, non-killed, still-open findings and sets ph
   assert.deepStrictEqual(l.planned, ['correctness:real']);
 });
 
+test('plan-fixes: a finding reopened after being marked fixed is not silently dropped as concluded', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const slug = review.targetSlug('feat/x');
+  const finding = { id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' };
+  // Pre-seed a ledger where this id is already status 'fixed' in both `findings`
+  // and `seen`, so this round's re-detection of the same id makes
+  // dedupeAgainstSeen mark it `reopened: true` (fix didn't hold / was reverted).
+  let ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  ledger.findings = [{ id: finding.id, status: 'fixed' }];
+  ledger.seen = [{ id: finding.id, status: 'fixed', hash: review.seenHash(finding) }];
+  review.writeLedger(dir, slug, ledger);
+
+  const { env } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [finding] },
+    { status: 'ok', rejected: [] });
+  const out = JSON.parse(run(['plan-fixes', 'feat/x'], { env }));
+  assert.deepStrictEqual(out.fixes.map((f) => f.id), ['correctness:real']);
+  const l = review.readLedger(dir, slug);
+  assert.deepStrictEqual(l.planned, ['correctness:real']);
+});
+
 test('plan-fixes: a missing correctness artifact is a harness-failure (never clean)', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };

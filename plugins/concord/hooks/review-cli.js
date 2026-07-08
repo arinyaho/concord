@@ -226,7 +226,13 @@ function main() {
       }
     };
     const fixes = survivors
-      .filter((f) => !killed.has(f.id) && !concluded.has(f.id) && spanPresent(f.file, f.span))
+      // A finding dedupeAgainstSeen marked `reopened: true` recurred after being
+      // marked 'fixed' -- it is still present in `ledger.findings` with that
+      // 'fixed' status (so `concluded` contains its id), but it is NOT actually
+      // concluded: the fix didn't hold or was reverted. Let it bypass the
+      // concluded check so it can reach the driver as a fix or a park, instead
+      // of being silently discarded.
+      .filter((f) => !killed.has(f.id) && (!concluded.has(f.id) || f.reopened) && spanPresent(f.file, f.span))
       .map((f) => ({ id: f.id, file: f.file, span: f.span, summary: f.summary }));
     const next = { ...ledger, planned: fixes.map((f) => f.id), phase: 'fixes' };
     writeLedger(stateDir, slug, next);
