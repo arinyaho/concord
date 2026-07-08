@@ -201,12 +201,12 @@ function main() {
       ledger = begun;
       if (terminal) {
         writeLedger(stateDir, slug, ledger);
-        process.stdout.write(JSON.stringify({ decision: 'terminal', status: ledger.status, round: ledger.round }) + '\n');
+        process.stdout.write(JSON.stringify({ decision: 'terminal', status: ledger.status, round: ledger.round, stateDir }) + '\n');
         return;
       }
       if (noOp) {
         writeLedger(stateDir, slug, ledger);
-        process.stdout.write(JSON.stringify({ decision: 'no-op', round: ledger.round, budget: ledger.budget }) + '\n');
+        process.stdout.write(JSON.stringify({ decision: 'no-op', round: ledger.round, budget: ledger.budget, stateDir }) + '\n');
         return;
       }
     }
@@ -216,7 +216,7 @@ function main() {
     const dod = runDod(repoRoot);
     ledger = { ...ledger, dod, phase: 'gates', target: { ...(ledger.target || { kind: 'local', ref }), base, head_sha: headSha } };
     writeLedger(stateDir, slug, ledger);
-    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed }) + '\n');
+    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, stateDir }) + '\n');
     return;
   }
 

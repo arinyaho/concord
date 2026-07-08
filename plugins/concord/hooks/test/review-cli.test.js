@@ -72,6 +72,7 @@ test('round-start: fresh start runs DoD, writes diff file, sets phase gates, dec
   const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
   assert.strictEqual(out.decision, 'work');
   assert.strictEqual(out.dodPassed, true);
+  assert.strictEqual(out.stateDir, dir); // driver needs this to build <stateDir>/round-N-*.json paths
   const ledger = review.readLedger(dir, review.targetSlug('feat/x'));
   assert.strictEqual(ledger.phase, 'gates');
   assert.ok(fs.existsSync(path.join(dir, `round-${ledger.round}-diff.txt`)));
