@@ -274,6 +274,26 @@ test('commit-fix: idempotent -- a second call for an already-journaled id commit
   assert.strictEqual(shaCount1, shaCount2);
 });
 
+test('record: a missing correctness artifact is a harness-failure (never a spurious clean decision)', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' }] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  fs.unlinkSync(path.join(dir, `round-${n}-correctness.json`)); // simulate a broken/missing gate artifact before record runs
+  assert.throws(() => run(['record', 'feat/x'], { env }), /harness-failure/);
+});
+
+test('record: a corrupt (non-JSON) verify artifact is a harness-failure too', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' }] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), 'not json{{{');
+  assert.throws(() => run(['record', 'feat/x'], { env }), /harness-failure/);
+});
+
 test('record: a journaled fix is reported fixed, and the fix-round never converges (stable-round)', () => {
   const repo = initRepo(); const dir = tmpDir();
   const { env, n } = seedGatesRound(repo, dir, 'feat/x',
@@ -332,6 +352,8 @@ test('record: tripping the park budget forces status parked and continue false, 
   // no fix artifact and no commit-fix call for correctness:new -> it parks too
   const out = JSON.parse(run(['record', 'feat/x'], { env }));
   assert.strictEqual(out.decision.continue, false);
+  assert.strictEqual(out.decision.converged, false); // must not read as a stale/spurious clean
+  assert.strictEqual(out.decision.parked, true);
   const l = review.readLedger(dir, slug);
   assert.strictEqual(l.status, 'parked');
   assert.strictEqual(l.budget.spent, 0); // park-budget-forced terminus does not consume a round
@@ -355,7 +377,8 @@ test('record: a fix-committing round that terminates re-runs DoD on the post-com
   let ledger = review.readLedger(dir, slug);
   ledger = { ...ledger, budget: { ...ledger.budget, max_rounds: 1, spent: 1 } };
   review.writeLedger(dir, slug, ledger);
-  run(['record', 'feat/x'], { env });
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
   const after = review.readLedger(dir, slug);
   assert.strictEqual(after.dod.passed, true); // re-ran against the post-commit tree, where a.txt now contains "fixed"
+  assert.match(out.handoff, /DoD: passed/); // the final re-run DoD state must be surfaced in the handoff text
 });

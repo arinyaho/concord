@@ -77,6 +77,9 @@ function renderHandoff(result) {
   );
   if (aborted) lines.push(`ABORTED (${aborted.kind}): ${aborted.message}`);
 
+  const dodLine = !ledger.dod ? 'DoD: not run' : ledger.dod.passed ? 'DoD: passed' : 'DoD: FAILED';
+  lines.push(dodLine);
+
   const fixed = (ledger.findings || []).filter((f) => f.status === 'fixed');
   const killedCount = (ledger.seen || []).filter((s) => s.status === 'killed').length;
   const parked = (ledger.findings || []).filter((f) => f.status === 'parked');
@@ -99,6 +102,28 @@ function renderHandoff(result) {
 
 function requireRef(ref, verb) {
   if (!ref) throw new Error(`review-cli ${verb}: missing required <ref> argument`);
+}
+
+// Fail-closed gate artifact read (design invariant: a broken/missing gate must
+// never be silently read as "zero findings" -- that can manufacture a
+// spurious converged:clean out of a harness failure). Shared by plan-fixes
+// and record; the caller decides what to do with the thrown harness-failure.
+function readArtifact(stateDir, n, name) {
+  const p = path.join(stateDir, `round-${n}-${name}.json`);
+  let raw;
+  try {
+    raw = fs.readFileSync(p, 'utf8');
+  } catch (e) {
+    throw new Error(`harness-failure: missing gate artifact ${name} for round ${n}`);
+  }
+  let j;
+  try {
+    j = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`harness-failure: ${name} artifact is not JSON`);
+  }
+  if (!j || j.status !== 'ok') throw new Error(`harness-failure: ${name} artifact missing status:"ok"`);
+  return j;
 }
 
 // Deletes any state-dir file for round n (diff, gate artifacts, fix artifacts)
@@ -216,6 +241,11 @@ function main() {
     }
     if (!ledger || ledger.phase !== 'fixes') throw new Error(`record: expected phase "fixes", got "${ledger && ledger.phase}"`);
 
+    // Per-finding fix artifacts (round-<n>-fix-<id>.json) stay lenient: a
+    // missing/non-ok fix artifact is a legitimate outcome (the fixer never
+    // edited, or crashed) and must PARK that finding needs-decision, not
+    // blow up the whole record call. Only the correctness/verify GATE
+    // artifacts are fail-closed -- see readArtifact above.
     const readJson = (name) => {
       try {
         return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-${name}.json`), 'utf8'));
@@ -223,8 +253,8 @@ function main() {
         return null;
       }
     };
-    const cJson = readJson('correctness') || { findings: [] };
-    const vJson = readJson('verify') || { rejected: [] };
+    const cJson = readArtifact(stateDir, n, 'correctness');
+    const vJson = readArtifact(stateDir, n, 'verify');
     const candidates = gc.parseGateFindings(JSON.stringify(cJson.findings || []));
     const killedIds = gc.parseVerifyVerdict(JSON.stringify({ rejected: vJson.rejected || [] }), candidates).rejectedIds;
 
@@ -248,7 +278,10 @@ function main() {
     ledger = applied;
     // Park-budget override BEFORE the charge below, so a forced terminus doesn't burn a round.
     if (R.parkBudgetExceeded(ledger, REVIEW_PARK_BUDGET_DEFAULT)) {
-      decision = { ...decision, continue: false };
+      // converged/parked must move together with continue here -- a stale
+      // converged:true would mislead a consumer that reads decision.converged
+      // without also checking continue.
+      decision = { ...decision, continue: false, converged: false, parked: true };
       ledger = { ...ledger, status: 'parked' };
     }
     if (decision.continue) ledger = { ...ledger, budget: { ...ledger.budget, spent: ledger.budget.spent + 1 } };
@@ -272,25 +305,8 @@ function main() {
     const ledger = readLedger(stateDir, slug);
     if (!ledger || ledger.phase !== 'gates') throw new Error(`plan-fixes: expected phase "gates", got "${ledger && ledger.phase}"`);
     const n = ledger.round;
-    const readArtifact = (name) => {
-      const p = path.join(stateDir, `round-${n}-${name}.json`);
-      let raw;
-      try {
-        raw = fs.readFileSync(p, 'utf8');
-      } catch (e) {
-        throw new Error(`harness-failure: missing gate artifact ${name} for round ${n}`);
-      }
-      let j;
-      try {
-        j = JSON.parse(raw);
-      } catch (e) {
-        throw new Error(`harness-failure: ${name} artifact is not JSON`);
-      }
-      if (!j || j.status !== 'ok') throw new Error(`harness-failure: ${name} artifact missing status:"ok"`);
-      return j;
-    };
-    const cJson = readArtifact('correctness');
-    const vJson = readArtifact('verify');
+    const cJson = readArtifact(stateDir, n, 'correctness');
+    const vJson = readArtifact(stateDir, n, 'verify');
     const candidates = gc.parseGateFindings(JSON.stringify(cJson.findings || []));
     // Coverage: every changed file must be in examined. Derive the changed-file
     // set from the diff file round-start already wrote (single-sourced diff) --
