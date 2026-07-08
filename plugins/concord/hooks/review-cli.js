@@ -175,6 +175,65 @@ function main() {
     return;
   }
 
+  if (verb === 'plan-fixes') {
+    requireRef(ref, 'plan-fixes');
+    const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
+    const gc = require('./lib/gate-contract');
+    const slug = targetSlug(ref);
+    const ledger = readLedger(stateDir, slug);
+    if (!ledger || ledger.phase !== 'gates') throw new Error(`plan-fixes: expected phase "gates", got "${ledger && ledger.phase}"`);
+    const n = ledger.round;
+    const readArtifact = (name) => {
+      const p = path.join(stateDir, `round-${n}-${name}.json`);
+      let raw;
+      try {
+        raw = fs.readFileSync(p, 'utf8');
+      } catch (e) {
+        throw new Error(`harness-failure: missing gate artifact ${name} for round ${n}`);
+      }
+      let j;
+      try {
+        j = JSON.parse(raw);
+      } catch (e) {
+        throw new Error(`harness-failure: ${name} artifact is not JSON`);
+      }
+      if (!j || j.status !== 'ok') throw new Error(`harness-failure: ${name} artifact missing status:"ok"`);
+      return j;
+    };
+    const cJson = readArtifact('correctness');
+    const vJson = readArtifact('verify');
+    const candidates = gc.parseGateFindings(JSON.stringify(cJson.findings || []));
+    // Coverage: every changed file must be in examined. Derive the changed-file
+    // set from the diff file round-start already wrote (single-sourced diff) --
+    // do NOT re-run git against ledger.target.base, which round-start never
+    // persisted before Task 6's base-in-target fix and which duplicates a git
+    // call the CLI already made once this round.
+    const diffText = fs.readFileSync(path.join(stateDir, `round-${n}-diff.txt`), 'utf8');
+    const changed = Array.from(new Set((diffText.match(/^\+\+\+ b\/(.+)$/gm) || []).map((l) => l.replace(/^\+\+\+ b\//, '').trim())));
+    const examined = new Set(Array.isArray(cJson.examined) ? cJson.examined : []);
+    const missing = changed.filter((f) => !examined.has(f));
+    if (missing.length) throw new Error(`harness-failure: coverage -- changed file(s) never examined: ${missing.join(', ')}`);
+    const verdict = gc.parseVerifyVerdict(JSON.stringify({ rejected: vJson.rejected || [] }), candidates);
+    const killed = new Set(verdict.rejectedIds);
+    const survivors = require('./lib/review').dedupeAgainstSeen(candidates, ledger.seen);
+    const concluded = new Set((ledger.findings || []).filter((f) => f.status !== 'open').map((f) => f.id));
+    const spanPresent = (file, span) => {
+      if (!span) return true;
+      try {
+        return fs.readFileSync(path.join(repoRoot, file), 'utf8').includes(span);
+      } catch (e) {
+        return false;
+      }
+    };
+    const fixes = survivors
+      .filter((f) => !killed.has(f.id) && !concluded.has(f.id) && spanPresent(f.file, f.span))
+      .map((f) => ({ id: f.id, file: f.file, span: f.span, summary: f.summary }));
+    const next = { ...ledger, planned: fixes.map((f) => f.id), phase: 'fixes' };
+    writeLedger(stateDir, slug, next);
+    process.stdout.write(JSON.stringify({ fixes }) + '\n');
+    return;
+  }
+
   if (verb === 'unpark') {
     requireRef(ref, 'unpark');
     const findingId = rest[0];
@@ -188,7 +247,7 @@ function main() {
     return;
   }
 
-  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | record | unpark)`);
+  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | plan-fixes | record | unpark)`);
 }
 
 module.exports = { gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitCheckoutTree, runDod };

@@ -170,3 +170,45 @@ test('review-cli: missing ref argument exits non-zero with a message on stderr',
   const dir = tmpDir();
   assert.throws(() => run(['show'], { env: { ...process.env, REVIEW_STATE_DIR: dir } }));
 });
+
+function seedGatesRound(repo, dir, ref, correctness, verify) {
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  run(['round-start', ref, 'HEAD~1'], { env });
+  const n = review.readLedger(dir, review.targetSlug(ref)).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify(correctness));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify(verify));
+  return { env, n };
+}
+
+test('plan-fixes: returns confirmed, non-killed, still-open findings and sets phase fixes', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [
+      { id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' },
+      { id: 'correctness:fp', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'y' } ] },
+    { status: 'ok', rejected: ['correctness:fp'] });
+  const out = JSON.parse(run(['plan-fixes', 'feat/x'], { env }));
+  assert.deepStrictEqual(out.fixes.map((f) => f.id), ['correctness:real']);
+  const l = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.strictEqual(l.phase, 'fixes');
+  assert.deepStrictEqual(l.planned, ['correctness:real']);
+});
+
+test('plan-fixes: a missing correctness artifact is a harness-failure (never clean)', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  run(['round-start', 'feat/x', 'HEAD~1'], { env });
+  assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure/);
+});
+
+test('plan-fixes: a changed file never examined is a harness-failure (coverage)', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: [], findings: [] },
+    { status: 'ok', rejected: [] });
+  assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure|coverage/);
+});
