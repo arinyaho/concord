@@ -47,7 +47,7 @@ test('git helpers operate on a real temp repo', () => {
   assert.strictEqual(cli.gitIsDirty(repo), false);
   fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
   assert.strictEqual(cli.gitIsDirty(repo), true);
-  const sha = cli.gitCommitFix(repo, 'correctness:x', 'fix it');
+  const sha = cli.gitCommitFix(repo, 'correctness:x', 'fix it', 'a.txt');
   assert.match(sha, /^[0-9a-f]{7,40}$/);
   assert.strictEqual(cli.gitIsReachable(repo, sha), true);
   cli.gitCheckoutTree(repo);
@@ -274,6 +274,31 @@ test('commit-fix: two findings in the same file get two separate commits', () =>
 
   const l = review.readLedger(dir, review.targetSlug('feat/x'));
   assert.deepStrictEqual(l.journal.map((j) => j.id), ['correctness:one', 'correctness:two']);
+});
+
+test('commit-fix: scopes staging to the finding\'s file -- an unrelated dirty file is never swept into the commit', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' }] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+
+  // The actual fix, to file A.
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:real.json`), JSON.stringify({ status: 'ok', edited: true }));
+  // Unrelated dirty content in the working tree -- an untracked file, standing
+  // in for a stray non-gitignored dir or a crash-recovery leftover.
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'unrelated\n');
+
+  const out = JSON.parse(run(['commit-fix', 'feat/x', 'correctness:real'], { env }));
+  assert.strictEqual(out.committed, true);
+
+  const committedFiles = execFileSync('git', ['show', '--name-only', '--pretty=format:', out.sha], { cwd: repo, encoding: 'utf8' })
+    .split('\n').map((s) => s.trim()).filter(Boolean);
+  assert.deepStrictEqual(committedFiles, ['a.txt']);
+  // b.txt was never staged or committed -- it is still dirty/untracked.
+  const status = execFileSync('git', ['status', '--porcelain', '--', 'b.txt'], { cwd: repo, encoding: 'utf8' });
+  assert.ok(status.trim().length > 0, 'b.txt should remain dirty/untracked after commit-fix');
 });
 
 test('commit-fix: idempotent -- a second call for an already-journaled id commits nothing new', () => {

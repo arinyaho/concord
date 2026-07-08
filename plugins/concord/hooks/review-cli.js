@@ -33,8 +33,12 @@ function gitDiff(repoRoot, base) {
   const args = base ? ['diff', `${base}...HEAD`] : ['diff', 'HEAD'];
   return sh('git', args, { cwd: repoRoot });
 }
-function gitCommitFix(repoRoot, findingId, summary) {
-  sh('git', ['add', '-A'], { cwd: repoRoot });
+function gitCommitFix(repoRoot, findingId, summary, file) {
+  // Stage only the finding's own file -- never `-A`. A whole-tree `git add -A`
+  // sweeps in any other dirty content (untracked non-gitignored dirs, a
+  // crash-recovery leftover, a driver-contract violation) and silently
+  // mis-attributes it to this finding's commit.
+  sh('git', ['add', '--', file], { cwd: repoRoot });
   sh('git', ['commit', '-m', `fix(review-until-green): ${findingId}\n\n${summary}`], { cwd: repoRoot });
   return sh('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).trim();
 }
@@ -48,6 +52,9 @@ function gitIsReachable(repoRoot, sha) {
 }
 function gitIsDirty(repoRoot) {
   return sh('git', ['status', '--porcelain'], { cwd: repoRoot }).trim().length > 0;
+}
+function gitIsDirtyForFile(repoRoot, file) {
+  return sh('git', ['status', '--porcelain', '--', file], { cwd: repoRoot }).trim().length > 0;
 }
 function gitCheckoutTree(repoRoot) {
   sh('git', ['checkout', '--', '.'], { cwd: repoRoot });
@@ -264,10 +271,14 @@ function main() {
     const n = ledger.round;
     if ((ledger.journal || []).some((j) => j.id === id)) { process.stdout.write(JSON.stringify({ committed: false, reason: 'already journaled' }) + '\n'); return; } // idempotent
     const fx = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-fix-${id}.json`), 'utf8')); } catch (e) { return null; } })();
-    if (fx && fx.status === 'ok' && fx.edited === true && gitIsDirty(repoRoot)) {
-      const cJson = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-correctness.json`), 'utf8')); } catch (e) { return { findings: [] }; } })();
-      const finding = (cJson.findings || []).find((f) => f.id === id) || { summary: '' };
-      const sha = gitCommitFix(repoRoot, id, finding.summary);
+    const cJson = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-correctness.json`), 'utf8')); } catch (e) { return { findings: [] }; } })();
+    const finding = (cJson.findings || []).find((f) => f.id === id) || { summary: '', file: null };
+    // File-scoped, not tree-wide: gating and staging on the whole tree would
+    // sweep unrelated dirty content (a stray untracked dir, a crash-recovery
+    // leftover) into this finding's commit -- the same mis-attribution the
+    // per-finding journal exists to prevent.
+    if (fx && fx.status === 'ok' && fx.edited === true && finding.file && gitIsDirtyForFile(repoRoot, finding.file)) {
+      const sha = gitCommitFix(repoRoot, id, finding.summary, finding.file);
       ledger = { ...ledger, journal: [...(ledger.journal || []), { id, sha }] };
       writeLedger(stateDir, slug, ledger);
       process.stdout.write(JSON.stringify({ committed: true, sha }) + '\n');
@@ -280,7 +291,7 @@ function main() {
   throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | plan-fixes | commit-fix | record | unpark)`);
 }
 
-module.exports = { gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitCheckoutTree, runDod };
+module.exports = { gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitCheckoutTree, runDod };
 
 if (require.main === module) {
   try {
