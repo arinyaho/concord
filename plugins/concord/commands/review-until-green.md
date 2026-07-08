@@ -1,5 +1,5 @@
 ---
-description: Run the review-until-green convergence loop against a branch/target and display its terminal handoff
+description: Repeatedly review a branch or PR, fix what the review finds, and re-check -- looping until the tests actually pass, or handing back the few things a person has to decide. The loop's state is saved, so a later session picks up where this one stopped. It reviews AND fixes AND repeats, unlike a one-shot review. Use when the user wants a change taken all the way to passing -- "review and fix my branch until it passes", "keep reviewing and fixing until it's green", "make this mergeable", "get this to LGTM", "run review until green". For a single review with no fixes, use /code-review instead.
 argument-hint: "[target | resume <ref>]"
 ---
 
