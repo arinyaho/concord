@@ -1,0 +1,48 @@
+'use strict';
+const { test } = require('node:test');
+const assert = require('node:assert');
+const gc = require('../lib/gate-contract');
+
+test('FINDING_ID_RE: accepts a stable gate:slug, rejects unsafe filename chars', () => {
+  assert.ok(gc.isValidFindingId('correctness:off-by-one'));
+  assert.ok(!gc.isValidFindingId('correctness:bad/slash'));
+  assert.ok(!gc.isValidFindingId('correctness:dot..dot'));
+  assert.ok(!gc.isValidFindingId('correctness:' + 'x'.repeat(200)));
+  assert.ok(!gc.isValidFindingId('NoGate'));
+  assert.ok(!gc.isValidFindingId('correctness:'));
+});
+
+test('parseGateFindings: parses a valid array and stamps status confirmed', () => {
+  const raw = JSON.stringify([{ id: 'correctness:a', gate: 'correctness', file: 'a.js', span: 'x', summary: 's' }]);
+  const out = gc.parseGateFindings(raw);
+  assert.strictEqual(out.length, 1);
+  assert.strictEqual(out[0].status, 'confirmed');
+  assert.strictEqual(out[0].id, 'correctness:a');
+});
+
+test('parseGateFindings: strips code fences before parsing', () => {
+  const raw = '```json\n[]\n```';
+  assert.deepStrictEqual(gc.parseGateFindings(raw), []);
+});
+
+test('parseGateFindings: throws on a malformed id (contract violation, not a dropped finding)', () => {
+  const raw = JSON.stringify([{ id: 'bad id', gate: 'correctness', file: 'a.js', summary: 's' }]);
+  assert.throws(() => gc.parseGateFindings(raw), /stable .* id/);
+});
+
+test('parseGateFindings: throws on non-array and on missing file/summary', () => {
+  assert.throws(() => gc.parseGateFindings('{}'), /array/);
+  assert.throws(() => gc.parseGateFindings(JSON.stringify([{ id: 'correctness:a', gate: 'correctness' }])), /file/);
+});
+
+test('parseVerifyVerdict: keeps only rejected ids present in candidates', () => {
+  const cands = [{ id: 'correctness:a' }, { id: 'correctness:b' }];
+  const v = gc.parseVerifyVerdict(JSON.stringify({ rejected: ['correctness:a', 'correctness:zzz'] }), cands);
+  assert.deepStrictEqual(v.rejectedIds, ['correctness:a']);
+});
+
+test('validateParkReason: enforces kind + non-empty text', () => {
+  assert.deepStrictEqual(gc.validateParkReason({ kind: 'needs-decision', text: 'x' }), { kind: 'needs-decision', text: 'x' });
+  assert.throws(() => gc.validateParkReason({ kind: 'bogus', text: 'x' }), /kind/);
+  assert.throws(() => gc.validateParkReason({ kind: 'needs-decision', text: '' }), /text/);
+});
