@@ -416,6 +416,34 @@ test('decideTermination: fixedCount>0 blocks converge even with dod passed and z
   assert.strictEqual(d.continue, true);
 });
 
+// CRITICAL 1 (false-clean via needs-decision park): a round that parked a
+// finding must never converge/clean, even when the clean predicate
+// (dodPassed && openFindingsCount===0 && fixedCount===0) would otherwise be
+// satisfied -- a parked finding is excluded from openFindingsCount, so
+// without this check a single needs-decision park below the park-budget
+// threshold silently escapes as "clean".
+test('decideTermination: parkedCount>0 terminates parked, never converges, even though dodPassed/openFindingsCount/fixedCount all say "clean"', () => {
+  const d = review.decideTermination({
+    dodPassed: true,
+    openFindingsCount: 0,
+    fixedCount: 0,
+    parkedCount: 1,
+    specDoubtScope: 'none',
+    noProgress: false,
+    budgetSpent: 0,
+    maxRounds: 5,
+  });
+  assert.deepStrictEqual(
+    { continue: d.continue, converged: d.converged, parked: d.parked, abandoned: d.abandoned },
+    { continue: false, converged: false, parked: true, abandoned: false }
+  );
+});
+
+test('decideTermination: parkedCount===0 (or absent) does not itself force parked -- clean branch is reachable', () => {
+  const d = review.decideTermination({ dodPassed: true, openFindingsCount: 0, fixedCount: 0, specDoubtScope: 'none', noProgress: false, budgetSpent: 0, maxRounds: 5 });
+  assert.strictEqual(d.converged, true);
+});
+
 test('parkBudgetExceeded: true once needs-decision parks reach the threshold', () => {
   const ledger = review.emptyLedger({ kind: 'local', ref: 'x' });
   ledger.findings = [
@@ -485,6 +513,32 @@ test('applyRoundOutcome: budget exhausted parks remaining open findings', () => 
   });
   assert.strictEqual(decision.parked, true);
   assert.strictEqual(after.status, 'parked');
+});
+
+// CRITICAL 1, applyRoundOutcome-level reproduction: a round whose net effect
+// is exactly one needs-decision park (dodPassed true, the parked finding is
+// excluded from openFindingsCount, zero fixes) must land status 'parked' and
+// decision.continue===false/converged===false -- NOT the false-clean this
+// bug previously produced.
+test('applyRoundOutcome: a round that parks one finding (needs-decision) never converges clean, even with dodPassed and zero open findings', () => {
+  let ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  ledger = review.beginRound(ledger, 'hash-1').ledger;
+  const f = finding({ id: 'correctness:park-me', status: 'confirmed' });
+  const { ledger: after, decision } = review.applyRoundOutcome(ledger, {
+    dodPassed: true,
+    findings: [f],
+    fixedIds: [],
+    parkedIds: ['correctness:park-me'],
+    killedIds: [],
+    specDoubtScope: 'none',
+    parkReasons: { 'correctness:park-me': { kind: 'needs-decision', text: 'fix artifact missing' } },
+  });
+  assert.strictEqual(decision.converged, false);
+  assert.strictEqual(decision.continue, false);
+  assert.strictEqual(decision.parked, true);
+  assert.strictEqual(after.status, 'parked');
+  const parked = after.findings.find((x) => x.id === 'correctness:park-me');
+  assert.strictEqual(parked.status, 'parked');
 });
 
 test('applyRoundOutcome: whole-diff spec-doubt abandons the run', () => {
