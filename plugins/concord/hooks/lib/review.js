@@ -143,10 +143,13 @@ function dedupeAgainstSeen(findings, seen) {
 //   1. specDoubtScope === 'whole-diff' -> abandoned. The plan/AC itself is
 //      wrong for the whole diff; continuing to fix on top of a bad foundation
 //      is worse than stopping.
-//   2. dodPassed && openFindingsCount === 0 -> converged ("clean"). Clean is
-//      defined as the executable gate having run-and-passed AND zero confirmed
-//      reviewer findings -- reviewer silence alone (dodPassed false) is
-//      deliberately NOT enough; see the next branch.
+//   2. dodPassed && openFindingsCount === 0 && fixedCount === 0 -> converged
+//      ("clean"). Clean is defined as the executable gate having run-and-passed,
+//      zero confirmed reviewer findings, AND zero fixes applied this round --
+//      a round that just applied fixes cannot be the clean round itself: the
+//      fixes need one more (free, no-fix) confirmation round to prove they
+//      actually hold. Reviewer silence alone (dodPassed false) is deliberately
+//      NOT enough either; see the next branch.
 //   3. budgetSpent >= maxRounds -> parked. Round budget exhausted.
 //   4. noProgress (zero fixes this round and the same findings persist) ->
 //      parked. Do not keep burning rounds once nothing is moving.
@@ -154,13 +157,13 @@ function dedupeAgainstSeen(findings, seen) {
 // Oscillation detection (a finding toggling fixed -> reopened -> fixed) is
 // deliberately out of scope for this shell (deferred per the plan).
 function decideTermination(roundOutcome) {
-  const { dodPassed, openFindingsCount, specDoubtScope, noProgress, budgetSpent, maxRounds } = roundOutcome;
+  const { dodPassed, openFindingsCount, specDoubtScope, noProgress, budgetSpent, maxRounds, fixedCount = 0 } = roundOutcome;
 
   if (specDoubtScope === 'whole-diff') {
     return { continue: false, converged: false, parked: false, abandoned: true, reason: 'spec-doubt invalidates the whole diff' };
   }
-  if (dodPassed && openFindingsCount === 0) {
-    return { continue: false, converged: true, parked: false, abandoned: false, reason: 'DoD-exec ran and passed with zero confirmed findings' };
+  if (dodPassed && openFindingsCount === 0 && fixedCount === 0) {
+    return { continue: false, converged: true, parked: false, abandoned: false, reason: 'DoD-exec ran and passed, zero open findings, and no fixes this round (stable)' };
   }
   if (budgetSpent >= maxRounds) {
     return { continue: false, converged: false, parked: true, abandoned: false, reason: 'round budget exhausted' };
@@ -293,6 +296,7 @@ function applyRoundOutcome(ledger, outcome) {
     noProgress,
     budgetSpent: ledger.budget.spent,
     maxRounds: ledger.budget.max_rounds,
+    fixedCount: (outcome.fixedIds || []).length, // COUNT, not the in-scope Set named fixedIds
   });
 
   const status = decision.converged ? 'clean' : decision.parked ? 'parked' : decision.abandoned ? 'abandoned' : 'converging';

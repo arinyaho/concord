@@ -387,23 +387,33 @@ test('applyRoundOutcome: a confirmed finding with no fix stays open, status conv
   assert.strictEqual(f1.status, 'open');
 });
 
-test('applyRoundOutcome: dod passed and all findings fixed -> ledger status clean', () => {
+test('applyRoundOutcome: dod passed and all findings fixed -> NOT clean yet (confirmation round follows)', () => {
   let ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
-  ledger = review.beginRound(ledger, 'hash-1').ledger;
+  ledger = review.beginRound(ledger, 'h').ledger;
   const { ledger: after, decision } = review.applyRoundOutcome(ledger, {
     dodPassed: true,
-    findings: [finding({ id: 'f1', status: 'confirmed' })],
-    fixedIds: ['f1'],
-    parkedIds: [],
-    killedIds: [],
-    specDoubtScope: 'none',
+    findings: [{ id: 'correctness:f1', gate: 'correctness', file: 'a.js', span: 'x', summary: 'b', status: 'confirmed' }],
+    fixedIds: ['correctness:f1'],
+    parkedIds: [], killedIds: [], specDoubtScope: 'none',
   });
-  assert.strictEqual(after.status, 'clean');
+  assert.strictEqual(decision.converged, false);
+  assert.strictEqual(decision.continue, true);
+  assert.strictEqual(after.status, 'converging');
+});
+
+test('applyRoundOutcome: a zero-fix round with dod passed and no open findings converges (the confirmation round)', () => {
+  let ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  ledger = review.beginRound(ledger, 'h').ledger;
+  const { decision } = review.applyRoundOutcome(ledger, {
+    dodPassed: true, findings: [], fixedIds: [], parkedIds: [], killedIds: [], specDoubtScope: 'none',
+  });
   assert.strictEqual(decision.converged, true);
-  const f1 = after.findings.find((f) => f.id === 'f1');
-  assert.strictEqual(f1.status, 'fixed');
-  // the fixed finding's content-hash is recorded in seen so a regression can reopen it
-  assert.ok(after.seen.some((s) => s.status === 'fixed'));
+});
+
+test('decideTermination: fixedCount>0 blocks converge even with dod passed and zero open', () => {
+  const d = review.decideTermination({ dodPassed: true, openFindingsCount: 0, fixedCount: 2, specDoubtScope: 'none', noProgress: false, budgetSpent: 0, maxRounds: 5 });
+  assert.strictEqual(d.converged, false);
+  assert.strictEqual(d.continue, true);
 });
 
 test('applyRoundOutcome: a killed finding is recorded in seen and does not resurface next round', () => {
