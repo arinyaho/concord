@@ -109,6 +109,39 @@ test('round-start: resume from phase fixes discards uncommitted edits and re-dri
   assert.ok(!fs.existsSync(path.join(dir, 'round-1-fix-correctness:x.json'))); // stale artifact gone
 });
 
+// CRITICAL 2 (false-clean via empty resume diff): on `resume <ref>` the
+// driver passes NO base token. Before the fix, round-start read only
+// `rest[0]` and never fell back to the persisted `ledger.target.base`, so
+// `gitDiff` fell back to `git diff HEAD` -- empty on a clean committed tree.
+// This asserts the fallback: a resumed round-start with no base arg must
+// still diff against the ORIGINAL base (persisted from the fresh start),
+// and target.base must survive the resume, not be clobbered to undefined.
+test('round-start: resume with no base arg falls back to the persisted target.base (does not review an empty diff)', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  // Fresh start against HEAD~1 -- persists target.base = 'HEAD~1'.
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  run(['round-start', 'feat/x', 'HEAD~1'], { env });
+  const slug = review.targetSlug('feat/x');
+  const afterFresh = review.readLedger(dir, slug);
+  assert.strictEqual(afterFresh.target.base, 'HEAD~1');
+
+  // Simulate a crash mid-round (phase left at 'gates') and a cross-session
+  // resume: the driver calls round-start again with NO base token.
+  let l = review.readLedger(dir, slug);
+  l = { ...l, phase: 'gates' };
+  review.writeLedger(dir, slug, l);
+
+  const out = JSON.parse(run(['round-start', 'feat/x'], { env })); // no base arg -- resume form
+  assert.strictEqual(out.decision, 'work');
+  const after = review.readLedger(dir, slug);
+  assert.strictEqual(after.target.base, 'HEAD~1'); // preserved, not clobbered to undefined
+  const diffText = fs.readFileSync(path.join(dir, `round-${after.round}-diff.txt`), 'utf8');
+  assert.ok(diffText.trim().length > 0, 'resumed round-start must diff against the persisted base, not an empty `git diff HEAD`');
+});
+
 test('review-cli unpark: reopens a parked finding', () => {
   const dir = tmpDir();
   const slug = review.targetSlug('feat/x');

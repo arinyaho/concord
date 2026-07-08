@@ -162,10 +162,16 @@ function main() {
 
   if (verb === 'round-start') {
     requireRef(ref, 'round-start');
-    const base = rest[0];
     const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
     const slug = targetSlug(ref);
     let ledger = readLedger(stateDir, slug) || emptyLedger({ kind: 'local', ref });
+
+    // `resume <ref>` passes NO base token -- fall back to the base persisted
+    // from the original fresh start (ledger.target.base). Without this, an
+    // undefined base makes gitDiff below fall back to `git diff HEAD`, which
+    // is EMPTY on a clean committed tree -- every cross-session resume of a
+    // real branch would silently review nothing and converge clean.
+    const base = rest[0] || (ledger.target && ledger.target.base);
 
     // Capture BEFORE any mutation. Committed fixes from a crashed round change
     // the diff, so beginRound's noOp path (same diff hash -> no-op) cannot be
