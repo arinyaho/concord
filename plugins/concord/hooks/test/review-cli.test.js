@@ -108,49 +108,6 @@ test('round-start: resume from phase fixes discards uncommitted edits and re-dri
   assert.ok(!fs.existsSync(path.join(dir, 'round-1-fix-correctness:x.json'))); // stale artifact gone
 });
 
-test('review-cli record: applies a round outcome from stdin JSON and persists the resulting ledger', () => {
-  const dir = tmpDir();
-  const env = { ...process.env, REVIEW_STATE_DIR: dir };
-  run(['round-start', 'feat/x'], { input: JSON.stringify({ target: { kind: 'local', ref: 'feat/x' }, diff: 'd1' }), env });
-
-  const outcome = JSON.stringify({
-    dodPassed: true,
-    findings: [{ id: 'f1', gate: 'correctness', file: 'a.js', span: 'bad code', summary: 'bug', status: 'confirmed' }],
-    fixedIds: ['f1'],
-    parkedIds: [],
-    killedIds: [],
-    specDoubtScope: 'none',
-  });
-  const out = run(['record', 'feat/x'], { input: outcome, env });
-  const parsed = JSON.parse(out);
-  assert.strictEqual(parsed.decision.converged, true);
-
-  const ledger = review.readLedger(dir, review.targetSlug('feat/x'));
-  assert.strictEqual(ledger.status, 'clean');
-  assert.strictEqual(ledger.findings[0].status, 'fixed');
-});
-
-test('review-cli record: shell-injection-safe -- a finding summary containing shell metacharacters never reaches a shell', () => {
-  const dir = tmpDir();
-  // round-start now drives real git in REVIEW_REPO_ROOT (no more stdin diff),
-  // so seed against a disposable temp repo instead of the ambient worktree.
-  const repo = initRepo();
-  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
-  run(['round-start', 'feat/x'], { env });
-  const dangerous = '`rm -rf /`; $(whoami); "; echo pwned #';
-  const outcome = JSON.stringify({
-    dodPassed: false,
-    findings: [{ id: 'f1', gate: 'correctness', file: 'a.js', span: dangerous, summary: dangerous, status: 'confirmed' }],
-    fixedIds: [],
-    parkedIds: [],
-    killedIds: [],
-    specDoubtScope: 'none',
-  });
-  assert.doesNotThrow(() => run(['record', 'feat/x'], { input: outcome, env }));
-  const ledger = review.readLedger(dir, review.targetSlug('feat/x'));
-  assert.strictEqual(ledger.findings.find((f) => f.id === 'f1').status, 'open');
-});
-
 test('review-cli unpark: reopens a parked finding', () => {
   const dir = tmpDir();
   const slug = review.targetSlug('feat/x');
@@ -315,4 +272,90 @@ test('commit-fix: idempotent -- a second call for an already-journaled id commit
   assert.strictEqual(out.committed, false);
   const shaCount2 = execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
   assert.strictEqual(shaCount1, shaCount2);
+});
+
+test('record: a journaled fix is reported fixed, and the fix-round never converges (stable-round)', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' }] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:real.json`), JSON.stringify({ status: 'ok', edited: true }));
+  run(['commit-fix', 'feat/x', 'correctness:real'], { env }); // driver calls this right after the fix subagent
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.continue, true);     // fix-round never converges
+  assert.strictEqual(out.decision.converged, false);
+  const l = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.strictEqual(l.phase, 'done');
+  assert.strictEqual(l.journal.length, 1);
+  assert.strictEqual(l.budget.spent, 1);               // charged because continue:true
+  assert.strictEqual(l.last_recorded_round, n);
+});
+
+test('record: idempotent -- a second record for the same round re-prints and does not double-commit or double-charge', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' }] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:real.json`), JSON.stringify({ status: 'ok', edited: true }));
+  run(['commit-fix', 'feat/x', 'correctness:real'], { env });
+  run(['record', 'feat/x'], { env });
+  const shaCount1 = execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  const spent1 = review.readLedger(dir, review.targetSlug('feat/x')).budget.spent;
+  run(['record', 'feat/x'], { env }); // second call, same round, phase already 'done'
+  const shaCount2 = execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  const spent2 = review.readLedger(dir, review.targetSlug('feat/x')).budget.spent;
+  assert.strictEqual(shaCount1, shaCount2); // no new commit
+  assert.strictEqual(spent1, spent2);       // no double charge
+});
+
+test('record: tripping the park budget forces status parked and continue false, without charging a round', () => {
+  const { REVIEW_PARK_BUDGET_DEFAULT } = require('../lib/config');
+  const repo = initRepo(); const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:new', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' }] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  // Seed REVIEW_PARK_BUDGET_DEFAULT pre-existing needs-decision parks so this
+  // round's one additional park (correctness:new, never fixed) trips the breaker.
+  const slug = review.targetSlug('feat/x');
+  let ledger = review.readLedger(dir, slug);
+  const priorParks = [];
+  for (let i = 0; i < REVIEW_PARK_BUDGET_DEFAULT; i += 1) {
+    priorParks.push({ id: `correctness:old-${i}`, gate: 'correctness', file: 'a.txt', span: '', summary: 'x', status: 'parked', park_reason: { kind: 'needs-decision', text: 'prior' } });
+  }
+  ledger = { ...ledger, findings: priorParks };
+  review.writeLedger(dir, slug, ledger);
+  // no fix artifact and no commit-fix call for correctness:new -> it parks too
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.continue, false);
+  const l = review.readLedger(dir, slug);
+  assert.strictEqual(l.status, 'parked');
+  assert.strictEqual(l.budget.spent, 0); // park-budget-forced terminus does not consume a round
+});
+
+test('record: a fix-committing round that terminates re-runs DoD on the post-commit tree', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  // Make the DoD command observe tree state instead of always passing.
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['grep -q fixed a.txt'] }));
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'dod checks tree state'], { cwd: repo });
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' }] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env }); // span 'two' still present at this point
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:real.json`), JSON.stringify({ status: 'ok', edited: true }));
+  run(['commit-fix', 'feat/x', 'correctness:real'], { env });
+  // Force this fix-committing round to be the terminus via round budget exhaustion.
+  const slug = review.targetSlug('feat/x');
+  let ledger = review.readLedger(dir, slug);
+  ledger = { ...ledger, budget: { ...ledger.budget, max_rounds: 1, spent: 1 } };
+  review.writeLedger(dir, slug, ledger);
+  run(['record', 'feat/x'], { env });
+  const after = review.readLedger(dir, slug);
+  assert.strictEqual(after.dod.passed, true); // re-ran against the post-commit tree, where a.txt now contains "fixed"
 });

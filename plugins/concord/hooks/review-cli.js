@@ -12,7 +12,6 @@ const {
   emptyLedger,
   contentHash,
   beginRound,
-  applyRoundOutcome,
   unparkFinding,
   resetUnreachable,
 } = require('./lib/review');
@@ -64,13 +63,38 @@ function runDod(repoRoot) {
   return dodExec.runDodExec({ cwd: repoRoot, commands: cfg.dod, execFn: dodExec.defaultExecFn });
 }
 
-// User/agent-supplied data (the diff, finding text, summaries) always arrives via
-// STDIN as JSON, never as an argv token -- the same shell-injection-safe pattern
-// charter-cli.js uses for `set`. Only the target ref and a finding id (both
-// caller-controlled identifiers, not free text) are taken from argv.
-function readStdinJson() {
-  const raw = fs.readFileSync(0, 'utf8');
-  return raw.trim() ? JSON.parse(raw) : {};
+// Terminal handoff (design §8): rounds, killed/fixed/parked counts, a per-fix
+// rationale digest, and the needs-decision packets -- the "one consolidated
+// handoff" that replaces the manual review<->fix relay. Moved here from
+// review-engine.js (the headless claude-p engine being retired) so `record`
+// can render it without depending on the file that Task 11 deletes.
+function renderHandoff(result) {
+  const { ledger, cost, aborted } = result;
+  const lines = [];
+  lines.push(`review-until-green: target ${ledger.target && ledger.target.ref} -- status: ${ledger.status}`);
+  lines.push(
+    `rounds: ${ledger.round}/${ledger.budget.max_rounds} (spent ${ledger.budget.spent})  cost: $${cost.totalUsd.toFixed(4)} across ${cost.calls} call(s)`
+  );
+  if (aborted) lines.push(`ABORTED (${aborted.kind}): ${aborted.message}`);
+
+  const fixed = (ledger.findings || []).filter((f) => f.status === 'fixed');
+  const killedCount = (ledger.seen || []).filter((s) => s.status === 'killed').length;
+  const parked = (ledger.findings || []).filter((f) => f.status === 'parked');
+  lines.push(`findings: ${fixed.length} fixed, ${killedCount} killed (false-positive), ${parked.length} parked`);
+
+  if (fixed.length) {
+    lines.push('', 'Fix digest:');
+    for (const f of fixed) lines.push(`  - [${f.id}] ${f.summary} -> commit ${f.fix_commit}`);
+  }
+  if (parked.length) {
+    lines.push('', 'Needs-decision packets:');
+    for (const f of parked) {
+      const reason = f.park_reason || {};
+      lines.push(`  - [${f.id}] ${f.file}: ${f.summary}`);
+      lines.push(`    kind: ${reason.kind || 'unknown'} -- ${reason.text || '(no reason recorded)'}`);
+    }
+  }
+  return lines.join('\n');
 }
 
 function requireRef(ref, verb) {
@@ -173,12 +197,70 @@ function main() {
 
   if (verb === 'record') {
     requireRef(ref, 'record');
+    const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
+    const gc = require('./lib/gate-contract');
+    const R = require('./lib/review');
+    const { REVIEW_PARK_BUDGET_DEFAULT } = require('./lib/config');
     const slug = targetSlug(ref);
-    const outcome = readStdinJson();
-    const ledger = readLedger(stateDir, slug) || emptyLedger({ kind: 'local', ref });
-    const { ledger: next, decision } = applyRoundOutcome(ledger, outcome);
-    writeLedger(stateDir, slug, next);
-    process.stdout.write(JSON.stringify({ status: next.status, decision }) + '\n');
+    let ledger = readLedger(stateDir, slug);
+    const n = ledger && ledger.round;
+
+    // Idempotency-first: this MUST be checked before the phase guard below,
+    // since the first successful record already flips phase to 'done' -- a
+    // guard-first ordering would throw on replay instead of reaching this branch.
+    if (ledger && ledger.phase === 'done' && ledger.last_recorded_round === n) {
+      process.stdout.write(
+        JSON.stringify({ decision: ledger._lastDecision || { continue: false }, handoff: renderHandoff({ ledger, cost: { totalUsd: 0, calls: 0 } }) }) + '\n'
+      );
+      return;
+    }
+    if (!ledger || ledger.phase !== 'fixes') throw new Error(`record: expected phase "fixes", got "${ledger && ledger.phase}"`);
+
+    const readJson = (name) => {
+      try {
+        return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-${name}.json`), 'utf8'));
+      } catch (e) {
+        return null;
+      }
+    };
+    const cJson = readJson('correctness') || { findings: [] };
+    const vJson = readJson('verify') || { rejected: [] };
+    const candidates = gc.parseGateFindings(JSON.stringify(cJson.findings || []));
+    const killedIds = gc.parseVerifyVerdict(JSON.stringify({ rejected: vJson.rejected || [] }), candidates).rejectedIds;
+
+    const journaled = new Map((ledger.journal || []).map((j) => [j.id, j.sha]));
+    const fixedIds = [];
+    const parkedIds = [];
+    const fixCommits = {};
+    const parkReasons = {};
+    for (const id of ledger.planned || []) {
+      if (journaled.has(id)) {
+        fixedIds.push(id);
+        fixCommits[id] = journaled.get(id);
+      } else {
+        const fx = readJson(`fix-${id}`);
+        parkedIds.push(id);
+        parkReasons[id] = gc.validateParkReason({ kind: 'needs-decision', text: fx ? 'fix reported no edit or the file was unchanged' : 'fix artifact missing' });
+      }
+    }
+    const outcome = { dodPassed: !!(ledger.dod && ledger.dod.passed), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons };
+    let { ledger: applied, decision } = R.applyRoundOutcome(ledger, outcome);
+    ledger = applied;
+    // Park-budget override BEFORE the charge below, so a forced terminus doesn't burn a round.
+    if (R.parkBudgetExceeded(ledger, REVIEW_PARK_BUDGET_DEFAULT)) {
+      decision = { ...decision, continue: false };
+      ledger = { ...ledger, status: 'parked' };
+    }
+    if (decision.continue) ledger = { ...ledger, budget: { ...ledger.budget, spent: ledger.budget.spent + 1 } };
+    if (!decision.continue && fixedIds.length > 0) {
+      // Fixes already landed via commit-fix -- re-run DoD against the post-commit
+      // tree so the handoff reports the true final state, not the pre-fix round-start snapshot.
+      ledger = { ...ledger, dod: runDod(repoRoot) };
+    }
+    gitCheckoutTree(repoRoot); // clean any leftover dirty edit from a rejected/parked fixer
+    ledger = { ...ledger, phase: 'done', last_recorded_round: n, _lastDecision: decision };
+    writeLedger(stateDir, slug, ledger);
+    process.stdout.write(JSON.stringify({ decision, handoff: renderHandoff({ ledger, cost: { totalUsd: 0, calls: 0 } }) }) + '\n');
     return;
   }
 
