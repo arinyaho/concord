@@ -46,3 +46,14 @@ test('validateParkReason: enforces kind + non-empty text', () => {
   assert.throws(() => gc.validateParkReason({ kind: 'bogus', text: 'x' }), /kind/);
   assert.throws(() => gc.validateParkReason({ kind: 'needs-decision', text: '' }), /text/);
 });
+
+test('parseGateFindings: retains requirement when present, defaults to empty', () => {
+  const withReq = gc.parseGateFindings(JSON.stringify([
+    { id: 'intent:retry-count', file: 'a.js', span: 'retry(1)', summary: 'retries once', requirement: 'retry three times' },
+  ]));
+  assert.strictEqual(withReq[0].requirement, 'retry three times');
+  const without = gc.parseGateFindings(JSON.stringify([
+    { id: 'correctness:x', file: 'a.js', summary: 'bug' },
+  ]));
+  assert.strictEqual(without[0].requirement, '');
+});
