@@ -34,6 +34,7 @@ function parseGateFindings(rawText) {
       file: f.file,
       span: typeof f.span === 'string' ? f.span : '',
       summary: f.summary,
+      requirement: typeof f.requirement === 'string' ? f.requirement : '',
       status: 'confirmed',
     };
   });

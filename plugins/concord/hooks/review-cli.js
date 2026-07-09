@@ -5,6 +5,7 @@ const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 const { resolveStateDirFromCwd } = require('./lib/statedir');
 const dodExec = require('./lib/dod-exec');
+const intentLib = require('./lib/intent');
 const {
   targetSlug,
   readLedger,
@@ -82,6 +83,7 @@ function renderHandoff(result) {
 
   const dodLine = !ledger.dod ? 'DoD: not run' : ledger.dod.passed ? 'DoD: passed' : 'DoD: FAILED';
   lines.push(dodLine);
+  lines.push(ledger.intentHash ? `intent: applied (${String(ledger.intentHash).slice(0, 12)}, ${ledger.intentBytes} bytes)` : 'intent: not configured');
 
   const fixed = (ledger.findings || []).filter((f) => f.status === 'fixed');
   const killedCount = (ledger.seen || []).filter((s) => s.status === 'killed').length;
@@ -89,8 +91,18 @@ function renderHandoff(result) {
   lines.push(`findings: ${fixed.length} fixed, ${killedCount} killed (false-positive), ${parked.length} parked`);
 
   if (fixed.length) {
-    lines.push('', 'Fix digest:');
+    const conf = ledger.status === 'intent-review' ? ' (pending confirmation)' : '';
+    lines.push('', `Fix digest${conf}:`);
     for (const f of fixed) lines.push(`  - [${f.id}] ${f.summary} -> commit ${f.fix_commit}`);
+  }
+  const intentParked = ledger.intent_parked || [];
+  if (intentParked.length) {
+    lines.push('', 'Intent findings (design conformance -- your decision; fix code or source, then re-run):');
+    for (const f of intentParked) {
+      lines.push(`  - [${f.id}] ${f.file}: ${f.summary}`);
+      lines.push(`    requirement: ${f.requirement || '(none)'}`);
+      lines.push(`    contradicts: ${f.span || '(no line)'}`);
+    }
   }
   if (parked.length) {
     lines.push('', 'Needs-decision packets:');
@@ -169,6 +181,15 @@ function main() {
     const slug = targetSlug(ref);
     let ledger = readLedger(stateDir, slug) || emptyLedger({ kind: 'local', ref });
 
+    // intent-review is a re-runnable stop state: a fresh round-start clears it,
+    // nulls diff_content_hash so beginRound advances a real round, and clears
+    // intentHash + deletes the cached artifact so intent RE-FETCHES -- picking up
+    // a correction the human made to the design source to retire a false positive.
+    if (ledger.status === 'intent-review') {
+      try { fs.unlinkSync(path.join(stateDir, `intent-${slug}.md`)); } catch (e) {}
+      ledger = { ...ledger, status: 'converging', diff_content_hash: null, intentHash: null, intentBytes: null, intent_parked: [] };
+    }
+
     // `resume <ref>` passes NO base token -- fall back to the base persisted
     // from the original fresh start (ledger.target.base). Without this, an
     // undefined base makes gitDiff below fall back to `git diff HEAD`, which
@@ -186,7 +207,7 @@ function main() {
     if (resumed) {
       gitCheckoutTree(repoRoot); // keep journaled commits, discard uncommitted
       deleteRoundArtifacts(stateDir, resumeRound);
-      ledger = { ...ledger, phase: 'idle', planned: [], resolved_absent: [] };
+      ledger = { ...ledger, phase: 'idle', planned: [], resolved_absent: [], intent_parked: [] };
     } else if (gitIsDirty(repoRoot)) {
       throw new Error('round-start: working tree is dirty; commit or stash before review-until-green');
     }
@@ -222,10 +243,30 @@ function main() {
 
     fs.mkdirSync(stateDir, { recursive: true });
     fs.writeFileSync(path.join(stateDir, `round-${ledger.round}-diff.txt`), diff);
+
+    const intentCfg = intentLib.loadIntentConfig(repoRoot);
+    if (intentCfg) {
+      const intentPath = path.join(stateDir, `intent-${slug}.md`);
+      if (!ledger.intentHash) {
+        const { text, sha, bytes } = intentLib.fetchIntent({ command: intentCfg.command, cwd: repoRoot, ref, base });
+        const tmp = intentPath + '.tmp';
+        fs.writeFileSync(tmp, text);
+        fs.renameSync(tmp, intentPath); // atomic: never leave a partial file a later step trusts
+        ledger = { ...ledger, intentHash: sha, intentBytes: bytes };
+      } else {
+        let cached;
+        try { cached = fs.readFileSync(intentPath, 'utf8'); } catch (e) {
+          throw new Error(`harness-failure: intent artifact intent-${slug}.md missing on re-hash`);
+        }
+        const sha = contentHash(cached);
+        if (sha !== ledger.intentHash) throw new Error('harness-failure: intent artifact changed mid-drive (hash mismatch)');
+      }
+    }
+
     const dod = runDod(repoRoot);
     ledger = { ...ledger, dod, phase: 'gates', target: { ...(ledger.target || { kind: 'local', ref }), base, head_sha: headSha } };
     writeLedger(stateDir, slug, ledger);
-    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, stateDir }) + '\n');
+    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, intentApplied: !!intentCfg, stateDir }) + '\n');
     return;
   }
 
@@ -294,15 +335,18 @@ function main() {
       fixedIds.push(id);
       fixCommits[id] = 'span already absent (idempotent replay)';
     }
-    const outcome = { dodPassed: !!(ledger.dod && ledger.dod.passed), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons };
+    const outcome = { dodPassed: !!(ledger.dod && ledger.dod.passed), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons, intentReviewCount: (ledger.intent_parked || []).length };
     let { ledger: applied, decision } = R.applyRoundOutcome(ledger, outcome);
     ledger = applied;
     // Park-budget override BEFORE the charge below, so a forced terminus doesn't burn a round.
     if (R.parkBudgetExceeded(ledger, REVIEW_PARK_BUDGET_DEFAULT)) {
       // converged/parked must move together with continue here -- a stale
       // converged:true would mislead a consumer that reads decision.converged
-      // without also checking continue.
-      decision = { ...decision, continue: false, converged: false, parked: true };
+      // without also checking continue. Likewise clear intentReview: without
+      // it a park-budget terminus on an intent-review decision would still
+      // print "resolve and re-run" intent guidance while the ledger status
+      // is truthfully "parked" (which refuses to resume until `unpark`).
+      decision = { ...decision, continue: false, converged: false, parked: true, intentReview: false };
       ledger = { ...ledger, status: 'parked' };
     }
     if (decision.continue) ledger = { ...ledger, budget: { ...ledger.budget, spent: ledger.budget.spent + 1 } };
@@ -329,6 +373,15 @@ function main() {
     const cJson = readArtifact(stateDir, n, 'correctness');
     const vJson = readArtifact(stateDir, n, 'verify');
     const candidates = gc.parseGateFindings(JSON.stringify(cJson.findings || []));
+    // Symmetric guard: an intent-prefixed id must never come from the
+    // correctness (auto-fixing) gate -- only the intent detector may mint
+    // "intent:" ids. Catching this here (not just on the intent side) keeps
+    // the fold below trustworthy even if a gate misbehaves or is spoofed.
+    for (const c of candidates) {
+      if (c.id.startsWith('intent:')) {
+        throw new Error(`harness-failure: intent-prefixed id "${c.id}" in the correctness artifact -- intent findings must come from the intent detector, never the auto-fixing gate`);
+      }
+    }
     // Coverage: every changed file must be in examined. Derive the changed-file
     // set from the diff file round-start already wrote (single-sourced diff) --
     // do NOT re-run git against ledger.target.base, which round-start never
@@ -369,7 +422,23 @@ function main() {
     const resolvedAbsent = confirmedNonKilled
       .filter((f) => !spanPresent(f.file, f.span))
       .map((f) => f.id);
-    const next = { ...ledger, planned: fixes.map((f) => f.id), resolved_absent: resolvedAbsent, phase: 'fixes' };
+    // Intent fold: report-only, never routed into fixes/resolved_absent. If
+    // intent was fetched this round (ledger.intentHash set), the detector
+    // artifact is mandatory -- a skipped/missing detector is fail-closed
+    // (harness-failure), never a silent "no intent findings".
+    let intentParked = [];
+    if (ledger.intentHash) {
+      const iJson = readArtifact(stateDir, n, 'intent'); // fail-closed: skipped detector -> harness-failure
+      const intentFindings = gc.parseGateFindings(JSON.stringify(iJson.findings || []));
+      for (const f of intentFindings) {
+        if (!f.id.startsWith('intent:')) throw new Error(`harness-failure: non-intent id "${f.id}" in the intent artifact`);
+      }
+      const changedSet = new Set(changed);
+      intentParked = intentFindings
+        .filter((f) => changedSet.has(f.file)) // out-of-PR-scope findings dropped
+        .map((f) => ({ id: f.id, file: f.file, span: f.span, requirement: f.requirement || '', summary: f.summary }));
+    }
+    const next = { ...ledger, planned: fixes.map((f) => f.id), resolved_absent: resolvedAbsent, intent_parked: intentParked, phase: 'fixes' };
     writeLedger(stateDir, slug, next);
     process.stdout.write(JSON.stringify({ fixes }) + '\n');
     return;

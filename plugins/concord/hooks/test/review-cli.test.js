@@ -484,3 +484,266 @@ test('record: a fix-committing round that terminates re-runs DoD on the post-com
   assert.strictEqual(after.dod.passed, true); // re-ran against the post-commit tree, where a.txt now contains "fixed"
   assert.match(out.handoff, /DoD: passed/); // the final re-run DoD state must be surfaced in the handoff text
 });
+
+function initRepoWithIntent(intentCmd) {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-intent-'));
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  execFileSync('git', ['config', 'user.email', 't@t'], { cwd: repo });
+  execFileSync('git', ['config', 'user.name', 't'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n');
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], intent: { command: intentCmd } }));
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'init'], { cwd: repo });
+  return repo;
+}
+
+test('round-start: intent configured -> fetches intent-<slug>.md, sets intentHash, intentApplied:true', () => {
+  const repo = initRepoWithIntent('printf "REQ: retry three times"');
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.strictEqual(out.decision, 'work');
+  assert.strictEqual(out.intentApplied, true);
+  const slug = review.targetSlug('feat/x');
+  assert.ok(fs.existsSync(path.join(dir, `intent-${slug}.md`)));
+  assert.strictEqual(fs.readFileSync(path.join(dir, `intent-${slug}.md`), 'utf8'), 'REQ: retry three times');
+  const ledger = review.readLedger(dir, slug);
+  assert.strictEqual(typeof ledger.intentHash, 'string');
+  assert.ok(ledger.intentBytes > 0);
+});
+
+test('round-start: no intent config -> intentApplied:false, no artifact', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.strictEqual(out.intentApplied, false);
+  assert.ok(!fs.existsSync(path.join(dir, `intent-${review.targetSlug('feat/x')}.md`)));
+});
+
+test('round-start: intent fetch that exits non-zero -> harness-failure abort', () => {
+  const repo = initRepoWithIntent('exit 7');
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  assert.throws(() => run(['round-start', 'feat/x', 'HEAD~1'], { env }), /harness-failure/);
+});
+
+test('round-start: intent-review re-entry re-fetches and advances a round', () => {
+  const repo = initRepoWithIntent('printf "REQ"');
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  run(['round-start', 'feat/x', 'HEAD~1'], { env });
+  const slug = review.targetSlug('feat/x');
+  // simulate a prior intent-review terminus
+  let ledger = review.readLedger(dir, slug);
+  ledger = { ...ledger, status: 'intent-review', phase: 'done', intent_parked: [{ id: 'intent:x', file: 'a.txt', span: 'two', requirement: 'REQ', summary: 's' }] };
+  review.writeLedger(dir, slug, ledger);
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.strictEqual(out.decision, 'work'); // re-entered, not "terminal"
+  const after = review.readLedger(dir, slug);
+  assert.deepStrictEqual(after.intent_parked, []); // reset
+  assert.ok(fs.existsSync(path.join(dir, `intent-${slug}.md`))); // re-fetched
+});
+
+function writeArtifact(dir, n, name, obj) {
+  fs.writeFileSync(path.join(dir, `round-${n}-${name}.json`), JSON.stringify(obj));
+}
+
+test('plan-fixes: intent finding on a changed file -> ledger.intent_parked with requirement', () => {
+  const repo = initRepoWithIntent('printf "REQ: retry three times"');
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const rs = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  const n = rs.round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'intent', { status: 'ok', findings: [
+    { id: 'intent:retry-count', file: 'a.txt', span: 'two', summary: 'retries once', requirement: 'retry three times' },
+  ] });
+  run(['plan-fixes', 'feat/x'], { env });
+  const ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.strictEqual(ledger.intent_parked.length, 1);
+  assert.strictEqual(ledger.intent_parked[0].id, 'intent:retry-count');
+  assert.strictEqual(ledger.intent_parked[0].requirement, 'retry three times');
+});
+
+test('plan-fixes: intent finding on an UNCHANGED file -> dropped', () => {
+  const repo = initRepoWithIntent('printf "REQ"');
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'intent', { status: 'ok', findings: [
+    { id: 'intent:elsewhere', file: 'other.txt', span: 'x', summary: 's', requirement: 'r' },
+  ] });
+  run(['plan-fixes', 'feat/x'], { env });
+  assert.strictEqual(review.readLedger(dir, review.targetSlug('feat/x')).intent_parked.length, 0);
+});
+
+test('plan-fixes: intentHash set but intent artifact missing -> harness-failure', () => {
+  const repo = initRepoWithIntent('printf "REQ"');
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  // NO round-n-intent.json written -> detector was skipped
+  assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure/);
+});
+
+test('plan-fixes: an intent: id in the CORRECTNESS artifact -> harness-failure (symmetric guard)', () => {
+  const repo = initRepoWithIntent('printf "REQ"');
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [
+    { id: 'intent:sneaky', file: 'a.txt', summary: 'should not auto-fix' },
+  ] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'intent', { status: 'ok', findings: [] });
+  assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure/);
+});
+
+test('record: an intent finding terminates intent-review and the handoff shows it', () => {
+  const repo = initRepoWithIntent('printf "REQ: retry three times"');
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'intent', { status: 'ok', findings: [
+    { id: 'intent:retry-count', file: 'a.txt', span: 'two', summary: 'retries once', requirement: 'retry three times' },
+  ] });
+  run(['plan-fixes', 'feat/x'], { env });
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.continue, false);
+  assert.strictEqual(out.decision.intentReview, true);
+  assert.match(out.handoff, /status: intent-review/);
+  assert.match(out.handoff, /intent: applied/);
+  assert.match(out.handoff, /retry three times/);
+  assert.match(out.handoff, /intent:retry-count/);
+  const ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.strictEqual(ledger.status, 'intent-review');
+});
+
+test('record: park-budget override on an intent-review round clears intentReview, leaving only parked', () => {
+  // A round whose OWN decision would be intent-review (an intent finding, no
+  // this-round needs-decision parks) must still get force-terminated to
+  // "parked" once REVIEW_PARK_BUDGET_DEFAULT prior parks are on the books --
+  // and the override must not leave a stale intentReview:true riding along
+  // with parked:true, or the command prompt would print "resolve and re-run"
+  // intent guidance while the ledger truthfully refuses to resume until `unpark`.
+  const { REVIEW_PARK_BUDGET_DEFAULT } = require('../lib/config');
+  const repo = initRepoWithIntent('printf "REQ: retry three times"');
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'intent', { status: 'ok', findings: [
+    { id: 'intent:retry-count', file: 'a.txt', span: 'two', summary: 'retries once', requirement: 'retry three times' },
+  ] });
+  run(['plan-fixes', 'feat/x'], { env });
+
+  // Seed REVIEW_PARK_BUDGET_DEFAULT pre-existing needs-decision parks so the
+  // breaker trips on this record call, same technique as the plain park-budget test.
+  const slug = review.targetSlug('feat/x');
+  let ledger = review.readLedger(dir, slug);
+  const priorParks = [];
+  for (let i = 0; i < REVIEW_PARK_BUDGET_DEFAULT; i += 1) {
+    priorParks.push({ id: `correctness:old-${i}`, gate: 'correctness', file: 'a.txt', span: '', summary: 'x', status: 'parked', park_reason: { kind: 'needs-decision', text: 'prior' } });
+  }
+  ledger = { ...ledger, findings: priorParks };
+  review.writeLedger(dir, slug, ledger);
+
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.parked, true);
+  assert.ok(!out.decision.intentReview); // must be cleared, not left riding along with parked:true
+  const after = review.readLedger(dir, slug);
+  assert.strictEqual(after.status, 'parked'); // not the stale 'intent-review'
+});
+
+test('renderHandoff: no intent config -> "intent: not configured"', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.match(out.handoff, /intent: not configured/);
+});
+
+test('e2e: intent contradiction -> intent-review; fix code + re-run -> clean', () => {
+  const repo = initRepoWithIntent('printf "REQ: the retry count must be three"');
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const slug = review.targetSlug('feat/x');
+
+  // A change that contradicts the requirement (retries once).
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'retry(1)\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+
+  // --- drive 1: detector raises the contradiction ---
+  let n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'intent', { status: 'ok', findings: [
+    { id: 'intent:retry-count', file: 'a.txt', span: 'retry(1)', summary: 'retries once', requirement: 'the retry count must be three' },
+  ] });
+  run(['plan-fixes', 'feat/x'], { env });
+  let out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.intentReview, true);
+  assert.strictEqual(review.readLedger(dir, slug).status, 'intent-review');
+
+  // --- human fixes the code, re-runs ---
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'retry(3)\n');
+  execFileSync('git', ['commit', '-aqm', 'fix retry count'], { cwd: repo });
+  n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~2'], { env })).round; // now two commits past base
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'intent', { status: 'ok', findings: [] }); // contradiction gone
+  run(['plan-fixes', 'feat/x'], { env });
+  out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.converged, true);
+  assert.strictEqual(review.readLedger(dir, slug).status, 'clean');
+});
+
+test('e2e: no intent config -> the same diff does NOT surface an intent finding (behaves as v0.5.0)', () => {
+  const repo = initRepo(); // no intent in config
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'retry(1)\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env }); // no intent artifact needed; intentHash is null
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.converged, true);
+  assert.match(out.handoff, /intent: not configured/);
+});
