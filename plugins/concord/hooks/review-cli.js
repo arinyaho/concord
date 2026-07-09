@@ -323,17 +323,16 @@ function main() {
         parkReasons[id] = gc.validateParkReason({ kind: 'needs-decision', text: fx ? 'fix reported no edit or the file was unchanged' : 'fix artifact missing' });
       }
     }
-    // Span-already-absent confirmed findings (plan-fixes' replay guard --
-    // ledger.resolved_absent) never entered `planned`, so the loop above never
-    // sees them. They are an idempotent replay: the fix already landed in a
-    // prior/crashed attempt, there is nothing left to commit. Without this,
-    // `outcome.findings` (built from ALL correctness candidates, below) would
-    // carry these ids through applyRoundOutcome with no fixed/parked/killed
-    // status, defaulting them to a phantom 'open' that blocks convergence
-    // forever and never surfaces in the handoff (which only lists parked).
+    // Journal-proven idempotent replays (plan-fixes' ledger.resolved_absent):
+    // the span is gone AND this run's journal has the commit, so the fix already
+    // landed and there is nothing left to commit. plan-fixes only routes a
+    // finding here when the journal proves the commit, so an absent span WITHOUT
+    // evidence never reaches this loop -- it is sent to the fixer (and parked if
+    // unfixable), never silently marked 'fixed'. Stamp the real journal sha (not
+    // a sentinel) so the handoff's fix digest shows the actual commit.
     for (const id of ledger.resolved_absent || []) {
       fixedIds.push(id);
-      fixCommits[id] = 'span already absent (idempotent replay)';
+      fixCommits[id] = journaled.get(id) || 'span already absent (idempotent replay)';
     }
     const outcome = { dodPassed: !!(ledger.dod && ledger.dod.passed), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons, intentReviewCount: (ledger.intent_parked || []).length };
     let { ledger: applied, decision } = R.applyRoundOutcome(ledger, outcome);
@@ -411,16 +410,21 @@ function main() {
     // concluded check so it can reach the driver as a fix or a park, instead
     // of being silently discarded.
     const confirmedNonKilled = survivors.filter((f) => !killed.has(f.id) && (!concluded.has(f.id) || f.reopened));
-    // Split on the replay guard: a span still present is genuinely fixable
-    // (drives a fix subagent below). A span already absent from the file is
-    // an idempotent replay -- the fix already landed in a prior/crashed
-    // attempt -- and must NOT be silently dropped: `record` (Task 8b) treats
-    // `resolved_absent` ids as 'fixed', not a phantom 'open'.
+    // A span still present is genuinely fixable and drives a fix subagent. A
+    // span ABSENT from the file is a true idempotent replay -- a fix that already
+    // landed in a prior/crashed attempt -- ONLY when this run's journal proves a
+    // commit for it. An absent span WITHOUT that evidence is NOT a replay: it is
+    // an additive/absence finding (nothing to quote) or a reviewer span that
+    // never matched. Marking those 'fixed' would converge green with a confirmed
+    // bug still live, so route them to the fixer instead (it adds the missing
+    // code -> a real commit, or reports no-edit -> record parks it needs-decision).
+    const journaledIds = new Set((ledger.journal || []).map((j) => j.id));
+    const isReplay = (f) => !spanPresent(f.file, f.span) && journaledIds.has(f.id);
     const fixes = confirmedNonKilled
-      .filter((f) => spanPresent(f.file, f.span))
+      .filter((f) => !isReplay(f))
       .map((f) => ({ id: f.id, file: f.file, span: f.span, summary: f.summary }));
     const resolvedAbsent = confirmedNonKilled
-      .filter((f) => !spanPresent(f.file, f.span))
+      .filter((f) => isReplay(f))
       .map((f) => f.id);
     // Intent fold: report-only, never routed into fixes/resolved_absent. If
     // intent was fetched this round (ledger.intentHash set), the detector

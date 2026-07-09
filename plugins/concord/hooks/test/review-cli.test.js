@@ -225,22 +225,25 @@ test('plan-fixes: a changed file never examined is a harness-failure (coverage)'
   assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure|coverage/);
 });
 
-// DEFECT: a confirmed (not-killed) finding whose span is no longer present in
-// its file was silently dropped from `planned`/`fixes` by the replay guard,
-// but `record` built its outcome from ALL correctness candidates -- so the
-// dropped finding still flowed into applyRoundOutcome, got no fixed/parked/
-// killed status, and defaulted to 'open': a phantom finding that blocks
-// convergence forever and never appears in the handoff (which only lists
-// parked findings). The correct semantics (matching the deleted engine.js):
-// a span-already-absent finding is an idempotent replay -- its fix already
-// landed in a prior/crashed attempt -- so it must be recorded 'fixed', not
-// 'open'.
+// A confirmed finding whose span is absent from the file is an idempotent replay
+// ONLY when this run's journal proves a prior commit for it. Without journal
+// evidence, plan-fixes routes it to the fixer (not resolved_absent) to prevent
+// silently converging green when a confirmed bug is still live. This test covers
+// the journal-proven replay path: absent + journaled -> resolved_absent -> fixed.
+// The no-journal path (absent + no journal -> planned -> parked) is covered by
+// the phantom-fix regression-lock tests added below.
 test('plan-fixes + record: a confirmed finding whose span is already absent from the file is idempotent-fixed, not a phantom open', () => {
   const repo = initRepo(); const dir = tmpDir();
   const { env } = seedGatesRound(repo, dir, 'feat/x',
     { status: 'ok', examined: ['a.txt'], findings: [
       { id: 'correctness:absent', gate: 'correctness', file: 'a.txt', span: 'this-span-is-not-in-the-file', summary: 'x' } ] },
     { status: 'ok', rejected: [] });
+  // Seed the journal with a prior commit that proves this absent span was already
+  // fixed in a crashed run. plan-fixes requires this evidence to classify an
+  // absent span as an idempotent replay rather than routing it to the fixer.
+  let ll = review.readLedger(dir, review.targetSlug('feat/x'));
+  ll = { ...ll, journal: [{ id: 'correctness:absent', sha: 'priorsha123' }] };
+  review.writeLedger(dir, review.targetSlug('feat/x'), ll);
 
   const planOut = JSON.parse(run(['plan-fixes', 'feat/x'], { env }));
   assert.deepStrictEqual(planOut.fixes, []); // span absent -- not in the fixable set
@@ -460,6 +463,88 @@ test('record: tripping the park budget forces status parked and continue false, 
   assert.strictEqual(l.status, 'parked');
   assert.strictEqual(l.budget.spent, 0); // park-budget-forced terminus does not consume a round
 });
+
+// --- Phantom-fix false-green regression lock (3 tests) ---
+// Prior to the fix, plan-fixes used only spanPresent() to split confirmed
+// findings: absent span -> resolvedAbsent, and record() blindly stamped every
+// resolvedAbsent id as 'fixed' with a sentinel commit string. An additive or
+// absence finding (span never in the file) or a finding with reviewer span that
+// drifted from the actual text was silently marked fixed with no patch.
+// The fix: absent span is an idempotent replay ONLY when this run's journal
+// proves a commit for it. Without that evidence, route it to the fixer.
+
+test('plan-fixes routes an absent-span finding with no journal evidence to the fixer, not resolved_absent', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env } = seedGatesRound(repo, dir, 'feat/absent-no-journal',
+    { status: 'ok', examined: ['a.txt'], findings: [
+      { id: 'correctness:additive', gate: 'correctness', file: 'a.txt', span: 'MISSING_FUNC_XYZ', summary: 'required function is absent' }
+    ]},
+    { status: 'ok', rejected: [] });
+  // a.txt contains 'two\n' from seedGatesRound -- confirm the span is not present.
+  assert.ok(!fs.readFileSync(path.join(repo, 'a.txt'), 'utf8').includes('MISSING_FUNC_XYZ'));
+
+  const planOut = JSON.parse(run(['plan-fixes', 'feat/absent-no-journal'], { env }));
+  // No journal evidence: absent span must go to the fixer (fixes), NOT resolved_absent.
+  assert.deepStrictEqual(planOut.fixes.map((f) => f.id), ['correctness:additive']);
+
+  const l = review.readLedger(dir, review.targetSlug('feat/absent-no-journal'));
+  assert.deepStrictEqual(l.planned, ['correctness:additive']);
+  assert.deepStrictEqual(l.resolved_absent, []);
+});
+
+test('absent-span finding with no journal and no fix is parked needs-decision, never marked fixed or converged', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env } = seedGatesRound(repo, dir, 'feat/absent-parked',
+    { status: 'ok', examined: ['a.txt'], findings: [
+      { id: 'correctness:additive', gate: 'correctness', file: 'a.txt', span: 'MISSING_FUNC_XYZ', summary: 'required function is absent' }
+    ]},
+    { status: 'ok', rejected: [] });
+  // plan-fixes with no journal evidence routes the absent-span finding to planned.
+  run(['plan-fixes', 'feat/absent-parked'], { env });
+  const afterPlan = review.readLedger(dir, review.targetSlug('feat/absent-parked'));
+  assert.deepStrictEqual(afterPlan.planned, ['correctness:additive']);
+  assert.deepStrictEqual(afterPlan.resolved_absent, []);
+
+  // No fix artifact and no commit-fix -- the bug was that record silently marked
+  // this fixed even though no patch ever landed.
+  const out = JSON.parse(run(['record', 'feat/absent-parked'], { env }));
+  const l = review.readLedger(dir, review.targetSlug('feat/absent-parked'));
+  const f = l.findings.find((x) => x.id === 'correctness:additive');
+  assert.strictEqual(f.status, 'parked'); // must NOT be 'fixed' -- no patch landed
+  assert.notStrictEqual(out.decision.converged, true); // must not converge green with a live bug
+});
+
+test('journal-proven absent-span finding is stamped fixed with the real commit sha, not a sentinel string', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const slug = review.targetSlug('feat/absent-journaled');
+  const { env } = seedGatesRound(repo, dir, 'feat/absent-journaled',
+    { status: 'ok', examined: ['a.txt'], findings: [
+      { id: 'correctness:absent', gate: 'correctness', file: 'a.txt', span: 'MISSING_FUNC_XYZ', summary: 'code was missing; prior run fixed it' }
+    ]},
+    { status: 'ok', rejected: [] });
+  // Seed the journal with a commit that proves the fix already landed in a prior
+  // crashed run -- this is the legitimate idempotent-replay path.
+  const realSha = 'abc123def456abc123def456abc123def456abc123';
+  let ledger = review.readLedger(dir, slug);
+  ledger = { ...ledger, journal: [{ id: 'correctness:absent', sha: realSha }] };
+  review.writeLedger(dir, slug, ledger);
+
+  // plan-fixes: absent + journal-proven -> idempotent replay -> resolvedAbsent, not fixes.
+  const planOut = JSON.parse(run(['plan-fixes', 'feat/absent-journaled'], { env }));
+  assert.deepStrictEqual(planOut.fixes, []);
+  const afterPlan = review.readLedger(dir, slug);
+  assert.deepStrictEqual(afterPlan.resolved_absent, ['correctness:absent']);
+  assert.deepStrictEqual(afterPlan.planned, []);
+
+  // record: replay is stamped fixed with the REAL journal sha, not the old sentinel string.
+  run(['record', 'feat/absent-journaled'], { env });
+  const l = review.readLedger(dir, slug);
+  const f = l.findings.find((x) => x.id === 'correctness:absent');
+  assert.strictEqual(f.status, 'fixed');
+  assert.strictEqual(f.fix_commit, realSha); // must be the real sha, not 'span already absent ...'
+});
+
+// --- end phantom-fix regression lock ---
 
 test('record: a fix-committing round that terminates re-runs DoD on the post-commit tree', () => {
   const repo = initRepo(); const dir = tmpDir();
