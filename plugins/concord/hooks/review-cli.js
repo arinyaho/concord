@@ -32,12 +32,17 @@ function gitDiff(repoRoot, base) {
   const args = base ? ['diff', `${base}...HEAD`] : ['diff', 'HEAD'];
   return sh('git', args, { cwd: repoRoot });
 }
-function gitCommitFix(repoRoot, findingId, summary, file) {
-  // Stage only the finding's own file -- never `-A`. A whole-tree `git add -A`
-  // sweeps in any other dirty content (untracked non-gitignored dirs, a
-  // crash-recovery leftover, a driver-contract violation) and silently
-  // mis-attributes it to this finding's commit.
-  sh('git', ['add', '--', file], { cwd: repoRoot });
+function gitCommitFix(repoRoot, findingId, summary, files) {
+  // Stage only the files the fix declares -- never `-A`. A whole-tree
+  // `git add -A` sweeps in any other dirty content (untracked non-gitignored
+  // dirs, a crash-recovery leftover, a driver-contract violation) and
+  // silently mis-attributes it to this finding's commit. `files` is a list:
+  // normally just the finding's own file, but a fix may legitimately touch a
+  // companion file (e.g. a caller/import it had to update); every file the
+  // fix subagent declared must land in the same attributed commit, or the
+  // companion edit is wiped later by record()'s gitCheckoutTree.
+  const fileList = Array.isArray(files) ? files : [files];
+  sh('git', ['add', '--', ...fileList], { cwd: repoRoot });
   sh('git', ['commit', '-m', `fix(review-until-green): ${findingId}\n\n${summary}`], { cwd: repoRoot });
   return sh('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).trim();
 }
@@ -398,12 +403,20 @@ function main() {
     const fx = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-fix-${id}.json`), 'utf8')); } catch (e) { return null; } })();
     const cJson = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-correctness.json`), 'utf8')); } catch (e) { return { findings: [] }; } })();
     const finding = (cJson.findings || []).find((f) => f.id === id) || { summary: '', file: null };
+    // The fix subagent declares every file it touched via `files` (finding.file
+    // plus any companion edit -- e.g. a caller/import the fix legitimately had
+    // to update). Fall back to [finding.file] for backward compatibility with
+    // a fix artifact that never sets `files`.
+    const files = ((fx && Array.isArray(fx.files) && fx.files.length) ? fx.files : [finding.file]).filter(Boolean);
     // File-scoped, not tree-wide: gating and staging on the whole tree would
     // sweep unrelated dirty content (a stray untracked dir, a crash-recovery
     // leftover) into this finding's commit -- the same mis-attribution the
-    // per-finding journal exists to prevent.
-    if (fx && fx.status === 'ok' && fx.edited === true && finding.file && gitIsDirtyForFile(repoRoot, finding.file)) {
-      const sha = gitCommitFix(repoRoot, id, finding.summary, finding.file);
+    // per-finding journal exists to prevent. Staging every declared file (not
+    // just finding.file) matters too: a fix that legitimately edits a second
+    // file must have BOTH edits land in the same attributed commit, or the
+    // companion edit is silently wiped by record()'s later gitCheckoutTree.
+    if (fx && fx.status === 'ok' && fx.edited === true && finding.file && files.some((f) => gitIsDirtyForFile(repoRoot, f))) {
+      const sha = gitCommitFix(repoRoot, id, finding.summary, files);
       ledger = { ...ledger, journal: [...(ledger.journal || []), { id, sha }] };
       writeLedger(stateDir, slug, ledger);
       process.stdout.write(JSON.stringify({ committed: true, sha }) + '\n');
