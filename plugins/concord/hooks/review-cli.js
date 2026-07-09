@@ -5,6 +5,7 @@ const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 const { resolveStateDirFromCwd } = require('./lib/statedir');
 const dodExec = require('./lib/dod-exec');
+const intentLib = require('./lib/intent');
 const {
   targetSlug,
   readLedger,
@@ -169,6 +170,15 @@ function main() {
     const slug = targetSlug(ref);
     let ledger = readLedger(stateDir, slug) || emptyLedger({ kind: 'local', ref });
 
+    // intent-review is a re-runnable stop state: a fresh round-start clears it,
+    // nulls diff_content_hash so beginRound advances a real round, and clears
+    // intentHash + deletes the cached artifact so intent RE-FETCHES -- picking up
+    // a correction the human made to the design source to retire a false positive.
+    if (ledger.status === 'intent-review') {
+      try { fs.unlinkSync(path.join(stateDir, `intent-${slug}.md`)); } catch (e) {}
+      ledger = { ...ledger, status: 'converging', diff_content_hash: null, intentHash: null, intentBytes: null, intent_parked: [] };
+    }
+
     // `resume <ref>` passes NO base token -- fall back to the base persisted
     // from the original fresh start (ledger.target.base). Without this, an
     // undefined base makes gitDiff below fall back to `git diff HEAD`, which
@@ -186,7 +196,7 @@ function main() {
     if (resumed) {
       gitCheckoutTree(repoRoot); // keep journaled commits, discard uncommitted
       deleteRoundArtifacts(stateDir, resumeRound);
-      ledger = { ...ledger, phase: 'idle', planned: [], resolved_absent: [] };
+      ledger = { ...ledger, phase: 'idle', planned: [], resolved_absent: [], intent_parked: [] };
     } else if (gitIsDirty(repoRoot)) {
       throw new Error('round-start: working tree is dirty; commit or stash before review-until-green');
     }
@@ -222,10 +232,30 @@ function main() {
 
     fs.mkdirSync(stateDir, { recursive: true });
     fs.writeFileSync(path.join(stateDir, `round-${ledger.round}-diff.txt`), diff);
+
+    const intentCfg = intentLib.loadIntentConfig(repoRoot);
+    if (intentCfg) {
+      const intentPath = path.join(stateDir, `intent-${slug}.md`);
+      if (!ledger.intentHash) {
+        const { text, sha, bytes } = intentLib.fetchIntent({ command: intentCfg.command, cwd: repoRoot, ref, base });
+        const tmp = intentPath + '.tmp';
+        fs.writeFileSync(tmp, text);
+        fs.renameSync(tmp, intentPath); // atomic: never leave a partial file a later step trusts
+        ledger = { ...ledger, intentHash: sha, intentBytes: bytes };
+      } else {
+        let cached;
+        try { cached = fs.readFileSync(intentPath, 'utf8'); } catch (e) {
+          throw new Error(`harness-failure: intent artifact intent-${slug}.md missing on re-hash`);
+        }
+        const sha = contentHash(cached);
+        if (sha !== ledger.intentHash) throw new Error('harness-failure: intent artifact changed mid-drive (hash mismatch)');
+      }
+    }
+
     const dod = runDod(repoRoot);
     ledger = { ...ledger, dod, phase: 'gates', target: { ...(ledger.target || { kind: 'local', ref }), base, head_sha: headSha } };
     writeLedger(stateDir, slug, ledger);
-    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, stateDir }) + '\n');
+    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, intentApplied: !!intentCfg, stateDir }) + '\n');
     return;
   }
 

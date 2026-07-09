@@ -484,3 +484,71 @@ test('record: a fix-committing round that terminates re-runs DoD on the post-com
   assert.strictEqual(after.dod.passed, true); // re-ran against the post-commit tree, where a.txt now contains "fixed"
   assert.match(out.handoff, /DoD: passed/); // the final re-run DoD state must be surfaced in the handoff text
 });
+
+function initRepoWithIntent(intentCmd) {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-intent-'));
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  execFileSync('git', ['config', 'user.email', 't@t'], { cwd: repo });
+  execFileSync('git', ['config', 'user.name', 't'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n');
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], intent: { command: intentCmd } }));
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'init'], { cwd: repo });
+  return repo;
+}
+
+test('round-start: intent configured -> fetches intent-<slug>.md, sets intentHash, intentApplied:true', () => {
+  const repo = initRepoWithIntent('printf "REQ: retry three times"');
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.strictEqual(out.decision, 'work');
+  assert.strictEqual(out.intentApplied, true);
+  const slug = review.targetSlug('feat/x');
+  assert.ok(fs.existsSync(path.join(dir, `intent-${slug}.md`)));
+  assert.strictEqual(fs.readFileSync(path.join(dir, `intent-${slug}.md`), 'utf8'), 'REQ: retry three times');
+  const ledger = review.readLedger(dir, slug);
+  assert.strictEqual(typeof ledger.intentHash, 'string');
+  assert.ok(ledger.intentBytes > 0);
+});
+
+test('round-start: no intent config -> intentApplied:false, no artifact', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.strictEqual(out.intentApplied, false);
+  assert.ok(!fs.existsSync(path.join(dir, `intent-${review.targetSlug('feat/x')}.md`)));
+});
+
+test('round-start: intent fetch that exits non-zero -> harness-failure abort', () => {
+  const repo = initRepoWithIntent('exit 7');
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  assert.throws(() => run(['round-start', 'feat/x', 'HEAD~1'], { env }), /harness-failure/);
+});
+
+test('round-start: intent-review re-entry re-fetches and advances a round', () => {
+  const repo = initRepoWithIntent('printf "REQ"');
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  run(['round-start', 'feat/x', 'HEAD~1'], { env });
+  const slug = review.targetSlug('feat/x');
+  // simulate a prior intent-review terminus
+  let ledger = review.readLedger(dir, slug);
+  ledger = { ...ledger, status: 'intent-review', phase: 'done', intent_parked: [{ id: 'intent:x', file: 'a.txt', span: 'two', requirement: 'REQ', summary: 's' }] };
+  review.writeLedger(dir, slug, ledger);
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.strictEqual(out.decision, 'work'); // re-entered, not "terminal"
+  const after = review.readLedger(dir, slug);
+  assert.deepStrictEqual(after.intent_parked, []); // reset
+  assert.ok(fs.existsSync(path.join(dir, `intent-${slug}.md`))); // re-fetched
+});
