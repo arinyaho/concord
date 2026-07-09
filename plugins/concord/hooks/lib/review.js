@@ -50,6 +50,9 @@ function emptyLedger(target) {
     resolved_absent: [],
     journal: [],
     last_recorded_round: null,
+    intentHash: null,
+    intentBytes: null,
+    intent_parked: [],
   };
 }
 
@@ -168,13 +171,16 @@ function dedupeAgainstSeen(findings, seen) {
 // Oscillation detection (a finding toggling fixed -> reopened -> fixed) is
 // deliberately out of scope for this shell (deferred per the plan).
 function decideTermination(roundOutcome) {
-  const { dodPassed, openFindingsCount, specDoubtScope, noProgress, budgetSpent, maxRounds, fixedCount = 0, parkedCount = 0 } = roundOutcome;
+  const { dodPassed, openFindingsCount, specDoubtScope, noProgress, budgetSpent, maxRounds, fixedCount = 0, parkedCount = 0, intentReviewCount = 0 } = roundOutcome;
 
   if (specDoubtScope === 'whole-diff') {
     return { continue: false, converged: false, parked: false, abandoned: true, reason: 'spec-doubt invalidates the whole diff' };
   }
   if (parkedCount > 0) {
     return { continue: false, converged: false, parked: true, abandoned: false, reason: 'a needs-decision park requires a human decision before progress' };
+  }
+  if (intentReviewCount > 0) {
+    return { continue: false, converged: false, parked: false, abandoned: false, intentReview: true, reason: 'open intent finding(s) need a human decision (design conformance)' };
   }
   if (dodPassed && openFindingsCount === 0 && fixedCount === 0) {
     return { continue: false, converged: true, parked: false, abandoned: false, reason: 'DoD-exec ran and passed, zero open findings, and no fixes this round (stable)' };
@@ -336,9 +342,10 @@ function applyRoundOutcome(ledger, outcome) {
     maxRounds: ledger.budget.max_rounds,
     fixedCount: (outcome.fixedIds || []).length, // COUNT, not the in-scope Set named fixedIds
     parkedCount: (outcome.parkedIds || []).length, // COUNT, not the in-scope Set named parkedIds
+    intentReviewCount: outcome.intentReviewCount || 0,
   });
 
-  const status = decision.converged ? 'clean' : decision.parked ? 'parked' : decision.abandoned ? 'abandoned' : 'converging';
+  const status = decision.converged ? 'clean' : decision.parked ? 'parked' : decision.abandoned ? 'abandoned' : decision.intentReview ? 'intent-review' : 'converging';
 
   const history = (ledger.history || []).concat([
     {

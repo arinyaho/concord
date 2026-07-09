@@ -645,3 +645,38 @@ test('renderReviewReport: a converging ledger mid-round shows its phase', () => 
   const out = review.renderReviewReport([{ slug: 'feat-x', ledger }]);
   assert.match(out, /phase fixes/);
 });
+
+test('decideTermination: an open intent finding -> intent-review (blocks clean, before the clean branch)', () => {
+  const d = review.decideTermination({
+    dodPassed: true, openFindingsCount: 0, specDoubtScope: 'none',
+    noProgress: false, budgetSpent: 0, maxRounds: 8, fixedCount: 0, parkedCount: 0,
+    intentReviewCount: 1,
+  });
+  assert.strictEqual(d.continue, false);
+  assert.strictEqual(d.converged, false);
+  assert.strictEqual(d.intentReview, true);
+});
+
+test('decideTermination: a needs-decision park still wins over intent-review', () => {
+  const d = review.decideTermination({
+    dodPassed: true, openFindingsCount: 0, specDoubtScope: 'none',
+    noProgress: false, budgetSpent: 0, maxRounds: 8, fixedCount: 0, parkedCount: 1, intentReviewCount: 1,
+  });
+  assert.strictEqual(d.parked, true);
+  assert.strictEqual(d.intentReview, undefined);
+});
+
+test('applyRoundOutcome: intentReviewCount -> status intent-review', () => {
+  const ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  const { ledger: next } = review.applyRoundOutcome(ledger, {
+    dodPassed: true, findings: [], fixedIds: [], parkedIds: [], killedIds: [], intentReviewCount: 2,
+  });
+  assert.strictEqual(next.status, 'intent-review');
+});
+
+test('emptyLedger: has intentHash, intentBytes, intent_parked', () => {
+  const l = review.emptyLedger({ kind: 'local', ref: 'r' });
+  assert.strictEqual(l.intentHash, null);
+  assert.strictEqual(l.intentBytes, null);
+  assert.deepStrictEqual(l.intent_parked, []);
+});
