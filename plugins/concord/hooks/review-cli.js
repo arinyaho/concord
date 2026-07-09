@@ -359,6 +359,15 @@ function main() {
     const cJson = readArtifact(stateDir, n, 'correctness');
     const vJson = readArtifact(stateDir, n, 'verify');
     const candidates = gc.parseGateFindings(JSON.stringify(cJson.findings || []));
+    // Symmetric guard: an intent-prefixed id must never come from the
+    // correctness (auto-fixing) gate -- only the intent detector may mint
+    // "intent:" ids. Catching this here (not just on the intent side) keeps
+    // the fold below trustworthy even if a gate misbehaves or is spoofed.
+    for (const c of candidates) {
+      if (c.id.startsWith('intent:')) {
+        throw new Error(`harness-failure: intent-prefixed id "${c.id}" in the correctness artifact -- intent findings must come from the intent detector, never the auto-fixing gate`);
+      }
+    }
     // Coverage: every changed file must be in examined. Derive the changed-file
     // set from the diff file round-start already wrote (single-sourced diff) --
     // do NOT re-run git against ledger.target.base, which round-start never
@@ -399,7 +408,23 @@ function main() {
     const resolvedAbsent = confirmedNonKilled
       .filter((f) => !spanPresent(f.file, f.span))
       .map((f) => f.id);
-    const next = { ...ledger, planned: fixes.map((f) => f.id), resolved_absent: resolvedAbsent, phase: 'fixes' };
+    // Intent fold: report-only, never routed into fixes/resolved_absent. If
+    // intent was fetched this round (ledger.intentHash set), the detector
+    // artifact is mandatory -- a skipped/missing detector is fail-closed
+    // (harness-failure), never a silent "no intent findings".
+    let intentParked = [];
+    if (ledger.intentHash) {
+      const iJson = readArtifact(stateDir, n, 'intent'); // fail-closed: skipped detector -> harness-failure
+      const intentFindings = gc.parseGateFindings(JSON.stringify(iJson.findings || []));
+      for (const f of intentFindings) {
+        if (!f.id.startsWith('intent:')) throw new Error(`harness-failure: non-intent id "${f.id}" in the intent artifact`);
+      }
+      const changedSet = new Set(changed);
+      intentParked = intentFindings
+        .filter((f) => changedSet.has(f.file)) // out-of-PR-scope findings dropped
+        .map((f) => ({ id: f.id, file: f.file, span: f.span, requirement: f.requirement || '', summary: f.summary }));
+    }
+    const next = { ...ledger, planned: fixes.map((f) => f.id), resolved_absent: resolvedAbsent, intent_parked: intentParked, phase: 'fixes' };
     writeLedger(stateDir, slug, next);
     process.stdout.write(JSON.stringify({ fixes }) + '\n');
     return;

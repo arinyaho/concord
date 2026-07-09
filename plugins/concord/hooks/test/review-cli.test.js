@@ -552,3 +552,71 @@ test('round-start: intent-review re-entry re-fetches and advances a round', () =
   assert.deepStrictEqual(after.intent_parked, []); // reset
   assert.ok(fs.existsSync(path.join(dir, `intent-${slug}.md`))); // re-fetched
 });
+
+function writeArtifact(dir, n, name, obj) {
+  fs.writeFileSync(path.join(dir, `round-${n}-${name}.json`), JSON.stringify(obj));
+}
+
+test('plan-fixes: intent finding on a changed file -> ledger.intent_parked with requirement', () => {
+  const repo = initRepoWithIntent('printf "REQ: retry three times"');
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const rs = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  const n = rs.round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'intent', { status: 'ok', findings: [
+    { id: 'intent:retry-count', file: 'a.txt', span: 'two', summary: 'retries once', requirement: 'retry three times' },
+  ] });
+  run(['plan-fixes', 'feat/x'], { env });
+  const ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.strictEqual(ledger.intent_parked.length, 1);
+  assert.strictEqual(ledger.intent_parked[0].id, 'intent:retry-count');
+  assert.strictEqual(ledger.intent_parked[0].requirement, 'retry three times');
+});
+
+test('plan-fixes: intent finding on an UNCHANGED file -> dropped', () => {
+  const repo = initRepoWithIntent('printf "REQ"');
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'intent', { status: 'ok', findings: [
+    { id: 'intent:elsewhere', file: 'other.txt', span: 'x', summary: 's', requirement: 'r' },
+  ] });
+  run(['plan-fixes', 'feat/x'], { env });
+  assert.strictEqual(review.readLedger(dir, review.targetSlug('feat/x')).intent_parked.length, 0);
+});
+
+test('plan-fixes: intentHash set but intent artifact missing -> harness-failure', () => {
+  const repo = initRepoWithIntent('printf "REQ"');
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  // NO round-n-intent.json written -> detector was skipped
+  assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure/);
+});
+
+test('plan-fixes: an intent: id in the CORRECTNESS artifact -> harness-failure (symmetric guard)', () => {
+  const repo = initRepoWithIntent('printf "REQ"');
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [
+    { id: 'intent:sneaky', file: 'a.txt', summary: 'should not auto-fix' },
+  ] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'intent', { status: 'ok', findings: [] });
+  assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure/);
+});
