@@ -658,3 +658,53 @@ test('renderHandoff: no intent config -> "intent: not configured"', () => {
   const out = JSON.parse(run(['record', 'feat/x'], { env }));
   assert.match(out.handoff, /intent: not configured/);
 });
+
+test('e2e: intent contradiction -> intent-review; fix code + re-run -> clean', () => {
+  const repo = initRepoWithIntent('printf "REQ: the retry count must be three"');
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const slug = review.targetSlug('feat/x');
+
+  // A change that contradicts the requirement (retries once).
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'retry(1)\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+
+  // --- drive 1: detector raises the contradiction ---
+  let n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'intent', { status: 'ok', findings: [
+    { id: 'intent:retry-count', file: 'a.txt', span: 'retry(1)', summary: 'retries once', requirement: 'the retry count must be three' },
+  ] });
+  run(['plan-fixes', 'feat/x'], { env });
+  let out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.intentReview, true);
+  assert.strictEqual(review.readLedger(dir, slug).status, 'intent-review');
+
+  // --- human fixes the code, re-runs ---
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'retry(3)\n');
+  execFileSync('git', ['commit', '-aqm', 'fix retry count'], { cwd: repo });
+  n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~2'], { env })).round; // now two commits past base
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'intent', { status: 'ok', findings: [] }); // contradiction gone
+  run(['plan-fixes', 'feat/x'], { env });
+  out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.converged, true);
+  assert.strictEqual(review.readLedger(dir, slug).status, 'clean');
+});
+
+test('e2e: no intent config -> the same diff does NOT surface an intent finding (behaves as v0.5.0)', () => {
+  const repo = initRepo(); // no intent in config
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'retry(1)\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env }); // no intent artifact needed; intentHash is null
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.converged, true);
+  assert.match(out.handoff, /intent: not configured/);
+});
