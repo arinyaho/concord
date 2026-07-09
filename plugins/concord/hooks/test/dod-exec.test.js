@@ -25,19 +25,41 @@ test('loadDodConfig: reads a configured "dod" command list from the repo root', 
   assert.deepStrictEqual(cfg.dod, ['npm run lint', 'npm test']);
 });
 
-test('loadDodConfig: corrupt JSON degrades to the default rather than throwing', () => {
-  const dir = tmpDir();
-  fs.writeFileSync(path.join(dir, 'review.config.json'), '{not json');
-  const cfg = dodExec.loadDodConfig(dir);
+test('loadDodConfig: absent config (ENOENT via injected readFileFn) falls back to the default, does not throw', () => {
+  const readFileFn = () => {
+    const e = new Error('ENOENT: no such file or directory');
+    e.code = 'ENOENT';
+    throw e;
+  };
+  const cfg = dodExec.loadDodConfig('/repo', readFileFn);
   assert.deepStrictEqual(cfg.dod, dodExec.DEFAULT_DOD_COMMANDS);
 });
 
-test('loadDodConfig: an empty or non-array "dod" degrades to the default', () => {
+test('loadDodConfig: present-but-corrupt config (bad JSON) throws harness-failure, does NOT degrade to default', () => {
+  const readFileFn = () => '{ not json';
+  assert.throws(() => dodExec.loadDodConfig('/repo', readFileFn), /harness-failure/);
+});
+
+test('loadDodConfig: present config with a non-usable "dod" shape throws harness-failure', () => {
+  const readFileFn = () => JSON.stringify({ dod: [] });
+  assert.throws(() => dodExec.loadDodConfig('/repo', readFileFn), /harness-failure/);
+});
+
+test('loadDodConfig: an unreadable-for-another-reason file (non-ENOENT error) throws harness-failure', () => {
+  const readFileFn = () => {
+    const e = new Error('EACCES: permission denied');
+    e.code = 'EACCES';
+    throw e;
+  };
+  assert.throws(() => dodExec.loadDodConfig('/repo', readFileFn), /harness-failure/);
+});
+
+test('loadDodConfig: an empty or non-array "dod" is a malformed present config -- throws harness-failure, does not degrade', () => {
   const dir = tmpDir();
   fs.writeFileSync(path.join(dir, 'review.config.json'), JSON.stringify({ dod: [] }));
-  assert.deepStrictEqual(dodExec.loadDodConfig(dir).dod, dodExec.DEFAULT_DOD_COMMANDS);
+  assert.throws(() => dodExec.loadDodConfig(dir), /harness-failure/);
   fs.writeFileSync(path.join(dir, 'review.config.json'), JSON.stringify({ dod: 'node --test' }));
-  assert.deepStrictEqual(dodExec.loadDodConfig(dir).dod, dodExec.DEFAULT_DOD_COMMANDS);
+  assert.throws(() => dodExec.loadDodConfig(dir), /harness-failure/);
 });
 
 // ---- runDodExec ----

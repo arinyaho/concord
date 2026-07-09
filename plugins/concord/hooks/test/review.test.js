@@ -78,6 +78,15 @@ test('emptyLedger: sane defaults, status converging, every field present', () =>
   assert.deepStrictEqual(l.history, []);
 });
 
+test('emptyLedger: carries the new phase/dod/planned/journal/last_recorded_round fields', () => {
+  const l = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  assert.strictEqual(l.phase, 'idle');
+  assert.strictEqual(l.dod, null);
+  assert.deepStrictEqual(l.planned, []);
+  assert.deepStrictEqual(l.journal, []);
+  assert.strictEqual(l.last_recorded_round, null);
+});
+
 // ---- seenHash: line-number independence ----
 
 test('seenHash: identical gate/file/span/summary hash the same regardless of line number', () => {
@@ -242,13 +251,29 @@ test('decideTermination: otherwise continue (converging)', () => {
 
 // ---- beginRound: round accounting ----
 
-test('beginRound: first round on a fresh ledger increments round and spent', () => {
+test('beginRound: first round on a fresh ledger increments round but does NOT charge budget (budget is charged at record now)', () => {
   const ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
   const { ledger: next, noOp } = review.beginRound(ledger, 'hash-1');
   assert.strictEqual(noOp, false);
   assert.strictEqual(next.round, 1);
-  assert.strictEqual(next.budget.spent, 1);
+  assert.strictEqual(next.budget.spent, 0); // was 1 before this change
   assert.strictEqual(next.diff_content_hash, 'hash-1');
+});
+
+test('beginRound: advances round but does NOT charge budget (budget is charged at record now)', () => {
+  const l = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  const { ledger: after } = review.beginRound(l, 'hash1');
+  assert.strictEqual(after.round, 1);
+  assert.strictEqual(after.budget.spent, 0); // was 1 before this change
+});
+
+test('beginRound: a noOp (unchanged hash) still neither advances round nor charges budget', () => {
+  let l = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  l = review.beginRound(l, 'h').ledger;
+  const { ledger: after, noOp } = review.beginRound(l, 'h');
+  assert.strictEqual(noOp, true);
+  assert.strictEqual(after.round, 1);
+  assert.strictEqual(after.budget.spent, 0);
 });
 
 test('beginRound: unchanged diff_content_hash is a no-op round and does NOT consume budget', () => {
@@ -260,14 +285,14 @@ test('beginRound: unchanged diff_content_hash is a no-op round and does NOT cons
   assert.strictEqual(r2.budget.spent, r1.budget.spent); // budget unchanged
 });
 
-test('beginRound: a changed diff_content_hash after a no-op resumes consuming budget', () => {
+test('beginRound: a changed diff_content_hash after a no-op resumes advancing the round (still no budget charge)', () => {
   const ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
   const { ledger: r1 } = review.beginRound(ledger, 'hash-1');
   const { ledger: r2 } = review.beginRound(r1, 'hash-1'); // no-op
   const { ledger: r3, noOp } = review.beginRound(r2, 'hash-2');
   assert.strictEqual(noOp, false);
   assert.strictEqual(r3.round, r1.round + 1);
-  assert.strictEqual(r3.budget.spent, r1.budget.spent + 1);
+  assert.strictEqual(r3.budget.spent, r1.budget.spent); // budget is charged at record now, not here
 });
 
 test('beginRound: does not mutate the input ledger', () => {
@@ -362,23 +387,86 @@ test('applyRoundOutcome: a confirmed finding with no fix stays open, status conv
   assert.strictEqual(f1.status, 'open');
 });
 
-test('applyRoundOutcome: dod passed and all findings fixed -> ledger status clean', () => {
+test('applyRoundOutcome: dod passed and all findings fixed -> NOT clean yet (confirmation round follows)', () => {
   let ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
-  ledger = review.beginRound(ledger, 'hash-1').ledger;
+  ledger = review.beginRound(ledger, 'h').ledger;
   const { ledger: after, decision } = review.applyRoundOutcome(ledger, {
     dodPassed: true,
-    findings: [finding({ id: 'f1', status: 'confirmed' })],
-    fixedIds: ['f1'],
-    parkedIds: [],
-    killedIds: [],
-    specDoubtScope: 'none',
+    findings: [{ id: 'correctness:f1', gate: 'correctness', file: 'a.js', span: 'x', summary: 'b', status: 'confirmed' }],
+    fixedIds: ['correctness:f1'],
+    parkedIds: [], killedIds: [], specDoubtScope: 'none',
   });
-  assert.strictEqual(after.status, 'clean');
+  assert.strictEqual(decision.converged, false);
+  assert.strictEqual(decision.continue, true);
+  assert.strictEqual(after.status, 'converging');
+});
+
+test('applyRoundOutcome: a zero-fix round with dod passed and no open findings converges (the confirmation round)', () => {
+  let ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  ledger = review.beginRound(ledger, 'h').ledger;
+  const { decision } = review.applyRoundOutcome(ledger, {
+    dodPassed: true, findings: [], fixedIds: [], parkedIds: [], killedIds: [], specDoubtScope: 'none',
+  });
   assert.strictEqual(decision.converged, true);
-  const f1 = after.findings.find((f) => f.id === 'f1');
-  assert.strictEqual(f1.status, 'fixed');
-  // the fixed finding's content-hash is recorded in seen so a regression can reopen it
-  assert.ok(after.seen.some((s) => s.status === 'fixed'));
+});
+
+test('decideTermination: fixedCount>0 blocks converge even with dod passed and zero open', () => {
+  const d = review.decideTermination({ dodPassed: true, openFindingsCount: 0, fixedCount: 2, specDoubtScope: 'none', noProgress: false, budgetSpent: 0, maxRounds: 5 });
+  assert.strictEqual(d.converged, false);
+  assert.strictEqual(d.continue, true);
+});
+
+// CRITICAL 1 (false-clean via needs-decision park): a round that parked a
+// finding must never converge/clean, even when the clean predicate
+// (dodPassed && openFindingsCount===0 && fixedCount===0) would otherwise be
+// satisfied -- a parked finding is excluded from openFindingsCount, so
+// without this check a single needs-decision park below the park-budget
+// threshold silently escapes as "clean".
+test('decideTermination: parkedCount>0 terminates parked, never converges, even though dodPassed/openFindingsCount/fixedCount all say "clean"', () => {
+  const d = review.decideTermination({
+    dodPassed: true,
+    openFindingsCount: 0,
+    fixedCount: 0,
+    parkedCount: 1,
+    specDoubtScope: 'none',
+    noProgress: false,
+    budgetSpent: 0,
+    maxRounds: 5,
+  });
+  assert.deepStrictEqual(
+    { continue: d.continue, converged: d.converged, parked: d.parked, abandoned: d.abandoned },
+    { continue: false, converged: false, parked: true, abandoned: false }
+  );
+});
+
+test('decideTermination: parkedCount===0 (or absent) does not itself force parked -- clean branch is reachable', () => {
+  const d = review.decideTermination({ dodPassed: true, openFindingsCount: 0, fixedCount: 0, specDoubtScope: 'none', noProgress: false, budgetSpent: 0, maxRounds: 5 });
+  assert.strictEqual(d.converged, true);
+});
+
+test('parkBudgetExceeded: true once needs-decision parks reach the threshold', () => {
+  const ledger = review.emptyLedger({ kind: 'local', ref: 'x' });
+  ledger.findings = [
+    { id: 'correctness:a', status: 'parked', park_reason: { kind: 'needs-decision', text: 't' } },
+    { id: 'correctness:b', status: 'parked', park_reason: { kind: 'needs-decision', text: 't' } },
+  ];
+  assert.strictEqual(review.parkBudgetExceeded(ledger, 2), true);
+  assert.strictEqual(review.parkBudgetExceeded(ledger, 3), false);
+});
+
+test('resetUnreachable: fixed/parked findings go back to open, their seen entries drop, status converging', () => {
+  const ledger = review.emptyLedger({ kind: 'local', ref: 'x' });
+  ledger.status = 'parked';
+  ledger.findings = [
+    { id: 'correctness:a', status: 'fixed', fix_commit: 'sha', park_reason: null },
+    { id: 'correctness:b', status: 'open' },
+  ];
+  ledger.seen = [{ id: 'correctness:a', hash: 'h', status: 'fixed' }];
+  const out = review.resetUnreachable(ledger);
+  assert.strictEqual(out.findings.find((f) => f.id === 'correctness:a').status, 'open');
+  assert.strictEqual(out.findings.find((f) => f.id === 'correctness:a').fix_commit, null);
+  assert.strictEqual(out.seen.length, 0);
+  assert.strictEqual(out.status, 'converging');
 });
 
 test('applyRoundOutcome: a killed finding is recorded in seen and does not resurface next round', () => {
@@ -413,7 +501,8 @@ test('applyRoundOutcome: a killed finding is recorded in seen and does not resur
 test('applyRoundOutcome: budget exhausted parks remaining open findings', () => {
   let ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
   ledger.budget.max_rounds = 1;
-  ledger = review.beginRound(ledger, 'hash-1').ledger; // round=1, spent=1
+  ledger = review.beginRound(ledger, 'hash-1').ledger; // round=1
+  ledger.budget.spent = 1; // budget is charged at record now, not beginRound; simulate a prior record charge
   const { ledger: after, decision } = review.applyRoundOutcome(ledger, {
     dodPassed: false,
     findings: [finding({ id: 'f3', status: 'confirmed' })],
@@ -424,6 +513,32 @@ test('applyRoundOutcome: budget exhausted parks remaining open findings', () => 
   });
   assert.strictEqual(decision.parked, true);
   assert.strictEqual(after.status, 'parked');
+});
+
+// CRITICAL 1, applyRoundOutcome-level reproduction: a round whose net effect
+// is exactly one needs-decision park (dodPassed true, the parked finding is
+// excluded from openFindingsCount, zero fixes) must land status 'parked' and
+// decision.continue===false/converged===false -- NOT the false-clean this
+// bug previously produced.
+test('applyRoundOutcome: a round that parks one finding (needs-decision) never converges clean, even with dodPassed and zero open findings', () => {
+  let ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  ledger = review.beginRound(ledger, 'hash-1').ledger;
+  const f = finding({ id: 'correctness:park-me', status: 'confirmed' });
+  const { ledger: after, decision } = review.applyRoundOutcome(ledger, {
+    dodPassed: true,
+    findings: [f],
+    fixedIds: [],
+    parkedIds: ['correctness:park-me'],
+    killedIds: [],
+    specDoubtScope: 'none',
+    parkReasons: { 'correctness:park-me': { kind: 'needs-decision', text: 'fix artifact missing' } },
+  });
+  assert.strictEqual(decision.converged, false);
+  assert.strictEqual(decision.continue, false);
+  assert.strictEqual(decision.parked, true);
+  assert.strictEqual(after.status, 'parked');
+  const parked = after.findings.find((x) => x.id === 'correctness:park-me');
+  assert.strictEqual(parked.status, 'parked');
 });
 
 test('applyRoundOutcome: whole-diff spec-doubt abandons the run', () => {
@@ -522,4 +637,11 @@ test('renderReviewReport: clean and abandoned ledgers are terminal and not surfa
 
 test('renderReviewReport: empty list renders empty string', () => {
   assert.strictEqual(review.renderReviewReport([]), '');
+});
+
+test('renderReviewReport: a converging ledger mid-round shows its phase', () => {
+  const ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  ledger.status = 'converging'; ledger.round = 2; ledger.phase = 'fixes';
+  const out = review.renderReviewReport([{ slug: 'feat-x', ledger }]);
+  assert.match(out, /phase fixes/);
 });

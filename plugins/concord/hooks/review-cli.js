@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 'use strict';
 const fs = require('node:fs');
+const { execFileSync } = require('node:child_process');
+const path = require('node:path');
 const { resolveStateDirFromCwd } = require('./lib/statedir');
+const dodExec = require('./lib/dod-exec');
 const {
   targetSlug,
   readLedger,
@@ -9,8 +12,8 @@ const {
   emptyLedger,
   contentHash,
   beginRound,
-  applyRoundOutcome,
   unparkFinding,
+  resetUnreachable,
 } = require('./lib/review');
 
 function resolveStateDir() {
@@ -18,17 +21,134 @@ function resolveStateDir() {
   return resolveStateDirFromCwd();
 }
 
-// User/agent-supplied data (the diff, finding text, summaries) always arrives via
-// STDIN as JSON, never as an argv token -- the same shell-injection-safe pattern
-// charter-cli.js uses for `set`. Only the target ref and a finding id (both
-// caller-controlled identifiers, not free text) are taken from argv.
-function readStdinJson() {
-  const raw = fs.readFileSync(0, 'utf8');
-  return raw.trim() ? JSON.parse(raw) : {};
+// Impure git/DoD boundary. lib/review.js and lib/gate-contract.js stay pure
+// (no child_process, no fs beyond ledger I/O); all process/git/DoD work for
+// the orchestrator lives here so it can be injected/tested against a real
+// temp repo without touching the caller's own working tree.
+function sh(bin, args, opts = {}) {
+  return execFileSync(bin, args, { encoding: 'utf8', maxBuffer: 20 * 1024 * 1024, ...opts });
+}
+function gitDiff(repoRoot, base) {
+  const args = base ? ['diff', `${base}...HEAD`] : ['diff', 'HEAD'];
+  return sh('git', args, { cwd: repoRoot });
+}
+function gitCommitFix(repoRoot, findingId, summary, files) {
+  // Stage only the files the fix declares -- never `-A`. A whole-tree
+  // `git add -A` sweeps in any other dirty content (untracked non-gitignored
+  // dirs, a crash-recovery leftover, a driver-contract violation) and
+  // silently mis-attributes it to this finding's commit. `files` is a list:
+  // normally just the finding's own file, but a fix may legitimately touch a
+  // companion file (e.g. a caller/import it had to update); every file the
+  // fix subagent declared must land in the same attributed commit, or the
+  // companion edit is wiped later by record()'s gitCheckoutTree.
+  const fileList = Array.isArray(files) ? files : [files];
+  sh('git', ['add', '--', ...fileList], { cwd: repoRoot });
+  sh('git', ['commit', '-m', `fix(review-until-green): ${findingId}\n\n${summary}`], { cwd: repoRoot });
+  return sh('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).trim();
+}
+function gitIsReachable(repoRoot, sha) {
+  try {
+    sh('git', ['merge-base', '--is-ancestor', sha, 'HEAD'], { cwd: repoRoot });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+function gitIsDirty(repoRoot) {
+  return sh('git', ['status', '--porcelain'], { cwd: repoRoot }).trim().length > 0;
+}
+function gitIsDirtyForFile(repoRoot, file) {
+  return sh('git', ['status', '--porcelain', '--', file], { cwd: repoRoot }).trim().length > 0;
+}
+function gitCheckoutTree(repoRoot) {
+  sh('git', ['checkout', '--', '.'], { cwd: repoRoot });
+}
+function runDod(repoRoot) {
+  const cfg = dodExec.loadDodConfig(repoRoot);
+  return dodExec.runDodExec({ cwd: repoRoot, commands: cfg.dod, execFn: dodExec.defaultExecFn });
+}
+
+// Terminal handoff (design §8): rounds, killed/fixed/parked counts, a per-fix
+// rationale digest, and the needs-decision packets -- the "one consolidated
+// handoff" that replaces the manual review<->fix relay. Moved here from
+// review-engine.js (the headless claude-p engine being retired) so `record`
+// can render it without depending on the file that Task 11 deletes.
+function renderHandoff(result) {
+  const { ledger, aborted } = result;
+  const lines = [];
+  lines.push(`review-until-green: target ${ledger.target && ledger.target.ref} -- status: ${ledger.status}`);
+  lines.push(`rounds: ${ledger.round}/${ledger.budget.max_rounds} (spent ${ledger.budget.spent})`);
+  if (aborted) lines.push(`ABORTED (${aborted.kind}): ${aborted.message}`);
+
+  const dodLine = !ledger.dod ? 'DoD: not run' : ledger.dod.passed ? 'DoD: passed' : 'DoD: FAILED';
+  lines.push(dodLine);
+
+  const fixed = (ledger.findings || []).filter((f) => f.status === 'fixed');
+  const killedCount = (ledger.seen || []).filter((s) => s.status === 'killed').length;
+  const parked = (ledger.findings || []).filter((f) => f.status === 'parked');
+  lines.push(`findings: ${fixed.length} fixed, ${killedCount} killed (false-positive), ${parked.length} parked`);
+
+  if (fixed.length) {
+    lines.push('', 'Fix digest:');
+    for (const f of fixed) lines.push(`  - [${f.id}] ${f.summary} -> commit ${f.fix_commit}`);
+  }
+  if (parked.length) {
+    lines.push('', 'Needs-decision packets:');
+    for (const f of parked) {
+      const reason = f.park_reason || {};
+      lines.push(`  - [${f.id}] ${f.file}: ${f.summary}`);
+      lines.push(`    kind: ${reason.kind || 'unknown'} -- ${reason.text || '(no reason recorded)'}`);
+    }
+  }
+  return lines.join('\n');
 }
 
 function requireRef(ref, verb) {
   if (!ref) throw new Error(`review-cli ${verb}: missing required <ref> argument`);
+}
+
+// Fail-closed gate artifact read (design invariant: a broken/missing gate must
+// never be silently read as "zero findings" -- that can manufacture a
+// spurious converged:clean out of a harness failure). Shared by plan-fixes
+// and record; the caller decides what to do with the thrown harness-failure.
+function readArtifact(stateDir, n, name) {
+  const p = path.join(stateDir, `round-${n}-${name}.json`);
+  let raw;
+  try {
+    raw = fs.readFileSync(p, 'utf8');
+  } catch (e) {
+    throw new Error(`harness-failure: missing gate artifact ${name} for round ${n}`);
+  }
+  let j;
+  try {
+    j = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`harness-failure: ${name} artifact is not JSON`);
+  }
+  if (!j || j.status !== 'ok') throw new Error(`harness-failure: ${name} artifact missing status:"ok"`);
+  return j;
+}
+
+// Deletes any state-dir file for round n (diff, gate artifacts, fix artifacts)
+// so a re-driven round never reads a stale artifact left over from a crashed
+// or superseded attempt.
+function deleteRoundArtifacts(stateDir, n) {
+  let names = [];
+  try {
+    names = fs.readdirSync(stateDir);
+  } catch (e) {
+    return;
+  }
+  const prefix = `round-${n}-`;
+  for (const nm of names) {
+    if (nm.startsWith(prefix)) {
+      try {
+        fs.unlinkSync(path.join(stateDir, nm));
+      } catch (e) {
+        // best-effort cleanup
+      }
+    }
+  }
 }
 
 function main() {
@@ -45,27 +165,213 @@ function main() {
 
   if (verb === 'round-start') {
     requireRef(ref, 'round-start');
+    const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
     const slug = targetSlug(ref);
-    const payload = readStdinJson();
-    const target = payload.target || { kind: 'local', ref };
-    const ledger = readLedger(stateDir, slug) || emptyLedger(target);
-    const diffHash = contentHash(payload.diff || '');
-    const { ledger: next, noOp, workHappened, terminal } = beginRound(ledger, diffHash);
-    writeLedger(stateDir, slug, next);
-    const out = { round: next.round, noOp, workHappened, status: next.status, budget: next.budget };
-    if (terminal) out.message = `Already ${next.status}; not starting a new round.`;
-    process.stdout.write(JSON.stringify(out) + '\n');
+    let ledger = readLedger(stateDir, slug) || emptyLedger({ kind: 'local', ref });
+
+    // `resume <ref>` passes NO base token -- fall back to the base persisted
+    // from the original fresh start (ledger.target.base). Without this, an
+    // undefined base makes gitDiff below fall back to `git diff HEAD`, which
+    // is EMPTY on a clean committed tree -- every cross-session resume of a
+    // real branch would silently review nothing and converge clean.
+    const base = rest[0] || (ledger.target && ledger.target.base);
+
+    // Capture BEFORE any mutation. Committed fixes from a crashed round change
+    // the diff, so beginRound's noOp path (same diff hash -> no-op) cannot be
+    // relied on to re-drive the same round -- we pin round/hash ourselves below
+    // instead of calling beginRound at all on a resume.
+    const resumed = ledger.phase === 'gates' || ledger.phase === 'fixes';
+    const resumeRound = ledger.round;
+
+    if (resumed) {
+      gitCheckoutTree(repoRoot); // keep journaled commits, discard uncommitted
+      deleteRoundArtifacts(stateDir, resumeRound);
+      ledger = { ...ledger, phase: 'idle', planned: [], resolved_absent: [] };
+    } else if (gitIsDirty(repoRoot)) {
+      throw new Error('round-start: working tree is dirty; commit or stash before review-until-green');
+    }
+    // Dirty check is skipped when resumed -- the checkout above already made the tree clean.
+
+    const headSha = sh('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).trim();
+    if (ledger.target && ledger.target.head_sha && !gitIsReachable(repoRoot, ledger.target.head_sha)) {
+      ledger = resetUnreachable(ledger);
+    }
+    const diff = gitDiff(repoRoot, base);
+    const diffHash = contentHash(diff);
+
+    if (resumed) {
+      // Resume re-drives round N at zero budget by pinning round/diff_content_hash
+      // directly, bypassing beginRound. This is a real work round: it proceeds to
+      // DoD + phase='gates' below, without advancing round or charging budget.
+      ledger = { ...ledger, diff_content_hash: diffHash, round: resumeRound };
+    } else {
+      deleteRoundArtifacts(stateDir, ledger.round + 1); // stale artifacts for the round about to run
+      const { ledger: begun, noOp, terminal } = beginRound(ledger, diffHash);
+      ledger = begun;
+      if (terminal) {
+        writeLedger(stateDir, slug, ledger);
+        process.stdout.write(JSON.stringify({ decision: 'terminal', status: ledger.status, round: ledger.round, stateDir }) + '\n');
+        return;
+      }
+      if (noOp) {
+        writeLedger(stateDir, slug, ledger);
+        process.stdout.write(JSON.stringify({ decision: 'no-op', round: ledger.round, budget: ledger.budget, stateDir }) + '\n');
+        return;
+      }
+    }
+
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(stateDir, `round-${ledger.round}-diff.txt`), diff);
+    const dod = runDod(repoRoot);
+    ledger = { ...ledger, dod, phase: 'gates', target: { ...(ledger.target || { kind: 'local', ref }), base, head_sha: headSha } };
+    writeLedger(stateDir, slug, ledger);
+    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, stateDir }) + '\n');
     return;
   }
 
   if (verb === 'record') {
     requireRef(ref, 'record');
+    const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
+    const gc = require('./lib/gate-contract');
+    const R = require('./lib/review');
+    const { REVIEW_PARK_BUDGET_DEFAULT } = require('./lib/config');
     const slug = targetSlug(ref);
-    const outcome = readStdinJson();
-    const ledger = readLedger(stateDir, slug) || emptyLedger({ kind: 'local', ref });
-    const { ledger: next, decision } = applyRoundOutcome(ledger, outcome);
+    let ledger = readLedger(stateDir, slug);
+    const n = ledger && ledger.round;
+
+    // Idempotency-first: this MUST be checked before the phase guard below,
+    // since the first successful record already flips phase to 'done' -- a
+    // guard-first ordering would throw on replay instead of reaching this branch.
+    if (ledger && ledger.phase === 'done' && ledger.last_recorded_round === n) {
+      process.stdout.write(
+        JSON.stringify({ decision: ledger._lastDecision || { continue: false }, handoff: renderHandoff({ ledger }) }) + '\n'
+      );
+      return;
+    }
+    if (!ledger || ledger.phase !== 'fixes') throw new Error(`record: expected phase "fixes", got "${ledger && ledger.phase}"`);
+
+    // Per-finding fix artifacts (round-<n>-fix-<id>.json) stay lenient: a
+    // missing/non-ok fix artifact is a legitimate outcome (the fixer never
+    // edited, or crashed) and must PARK that finding needs-decision, not
+    // blow up the whole record call. Only the correctness/verify GATE
+    // artifacts are fail-closed -- see readArtifact above.
+    const readJson = (name) => {
+      try {
+        return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-${name}.json`), 'utf8'));
+      } catch (e) {
+        return null;
+      }
+    };
+    const cJson = readArtifact(stateDir, n, 'correctness');
+    const vJson = readArtifact(stateDir, n, 'verify');
+    const candidates = gc.parseGateFindings(JSON.stringify(cJson.findings || []));
+    const killedIds = gc.parseVerifyVerdict(JSON.stringify({ rejected: vJson.rejected || [] }), candidates).rejectedIds;
+
+    const journaled = new Map((ledger.journal || []).map((j) => [j.id, j.sha]));
+    const fixedIds = [];
+    const parkedIds = [];
+    const fixCommits = {};
+    const parkReasons = {};
+    for (const id of ledger.planned || []) {
+      if (journaled.has(id)) {
+        fixedIds.push(id);
+        fixCommits[id] = journaled.get(id);
+      } else {
+        const fx = readJson(`fix-${id}`);
+        parkedIds.push(id);
+        parkReasons[id] = gc.validateParkReason({ kind: 'needs-decision', text: fx ? 'fix reported no edit or the file was unchanged' : 'fix artifact missing' });
+      }
+    }
+    // Span-already-absent confirmed findings (plan-fixes' replay guard --
+    // ledger.resolved_absent) never entered `planned`, so the loop above never
+    // sees them. They are an idempotent replay: the fix already landed in a
+    // prior/crashed attempt, there is nothing left to commit. Without this,
+    // `outcome.findings` (built from ALL correctness candidates, below) would
+    // carry these ids through applyRoundOutcome with no fixed/parked/killed
+    // status, defaulting them to a phantom 'open' that blocks convergence
+    // forever and never surfaces in the handoff (which only lists parked).
+    for (const id of ledger.resolved_absent || []) {
+      fixedIds.push(id);
+      fixCommits[id] = 'span already absent (idempotent replay)';
+    }
+    const outcome = { dodPassed: !!(ledger.dod && ledger.dod.passed), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons };
+    let { ledger: applied, decision } = R.applyRoundOutcome(ledger, outcome);
+    ledger = applied;
+    // Park-budget override BEFORE the charge below, so a forced terminus doesn't burn a round.
+    if (R.parkBudgetExceeded(ledger, REVIEW_PARK_BUDGET_DEFAULT)) {
+      // converged/parked must move together with continue here -- a stale
+      // converged:true would mislead a consumer that reads decision.converged
+      // without also checking continue.
+      decision = { ...decision, continue: false, converged: false, parked: true };
+      ledger = { ...ledger, status: 'parked' };
+    }
+    if (decision.continue) ledger = { ...ledger, budget: { ...ledger.budget, spent: ledger.budget.spent + 1 } };
+    if (!decision.continue && fixedIds.length > 0) {
+      // Fixes already landed via commit-fix -- re-run DoD against the post-commit
+      // tree so the handoff reports the true final state, not the pre-fix round-start snapshot.
+      ledger = { ...ledger, dod: runDod(repoRoot) };
+    }
+    gitCheckoutTree(repoRoot); // clean any leftover dirty edit from a rejected/parked fixer
+    ledger = { ...ledger, phase: 'done', last_recorded_round: n, _lastDecision: decision };
+    writeLedger(stateDir, slug, ledger);
+    process.stdout.write(JSON.stringify({ decision, handoff: renderHandoff({ ledger }) }) + '\n');
+    return;
+  }
+
+  if (verb === 'plan-fixes') {
+    requireRef(ref, 'plan-fixes');
+    const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
+    const gc = require('./lib/gate-contract');
+    const slug = targetSlug(ref);
+    const ledger = readLedger(stateDir, slug);
+    if (!ledger || ledger.phase !== 'gates') throw new Error(`plan-fixes: expected phase "gates", got "${ledger && ledger.phase}"`);
+    const n = ledger.round;
+    const cJson = readArtifact(stateDir, n, 'correctness');
+    const vJson = readArtifact(stateDir, n, 'verify');
+    const candidates = gc.parseGateFindings(JSON.stringify(cJson.findings || []));
+    // Coverage: every changed file must be in examined. Derive the changed-file
+    // set from the diff file round-start already wrote (single-sourced diff) --
+    // do NOT re-run git against ledger.target.base, which round-start never
+    // persisted before Task 6's base-in-target fix and which duplicates a git
+    // call the CLI already made once this round.
+    const diffText = fs.readFileSync(path.join(stateDir, `round-${n}-diff.txt`), 'utf8');
+    const changed = Array.from(new Set((diffText.match(/^\+\+\+ b\/(.+)$/gm) || []).map((l) => l.replace(/^\+\+\+ b\//, '').trim())));
+    const examined = new Set(Array.isArray(cJson.examined) ? cJson.examined : []);
+    const missing = changed.filter((f) => !examined.has(f));
+    if (missing.length) throw new Error(`harness-failure: coverage -- changed file(s) never examined: ${missing.join(', ')}`);
+    const verdict = gc.parseVerifyVerdict(JSON.stringify({ rejected: vJson.rejected || [] }), candidates);
+    const killed = new Set(verdict.rejectedIds);
+    const survivors = require('./lib/review').dedupeAgainstSeen(candidates, ledger.seen);
+    const concluded = new Set((ledger.findings || []).filter((f) => f.status !== 'open').map((f) => f.id));
+    const spanPresent = (file, span) => {
+      if (!span) return true;
+      try {
+        return fs.readFileSync(path.join(repoRoot, file), 'utf8').includes(span);
+      } catch (e) {
+        return false;
+      }
+    };
+    // A finding dedupeAgainstSeen marked `reopened: true` recurred after being
+    // marked 'fixed' -- it is still present in `ledger.findings` with that
+    // 'fixed' status (so `concluded` contains its id), but it is NOT actually
+    // concluded: the fix didn't hold or was reverted. Let it bypass the
+    // concluded check so it can reach the driver as a fix or a park, instead
+    // of being silently discarded.
+    const confirmedNonKilled = survivors.filter((f) => !killed.has(f.id) && (!concluded.has(f.id) || f.reopened));
+    // Split on the replay guard: a span still present is genuinely fixable
+    // (drives a fix subagent below). A span already absent from the file is
+    // an idempotent replay -- the fix already landed in a prior/crashed
+    // attempt -- and must NOT be silently dropped: `record` (Task 8b) treats
+    // `resolved_absent` ids as 'fixed', not a phantom 'open'.
+    const fixes = confirmedNonKilled
+      .filter((f) => spanPresent(f.file, f.span))
+      .map((f) => ({ id: f.id, file: f.file, span: f.span, summary: f.summary }));
+    const resolvedAbsent = confirmedNonKilled
+      .filter((f) => !spanPresent(f.file, f.span))
+      .map((f) => f.id);
+    const next = { ...ledger, planned: fixes.map((f) => f.id), resolved_absent: resolvedAbsent, phase: 'fixes' };
     writeLedger(stateDir, slug, next);
-    process.stdout.write(JSON.stringify({ status: next.status, decision }) + '\n');
+    process.stdout.write(JSON.stringify({ fixes }) + '\n');
     return;
   }
 
@@ -82,12 +388,52 @@ function main() {
     return;
   }
 
-  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | record | unpark)`);
+  if (verb === 'commit-fix') {
+    requireRef(ref, 'commit-fix');
+    const id = rest[0];
+    if (!id) throw new Error('commit-fix: missing <findingId>');
+    const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
+    const slug = targetSlug(ref);
+    let ledger = readLedger(stateDir, slug);
+    if (!ledger || ledger.phase !== 'fixes') throw new Error(`commit-fix: expected phase "fixes", got "${ledger && ledger.phase}"`);
+    const n = ledger.round;
+    if ((ledger.journal || []).some((j) => j.id === id)) { process.stdout.write(JSON.stringify({ committed: false, reason: 'already journaled' }) + '\n'); return; } // idempotent
+    const fx = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-fix-${id}.json`), 'utf8')); } catch (e) { return null; } })();
+    const cJson = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-correctness.json`), 'utf8')); } catch (e) { return { findings: [] }; } })();
+    const finding = (cJson.findings || []).find((f) => f.id === id) || { summary: '', file: null };
+    // The fix subagent declares every file it touched via `files` (finding.file
+    // plus any companion edit -- e.g. a caller/import the fix legitimately had
+    // to update). Fall back to [finding.file] for backward compatibility with
+    // a fix artifact that never sets `files`.
+    const files = ((fx && Array.isArray(fx.files) && fx.files.length) ? fx.files : [finding.file]).filter(Boolean);
+    // File-scoped, not tree-wide: gating and staging on the whole tree would
+    // sweep unrelated dirty content (a stray untracked dir, a crash-recovery
+    // leftover) into this finding's commit -- the same mis-attribution the
+    // per-finding journal exists to prevent. Staging every declared file (not
+    // just finding.file) matters too: a fix that legitimately edits a second
+    // file must have BOTH edits land in the same attributed commit, or the
+    // companion edit is silently wiped by record()'s later gitCheckoutTree.
+    if (fx && fx.status === 'ok' && fx.edited === true && finding.file && files.some((f) => gitIsDirtyForFile(repoRoot, f))) {
+      const sha = gitCommitFix(repoRoot, id, finding.summary, files);
+      ledger = { ...ledger, journal: [...(ledger.journal || []), { id, sha }] };
+      writeLedger(stateDir, slug, ledger);
+      process.stdout.write(JSON.stringify({ committed: true, sha }) + '\n');
+    } else {
+      process.stdout.write(JSON.stringify({ committed: false, reason: 'no edit or file unchanged' }) + '\n');
+    }
+    return;
+  }
+
+  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | plan-fixes | commit-fix | record | unpark)`);
 }
 
-try {
-  main();
-} catch (e) {
-  process.stderr.write(`review-cli: ${e && e.message ? e.message : e}\n`);
-  process.exit(1);
+module.exports = { gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitCheckoutTree, runDod };
+
+if (require.main === module) {
+  try {
+    main();
+  } catch (e) {
+    process.stderr.write(`review-cli: ${e && e.message ? e.message : e}\n`);
+    process.exit(1);
+  }
 }

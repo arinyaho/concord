@@ -10,18 +10,33 @@ const path = require('node:path');
 const DEFAULT_DOD_COMMANDS = ['node --test'];
 const CONFIG_FILENAME = 'review.config.json';
 
-// Reads `review.config.json` from repoRoot. Missing/corrupt config degrades to
-// the default command list rather than throwing (mirrors review.js's
-// readLedger: a broken durable file is "nothing yet", not a blocker).
+// Reads `review.config.json` from repoRoot. An ABSENT config is benign --
+// mirrors review.js's readLedger: nothing written yet is "nothing yet", not a
+// blocker -- and degrades to the default command list. A PRESENT-BUT-CORRUPT
+// config is a broken gate definition, not "nothing yet": it must fail closed
+// (harness-failure) rather than silently substitute the default, which on a
+// non-node repo would run `node --test`, find zero tests, exit 0, and
+// manufacture a false-clean DoD pass out of a harness failure.
 function loadDodConfig(repoRoot, readFileFn = fs.readFileSync) {
+  let raw;
   try {
-    const raw = readFileFn(path.join(repoRoot, CONFIG_FILENAME), 'utf8');
-    const parsed = JSON.parse(raw);
-    const dod = Array.isArray(parsed.dod) && parsed.dod.length ? parsed.dod.filter((c) => typeof c === 'string' && c.trim()) : null;
-    return { dod: dod && dod.length ? dod : DEFAULT_DOD_COMMANDS };
+    raw = readFileFn(path.join(repoRoot, CONFIG_FILENAME), 'utf8');
   } catch (e) {
-    return { dod: DEFAULT_DOD_COMMANDS };
+    if (e && e.code === 'ENOENT') return { dod: DEFAULT_DOD_COMMANDS };
+    throw new Error(`harness-failure: ${CONFIG_FILENAME} is present but unreadable: ${e && e.message ? e.message : e}`);
   }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`harness-failure: ${CONFIG_FILENAME} is present but malformed: ${e && e.message ? e.message : e}`);
+  }
+  const dod =
+    parsed && Array.isArray(parsed.dod) && parsed.dod.length ? parsed.dod.filter((c) => typeof c === 'string' && c.trim()) : null;
+  if (!dod || !dod.length) {
+    throw new Error(`harness-failure: ${CONFIG_FILENAME} is present but its "dod" field is not a non-empty array of commands`);
+  }
+  return { dod };
 }
 
 // Runs each configured command in order via the injected `execFn(cmd, cwd) ->
