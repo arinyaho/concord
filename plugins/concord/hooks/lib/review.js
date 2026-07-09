@@ -416,6 +416,8 @@ function renderReviewReport(ledgers) {
       lines.push(`review-until-green [${ref}]: ${roundInfo}${ph}, ${open} open finding(s) -- converging; resume with \`/review-until-green resume ${ref}\`.`);
     } else if (ledger.status === 'parked') {
       lines.push(`review-until-green [${ref}]: ${roundInfo}, ${open} open finding(s) -- parked, needs a human decision; see \`review-cli.js show ${ref}\` (unpark a finding with \`review-cli.js unpark ${ref} <findingId>\`).`);
+    } else if (ledger.status === 'intent-review') {
+      lines.push(`review-until-green [${ref}]: ${roundInfo} -- stopped for a design-conformance (intent) finding, needs a human decision; re-run \`/review-until-green ${ref}\` after fixing the code or the design source (a fixed contradiction converges, an unfixed one re-fetches the intent).`);
     }
   }
   return lines.join('\n');

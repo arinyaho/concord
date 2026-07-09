@@ -646,6 +646,16 @@ test('renderReviewReport: a converging ledger mid-round shows its phase', () => 
   assert.match(out, /phase fixes/);
 });
 
+test('renderReviewReport: intent-review ledgers surface a design-conformance reminder, not silently omitted', () => {
+  const l = review.emptyLedger({ kind: 'local', ref: 'feat/e' });
+  l.status = 'intent-review';
+  l.round = 3;
+  l.intent_parked = [{ id: 'intent:1', file: 'a.js', summary: 'contradicts spec' }];
+  const out = review.renderReviewReport([{ slug: 'feat-e', ledger: l }]);
+  assert.ok(out.includes('feat/e'));
+  assert.match(out, /intent|design.conformance/i);
+});
+
 test('decideTermination: an open intent finding -> intent-review (blocks clean, before the clean branch)', () => {
   const d = review.decideTermination({
     dodPassed: true, openFindingsCount: 0, specDoubtScope: 'none',

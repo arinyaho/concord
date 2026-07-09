@@ -645,6 +645,45 @@ test('record: an intent finding terminates intent-review and the handoff shows i
   assert.strictEqual(ledger.status, 'intent-review');
 });
 
+test('record: park-budget override on an intent-review round clears intentReview, leaving only parked', () => {
+  // A round whose OWN decision would be intent-review (an intent finding, no
+  // this-round needs-decision parks) must still get force-terminated to
+  // "parked" once REVIEW_PARK_BUDGET_DEFAULT prior parks are on the books --
+  // and the override must not leave a stale intentReview:true riding along
+  // with parked:true, or the command prompt would print "resolve and re-run"
+  // intent guidance while the ledger truthfully refuses to resume until `unpark`.
+  const { REVIEW_PARK_BUDGET_DEFAULT } = require('../lib/config');
+  const repo = initRepoWithIntent('printf "REQ: retry three times"');
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'intent', { status: 'ok', findings: [
+    { id: 'intent:retry-count', file: 'a.txt', span: 'two', summary: 'retries once', requirement: 'retry three times' },
+  ] });
+  run(['plan-fixes', 'feat/x'], { env });
+
+  // Seed REVIEW_PARK_BUDGET_DEFAULT pre-existing needs-decision parks so the
+  // breaker trips on this record call, same technique as the plain park-budget test.
+  const slug = review.targetSlug('feat/x');
+  let ledger = review.readLedger(dir, slug);
+  const priorParks = [];
+  for (let i = 0; i < REVIEW_PARK_BUDGET_DEFAULT; i += 1) {
+    priorParks.push({ id: `correctness:old-${i}`, gate: 'correctness', file: 'a.txt', span: '', summary: 'x', status: 'parked', park_reason: { kind: 'needs-decision', text: 'prior' } });
+  }
+  ledger = { ...ledger, findings: priorParks };
+  review.writeLedger(dir, slug, ledger);
+
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.parked, true);
+  assert.ok(!out.decision.intentReview); // must be cleared, not left riding along with parked:true
+  const after = review.readLedger(dir, slug);
+  assert.strictEqual(after.status, 'parked'); // not the stale 'intent-review'
+});
+
 test('renderHandoff: no intent config -> "intent: not configured"', () => {
   const repo = initRepo();
   const dir = tmpDir();

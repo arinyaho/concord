@@ -342,8 +342,11 @@ function main() {
     if (R.parkBudgetExceeded(ledger, REVIEW_PARK_BUDGET_DEFAULT)) {
       // converged/parked must move together with continue here -- a stale
       // converged:true would mislead a consumer that reads decision.converged
-      // without also checking continue.
-      decision = { ...decision, continue: false, converged: false, parked: true };
+      // without also checking continue. Likewise clear intentReview: without
+      // it a park-budget terminus on an intent-review decision would still
+      // print "resolve and re-run" intent guidance while the ledger status
+      // is truthfully "parked" (which refuses to resume until `unpark`).
+      decision = { ...decision, continue: false, converged: false, parked: true, intentReview: false };
       ledger = { ...ledger, status: 'parked' };
     }
     if (decision.continue) ledger = { ...ledger, budget: { ...ledger.budget, spent: ledger.budget.spent + 1 } };
