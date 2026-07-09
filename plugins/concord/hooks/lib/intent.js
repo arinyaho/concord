@@ -45,4 +45,30 @@ function loadIntentConfig(repoRoot, readFileFn = fs.readFileSync) {
   return { command: intent.command };
 }
 
-module.exports = { CONFIG_FILENAME, INTENT_MAX_BYTES, INTENT_TIMEOUT_MS, loadIntentConfig };
+// Real exec: shell so a composed "cat a && cmd b" works; timeout because intent
+// sources are network/auth-bound (gh, tracker CLIs) unlike local DoD tests -- a
+// blocked fetch must not hang round-start with no terminus.
+function intentExecFn(cmd, cwd, env) {
+  const { spawnSync } = require('node:child_process');
+  const r = spawnSync(cmd, { cwd, shell: true, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024, timeout: INTENT_TIMEOUT_MS, env });
+  if (r.error && r.error.code === 'ETIMEDOUT') return { status: 124, stdout: r.stdout, stderr: 'intent fetch timed out' };
+  return { status: r.status == null ? 1 : r.status, stdout: r.stdout, stderr: r.stderr };
+}
+
+// Fetch the intent blob, fail-closed on substance not just transport. ref/base
+// go through the child ENV (REVIEW_REF/REVIEW_BASE), never string-interpolated
+// into `command` -- on an untrusted PR the branch name is contributor-controlled
+// and interpolation would be a command-injection primitive.
+function fetchIntent({ command, cwd, ref, base, execFn = intentExecFn }) {
+  const env = { ...process.env, REVIEW_REF: ref == null ? '' : String(ref), REVIEW_BASE: base == null ? '' : String(base) };
+  const { status, stdout } = execFn(command, cwd, env);
+  if (status !== 0) throw new Error(`harness-failure: intent fetch command exited ${status}`);
+  const text = String(stdout == null ? '' : stdout);
+  if (text.trim() === '') throw new Error('harness-failure: intent fetch produced empty output');
+  const bytes = Buffer.byteLength(text, 'utf8');
+  if (bytes > INTENT_MAX_BYTES) throw new Error(`harness-failure: intent output ${bytes} bytes exceeds cap ${INTENT_MAX_BYTES}`);
+  const sha = crypto.createHash('sha256').update(text, 'utf8').digest('hex');
+  return { text, sha, bytes };
+}
+
+module.exports = { CONFIG_FILENAME, INTENT_MAX_BYTES, INTENT_TIMEOUT_MS, loadIntentConfig, intentExecFn, fetchIntent };
