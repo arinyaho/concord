@@ -183,7 +183,7 @@ function main() {
     if (resumed) {
       gitCheckoutTree(repoRoot); // keep journaled commits, discard uncommitted
       deleteRoundArtifacts(stateDir, resumeRound);
-      ledger = { ...ledger, phase: 'idle', planned: [] };
+      ledger = { ...ledger, phase: 'idle', planned: [], resolved_absent: [] };
     } else if (gitIsDirty(repoRoot)) {
       throw new Error('round-start: working tree is dirty; commit or stash before review-until-green');
     }
@@ -279,6 +279,18 @@ function main() {
         parkReasons[id] = gc.validateParkReason({ kind: 'needs-decision', text: fx ? 'fix reported no edit or the file was unchanged' : 'fix artifact missing' });
       }
     }
+    // Span-already-absent confirmed findings (plan-fixes' replay guard --
+    // ledger.resolved_absent) never entered `planned`, so the loop above never
+    // sees them. They are an idempotent replay: the fix already landed in a
+    // prior/crashed attempt, there is nothing left to commit. Without this,
+    // `outcome.findings` (built from ALL correctness candidates, below) would
+    // carry these ids through applyRoundOutcome with no fixed/parked/killed
+    // status, defaulting them to a phantom 'open' that blocks convergence
+    // forever and never surfaces in the handoff (which only lists parked).
+    for (const id of ledger.resolved_absent || []) {
+      fixedIds.push(id);
+      fixCommits[id] = 'span already absent (idempotent replay)';
+    }
     const outcome = { dodPassed: !!(ledger.dod && ledger.dod.passed), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons };
     let { ledger: applied, decision } = R.applyRoundOutcome(ledger, outcome);
     ledger = applied;
@@ -336,16 +348,25 @@ function main() {
         return false;
       }
     };
-    const fixes = survivors
-      // A finding dedupeAgainstSeen marked `reopened: true` recurred after being
-      // marked 'fixed' -- it is still present in `ledger.findings` with that
-      // 'fixed' status (so `concluded` contains its id), but it is NOT actually
-      // concluded: the fix didn't hold or was reverted. Let it bypass the
-      // concluded check so it can reach the driver as a fix or a park, instead
-      // of being silently discarded.
-      .filter((f) => !killed.has(f.id) && (!concluded.has(f.id) || f.reopened) && spanPresent(f.file, f.span))
+    // A finding dedupeAgainstSeen marked `reopened: true` recurred after being
+    // marked 'fixed' -- it is still present in `ledger.findings` with that
+    // 'fixed' status (so `concluded` contains its id), but it is NOT actually
+    // concluded: the fix didn't hold or was reverted. Let it bypass the
+    // concluded check so it can reach the driver as a fix or a park, instead
+    // of being silently discarded.
+    const confirmedNonKilled = survivors.filter((f) => !killed.has(f.id) && (!concluded.has(f.id) || f.reopened));
+    // Split on the replay guard: a span still present is genuinely fixable
+    // (drives a fix subagent below). A span already absent from the file is
+    // an idempotent replay -- the fix already landed in a prior/crashed
+    // attempt -- and must NOT be silently dropped: `record` (Task 8b) treats
+    // `resolved_absent` ids as 'fixed', not a phantom 'open'.
+    const fixes = confirmedNonKilled
+      .filter((f) => spanPresent(f.file, f.span))
       .map((f) => ({ id: f.id, file: f.file, span: f.span, summary: f.summary }));
-    const next = { ...ledger, planned: fixes.map((f) => f.id), phase: 'fixes' };
+    const resolvedAbsent = confirmedNonKilled
+      .filter((f) => !spanPresent(f.file, f.span))
+      .map((f) => f.id);
+    const next = { ...ledger, planned: fixes.map((f) => f.id), resolved_absent: resolvedAbsent, phase: 'fixes' };
     writeLedger(stateDir, slug, next);
     process.stdout.write(JSON.stringify({ fixes }) + '\n');
     return;

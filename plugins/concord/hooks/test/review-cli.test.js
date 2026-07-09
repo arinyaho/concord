@@ -225,6 +225,38 @@ test('plan-fixes: a changed file never examined is a harness-failure (coverage)'
   assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure|coverage/);
 });
 
+// DEFECT: a confirmed (not-killed) finding whose span is no longer present in
+// its file was silently dropped from `planned`/`fixes` by the replay guard,
+// but `record` built its outcome from ALL correctness candidates -- so the
+// dropped finding still flowed into applyRoundOutcome, got no fixed/parked/
+// killed status, and defaulted to 'open': a phantom finding that blocks
+// convergence forever and never appears in the handoff (which only lists
+// parked findings). The correct semantics (matching the deleted engine.js):
+// a span-already-absent finding is an idempotent replay -- its fix already
+// landed in a prior/crashed attempt -- so it must be recorded 'fixed', not
+// 'open'.
+test('plan-fixes + record: a confirmed finding whose span is already absent from the file is idempotent-fixed, not a phantom open', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [
+      { id: 'correctness:absent', gate: 'correctness', file: 'a.txt', span: 'this-span-is-not-in-the-file', summary: 'x' } ] },
+    { status: 'ok', rejected: [] });
+
+  const planOut = JSON.parse(run(['plan-fixes', 'feat/x'], { env }));
+  assert.deepStrictEqual(planOut.fixes, []); // span absent -- not in the fixable set
+  const afterPlan = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.deepStrictEqual(afterPlan.planned, []);
+  assert.deepStrictEqual(afterPlan.resolved_absent, ['correctness:absent']);
+
+  // No fix subagent, no commit-fix call -- there is nothing to commit.
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  const l = review.readLedger(dir, review.targetSlug('feat/x'));
+  const f = l.findings.find((x) => x.id === 'correctness:absent');
+  assert.strictEqual(f.status, 'fixed'); // NOT 'open' -- the phantom-open bug
+  assert.strictEqual(l.findings.filter((x) => x.status === 'open').length, 0);
+  assert.strictEqual(out.decision.parked, false); // does not strand convergence
+});
+
 test('commit-fix: commits one fix and journals it', () => {
   const repo = initRepo(); const dir = tmpDir();
   const { env, n } = seedGatesRound(repo, dir, 'feat/x',

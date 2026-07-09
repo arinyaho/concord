@@ -47,6 +47,7 @@ function emptyLedger(target) {
     phase: 'idle',
     dod: null,
     planned: [],
+    resolved_absent: [],
     journal: [],
     last_recorded_round: null,
   };
