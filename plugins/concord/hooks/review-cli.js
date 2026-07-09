@@ -74,12 +74,10 @@ function runDod(repoRoot) {
 // review-engine.js (the headless claude-p engine being retired) so `record`
 // can render it without depending on the file that Task 11 deletes.
 function renderHandoff(result) {
-  const { ledger, cost, aborted } = result;
+  const { ledger, aborted } = result;
   const lines = [];
   lines.push(`review-until-green: target ${ledger.target && ledger.target.ref} -- status: ${ledger.status}`);
-  lines.push(
-    `rounds: ${ledger.round}/${ledger.budget.max_rounds} (spent ${ledger.budget.spent})  cost: $${cost.totalUsd.toFixed(4)} across ${cost.calls} call(s)`
-  );
+  lines.push(`rounds: ${ledger.round}/${ledger.budget.max_rounds} (spent ${ledger.budget.spent})`);
   if (aborted) lines.push(`ABORTED (${aborted.kind}): ${aborted.message}`);
 
   const dodLine = !ledger.dod ? 'DoD: not run' : ledger.dod.passed ? 'DoD: passed' : 'DoD: FAILED';
@@ -246,7 +244,7 @@ function main() {
     // guard-first ordering would throw on replay instead of reaching this branch.
     if (ledger && ledger.phase === 'done' && ledger.last_recorded_round === n) {
       process.stdout.write(
-        JSON.stringify({ decision: ledger._lastDecision || { continue: false }, handoff: renderHandoff({ ledger, cost: { totalUsd: 0, calls: 0 } }) }) + '\n'
+        JSON.stringify({ decision: ledger._lastDecision || { continue: false }, handoff: renderHandoff({ ledger }) }) + '\n'
       );
       return;
     }
@@ -316,7 +314,7 @@ function main() {
     gitCheckoutTree(repoRoot); // clean any leftover dirty edit from a rejected/parked fixer
     ledger = { ...ledger, phase: 'done', last_recorded_round: n, _lastDecision: decision };
     writeLedger(stateDir, slug, ledger);
-    process.stdout.write(JSON.stringify({ decision, handoff: renderHandoff({ ledger, cost: { totalUsd: 0, calls: 0 } }) }) + '\n');
+    process.stdout.write(JSON.stringify({ decision, handoff: renderHandoff({ ledger }) }) + '\n');
     return;
   }
 
