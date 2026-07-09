@@ -83,6 +83,7 @@ function renderHandoff(result) {
 
   const dodLine = !ledger.dod ? 'DoD: not run' : ledger.dod.passed ? 'DoD: passed' : 'DoD: FAILED';
   lines.push(dodLine);
+  lines.push(ledger.intentHash ? `intent: applied (${String(ledger.intentHash).slice(0, 12)}, ${ledger.intentBytes} bytes)` : 'intent: not configured');
 
   const fixed = (ledger.findings || []).filter((f) => f.status === 'fixed');
   const killedCount = (ledger.seen || []).filter((s) => s.status === 'killed').length;
@@ -90,8 +91,18 @@ function renderHandoff(result) {
   lines.push(`findings: ${fixed.length} fixed, ${killedCount} killed (false-positive), ${parked.length} parked`);
 
   if (fixed.length) {
-    lines.push('', 'Fix digest:');
+    const conf = ledger.status === 'intent-review' ? ' (pending confirmation)' : '';
+    lines.push('', `Fix digest${conf}:`);
     for (const f of fixed) lines.push(`  - [${f.id}] ${f.summary} -> commit ${f.fix_commit}`);
+  }
+  const intentParked = ledger.intent_parked || [];
+  if (intentParked.length) {
+    lines.push('', 'Intent findings (design conformance -- your decision; fix code or source, then re-run):');
+    for (const f of intentParked) {
+      lines.push(`  - [${f.id}] ${f.file}: ${f.summary}`);
+      lines.push(`    requirement: ${f.requirement || '(none)'}`);
+      lines.push(`    contradicts: ${f.span || '(no line)'}`);
+    }
   }
   if (parked.length) {
     lines.push('', 'Needs-decision packets:');
@@ -324,7 +335,7 @@ function main() {
       fixedIds.push(id);
       fixCommits[id] = 'span already absent (idempotent replay)';
     }
-    const outcome = { dodPassed: !!(ledger.dod && ledger.dod.passed), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons };
+    const outcome = { dodPassed: !!(ledger.dod && ledger.dod.passed), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons, intentReviewCount: (ledger.intent_parked || []).length };
     let { ledger: applied, decision } = R.applyRoundOutcome(ledger, outcome);
     ledger = applied;
     // Park-budget override BEFORE the charge below, so a forced terminus doesn't burn a round.
