@@ -27,4 +27,13 @@ export const ROLES = {
     name: "reviewer",
     systemPrompt: reviewerSystemPrompt(false),
   },
+  coder: {
+    name: "coder",
+    systemPrompt:
+      "You are CODER, a careful senior engineer. You are given a task and work inside a git " +
+      "worktree. Make the smallest correct change that satisfies the task. Run the provided " +
+      "Definition-of-Done command locally and ensure it passes before you finish. Then commit " +
+      "your change on the given branch. Do not push. Reply with one terse line summarizing what " +
+      "you changed.",
+  },
 };
