@@ -51,7 +51,7 @@ const verifyOk = verifyArt.status === "ok" && Array.isArray(verifyArt.rejected);
 
 const ok = reviewOk && fixOk && verifyOk && !process.env.ANTHROPIC_API_KEY;
 console.log(JSON.stringify({
-  ok, examined: reviewArt.examined, findingCount: reviewArt.findings.length,
+  ok, examined: reviewArt.examined, findingCount: (reviewArt.findings || []).length,
   fixTried: !!findingId, fixStatus: fixArt && fixArt.status, verifyStatus: verifyArt.status,
   apiKeyPresent: !!process.env.ANTHROPIC_API_KEY,
 }, null, 2));
