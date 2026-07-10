@@ -891,6 +891,11 @@ test('round-start warns when the base branch is behind its upstream', () => {
   });
   assert.strictEqual(r2.status, 0);
   assert.ok(!r2.stderr.includes('behind its upstream'), 'no stale-base warning for a ref without a configured upstream');
+  // The upstream lookup fails for a no-upstream base (git prints "fatal: ..." to
+  // its own stderr); the warning block must SWALLOW that noise, not leak it. The
+  // default base is origin/<main>, which has no upstream, so this path runs every
+  // round -- a leaked "fatal:" reads as an error though the run is fine.
+  assert.ok(!/fatal|no such branch|no upstream/i.test(r2.stderr), `a no-upstream base must not leak git's stderr; got: ${r2.stderr}`);
 });
 
 // ---- dod:null deferred opt-out integration ----
