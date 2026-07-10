@@ -7,22 +7,24 @@ const path = require('node:path');
 // Commands are configurable per-repo via `review.config.json` at the repo
 // root; `execFn` is injectable so unit tests never spawn a real process.
 
-const DEFAULT_DOD_COMMANDS = ['node --test'];
 const CONFIG_FILENAME = 'review.config.json';
 
-// Reads `review.config.json` from repoRoot. An ABSENT config is benign --
-// mirrors review.js's readLedger: nothing written yet is "nothing yet", not a
-// blocker -- and degrades to the default command list. A PRESENT-BUT-CORRUPT
-// config is a broken gate definition, not "nothing yet": it must fail closed
-// (harness-failure) rather than silently substitute the default, which on a
-// non-node repo would run `node --test`, find zero tests, exit 0, and
-// manufacture a false-clean DoD pass out of a harness failure.
+// Reads `review.config.json` from repoRoot. An ABSENT config is a hard error
+// (harness-failure): there is no silent default. On a repo with no node tests,
+// a silent `node --test` default finds 0 tests, exits 0, and manufactures a
+// false-clean DoD pass -- violating concord's fail-closed / distrust-green
+// principle. The user must declare their gate explicitly. A PRESENT-BUT-CORRUPT
+// config also fails closed.
 function loadDodConfig(repoRoot, readFileFn = fs.readFileSync) {
   let raw;
   try {
     raw = readFileFn(path.join(repoRoot, CONFIG_FILENAME), 'utf8');
   } catch (e) {
-    if (e && e.code === 'ENOENT') return { dod: DEFAULT_DOD_COMMANDS };
+    if (e && e.code === 'ENOENT') {
+      throw new Error(
+        `harness-failure: no ${CONFIG_FILENAME} at the repo root -- declare your DoD gate, e.g. {"dod":["node --test"]} or {"dod":["pnpm build"]}. concord will not run a silent default gate that can pass on a repo it never actually tested (false clean).`,
+      );
+    }
     throw new Error(`harness-failure: ${CONFIG_FILENAME} is present but unreadable: ${e && e.message ? e.message : e}`);
   }
   let parsed;
@@ -67,4 +69,4 @@ function defaultExecFn(cmd, cwd) {
   return { status: r.status == null ? 1 : r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
-module.exports = { DEFAULT_DOD_COMMANDS, CONFIG_FILENAME, loadDodConfig, runDodExec, defaultExecFn };
+module.exports = { CONFIG_FILENAME, loadDodConfig, runDodExec, defaultExecFn };
