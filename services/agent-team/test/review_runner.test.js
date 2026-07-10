@@ -105,7 +105,14 @@ test("harness-failure (thrown) at round-start maps to outcome error, never conve
 });
 
 test("harness-failure flagged result at round-start also maps to error", async () => {
-  const cli = fakeCli({ "round-start": [{ harnessFailure: true, message: "bad" }] });
+  const cli = fakeCli({
+    // Downstream verbs scripted so that IF the isHarnessFailure guard were removed,
+    // the loop would proceed to a FALSE converged (caught by the error assertion),
+    // instead of crashing on an unscripted verb and reaching error for the wrong reason.
+    "round-start": [{ harnessFailure: true, message: "bad" }],
+    "plan-fixes": [{ fixes: [] }],
+    "record": [{ decision: { continue: false, converged: true } }],
+  });
   const sp = recordingSpawn();
   const res = await runReviewUntilGreen({ target: TARGET, runCli: cli.runCli, spawn: sp.spawn, maxRounds: 5 });
   assert.equal(res.outcome, "error");
@@ -123,8 +130,11 @@ test("harness-failure (thrown) at plan-fixes maps to outcome error, never conver
 
 test("harness-failure flagged result at plan-fixes maps to error", async () => {
   const cli = fakeCli({
+    // Guard removed -> plan.fixes undefined -> loop skips fixes and records converged;
+    // the scripted record makes that FALSE converged reachable so the error assertion pins the guard.
     "round-start": [{ decision: "work", round: 1, stateDir: "/s", dodPassed: false }],
     "plan-fixes": [{ harnessFailure: true, message: "bad" }],
+    "record": [{ decision: { continue: false, converged: true } }],
   });
   const sp = recordingSpawn();
   const res = await runReviewUntilGreen({ target: TARGET, runCli: cli.runCli, spawn: sp.spawn, maxRounds: 5 });
@@ -144,9 +154,12 @@ test("harness-failure (thrown) at commit-fix maps to outcome error, never conver
 
 test("harness-failure flagged result at commit-fix maps to error", async () => {
   const cli = fakeCli({
+    // Guard removed -> committed.committed undefined (falsy) -> fix uncounted -> loop records converged;
+    // the scripted record makes that FALSE converged reachable so the error assertion pins the guard.
     "round-start": [{ decision: "work", round: 1, stateDir: "/s", dodPassed: false }],
     "plan-fixes": [{ fixes: [{ id: "correctness:a" }] }],
     "commit-fix": [{ harnessFailure: true, message: "bad" }],
+    "record": [{ decision: { continue: false, converged: true } }],
   });
   const sp = recordingSpawn();
   const res = await runReviewUntilGreen({ target: TARGET, runCli: cli.runCli, spawn: sp.spawn, maxRounds: 5 });
@@ -166,9 +179,13 @@ test("harness-failure (thrown) at record maps to outcome error, never converged"
 
 test("harness-failure flagged result at record maps to error", async () => {
   const cli = fakeCli({
+    // Guard removed -> rec.decision undefined -> d={} -> !d.continue true, not converged ->
+    // parked branch runs `show`; the scripted parked finding makes that FALSE parked reachable
+    // so the error assertion pins the guard.
     "round-start": [{ decision: "work", round: 1, stateDir: "/s", dodPassed: false }],
     "plan-fixes": [{ fixes: [] }],
     "record": [{ harnessFailure: true, message: "bad" }],
+    "show": [{ findings: [{ id: "p", status: "parked" }] }],
   });
   const sp = recordingSpawn();
   const res = await runReviewUntilGreen({ target: TARGET, runCli: cli.runCli, spawn: sp.spawn, maxRounds: 5 });
