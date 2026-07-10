@@ -583,6 +583,18 @@ test('unparkFinding: reopens a parked finding and un-terminals a parked ledger',
   assert.strictEqual(after.status, 'converging');
 });
 
+test('unparkFinding: drops the finding\'s seen entry so a re-report is not suppressed', () => {
+  let ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  ledger.status = 'parked';
+  ledger.findings.push({ id: 'f9', status: 'parked' });
+  ledger.seen.push({ id: 'f9', hash: 'h', status: 'parked' });
+  const after = review.unparkFinding(ledger, 'f9');
+  // Finding stays 'open' (re-evaluated next round); its seen entry is dropped so
+  // dedupeAgainstSeen will not suppress the gate re-reporting it.
+  assert.strictEqual(after.findings.find((f) => f.id === 'f9').status, 'open');
+  assert.ok(!after.seen.some((s) => s.id === 'f9'));
+});
+
 test('unparkFinding: throws for an unknown finding id', () => {
   const ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
   assert.throws(() => review.unparkFinding(ledger, 'nope'));
