@@ -376,7 +376,15 @@ function unparkFinding(ledger, findingId) {
   if (idx === -1) throw new Error(`unparkFinding: no such finding id "${findingId}"`);
   const findings = ledger.findings.slice();
   findings[idx] = { ...findings[idx], status: 'open', park_reason: null };
-  return { ...ledger, findings, status: 'converging' };
+  // Drop the finding's seen entry too. A leftover 'parked' seen entry makes
+  // dedupeAgainstSeen suppress the finding if the gate re-reports it next round,
+  // so a still-present unparked finding would never re-surface to be re-processed
+  // (and a resolved one would linger 'open'). Dropping it lets the gate re-arbitrate:
+  // still-broken -> re-reported and re-processed; resolved -> silent -> stops
+  // blocking convergence. Keeps status 'open' (fail-closed) rather than deleting the
+  // finding, so a gate that flakes on a still-open finding parks, never false-greens.
+  const seen = (ledger.seen || []).filter((s) => s.id !== findingId);
+  return { ...ledger, findings, seen, status: 'converging' };
 }
 
 // ---------------------------------------------------------------------------
