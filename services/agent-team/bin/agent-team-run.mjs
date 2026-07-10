@@ -18,7 +18,11 @@ function parseArgs(argv) {
     if (t === "--repo") a.repo = argv[++i];
     else if (t === "--base") a.base = argv[++i];
     else if (t === "--model") a.model = argv[++i];
-    else if (t === "--timeout") a.timeout = Number(argv[++i]);
+    else if (t === "--timeout") {
+      const n = Number(argv[++i]);
+      if (!Number.isInteger(n) || n < 1) { console.error("--timeout needs a positive integer"); process.exit(2); }
+      a.timeout = n;
+    }
     else if (t === "--max-rounds") {
       const n = Number(argv[++i]);
       if (!Number.isInteger(n) || n < 1) { console.error("--max-rounds needs a positive integer"); process.exit(2); }
