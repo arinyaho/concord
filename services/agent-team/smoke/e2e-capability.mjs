@@ -39,7 +39,7 @@ const res = await runCapability({
   coder, reviewRunner, base: "main",
 });
 const pass = res.outcome === "done" && res.review.outcome === "converged" && !process.env.ANTHROPIC_API_KEY;
-console.log(JSON.stringify({ pass, outcome: res.outcome, review: res.review.outcome, rounds: res.review.rounds }, null, 2));
+console.log(JSON.stringify({ pass, outcome: res.outcome, review: res.review ? res.review.outcome : null, rounds: res.review ? res.review.rounds : null }, null, 2));
 
 // Also exercise the ACTUAL shipped binary end-to-end (not just the in-process wiring
 // above): real CLI_PATH resolution, worktree creation, JSONL logging, and the
