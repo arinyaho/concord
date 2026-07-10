@@ -197,6 +197,19 @@ function main() {
     // real branch would silently review nothing and converge clean.
     const base = rest[0] || (ledger.target && ledger.target.base);
 
+    // Warn if `base` is a local branch behind its upstream. Diffing against a stale
+    // local base sweeps in everything merged upstream since the branch point -> a
+    // phantom diff of unrelated files and a confusing coverage harness-failure. A
+    // remote-tracking ref (origin/...) has no upstream, so the default never trips this.
+    if (base) {
+      try {
+        const behind = sh('git', ['rev-list', '--count', `${base}..${base}@{upstream}`], { cwd: repoRoot }).trim();
+        if (behind && behind !== '0') {
+          process.stderr.write(`review-cli round-start: base "${base}" is ${behind} commit(s) behind its upstream -- the diff may include unrelated changes merged upstream; pass the remote ref (e.g. origin/${base}) instead.\n`);
+        }
+      } catch (e) { /* base has no upstream (e.g. a remote-tracking ref) -> nothing to compare */ }
+    }
+
     // Capture BEFORE any mutation. Committed fixes from a crashed round change
     // the diff, so beginRound's noOp path (same diff hash -> no-op) cannot be
     // relied on to re-drive the same round -- we pin round/hash ourselves below

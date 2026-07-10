@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 const review = require('../lib/review');
 const cli = require('../review-cli'); // must be requirable without running main()
 
@@ -16,6 +16,12 @@ function tmpDir() {
 
 function run(args, opts = {}) {
   return execFileSync('node', [CLI, ...args], { encoding: 'utf8', ...opts });
+}
+
+function runCapture(args, opts = {}) {
+  // Like run() but also captures stderr so tests can assert on warning messages.
+  const r = spawnSync('node', [CLI, ...args], { encoding: 'utf8', ...opts });
+  return { stdout: r.stdout || '', stderr: r.stderr || '', status: r.status };
 }
 
 function initRepo() {
@@ -831,4 +837,58 @@ test('e2e: no intent config -> the same diff does NOT surface an intent finding 
   const out = JSON.parse(run(['record', 'feat/x'], { env }));
   assert.strictEqual(out.decision.converged, true);
   assert.match(out.handoff, /intent: not configured/);
+});
+
+// --- stale-base footgun warning ---
+// When the base is a LOCAL branch that is behind its upstream, git diff
+// base...HEAD sweeps in every commit merged upstream since the branch point --
+// a phantom diff of unrelated files. round-start must emit a non-fatal warning
+// to stderr so the user knows to pass the remote ref instead.
+
+test('round-start warns when the base branch is behind its upstream', () => {
+  // Set up a repo where local branch `stalebase` is 1 commit behind its
+  // upstream `up`, without a real remote (simpler + deterministic).
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-stale-'));
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  execFileSync('git', ['config', 'user.email', 't@t'], { cwd: repo });
+  execFileSync('git', ['config', 'user.name', 't'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n');
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'] }));
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'init'], { cwd: repo });
+
+  // stalebase: anchored at the initial commit.
+  execFileSync('git', ['checkout', '-qb', 'stalebase'], { cwd: repo });
+  // up: one extra commit ahead of stalebase.
+  execFileSync('git', ['checkout', '-qb', 'up'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'extra\n');
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'extra on up'], { cwd: repo });
+  // Return to stalebase and declare up as its upstream.
+  execFileSync('git', ['checkout', '-q', 'stalebase'], { cwd: repo });
+  execFileSync('git', ['branch', '--set-upstream-to=up', 'stalebase'], { cwd: repo });
+  // stalebase@{upstream} = up; stalebase is now 1 commit behind up.
+
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const r = runCapture(['round-start', 'feat/x', 'stalebase'], { env });
+
+  // Warning is non-fatal: round-start must still exit 0.
+  assert.strictEqual(r.status, 0, `round-start must not abort on a stale-base warning; stderr: ${r.stderr}`);
+  // Warning text must identify the branch, the commit count, and the root cause.
+  assert.match(r.stderr, /behind its upstream/);
+  assert.match(r.stderr, /stalebase/);
+  assert.match(r.stderr, /\b1\b/); // 1 commit behind
+
+  // Companion: a base ref with NO configured upstream (e.g. HEAD~1) must produce
+  // no warning and must not throw (exercises the try/catch in the warning block).
+  const repo2 = initRepo();
+  fs.writeFileSync(path.join(repo2, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo2 });
+  const dir2 = tmpDir();
+  const r2 = runCapture(['round-start', 'feat/x', 'HEAD~1'], {
+    env: { ...process.env, REVIEW_STATE_DIR: dir2, REVIEW_REPO_ROOT: repo2 },
+  });
+  assert.strictEqual(r2.status, 0);
+  assert.ok(!r2.stderr.includes('behind its upstream'), 'no stale-base warning for a ref without a configured upstream');
 });

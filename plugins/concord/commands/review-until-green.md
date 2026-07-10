@@ -7,7 +7,7 @@ The review CLI lives at `${CLAUDE_PLUGIN_ROOT}/hooks/review-cli.js`. It is the d
 
 Arguments: `$ARGUMENTS`
 
-Determine the target ref: empty -> current branch (`git branch --show-current`); `resume <ref>` -> the ref after `resume`; else the arguments as-is. Optional base ref is the second token (default the repo's main branch).
+Determine the target ref: empty -> current branch (`git branch --show-current`); `resume <ref>` -> the ref after `resume`; else the arguments as-is. Optional base ref is the second token (default the repo's remote main branch, `origin/<main>` -- a local base can be stale (behind its remote), which sweeps unrelated merged changes into the diff).
 
 Run this loop. Do each step in order; do not skip, reorder, or improvise termination.
 
