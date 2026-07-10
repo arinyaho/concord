@@ -53,6 +53,21 @@ test("routes the brief on round 1 and findings on later rounds (handback via coo
   assert.equal(reviewer.calls[1], "d2");
 });
 
+test("a rejection with no specific findings still carries forward as a revise prompt, not a re-sent brief", async () => {
+  const spec = fakeRole(["d1", "d2", "d3"]);
+  const reviewer = fakeRole([
+    '{"approved": false, "findings": []}',
+    '{"approved": false, "findings": []}',
+  ]);
+  await runJob({ brief: "BRIEF-TEXT", spec, reviewer, maxRounds: 3 });
+  // round 1 spec prompt carries the brief, as always
+  assert.match(spec.calls[0], /BRIEF-TEXT/);
+  // round 2 must be a revise prompt: the brief must NOT be re-sent even though
+  // findings was empty (the reviewer rejected without listing findings).
+  assert.doesNotMatch(spec.calls[1], /^Brief:/);
+  assert.doesNotMatch(spec.calls[1], /BRIEF-TEXT/);
+});
+
 test("an unparseable review never ends as APPROVED (fails closed to the cap)", async () => {
   const spec = fakeRole(["d1", "d2", "d3"]);
   const reviewer = fakeRole(["looks fine to me"]); // not JSON

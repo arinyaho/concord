@@ -23,10 +23,16 @@ export async function runJob({ brief, spec, reviewer, maxRounds = 3, logger = NO
     try {
       // delegation 1: coordinator -> spec. Brief on round 1; only findings after,
       // because the spec thread persists and remembers its prior draft.
+      // Branch on the round number (not findings.length): a reviewer can reject
+      // with an empty findings list (approved:false, findings:[]), and that must
+      // still be treated as "later round" so the rejection isn't silently
+      // dropped in favor of resending the original brief.
       const specPrompt =
-        findings.length === 0
+        round === 1
           ? `Brief: ${brief}`
-          : `Revise your prior draft to address every one of these reviewer findings:\n- ${findings.join("\n- ")}`;
+          : findings.length === 0
+            ? "Revise your prior draft: the reviewer did not approve it (no specific findings were given)."
+            : `Revise your prior draft to address every one of these reviewer findings:\n- ${findings.join("\n- ")}`;
       finalDraft = await spec.send(specPrompt);
 
       // delegation 2: coordinator -> reviewer (always sees the latest draft only).
