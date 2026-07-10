@@ -892,3 +892,51 @@ test('round-start warns when the base branch is behind its upstream', () => {
   assert.strictEqual(r2.status, 0);
   assert.ok(!r2.stderr.includes('behind its upstream'), 'no stale-base warning for a ref without a configured upstream');
 });
+
+// ---- dod:null deferred opt-out integration ----
+
+test('a review.config.json with "dod": null converges with the DoD reported DEFERRED, never passed', () => {
+  // Infra/VTL/CDK repos have no honest executable DoD (validated only by
+  // post-deploy e2e). dod:null is the explicit opt-out: the review gates still
+  // run; the executable DoD is skipped and labeled deferred, never faked.
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-dod-defer-'));
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  execFileSync('git', ['config', 'user.email', 't@t'], { cwd: repo });
+  execFileSync('git', ['config', 'user.name', 't'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n');
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: null }));
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'init'], { cwd: repo });
+
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+
+  // Commit a change so there is a real diff.
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+
+  // round-start: before the fix this throws because loadDodConfig throws on dod:null.
+  const rsOut = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.strictEqual(rsOut.decision, 'work');
+
+  const n = rsOut.round;
+
+  // Write gate artifacts: zero correctness findings, zero rejections.
+  fs.writeFileSync(
+    path.join(dir, `round-${n}-correctness.json`),
+    JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }),
+  );
+  fs.writeFileSync(
+    path.join(dir, `round-${n}-verify.json`),
+    JSON.stringify({ status: 'ok', rejected: [] }),
+  );
+
+  run(['plan-fixes', 'feat/x'], { env });
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+
+  // A deferred DoD must not block convergence: zero open findings -> converged.
+  assert.strictEqual(out.decision.converged, true, 'dod:null should allow convergence when no findings remain');
+  // The handoff must clearly label the DoD deferred, never fake it as "passed".
+  assert.match(out.handoff, /DEFERRED/);
+  assert.ok(!out.handoff.includes('DoD: passed'), 'deferred DoD must never be reported as "DoD: passed"');
+});
