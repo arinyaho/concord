@@ -210,7 +210,11 @@ function main() {
     // remote-tracking ref (origin/...) has no upstream, so the default never trips this.
     if (base) {
       try {
-        const behind = sh('git', ['rev-list', '--count', `${base}..${base}@{upstream}`], { cwd: repoRoot }).trim();
+        // stdio ignores git's stderr: a no-upstream base makes the `@{upstream}`
+        // lookup fail with "fatal: ...", which the default origin/<main> base hits
+        // every run. The non-zero exit still throws and is caught below; only the
+        // noise is suppressed.
+        const behind = sh('git', ['rev-list', '--count', `${base}..${base}@{upstream}`], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
         if (behind && behind !== '0') {
           process.stderr.write(`review-cli round-start: base "${base}" is ${behind} commit(s) behind its upstream -- the diff may include unrelated changes merged upstream; pass the remote ref (e.g. origin/${base}) instead.\n`);
         }
