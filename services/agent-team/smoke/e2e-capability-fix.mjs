@@ -1,12 +1,11 @@
-// Manual e2e (network, OAuth), SECOND LEG: exercises the real fix -> commit-fix path.
-// The task is worded to invite a reviewable edge case (division by zero is left
-// unspecified), so the review loop is likely -- but not guaranteed -- to raise a
-// finding and fix it. Real-LLM behavior cannot guarantee a defect is produced, so
+// Manual e2e (network, OAuth), SECOND LEG: runs the pipeline against a task worded to
+// invite a reviewable edge case (division by zero is left unspecified), so the review
+// loop may -- but is not guaranteed to -- raise a finding and exercise the real
+// fix -> commit-fix path. Real-LLM behavior cannot guarantee a defect is produced, so
 // this leg's assertion is deliberately tolerant: "done" and "parked" are both valid
 // loop terminations (a non-"done" outcome here is a signal to look at the run's
-// artifacts, not a flake to retry-until-green). What this leg actually proves is that
-// WHEN a finding occurs, the fix -> commit-fix path is exercised for real: fixed >= 1
-// implies rounds >= 1.
+// artifacts, not a flake to retry-until-green). The fix -> commit-fix path itself is
+// covered deterministically by the unit tests and the contract test, not by this leg.
 // Run: cd services/agent-team && unset ANTHROPIC_API_KEY && node smoke/e2e-capability-fix.mjs
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -48,8 +47,7 @@ const res = await runCapability({
 });
 
 const outcomeOk = res.outcome === "done" || res.outcome === "parked";
-const fixPathOk = !res.review || res.review.fixed < 1 || res.review.rounds >= 1;
-const pass = outcomeOk && fixPathOk && !process.env.ANTHROPIC_API_KEY;
+const pass = outcomeOk && !process.env.ANTHROPIC_API_KEY;
 console.log(JSON.stringify({
   pass, outcome: res.outcome, review: res.review && res.review.outcome,
   rounds: res.review && res.review.rounds, fixed: res.review && res.review.fixed,
