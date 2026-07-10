@@ -12,10 +12,19 @@ function tmpDir() {
 
 // ---- loadDodConfig ----
 
-test('loadDodConfig: missing review.config.json falls back to the default command list', () => {
-  const dir = tmpDir();
-  const cfg = dodExec.loadDodConfig(dir);
-  assert.deepStrictEqual(cfg.dod, dodExec.DEFAULT_DOD_COMMANDS);
+// UPDATED (was: "falls back to the default command list") -- old behavior was
+// ENOENT -> return { dod: DEFAULT_DOD_COMMANDS }. Fix makes ENOENT fail-closed
+// (throws harness-failure). Test now asserts the correct post-fix behavior.
+test('loadDodConfig: missing review.config.json throws harness-failure (no silent fallback)', () => {
+  const dir = tmpDir(); // guaranteed empty -- no review.config.json written
+  assert.throws(
+    () => dodExec.loadDodConfig(dir),
+    (err) => {
+      assert.match(err.message, /harness-failure/);
+      assert.match(err.message, /review\.config\.json/);
+      return true;
+    },
+  );
 });
 
 test('loadDodConfig: reads a configured "dod" command list from the repo root', () => {
@@ -25,14 +34,24 @@ test('loadDodConfig: reads a configured "dod" command list from the repo root', 
   assert.deepStrictEqual(cfg.dod, ['npm run lint', 'npm test']);
 });
 
-test('loadDodConfig: absent config (ENOENT via injected readFileFn) falls back to the default, does not throw', () => {
+// UPDATED (was: "absent config (ENOENT via injected readFileFn) falls back to
+// the default, does not throw") -- old behavior returned DEFAULT_DOD_COMMANDS
+// on ENOENT. Fix makes ENOENT fail-closed: throws harness-failure so concord
+// never passes a DoD gate it never actually ran (false-clean footgun).
+test('loadDodConfig throws harness-failure when review.config.json is absent (no silent default gate)', () => {
   const readFileFn = () => {
     const e = new Error('ENOENT: no such file or directory');
     e.code = 'ENOENT';
     throw e;
   };
-  const cfg = dodExec.loadDodConfig('/repo', readFileFn);
-  assert.deepStrictEqual(cfg.dod, dodExec.DEFAULT_DOD_COMMANDS);
+  assert.throws(
+    () => dodExec.loadDodConfig('/repo', readFileFn),
+    (err) => {
+      assert.match(err.message, /harness-failure/);
+      assert.match(err.message, /review\.config\.json/);
+      return true;
+    },
+  );
 });
 
 test('loadDodConfig: present-but-corrupt config (bad JSON) throws harness-failure, does NOT degrade to default', () => {
