@@ -33,6 +33,14 @@ function loadDodConfig(repoRoot, readFileFn = fs.readFileSync) {
   } catch (e) {
     throw new Error(`harness-failure: ${CONFIG_FILENAME} is present but malformed: ${e && e.message ? e.message : e}`);
   }
+  // Explicit opt-out: `"dod": null` declares there is no executable gate (an
+  // infra/VTL/CDK change validated out-of-band, e.g. post-deploy e2e). Distinct
+  // from an ABSENT config (harness-failure) and from a command list: the review
+  // gates still run, but the executable DoD is deferred, never faked to a false
+  // clean.
+  if (parsed && parsed.dod === null) {
+    return { deferred: true };
+  }
   const dod =
     parsed && Array.isArray(parsed.dod) && parsed.dod.length ? parsed.dod.filter((c) => typeof c === 'string' && c.trim()) : null;
   if (!dod || !dod.length) {

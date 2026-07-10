@@ -125,3 +125,26 @@ test('runDodExec: empty command list passes trivially', () => {
   assert.strictEqual(out.passed, true);
   assert.deepStrictEqual(out.results, []);
 });
+
+// ---- loadDodConfig: dod:null opt-out (deferred gate) ----
+
+test('loadDodConfig returns { deferred: true } for an explicit "dod": null (opt-out, not a gate)', () => {
+  // `{"dod":null}` is the honest no-gate declaration. Distinct from ABSENT config
+  // (harness-failure) and from a command list. The review gates still run; the
+  // executable DoD is skipped and labeled deferred, never faked to a false clean.
+  const readFileFn = () => '{"dod":null}';
+  const result = dodExec.loadDodConfig('/repo', readFileFn);
+  assert.deepStrictEqual(result, { deferred: true });
+});
+
+test('loadDodConfig guard: a dod array still returns { dod: [...] } (null opt-out does not change the normal path)', () => {
+  const readFileFn = () => JSON.stringify({ dod: ['node --test'] });
+  const result = dodExec.loadDodConfig('/repo', readFileFn);
+  assert.deepStrictEqual(result.dod, ['node --test']);
+  assert.ok(!result.deferred, 'array path must not set deferred');
+});
+
+test('loadDodConfig guard: {} (dod absent/undefined, not null) still throws harness-failure (a typo must not be silently deferred)', () => {
+  const readFileFn = () => JSON.stringify({});
+  assert.throws(() => dodExec.loadDodConfig('/repo', readFileFn), /harness-failure/);
+});

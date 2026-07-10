@@ -66,6 +66,7 @@ function gitCheckoutTree(repoRoot) {
 }
 function runDod(repoRoot) {
   const cfg = dodExec.loadDodConfig(repoRoot);
+  if (cfg.deferred) return { passed: true, deferred: true, results: [] };
   return dodExec.runDodExec({ cwd: repoRoot, commands: cfg.dod, execFn: dodExec.defaultExecFn });
 }
 
@@ -81,7 +82,13 @@ function renderHandoff(result) {
   lines.push(`rounds: ${ledger.round}/${ledger.budget.max_rounds} (spent ${ledger.budget.spent})`);
   if (aborted) lines.push(`ABORTED (${aborted.kind}): ${aborted.message}`);
 
-  const dodLine = !ledger.dod ? 'DoD: not run' : ledger.dod.passed ? 'DoD: passed' : 'DoD: FAILED';
+  const dodLine = !ledger.dod
+    ? 'DoD: not run'
+    : ledger.dod.deferred
+      ? 'DoD: DEFERRED (no executable gate declared; validate out-of-band, e.g. post-deploy e2e)'
+      : ledger.dod.passed
+        ? 'DoD: passed'
+        : 'DoD: FAILED';
   lines.push(dodLine);
   lines.push(ledger.intentHash ? `intent: applied (${String(ledger.intentHash).slice(0, 12)}, ${ledger.intentBytes} bytes)` : 'intent: not configured');
 
