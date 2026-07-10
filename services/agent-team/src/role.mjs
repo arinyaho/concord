@@ -8,10 +8,11 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 // AbortController -- clean cancellation is a follow-up.)
 export function createRole({ name, systemPrompt, model, timeoutMs = 120000 }) {
   let sessionId = null;
-  async function consume(userPrompt) {
-    const options = { maxTurns: 1, allowedTools: [] };
+  async function consume(userPrompt, extra = {}) {
+    const options = { maxTurns: extra.maxTurns ?? 1, allowedTools: extra.allowedTools ?? [] };
     if (systemPrompt) options.systemPrompt = systemPrompt;
     if (model) options.model = model;
+    if (extra.cwd) options.cwd = extra.cwd;
     if (sessionId) options.resume = sessionId;
 
     let result = null;
@@ -23,13 +24,13 @@ export function createRole({ name, systemPrompt, model, timeoutMs = 120000 }) {
   }
   return {
     name,
-    async send(userPrompt) {
+    async send(userPrompt, extra = {}) {
       let timer;
       const timeout = new Promise((_, reject) => {
         timer = setTimeout(() => reject(new Error(`role ${name} timed out after ${timeoutMs}ms`)), timeoutMs);
       });
       try {
-        return await Promise.race([consume(userPrompt), timeout]);
+        return await Promise.race([consume(userPrompt, extra), timeout]);
       } finally {
         clearTimeout(timer);
       }
