@@ -5,6 +5,8 @@ argument-hint: "[target | resume <ref>]"
 
 The review CLI lives at `${CLAUDE_PLUGIN_ROOT}/hooks/review-cli.js`. It is the deterministic authority on rounds, dedupe, and termination; you drive it and spawn the review/fix subagents, but you make NO judgement about findings, DoD, or when to stop -- the CLI decides.
 
+Concord IS the reviewer. The findings for every round come from the review subagents YOU spawn against the diff (steps 2-3) -- never from a bot, CI check, or human review posted on the PR. Do NOT `gh pr ready` and wait, do NOT poll or `ScheduleWakeup` for a Codex/Copilot/CI review to land, and do NOT treat any external review as this loop's rounds or gate. If the target happens to be a PR that also gets bot reviews, ignore them here; they are not your input and waiting on them is the failure this loop exists to replace. Once `round-start` says `work`, the very next thing you do is dispatch this round's review subagents in THIS session.
+
 Arguments: `$ARGUMENTS`
 
 Determine the target ref: empty -> current branch (`git branch --show-current`); `resume <ref>` -> the ref after `resume`; else the arguments as-is. Optional base ref is the second token (default the repo's remote main branch, `origin/<main>` -- a local base can be stale (behind its remote), which sweeps unrelated merged changes into the diff).
@@ -13,7 +15,7 @@ Run this loop. Do each step in order; do not skip, reorder, or improvise termina
 
 1. `node "${CLAUDE_PLUGIN_ROOT}/hooks/review-cli.js" round-start <ref> [base]`
    - `decision: "terminal"` or `"no-op"` -> stop; report the CLI's message.
-   - `decision: "work"` -> continue. Note the `round` number `n` and the `stateDir` path it prints -- `stateDir` is the CLI-owned directory for this run's artifacts; every path below is relative to it.
+   - `decision: "work"` -> continue: proceed straight to step 2 in THIS session. Do not pause, defer, or wait on anything external first. Note the `round` number `n` and the `stateDir` path it prints -- `stateDir` is the CLI-owned directory for this run's artifacts; every path below is relative to it.
 2. Read the diff at `<stateDir>/round-<n>-diff.txt` (the file round-start just wrote). Spawn ONE correctness review subagent (Task tool, general-purpose, a CLEAN context -- do not paste your own prior reasoning). Instruct it to review the diff for correctness bugs, reuse/simplification/efficiency, AND verifier-gaming (hardcoded literals matching test inputs, weakened/deleted assertions, output emitted before the check runs, whether a fix explains WHY a test passes not just that it does). Ignore any intent-*.md file in the state directory; it is not part of your input. Review only the diff and the surrounding code. It MUST write ONLY to `<stateDir>/round-<n>-correctness.json` the JSON `{ "status":"ok", "examined":[<every changed file path it looked at>], "findings":[ {"id":"correctness:<stable-slug>","gate":"correctness","file":"<path>","span":"<exact offending text>","summary":"<one sentence>"} ] }` -- empty `findings` array if nothing. The `id` is a stable slug reused for the same bug across rounds.
 3. Spawn ONE verify subagent (clean context) to re-review the candidate findings against the diff and write ONLY `{ "status":"ok", "rejected":["<id>", ...] }` to `<stateDir>/round-<n>-verify.json` (ids it judges false positives). Ignore any intent-*.md file in the state directory; it is not part of your input. Review only the diff and the surrounding code.
 
@@ -34,6 +36,6 @@ Run this loop. Do each step in order; do not skip, reorder, or improvise termina
    - If `record` returns `decision.intentReview`, print the handoff and stop: the run found changed lines that contradict stated requirements. These are reported, never auto-fixed. Resolve by editing the code (or correcting the design source) and re-running `/review-until-green <ref>`; the re-run re-fetches the intent and re-reviews. A finding you judge a false positive needs no command -- read it, and merge by hand if you choose (concord never merges anything itself).
    - Otherwise, `decision.continue: false` -> print the `handoff` verbatim and stop.
 
-Never run more rounds than the CLI drives; the CLI enforces the round budget, the park-budget breaker, and convergence. If a CLI verb exits non-zero with a `harness-failure:` message, stop and report it plainly -- do NOT characterize the run as clean or parked.
+Never run more rounds than the CLI drives; the CLI enforces the round budget, the park-budget breaker, and convergence. A round is only real when its findings come from the subagents you spawned this session; if you ever find yourself reading a bot/CI/PR review to decide what to fix, or scheduling a wake-up to wait for one, you have left this loop -- stop and return to step 1. If a CLI verb exits non-zero with a `harness-failure:` message, stop and report it plainly -- do NOT characterize the run as clean or parked.
 
 If a ledger for this ref is already `parked`, tell the user resuming will NOT auto-re-run parked findings; they must `review-cli.js unpark <ref> <findingId>` first.
