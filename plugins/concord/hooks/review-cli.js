@@ -10,6 +10,7 @@ const {
   targetSlug,
   readLedger,
   writeLedger,
+  deleteLedger,
   emptyLedger,
   contentHash,
   beginRound,
@@ -513,6 +514,28 @@ function main() {
     return;
   }
 
+  // Discards the ledger for a ref so the next round-start begins a fresh run.
+  // The escape hatch for a ledger latched into a finding-less terminal state: a
+  // no-progress or budget-exhausted park has zero parked findings, so `unpark`
+  // has no target -- without `reset` the only recourse was deleting the state
+  // file by hand. Also sweeps this run's round artifacts so a fresh start cannot
+  // read a stale gate result left behind by the discarded run.
+  if (verb === 'reset') {
+    requireRef(ref, 'reset');
+    const slug = targetSlug(ref);
+    const prior = readLedger(stateDir, slug);
+    if (!prior) {
+      process.stdout.write(`review-cli reset: no ledger for ref "${ref}"; nothing to reset.\n`);
+      return;
+    }
+    deleteLedger(stateDir, slug);
+    for (let n = 1; n <= (prior.round || 0); n++) deleteRoundArtifacts(stateDir, n);
+    process.stdout.write(
+      `reset ref "${ref}" (was "${prior.status}"); cleared ${prior.round || 0} round(s) of artifacts. The next round-start begins a fresh run.\n`,
+    );
+    return;
+  }
+
   if (verb === 'commit-fix') {
     requireRef(ref, 'commit-fix');
     const id = rest[0];
@@ -549,7 +572,7 @@ function main() {
     return;
   }
 
-  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | plan-fixes | commit-fix | record | unpark)`);
+  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | plan-fixes | commit-fix | record | unpark | reset)`);
 }
 
 module.exports = { gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitCheckoutTree, runDod };
