@@ -11,8 +11,13 @@ export function buildQueryOptions({ systemPrompt, model, extra = {}, sessionId, 
   if (sessionId) options.resume = sessionId;
   const ss = env.AGENT_TEAM_SETTING_SOURCES;
   if (ss) {
-    try { options.settingSources = JSON.parse(ss); }
-    catch { throw new Error(`AGENT_TEAM_SETTING_SOURCES must be a JSON array, got: ${ss}`); }
+    let parsed;
+    try { parsed = JSON.parse(ss); }
+    catch { throw new Error(`AGENT_TEAM_SETTING_SOURCES must be a JSON array of strings, got: ${ss}`); }
+    if (!Array.isArray(parsed) || !parsed.every((s) => typeof s === "string")) {
+      throw new Error(`AGENT_TEAM_SETTING_SOURCES must be a JSON array of strings, got: ${ss}`);
+    }
+    options.settingSources = parsed;
   }
   return options;
 }

@@ -13,3 +13,9 @@ test("settingSources from AGENT_TEAM_SETTING_SOURCES", () => {
 test("malformed AGENT_TEAM_SETTING_SOURCES throws", () => {
   assert.throws(() => buildQueryOptions({ systemPrompt: "s", extra: {}, sessionId: null, env: { AGENT_TEAM_SETTING_SOURCES: "notjson" } }), /AGENT_TEAM_SETTING_SOURCES/);
 });
+test("non-array AGENT_TEAM_SETTING_SOURCES throws", () => {
+  assert.throws(() => buildQueryOptions({ systemPrompt: "s", extra: {}, sessionId: null, env: { AGENT_TEAM_SETTING_SOURCES: '"user"' } }), /AGENT_TEAM_SETTING_SOURCES/);
+});
+test("AGENT_TEAM_SETTING_SOURCES array with non-string element throws", () => {
+  assert.throws(() => buildQueryOptions({ systemPrompt: "s", extra: {}, sessionId: null, env: { AGENT_TEAM_SETTING_SOURCES: "[1,2]" } }), /AGENT_TEAM_SETTING_SOURCES/);
+});

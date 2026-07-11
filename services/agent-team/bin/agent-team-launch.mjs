@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn as nodeSpawn, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readdirSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +30,7 @@ function parseArgs(argv) {
 // $HOME-rooted worktree parent so colima mounts it (a /var/folders tmpdir would bind empty).
 function defaultMkWorkDir(env) {
   const base = join(env.HOME || homedir(), ".agent-team", "work");
+  mkdirSync(dirname(base), { recursive: true });
   return join(mkdtempSync(join(base + "-")), "work");
 }
 

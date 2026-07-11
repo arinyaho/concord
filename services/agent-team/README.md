@@ -35,4 +35,5 @@ This seeds a throwaway `$HOME`-rooted target repo with a failing node-only DoD, 
 Notes:
 - The launcher mounts only the target clone (/work), the concord code (RO), the creds dir (RO), and `~/.claude/skills` (RO). The author's home, cloud CLIs, Keychain, and shell env are NOT reachable inside.
 - Rotation / revocation runbook: re-seed the creds dir (re-copy `~/.claude/.credentials.json`). This does NOT revoke an already-exfiltrated token -- for a suspected compromise, do a real server-side re-auth that invalidates prior tokens (revoke the session from the Claude account, not just from this machine), then re-seed.
+- Token-TTL failure mode: the creds file is mounted read-only, so the SDK cannot refresh the OAuth token mid-job. A job that outlives the token's lifetime will FAIL (it does not leak) -- re-seed the creds dir to refresh.
 - Phase-3a limitation: the image is node-only. A target repo whose DoD needs pnpm/pytest/cargo is not yet supported.
