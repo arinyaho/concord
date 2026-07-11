@@ -33,6 +33,23 @@ function writeLedger(stateDir, slug, ledger) {
   fs.writeFileSync(ledgerPath(stateDir, slug), JSON.stringify(ledger));
 }
 
+// Removes the durable ledger for a ref so the next round-start begins a fresh
+// run. Returns true if a ledger was present, false if there was nothing to
+// delete (idempotent -- ENOENT is not an error). The counterpart to
+// writeLedger; used by the `reset` verb to re-arm a ledger that has latched
+// into a finding-less terminal state -- a no-progress or budget-exhausted park
+// has zero parked findings, so `unpark` has no target and the only prior
+// recourse was deleting the state file by hand.
+function deleteLedger(stateDir, slug) {
+  try {
+    fs.unlinkSync(ledgerPath(stateDir, slug));
+    return true;
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return false;
+    throw e;
+  }
+}
+
 function emptyLedger(target) {
   return {
     target,
@@ -436,6 +453,7 @@ module.exports = {
   ledgerPath,
   readLedger,
   writeLedger,
+  deleteLedger,
   emptyLedger,
   targetSlug,
   contentHash,

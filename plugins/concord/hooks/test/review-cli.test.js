@@ -163,6 +163,45 @@ test('review-cli unpark: reopens a parked finding', () => {
   assert.strictEqual(after.status, 'converging');
 });
 
+test('review-cli reset: re-arms a finding-less parked ledger so round-start starts fresh', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const slug = review.targetSlug('feat/x');
+  // Drive a no-progress park: the DoD keeps failing and the review finds nothing
+  // to fix -> parked with ZERO findings, so `unpark` has no target.
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['false'] }));
+  execFileSync('git', ['commit', '-aqm', 'failing dod'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  run(['plan-fixes', 'feat/x'], { env });
+  const rec = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(rec.decision.parked, true);
+  assert.strictEqual(review.readLedger(dir, slug).status, 'parked');
+  assert.strictEqual((review.readLedger(dir, slug).findings || []).length, 0); // nothing to unpark
+
+  // Parked is terminal: a fresh round-start refuses to re-drive.
+  assert.strictEqual(JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).decision, 'terminal');
+
+  // reset discards the ledger and sweeps the discarded run's round artifacts.
+  const out = run(['reset', 'feat/x'], { env });
+  assert.match(out, /reset ref "feat\/x" \(was "parked"\)/);
+  assert.strictEqual(review.readLedger(dir, slug), null);
+  assert.ok(!fs.existsSync(path.join(dir, `round-${n}-correctness.json`)), 'stale round artifact must be swept');
+
+  // Now round-start begins a genuinely fresh run.
+  assert.strictEqual(JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).decision, 'work');
+});
+
+test('review-cli reset: no ledger for the ref -> reports nothing to reset, exits 0', () => {
+  const dir = tmpDir();
+  const out = run(['reset', 'feat/nope'], { env: { ...process.env, REVIEW_STATE_DIR: dir } });
+  assert.match(out, /nothing to reset/);
+});
+
 test('review-cli: missing ref argument exits non-zero with a message on stderr', () => {
   const dir = tmpDir();
   assert.throws(() => run(['show'], { env: { ...process.env, REVIEW_STATE_DIR: dir } }));
