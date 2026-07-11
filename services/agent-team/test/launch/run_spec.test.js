@@ -27,6 +27,7 @@ test("mounts exactly the four allowlisted sources at the right targets", () => {
   assert.ok(a.includes("-v /home/u/work-1:/work"));
   assert.ok(a.includes("-v /home/u/creds/.claude:/root/.claude:ro"));
   assert.ok(a.includes("-v /home/u/.claude/skills:/root/.claude/skills:ro"));
+  assert.equal(buildDockerArgs(CFG).filter((x) => x === "-v").length, 4);
 });
 
 test("injects env allowlist: HOME, GIT_* identity, settingSources; no cloud vars", () => {
@@ -38,6 +39,7 @@ test("injects env allowlist: HOME, GIT_* identity, settingSources; no cloud vars
   assert.ok(joined.includes(`-e AGENT_TEAM_SETTING_SOURCES=["user"]`));
   // every -e is KEY=value (never a bare -e that would pull from the launcher env)
   for (let i = 0; i < a.length; i++) if (a[i] === "-e") assert.ok(a[i + 1].includes("="), `bare -e at ${i}`);
+  assert.equal(a.filter((x) => x === "-e").length, 6);
 });
 
 test("NEVER emits dangerous flags", () => {
