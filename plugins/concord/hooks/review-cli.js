@@ -75,6 +75,31 @@ function runDod(repoRoot) {
 // handoff" that replaces the manual review<->fix relay. Moved here from
 // review-engine.js (the headless claude-p engine being retired) so `record`
 // can render it without depending on the file that Task 11 deletes.
+// When the DoD gate failed, surface WHY, not just THAT. runDodExec is fail-fast,
+// so the first non-passing result is the culprit; it already carries the command,
+// its exit code, and the combined stdout+stderr the runner captured. Without this
+// the handoff said only "DoD: FAILED", forcing the human to re-run the gate by
+// hand to see a cause the runner had in hand -- a missing dep, a lint error, a
+// single failing test -- often with an obvious fix. Bounded (tail of N lines, each
+// clipped) so a noisy log cannot flood the handoff.
+function renderDodFailure(dod) {
+  const out = [];
+  const failing = ((dod && dod.results) || []).find((r) => r && !r.passed);
+  if (!failing) return out; // pre-`results` ledger, or nothing to show
+  out.push(`  $ ${failing.cmd}  (exit ${failing.exitCode})`);
+  const clip = (l) => (l.length > 200 ? l.slice(0, 200) + '...' : l);
+  const body = String(failing.output == null ? '' : failing.output).replace(/\s+$/, '');
+  if (!body) {
+    out.push('    (no output captured)');
+    return out;
+  }
+  const all = body.split('\n');
+  const TAIL = 12;
+  if (all.length > TAIL) out.push(`    ... (${all.length - TAIL} earlier line(s) omitted)`);
+  for (const l of all.slice(-TAIL)) out.push(`    ${clip(l)}`);
+  return out;
+}
+
 function renderHandoff(result) {
   const { ledger, aborted } = result;
   const lines = [];
@@ -90,6 +115,9 @@ function renderHandoff(result) {
         ? 'DoD: passed'
         : 'DoD: FAILED';
   lines.push(dodLine);
+  if (ledger.dod && !ledger.dod.deferred && !ledger.dod.passed) {
+    lines.push(...renderDodFailure(ledger.dod));
+  }
   lines.push(ledger.intentHash ? `intent: applied (${String(ledger.intentHash).slice(0, 12)}, ${ledger.intentBytes} bytes)` : 'intent: not configured');
 
   const fixed = (ledger.findings || []).filter((f) => f.status === 'fixed');
