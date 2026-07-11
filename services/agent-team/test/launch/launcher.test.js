@@ -64,3 +64,16 @@ test("container failure: non-zero spawn code is preserved and workDir is still c
   assert.equal(code, 17);
   assert.equal(d.calls.rmWorkDir, 1);
 });
+
+test("container success but re-export fails: surfaced as 1, workDir still cleaned up", async () => {
+  const d = deps({
+    runGit: (args) => {
+      if (args.includes("fetch")) { d.calls.reExport++; throw new Error("fetch failed"); }
+      if (args[0] === "clone") d.calls.clone++;
+      return { status: 0, stdout: "", stderr: "" };
+    },
+  });
+  const code = await runLaunch({ argv: BASE, env: { HOME: "/home/u" }, deps: d });
+  assert.equal(code, 1);
+  assert.equal(d.calls.rmWorkDir, 1);
+});

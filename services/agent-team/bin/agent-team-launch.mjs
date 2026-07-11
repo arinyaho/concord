@@ -63,10 +63,15 @@ export async function runLaunch({ argv, env, deps }) {
 
     // The pipeline mints its own branch name (agent-team/run-<container-pid>); re-export by
     // scanning the produced branches. Simplest robust approach: fetch all agent-team/* refs.
-    // Best-effort: a re-export failure (e.g. container never produced a branch) must not mask
-    // the real container exit code or skip workDir cleanup.
-    try { reExport({ srcRepo: a.repo, workDir, branch: "refs/heads/agent-team/*", runGit }); }
-    catch (e) { console.error(`agent-team-launch: re-export skipped (${e.message})`); }
+    // A re-export failure must never mask a container FAILURE's real exit code -- but if the
+    // container SUCCEEDED and the branch still failed to land, surface that (return 1) instead
+    // of silently returning 0.
+    try {
+      reExport({ srcRepo: a.repo, workDir, branch: "refs/heads/agent-team/*", runGit });
+    } catch (e) {
+      console.error(`agent-team-launch: re-export failed (${e.message})`);
+      if (code === 0) return 1; // container converged but the branch did not land -- surface it
+    }
     return code;
   } catch (e) {
     console.error(`agent-team-launch: ${e.message}`);

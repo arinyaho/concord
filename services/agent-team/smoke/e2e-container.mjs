@@ -2,9 +2,9 @@
 // failing node-only DoD, runs agent-team-launch, asserts the coder+review converge (outcome done)
 // and the produced branch re-exports into the target. NOT under test/.
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 
 const credsDir = process.argv[process.argv.indexOf("--creds-dir") + 1];
 if (!credsDir) { console.error("need --creds-dir"); process.exit(2); }
@@ -27,5 +27,8 @@ const r = spawnSync("node", [bin,
 console.log(r.stdout); console.error(r.stderr);
 const converged = /"outcome": "done"/.test(r.stdout) || r.status === 0;
 const branched = git(["-C", target, "branch", "--list", "agent-team/*"]).stdout.trim() !== "";
-if (!converged || !branched) { console.error("E2E SMOKE FAILED"); process.exit(1); }
-console.log("E2E SMOKE PASSED");
+const failed = !converged || !branched;
+if (failed) console.error("E2E SMOKE FAILED"); else console.log("E2E SMOKE PASSED");
+// Always clean up the throwaway repo -- its contents were already printed/asserted above.
+rmSync(dirname(target), { recursive: true, force: true });
+if (failed) process.exit(1);
