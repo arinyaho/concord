@@ -16,7 +16,7 @@ export function cleanClone({ srcRepo, workDir, base, runGit }) {
   runGit(["-C", workDir, "remote", "remove", "origin"]);
   rmSync(join(workDir, ".git", "hooks"), { recursive: true, force: true });
   mkdirSync(join(workDir, ".git", "hooks"), { recursive: true });
-  runGit(["-C", workDir, "config", "--unset-all", "credential.helper"]); // no-op if absent
+  runGit(["-C", workDir, "config", "credential.helper", ""]); // empty local override shadows any inherited global helper
 }
 
 // Land ONLY the produced branch back into the real repo. `fetch` writes the ref + objects
