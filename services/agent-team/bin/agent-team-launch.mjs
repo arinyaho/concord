@@ -41,6 +41,7 @@ export async function runLaunch({ argv, env, deps }) {
   const home = env.HOME || homedir();
   const skillsDir = a.skillsDir || join(home, ".claude", "skills");
   const concordDir = a.concord || join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+  let workDir;
   try {
     if (!a.task || !a.repo || !a.credsDir) {
       console.error('Usage: agent-team-launch "<task>" --repo <path> --creds-dir <path> [--skills-dir P] [--concord P] [--image T] [--base main]');
@@ -50,7 +51,7 @@ export async function runLaunch({ argv, env, deps }) {
     const runtime = resolveRuntime(env, existsBin);
     assertCredsDir(a.credsDir, readdir);
 
-    const workDir = mkWorkDir(env);
+    workDir = mkWorkDir(env);
     cleanClone({ srcRepo: a.repo, workDir, base: a.base, runGit });
 
     const pipelineArgs = [a.task, "--repo", "/work", "--base", a.base];
@@ -62,12 +63,16 @@ export async function runLaunch({ argv, env, deps }) {
 
     // The pipeline mints its own branch name (agent-team/run-<container-pid>); re-export by
     // scanning the produced branches. Simplest robust approach: fetch all agent-team/* refs.
-    reExport({ srcRepo: a.repo, workDir, branch: "refs/heads/agent-team/*", runGit });
-    rmWorkDir(workDir);
+    // Best-effort: a re-export failure (e.g. container never produced a branch) must not mask
+    // the real container exit code or skip workDir cleanup.
+    try { reExport({ srcRepo: a.repo, workDir, branch: "refs/heads/agent-team/*", runGit }); }
+    catch (e) { console.error(`agent-team-launch: re-export skipped (${e.message})`); }
     return code;
   } catch (e) {
     console.error(`agent-team-launch: ${e.message}`);
     return 1;
+  } finally {
+    if (workDir) rmWorkDir(workDir);
   }
 }
 

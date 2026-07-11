@@ -11,7 +11,7 @@ export function buildDockerArgs(cfg) {
     "run", "--rm",
     "-v", `${concordDir}:/concord-ro:ro`,
     "-v", `${workDir}:/work`,
-    "-v", `${credsDir}:/root/.claude:ro`,
+    "-v", `${credsDir}/.credentials.json:/root/.claude/.credentials.json:ro`,
     "-v", `${skillsDir}:/root/.claude/skills:ro`,
     "-e", "HOME=/root",
     "-e", `GIT_AUTHOR_NAME=${gitName}`,

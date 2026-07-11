@@ -11,7 +11,7 @@ import { runLaunch } from "../../bin/agent-team-launch.mjs";
 // mkdir outright), so mkWorkDir here returns a real tmpdir-rooted path -- same pattern already
 // used by test/launch/repo.test.js -- instead of the brief's hardcoded literal.
 function deps(overrides = {}) {
-  const calls = { spawn: [], reExport: 0, clone: 0 };
+  const calls = { spawn: [], reExport: 0, clone: 0, rmWorkDir: 0 };
   const workDir = join(mkdtempSync(join(tmpdir(), "at-launch-")), "work-1");
   return {
     calls,
@@ -21,7 +21,7 @@ function deps(overrides = {}) {
     existsBin: () => true,
     runGit: (args) => { if (args[0] === "clone") calls.clone++; if (args.includes("fetch")) calls.reExport++; return { status: 0, stdout: "", stderr: "" }; },
     mkWorkDir: () => workDir,
-    rmWorkDir: () => {},
+    rmWorkDir: () => { calls.rmWorkDir++; },
     ...overrides,
   };
 }
@@ -56,4 +56,11 @@ test("refuses when creds dir has a planted sibling", async () => {
   const code = await runLaunch({ argv: BASE, env: { HOME: "/home/u" }, deps: d });
   assert.notEqual(code, 0);
   assert.equal(d.calls.spawn.length, 0);
+});
+
+test("container failure: non-zero spawn code is preserved and workDir is still cleaned up", async () => {
+  const d = deps({ spawn: async (bin, args) => { d.calls.spawn.push({ bin, args }); return 17; } });
+  const code = await runLaunch({ argv: BASE, env: { HOME: "/home/u" }, deps: d });
+  assert.equal(code, 17);
+  assert.equal(d.calls.rmWorkDir, 1);
 });

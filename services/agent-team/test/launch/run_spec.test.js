@@ -25,7 +25,7 @@ test("mounts exactly the four allowlisted sources at the right targets", () => {
   const a = buildDockerArgs(CFG).join(" ");
   assert.ok(a.includes("-v /home/u/concord:/concord-ro:ro"));
   assert.ok(a.includes("-v /home/u/work-1:/work"));
-  assert.ok(a.includes("-v /home/u/creds/.claude:/root/.claude:ro"));
+  assert.ok(a.includes("-v /home/u/creds/.claude/.credentials.json:/root/.claude/.credentials.json:ro"));
   assert.ok(a.includes("-v /home/u/.claude/skills:/root/.claude/skills:ro"));
   assert.equal(buildDockerArgs(CFG).filter((x) => x === "-v").length, 4);
 });
