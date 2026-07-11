@@ -789,6 +789,29 @@ test('renderHandoff: no intent config -> "intent: not configured"', () => {
   assert.match(out.handoff, /intent: not configured/);
 });
 
+test('renderHandoff: a FAILED DoD surfaces the failing command, exit code, and output tail', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  // A DoD command that fails deterministically with identifiable output on stderr.
+  // Commit the config change on its own so it is not part of the reviewed diff
+  // (else the coverage gate flags review.config.json as an unexamined change).
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['echo OUTPUT_NEEDLE 1>&2; exit 3'] }));
+  execFileSync('git', ['commit', '-aqm', 'set failing dod'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.match(out.handoff, /DoD: FAILED/);
+  // the failing command + its exit code, on the line right after "DoD: FAILED"
+  assert.match(out.handoff, /DoD: FAILED\n {2}\$ echo OUTPUT_NEEDLE 1>&2; exit 3 {2}\(exit 3\)/);
+  // a tail of the runner's captured output, rendered as an indented line
+  assert.match(out.handoff, /\n {4}OUTPUT_NEEDLE/);
+});
+
 test('e2e: intent contradiction -> intent-review; fix code + re-run -> clean', () => {
   const repo = initRepoWithIntent('printf "REQ: the retry count must be three"');
   const dir = tmpDir();
