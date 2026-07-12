@@ -9,9 +9,10 @@ import { makeRunCli } from "../src/adapters/review_cli.mjs";
 import { makeSpawn } from "../src/adapters/spawn_subagent.mjs";
 import { createWorktree } from "../src/adapters/worktree.mjs";
 import { createLogger } from "../src/log.mjs";
+import { assertLaunchAllowed } from "../src/launch/interlock.mjs";
 
 function parseArgs(argv) {
-  const a = { base: "main", maxRounds: 5, model: undefined, timeout: undefined, repo: undefined };
+  const a = { base: "main", maxRounds: 5, model: undefined, timeout: undefined, repo: undefined, allowUncontained: false };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
@@ -27,7 +28,9 @@ function parseArgs(argv) {
       const n = Number(argv[++i]);
       if (!Number.isInteger(n) || n < 1) { console.error("--max-rounds needs a positive integer"); process.exit(2); }
       a.maxRounds = n;
-    } else rest.push(t);
+    }
+    else if (t === "--allow-uncontained") a.allowUncontained = true;
+    else rest.push(t);
   }
   a.task = rest.join(" ").trim();
   return a;
@@ -40,13 +43,14 @@ if (!args.task || !args.repo) {
 }
 if (process.env.ANTHROPIC_API_KEY) console.error("WARNING: ANTHROPIC_API_KEY is set; this is meant to run on OAuth. Unset it.");
 
-// SECURITY -- credential-isolation gate (phase 3b requirement, not yet enforced here):
-// this entry runs the pipeline with the author's AMBIENT host credentials (aws/gh/gcloud/oci,
-// SSH, Keychain). It is safe ONLY for local, author-triggered runs. It MUST NOT be wired to any
-// remote trigger (webhook, queue listener, scheduled job) except behind bin/agent-team-launch.mjs
-// (the container launch that scrubs those credentials). Phase 3b lands the mechanism that makes
-// this entry REFUSE a remote-triggered, un-contained invocation; until then the interlock is a
-// convention -- do not add a remote trigger to this bare entry.
+// Credential-isolation interlock (spec 2026-07-12): refuse a remote-triggered, un-contained run
+// before any side effect. Contained (inside agent-team-launch) or an explicit local opt-in only.
+try {
+  assertLaunchAllowed({ env: process.env, allowUncontained: args.allowUncontained });
+} catch (e) {
+  console.error(e.message);
+  process.exit(2);
+}
 
 // review-cli.js path in the concord monorepo (this package lives at services/agent-team/).
 const CLI_PATH = new URL("../../../plugins/concord/hooks/review-cli.js", import.meta.url).pathname;
@@ -63,7 +67,7 @@ const reviewRunner = {
   runReview: (target) => runReviewUntilGreen({ target, runCli, spawn, maxRounds: args.maxRounds, logger }),
 };
 
-const res = await runCapability({ task: args.task, coder, reviewRunner, base: args.base, logger });
+const res = await runCapability({ task: args.task, coder, reviewRunner, base: args.base, logger, allowUncontained: args.allowUncontained });
 res.apiKeyPresent = !!process.env.ANTHROPIC_API_KEY;
 res.logPath = runPath;
 console.log(JSON.stringify(res, null, 2));
