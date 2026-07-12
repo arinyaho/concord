@@ -43,7 +43,7 @@ const reviewRunner = { runReview: (t) => runReviewUntilGreen({ target: t, runCli
 const res = await runCapability({
   task: "Add a pure function `divide(a, b)` in divide.js that returns a divided by b, with a " +
     "node --test test for it. Do not add any special-casing for b === 0.",
-  coder, reviewRunner, base: "main",
+  coder, reviewRunner, base: "main", allowUncontained: true,
 });
 
 const outcomeOk = res.outcome === "done" || res.outcome === "parked";
