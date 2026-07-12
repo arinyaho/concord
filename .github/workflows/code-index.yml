@@ -1,0 +1,31 @@
+name: code-index
+
+on:
+  push:
+    paths:
+      - "services/code-index/**"
+      - ".github/workflows/code-index.yml"
+  pull_request:
+    paths:
+      - "services/code-index/**"
+      - ".github/workflows/code-index.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies (includes pinned clangd==19.1.7)
+        working-directory: services/code-index
+        run: uv sync --extra dev
+
+      - name: Run test suite
+        working-directory: services/code-index
+        run: uv run pytest -v

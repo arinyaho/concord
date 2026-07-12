@@ -1,0 +1,28 @@
+[project]
+name = "code-index"
+version = "0.1.0"
+description = "INDEX sub-system: clangd static code-graph + SQLite symbol store (Stage-1)."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+# clangd ships a no-sudo binary; kept optional so a bare install stays wheel-free.
+engine = ["clangd==19.1.7"]
+dev = ["pytest>=8.0", "clangd==19.1.7"]
+
+[project.scripts]
+code-index = "code_index.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/code_index"]
+
+[tool.pytest.ini_options]
+markers = [
+    "requires_clangd: test needs a runnable clangd binary; skipped if absent.",
+]
+testpaths = ["tests"]
+pythonpath = ["src"]
