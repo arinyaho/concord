@@ -8,7 +8,7 @@ const crypto = require('node:crypto');
 // ref/base reach the shell only via env (REVIEW_REF/REVIEW_BASE), never interpolated.
 
 const CONFIG_FILENAME = 'review.config.json';
-const KNOWN_TOP_KEYS = new Set(['dod', 'intent']);
+const KNOWN_TOP_KEYS = new Set(['dod', 'intent', 'gate']);
 const INTENT_MAX_BYTES = 256 * 1024;
 const INTENT_TIMEOUT_MS = 60 * 1000;
 
