@@ -51,7 +51,7 @@ The GATE and the INDEX code-graph are **separate deliverables on separate tracks
    - the GATE runs **every round**, alongside correctness, against the same round diff;
    - its findings **never auto-fix and never end a round mid-loop**; they accumulate and are re-evaluated each round (a later fix that resolves an earlier gate finding drops it, exactly as correctness findings dedupe);
    - the correctness + DoD loop proceeds to its natural convergence;
-   - **at the moment the loop would declare `clean`**, any still-open GATE findings flip the terminus to a new **`gate-review`** status — human-gated, terminal, re-runnable — instead of `clean`. Zero open GATE findings → `clean` as before.
+   - **at the moment the loop would declare `clean`**, any still-open GATE findings flip the terminus to a new **`gate-pending`** status — human-gated, terminal, re-runnable — instead of `clean`. Zero open GATE findings → `clean` as before.
 
    Running every round buys early visibility (each round's handoff shows the current advisory findings) and cross-round refinement (fixes clear findings automatically); blocking only at the boundary preserves the auto-fix flow and enforces distrust-green (a green diff is not yet LGTM).
 
@@ -86,10 +86,10 @@ A GATE finding:
 The termination state machine gains one branch, checked at the convergence point:
 
 - existing order is unchanged up to the clean check;
-- **new:** if the loop would otherwise converge `clean` (DoD passed, zero open correctness findings, no fixes this round) AND the GATE-open set is non-empty → terminus `gate-review` (continue:false, converged:false, gateReview:true), human-gated;
+- **new:** if the loop would otherwise converge `clean` (DoD passed, zero open correctness findings, no fixes this round) AND the GATE-open set is non-empty → terminus `gate-pending` (continue:false, converged:false, gatePending:true), human-gated;
 - if the GATE-open set is empty → `clean` as today.
 
-`gate-review`, like `intent-review`, is a **re-runnable stop state**: a fresh `round-start` clears it, re-fetches the design source, and re-evaluates, so a human who fixed the code or corrected the design source clears the finding by re-running. It composes with the existing terminal-status handling: `reset <ref>` also discards a `gate-review` ledger, and the round-budget / park breakers still bound the run.
+`gate-pending`, like `intent-review`, is a **re-runnable stop state**: a fresh `round-start` clears it, re-fetches the design source, and re-evaluates, so a human who fixed the code or corrected the design source clears the finding by re-running. It composes with the existing terminal-status handling: `reset <ref>` also discards a `gate-pending` ledger, and the round-budget / park breakers still bound the run.
 
 ## Dismissal (accepted / deferred findings)
 
@@ -102,11 +102,11 @@ Because the GATE runs every round and never auto-fixes, a finding the human legi
 
 - Opt-in for v1, via a `gate` block in `review.config.json` (default: absent → the loop stays exactly diff-local, preserving the zero-config default and the current cost profile). When present, the GATE runs the panel each round using the design source (the `intent.command` output, if configured) plus ad-hoc read.
 - The block also carries the pack source: v1 = ad-hoc; later a retriever endpoint. Trust model matches `intent` — a project-authored value the CLI consumes: benign on an absent block (zero-config default stays diff-local), fail-closed on a present-but-broken one. (Note it does not follow `dod` here, whose absence itself fails closed.)
-- **Open policy question (below):** whether the GATE flips to default-on in a later version once trusted — the user's motivating complaint ("a one-line review should include built-in coverage") argues for default-on, but the blocking `gate-review` terminus and the extra per-round passes are a behavior/cost change that v1 keeps behind an explicit opt-in.
+- **Open policy question (below):** whether the GATE flips to default-on in a later version once trusted — the user's motivating complaint ("a one-line review should include built-in coverage") argues for default-on, but the blocking `gate-pending` terminus and the extra per-round passes are a behavior/cost change that v1 keeps behind an explicit opt-in.
 
 ## What ships in v1 vs later
 
-- **v1 (this spec, in concord):** the GATE gate — every-round panel (one review lens + one independent verify), report-only, `gate:` findings, `gate-review` convergence-boundary terminus, dismissal path, `review.config.json` `gate` opt-in. Pack = design source + ad-hoc codebase read. Language-agnostic.
+- **v1 (this spec, in concord):** the GATE gate — every-round panel (one review lens + one independent verify), report-only, `gate:` findings, `gate-pending` convergence-boundary terminus, dismissal path, `review.config.json` `gate` opt-in. Pack = design source + ad-hoc codebase read. Language-agnostic.
 - **Later (behind the pack interface, separate tracks):** the RETRIEVER fills a deterministic structural pack from the INDEX code-graph; the GATE consumes it unchanged. Additional review lenses. FRESHNESS. The default-on decision.
 
 ## Divergences from the parent design, recorded
