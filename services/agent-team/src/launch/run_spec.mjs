@@ -14,6 +14,7 @@ export function buildDockerArgs(cfg) {
     "-v", `${credsDir}/.credentials.json:/root/.claude/.credentials.json:ro`,
     "-v", `${skillsDir}:/root/.claude/skills:ro`,
     "-e", "HOME=/root",
+    "-e", "AGENT_TEAM_CONTAINED=1",
     "-e", `GIT_AUTHOR_NAME=${gitName}`,
     "-e", `GIT_AUTHOR_EMAIL=${gitEmail}`,
     "-e", `GIT_COMMITTER_NAME=${gitName}`,
