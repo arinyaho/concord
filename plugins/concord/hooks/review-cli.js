@@ -147,6 +147,7 @@ function renderHandoff(result) {
     for (const f of gateOpen) {
       lines.push(`  - [${f.id}] ${f.file}: ${f.summary}`);
       if (f.requirement) lines.push(`    requirement: ${f.requirement}`);
+      if (f.evidence) lines.push(`    anchor: ${f.evidence}`);
     }
   }
   if (parked.length) {
@@ -412,11 +413,12 @@ function main() {
     if (R.parkBudgetExceeded(ledger, REVIEW_PARK_BUDGET_DEFAULT)) {
       // converged/parked must move together with continue here -- a stale
       // converged:true would mislead a consumer that reads decision.converged
-      // without also checking continue. Likewise clear intentReview: without
-      // it a park-budget terminus on an intent-review decision would still
-      // print "resolve and re-run" intent guidance while the ledger status
-      // is truthfully "parked" (which refuses to resume until `unpark`).
-      decision = { ...decision, continue: false, converged: false, parked: true, intentReview: false };
+      // without also checking continue. Likewise clear intentReview and
+      // gatePending: without this a park-budget terminus on an intent-review
+      // or gate-pending decision would still print "resolve and re-run"
+      // guidance for that stale state while the ledger status is truthfully
+      // "parked" (which refuses to resume until `unpark`).
+      decision = { ...decision, continue: false, converged: false, parked: true, intentReview: false, gatePending: false };
       ledger = { ...ledger, status: 'parked' };
     }
     if (decision.continue) ledger = { ...ledger, budget: { ...ledger.budget, spent: ledger.budget.spent + 1 } };
@@ -528,9 +530,26 @@ function main() {
       for (const f of gFindings) {
         if (!f.id.startsWith('gate:')) throw new Error(`harness-failure: non-gate id "${f.id}" in the gate artifact`);
       }
-      const gvRaw = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-gate-verify.json`), 'utf8')); } catch (e) { return { rejected: [] }; } })();
-      const rejected = gc.parseVerifyVerdict(JSON.stringify({ rejected: gvRaw.rejected || [] }), gFindings).rejectedIds;
-      gateOpen = require('./lib/gate').foldGateFindings({ gateFindings: gFindings, verifyRejectedIds: rejected, dismissedIds: ledger.gate_dismissed || [] });
+      // gate-verify itself stays lenient (missing/malformed artifact -> the
+      // legacy shape { rejected: [] }): unlike the gate-review artifact above,
+      // a broken verify pass is not a harness-failure -- it just means no
+      // rejections and no verify-added findings this round.
+      const gvRaw = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-gate-verify.json`), 'utf8')); } catch (e) { return { rejected: [], findings: [] }; } })();
+      const verifyFindings = gc.parseGateFindings(JSON.stringify(gvRaw.findings || []));
+      for (const f of verifyFindings) {
+        if (!f.id.startsWith('gate:')) throw new Error(`harness-failure: non-gate id "${f.id}" in the gate-verify artifact`);
+      }
+      // Distrust-green: gate-verify's different lens may surface a class of gap
+      // gate-review missed, by adding it as a new gate: finding of its own. Merge
+      // it into the candidate set BEFORE folding, deduped by id -- a verify
+      // finding whose id collides with a gate-review finding collapses to the
+      // gate-review entry (set second so it overwrites).
+      const byId = new Map();
+      for (const f of verifyFindings) byId.set(f.id, f);
+      for (const f of gFindings) byId.set(f.id, f);
+      const mergedGateFindings = Array.from(byId.values());
+      const rejected = gc.parseVerifyVerdict(JSON.stringify({ rejected: gvRaw.rejected || [] }), mergedGateFindings).rejectedIds;
+      gateOpen = require('./lib/gate').foldGateFindings({ gateFindings: mergedGateFindings, verifyRejectedIds: rejected, dismissedIds: ledger.gate_dismissed || [] });
     }
     const next = { ...ledger, planned: fixes.map((f) => f.id), resolved_absent: resolvedAbsent, intent_parked: intentParked, gate_open: gateOpen, phase: 'fixes' };
     writeLedger(stateDir, slug, next);

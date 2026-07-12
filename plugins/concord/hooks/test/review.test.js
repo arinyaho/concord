@@ -668,6 +668,17 @@ test('renderReviewReport: intent-review ledgers surface a design-conformance rem
   assert.match(out, /intent|design.conformance/i);
 });
 
+test('renderReviewReport: gate-pending ledgers surface an advisory GATE reminder, not silently omitted', () => {
+  const l = review.emptyLedger({ kind: 'local', ref: 'feat/g' });
+  l.status = 'gate-pending';
+  l.round = 3;
+  l.gate_open = [{ id: 'gate:cross-context:1', file: 'a.js', summary: 'unchanged sibling breaks' }];
+  const out = review.renderReviewReport([{ slug: 'feat-g', ledger: l }]);
+  assert.ok(out.includes('feat/g'));
+  assert.match(out, /GATE/);
+  assert.match(out, /dismiss feat\/g/);
+});
+
 test('decideTermination: an open intent finding -> intent-review (blocks clean, before the clean branch)', () => {
   const d = review.decideTermination({
     dodPassed: true, openFindingsCount: 0, specDoubtScope: 'none',

@@ -453,6 +453,8 @@ function renderReviewReport(ledgers) {
       lines.push(`review-until-green [${ref}]: ${roundInfo}, ${open} open finding(s) -- parked, needs a human decision; see \`review-cli.js show ${ref}\` (unpark a finding with \`review-cli.js unpark ${ref} <findingId>\`).`);
     } else if (ledger.status === 'intent-review') {
       lines.push(`review-until-green [${ref}]: ${roundInfo} -- stopped for a design-conformance (intent) finding, needs a human decision; re-run \`/review-until-green ${ref}\` after fixing the code or the design source (a fixed contradiction converges, an unfixed one re-fetches the intent).`);
+    } else if (ledger.status === 'gate-pending') {
+      lines.push(`review-until-green [${ref}]: ${roundInfo} -- stopped for advisory GATE finding(s), needs a human decision; re-run \`/review-until-green ${ref}\` (a fresh run re-evaluates the gate) or \`review-cli.js dismiss ${ref} <gateId>\` for a finding you accept as out-of-scope.`);
     }
   }
   return lines.join('\n');
