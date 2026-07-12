@@ -751,6 +751,20 @@ test('plan-fixes: an intent: id in the CORRECTNESS artifact -> harness-failure (
   assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure/);
 });
 
+test('plan-fixes: a gate: id in the CORRECTNESS artifact -> harness-failure (symmetric guard)', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [
+    { id: 'gate:cross-context:leak', file: 'a.txt', summary: 'should not auto-fix' },
+  ] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure/);
+});
+
 test('record: an intent finding terminates intent-review and the handoff shows it', () => {
   const repo = initRepoWithIntent('printf "REQ: retry three times"');
   const dir = tmpDir();
@@ -1007,3 +1021,451 @@ test('a review.config.json with "dod": null converges with the DoD reported DEFE
   assert.match(out.handoff, /DEFERRED/);
   assert.ok(!out.handoff.includes('DoD: passed'), 'deferred DoD must never be reported as "DoD: passed"');
 });
+
+test('round-start: signals gateApplied when review.config.json has a gate block', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
+  execFileSync('git', ['commit', '-aqm', 'enable gate'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.strictEqual(out.gateApplied, true);
+});
+
+test('round-start: a gate-pending ledger is a re-runnable stop (resets to converging, keeps dismissed)', () => {
+  const dir = tmpDir();
+  const repo = initRepo();
+  const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  let l = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  l = { ...l, status: 'gate-pending', gate_open: [{ id: 'gate:cross-context:x', file: 'a.txt', summary: 's' }], gate_dismissed: ['gate:ac-coverage:y'], diff_content_hash: 'stale' };
+  review.writeLedger(dir, slug, l);
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.strictEqual(out.decision, 'work'); // NOT terminal
+  const after = review.readLedger(dir, slug);
+  assert.strictEqual(after.status, 'converging');
+  assert.deepStrictEqual(after.gate_open, []);            // cleared for a fresh evaluation
+  assert.deepStrictEqual(after.gate_dismissed, ['gate:ac-coverage:y']); // preserved
+});
+
+test('round-start: gate-pending re-entry on an IDENTICAL diff still yields work, not no-op', () => {
+  const repo = initRepo();
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
+  execFileSync('git', ['commit', '-aqm', 'enable gate'], { cwd: repo });
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  // A real round-start against base HEAD~1 seeds a genuine diff_content_hash in the ledger.
+  run(['round-start', 'feat/x', 'HEAD~1'], { env });
+  const slug = review.targetSlug('feat/x');
+  // Simulate a prior gate-pending terminus WITHOUT touching the working tree or adding
+  // commits -- unlike the "keeps dismissed" test above, the diff on re-run is byte-identical
+  // to the one that seeded diff_content_hash. This is the "dismiss a gate finding, then
+  // re-run without further code changes" path.
+  let ledger = review.readLedger(dir, slug);
+  ledger = { ...ledger, status: 'gate-pending', phase: 'done', gate_open: [{ id: 'gate:cross-context:x', file: 'a.txt', summary: 's' }] };
+  review.writeLedger(dir, slug, ledger);
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.strictEqual(out.decision, 'work'); // re-entered on the SAME diff, not "no-op"
+  const after = review.readLedger(dir, slug);
+  assert.strictEqual(after.status, 'converging');
+  assert.deepStrictEqual(after.gate_open, []); // cleared for a fresh evaluation
+});
+
+test('plan-fixes: folds gate + gate-verify artifacts into gate_open, honoring dismissed, never into fixes', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
+  execFileSync('git', ['commit', '-aqm', 'enable gate'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  // pre-dismiss one finding
+  const slug = review.targetSlug('feat/x');
+  let l = review.readLedger(dir, slug); l = { ...l, gate_dismissed: ['gate:ac-coverage:dismissed-one'] }; review.writeLedger(dir, slug, l);
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [
+    { id: 'gate:cross-context:keep', file: 'other.js', span: 'x', summary: 'unchanged sibling issue' },
+    { id: 'gate:silent-gap:reject', file: 'a.txt', span: '', summary: 'fp', requirement: 'r' },
+    { id: 'gate:ac-coverage:dismissed-one', file: 'a.txt', span: '', summary: 'accepted', requirement: 'r' },
+  ] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: ['gate:silent-gap:reject'] }));
+  const out = JSON.parse(run(['plan-fixes', 'feat/x'], { env }));
+  assert.deepStrictEqual(out.fixes, []); // gate findings NEVER become fixes
+  const after = review.readLedger(dir, slug);
+  assert.strictEqual(after.gate_open.length, 1);
+  assert.strictEqual(after.gate_open[0].id, 'gate:cross-context:keep'); // reject + dismiss removed; unchanged-file finding kept
+});
+
+test('plan-fixes: a gate-verify-added finding (distrust-green) merges into gate_open', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
+  execFileSync('git', ['commit', '-aqm', 'enable gate'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  // gate-review found nothing this round, but gate-verify's different lens caught a gap.
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [
+    { id: 'gate:cross-context:verify-found', file: 'other.js', span: 'x', summary: 'gate-verify caught a gap the first pass missed', requirement: 'r' },
+  ] }));
+  const out = JSON.parse(run(['plan-fixes', 'feat/x'], { env }));
+  assert.deepStrictEqual(out.fixes, []); // still never routed to auto-fix
+  const after = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.ok(after.gate_open.some((f) => f.id === 'gate:cross-context:verify-found'));
+});
+
+test('plan-fixes: a verify finding sharing an id with a gate-review finding does not duplicate (gate-review wins)', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
+  execFileSync('git', ['commit', '-aqm', 'enable gate'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [
+    { id: 'gate:cross-context:dup', file: 'a.txt', span: 'gate-review-span', summary: 'gate-review summary', requirement: 'r1' },
+  ] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [
+    { id: 'gate:cross-context:dup', file: 'a.txt', span: 'verify-span', summary: 'verify summary', requirement: 'r2' },
+  ] }));
+  const out = JSON.parse(run(['plan-fixes', 'feat/x'], { env }));
+  assert.deepStrictEqual(out.fixes, []);
+  const after = review.readLedger(dir, review.targetSlug('feat/x'));
+  const dups = after.gate_open.filter((f) => f.id === 'gate:cross-context:dup');
+  assert.strictEqual(dups.length, 1); // no duplicate
+  assert.strictEqual(dups[0].evidence, 'gate-review-span'); // gate-review entry wins on id collision
+  assert.strictEqual(dups[0].summary, 'gate-review summary');
+});
+
+test('plan-fixes: a verify-added finding that verify also rejects (in its own "rejected" list) is dropped, not surfaced', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
+  execFileSync('git', ['commit', '-aqm', 'enable gate'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: ['gate:cross-context:self-reject'], findings: [
+    { id: 'gate:cross-context:self-reject', file: 'other.js', span: 'x', summary: 'flagged then immediately retracted', requirement: 'r' },
+  ] }));
+  run(['plan-fixes', 'feat/x'], { env });
+  const after = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.ok(!after.gate_open.some((f) => f.id === 'gate:cross-context:self-reject'));
+});
+
+test('plan-fixes: a non-gate id in the gate-verify findings is a harness-failure (symmetric guard)', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
+  execFileSync('git', ['commit', '-aqm', 'enable gate'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [
+    { id: 'correctness:not-a-gate-id', file: 'a.txt', span: 'x', summary: 'wrong namespace' },
+  ] }));
+  assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure/);
+});
+
+test('plan-fixes: a missing gate-verify "findings" field defaults to empty (lenient artifact)', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
+  execFileSync('git', ['commit', '-aqm', 'enable gate'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  // legacy-shaped gate-verify artifact, no "findings" key at all.
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  const out = JSON.parse(run(['plan-fixes', 'feat/x'], { env }));
+  assert.deepStrictEqual(out.fixes, []);
+  const after = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.deepStrictEqual(after.gate_open, []);
+});
+
+test('plan-fixes: a non-gate id in the gate artifact is a harness-failure', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
+  execFileSync('git', ['commit', '-aqm', 'enable gate'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [
+    { id: 'correctness:not-a-gate-id', file: 'a.txt', span: 'x', summary: 'wrong namespace' },
+  ] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure/);
+});
+
+test('record: diff-local clean with an open gate finding -> gate-pending, not clean', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
+  execFileSync('git', ['commit', '-aqm', 'enable gate'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [
+    { id: 'gate:cross-context:sibling', file: 'other.js', span: 'x', summary: 'unchanged sibling reopens invariant' },
+  ] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  run(['plan-fixes', 'feat/x'], { env });
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.gatePending, true);
+  assert.strictEqual(out.decision.converged, false);
+  assert.strictEqual(review.readLedger(dir, review.targetSlug('feat/x')).status, 'gate-pending');
+});
+
+test('renderHandoff: gate-pending surfaces the advisory GATE findings section', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
+  execFileSync('git', ['commit', '-aqm', 'enable gate'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [
+    { id: 'gate:silent-gap:missing-check', file: 'verify.js', span: 'if (!target) return;', summary: 'design requires a target-exists check' },
+  ] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  run(['plan-fixes', 'feat/x'], { env });
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.match(out.handoff, /status: gate-pending/);
+  assert.match(out.handoff, /GATE findings \(advisory/);
+  assert.match(out.handoff, /gate:silent-gap:missing-check/);
+  assert.match(out.handoff, /anchor: if \(!target\) return;/); // evidence/span surfaces as the anchor
+});
+
+test('record: park-budget override on a gate-pending round clears gatePending, leaving only parked', () => {
+  // A round whose OWN decision would be gate-pending (an open gate finding,
+  // diff-local otherwise clean) must still get force-terminated to "parked"
+  // once REVIEW_PARK_BUDGET_DEFAULT prior parks are on the books -- and the
+  // override must not leave a stale gatePending:true riding along with
+  // parked:true, mirroring the existing intentReview override above.
+  const { REVIEW_PARK_BUDGET_DEFAULT } = require('../lib/config');
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
+  execFileSync('git', ['commit', '-aqm', 'enable gate'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [
+    { id: 'gate:cross-context:sibling', file: 'other.js', span: 'x', summary: 'unchanged sibling reopens invariant' },
+  ] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  run(['plan-fixes', 'feat/x'], { env });
+
+  // Seed REVIEW_PARK_BUDGET_DEFAULT pre-existing needs-decision parks so the
+  // breaker trips on this record call, same technique as the plain park-budget test.
+  const slug = review.targetSlug('feat/x');
+  let ledger = review.readLedger(dir, slug);
+  const priorParks = [];
+  for (let i = 0; i < REVIEW_PARK_BUDGET_DEFAULT; i += 1) {
+    priorParks.push({ id: `correctness:old-${i}`, gate: 'correctness', file: 'a.txt', span: '', summary: 'x', status: 'parked', park_reason: { kind: 'needs-decision', text: 'prior' } });
+  }
+  ledger = { ...ledger, findings: priorParks };
+  review.writeLedger(dir, slug, ledger);
+
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.parked, true);
+  assert.ok(!out.decision.gatePending); // must be cleared, not left riding along with parked:true
+  const after = review.readLedger(dir, slug);
+  assert.strictEqual(after.status, 'parked'); // not the stale 'gate-pending'
+});
+
+// --- gate_open cross-round persistence (spec decision 4) ---
+//
+// The gate subagent is nondeterministic: a round can silently fail to
+// re-report a real standing finding. Without carry-forward, plan-fixes
+// OVERWRITES gate_open fresh from only that round's artifacts every time --
+// a single flaky round erases a standing finding and the run converges
+// clean with a real design gap unresolved. These tests drive a real
+// multi-round run (round-start -> plan-fixes -> commit-fix -> record, twice)
+// to prove a finding on a file the diff never touched survives a silent
+// round, while a finding on a file the diff DID touch is dropped (a fix
+// plausibly addressed it).
+
+test('e2e: a flaky round (gate goes silent) does not erase a standing finding on an UNCHANGED file -- must not converge clean', () => {
+  const repo = initRepo();
+  fs.writeFileSync(path.join(repo, 'unchanged.txt'), 'stable\n'); // never touched by the branch
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add unchanged.txt, enable gate'], { cwd: repo });
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const slug = review.targetSlug('feat/x');
+
+  // --- round 1: a real correctness finding (so the round makes progress) +
+  // a gate finding G on the unchanged file.
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  let n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [
+    { id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'fix me' },
+  ] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'gate', { status: 'ok', findings: [
+    { id: 'gate:cross-context:g', file: 'unchanged.txt', span: '', summary: 'a real design gap', requirement: 'r' },
+  ] });
+  writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+
+  // Simulate the correctness fix landing: the fixer edits a.txt and commit-fix journals it.
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two-fixed\n');
+  writeArtifact(dir, n, 'fix-correctness:real', { status: 'ok', edited: true, files: ['a.txt'] });
+  const cf = JSON.parse(run(['commit-fix', 'feat/x', 'correctness:real'], { env }));
+  assert.strictEqual(cf.committed, true);
+
+  let out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.continue, true); // progress -- the round is not terminal
+  let ledger = review.readLedger(dir, slug);
+  assert.ok(ledger.gate_open.some((f) => f.id === 'gate:cross-context:g'), 'G must be recorded after round 1');
+
+  // --- round 2: correctness is clean, and the GATE WENT SILENT (flaky round --
+  // it re-examined but failed to re-report G, even though the gap is still real).
+  n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~2'], { env })).round; // base + change + fix commits
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'gate', { status: 'ok', findings: [] }); // silent -- G not re-reported
+  writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  out = JSON.parse(run(['record', 'feat/x'], { env }));
+
+  // The flaky round must NOT be allowed to erase G nor converge clean.
+  assert.strictEqual(out.decision.converged, false, 'a flaky gate round must not converge clean with a standing unchanged-file finding erased');
+  assert.strictEqual(out.decision.gatePending, true);
+  ledger = review.readLedger(dir, slug);
+  assert.ok(ledger.gate_open.some((f) => f.id === 'gate:cross-context:g'), 'G must survive a silent round on an unchanged file');
+  assert.strictEqual(ledger.status, 'gate-pending');
+});
+
+test('e2e: a carried finding whose file DID change since base is dropped when the gate goes silent on it', () => {
+  // Same continuous-run shape as the unchanged-file test above (round 1 makes
+  // progress via a real correctness fix, so the run never crosses a
+  // gate-pending terminus -- round-start's gate-pending reset intentionally
+  // clears gate_open for a FRESH evaluation after a human decision, which
+  // would be indistinguishable from carry-forward here; persistence is only
+  // WITHIN one continuous run). The only difference: G2's file IS the file
+  // the correctness fix touches, so by round 2 it is in the diff since base.
+  const repo = initRepo();
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
+  execFileSync('git', ['commit', '-aqm', 'enable gate'], { cwd: repo });
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const slug = review.targetSlug('feat/x');
+
+  // --- round 1: a real correctness finding (so the round makes progress) +
+  // a gate finding G2 on a.txt -- the SAME file the correctness fix will touch.
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  let n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [
+    { id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'fix me' },
+  ] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'gate', { status: 'ok', findings: [
+    { id: 'gate:cross-context:g2', file: 'a.txt', span: '', summary: 'a gap on the changed file', requirement: 'r' },
+  ] });
+  writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two-fixed\n');
+  writeArtifact(dir, n, 'fix-correctness:real', { status: 'ok', edited: true, files: ['a.txt'] });
+  const cf = JSON.parse(run(['commit-fix', 'feat/x', 'correctness:real'], { env }));
+  assert.strictEqual(cf.committed, true);
+
+  let out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.continue, true); // progress -- the round is not terminal
+  let ledger = review.readLedger(dir, slug);
+  assert.ok(ledger.gate_open.some((f) => f.id === 'gate:cross-context:g2'));
+
+  // --- round 2: correctness is clean, and the gate goes silent on G2. Its
+  // file (a.txt) is now in the diff since base (the fix touched it) -- a fix
+  // plausibly addressed it -- so it must be dropped, not carried.
+  n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~2'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'gate', { status: 'ok', findings: [] }); // silent this round
+  writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  out = JSON.parse(run(['record', 'feat/x'], { env }));
+
+  assert.strictEqual(out.decision.converged, true, 'a carried finding on a changed file must be dropped, allowing convergence');
+  ledger = review.readLedger(dir, slug);
+  assert.deepStrictEqual(ledger.gate_open, []);
+});
+
+test('review-cli dismiss: records the id in gate_dismissed and drops it from gate_open', () => {
+  const dir = tmpDir();
+  const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  let l = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  l = { ...l, status: 'gate-pending', gate_open: [{ id: 'gate:ac-coverage:defer', file: 'a.js', summary: 's' }] };
+  review.writeLedger(dir, slug, l);
+  const out = run(['dismiss', 'feat/x', 'gate:ac-coverage:defer'], { env });
+  assert.match(out, /dismissed gate:ac-coverage:defer/);
+  const after = review.readLedger(dir, slug);
+  assert.deepStrictEqual(after.gate_dismissed, ['gate:ac-coverage:defer']);
+  assert.deepStrictEqual(after.gate_open, []);
+});
+
+test('review-cli dismiss: idempotent (no duplicate in gate_dismissed)', () => {
+  const dir = tmpDir();
+  const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  review.writeLedger(dir, slug, { ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), gate_dismissed: ['gate:x:y'] });
+  run(['dismiss', 'feat/x', 'gate:x:y'], { env });
+  assert.deepStrictEqual(review.readLedger(dir, slug).gate_dismissed, ['gate:x:y']);
+});
+
+test('review-cli dismiss: rejects a gateId that is not in the gate: namespace', () => {
+  const dir = tmpDir();
+  const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  review.writeLedger(dir, slug, review.emptyLedger({ kind: 'local', ref: 'feat/x' }));
+  assert.throws(() => run(['dismiss', 'feat/x', 'not-a-gate-id'], { env }), /must be a gate: id/);
+  // must not have mutated the ledger on the rejected call
+  assert.deepStrictEqual(review.readLedger(dir, slug).gate_dismissed, []);
+});
+

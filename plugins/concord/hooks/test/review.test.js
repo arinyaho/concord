@@ -668,6 +668,17 @@ test('renderReviewReport: intent-review ledgers surface a design-conformance rem
   assert.match(out, /intent|design.conformance/i);
 });
 
+test('renderReviewReport: gate-pending ledgers surface an advisory GATE reminder, not silently omitted', () => {
+  const l = review.emptyLedger({ kind: 'local', ref: 'feat/g' });
+  l.status = 'gate-pending';
+  l.round = 3;
+  l.gate_open = [{ id: 'gate:cross-context:1', file: 'a.js', summary: 'unchanged sibling breaks' }];
+  const out = review.renderReviewReport([{ slug: 'feat-g', ledger: l }]);
+  assert.ok(out.includes('feat/g'));
+  assert.match(out, /GATE/);
+  assert.match(out, /dismiss feat\/g/);
+});
+
 test('decideTermination: an open intent finding -> intent-review (blocks clean, before the clean branch)', () => {
   const d = review.decideTermination({
     dodPassed: true, openFindingsCount: 0, specDoubtScope: 'none',
@@ -701,4 +712,39 @@ test('emptyLedger: has intentHash, intentBytes, intent_parked', () => {
   assert.strictEqual(l.intentHash, null);
   assert.strictEqual(l.intentBytes, null);
   assert.deepStrictEqual(l.intent_parked, []);
+});
+
+test('emptyLedger initializes gate_open and gate_dismissed to empty arrays', () => {
+  const l = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  assert.deepStrictEqual(l.gate_open, []);
+  assert.deepStrictEqual(l.gate_dismissed, []);
+});
+
+// ---- decideTermination: gate-pending ----
+
+test('decideTermination: would-converge + open gate findings -> gate-pending, not clean', () => {
+  const d = review.decideTermination({
+    dodPassed: true, openFindingsCount: 0, specDoubtScope: 'none', noProgress: false,
+    budgetSpent: 0, maxRounds: 5, fixedCount: 0, parkedCount: 0, intentReviewCount: 0, gateOpenCount: 2,
+  });
+  assert.strictEqual(d.gatePending, true);
+  assert.strictEqual(d.converged, false);
+  assert.strictEqual(d.continue, false);
+});
+
+test('decideTermination: would-converge + zero gate findings -> clean', () => {
+  const d = review.decideTermination({
+    dodPassed: true, openFindingsCount: 0, specDoubtScope: 'none', noProgress: false,
+    budgetSpent: 0, maxRounds: 5, fixedCount: 0, parkedCount: 0, intentReviewCount: 0, gateOpenCount: 0,
+  });
+  assert.strictEqual(d.converged, true);
+  assert.ok(!d.gatePending);
+});
+
+test('decideTermination: open CORRECTNESS findings ignore gate count (loop continues, no early halt)', () => {
+  const d = review.decideTermination({
+    dodPassed: false, openFindingsCount: 1, specDoubtScope: 'none', noProgress: false,
+    budgetSpent: 0, maxRounds: 5, fixedCount: 0, parkedCount: 0, intentReviewCount: 0, gateOpenCount: 5,
+  });
+  assert.strictEqual(d.continue, true); // gate does NOT terminate mid-loop
 });

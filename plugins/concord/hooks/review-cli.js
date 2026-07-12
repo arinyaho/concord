@@ -6,6 +6,7 @@ const path = require('node:path');
 const { resolveStateDirFromCwd } = require('./lib/statedir');
 const dodExec = require('./lib/dod-exec');
 const intentLib = require('./lib/intent');
+const gateLib = require('./lib/gate');
 const {
   targetSlug,
   readLedger,
@@ -140,6 +141,15 @@ function renderHandoff(result) {
       lines.push(`    contradicts: ${f.span || '(no line)'}`);
     }
   }
+  const gateOpen = ledger.gate_open || [];
+  if (gateOpen.length) {
+    lines.push('', 'GATE findings (advisory -- your decision; fix, or dismiss the id):');
+    for (const f of gateOpen) {
+      lines.push(`  - [${f.id}] ${f.file}: ${f.summary}`);
+      if (f.requirement) lines.push(`    requirement: ${f.requirement}`);
+      if (f.evidence) lines.push(`    anchor: ${f.evidence}`);
+    }
+  }
   if (parked.length) {
     lines.push('', 'Needs-decision packets:');
     for (const f of parked) {
@@ -226,6 +236,14 @@ function main() {
       ledger = { ...ledger, status: 'converging', diff_content_hash: null, intentHash: null, intentBytes: null, intent_parked: [] };
     }
 
+    // gate-pending, like intent-review, is a re-runnable stop state: a fresh
+    // round-start clears the reported gate findings and nulls the diff hash so a
+    // real round advances and the gate re-evaluates. gate_dismissed is preserved
+    // (a finding the human retired stays retired across re-runs).
+    if (ledger.status === 'gate-pending') {
+      ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_open: [] };
+    }
+
     // `resume <ref>` passes NO base token -- fall back to the base persisted
     // from the original fresh start (ledger.target.base). Without this, an
     // undefined base makes gitDiff below fall back to `git diff HEAD`, which
@@ -298,6 +316,7 @@ function main() {
     fs.writeFileSync(path.join(stateDir, `round-${ledger.round}-diff.txt`), diff);
 
     const intentCfg = intentLib.loadIntentConfig(repoRoot);
+    const gateCfg = gateLib.loadGateConfig(repoRoot);
     if (intentCfg) {
       const intentPath = path.join(stateDir, `intent-${slug}.md`);
       if (!ledger.intentHash) {
@@ -319,7 +338,7 @@ function main() {
     const dod = runDod(repoRoot);
     ledger = { ...ledger, dod, phase: 'gates', target: { ...(ledger.target || { kind: 'local', ref }), base, head_sha: headSha } };
     writeLedger(stateDir, slug, ledger);
-    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, intentApplied: !!intentCfg, stateDir }) + '\n');
+    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, intentApplied: !!intentCfg, gateApplied: !!gateCfg, stateDir }) + '\n');
     return;
   }
 
@@ -387,18 +406,19 @@ function main() {
       fixedIds.push(id);
       fixCommits[id] = journaled.get(id) || 'span already absent (idempotent replay)';
     }
-    const outcome = { dodPassed: !!(ledger.dod && ledger.dod.passed), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons, intentReviewCount: (ledger.intent_parked || []).length };
+    const outcome = { dodPassed: !!(ledger.dod && ledger.dod.passed), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons, intentReviewCount: (ledger.intent_parked || []).length, gateOpenCount: (ledger.gate_open || []).length };
     let { ledger: applied, decision } = R.applyRoundOutcome(ledger, outcome);
     ledger = applied;
     // Park-budget override BEFORE the charge below, so a forced terminus doesn't burn a round.
     if (R.parkBudgetExceeded(ledger, REVIEW_PARK_BUDGET_DEFAULT)) {
       // converged/parked must move together with continue here -- a stale
       // converged:true would mislead a consumer that reads decision.converged
-      // without also checking continue. Likewise clear intentReview: without
-      // it a park-budget terminus on an intent-review decision would still
-      // print "resolve and re-run" intent guidance while the ledger status
-      // is truthfully "parked" (which refuses to resume until `unpark`).
-      decision = { ...decision, continue: false, converged: false, parked: true, intentReview: false };
+      // without also checking continue. Likewise clear intentReview and
+      // gatePending: without this a park-budget terminus on an intent-review
+      // or gate-pending decision would still print "resolve and re-run"
+      // guidance for that stale state while the ledger status is truthfully
+      // "parked" (which refuses to resume until `unpark`).
+      decision = { ...decision, continue: false, converged: false, parked: true, intentReview: false, gatePending: false };
       ledger = { ...ledger, status: 'parked' };
     }
     if (decision.continue) ledger = { ...ledger, budget: { ...ledger.budget, spent: ledger.budget.spent + 1 } };
@@ -418,6 +438,7 @@ function main() {
     requireRef(ref, 'plan-fixes');
     const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
     const gc = require('./lib/gate-contract');
+    const gateCfg = require('./lib/gate').loadGateConfig(repoRoot);
     const slug = targetSlug(ref);
     const ledger = readLedger(stateDir, slug);
     if (!ledger || ledger.phase !== 'gates') throw new Error(`plan-fixes: expected phase "gates", got "${ledger && ledger.phase}"`);
@@ -432,6 +453,9 @@ function main() {
     for (const c of candidates) {
       if (c.id.startsWith('intent:')) {
         throw new Error(`harness-failure: intent-prefixed id "${c.id}" in the correctness artifact -- intent findings must come from the intent detector, never the auto-fixing gate`);
+      }
+      if (c.id.startsWith('gate:')) {
+        throw new Error(`harness-failure: gate-prefixed id "${c.id}" in the correctness artifact -- gate findings must come from the gate reviewer, never the auto-fixing gate`);
       }
     }
     // Coverage: every changed file must be in examined. Derive the changed-file
@@ -495,7 +519,56 @@ function main() {
         .filter((f) => changedSet.has(f.file)) // out-of-PR-scope findings dropped
         .map((f) => ({ id: f.id, file: f.file, span: f.span, requirement: f.requirement || '', summary: f.summary }));
     }
-    const next = { ...ledger, planned: fixes.map((f) => f.id), resolved_absent: resolvedAbsent, intent_parked: intentParked, phase: 'fixes' };
+    // Gate fold: report-only, never routed into fixes. Fail-closed like the
+    // intent detector -- if the gate was applied this round, its artifact is
+    // mandatory. Deliberately NOT filtered to changed files (unchanged-sibling
+    // cross-context is the point). gate: namespace is guarded symmetrically.
+    let gateOpen = [];
+    if (gateCfg) {
+      const gJson = readArtifact(stateDir, n, 'gate'); // fail-closed
+      const gFindings = gc.parseGateFindings(JSON.stringify(gJson.findings || []));
+      for (const f of gFindings) {
+        if (!f.id.startsWith('gate:')) throw new Error(`harness-failure: non-gate id "${f.id}" in the gate artifact`);
+      }
+      // gate-verify itself stays lenient (missing/malformed artifact -> the
+      // legacy shape { rejected: [] }): unlike the gate-review artifact above,
+      // a broken verify pass is not a harness-failure -- it just means no
+      // rejections and no verify-added findings this round.
+      const gvRaw = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-gate-verify.json`), 'utf8')); } catch (e) { return { rejected: [], findings: [] }; } })();
+      const verifyFindings = gc.parseGateFindings(JSON.stringify(gvRaw.findings || []));
+      for (const f of verifyFindings) {
+        if (!f.id.startsWith('gate:')) throw new Error(`harness-failure: non-gate id "${f.id}" in the gate-verify artifact`);
+      }
+      // Distrust-green: gate-verify's different lens may surface a class of gap
+      // gate-review missed, by adding it as a new gate: finding of its own. Merge
+      // it into the candidate set BEFORE folding, deduped by id -- a verify
+      // finding whose id collides with a gate-review finding collapses to the
+      // gate-review entry (set second so it overwrites).
+      const byId = new Map();
+      for (const f of verifyFindings) byId.set(f.id, f);
+      for (const f of gFindings) byId.set(f.id, f);
+      const mergedGateFindings = Array.from(byId.values());
+      const rejected = gc.parseVerifyVerdict(JSON.stringify({ rejected: gvRaw.rejected || [] }), mergedGateFindings).rejectedIds;
+      const thisRound = gateLib.foldGateFindings({ gateFindings: mergedGateFindings, verifyRejectedIds: rejected, dismissedIds: ledger.gate_dismissed || [] });
+      // Cross-round persistence (spec decision 4): gate findings must PERSIST
+      // across rounds, not be overwritten fresh each round -- a round where the
+      // gate subagent nondeterministically fails to re-report a real finding
+      // must not silently erase it and let the run converge clean. Carry
+      // forward anything from the PRIOR round's gate_open not already covered
+      // by thisRound, unless it is plausibly resolved: dismissed, rejected by
+      // this round's gate-verify, or its file was touched by the diff since
+      // base (a fix plausibly addressed it). thisRound and carried are
+      // disjoint by construction (carried excludes thisRound's ids).
+      const carried = gateLib.carryForwardGateFindings({
+        priorGateOpen: ledger.gate_open || [],
+        thisRoundIds: thisRound.map((f) => f.id),
+        verifyRejectedIds: rejected,
+        dismissedIds: ledger.gate_dismissed || [],
+        changedFiles: changed,
+      });
+      gateOpen = thisRound.concat(carried);
+    }
+    const next = { ...ledger, planned: fixes.map((f) => f.id), resolved_absent: resolvedAbsent, intent_parked: intentParked, gate_open: gateOpen, phase: 'fixes' };
     writeLedger(stateDir, slug, next);
     process.stdout.write(JSON.stringify({ fixes }) + '\n');
     return;
@@ -511,6 +584,21 @@ function main() {
     const next = unparkFinding(ledger, findingId);
     writeLedger(stateDir, slug, next);
     process.stdout.write(`unparked ${findingId}; ledger status is now "${next.status}".\n`);
+    return;
+  }
+
+  if (verb === 'dismiss') {
+    requireRef(ref, 'dismiss');
+    const gateId = rest[0];
+    if (!gateId) throw new Error('review-cli dismiss: missing required <gateId> argument');
+    if (!gateId.startsWith('gate:')) throw new Error(`review-cli dismiss: ${gateId} must be a gate: id`);
+    const slug = targetSlug(ref);
+    const ledger = readLedger(stateDir, slug);
+    if (!ledger) throw new Error(`review-cli dismiss: no ledger for ref "${ref}"`);
+    const dismissed = Array.from(new Set([...(ledger.gate_dismissed || []), gateId]));
+    const gateOpen = (ledger.gate_open || []).filter((f) => f.id !== gateId);
+    writeLedger(stateDir, slug, { ...ledger, gate_dismissed: dismissed, gate_open: gateOpen });
+    process.stdout.write(`dismissed ${gateId}; it will no longer surface or block for ref "${ref}".\n`);
     return;
   }
 
@@ -572,7 +660,7 @@ function main() {
     return;
   }
 
-  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | plan-fixes | commit-fix | record | unpark | reset)`);
+  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | plan-fixes | commit-fix | record | unpark | dismiss | reset)`);
 }
 
 module.exports = { gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitCheckoutTree, runDod };

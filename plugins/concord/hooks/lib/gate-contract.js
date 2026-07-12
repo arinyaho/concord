@@ -3,7 +3,10 @@
 // Moved out of engine.js so review-cli.js's `record`/`plan-fixes` can validate
 // subagent-written artifacts against the same contract the engine used to enforce.
 
-const FINDING_ID_RE = /^[a-z][a-z0-9-]*:[a-z0-9][a-z0-9-]{0,79}$/;
+// One segment ("correctness:slug" / "intent:slug") or two ("gate:class:slug" --
+// the gate namespace's id shape per lib/gate.js's foldGateFindings, which derives
+// `class` from the id's middle segment). Each segment is a-z0-9- , 1-80 chars.
+const FINDING_ID_RE = /^[a-z][a-z0-9-]*(?::[a-z0-9][a-z0-9-]{0,79}){1,2}$/;
 
 function isValidFindingId(id) {
   return typeof id === 'string' && FINDING_ID_RE.test(id);
@@ -20,9 +23,9 @@ function parseGateFindings(rawText) {
   try {
     parsed = JSON.parse(stripFences(rawText));
   } catch (e) {
-    throw new Error(`correctness gate did not return valid JSON: ${e.message}`);
+    throw new Error(`gate did not return valid JSON: ${e.message}`);
   }
-  if (!Array.isArray(parsed)) throw new Error('correctness gate output must be a JSON array of findings');
+  if (!Array.isArray(parsed)) throw new Error('gate output must be a JSON array of findings');
   return parsed.map((f, i) => {
     if (!f || typeof f !== 'object') throw new Error(`finding[${i}] is not an object`);
     if (!isValidFindingId(f.id)) throw new Error(`finding[${i}].id "${f.id}" is not a stable "gate:slug" id (contract violation)`);

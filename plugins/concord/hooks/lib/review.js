@@ -70,6 +70,8 @@ function emptyLedger(target) {
     intentHash: null,
     intentBytes: null,
     intent_parked: [],
+    gate_open: [],
+    gate_dismissed: [],
   };
 }
 
@@ -188,7 +190,7 @@ function dedupeAgainstSeen(findings, seen) {
 // Oscillation detection (a finding toggling fixed -> reopened -> fixed) is
 // deliberately out of scope for this shell (deferred per the plan).
 function decideTermination(roundOutcome) {
-  const { dodPassed, openFindingsCount, specDoubtScope, noProgress, budgetSpent, maxRounds, fixedCount = 0, parkedCount = 0, intentReviewCount = 0 } = roundOutcome;
+  const { dodPassed, openFindingsCount, specDoubtScope, noProgress, budgetSpent, maxRounds, fixedCount = 0, parkedCount = 0, intentReviewCount = 0, gateOpenCount = 0 } = roundOutcome;
 
   if (specDoubtScope === 'whole-diff') {
     return { continue: false, converged: false, parked: false, abandoned: true, reason: 'spec-doubt invalidates the whole diff' };
@@ -200,6 +202,13 @@ function decideTermination(roundOutcome) {
     return { continue: false, converged: false, parked: false, abandoned: false, intentReview: true, reason: 'open intent finding(s) need a human decision (design conformance)' };
   }
   if (dodPassed && openFindingsCount === 0 && fixedCount === 0) {
+    if (gateOpenCount > 0) {
+      // Convergence-boundary block: the diff-local loop is clean, but the GATE
+      // still has open advisory findings. Do NOT converge; hand back for a human
+      // decision. This is the ONLY place the gate gates -- never mid-loop, so the
+      // correctness/DoD auto-fix flow is never halted early by a design finding.
+      return { continue: false, converged: false, parked: false, abandoned: false, gatePending: true, reason: 'diff-local clean, but open GATE finding(s) need a human decision (design/AC/cross-context)' };
+    }
     return { continue: false, converged: true, parked: false, abandoned: false, reason: 'DoD-exec ran and passed, zero open findings, and no fixes this round (stable)' };
   }
   if (budgetSpent >= maxRounds) {
@@ -360,9 +369,10 @@ function applyRoundOutcome(ledger, outcome) {
     fixedCount: (outcome.fixedIds || []).length, // COUNT, not the in-scope Set named fixedIds
     parkedCount: (outcome.parkedIds || []).length, // COUNT, not the in-scope Set named parkedIds
     intentReviewCount: outcome.intentReviewCount || 0,
+    gateOpenCount: outcome.gateOpenCount || 0,
   });
 
-  const status = decision.converged ? 'clean' : decision.parked ? 'parked' : decision.abandoned ? 'abandoned' : decision.intentReview ? 'intent-review' : 'converging';
+  const status = decision.converged ? 'clean' : decision.parked ? 'parked' : decision.abandoned ? 'abandoned' : decision.intentReview ? 'intent-review' : decision.gatePending ? 'gate-pending' : 'converging';
 
   const history = (ledger.history || []).concat([
     {
@@ -443,6 +453,8 @@ function renderReviewReport(ledgers) {
       lines.push(`review-until-green [${ref}]: ${roundInfo}, ${open} open finding(s) -- parked, needs a human decision; see \`review-cli.js show ${ref}\` (unpark a finding with \`review-cli.js unpark ${ref} <findingId>\`).`);
     } else if (ledger.status === 'intent-review') {
       lines.push(`review-until-green [${ref}]: ${roundInfo} -- stopped for a design-conformance (intent) finding, needs a human decision; re-run \`/review-until-green ${ref}\` after fixing the code or the design source (a fixed contradiction converges, an unfixed one re-fetches the intent).`);
+    } else if (ledger.status === 'gate-pending') {
+      lines.push(`review-until-green [${ref}]: ${roundInfo} -- stopped for advisory GATE finding(s), needs a human decision; re-run \`/review-until-green ${ref}\` (a fresh run re-evaluates the gate) or \`review-cli.js dismiss ${ref} <gateId>\` for a finding you accept as out-of-scope.`);
     }
   }
   return lines.join('\n');
