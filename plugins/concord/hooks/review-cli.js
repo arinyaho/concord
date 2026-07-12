@@ -141,6 +141,14 @@ function renderHandoff(result) {
       lines.push(`    contradicts: ${f.span || '(no line)'}`);
     }
   }
+  const gateOpen = ledger.gate_open || [];
+  if (gateOpen.length) {
+    lines.push('', 'GATE findings (advisory -- your decision; fix, or dismiss the id):');
+    for (const f of gateOpen) {
+      lines.push(`  - [${f.id}] ${f.file}: ${f.summary}`);
+      if (f.requirement) lines.push(`    requirement: ${f.requirement}`);
+    }
+  }
   if (parked.length) {
     lines.push('', 'Needs-decision packets:');
     for (const f of parked) {
