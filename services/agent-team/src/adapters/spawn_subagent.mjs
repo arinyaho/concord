@@ -1,4 +1,5 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { settingSourcesFromEnv } from "../settings_sources.mjs";
 
 // Per-kind prompt for a review-cli subagent. Each tells the subagent the EXACT
 // absolute artifact path to write, and the exact JSON schema review-cli reads.
@@ -30,11 +31,22 @@ function promptFor(kind, { stateDir, round, diffPath, findingId }) {
   throw new Error(`unknown spawn kind: ${kind}`);
 }
 
+// Pure: assemble query() options for a review-loop subagent. settingSources is env-gated the
+// same way as buildQueryOptions in ../role.mjs: the container launcher pins ['user'] so that
+// repo-committed project/local settings in the untrusted target repo (cwd: repoRoot) do NOT
+// auto-execute on the subagent's first tool call -- SM6.
+export function buildSpawnOptions({ repoRoot, model, env = process.env }) {
+  const options = { maxTurns: 12, allowedTools: ["Read", "Write", "Edit", "Bash"], cwd: repoRoot };
+  if (model) options.model = model;
+  const ss = settingSourcesFromEnv(env);
+  if (ss) options.settingSources = ss;
+  return options;
+}
+
 export function makeSpawn({ repoRoot, model, timeoutMs = 300000 }) {
   return async function spawn(kind, opts) {
     const prompt = promptFor(kind, opts);
-    const options = { maxTurns: 12, allowedTools: ["Read", "Write", "Edit", "Bash"], cwd: repoRoot };
-    if (model) options.model = model;
+    const options = buildSpawnOptions({ repoRoot, model });
     const run = (async () => { for await (const _ of query({ prompt, options })) { /* drain */ } })();
     let timer;
     const race = new Promise((_, rej) => {
