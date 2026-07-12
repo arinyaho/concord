@@ -23,7 +23,7 @@ Setup (once):
 - Install a container runtime: `brew install colima docker` (or OrbStack / Podman). `colima start` before use.
 - Seed a Claude-only creds dir OUTSIDE the repo, holding ONLY the credential file. It MUST be `$HOME`-rooted (colima only mounts `$HOME` by default -- a `/tmp`-rooted creds dir binds empty inside the container and auth silently fails):
   `mkdir -p ~/.agent-team/creds && cp ~/.claude/.credentials.json ~/.agent-team/creds/.credentials.json && chmod 600 ~/.agent-team/creds/.credentials.json`
-- Build the image: `docker build -t agent-team:3a services/agent-team` (the launcher also builds on first run).
+- Build the image: `docker build -t agent-team:3a services/agent-team`. The launcher does NOT build the image itself -- it only resolves the container runtime binary and runs the container, so this build step must be done manually before the first run and repeated after any change to the image.
 
 Run:
 `node services/agent-team/bin/agent-team-launch.mjs "<task>" --repo <target-repo> --creds-dir ~/.agent-team/creds`

@@ -40,6 +40,14 @@ if (!args.task || !args.repo) {
 }
 if (process.env.ANTHROPIC_API_KEY) console.error("WARNING: ANTHROPIC_API_KEY is set; this is meant to run on OAuth. Unset it.");
 
+// SECURITY -- credential-isolation gate (phase 3b requirement, not yet enforced here):
+// this entry runs the pipeline with the author's AMBIENT host credentials (aws/gh/gcloud/oci,
+// SSH, Keychain). It is safe ONLY for local, author-triggered runs. It MUST NOT be wired to any
+// remote trigger (webhook, queue listener, scheduled job) except behind bin/agent-team-launch.mjs
+// (the container launch that scrubs those credentials). Phase 3b lands the mechanism that makes
+// this entry REFUSE a remote-triggered, un-contained invocation; until then the interlock is a
+// convention -- do not add a remote trigger to this bare entry.
+
 // review-cli.js path in the concord monorepo (this package lives at services/agent-team/).
 const CLI_PATH = new URL("../../../plugins/concord/hooks/review-cli.js", import.meta.url).pathname;
 const stateDir = mkdtempSync(join(tmpdir(), "agent-team-state-"));

@@ -27,7 +27,9 @@ const r = spawnSync("node", [bin,
 console.log(r.stdout); console.error(r.stderr);
 const converged = /"outcome": "done"/.test(r.stdout) || r.status === 0;
 const branched = git(["-C", target, "branch", "--list", "agent-team/*"]).stdout.trim() !== "";
-const failed = !converged || !branched;
+const oauthOnly = /"apiKeyPresent":\s*false/.test(r.stdout);
+console.log(JSON.stringify({ converged, branched, oauthOnly }));
+const failed = !converged || !branched || !oauthOnly;
 if (failed) console.error("E2E SMOKE FAILED"); else console.log("E2E SMOKE PASSED");
 // Always clean up the throwaway repo -- its contents were already printed/asserted above.
 rmSync(dirname(target), { recursive: true, force: true });
