@@ -1037,3 +1037,28 @@ test('round-start: a gate-pending ledger is a re-runnable stop (resets to conver
   assert.deepStrictEqual(after.gate_open, []);            // cleared for a fresh evaluation
   assert.deepStrictEqual(after.gate_dismissed, ['gate:ac-coverage:y']); // preserved
 });
+
+test('round-start: gate-pending re-entry on an IDENTICAL diff still yields work, not no-op', () => {
+  const repo = initRepo();
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
+  execFileSync('git', ['commit', '-aqm', 'enable gate'], { cwd: repo });
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  // A real round-start against base HEAD~1 seeds a genuine diff_content_hash in the ledger.
+  run(['round-start', 'feat/x', 'HEAD~1'], { env });
+  const slug = review.targetSlug('feat/x');
+  // Simulate a prior gate-pending terminus WITHOUT touching the working tree or adding
+  // commits -- unlike the "keeps dismissed" test above, the diff on re-run is byte-identical
+  // to the one that seeded diff_content_hash. This is the "dismiss a gate finding, then
+  // re-run without further code changes" path.
+  let ledger = review.readLedger(dir, slug);
+  ledger = { ...ledger, status: 'gate-pending', phase: 'done', gate_open: [{ id: 'gate:cross-context:x', file: 'a.txt', summary: 's' }] };
+  review.writeLedger(dir, slug, ledger);
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.strictEqual(out.decision, 'work'); // re-entered on the SAME diff, not "no-op"
+  const after = review.readLedger(dir, slug);
+  assert.strictEqual(after.status, 'converging');
+  assert.deepStrictEqual(after.gate_open, []); // cleared for a fresh evaluation
+});
