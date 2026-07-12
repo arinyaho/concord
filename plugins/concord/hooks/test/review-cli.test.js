@@ -1165,3 +1165,26 @@ test('renderHandoff: gate-pending surfaces the advisory GATE findings section', 
   assert.match(out.handoff, /GATE findings \(advisory/);
   assert.match(out.handoff, /gate:silent-gap:missing-check/);
 });
+
+test('review-cli dismiss: records the id in gate_dismissed and drops it from gate_open', () => {
+  const dir = tmpDir();
+  const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  let l = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  l = { ...l, status: 'gate-pending', gate_open: [{ id: 'gate:ac-coverage:defer', file: 'a.js', summary: 's' }] };
+  review.writeLedger(dir, slug, l);
+  const out = run(['dismiss', 'feat/x', 'gate:ac-coverage:defer'], { env });
+  assert.match(out, /dismissed gate:ac-coverage:defer/);
+  const after = review.readLedger(dir, slug);
+  assert.deepStrictEqual(after.gate_dismissed, ['gate:ac-coverage:defer']);
+  assert.deepStrictEqual(after.gate_open, []);
+});
+
+test('review-cli dismiss: idempotent (no duplicate in gate_dismissed)', () => {
+  const dir = tmpDir();
+  const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  review.writeLedger(dir, slug, { ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), gate_dismissed: ['gate:x:y'] });
+  run(['dismiss', 'feat/x', 'gate:x:y'], { env });
+  assert.deepStrictEqual(review.readLedger(dir, slug).gate_dismissed, ['gate:x:y']);
+});

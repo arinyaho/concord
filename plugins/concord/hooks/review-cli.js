@@ -551,6 +551,20 @@ function main() {
     return;
   }
 
+  if (verb === 'dismiss') {
+    requireRef(ref, 'dismiss');
+    const gateId = rest[0];
+    if (!gateId) throw new Error('review-cli dismiss: missing required <gateId> argument');
+    const slug = targetSlug(ref);
+    const ledger = readLedger(stateDir, slug);
+    if (!ledger) throw new Error(`review-cli dismiss: no ledger for ref "${ref}"`);
+    const dismissed = Array.from(new Set([...(ledger.gate_dismissed || []), gateId]));
+    const gateOpen = (ledger.gate_open || []).filter((f) => f.id !== gateId);
+    writeLedger(stateDir, slug, { ...ledger, gate_dismissed: dismissed, gate_open: gateOpen });
+    process.stdout.write(`dismissed ${gateId}; it will no longer surface or block for ref "${ref}".\n`);
+    return;
+  }
+
   // Discards the ledger for a ref so the next round-start begins a fresh run.
   // The escape hatch for a ledger latched into a finding-less terminal state: a
   // no-progress or budget-exhausted park has zero parked findings, so `unpark`
@@ -609,7 +623,7 @@ function main() {
     return;
   }
 
-  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | plan-fixes | commit-fix | record | unpark | reset)`);
+  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | plan-fixes | commit-fix | record | unpark | dismiss | reset)`);
 }
 
 module.exports = { gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitCheckoutTree, runDod };
