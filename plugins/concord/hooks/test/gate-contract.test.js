@@ -12,6 +12,16 @@ test('FINDING_ID_RE: accepts a stable gate:slug, rejects unsafe filename chars',
   assert.ok(!gc.isValidFindingId('correctness:'));
 });
 
+test('FINDING_ID_RE: only "gate:" ids may have 3 segments; other prefixes stay 2-segment', () => {
+  assert.ok(gc.isValidFindingId('gate:cross-context:foo'));
+  assert.ok(gc.isValidFindingId('gate:foo'));
+  assert.ok(gc.isValidFindingId('correctness:foo'));
+  assert.ok(gc.isValidFindingId('intent:retry-count'));
+  assert.ok(!gc.isValidFindingId('correctness:foo:bar'));
+  assert.ok(!gc.isValidFindingId('intent:a:b'));
+  assert.ok(!gc.isValidFindingId('gate:a:b:c'));
+});
+
 test('parseGateFindings: parses a valid array and stamps status confirmed', () => {
   const raw = JSON.stringify([{ id: 'correctness:a', gate: 'correctness', file: 'a.js', span: 'x', summary: 's' }]);
   const out = gc.parseGateFindings(raw);
