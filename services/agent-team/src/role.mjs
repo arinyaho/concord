@@ -1,4 +1,5 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { settingSourcesFromEnv } from "./settings_sources.mjs";
 
 // Pure: assemble query() options. settingSources is env-gated so the container launcher can
 // pin ['user'] (load author skills, exclude repo-committed project/local settings -- spec
@@ -9,16 +10,8 @@ export function buildQueryOptions({ systemPrompt, model, extra = {}, sessionId, 
   if (model) options.model = model;
   if (extra.cwd) options.cwd = extra.cwd;
   if (sessionId) options.resume = sessionId;
-  const ss = env.AGENT_TEAM_SETTING_SOURCES;
-  if (ss) {
-    let parsed;
-    try { parsed = JSON.parse(ss); }
-    catch { throw new Error(`AGENT_TEAM_SETTING_SOURCES must be a JSON array of strings, got: ${ss}`); }
-    if (!Array.isArray(parsed) || !parsed.every((s) => typeof s === "string")) {
-      throw new Error(`AGENT_TEAM_SETTING_SOURCES must be a JSON array of strings, got: ${ss}`);
-    }
-    options.settingSources = parsed;
-  }
+  const ss = settingSourcesFromEnv(env);
+  if (ss) options.settingSources = ss;
   return options;
 }
 
