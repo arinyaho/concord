@@ -23,9 +23,9 @@ function parseGateFindings(rawText) {
   try {
     parsed = JSON.parse(stripFences(rawText));
   } catch (e) {
-    throw new Error(`correctness gate did not return valid JSON: ${e.message}`);
+    throw new Error(`gate did not return valid JSON: ${e.message}`);
   }
-  if (!Array.isArray(parsed)) throw new Error('correctness gate output must be a JSON array of findings');
+  if (!Array.isArray(parsed)) throw new Error('gate output must be a JSON array of findings');
   return parsed.map((f, i) => {
     if (!f || typeof f !== 'object') throw new Error(`finding[${i}] is not an object`);
     if (!isValidFindingId(f.id)) throw new Error(`finding[${i}].id "${f.id}" is not a stable "gate:slug" id (contract violation)`);
