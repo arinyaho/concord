@@ -101,7 +101,7 @@ Because the GATE runs every round and never auto-fixes, a finding the human legi
 ## Configuration
 
 - Opt-in for v1, via a `gate` block in `review.config.json` (default: absent → the loop stays exactly diff-local, preserving the zero-config default and the current cost profile). When present, the GATE runs the panel each round using the design source (the `intent.command` output, if configured) plus ad-hoc read.
-- The block also carries the pack source: v1 = ad-hoc; later a retriever endpoint. Trust model matches `dod` and `intent` — a project-authored value the CLI consumes; fail-closed on a present-but-broken block, benign on an absent one.
+- The block also carries the pack source: v1 = ad-hoc; later a retriever endpoint. Trust model matches `intent` — a project-authored value the CLI consumes: benign on an absent block (zero-config default stays diff-local), fail-closed on a present-but-broken one. (Note it does not follow `dod` here, whose absence itself fails closed.)
 - **Open policy question (below):** whether the GATE flips to default-on in a later version once trusted — the user's motivating complaint ("a one-line review should include built-in coverage") argues for default-on, but the blocking `gate-review` terminus and the extra per-round passes are a behavior/cost change that v1 keeps behind an explicit opt-in.
 
 ## What ships in v1 vs later
