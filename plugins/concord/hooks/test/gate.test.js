@@ -37,18 +37,21 @@ test('loadGateConfig: malformed JSON -> harness-failure', () => {
 
 test('foldGateFindings: drops verify-rejected and dismissed, keeps unchanged-file findings', () => {
   const gateFindings = [
-    { id: 'gate:cross-context:sibling-reopen', file: 'src/unchanged_sibling.js', span: 'spawn(opts)', summary: 'sibling reopens the gate', requirement: '' },
-    { id: 'gate:silent-gap:missing-validate', file: 'src/verify.js', span: '', summary: 'design requires a target-exists check', requirement: 'verify must check the target exists' },
-    { id: 'gate:ac-coverage:ac-b-partial', file: 'src/promote.js', span: '', summary: 'AC-B only partial', requirement: 'AC-B: automated end-to-end' },
+    { id: 'gate:silent-gap:sibling-reopen', file: 'src/unchanged_sibling.js', span: 'spawn(opts)', summary: 'sibling reopens the gate', requirement: 'must not reopen a resolved sibling' },
+    { id: 'gate:ac-coverage:missing-validate', file: 'src/verify.js', span: '', summary: 'design requires a target-exists check', requirement: 'verify must check the target exists' },
+    { id: 'gate:cross-context:ac-b-partial', file: 'src/promote.js', span: '', summary: 'AC-B only partial', requirement: 'AC-B: automated end-to-end' },
   ];
   const out = gate.foldGateFindings({
     gateFindings,
-    verifyRejectedIds: ['gate:ac-coverage:ac-b-partial'],   // a false positive
-    dismissedIds: ['gate:silent-gap:missing-validate'],     // human-accepted/deferred
+    verifyRejectedIds: ['gate:cross-context:ac-b-partial'],   // a false positive
+    dismissedIds: ['gate:ac-coverage:missing-validate'],      // human-accepted/deferred
   });
   assert.strictEqual(out.length, 1);
-  assert.strictEqual(out[0].id, 'gate:cross-context:sibling-reopen');
-  assert.strictEqual(out[0].class, 'cross-context');
+  assert.strictEqual(out[0].id, 'gate:silent-gap:sibling-reopen');
+  assert.strictEqual(out[0].class, 'silent-gap'); // non-default class, actually derived (not a hardcoded default)
+  assert.strictEqual(out[0].evidence, 'spawn(opts)'); // evidence maps from the finding's span
+  assert.strictEqual(out[0].requirement, 'must not reopen a resolved sibling'); // requirement passes through
+  assert.strictEqual(out[0].summary, 'sibling reopens the gate'); // summary passes through
   assert.strictEqual(out[0].file, 'src/unchanged_sibling.js'); // NOT filtered though it is an unchanged file
 });
 
