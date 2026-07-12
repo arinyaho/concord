@@ -30,7 +30,7 @@ function parseArgs(argv) {
 
 const args = parseArgs(process.argv.slice(2));
 if (!args.brief) {
-  console.error('Usage: node bin/agent-team.mjs [--diverge] [--max-rounds N] [--model NAME] "<brief>"');
+  console.error('Usage: node bin/agent-team.mjs [--diverge] [--max-rounds N] [--model NAME] [--allow-uncontained] "<brief>"');
   process.exit(2);
 }
 if (process.env.ANTHROPIC_API_KEY) {

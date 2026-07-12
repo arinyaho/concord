@@ -38,7 +38,7 @@ function parseArgs(argv) {
 
 const args = parseArgs(process.argv.slice(2));
 if (!args.task || !args.repo) {
-  console.error('Usage: agent-team-run "<task>" --repo <path> [--base main] [--max-rounds N] [--model NAME] [--timeout MS]');
+  console.error('Usage: agent-team-run "<task>" --repo <path> [--base main] [--max-rounds N] [--model NAME] [--timeout MS] [--allow-uncontained]');
   process.exit(2);
 }
 if (process.env.ANTHROPIC_API_KEY) console.error("WARNING: ANTHROPIC_API_KEY is set; this is meant to run on OAuth. Unset it.");
