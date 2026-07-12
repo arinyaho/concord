@@ -751,6 +751,20 @@ test('plan-fixes: an intent: id in the CORRECTNESS artifact -> harness-failure (
   assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure/);
 });
 
+test('plan-fixes: a gate: id in the CORRECTNESS artifact -> harness-failure (symmetric guard)', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [
+    { id: 'gate:cross-context:leak', file: 'a.txt', summary: 'should not auto-fix' },
+  ] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure/);
+});
+
 test('record: an intent finding terminates intent-review and the handoff shows it', () => {
   const repo = initRepoWithIntent('printf "REQ: retry three times"');
   const dir = tmpDir();
