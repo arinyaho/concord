@@ -3,7 +3,10 @@
 // Moved out of engine.js so review-cli.js's `record`/`plan-fixes` can validate
 // subagent-written artifacts against the same contract the engine used to enforce.
 
-const FINDING_ID_RE = /^[a-z][a-z0-9-]*:[a-z0-9][a-z0-9-]{0,79}$/;
+// One segment ("correctness:slug" / "intent:slug") or two ("gate:class:slug" --
+// the gate namespace's id shape per lib/gate.js's foldGateFindings, which derives
+// `class` from the id's middle segment). Each segment is a-z0-9- , 1-80 chars.
+const FINDING_ID_RE = /^[a-z][a-z0-9-]*(?::[a-z0-9][a-z0-9-]{0,79}){1,2}$/;
 
 function isValidFindingId(id) {
   return typeof id === 'string' && FINDING_ID_RE.test(id);

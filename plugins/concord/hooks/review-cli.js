@@ -428,6 +428,7 @@ function main() {
     requireRef(ref, 'plan-fixes');
     const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
     const gc = require('./lib/gate-contract');
+    const gateCfg = require('./lib/gate').loadGateConfig(repoRoot);
     const slug = targetSlug(ref);
     const ledger = readLedger(stateDir, slug);
     if (!ledger || ledger.phase !== 'gates') throw new Error(`plan-fixes: expected phase "gates", got "${ledger && ledger.phase}"`);
@@ -442,6 +443,9 @@ function main() {
     for (const c of candidates) {
       if (c.id.startsWith('intent:')) {
         throw new Error(`harness-failure: intent-prefixed id "${c.id}" in the correctness artifact -- intent findings must come from the intent detector, never the auto-fixing gate`);
+      }
+      if (c.id.startsWith('gate:')) {
+        throw new Error(`harness-failure: gate-prefixed id "${c.id}" in the correctness artifact -- gate findings must come from the gate reviewer, never the auto-fixing gate`);
       }
     }
     // Coverage: every changed file must be in examined. Derive the changed-file
@@ -505,7 +509,22 @@ function main() {
         .filter((f) => changedSet.has(f.file)) // out-of-PR-scope findings dropped
         .map((f) => ({ id: f.id, file: f.file, span: f.span, requirement: f.requirement || '', summary: f.summary }));
     }
-    const next = { ...ledger, planned: fixes.map((f) => f.id), resolved_absent: resolvedAbsent, intent_parked: intentParked, phase: 'fixes' };
+    // Gate fold: report-only, never routed into fixes. Fail-closed like the
+    // intent detector -- if the gate was applied this round, its artifact is
+    // mandatory. Deliberately NOT filtered to changed files (unchanged-sibling
+    // cross-context is the point). gate: namespace is guarded symmetrically.
+    let gateOpen = [];
+    if (gateCfg) {
+      const gJson = readArtifact(stateDir, n, 'gate'); // fail-closed
+      const gFindings = gc.parseGateFindings(JSON.stringify(gJson.findings || []));
+      for (const f of gFindings) {
+        if (!f.id.startsWith('gate:')) throw new Error(`harness-failure: non-gate id "${f.id}" in the gate artifact`);
+      }
+      const gvRaw = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-gate-verify.json`), 'utf8')); } catch (e) { return { rejected: [] }; } })();
+      const rejected = gc.parseVerifyVerdict(JSON.stringify({ rejected: gvRaw.rejected || [] }), gFindings).rejectedIds;
+      gateOpen = require('./lib/gate').foldGateFindings({ gateFindings: gFindings, verifyRejectedIds: rejected, dismissedIds: ledger.gate_dismissed || [] });
+    }
+    const next = { ...ledger, planned: fixes.map((f) => f.id), resolved_absent: resolvedAbsent, intent_parked: intentParked, gate_open: gateOpen, phase: 'fixes' };
     writeLedger(stateDir, slug, next);
     process.stdout.write(JSON.stringify({ fixes }) + '\n');
     return;
