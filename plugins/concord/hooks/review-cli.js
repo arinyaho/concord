@@ -6,6 +6,7 @@ const path = require('node:path');
 const { resolveStateDirFromCwd } = require('./lib/statedir');
 const dodExec = require('./lib/dod-exec');
 const intentLib = require('./lib/intent');
+const gateLib = require('./lib/gate');
 const {
   targetSlug,
   readLedger,
@@ -226,6 +227,14 @@ function main() {
       ledger = { ...ledger, status: 'converging', diff_content_hash: null, intentHash: null, intentBytes: null, intent_parked: [] };
     }
 
+    // gate-pending, like intent-review, is a re-runnable stop state: a fresh
+    // round-start clears the reported gate findings and nulls the diff hash so a
+    // real round advances and the gate re-evaluates. gate_dismissed is preserved
+    // (a finding the human retired stays retired across re-runs).
+    if (ledger.status === 'gate-pending') {
+      ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_open: [] };
+    }
+
     // `resume <ref>` passes NO base token -- fall back to the base persisted
     // from the original fresh start (ledger.target.base). Without this, an
     // undefined base makes gitDiff below fall back to `git diff HEAD`, which
@@ -298,6 +307,7 @@ function main() {
     fs.writeFileSync(path.join(stateDir, `round-${ledger.round}-diff.txt`), diff);
 
     const intentCfg = intentLib.loadIntentConfig(repoRoot);
+    const gateCfg = gateLib.loadGateConfig(repoRoot);
     if (intentCfg) {
       const intentPath = path.join(stateDir, `intent-${slug}.md`);
       if (!ledger.intentHash) {
@@ -319,7 +329,7 @@ function main() {
     const dod = runDod(repoRoot);
     ledger = { ...ledger, dod, phase: 'gates', target: { ...(ledger.target || { kind: 'local', ref }), base, head_sha: headSha } };
     writeLedger(stateDir, slug, ledger);
-    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, intentApplied: !!intentCfg, stateDir }) + '\n');
+    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, intentApplied: !!intentCfg, gateApplied: !!gateCfg, stateDir }) + '\n');
     return;
   }
 

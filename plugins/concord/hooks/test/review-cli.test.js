@@ -1007,3 +1007,33 @@ test('a review.config.json with "dod": null converges with the DoD reported DEFE
   assert.match(out.handoff, /DEFERRED/);
   assert.ok(!out.handoff.includes('DoD: passed'), 'deferred DoD must never be reported as "DoD: passed"');
 });
+
+test('round-start: signals gateApplied when review.config.json has a gate block', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
+  execFileSync('git', ['commit', '-aqm', 'enable gate'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.strictEqual(out.gateApplied, true);
+});
+
+test('round-start: a gate-pending ledger is a re-runnable stop (resets to converging, keeps dismissed)', () => {
+  const dir = tmpDir();
+  const repo = initRepo();
+  const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  let l = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  l = { ...l, status: 'gate-pending', gate_open: [{ id: 'gate:cross-context:x', file: 'a.txt', summary: 's' }], gate_dismissed: ['gate:ac-coverage:y'], diff_content_hash: 'stale' };
+  review.writeLedger(dir, slug, l);
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.strictEqual(out.decision, 'work'); // NOT terminal
+  const after = review.readLedger(dir, slug);
+  assert.strictEqual(after.status, 'converging');
+  assert.deepStrictEqual(after.gate_open, []);            // cleared for a fresh evaluation
+  assert.deepStrictEqual(after.gate_dismissed, ['gate:ac-coverage:y']); // preserved
+});
