@@ -49,4 +49,26 @@ function foldGateFindings({ gateFindings, verifyRejectedIds, dismissedIds }) {
     });
 }
 
-module.exports = { CONFIG_FILENAME, loadGateConfig, foldGateFindings };
+// Cross-round persistence retire rule (spec decision 4): gate findings must
+// PERSIST across rounds -- a round where the gate subagent nondeterministically
+// fails to re-report a real finding must not silently erase it and let the run
+// converge clean. `priorGateOpen` (the ledger's gate_open going into this
+// round) carries forward everything NOT already covered by `thisRoundIds`
+// (this round's own folded findings) UNLESS it is plausibly resolved:
+// dismissed, rejected by this round's gate-verify, or its file was touched by
+// the diff since base (a fix plausibly addressed it -- trust the silence). A
+// finding on a file the diff never touched gets no such benefit of the doubt:
+// the gate's silence on it is untrusted (flaky), so it is kept. Callers union
+// the result with `thisRound` (foldGateFindings' own output); the two are
+// disjoint by construction since carried excludes thisRoundIds.
+function carryForwardGateFindings({ priorGateOpen, thisRoundIds, verifyRejectedIds, dismissedIds, changedFiles }) {
+  const thisRound = new Set(thisRoundIds || []);
+  const rejected = new Set(verifyRejectedIds || []);
+  const dismissed = new Set(dismissedIds || []);
+  const changed = new Set(changedFiles || []);
+  return (priorGateOpen || []).filter(
+    (f) => !thisRound.has(f.id) && !dismissed.has(f.id) && !rejected.has(f.id) && !changed.has(f.file),
+  );
+}
+
+module.exports = { CONFIG_FILENAME, loadGateConfig, foldGateFindings, carryForwardGateFindings };

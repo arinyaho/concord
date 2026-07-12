@@ -1314,6 +1314,128 @@ test('record: park-budget override on a gate-pending round clears gatePending, l
   assert.strictEqual(after.status, 'parked'); // not the stale 'gate-pending'
 });
 
+// --- gate_open cross-round persistence (spec decision 4) ---
+//
+// The gate subagent is nondeterministic: a round can silently fail to
+// re-report a real standing finding. Without carry-forward, plan-fixes
+// OVERWRITES gate_open fresh from only that round's artifacts every time --
+// a single flaky round erases a standing finding and the run converges
+// clean with a real design gap unresolved. These tests drive a real
+// multi-round run (round-start -> plan-fixes -> commit-fix -> record, twice)
+// to prove a finding on a file the diff never touched survives a silent
+// round, while a finding on a file the diff DID touch is dropped (a fix
+// plausibly addressed it).
+
+test('e2e: a flaky round (gate goes silent) does not erase a standing finding on an UNCHANGED file -- must not converge clean', () => {
+  const repo = initRepo();
+  fs.writeFileSync(path.join(repo, 'unchanged.txt'), 'stable\n'); // never touched by the branch
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add unchanged.txt, enable gate'], { cwd: repo });
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const slug = review.targetSlug('feat/x');
+
+  // --- round 1: a real correctness finding (so the round makes progress) +
+  // a gate finding G on the unchanged file.
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  let n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [
+    { id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'fix me' },
+  ] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'gate', { status: 'ok', findings: [
+    { id: 'gate:cross-context:g', file: 'unchanged.txt', span: '', summary: 'a real design gap', requirement: 'r' },
+  ] });
+  writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+
+  // Simulate the correctness fix landing: the fixer edits a.txt and commit-fix journals it.
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two-fixed\n');
+  writeArtifact(dir, n, 'fix-correctness:real', { status: 'ok', edited: true, files: ['a.txt'] });
+  const cf = JSON.parse(run(['commit-fix', 'feat/x', 'correctness:real'], { env }));
+  assert.strictEqual(cf.committed, true);
+
+  let out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.continue, true); // progress -- the round is not terminal
+  let ledger = review.readLedger(dir, slug);
+  assert.ok(ledger.gate_open.some((f) => f.id === 'gate:cross-context:g'), 'G must be recorded after round 1');
+
+  // --- round 2: correctness is clean, and the GATE WENT SILENT (flaky round --
+  // it re-examined but failed to re-report G, even though the gap is still real).
+  n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~2'], { env })).round; // base + change + fix commits
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'gate', { status: 'ok', findings: [] }); // silent -- G not re-reported
+  writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  out = JSON.parse(run(['record', 'feat/x'], { env }));
+
+  // The flaky round must NOT be allowed to erase G nor converge clean.
+  assert.strictEqual(out.decision.converged, false, 'a flaky gate round must not converge clean with a standing unchanged-file finding erased');
+  assert.strictEqual(out.decision.gatePending, true);
+  ledger = review.readLedger(dir, slug);
+  assert.ok(ledger.gate_open.some((f) => f.id === 'gate:cross-context:g'), 'G must survive a silent round on an unchanged file');
+  assert.strictEqual(ledger.status, 'gate-pending');
+});
+
+test('e2e: a carried finding whose file DID change since base is dropped when the gate goes silent on it', () => {
+  // Same continuous-run shape as the unchanged-file test above (round 1 makes
+  // progress via a real correctness fix, so the run never crosses a
+  // gate-pending terminus -- round-start's gate-pending reset intentionally
+  // clears gate_open for a FRESH evaluation after a human decision, which
+  // would be indistinguishable from carry-forward here; persistence is only
+  // WITHIN one continuous run). The only difference: G2's file IS the file
+  // the correctness fix touches, so by round 2 it is in the diff since base.
+  const repo = initRepo();
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
+  execFileSync('git', ['commit', '-aqm', 'enable gate'], { cwd: repo });
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const slug = review.targetSlug('feat/x');
+
+  // --- round 1: a real correctness finding (so the round makes progress) +
+  // a gate finding G2 on a.txt -- the SAME file the correctness fix will touch.
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  let n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [
+    { id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'fix me' },
+  ] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'gate', { status: 'ok', findings: [
+    { id: 'gate:cross-context:g2', file: 'a.txt', span: '', summary: 'a gap on the changed file', requirement: 'r' },
+  ] });
+  writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two-fixed\n');
+  writeArtifact(dir, n, 'fix-correctness:real', { status: 'ok', edited: true, files: ['a.txt'] });
+  const cf = JSON.parse(run(['commit-fix', 'feat/x', 'correctness:real'], { env }));
+  assert.strictEqual(cf.committed, true);
+
+  let out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.continue, true); // progress -- the round is not terminal
+  let ledger = review.readLedger(dir, slug);
+  assert.ok(ledger.gate_open.some((f) => f.id === 'gate:cross-context:g2'));
+
+  // --- round 2: correctness is clean, and the gate goes silent on G2. Its
+  // file (a.txt) is now in the diff since base (the fix touched it) -- a fix
+  // plausibly addressed it -- so it must be dropped, not carried.
+  n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~2'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'gate', { status: 'ok', findings: [] }); // silent this round
+  writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  out = JSON.parse(run(['record', 'feat/x'], { env }));
+
+  assert.strictEqual(out.decision.converged, true, 'a carried finding on a changed file must be dropped, allowing convergence');
+  ledger = review.readLedger(dir, slug);
+  assert.deepStrictEqual(ledger.gate_open, []);
+});
+
 test('review-cli dismiss: records the id in gate_dismissed and drops it from gate_open', () => {
   const dir = tmpDir();
   const slug = review.targetSlug('feat/x');
@@ -1336,3 +1458,4 @@ test('review-cli dismiss: idempotent (no duplicate in gate_dismissed)', () => {
   run(['dismiss', 'feat/x', 'gate:x:y'], { env });
   assert.deepStrictEqual(review.readLedger(dir, slug).gate_dismissed, ['gate:x:y']);
 });
+

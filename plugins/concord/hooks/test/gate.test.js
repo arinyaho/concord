@@ -63,3 +63,69 @@ test('foldGateFindings: class derives from the id segment, defaults to cross-con
   });
   assert.strictEqual(out[0].class, 'cross-context');
 });
+
+// --- carryForwardGateFindings (cross-round persistence, spec decision 4) ---
+//
+// A round where the gate subagent nondeterministically fails to re-report a
+// real finding must not erase it from ledger.gate_open. The retire rule is
+// deliberately narrow: a prior finding is dropped ONLY when it is plausibly
+// resolved -- dismissed, rejected by this round's gate-verify, or its file
+// was touched by the diff since base (a fix plausibly addressed it). An
+// untouched file's silence is untrusted (the gate is nondeterministic), so
+// those findings carry forward.
+
+test('carryForwardGateFindings: a prior finding on an UNCHANGED file survives a silent round', () => {
+  const priorGateOpen = [{ id: 'gate:cross-context:g', file: 'unchanged.txt', evidence: '', requirement: '', summary: 's' }];
+  const out = gate.carryForwardGateFindings({
+    priorGateOpen,
+    thisRoundIds: [],
+    verifyRejectedIds: [],
+    dismissedIds: [],
+    changedFiles: ['a.txt'], // g's file not among this round's changed files
+  });
+  assert.deepStrictEqual(out, priorGateOpen);
+});
+
+test('carryForwardGateFindings: a prior finding whose file WAS changed this round is dropped (a fix plausibly addressed it)', () => {
+  const out = gate.carryForwardGateFindings({
+    priorGateOpen: [{ id: 'gate:cross-context:g', file: 'a.txt', evidence: '', requirement: '', summary: 's' }],
+    thisRoundIds: [],
+    verifyRejectedIds: [],
+    dismissedIds: [],
+    changedFiles: ['a.txt'],
+  });
+  assert.deepStrictEqual(out, []);
+});
+
+test('carryForwardGateFindings: a prior finding already present in thisRound is not double-carried', () => {
+  const out = gate.carryForwardGateFindings({
+    priorGateOpen: [{ id: 'gate:cross-context:g', file: 'unchanged.txt', evidence: '', requirement: '', summary: 's' }],
+    thisRoundIds: ['gate:cross-context:g'], // re-reported this round -- thisRound already carries it
+    verifyRejectedIds: [],
+    dismissedIds: [],
+    changedFiles: [],
+  });
+  assert.deepStrictEqual(out, []);
+});
+
+test('carryForwardGateFindings: a dismissed prior finding is dropped even on an unchanged file', () => {
+  const out = gate.carryForwardGateFindings({
+    priorGateOpen: [{ id: 'gate:cross-context:g', file: 'unchanged.txt', evidence: '', requirement: '', summary: 's' }],
+    thisRoundIds: [],
+    verifyRejectedIds: [],
+    dismissedIds: ['gate:cross-context:g'],
+    changedFiles: [],
+  });
+  assert.deepStrictEqual(out, []);
+});
+
+test('carryForwardGateFindings: a prior finding rejected by this round\'s gate-verify is dropped even on an unchanged file', () => {
+  const out = gate.carryForwardGateFindings({
+    priorGateOpen: [{ id: 'gate:cross-context:g', file: 'unchanged.txt', evidence: '', requirement: '', summary: 's' }],
+    thisRoundIds: [],
+    verifyRejectedIds: ['gate:cross-context:g'],
+    dismissedIds: [],
+    changedFiles: [],
+  });
+  assert.deepStrictEqual(out, []);
+});

@@ -549,7 +549,24 @@ function main() {
       for (const f of gFindings) byId.set(f.id, f);
       const mergedGateFindings = Array.from(byId.values());
       const rejected = gc.parseVerifyVerdict(JSON.stringify({ rejected: gvRaw.rejected || [] }), mergedGateFindings).rejectedIds;
-      gateOpen = require('./lib/gate').foldGateFindings({ gateFindings: mergedGateFindings, verifyRejectedIds: rejected, dismissedIds: ledger.gate_dismissed || [] });
+      const thisRound = gateLib.foldGateFindings({ gateFindings: mergedGateFindings, verifyRejectedIds: rejected, dismissedIds: ledger.gate_dismissed || [] });
+      // Cross-round persistence (spec decision 4): gate findings must PERSIST
+      // across rounds, not be overwritten fresh each round -- a round where the
+      // gate subagent nondeterministically fails to re-report a real finding
+      // must not silently erase it and let the run converge clean. Carry
+      // forward anything from the PRIOR round's gate_open not already covered
+      // by thisRound, unless it is plausibly resolved: dismissed, rejected by
+      // this round's gate-verify, or its file was touched by the diff since
+      // base (a fix plausibly addressed it). thisRound and carried are
+      // disjoint by construction (carried excludes thisRound's ids).
+      const carried = gateLib.carryForwardGateFindings({
+        priorGateOpen: ledger.gate_open || [],
+        thisRoundIds: thisRound.map((f) => f.id),
+        verifyRejectedIds: rejected,
+        dismissedIds: ledger.gate_dismissed || [],
+        changedFiles: changed,
+      });
+      gateOpen = thisRound.concat(carried);
     }
     const next = { ...ledger, planned: fixes.map((f) => f.id), resolved_absent: resolvedAbsent, intent_parked: intentParked, gate_open: gateOpen, phase: 'fixes' };
     writeLedger(stateDir, slug, next);
