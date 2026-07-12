@@ -1459,3 +1459,13 @@ test('review-cli dismiss: idempotent (no duplicate in gate_dismissed)', () => {
   assert.deepStrictEqual(review.readLedger(dir, slug).gate_dismissed, ['gate:x:y']);
 });
 
+test('review-cli dismiss: rejects a gateId that is not in the gate: namespace', () => {
+  const dir = tmpDir();
+  const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  review.writeLedger(dir, slug, review.emptyLedger({ kind: 'local', ref: 'feat/x' }));
+  assert.throws(() => run(['dismiss', 'feat/x', 'not-a-gate-id'], { env }), /must be a gate: id/);
+  // must not have mutated the ledger on the rejected call
+  assert.deepStrictEqual(review.readLedger(dir, slug).gate_dismissed, []);
+});
+

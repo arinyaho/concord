@@ -591,6 +591,7 @@ function main() {
     requireRef(ref, 'dismiss');
     const gateId = rest[0];
     if (!gateId) throw new Error('review-cli dismiss: missing required <gateId> argument');
+    if (!gateId.startsWith('gate:')) throw new Error(`review-cli dismiss: ${gateId} must be a gate: id`);
     const slug = targetSlug(ref);
     const ledger = readLedger(stateDir, slug);
     if (!ledger) throw new Error(`review-cli dismiss: no ledger for ref "${ref}"`);
