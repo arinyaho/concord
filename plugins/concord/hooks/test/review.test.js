@@ -708,3 +708,32 @@ test('emptyLedger initializes gate_open and gate_dismissed to empty arrays', () 
   assert.deepStrictEqual(l.gate_open, []);
   assert.deepStrictEqual(l.gate_dismissed, []);
 });
+
+// ---- decideTermination: gate-pending ----
+
+test('decideTermination: would-converge + open gate findings -> gate-pending, not clean', () => {
+  const d = review.decideTermination({
+    dodPassed: true, openFindingsCount: 0, specDoubtScope: 'none', noProgress: false,
+    budgetSpent: 0, maxRounds: 5, fixedCount: 0, parkedCount: 0, intentReviewCount: 0, gateOpenCount: 2,
+  });
+  assert.strictEqual(d.gatePending, true);
+  assert.strictEqual(d.converged, false);
+  assert.strictEqual(d.continue, false);
+});
+
+test('decideTermination: would-converge + zero gate findings -> clean', () => {
+  const d = review.decideTermination({
+    dodPassed: true, openFindingsCount: 0, specDoubtScope: 'none', noProgress: false,
+    budgetSpent: 0, maxRounds: 5, fixedCount: 0, parkedCount: 0, intentReviewCount: 0, gateOpenCount: 0,
+  });
+  assert.strictEqual(d.converged, true);
+  assert.ok(!d.gatePending);
+});
+
+test('decideTermination: open CORRECTNESS findings ignore gate count (loop continues, no early halt)', () => {
+  const d = review.decideTermination({
+    dodPassed: false, openFindingsCount: 1, specDoubtScope: 'none', noProgress: false,
+    budgetSpent: 0, maxRounds: 5, fixedCount: 0, parkedCount: 0, intentReviewCount: 0, gateOpenCount: 5,
+  });
+  assert.strictEqual(d.continue, true); // gate does NOT terminate mid-loop
+});
