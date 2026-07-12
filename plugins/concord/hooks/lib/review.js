@@ -70,6 +70,8 @@ function emptyLedger(target) {
     intentHash: null,
     intentBytes: null,
     intent_parked: [],
+    gate_open: [],
+    gate_dismissed: [],
   };
 }
 

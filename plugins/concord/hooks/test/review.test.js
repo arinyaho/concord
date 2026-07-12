@@ -702,3 +702,9 @@ test('emptyLedger: has intentHash, intentBytes, intent_parked', () => {
   assert.strictEqual(l.intentBytes, null);
   assert.deepStrictEqual(l.intent_parked, []);
 });
+
+test('emptyLedger initializes gate_open and gate_dismissed to empty arrays', () => {
+  const l = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  assert.deepStrictEqual(l.gate_open, []);
+  assert.deepStrictEqual(l.gate_dismissed, []);
+});
