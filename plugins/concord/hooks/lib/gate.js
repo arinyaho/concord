@@ -30,4 +30,23 @@ function loadGateConfig(repoRoot, readFileFn = fs.readFileSync) {
   return { enabled: true };
 }
 
-module.exports = { CONFIG_FILENAME, loadGateConfig };
+// Fold a round's gate-review candidates + gate-verify verdict + the ledger's
+// dismissed set into the open gate findings for this round. Report-only:
+// deliberately NOT filtered to changed files (the cross-context case is an
+// UNCHANGED sibling that a changed line's guarantee depends on -- filtering to
+// changed files, as the intent detector does, would drop exactly the class the
+// gate exists to catch). Each finding is re-derived fresh every round, so a
+// later fix that resolves a gap simply stops the gate raising it.
+function foldGateFindings({ gateFindings, verifyRejectedIds, dismissedIds }) {
+  const rejected = new Set(verifyRejectedIds || []);
+  const dismissed = new Set(dismissedIds || []);
+  return (gateFindings || [])
+    .filter((f) => !rejected.has(f.id) && !dismissed.has(f.id))
+    .map((f) => {
+      const seg = String(f.id).split(':');
+      const cls = seg.length >= 3 && seg[1] ? seg[1] : 'cross-context';
+      return { id: f.id, class: cls, file: f.file, evidence: f.span || '', requirement: f.requirement || '', summary: f.summary };
+    });
+}
+
+module.exports = { CONFIG_FILENAME, loadGateConfig, foldGateFindings };

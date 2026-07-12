@@ -34,3 +34,29 @@ test('loadGateConfig: "gate": true (not an object) -> harness-failure', () => {
 test('loadGateConfig: malformed JSON -> harness-failure', () => {
   assert.throws(() => gate.loadGateConfig('/repo', reader({ 'review.config.json': '{bad' })), /harness-failure/);
 });
+
+test('foldGateFindings: drops verify-rejected and dismissed, keeps unchanged-file findings', () => {
+  const gateFindings = [
+    { id: 'gate:cross-context:sibling-reopen', file: 'src/unchanged_sibling.js', span: 'spawn(opts)', summary: 'sibling reopens the gate', requirement: '' },
+    { id: 'gate:silent-gap:missing-validate', file: 'src/verify.js', span: '', summary: 'design requires a target-exists check', requirement: 'verify must check the target exists' },
+    { id: 'gate:ac-coverage:ac-b-partial', file: 'src/promote.js', span: '', summary: 'AC-B only partial', requirement: 'AC-B: automated end-to-end' },
+  ];
+  const out = gate.foldGateFindings({
+    gateFindings,
+    verifyRejectedIds: ['gate:ac-coverage:ac-b-partial'],   // a false positive
+    dismissedIds: ['gate:silent-gap:missing-validate'],     // human-accepted/deferred
+  });
+  assert.strictEqual(out.length, 1);
+  assert.strictEqual(out[0].id, 'gate:cross-context:sibling-reopen');
+  assert.strictEqual(out[0].class, 'cross-context');
+  assert.strictEqual(out[0].file, 'src/unchanged_sibling.js'); // NOT filtered though it is an unchanged file
+});
+
+test('foldGateFindings: class derives from the id segment, defaults to cross-context', () => {
+  const out = gate.foldGateFindings({
+    gateFindings: [{ id: 'gate:only-two-segments', file: 'a.js', span: '', summary: 's', requirement: '' }],
+    verifyRejectedIds: [],
+    dismissedIds: [],
+  });
+  assert.strictEqual(out[0].class, 'cross-context');
+});
