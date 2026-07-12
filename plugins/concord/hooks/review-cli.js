@@ -526,7 +526,9 @@ function main() {
     let gateOpen = [];
     if (gateCfg) {
       const gJson = readArtifact(stateDir, n, 'gate'); // fail-closed
-      const gFindings = gc.parseGateFindings(JSON.stringify(gJson.findings || []));
+      let gFindings;
+      try { gFindings = gc.parseGateFindings(JSON.stringify(gJson.findings || [])); }
+      catch (e) { throw new Error(`harness-failure: gate artifact invalid: ${e.message}`); }
       for (const f of gFindings) {
         if (!f.id.startsWith('gate:')) throw new Error(`harness-failure: non-gate id "${f.id}" in the gate artifact`);
       }
@@ -535,7 +537,9 @@ function main() {
       // a broken verify pass is not a harness-failure -- it just means no
       // rejections and no verify-added findings this round.
       const gvRaw = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-gate-verify.json`), 'utf8')); } catch (e) { return { rejected: [], findings: [] }; } })();
-      const verifyFindings = gc.parseGateFindings(JSON.stringify(gvRaw.findings || []));
+      let verifyFindings;
+      try { verifyFindings = gc.parseGateFindings(JSON.stringify(gvRaw.findings || [])); }
+      catch (e) { throw new Error(`harness-failure: gate-verify artifact invalid: ${e.message}`); }
       for (const f of verifyFindings) {
         if (!f.id.startsWith('gate:')) throw new Error(`harness-failure: non-gate id "${f.id}" in the gate-verify artifact`);
       }
