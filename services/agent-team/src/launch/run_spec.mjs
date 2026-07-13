@@ -5,10 +5,13 @@
 export function buildDockerArgs(cfg) {
   const {
     image, concordDir, workDir, credsDir, skillsDir,
-    gitName, gitEmail, settingSources, pipelineArgs = [],
+    gitName, gitEmail, settingSources, pipelineArgs = [], jobId,
   } = cfg;
+  const jobEnv = jobId ? ["-e", `AGENT_TEAM_JOB_ID=${jobId}`] : [];
+  const jobName = jobId ? ["--name", `agent-team-${jobId}`] : [];
   return [
     "run", "--rm",
+    ...jobName,
     "-v", `${concordDir}:/concord-ro:ro`,
     "-v", `${workDir}:/work`,
     "-v", `${credsDir}/.credentials.json:/root/.claude/.credentials.json:ro`,
@@ -20,6 +23,7 @@ export function buildDockerArgs(cfg) {
     "-e", `GIT_COMMITTER_NAME=${gitName}`,
     "-e", `GIT_COMMITTER_EMAIL=${gitEmail}`,
     "-e", `AGENT_TEAM_SETTING_SOURCES=${JSON.stringify(settingSources)}`,
+    ...jobEnv,
     image,
     ...pipelineArgs,
   ];

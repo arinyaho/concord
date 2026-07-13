@@ -55,3 +55,16 @@ test("pipeline args pass through AFTER the image, order preserved", () => {
   const img = a.indexOf("agent-team:3a");
   assert.deepEqual(a.slice(img + 1), ["do the task", "--repo", "/work", "--base", "main"]);
 });
+
+test("jobId present -> emits AGENT_TEAM_JOB_ID (-e count 8) and --name", () => {
+  const a = buildDockerArgs({ ...CFG, jobId: "ab12cd34" });
+  assert.ok(a.join(" ").includes("-e AGENT_TEAM_JOB_ID=ab12cd34"));
+  assert.ok(a.join(" ").includes("--name agent-team-ab12cd34"));
+  assert.equal(a.filter((x) => x === "-e").length, 8);
+});
+test("jobId nullish -> no AGENT_TEAM_JOB_ID, no --name, -e count 7, never =undefined", () => {
+  const a = buildDockerArgs(CFG); // CFG has no jobId
+  assert.ok(!a.join(" ").includes("AGENT_TEAM_JOB_ID"));
+  assert.ok(!a.join(" ").includes("--name"));
+  assert.equal(a.filter((x) => x === "-e").length, 7);
+});
