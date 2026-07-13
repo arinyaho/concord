@@ -2,9 +2,12 @@
 // and translate review_runner's vocabulary to the capability vocabulary. This is the
 // SOLE place that maps { converged, parked, error } -> { done, parked, error }.
 
+import { assertLaunchAllowed } from "./launch/interlock.mjs";
+
 const REVIEW_TO_CAPABILITY = { converged: "done", parked: "parked", error: "error" };
 
-export async function runCapability({ task, coder, reviewRunner, base, logger = { event() {} } }) {
+export async function runCapability({ task, coder, reviewRunner, base, logger = { event() {} }, allowUncontained = false }) {
+  assertLaunchAllowed({ env: process.env, allowUncontained });
   logger.event("coder_start", { task });
   const c = await coder.run(task);
   if (!c.branch) {

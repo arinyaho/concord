@@ -37,9 +37,10 @@ test("injects env allowlist: HOME, GIT_* identity, settingSources; no cloud vars
   assert.ok(joined.includes("-e GIT_AUTHOR_NAME=agent-team-bot"));
   assert.ok(joined.includes("-e GIT_COMMITTER_EMAIL=bot@agent-team.local"));
   assert.ok(joined.includes(`-e AGENT_TEAM_SETTING_SOURCES=["user"]`));
+  assert.ok(buildDockerArgs(CFG).join(" ").includes("-e AGENT_TEAM_CONTAINED=1"));
   // every -e is KEY=value (never a bare -e that would pull from the launcher env)
   for (let i = 0; i < a.length; i++) if (a[i] === "-e") assert.ok(a[i + 1].includes("="), `bare -e at ${i}`);
-  assert.equal(a.filter((x) => x === "-e").length, 6);
+  assert.equal(a.filter((x) => x === "-e").length, 7);
 });
 
 test("NEVER emits dangerous flags", () => {

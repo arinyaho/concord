@@ -10,8 +10,8 @@ role threads through a handoff/handback loop with a code-owned round cap.
     npm install
     npm test                  # unit tests (no network)
     npm run smoke             # substrate check (network, OAuth)
-    node bin/agent-team.mjs "Design a rate limiter for a public JSON API"
-    node bin/agent-team.mjs --diverge "..."   # forces the non-converging path
+    node bin/agent-team.mjs --allow-uncontained "Design a rate limiter for a public JSON API"
+    node bin/agent-team.mjs --diverge --allow-uncontained "..."   # forces the non-converging path
 
 Requires an active `claude login` session; no API key.
 

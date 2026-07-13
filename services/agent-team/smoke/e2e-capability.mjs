@@ -36,7 +36,7 @@ const reviewRunner = { runReview: (t) => runReviewUntilGreen({ target: t, runCli
 
 const res = await runCapability({
   task: "Add a pure function `add(a, b)` in add.js that returns a+b, with a node --test test for it.",
-  coder, reviewRunner, base: "main",
+  coder, reviewRunner, base: "main", allowUncontained: true,
 });
 const pass = res.outcome === "done" && res.review.outcome === "converged" && !process.env.ANTHROPIC_API_KEY;
 console.log(JSON.stringify({ pass, outcome: res.outcome, review: res.review ? res.review.outcome : null, rounds: res.review ? res.review.rounds : null }, null, 2));
@@ -51,6 +51,7 @@ const binResult = spawnSync("node", [
   "Add a pure function `sub(a, b)` in sub.js that returns a-b, with a node --test test for it.",
   "--repo", repo,
   "--base", "main",
+  "--allow-uncontained",
 ], { encoding: "utf8" });
 let binJson;
 try { binJson = JSON.parse(binResult.stdout); } catch { binJson = null; }
