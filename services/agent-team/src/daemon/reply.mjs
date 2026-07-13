@@ -13,8 +13,9 @@ export function formatSuccess({ jobId, branch }) {
 export function formatFailure({ analysis, tail }) {
   const head = analysis ? `failed -- ${analysis}\n\n` : "failed\n\n";
   const FENCE = 8; // "```\n" + "\n```"
-  const room = Math.max(0, CAP - head.length - 3 - FENCE);
-  const t = (tail ?? "").length > room ? "..." + (tail ?? "").slice(-room) : (tail ?? "");
+  const room = CAP - head.length - 3 - FENCE;
+  const body = tail ?? "";
+  const t = room <= 0 ? "" : (body.length > room ? "..." + body.slice(-room) : body);
   return clamp(head + "```\n" + t + "\n```");
 }
 export function formatQueueFull() { return "queue full -- try again shortly"; }

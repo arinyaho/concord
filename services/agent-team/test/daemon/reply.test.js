@@ -23,3 +23,10 @@ test("failure with null analysis falls back to tail-only, still clamped", () => 
   const out = formatFailure({ analysis: null, tail: "y".repeat(5000) });
   assert.ok(out.length <= 2000);
 });
+test("failure with a very long analysis zeroes the tail budget without defeating truncation or breaking the fence", () => {
+  const out = formatFailure({ analysis: "a".repeat(1978), tail: "x".repeat(5000) });
+  assert.ok(out.length <= 2000);
+  assert.equal((out.match(/```/g) || []).length % 2, 0, "fences balanced");
+  assert.ok(out.trimEnd().endsWith("```"), "ends with closing fence");
+  assert.ok(!out.includes("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"), "tail must not be shown wholesale when there is no room");
+});
