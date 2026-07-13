@@ -25,3 +25,17 @@ test("defaults: no args -> reads process.env for contained, allowUncontained fal
   try { assert.throws(() => assertLaunchAllowed(), /uncontained/i); }
   finally { if (saved !== undefined) process.env.AGENT_TEAM_CONTAINED = saved; }
 });
+test("REMOTE=1 and not contained -> throws even with allowUncontained true", () => {
+  assert.throws(
+    () => assertLaunchAllowed({ env: { AGENT_TEAM_REMOTE: "1" }, allowUncontained: true }),
+    /remote/i
+  );
+});
+test("REMOTE=1 but contained -> allowed (container path unaffected)", () => {
+  assert.doesNotThrow(
+    () => assertLaunchAllowed({ env: { AGENT_TEAM_REMOTE: "1", AGENT_TEAM_CONTAINED: "1" }, allowUncontained: false })
+  );
+});
+test("REMOTE unset -> prior behavior preserved (opt-in still allowed)", () => {
+  assert.doesNotThrow(() => assertLaunchAllowed({ env: {}, allowUncontained: true }));
+});
