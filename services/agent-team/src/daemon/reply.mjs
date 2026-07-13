@@ -12,7 +12,8 @@ export function formatSuccess({ jobId, branch }) {
 }
 export function formatFailure({ analysis, tail }) {
   const head = analysis ? `failed -- ${analysis}\n\n` : "failed\n\n";
-  const room = CAP - head.length - 3;
+  const FENCE = 8; // "```\n" + "\n```"
+  const room = Math.max(0, CAP - head.length - 3 - FENCE);
   const t = (tail ?? "").length > room ? "..." + (tail ?? "").slice(-room) : (tail ?? "");
   return clamp(head + "```\n" + t + "\n```");
 }

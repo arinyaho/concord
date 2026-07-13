@@ -13,6 +13,12 @@ test("failure clamps to 2000 chars even with a huge tail", () => {
   assert.ok(out.length <= 2000);
   assert.ok(out.includes("boom"));
 });
+test("failure truncation keeps the code fence terminated", () => {
+  const out = formatFailure({ analysis: "boom", tail: "x".repeat(5000) });
+  assert.ok(out.length <= 2000);
+  assert.equal((out.match(/```/g) || []).length % 2, 0, "code fences must be balanced");
+  assert.ok(out.trimEnd().endsWith("```"), "must end with a closing fence");
+});
 test("failure with null analysis falls back to tail-only, still clamped", () => {
   const out = formatFailure({ analysis: null, tail: "y".repeat(5000) });
   assert.ok(out.length <= 2000);
