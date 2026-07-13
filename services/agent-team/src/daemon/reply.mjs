@@ -11,12 +11,15 @@ export function formatSuccess({ jobId, branch }) {
   return clamp(`done #${jobId} -- branch ${branch}`);
 }
 export function formatFailure({ analysis, tail }) {
-  const head = analysis ? `failed -- ${analysis}\n\n` : "failed\n\n";
-  const FENCE = 8; // "```\n" + "\n```"
-  const room = CAP - head.length - 3 - FENCE;
+  const OPEN = "```\n", CLOSE = "\n```";
+  const FENCE = OPEN.length + CLOSE.length; // 8
+  let head = analysis ? `failed -- ${analysis}\n\n` : "failed\n\n";
+  const maxHead = CAP - FENCE;
+  if (head.length > maxHead) head = head.slice(0, maxHead - 3) + "...";
+  const room = CAP - head.length - FENCE - 3;
   const body = tail ?? "";
   const t = room <= 0 ? "" : (body.length > room ? "..." + body.slice(-room) : body);
-  return clamp(head + "```\n" + t + "\n```");
+  return clamp(head + OPEN + t + CLOSE);
 }
 export function formatQueueFull() { return "queue full -- try again shortly"; }
 export function formatTimeout({ jobId }) { return clamp(`timed out #${jobId}`); }

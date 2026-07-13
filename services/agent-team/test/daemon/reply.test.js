@@ -30,3 +30,9 @@ test("failure with a very long analysis zeroes the tail budget without defeating
   assert.ok(out.trimEnd().endsWith("```"), "ends with closing fence");
   assert.ok(!out.includes("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"), "tail must not be shown wholesale when there is no room");
 });
+test("failure with an oversized analysis AND tail stays <=2000 with a terminated fence", () => {
+  const out = formatFailure({ analysis: "a".repeat(5000), tail: "x".repeat(5000) });
+  assert.ok(out.length <= 2000);
+  assert.equal((out.match(/```/g) || []).length % 2, 0, "fences balanced");
+  assert.ok(out.trimEnd().endsWith("```"), "ends with a closing fence");
+});
