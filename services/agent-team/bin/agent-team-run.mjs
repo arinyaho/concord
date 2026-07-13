@@ -58,7 +58,7 @@ const stateDir = mkdtempSync(join(tmpdir(), "agent-team-state-"));
 const runPath = join(process.cwd(), "runs", `run-${process.pid}.jsonl`);
 const logger = createLogger(runPath);
 
-const branch = `agent-team/run-${process.pid}`;
+const branch = `agent-team/${process.env.AGENT_TEAM_JOB_ID || "run-" + process.pid}`;
 const { worktreePath } = createWorktree({ repoRoot: args.repo, base: args.base, branch });
 const coder = createCoder({ cwd: worktreePath, branch, model: args.model, timeoutMs: args.timeout });
 const runCli = makeRunCli({ repoRoot: worktreePath, stateDir, cliPath: CLI_PATH, timeoutMs: args.timeout });

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.agent-team.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/ABSOLUTE/PATH/services/agent-team/launchd/agent-team-daemon-wrapper.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AGENT_TEAM_CONFIG</key><string>/ABSOLUTE/PATH/to/agent-team.config.json</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/agent-team-daemon.out.log</string>
+  <key>StandardErrorPath</key><string>/tmp/agent-team-daemon.err.log</string>
+</dict>
+</plist>

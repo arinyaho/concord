@@ -11,7 +11,7 @@ import { cleanClone, reExport } from "../src/launch/repo.mjs";
 const BOT = { name: "agent-team-bot", email: "bot@agent-team.local" };
 
 function parseArgs(argv) {
-  const a = { base: "main", image: "agent-team:3a", repo: undefined, credsDir: undefined, skillsDir: undefined, concord: undefined };
+  const a = { base: "main", image: "agent-team:3a", repo: undefined, credsDir: undefined, skillsDir: undefined, concord: undefined, jobId: undefined };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
@@ -21,6 +21,7 @@ function parseArgs(argv) {
     else if (t === "--concord") a.concord = argv[++i];
     else if (t === "--image") a.image = argv[++i];
     else if (t === "--base") a.base = argv[++i];
+    else if (t === "--job-id") a.jobId = argv[++i];
     else rest.push(t);
   }
   a.task = rest.join(" ").trim();
@@ -59,6 +60,7 @@ export async function runLaunch({ argv, env, deps }) {
     const args = buildDockerArgs({
       image: a.image, concordDir, workDir, credsDir: a.credsDir, skillsDir,
       gitName: BOT.name, gitEmail: BOT.email, settingSources: ["user"], pipelineArgs,
+      jobId: a.jobId,
     });
     const code = await spawn(runtime, args);
 
@@ -68,7 +70,8 @@ export async function runLaunch({ argv, env, deps }) {
     // container SUCCEEDED and the branch still failed to land, surface that (return 1) instead
     // of silently returning 0.
     try {
-      reExport({ srcRepo: a.repo, workDir, branch: "refs/heads/agent-team/*", runGit });
+      const branchRef = a.jobId ? `refs/heads/agent-team/${a.jobId}` : "refs/heads/agent-team/*";
+      reExport({ srcRepo: a.repo, workDir, branch: branchRef, runGit });
     } catch (e) {
       console.error(`agent-team-launch: re-export failed (${e.message})`);
       if (code === 0) return 1; // container converged but the branch did not land -- surface it

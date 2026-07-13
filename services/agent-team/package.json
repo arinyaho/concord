@@ -9,6 +9,7 @@
     "smoke": "node smoke/auth-smoke.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.205"
+    "@anthropic-ai/claude-agent-sdk": "0.3.205",
+    "discord.js": "^14.26.5"
   }
 }
