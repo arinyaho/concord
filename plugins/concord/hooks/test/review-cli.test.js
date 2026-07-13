@@ -1246,6 +1246,31 @@ test('plan-fixes: a shape-invalid gate artifact finding (missing "file") throws 
   assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure/);
 });
 
+test('plan-fixes: a shape-invalid gate-VERIFY artifact finding (missing "file") degrades to no verify findings, not a harness-failure', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
+  execFileSync('git', ['commit', '-aqm', 'enable gate'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [
+    { id: 'gate:cross-context:valid', file: 'other.js', span: 'x', summary: 'valid gate-review finding' },
+  ] }));
+  // gate-verify artifact is valid JSON, but its findings entry is shape-broken (missing "file").
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [
+    { id: 'gate:silent-gap:x', summary: 's' },
+  ] }));
+  const out = JSON.parse(run(['plan-fixes', 'feat/x'], { env })); // must not throw
+  assert.deepStrictEqual(out.fixes, []);
+  const after = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.strictEqual(after.gate_open.length, 1);
+  assert.strictEqual(after.gate_open[0].id, 'gate:cross-context:valid'); // only the valid gate-review finding; broken verify finding silently dropped
+});
+
 test('record: diff-local clean with an open gate finding -> gate-pending, not clean', () => {
   const repo = initRepo();
   const dir = tmpDir();

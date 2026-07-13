@@ -533,13 +533,14 @@ function main() {
         if (!f.id.startsWith('gate:')) throw new Error(`harness-failure: non-gate id "${f.id}" in the gate artifact`);
       }
       // gate-verify itself stays lenient (missing/malformed artifact -> the
-      // legacy shape { rejected: [] }): unlike the gate-review artifact above,
-      // a broken verify pass is not a harness-failure -- it just means no
+      // legacy shape { rejected: [] }, and a shape-invalid findings entry ->
+      // an empty findings list): unlike the gate-review artifact above, a
+      // broken verify pass is not a harness-failure -- it just means no
       // rejections and no verify-added findings this round.
       const gvRaw = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-gate-verify.json`), 'utf8')); } catch (e) { return { rejected: [], findings: [] }; } })();
       let verifyFindings;
       try { verifyFindings = gc.parseGateFindings(JSON.stringify(gvRaw.findings || [])); }
-      catch (e) { throw new Error(`harness-failure: gate-verify artifact invalid: ${e.message}`); }
+      catch (e) { verifyFindings = []; }
       for (const f of verifyFindings) {
         if (!f.id.startsWith('gate:')) throw new Error(`harness-failure: non-gate id "${f.id}" in the gate-verify artifact`);
       }
