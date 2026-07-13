@@ -12,10 +12,11 @@ export function branchFor(jobId) { return `agent-team/${jobId}`; }
 
 // Spawn agent-team-launch (node) with shell:false. Captures a bounded stderr tail. Resolves
 // { code, tail }. The daemon (queue) owns the wall-clock timeout + docker kill, not this.
-export function runLaunchJob({ argv, env, tailBytes = 4000 }, deps = {}) {
+export function runLaunchJob({ argv, env, tailBytes = 4000, onChild }, deps = {}) {
   const spawn = deps.spawn ?? nodeSpawn;
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, argv, { env, stdio: ["ignore", "inherit", "pipe"] });
+    const child = spawn(process.execPath, argv, { env, stdio: ["ignore", "inherit", "pipe"], detached: true });
+    if (onChild) onChild(child);
     let tail = "";
     child.stderr.on("data", (d) => { tail = (tail + d.toString()).slice(-tailBytes); });
     child.on("close", (code) => resolve({ code: code ?? 1, tail, child }));

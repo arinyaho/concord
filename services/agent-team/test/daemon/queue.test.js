@@ -30,6 +30,21 @@ test("timeout kills the container and reports timeout", async () => {
   assert.deepEqual(killed, ["slow"]);
   assert.equal(job._o.kind, "timeout");
 });
+test("timeout kills the child process tree (killTree) in addition to dockerKill", async () => {
+  const killed = []; const dockerKilled = [];
+  const q = createQueue({
+    cap: 1, queueMax: 5, jobTimeoutMs: 5,
+    runJob: () => new Promise(() => {}),
+    dockerKill: (id) => dockerKilled.push(id),
+    killTree: (child) => killed.push(child),
+    onOutcome() {},
+  });
+  const job = { jobId: "wedged", child: { pid: 4242 } };
+  q.submit(job);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(killed, [{ pid: 4242 }]);
+  assert.deepEqual(dockerKilled, ["wedged"]);
+});
 test("late natural resolution after timeout does not double-fire onOutcome", async () => {
   let calls = 0; let lastKind = null;
   const q = createQueue({

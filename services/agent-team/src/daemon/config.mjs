@@ -21,16 +21,22 @@ export function loadConfig(raw) {
   }
   if (typeof c.jobTimeoutMs !== "number" || c.jobTimeoutMs <= 0) throw new Error("config.jobTimeoutMs must be a positive number");
   req(c.diagnoseModel, "diagnoseModel");
+  const cap = c.cap ?? 10;
+  const queueMax = c.queueMax ?? 50;
+  const credsRefreshMs = c.credsRefreshMs ?? 1800000;
+  if (typeof cap !== "number" || cap < 1) throw new Error("config.cap must be a number >= 1");
+  if (typeof queueMax !== "number" || queueMax < 1) throw new Error("config.queueMax must be a number >= 1");
+  if (typeof credsRefreshMs !== "number" || credsRefreshMs <= 0) throw new Error("config.credsRefreshMs must be a positive number");
   return {
     repos: c.repos,
     credsDir: c.credsDir,
     guildId: c.guildId,
     channelId: c.channelId,
     userIds: c.userIds,
-    cap: c.cap ?? 10,
-    queueMax: c.queueMax ?? 50,
+    cap,
+    queueMax,
     jobTimeoutMs: c.jobTimeoutMs,
-    credsRefreshMs: c.credsRefreshMs ?? 1800000,
+    credsRefreshMs,
     diagnoseModel: c.diagnoseModel,
     base: c.base ?? "main",
     botTokenEnv: c.botTokenEnv,

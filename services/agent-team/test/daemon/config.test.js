@@ -27,3 +27,9 @@ test("rejects a non-absolute repos value", () => {
 test("rejects a literal token in the config (only an env var NAME is allowed)", () => {
   assert.throws(() => loadConfig({ ...OK, botTokenEnv: undefined }), /botTokenEnv/i);
 });
+test("rejects non-positive / non-number cap, queueMax, credsRefreshMs", () => {
+  assert.throws(() => loadConfig({ ...OK, cap: 0 }), /cap/i);
+  assert.throws(() => loadConfig({ ...OK, queueMax: 0 }), /queueMax/i);
+  assert.throws(() => loadConfig({ ...OK, credsRefreshMs: -1 }), /credsRefreshMs/i);
+  assert.throws(() => loadConfig({ ...OK, cap: "ten" }), /cap/i);
+});

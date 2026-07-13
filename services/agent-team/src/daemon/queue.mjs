@@ -2,9 +2,10 @@
 // (submit returns false when full = the flood bound). Each running job is under a wall-clock:
 // on timeout the daemon docker-kills the named container (killing the launch child alone leaves
 // the dockerd-managed container orphaned holding the creds mount) and frees the slot.
-export function createQueue({ cap, queueMax, jobTimeoutMs, runJob, dockerKill, onOutcome }) {
+export function createQueue({ cap, queueMax, jobTimeoutMs, runJob, dockerKill, onOutcome, killTree }) {
   let active = 0;
   const fifo = [];
+  const killGroup = killTree ?? ((child) => { if (child?.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch {} } });
 
   function pump() {
     while (active < cap && fifo.length) {
@@ -18,7 +19,12 @@ export function createQueue({ cap, queueMax, jobTimeoutMs, runJob, dockerKill, o
     let timer;
     let timedOut = false;
     const timeout = new Promise((resolve) => {
-      timer = setTimeout(() => { timedOut = true; try { dockerKill(job.jobId); } catch {} resolve({ code: 124, tail: "timed out" }); }, jobTimeoutMs);
+      timer = setTimeout(() => {
+        timedOut = true;
+        try { killGroup(job.child); } catch {}
+        try { dockerKill(job.jobId); } catch {}
+        resolve({ code: 124, tail: "timed out" });
+      }, jobTimeoutMs);
       timer.unref();
     });
     let outcome;
