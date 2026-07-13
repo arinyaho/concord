@@ -19,16 +19,20 @@ export function createQueue({ cap, queueMax, jobTimeoutMs, runJob, dockerKill, o
     let timedOut = false;
     const timeout = new Promise((resolve) => {
       timer = setTimeout(() => { timedOut = true; try { dockerKill(job.jobId); } catch {} resolve({ code: 124, tail: "timed out" }); }, jobTimeoutMs);
+      timer.unref();
     });
+    let outcome;
     try {
       const res = await Promise.race([runJob(job), timeout]);
-      if (timedOut) onOutcome(job, { kind: "timeout", code: 124, tail: res.tail });
-      else onOutcome(job, { kind: res.code === 0 ? "done" : "failed", code: res.code, tail: res.tail });
+      outcome = timedOut
+        ? { kind: "timeout", code: 124, tail: res.tail }
+        : { kind: res.code === 0 ? "done" : "failed", code: res.code, tail: res.tail };
     } catch (e) {
-      onOutcome(job, { kind: "failed", code: 1, tail: String(e?.message ?? e) });
+      outcome = { kind: "failed", code: 1, tail: String(e?.message ?? e) };
     } finally {
       clearTimeout(timer);
     }
+    onOutcome(job, outcome);
   }
 
   return {

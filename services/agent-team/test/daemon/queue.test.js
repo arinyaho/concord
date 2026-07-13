@@ -30,3 +30,27 @@ test("timeout kills the container and reports timeout", async () => {
   assert.deepEqual(killed, ["slow"]);
   assert.equal(job._o.kind, "timeout");
 });
+test("late natural resolution after timeout does not double-fire onOutcome", async () => {
+  let calls = 0; let lastKind = null;
+  const q = createQueue({
+    cap: 1, queueMax: 5, jobTimeoutMs: 5,
+    runJob: () => new Promise((res) => setTimeout(() => res({ code: 0, tail: "" }), 40)),
+    dockerKill() {}, onOutcome: (job, o) => { calls++; lastKind = o.kind; },
+  });
+  q.submit({ jobId: "late" });
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(calls, 1);
+  assert.equal(lastKind, "timeout");
+});
+test("runJob rejection -> failed outcome once", async () => {
+  let calls = 0; let lastKind = null;
+  const q = createQueue({
+    cap: 1, queueMax: 5, jobTimeoutMs: 100000,
+    runJob: () => Promise.reject(new Error("boom")),
+    dockerKill() {}, onOutcome: (job, o) => { calls++; lastKind = o.kind; },
+  });
+  q.submit({ jobId: "rej" });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(calls, 1);
+  assert.equal(lastKind, "failed");
+});
