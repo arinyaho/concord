@@ -252,9 +252,8 @@ function main() {
     // through to `base` (which would produce a confusing downstream git
     // error against a nonsense ref).
     const BROAD_FLAGS = new Set(['--broad', '--gate']);
-    const broadFlagIdx = rest.findIndex((a) => BROAD_FLAGS.has(a));
-    const broadFlagPassed = broadFlagIdx !== -1;
-    const positional = rest.filter((_, i) => i !== broadFlagIdx);
+    const broadFlagPassed = rest.some((a) => BROAD_FLAGS.has(a));
+    const positional = rest.filter((a) => !BROAD_FLAGS.has(a));
     for (const tok of positional) {
       if (tok.startsWith('--')) throw new Error(`review-cli round-start: unknown flag "${tok}"`);
     }

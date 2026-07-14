@@ -1068,6 +1068,17 @@ test('round-start: --gate is accepted as an alias for --broad', () => {
   assert.strictEqual(out.gateApplied, true);
 });
 
+test('round-start: --broad and --gate together are idempotent, not an unknown-flag error', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--broad', '--gate'], { env }));
+  assert.strictEqual(out.decision, 'work');
+  assert.strictEqual(out.gateApplied, true);
+});
+
 test('round-start: an unrecognized "--" flag is a clear usage error, not silently treated as base', () => {
   const repo = initRepo();
   const dir = tmpDir();
@@ -1405,7 +1416,7 @@ test('record: diff-local clean with an open gate finding -> gate-pending, not cl
   assert.strictEqual(review.readLedger(dir, review.targetSlug('feat/x')).status, 'gate-pending');
 });
 
-test('renderHandoff: gate-pending surfaces the advisory GATE findings section', () => {
+test('renderHandoff: gate-pending surfaces the advisory broad review findings section', () => {
   const repo = initRepo();
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };

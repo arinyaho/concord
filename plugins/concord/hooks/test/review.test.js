@@ -673,7 +673,7 @@ test('renderReviewReport: intent-review ledgers surface a design-conformance rem
   assert.match(out, /intent|design.conformance/i);
 });
 
-test('renderReviewReport: gate-pending ledgers surface an advisory GATE reminder, not silently omitted', () => {
+test('renderReviewReport: gate-pending ledgers surface an advisory broad review reminder, not silently omitted', () => {
   const l = review.emptyLedger({ kind: 'local', ref: 'feat/g' });
   l.status = 'gate-pending';
   l.round = 3;
