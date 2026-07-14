@@ -1034,6 +1034,78 @@ test('round-start: signals gateApplied when review.config.json has a gate block'
   assert.strictEqual(out.gateApplied, true);
 });
 
+test('round-start: --broad flag applies gate without a review.config.json gate block', () => {
+  const repo = initRepo(); // NOTE: initRepo's review.config.json has no "gate" block
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--broad'], { env }));
+  assert.strictEqual(out.decision, 'work');
+  assert.strictEqual(out.gateApplied, true);
+});
+
+test('round-start: --broad flag works before the base token too (order-independent)', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const out = JSON.parse(run(['round-start', 'feat/x', '--broad', 'HEAD~1'], { env }));
+  assert.strictEqual(out.decision, 'work');
+  assert.strictEqual(out.gateApplied, true);
+  const ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.strictEqual(ledger.target.base, 'HEAD~1'); // the flag must not get mistaken for base
+});
+
+test('round-start: --gate is accepted as an alias for --broad', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--gate'], { env }));
+  assert.strictEqual(out.gateApplied, true);
+});
+
+test('round-start: an unrecognized "--" flag is a clear usage error, not silently treated as base', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  assert.throws(() => run(['round-start', 'feat/x', '--typo'], { env }), /unknown flag "--typo"/);
+});
+
+test('round-start: gateApplied is sticky -- a later round-start omitting --broad keeps it applied', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const first = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--broad'], { env }));
+  assert.strictEqual(first.gateApplied, true);
+  const slug = review.targetSlug('feat/x');
+  assert.strictEqual(review.readLedger(dir, slug).gateApplied, true); // persisted after round 1
+
+  // round-start is called again with no --broad token. Phase is already 'gates'
+  // from round 1 (round-start never advances it to 'fixes'), so this naturally
+  // re-drives the same round via the existing "resumed" path -- the sticky
+  // ledger field, not the flag, is what must keep gateApplied true here.
+  const second = JSON.parse(run(['round-start', 'feat/x'], { env }));
+  assert.strictEqual(second.gateApplied, true);
+});
+
+test('round-start: gateApplied is false when neither the config gate block nor --broad is present', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.strictEqual(out.gateApplied, false);
+});
+
 test('round-start: a gate-pending ledger is a re-runnable stop (resets to converging, keeps dismissed)', () => {
   const dir = tmpDir();
   const repo = initRepo();

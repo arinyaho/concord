@@ -244,12 +244,27 @@ function main() {
       ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_open: [] };
     }
 
+    // Broad-review enable flag (--broad, alias --gate): a per-invocation
+    // override so a repo can turn broad review on without editing
+    // review.config.json. Lives among round-start's trailing arguments,
+    // order-independent against the optional `base` token below. Any other
+    // "--"-prefixed token is a usage error rather than silently falling
+    // through to `base` (which would produce a confusing downstream git
+    // error against a nonsense ref).
+    const BROAD_FLAGS = new Set(['--broad', '--gate']);
+    const broadFlagIdx = rest.findIndex((a) => BROAD_FLAGS.has(a));
+    const broadFlagPassed = broadFlagIdx !== -1;
+    const positional = rest.filter((_, i) => i !== broadFlagIdx);
+    for (const tok of positional) {
+      if (tok.startsWith('--')) throw new Error(`review-cli round-start: unknown flag "${tok}"`);
+    }
+
     // `resume <ref>` passes NO base token -- fall back to the base persisted
     // from the original fresh start (ledger.target.base). Without this, an
     // undefined base makes gitDiff below fall back to `git diff HEAD`, which
     // is EMPTY on a clean committed tree -- every cross-session resume of a
     // real branch would silently review nothing and converge clean.
-    const base = rest[0] || (ledger.target && ledger.target.base);
+    const base = positional[0] || (ledger.target && ledger.target.base);
 
     // Warn if `base` is a local branch behind its upstream. Diffing against a stale
     // local base sweeps in everything merged upstream since the branch point -> a
@@ -317,6 +332,12 @@ function main() {
 
     const intentCfg = intentLib.loadIntentConfig(repoRoot);
     const gateCfg = gateLib.loadGateConfig(repoRoot);
+    // Sticky: once broad review is applied for this ledger (config, flag, or a
+    // prior round), it stays applied even if a later round-start call omits the
+    // flag -- mirrors how `base` falls back to the persisted `ledger.target.base`
+    // above. plan-fixes reads this ledger field instead of re-deriving from
+    // review.config.json (see Task 3).
+    const gateApplied = !!gateCfg || broadFlagPassed || !!ledger.gateApplied;
     if (intentCfg) {
       const intentPath = path.join(stateDir, `intent-${slug}.md`);
       if (!ledger.intentHash) {
@@ -336,9 +357,9 @@ function main() {
     }
 
     const dod = runDod(repoRoot);
-    ledger = { ...ledger, dod, phase: 'gates', target: { ...(ledger.target || { kind: 'local', ref }), base, head_sha: headSha } };
+    ledger = { ...ledger, dod, phase: 'gates', gateApplied, target: { ...(ledger.target || { kind: 'local', ref }), base, head_sha: headSha } };
     writeLedger(stateDir, slug, ledger);
-    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, intentApplied: !!intentCfg, gateApplied: !!gateCfg, stateDir }) + '\n');
+    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, intentApplied: !!intentCfg, gateApplied, stateDir }) + '\n');
     return;
   }
 
