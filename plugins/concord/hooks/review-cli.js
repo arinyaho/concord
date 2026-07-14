@@ -143,7 +143,7 @@ function renderHandoff(result) {
   }
   const gateOpen = ledger.gate_open || [];
   if (gateOpen.length) {
-    lines.push('', 'GATE findings (advisory -- your decision; fix, or dismiss the id):');
+    lines.push('', 'Broad review findings (advisory -- your decision; fix, or dismiss the id):');
     for (const f of gateOpen) {
       lines.push(`  - [${f.id}] ${f.file}: ${f.summary}`);
       if (f.requirement) lines.push(`    requirement: ${f.requirement}`);

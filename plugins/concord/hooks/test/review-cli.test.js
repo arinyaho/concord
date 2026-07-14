@@ -1423,7 +1423,7 @@ test('renderHandoff: gate-pending surfaces the advisory GATE findings section', 
   run(['plan-fixes', 'feat/x'], { env });
   const out = JSON.parse(run(['record', 'feat/x'], { env }));
   assert.match(out.handoff, /status: gate-pending/);
-  assert.match(out.handoff, /GATE findings \(advisory/);
+  assert.match(out.handoff, /Broad review findings \(advisory/);
   assert.match(out.handoff, /gate:silent-gap:missing-check/);
   assert.match(out.handoff, /anchor: if \(!target\) return;/); // evidence/span surfaces as the anchor
 });

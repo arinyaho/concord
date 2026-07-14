@@ -680,7 +680,7 @@ test('renderReviewReport: gate-pending ledgers surface an advisory GATE reminder
   l.gate_open = [{ id: 'gate:cross-context:1', file: 'a.js', summary: 'unchanged sibling breaks' }];
   const out = review.renderReviewReport([{ slug: 'feat-g', ledger: l }]);
   assert.ok(out.includes('feat/g'));
-  assert.match(out, /GATE/);
+  assert.match(out, /broad review/i);
   assert.match(out, /dismiss feat\/g/);
 });
 

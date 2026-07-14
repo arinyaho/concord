@@ -455,7 +455,7 @@ function renderReviewReport(ledgers) {
     } else if (ledger.status === 'intent-review') {
       lines.push(`review-until-green [${ref}]: ${roundInfo} -- stopped for a design-conformance (intent) finding, needs a human decision; re-run \`/review-until-green ${ref}\` after fixing the code or the design source (a fixed contradiction converges, an unfixed one re-fetches the intent).`);
     } else if (ledger.status === 'gate-pending') {
-      lines.push(`review-until-green [${ref}]: ${roundInfo} -- stopped for advisory GATE finding(s), needs a human decision; re-run \`/review-until-green ${ref}\` (a fresh run re-evaluates the gate) or \`review-cli.js dismiss ${ref} <gateId>\` for a finding you accept as out-of-scope.`);
+      lines.push(`review-until-green [${ref}]: ${roundInfo} -- stopped for advisory broad review finding(s), needs a human decision; re-run \`/review-until-green ${ref}\` (a fresh run re-evaluates broad review) or \`review-cli.js dismiss ${ref} <gateId>\` for a finding you accept as out-of-scope.`);
     }
   }
   return lines.join('\n');
