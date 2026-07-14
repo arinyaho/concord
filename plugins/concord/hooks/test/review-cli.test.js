@@ -1034,6 +1034,89 @@ test('round-start: signals gateApplied when review.config.json has a gate block'
   assert.strictEqual(out.gateApplied, true);
 });
 
+test('round-start: --broad flag applies gate without a review.config.json gate block', () => {
+  const repo = initRepo(); // NOTE: initRepo's review.config.json has no "gate" block
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--broad'], { env }));
+  assert.strictEqual(out.decision, 'work');
+  assert.strictEqual(out.gateApplied, true);
+});
+
+test('round-start: --broad flag works before the base token too (order-independent)', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const out = JSON.parse(run(['round-start', 'feat/x', '--broad', 'HEAD~1'], { env }));
+  assert.strictEqual(out.decision, 'work');
+  assert.strictEqual(out.gateApplied, true);
+  const ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.strictEqual(ledger.target.base, 'HEAD~1'); // the flag must not get mistaken for base
+});
+
+test('round-start: --gate is accepted as an alias for --broad', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--gate'], { env }));
+  assert.strictEqual(out.gateApplied, true);
+});
+
+test('round-start: --broad and --gate together are idempotent, not an unknown-flag error', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--broad', '--gate'], { env }));
+  assert.strictEqual(out.decision, 'work');
+  assert.strictEqual(out.gateApplied, true);
+});
+
+test('round-start: an unrecognized "--" flag is a clear usage error, not silently treated as base', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  assert.throws(() => run(['round-start', 'feat/x', '--typo'], { env }), /unknown flag "--typo"/);
+});
+
+test('round-start: gateApplied is sticky -- a later round-start omitting --broad keeps it applied', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const first = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--broad'], { env }));
+  assert.strictEqual(first.gateApplied, true);
+  const slug = review.targetSlug('feat/x');
+  assert.strictEqual(review.readLedger(dir, slug).gateApplied, true); // persisted after round 1
+
+  // round-start is called again with no --broad token. Phase is already 'gates'
+  // from round 1 (round-start never advances it to 'fixes'), so this naturally
+  // re-drives the same round via the existing "resumed" path -- the sticky
+  // ledger field, not the flag, is what must keep gateApplied true here.
+  const second = JSON.parse(run(['round-start', 'feat/x'], { env }));
+  assert.strictEqual(second.gateApplied, true);
+});
+
+test('round-start: gateApplied is false when neither the config gate block nor --broad is present', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.strictEqual(out.gateApplied, false);
+});
+
 test('round-start: a gate-pending ledger is a re-runnable stop (resets to converging, keeps dismissed)', () => {
   const dir = tmpDir();
   const repo = initRepo();
@@ -1102,6 +1185,46 @@ test('plan-fixes: folds gate + gate-verify artifacts into gate_open, honoring di
   const after = review.readLedger(dir, slug);
   assert.strictEqual(after.gate_open.length, 1);
   assert.strictEqual(after.gate_open[0].id, 'gate:cross-context:keep'); // reject + dismiss removed; unchanged-file finding kept
+});
+
+test('plan-fixes: reads ledger.gateApplied (not review.config.json) -- a --broad-enabled round still requires the gate artifact', () => {
+  const repo = initRepo(); // NOTE: no "gate" block in review.config.json
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const rsOut = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--broad'], { env }));
+  assert.strictEqual(rsOut.gateApplied, true);
+  const n = rsOut.round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  // No round-N-gate.json written. Before the fix, plan-fixes re-read
+  // review.config.json (no "gate" block there since the round was enabled via
+  // --broad, not config), computed a falsy gate signal, and silently skipped
+  // requiring/reading the gate artifact. After the fix it reads
+  // ledger.gateApplied (true, from --broad) and must fail closed on the
+  // missing artifact instead of silently proceeding.
+  assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure/);
+});
+
+test('plan-fixes: a --broad-enabled round folds gate findings into gate_open exactly like a config-enabled round', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const rsOut = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--broad'], { env }));
+  const n = rsOut.round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [
+    { id: 'gate:cross-context:flagged', file: 'other.js', span: 'x', summary: 'unchanged sibling issue' },
+  ] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  run(['plan-fixes', 'feat/x'], { env });
+  const after = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.strictEqual(after.gate_open.length, 1);
+  assert.strictEqual(after.gate_open[0].id, 'gate:cross-context:flagged');
 });
 
 test('plan-fixes: a gate-verify-added finding (distrust-green) merges into gate_open', () => {
@@ -1293,7 +1416,7 @@ test('record: diff-local clean with an open gate finding -> gate-pending, not cl
   assert.strictEqual(review.readLedger(dir, review.targetSlug('feat/x')).status, 'gate-pending');
 });
 
-test('renderHandoff: gate-pending surfaces the advisory GATE findings section', () => {
+test('renderHandoff: gate-pending surfaces the advisory broad review findings section', () => {
   const repo = initRepo();
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
@@ -1311,7 +1434,7 @@ test('renderHandoff: gate-pending surfaces the advisory GATE findings section', 
   run(['plan-fixes', 'feat/x'], { env });
   const out = JSON.parse(run(['record', 'feat/x'], { env }));
   assert.match(out.handoff, /status: gate-pending/);
-  assert.match(out.handoff, /GATE findings \(advisory/);
+  assert.match(out.handoff, /Broad review findings \(advisory/);
   assert.match(out.handoff, /gate:silent-gap:missing-check/);
   assert.match(out.handoff, /anchor: if \(!target\) return;/); // evidence/span surfaces as the anchor
 });
