@@ -459,10 +459,15 @@ function main() {
     requireRef(ref, 'plan-fixes');
     const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
     const gc = require('./lib/gate-contract');
-    const gateCfg = require('./lib/gate').loadGateConfig(repoRoot);
     const slug = targetSlug(ref);
     const ledger = readLedger(stateDir, slug);
     if (!ledger || ledger.phase !== 'gates') throw new Error(`plan-fixes: expected phase "gates", got "${ledger && ledger.phase}"`);
+    // Read round-start's decision from the ledger, not a fresh
+    // review.config.json read: gateApplied may have come from the --broad
+    // flag, which leaves no trace in the config file. Re-deriving from
+    // loadGateConfig here would silently miss a flag-enabled round and
+    // discard that round's gate-review/gate-verify findings.
+    const gateApplied = !!ledger.gateApplied;
     const n = ledger.round;
     const cJson = readArtifact(stateDir, n, 'correctness');
     const vJson = readArtifact(stateDir, n, 'verify');
@@ -545,7 +550,7 @@ function main() {
     // mandatory. Deliberately NOT filtered to changed files (unchanged-sibling
     // cross-context is the point). gate: namespace is guarded symmetrically.
     let gateOpen = [];
-    if (gateCfg) {
+    if (gateApplied) {
       const gJson = readArtifact(stateDir, n, 'gate'); // fail-closed
       let gFindings;
       try { gFindings = gc.parseGateFindings(JSON.stringify(gJson.findings || [])); }
