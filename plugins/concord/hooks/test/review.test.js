@@ -87,6 +87,11 @@ test('emptyLedger: carries the new phase/dod/planned/journal/last_recorded_round
   assert.strictEqual(l.last_recorded_round, null);
 });
 
+test('emptyLedger: carries the new gateApplied field, defaulting false', () => {
+  const l = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  assert.strictEqual(l.gateApplied, false);
+});
+
 // ---- seenHash: line-number independence ----
 
 test('seenHash: identical gate/file/span/summary hash the same regardless of line number', () => {

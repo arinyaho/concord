@@ -72,6 +72,7 @@ function emptyLedger(target) {
     intent_parked: [],
     gate_open: [],
     gate_dismissed: [],
+    gateApplied: false,
   };
 }
 
