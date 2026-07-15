@@ -1799,3 +1799,12 @@ test('gate-panel-round-record: two consecutive dry rounds -> status "done" and l
   assert.strictEqual(ledger.gate_panel.status, 'done');
 });
 
+test('review-cli: unknown verb error message lists the two new gate-panel verbs', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const { stderr, status } = runCapture(['bogus-verb'], { env });
+  assert.notStrictEqual(status, 0);
+  assert.match(stderr, /gate-panel-round-start/);
+  assert.match(stderr, /gate-panel-round-record/);
+});
+
