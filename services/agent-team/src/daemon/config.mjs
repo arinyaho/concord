@@ -27,6 +27,18 @@ export function loadConfig(raw) {
   if (typeof cap !== "number" || cap < 1) throw new Error("config.cap must be a number >= 1");
   if (typeof queueMax !== "number" || queueMax < 1) throw new Error("config.queueMax must be a number >= 1");
   if (typeof credsRefreshMs !== "number" || credsRefreshMs <= 0) throw new Error("config.credsRefreshMs must be a positive number");
+
+  // conversation fields (B-1). Capability channelId is untouched above.
+  if (!Array.isArray(c.conversationChannelIds) || c.conversationChannelIds.length === 0
+      || !c.conversationChannelIds.every((s) => typeof s === "string" && s))
+    throw new Error("config.conversationChannelIds must be a non-empty array of non-empty strings");
+  if (c.conversationChannelIds.includes(c.channelId))
+    throw new Error("config.channelId and config.conversationChannelIds must be disjoint");
+  req(c.sessionStorePath, "sessionStorePath");
+  if (!isAbsolute(c.sessionStorePath)) throw new Error("config.sessionStorePath must be an absolute path");
+  if (c.maxRoundLen !== undefined && (!Number.isInteger(c.maxRoundLen) || c.maxRoundLen < 1))
+    throw new Error("config.maxRoundLen must be a positive integer");
+
   return {
     repos: c.repos,
     credsDir: c.credsDir,
@@ -40,5 +52,8 @@ export function loadConfig(raw) {
     diagnoseModel: c.diagnoseModel,
     base: c.base ?? "main",
     botTokenEnv: c.botTokenEnv,
+    conversationChannelIds: c.conversationChannelIds,
+    sessionStorePath: c.sessionStorePath,
+    maxRoundLen: c.maxRoundLen,
   };
 }

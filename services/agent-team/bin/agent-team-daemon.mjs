@@ -13,6 +13,27 @@ import { buildLaunchArgv, runLaunchJob } from "../src/daemon/launch_job.mjs";
 import { diagnose } from "../src/daemon/diagnose.mjs";
 import { replyForOutcome } from "../src/daemon/outcome.mjs";
 import { startCredsRefresh } from "../src/daemon/creds_refresh.mjs";
+import { loadStore, saveThread } from "../src/daemon/session_store.mjs";
+import { runRole } from "../src/daemon/roles.mjs";
+import { makeConversationHandler } from "../src/daemon/conversation_dispatch.mjs";
+import { CONVERSATION_ROSTER } from "../src/daemon/conversation_roster.mjs";
+
+// Wraps the tool-less role adapter with a per-call AbortController + wall-clock timeout, so a
+// hung role turn is CANCELLED (query() honors abort per the Task 1 spike) rather than abandoned.
+// advanceTurn's injected runRole is called with a 5th arg (undefined, its own placeholder) that
+// this wrapper's 4-arg signature simply does not accept -- advanceTurn is unmodified. Reuses
+// cfg.jobTimeoutMs (the existing capability-job wall clock) rather than adding a new config field.
+function makeConvRunRole({ query, timeoutMs }) {
+  return async function convRunRole(role, userText, priorOutputs, resumeId) {
+    const abortController = new AbortController();
+    const timer = setTimeout(() => abortController.abort(), timeoutMs);
+    try {
+      return await runRole(role, userText, priorOutputs, resumeId, abortController, { query });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}
 
 async function main() {
   const cfgPath = process.env.AGENT_TEAM_CONFIG;
@@ -49,7 +70,28 @@ async function main() {
   const { Client, GatewayIntentBits } = await import("discord.js");
   const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
   const handle = makeHandler({ cfg, deps: { queue, mintId: () => randomUUID().slice(0, 8), reply: (msg, text) => msg.reply(text) } });
-  client.on("messageCreate", (msg) => handle(msg).catch((e) => console.error(`handle failed: ${e.message}`)));
+
+  // B-1 conversation path: disjoint channels from the capability path (config-enforced), so a
+  // message routes to exactly one. Tried FIRST; falls through to the capability handler if it
+  // declines (non-conversation channel/thread, or an unauthorized author).
+  const convStore = loadStore(cfg.sessionStorePath);
+  const convHandler = makeConversationHandler({
+    cfg, roster: CONVERSATION_ROSTER, store: convStore,
+    deps: {
+      createThread: (msg) => msg.startThread({ name: (msg.content || "conversation").slice(0, 80) }),
+      post: async (threadId, role, text) => { const ch = await client.channels.fetch(threadId); await ch.send(`**${role}:** ${text}`.slice(0, 2000)); },
+      runRole: makeConvRunRole({ query, timeoutMs: cfg.jobTimeoutMs }),
+      persist: (threadId, state) => saveThread(convStore, cfg.sessionStorePath, threadId, state),
+    },
+  });
+
+  client.on("messageCreate", async (msg) => {
+    if (msg.author?.bot) return; // bot-first, ahead of both paths -- self-post loop guard
+    try {
+      if (await convHandler(msg)) return;
+    } catch (e) { console.error(`conversation: ${e.message}`); return; }
+    await handle(msg).catch((e) => console.error(`handle failed: ${e.message}`)); // existing capability path, unchanged
+  });
   client.once("ready", () => console.error(`agent-team daemon ready as ${client.user?.tag}`));
   await client.login(token);
 }
