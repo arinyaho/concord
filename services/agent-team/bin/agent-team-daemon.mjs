@@ -78,7 +78,7 @@ async function main() {
   const convHandler = makeConversationHandler({
     cfg, roster: CONVERSATION_ROSTER, store: convStore,
     deps: {
-      createThread: (msg) => msg.startThread({ name: (msg.content ?? "conversation").slice(0, 80) }),
+      createThread: (msg) => msg.startThread({ name: (msg.content || "conversation").slice(0, 80) }),
       post: async (threadId, role, text) => { const ch = await client.channels.fetch(threadId); await ch.send(`**${role}:** ${text}`.slice(0, 2000)); },
       runRole: makeConvRunRole({ query, timeoutMs: cfg.jobTimeoutMs }),
       persist: (threadId, state) => saveThread(convStore, cfg.sessionStorePath, threadId, state),
