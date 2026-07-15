@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { loadStore, saveThread } from "../../src/daemon/session_store.mjs";
 
 test("loadStore: missing/unparseable -> empty map, no throw", () => {
-  const miss = loadStore("/x", { readFileSync: () => { throw new Error("ENOENT"); } });
+  const miss = loadStore("/x", { readFileSync: () => { throw Object.assign(new Error("ENOENT"), { code: "ENOENT" }); } });
   assert.equal(miss.size, 0);
   const bad = loadStore("/x", { readFileSync: () => "not json" });
   assert.equal(bad.size, 0);
@@ -13,6 +13,39 @@ test("loadStore: drops a malformed entry, keeps valid ones", () => {
   const m = loadStore("/x", { readFileSync: () => json });
   assert.deepEqual(m.get("t1"), { roleSessions: { spec: "s1" } });
   assert.equal(m.has("t2"), false);
+});
+test("loadStore: non-ENOENT read error -> empty map, logged", () => {
+  const calls = [];
+  const orig = console.error;
+  console.error = (...args) => calls.push(args);
+  try {
+    const err = new Error("permission denied");
+    err.code = "EACCES";
+    const m = loadStore("/x", { readFileSync: () => { throw err; } });
+    assert.equal(m.size, 0);
+    assert.equal(calls.length, 1);
+  } finally {
+    console.error = orig;
+  }
+});
+test("loadStore: ENOENT read error -> empty map, not logged", () => {
+  const calls = [];
+  const orig = console.error;
+  console.error = (...args) => calls.push(args);
+  try {
+    const err = new Error("no such file or directory");
+    err.code = "ENOENT";
+    const m = loadStore("/x", { readFileSync: () => { throw err; } });
+    assert.equal(m.size, 0);
+    assert.equal(calls.length, 0);
+  } finally {
+    console.error = orig;
+  }
+});
+test("loadStore: drops an entry whose roleSessions is an array", () => {
+  const json = JSON.stringify({ t1: { roleSessions: ["spec", "s1"] } });
+  const m = loadStore("/x", { readFileSync: () => json });
+  assert.equal(m.has("t1"), false);
 });
 test("saveThread: mutates map + atomic temp-then-rename with mode 0600", () => {
   const calls = [];

@@ -5,17 +5,25 @@ import { readFileSync as rfs, writeFileSync as wfs, renameSync as rns } from "no
 // Load is graceful: a missing/unparseable file yields an empty map; a malformed single entry is
 // dropped rather than crashing the daemon.
 function validEntry(v) {
-  return v && typeof v === "object" && v.roleSessions && typeof v.roleSessions === "object";
+  return v && typeof v === "object" && v.roleSessions && typeof v.roleSessions === "object" && !Array.isArray(v.roleSessions);
 }
 
 export function loadStore(path, deps = {}) {
   const readFileSync = deps.readFileSync ?? rfs;
   const map = new Map();
   let raw;
-  try { raw = readFileSync(path, "utf8"); } catch { return map; }
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (e) {
+    if (e && e.code !== "ENOENT") console.error(`session store unreadable at ${path}: ${e.message}; starting empty`);
+    return map;
+  }
   let obj;
   try { obj = JSON.parse(raw); } catch { console.error(`session store unparseable at ${path}; starting empty`); return map; }
-  if (!obj || typeof obj !== "object") return map;
+  if (!obj || typeof obj !== "object") {
+    console.error(`session store at ${path} is not an object; starting empty`);
+    return map;
+  }
   for (const [threadId, v] of Object.entries(obj)) {
     if (validEntry(v)) map.set(threadId, v);
     else console.error(`session store: dropping malformed entry ${threadId}`);
