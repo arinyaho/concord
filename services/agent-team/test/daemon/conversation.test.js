@@ -88,6 +88,31 @@ test("runRole throwing AND the resulting error-notice post also throwing: turn s
   assert.deepEqual(posts, [["reviewer", "reviewer ok"]]);
   assert.deepEqual(state.roleSessions, { reviewer: "r" });
 });
+test("reset-notice post throwing does not drop the real reply: reply is still posted and threaded", async () => {
+  const seenPrior = [];
+  const { deps, posts, state } = ctx(async (role, text, prior) => {
+    if (role.name === "reviewer") seenPrior.push(prior.map((p) => p.role));
+    return role.name === "spec"
+      ? { text: "spec real reply", sessionId: "s", skip: false, reset: true }
+      : { text: "reviewer ok", sessionId: "r", skip: false, reset: false };
+  });
+  deps.post = async (tid, role, text) => {
+    if (role === "spec" && text === "(session reset)") throw new Error("rate limited");
+    posts.push([role, text]);
+  };
+  const origError = console.error;
+  console.error = () => {};
+  try {
+    await advanceTurn(deps);
+  } finally {
+    console.error = origError;
+  }
+  // The reset notice failed silently (best-effort via safePost); spec's real reply still made it
+  // through and was threaded into priorOutputs (visible via reviewer seeing it, and via posts).
+  assert.deepEqual(posts, [["spec", "spec real reply"], ["reviewer", "reviewer ok"]]);
+  assert.deepEqual(seenPrior, [["spec"]]); // reviewer saw spec's reply threaded into priorOutputs
+  assert.deepEqual(state.roleSessions, { spec: "s", reviewer: "r" }); // round continued normally
+});
 test("post throwing (e.g. Discord API failure) is contained: turn continues to the next role", async () => {
   const roleAttempts = [];
   const { deps, posts, state } = ctx(async (role) => {

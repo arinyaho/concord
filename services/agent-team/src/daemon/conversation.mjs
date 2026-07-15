@@ -3,10 +3,12 @@
 // threading each role's output to later roles, posting labeled non-skip outputs, persisting each
 // session id incrementally (so a mid-turn crash never replays the whole turn). A role's
 // generation failure (runRole throwing) is contained: an error notice is posted and the turn
-// continues. Once a role has actually generated a reply, that reply is delivered (posted /
-// threaded into priorOutputs) BEFORE the fallible disk persist runs, so a persist failure can
-// never discard an already-generated reply -- it only degrades durability (logged; on restart
-// that role resumes from its last successfully-persisted session id) and never aborts the round.
+// continues. The cosmetic "(session reset)" notice is posted best-effort (safePost) and cannot
+// precede-and-drop the real reply; the real reply is posted in its own try/catch, and once
+// delivered (posted / threaded into priorOutputs) that happens BEFORE the fallible disk persist
+// runs, so a persist failure can never discard an already-generated reply -- it only degrades
+// durability (logged; on restart that role resumes from its last successfully-persisted session
+// id) and never aborts the round.
 export async function advanceTurn({ threadId, userText, roster, maxRoundLen, state, select, runRole, post, persist }) {
   const round = select(userText, roster, maxRoundLen);
   const byName = Object.fromEntries(roster.map((r) => [r.name, r]));
@@ -30,16 +32,18 @@ export async function advanceTurn({ threadId, userText, roster, maxRoundLen, sta
       continue;
     }
 
-    // Deliver the already-generated reply first. A failure here (e.g. Discord unreachable) is a
-    // separate best-effort concern: it must not skip the persist below or abort the round.
-    try {
-      if (res.reset) await post(threadId, name, "(session reset)");
-      if (!res.skip) {
+    // The reset notice is cosmetic and posted best-effort via safePost, so a failure posting it
+    // can never precede-and-drop the real reply below. Deliver the already-generated reply in its
+    // own try/catch: a failure here (e.g. Discord unreachable) is a separate best-effort concern
+    // that must not skip the persist below or abort the round.
+    if (res.reset) await safePost(name, "(session reset)");
+    if (!res.skip) {
+      try {
         await post(threadId, name, res.text);
         priorOutputs.push({ role: name, text: res.text });
+      } catch (e) {
+        await safePost(name, `(${name} error: ${e.message})`);
       }
-    } catch (e) {
-      await post(threadId, name, `(${name} error: ${e.message})`).catch(() => {});
     }
 
     // Persist durability last and in isolation: a disk failure here must never discard the reply
