@@ -951,9 +951,9 @@ test('gate-panel-round-record: two consecutive dry rounds -> status "done" and l
   const { env, n } = seedGatesRound(repo, dir, 'feat/x',
     { status: 'ok', examined: ['a.txt'], findings: [] },
     { status: 'ok', rejected: [] });
-  run(['plan-fixes', 'feat/x'], { env });
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
+  run(['plan-fixes', 'feat/x'], { env }); // plan-fixes reads round-<n>-gate.json fail-closed once gate.panel is configured -- must exist before this call
   run(['record', 'feat/x'], { env }); // -> panelPending, phase flips to 'done'
 
   run(['gate-panel-round-start', 'feat/x'], { env }); // round 1
