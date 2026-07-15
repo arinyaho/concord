@@ -7,6 +7,7 @@ const { resolveStateDirFromCwd } = require('./lib/statedir');
 const dodExec = require('./lib/dod-exec');
 const intentLib = require('./lib/intent');
 const gateLib = require('./lib/gate');
+const gatePanelLib = require('./lib/gate-panel');
 const {
   targetSlug,
   readLedger,
@@ -23,6 +24,8 @@ function resolveStateDir() {
   if (process.env.REVIEW_STATE_DIR) return process.env.REVIEW_STATE_DIR;
   return resolveStateDirFromCwd();
 }
+
+const GATE_PANEL_LENSES = ['ac-coverage', 'design-conformance', 'cross-context', 'silent-gap', 'threat-model'];
 
 // Impure git/DoD boundary. lib/review.js and lib/gate-contract.js stay pure
 // (no child_process, no fs beyond ledger I/O); all process/git/DoD work for
@@ -141,6 +144,9 @@ function renderHandoff(result) {
       lines.push(`    contradicts: ${f.span || '(no line)'}`);
     }
   }
+  if (ledger.gate_panel && ledger.gate_panel.status === 'done' && ledger.gate_panel.round > 0) {
+    lines.push(`Broad-review panel: ${ledger.gate_panel.round} round(s), ${(ledger.gate_panel.confirmed || []).length} confirmed`);
+  }
   const gateOpen = ledger.gate_open || [];
   if (gateOpen.length) {
     lines.push('', 'Broad review findings (advisory -- your decision; fix, or dismiss the id):');
@@ -238,6 +244,104 @@ function main() {
     return;
   }
 
+  if (verb === 'gate-panel-round-start') {
+    requireRef(ref, 'gate-panel-round-start');
+    const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
+    const gateCfg = gateLib.loadGateConfig(repoRoot);
+    if (!gateCfg || !gateCfg.panel) throw new Error('harness-failure: gate-panel-round-start: gate.panel is not enabled in review.config.json');
+    const slug = targetSlug(ref);
+    const ledger = readLedger(stateDir, slug);
+    if (!ledger) throw new Error(`harness-failure: gate-panel-round-start: no ledger for ref "${ref}"`);
+    const gp = ledger.gate_panel || gatePanelLib.emptyGatePanel();
+    if (gp.status === 'done') throw new Error('harness-failure: gate-panel-round-start: the panel already finished this convergence attempt -- call record, not another panel round');
+    const round = (gp.round || 0) + 1;
+    process.stdout.write(JSON.stringify({ round, rejectedIds: gp.rejectedIds || [], stateDir }) + '\n');
+    return;
+  }
+
+  if (verb === 'gate-panel-round-record') {
+    requireRef(ref, 'gate-panel-round-record');
+    const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
+    const gc = require('./lib/gate-contract');
+    const gateCfg = gateLib.loadGateConfig(repoRoot);
+    if (!gateCfg || !gateCfg.panel) throw new Error('harness-failure: gate-panel-round-record: gate.panel is not enabled in review.config.json');
+    const slug = targetSlug(ref);
+    let ledger = readLedger(stateDir, slug);
+    if (!ledger) throw new Error(`harness-failure: gate-panel-round-record: no ledger for ref "${ref}"`);
+    const gp = ledger.gate_panel || gatePanelLib.emptyGatePanel();
+    if (gp.status === 'done') throw new Error('harness-failure: gate-panel-round-record: the panel already finished this convergence attempt');
+    const n = ledger.round;
+    const m = (gp.round || 0) + 1;
+
+    // Each lens is read leniently (missing/malformed -> zero findings this
+    // round) -- a single flaky lens subagent must not blow up a
+    // multi-million-token panel round. Contrast with correctness/verify's
+    // fail-closed readArtifact: those gate an auto-fixing loop where a
+    // manufactured "zero findings" is dangerous; the panel is report-only
+    // and self-verifying, so a missing lens just means fewer candidates.
+    let allCandidates = [];
+    for (const lens of GATE_PANEL_LENSES) {
+      let raw;
+      try {
+        raw = JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-gate-panel-${m}-${lens}.json`), 'utf8'));
+      } catch (e) {
+        continue;
+      }
+      let findings;
+      try {
+        findings = gc.parseGateFindings(JSON.stringify(raw.findings || []));
+      } catch (e) {
+        continue; // malformed lens output -- treated as zero findings, not a harness-failure
+      }
+      for (const f of findings) {
+        const seg = f.id.split(':');
+        if (seg[1] !== lens) {
+          throw new Error(`harness-failure: gate-panel-round-record: finding "${f.id}" from the "${lens}" lens file must use the "${lens}" class in its id`);
+        }
+      }
+      allCandidates = allCandidates.concat(findings);
+    }
+
+    // A human-dismissed id (review-cli.js dismiss verb, existing gate_dismissed
+    // set) must never re-enter the panel's confirmed set -- mergePanelIntoGate
+    // (lib/gate-panel.js) only dedupes against the CURRENT gate_open, it does
+    // not know about gate_dismissed, so a dismissed finding a lens re-raises
+    // would otherwise silently reappear once the panel completes. Drop it here,
+    // at the earliest point it's known, same as foldGateFindings/
+    // carryForwardGateFindings already do for the lightweight GATE (lib/gate.js).
+    const dismissed = new Set(ledger.gate_dismissed || []);
+    allCandidates = allCandidates.filter((f) => !dismissed.has(f.id));
+
+    // The verify pass is the opposite lenience direction: missing/malformed
+    // means nothing is confirmed to have survived, NOT that everything
+    // survived -- promoting unverified findings by default would defeat the
+    // entire point of an adversarial-verify pass (distrust-green).
+    let survivedIds;
+    try {
+      const vRaw = JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-gate-panel-${m}-verify.json`), 'utf8'));
+      if (vRaw.status !== 'ok' || !Array.isArray(vRaw.rejected)) {
+        throw new Error('malformed verify artifact shape');
+      }
+      const rejected = new Set(vRaw.rejected);
+      survivedIds = allCandidates.map((f) => f.id).filter((id) => !rejected.has(id));
+    } catch (e) {
+      survivedIds = []; // missing, unreadable, or shape-malformed verify artifact -- nothing survives this round
+    }
+
+    const result = gatePanelLib.foldPanelRound({ gatePanel: gp, roundFindings: allCandidates, survivedIds });
+    ledger = { ...ledger, gate_panel: result };
+    if (result.status === 'done') {
+      // Revert phase so a subsequent `record` call passes its `phase ===
+      // 'fixes'` guard and re-runs normally instead of hitting record's
+      // done-idempotency short-circuit left over from the earlier
+      // panelPending call (Task 4).
+      ledger = { ...ledger, phase: 'fixes' };
+    }
+    writeLedger(stateDir, slug, ledger);
+    process.stdout.write(JSON.stringify({ status: result.status, round: result.round, dryStreak: result.dryStreak, newlyConfirmedCount: result.newlyConfirmedCount, rejectedIds: result.rejectedIds }) + '\n');
+    return;
+  }
+
   if (verb === 'round-start') {
     requireRef(ref, 'round-start');
     const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
@@ -250,15 +354,28 @@ function main() {
     // a correction the human made to the design source to retire a false positive.
     if (ledger.status === 'intent-review') {
       try { fs.unlinkSync(path.join(stateDir, `intent-${slug}.md`)); } catch (e) {}
-      ledger = { ...ledger, status: 'converging', diff_content_hash: null, intentHash: null, intentBytes: null, intent_parked: [] };
+      ledger = { ...ledger, status: 'converging', diff_content_hash: null, intentHash: null, intentBytes: null, intent_parked: [], gate_panel: gatePanelLib.emptyGatePanel() };
     }
 
     // gate-pending, like intent-review, is a re-runnable stop state: a fresh
     // round-start clears the reported gate findings and nulls the diff hash so a
     // real round advances and the gate re-evaluates. gate_dismissed is preserved
-    // (a finding the human retired stays retired across re-runs).
+    // (a finding the human retired stays retired across re-runs). gate_panel also
+    // resets -- the panel must re-run fresh on every convergence attempt (design
+    // decision 4: "exactly once per convergence attempt", not once per ledger
+    // lifetime), otherwise stale confirmed findings from the prior panel run would
+    // keep resurfacing in gate_open even after being fixed or dismissed.
     if (ledger.status === 'gate-pending') {
-      ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_open: [] };
+      ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_open: [], gate_panel: gatePanelLib.emptyGatePanel() };
+    }
+
+    // gate-panel-pending is also re-runnable: a session may have crashed or been
+    // interrupted mid-panel (between record() first returning panelPending and the
+    // panel loop completing). A fresh round-start here resets gate_panel so the
+    // panel restarts cleanly from round 1 rather than leaving a half-finished panel
+    // stranded with no way to resume.
+    if (ledger.status === 'gate-panel-pending') {
+      ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_panel: gatePanelLib.emptyGatePanel() };
     }
 
     // Broad-review enable flag (--broad, alias --gate): a per-invocation
@@ -418,6 +535,19 @@ function main() {
     const candidates = gc.parseGateFindings(JSON.stringify(cJson.findings || []));
     const killedIds = gc.parseVerifyVerdict(JSON.stringify({ rejected: vJson.rejected || [] }), candidates).rejectedIds;
 
+    // Holistic GATE panel (spec: 2026-07-15-gate-holistic-panel-design.md):
+    // once the panel has finished (gate-panel-round-record set gate_panel.status
+    // to 'done' and reverted phase to 'fixes' so this call could even happen),
+    // fold its confirmed findings into gate_open BEFORE computing gateOpenCount
+    // below -- same merge every repeat call, mergePanelIntoGate is idempotent
+    // by construction (dedup by id).
+    const gateCfg = gateLib.loadGateConfig(repoRoot);
+    let gateOpen = ledger.gate_open || [];
+    if (ledger.gate_panel && ledger.gate_panel.status === 'done') {
+      gateOpen = gatePanelLib.mergePanelIntoGate(gateOpen, ledger.gate_panel.confirmed || [], ledger.gate_dismissed || []);
+      ledger = { ...ledger, gate_open: gateOpen };
+    }
+
     const journaled = new Map((ledger.journal || []).map((j) => [j.id, j.sha]));
     const fixedIds = [];
     const parkedIds = [];
@@ -444,7 +574,13 @@ function main() {
       fixedIds.push(id);
       fixCommits[id] = journaled.get(id) || 'span already absent (idempotent replay)';
     }
-    const outcome = { dodPassed: !!(ledger.dod && ledger.dod.passed), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons, intentReviewCount: (ledger.intent_parked || []).length, gateOpenCount: (ledger.gate_open || []).length };
+    const outcome = {
+      dodPassed: !!(ledger.dod && ledger.dod.passed), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons,
+      intentReviewCount: (ledger.intent_parked || []).length,
+      gateOpenCount: gateOpen.length,
+      panelConfigured: !!(gateCfg && gateCfg.panel),
+      panelDone: !!(ledger.gate_panel && ledger.gate_panel.status === 'done'),
+    };
     let { ledger: applied, decision } = R.applyRoundOutcome(ledger, outcome);
     ledger = applied;
     // Park-budget override BEFORE the charge below, so a forced terminus doesn't burn a round.
@@ -709,7 +845,7 @@ function main() {
     return;
   }
 
-  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | plan-fixes | commit-fix | record | unpark | dismiss | reset)`);
+  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | plan-fixes | commit-fix | record | gate-panel-round-start | gate-panel-round-record | unpark | dismiss | reset)`);
 }
 
 module.exports = { gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitCheckoutTree, runDod };

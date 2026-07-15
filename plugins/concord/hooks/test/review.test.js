@@ -254,6 +254,32 @@ test('decideTermination: otherwise continue (converging)', () => {
   );
 });
 
+test('decideTermination: dod passed, zero open findings, gate.panel configured and not yet run -> panelPending (not converged)', () => {
+  const d = review.decideTermination(outcome({ dodPassed: true, openFindingsCount: 0, panelConfigured: true, panelDone: false }));
+  assert.deepStrictEqual(
+    { continue: d.continue, converged: d.converged, panelPending: d.panelPending },
+    { continue: false, converged: false, panelPending: true }
+  );
+});
+
+test('decideTermination: panelConfigured but panelDone -> falls through to normal clean check, no panelPending', () => {
+  const d = review.decideTermination(outcome({ dodPassed: true, openFindingsCount: 0, panelConfigured: true, panelDone: true }));
+  assert.strictEqual(d.panelPending, undefined);
+  assert.strictEqual(d.converged, true);
+});
+
+test('decideTermination: panel NOT configured -> normal clean check unaffected, no panelPending', () => {
+  const d = review.decideTermination(outcome({ dodPassed: true, openFindingsCount: 0, panelConfigured: false }));
+  assert.strictEqual(d.panelPending, undefined);
+  assert.strictEqual(d.converged, true);
+});
+
+test('decideTermination: open lightweight GATE findings take priority over panelPending (gatePending wins)', () => {
+  const d = review.decideTermination(outcome({ dodPassed: true, openFindingsCount: 0, gateOpenCount: 1, panelConfigured: true, panelDone: false }));
+  assert.strictEqual(d.gatePending, true);
+  assert.strictEqual(d.panelPending, undefined);
+});
+
 // ---- beginRound: round accounting ----
 
 test('beginRound: first round on a fresh ledger increments round but does NOT charge budget (budget is charged at record now)', () => {
@@ -546,6 +572,15 @@ test('applyRoundOutcome: a round that parks one finding (needs-decision) never c
   assert.strictEqual(parked.status, 'parked');
 });
 
+test('applyRoundOutcome: panelPending decision sets ledger status to "gate-panel-pending"', () => {
+  const ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  const { ledger: next } = review.applyRoundOutcome(
+    { ...ledger, budget: { max_rounds: 5, spent: 0 }, phase: 'fixes' },
+    { dodPassed: true, findings: [], fixedIds: [], parkedIds: [], killedIds: [], panelConfigured: true, panelDone: false }
+  );
+  assert.strictEqual(next.status, 'gate-panel-pending');
+});
+
 test('applyRoundOutcome: whole-diff spec-doubt abandons the run', () => {
   let ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
   ledger = review.beginRound(ledger, 'hash-1').ledger;
@@ -682,6 +717,15 @@ test('renderReviewReport: gate-pending ledgers surface an advisory broad review 
   assert.ok(out.includes('feat/g'));
   assert.match(out, /broad review/i);
   assert.match(out, /dismiss feat\/g/);
+});
+
+test('renderReviewReport: gate-panel-pending ledgers surface a resume/panel reminder, not silently omitted', () => {
+  const l = review.emptyLedger({ kind: 'local', ref: 'feat/p' });
+  l.status = 'gate-panel-pending';
+  l.round = 3;
+  const out = review.renderReviewReport([{ slug: 'feat-p', ledger: l }]);
+  assert.ok(out.includes('feat/p'));
+  assert.match(out, /panel pending or interrupted/);
 });
 
 test('decideTermination: an open intent finding -> intent-review (blocks clean, before the clean branch)', () => {

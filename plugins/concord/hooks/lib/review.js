@@ -3,6 +3,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { REVIEW_MAX_ROUNDS_DEFAULT, REVIEW_PARK_BUDGET_DEFAULT } = require('./config');
+const { emptyGatePanel } = require('./gate-panel');
 
 // Pure, unit-testable core for review-until-green. No LLM calls, no process
 // spawning, no network -- the "CLI enforces, the agent drives" model: this module
@@ -72,6 +73,7 @@ function emptyLedger(target) {
     intent_parked: [],
     gate_open: [],
     gate_dismissed: [],
+    gate_panel: emptyGatePanel(),
     gateApplied: false,
   };
 }
@@ -191,7 +193,7 @@ function dedupeAgainstSeen(findings, seen) {
 // Oscillation detection (a finding toggling fixed -> reopened -> fixed) is
 // deliberately out of scope for this shell (deferred per the plan).
 function decideTermination(roundOutcome) {
-  const { dodPassed, openFindingsCount, specDoubtScope, noProgress, budgetSpent, maxRounds, fixedCount = 0, parkedCount = 0, intentReviewCount = 0, gateOpenCount = 0 } = roundOutcome;
+  const { dodPassed, openFindingsCount, specDoubtScope, noProgress, budgetSpent, maxRounds, fixedCount = 0, parkedCount = 0, intentReviewCount = 0, gateOpenCount = 0, panelConfigured = false, panelDone = false } = roundOutcome;
 
   if (specDoubtScope === 'whole-diff') {
     return { continue: false, converged: false, parked: false, abandoned: true, reason: 'spec-doubt invalidates the whole diff' };
@@ -209,6 +211,17 @@ function decideTermination(roundOutcome) {
       // decision. This is the ONLY place the gate gates -- never mid-loop, so the
       // correctness/DoD auto-fix flow is never halted early by a design finding.
       return { continue: false, converged: false, parked: false, abandoned: false, gatePending: true, reason: 'diff-local clean, but open GATE finding(s) need a human decision (design/AC/cross-context)' };
+    }
+    // Convergence-boundary hook for the holistic GATE panel (spec:
+    // 2026-07-15-gate-holistic-panel-design.md decision 4): the panel is
+    // expensive (measured ~1.9M tokens/round average), so it triggers
+    // exactly once, only once everything else that would keep changing the
+    // diff has already gone quiet -- never speculatively on a round that
+    // still has open findings. panelDone is sticky per convergence attempt,
+    // so a repeat record() call after the panel finishes falls through to
+    // the normal clean check below instead of looping the panel forever.
+    if (panelConfigured && !panelDone) {
+      return { continue: false, converged: false, parked: false, abandoned: false, panelPending: true, reason: 'diff-local clean and no open GATE findings, but the holistic GATE panel has not run yet this convergence attempt' };
     }
     return { continue: false, converged: true, parked: false, abandoned: false, reason: 'DoD-exec ran and passed, zero open findings, and no fixes this round (stable)' };
   }
@@ -371,9 +384,11 @@ function applyRoundOutcome(ledger, outcome) {
     parkedCount: (outcome.parkedIds || []).length, // COUNT, not the in-scope Set named parkedIds
     intentReviewCount: outcome.intentReviewCount || 0,
     gateOpenCount: outcome.gateOpenCount || 0,
+    panelConfigured: !!outcome.panelConfigured,
+    panelDone: !!outcome.panelDone,
   });
 
-  const status = decision.converged ? 'clean' : decision.parked ? 'parked' : decision.abandoned ? 'abandoned' : decision.intentReview ? 'intent-review' : decision.gatePending ? 'gate-pending' : 'converging';
+  const status = decision.converged ? 'clean' : decision.parked ? 'parked' : decision.abandoned ? 'abandoned' : decision.intentReview ? 'intent-review' : decision.gatePending ? 'gate-pending' : decision.panelPending ? 'gate-panel-pending' : 'converging';
 
   const history = (ledger.history || []).concat([
     {
@@ -456,6 +471,8 @@ function renderReviewReport(ledgers) {
       lines.push(`review-until-green [${ref}]: ${roundInfo} -- stopped for a design-conformance (intent) finding, needs a human decision; re-run \`/review-until-green ${ref}\` after fixing the code or the design source (a fixed contradiction converges, an unfixed one re-fetches the intent).`);
     } else if (ledger.status === 'gate-pending') {
       lines.push(`review-until-green [${ref}]: ${roundInfo} -- stopped for advisory broad review finding(s), needs a human decision; re-run \`/review-until-green ${ref}\` (a fresh run re-evaluates broad review) or \`review-cli.js dismiss ${ref} <gateId>\` for a finding you accept as out-of-scope.`);
+    } else if (ledger.status === 'gate-panel-pending') {
+      lines.push(`review-until-green [${ref}]: ${roundInfo} -- diff-local clean, holistic broad-review panel pending or interrupted; re-run \`/review-until-green ${ref}\` to run/resume the panel (a fresh round-start resets and restarts it cleanly).`);
     }
   }
   return lines.join('\n');
