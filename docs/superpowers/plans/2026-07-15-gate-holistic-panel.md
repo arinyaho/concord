@@ -570,7 +570,7 @@ Add to `plugins/concord/hooks/test/review-cli.test.js`, near the other `record`-
 ```javascript
 test('record: gate.panel enabled and diff-local + lightweight-gate clean -> panelPending, not converged', () => {
   const repo = initRepo(); const dir = tmpDir();
-  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ gate: { panel: true } }));
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
   execFileSync('git', ['add', '-A'], { cwd: repo });
   execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
   const { env, n } = seedGatesRound(repo, dir, 'feat/x',
@@ -598,7 +598,7 @@ test('record: gate.panel enabled but NOT configured (absent gate.panel) -> conve
 
 test('record: after gate_panel.status is "done" with a confirmed finding, record merges it into gate_open -> gatePending, not clean', () => {
   const repo = initRepo(); const dir = tmpDir();
-  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ gate: { panel: true } }));
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
   execFileSync('git', ['add', '-A'], { cwd: repo });
   execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
   const { env, n } = seedGatesRound(repo, dir, 'feat/x',
@@ -742,7 +742,7 @@ test('gate-panel-round-start: gate.panel not configured -> harness-failure', () 
 
 test('gate-panel-round-start: first call -> round 1, empty rejectedIds', () => {
   const repo = initRepo(); const dir = tmpDir();
-  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ gate: { panel: true } }));
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
   execFileSync('git', ['add', '-A'], { cwd: repo });
   execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
   const { env } = seedGatesRound(repo, dir, 'feat/x',
@@ -756,7 +756,7 @@ test('gate-panel-round-start: first call -> round 1, empty rejectedIds', () => {
 
 test('gate-panel-round-start: reports the NEXT round number and the accumulated rejectedIds from ledger.gate_panel', () => {
   const repo = initRepo(); const dir = tmpDir();
-  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ gate: { panel: true } }));
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
   execFileSync('git', ['add', '-A'], { cwd: repo });
   execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
   const { env } = seedGatesRound(repo, dir, 'feat/x',
@@ -772,7 +772,7 @@ test('gate-panel-round-start: reports the NEXT round number and the accumulated 
 
 test('gate-panel-round-start: panel already "done" -> harness-failure (call record, not another panel round)', () => {
   const repo = initRepo(); const dir = tmpDir();
-  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ gate: { panel: true } }));
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
   execFileSync('git', ['add', '-A'], { cwd: repo });
   execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
   const { env } = seedGatesRound(repo, dir, 'feat/x',
@@ -842,7 +842,7 @@ Add to `plugins/concord/hooks/test/review-cli.test.js`:
 
 ```javascript
 function seedPanelRoundConfig(repo) {
-  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ gate: { panel: true } }));
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
   execFileSync('git', ['add', '-A'], { cwd: repo });
   execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
 }
@@ -1133,7 +1133,7 @@ Add to `plugins/concord/hooks/test/review-cli.test.js`:
 ```javascript
 test('e2e: gate.panel enabled -- full cycle: record signals panelPending, 3 panel rounds converge (1 confirmed then 2 dry), final record merges into gate_open', () => {
   const repo = initRepo(); const dir = tmpDir();
-  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ gate: { panel: true } }));
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
   execFileSync('git', ['add', '-A'], { cwd: repo });
   execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
   const { env, n } = seedGatesRound(repo, dir, 'feat/x',
@@ -1276,7 +1276,7 @@ Add to `plugins/concord/hooks/test/review-cli.test.js`, reusing the same setup s
 ```javascript
 test('renderHandoff (via record): reports GATE panel round count and confirmed count once the panel is done', () => {
   const repo = initRepo(); const dir = tmpDir();
-  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ gate: { panel: true } }));
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
   execFileSync('git', ['add', '-A'], { cwd: repo });
   execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
   const { env, n } = seedGatesRound(repo, dir, 'feat/x',
