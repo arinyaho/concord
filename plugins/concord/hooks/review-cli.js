@@ -354,15 +354,28 @@ function main() {
     // a correction the human made to the design source to retire a false positive.
     if (ledger.status === 'intent-review') {
       try { fs.unlinkSync(path.join(stateDir, `intent-${slug}.md`)); } catch (e) {}
-      ledger = { ...ledger, status: 'converging', diff_content_hash: null, intentHash: null, intentBytes: null, intent_parked: [] };
+      ledger = { ...ledger, status: 'converging', diff_content_hash: null, intentHash: null, intentBytes: null, intent_parked: [], gate_panel: gatePanelLib.emptyGatePanel() };
     }
 
     // gate-pending, like intent-review, is a re-runnable stop state: a fresh
     // round-start clears the reported gate findings and nulls the diff hash so a
     // real round advances and the gate re-evaluates. gate_dismissed is preserved
-    // (a finding the human retired stays retired across re-runs).
+    // (a finding the human retired stays retired across re-runs). gate_panel also
+    // resets -- the panel must re-run fresh on every convergence attempt (design
+    // decision 4: "exactly once per convergence attempt", not once per ledger
+    // lifetime), otherwise stale confirmed findings from the prior panel run would
+    // keep resurfacing in gate_open even after being fixed or dismissed.
     if (ledger.status === 'gate-pending') {
-      ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_open: [] };
+      ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_open: [], gate_panel: gatePanelLib.emptyGatePanel() };
+    }
+
+    // gate-panel-pending is also re-runnable: a session may have crashed or been
+    // interrupted mid-panel (between record() first returning panelPending and the
+    // panel loop completing). A fresh round-start here resets gate_panel so the
+    // panel restarts cleanly from round 1 rather than leaving a half-finished panel
+    // stranded with no way to resume.
+    if (ledger.status === 'gate-panel-pending') {
+      ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_panel: gatePanelLib.emptyGatePanel() };
     }
 
     // `resume <ref>` passes NO base token -- fall back to the base persisted
@@ -511,7 +524,7 @@ function main() {
     const gateCfg = gateLib.loadGateConfig(repoRoot);
     let gateOpen = ledger.gate_open || [];
     if (ledger.gate_panel && ledger.gate_panel.status === 'done') {
-      gateOpen = gatePanelLib.mergePanelIntoGate(gateOpen, ledger.gate_panel.confirmed || []);
+      gateOpen = gatePanelLib.mergePanelIntoGate(gateOpen, ledger.gate_panel.confirmed || [], ledger.gate_dismissed || []);
       ledger = { ...ledger, gate_open: gateOpen };
     }
 

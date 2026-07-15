@@ -3,6 +3,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { REVIEW_MAX_ROUNDS_DEFAULT, REVIEW_PARK_BUDGET_DEFAULT } = require('./config');
+const { emptyGatePanel } = require('./gate-panel');
 
 // Pure, unit-testable core for review-until-green. No LLM calls, no process
 // spawning, no network -- the "CLI enforces, the agent drives" model: this module
@@ -72,6 +73,7 @@ function emptyLedger(target) {
     intent_parked: [],
     gate_open: [],
     gate_dismissed: [],
+    gate_panel: emptyGatePanel(),
   };
 }
 
@@ -468,6 +470,8 @@ function renderReviewReport(ledgers) {
       lines.push(`review-until-green [${ref}]: ${roundInfo} -- stopped for a design-conformance (intent) finding, needs a human decision; re-run \`/review-until-green ${ref}\` after fixing the code or the design source (a fixed contradiction converges, an unfixed one re-fetches the intent).`);
     } else if (ledger.status === 'gate-pending') {
       lines.push(`review-until-green [${ref}]: ${roundInfo} -- stopped for advisory GATE finding(s), needs a human decision; re-run \`/review-until-green ${ref}\` (a fresh run re-evaluates the gate) or \`review-cli.js dismiss ${ref} <gateId>\` for a finding you accept as out-of-scope.`);
+    } else if (ledger.status === 'gate-panel-pending') {
+      lines.push(`review-until-green [${ref}]: ${roundInfo} -- diff-local clean, holistic GATE panel pending or interrupted; re-run \`/review-until-green ${ref}\` to run/resume the panel (a fresh round-start resets and restarts it cleanly).`);
     }
   }
   return lines.join('\n');

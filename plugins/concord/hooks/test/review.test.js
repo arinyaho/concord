@@ -714,6 +714,15 @@ test('renderReviewReport: gate-pending ledgers surface an advisory GATE reminder
   assert.match(out, /dismiss feat\/g/);
 });
 
+test('renderReviewReport: gate-panel-pending ledgers surface a resume/panel reminder, not silently omitted', () => {
+  const l = review.emptyLedger({ kind: 'local', ref: 'feat/p' });
+  l.status = 'gate-panel-pending';
+  l.round = 3;
+  const out = review.renderReviewReport([{ slug: 'feat-p', ledger: l }]);
+  assert.ok(out.includes('feat/p'));
+  assert.match(out, /panel pending or interrupted/);
+});
+
 test('decideTermination: an open intent finding -> intent-review (blocks clean, before the clean branch)', () => {
   const d = review.decideTermination({
     dodPassed: true, openFindingsCount: 0, specDoubtScope: 'none',

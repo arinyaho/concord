@@ -1852,6 +1852,85 @@ test('e2e: gate.panel enabled -- full cycle: record signals panelPending, 3 pane
   assert.strictEqual(finalLedger.status, 'gate-pending');
 });
 
+test('e2e: gate_panel resets on a second convergence attempt -- round-start re-arm makes the panel re-run, and a fixed finding does not resurface', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
+
+  // --- Attempt 1: correctness clean, lightweight gate clean, panel confirms one finding
+  // over 3 rounds (1 real, then 2 dry) -- same shape as the existing full-cycle e2e test.
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] });
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
+  run(['plan-fixes', 'feat/x'], { env });
+  const rec1 = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(rec1.decision.panelPending, true);
+
+  run(['gate-panel-round-start', 'feat/x'], { env }); // round 1
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-threat-model.json`),
+    JSON.stringify({ status: 'ok', findings: [{ id: 'gate:threat-model:sk-exposure', file: 'a.txt', span: '', requirement: '', summary: 'a real gap' }] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  const round1 = JSON.parse(run(['gate-panel-round-record', 'feat/x'], { env }));
+  assert.strictEqual(round1.newlyConfirmedCount, 1);
+
+  run(['gate-panel-round-start', 'feat/x'], { env }); // round 2 -- 1st dry round
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-2-threat-model.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-2-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  run(['gate-panel-round-record', 'feat/x'], { env });
+
+  run(['gate-panel-round-start', 'feat/x'], { env }); // round 3 -- 2nd consecutive dry round -> done
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-3-threat-model.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-3-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  const round3 = JSON.parse(run(['gate-panel-round-record', 'feat/x'], { env }));
+  assert.strictEqual(round3.status, 'done');
+
+  const rec2 = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(rec2.decision.gatePending, true);
+  let ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.deepStrictEqual(ledger.gate_open.map((f) => f.id), ['gate:threat-model:sk-exposure']);
+  assert.strictEqual(ledger.gate_panel.status, 'done');
+
+  // --- Human fixes the underlying issue and re-runs: round-start (resume form, no base
+  // token) re-arms the gate-pending stop state. Before the fix, gate_panel.status stayed
+  // 'done' forever here -- this asserts it is reset so the panel re-runs.
+  run(['round-start', 'feat/x'], { env });
+  ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.strictEqual(ledger.status, 'converging');
+  assert.strictEqual(ledger.gate_panel.status, 'idle');
+  assert.deepStrictEqual(ledger.gate_panel.confirmed, []);
+  assert.deepStrictEqual(ledger.gate_open, []);
+  const n2 = ledger.round;
+  assert.notStrictEqual(n2, n);
+
+  // --- Attempt 2: correctness clean again, lightweight gate clean again -- simulating the
+  // fix worked and nothing else was found. The panel must run again (not be skipped because
+  // gate_panel was 'done' from attempt 1), and this time no lens raises anything.
+  fs.writeFileSync(path.join(dir, `round-${n2}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n2}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n2}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n2}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
+  run(['plan-fixes', 'feat/x'], { env });
+  const rec3 = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(rec3.decision.panelPending, true); // re-runs -- not skipped as already-done
+
+  run(['gate-panel-round-start', 'feat/x'], { env }); // panel round 1 of attempt 2 -- no lens files -> 1st dry round
+  const p1 = JSON.parse(run(['gate-panel-round-record', 'feat/x'], { env }));
+  assert.strictEqual(p1.status, 'running');
+  run(['gate-panel-round-start', 'feat/x'], { env }); // panel round 2 of attempt 2 -- 2nd consecutive dry round -> done
+  const p2 = JSON.parse(run(['gate-panel-round-record', 'feat/x'], { env }));
+  assert.strictEqual(p2.status, 'done');
+
+  const rec4 = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(rec4.decision.converged, true);
+  assert.strictEqual(rec4.decision.gatePending, undefined);
+  const finalLedger = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.strictEqual(finalLedger.status, 'clean');
+  assert.deepStrictEqual(finalLedger.gate_open, []); // the stale confirmed finding did not resurface
+});
+
 test('review-cli: unknown verb error message lists the two new gate-panel verbs', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };

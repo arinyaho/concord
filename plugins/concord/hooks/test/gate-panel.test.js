@@ -89,3 +89,26 @@ test('mergePanelIntoGate: empty panelConfirmed is a no-op', () => {
   const gateFindings = [{ id: 'gate:ac-coverage:x', class: 'ac-coverage', file: 'a.js', evidence: '', requirement: '', summary: 's' }];
   assert.deepStrictEqual(gatePanel.mergePanelIntoGate(gateFindings, []), gateFindings);
 });
+
+test('mergePanelIntoGate: a panel-confirmed id already in dismissedIds is dropped, not merged in', () => {
+  const gateFindings = [];
+  const panelConfirmed = [
+    { id: 'gate:threat-model:already-dismissed', class: 'threat-model', file: 'a.js', evidence: '', requirement: '', summary: 's1' },
+    { id: 'gate:threat-model:still-live', class: 'threat-model', file: 'b.js', evidence: '', requirement: '', summary: 's2' },
+  ];
+  const out = gatePanel.mergePanelIntoGate(gateFindings, panelConfirmed, ['gate:threat-model:already-dismissed']);
+  assert.deepStrictEqual(out.map((f) => f.id), ['gate:threat-model:still-live']);
+});
+
+test('foldPanelRound: two roundFindings entries sharing the same id, both surviving, produce only ONE confirmed entry', () => {
+  const result = gatePanel.foldPanelRound({
+    gatePanel: gatePanel.emptyGatePanel(),
+    roundFindings: [
+      { id: 'gate:threat-model:dup-in-round', file: 'a.js', summary: 's' },
+      { id: 'gate:threat-model:dup-in-round', file: 'a.js', summary: 's' },
+    ],
+    survivedIds: ['gate:threat-model:dup-in-round'],
+  });
+  assert.strictEqual(result.newlyConfirmedCount, 1);
+  assert.strictEqual(result.confirmed.length, 1);
+});

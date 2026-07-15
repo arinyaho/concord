@@ -42,7 +42,7 @@ function foldPanelRound({ gatePanel, roundFindings, survivedIds }) {
   const newlyRejectedIds = [];
   for (const f of roundFindings || []) {
     if (survived.has(f.id)) {
-      if (!priorConfirmedIds.has(f.id)) newlyConfirmed.push(toGateFinding(f));
+      if (!priorConfirmedIds.has(f.id) && !newlyConfirmed.some((c) => c.id === f.id)) newlyConfirmed.push(toGateFinding(f));
     } else {
       newlyRejectedIds.push(f.id);
     }
@@ -67,10 +67,14 @@ function foldPanelRound({ gatePanel, roundFindings, survivedIds }) {
 // existing GATE findings array (same shape), deduped by id. gate-review's
 // own findings win on a rare id collision (decision 8: review-cli.js's fold
 // logic itself does not change -- this is the one seam that feeds the
-// panel's output into it, as plain data).
-function mergePanelIntoGate(gateFindings, panelConfirmed) {
+// panel's output into it, as plain data). dismissedIds filters out any
+// panel-confirmed finding a human has already dismissed via the `dismiss`
+// verb -- mirrors lib/gate.js's foldGateFindings/carryForwardGateFindings,
+// which already exclude dismissed ids from the lightweight GATE's own flow.
+function mergePanelIntoGate(gateFindings, panelConfirmed, dismissedIds) {
   const existingIds = new Set((gateFindings || []).map((f) => f.id));
-  const extra = (panelConfirmed || []).filter((f) => !existingIds.has(f.id));
+  const dismissed = new Set(dismissedIds || []);
+  const extra = (panelConfirmed || []).filter((f) => !existingIds.has(f.id) && !dismissed.has(f.id));
   return (gateFindings || []).concat(extra);
 }
 
