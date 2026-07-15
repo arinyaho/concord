@@ -47,3 +47,27 @@ test("a role throwing posts an error notice and the turn continues", async () =>
   assert.match(posts[0][1], /error/i);
   assert.deepEqual(posts[1], ["reviewer", "reviewer ok"]);
 });
+test("persist throwing after a role's runRole succeeds is contained: error notice posted, turn continues", async () => {
+  const { deps, posts } = ctx(async (role) => ({ text: `${role.name} ok`, sessionId: `s_${role.name}`, skip: false, reset: false }));
+  let thrown = false;
+  deps.persist = async (tid, s) => { if (!thrown) { thrown = true; throw new Error("disk full"); } };
+  await advanceTurn(deps);
+  assert.match(posts[0][1], /error/i);
+  assert.deepEqual(posts[1], ["reviewer", "reviewer ok"]); // round continues past the failed role
+});
+test("post throwing (e.g. Discord API failure) is contained: turn continues to the next role", async () => {
+  const roleAttempts = [];
+  const { deps, posts, state } = ctx(async (role) => {
+    roleAttempts.push(role.name);
+    return { text: `${role.name} ok`, sessionId: `s_${role.name}`, skip: false, reset: false };
+  });
+  deps.post = async (tid, role, text) => {
+    if (role === "spec" && !text.includes("error")) throw new Error("discord unreachable");
+    posts.push([role, text]);
+  };
+  await advanceTurn(deps);
+  assert.deepEqual(roleAttempts, ["spec", "reviewer"]); // reviewer still ran
+  assert.match(posts[0][1], /error/i);
+  assert.deepEqual(posts[1], ["reviewer", "reviewer ok"]);
+  assert.deepEqual(state.roleSessions, { spec: "s_spec", reviewer: "s_reviewer" }); // spec's session persisted despite post failure
+});

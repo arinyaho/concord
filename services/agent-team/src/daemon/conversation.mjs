@@ -9,15 +9,14 @@ export async function advanceTurn({ threadId, userText, roster, maxRoundLen, sta
   const priorOutputs = [];
   for (const name of round) {
     const role = byName[name];
-    let res;
     try {
-      res = await runRole(role, userText, priorOutputs, state.roleSessions[name], undefined);
+      const res = await runRole(role, userText, priorOutputs, state.roleSessions[name], undefined);
+      if (res.sessionId) { state.roleSessions[name] = res.sessionId; await persist(threadId, state); }
+      if (res.reset) await post(threadId, name, "(session reset)");
+      if (!res.skip) { await post(threadId, name, res.text); priorOutputs.push({ role: name, text: res.text }); }
     } catch (e) {
       await post(threadId, name, `(${name} error: ${e.message})`);
       continue;
     }
-    if (res.sessionId) { state.roleSessions[name] = res.sessionId; await persist(threadId, state); }
-    if (res.reset) await post(threadId, name, "(session reset)");
-    if (!res.skip) { await post(threadId, name, res.text); priorOutputs.push({ role: name, text: res.text }); }
   }
 }
