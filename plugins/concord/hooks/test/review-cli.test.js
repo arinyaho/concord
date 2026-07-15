@@ -1322,6 +1322,70 @@ test('record: diff-local clean with an open gate finding -> gate-pending, not cl
   assert.strictEqual(review.readLedger(dir, review.targetSlug('feat/x')).status, 'gate-pending');
 });
 
+test('record: gate.panel enabled and diff-local + lightweight-gate clean -> panelPending, not converged', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] });
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
+  const planOut = JSON.parse(run(['plan-fixes', 'feat/x'], { env }));
+  assert.deepStrictEqual(planOut.fixes, []);
+  const rec = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(rec.decision.panelPending, true);
+  assert.strictEqual(rec.decision.converged, false);
+});
+
+test('record: gate.panel enabled but NOT configured (absent gate.panel) -> converges clean as before (no behavior change)', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  const rec = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(rec.decision.converged, true);
+  assert.strictEqual(rec.decision.panelPending, undefined);
+});
+
+test('record: after gate_panel.status is "done" with a confirmed finding, record merges it into gate_open -> gatePending, not clean', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] });
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
+  run(['plan-fixes', 'feat/x'], { env });
+  const rec1 = JSON.parse(run(['record', 'feat/x'], { env })); // -> panelPending, phase flips to 'done'
+  assert.strictEqual(rec1.decision.panelPending, true);
+
+  // Simulate the panel having already converged with one confirmed finding
+  // (Task 6 covers actually driving this state via the CLI verbs) --
+  // directly seed the ledger state record() is contracted to read.
+  let ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  ledger = {
+    ...ledger,
+    phase: 'fixes', // reverted by gate-panel-round-record when the panel finishes (Task 6)
+    gate_panel: {
+      status: 'done', round: 2, dryStreak: 2,
+      confirmed: [{ id: 'gate:threat-model:sk-exposure', class: 'threat-model', file: 'a.txt', evidence: '', requirement: '', summary: 'a real gap the panel found' }],
+      rejectedIds: [],
+    },
+  };
+  review.writeLedger(dir, review.targetSlug('feat/x'), ledger);
+
+  const rec2 = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(rec2.decision.panelPending, undefined);
+  assert.strictEqual(rec2.decision.gatePending, true);
+  const finalLedger = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.deepStrictEqual(finalLedger.gate_open.map((f) => f.id), ['gate:threat-model:sk-exposure']);
+});
+
 test('renderHandoff: gate-pending surfaces the advisory GATE findings section', () => {
   const repo = initRepo();
   const dir = tmpDir();

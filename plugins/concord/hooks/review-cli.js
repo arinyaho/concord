@@ -7,6 +7,7 @@ const { resolveStateDirFromCwd } = require('./lib/statedir');
 const dodExec = require('./lib/dod-exec');
 const intentLib = require('./lib/intent');
 const gateLib = require('./lib/gate');
+const gatePanelLib = require('./lib/gate-panel');
 const {
   targetSlug,
   readLedger,
@@ -398,6 +399,19 @@ function main() {
     const candidates = gc.parseGateFindings(JSON.stringify(cJson.findings || []));
     const killedIds = gc.parseVerifyVerdict(JSON.stringify({ rejected: vJson.rejected || [] }), candidates).rejectedIds;
 
+    // Holistic GATE panel (spec: 2026-07-15-gate-holistic-panel-design.md):
+    // once the panel has finished (gate-panel-round-record set gate_panel.status
+    // to 'done' and reverted phase to 'fixes' so this call could even happen),
+    // fold its confirmed findings into gate_open BEFORE computing gateOpenCount
+    // below -- same merge every repeat call, mergePanelIntoGate is idempotent
+    // by construction (dedup by id).
+    const gateCfg = gateLib.loadGateConfig(repoRoot);
+    let gateOpen = ledger.gate_open || [];
+    if (ledger.gate_panel && ledger.gate_panel.status === 'done') {
+      gateOpen = gatePanelLib.mergePanelIntoGate(gateOpen, ledger.gate_panel.confirmed || []);
+      ledger = { ...ledger, gate_open: gateOpen };
+    }
+
     const journaled = new Map((ledger.journal || []).map((j) => [j.id, j.sha]));
     const fixedIds = [];
     const parkedIds = [];
@@ -424,7 +438,13 @@ function main() {
       fixedIds.push(id);
       fixCommits[id] = journaled.get(id) || 'span already absent (idempotent replay)';
     }
-    const outcome = { dodPassed: !!(ledger.dod && ledger.dod.passed), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons, intentReviewCount: (ledger.intent_parked || []).length, gateOpenCount: (ledger.gate_open || []).length };
+    const outcome = {
+      dodPassed: !!(ledger.dod && ledger.dod.passed), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons,
+      intentReviewCount: (ledger.intent_parked || []).length,
+      gateOpenCount: gateOpen.length,
+      panelConfigured: !!(gateCfg && gateCfg.panel),
+      panelDone: !!(ledger.gate_panel && ledger.gate_panel.status === 'done'),
+    };
     let { ledger: applied, decision } = R.applyRoundOutcome(ledger, outcome);
     ledger = applied;
     // Park-budget override BEFORE the charge below, so a forced terminus doesn't burn a round.
