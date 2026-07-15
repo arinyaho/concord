@@ -239,6 +239,21 @@ function main() {
     return;
   }
 
+  if (verb === 'gate-panel-round-start') {
+    requireRef(ref, 'gate-panel-round-start');
+    const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
+    const gateCfg = gateLib.loadGateConfig(repoRoot);
+    if (!gateCfg || !gateCfg.panel) throw new Error('harness-failure: gate-panel-round-start: gate.panel is not enabled in review.config.json');
+    const slug = targetSlug(ref);
+    const ledger = readLedger(stateDir, slug);
+    if (!ledger) throw new Error(`harness-failure: gate-panel-round-start: no ledger for ref "${ref}"`);
+    const gp = ledger.gate_panel || gatePanelLib.emptyGatePanel();
+    if (gp.status === 'done') throw new Error('harness-failure: gate-panel-round-start: the panel already finished this convergence attempt -- call record, not another panel round');
+    const round = (gp.round || 0) + 1;
+    process.stdout.write(JSON.stringify({ round, rejectedIds: gp.rejectedIds || [], stateDir }) + '\n');
+    return;
+  }
+
   if (verb === 'round-start') {
     requireRef(ref, 'round-start');
     const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();

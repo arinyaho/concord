@@ -1605,3 +1605,55 @@ test('review-cli dismiss: rejects a gateId that is not in the gate: namespace', 
   assert.deepStrictEqual(review.readLedger(dir, slug).gate_dismissed, []);
 });
 
+test('gate-panel-round-start: gate.panel not configured -> harness-failure', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] });
+  assert.throws(() => run(['gate-panel-round-start', 'feat/x'], { env }), /harness-failure/);
+});
+
+test('gate-panel-round-start: first call -> round 1, empty rejectedIds', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
+  const { env } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] });
+  const out = JSON.parse(run(['gate-panel-round-start', 'feat/x'], { env }));
+  assert.strictEqual(out.round, 1);
+  assert.deepStrictEqual(out.rejectedIds, []);
+  assert.strictEqual(out.stateDir, dir);
+});
+
+test('gate-panel-round-start: reports the NEXT round number and the accumulated rejectedIds from ledger.gate_panel', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
+  const { env } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] });
+  let ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  ledger = { ...ledger, gate_panel: { status: 'running', round: 2, dryStreak: 1, confirmed: [], rejectedIds: ['gate:threat-model:false-lead'] } };
+  review.writeLedger(dir, review.targetSlug('feat/x'), ledger);
+  const out = JSON.parse(run(['gate-panel-round-start', 'feat/x'], { env }));
+  assert.strictEqual(out.round, 3);
+  assert.deepStrictEqual(out.rejectedIds, ['gate:threat-model:false-lead']);
+});
+
+test('gate-panel-round-start: panel already "done" -> harness-failure (call record, not another panel round)', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
+  const { env } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] });
+  let ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  ledger = { ...ledger, gate_panel: { status: 'done', round: 2, dryStreak: 2, confirmed: [], rejectedIds: [] } };
+  review.writeLedger(dir, review.targetSlug('feat/x'), ledger);
+  assert.throws(() => run(['gate-panel-round-start', 'feat/x'], { env }), /harness-failure/);
+});
+
