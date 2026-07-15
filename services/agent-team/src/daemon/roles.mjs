@@ -30,6 +30,7 @@ export async function runRole(role, userText, priorOutputs, resumeId, abortContr
   try {
     out = await once(query, prompt, resumeId ? { ...base, resume: resumeId } : base);
   } catch (e) {
+    if (abortController?.signal?.aborted) throw e; // timeout/cancel, not a bad resume -- do not retry
     if (resumeId) { reset = true; out = await once(query, prompt, base); } // bad-resume THROWS -> retry fresh
     else throw e;
   }

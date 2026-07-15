@@ -61,3 +61,33 @@ test("silent-fresh guard: resume succeeds but session id differs -> reset:true",
   assert.equal(r.reset, true);
   assert.equal(r.sessionId, "sess_other");
 });
+test("abort during a resume turn is NOT a bad resume -> rethrows without retry (no session reset)", async () => {
+  let calls = 0;
+  const abortController = new AbortController();
+  abortController.abort(); // simulate the per-turn timeout having already fired
+  async function* abortingQuery() {
+    calls += 1;
+    throw new Error("aborted"); // what the SDK throws when the signal fires mid-query
+    // eslint-disable-next-line no-unreachable
+    yield {};
+  }
+  await assert.rejects(
+    runRole({ name: "spec", systemPrompt: "SP" }, "hi", [], "sess_prev", abortController, { query: abortingQuery }),
+    /aborted/,
+  );
+  assert.equal(calls, 1); // no retry -- bad-resume recovery must not swallow a real timeout/cancel
+});
+test("bad-resume retry still fires when the signal is NOT aborted (diverges from the abort case above)", async () => {
+  let calls = 0;
+  const abortController = new AbortController(); // never aborted
+  async function* retryingQuery({ options }) {
+    calls += 1;
+    if (options.resume) throw new Error("--resume requires a valid session Id");
+    yield { type: "system", subtype: "init", session_id: "sess_fresh" };
+    yield { type: "result", result: "recovered" };
+  }
+  const r = await runRole({ name: "spec", systemPrompt: "SP" }, "hi", [], "sess_bad", abortController, { query: retryingQuery });
+  assert.equal(r.reset, true);
+  assert.equal(r.text, "recovered");
+  assert.equal(calls, 2); // first call (resume) throws, retry (no resume) succeeds
+});
