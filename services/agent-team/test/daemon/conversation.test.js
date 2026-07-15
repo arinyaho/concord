@@ -47,13 +47,26 @@ test("a role throwing posts an error notice and the turn continues", async () =>
   assert.match(posts[0][1], /error/i);
   assert.deepEqual(posts[1], ["reviewer", "reviewer ok"]);
 });
-test("persist throwing after a role's runRole succeeds is contained: error notice posted, turn continues", async () => {
-  const { deps, posts } = ctx(async (role) => ({ text: `${role.name} ok`, sessionId: `s_${role.name}`, skip: false, reset: false }));
+test("persist throwing after a role's runRole succeeds does not drop the reply: real text is posted, failure only logged, round continues", async () => {
+  const { deps, posts, state } = ctx(async (role) => ({ text: `${role.name} ok`, sessionId: `s_${role.name}`, skip: false, reset: false }));
   let thrown = false;
   deps.persist = async (tid, s) => { if (!thrown) { thrown = true; throw new Error("disk full"); } };
-  await advanceTurn(deps);
-  assert.match(posts[0][1], /error/i);
-  assert.deepEqual(posts[1], ["reviewer", "reviewer ok"]); // round continues past the failed role
+  const origError = console.error;
+  const errorLogs = [];
+  console.error = (...args) => errorLogs.push(args);
+  try {
+    await advanceTurn(deps);
+  } finally {
+    console.error = origError;
+  }
+  // The generated reply is delivered even though the FIRST persist call (spec's) throws --
+  // generation succeeded, so the real reply must reach Discord, not a generic error notice.
+  assert.deepEqual(posts, [["spec", "spec ok"], ["reviewer", "reviewer ok"]]);
+  assert.equal(errorLogs.length, 1); // persist failure is logged, not surfaced as a dropped reply
+  // sessionId is still tracked in-memory for the round even though the disk write failed; only
+  // durability degrades (resumed from the last successfully-persisted id on restart).
+  assert.equal(state.roleSessions.spec, "s_spec");
+  assert.equal(state.roleSessions.reviewer, "s_reviewer");
 });
 test("post throwing (e.g. Discord API failure) is contained: turn continues to the next role", async () => {
   const roleAttempts = [];
