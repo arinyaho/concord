@@ -27,7 +27,24 @@ function loadGateConfig(repoRoot, readFileFn = fs.readFileSync) {
   if (typeof parsed.gate !== 'object' || Array.isArray(parsed.gate)) {
     throw new Error(`harness-failure: ${CONFIG_FILENAME} "gate" must be an object (e.g. {} to enable) or null to disable`);
   }
-  return { enabled: true };
+  if (parsed.gate.panel !== undefined && typeof parsed.gate.panel !== 'boolean') {
+    throw new Error(`harness-failure: ${CONFIG_FILENAME} "gate.panel" must be a boolean`);
+  }
+  // panel (spec: 2026-07-15-gate-holistic-panel-design.md decision 7): opt-in,
+  // no hardcoded file-path/keyword heuristic in the shared plugin -- a repo
+  // that wants the heavier 5-lens panel declares it explicitly, the same way
+  // DoD commands are already repo-declared.
+  return { enabled: true, panel: !!parsed.gate.panel };
+}
+
+// Shared with lib/gate-panel.js's foldPanelRound -- both need to turn a raw
+// gate-contract-shape finding ({id, file, span, requirement, summary}) into
+// the folded ledger shape ({id, class, file, evidence, requirement,
+// summary}). One derivation, two callers, so they can never drift apart.
+function toGateFinding(f) {
+  const seg = String(f.id).split(':');
+  const cls = seg.length >= 3 && seg[1] ? seg[1] : 'cross-context';
+  return { id: f.id, class: cls, file: f.file, evidence: f.span || '', requirement: f.requirement || '', summary: f.summary };
 }
 
 // Fold a round's gate-review candidates + gate-verify verdict + the ledger's
@@ -42,11 +59,7 @@ function foldGateFindings({ gateFindings, verifyRejectedIds, dismissedIds }) {
   const dismissed = new Set(dismissedIds || []);
   return (gateFindings || [])
     .filter((f) => !rejected.has(f.id) && !dismissed.has(f.id))
-    .map((f) => {
-      const seg = String(f.id).split(':');
-      const cls = seg.length >= 3 && seg[1] ? seg[1] : 'cross-context';
-      return { id: f.id, class: cls, file: f.file, evidence: f.span || '', requirement: f.requirement || '', summary: f.summary };
-    });
+    .map(toGateFinding);
 }
 
 // Cross-round persistence retire rule (spec decision 4): gate findings must
@@ -71,4 +84,4 @@ function carryForwardGateFindings({ priorGateOpen, thisRoundIds, verifyRejectedI
   );
 }
 
-module.exports = { CONFIG_FILENAME, loadGateConfig, foldGateFindings, carryForwardGateFindings };
+module.exports = { CONFIG_FILENAME, loadGateConfig, foldGateFindings, carryForwardGateFindings, toGateFinding };

@@ -23,8 +23,16 @@ test('loadGateConfig: "gate": null -> null (explicit opt-out)', () => {
   assert.strictEqual(gate.loadGateConfig('/repo', reader({ 'review.config.json': '{"gate":null}' })), null);
 });
 
-test('loadGateConfig: "gate": {} -> enabled', () => {
-  assert.deepStrictEqual(gate.loadGateConfig('/repo', reader({ 'review.config.json': '{"gate":{}}' })), { enabled: true });
+test('loadGateConfig: "gate": {} -> enabled, panel defaults to false', () => {
+  assert.deepStrictEqual(gate.loadGateConfig('/repo', reader({ 'review.config.json': '{"gate":{}}' })), { enabled: true, panel: false });
+});
+
+test('loadGateConfig: "gate": {"panel": true} -> panel enabled', () => {
+  assert.deepStrictEqual(gate.loadGateConfig('/repo', reader({ 'review.config.json': '{"gate":{"panel":true}}' })), { enabled: true, panel: true });
+});
+
+test('loadGateConfig: "gate": {"panel": "yes"} (not a boolean) -> harness-failure', () => {
+  assert.throws(() => gate.loadGateConfig('/repo', reader({ 'review.config.json': '{"gate":{"panel":"yes"}}' })), /harness-failure/);
 });
 
 test('loadGateConfig: "gate": true (not an object) -> harness-failure', () => {
@@ -128,4 +136,14 @@ test('carryForwardGateFindings: a prior finding rejected by this round\'s gate-v
     changedFiles: [],
   });
   assert.deepStrictEqual(out, []);
+});
+
+test('toGateFinding: derives class from the id\'s middle segment', () => {
+  const out = gate.toGateFinding({ id: 'gate:threat-model:sk-exposure', file: 'a.js', span: 'x', requirement: 'r', summary: 's' });
+  assert.deepStrictEqual(out, { id: 'gate:threat-model:sk-exposure', class: 'threat-model', file: 'a.js', evidence: 'x', requirement: 'r', summary: 's' });
+});
+
+test('toGateFinding: id with only two segments defaults class to cross-context', () => {
+  const out = gate.toGateFinding({ id: 'gate:only-two-segments', file: 'a.js', summary: 's' });
+  assert.strictEqual(out.class, 'cross-context');
 });
