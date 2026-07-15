@@ -145,11 +145,11 @@ function renderHandoff(result) {
     }
   }
   if (ledger.gate_panel && ledger.gate_panel.status === 'done' && ledger.gate_panel.round > 0) {
-    lines.push(`GATE panel: ${ledger.gate_panel.round} round(s), ${(ledger.gate_panel.confirmed || []).length} confirmed`);
+    lines.push(`Broad-review panel: ${ledger.gate_panel.round} round(s), ${(ledger.gate_panel.confirmed || []).length} confirmed`);
   }
   const gateOpen = ledger.gate_open || [];
   if (gateOpen.length) {
-    lines.push('', 'GATE findings (advisory -- your decision; fix, or dismiss the id):');
+    lines.push('', 'Broad review findings (advisory -- your decision; fix, or dismiss the id):');
     for (const f of gateOpen) {
       lines.push(`  - [${f.id}] ${f.file}: ${f.summary}`);
       if (f.requirement) lines.push(`    requirement: ${f.requirement}`);
@@ -378,12 +378,26 @@ function main() {
       ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_panel: gatePanelLib.emptyGatePanel() };
     }
 
+    // Broad-review enable flag (--broad, alias --gate): a per-invocation
+    // override so a repo can turn broad review on without editing
+    // review.config.json. Lives among round-start's trailing arguments,
+    // order-independent against the optional `base` token below. Any other
+    // "--"-prefixed token is a usage error rather than silently falling
+    // through to `base` (which would produce a confusing downstream git
+    // error against a nonsense ref).
+    const BROAD_FLAGS = new Set(['--broad', '--gate']);
+    const broadFlagPassed = rest.some((a) => BROAD_FLAGS.has(a));
+    const positional = rest.filter((a) => !BROAD_FLAGS.has(a));
+    for (const tok of positional) {
+      if (tok.startsWith('--')) throw new Error(`review-cli round-start: unknown flag "${tok}"`);
+    }
+
     // `resume <ref>` passes NO base token -- fall back to the base persisted
     // from the original fresh start (ledger.target.base). Without this, an
     // undefined base makes gitDiff below fall back to `git diff HEAD`, which
     // is EMPTY on a clean committed tree -- every cross-session resume of a
     // real branch would silently review nothing and converge clean.
-    const base = rest[0] || (ledger.target && ledger.target.base);
+    const base = positional[0] || (ledger.target && ledger.target.base);
 
     // Warn if `base` is a local branch behind its upstream. Diffing against a stale
     // local base sweeps in everything merged upstream since the branch point -> a
@@ -451,6 +465,12 @@ function main() {
 
     const intentCfg = intentLib.loadIntentConfig(repoRoot);
     const gateCfg = gateLib.loadGateConfig(repoRoot);
+    // Sticky: once broad review is applied for this ledger (config, flag, or a
+    // prior round), it stays applied even if a later round-start call omits the
+    // flag -- mirrors how `base` falls back to the persisted `ledger.target.base`
+    // above. plan-fixes reads this ledger field instead of re-deriving from
+    // review.config.json (see Task 3).
+    const gateApplied = !!gateCfg || broadFlagPassed || !!ledger.gateApplied;
     if (intentCfg) {
       const intentPath = path.join(stateDir, `intent-${slug}.md`);
       if (!ledger.intentHash) {
@@ -470,9 +490,9 @@ function main() {
     }
 
     const dod = runDod(repoRoot);
-    ledger = { ...ledger, dod, phase: 'gates', target: { ...(ledger.target || { kind: 'local', ref }), base, head_sha: headSha } };
+    ledger = { ...ledger, dod, phase: 'gates', gateApplied, target: { ...(ledger.target || { kind: 'local', ref }), base, head_sha: headSha } };
     writeLedger(stateDir, slug, ledger);
-    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, intentApplied: !!intentCfg, gateApplied: !!gateCfg, stateDir }) + '\n');
+    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, intentApplied: !!intentCfg, gateApplied, stateDir }) + '\n');
     return;
   }
 
@@ -592,10 +612,15 @@ function main() {
     requireRef(ref, 'plan-fixes');
     const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
     const gc = require('./lib/gate-contract');
-    const gateCfg = require('./lib/gate').loadGateConfig(repoRoot);
     const slug = targetSlug(ref);
     const ledger = readLedger(stateDir, slug);
     if (!ledger || ledger.phase !== 'gates') throw new Error(`plan-fixes: expected phase "gates", got "${ledger && ledger.phase}"`);
+    // Read round-start's decision from the ledger, not a fresh
+    // review.config.json read: gateApplied may have come from the --broad
+    // flag, which leaves no trace in the config file. Re-deriving from
+    // loadGateConfig here would silently miss a flag-enabled round and
+    // discard that round's gate-review/gate-verify findings.
+    const gateApplied = !!ledger.gateApplied;
     const n = ledger.round;
     const cJson = readArtifact(stateDir, n, 'correctness');
     const vJson = readArtifact(stateDir, n, 'verify');
@@ -679,7 +704,7 @@ function main() {
     // mandatory. Deliberately NOT filtered to changed files (unchanged-sibling
     // cross-context is the point). gate: namespace is guarded symmetrically.
     let gateOpen = [];
-    if (gateCfg) {
+    if (gateApplied) {
       const gJson = readArtifact(stateDir, n, 'gate'); // fail-closed
       let gFindings;
       try { gFindings = gc.parseGateFindings(JSON.stringify(gJson.findings || [])); }

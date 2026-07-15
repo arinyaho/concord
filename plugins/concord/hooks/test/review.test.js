@@ -87,6 +87,11 @@ test('emptyLedger: carries the new phase/dod/planned/journal/last_recorded_round
   assert.strictEqual(l.last_recorded_round, null);
 });
 
+test('emptyLedger: carries the new gateApplied field, defaulting false', () => {
+  const l = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  assert.strictEqual(l.gateApplied, false);
+});
+
 // ---- seenHash: line-number independence ----
 
 test('seenHash: identical gate/file/span/summary hash the same regardless of line number', () => {
@@ -703,14 +708,14 @@ test('renderReviewReport: intent-review ledgers surface a design-conformance rem
   assert.match(out, /intent|design.conformance/i);
 });
 
-test('renderReviewReport: gate-pending ledgers surface an advisory GATE reminder, not silently omitted', () => {
+test('renderReviewReport: gate-pending ledgers surface an advisory broad review reminder, not silently omitted', () => {
   const l = review.emptyLedger({ kind: 'local', ref: 'feat/g' });
   l.status = 'gate-pending';
   l.round = 3;
   l.gate_open = [{ id: 'gate:cross-context:1', file: 'a.js', summary: 'unchanged sibling breaks' }];
   const out = review.renderReviewReport([{ slug: 'feat-g', ledger: l }]);
   assert.ok(out.includes('feat/g'));
-  assert.match(out, /GATE/);
+  assert.match(out, /broad review/i);
   assert.match(out, /dismiss feat\/g/);
 });
 
