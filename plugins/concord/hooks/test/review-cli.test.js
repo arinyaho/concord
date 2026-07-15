@@ -1799,6 +1799,58 @@ test('gate-panel-round-record: two consecutive dry rounds -> status "done" and l
   assert.strictEqual(ledger.gate_panel.status, 'done');
 });
 
+test('e2e: gate.panel enabled -- full cycle: record signals panelPending, 3 panel rounds converge (1 confirmed then 2 dry), final record merges into gate_open', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] });
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
+
+  const planOut = JSON.parse(run(['plan-fixes', 'feat/x'], { env }));
+  assert.deepStrictEqual(planOut.fixes, []); // nothing to fix -- would otherwise go clean
+
+  const rec1 = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(rec1.decision.panelPending, true);
+
+  // Panel round 1: the threat-model lens raises a real finding, verify lets it survive.
+  const start1 = JSON.parse(run(['gate-panel-round-start', 'feat/x'], { env }));
+  assert.strictEqual(start1.round, 1);
+  assert.deepStrictEqual(start1.rejectedIds, []);
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-threat-model.json`),
+    JSON.stringify({ status: 'ok', findings: [{ id: 'gate:threat-model:sk-exposure', file: 'a.txt', span: '', requirement: '', summary: 'a real gap' }] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  const round1 = JSON.parse(run(['gate-panel-round-record', 'feat/x'], { env }));
+  assert.strictEqual(round1.status, 'running'); // real progress -- dryStreak reset to 0
+
+  // Panel round 2: nothing new -- 1st dry round. rejectedIds carries forward from round 1 (empty here).
+  const start2 = JSON.parse(run(['gate-panel-round-start', 'feat/x'], { env }));
+  assert.strictEqual(start2.round, 2);
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-2-threat-model.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-2-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  const round2 = JSON.parse(run(['gate-panel-round-record', 'feat/x'], { env }));
+  assert.strictEqual(round2.status, 'running'); // 1 dry round so far -- needs 2 consecutive
+
+  // Panel round 3: still nothing -- 2nd consecutive dry round -> done.
+  const start3 = JSON.parse(run(['gate-panel-round-start', 'feat/x'], { env }));
+  assert.strictEqual(start3.round, 3);
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-3-threat-model.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-3-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  const round3 = JSON.parse(run(['gate-panel-round-record', 'feat/x'], { env }));
+  assert.strictEqual(round3.status, 'done');
+
+  // record again -- panel is done, its confirmed finding merges into gate_open -> gate-pending, not clean.
+  const rec2 = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(rec2.decision.panelPending, undefined);
+  assert.strictEqual(rec2.decision.gatePending, true);
+  const finalLedger = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.deepStrictEqual(finalLedger.gate_open.map((f) => f.id), ['gate:threat-model:sk-exposure']);
+  assert.strictEqual(finalLedger.status, 'gate-pending');
+});
+
 test('review-cli: unknown verb error message lists the two new gate-panel verbs', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
