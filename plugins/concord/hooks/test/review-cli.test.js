@@ -1846,6 +1846,7 @@ test('e2e: gate.panel enabled -- full cycle: record signals panelPending, 3 pane
   const rec2 = JSON.parse(run(['record', 'feat/x'], { env }));
   assert.strictEqual(rec2.decision.panelPending, undefined);
   assert.strictEqual(rec2.decision.gatePending, true);
+  assert.match(rec2.handoff, /GATE panel: 3 round\(s\), 1 confirmed/); // positive path: line present when panel done
   const finalLedger = review.readLedger(dir, review.targetSlug('feat/x'));
   assert.deepStrictEqual(finalLedger.gate_open.map((f) => f.id), ['gate:threat-model:sk-exposure']);
   assert.strictEqual(finalLedger.status, 'gate-pending');
@@ -1871,7 +1872,8 @@ test('renderHandoff (via record): reports GATE panel round count and confirmed c
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
   run(['plan-fixes', 'feat/x'], { env });
-  run(['record', 'feat/x'], { env }); // -> panelPending
+  const rec0 = JSON.parse(run(['record', 'feat/x'], { env })); // -> panelPending, panel not done yet
+  assert.doesNotMatch(rec0.handoff, /GATE panel:/); // negative path: line absent when panel not done
 
   let ledger = review.readLedger(dir, review.targetSlug('feat/x'));
   ledger = {
