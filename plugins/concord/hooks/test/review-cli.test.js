@@ -262,6 +262,22 @@ test('plan-fixes: a missing correctness artifact is a harness-failure (never cle
   assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure/);
 });
 
+test('plan-fixes: a verify artifact older than its correctness artifact is a harness-failure (spawn-ordering race)', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  run(['round-start', 'feat/x', 'HEAD~1'], { env });
+  const n = review.readLedger(dir, review.targetSlug('feat/x')).round;
+  const cPath = path.join(dir, `round-${n}-correctness.json`);
+  const vPath = path.join(dir, `round-${n}-verify.json`);
+  fs.writeFileSync(cPath, JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(vPath, JSON.stringify({ status: 'ok', rejected: [] }));
+  const past = new Date(Date.now() - 60000);
+  fs.utimesSync(vPath, past, past); // verify's file predates correctness's -- simulates a parallel spawn racing an empty file
+  assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure.*predates/);
+});
+
 test('plan-fixes: a changed file never examined is a harness-failure (coverage)', () => {
   const repo = initRepo(); const dir = tmpDir();
   const { env } = seedGatesRound(repo, dir, 'feat/x',
@@ -442,6 +458,19 @@ test('record: a corrupt (non-JSON) verify artifact is a harness-failure too', ()
   run(['plan-fixes', 'feat/x'], { env });
   fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), 'not json{{{');
   assert.throws(() => run(['record', 'feat/x'], { env }), /harness-failure/);
+});
+
+test('record: a verify artifact older than its correctness artifact is a harness-failure (spawn-ordering race)', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' }] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env }); // succeeds -- correctly ordered artifacts at this point
+  const cPath = path.join(dir, `round-${n}-correctness.json`);
+  const vPath = path.join(dir, `round-${n}-verify.json`);
+  const past = new Date(Date.now() - 60000);
+  fs.utimesSync(vPath, past, past); // simulate the verify artifact turning out to predate correctness's by the time record reads them
+  assert.throws(() => run(['record', 'feat/x'], { env }), /harness-failure.*predates/);
 });
 
 test('record: a journaled fix is reported fixed, and the fix-round never converges (stable-round)', () => {
