@@ -144,6 +144,9 @@ function renderHandoff(result) {
       lines.push(`    contradicts: ${f.span || '(no line)'}`);
     }
   }
+  if (ledger.gate_panel && ledger.gate_panel.status === 'done' && ledger.gate_panel.round > 0) {
+    lines.push(`GATE panel: ${ledger.gate_panel.round} round(s), ${(ledger.gate_panel.confirmed || []).length} confirmed`);
+  }
   const gateOpen = ledger.gate_open || [];
   if (gateOpen.length) {
     lines.push('', 'GATE findings (advisory -- your decision; fix, or dismiss the id):');

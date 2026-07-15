@@ -1860,3 +1860,32 @@ test('review-cli: unknown verb error message lists the two new gate-panel verbs'
   assert.match(stderr, /gate-panel-round-record/);
 });
 
+test('renderHandoff (via record): reports GATE panel round count and confirmed count once the panel is done', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] });
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
+  run(['plan-fixes', 'feat/x'], { env });
+  run(['record', 'feat/x'], { env }); // -> panelPending
+
+  let ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  ledger = {
+    ...ledger,
+    phase: 'fixes',
+    gate_panel: {
+      status: 'done', round: 3, dryStreak: 2,
+      confirmed: [{ id: 'gate:threat-model:sk-exposure', class: 'threat-model', file: 'a.txt', evidence: '', requirement: '', summary: 's' }],
+      rejectedIds: [],
+    },
+  };
+  review.writeLedger(dir, review.targetSlug('feat/x'), ledger);
+
+  const rec = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.match(rec.handoff, /GATE panel: 3 round\(s\), 1 confirmed/);
+});
+
