@@ -316,10 +316,13 @@ function main() {
     let survivedIds;
     try {
       const vRaw = JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-gate-panel-${m}-verify.json`), 'utf8'));
-      const rejected = new Set(Array.isArray(vRaw.rejected) ? vRaw.rejected : []);
+      if (vRaw.status !== 'ok' || !Array.isArray(vRaw.rejected)) {
+        throw new Error('malformed verify artifact shape');
+      }
+      const rejected = new Set(vRaw.rejected);
       survivedIds = allCandidates.map((f) => f.id).filter((id) => !rejected.has(id));
     } catch (e) {
-      survivedIds = []; // missing/malformed verify artifact -- nothing survives this round
+      survivedIds = []; // missing, unreadable, or shape-malformed verify artifact -- nothing survives this round
     }
 
     const result = gatePanelLib.foldPanelRound({ gatePanel: gp, roundFindings: allCandidates, survivedIds });

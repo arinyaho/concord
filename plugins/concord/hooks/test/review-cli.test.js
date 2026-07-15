@@ -1720,6 +1720,20 @@ test('gate-panel-round-record: missing verify artifact -> nothing survives (fail
   assert.deepStrictEqual(out.rejectedIds, ['gate:threat-model:unverified']);
 });
 
+test('gate-panel-round-record: verify artifact is valid JSON but wrong shape (no rejected array) -> nothing survives, not everything', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  seedPanelRoundConfig(repo);
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] });
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-threat-model.json`),
+    JSON.stringify({ status: 'ok', findings: [{ id: 'gate:threat-model:unverified-shape', file: 'a.txt', summary: 'verify crashed before writing a real verdict' }] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-verify.json`), JSON.stringify({ status: 'error', error: 'subagent timed out' })); // valid JSON, no "rejected" array
+  const out = JSON.parse(run(['gate-panel-round-record', 'feat/x'], { env }));
+  assert.strictEqual(out.newlyConfirmedCount, 0);
+  assert.deepStrictEqual(out.rejectedIds, ['gate:threat-model:unverified-shape']);
+});
+
 test('gate-panel-round-record: a missing/malformed lens file contributes zero findings, not a harness-failure', () => {
   const repo = initRepo(); const dir = tmpDir();
   seedPanelRoundConfig(repo);
