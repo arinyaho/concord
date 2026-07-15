@@ -119,3 +119,25 @@ lives in the Keychain.
 Logs go to `/tmp/agent-team-daemon.out.log` and `/tmp/agent-team-daemon.err.log`.
 `KeepAlive` restarts the daemon if it exits; `launchctl unload
 ~/Library/LaunchAgents/com.agent-team.daemon.plist` stops it.
+
+### Conversation channels (B-1)
+
+In addition to the capability (task-launching) channel above, the daemon runs a separate tool-less conversation path: an authorized author posts a design question in a conversation channel, the daemon opens a thread, and Spec and Reviewer (a fixed roster, `src/daemon/conversation_roster.mjs`) reply in their own voice, resuming the same thread's session on each follow-up. A role that judges a turn outside its concern replies with nothing (self-skip) rather than posting a generic response.
+
+Config fields (added to the JSON shape above, all under the same file):
+
+```json
+{
+  "conversationChannelIds": ["123456789012345680"],
+  "sessionStorePath": "/Users/you/.agent-team/conversation-sessions.json",
+  "maxRoundLen": 2
+}
+```
+
+- `conversationChannelIds` (required, non-empty array of channel IDs): the channels that start a new conversation thread. Must be disjoint from `channelId` (the capability channel) -- `loadConfig` rejects a config where the two overlap, so a message can only ever route to one path.
+- `sessionStorePath` (required, absolute path): where per-thread role session ids are persisted (JSON, mode `0600`, atomic temp-then-rename write on every turn). The daemon reloads this file on startup, so a follow-up posted after a restart resumes the same role sessions rather than starting over.
+- `maxRoundLen` (optional, defaults to the roster length): caps how many roles run per turn, in roster order.
+
+Thread permissions: the bot invite needs **Create Public Threads** and **Send Messages in Threads**, in addition to the scopes listed under "Discord app setup" above -- the daemon opens each conversation with `msg.startThread(...)`, which fails without these.
+
+**Standing assumption (load-bearing):** the conversation path does not screen who can read or post in a thread it creates -- it authorizes the *triggering* message (author in `userIds`, guild matches `guildId`) and, for follow-ups, that the thread's live parent is still a listed conversation channel. It does not check thread membership. This is safe only because the guild itself is private and author-only (the same assumption "Discord app setup" already requires for the capability channel). Do not add a `conversationChannelIds` entry that lives in a guild with any member besides the author and the bot -- doing so would let a third party read or post in threads the daemon creates, which B-1's no-third-party-ingress guarantee assumes cannot happen.
