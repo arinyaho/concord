@@ -1657,3 +1657,131 @@ test('gate-panel-round-start: panel already "done" -> harness-failure (call reco
   assert.throws(() => run(['gate-panel-round-start', 'feat/x'], { env }), /harness-failure/);
 });
 
+function seedPanelRoundConfig(repo) {
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
+}
+
+test('gate-panel-round-record: gate.panel not configured -> harness-failure', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] });
+  assert.throws(() => run(['gate-panel-round-record', 'feat/x'], { env }), /harness-failure/);
+});
+
+test('gate-panel-round-record: a lens finding that survives verify is confirmed; status stays "running" (only 1 round in)', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  seedPanelRoundConfig(repo);
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] });
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-threat-model.json`),
+    JSON.stringify({ status: 'ok', findings: [{ id: 'gate:threat-model:sk-exposure', file: 'a.txt', span: '', requirement: '', summary: 'a real gap' }] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-ac-coverage.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-design-conformance.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-cross-context.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-silent-gap.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  const out = JSON.parse(run(['gate-panel-round-record', 'feat/x'], { env }));
+  assert.strictEqual(out.status, 'running');
+  assert.strictEqual(out.round, 1);
+  assert.strictEqual(out.newlyConfirmedCount, 1);
+  const ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.deepStrictEqual(ledger.gate_panel.confirmed.map((f) => f.id), ['gate:threat-model:sk-exposure']);
+});
+
+test('gate-panel-round-record: a lens finding rejected by verify is NOT confirmed and appears in rejectedIds', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  seedPanelRoundConfig(repo);
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] });
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-threat-model.json`),
+    JSON.stringify({ status: 'ok', findings: [{ id: 'gate:threat-model:false-lead', file: 'a.txt', summary: 'not actually real' }] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-verify.json`), JSON.stringify({ status: 'ok', rejected: ['gate:threat-model:false-lead'] }));
+  const out = JSON.parse(run(['gate-panel-round-record', 'feat/x'], { env }));
+  assert.strictEqual(out.newlyConfirmedCount, 0);
+  assert.deepStrictEqual(out.rejectedIds, ['gate:threat-model:false-lead']);
+});
+
+test('gate-panel-round-record: missing verify artifact -> nothing survives (fail-closed toward not-confirming)', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  seedPanelRoundConfig(repo);
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] });
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-threat-model.json`),
+    JSON.stringify({ status: 'ok', findings: [{ id: 'gate:threat-model:unverified', file: 'a.txt', summary: 'no verify ran' }] }));
+  // no round-<n>-gate-panel-1-verify.json written at all
+  const out = JSON.parse(run(['gate-panel-round-record', 'feat/x'], { env }));
+  assert.strictEqual(out.newlyConfirmedCount, 0);
+  assert.deepStrictEqual(out.rejectedIds, ['gate:threat-model:unverified']);
+});
+
+test('gate-panel-round-record: a missing/malformed lens file contributes zero findings, not a harness-failure', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  seedPanelRoundConfig(repo);
+  const { env } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] });
+  // No lens files at all, no verify file.
+  const out = JSON.parse(run(['gate-panel-round-record', 'feat/x'], { env }));
+  assert.strictEqual(out.status, 'running'); // 1st dry round -- not an error
+  assert.strictEqual(out.newlyConfirmedCount, 0);
+});
+
+test('gate-panel-round-record: a finding whose id class does not match its lens filename is a harness-failure', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  seedPanelRoundConfig(repo);
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] });
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-threat-model.json`),
+    JSON.stringify({ status: 'ok', findings: [{ id: 'gate:ac-coverage:mislabeled', file: 'a.txt', summary: 'wrong lens' }] }));
+  assert.throws(() => run(['gate-panel-round-record', 'feat/x'], { env }), /harness-failure/);
+});
+
+test('gate-panel-round-record: a finding whose id was already human-dismissed is dropped before verify, never confirmed', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  seedPanelRoundConfig(repo);
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] });
+  let ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  ledger = { ...ledger, gate_dismissed: ['gate:threat-model:already-dismissed'] };
+  review.writeLedger(dir, review.targetSlug('feat/x'), ledger);
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-threat-model.json`),
+    JSON.stringify({ status: 'ok', findings: [{ id: 'gate:threat-model:already-dismissed', file: 'a.txt', summary: 'a human already dismissed this' }] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-verify.json`), JSON.stringify({ status: 'ok', rejected: [] })); // would survive verify if it reached it
+  const out = JSON.parse(run(['gate-panel-round-record', 'feat/x'], { env }));
+  assert.strictEqual(out.newlyConfirmedCount, 0);
+  const finalLedger = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.deepStrictEqual(finalLedger.gate_panel.confirmed, []);
+});
+
+test('gate-panel-round-record: two consecutive dry rounds -> status "done" and ledger.phase reverts to "fixes"', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  seedPanelRoundConfig(repo);
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] });
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
+  run(['plan-fixes', 'feat/x'], { env });
+  run(['record', 'feat/x'], { env }); // -> panelPending, phase flips to 'done'
+
+  run(['gate-panel-round-start', 'feat/x'], { env }); // round 1
+  const out1 = JSON.parse(run(['gate-panel-round-record', 'feat/x'], { env })); // no findings -- dry round 1
+  assert.strictEqual(out1.status, 'running');
+
+  run(['gate-panel-round-start', 'feat/x'], { env }); // round 2
+  const out2 = JSON.parse(run(['gate-panel-round-record', 'feat/x'], { env })); // dry round 2 -- done
+  assert.strictEqual(out2.status, 'done');
+
+  const ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.strictEqual(ledger.phase, 'fixes');
+  assert.strictEqual(ledger.gate_panel.status, 'done');
+});
+
