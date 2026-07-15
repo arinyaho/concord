@@ -47,9 +47,11 @@ test("authorized message in a tracked thread -> follow-up turn; returns true", a
   assert.deepEqual(posts[0], ["thr1", "spec", "spec hi"]);
 });
 
-// The per-thread promise-chain lock (withThreadLock) is the headline "turn semaphore" -- two rapid
-// messages in the SAME thread must not interleave on the shared `state` object. These tests drive
-// that invariant directly with manual promise gates (no timers/sleeps, no network).
+// The per-thread promise-chain lock (withThreadLock) enforces same-thread serialization -- two
+// rapid messages in the SAME thread must not interleave on the shared `state` object. This is
+// distinct from the cross-thread turn-concurrency semaphore (tested further below), which bounds
+// how many turns across DIFFERENT threads run at once. This test drives the per-thread invariant
+// directly with a manual promise gate (no timers/sleeps, no network).
 test("same-thread turns serialize: second turn's runRole does not enter until the first fully exits", async () => {
   const order = [];
   let releaseFirst;
@@ -103,4 +105,89 @@ test("new conversation: thread is tracked (persist + store.set) before the first
   // advanceTurn persists again after the turn (session id bookkeeping) -- only the seed-before-run
   // ordering matters here, so check the prefix rather than the full (longer) call log.
   assert.deepEqual(order.slice(0, 3), ["persist", "store.set", "runRole"]);
+});
+
+// The cross-thread turn-concurrency semaphore is a SEPARATE mechanism from withThreadLock above:
+// it bounds how many turns run their host query concurrently across ALL threads on one handler
+// (withThreadLock only ever serializes turns within a single thread; distinct threads are not
+// bounded by it at all). These tests drive that bound directly with a manual promise gate shared
+// across every runRole call (no timers/sleeps, no network) and rely on repeated `Promise.resolve()`
+// flushes to let every already-queued microtask (thread lock hand-off, semaphore acquire, turn
+// dispatch) settle before asserting -- deterministic since no real I/O or timer is involved.
+async function flushMicrotasks(times = 10) {
+  for (let i = 0; i < times; i += 1) await Promise.resolve();
+}
+
+test("cross-thread cap: at most MAX_CONCURRENT_TURNS runRole calls are in-flight across distinct threads", async () => {
+  const order = [];
+  let releaseGate;
+  const gate = new Promise((resolve) => { releaseGate = resolve; });
+  const deps = {
+    createThread: async (msg) => ({ id: `thr_${msg.id}` }),
+    post: () => {},
+    runRole: async (role) => {
+      order.push(`enter:${role.name}`);
+      await gate; // every call blocks on the SAME gate until we release it below
+      order.push(`exit:${role.name}`);
+      return { text: `${role.name} hi`, sessionId: "s1", skip: false, reset: false };
+    },
+    persist: () => {},
+  };
+  const CAP = 4; // must match MAX_CONCURRENT_TURNS in src/daemon/conversation_dispatch.mjs
+  const N = CAP + 1; // one more distinct thread than the cap allows to run concurrently
+  const store = new Map();
+  for (let i = 1; i <= N; i += 1) store.set(`thr${i}`, { roleSessions: {} });
+  const h = makeConversationHandler({ cfg, roster, store, deps });
+  const threadMsg = (i) => ({ id: `m${i}`, author: { id: "u", bot: false }, channelId: `thr${i}`, guildId: "g", channel: { parentId: "c1" } });
+
+  const pending = [];
+  for (let i = 1; i <= N; i += 1) pending.push(h(threadMsg(i)));
+
+  await flushMicrotasks();
+  const enteredBeforeRelease = order.filter((e) => e.startsWith("enter:")).length;
+  assert.equal(enteredBeforeRelease, CAP); // exactly the cap is in-flight; the extra thread is still queued
+
+  releaseGate();
+  await Promise.all(pending);
+  const enteredAfterRelease = order.filter((e) => e.startsWith("enter:")).length;
+  assert.equal(enteredAfterRelease, N); // once a slot frees, the queued thread's turn runs too
+});
+
+test("depth bound: a turn beyond MAX_CONCURRENT_TURNS + MAX_QUEUED_TURNS is dropped with a busy note instead of running", async () => {
+  const posts = [];
+  let releaseGate;
+  const gate = new Promise((resolve) => { releaseGate = resolve; });
+  const runRoleCalls = [];
+  const deps = {
+    createThread: async (msg) => ({ id: `thr_${msg.id}` }),
+    post: (tid, role, text) => posts.push([tid, role, text]),
+    runRole: async (role) => {
+      runRoleCalls.push(role.name);
+      await gate;
+      return { text: `${role.name} hi`, sessionId: "s1", skip: false, reset: false };
+    },
+    persist: () => {},
+  };
+  const CAP = 4; // MAX_CONCURRENT_TURNS
+  const QUEUE = 4; // MAX_QUEUED_TURNS
+  const N = CAP + QUEUE; // exactly fills active slots + the wait queue
+  const store = new Map();
+  for (let i = 1; i <= N + 1; i += 1) store.set(`thr${i}`, { roleSessions: {} });
+  const h = makeConversationHandler({ cfg, roster, store, deps });
+  const threadMsg = (i) => ({ id: `m${i}`, author: { id: "u", bot: false }, channelId: `thr${i}`, guildId: "g", channel: { parentId: "c1" } });
+
+  const pending = [];
+  for (let i = 1; i <= N; i += 1) pending.push(h(threadMsg(i)));
+  await flushMicrotasks();
+  assert.equal(runRoleCalls.length, CAP); // 4 active; 4 more queued behind the semaphore, none run yet
+
+  // One more distinct thread arrives while the queue is already at MAX_QUEUED_TURNS -- it must be
+  // dropped with an in-thread busy note, without ever invoking runRole.
+  const overflowHandled = await h(threadMsg(N + 1));
+  assert.equal(overflowHandled, true);
+  assert.equal(runRoleCalls.length, CAP); // unchanged -- the overflow turn never ran
+  assert.deepEqual(posts.at(-1), [`thr${N + 1}`, "system", "(busy -- try again shortly)"]);
+
+  releaseGate();
+  await Promise.all(pending);
 });
