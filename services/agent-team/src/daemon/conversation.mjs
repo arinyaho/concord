@@ -11,13 +11,22 @@ export async function advanceTurn({ threadId, userText, roster, maxRoundLen, sta
   const round = select(userText, roster, maxRoundLen);
   const byName = Object.fromEntries(roster.map((r) => [r.name, r]));
   const priorOutputs = [];
+  // Best-effort notice post: never throws, so a failure posting a notice (e.g. Discord
+  // unreachable, a call-specific rate-limit) can never itself abort the round.
+  const safePost = async (roleName, text) => {
+    try {
+      await post(threadId, roleName, text);
+    } catch (e) {
+      console.error(`[agent-team] notice post failed for role ${roleName}:`, e);
+    }
+  };
   for (const name of round) {
     const role = byName[name];
     let res;
     try {
       res = await runRole(role, userText, priorOutputs, state.roleSessions[name], undefined);
     } catch (e) {
-      await post(threadId, name, `(${name} error: ${e.message})`);
+      await safePost(name, `(${name} error: ${e.message})`);
       continue;
     }
 

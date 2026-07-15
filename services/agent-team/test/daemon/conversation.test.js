@@ -68,6 +68,26 @@ test("persist throwing after a role's runRole succeeds does not drop the reply: 
   assert.equal(state.roleSessions.spec, "s_spec");
   assert.equal(state.roleSessions.reviewer, "s_reviewer");
 });
+test("runRole throwing AND the resulting error-notice post also throwing: turn still continues to the next role", async () => {
+  const roleAttempts = [];
+  const { deps, posts, state } = ctx(async (role) => {
+    roleAttempts.push(role.name);
+    if (role.name === "spec") throw new Error("boom");
+    return { text: "reviewer ok", sessionId: "r", skip: false, reset: false };
+  });
+  deps.post = async (tid, role, text) => {
+    if (/error/i.test(text)) throw new Error("discord unreachable");
+    posts.push([role, text]);
+  };
+  await advanceTurn(deps);
+  // Both roles were attempted: spec's runRole failure did not abort the round even though the
+  // error-notice post ALSO threw.
+  assert.deepEqual(roleAttempts, ["spec", "reviewer"]);
+  // spec's error notice failed silently (no throw escapes advanceTurn); reviewer's real output
+  // still made it through.
+  assert.deepEqual(posts, [["reviewer", "reviewer ok"]]);
+  assert.deepEqual(state.roleSessions, { reviewer: "r" });
+});
 test("post throwing (e.g. Discord API failure) is contained: turn continues to the next role", async () => {
   const roleAttempts = [];
   const { deps, posts, state } = ctx(async (role) => {
