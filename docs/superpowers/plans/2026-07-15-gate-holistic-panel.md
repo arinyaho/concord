@@ -927,6 +927,24 @@ test('gate-panel-round-record: a finding whose id class does not match its lens 
   assert.throws(() => run(['gate-panel-round-record', 'feat/x'], { env }), /harness-failure/);
 });
 
+test('gate-panel-round-record: a finding whose id was already human-dismissed is dropped before verify, never confirmed', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  seedPanelRoundConfig(repo);
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] });
+  let ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  ledger = { ...ledger, gate_dismissed: ['gate:threat-model:already-dismissed'] };
+  review.writeLedger(dir, review.targetSlug('feat/x'), ledger);
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-threat-model.json`),
+    JSON.stringify({ status: 'ok', findings: [{ id: 'gate:threat-model:already-dismissed', file: 'a.txt', summary: 'a human already dismissed this' }] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-verify.json`), JSON.stringify({ status: 'ok', rejected: [] })); // would survive verify if it reached it
+  const out = JSON.parse(run(['gate-panel-round-record', 'feat/x'], { env }));
+  assert.strictEqual(out.newlyConfirmedCount, 0);
+  const finalLedger = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.deepStrictEqual(finalLedger.gate_panel.confirmed, []);
+});
+
 test('gate-panel-round-record: two consecutive dry rounds -> status "done" and ledger.phase reverts to "fixes"', () => {
   const repo = initRepo(); const dir = tmpDir();
   seedPanelRoundConfig(repo);
@@ -1010,6 +1028,16 @@ Then add the verb block, right after the `gate-panel-round-start` block from Tas
       }
       allCandidates = allCandidates.concat(findings);
     }
+
+    // A human-dismissed id (review-cli.js dismiss verb, existing gate_dismissed
+    // set) must never re-enter the panel's confirmed set -- mergePanelIntoGate
+    // (lib/gate-panel.js) only dedupes against the CURRENT gate_open, it does
+    // not know about gate_dismissed, so a dismissed finding a lens re-raises
+    // would otherwise silently reappear once the panel completes. Drop it here,
+    // at the earliest point it's known, same as foldGateFindings/
+    // carryForwardGateFindings already do for the lightweight GATE (lib/gate.js).
+    const dismissed = new Set(ledger.gate_dismissed || []);
+    allCandidates = allCandidates.filter((f) => !dismissed.has(f.id));
 
     // The verify pass is the opposite lenience direction: missing/malformed
     // means nothing is confirmed to have survived, NOT that everything
