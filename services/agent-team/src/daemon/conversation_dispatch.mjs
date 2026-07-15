@@ -17,7 +17,13 @@ export function makeConversationHandler({ cfg, roster, store, deps }) {
   function withThreadLock(threadId, fn) {
     const prev = locks.get(threadId) ?? Promise.resolve();
     const next = prev.then(fn, fn);
-    locks.set(threadId, next.catch(() => {})); // keep the chain alive past a failed turn
+    const tail = next.catch(() => {}); // keep the chain alive past a failed turn
+    locks.set(threadId, tail);
+    // Evict once this thread's chain settles, but only if no newer turn has
+    // chained onto it in the meantime (i.e. we are still the current tail).
+    tail.then(() => {
+      if (locks.get(threadId) === tail) locks.delete(threadId);
+    });
     return next;
   }
 
