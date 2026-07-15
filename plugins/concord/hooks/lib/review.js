@@ -190,7 +190,7 @@ function dedupeAgainstSeen(findings, seen) {
 // Oscillation detection (a finding toggling fixed -> reopened -> fixed) is
 // deliberately out of scope for this shell (deferred per the plan).
 function decideTermination(roundOutcome) {
-  const { dodPassed, openFindingsCount, specDoubtScope, noProgress, budgetSpent, maxRounds, fixedCount = 0, parkedCount = 0, intentReviewCount = 0, gateOpenCount = 0 } = roundOutcome;
+  const { dodPassed, openFindingsCount, specDoubtScope, noProgress, budgetSpent, maxRounds, fixedCount = 0, parkedCount = 0, intentReviewCount = 0, gateOpenCount = 0, panelConfigured = false, panelDone = false } = roundOutcome;
 
   if (specDoubtScope === 'whole-diff') {
     return { continue: false, converged: false, parked: false, abandoned: true, reason: 'spec-doubt invalidates the whole diff' };
@@ -208,6 +208,17 @@ function decideTermination(roundOutcome) {
       // decision. This is the ONLY place the gate gates -- never mid-loop, so the
       // correctness/DoD auto-fix flow is never halted early by a design finding.
       return { continue: false, converged: false, parked: false, abandoned: false, gatePending: true, reason: 'diff-local clean, but open GATE finding(s) need a human decision (design/AC/cross-context)' };
+    }
+    // Convergence-boundary hook for the holistic GATE panel (spec:
+    // 2026-07-15-gate-holistic-panel-design.md decision 4): the panel is
+    // expensive (measured ~1.9M tokens/round average), so it triggers
+    // exactly once, only once everything else that would keep changing the
+    // diff has already gone quiet -- never speculatively on a round that
+    // still has open findings. panelDone is sticky per convergence attempt,
+    // so a repeat record() call after the panel finishes falls through to
+    // the normal clean check below instead of looping the panel forever.
+    if (panelConfigured && !panelDone) {
+      return { continue: false, converged: false, parked: false, abandoned: false, panelPending: true, reason: 'diff-local clean and no open GATE findings, but the holistic GATE panel has not run yet this convergence attempt' };
     }
     return { continue: false, converged: true, parked: false, abandoned: false, reason: 'DoD-exec ran and passed, zero open findings, and no fixes this round (stable)' };
   }
@@ -370,9 +381,11 @@ function applyRoundOutcome(ledger, outcome) {
     parkedCount: (outcome.parkedIds || []).length, // COUNT, not the in-scope Set named parkedIds
     intentReviewCount: outcome.intentReviewCount || 0,
     gateOpenCount: outcome.gateOpenCount || 0,
+    panelConfigured: !!outcome.panelConfigured,
+    panelDone: !!outcome.panelDone,
   });
 
-  const status = decision.converged ? 'clean' : decision.parked ? 'parked' : decision.abandoned ? 'abandoned' : decision.intentReview ? 'intent-review' : decision.gatePending ? 'gate-pending' : 'converging';
+  const status = decision.converged ? 'clean' : decision.parked ? 'parked' : decision.abandoned ? 'abandoned' : decision.intentReview ? 'intent-review' : decision.gatePending ? 'gate-pending' : decision.panelPending ? 'gate-panel-pending' : 'converging';
 
   const history = (ledger.history || []).concat([
     {
