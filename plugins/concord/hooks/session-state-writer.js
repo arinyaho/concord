@@ -5,7 +5,7 @@ const path = require('node:path');
 const { readDelta, mapEntries } = require('../adapters/claude-code/transcript');
 const { extractFacts, extractRationale, extractRationaleText } = require('../core/extract');
 const { emptyModel, mergeModel } = require('./lib/state');
-const { writeNorthStarIfAbsent, firstSubstantiveUserMessage, readNorthStar } = require('./lib/charter');
+const { writeNorthStarIfAbsent, firstSubstantiveUserMessage, readNorthStar } = require('../core/charter');
 
 function main() {
   const { session_id, transcript_path, last_assistant_message } = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -48,7 +48,7 @@ function main() {
   // Once the north-star exists, skip the read entirely. A wrong draft is fixed by `/charter set`.
   if (!readNorthStar(stateDir)) {
     const head = readDelta(transcript_path, 0).entries;
-    const firstMsg = firstSubstantiveUserMessage(head);
+    const firstMsg = firstSubstantiveUserMessage(mapEntries(head));
     if (firstMsg) writeNorthStarIfAbsent(stateDir, firstMsg);
   }
 }

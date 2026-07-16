@@ -2,7 +2,7 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const { readNorthStar, mergeSessions, renderCharter, catchUpSessions } = require('./lib/charter');
+const { readNorthStar, mergeSessions, renderCharter, catchUpSessions } = require('../core/charter');
 
 const CONVENTION =
   'Tag durable decisions and open items inline so a hook can persist them across sessions: ' +
@@ -15,7 +15,7 @@ function main() {
   const stateDir = path.join(path.dirname(transcript_path), 'state');
 
   // Durability: fold any abandoned session's un-watermarked tail before reading.
-  catchUpSessions(stateDir, { currentSid: sid });
+  catchUpSessions(stateDir, { currentSid: sid, readEntries: require('../adapters/claude-code/transcript').parseDelta });
 
   const northStar = readNorthStar(stateDir);
   const merged = mergeSessions(stateDir); // include self: on resume/compact we WANT the resuming session own decisions back — dedup absorbs the overlap

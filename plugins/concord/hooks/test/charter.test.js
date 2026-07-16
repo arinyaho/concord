@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const charter = require('../lib/charter');
+const charter = require('../../core/charter');
 
 function tmpStateDir() {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'charter-'));
@@ -43,12 +43,12 @@ test('north-star: writes are capped at NORTH_STAR_MAX', () => {
 
 test('firstSubstantiveUserMessage: skips boilerplate, returns first real user message', () => {
   const entries = [
-    { type: 'user', message: { role: 'user', content: '<system-reminder>hi</system-reminder>' } },
-    { type: 'user', message: { role: 'user', content: 'Base directory for this skill: /x/y' } },
-    { type: 'user', message: { role: 'user', content: 'Caveat: local command output below' } },
-    { type: 'user', message: { role: 'user', content: 'ok' } }, // too short
-    { type: 'user', message: { role: 'user', content: 'Start the D-track charter work: preserve founding context.' } },
-    { type: 'user', message: { role: 'user', content: 'a later message' } },
+    { role: 'user', text: '<system-reminder>hi</system-reminder>', toolCalls: [] },
+    { role: 'user', text: 'Base directory for this skill: /x/y', toolCalls: [] },
+    { role: 'user', text: 'Caveat: local command output below', toolCalls: [] },
+    { role: 'user', text: 'ok', toolCalls: [] }, // too short
+    { role: 'user', text: 'Start the D-track charter work: preserve founding context.', toolCalls: [] },
+    { role: 'user', text: 'a later message', toolCalls: [] },
   ];
   assert.strictEqual(
     charter.firstSubstantiveUserMessage(entries),
@@ -58,8 +58,8 @@ test('firstSubstantiveUserMessage: skips boilerplate, returns first real user me
 
 test('firstSubstantiveUserMessage: array content, all-boilerplate returns null', () => {
   const entries = [
-    { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'CAVEMAN MODE ACTIVE (lite)' }] } },
-    { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'SessionStart hook fired' }] } },
+    { role: 'user', text: 'CAVEMAN MODE ACTIVE (lite)', toolCalls: [] },
+    { role: 'user', text: 'SessionStart hook fired', toolCalls: [] },
   ];
   assert.strictEqual(charter.firstSubstantiveUserMessage(entries), null);
 });
@@ -131,14 +131,14 @@ test('catchUpSessions: harvests an abandoned session un-watermarked tail; idempo
   fs.utimesSync(tpath, new Date(old), new Date(old));
   fs.writeFileSync(path.join(dir, `${sid}.json`), JSON.stringify({ offset: 0, openLoops: [], decisions: [], nexts: [], facts: [] }));
 
-  charter.catchUpSessions(dir, { currentSid: 'other', now: Date.now() });
+  charter.catchUpSessions(dir, { currentSid: 'other', now: Date.now(), readEntries: require('../../adapters/claude-code/transcript').parseDelta });
   const after = JSON.parse(fs.readFileSync(path.join(dir, `${sid}.json`), 'utf8'));
   assert.ok(after.decisions.includes('[x] chose B over A'));
   assert.ok(after.offset > 0);
 
   // idempotent: a second scan changes nothing
   const before2 = fs.readFileSync(path.join(dir, `${sid}.json`), 'utf8');
-  charter.catchUpSessions(dir, { currentSid: 'other', now: Date.now() });
+  charter.catchUpSessions(dir, { currentSid: 'other', now: Date.now(), readEntries: require('../../adapters/claude-code/transcript').parseDelta });
   assert.strictEqual(fs.readFileSync(path.join(dir, `${sid}.json`), 'utf8'), before2);
 });
 
@@ -150,7 +150,7 @@ test('catchUpSessions: skips a recently-active session (race guard)', () => {
   fs.writeFileSync(path.join(proj, `${sid}.jsonl`), JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'DECISION: [y] live' }] } }) + '\n');
   fs.writeFileSync(path.join(dir, `${sid}.json`), JSON.stringify({ offset: 0, openLoops: [], decisions: [], nexts: [], facts: [] }));
   // transcript mtime is "now" => active => skipped
-  charter.catchUpSessions(dir, { currentSid: 'other', now: Date.now() });
+  charter.catchUpSessions(dir, { currentSid: 'other', now: Date.now(), readEntries: require('../../adapters/claude-code/transcript').parseDelta });
   const after = JSON.parse(fs.readFileSync(path.join(dir, `${sid}.json`), 'utf8'));
   assert.strictEqual(after.decisions.length, 0);
 });
@@ -170,7 +170,7 @@ test('catchUpSessions: a malformed model file does not abort the whole scan', ()
   fs.utimesSync(path.join(proj, 'good1.jsonl'), new Date(old), new Date(old));
   fs.writeFileSync(path.join(dir, 'good1.json'), JSON.stringify({ offset: 0, openLoops: [], decisions: [], nexts: [], facts: [] }));
 
-  assert.doesNotThrow(() => charter.catchUpSessions(dir, { currentSid: 'other', now: Date.now() }));
+  assert.doesNotThrow(() => charter.catchUpSessions(dir, { currentSid: 'other', now: Date.now(), readEntries: require('../../adapters/claude-code/transcript').parseDelta }));
   const good = JSON.parse(fs.readFileSync(path.join(dir, 'good1.json'), 'utf8'));
   assert.ok(good.decisions.includes('[g] good')); // valid session caught up despite the bad one
 });

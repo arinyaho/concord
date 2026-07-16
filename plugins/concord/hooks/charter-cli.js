@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 const fs = require('node:fs');
-const { readNorthStar, setNorthStar, mergeSessions, renderCharter } = require('./lib/charter');
+const { readNorthStar, setNorthStar, mergeSessions, renderCharter } = require('../core/charter');
 const { resolveStateDirFromCwd } = require('./lib/statedir');
 
 function resolveStateDir() {

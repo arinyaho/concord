@@ -1,10 +1,9 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const { NORTH_STAR_MAX, MIN_MSG_LEN, SESSIONS_MERGE_CAP, ACTIVE_SKIP_MINUTES } = require('./config');
-const { emptyModel, mergeModel } = require('./state');
-const { readDelta, mapEntries } = require('../../adapters/claude-code/transcript');
-const { extractFacts, extractRationale } = require('../../core/extract');
+const { NORTH_STAR_MAX, MIN_MSG_LEN, SESSIONS_MERGE_CAP, ACTIVE_SKIP_MINUTES } = require('../hooks/lib/config'); // Interim: Task 5 moves config/state into core -> change to ./config, ./state
+const { emptyModel, mergeModel } = require('../hooks/lib/state'); // Interim: Task 5 moves config/state into core -> change to ./config, ./state
+const { extractFacts, extractRationale } = require('./extract');
 
 function charterPath(stateDir) {
   return path.join(stateDir, 'charter.md');
@@ -65,17 +64,6 @@ const BOILERPLATE = [
   '<local-command',
 ];
 
-function messageText(content) {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
-      .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
-      .map((b) => b.text)
-      .join('\n');
-  }
-  return '';
-}
-
 function isBoilerplate(text) {
   const low = text.trim().toLowerCase();
   if (low.startsWith('<')) return true;
@@ -85,9 +73,8 @@ function isBoilerplate(text) {
 // The first user message that is real framing, not harness/tooling boilerplate.
 function firstSubstantiveUserMessage(entries) {
   for (const e of entries) {
-    const msg = (e && e.message) || {};
-    if (msg.role !== 'user') continue;
-    const text = messageText(msg.content).trim();
+    if (e.role !== 'user') continue;
+    const text = (e.text || '').trim();
     if (text.length < MIN_MSG_LEN) continue;
     if (isBoilerplate(text)) continue;
     return text;
@@ -166,7 +153,7 @@ function renderCharter(northStar, model) {
 // Re-process any session whose model watermark lags its transcript (e.g. a session
 // abandoned before its Stop hook flushed the final turn). Skips the current session
 // and any transcript touched within ACTIVE_SKIP_MINUTES to avoid racing a live writer.
-function catchUpSessions(stateDir, { currentSid, now = Date.now() } = {}) {
+function catchUpSessions(stateDir, { currentSid, now = Date.now(), readEntries } = {}) {
   const projDir = path.dirname(stateDir);
   const activeCutoff = now - ACTIVE_SKIP_MINUTES * 60 * 1000;
   let names;
@@ -196,16 +183,14 @@ function catchUpSessions(stateDir, { currentSid, now = Date.now() } = {}) {
       continue;
     }
     if ((model.offset || 0) >= tstat.size) continue; // already caught up
+    if (typeof readEntries !== 'function') continue; // no reader injected -> nothing to fold
 
     try {
-      const { entries, newOffset } = readDelta(tpath, model.offset || 0);
+      // readEntries yields already-neutral NeutralEntry[] plus the advanced offset.
+      const { entries, newOffset } = readEntries(tpath, model.offset || 0);
       if (entries.length === 0) continue;
-      // extract.js now consumes NeutralEntry[]; readDelta still returns raw Claude
-      // JSONL objects, so map them through the adapter first. (Interim: Task 4
-      // moves this file to core and pushes transcript reading to the caller.)
-      const neutralEntries = mapEntries(entries);
-      const facts = extractFacts(neutralEntries);
-      const rationale = extractRationale(neutralEntries);
+      const facts = extractFacts(entries);
+      const rationale = extractRationale(entries);
       const merged = mergeModel(model, { ...rationale, facts });
       merged.offset = newOffset;
       fs.writeFileSync(jsonPath, JSON.stringify(merged));
