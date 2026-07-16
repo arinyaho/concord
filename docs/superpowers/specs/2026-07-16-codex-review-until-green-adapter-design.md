@@ -38,13 +38,17 @@ adapters/codex/
                      (CHARTER/REVIEW_STATE_DIR env overrides still honored by the CLI wrapper)
   spawn-include.md   ReviewerPort — the codex-exec spawn fragment composed into the command
 
-packaging/codex/
-  .codex-plugin/plugin.json         manifest: name, version, commands (+ marketplace metadata)
-  commands/review-until-green.md    composed = core/review-driver.md + adapters/codex/spawn-include.md,
-                                    with <review-cli> resolved to the bundled CLI path and
-                                    <arguments> resolved to $ARGUMENTS
-  bin/review-cli.js (or a bundled copy of core+adapters)   the deterministic engine the command invokes
+plugins/concord-codex/            the Codex plugin, packaged FLAT — mirroring the as-built
+                                  Claude Code plugin layout (plugins/concord/ is flat:
+                                  .claude-plugin/ + commands/ + hooks/), NOT a packaging/ dir
+  .codex-plugin/plugin.json       manifest: name, version, commands (+ marketplace metadata)
+  commands/review-until-green.md  composed = core/review-driver.md + adapters/codex/spawn-include.md,
+                                  with <review-cli> resolved to the bundled CLI path and
+                                  <arguments> resolved to $ARGUMENTS
+  (bundled core/ + adapters/codex/)   the deterministic engine the command invokes
 ```
+
+Note on layout: the parent design's diagram named a `packaging/claude-code/` directory, but the as-built Claude Code plugin was kept FLAT at `plugins/concord/` (`.claude-plugin/`, `commands/`, `hooks/`, with `core/` and `adapters/` as siblings) — no `packaging/` directory exists in the repo. This Codex design follows the real, as-built convention: a flat sibling plugin directory, symmetric with the Claude Code plugin. Whether the Codex plugin vendors a copy of `core/`+`adapters/codex/` or references the shared tree is the one packaging choice left to implementation.
 
 ### StateDirPort (Codex)
 
@@ -54,7 +58,11 @@ Mirrors `adapters/claude-code/statedir.js` but rooted at Codex's config dir. `co
 
 The neutral `core/review-driver.md` says, at each spawn site, "spawn ONE ... subagent per the harness spawn-include (clean context)". The Codex `spawn-include.md` defines that mechanism for the Codex main model driving the loop:
 
-> Spawn each reviewer subagent as a subprocess: `codex exec --cd <repoRoot> --sandbox workspace-write "<the reviewer prompt>"`. Each reviewer is a fresh, clean-context Codex agent; it reviews the diff and writes ONLY its JSON artifact to the state directory, exactly as the prompt instructs. For a parallel fan-out (the 5-lens panel, the 3-way adversarial verify), launch the `codex exec` calls concurrently as background processes and wait for all their artifact files before proceeding. For a sequential dependency ("wait for the file"), launch the dependent `codex exec` only after the prior artifact exists.
+> Spawn each **review-class** subagent (correctness, verify, intent, gate-review, gate-verify, panel lens, adversarial-verify) as a subprocess: `codex exec --cd <repoRoot> --sandbox workspace-write "<the prompt>"`. Each is a fresh, clean-context Codex agent that reviews the diff and writes ONLY its JSON artifact to the state directory. For a parallel fan-out (the 5-lens panel, the 3-way adversarial verify), launch the `codex exec` calls concurrently as background processes and wait for all their artifact files before proceeding. For a sequential dependency ("wait for the file"), launch the dependent `codex exec` only after the prior artifact exists.
+>
+> Spawn the **fix subagent** (driver step 5) the same way — `codex exec --cd <repoRoot> --sandbox workspace-write "<the fix prompt>"` — but note it is different in kind: it EDITS arbitrary source files in the working tree (not just a JSON artifact), so `workspace-write` must cover the whole repo, not only the state dir. It runs strictly ONE AT A TIME (never backgrounded/parallel — two fixes may touch the same file), and after each fix subagent returns, the main Codex session runs `node <review-cli> commit-fix <ref> <id>` itself before spawning the next. The fix subagent still writes its `round-<n>-fix-<id>.json` result artifact as the driver requires.
+
+The fix step is why `workspace-write` (not a read-only sandbox) is the required mode: review-class subagents only need to write under the state dir, but the fix subagent needs to edit repo source — so the single sandbox mode chosen must satisfy the stricter of the two.
 
 Consequences, documented honestly:
 
@@ -64,20 +72,29 @@ Consequences, documented honestly:
 
 ### CommandPort (Codex)
 
-`packaging/codex/commands/review-until-green.md` is composed the same way the Claude Code command is (Task 7 of the prior deliverable): the neutral `core/review-driver.md` body spliced with the Codex `spawn-include.md`, resolving the two placeholders — `<review-cli>` to the bundled engine's path, `<arguments>` to `$ARGUMENTS`. Front-matter `description:` mirrors the Claude Code command's.
+The Codex plugin's `commands/review-until-green.md` is composed by the same *procedure* Task 7 of the prior deliverable used for the Claude Code command (splice the neutral `core/review-driver.md` body with the vendor `spawn-include.md`, resolving `<review-cli>` to the bundled engine's path and `<arguments>` to `$ARGUMENTS`) — not by mirroring a `packaging/` directory that does not exist. Both plugins are flat; both compose the same neutral driver with their own spawn-include. Front-matter `description:` mirrors the Claude Code command's.
+
+## Relationship to the Codex stub (GAPS.md / README.md)
+
+This design resolves two of the open questions the stub `adapters/codex/GAPS.md` records, and the implementation MUST update the stub docs so they stop reading "documented, not implemented" for the ports this deliverable ships:
+
+- **Fan-out strategy** (GAPS open question) → resolved: OS-level process-parallel `codex exec` (background subprocesses), with the cost documented in the ReviewerPort section above.
+- **Install-model choice** (GAPS open question, (i) native `~/.codex` plugin vs (ii) CC-shells-out) → resolved: option (i), a native flat Codex plugin dir.
+
+The implementation updates `adapters/codex/GAPS.md` (mark these two resolved, note the fix-subagent sandbox requirement + fan-out cost as the remaining known trade-off) and `adapters/codex/README.md`'s port-mapping table (mark `command`, `reviewer`, `statedir` as implemented for review-until-green; `lifecycle`/`transcript` remain not-implemented, deferred with session-state/charter). Leaving the stub stale is a defect this design explicitly forbids.
 
 ## Open details (confirm at implementation, not blockers)
 
 - **Plugin-root path resolution.** Claude Code commands reference files via `${CLAUDE_PLUGIN_ROOT}`. Codex's exact equivalent for a command to locate its bundled `review-cli.js` is unconfirmed (observed: Codex `hooks.json` uses plugin-relative `./scripts/...`). The `<review-cli>` placeholder is resolved at composition to whatever Codex's convention is — a `${CODEX_PLUGIN_ROOT}`-style variable or a plugin-relative path. Confirm the first implementation step.
 - **`codex exec` sandbox mode for artifact writes.** The reviewer must write its JSON artifact. `--sandbox workspace-write` (or a `-c sandbox_permissions=[...]` override) must permit writing under the repo/state dir without an interactive prompt. Confirm the minimal safe mode; avoid `--dangerously-bypass-approvals-and-sandbox` unless the environment is already externally sandboxed.
-- **Bundling.** Whether `packaging/codex/` vendors a copy of `core/` + `adapters/codex/` or references a shared install is a packaging decision; the design only requires that the command can invoke the same deterministic engine.
+- **Bundling.** Whether the Codex plugin dir vendors a copy of `core/` + `adapters/codex/` or references a shared install is a packaging decision; the design only requires that the command can invoke the same deterministic engine.
 
-## Verification
+Following the parent design's "enforced, not just asserted" standard, verification is mechanical first, E2E second:
 
-- `review-until-green` runs end-to-end under `codex` on a real branch: a round-start, at least one reviewer `codex exec` producing a valid artifact, `plan-fixes`/`record`, and a terminal decision — with the state dir under `~/.codex`.
-- The composed Codex command instructs the same loop as the neutral driver (same verbs, artifact paths, ordering), differing only in the spawn mechanism.
-- `core/` is unchanged: the existing Claude Code suite stays green, and the neutrality guard still passes (the Codex adapter lives outside `core/`).
-- A Codex reviewer prompt writes the same artifact JSON shape the Claude Code reviewers write (the CLI is the shared consumer, so the contract is identical).
+- **Mechanical (required):** `adapters/codex/statedir.js` gets a unit test mirroring `hooks/test/statedir.test.js` — asserting its `resolveStateDirFromCwd` produces the expected `~/.codex`-rooted project-scoped path and honors the `REVIEW_STATE_DIR` override. This is the port-shape enforcement the parent design mandates for every adapter, and it is the one file in this deliverable with an existing unit-test precedent.
+- **Mechanical (required):** `core/` is unchanged — the existing Claude Code suite stays green and the neutrality guard still passes (the Codex adapter lives outside `core/`). A guard confirms no core edit was needed.
+- **E2E:** `review-until-green` runs end-to-end under `codex` on a real branch through a FULL convergence, not just a review pass: round-start → at least one review-class `codex exec` producing a valid artifact → **a fix subagent `codex exec` that edits the tree → the main session's `commit-fix` → record** → a terminal decision, with the state dir under `~/.codex`. The fix+commit leg is explicitly exercised, since it is what makes the loop *converge* rather than merely *review*.
+- **E2E:** the composed Codex command instructs the same loop as the neutral driver (same verbs, artifact paths, ordering), differing only in the spawn mechanism; a Codex reviewer prompt writes the same artifact JSON shape the Claude Code reviewers write (the CLI is the shared consumer, so the contract is identical).
 
 ## Non-goals (this deliverable)
 
