@@ -1,6 +1,6 @@
 {
   "name": "concord",
-  "version": "0.8.0-alpha.2",
+  "version": "0.9.0-alpha.1",
   "description": "A bundle of Claude Code harness-engineering tools. Currently: a per-session state checkpoint, a cross-session task charter (a project's guiding goal plus the decisions made along the way), and a review-and-fix loop that keeps reviewing a code change, fixing what it finds, and re-checking until the tests actually pass -- or hands back the parts a person has to decide. State is persisted from the transcript and re-injected on resume, compaction, or a fresh session. Grows with more harness capabilities.",
   "author": { "name": "arinyaho", "url": "https://github.com/arinyaho" },
   "homepage": "https://github.com/arinyaho/concord",
