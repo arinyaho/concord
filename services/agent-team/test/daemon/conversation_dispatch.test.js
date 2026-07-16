@@ -250,3 +250,67 @@ test("feedTurn on a missing thread -> guarded note, no throw", async () => {
   await handler.feedTurn("ghost", "[job result: ...]");
   assert.match(systems.at(-1)[1], /closed|no longer|missing|unknown/i);
 });
+
+// The whole point of feedTurn is that a computed job outcome is NEVER silently shed the way an
+// over-the-cap author burst is: it re-enters the SAME lock + semaphore but BYPASSES the busy-drop.
+// This drives that invariant behaviorally under real saturation -- fill the cross-thread semaphore
+// to the drop threshold (MAX_CONCURRENT_TURNS active + MAX_QUEUED_TURNS waiting), confirm a normal
+// turn IS dropped there (proving the harness actually reached the threshold), then confirm a feedTurn
+// re-entry under the SAME saturation is NOT dropped (no busy note, and its role eventually runs).
+// Deterministic: one shared manual promise gate + microtask flushes, no timers/sleeps.
+test("feedTurn bypasses the busy-drop: a job outcome runs under saturation where a normal turn is dropped", async () => {
+  const posts = [];
+  const entered = [];
+  let releaseGate;
+  const gate = new Promise((resolve) => { releaseGate = resolve; });
+  const deps = {
+    createThread: async (msg) => ({ id: `thr_${msg.id}` }),
+    post: (tid, role, text) => posts.push([tid, role, text]),
+    runRole: async (role) => {
+      entered.push(role.name);
+      await gate; // every in-flight turn parks here, holding its semaphore slot, until released below
+      return { text: `${role.name} hi`, sessionId: "s1", skip: false, reset: false };
+    },
+    persist: () => {},
+    postSystem: async (tid, text) => posts.push([tid, "system", text]),
+    getPending: () => null,
+    clearPending: () => {},
+    dispatchAction: () => ({ accepted: true }),
+  };
+  const CAP = 4;   // MAX_CONCURRENT_TURNS
+  const QUEUE = 4; // MAX_QUEUED_TURNS
+  const SAT = CAP + QUEUE; // 8 in-flight turns -> sem.waiting() === MAX_QUEUED_TURNS (the drop threshold)
+  const store = new Map();
+  for (let i = 1; i <= SAT; i += 1) store.set(`thr${i}`, { roleSessions: {} });
+  store.set("thr9", { roleSessions: {} });    // control: a normal turn that must be dropped
+  store.set("thrFeed", { roleSessions: {} });  // feedTurn target that must NOT be dropped
+  const { handle, feedTurn } = makeConversationHandler({ cfg: cfg2, roster: roster2, store, deps });
+  const threadMsg = (id) => ({ id: `m_${id}`, author: { id: "u", bot: false }, channelId: id, guildId: "g", channel: { parentId: "c1" }, content: "hi" });
+
+  // Saturate: 8 concurrent normal turns on distinct tracked threads -> CAP active in runRole, QUEUE queued.
+  const pending = [];
+  for (let i = 1; i <= SAT; i += 1) pending.push(handle(threadMsg(`thr${i}`)));
+  await flushMicrotasks();
+  assert.equal(entered.length, CAP); // exactly the cap is in runRole; sem.waiting() now === QUEUE (drop threshold)
+
+  // Control: a 9th NORMAL turn under this saturation IS busy-dropped -- proves the threshold is truly reached.
+  const dropped = await handle(threadMsg("thr9"));
+  assert.equal(dropped, true);
+  assert.equal(entered.length, CAP); // unchanged -- the dropped normal turn never entered runRole
+  assert.deepEqual(posts.at(-1), ["thr9", "system", "(busy -- try again shortly)"]);
+
+  // Bypass: feedTurn on a tracked thread under the SAME saturation must NOT be dropped. Fire without
+  // awaiting -- it queues behind the semaphore (its await would not resolve until the gate releases).
+  const fed = feedTurn("thrFeed", "[job result: done]");
+  await flushMicrotasks();
+  // The busy-drop branch was skipped for the job outcome: no "(busy ...)" note is posted for its thread.
+  assert.ok(!posts.some(([tid, , text]) => tid === "thrFeed" && String(text).includes("busy")));
+  assert.equal(entered.length, CAP); // no slot has freed yet, so its runRole has not entered -- it queued, not dropped
+
+  // Release the gate: the active turns settle, the semaphore drains its wait queue, and the queued
+  // feedTurn turn finally runs -- proving the job outcome was carried through, never shed.
+  releaseGate();
+  await Promise.all([...pending, fed]);
+  assert.ok(entered.length > CAP); // more roles ran once slots freed, including the feedTurn turn
+  assert.ok(posts.some(([tid, role]) => tid === "thrFeed" && role === "spec")); // its reply was posted -> it ran
+});
