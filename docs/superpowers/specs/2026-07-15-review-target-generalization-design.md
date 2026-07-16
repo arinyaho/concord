@@ -3,13 +3,13 @@
 Status: DESIGN (architecture-level / north-star). Decomposed into 3 phases; each phase gets its own detailed spec → plan → implementation cycle. This document fixes the reframe and the phase boundaries, not the per-verb mechanics.
 Date: 2026-07-15
 Author: arinyaho (with Claude)
-Lineage: extends `review-until-green` (shipped as concord 0.8.0-alpha.2) past its diff-local origins. Motivated by the observation that `review-until-green` can only review what `git diff <base>...<HEAD>` produces, so a local spec/design `.md`, a long session's accumulated context/decisions, or a silent gap (something the design requires but no diff touches) cannot be reviewed at all -- `round-start` returns `no-op` on an empty diff. The GATE/panel layers (added in `2026-07-12-review-gate-design.md` and `2026-07-15-gate-holistic-panel-design.md`) already reach past the diff (they Read/Grep the whole repo, catch silent gaps, review design-conformance), which proves the review capability is not intrinsically diff-bound; only the *target-acquisition* and *convergence* mechanics are.
+Lineage: extends `review-until-green` (shipped as concord 0.8.0-alpha.2) past its diff-local origins. Motivated by the observation that `review-until-green` can only review what `git diff <base>...<HEAD>` produces, so a local spec/design `.md`, a long session's accumulated context/decisions, or a silent gap (something the design requires but no diff touches) cannot be reviewed at all -- `git diff <base>...<HEAD>` yields an empty diff, so the round has nothing to review and converges clean without the file ever being seen. The GATE/panel layers (added in `2026-07-12-review-gate-design.md` and `2026-07-15-gate-holistic-panel-design.md`) already reach past the diff (they Read/Grep the whole repo, catch silent gaps, review design-conformance), which proves the review capability is not intrinsically diff-bound; only the *target-acquisition* and *convergence* mechanics are.
 
 ## The reframe
 
 The current model bakes in four coupled assumptions, all traceable to "a review is a git diff":
 
-1. **Target = a git diff.** `round-start` computes `git diff <base>...<HEAD>`; an empty diff is a `no-op`.
+1. **Target = a git diff.** `round-start` computes `git diff <base>...<HEAD>`; an empty diff produces a round with nothing to review, which converges clean. (This is distinct from a `no-op`, which `beginRound` returns only when the diff is byte-identical to the prior round's.)
 2. **Convergence = diff stability.** `decideTermination` converges when `dodPassed && openFindingsCount === 0 && fixedCount === 0` -- the `fixedCount === 0` clause means "no fix changed the tree this round," i.e. the diff stopped moving.
 3. **Fix = a git commit.** `commit-fix` git-commits each fix's declared files; the fix loop is a mandatory step baked into `review-until-green.md`.
 4. **The reviewer is a fire-and-forget subagent.** It writes a findings JSON and exits; no interaction, no steering.
@@ -28,17 +28,17 @@ Critically, git is **not removed**. concord stops *assuming* every review is a g
 The value concord provides over "just ask Claude to review" is determinism the model cannot fake: stable round counting, dedup so the same finding across rounds collapses to one, and a convergence rule the model does not get to override. All of that stays -- in the ledger. Specifically preserved across all phases:
 
 - the ledger (per-target state file: findings, `seen`, rounds, status),
-- `seenHash`-based dedup (already line-number-independent; already content-anchored, not diff-anchored),
+- id-based dedup keyed on the gate-emitted stable finding id, backed by a secondary line-independent content hash (`seenHash`) -- already line-number- and diff-position-independent,
 - the GATE and holistic-panel layers (already target-agnostic in spirit -- they Read/Grep beyond the diff),
 - the "CLI owns termination, the agent supplies judgment" split -- even when the reviewer is agentified, the stop condition is computed from the ledger, not asserted by the model.
 
 ## Dedup strategy (the load-bearing risk)
 
-Convergence rests entirely on dedup: if the same finding gets a different identity each round, the loop never runs dry. Today this works because the finding id is content-anchored (`hash(class + file + span-text + summary)`, line-independent) and code spans are stable. Prose is the hard case -- a reworded summary or a slightly different quoted span changes the hash, so the same objection reads as "new" forever.
+Convergence rests entirely on dedup: if the same finding gets a different identity each round, the loop never runs dry. Today this works because the finding id is a gate-emitted stable slug (e.g. `correctness:assignment-in-condition`), reused across rounds for the same objection, backed by a secondary line-independent content hash (`seenHash` over class + file + span-text + summary) that only distinguishes a byte-identical revert from a reworded reappearance; code spans are stable so both hold. Prose is the hard case -- a reworded summary or a slightly different quoted span both changes that secondary hash and tempts the reviewer to mint a fresh slug, so the same objection reads as "new" forever.
 
 Chosen strategy: **reinforced compromise, not a single mechanism.**
 
-- **Key floor (deterministic):** exact-match on the content-anchored hash dedups for free, with no model involvement. This is the convergence guarantee's backbone.
+- **Key floor (deterministic):** exact-match on the stable finding id (slug) dedups for free, with no model involvement, and the secondary content hash tells a byte-identical revert apart from a reworded reappearance. This is the convergence guarantee's backbone.
 - **Model-assisted id reuse (stability aid):** each round's reviewer is handed the prior round's open findings and instructed to reuse an existing id when it recognizes the same objection, rather than minting a new one. This is a strengthening of what `review-until-green.md` already asks ("reuse the same slug for the same bug"), extended to prose targets where the anchor is weaker.
 
 Rejected: pure model-judged dedup (convergence would lean entirely on the model's "is this new?" call -- the one thing we are keeping deterministic) and pure key-based (too brittle for prose -- a reworded finding never dedups, so the loop never converges).
@@ -51,7 +51,7 @@ Each phase produces working, testable software and does not break the phase befo
 
 - `round-start` stops hardcoding "the target is a git diff." It acquires a review scope through a target-type abstraction; the first (and, in Phase 1, only) target-type is the existing git-diff producer, so the CLI surface and behavior for code review are identical.
 - `decideTermination` replaces the `fixedCount === 0` (diff-stable) convergence clause with a dry-round rule: terminate after N consecutive rounds with zero *new* (previously-unseen) findings. DoD gating stays for target-types that declare a DoD (code); target-types with no DoD skip it. The code path is regression-tested against the new rule.
-- `commit-fix` becomes an optional helper rather than a mandatory loop step. `record` already reads fix *reports* (`fix-<id>.json`), not git state, so it tolerates fixes that were not git-committed; the code path keeps calling `commit-fix` to preserve per-fix commit attribution.
+- `commit-fix` becomes an optional helper rather than a mandatory loop step. Today `record` marks a finding fixed only when this run's journal has its commit (written by `commit-fix` after its git commit); a fix that was not committed is parked, and the fix *report* (`fix-<id>.json`) is consulted only to word the park reason. Making `commit-fix` optional therefore requires `record` to accept a fix report as an alternative "fixed" signal for non-git targets -- a change this design introduces, not existing behavior. The code path keeps calling `commit-fix` to preserve per-fix commit attribution.
 - Outcome: code review looks and behaves identically; the internals no longer assume git or diff-stability. Nothing new is reviewable yet.
 
 ### Phase 2 — Add diff-less target types
