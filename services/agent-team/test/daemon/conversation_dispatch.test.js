@@ -18,7 +18,7 @@ const chanMsg = { id: "m1", author: { id: "u", bot: false }, channelId: "c1", gu
 
 test("authorized conversation-channel message -> thread created + turn run; returns true", async () => {
   const { deps, posts, created } = ctx();
-  const h = makeConversationHandler({ cfg, roster, store: new Map(), deps });
+  const { handle: h } = makeConversationHandler({ cfg, roster, store: new Map(), deps });
   const handled = await h(chanMsg);
   assert.equal(handled, true);
   assert.deepEqual(created, ["m1"]);
@@ -26,14 +26,14 @@ test("authorized conversation-channel message -> thread created + turn run; retu
 });
 test("message in a non-conversation channel -> not handled (false), no thread", async () => {
   const { deps, created } = ctx();
-  const h = makeConversationHandler({ cfg, roster, store: new Map(), deps });
+  const { handle: h } = makeConversationHandler({ cfg, roster, store: new Map(), deps });
   const handled = await h({ ...chanMsg, channelId: "other" });
   assert.equal(handled, false);
   assert.deepEqual(created, []);
 });
 test("unauthorized author in a conversation channel -> not handled, no thread", async () => {
   const { deps, created } = ctx();
-  const h = makeConversationHandler({ cfg, roster, store: new Map(), deps });
+  const { handle: h } = makeConversationHandler({ cfg, roster, store: new Map(), deps });
   const handled = await h({ ...chanMsg, author: { id: "intruder", bot: false } });
   assert.equal(handled, false);
   assert.deepEqual(created, []);
@@ -41,7 +41,7 @@ test("unauthorized author in a conversation channel -> not handled, no thread", 
 test("authorized message in a tracked thread -> follow-up turn; returns true", async () => {
   const { deps, posts } = ctx();
   const store = new Map([["thr1", { roleSessions: { spec: "prev" } }]]);
-  const h = makeConversationHandler({ cfg, roster, store, deps });
+  const { handle: h } = makeConversationHandler({ cfg, roster, store, deps });
   const handled = await h({ id: "m2", author: { id: "u", bot: false }, channelId: "thr1", guildId: "g", channel: { parentId: "c1" } });
   assert.equal(handled, true);
   assert.deepEqual(posts[0], ["thr1", "spec", "spec hi"]);
@@ -71,7 +71,7 @@ test("same-thread turns serialize: second turn's runRole does not enter until th
     persist: () => {},
   };
   const store = new Map([["thr1", { roleSessions: {} }]]);
-  const h = makeConversationHandler({ cfg, roster, store, deps });
+  const { handle: h } = makeConversationHandler({ cfg, roster, store, deps });
   const threadMsg = (id) => ({ id, author: { id: "u", bot: false }, channelId: "thr1", guildId: "g", channel: { parentId: "c1" } });
 
   const p1 = h(threadMsg("m1"));
@@ -99,7 +99,7 @@ test("new conversation: thread is tracked (persist + store.set) before the first
     runRole: async () => { order.push("runRole"); return { text: "hi", sessionId: "s1", skip: false, reset: false }; },
     persist: () => { order.push("persist"); },
   };
-  const h = makeConversationHandler({ cfg, roster, store, deps });
+  const { handle: h } = makeConversationHandler({ cfg, roster, store, deps });
   const handled = await h(chanMsg);
   assert.equal(handled, true);
   // advanceTurn persists again after the turn (session id bookkeeping) -- only the seed-before-run
@@ -137,7 +137,7 @@ test("cross-thread cap: at most MAX_CONCURRENT_TURNS runRole calls are in-flight
   const N = CAP + 1; // one more distinct thread than the cap allows to run concurrently
   const store = new Map();
   for (let i = 1; i <= N; i += 1) store.set(`thr${i}`, { roleSessions: {} });
-  const h = makeConversationHandler({ cfg, roster, store, deps });
+  const { handle: h } = makeConversationHandler({ cfg, roster, store, deps });
   const threadMsg = (i) => ({ id: `m${i}`, author: { id: "u", bot: false }, channelId: `thr${i}`, guildId: "g", channel: { parentId: "c1" } });
 
   const pending = [];
@@ -173,7 +173,7 @@ test("depth bound: a turn beyond MAX_CONCURRENT_TURNS + MAX_QUEUED_TURNS is drop
   const N = CAP + QUEUE; // exactly fills active slots + the wait queue
   const store = new Map();
   for (let i = 1; i <= N + 1; i += 1) store.set(`thr${i}`, { roleSessions: {} });
-  const h = makeConversationHandler({ cfg, roster, store, deps });
+  const { handle: h } = makeConversationHandler({ cfg, roster, store, deps });
   const threadMsg = (i) => ({ id: `m${i}`, author: { id: "u", bot: false }, channelId: `thr${i}`, guildId: "g", channel: { parentId: "c1" } });
 
   const pending = [];
@@ -190,4 +190,63 @@ test("depth bound: a turn beyond MAX_CONCURRENT_TURNS + MAX_QUEUED_TURNS is drop
 
   releaseGate();
   await Promise.all(pending);
+});
+
+// B-2: feedTurn (locked re-entry with busy-drop bypass) + confirm routing in the tracked-thread
+// branch. makeConversationHandler now returns { handle, feedTurn } instead of a bare function.
+const roster2 = [{ name: "spec", systemPrompt: "s" }];
+const cfg2 = { guildId: "g", userIds: ["u"], conversationChannelIds: ["c1"], maxRoundLen: 10, sessionStorePath: "/x" };
+
+function h2(over = {}) {
+  const posts = [], systems = [], submitted = [];
+  const store = new Map();
+  const deps = {
+    createThread: async (m) => ({ id: `thr_${m.id}` }),
+    post: async (tid, role, text) => posts.push([tid, role, text]),
+    runRole: async (role) => ({ text: `${role.name} hi`, sessionId: "s1", skip: false, reset: false }),
+    persist: (tid, s) => store.set(tid, JSON.parse(JSON.stringify(s))),
+    postSystem: async (tid, text) => systems.push([tid, text]),
+    getPending: (s, tid) => s.get(tid)?.pendingAction ?? null,
+    clearPending: (s, p, tid) => { const st = s.get(tid); if (st) delete st.pendingAction; },
+    dispatchAction: ({ pending, threadId, feedTurn }) => { submitted.push([threadId, pending, feedTurn]); return { accepted: true }; },
+    ...over,
+  };
+  const handler = makeConversationHandler({ cfg: cfg2, roster: roster2, store, deps });
+  return { handler, posts, systems, submitted, store };
+}
+const thr = { id: "m2", author: { id: "u", bot: false }, channelId: "thr1", guildId: "g", channel: { parentId: "c1" }, content: "" };
+
+test("returns { handle, feedTurn }", () => {
+  const { handler } = h2();
+  assert.equal(typeof handler.handle, "function");
+  assert.equal(typeof handler.feedTurn, "function");
+});
+test("`run <id>` matching pending -> dispatchAction + clears pending, no normal turn", async () => {
+  const { handler, submitted, store } = h2();
+  store.set("thr1", { roleSessions: {}, pendingAction: { id: "a1", alias: "concord", repoPath: "/r", task: "fix" } });
+  const handled = await handler.handle({ ...thr, content: "run a1" });
+  assert.equal(handled, true);
+  assert.equal(submitted[0][0], "thr1");
+  assert.equal(submitted[0][1].id, "a1");
+  assert.equal(store.get("thr1").pendingAction, undefined); // cleared on accept
+});
+test("`run <id>` not matching -> 'no pending proposal', no dispatch", async () => {
+  const { handler, systems, submitted, store } = h2();
+  store.set("thr1", { roleSessions: {} }); // tracked thread, no pendingAction
+  const r = await handler.handle({ ...thr, content: "run zzz" });
+  assert.equal(r, true);
+  assert.equal(submitted.length, 0);
+  assert.match(systems.at(-1)[1], /no pending proposal zzz/);
+});
+test("queue full on confirm -> busy note, pending NOT cleared", async () => {
+  const { handler, systems, store } = h2({ dispatchAction: () => ({ accepted: false }) });
+  store.set("thr1", { roleSessions: {}, pendingAction: { id: "a1", alias: "concord", repoPath: "/r", task: "fix" } });
+  await handler.handle({ ...thr, content: "run a1" });
+  assert.match(systems.at(-1)[1], /busy/i);
+  assert.equal(store.get("thr1").pendingAction.id, "a1"); // preserved for retry
+});
+test("feedTurn on a missing thread -> guarded note, no throw", async () => {
+  const { handler, systems } = h2();
+  await handler.feedTurn("ghost", "[job result: ...]");
+  assert.match(systems.at(-1)[1], /closed|no longer|missing|unknown/i);
 });

@@ -37,7 +37,7 @@ function makeSemaphore(cap) {
 }
 
 export function makeConversationHandler({ cfg, roster, store, deps }) {
-  const { createThread, post, runRole, persist } = deps;
+  const { createThread, post, runRole, persist, postSystem, getPending, clearPending, dispatchAction } = deps;
   const maxRoundLen = cfg.maxRoundLen ?? roster.length;
   const locks = new Map(); // threadId -> tail promise (serialize same-thread turns)
   const sem = makeSemaphore(MAX_CONCURRENT_TURNS); // shared across all threads on this handler
@@ -55,14 +55,16 @@ export function makeConversationHandler({ cfg, roster, store, deps }) {
     return next;
   }
 
-  async function run(threadId, userText, state) {
+  async function run(threadId, userText, state, opts = {}) {
     await withThreadLock(threadId, async () => {
       // Depth bound: too many turns already waiting on a free cross-thread slot -> drop this one
       // with an in-thread notice rather than growing the queue without limit. This check and the
       // eventual acquire() both run inside the per-thread lock, so it cannot race itself for the
       // same thread; it can still race turns from other threads for queue slots, which is fine --
-      // the bound is advisory backpressure, not an exact count.
-      if (sem.waiting() >= MAX_QUEUED_TURNS) {
+      // the bound is advisory backpressure, not an exact count. A job-outcome re-entry (feedTurn)
+      // bypasses this drop: a computed outcome is bounded by the capability queue's own cap, not a
+      // floodable author burst, so it must never be silently shed.
+      if (!opts.bypassBusyDrop && sem.waiting() >= MAX_QUEUED_TURNS) {
         // Best-effort notice: a post failure here (e.g. Discord unreachable) must not turn a
         // dropped-for-capacity turn into an unhandled rejection.
         try {
@@ -85,7 +87,24 @@ export function makeConversationHandler({ cfg, roster, store, deps }) {
     });
   }
 
-  return async function handle(msg) {
+  // Locked re-entry for a job outcome. Re-fetches state (guard a closed/evicted thread) and runs a
+  // synthesized turn through the SAME lock + semaphore as a user turn, but BYPASSING the busy-drop --
+  // a computed job outcome (bounded by the capability queue's own cap, not a floodable author burst)
+  // must never be silently shed.
+  async function feedTurn(threadId, userText) {
+    const state = store.get(threadId);
+    if (!state) {
+      try {
+        await postSystem(threadId, "(job result for a closed conversation -- ignored)");
+      } catch (e) {
+        console.error(`[agent-team] feedTurn guard notice post failed for thread ${threadId}:`, e);
+      }
+      return;
+    }
+    await run(threadId, userText, state, { bypassBusyDrop: true });
+  }
+
+  const handle = async function handle(msg) {
     const authed = nonEmpty(msg.author?.id) && msg.guildId === cfg.guildId
       && Array.isArray(cfg.userIds) && cfg.userIds.includes(msg.author.id);
 
@@ -98,13 +117,34 @@ export function makeConversationHandler({ cfg, roster, store, deps }) {
       await run(thread.id, msg.content ?? "", state);
       return true;
     }
-    // (b) tracked thread -> follow-up
+    // (b) tracked thread -> confirm a pending action, else a follow-up turn
     const parentId = msg.channel?.parentId;
     if (isAuthorizedThread({ authorId: msg.author?.id, channelId: msg.channelId, guildId: msg.guildId, parentId }, cfg, store)) {
-      const state = store.get(msg.channelId);
-      await run(msg.channelId, msg.content ?? "", state);
+      const threadId = msg.channelId;
+      const confirm = (msg.content ?? "").trim().match(/^run\s+(\S+)$/i);
+      if (confirm) {
+        const pending = getPending(store, threadId);
+        if (pending && pending.id === confirm[1]) {
+          const { accepted } = dispatchAction({ pending, threadId, feedTurn });
+          if (accepted) {
+            clearPending(store, cfg.sessionStorePath, threadId);
+            await postSystem(threadId, `job started (${pending.id})`);
+          } else {
+            // Do NOT clear the pending proposal here -- leave it in place so the user can retry
+            // `run <id>` once a capability slot frees up.
+            await postSystem(threadId, "busy -- try again shortly");
+          }
+        } else {
+          await postSystem(threadId, `no pending proposal ${confirm[1]}`);
+        }
+        return true;
+      }
+      const state = store.get(threadId);
+      await run(threadId, msg.content ?? "", state);
       return true;
     }
     return false;
   };
+
+  return { handle, feedTurn };
 }
