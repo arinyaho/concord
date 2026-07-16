@@ -207,6 +207,25 @@ test('review-cli: missing ref argument exits non-zero with a message on stderr',
   assert.throws(() => run(['show'], { env: { ...process.env, REVIEW_STATE_DIR: dir } }));
 });
 
+// Regression: core/review-cli.js's require.main === module guard is dead on
+// the only path anyone actually invokes -- the manifest and the
+// review-until-green command both run hooks/review-cli.js (the shim), whose
+// require.main is the shim itself, not core. Before the fix, the shim called
+// cli.main() bare, so a thrown error printed a raw Node stack trace to stderr
+// instead of the graceful `review-cli: <msg>` one-liner core intended. This
+// spawns the SHIM (CLI, the same path constant every other test in this file
+// uses) on a deterministic throw (missing required <ref> argument) and
+// asserts the operator-facing error contract: a clean `review-cli: ` prefixed
+// line, exit code 1, and no raw Node stack-trace frame.
+test('review-cli shim: a thrown error prints the graceful "review-cli: <msg>" line, not a raw stack trace', () => {
+  const dir = tmpDir();
+  const { stdout, stderr, status } = runCapture(['show'], { env: { ...process.env, REVIEW_STATE_DIR: dir } });
+  assert.strictEqual(status, 1);
+  assert.strictEqual(stdout, '');
+  assert.match(stderr, /^review-cli: /);
+  assert.ok(!/\n {4}at /.test(stderr), `stderr must not contain a raw Node stack-trace frame, got:\n${stderr}`);
+});
+
 function seedGatesRound(repo, dir, ref, correctness, verify) {
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');

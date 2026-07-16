@@ -848,9 +848,12 @@ function main() {
   throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | plan-fixes | commit-fix | record | gate-panel-round-start | gate-panel-round-record | unpark | dismiss | reset)`);
 }
 
-module.exports = { gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitCheckoutTree, runDod, main };
-
-if (require.main === module) {
+// Wraps main() with the graceful operator-facing error format. Exported (not
+// just run inline below) so the hooks/review-cli.js shim -- the actual
+// require.main on every real invocation (manifest + review-until-green
+// command both run the shim, never this file directly) -- can call it too and
+// get the same `review-cli: <msg>` one-liner instead of a raw stack trace.
+function runMain() {
   try {
     main();
   } catch (e) {
@@ -858,3 +861,7 @@ if (require.main === module) {
     process.exit(1);
   }
 }
+
+module.exports = { gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitCheckoutTree, runDod, main, runMain };
+
+if (require.main === module) runMain();
