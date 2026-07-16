@@ -1,2 +1,3 @@
 'use strict';
-require('../core/charter-cli.js');
+const { resolveStateDirFromCwd } = require('../adapters/claude-code/statedir');
+require('../core/charter-cli.js').runMain(resolveStateDirFromCwd);

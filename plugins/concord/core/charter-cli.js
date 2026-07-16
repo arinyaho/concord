@@ -2,16 +2,15 @@
 'use strict';
 const fs = require('node:fs');
 const { readNorthStar, setNorthStar, mergeSessions, renderCharter } = require('./charter');
-const { resolveStateDirFromCwd } = require('../adapters/claude-code/statedir');
 
-function resolveStateDir() {
+function resolveStateDir(resolveFromCwd) {
   if (process.env.CHARTER_STATE_DIR) return process.env.CHARTER_STATE_DIR;
-  return resolveStateDirFromCwd();
+  return resolveFromCwd();
 }
 
-function main() {
+function main(resolveFromCwd) {
   const cmd = process.argv[2] || 'show';
-  const stateDir = resolveStateDir();
+  const stateDir = resolveStateDir(resolveFromCwd);
   if (cmd === 'set') {
     const text = fs.readFileSync(0, 'utf8');
     setNorthStar(stateDir, text);
@@ -23,9 +22,13 @@ function main() {
   process.stdout.write(md);
 }
 
-try {
-  main();
-} catch (e) {
-  process.stderr.write(`charter: ${e && e.message ? e.message : e}\n`);
-  process.exit(1);
+function runMain(resolveFromCwd) {
+  try {
+    main(resolveFromCwd);
+  } catch (e) {
+    process.stderr.write(`charter: ${e && e.message ? e.message : e}\n`);
+    process.exit(1);
+  }
 }
+
+module.exports = { main, runMain };

@@ -3,7 +3,6 @@
 const fs = require('node:fs');
 const { execFileSync } = require('node:child_process');
 const path = require('node:path');
-const { resolveStateDirFromCwd } = require('../adapters/claude-code/statedir');
 const dodExec = require('./dod-exec');
 const intentLib = require('./intent');
 const gateLib = require('./gate');
@@ -20,9 +19,9 @@ const {
   resetUnreachable,
 } = require('./review');
 
-function resolveStateDir() {
+function resolveStateDir(resolveFromCwd) {
   if (process.env.REVIEW_STATE_DIR) return process.env.REVIEW_STATE_DIR;
-  return resolveStateDirFromCwd();
+  return resolveFromCwd();
 }
 
 const GATE_PANEL_LENSES = ['ac-coverage', 'design-conformance', 'cross-context', 'silent-gap', 'threat-model'];
@@ -232,9 +231,9 @@ function deleteRoundArtifacts(stateDir, n) {
   }
 }
 
-function main() {
+function main(resolveFromCwd) {
   const [verb, ref, ...rest] = process.argv.slice(2);
-  const stateDir = resolveStateDir();
+  const stateDir = resolveStateDir(resolveFromCwd);
 
   if (verb === 'show') {
     requireRef(ref, 'show');
@@ -853,9 +852,9 @@ function main() {
 // require.main on every real invocation (manifest + review-until-green
 // command both run the shim, never this file directly) -- can call it too and
 // get the same `review-cli: <msg>` one-liner instead of a raw stack trace.
-function runMain() {
+function runMain(resolveFromCwd) {
   try {
-    main();
+    main(resolveFromCwd);
   } catch (e) {
     process.stderr.write(`review-cli: ${e && e.message ? e.message : e}\n`);
     process.exit(1);
@@ -863,5 +862,3 @@ function runMain() {
 }
 
 module.exports = { gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitCheckoutTree, runDod, main, runMain };
-
-if (require.main === module) runMain();
