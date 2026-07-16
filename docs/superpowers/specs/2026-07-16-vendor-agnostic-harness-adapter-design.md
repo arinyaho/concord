@@ -80,10 +80,10 @@ The adapter owns: which harness events map to `stop` (write checkpoint) vs the `
 
 ```
 parseDelta(transcriptPath, offset) -> { entries: NeutralEntry[], newOffset: number }
-NeutralEntry = { role: 'user' | 'assistant', text: string }
+NeutralEntry = { role: 'user' | 'assistant', text: string, toolCalls: Array<{ name, input }> }
 ```
 
-`NeutralEntry` is the minimum `core/state/extract` needs. The Claude Code adapter wraps today's `readDelta` (byte-offset delta read) plus the Claude Code message-shape parsing currently inlined in `extract.js`. The offset-advancement / partial-line semantics stay in the adapter, since they are transcript-format details. `core/state` operates only on `NeutralEntry[]`.
+`NeutralEntry` is the minimum `core/state/extract` needs: `extractRationale` reads `text`, and `extractFacts` reads `toolCalls` (file paths and commands come from tool calls, not prose) — so the neutral shape carries both. The Claude Code adapter wraps today's `readDelta` (byte-offset delta read) plus the Claude Code message-shape parsing currently inlined in `extract.js`. The offset-advancement / partial-line semantics stay in the adapter, since they are transcript-format details. `core/state` operates only on `NeutralEntry[]`.
 
 ### 3. ReviewerPort — the subtle one
 
