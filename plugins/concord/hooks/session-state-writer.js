@@ -2,8 +2,8 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const { readDelta } = require('../adapters/claude-code/transcript');
-const { extractFacts, extractRationale, extractRationaleText } = require('./lib/extract');
+const { readDelta, mapEntries } = require('../adapters/claude-code/transcript');
+const { extractFacts, extractRationale, extractRationaleText } = require('../core/extract');
 const { emptyModel, mergeModel } = require('./lib/state');
 const { writeNorthStarIfAbsent, firstSubstantiveUserMessage, readNorthStar } = require('./lib/charter');
 
@@ -24,8 +24,12 @@ function main() {
   }
 
   const { entries, newOffset } = readDelta(transcript_path, model.offset || 0);
-  const facts = extractFacts(entries);
-  const rationale = extractRationale(entries);
+  // extract.js now consumes NeutralEntry[]; readDelta still returns raw Claude
+  // JSONL objects, so map them through the adapter first. (Interim: Task 4/5
+  // rewires this hook onto adapters/claude-code/transcript.js's parseDelta.)
+  const neutralEntries = mapEntries(entries);
+  const facts = extractFacts(neutralEntries);
+  const rationale = extractRationale(neutralEntries);
   // Also harvest tags from the just-finished turn via stdin, in case it has not
   // yet flushed to the transcript; downstream dedup absorbs the overlap.
   const msgRationale = extractRationaleText(last_assistant_message);

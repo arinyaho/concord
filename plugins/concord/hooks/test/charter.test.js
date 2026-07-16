@@ -123,7 +123,7 @@ test('catchUpSessions: harvests an abandoned session un-watermarked tail; idempo
   const sid = 'abandoned1';
   const line = (o) => JSON.stringify(o) + '\n';
   const transcript =
-    line({ type: 'assistant', message: { content: [{ type: 'text', text: 'DECISION: [x] chose B over A' }] } });
+    line({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'DECISION: [x] chose B over A' }] } });
   const tpath = path.join(proj, `${sid}.jsonl`);
   fs.writeFileSync(tpath, transcript);
   // stale mtime so it is not treated as active
@@ -162,11 +162,11 @@ test('catchUpSessions: a malformed model file does not abort the whole scan', ()
   const old = Date.now() - 60 * 60 * 1000;
   const L = (o) => JSON.stringify(o) + '\n';
   // malformed model: valid JSON, missing array fields -> would throw in mergeModel
-  fs.writeFileSync(path.join(proj, 'bad1.jsonl'), L({ type: 'assistant', message: { content: [{ type: 'text', text: 'DECISION: [b] bad' }] } }));
+  fs.writeFileSync(path.join(proj, 'bad1.jsonl'), L({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'DECISION: [b] bad' }] } }));
   fs.utimesSync(path.join(proj, 'bad1.jsonl'), new Date(old), new Date(old));
   fs.writeFileSync(path.join(dir, 'bad1.json'), JSON.stringify({ offset: 0 }));
   // valid abandoned session
-  fs.writeFileSync(path.join(proj, 'good1.jsonl'), L({ type: 'assistant', message: { content: [{ type: 'text', text: 'DECISION: [g] good' }] } }));
+  fs.writeFileSync(path.join(proj, 'good1.jsonl'), L({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'DECISION: [g] good' }] } }));
   fs.utimesSync(path.join(proj, 'good1.jsonl'), new Date(old), new Date(old));
   fs.writeFileSync(path.join(dir, 'good1.json'), JSON.stringify({ offset: 0, openLoops: [], decisions: [], nexts: [], facts: [] }));
 

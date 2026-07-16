@@ -3,8 +3,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { NORTH_STAR_MAX, MIN_MSG_LEN, SESSIONS_MERGE_CAP, ACTIVE_SKIP_MINUTES } = require('./config');
 const { emptyModel, mergeModel } = require('./state');
-const { readDelta } = require('../../adapters/claude-code/transcript');
-const { extractFacts, extractRationale } = require('./extract');
+const { readDelta, mapEntries } = require('../../adapters/claude-code/transcript');
+const { extractFacts, extractRationale } = require('../../core/extract');
 
 function charterPath(stateDir) {
   return path.join(stateDir, 'charter.md');
@@ -200,8 +200,12 @@ function catchUpSessions(stateDir, { currentSid, now = Date.now() } = {}) {
     try {
       const { entries, newOffset } = readDelta(tpath, model.offset || 0);
       if (entries.length === 0) continue;
-      const facts = extractFacts(entries);
-      const rationale = extractRationale(entries);
+      // extract.js now consumes NeutralEntry[]; readDelta still returns raw Claude
+      // JSONL objects, so map them through the adapter first. (Interim: Task 4
+      // moves this file to core and pushes transcript reading to the caller.)
+      const neutralEntries = mapEntries(entries);
+      const facts = extractFacts(neutralEntries);
+      const rationale = extractRationale(neutralEntries);
       const merged = mergeModel(model, { ...rationale, facts });
       merged.offset = newOffset;
       fs.writeFileSync(jsonPath, JSON.stringify(merged));
