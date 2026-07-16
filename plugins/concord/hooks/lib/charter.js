@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { NORTH_STAR_MAX, MIN_MSG_LEN, SESSIONS_MERGE_CAP, ACTIVE_SKIP_MINUTES } = require('./config');
 const { emptyModel, mergeModel } = require('./state');
-const { readDelta } = require('./transcript');
+const { readDelta } = require('../../adapters/claude-code/transcript');
 const { extractFacts, extractRationale } = require('./extract');
 
 function charterPath(stateDir) {

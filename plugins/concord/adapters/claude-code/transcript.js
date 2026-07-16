@@ -1,5 +1,6 @@
 'use strict';
 const fs = require('node:fs');
+const { normalizeEntry } = require('../../core/ports');
 
 // Read new JSONL entries appended since `offset` bytes. Advances the offset only
 // to the last complete line, so a partial line mid-write is re-read next time.
@@ -40,4 +41,29 @@ function readDelta(transcriptPath, offset) {
   }
 }
 
-module.exports = { readDelta };
+// Claude Code transcript entry -> NeutralEntry. Concatenates text items,
+// collects tool_use items as toolCalls. Entries without a message are dropped.
+function mapEntries(rawEntries) {
+  const out = [];
+  for (const e of rawEntries || []) {
+    const msg = e && e.message;
+    if (!msg || (msg.role !== 'user' && msg.role !== 'assistant')) continue;
+    const content = Array.isArray(msg.content) ? msg.content : [];
+    let text = '';
+    const toolCalls = [];
+    for (const item of content) {
+      if (!item) continue;
+      if (item.type === 'text' && typeof item.text === 'string') text += (text ? '\n' : '') + item.text;
+      else if (item.type === 'tool_use') toolCalls.push({ name: item.name, input: item.input || {} });
+    }
+    out.push(normalizeEntry({ role: msg.role, text, toolCalls }));
+  }
+  return out;
+}
+
+function parseDelta(transcriptPath, offset) {
+  const { entries, newOffset } = readDelta(transcriptPath, offset);
+  return { entries: mapEntries(entries), newOffset };
+}
+
+module.exports = { readDelta, mapEntries, parseDelta };

@@ -2,7 +2,7 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const { readDelta } = require('./lib/transcript');
+const { readDelta } = require('../adapters/claude-code/transcript');
 const { extractFacts, extractRationale, extractRationaleText } = require('./lib/extract');
 const { emptyModel, mergeModel } = require('./lib/state');
 const { writeNorthStarIfAbsent, firstSubstantiveUserMessage, readNorthStar } = require('./lib/charter');
