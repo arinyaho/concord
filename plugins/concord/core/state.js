@@ -40,8 +40,8 @@ function mergeModel(prev, d) {
   };
 
   // Keep the most-recent occurrence of each distinct item, then cap, so churn
-  // (repeated edits, or a tag harvested from both the transcript and the Stop
-  // hook's last_assistant_message) cannot evict higher-signal entries.
+  // (repeated edits, or a tag harvested from both the transcript and the
+  // Stop hook's final assistant message) cannot evict higher-signal entries.
   m.facts = dedupeLatest(m.facts.concat(d.facts), (f) => f).slice(-FACTS_CAP);
 
   m.openLoops = m.openLoops.concat(d.openLoops);
