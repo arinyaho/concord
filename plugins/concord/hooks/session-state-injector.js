@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
-const fs = require('node:fs');
 const path = require('node:path');
+const { readStdinEvent } = require('../adapters/claude-code/event');
 const { readNorthStar, mergeSessions, renderCharter, catchUpSessions } = require('../core/charter');
 
 const CONVENTION =
@@ -9,10 +9,10 @@ const CONVENTION =
   '`DECISION:` / `OPEN-LOOP:` / `NEXT:` / `RESOLVED:`.';
 
 function main() {
-  const { session_id, transcript_path, source } = JSON.parse(fs.readFileSync(0, 'utf8'));
-  if (!transcript_path) return;
-  const sid = path.basename(String(session_id || ''));
-  const stateDir = path.join(path.dirname(transcript_path), 'state');
+  const { sessionId, transcriptPath } = readStdinEvent();
+  if (!transcriptPath) return;
+  const sid = path.basename(String(sessionId || ''));
+  const stateDir = path.join(path.dirname(transcriptPath), 'state');
 
   // Durability: fold any abandoned session's un-watermarked tail before reading.
   catchUpSessions(stateDir, { currentSid: sid, readEntries: require('../adapters/claude-code/transcript').parseDelta });

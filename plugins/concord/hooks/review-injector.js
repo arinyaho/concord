@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 'use strict';
-const fs = require('node:fs');
+const { readStdinEvent } = require('../adapters/claude-code/event');
 const { resolveStateDirFromTranscript } = require('../adapters/claude-code/statedir');
 const { listLedgers, renderReviewReport } = require('../core/review');
 
 function main() {
-  const { transcript_path } = JSON.parse(fs.readFileSync(0, 'utf8'));
-  if (!transcript_path) return;
-  const stateDir = resolveStateDirFromTranscript(transcript_path);
+  const { transcriptPath } = readStdinEvent();
+  if (!transcriptPath) return;
+  const stateDir = resolveStateDirFromTranscript(transcriptPath);
   const report = renderReviewReport(listLedgers(stateDir));
   if (report) process.stdout.write(report + '\n');
 }
