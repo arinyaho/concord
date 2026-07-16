@@ -42,10 +42,16 @@ plugins/concord-codex/            the Codex plugin, packaged FLAT — mirroring 
                                   Claude Code plugin layout (plugins/concord/ is flat:
                                   .claude-plugin/ + commands/ + hooks/), NOT a packaging/ dir
   .codex-plugin/plugin.json       manifest: name, version, commands (+ marketplace metadata)
+  bin/review-cli.js               ENTRYPOINT SHIM (the Codex analogue of hooks/review-cli.js):
+                                  requires core/review-cli.js, injects adapters/codex/statedir.js's
+                                  resolver, and `if (require.main === module) cli.runMain(resolveFromCwd)`.
+                                  <review-cli> resolves to THIS shim, never to core/review-cli.js
+                                  directly -- core/review-cli.js exports runMain but does NOT
+                                  self-invoke, so run directly it is inert.
   commands/review-until-green.md  composed = core/review-driver.md + adapters/codex/spawn-include.md,
-                                  with <review-cli> resolved to the bundled CLI path and
+                                  with <review-cli> resolved to bin/review-cli.js (the shim) and
                                   <arguments> resolved to $ARGUMENTS
-  (bundled core/ + adapters/codex/)   the deterministic engine the command invokes
+  (bundled core/ + adapters/codex/)   the deterministic engine the shim requires into
 ```
 
 Note on layout: the parent design's diagram named a `packaging/claude-code/` directory, but the as-built Claude Code plugin was kept FLAT at `plugins/concord/` (`.claude-plugin/`, `commands/`, `hooks/`, with `core/` and `adapters/` as siblings) — no `packaging/` directory exists in the repo. This Codex design follows the real, as-built convention: a flat sibling plugin directory, symmetric with the Claude Code plugin. Whether the Codex plugin vendors a copy of `core/`+`adapters/codex/` or references the shared tree is the one packaging choice left to implementation.
@@ -85,7 +91,7 @@ The implementation updates `adapters/codex/GAPS.md` (mark these two resolved, no
 
 ## Open details (confirm at implementation, not blockers)
 
-- **Plugin-root path resolution.** Claude Code commands reference files via `${CLAUDE_PLUGIN_ROOT}`. Codex's exact equivalent for a command to locate its bundled `review-cli.js` is unconfirmed (observed: Codex `hooks.json` uses plugin-relative `./scripts/...`). The `<review-cli>` placeholder is resolved at composition to whatever Codex's convention is — a `${CODEX_PLUGIN_ROOT}`-style variable or a plugin-relative path. Confirm the first implementation step.
+- **Plugin-root path resolution.** Claude Code commands reference files via `${CLAUDE_PLUGIN_ROOT}`. Codex's exact equivalent for a command to locate its bundled `bin/review-cli.js` shim is unconfirmed (observed: Codex `hooks.json` uses plugin-relative `./scripts/...`). The `<review-cli>` placeholder is resolved at composition to whatever Codex's convention is — a `${CODEX_PLUGIN_ROOT}`-style variable or a plugin-relative path — pointing at the `bin/review-cli.js` shim (not `core/review-cli.js`). Confirm the first implementation step.
 - **`codex exec` sandbox mode for artifact writes.** The reviewer must write its JSON artifact. `--sandbox workspace-write` (or a `-c sandbox_permissions=[...]` override) must permit writing under the repo/state dir without an interactive prompt. Confirm the minimal safe mode; avoid `--dangerously-bypass-approvals-and-sandbox` unless the environment is already externally sandboxed.
 - **Bundling.** Whether the Codex plugin dir vendors a copy of `core/` + `adapters/codex/` or references a shared install is a packaging decision; the design only requires that the command can invoke the same deterministic engine.
 
