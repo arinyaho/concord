@@ -24,7 +24,7 @@ test('writes state json only, no md, no rolling pointer', () => {
   const { proj, transcript, id } = setup();
   fs.writeFileSync(
     transcript,
-    '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/x/a.js"}}]}}\n'
+    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/x/a.js"}}]}}\n'
   );
   runWriter(transcript, id);
   const stateDir = path.join(proj, 'state');
@@ -38,7 +38,7 @@ test('writes state json only, no md, no rolling pointer', () => {
 
 test('second run consumes only the delta (idempotent, no dup)', () => {
   const { proj, transcript, id } = setup();
-  const line = '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/x/a.js"}}]}}\n';
+  const line = '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/x/a.js"}}]}}\n';
   fs.writeFileSync(transcript, line);
   runWriter(transcript, id);
   runWriter(transcript, id); // no new bytes
@@ -56,7 +56,7 @@ test('harvests tags from last_assistant_message and dedups against the transcrip
   // Transcript already carries one open loop (the flushed path)...
   fs.writeFileSync(
     transcript,
-    '{"type":"assistant","message":{"content":[{"type":"text","text":"OPEN-LOOP: enable the plugin"}]}}\n'
+    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"OPEN-LOOP: enable the plugin"}]}}\n'
   );
   // ...and stdin carries the same loop (unflushed path) plus a new decision.
   execFileSync('node', [WRITER], {
@@ -80,7 +80,7 @@ test('writer: drafts north-star from first substantive user message when charter
     tpath,
     L({ type: 'user', message: { role: 'user', content: '<system-reminder>x</system-reminder>' } }) +
       L({ type: 'user', message: { role: 'user', content: 'Build the task charter: preserve founding context across sessions.' } }) +
-      L({ type: 'assistant', message: { content: [{ type: 'text', text: 'DECISION: [scope] north-star + shards' }] } })
+      L({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'DECISION: [scope] north-star + shards' }] } })
   );
   const input = JSON.stringify({ session_id: sid, transcript_path: tpath, last_assistant_message: '' });
   execFileSync('node', [path.join(__dirname, '..', 'session-state-writer.js')], { input });

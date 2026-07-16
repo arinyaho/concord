@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { loadIntentConfig, fetchIntent } = require('../lib/intent');
+const { loadIntentConfig, fetchIntent } = require('../../core/intent');
 
 // readFileFn stub: maps the config path to a string, or throws ENOENT.
 function reader(contentByPath) {

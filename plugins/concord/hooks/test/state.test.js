@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { emptyModel, mergeModel } = require('../lib/state');
+const { emptyModel, mergeModel } = require('../../core/state');
 
 function delta(over) {
   return { decisions: [], openLoops: [], nexts: [], resolved: [], facts: [], ...over };

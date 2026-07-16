@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
-const review = require('../lib/review');
+const review = require('../../core/review');
 const cli = require('../review-cli'); // must be requirable without running main()
 
 const CLI = path.join(__dirname, '..', 'review-cli.js');
@@ -205,6 +205,25 @@ test('review-cli reset: no ledger for the ref -> reports nothing to reset, exits
 test('review-cli: missing ref argument exits non-zero with a message on stderr', () => {
   const dir = tmpDir();
   assert.throws(() => run(['show'], { env: { ...process.env, REVIEW_STATE_DIR: dir } }));
+});
+
+// Regression: core/review-cli.js's require.main === module guard is dead on
+// the only path anyone actually invokes -- the manifest and the
+// review-until-green command both run hooks/review-cli.js (the shim), whose
+// require.main is the shim itself, not core. Before the fix, the shim called
+// cli.main() bare, so a thrown error printed a raw Node stack trace to stderr
+// instead of the graceful `review-cli: <msg>` one-liner core intended. This
+// spawns the SHIM (CLI, the same path constant every other test in this file
+// uses) on a deterministic throw (missing required <ref> argument) and
+// asserts the operator-facing error contract: a clean `review-cli: ` prefixed
+// line, exit code 1, and no raw Node stack-trace frame.
+test('review-cli shim: a thrown error prints the graceful "review-cli: <msg>" line, not a raw stack trace', () => {
+  const dir = tmpDir();
+  const { stdout, stderr, status } = runCapture(['show'], { env: { ...process.env, REVIEW_STATE_DIR: dir } });
+  assert.strictEqual(status, 1);
+  assert.strictEqual(stdout, '');
+  assert.match(stderr, /^review-cli: /);
+  assert.ok(!/\n {4}at /.test(stderr), `stderr must not contain a raw Node stack-trace frame, got:\n${stderr}`);
 });
 
 function seedGatesRound(repo, dir, ref, correctness, verify) {
@@ -512,7 +531,7 @@ test('record: idempotent -- a second record for the same round re-prints and doe
 });
 
 test('record: tripping the park budget forces status parked and continue false, without charging a round', () => {
-  const { REVIEW_PARK_BUDGET_DEFAULT } = require('../lib/config');
+  const { REVIEW_PARK_BUDGET_DEFAULT } = require('../../core/config');
   const repo = initRepo(); const dir = tmpDir();
   const { env, n } = seedGatesRound(repo, dir, 'feat/x',
     { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:new', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' }] },
@@ -825,7 +844,7 @@ test('record: park-budget override on an intent-review round clears intentReview
   // and the override must not leave a stale intentReview:true riding along
   // with parked:true, or the command prompt would print "resolve and re-run"
   // intent guidance while the ledger truthfully refuses to resume until `unpark`.
-  const { REVIEW_PARK_BUDGET_DEFAULT } = require('../lib/config');
+  const { REVIEW_PARK_BUDGET_DEFAULT } = require('../../core/config');
   const repo = initRepoWithIntent('printf "REQ: retry three times"');
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
@@ -1538,7 +1557,7 @@ test('record: park-budget override on a gate-pending round clears gatePending, l
   // once REVIEW_PARK_BUDGET_DEFAULT prior parks are on the books -- and the
   // override must not leave a stale gatePending:true riding along with
   // parked:true, mirroring the existing intentReview override above.
-  const { REVIEW_PARK_BUDGET_DEFAULT } = require('../lib/config');
+  const { REVIEW_PARK_BUDGET_DEFAULT } = require('../../core/config');
   const repo = initRepo();
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };

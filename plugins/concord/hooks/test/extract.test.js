@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const { extractFacts, extractRationale } = require('../lib/extract');
+const { extractFacts, extractRationale } = require('../../core/extract');
 
 function loadFixture() {
   const p = path.join(__dirname, 'fixtures', 'sample.jsonl');
@@ -23,14 +23,14 @@ test('facts: edits and meaningful commands, noise filtered', () => {
 
 test('facts: allowlist captures infra tools, drops noise and variable-assignment setup', () => {
   const entries = [
-    { type: 'assistant', message: { content: [
-      { type: 'tool_use', name: 'Bash', input: { command: 'docker build -t x .' } },
-      { type: 'tool_use', name: 'Bash', input: { command: 'terraform apply' } },
-      { type: 'tool_use', name: 'Bash', input: { command: 'ls -la' } },
-      { type: 'tool_use', name: 'Bash', input: { command: 'F=/some/long/path' } },
-      { type: 'tool_use', name: 'Bash', input: { command: 'cd /w && git commit -m x' } },
-      { type: 'tool_use', name: 'Bash', input: { command: 'HAT="uv run --project /p hat"' } },
-    ] } },
+    { role: 'assistant', text: '', toolCalls: [
+      { name: 'Bash', input: { command: 'docker build -t x .' } },
+      { name: 'Bash', input: { command: 'terraform apply' } },
+      { name: 'Bash', input: { command: 'ls -la' } },
+      { name: 'Bash', input: { command: 'F=/some/long/path' } },
+      { name: 'Bash', input: { command: 'cd /w && git commit -m x' } },
+      { name: 'Bash', input: { command: 'HAT="uv run --project /p hat"' } },
+    ] },
   ];
   const facts = extractFacts(entries);
   assert.ok(facts.includes('ran: docker build -t x .')); // recall: infra tool captured
@@ -50,9 +50,7 @@ test('rationale: tagged lines routed by tag', () => {
 
 test('rationale: RESOLVED captured, untagged text ignored', () => {
   const entries = [
-    { type: 'assistant', message: { content: [
-      { type: 'text', text: 'just prose, no tag\nRESOLVED: verify the injector' },
-    ] } },
+    { role: 'assistant', text: 'just prose, no tag\nRESOLVED: verify the injector', toolCalls: [] },
   ];
   const r = extractRationale(entries);
   assert.deepEqual(r.resolved, ['verify the injector']);
@@ -61,9 +59,9 @@ test('rationale: RESOLVED captured, untagged text ignored', () => {
 
 test('task tool_use becomes a task fact', () => {
   const entries = [
-    { type: 'assistant', message: { content: [
-      { type: 'tool_use', name: 'TaskUpdate', input: { title: 'Build writer', status: 'completed' } },
-    ] } },
+    { role: 'assistant', text: '', toolCalls: [
+      { name: 'TaskUpdate', input: { title: 'Build writer', status: 'completed' } },
+    ] },
   ];
   assert.deepEqual(extractFacts(entries), ['task: Build writer [completed]']);
 });
