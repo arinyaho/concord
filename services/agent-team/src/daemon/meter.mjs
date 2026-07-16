@@ -43,7 +43,7 @@ const k = (x) => (x >= 1000 ? `${Math.round(x / 100) / 10}k` : `${x}`);
 
 export function formatSummaryLine(s) {
   const t = s.totals;
-  return `tokens: fresh ${k(t.freshInput)} - resumed(cached) ${k(t.resumedContext)} - created ${k(t.cacheCreation)} - out ${k(t.output)} - ~${k(Math.round(t.costWeightedInput))} input-equiv (${s.turnCount} turns)`;
+  return `tokens: fresh ${k(t.freshInput)} - cached ${k(t.resumedContext)} - created ${k(t.cacheCreation)} - out ${k(t.output)} - ~${k(Math.round(t.costWeightedInput))} input-equiv (${s.turnCount} turns)`;
 }
 
 export function formatTally(s) {
