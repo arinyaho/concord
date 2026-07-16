@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const CORE = path.join(__dirname, '..', '..', 'core');
-const BANNED = ['CLAUDE_', 'transcript_path', 'session_id', 'last_assistant_message', 'Task tool'];
+const BANNED = ['CLAUDE_', 'transcript_path', 'session_id', 'last_assistant_message', 'Task tool', '$ARGUMENTS'];
 
 function walk(dir) {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((d) => {

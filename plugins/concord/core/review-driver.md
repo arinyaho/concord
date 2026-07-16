@@ -2,7 +2,7 @@ The review CLI is invoked as `node "<review-cli>" <verb> ...`, where `<review-cl
 
 Concord IS the reviewer. The findings for every round come from the review subagents YOU spawn against the diff (steps 2-3) -- never from a bot, CI check, or human review posted on the PR. Do NOT `gh pr ready` and wait, do NOT poll or `ScheduleWakeup` for a Codex/Copilot/CI review to land, and do NOT treat any external review as this loop's rounds or gate. If the target happens to be a PR that also gets bot reviews, ignore them here; they are not your input and waiting on them is the failure this loop exists to replace. Once `round-start` says `work`, the very next thing you do is dispatch this round's review subagents in THIS session.
 
-Arguments: `$ARGUMENTS`
+Arguments: `<arguments>` -- the harness-resolved invocation arguments; each packaging layer wires this to its own argument-substitution token (the same way `<review-cli>` is wired to the CLI path).
 
 Determine the target ref: empty -> current branch (`git branch --show-current`); `resume <ref>` -> the ref after `resume`; else the arguments as-is. Optional base ref is the second token (default the repo's remote main branch, `origin/<main>` -- a local base can be stale (behind its remote), which sweeps unrelated merged changes into the diff).
 
