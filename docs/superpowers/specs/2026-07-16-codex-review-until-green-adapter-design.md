@@ -41,7 +41,9 @@ adapters/codex/
 plugins/concord-codex/            the Codex plugin, packaged FLAT — mirroring the as-built
                                   Claude Code plugin layout (plugins/concord/ is flat:
                                   .claude-plugin/ + commands/ + hooks/), NOT a packaging/ dir
-  .codex-plugin/plugin.json       manifest: name, version, commands (+ marketplace metadata)
+  .codex-plugin/plugin.json       manifest: name, version (+ marketplace metadata) — no `commands`
+                                  field; Codex auto-discovers `commands/*.md` by directory
+                                  convention, per the spike findings and the shipped manifest
   bin/review-cli.js               ENTRYPOINT SHIM (the Codex analogue of hooks/review-cli.js):
                                   requires core/review-cli.js, injects adapters/codex/statedir.js's
                                   resolver, and `if (require.main === module) cli.runMain(resolveFromCwd)`.
@@ -67,6 +69,8 @@ The neutral `core/review-driver.md` says, at each spawn site, "spawn ONE ... sub
 > Spawn each **review-class** subagent (correctness, verify, intent, gate-review, gate-verify, panel lens, adversarial-verify) as a subprocess: `codex exec --cd <repoRoot> --sandbox workspace-write "<the prompt>"`. Each is a fresh, clean-context Codex agent that reviews the diff and writes ONLY its JSON artifact to the state directory. For a parallel fan-out (the 5-lens panel, the 3-way adversarial verify), launch the `codex exec` calls concurrently as background processes and wait for all their artifact files before proceeding. For a sequential dependency ("wait for the file"), launch the dependent `codex exec` only after the prior artifact exists.
 >
 > Spawn the **fix subagent** (driver step 5) the same way — `codex exec --cd <repoRoot> --sandbox workspace-write "<the fix prompt>"` — but note it is different in kind: it EDITS arbitrary source files in the working tree (not just a JSON artifact), so `workspace-write` must cover the whole repo, not only the state dir. It runs strictly ONE AT A TIME (never backgrounded/parallel — two fixes may touch the same file), and after each fix subagent returns, the main Codex session runs `node <review-cli> commit-fix <ref> <id>` itself before spawning the next. The fix subagent still writes its `round-<n>-fix-<id>.json` result artifact as the driver requires.
+
+Superseded by the shipped invocation: the as-implemented spawn command also adds `--add-dir <stateDir>` (the state dir lives under `~/.codex`, outside the `--cd <repoRoot>` tree, so it must be granted explicitly) and `--skip-git-repo-check` (bypasses Codex's trusted-directory prompt, which would otherwise hang an unattended subprocess waiting on stdin it never receives). Both were discovered during implementation/E2E, not anticipated here — see `adapters/codex/spawn-include.md` and the E2E note for the current, correct invocation.
 
 The fix step is why `workspace-write` (not a read-only sandbox) is the required mode: review-class subagents only need to write under the state dir, but the fix subagent needs to edit repo source — so the single sandbox mode chosen must satisfy the stricter of the two.
 
