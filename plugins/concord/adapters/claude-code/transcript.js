@@ -48,13 +48,16 @@ function mapEntries(rawEntries) {
   for (const e of rawEntries || []) {
     const msg = e && e.message;
     if (!msg || (msg.role !== 'user' && msg.role !== 'assistant')) continue;
-    const content = Array.isArray(msg.content) ? msg.content : [];
     let text = '';
     const toolCalls = [];
-    for (const item of content) {
-      if (!item) continue;
-      if (item.type === 'text' && typeof item.text === 'string') text += (text ? '\n' : '') + item.text;
-      else if (item.type === 'tool_use') toolCalls.push({ name: item.name, input: item.input || {} });
+    if (typeof msg.content === 'string') {
+      text = msg.content;
+    } else if (Array.isArray(msg.content)) {
+      for (const item of msg.content) {
+        if (!item) continue;
+        if (item.type === 'text' && typeof item.text === 'string') text += (text ? '\n' : '') + item.text;
+        else if (item.type === 'tool_use') toolCalls.push({ name: item.name, input: item.input || {} });
+      }
     }
     out.push(normalizeEntry({ role: msg.role, text, toolCalls }));
   }

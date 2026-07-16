@@ -19,3 +19,12 @@ test('mapEntries lifts assistant text + tool calls into NeutralEntry', () => {
 test('mapEntries skips entries with no message', () => {
   assert.deepStrictEqual(mapEntries([{ type: 'system' }, {}]), []);
 });
+
+test('mapEntries maps string-shaped user content to text', () => {
+  const raw = [
+    { type: 'user', message: { role: 'user', content: 'do the thing' } },
+  ];
+  assert.deepStrictEqual(mapEntries(raw), [
+    { role: 'user', text: 'do the thing', toolCalls: [] },
+  ]);
+});
