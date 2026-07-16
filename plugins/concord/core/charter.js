@@ -1,8 +1,8 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const { NORTH_STAR_MAX, MIN_MSG_LEN, SESSIONS_MERGE_CAP, ACTIVE_SKIP_MINUTES } = require('../hooks/lib/config'); // Interim: Task 5 moves config/state into core -> change to ./config, ./state
-const { emptyModel, mergeModel } = require('../hooks/lib/state'); // Interim: Task 5 moves config/state into core -> change to ./config, ./state
+const { NORTH_STAR_MAX, MIN_MSG_LEN, SESSIONS_MERGE_CAP, ACTIVE_SKIP_MINUTES } = require('./config');
+const { emptyModel, mergeModel } = require('./state');
 const { extractFacts, extractRationale } = require('./extract');
 
 function charterPath(stateDir) {

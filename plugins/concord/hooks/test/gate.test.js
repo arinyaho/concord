@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const gate = require('../lib/gate');
+const gate = require('../../core/gate');
 
 function reader(map) {
   return (p) => {

@@ -3,11 +3,11 @@
 const fs = require('node:fs');
 const { execFileSync } = require('node:child_process');
 const path = require('node:path');
-const { resolveStateDirFromCwd } = require('./lib/statedir');
-const dodExec = require('./lib/dod-exec');
-const intentLib = require('./lib/intent');
-const gateLib = require('./lib/gate');
-const gatePanelLib = require('./lib/gate-panel');
+const { resolveStateDirFromCwd } = require('../adapters/claude-code/statedir');
+const dodExec = require('../core/dod-exec');
+const intentLib = require('../core/intent');
+const gateLib = require('../core/gate');
+const gatePanelLib = require('../core/gate-panel');
 const {
   targetSlug,
   readLedger,
@@ -18,7 +18,7 @@ const {
   beginRound,
   unparkFinding,
   resetUnreachable,
-} = require('./lib/review');
+} = require('../core/review');
 
 function resolveStateDir() {
   if (process.env.REVIEW_STATE_DIR) return process.env.REVIEW_STATE_DIR;
@@ -262,7 +262,7 @@ function main() {
   if (verb === 'gate-panel-round-record') {
     requireRef(ref, 'gate-panel-round-record');
     const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
-    const gc = require('./lib/gate-contract');
+    const gc = require('../core/gate-contract');
     const gateCfg = gateLib.loadGateConfig(repoRoot);
     if (!gateCfg || !gateCfg.panel) throw new Error('harness-failure: gate-panel-round-record: gate.panel is not enabled in review.config.json');
     const slug = targetSlug(ref);
@@ -499,9 +499,9 @@ function main() {
   if (verb === 'record') {
     requireRef(ref, 'record');
     const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
-    const gc = require('./lib/gate-contract');
-    const R = require('./lib/review');
-    const { REVIEW_PARK_BUDGET_DEFAULT } = require('./lib/config');
+    const gc = require('../core/gate-contract');
+    const R = require('../core/review');
+    const { REVIEW_PARK_BUDGET_DEFAULT } = require('../core/config');
     const slug = targetSlug(ref);
     let ledger = readLedger(stateDir, slug);
     const n = ledger && ledger.round;
@@ -611,7 +611,7 @@ function main() {
   if (verb === 'plan-fixes') {
     requireRef(ref, 'plan-fixes');
     const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
-    const gc = require('./lib/gate-contract');
+    const gc = require('../core/gate-contract');
     const slug = targetSlug(ref);
     const ledger = readLedger(stateDir, slug);
     if (!ledger || ledger.phase !== 'gates') throw new Error(`plan-fixes: expected phase "gates", got "${ledger && ledger.phase}"`);
@@ -650,7 +650,7 @@ function main() {
     if (missing.length) throw new Error(`harness-failure: coverage -- changed file(s) never examined: ${missing.join(', ')}`);
     const verdict = gc.parseVerifyVerdict(JSON.stringify({ rejected: vJson.rejected || [] }), candidates);
     const killed = new Set(verdict.rejectedIds);
-    const survivors = require('./lib/review').dedupeAgainstSeen(candidates, ledger.seen);
+    const survivors = require('../core/review').dedupeAgainstSeen(candidates, ledger.seen);
     const concluded = new Set((ledger.findings || []).filter((f) => f.status !== 'open').map((f) => f.id));
     const spanPresent = (file, span) => {
       if (!span) return true;

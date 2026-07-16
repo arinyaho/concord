@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const review = require('../lib/review');
+const review = require('../../core/review');
 
 const INJECTOR = path.join(__dirname, '..', 'review-injector.js');
 

@@ -2,7 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');
-const statedir = require('../lib/statedir');
+const statedir = require('../../adapters/claude-code/statedir');
 
 test('resolveStateDirFromCwd: mirrors Claude Code project-dir encoding under CLAUDE_CONFIG_DIR', () => {
   const prevConfig = process.env.CLAUDE_CONFIG_DIR;

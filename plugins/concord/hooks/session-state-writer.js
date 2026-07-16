@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { readDelta, mapEntries } = require('../adapters/claude-code/transcript');
 const { extractFacts, extractRationale, extractRationaleText } = require('../core/extract');
-const { emptyModel, mergeModel } = require('./lib/state');
+const { emptyModel, mergeModel } = require('../core/state');
 const { writeNorthStarIfAbsent, firstSubstantiveUserMessage, readNorthStar } = require('../core/charter');
 
 function main() {

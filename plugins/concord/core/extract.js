@@ -1,5 +1,5 @@
 'use strict';
-const { TAG_RE, MEANINGFUL_BASH_RE } = require('../hooks/lib/config');
+const { TAG_RE, MEANINGFUL_BASH_RE } = require('./config');
 
 // Facts from tool calls: edited files, meaningful commands, task changes.
 function extractFacts(entries) {

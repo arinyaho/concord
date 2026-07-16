@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const gatePanel = require('../lib/gate-panel');
+const gatePanel = require('../../core/gate-panel');
 
 test('emptyGatePanel: starting state', () => {
   assert.deepStrictEqual(gatePanel.emptyGatePanel(), { status: 'idle', round: 0, dryStreak: 0, confirmed: [], rejectedIds: [] });

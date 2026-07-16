@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 const fs = require('node:fs');
-const { resolveStateDirFromTranscript } = require('./lib/statedir');
-const { listLedgers, renderReviewReport } = require('./lib/review');
+const { resolveStateDirFromTranscript } = require('../adapters/claude-code/statedir');
+const { listLedgers, renderReviewReport } = require('../core/review');
 
 function main() {
   const { transcript_path } = JSON.parse(fs.readFileSync(0, 'utf8'));

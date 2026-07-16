@@ -2,7 +2,7 @@
 'use strict';
 const fs = require('node:fs');
 const { readNorthStar, setNorthStar, mergeSessions, renderCharter } = require('../core/charter');
-const { resolveStateDirFromCwd } = require('./lib/statedir');
+const { resolveStateDirFromCwd } = require('../adapters/claude-code/statedir');
 
 function resolveStateDir() {
   if (process.env.CHARTER_STATE_DIR) return process.env.CHARTER_STATE_DIR;

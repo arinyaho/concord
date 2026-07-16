@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const dodExec = require('../lib/dod-exec');
+const dodExec = require('../../core/dod-exec');
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'dod-exec-'));
