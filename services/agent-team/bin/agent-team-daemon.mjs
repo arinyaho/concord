@@ -12,6 +12,7 @@ import { createQueue } from "../src/daemon/queue.mjs";
 import { buildLaunchArgv, runLaunchJob } from "../src/daemon/launch_job.mjs";
 import { diagnose } from "../src/daemon/diagnose.mjs";
 import { replyForOutcome } from "../src/daemon/outcome.mjs";
+import { makeOutcomeRouter } from "../src/daemon/outcome_router.mjs";
 import { startCredsRefresh } from "../src/daemon/creds_refresh.mjs";
 import { loadStore, saveThread } from "../src/daemon/session_store.mjs";
 import { runRole } from "../src/daemon/roles.mjs";
@@ -67,12 +68,10 @@ async function main() {
 
   const queue = createQueue({
     cap: cfg.cap, queueMax: cfg.queueMax, jobTimeoutMs: cfg.jobTimeoutMs, runJob, dockerKill,
-    onOutcome: (job, outcome) => {
-      const p = job.onDone
-        ? job.onDone(outcome)
-        : replyForOutcome(job, outcome, { reply: (m, t) => m.reply(t), diagnose: boundDiagnose, model: cfg.diagnoseModel });
-      Promise.resolve(p).catch((e) => console.error(`outcome handling failed: ${e.message}`));
-    },
+    onOutcome: makeOutcomeRouter({
+      replyForOutcome: (job, outcome) => replyForOutcome(job, outcome, { reply: (m, t) => m.reply(t), diagnose: boundDiagnose, model: cfg.diagnoseModel }),
+      onError: (e) => console.error(`outcome handling failed: ${e.message}`),
+    }),
   });
 
   const { Client, GatewayIntentBits } = await import("discord.js");
