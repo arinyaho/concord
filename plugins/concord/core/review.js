@@ -193,7 +193,7 @@ function dedupeAgainstSeen(findings, seen) {
 // Oscillation detection (a finding toggling fixed -> reopened -> fixed) is
 // deliberately out of scope for this shell (deferred per the plan).
 function decideTermination(roundOutcome) {
-  const { dodPassed, openFindingsCount, specDoubtScope, noProgress, budgetSpent, maxRounds, fixedCount = 0, parkedCount = 0, intentReviewCount = 0, gateOpenCount = 0, panelConfigured = false, panelDone = false } = roundOutcome;
+  const { dodPassed, openFindingsCount, specDoubtScope, noProgress, budgetSpent, maxRounds, fixedCount = 0, parkedCount = 0, intentReviewCount = 0, gateOpenCount = 0, panelConfigured = false, panelDone = false, hasDoD = true, dryStreak = 0 } = roundOutcome;
 
   if (specDoubtScope === 'whole-diff') {
     return { continue: false, converged: false, parked: false, abandoned: true, reason: 'spec-doubt invalidates the whole diff' };
@@ -203,6 +203,29 @@ function decideTermination(roundOutcome) {
   }
   if (intentReviewCount > 0) {
     return { continue: false, converged: false, parked: false, abandoned: false, intentReview: true, reason: 'open intent finding(s) need a human decision (design conformance)' };
+  }
+  // Dry-round convergence for a no-DoD (e.g. file) target. A diffless target has
+  // no executable DoD gate to run-and-pass, so "clean" cannot be defined by
+  // dodPassed. Instead it converges after N consecutive rounds that surfaced
+  // ZERO new findings (dryStreak), with no findings still open. The boundary
+  // hooks (open GATE finding, un-run holistic panel) are honored identically to
+  // the git clause below. This branch runs ONLY when hasDoD === false; for a git
+  // target (hasDoD truthy/absent) it is skipped entirely and dryStreak is never
+  // read, so the git path is byte-identical to before this feature.
+  if (hasDoD === false) {
+    if (openFindingsCount === 0 && dryStreak >= 2) {
+      if (gateOpenCount > 0) {
+        return { continue: false, converged: false, parked: false, abandoned: false, gatePending: true, reason: 'dry-round clean, but open GATE finding(s) need a human decision (design/AC/cross-context)' };
+      }
+      if (panelConfigured && !panelDone) {
+        return { continue: false, converged: false, parked: false, abandoned: false, panelPending: true, reason: 'dry-round clean, but the holistic GATE panel has not run yet this convergence attempt' };
+      }
+      return { continue: false, converged: true, parked: false, abandoned: false, reason: `no new findings for ${dryStreak} consecutive rounds (dry, no-DoD target)` };
+    }
+    if (budgetSpent >= maxRounds) {
+      return { continue: false, converged: false, parked: true, abandoned: false, reason: 'round budget exhausted before the no-DoD target ran dry' };
+    }
+    return { continue: true, converged: false, parked: false, abandoned: false, reason: 'no-DoD target: findings remain or the dry streak is below threshold' };
   }
   if (dodPassed && openFindingsCount === 0 && fixedCount === 0) {
     if (gateOpenCount > 0) {
@@ -284,11 +307,12 @@ const TERMINAL_STATUSES = new Set(['clean', 'parked', 'abandoned']);
 //     itself so a caller can distinguish "the round number advanced" from "the
 //     harness is about to do work this iteration" without re-deriving it from
 //     `noOp`/`terminal`.
-function beginRound(ledger, diffContentHash) {
+function beginRound(ledger, diffContentHash, opts = {}) {
+  const { reReviewOnStableContent = false } = opts;
   if (TERMINAL_STATUSES.has(ledger.status)) {
     return { ledger, noOp: true, workHappened: false, terminal: true };
   }
-  const noOp = ledger.diff_content_hash !== null && ledger.diff_content_hash === diffContentHash;
+  const noOp = !reReviewOnStableContent && ledger.diff_content_hash !== null && ledger.diff_content_hash === diffContentHash;
   const next = {
     ...ledger,
     round: noOp ? ledger.round : ledger.round + 1,
@@ -373,6 +397,20 @@ function applyRoundOutcome(ledger, outcome) {
     priorOpenIds.size === currentOpenIds.size && Array.from(priorOpenIds).every((id) => currentOpenIds.has(id));
   const noProgress = fixedIds.size === 0 && sameOpenSet;
 
+  // The count of genuinely NEW findings this round -- a survivor that was not
+  // already open going in and is not a reopen. This is the SINGLE definition of
+  // "new" (also fed to the history entry below); the dry-round streak consumes
+  // it, it is never recomputed with a second definition.
+  const newCount = survivors.filter((f) => !priorOpenIds.has(f.id) && !f.reopened).length;
+  // Dry-streak: consecutive zero-new rounds. Advances on a zero-new round,
+  // resets to 0 on any new finding. Only decideTermination's no-DoD branch reads
+  // it; a git target ignores it, so maintaining it here is inert for git runs.
+  const dryStreak = newCount === 0 ? (ledger.dryStreak || 0) + 1 : 0;
+  // hasDoD is derived from the persisted target: an absent target, or any git
+  // target, is hasDoD=true (the existing DoD-gated path); only a target that
+  // explicitly set hasDoD:false (the file target) takes the dry-round branch.
+  const hasDoD = ledger.target ? ledger.target.hasDoD !== false : true;
+
   const decision = decideTermination({
     dodPassed: !!outcome.dodPassed,
     openFindingsCount,
@@ -386,6 +424,8 @@ function applyRoundOutcome(ledger, outcome) {
     gateOpenCount: outcome.gateOpenCount || 0,
     panelConfigured: !!outcome.panelConfigured,
     panelDone: !!outcome.panelDone,
+    hasDoD,
+    dryStreak,
   });
 
   const status = decision.converged ? 'clean' : decision.parked ? 'parked' : decision.abandoned ? 'abandoned' : decision.intentReview ? 'intent-review' : decision.gatePending ? 'gate-pending' : decision.panelPending ? 'gate-panel-pending' : 'converging';
@@ -394,7 +434,7 @@ function applyRoundOutcome(ledger, outcome) {
     {
       round: ledger.round,
       fixes: fixedIds.size,
-      new: survivors.filter((f) => !priorOpenIds.has(f.id) && !f.reopened).length,
+      new: newCount,
       killed: killedIds.size,
     },
   ]);
@@ -405,6 +445,7 @@ function applyRoundOutcome(ledger, outcome) {
     findings,
     seen: (ledger.seen || []).concat(newSeenEntries),
     history,
+    dryStreak,
   };
 
   return { ledger: next, decision };

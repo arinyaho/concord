@@ -797,3 +797,146 @@ test('decideTermination: open CORRECTNESS findings ignore gate count (loop conti
   });
   assert.strictEqual(d.continue, true); // gate does NOT terminate mid-loop
 });
+
+// ---- dry-round convergence for no-DoD (file) targets (Task 3) ----
+
+test('decideTermination: hasDoD git path unchanged (converges on a clean stable round)', () => {
+  // hasDoD omitted -> defaults to the git path; a clean stable round converges
+  // exactly as before, and dryStreak is never consulted.
+  const d = review.decideTermination({ dodPassed: true, openFindingsCount: 0, fixedCount: 0, budgetSpent: 1, maxRounds: 5 });
+  assert.strictEqual(d.converged, true);
+});
+
+test('decideTermination: git path ignores dryStreak entirely (byte-identical to no-dryStreak call)', () => {
+  // A git round that would NOT converge (dodPassed false) must stay continue
+  // regardless of a stray dryStreak value -- the git clause never reads it.
+  const withStreak = review.decideTermination({ dodPassed: false, openFindingsCount: 0, dryStreak: 5, budgetSpent: 1, maxRounds: 5 });
+  const without = review.decideTermination({ dodPassed: false, openFindingsCount: 0, budgetSpent: 1, maxRounds: 5 });
+  assert.deepStrictEqual(withStreak, without);
+});
+
+test('decideTermination: no-DoD target needs 2 dry rounds to converge', () => {
+  const one = review.decideTermination({ hasDoD: false, openFindingsCount: 0, dryStreak: 1, budgetSpent: 1, maxRounds: 5 });
+  assert.strictEqual(one.converged, false);
+  assert.strictEqual(one.continue, true);
+  const two = review.decideTermination({ hasDoD: false, openFindingsCount: 0, dryStreak: 2, budgetSpent: 2, maxRounds: 5 });
+  assert.strictEqual(two.converged, true);
+  assert.strictEqual(two.continue, false);
+});
+
+test('decideTermination: no-DoD target with open findings does not converge even at dryStreak>=2', () => {
+  const d = review.decideTermination({ hasDoD: false, openFindingsCount: 1, dryStreak: 2, budgetSpent: 2, maxRounds: 5 });
+  assert.strictEqual(d.converged, false);
+  assert.strictEqual(d.continue, true);
+});
+
+test('decideTermination: no-DoD target parks when the round budget is exhausted before running dry', () => {
+  const d = review.decideTermination({ hasDoD: false, openFindingsCount: 1, dryStreak: 0, budgetSpent: 5, maxRounds: 5 });
+  assert.strictEqual(d.parked, true);
+  assert.strictEqual(d.continue, false);
+  assert.strictEqual(d.converged, false);
+});
+
+test('decideTermination: no-DoD dry-clean but an open GATE finding -> gatePending (same boundary hook as git)', () => {
+  const d = review.decideTermination({ hasDoD: false, openFindingsCount: 0, dryStreak: 2, gateOpenCount: 1, budgetSpent: 2, maxRounds: 5 });
+  assert.strictEqual(d.gatePending, true);
+  assert.strictEqual(d.converged, false);
+  assert.strictEqual(d.continue, false);
+});
+
+test('decideTermination: no-DoD dry-clean but the holistic panel has not run -> panelPending', () => {
+  const d = review.decideTermination({ hasDoD: false, openFindingsCount: 0, dryStreak: 2, panelConfigured: true, panelDone: false, budgetSpent: 2, maxRounds: 5 });
+  assert.strictEqual(d.panelPending, true);
+  assert.strictEqual(d.converged, false);
+  assert.strictEqual(d.continue, false);
+});
+
+test('applyRoundOutcome: dryStreak increments on a zero-new round and resets on a new finding (no-DoD target)', () => {
+  let ledger = review.emptyLedger({ kind: 'local', ref: 'file:n.md', type: 'file', hasDoD: false });
+  ledger = review.beginRound(ledger, 'h1').ledger;
+  // No new findings -> dryStreak advances to 1.
+  ledger = review.applyRoundOutcome(ledger, { findings: [], fixedIds: [], parkedIds: [], killedIds: [] }).ledger;
+  assert.strictEqual(ledger.dryStreak, 1);
+  // A genuinely new finding -> dryStreak resets to 0.
+  ledger = review.beginRound(ledger, 'h2').ledger;
+  ledger = review.applyRoundOutcome(ledger, {
+    findings: [{ id: 'docreview:x', gate: 'correctness', file: 'n.md', span: 's', summary: 't', status: 'confirmed' }],
+    fixedIds: [], parkedIds: [], killedIds: [],
+  }).ledger;
+  assert.strictEqual(ledger.dryStreak, 0);
+});
+
+test('applyRoundOutcome: two consecutive zero-new rounds converge a no-DoD target (dryStreak reaches 2)', () => {
+  let ledger = review.emptyLedger({ kind: 'local', ref: 'file:n.md', type: 'file', hasDoD: false });
+  ledger = review.beginRound(ledger, 'h1').ledger;
+  let r = review.applyRoundOutcome(ledger, { findings: [], fixedIds: [], parkedIds: [], killedIds: [] });
+  assert.strictEqual(r.ledger.dryStreak, 1);
+  assert.strictEqual(r.decision.converged, false);
+  assert.strictEqual(r.decision.continue, true);
+  ledger = review.beginRound(r.ledger, 'h2').ledger;
+  r = review.applyRoundOutcome(ledger, { findings: [], fixedIds: [], parkedIds: [], killedIds: [] });
+  assert.strictEqual(r.ledger.dryStreak, 2);
+  assert.strictEqual(r.decision.converged, true);
+  assert.strictEqual(r.ledger.status, 'clean');
+});
+
+test('applyRoundOutcome: git target (target.hasDoD true) never sets a truthy dryStreak path -- git convergence rules apply', () => {
+  // A git target with a zero-new, zero-fix, DoD-passed round converges via the
+  // git clause; the presence of a dryStreak counter must not change that.
+  let ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' }); // no target.hasDoD -> git
+  ledger = review.beginRound(ledger, 'h').ledger;
+  const { decision } = review.applyRoundOutcome(ledger, {
+    dodPassed: true, findings: [], fixedIds: [], parkedIds: [], killedIds: [], specDoubtScope: 'none',
+  });
+  assert.strictEqual(decision.converged, true); // git path, unchanged
+});
+
+test('applyRoundOutcome: roundOutcome threading -- ledger with an extended target round-trips dryStreak through readLedger/writeLedger', () => {
+  const dir = tmpStateDir();
+  const slug = review.targetSlug('file:n.md');
+  let ledger = review.emptyLedger({ kind: 'local', ref: 'file:n.md', type: 'file', hasDoD: false });
+  ledger = review.beginRound(ledger, 'h1').ledger;
+  ledger = review.applyRoundOutcome(ledger, { findings: [], fixedIds: [], parkedIds: [], killedIds: [] }).ledger;
+  review.writeLedger(dir, slug, ledger);
+  const back = review.readLedger(dir, slug);
+  assert.strictEqual(back.dryStreak, 1);
+  assert.strictEqual(back.target.hasDoD, false);
+  assert.strictEqual(back.target.type, 'file');
+  assert.deepStrictEqual(back, ledger); // full-fidelity round-trip
+});
+
+// ---- beginRound: reReviewOnStableContent flag (Task 7) ----
+
+test('beginRound: reReviewOnStableContent:true with identical hash is NOT a no-op -- round advances (file target fluke-guard)', () => {
+  // A file target's 2nd consecutive dry round runs on identical content.
+  // Without this flag, beginRound would no-op and dryStreak could never reach 2.
+  let ledger = review.emptyLedger({ kind: 'local', ref: 'file:n.md', type: 'file', hasDoD: false });
+  ledger = review.beginRound(ledger, 'same-hash').ledger; // round 1
+  const { ledger: r2, noOp, workHappened } = review.beginRound(ledger, 'same-hash', { reReviewOnStableContent: true });
+  assert.strictEqual(noOp, false, 'reReviewOnStableContent:true must not no-op on identical content');
+  assert.strictEqual(workHappened, true, 'reReviewOnStableContent:true must mark workHappened');
+  assert.strictEqual(r2.round, 2, 'round must advance to 2');
+  assert.strictEqual(r2.diff_content_hash, 'same-hash');
+});
+
+test('beginRound: default (no opts) with identical hash is still a no-op -- git path unchanged', () => {
+  // Confirm the default behavior (reReviewOnStableContent=false) is byte-identical
+  // to the pre-Task-7 behavior: an unchanged diff hash is still a no-op for git targets.
+  let ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  ledger = review.beginRound(ledger, 'same-hash').ledger;
+  const { noOp } = review.beginRound(ledger, 'same-hash');
+  assert.strictEqual(noOp, true, 'default (git) path must remain a no-op on identical content');
+});
+
+test('applyRoundOutcome + readLedger: a pre-existing ledger without dryStreak reads dryStreak as absent (backward-compat, treated as 0)', () => {
+  const dir = tmpStateDir();
+  const slug = review.targetSlug('feat/legacy');
+  // emptyLedger has NO dryStreak field and NO target.hasDoD (git) -- simulates a
+  // ledger written before this feature existed.
+  const legacy = review.emptyLedger({ kind: 'local', ref: 'feat/legacy' });
+  assert.strictEqual('dryStreak' in legacy, false);
+  review.writeLedger(dir, slug, legacy);
+  const back = review.readLedger(dir, slug);
+  assert.strictEqual(back.dryStreak, undefined); // absent -> read sites default it to 0
+  assert.strictEqual(back.target.hasDoD, undefined); // absent -> derived as git/true
+});

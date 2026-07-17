@@ -2112,3 +2112,291 @@ test('renderHandoff (via record): reports GATE panel round count and confirmed c
   assert.match(rec.handoff, /Broad-review panel: 3 round\(s\), 1 confirmed/);
 });
 
+// ---- file target round-start tests (Task 2) ----
+
+test('round-start file: file:<path> target produces decision work, targetType file, writes file content as diff', () => {
+  const dir = tmpDir();
+  // Use a temp directory with NO git init (the whole point of a file target).
+  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-'));
+  fs.writeFileSync(path.join(fileDir, 'note.md'), '# Design\nclaim without evidence\n');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
+  const out = JSON.parse(run(['round-start', 'file:note.md'], { env }));
+  assert.strictEqual(out.decision, 'work');
+  assert.strictEqual(out.targetType, 'file');
+  const ledger = review.readLedger(dir, review.targetSlug('file:note.md'));
+  assert.strictEqual(ledger.phase, 'gates');
+  assert.strictEqual(ledger.target.type, 'file');
+  assert.strictEqual(ledger.target.hasDoD, false);
+  // The diff file must contain the file content (not a git diff).
+  const diffText = fs.readFileSync(path.join(dir, `round-${ledger.round}-diff.txt`), 'utf8');
+  assert.ok(diffText.includes('claim without evidence'), 'diff file must contain the note content');
+  assert.ok(diffText.includes('===== note.md ====='), 'diff file must contain the section header');
+  assert.ok(!diffText.includes('diff --git'), 'diff file must not be a git diff');
+  // No .git directory must have been created.
+  assert.ok(!fs.existsSync(path.join(fileDir, '.git')), 'file target must not create a .git directory');
+});
+
+// finding #1: `file:<arg>` is the SINGLE file-target surface; <arg> may be a
+// literal path OR a simple single-'*' glob, routed through the same resolveGlob.
+// (The old `--files` flag was dropped -- it only worked when a positional ref
+// preceded it and crashed as a bare selector, and the test that "covered" it
+// passed BOTH file:note.md AND --files note.md so --files was inert.)
+test('round-start file:<glob> resolves ALL matching files (sorted) into the review text', () => {
+  const dir = tmpDir();
+  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-'));
+  // Two .md files (write z before a to prove sort, not FS order) + a non-match.
+  fs.writeFileSync(path.join(fileDir, 'zeta.md'), 'ZETA doc body\n');
+  fs.writeFileSync(path.join(fileDir, 'alpha.md'), 'ALPHA doc body\n');
+  fs.writeFileSync(path.join(fileDir, 'readme.txt'), 'not markdown\n');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
+  const out = JSON.parse(run(['round-start', 'file:*.md'], { env }));
+  assert.strictEqual(out.decision, 'work');
+  assert.strictEqual(out.targetType, 'file');
+  const ledger = review.readLedger(dir, review.targetSlug('file:*.md'));
+  const diffText = fs.readFileSync(path.join(dir, `round-${ledger.round}-diff.txt`), 'utf8');
+  // BOTH .md files present, the .txt absent.
+  assert.ok(diffText.includes('ALPHA doc body'), 'glob must pull in alpha.md');
+  assert.ok(diffText.includes('ZETA doc body'), 'glob must pull in zeta.md');
+  assert.ok(!diffText.includes('not markdown'), 'glob must not pull in readme.txt');
+  // Sorted: alpha.md header precedes zeta.md header.
+  const aIdx = diffText.indexOf('===== alpha.md =====');
+  const zIdx = diffText.indexOf('===== zeta.md =====');
+  assert.ok(aIdx !== -1 && zIdx !== -1, 'both section headers must be present');
+  assert.ok(aIdx < zIdx, 'alpha.md must precede zeta.md (sorted order)');
+  // No .git touched in the non-git dir.
+  assert.ok(!fs.existsSync(path.join(fileDir, '.git')), 'file:<glob> target must not create .git');
+});
+
+test('round-start file:<literal> resolves a single literal path into the review text', () => {
+  const dir = tmpDir();
+  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-'));
+  fs.writeFileSync(path.join(fileDir, 'note.md'), 'literal path body\n');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
+  const out = JSON.parse(run(['round-start', 'file:note.md'], { env }));
+  assert.strictEqual(out.decision, 'work');
+  assert.strictEqual(out.targetType, 'file');
+  const ledger = review.readLedger(dir, review.targetSlug('file:note.md'));
+  const diffText = fs.readFileSync(path.join(dir, `round-${ledger.round}-diff.txt`), 'utf8');
+  assert.ok(diffText.includes('literal path body'), 'literal file: path must be read into the review text');
+});
+
+test('round-start file:<glob> that matches nothing errors clearly (never silently converges on empty)', () => {
+  const dir = tmpDir();
+  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-'));
+  fs.writeFileSync(path.join(fileDir, 'note.txt'), 'only a txt here\n'); // no .md to match
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
+  const { stderr, status } = runCapture(['round-start', 'file:*.md'], { env });
+  assert.strictEqual(status, 1, 'a no-match file glob must exit non-zero');
+  assert.match(stderr, /matched no files/, 'error must clearly state the glob matched no files');
+  assert.match(stderr, /^review-cli: /, 'must use the graceful operator-facing error line');
+});
+
+// finding #2: the plan-fixes coverage check greps `+++ b/<path>` diff headers.
+// For a file target, round-<n>-diff.txt holds raw document content, so a doc
+// that QUOTES a unified diff (a line starting `+++ b/...`) would otherwise mint
+// a phantom "changed file" the doc reviewer never examined and throw a spurious
+// coverage harness-failure -- defeating the exact spec/design-doc review the
+// feature exists for. The coverage check must be skipped for a file target.
+test('plan-fixes file target: doc content quoting a `+++ b/` diff line does NOT trigger a coverage harness-failure', () => {
+  const dir = tmpDir();
+  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-'));
+  // A design doc that legitimately quotes a unified diff -- the `+++ b/...`
+  // line is the trap: a git target would read it as a changed file.
+  const noteBody = [
+    '# Design Note',
+    'The patch below illustrates the change:',
+    '```',
+    '--- a/src/foo.js',
+    '+++ b/src/foo.js',
+    '@@ -1 +1 @@',
+    '-old',
+    '+new',
+    '```',
+    '',
+  ].join('\n');
+  const notePath = path.join(fileDir, 'note.md');
+  fs.writeFileSync(notePath, noteBody + '\n');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
+  const ref = 'file:note.md';
+
+  const rs = JSON.parse(run(['round-start', ref], { env }));
+  assert.strictEqual(rs.targetType, 'file');
+  const n = rs.round;
+  // Sanity: the trap line IS present in the review text.
+  const diffText = fs.readFileSync(path.join(dir, `round-${n}-diff.txt`), 'utf8');
+  assert.ok(diffText.includes('+++ b/src/foo.js'), 'the doc must contain the quoted +++ b/ diff line');
+
+  // Reviewer examines note.md only (it never "examined" src/foo.js, which does
+  // not exist) and finds nothing.
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['note.md'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+
+  // Before the fix this threw `harness-failure: coverage -- changed file(s)
+  // never examined: src/foo.js`. It must now succeed cleanly.
+  const out = JSON.parse(run(['plan-fixes', ref], { env }));
+  assert.deepStrictEqual(out.fixes, [], 'plan-fixes must run without a coverage harness-failure for a file target');
+});
+
+test('round-start file: persists target.type, target.hasDoD, target.spec in the ledger', () => {
+  const dir = tmpDir();
+  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-'));
+  fs.writeFileSync(path.join(fileDir, 'doc.md'), 'hello\n');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
+  run(['round-start', 'file:doc.md'], { env });
+  const ledger = review.readLedger(dir, review.targetSlug('file:doc.md'));
+  assert.strictEqual(ledger.target.type, 'file');
+  assert.strictEqual(ledger.target.hasDoD, false);
+  assert.deepStrictEqual(ledger.target.spec, { files: ['doc.md'] });
+});
+
+test('round-start file: a git target still produces targetType git in the work decision', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.strictEqual(out.decision, 'work');
+  assert.strictEqual(out.targetType, 'git');
+  const ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.strictEqual(ledger.target.type, 'git');
+  assert.strictEqual(ledger.target.hasDoD, true);
+});
+
+// ---------------------------------------------------------------------------
+// Task 4: record non-git fixed-signal
+// ---------------------------------------------------------------------------
+
+function seedFileTargetFixesRound(dir, ref, fileRef, correctness, verify) {
+  const slug = review.targetSlug(ref);
+  let ledger = review.emptyLedger({ kind: 'file', ref, type: 'file', hasDoD: false, spec: { files: [fileRef] } });
+  ledger = review.beginRound(ledger, 'hash1').ledger;
+  ledger = { ...ledger, phase: 'fixes', planned: correctness.findings.map((f) => f.id), dod: { passed: true, deferred: true, results: [] }, gateApplied: false };
+  review.writeLedger(dir, slug, ledger);
+  const n = ledger.round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify(correctness));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify(verify));
+  return { n, slug };
+}
+
+test('record file target: fix artifact with edited:true marks finding fixed with file-edit sentinel', () => {
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  const ref = 'file:note.md';
+  const { n, slug } = seedFileTargetFixesRound(dir, ref, 'note.md',
+    { status: 'ok', examined: ['note.md'], findings: [
+      { id: 'docreview:unsupported-claim', gate: 'correctness', file: 'note.md', span: 'claim without evidence', summary: 'Claim lacks citation.' },
+    ]},
+    { status: 'ok', rejected: [] }
+  );
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-docreview:unsupported-claim.json`), JSON.stringify({ status: 'ok', edited: true, files: ['note.md'] }));
+  const out = JSON.parse(run(['record', ref], { env }));
+  const l = review.readLedger(dir, slug);
+  const f = l.findings.find((x) => x.id === 'docreview:unsupported-claim');
+  assert.strictEqual(f.status, 'fixed');
+  assert.strictEqual(f.fix_commit, 'file-edit');
+  assert.strictEqual(out.decision.continue, true);
+  assert.strictEqual(out.decision.converged, false);
+});
+
+test('record file target: fix artifact with edited:false parks needs-decision, no fix_commit', () => {
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  const ref = 'file:note.md';
+  const { n, slug } = seedFileTargetFixesRound(dir, ref, 'note.md',
+    { status: 'ok', examined: ['note.md'], findings: [
+      { id: 'docreview:unfixed', gate: 'correctness', file: 'note.md', span: 'bad claim', summary: 'Still wrong.' },
+    ]},
+    { status: 'ok', rejected: [] }
+  );
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-docreview:unfixed.json`), JSON.stringify({ status: 'ok', edited: false }));
+  run(['record', ref], { env });
+  const l = review.readLedger(dir, slug);
+  const f = l.findings.find((x) => x.id === 'docreview:unfixed');
+  assert.strictEqual(f.status, 'parked');
+  assert.ok(!f.fix_commit, 'parked finding must not carry fix_commit');
+});
+
+test('record file target: missing fix artifact parks needs-decision', () => {
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  const ref = 'file:note.md';
+  const { n, slug } = seedFileTargetFixesRound(dir, ref, 'note.md',
+    { status: 'ok', examined: ['note.md'], findings: [
+      { id: 'docreview:no-artifact', gate: 'correctness', file: 'note.md', span: 'claim', summary: 'Missing fix.' },
+    ]},
+    { status: 'ok', rejected: [] }
+  );
+  void n;
+  run(['record', ref], { env });
+  const l = review.readLedger(dir, slug);
+  const f = l.findings.find((x) => x.id === 'docreview:no-artifact');
+  assert.strictEqual(f.status, 'parked');
+});
+
+// finding #3: a RESUMED file target must run the same target-agnostic resume
+// housekeeping git resume does -- purge the interrupted round's artifacts and
+// reset planned[] -- otherwise a stale `round-N-fix-<id>.json {edited:true}`
+// left by the interrupted attempt false-signals in record (a file target's ONLY
+// fixed-signal is that artifact -- there is no git journal to override it),
+// letting dryStreak convergence declare clean off stale bookkeeping. This drives
+// the real resume path: round-start force-sets phase='gates' on a fresh run, so
+// a second `round-start file:X` after an interruption sees resumed=true.
+test('round-start file target resume: a stale fix artifact from the interrupted round is purged (cannot false-signal)', () => {
+  const dir = tmpDir();
+  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-'));
+  const notePath = path.join(fileDir, 'note.md');
+  fs.writeFileSync(notePath, '# Note\nan unsupported claim\n');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
+  const ref = 'file:note.md';
+  const slug = review.targetSlug(ref);
+
+  // Fresh round-start -> phase 'gates', round N.
+  const rs1 = JSON.parse(run(['round-start', ref], { env }));
+  assert.strictEqual(rs1.targetType, 'file');
+  const n = rs1.round;
+
+  // Simulate an interrupted fix attempt: the ledger is mid-round at phase
+  // 'fixes' with a planned finding, and a stale edited:true fix artifact sits on
+  // disk from the fixer that ran before the crash.
+  let l = review.readLedger(dir, slug);
+  l = { ...l, phase: 'fixes', planned: ['docreview:stale'] };
+  review.writeLedger(dir, slug, l);
+  const staleFix = path.join(dir, `round-${n}-fix-docreview:stale.json`);
+  fs.writeFileSync(staleFix, JSON.stringify({ status: 'ok', edited: true, files: ['note.md'] }));
+  assert.ok(fs.existsSync(staleFix), 'precondition: stale fix artifact is present before resume');
+
+  // Resume: a second round-start for the same ref re-drives round N. It must run
+  // deleteRoundArtifacts(N) and reset planned[] even though this is a file target.
+  const rs2 = JSON.parse(run(['round-start', ref], { env }));
+  assert.strictEqual(rs2.decision, 'work', 'resume must re-drive the round');
+  assert.strictEqual(rs2.round, n, 'resume re-drives the SAME round, not a new one');
+
+  // The stale fix artifact is gone -> it can no longer false-mark the finding
+  // fixed in record.
+  assert.ok(!fs.existsSync(staleFix), 'stale fix artifact must be purged on a file-target resume');
+  const after = review.readLedger(dir, slug);
+  assert.deepStrictEqual(after.planned, [], 'planned[] must be reset on a file-target resume');
+});
+
+test('record git target: fixed-signal comes from the journal sha, not the fix artifact (regression lock)', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/git-record-regression',
+    { status: 'ok', examined: ['a.txt'], findings: [
+      { id: 'correctness:y', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' },
+    ]},
+    { status: 'ok', rejected: [] }
+  );
+  run(['plan-fixes', 'feat/git-record-regression'], { env });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:y.json`), JSON.stringify({ status: 'ok', edited: true }));
+  run(['commit-fix', 'feat/git-record-regression', 'correctness:y'], { env });
+  run(['record', 'feat/git-record-regression'], { env });
+  const slug = review.targetSlug('feat/git-record-regression');
+  const l = review.readLedger(dir, slug);
+  const f = l.findings.find((x) => x.id === 'correctness:y');
+  assert.strictEqual(f.status, 'fixed');
+  assert.match(f.fix_commit, /^[0-9a-f]{7,40}$/, 'git fix_commit must be a real sha');
+  assert.notStrictEqual(f.fix_commit, 'file-edit');
+});
