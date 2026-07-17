@@ -1,3 +1,5 @@
+import { recordTurn, foldTurn, summarize, formatSummaryLine } from "./meter.mjs";
+
 // The turn engine. Decoupled from the trigger (advanceTurn takes plain userText -- a user
 // message today, an autonomous "continue" prompt later). Runs the selected round sequentially,
 // threading each role's output to later roles, posting labeled non-skip outputs, persisting each
@@ -32,6 +34,10 @@ export async function advanceTurn({ threadId, userText, roster, maxRoundLen, sta
       continue;
     }
 
+    // Meter: record every successful turn (including skips -- a self-skip still ran a full
+    // LLM turn = burn source #1). Pure + total-over-missing, so it cannot throw into the loop.
+    state.tokens = foldTurn(state.tokens, recordTurn({ role: name, usage: res.usage }));
+
     // The reset notice is cosmetic and posted best-effort via safePost, so a failure posting it
     // can never precede-and-drop the real reply below. Deliver the already-generated reply in its
     // own try/catch: a failure here (e.g. Discord unreachable) is a separate best-effort concern
@@ -56,5 +62,10 @@ export async function advanceTurn({ threadId, userText, roster, maxRoundLen, sta
         console.error(`[agent-team] persist failed for role ${name}:`, e);
       }
     }
+  }
+  // Per-conversation footer: best-effort, after all replies, numbers-only, synthetic "system"
+  // role. safePost never throws, so a footer-post failure cannot abort the round.
+  if (state.tokens && state.tokens.turnCount > 0) {
+    await safePost("system", formatSummaryLine(summarize(state.tokens)));
   }
 }

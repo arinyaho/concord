@@ -153,6 +153,40 @@ test("cross-thread cap: at most MAX_CONCURRENT_TURNS runRole calls are in-flight
   assert.equal(enteredAfterRelease, N); // once a slot frees, the queued thread's turn runs too
 });
 
+test("/tokens in an authorized tracked thread posts the tally and runs NO role", async () => {
+  const posts = [];
+  let roleRan = false;
+  const cfg = { guildId: "g", userIds: ["u"], conversationChannelIds: ["conv"] };
+  const store = new Map([["thr", { roleSessions: {}, tokens: { perRole: { spec: { freshInput: 100, turns: 1 } }, totals: { freshInput: 100 }, turnCount: 1 } }]]);
+  const { handle } = makeConversationHandler({ cfg, roster: [{ name: "spec" }], store, deps: {
+    createThread: async () => ({ id: "x" }),
+    post: async (_tid, role, text) => { posts.push({ role, text }); },
+    runRole: async () => { roleRan = true; return { text: "", sessionId: "s", skip: false, reset: false, usage: {} }; },
+    persist: async () => {},
+  }});
+  // a tracked-thread message whose content is exactly "/tokens" (parentId in conversationChannelIds)
+  const handled = await handle({ author: { id: "u" }, guildId: "g", channelId: "thr", content: "/tokens", channel: { parentId: "conv" } });
+  assert.equal(handled, true);
+  assert.equal(roleRan, false);                          // NO role invoked
+  const reply = posts.find((p) => /tokens \(this conversation/.test(p.text));
+  assert.ok(reply, "a tally is posted");
+  assert.doesNotMatch(reply.text, /session|resume/);     // numbers-only
+});
+
+test("a message merely CONTAINING /tokens as free text is NOT the verb (runs the turn)", async () => {
+  let roleRan = false;
+  const cfg = { guildId: "g", userIds: ["u"], conversationChannelIds: ["conv"] };
+  const store = new Map([["thr", { roleSessions: {}, tokens: undefined }]]);
+  const { handle } = makeConversationHandler({ cfg, roster: [{ name: "spec" }], store, deps: {
+    createThread: async () => ({ id: "x" }),
+    post: async () => {},
+    runRole: async () => { roleRan = true; return { text: "hi", sessionId: "s", skip: false, reset: false, usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }; },
+    persist: async () => {},
+  }});
+  await handle({ author: { id: "u" }, guildId: "g", channelId: "thr", content: "please run /tokens later", channel: { parentId: "conv" } });
+  assert.equal(roleRan, true); // not an exact match -> a normal turn
+});
+
 test("depth bound: a turn beyond MAX_CONCURRENT_TURNS + MAX_QUEUED_TURNS is dropped with a busy note instead of running", async () => {
   const posts = [];
   let releaseGate;
@@ -216,6 +250,13 @@ function h2(over = {}) {
 }
 const thr = { id: "m2", author: { id: "u", bot: false }, channelId: "thr1", guildId: "g", channel: { parentId: "c1" }, content: "" };
 
+// Every turn with state.tokens.turnCount > 0 posts a best-effort numbers-only "tokens: ..." system
+// footer AFTER the meaningful replies (see advanceTurn in conversation.mjs). These h2() tests use a
+// runRole mock with no `usage`, so the footer still appears (turnCount still increments). Strip it
+// before asserting on the meaningful posts so the token-meter feature and these pre-existing
+// assertions can coexist without weakening what's actually being checked.
+const dropTokenFooter = (posts) => posts.filter(([, role, text]) => !(role === "system" && typeof text === "string" && text.startsWith("tokens:")));
+
 test("returns { handle, feedTurn }", () => {
   const { handler } = h2();
   assert.equal(typeof handler.handle, "function");
@@ -244,7 +285,7 @@ test("`run <id>` with NO pending -> ordinary conversation: a normal turn runs, n
   const r = await handler.handle({ ...thr, content: "run xyz" });
   assert.equal(r, true);
   assert.equal(submitted.length, 0); // never dispatched
-  assert.deepEqual(posts.at(-1), ["thr1", "spec", "spec hi"]); // fell through to a normal turn
+  assert.deepEqual(dropTokenFooter(posts).at(-1), ["thr1", "spec", "spec hi"]); // fell through to a normal turn
   assert.ok(!systems.some(([, text]) => /no pending proposal/.test(text))); // not rejected
 });
 test("queue full on confirm -> busy note, pending NOT cleared", async () => {
@@ -260,7 +301,7 @@ test("ordinary message (not `run <id>`) with a pending proposal -> normal turn r
   store.set("thr1", { roleSessions: {}, pendingAction: pending });
   const handled = await handler.handle({ ...thr, content: "just chatting, not a command" });
   assert.equal(handled, true);
-  assert.deepEqual(posts.at(-1), ["thr1", "spec", "spec hi"]); // a normal turn ran
+  assert.deepEqual(dropTokenFooter(posts).at(-1), ["thr1", "spec", "spec hi"]); // a normal turn ran
   // The pending proposal must survive a normal turn -- only a matching `run <id>` (accept path) or a
   // fresh DISPATCH (supersede) may clear/replace it, never an unrelated conversation message.
   assert.deepEqual(store.get("thr1").pendingAction, pending);
@@ -292,7 +333,7 @@ test("feedTurn: when a role reacts, both the system outcome note and the role re
   store.set("thr1", { roleSessions: {} });
   await handler.feedTurn("thr1", "[job result: outcome=succeeded ...]");
   assert.ok(systems.some(([tid, text]) => tid === "thr1" && text === "[job result: outcome=succeeded ...]"));
-  assert.deepEqual(posts.at(-1), ["thr1", "spec", "spec hi"]);
+  assert.deepEqual(dropTokenFooter(posts).at(-1), ["thr1", "spec", "spec hi"]);
 });
 
 // The whole point of feedTurn is that a computed job outcome is NEVER silently shed the way an

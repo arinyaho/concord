@@ -1,6 +1,7 @@
 import { isAuthorizedThread } from "./thread_gate.mjs";
 import { selectRound } from "./select_round.mjs";
 import { advanceTurn } from "./conversation.mjs";
+import { summarize, formatTally } from "./meter.mjs";
 
 // The conversation routing core (bot-skip lives in the bin, ahead of this). Returns true iff it
 // handled the message. Authorized conversation-channel message -> create thread, AWAIT-seed the
@@ -135,7 +136,25 @@ export function makeConversationHandler({ cfg, roster, store, deps }) {
     const parentId = msg.channel?.parentId;
     if (isAuthorizedThread({ authorId: msg.author?.id, channelId: msg.channelId, guildId: msg.guildId, parentId }, cfg, store)) {
       const threadId = msg.channelId;
-      const confirm = (msg.content ?? "").trim().match(/^run\s+(\S+)$/i);
+      const content = (msg.content ?? "").trim();
+      const state = store.get(threadId);
+
+      // Fixed-enum control verb (measure-only meter): EXACT "/tokens" only (a message merely
+      // containing it is a normal turn). No user substring flows into any query/shell/host call --
+      // pure read of state.tokens. The author+guild+channel gate is already satisfied here.
+      if (content === "/tokens") {
+        try {
+          await post(threadId, "system", state && state.tokens
+            ? formatTally(summarize(state.tokens))
+            : "no tokens recorded yet");
+        } catch (e) {
+          console.error(`[agent-team] /tokens post failed for thread ${threadId}:`, e);
+        }
+        return true;
+      }
+
+      // `run <id>` confirms a pending delegated action.
+      const confirm = content.match(/^run\s+(\S+)$/i);
       if (confirm) {
         const pending = getPending(store, threadId);
         if (pending) {
@@ -159,7 +178,6 @@ export function makeConversationHandler({ cfg, roster, store, deps }) {
         // a confirmation. Fall through to the normal-turn path below so the team discusses it rather
         // than the daemon rejecting it.
       }
-      const state = store.get(threadId);
       await run(threadId, msg.content ?? "", state);
       return true;
     }
