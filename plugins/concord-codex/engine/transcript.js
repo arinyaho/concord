@@ -83,8 +83,13 @@ function mapEntries(rawEntries) {
       const name = payload.name || payload.type;
       const rawInput = payload.input || payload.arguments || payload.action || {};
       const isShell = name === 'exec' || payload.type === 'local_shell_call';
+      // The command may be a raw string, or (for local_shell_call's argv shape)
+      // an array -- join arrays with spaces so extractFacts's MEANINGFUL_BASH_RE
+      // sees a real command line, not a comma-joined String(array).
+      const rawCmd = typeof rawInput === 'string' ? rawInput : rawInput.command;
+      const command = Array.isArray(rawCmd) ? rawCmd.join(' ') : rawCmd;
       const toolCall = isShell
-        ? { name: 'Bash', input: { command: typeof rawInput === 'string' ? rawInput : rawInput.command } }
+        ? { name: 'Bash', input: { command } }
         : { name, input: rawInput };
       out.push(normalizeEntry({ role: 'assistant', text: '', toolCalls: [toolCall] }));
     }
