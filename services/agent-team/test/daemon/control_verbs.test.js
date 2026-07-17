@@ -24,6 +24,20 @@ test("formatStatus: bounded, truncates task, tolerates undefined threadId, empty
   assert.match(empty, /nothing pending|no jobs/i);
 });
 
+test("formatStatus: newlines in a task collapse to one row (no phantom prefix-less line)", () => {
+  const s = formatStatus({
+    pendings: [],
+    jobs: { running: [{ jobId: "j1", alias: "concord", task: "line1\nline2", threadId: "t1" }], queued: [] },
+  });
+  const rows = s.split("\n");
+  const jobRow = rows.find((r) => r.includes("j1"));
+  assert.ok(jobRow); // the job renders
+  assert.doesNotMatch(jobRow, /\n/); // single line: no embedded newline survived
+  assert.equal(rows.filter((r) => r.includes("line2")).length, 1); // line2 stays on the j1 row
+  assert.match(jobRow, /line1 line2/); // newline became a space
+  assert.ok(s.length <= 2000);
+});
+
 function deps(over = {}) {
   const posts = [], setNames = [], sends = [];
   return {

@@ -18,7 +18,10 @@ export function parseControlVerb(content) {
   return null;
 }
 
-const clip = (t, n = 60) => { const x = String(t ?? ""); return x.length > n ? x.slice(0, n) + "..." : x; };
+// Collapse newlines/control chars to a space BEFORE truncating: a task comes from raw multi-line
+// Discord content, and an embedded \n would inject a phantom prefix-less row into the single-message
+// /status readout. allowedMentions covers pings, not layout.
+const clip = (t, n = 60) => { const x = String(t ?? "").replace(/[\r\n\x00-\x1f]+/g, " "); return x.length > n ? x.slice(0, n) + "..." : x; };
 
 export function formatStatus({ pendings, jobs }) {
   const lines = ["status:"];
