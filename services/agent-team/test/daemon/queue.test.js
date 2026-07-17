@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createQueue } from "../../src/daemon/queue.mjs";
+import { createQueue, computeOutcome } from "../../src/daemon/queue.mjs";
 
 const tick = () => new Promise((r) => setImmediate(r));
 
@@ -68,4 +68,124 @@ test("runJob rejection -> failed outcome once", async () => {
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(calls, 1);
   assert.equal(lastKind, "failed");
+});
+
+// --- cancel + list (B-3a Task 1) ---
+
+// A controllable runJob: returns a promise we resolve by hand, and records job.child via onChild-like.
+function deferred() { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; }
+
+function makeQueue(over = {}) {
+  const outcomes = [], killed = [], dockerKilled = [];
+  const runs = new Map(); // jobId -> deferred
+  const q = createQueue({
+    cap: 1, queueMax: 10, jobTimeoutMs: 1_000_000,
+    runJob: (job) => { job.child = { pid: 4242 }; const d = deferred(); runs.set(job.jobId, d); return d.promise; },
+    dockerKill: (id) => dockerKilled.push(id),
+    killTree: (child) => killed.push(child?.pid),
+    onOutcome: (job, outcome) => outcomes.push({ jobId: job.jobId, kind: outcome.kind }),
+    ...over,
+  });
+  return { q, outcomes, killed, dockerKilled, runs };
+}
+const job = (jobId, extra = {}) => ({ jobId, alias: "concord", task: "fix it", threadId: "t1", ...extra });
+
+test("cancel a RUNNING job -> killTree + dockerKill, cancelled outcome, running cleared, found:true", async () => {
+  const { q, outcomes, killed, dockerKilled } = makeQueue();
+  q.submit(job("a1"));
+  await Promise.resolve(); // let pump start the job
+  assert.deepEqual(q.list().running.map((r) => r.jobId), ["a1"]);
+  const r = q.cancel("a1");
+  assert.deepEqual(r, { found: true });
+  assert.deepEqual(killed, [4242]);
+  assert.deepEqual(dockerKilled, ["a1"]);
+  // 3 ticks: cancel-promise settles the race (1), run()'s await resumes and fires onOutcome (2),
+  // run()'s own async-function promise resolves, letting the outer .finally() run (3) -- that
+  // outer .finally() is what actually deletes the job from `running`, one tick after onOutcome.
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  assert.deepEqual(outcomes, [{ jobId: "a1", kind: "cancelled" }]);
+  assert.deepEqual(q.list().running, []);
+  assert.deepEqual(q.cancel("a1"), { found: false }); // idempotent after settle
+});
+
+test("cancel a QUEUED job -> spliced, cancelled outcome, never ran, found:true", async () => {
+  const { q, outcomes, dockerKilled, runs } = makeQueue();
+  q.submit(job("a1")); // runs (cap 1)
+  await Promise.resolve();
+  q.submit(job("a2")); // queued
+  assert.deepEqual(q.list().queued.map((x) => x.jobId), ["a2"]);
+  const r = q.cancel("a2");
+  assert.deepEqual(r, { found: true });
+  assert.deepEqual(dockerKilled, []); // a queued job is never dockerKilled
+  assert.equal(runs.has("a2"), false); // never ran
+  assert.ok(outcomes.some((o) => o.jobId === "a2" && o.kind === "cancelled"));
+  assert.deepEqual(q.list().queued, []);
+});
+
+test("cancel unknown id -> found:false, no dockerKill", () => {
+  const { q, dockerKilled } = makeQueue();
+  assert.deepEqual(q.cancel("nope"), { found: false });
+  assert.deepEqual(dockerKilled, []);
+});
+
+test("list summaries carry jobId/alias/task/threadId (threadId may be undefined)", async () => {
+  const { q } = makeQueue();
+  q.submit(job("a1"));
+  q.submit({ jobId: "cap1", alias: "concord", task: "capability", msg: {} }); // capability job, no threadId
+  await Promise.resolve();
+  const running = q.list().running.find((x) => x.jobId === "a1");
+  assert.deepEqual(running, { jobId: "a1", alias: "concord", task: "fix it", threadId: "t1" });
+  const queued = q.list().queued.find((x) => x.jobId === "cap1");
+  assert.equal(queued.threadId, undefined);
+});
+
+test("natural completion then cancel -> onOutcome fires once, cancel found:false", async () => {
+  const { q, outcomes, runs } = makeQueue();
+  q.submit(job("a1"));
+  await Promise.resolve();
+  runs.get("a1").resolve({ code: 0, tail: "ok" }); // natural completion
+  // 3 ticks -- see the same accounting in the "cancel a RUNNING job" test above: onOutcome
+  // fires before the outer .finally() removes the job from `running`.
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  assert.deepEqual(outcomes, [{ jobId: "a1", kind: "done" }]);
+  assert.deepEqual(q.cancel("a1"), { found: false });
+  assert.equal(outcomes.length, 1); // no second outcome
+});
+
+// --- computeOutcome precedence (pure) ---
+
+test("computeOutcome: cancelled beats timedOut (precedence pin)", () => {
+  // Both flags true: cancel must win. Reordering the fn to check timedOut first fails here.
+  assert.deepEqual(
+    computeOutcome({ cancelled: true, timedOut: true, res: { code: 124, tail: "timed out" } }),
+    { kind: "cancelled", code: 130, tail: "cancelled" },
+  );
+});
+
+test("computeOutcome: cancelled without timeout", () => {
+  assert.deepEqual(
+    computeOutcome({ cancelled: true, timedOut: false, res: { code: 0, tail: "" } }),
+    { kind: "cancelled", code: 130, tail: "cancelled" },
+  );
+});
+
+test("computeOutcome: timeout when not cancelled", () => {
+  assert.deepEqual(
+    computeOutcome({ cancelled: false, timedOut: true, res: { code: 124, tail: "x" } }),
+    { kind: "timeout", code: 124, tail: "x" },
+  );
+});
+
+test("computeOutcome: done on zero exit", () => {
+  assert.deepEqual(
+    computeOutcome({ cancelled: false, timedOut: false, res: { code: 0, tail: "ok" } }),
+    { kind: "done", code: 0, tail: "ok" },
+  );
+});
+
+test("computeOutcome: failed on non-zero exit", () => {
+  assert.deepEqual(
+    computeOutcome({ cancelled: false, timedOut: false, res: { code: 1, tail: "boom" } }),
+    { kind: "failed", code: 1, tail: "boom" },
+  );
 });

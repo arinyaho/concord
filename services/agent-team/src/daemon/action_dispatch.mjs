@@ -9,7 +9,7 @@ export function makeDispatchAction({ queue }) {
   return function dispatchAction({ pending, threadId, feedTurn }) {
     const { id, alias, repoPath, task } = pending;
     const job = {
-      task, repoPath, alias, jobId: id,
+      task, repoPath, alias, jobId: id, threadId,
       onDone: (outcome) => feedTurn(threadId, formatOutcomePrompt(outcome, { alias, jobId: id })),
     };
     return { accepted: queue.submit(job) };

@@ -2,6 +2,7 @@ import { isAuthorizedThread } from "./thread_gate.mjs";
 import { selectRound } from "./select_round.mjs";
 import { advanceTurn } from "./conversation.mjs";
 import { summarize, formatTally } from "./meter.mjs";
+import { parseControlVerb, handleControlVerb } from "./control_verbs.mjs";
 
 // The conversation routing core (bot-skip lives in the bin, ahead of this). Returns true iff it
 // handled the message. Authorized conversation-channel message -> create thread, AWAIT-seed the
@@ -38,7 +39,7 @@ function makeSemaphore(cap) {
 }
 
 export function makeConversationHandler({ cfg, roster, store, deps }) {
-  const { createThread, post, runRole, persist, postSystem, getPending, clearPending, dispatchAction } = deps;
+  const { createThread, post, runRole, persist, postSystem, getPending, clearPending, dispatchAction, queue } = deps;
   const maxRoundLen = cfg.maxRoundLen ?? roster.length;
   const locks = new Map(); // threadId -> tail promise (serialize same-thread turns)
   const sem = makeSemaphore(MAX_CONCURRENT_TURNS); // shared across all threads on this handler
@@ -178,6 +179,23 @@ export function makeConversationHandler({ cfg, roster, store, deps }) {
         // a confirmation. Fall through to the normal-turn path below so the team discusses it rather
         // than the daemon rejecting it.
       }
+
+      // Author-gated control verbs (/cancel, /status, /clear, /rename): dispatched here, after
+      // /tokens and `run <id>`, before the normal-turn path -- a recognized verb never runs a turn.
+      const verb = parseControlVerb(content);
+      if (verb) {
+        const listPendings = () => [...store.entries()]
+          .filter(([, s]) => s.pendingAction)
+          .map(([tid, s]) => ({ threadId: tid, ...s.pendingAction }));
+        await handleControlVerb(verb, {
+          threadId, channel: msg.channel, cfg, queue, postSystem,
+          getPending: (tid) => getPending(store, tid),
+          clearPending: (path, tid) => clearPending(store, path, tid),
+          listPendings,
+        });
+        return true;
+      }
+
       await run(threadId, msg.content ?? "", state);
       return true;
     }

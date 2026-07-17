@@ -343,6 +343,36 @@ test("feedTurn: when a role reacts, both the system outcome note and the role re
 // turn IS dropped there (proving the harness actually reached the threshold), then confirm a feedTurn
 // re-entry under the SAME saturation is NOT dropped (no busy note, and its role eventually runs).
 // Deterministic: one shared manual promise gate + microtask flushes, no timers/sleeps.
+// B-3a Task 5: control-verb dispatch in the tracked-thread branch, after /tokens and `run <id>`,
+// before the normal-turn path. A recognized verb must be handled (return true) and must NOT run a
+// normal turn (no role invoked).
+test("a /status message in a tracked thread is handled, no role turn", async () => {
+  const posts = [], sent = [];
+  const store = new Map([["thr1", { roleSessions: {}, pendingAction: { id: "p1", alias: "concord", repoPath: "/r", task: "fix" } }]]);
+  const queue = { cancel: () => ({ found: false }), list: () => ({ running: [], queued: [] }) };
+  let roleRan = false;
+  const { handle } = makeConversationHandler({
+    cfg: { guildId: "g", userIds: ["u"], conversationChannelIds: ["c1"], maxRoundLen: 10, sessionStorePath: "/s" },
+    roster: [{ name: "spec", systemPrompt: "s" }], store,
+    deps: {
+      createThread: async () => ({ id: "thr1" }),
+      post: async (tid, role, text) => posts.push([tid, role, text]),
+      runRole: async () => { roleRan = true; return { text: "hi", sessionId: "s", skip: false, reset: false }; },
+      persist: () => {},
+      postSystem: async () => {},
+      getPending: (s, tid) => s.get(tid)?.pendingAction ?? null,
+      clearPending: () => {},
+      dispatchAction: () => ({ accepted: true }),
+      queue,
+    },
+  });
+  const handled = await handle({ id: "m", author: { id: "u", bot: false }, channelId: "thr1", guildId: "g",
+    channel: { parentId: "c1", send: async (o) => sent.push(o) }, content: "/status" });
+  assert.equal(handled, true);
+  assert.equal(roleRan, false);
+  assert.ok(sent.some((o) => /status/.test(o.content) && o.allowedMentions));
+});
+
 test("feedTurn bypasses the busy-drop: a job outcome runs under saturation where a normal turn is dropped", async () => {
   const posts = [];
   const entered = [];

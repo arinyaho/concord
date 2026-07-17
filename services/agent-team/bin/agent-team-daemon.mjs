@@ -95,7 +95,7 @@ async function main() {
       post: wrappedPost,
       runRole: makeConvRunRole({ query, timeoutMs: cfg.jobTimeoutMs }),
       persist: (threadId, state) => saveThread(convStore, cfg.sessionStorePath, threadId, state),
-      postSystem, getPending, clearPending, dispatchAction,
+      postSystem, getPending, clearPending, dispatchAction, queue,
     },
   });
   const convHandle = conv.handle;

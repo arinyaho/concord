@@ -30,6 +30,15 @@ test("generic failure -> analysis + tail", async () => {
   await replyForOutcome(job, { kind: "failed", code: 1, tail: "boom" }, base);
   assert.match(replies[0], /root cause X/);
 });
+test("cancelled outcome -> plain cancelled reply, diagnose NOT called", async () => {
+  let diagnosed = false;
+  const { replies, base } = deps({ diagnose: async () => { diagnosed = true; return "x"; } });
+  await replyForOutcome(job, { kind: "cancelled", code: 130, tail: "cancelled" }, base);
+  assert.equal(diagnosed, false);
+  assert.equal(replies.length, 1);
+  assert.match(replies[0], /cancelled/i);
+  assert.match(replies[0], /ab12/);
+});
 test("isAuthExpiry matches known token-expiry strings", () => {
   assert.equal(isAuthExpiry("... OAuth token expired ..."), true);
   assert.equal(isAuthExpiry("unrelated error"), false);
