@@ -254,6 +254,17 @@ test("queue full on confirm -> busy note, pending NOT cleared", async () => {
   assert.match(systems.at(-1)[1], /busy/i);
   assert.equal(store.get("thr1").pendingAction.id, "a1"); // preserved for retry
 });
+test("ordinary message (not `run <id>`) with a pending proposal -> normal turn runs AND pending persists", async () => {
+  const { handler, posts, store } = h2();
+  const pending = { id: "a1", alias: "concord", repoPath: "/r", task: "fix" };
+  store.set("thr1", { roleSessions: {}, pendingAction: pending });
+  const handled = await handler.handle({ ...thr, content: "just chatting, not a command" });
+  assert.equal(handled, true);
+  assert.deepEqual(posts.at(-1), ["thr1", "spec", "spec hi"]); // a normal turn ran
+  // The pending proposal must survive a normal turn -- only a matching `run <id>` (accept path) or a
+  // fresh DISPATCH (supersede) may clear/replace it, never an unrelated conversation message.
+  assert.deepEqual(store.get("thr1").pendingAction, pending);
+});
 test("feedTurn on a missing thread -> guarded note, no throw", async () => {
   const { handler, systems } = h2();
   await handler.feedTurn("ghost", "[job result: ...]");

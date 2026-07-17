@@ -9,6 +9,8 @@ import { makeConversationHandler } from "../src/daemon/conversation_dispatch.mjs
 import { makeActionPost } from "../src/daemon/action_post.mjs";
 import { setPending, getPending, clearPending } from "../src/daemon/pending_action.mjs";
 import { buildConversationRoster } from "../src/daemon/conversation_roster.mjs";
+import { makeDispatchAction } from "../src/daemon/action_dispatch.mjs";
+import { makeOutcomeRouter } from "../src/daemon/outcome_router.mjs";
 
 const cfg = { guildId: "g", userIds: ["u"], conversationChannelIds: ["c1"], maxRoundLen: 10, sessionStorePath: "/tmp/x.json", repos: { concord: "/r" } };
 const store = new Map();
@@ -57,5 +59,46 @@ assert.equal(handled, true);
 assert.equal(submitted.length, 1, "dispatchAction called exactly once");
 assert.equal(submitted[0][0], "thr1", "dispatched for the confirming thread");
 assert.equal(submitted[0][1].id, "id1", "dispatched with the minted id");
+
+// --- Real dispatch + outcome-router composition ---------------------------------------------
+// Everything above mocks dispatchAction directly, so the real makeDispatchAction + makeOutcomeRouter
+// wiring (the bin's actual global onOutcome discriminator) is never exercised. Compose the REAL
+// pieces against a mock queue + mock replyForOutcome and drive the discriminator both ways.
+const submittedJobs = [];
+const mockQueue = { submit: (job) => { submittedJobs.push(job); return true; } };
+const realDispatchAction = makeDispatchAction({ queue: mockQueue });
+
+const feedTurnCalls = [];
+const fakeFeedTurn = (tid, text) => { feedTurnCalls.push([tid, text]); };
+
+const pendingForReal = { id: "id2", alias: "concord", repoPath: "/r", task: "fix the bug" };
+const { accepted: realAccepted } = realDispatchAction({ pending: pendingForReal, threadId: "thr2", feedTurn: fakeFeedTurn });
+assert.equal(realAccepted, true, "real dispatchAction accepted the job onto the mock queue");
+assert.equal(submittedJobs.length, 1, "exactly one job reached the mock queue");
+const conversationJob = submittedJobs[0];
+assert.equal(conversationJob.jobId, "id2", "job carries jobId = the minted proposal id");
+assert.equal(typeof conversationJob.onDone, "function", "job carries an onDone closure");
+assert.equal(conversationJob.msg, undefined, "a conversation job has NO .msg field");
+
+const replyForOutcomeCalls = [];
+const mockReplyForOutcome = (job, outcome) => { replyForOutcomeCalls.push([job, outcome]); };
+const onErrorCalls = [];
+const realOnOutcome = makeOutcomeRouter({ replyForOutcome: mockReplyForOutcome, onError: (e) => onErrorCalls.push(e) });
+
+// (b) Feeding the submitted conversation job through the REAL router must route to its own onDone
+// (-> feedTurn), never to the capability replyForOutcome.
+realOnOutcome(conversationJob, { kind: "done", tail: "ok" });
+assert.equal(feedTurnCalls.length, 1, "onDone (feedTurn) was invoked for the conversation job");
+assert.equal(feedTurnCalls[0][0], "thr2", "feedTurn was called for the dispatching thread");
+assert.equal(replyForOutcomeCalls.length, 0, "replyForOutcome was NOT called for a conversation job");
+assert.equal(onErrorCalls.length, 0, "no error surfaced from the onDone path");
+
+// (c) A capability job (.msg present, no onDone) through the SAME router must call replyForOutcome
+// instead -- proving the discriminator branches correctly both ways, not just for the conversation case.
+const capabilityJob = { msg: { channel: { id: "c1" } }, jobId: "cap1" };
+realOnOutcome(capabilityJob, { kind: "done", tail: "ok" });
+assert.equal(replyForOutcomeCalls.length, 1, "replyForOutcome WAS called for the capability job");
+assert.equal(replyForOutcomeCalls[0][0], capabilityJob, "replyForOutcome received the capability job");
+assert.equal(feedTurnCalls.length, 1, "the capability job did not also trigger feedTurn");
 
 console.log("ACTION CONTRACT OK");
