@@ -34,11 +34,16 @@ function gitDirty(repoRoot) {
 // Acquire a git target: the same dirty-check + identity + diff review-cli.js
 // round-start ran inline. The dirty-tree throw fires on the identical condition
 // and carries the identical message, so the fresh-start git path is unchanged.
+// NOTE (finding #5): the diff is computed here, before round-start's separate
+// reachability/resetUnreachable step. gitDiff is read-only and depends only on
+// (repoRoot, base); resetUnreachable mutates only the ledger, not the tree or
+// base. The two are input-independent, so their relative order is a true
+// no-op -- head_sha, diff, and the ledger end identical either way.
 function gitTarget(spec, repoRoot) {
   if (gitDirty(repoRoot)) throw new Error('round-start: working tree is dirty; commit or stash before review-until-green');
   const identity = gitHeadSha(repoRoot);
   const reviewText = gitDiff(repoRoot, spec.base);
-  return { type: 'git', reviewText, identity, hasDoD: true, key: spec.ref };
+  return { type: 'git', reviewText, identity, hasDoD: true };
 }
 
 // Content hash for a file target's identity (SHA-1 of the concatenated review
@@ -112,9 +117,24 @@ function fileTarget(spec, repoRoot) {
     }
   }
   rels.sort();
+  // A file target that matches nothing has no text to review and would
+  // otherwise hash the empty string and silently "converge" on an empty
+  // review. Fail loudly instead so a typo'd path or a glob with no match is
+  // reported, not swallowed.
+  if (rels.length === 0) {
+    throw new Error(`round-start: file target matched no files: ${spec.files.join(', ')}`);
+  }
   const blocks = rels.map((rel) => {
     const abs = path.resolve(repoRoot, rel);
-    const body = fs.readFileSync(abs, 'utf8');
+    let body;
+    try {
+      body = fs.readFileSync(abs, 'utf8');
+    } catch (e) {
+      // A literal path (no '*') is passed through by resolveGlob unresolved, so
+      // a nonexistent literal reaches here. Report it as a clear no-such-file
+      // error rather than a raw ENOENT stack.
+      throw new Error(`round-start: file target could not read "${rel}": ${e.code || e.message}`);
+    }
     return `===== ${rel} =====\n${body}\n`;
   });
   const reviewText = blocks.join('\n');
@@ -123,7 +143,6 @@ function fileTarget(spec, repoRoot) {
     reviewText,
     identity: contentHash(reviewText),
     hasDoD: false,
-    key: `file:${rels.join(',')}`,
   };
 }
 

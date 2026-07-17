@@ -186,3 +186,69 @@ test('e2e: file target converges in 3 rounds with zero git operations in the fil
   // =========================================================================
   assert.ok(!fs.existsSync(path.join(fileDir, '.git')), 'ZERO git: .git must never be created in the file directory');
 });
+
+// finding #4: strengthen the no-git proof from a `.git`-absence check to a real
+// git-exec spy. The CLI is spawned as a subprocess, so the spy crosses the
+// process boundary via a PATH shim: a temp bin dir holds an executable `git`
+// script that appends its argv to a marker file whenever invoked, prepended to
+// PATH for the file-target run. A `.git`-absence check misses a read-only git
+// touch (git --version, a `git status` resolving to a PARENT repo, any git call
+// that errors before writing state); the marker asserts ZERO git PROCESSES were
+// spawned -- exactly the class of touch that would violate the Obsidian/non-git
+// contract (S2/S6). Run inside a real git repo (an ancestor .git present) so a
+// stray `git status` WOULD resolve to it -- proving the file target does not
+// even look.
+test('e2e: a file-target run spawns ZERO git processes (PATH-shim git-exec spy)', () => {
+  // A parent git repo so any stray git call would find an ancestor .git.
+  const parentRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-e2e-gitspy-'));
+  execFileSync('git', ['init', '-q'], { cwd: parentRepo });
+  execFileSync('git', ['config', 'user.email', 't@t'], { cwd: parentRepo });
+  execFileSync('git', ['config', 'user.name', 't'], { cwd: parentRepo });
+  // The file target lives in a SUBDIR of that repo -- so `git status` here would
+  // resolve to the parent .git if the file path ever touched git.
+  const fileDir = path.join(parentRepo, 'docs');
+  fs.mkdirSync(fileDir);
+  const stateDir = tmpDir();
+
+  // PATH shim: a bin dir whose `git` records every invocation to a marker file,
+  // then exits 0 (so even if something tried git, it would not crash the run --
+  // we detect the attempt via the marker, not via a failure).
+  const shimBin = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-gitshim-'));
+  const marker = path.join(shimBin, 'git-invocations.log');
+  const gitShim = path.join(shimBin, 'git');
+  fs.writeFileSync(gitShim, `#!/bin/sh\nprintf '%s\\n' "git $*" >> ${JSON.stringify(marker)}\nexit 0\n`);
+  fs.chmodSync(gitShim, 0o755);
+  const env = {
+    ...process.env,
+    REVIEW_STATE_DIR: stateDir,
+    REVIEW_REPO_ROOT: fileDir,
+    PATH: `${shimBin}${path.delimiter}${process.env.PATH}`,
+  };
+
+  const ref = 'file:note.md';
+  const slug = review.targetSlug(ref);
+  const notePath = path.join(fileDir, 'note.md');
+  fs.writeFileSync(notePath, '# Doc\nan unsupported claim\n');
+
+  // Drive a full round: round-start -> plan-fixes -> record.
+  const rs = JSON.parse(run(['round-start', ref], { env }));
+  assert.strictEqual(rs.targetType, 'file', 'must be a file target');
+  const n = rs.round;
+  writeArtifact(stateDir, n, 'correctness', {
+    status: 'ok', examined: ['note.md'],
+    findings: [{ id: 'docreview:claim', gate: 'correctness', file: 'note.md', span: 'an unsupported claim', summary: 'no citation' }],
+  });
+  writeArtifact(stateDir, n, 'verify', { status: 'ok', rejected: [] });
+  const pf = JSON.parse(run(['plan-fixes', ref], { env }));
+  assert.strictEqual(pf.fixes.length, 1);
+  fs.writeFileSync(notePath, '# Doc\na claim backed by [1]\n');
+  writeArtifact(stateDir, n, `fix-${pf.fixes[0].id}`, { status: 'ok', edited: true, files: ['note.md'] });
+  run(['record', ref], { env });
+
+  // The core assertion: the git shim was NEVER invoked -> the marker is absent
+  // (or empty). If any git process had been spawned, the marker would list it.
+  const invoked = fs.existsSync(marker) ? fs.readFileSync(marker, 'utf8').trim() : '';
+  assert.strictEqual(invoked, '', `file-target run must spawn ZERO git processes, but the shim recorded:\n${invoked}`);
+
+  void slug;
+});

@@ -13,6 +13,8 @@ Arguments: `$ARGUMENTS`
 
 Determine the target ref: empty -> current branch (`git branch --show-current`); `resume <ref>` -> the ref after `resume`; else the arguments as-is. Optional base ref is the second token (default the repo's remote main branch, `origin/<main>` -- a local base can be stale (behind its remote), which sweeps unrelated merged changes into the diff).
 
+To review a local file or document instead of a git diff (a design/spec `.md`, a note -- reviewable even in a directory that is not a git repository), pass a single `file:<path-or-glob>` token as the ref, where `<path-or-glob>` is a literal path OR a simple single-`*` glob resolved against the repo root: `round-start file:note.md` or `round-start file:*.md` (the glob pulls in every match, concatenated in sorted order). This is the ONLY file-target form -- there is no `--files` flag. A file target has no base and no DoD; `round-start` reports `targetType: 'file'` and the per-round flow branches on it (see step 2).
+
 Also check whether this invocation asked for a broad review: if the arguments contain the literal token `--broad` or `--gate`, or the phrase "broad review" or "게이트", pass `--broad` to every `round-start` call for the rest of this run (harmless to repeat once broad review is already applied). Otherwise omit it -- broad review adds real per-round cost, so it stays off unless asked for.
 
 **Claude Code spawn mechanism.** Spawn each reviewer subagent with the `Task`

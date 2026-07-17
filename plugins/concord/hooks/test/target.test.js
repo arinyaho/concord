@@ -39,7 +39,9 @@ test('acquireTarget git: reviewText is the diff, identity is HEAD sha, hasDoD tr
   assert.match(t.identity, /^[0-9a-f]{40}$/);
   assert.strictEqual(t.identity, headSha);
   assert.ok(t.reviewText.includes('diff --git'), 'reviewText should be a git diff');
-  assert.strictEqual(t.key, 'feat/x');
+  // The ledger is keyed off the CLI ref (targetSlug(ref)); acquireTarget does
+  // not carry a redundant `key` field (finding #5 -- dead contract removed).
+  assert.strictEqual('key' in t, false, 'git target must not carry a computed-but-unused key field');
 });
 
 test('acquireTarget git: base undefined diffs the working tree vs HEAD (empty on a clean tree)', () => {
@@ -72,12 +74,16 @@ test('acquireTarget file: reviewText contains file content, identity is a hex ha
   assert.match(t.identity, /^[0-9a-f]{7,}$/, 'identity must be a hex string (content hash)');
 });
 
-test('acquireTarget file: key encodes the sorted relpaths', () => {
+test('acquireTarget file: does not carry a computed-but-unused key field (finding #5)', () => {
   const dir = mkdtempNonGit();
   fs.writeFileSync(path.join(dir, 'a.md'), 'A\n');
   fs.writeFileSync(path.join(dir, 'b.md'), 'B\n');
   const t = acquireTarget({ files: ['b.md', 'a.md'] }, dir);
-  assert.strictEqual(t.key, 'file:a.md,b.md', 'key must be the sorted relpath list prefixed with file:');
+  // The ledger keys off the CLI ref (targetSlug(ref)), not a resolved-relpath
+  // slug -- so a stable `file:*.md` invocation keys the same ledger every run.
+  // `key` was dead (round-start ignored it) and is removed to keep the contract
+  // clean and the ledger identity stable across sessions.
+  assert.strictEqual('key' in t, false, 'file target must not carry a computed-but-unused key field');
 });
 
 test('acquireTarget file: multiple files are sorted and concatenated with section headers', () => {

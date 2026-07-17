@@ -386,37 +386,19 @@ function main(resolveFromCwd) {
     // through to `base` (which would produce a confusing downstream git
     // error against a nonsense ref).
     const BROAD_FLAGS = new Set(['--broad', '--gate']);
-    // Separate --files <glob> flag handling BEFORE the broad-flag filter so
-    // the --files token is not confused with a positional base arg.
-    let filesGlob = null;
-    const restNoFiles = [];
-    for (let i = 0; i < rest.length; i++) {
-      if (rest[i] === '--files') {
-        filesGlob = rest[i + 1];
-        i++; // skip the value token
-      } else {
-        restNoFiles.push(rest[i]);
-      }
-    }
-    const broadFlagPassed = restNoFiles.some((a) => BROAD_FLAGS.has(a));
-    const positional = restNoFiles.filter((a) => !BROAD_FLAGS.has(a));
+    const broadFlagPassed = rest.some((a) => BROAD_FLAGS.has(a));
+    const positional = rest.filter((a) => !BROAD_FLAGS.has(a));
     for (const tok of positional) {
       if (tok.startsWith('--')) throw new Error(`review-cli round-start: unknown flag "${tok}"`);
     }
 
-    // Detect a file target: the ref token matches 'file:<path>' or a --files
-    // flag was passed. Build a file spec (spec.files array) for acquireTarget.
-    // A file target carries hasDoD:false and does not use git at all.
+    // Detect a file target: the single file-target surface is `file:<arg>` in
+    // the ref slot, where <arg> is a literal path OR a simple single-'*' glob
+    // (e.g. `file:note.md`, `file:*.md`). The glob is resolved by fileTarget's
+    // resolveGlob against repoRoot, so both forms flow through one path. A file
+    // target carries hasDoD:false and does not use git at all.
     const fileRefMatch = ref && ref.match(/^file:(.+)$/);
-    let fileSpec = null;
-    if (fileRefMatch) {
-      fileSpec = { files: [fileRefMatch[1]] };
-    } else if (filesGlob != null) {
-      // --files <glob>: a simple single-glob; the spec carries one pattern.
-      // resolveGlob is inside fileTarget; pass it as-is and let fileTarget
-      // expand it relative to repoRoot.
-      fileSpec = { files: [filesGlob] };
-    }
+    const fileSpec = fileRefMatch ? { files: [fileRefMatch[1]] } : null;
     const isFileTarget = fileSpec !== null;
 
     // `resume <ref>` passes NO base token -- fall back to the base persisted
@@ -453,29 +435,40 @@ function main(resolveFromCwd) {
     const resumed = ledger.phase === 'gates' || ledger.phase === 'fixes';
     const resumeRound = ledger.round;
 
-    // Target acquisition goes through the core/target.js seam. On a FRESH start
-    // acquireTarget runs the dirty-check + HEAD rev-parse + diff (identical
-    // command invocations, identical dirty-tree throw). On a RESUME the checkout
-    // above already made the tree clean, so the dirty-check is deliberately
-    // skipped -- we call the seam's primitives (gitHeadSha + gitDiff) directly
-    // rather than acquireTarget, preserving today's resume-skips-dirty-check
-    // behavior (an untracked file must not block a resume). resetUnreachable
-    // stays here: it is git-ledger reachability logic, not acquisition.
-    // For file targets the entire git block (checkout, resetUnreachable,
-    // head_sha reachability) is skipped -- file targets carry no git state.
+    // Resume housekeeping is TARGET-AGNOSTIC: an interrupted round leaves stale
+    // round artifacts (and, for a file target, a stale fix-<id>.json that has no
+    // git journal to override it), so BOTH target types must purge them and
+    // reset the round's planned/absent/intent arrays before re-driving. Only the
+    // git-specific working-tree discard (gitCheckoutTree) is gated on git; a file
+    // target has no working tree to check out. Before this, a resumed file target
+    // took the file-acquisition branch first and skipped all of it, so a stale
+    // edited:true fix artifact could false-signal in record. (finding #3)
+    const isGit = !isFileTarget;
+    if (resumed) {
+      if (isGit) gitCheckoutTree(repoRoot); // git-only: keep journaled commits, discard uncommitted
+      deleteRoundArtifacts(stateDir, resumeRound); // both: purge the interrupted round's artifacts
+      ledger = { ...ledger, phase: 'idle', planned: [], resolved_absent: [], intent_parked: [] };
+    }
+
+    // Target acquisition goes through the core/target.js seam. On a FRESH git
+    // start acquireTarget runs the dirty-check + HEAD rev-parse + diff (identical
+    // command invocations, identical dirty-tree throw). On a git RESUME the
+    // checkout above already made the tree clean, so the dirty-check is
+    // deliberately skipped -- we call the seam's primitives (gitHeadSha +
+    // gitDiff) directly rather than acquireTarget, preserving today's
+    // resume-skips-dirty-check behavior (an untracked file must not block a
+    // resume). resetUnreachable stays below: it is git-ledger reachability
+    // logic, not acquisition. A file target reads content directly (no git ops)
+    // on both fresh and resume; its identity is a content hash.
     let headSha;
     let diff;
     let acquiredTarget;
     if (isFileTarget) {
-      // File target: read content directly from disk, no git ops.
       acquiredTarget = acquireTarget(fileSpec, repoRoot);
       headSha = acquiredTarget.identity; // content hash, not a sha; field name reused for compat
       diff = acquiredTarget.reviewText;
     } else if (resumed) {
-      gitCheckoutTree(repoRoot); // keep journaled commits, discard uncommitted
-      deleteRoundArtifacts(stateDir, resumeRound);
-      ledger = { ...ledger, phase: 'idle', planned: [], resolved_absent: [], intent_parked: [] };
-      headSha = gitHeadSha(repoRoot);
+      headSha = gitHeadSha(repoRoot); // no dirty-check on resume
       diff = gitDiff(repoRoot, base);
     } else {
       const target = acquireTarget({ ref, base }, repoRoot); // throws the same dirty-tree error
@@ -716,16 +709,29 @@ function main(resolveFromCwd) {
         throw new Error(`harness-failure: gate-prefixed id "${c.id}" in the correctness artifact -- gate findings must come from the gate reviewer, never the auto-fixing gate`);
       }
     }
-    // Coverage: every changed file must be in examined. Derive the changed-file
-    // set from the diff file round-start already wrote (single-sourced diff) --
-    // do NOT re-run git against ledger.target.base, which round-start never
-    // persisted before Task 6's base-in-target fix and which duplicates a git
-    // call the CLI already made once this round.
-    const diffText = fs.readFileSync(path.join(stateDir, `round-${n}-diff.txt`), 'utf8');
-    const changed = Array.from(new Set((diffText.match(/^\+\+\+ b\/(.+)$/gm) || []).map((l) => l.replace(/^\+\+\+ b\//, '').trim())));
-    const examined = new Set(Array.isArray(cJson.examined) ? cJson.examined : []);
-    const missing = changed.filter((f) => !examined.has(f));
-    if (missing.length) throw new Error(`harness-failure: coverage -- changed file(s) never examined: ${missing.join(', ')}`);
+    // Coverage: every changed file must be in examined. This is a GIT-DIFF-shaped
+    // check -- `changed` is parsed from `+++ b/<path>` diff headers -- so both the
+    // derivation and the assertion are gated on the target being git (same isGit
+    // test record uses). For a file target, round-<n>-diff.txt holds raw document
+    // CONTENT, not a git diff; a doc that merely QUOTES a unified diff (a line
+    // starting `+++ b/...`) would otherwise mint a phantom "changed file" the doc
+    // reviewer never examined and throw a spurious coverage harness-failure. A
+    // file target has no diff-header notion of changed files, so `changed` stays
+    // empty and the coverage invariant does not apply -- the reviewer's examined
+    // list is advisory there. `changed` remains in scope (empty for file targets)
+    // for the intent/gate folds below, which are git-only concepts. (finding #2)
+    const isGit = !ledger.target || ledger.target.type === 'git';
+    let changed = [];
+    if (isGit) {
+      // Derive the changed-file set from the diff file round-start already wrote
+      // (single-sourced diff) -- do NOT re-run git against ledger.target.base,
+      // which duplicates a git call the CLI already made once this round.
+      const diffText = fs.readFileSync(path.join(stateDir, `round-${n}-diff.txt`), 'utf8');
+      changed = Array.from(new Set((diffText.match(/^\+\+\+ b\/(.+)$/gm) || []).map((l) => l.replace(/^\+\+\+ b\//, '').trim())));
+      const examined = new Set(Array.isArray(cJson.examined) ? cJson.examined : []);
+      const missing = changed.filter((f) => !examined.has(f));
+      if (missing.length) throw new Error(`harness-failure: coverage -- changed file(s) never examined: ${missing.join(', ')}`);
+    }
     const verdict = gc.parseVerifyVerdict(JSON.stringify({ rejected: vJson.rejected || [] }), candidates);
     const killed = new Set(verdict.rejectedIds);
     const survivors = require('./review').dedupeAgainstSeen(candidates, ledger.seen);
