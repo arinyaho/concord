@@ -119,3 +119,21 @@ test("resolves the parent object via fetchChannel when thread.parent is uncached
   const wh = await resolve("T");
   assert.equal(wh.name, MARKER); // reached parent via fetchChannel("P"), not the ThreadChannel
 });
+
+test("an unfetchable parent (sync throw) does NOT latch a null sentinel; next call re-probes", async () => {
+  let parentReady = false;
+  const realParent = {
+    id: "P",
+    async fetchWebhooks() { return { find: () => undefined }; },
+    async createWebhook({ name }) { return { name, owner: { id: "BOT" }, send: async () => {} }; },
+  };
+  // First resolve: parent id "P" is not yet fetchable => parent falls back to the thread, whose
+  // fetchWebhooks is undefined => synchronous TypeError inside getOrCreate (code: undefined = transient).
+  const thread = { id: "T", parentId: "P", parent: null };
+  const fetchChannel = async (id) => (id === "P" ? (parentReady ? realParent : undefined) : thread);
+  const resolve = makeWebhookResolver({ fetchChannel, getBotUserId: () => "BOT", markerName: MARKER });
+  assert.equal(await resolve("T"), null); // failed this post
+  parentReady = true;
+  const wh = await resolve("T"); // must re-probe, not stay latched on the sentinel
+  assert.equal(wh.name, MARKER);
+});

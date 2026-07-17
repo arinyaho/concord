@@ -9,18 +9,12 @@ const PERMANENT = new Set([50013, 30007]); // 50013 Missing Permissions, 30007 M
 export function makeWebhookResolver({ fetchChannel, getBotUserId, markerName }) {
   const cache = new Map(); // parentId -> Promise<webhook | null>
 
-  async function getOrCreate(parent, parentId) {
-    try {
-      const hooks = await parent.fetchWebhooks();
-      const me = getBotUserId(); // read LATE (BLOCKER-1): client.user is null at construction
-      let wh = hooks.find((h) => me && h.owner?.id === me && h.name === markerName);
-      if (!wh) wh = await parent.createWebhook({ name: markerName });
-      return wh;
-    } catch (e) {
-      console.error(`[agent-team] webhook get-or-create failed for channel ${parentId}:`, e);
-      if (!PERMANENT.has(e?.code)) cache.delete(parentId); // transient: re-probe on next post
-      return null;
-    }
+  async function getOrCreate(parent) {
+    const hooks = await parent.fetchWebhooks();
+    const me = getBotUserId(); // read LATE (BLOCKER-1): client.user is null at construction
+    let wh = hooks.find((h) => me && h.owner?.id === me && h.name === markerName);
+    if (!wh) wh = await parent.createWebhook({ name: markerName });
+    return wh;
   }
 
   return async function resolveWebhook(threadId) {
@@ -30,8 +24,17 @@ export function makeWebhookResolver({ fetchChannel, getBotUserId, markerName }) 
     if (!parent && thread.parentId) parent = await fetchChannel(thread.parentId);
     parent = parent ?? thread;
     if (cache.has(parentId)) return cache.get(parentId);
-    const p = getOrCreate(parent, parentId); // start the promise...
-    cache.set(parentId, p);                   // ...cache it synchronously (no await between) => coalesced
+    // getOrCreate is async => a sync OR async throw both surface as a REJECTED Promise, so this
+    // .catch runs as a microtask strictly AFTER the cache.set below. The transient cache.delete can
+    // therefore never race ahead of the insert (which would wrongly latch a null sentinel on a
+    // non-permanent failure). Permanent (50013/30007) -> keep the cached resolved-null (sticky);
+    // transient/unknown -> delete so the next post re-probes.
+    const p = getOrCreate(parent).catch((e) => {
+      console.error(`[agent-team] webhook get-or-create failed for channel ${parentId}:`, e);
+      if (!PERMANENT.has(e?.code)) cache.delete(parentId);
+      return null;
+    });
+    cache.set(parentId, p);
     return p;
   };
 }
