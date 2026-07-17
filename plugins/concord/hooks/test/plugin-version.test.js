@@ -84,3 +84,43 @@ test('release script leaves existing files unchanged when a manifest is missing'
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('release script leaves existing files unchanged when a later manifest is unwritable', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concord-version-'));
+  const claude = path.join(root, 'plugins/concord/.claude-plugin');
+  const codex = path.join(root, 'plugins/concord-codex/.codex-plugin');
+  const versionFile = path.join(root, 'VERSION');
+  const claudeManifest = path.join(claude, 'plugin.json');
+  const codexManifest = path.join(codex, 'plugin.json');
+  fs.mkdirSync(claude, { recursive: true });
+  fs.mkdirSync(codex, { recursive: true });
+  fs.writeFileSync(versionFile, '0.1.0-alpha.1\n');
+  fs.writeFileSync(
+    claudeManifest,
+    `${JSON.stringify({ name: 'concord', version: '0.1.0-alpha.1', preserve: true }, null, 2)}\n`
+  );
+  fs.writeFileSync(
+    codexManifest,
+    `${JSON.stringify({ name: 'concord-codex', version: '0.1.0-alpha.1' }, null, 2)}\n`
+  );
+  fs.chmodSync(codexManifest, 0o444);
+
+  try {
+    assert.throws(() => {
+      execFileSync(process.execPath, [SCRIPT, '0.9.0-alpha.2'], {
+        env: { ...process.env, CONCORD_VERSION_ROOT: root },
+        stdio: 'pipe',
+      });
+    });
+
+    assert.equal(version(versionFile), '0.1.0-alpha.1');
+    assert.deepEqual(manifest(claudeManifest), {
+      name: 'concord',
+      version: '0.1.0-alpha.1',
+      preserve: true,
+    });
+  } finally {
+    fs.chmodSync(codexManifest, 0o644);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

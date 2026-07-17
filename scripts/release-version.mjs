@@ -23,7 +23,12 @@ const updatedManifests = manifests.map((manifestPath) => {
   return [manifestPath, `${JSON.stringify(manifest, null, 2)}\n`];
 });
 
-fs.writeFileSync(path.join(root, 'VERSION'), `${releaseVersion}\n`);
+const versionFile = path.join(root, 'VERSION');
+for (const target of [versionFile, ...manifests]) {
+  fs.accessSync(target, fs.constants.W_OK);
+}
+
+fs.writeFileSync(versionFile, `${releaseVersion}\n`);
 
 for (const [manifestPath, contents] of updatedManifests) {
   fs.writeFileSync(manifestPath, contents);
