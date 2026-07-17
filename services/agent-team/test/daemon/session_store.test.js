@@ -47,6 +47,20 @@ test("loadStore: drops an entry whose roleSessions is an array", () => {
   const m = loadStore("/x", { readFileSync: () => json });
   assert.equal(m.has("t1"), false);
 });
+test("saveThread/loadStore round-trips a state carrying a tokens aggregate (backward-compat)", () => {
+  // Use injected fs deps (same pattern as this file) -- no real disk I/O.
+  let stored = "";
+  const m = new Map();
+  const state = { roleSessions: { spec: "s1" }, tokens: { perRole: { spec: { freshInput: 10, turns: 1 } }, totals: { freshInput: 10 }, turnCount: 1 } };
+  saveThread(m, "/dir/store.json", "t1", state, {
+    writeFileSync: (_p, data) => { stored = data; },
+    renameSync: () => {},
+  });
+  const loaded = loadStore("/dir/store.json", { readFileSync: () => stored });
+  assert.equal(loaded.get("t1").tokens.turnCount, 1);       // tokens survived
+  assert.equal(loaded.get("t1").roleSessions.spec, "s1");    // validEntry still accepts it
+});
+
 test("saveThread: mutates map + atomic temp-then-rename with mode 0600", () => {
   const calls = [];
   const m = new Map();
