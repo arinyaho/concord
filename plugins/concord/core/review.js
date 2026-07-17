@@ -307,11 +307,12 @@ const TERMINAL_STATUSES = new Set(['clean', 'parked', 'abandoned']);
 //     itself so a caller can distinguish "the round number advanced" from "the
 //     harness is about to do work this iteration" without re-deriving it from
 //     `noOp`/`terminal`.
-function beginRound(ledger, diffContentHash) {
+function beginRound(ledger, diffContentHash, opts = {}) {
+  const { reReviewOnStableContent = false } = opts;
   if (TERMINAL_STATUSES.has(ledger.status)) {
     return { ledger, noOp: true, workHappened: false, terminal: true };
   }
-  const noOp = ledger.diff_content_hash !== null && ledger.diff_content_hash === diffContentHash;
+  const noOp = !reReviewOnStableContent && ledger.diff_content_hash !== null && ledger.diff_content_hash === diffContentHash;
   const next = {
     ...ledger,
     round: noOp ? ledger.round : ledger.round + 1,

@@ -905,6 +905,29 @@ test('applyRoundOutcome: roundOutcome threading -- ledger with an extended targe
   assert.deepStrictEqual(back, ledger); // full-fidelity round-trip
 });
 
+// ---- beginRound: reReviewOnStableContent flag (Task 7) ----
+
+test('beginRound: reReviewOnStableContent:true with identical hash is NOT a no-op -- round advances (file target fluke-guard)', () => {
+  // A file target's 2nd consecutive dry round runs on identical content.
+  // Without this flag, beginRound would no-op and dryStreak could never reach 2.
+  let ledger = review.emptyLedger({ kind: 'local', ref: 'file:n.md', type: 'file', hasDoD: false });
+  ledger = review.beginRound(ledger, 'same-hash').ledger; // round 1
+  const { ledger: r2, noOp, workHappened } = review.beginRound(ledger, 'same-hash', { reReviewOnStableContent: true });
+  assert.strictEqual(noOp, false, 'reReviewOnStableContent:true must not no-op on identical content');
+  assert.strictEqual(workHappened, true, 'reReviewOnStableContent:true must mark workHappened');
+  assert.strictEqual(r2.round, 2, 'round must advance to 2');
+  assert.strictEqual(r2.diff_content_hash, 'same-hash');
+});
+
+test('beginRound: default (no opts) with identical hash is still a no-op -- git path unchanged', () => {
+  // Confirm the default behavior (reReviewOnStableContent=false) is byte-identical
+  // to the pre-Task-7 behavior: an unchanged diff hash is still a no-op for git targets.
+  let ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  ledger = review.beginRound(ledger, 'same-hash').ledger;
+  const { noOp } = review.beginRound(ledger, 'same-hash');
+  assert.strictEqual(noOp, true, 'default (git) path must remain a no-op on identical content');
+});
+
 test('applyRoundOutcome + readLedger: a pre-existing ledger without dryStreak reads dryStreak as absent (backward-compat, treated as 0)', () => {
   const dir = tmpStateDir();
   const slug = review.targetSlug('feat/legacy');

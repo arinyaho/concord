@@ -497,7 +497,7 @@ function main(resolveFromCwd) {
       ledger = { ...ledger, diff_content_hash: diffHash, round: resumeRound };
     } else {
       deleteRoundArtifacts(stateDir, ledger.round + 1); // stale artifacts for the round about to run
-      const { ledger: begun, noOp, terminal } = beginRound(ledger, diffHash);
+      const { ledger: begun, noOp, terminal } = beginRound(ledger, diffHash, { reReviewOnStableContent: isFileTarget });
       ledger = begun;
       if (terminal) {
         writeLedger(stateDir, slug, ledger);
