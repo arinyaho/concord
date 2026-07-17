@@ -37,10 +37,11 @@ outcome-routing discriminator.
    The daemon should post `job started (<id>)`.
 
 5. **Watch the job run.** Confirm (via daemon logs, or `docker ps`) that the existing capability
-   container job actually launches -- same container runtime, credential isolation, and per-repo
-   single-slot interlock as a task submitted through the capability channel. If another job is
-   already running against the same repo alias, this should queue or reject rather than run two
-   jobs concurrently against the same clone.
+   container job actually launches -- same container runtime, credential isolation, and
+   remote-trigger interlock as a task submitted through the capability channel. Confirm the job runs
+   in its own clean clone on branch `agent-team/<id>`, not a clone shared with any other job -- there
+   is no per-repo lock, so a second job against the same alias would run concurrently rather than
+   queue behind this one, bounded only by the daemon's global `cap`.
 
 6. **Confirm outcome feedback.** Once the job finishes, the thread should receive a synthesized
    turn along the lines of `[job result: alias=<alias>, branch=agent-team/<id>, outcome=done,
