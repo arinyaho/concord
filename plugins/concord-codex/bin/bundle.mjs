@@ -11,7 +11,7 @@ const here = path.dirname(url.fileURLToPath(import.meta.url));           // plug
 const codexRoot = path.dirname(here);                                     // plugins/concord-codex
 const repoRoot = path.dirname(path.dirname(codexRoot));                   // repo root
 const coreDir = path.join(repoRoot, 'plugins/concord/core');
-const codexStatedir = path.join(repoRoot, 'plugins/concord/adapters/codex/statedir.js');
+const codexAdaptersDir = path.join(repoRoot, 'plugins/concord/adapters/codex');
 const engineDir = path.join(codexRoot, 'engine');
 
 fs.rmSync(engineDir, { recursive: true, force: true });
@@ -22,6 +22,8 @@ for (const f of fs.readdirSync(coreDir).filter((f) => f.endsWith('.js'))) {
   fs.copyFileSync(path.join(coreDir, f), path.join(engineDir, f));
   n++;
 }
-fs.copyFileSync(codexStatedir, path.join(engineDir, 'statedir.js'));
-n++;
+for (const f of ['statedir.js', 'transcript.js', 'event.js']) {
+  fs.copyFileSync(path.join(codexAdaptersDir, f), path.join(engineDir, f));
+  n++;
+}
 console.log(`bundled ${n} files into engine/`);
