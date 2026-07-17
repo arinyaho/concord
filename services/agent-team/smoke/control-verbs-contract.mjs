@@ -15,7 +15,8 @@ const deps = {
 };
 
 await handleControlVerb(parseControlVerb("/cancel a1"), deps);
-assert.match(posts.at(-1)[1], /cancelled a1/);
+// cancel acks go through mention-disabled channel.send (echo user input safely), not postSystem.
+assert.ok(sent.some((o) => o.allowedMentions && /cancelled a1/.test(o.content)), "cancel ack via mention-safe send");
 await handleControlVerb(parseControlVerb("/status"), deps);
 assert.ok(sent.some((o) => o.allowedMentions && /a1/.test(o.content)));
 await handleControlVerb(parseControlVerb("/clear"), deps);
