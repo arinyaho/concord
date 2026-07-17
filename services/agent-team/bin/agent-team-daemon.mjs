@@ -16,7 +16,7 @@ import { startCredsRefresh } from "../src/daemon/creds_refresh.mjs";
 import { loadStore, saveThread } from "../src/daemon/session_store.mjs";
 import { runRole } from "../src/daemon/roles.mjs";
 import { makeConversationHandler } from "../src/daemon/conversation_dispatch.mjs";
-import { setPending, getPending, clearPending } from "../src/daemon/pending_action.mjs";
+import { getPending, clearPending } from "../src/daemon/pending_action.mjs";
 import { makeDispatchAction } from "../src/daemon/action_dispatch.mjs";
 import { makeActionPost } from "../src/daemon/action_post.mjs";
 import { buildConversationRoster } from "../src/daemon/conversation_roster.mjs";
