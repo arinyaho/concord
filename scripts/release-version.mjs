@@ -17,10 +17,14 @@ const manifests = [
   path.join(root, 'plugins/concord-codex/.codex-plugin/plugin.json'),
 ];
 
-fs.writeFileSync(path.join(root, 'VERSION'), `${releaseVersion}\n`);
-
-for (const manifestPath of manifests) {
+const updatedManifests = manifests.map((manifestPath) => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   manifest.version = releaseVersion;
-  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  return [manifestPath, `${JSON.stringify(manifest, null, 2)}\n`];
+});
+
+fs.writeFileSync(path.join(root, 'VERSION'), `${releaseVersion}\n`);
+
+for (const [manifestPath, contents] of updatedManifests) {
+  fs.writeFileSync(manifestPath, contents);
 }

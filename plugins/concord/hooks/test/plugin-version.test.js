@@ -53,3 +53,34 @@ test('release script updates an isolated canonical version and both manifests', 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('release script leaves existing files unchanged when a manifest is missing', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concord-version-'));
+  const claude = path.join(root, 'plugins/concord/.claude-plugin');
+  const versionFile = path.join(root, 'VERSION');
+  const claudeManifest = path.join(claude, 'plugin.json');
+  fs.mkdirSync(claude, { recursive: true });
+  fs.writeFileSync(versionFile, '0.1.0-alpha.1\n');
+  fs.writeFileSync(
+    claudeManifest,
+    `${JSON.stringify({ name: 'concord', version: '0.1.0-alpha.1', preserve: true }, null, 2)}\n`
+  );
+
+  try {
+    assert.throws(() => {
+      execFileSync(process.execPath, [SCRIPT, '0.9.0-alpha.2'], {
+        env: { ...process.env, CONCORD_VERSION_ROOT: root },
+        stdio: 'pipe',
+      });
+    });
+
+    assert.equal(version(versionFile), '0.1.0-alpha.1');
+    assert.deepEqual(manifest(claudeManifest), {
+      name: 'concord',
+      version: '0.1.0-alpha.1',
+      preserve: true,
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
