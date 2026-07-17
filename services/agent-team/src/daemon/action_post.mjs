@@ -12,7 +12,7 @@ export function makeActionPost({ post, cfg, store, storePath, mintId, postSystem
   const setPending = setPendingImpl ?? realSetPending;
   return async function wrappedPost(threadId, role, text) {
     const { proposal, prose } = parseProposal(text);
-    await post(threadId, role, prose);
+    if (prose.trim()) await post(threadId, role, prose);
     if (!proposal) return;
     try {
       const r = resolveProposal(proposal, cfg);

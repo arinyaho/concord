@@ -38,6 +38,13 @@ test("unknown alias: prose sent, reason posted, no pending", async () => {
   assert.equal(pend.length, 0);
   assert.match(systems[0][1], /alias/i);
 });
+test("dispatch-only output (empty prose): post not called, pending still recorded, confirm still posted", async () => {
+  const { wp, posts, systems, pend } = ctx();
+  await wp("t1", "spec", "DISPATCH concord :: fix it");
+  assert.equal(posts.length, 0); // no blank "**role:** " message
+  assert.deepEqual(pend[0][1], { id: "id1", alias: "concord", repoPath: "/r", task: "fix it" });
+  assert.match(systems[0][1], /run id1/);
+});
 test("a detection failure never throws out of the wrap", async () => {
   const wp = makeActionPost({
     post: async () => {}, cfg: { repos: { concord: "/r" } }, store: new Map(), storePath: "/s",
