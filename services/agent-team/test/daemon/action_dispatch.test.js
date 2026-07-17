@@ -28,3 +28,10 @@ test("queue full -> accepted:false", () => {
   const dispatch = makeDispatchAction({ queue: { submit: () => false } });
   assert.equal(dispatch({ pending, threadId: "t1", feedTurn: () => {} }).accepted, false);
 });
+test("dispatched job carries threadId", () => {
+  let submitted;
+  const queue = { submit: (jobIt) => { submitted = jobIt; return true; } };
+  const dispatch = makeDispatchAction({ queue });
+  dispatch({ pending: { id: "a1", alias: "concord", repoPath: "/r", task: "fix it" }, threadId: "t9", feedTurn: () => {} });
+  assert.equal(submitted.threadId, "t9");
+});
