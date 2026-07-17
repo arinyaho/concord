@@ -10,7 +10,9 @@ function ctx(runRoleImpl) {
     threadId: "t1", userText: "design the API", roster, maxRoundLen: 10, state,
     select: (u, r, cap) => r.map((x) => x.name).slice(0, cap),
     runRole: runRoleImpl,
-    post: (tid, role, text) => posts.push([role, text]),
+    // Exclude synthetic "system" footer posts so existing assertions remain stable.
+    // The footer behavior is covered separately by the token meter tests below.
+    post: (tid, role, text) => { if (role !== "system") posts.push([role, text]); },
     persist: (tid, s) => persisted.push(JSON.parse(JSON.stringify(s.roleSessions))),
   };
   return { deps, posts, persisted, state };
@@ -77,7 +79,7 @@ test("runRole throwing AND the resulting error-notice post also throwing: turn s
   });
   deps.post = async (tid, role, text) => {
     if (/error/i.test(text)) throw new Error("discord unreachable");
-    posts.push([role, text]);
+    if (role !== "system") posts.push([role, text]); // exclude synthetic footer
   };
   await advanceTurn(deps);
   // Both roles were attempted: spec's runRole failure did not abort the round even though the
@@ -98,7 +100,7 @@ test("reset-notice post throwing does not drop the real reply: reply is still po
   });
   deps.post = async (tid, role, text) => {
     if (role === "spec" && text === "(session reset)") throw new Error("rate limited");
-    posts.push([role, text]);
+    if (role !== "system") posts.push([role, text]); // exclude synthetic footer
   };
   const origError = console.error;
   console.error = () => {};
@@ -113,6 +115,74 @@ test("reset-notice post throwing does not drop the real reply: reply is still po
   assert.deepEqual(seenPrior, [["spec"]]); // reviewer saw spec's reply threaded into priorOutputs
   assert.deepEqual(state.roleSessions, { spec: "s", reviewer: "r" }); // round continued normally
 });
+// --- Token meter tests ---
+
+function meterHarness(runRoleImpl) {
+  const posts = [];
+  const state = { roleSessions: {} };
+  const roster = [{ name: "spec" }, { name: "coder" }];
+  return {
+    posts, state,
+    run: (userText) => advanceTurn({
+      threadId: "t1", userText, roster, maxRoundLen: 2, state,
+      select: () => ["spec", "coder"],
+      runRole: runRoleImpl,
+      post: async (_tid, role, text) => { posts.push({ role, text }); },
+      persist: async () => {},
+    }),
+  };
+}
+
+test("advanceTurn folds usage into state.tokens for every turn INCLUDING skips", async () => {
+  const h = meterHarness(async (role) => ({
+    text: role.name === "coder" ? "" : "hi",
+    sessionId: `s-${role.name}`,
+    skip: role.name === "coder",     // coder skips -- but it still burned a turn
+    reset: false,
+    usage: { input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+  }));
+  await h.run("go");
+  assert.equal(h.state.tokens.turnCount, 2);              // BOTH roles counted (skip too)
+  assert.equal(h.state.tokens.perRole.coder.turns, 1);   // the skipping role's burn is recorded
+  assert.equal(h.state.tokens.totals.freshInput, 200);
+});
+
+test("advanceTurn posts a numbers-only footer via post at round end", async () => {
+  const h = meterHarness(async (role) => ({ text: "hi", sessionId: `s-${role.name}`, skip: false, reset: false,
+    usage: { input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }));
+  await h.run("go");
+  const footer = h.posts.find((p) => p.role === "system" && /tokens:/.test(p.text));
+  assert.ok(footer, "a system-labeled token footer is posted");
+  assert.doesNotMatch(footer.text, /s-spec|session/); // numbers-only, no session ids
+});
+
+test("advanceTurn: a throwing role records nothing (expected gap), round continues", async () => {
+  let first = true;
+  const h = meterHarness(async (role) => {
+    if (first) { first = false; throw new Error("boom"); }         // spec throws
+    return { text: "hi", sessionId: "s-coder", skip: false, reset: false,
+      usage: { input_tokens: 50, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } };
+  });
+  await h.run("go");
+  assert.equal(h.state.tokens.turnCount, 1);   // only coder recorded; spec's throw = gap
+  assert.equal(h.state.tokens.totals.freshInput, 50);
+});
+
+test("advanceTurn: a footer-post failure does not abort the round", async () => {
+  const state = { roleSessions: {} };
+  await assert.doesNotReject(advanceTurn({
+    threadId: "t1", userText: "go", roster: [{ name: "spec" }], maxRoundLen: 1, state,
+    select: () => ["spec"],
+    runRole: async () => ({ text: "hi", sessionId: "s", skip: false, reset: false,
+      usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }),
+    post: async (_t, role) => { if (role === "system") throw new Error("discord down"); }, // footer post fails
+    persist: async () => {},
+  }));
+  assert.equal(state.tokens.turnCount, 1); // fold still happened
+});
+
+// --- end token meter tests ---
+
 test("post throwing (e.g. Discord API failure) is contained: turn continues to the next role", async () => {
   const roleAttempts = [];
   const { deps, posts, state } = ctx(async (role) => {

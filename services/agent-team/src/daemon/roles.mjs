@@ -11,12 +11,12 @@ function buildPrompt(role, userText, priorOutputs) {
 }
 
 async function once(query, prompt, options) {
-  let sessionId = null, result = null;
+  let sessionId = null, result = null, usage = null;
   for await (const m of query({ prompt, options })) {
     if (m.type === "system" && m.subtype === "init") sessionId = m.session_id;
-    if ("result" in m) result = m.result;
+    if ("result" in m) { result = m.result; usage = m.usage ?? null; }
   }
-  return { sessionId, text: (result ?? "").trim() };
+  return { sessionId, text: (result ?? "").trim(), usage };
 }
 
 export async function runRole(role, userText, priorOutputs, resumeId, abortController, deps = {}) {
@@ -39,5 +39,5 @@ export async function runRole(role, userText, priorOutputs, resumeId, abortContr
   if (resumeId && out.sessionId && out.sessionId !== resumeId) reset = true;
   const skip = SKIP_RE.test(out.text);
   const text = skip ? out.text.replace(SKIP_RE, "").trim() : out.text;
-  return { text, sessionId: out.sessionId, skip, reset };
+  return { text, sessionId: out.sessionId, skip, reset, usage: out.usage };
 }
