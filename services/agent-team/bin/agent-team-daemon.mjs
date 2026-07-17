@@ -23,6 +23,7 @@ import { makeActionPost } from "../src/daemon/action_post.mjs";
 import { buildConversationRoster } from "../src/daemon/conversation_roster.mjs";
 import { makeWebhookResolver } from "../src/daemon/webhook_cache.mjs";
 import { makeWebhookPost } from "../src/daemon/webhook_post.mjs";
+import { makeInlinePosters } from "../src/daemon/inline_post.mjs";
 
 // Wraps the tool-less role adapter with a per-call AbortController + wall-clock timeout, so a
 // hung role turn is CANCELLED (query() honors abort per the Task 1 spike) rather than abandoned.
@@ -85,14 +86,7 @@ async function main() {
   // declines (non-conversation channel/thread, or an unauthorized author).
   const convStore = loadStore(cfg.sessionStorePath);
   const mintId = () => randomUUID().slice(0, 8);
-  const rawPost = async (threadId, role, text) => {
-    const ch = await client.channels.fetch(threadId);
-    await ch.send({ content: `**${role}:** ${text}`.slice(0, 2000), allowedMentions: { parse: [] } });
-  };
-  const postSystem = async (threadId, text) => {
-    const ch = await client.channels.fetch(threadId);
-    await ch.send({ content: String(text).slice(0, 2000), allowedMentions: { parse: [] } });
-  };
+  const { rawPost, postSystem } = makeInlinePosters({ fetchChannel: (id) => client.channels.fetch(id) });
   const resolveWebhook = makeWebhookResolver({
     fetchChannel: (id) => client.channels.fetch(id),
     getBotUserId: () => client.user?.id, // getter: client.user is null until ready
