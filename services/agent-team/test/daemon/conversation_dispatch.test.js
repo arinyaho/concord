@@ -230,13 +230,22 @@ test("`run <id>` matching pending -> dispatchAction + clears pending, no normal 
   assert.equal(submitted[0][1].id, "a1");
   assert.equal(store.get("thr1").pendingAction, undefined); // cleared on accept
 });
-test("`run <id>` not matching -> 'no pending proposal', no dispatch", async () => {
+test("`run <id>` with a pending of a DIFFERENT id -> 'no pending proposal', no dispatch", async () => {
   const { handler, systems, submitted, store } = h2();
-  store.set("thr1", { roleSessions: {} }); // tracked thread, no pendingAction
+  store.set("thr1", { roleSessions: {}, pendingAction: { id: "a1", alias: "concord", repoPath: "/r", task: "fix" } });
   const r = await handler.handle({ ...thr, content: "run zzz" });
   assert.equal(r, true);
   assert.equal(submitted.length, 0);
   assert.match(systems.at(-1)[1], /no pending proposal zzz/);
+});
+test("`run <id>` with NO pending -> ordinary conversation: a normal turn runs, no rejection note", async () => {
+  const { handler, posts, systems, submitted, store } = h2();
+  store.set("thr1", { roleSessions: {} }); // tracked thread, no pendingAction at all
+  const r = await handler.handle({ ...thr, content: "run xyz" });
+  assert.equal(r, true);
+  assert.equal(submitted.length, 0); // never dispatched
+  assert.deepEqual(posts.at(-1), ["thr1", "spec", "spec hi"]); // fell through to a normal turn
+  assert.ok(!systems.some(([, text]) => /no pending proposal/.test(text))); // not rejected
 });
 test("queue full on confirm -> busy note, pending NOT cleared", async () => {
   const { handler, systems, store } = h2({ dispatchAction: () => ({ accepted: false }) });

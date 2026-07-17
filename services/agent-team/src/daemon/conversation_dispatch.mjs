@@ -124,20 +124,26 @@ export function makeConversationHandler({ cfg, roster, store, deps }) {
       const confirm = (msg.content ?? "").trim().match(/^run\s+(\S+)$/i);
       if (confirm) {
         const pending = getPending(store, threadId);
-        if (pending && pending.id === confirm[1]) {
-          const { accepted } = dispatchAction({ pending, threadId, feedTurn });
-          if (accepted) {
-            clearPending(store, cfg.sessionStorePath, threadId);
-            await postSystem(threadId, `job started (${pending.id})`);
+        if (pending) {
+          if (pending.id === confirm[1]) {
+            const { accepted } = dispatchAction({ pending, threadId, feedTurn });
+            if (accepted) {
+              clearPending(store, cfg.sessionStorePath, threadId);
+              await postSystem(threadId, `job started (${pending.id})`);
+            } else {
+              // Do NOT clear the pending proposal here -- leave it in place so the user can retry
+              // `run <id>` once a capability slot frees up.
+              await postSystem(threadId, "busy -- try again shortly");
+            }
           } else {
-            // Do NOT clear the pending proposal here -- leave it in place so the user can retry
-            // `run <id>` once a capability slot frees up.
-            await postSystem(threadId, "busy -- try again shortly");
+            // A pending proposal exists but this id does not match it -- likely a fat-fingered id.
+            await postSystem(threadId, `no pending proposal ${confirm[1]}`);
           }
-        } else {
-          await postSystem(threadId, `no pending proposal ${confirm[1]}`);
+          return true;
         }
-        return true;
+        // No pending proposal at all: a `run <id>` message is ordinary conversation (spec 120), not
+        // a confirmation. Fall through to the normal-turn path below so the team discusses it rather
+        // than the daemon rejecting it.
       }
       const state = store.get(threadId);
       await run(threadId, msg.content ?? "", state);
