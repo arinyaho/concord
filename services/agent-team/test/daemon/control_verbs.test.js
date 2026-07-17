@@ -92,6 +92,13 @@ test("clear: pending -> cleared; none -> nothing pending", async () => {
   assert.match(b.posts.at(-1)[1], /nothing pending/i);
 });
 
+test("clear: persist failure -> 'clear failed' notice, handler does not throw", async () => {
+  const c = deps({ clearPending: () => { throw new Error("EACCES"); } });
+  await handleControlVerb({ verb: "clear", arg: undefined }, c.d); // must not throw out
+  assert.match(c.posts.at(-1)[1], /clear failed/i);
+  assert.doesNotMatch(c.posts.at(-1)[1], /^cleared$/i); // no false success ack
+});
+
 test("rename: success -> setName + ack; failure -> rename failed", async () => {
   const a = deps(); await handleControlVerb({ verb: "rename", arg: "newname" }, a.d);
   assert.deepEqual(a.setNames, ["newname"]);

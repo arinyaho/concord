@@ -55,8 +55,13 @@ export async function handleControlVerb({ verb, arg }, deps) {
     return;
   }
   if (verb === "clear") {
-    if (getPending(threadId)) { clearPending(cfg.sessionStorePath, threadId); await postSystem(threadId, "cleared"); }
-    else await postSystem(threadId, "nothing pending");
+    // clearPending deletes in memory then persists via a throwable fs write. Wrap so a persist
+    // failure yields a distinct notice instead of a false `cleared` (memory cleared, disk still
+    // holds the pending -> loadStore would resurrect it on restart). The author is always told.
+    if (getPending(threadId)) {
+      try { clearPending(cfg.sessionStorePath, threadId); await postSystem(threadId, "cleared"); }
+      catch (e) { console.error(`[agent-team] /clear failed for thread ${threadId}:`, e); await postSystem(threadId, "clear failed"); }
+    } else await postSystem(threadId, "nothing pending");
     return;
   }
   if (verb === "rename") {
