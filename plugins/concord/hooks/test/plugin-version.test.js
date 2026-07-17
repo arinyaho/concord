@@ -124,3 +124,40 @@ test('release script leaves existing files unchanged when a later manifest is un
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('release script preserves manifest text except for the version value', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concord-version-'));
+  const claude = path.join(root, 'plugins/concord/.claude-plugin');
+  const codex = path.join(root, 'plugins/concord-codex/.codex-plugin');
+  const claudeManifest = path.join(claude, 'plugin.json');
+  const codexManifest = path.join(codex, 'plugin.json');
+  fs.mkdirSync(claude, { recursive: true });
+  fs.mkdirSync(codex, { recursive: true });
+  fs.writeFileSync(path.join(root, 'VERSION'), '0.1.0-alpha.1\n');
+
+  const contents = (name) => `{
+  "name" : "${name}", "metadata" : { "version" : "unchanged" },
+\t"version"    :    "0.1.0-alpha.1" , "preserve" : true
+}\n`;
+  const originalClaude = contents('concord');
+  const originalCodex = contents('concord-codex');
+  fs.writeFileSync(claudeManifest, originalClaude);
+  fs.writeFileSync(codexManifest, originalCodex);
+
+  try {
+    execFileSync(process.execPath, [SCRIPT, '0.9.0-alpha.2'], {
+      env: { ...process.env, CONCORD_VERSION_ROOT: root },
+    });
+
+    assert.equal(
+      fs.readFileSync(claudeManifest, 'utf8'),
+      originalClaude.replace('"0.1.0-alpha.1"', '"0.9.0-alpha.2"')
+    );
+    assert.equal(
+      fs.readFileSync(codexManifest, 'utf8'),
+      originalCodex.replace('"0.1.0-alpha.1"', '"0.9.0-alpha.2"')
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
