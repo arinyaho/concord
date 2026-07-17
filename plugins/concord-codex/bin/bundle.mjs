@@ -17,8 +17,6 @@ const engineDir = path.join(codexRoot, 'engine');
 fs.rmSync(engineDir, { recursive: true, force: true });
 fs.mkdirSync(engineDir, { recursive: true });
 
-const header = '// GENERATED — do not edit. Vendored copy for the self-contained Codex plugin.\n// Source of truth: plugins/concord/core/ + adapters/codex/statedir.js. Regenerate: node bin/bundle.mjs\n';
-
 let n = 0;
 for (const f of fs.readdirSync(coreDir).filter((f) => f.endsWith('.js'))) {
   fs.copyFileSync(path.join(coreDir, f), path.join(engineDir, f));
