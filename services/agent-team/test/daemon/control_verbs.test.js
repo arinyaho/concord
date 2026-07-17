@@ -64,3 +64,18 @@ test("rename: success -> setName + ack; failure -> rename failed", async () => {
   await handleControlVerb({ verb: "rename", arg: "x" }, b.d);
   assert.match(b.posts.at(-1)[1], /rename failed/i);
 });
+
+test("status: posts via channel.send with mentions disabled, not postSystem", async () => {
+  const sends = [];
+  const a = deps({
+    channel: { send: async (o) => sends.push(o) },
+    listPendings: () => [{ threadId: "t1", id: "p1", alias: "concord", task: "fix" }],
+    queue: { list: () => ({ running: [{ jobId: "j1", alias: "concord", task: "run", threadId: "t1" }], queued: [] }) },
+  });
+  await handleControlVerb({ verb: "status", arg: undefined }, a.d);
+  assert.equal(sends.length, 1);
+  assert.deepEqual(sends[0].allowedMentions, { parse: [] }); // mass-mention defense
+  assert.match(sends[0].content, /p1/);
+  assert.match(sends[0].content, /j1/);
+  assert.equal(a.posts.length, 0); // must NOT route status output through postSystem
+});

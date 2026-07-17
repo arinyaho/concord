@@ -25,7 +25,7 @@ export function formatStatus({ pendings, jobs }) {
   if (pendings.length === 0 && jobs.running.length === 0 && jobs.queued.length === 0) {
     lines.push("  nothing pending, no jobs running");
   } else {
-    for (const p of pendings) lines.push(`  pending ${p.id} (thread ${p.threadId}) ${p.alias}: ${clip(p.task)}`);
+    for (const p of pendings) lines.push(`  pending ${p.id} (thread ${p.threadId ?? "-"}) ${p.alias}: ${clip(p.task)}`);
     for (const j of jobs.running) lines.push(`  running ${j.jobId} (thread ${j.threadId ?? "-"}) ${j.alias}: ${clip(j.task)}`);
     for (const j of jobs.queued) lines.push(`  queued ${j.jobId} (thread ${j.threadId ?? "-"}) ${j.alias}: ${clip(j.task)}`);
   }
