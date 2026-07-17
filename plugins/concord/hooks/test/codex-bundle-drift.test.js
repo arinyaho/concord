@@ -9,7 +9,8 @@ const path = require('node:path');
 
 const REPO = path.join(__dirname, '..', '..', '..', '..');       // repo root
 const CORE = path.join(REPO, 'plugins/concord/core');
-const CODEX_STATEDIR = path.join(REPO, 'plugins/concord/adapters/codex/statedir.js');
+const CODEX_ADAPTERS = path.join(REPO, 'plugins/concord/adapters/codex');
+const CODEX_STATEDIR = path.join(CODEX_ADAPTERS, 'statedir.js');
 const ENGINE = path.join(REPO, 'plugins/concord-codex/engine');
 
 test('codex engine is byte-identical to core/*.js (run bin/bundle.mjs if this fails)', () => {
@@ -27,8 +28,18 @@ test('codex engine statedir is byte-identical to adapters/codex/statedir.js', ()
   assert.ok(src.equals(vendored), 'engine/statedir.js drifted — re-run node plugins/concord-codex/bin/bundle.mjs');
 });
 
+test('codex engine transcript/event adapters are byte-identical to adapters/codex/', () => {
+  for (const f of ['transcript.js', 'event.js']) {
+    const src = fs.readFileSync(path.join(CODEX_ADAPTERS, f));
+    const vendored = fs.readFileSync(path.join(ENGINE, f));
+    assert.ok(src.equals(vendored), `engine/${f} drifted — re-run node plugins/concord-codex/bin/bundle.mjs`);
+  }
+});
+
 test('codex engine has exactly the expected file set (no stale/missing)', () => {
-  const expected = new Set(fs.readdirSync(CORE).filter((f) => f.endsWith('.js')).concat('statedir.js'));
+  const expected = new Set(
+    fs.readdirSync(CORE).filter((f) => f.endsWith('.js')).concat('statedir.js', 'transcript.js', 'event.js')
+  );
   const actual = new Set(fs.readdirSync(ENGINE).filter((f) => f.endsWith('.js')));
   assert.deepStrictEqual([...actual].sort(), [...expected].sort());
 });
