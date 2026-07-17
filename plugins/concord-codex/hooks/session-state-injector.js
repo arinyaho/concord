@@ -2,7 +2,7 @@
 'use strict';
 const path = require('node:path');
 const { readStdinEvent } = require('../engine/event');
-const { readNorthStar, mergeSessions, renderCharter, catchUpSessions } = require('../engine/charter');
+const { readNorthStar, mergeSessions, renderCharter } = require('../engine/charter');
 const { resolveStateDirFromCwd } = require('../engine/statedir');
 
 const CONVENTION =
@@ -15,8 +15,13 @@ function main() {
   const sid = path.basename(String(sessionId || ''));
   const stateDir = resolveStateDirFromCwd();
 
-  // Durability: fold any abandoned session's un-watermarked tail before reading.
-  catchUpSessions(stateDir, { currentSid: sid, readEntries: require('../engine/transcript').parseDelta });
+  // catchUpSessions is not wired here: it guesses an abandoned session's transcript
+  // at `dirname(stateDir)/<sid>.jsonl`, a Claude-Code colocated layout. Codex rollouts
+  // live at ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl, unrelated to the cwd-derived
+  // stateDir, so that guess always misses and the call would silently no-op. Each
+  // session's own Stop hook persists its state as it goes, and mergeSessions below
+  // still reads all persisted session states -- so catch-up just isn't needed/available
+  // on this harness.
 
   const northStar = readNorthStar(stateDir);
   const merged = mergeSessions(stateDir); // include self: on resume/compact we WANT the resuming session own decisions back — dedup absorbs the overlap
