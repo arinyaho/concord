@@ -1,17 +1,21 @@
 // Bounded-concurrency FIFO runner. cap = max concurrent containers; queueMax = max waiting jobs
 // (submit returns false when full = the flood bound). Each running job is under a wall-clock:
 // on timeout the daemon docker-kills the named container (killing the launch child alone leaves
-// the dockerd-managed container orphaned holding the creds mount) and frees the slot.
+// the dockerd-managed container orphaned holding the creds mount) and frees the slot. cancel(jobId)
+// stops a running or queued job on demand (same kill as the timeout), producing a `cancelled`
+// outcome; list() reports running + queued jobs for the /status control verb.
 export function createQueue({ cap, queueMax, jobTimeoutMs, runJob, dockerKill, onOutcome, killTree }) {
   let active = 0;
   const fifo = [];
+  const running = new Map(); // jobId -> job (jobs currently in run())
   const killGroup = killTree ?? ((child) => { if (child?.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch {} } });
 
   function pump() {
     while (active < cap && fifo.length) {
       const job = fifo.shift();
       active++;
-      run(job).finally(() => { active--; pump(); });
+      running.set(job.jobId, job);
+      run(job).finally(() => { active--; running.delete(job.jobId); pump(); });
     }
   }
 
@@ -27,12 +31,17 @@ export function createQueue({ cap, queueMax, jobTimeoutMs, runJob, dockerKill, o
       }, jobTimeoutMs);
       timer.unref();
     });
+    // Cancel arm: cancel(jobId) sets job._cancelled + kills + resolves this. Stashed synchronously
+    // (no await before the race), so a later cancel() macrotask always finds the resolver.
+    const cancel = new Promise((resolve) => { job._cancelResolve = resolve; });
     let outcome;
     try {
-      const res = await Promise.race([runJob(job), timeout]);
-      outcome = timedOut
-        ? { kind: "timeout", code: 124, tail: res.tail }
-        : { kind: res.code === 0 ? "done" : "failed", code: res.code, tail: res.tail };
+      const res = await Promise.race([runJob(job), timeout, cancel]);
+      outcome = job._cancelled
+        ? { kind: "cancelled", code: 130, tail: "cancelled" }
+        : timedOut
+          ? { kind: "timeout", code: 124, tail: res.tail }
+          : { kind: res.code === 0 ? "done" : "failed", code: res.code, tail: res.tail };
     } catch (e) {
       outcome = { kind: "failed", code: 1, tail: String(e?.message ?? e) };
     } finally {
@@ -41,12 +50,34 @@ export function createQueue({ cap, queueMax, jobTimeoutMs, runJob, dockerKill, o
     onOutcome(job, outcome);
   }
 
+  const summarize = (j) => ({ jobId: j.jobId, alias: j.alias, task: j.task, threadId: j.threadId });
+
   return {
     submit(job) {
       if (fifo.length >= queueMax) return false;
       fifo.push(job);
       pump();
       return true;
+    },
+    cancel(jobId) {
+      const runningJob = running.get(jobId);
+      if (runningJob) {
+        runningJob._cancelled = true;
+        try { killGroup(runningJob.child); } catch {}
+        try { dockerKill(jobId); } catch {}
+        runningJob._cancelResolve?.({ code: 130, tail: "cancelled" });
+        return { found: true };
+      }
+      const i = fifo.findIndex((j) => j.jobId === jobId);
+      if (i >= 0) {
+        const [queuedJob] = fifo.splice(i, 1);
+        onOutcome(queuedJob, { kind: "cancelled", code: 130, tail: "cancelled" });
+        return { found: true };
+      }
+      return { found: false };
+    },
+    list() {
+      return { running: [...running.values()].map(summarize), queued: fifo.map(summarize) };
     },
   };
 }
