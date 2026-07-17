@@ -155,3 +155,14 @@ A confirmed action runs as the existing capability job (the same container launc
 The conversation path itself stays tool-less: no role, and no part of the DISPATCH parsing or gate, executes code, reads a filesystem, or reaches a network. `DISPATCH` is inert text a role can emit; only the author's explicit `run <id>` confirmation, itself routed through the pre-existing capability job launcher, causes anything to run. This is the same no-new-RCE-surface property B-1's conversation roster already had.
 
 See `smoke/e2e-delegated-actions.md` for the manual end-to-end runbook.
+
+### Control verbs (B-3a)
+
+Four fixed commands, matched only in a tracked (author-gated) thread and never sent through an LLM: `/cancel <id>`, `/status`, `/clear`, `/rename <name>`. Like the rest of the daemon's message handling, a message from anyone but the configured author in the configured guild is ignored -- these verbs do not open any new authorization path.
+
+- `/cancel <id>` stops a running or queued capability job by its job id, using the same kill path as a timeout. It is global by id: you can cancel a job from any tracked thread, not only the thread that dispatched it. It acks `cancelled <id>` in the thread the command was posted from, and the job's **origin** thread (the one the job was dispatched from) separately receives the job's own cancelled result, `cancelled (<id>)` -- best-effort, since the daemon signals the container to stop but does not wait for it to fully exit before reporting. An id that does not match any running or queued job replies `no such job <id>` and changes nothing.
+- `/status` posts a one-message summary of every pending delegated-action proposal and every running/queued capability job, across all tracked threads -- also global, not scoped to the thread it was posted in. It is sent with mentions disabled (`allowedMentions: { parse: [] }`), so a task or proposal text that happens to contain `@everyone` or a role mention cannot ping the guild.
+- `/clear` drops the current thread's pending delegated-action proposal (the one created by a role's `DISPATCH` line, see "Delegated actions (B-2)" above), if any. It replies `cleared`, or `nothing pending` if there was none.
+- `/rename <name>` renames the current thread via the Discord API and replies `renamed`, or `rename failed` if the API call errors.
+
+See `smoke/control-verbs-contract.mjs` for the no-network parser/handler contract check, and `smoke/e2e-control-verbs.md` for the manual end-to-end runbook.
