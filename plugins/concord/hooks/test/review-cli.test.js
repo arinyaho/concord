@@ -2112,3 +2112,64 @@ test('renderHandoff (via record): reports GATE panel round count and confirmed c
   assert.match(rec.handoff, /Broad-review panel: 3 round\(s\), 1 confirmed/);
 });
 
+// ---- file target round-start tests (Task 2) ----
+
+test('round-start file: file:<path> target produces decision work, targetType file, writes file content as diff', () => {
+  const dir = tmpDir();
+  // Use a temp directory with NO git init (the whole point of a file target).
+  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-'));
+  fs.writeFileSync(path.join(fileDir, 'note.md'), '# Design\nclaim without evidence\n');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
+  const out = JSON.parse(run(['round-start', 'file:note.md'], { env }));
+  assert.strictEqual(out.decision, 'work');
+  assert.strictEqual(out.targetType, 'file');
+  const ledger = review.readLedger(dir, review.targetSlug('file:note.md'));
+  assert.strictEqual(ledger.phase, 'gates');
+  assert.strictEqual(ledger.target.type, 'file');
+  assert.strictEqual(ledger.target.hasDoD, false);
+  // The diff file must contain the file content (not a git diff).
+  const diffText = fs.readFileSync(path.join(dir, `round-${ledger.round}-diff.txt`), 'utf8');
+  assert.ok(diffText.includes('claim without evidence'), 'diff file must contain the note content');
+  assert.ok(diffText.includes('===== note.md ====='), 'diff file must contain the section header');
+  assert.ok(!diffText.includes('diff --git'), 'diff file must not be a git diff');
+  // No .git directory must have been created.
+  assert.ok(!fs.existsSync(path.join(fileDir, '.git')), 'file target must not create a .git directory');
+});
+
+test('round-start file: --files <glob> flag produces decision work with targetType file', () => {
+  const dir = tmpDir();
+  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-'));
+  fs.writeFileSync(path.join(fileDir, 'note.md'), 'content\n');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
+  const out = JSON.parse(run(['round-start', 'file:note.md', '--files', 'note.md'], { env }));
+  // file:<path> takes precedence; --files is parsed and does not conflict.
+  assert.strictEqual(out.decision, 'work');
+  assert.strictEqual(out.targetType, 'file');
+});
+
+test('round-start file: persists target.type, target.hasDoD, target.spec in the ledger', () => {
+  const dir = tmpDir();
+  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-'));
+  fs.writeFileSync(path.join(fileDir, 'doc.md'), 'hello\n');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
+  run(['round-start', 'file:doc.md'], { env });
+  const ledger = review.readLedger(dir, review.targetSlug('file:doc.md'));
+  assert.strictEqual(ledger.target.type, 'file');
+  assert.strictEqual(ledger.target.hasDoD, false);
+  assert.deepStrictEqual(ledger.target.spec, { files: ['doc.md'] });
+});
+
+test('round-start file: a git target still produces targetType git in the work decision', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.strictEqual(out.decision, 'work');
+  assert.strictEqual(out.targetType, 'git');
+  const ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.strictEqual(ledger.target.type, 'git');
+  assert.strictEqual(ledger.target.hasDoD, true);
+});
+

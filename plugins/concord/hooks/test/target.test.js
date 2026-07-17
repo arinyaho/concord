@@ -7,6 +7,12 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { acquireTarget } = require('../../core/target');
 
+// Non-git temp directory helper: a plain temp dir with NO git init. Used to
+// verify the file target performs zero git operations.
+function mkdtempNonGit() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-'));
+}
+
 // Inline git-repo helper mirroring review-cli.test.js: init a temp repo with a
 // committed change against a base, leaving a CLEAN working tree (so the git
 // target's dirty-check passes) while `git diff base...HEAD` is non-empty.
@@ -51,4 +57,66 @@ test('acquireTarget git: dirty working tree throws the identical round-start err
     () => acquireTarget({ ref: 'HEAD', base: undefined }, dir),
     /working tree is dirty; commit or stash before review-until-green/,
   );
+});
+
+// ---- file target tests (Task 2) ----
+
+test('acquireTarget file: reviewText contains file content, identity is a hex hash, hasDoD false', () => {
+  const dir = mkdtempNonGit();
+  fs.writeFileSync(path.join(dir, 'note.md'), '# Note\nclaim without evidence\n');
+  const t = acquireTarget({ files: ['note.md'] }, dir);
+  assert.strictEqual(t.type, 'file');
+  assert.strictEqual(t.hasDoD, false);
+  assert.ok(t.reviewText.includes('claim without evidence'), 'reviewText must contain the file body');
+  assert.ok(t.reviewText.includes('===== note.md ====='), 'reviewText must contain the section header');
+  assert.match(t.identity, /^[0-9a-f]{7,}$/, 'identity must be a hex string (content hash)');
+});
+
+test('acquireTarget file: key encodes the sorted relpaths', () => {
+  const dir = mkdtempNonGit();
+  fs.writeFileSync(path.join(dir, 'a.md'), 'A\n');
+  fs.writeFileSync(path.join(dir, 'b.md'), 'B\n');
+  const t = acquireTarget({ files: ['b.md', 'a.md'] }, dir);
+  assert.strictEqual(t.key, 'file:a.md,b.md', 'key must be the sorted relpath list prefixed with file:');
+});
+
+test('acquireTarget file: multiple files are sorted and concatenated with section headers', () => {
+  const dir = mkdtempNonGit();
+  fs.writeFileSync(path.join(dir, 'z.md'), 'Z content\n');
+  fs.writeFileSync(path.join(dir, 'a.md'), 'A content\n');
+  const t = acquireTarget({ files: ['z.md', 'a.md'] }, dir);
+  // Sorted order: a.md before z.md
+  const aIdx = t.reviewText.indexOf('===== a.md =====');
+  const zIdx = t.reviewText.indexOf('===== z.md =====');
+  assert.ok(aIdx !== -1, 'a.md header must be present');
+  assert.ok(zIdx !== -1, 'z.md header must be present');
+  assert.ok(aIdx < zIdx, 'a.md must come before z.md (sorted order)');
+});
+
+test('acquireTarget file: identity changes when file content changes', () => {
+  const dir = mkdtempNonGit();
+  const fp = path.join(dir, 'note.md');
+  fs.writeFileSync(fp, 'original\n');
+  const t1 = acquireTarget({ files: ['note.md'] }, dir);
+  fs.writeFileSync(fp, 'modified\n');
+  const t2 = acquireTarget({ files: ['note.md'] }, dir);
+  assert.notStrictEqual(t1.identity, t2.identity, 'identity must change when content changes');
+});
+
+test('acquireTarget file: performs NO git operation (no .git created in non-git dir)', () => {
+  const dir = mkdtempNonGit();
+  fs.writeFileSync(path.join(dir, 'note.md'), 'x\n');
+  acquireTarget({ files: ['note.md'] }, dir);
+  assert.ok(!fs.existsSync(path.join(dir, '.git')), 'file target must not create a .git directory');
+});
+
+test('acquireTarget file: simple single-* glob resolves matching files', () => {
+  const dir = mkdtempNonGit();
+  fs.writeFileSync(path.join(dir, 'doc-a.md'), 'Doc A\n');
+  fs.writeFileSync(path.join(dir, 'doc-b.md'), 'Doc B\n');
+  fs.writeFileSync(path.join(dir, 'readme.txt'), 'not a md\n');
+  const t = acquireTarget({ files: ['*.md'] }, dir);
+  assert.ok(t.reviewText.includes('doc-a.md'), 'glob must match doc-a.md');
+  assert.ok(t.reviewText.includes('doc-b.md'), 'glob must match doc-b.md');
+  assert.ok(!t.reviewText.includes('readme.txt'), 'glob must not match readme.txt');
 });

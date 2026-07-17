@@ -386,24 +386,54 @@ function main(resolveFromCwd) {
     // through to `base` (which would produce a confusing downstream git
     // error against a nonsense ref).
     const BROAD_FLAGS = new Set(['--broad', '--gate']);
-    const broadFlagPassed = rest.some((a) => BROAD_FLAGS.has(a));
-    const positional = rest.filter((a) => !BROAD_FLAGS.has(a));
+    // Separate --files <glob> flag handling BEFORE the broad-flag filter so
+    // the --files token is not confused with a positional base arg.
+    let filesGlob = null;
+    const restNoFiles = [];
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === '--files') {
+        filesGlob = rest[i + 1];
+        i++; // skip the value token
+      } else {
+        restNoFiles.push(rest[i]);
+      }
+    }
+    const broadFlagPassed = restNoFiles.some((a) => BROAD_FLAGS.has(a));
+    const positional = restNoFiles.filter((a) => !BROAD_FLAGS.has(a));
     for (const tok of positional) {
       if (tok.startsWith('--')) throw new Error(`review-cli round-start: unknown flag "${tok}"`);
     }
+
+    // Detect a file target: the ref token matches 'file:<path>' or a --files
+    // flag was passed. Build a file spec (spec.files array) for acquireTarget.
+    // A file target carries hasDoD:false and does not use git at all.
+    const fileRefMatch = ref && ref.match(/^file:(.+)$/);
+    let fileSpec = null;
+    if (fileRefMatch) {
+      fileSpec = { files: [fileRefMatch[1]] };
+    } else if (filesGlob != null) {
+      // --files <glob>: a simple single-glob; the spec carries one pattern.
+      // resolveGlob is inside fileTarget; pass it as-is and let fileTarget
+      // expand it relative to repoRoot.
+      fileSpec = { files: [filesGlob] };
+    }
+    const isFileTarget = fileSpec !== null;
 
     // `resume <ref>` passes NO base token -- fall back to the base persisted
     // from the original fresh start (ledger.target.base). Without this, an
     // undefined base makes gitDiff below fall back to `git diff HEAD`, which
     // is EMPTY on a clean committed tree -- every cross-session resume of a
     // real branch would silently review nothing and converge clean.
+    // For file targets base is irrelevant; this line is harmless (undefined).
     const base = positional[0] || (ledger.target && ledger.target.base);
 
     // Warn if `base` is a local branch behind its upstream. Diffing against a stale
     // local base sweeps in everything merged upstream since the branch point -> a
     // phantom diff of unrelated files and a confusing coverage harness-failure. A
     // remote-tracking ref (origin/...) has no upstream, so the default never trips this.
-    if (base) {
+    // Skip entirely for file targets -- base is irrelevant and a git call in a
+    // non-git directory would throw.
+    if (!isFileTarget && base) {
       try {
         // stdio ignores git's stderr: a no-upstream base makes the `@{upstream}`
         // lookup fail with "fatal: ...", which the default origin/<main> base hits
@@ -431,9 +461,17 @@ function main(resolveFromCwd) {
     // rather than acquireTarget, preserving today's resume-skips-dirty-check
     // behavior (an untracked file must not block a resume). resetUnreachable
     // stays here: it is git-ledger reachability logic, not acquisition.
+    // For file targets the entire git block (checkout, resetUnreachable,
+    // head_sha reachability) is skipped -- file targets carry no git state.
     let headSha;
     let diff;
-    if (resumed) {
+    let acquiredTarget;
+    if (isFileTarget) {
+      // File target: read content directly from disk, no git ops.
+      acquiredTarget = acquireTarget(fileSpec, repoRoot);
+      headSha = acquiredTarget.identity; // content hash, not a sha; field name reused for compat
+      diff = acquiredTarget.reviewText;
+    } else if (resumed) {
       gitCheckoutTree(repoRoot); // keep journaled commits, discard uncommitted
       deleteRoundArtifacts(stateDir, resumeRound);
       ledger = { ...ledger, phase: 'idle', planned: [], resolved_absent: [], intent_parked: [] };
@@ -441,10 +479,13 @@ function main(resolveFromCwd) {
       diff = gitDiff(repoRoot, base);
     } else {
       const target = acquireTarget({ ref, base }, repoRoot); // throws the same dirty-tree error
+      acquiredTarget = target;
       headSha = target.identity;
       diff = target.reviewText;
     }
-    if (ledger.target && ledger.target.head_sha && !gitIsReachable(repoRoot, ledger.target.head_sha)) {
+    // Reachability check and resetUnreachable are git-ledger-only operations:
+    // a file target carries no head_sha ref and git must not be invoked.
+    if (!isFileTarget && ledger.target && ledger.target.head_sha && !gitIsReachable(repoRoot, ledger.target.head_sha)) {
       ledger = resetUnreachable(ledger);
     }
     const diffHash = contentHash(diff);
@@ -499,10 +540,23 @@ function main(resolveFromCwd) {
       }
     }
 
-    const dod = runDod(repoRoot);
-    ledger = { ...ledger, dod, phase: 'gates', gateApplied, target: { ...(ledger.target || { kind: 'local', ref }), base, head_sha: headSha } };
+    // DoD is a git-target concept (a CI command the code must pass before
+    // review-until-green can declare done). File targets carry hasDoD:false
+    // and skip the DoD entirely -- runDod would throw in a non-git dir because
+    // review.config.json is not expected to exist there.
+    const dod = isFileTarget ? { passed: true, deferred: true, results: [] } : runDod(repoRoot);
+    // Persist the extended target object. For file targets, add type/hasDoD/spec
+    // so later verbs (record, decideTermination) can branch on target type without
+    // re-parsing the ref. For git targets, the existing ref/base/head_sha fields
+    // are preserved; type/hasDoD are added for consistency.
+    const targetType = isFileTarget ? 'file' : 'git';
+    const baseTarget = ledger.target || { kind: 'local', ref };
+    const targetUpdate = isFileTarget
+      ? { ...baseTarget, type: 'file', hasDoD: false, spec: fileSpec }
+      : { ...baseTarget, type: 'git', hasDoD: true, spec: { ref, base }, base, head_sha: headSha };
+    ledger = { ...ledger, dod, phase: 'gates', gateApplied, target: targetUpdate };
     writeLedger(stateDir, slug, ledger);
-    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, intentApplied: !!intentCfg, gateApplied, stateDir }) + '\n');
+    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, intentApplied: !!intentCfg, gateApplied, targetType, stateDir }) + '\n');
     return;
   }
 
