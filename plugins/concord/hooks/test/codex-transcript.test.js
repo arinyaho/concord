@@ -41,6 +41,18 @@ test('mapEntries normalizes a local_shell_call to Bash', () => {
   ]);
 });
 
+test('mapEntries joins an argv-array local_shell_call command (real Codex shape)', () => {
+  const raw = [
+    {
+      type: 'response_item',
+      payload: { type: 'local_shell_call', action: { command: ['bash', '-lc', 'echo hi'] } },
+    },
+  ];
+  assert.deepStrictEqual(mapEntries(raw), [
+    { role: 'assistant', text: '', toolCalls: [{ name: 'Bash', input: { command: 'bash -lc echo hi' } }] },
+  ]);
+});
+
 test('mapEntries passes through a non-shell tool call (e.g. apply_patch) best-effort', () => {
   const raw = [
     {
