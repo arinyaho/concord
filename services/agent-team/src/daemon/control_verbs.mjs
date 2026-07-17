@@ -38,7 +38,7 @@ export async function handleControlVerb({ verb, arg }, deps) {
     const { found } = queue.cancel(arg);
     // arg is user-supplied, so the ack echoes it back; mentions disabled + channel.send (not
     // postSystem) so `/cancel @everyone` cannot resolve into a live ping.
-    const content = found ? `cancelled ${arg}` : `no such job ${arg}`;
+    const content = (found ? `cancelled ${arg}` : `no such job ${arg}`).slice(0, 2000);
     try { await channel.send({ content, allowedMentions: { parse: [] } }); }
     catch (e) { console.error(`[agent-team] /cancel ack post failed for thread ${threadId}:`, e); }
     return;

@@ -61,6 +61,16 @@ test("cancel: user-supplied @everyone is echoed but mention-disabled (no live pi
   assert.equal(c.posts.length, 0);
 });
 
+test("cancel: pathologically long arg -> ack clamped to 2000 chars, still via channel.send", async () => {
+  const longArg = "x".repeat(3000);
+  const d = deps({ queue: { cancel: () => ({ found: false }), list: () => ({}) } });
+  await handleControlVerb({ verb: "cancel", arg: longArg }, d.d);
+  const last = d.sends.at(-1);
+  assert.ok(last.content.length <= 2000);
+  assert.deepEqual(last.allowedMentions, { parse: [] });
+  assert.equal(d.posts.length, 0); // still must NOT route through postSystem
+});
+
 test("clear: pending -> cleared; none -> nothing pending", async () => {
   const a = deps(); await handleControlVerb({ verb: "clear", arg: undefined }, a.d);
   assert.match(a.posts.at(-1)[1], /cleared/i);
