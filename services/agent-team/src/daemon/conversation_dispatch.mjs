@@ -38,7 +38,7 @@ function makeSemaphore(cap) {
 }
 
 export function makeConversationHandler({ cfg, roster, store, deps }) {
-  const { createThread, post, runRole, persist } = deps;
+  const { createThread, post, runRole, persist, postSystem, getPending, clearPending, dispatchAction } = deps;
   const maxRoundLen = cfg.maxRoundLen ?? roster.length;
   const locks = new Map(); // threadId -> tail promise (serialize same-thread turns)
   const sem = makeSemaphore(MAX_CONCURRENT_TURNS); // shared across all threads on this handler
@@ -56,14 +56,16 @@ export function makeConversationHandler({ cfg, roster, store, deps }) {
     return next;
   }
 
-  async function run(threadId, userText, state) {
+  async function run(threadId, userText, state, opts = {}) {
     await withThreadLock(threadId, async () => {
       // Depth bound: too many turns already waiting on a free cross-thread slot -> drop this one
       // with an in-thread notice rather than growing the queue without limit. This check and the
       // eventual acquire() both run inside the per-thread lock, so it cannot race itself for the
       // same thread; it can still race turns from other threads for queue slots, which is fine --
-      // the bound is advisory backpressure, not an exact count.
-      if (sem.waiting() >= MAX_QUEUED_TURNS) {
+      // the bound is advisory backpressure, not an exact count. A job-outcome re-entry (feedTurn)
+      // bypasses this drop: a computed outcome is bounded by the capability queue's own cap, not a
+      // floodable author burst, so it must never be silently shed.
+      if (!opts.bypassBusyDrop && sem.waiting() >= MAX_QUEUED_TURNS) {
         // Best-effort notice: a post failure here (e.g. Discord unreachable) must not turn a
         // dropped-for-capacity turn into an unhandled rejection.
         try {
@@ -86,7 +88,38 @@ export function makeConversationHandler({ cfg, roster, store, deps }) {
     });
   }
 
-  return async function handle(msg) {
+  // Locked re-entry for a job outcome. Re-fetches state (guard a closed/evicted thread) and runs a
+  // synthesized turn through the SAME lock + semaphore as a user turn, but BYPASSING the busy-drop --
+  // a computed job outcome (bounded by the capability queue's own cap, not a floodable author burst)
+  // must never be silently shed.
+  //
+  // advanceTurn only posts non-skip ROLE outputs -- it never posts userText itself. The conversation
+  // roles can legitimately SKIP the result turn (their SKIP_RULE invites "outside your area -> SKIP"),
+  // and if EVERY role skips, nothing would be posted or logged: the author, who confirmed `run <id>`
+  // and saw "job started", would never learn the job finished or failed. So the outcome is posted
+  // unconditionally here, BEFORE the turn runs, guaranteeing the author always sees it regardless of
+  // whether any role reacts. This mirrors the capability path (replyForOutcome posts unconditionally).
+  // Best-effort + its own try/catch: a post failure here must not crash the fire-and-forget onDone
+  // caller, nor block the turn that follows.
+  async function feedTurn(threadId, userText) {
+    const state = store.get(threadId);
+    if (!state) {
+      try {
+        await postSystem(threadId, "(job result for a closed conversation -- ignored)");
+      } catch (e) {
+        console.error(`[agent-team] feedTurn guard notice post failed for thread ${threadId}:`, e);
+      }
+      return;
+    }
+    try {
+      await postSystem(threadId, userText);
+    } catch (e) {
+      console.error(`[agent-team] job-result notice post failed for thread ${threadId}:`, e);
+    }
+    await run(threadId, userText, state, { bypassBusyDrop: true });
+  }
+
+  const handle = async function handle(msg) {
     const authed = nonEmpty(msg.author?.id) && msg.guildId === cfg.guildId
       && Array.isArray(cfg.userIds) && cfg.userIds.includes(msg.author.id);
 
@@ -99,26 +132,57 @@ export function makeConversationHandler({ cfg, roster, store, deps }) {
       await run(thread.id, msg.content ?? "", state);
       return true;
     }
-    // (b) tracked thread -> follow-up
+    // (b) tracked thread -> confirm a pending action, else a follow-up turn
     const parentId = msg.channel?.parentId;
     if (isAuthorizedThread({ authorId: msg.author?.id, channelId: msg.channelId, guildId: msg.guildId, parentId }, cfg, store)) {
-      const state = store.get(msg.channelId);
-      // Fixed-enum control verb: EXACT "/tokens" only (a message merely containing it is a normal
-      // turn). No user substring flows into any query/shell/host call -- pure read of state.tokens.
-      // The author+guild+channel gate is already satisfied here; no new host surface.
-      if ((msg.content ?? "").trim() === "/tokens") {
+      const threadId = msg.channelId;
+      const content = (msg.content ?? "").trim();
+      const state = store.get(threadId);
+
+      // Fixed-enum control verb (measure-only meter): EXACT "/tokens" only (a message merely
+      // containing it is a normal turn). No user substring flows into any query/shell/host call --
+      // pure read of state.tokens. The author+guild+channel gate is already satisfied here.
+      if (content === "/tokens") {
         try {
-          await post(msg.channelId, "system", state && state.tokens
+          await post(threadId, "system", state && state.tokens
             ? formatTally(summarize(state.tokens))
             : "no tokens recorded yet");
         } catch (e) {
-          console.error(`[agent-team] /tokens post failed for thread ${msg.channelId}:`, e);
+          console.error(`[agent-team] /tokens post failed for thread ${threadId}:`, e);
         }
         return true;
       }
-      await run(msg.channelId, msg.content ?? "", state);
+
+      // `run <id>` confirms a pending delegated action.
+      const confirm = content.match(/^run\s+(\S+)$/i);
+      if (confirm) {
+        const pending = getPending(store, threadId);
+        if (pending) {
+          if (pending.id === confirm[1]) {
+            const { accepted } = dispatchAction({ pending, threadId, feedTurn });
+            if (accepted) {
+              clearPending(store, cfg.sessionStorePath, threadId);
+              await postSystem(threadId, `job started (${pending.id})`);
+            } else {
+              // Do NOT clear the pending proposal here -- leave it in place so the user can retry
+              // `run <id>` once a capability slot frees up.
+              await postSystem(threadId, "busy -- try again shortly");
+            }
+          } else {
+            // A pending proposal exists but this id does not match it -- likely a fat-fingered id.
+            await postSystem(threadId, `no pending proposal ${confirm[1]}`);
+          }
+          return true;
+        }
+        // No pending proposal at all: a `run <id>` message is ordinary conversation (spec 120), not
+        // a confirmation. Fall through to the normal-turn path below so the team discusses it rather
+        // than the daemon rejecting it.
+      }
+      await run(threadId, msg.content ?? "", state);
       return true;
     }
     return false;
   };
+
+  return { handle, feedTurn };
 }
