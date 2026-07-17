@@ -153,6 +153,40 @@ test("cross-thread cap: at most MAX_CONCURRENT_TURNS runRole calls are in-flight
   assert.equal(enteredAfterRelease, N); // once a slot frees, the queued thread's turn runs too
 });
 
+test("/tokens in an authorized tracked thread posts the tally and runs NO role", async () => {
+  const posts = [];
+  let roleRan = false;
+  const cfg = { guildId: "g", userIds: ["u"], conversationChannelIds: ["conv"] };
+  const store = new Map([["thr", { roleSessions: {}, tokens: { perRole: { spec: { freshInput: 100, turns: 1 } }, totals: { freshInput: 100 }, turnCount: 1 } }]]);
+  const handle = makeConversationHandler({ cfg, roster: [{ name: "spec" }], store, deps: {
+    createThread: async () => ({ id: "x" }),
+    post: async (_tid, role, text) => { posts.push({ role, text }); },
+    runRole: async () => { roleRan = true; return { text: "", sessionId: "s", skip: false, reset: false, usage: {} }; },
+    persist: async () => {},
+  }});
+  // a tracked-thread message whose content is exactly "/tokens" (parentId in conversationChannelIds)
+  const handled = await handle({ author: { id: "u" }, guildId: "g", channelId: "thr", content: "/tokens", channel: { parentId: "conv" } });
+  assert.equal(handled, true);
+  assert.equal(roleRan, false);                          // NO role invoked
+  const reply = posts.find((p) => /tokens \(this conversation/.test(p.text));
+  assert.ok(reply, "a tally is posted");
+  assert.doesNotMatch(reply.text, /session|resume/);     // numbers-only
+});
+
+test("a message merely CONTAINING /tokens as free text is NOT the verb (runs the turn)", async () => {
+  let roleRan = false;
+  const cfg = { guildId: "g", userIds: ["u"], conversationChannelIds: ["conv"] };
+  const store = new Map([["thr", { roleSessions: {}, tokens: undefined }]]);
+  const handle = makeConversationHandler({ cfg, roster: [{ name: "spec" }], store, deps: {
+    createThread: async () => ({ id: "x" }),
+    post: async () => {},
+    runRole: async () => { roleRan = true; return { text: "hi", sessionId: "s", skip: false, reset: false, usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }; },
+    persist: async () => {},
+  }});
+  await handle({ author: { id: "u" }, guildId: "g", channelId: "thr", content: "please run /tokens later", channel: { parentId: "conv" } });
+  assert.equal(roleRan, true); // not an exact match -> a normal turn
+});
+
 test("depth bound: a turn beyond MAX_CONCURRENT_TURNS + MAX_QUEUED_TURNS is dropped with a busy note instead of running", async () => {
   const posts = [];
   let releaseGate;

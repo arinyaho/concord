@@ -1,6 +1,7 @@
 import { isAuthorizedThread } from "./thread_gate.mjs";
 import { selectRound } from "./select_round.mjs";
 import { advanceTurn } from "./conversation.mjs";
+import { summarize, formatTally } from "./meter.mjs";
 
 // The conversation routing core (bot-skip lives in the bin, ahead of this). Returns true iff it
 // handled the message. Authorized conversation-channel message -> create thread, AWAIT-seed the
@@ -102,6 +103,19 @@ export function makeConversationHandler({ cfg, roster, store, deps }) {
     const parentId = msg.channel?.parentId;
     if (isAuthorizedThread({ authorId: msg.author?.id, channelId: msg.channelId, guildId: msg.guildId, parentId }, cfg, store)) {
       const state = store.get(msg.channelId);
+      // Fixed-enum control verb: EXACT "/tokens" only (a message merely containing it is a normal
+      // turn). No user substring flows into any query/shell/host call -- pure read of state.tokens.
+      // The author+guild+channel gate is already satisfied here; no new host surface.
+      if ((msg.content ?? "").trim() === "/tokens") {
+        try {
+          await post(msg.channelId, "system", state && state.tokens
+            ? formatTally(summarize(state.tokens))
+            : "no tokens recorded yet");
+        } catch (e) {
+          console.error(`[agent-team] /tokens post failed for thread ${msg.channelId}:`, e);
+        }
+        return true;
+      }
       await run(msg.channelId, msg.content ?? "", state);
       return true;
     }
