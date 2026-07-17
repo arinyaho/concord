@@ -25,11 +25,11 @@ test("formatStatus: bounded, truncates task, tolerates undefined threadId, empty
 });
 
 function deps(over = {}) {
-  const posts = [], setNames = [];
+  const posts = [], setNames = [], sends = [];
   return {
     d: {
       threadId: "t1",
-      channel: { setName: async (n) => setNames.push(n) },
+      channel: { setName: async (n) => setNames.push(n), send: async (o) => sends.push(o) },
       cfg: { sessionStorePath: "/s" },
       queue: { cancel: () => ({ found: true }), list: () => ({ running: [], queued: [] }) },
       postSystem: async (tid, text) => posts.push([tid, text]),
@@ -37,16 +37,28 @@ function deps(over = {}) {
       clearPending: () => {},
       listPendings: () => [],
       ...over,
-    }, posts, setNames,
+    }, posts, setNames, sends,
   };
 }
 
-test("cancel: found -> ack; not found -> no such job", async () => {
+test("cancel: found -> ack; not found -> no such job (mention-disabled channel.send, not postSystem)", async () => {
   const a = deps(); await handleControlVerb({ verb: "cancel", arg: "a1" }, a.d);
-  assert.match(a.posts.at(-1)[1], /cancelled a1/);
+  assert.match(a.sends.at(-1).content, /cancelled a1/);
+  assert.deepEqual(a.sends.at(-1).allowedMentions, { parse: [] });
+  assert.equal(a.posts.length, 0); // ack must NOT route through postSystem
   const b = deps({ queue: { cancel: () => ({ found: false }), list: () => ({}) } });
   await handleControlVerb({ verb: "cancel", arg: "zzz" }, b.d);
-  assert.match(b.posts.at(-1)[1], /no such job zzz/);
+  assert.match(b.sends.at(-1).content, /no such job zzz/);
+  assert.deepEqual(b.sends.at(-1).allowedMentions, { parse: [] });
+  assert.equal(b.posts.length, 0);
+});
+
+test("cancel: user-supplied @everyone is echoed but mention-disabled (no live ping)", async () => {
+  const c = deps({ queue: { cancel: () => ({ found: false }), list: () => ({}) } });
+  await handleControlVerb({ verb: "cancel", arg: "@everyone" }, c.d);
+  assert.equal(c.sends.at(-1).content, "no such job @everyone");
+  assert.deepEqual(c.sends.at(-1).allowedMentions, { parse: [] }); // ping neutralized
+  assert.equal(c.posts.length, 0);
 });
 
 test("clear: pending -> cleared; none -> nothing pending", async () => {
