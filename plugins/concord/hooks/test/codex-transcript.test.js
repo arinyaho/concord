@@ -17,15 +17,39 @@ test('mapEntries lifts a rollout assistant message', () => {
   assert.deepStrictEqual(mapEntries(raw), [{ role: 'assistant', text: 'DECISION: use X', toolCalls: [] }]);
 });
 
-test('mapEntries lifts a custom_tool_call', () => {
+test('mapEntries normalizes an exec custom_tool_call to Bash', () => {
   const raw = [
     {
       type: 'response_item',
-      payload: { type: 'custom_tool_call', name: 'shell', input: { command: 'ls' } },
+      payload: { type: 'custom_tool_call', name: 'exec', input: 'ls -la' },
     },
   ];
   assert.deepStrictEqual(mapEntries(raw), [
-    { role: 'assistant', text: '', toolCalls: [{ name: 'shell', input: { command: 'ls' } }] },
+    { role: 'assistant', text: '', toolCalls: [{ name: 'Bash', input: { command: 'ls -la' } }] },
+  ]);
+});
+
+test('mapEntries normalizes a local_shell_call to Bash', () => {
+  const raw = [
+    {
+      type: 'response_item',
+      payload: { type: 'local_shell_call', name: 'local_shell_call', input: { command: 'git status' } },
+    },
+  ];
+  assert.deepStrictEqual(mapEntries(raw), [
+    { role: 'assistant', text: '', toolCalls: [{ name: 'Bash', input: { command: 'git status' } }] },
+  ]);
+});
+
+test('mapEntries passes through a non-shell tool call (e.g. apply_patch) best-effort', () => {
+  const raw = [
+    {
+      type: 'response_item',
+      payload: { type: 'custom_tool_call', name: 'apply_patch', input: { patch: '*** Begin Patch' } },
+    },
+  ];
+  assert.deepStrictEqual(mapEntries(raw), [
+    { role: 'assistant', text: '', toolCalls: [{ name: 'apply_patch', input: { patch: '*** Begin Patch' } }] },
   ]);
 });
 

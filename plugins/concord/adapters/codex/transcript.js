@@ -74,9 +74,19 @@ function mapEntries(rawEntries) {
       }
       out.push(normalizeEntry({ role: payload.role, text, toolCalls: [] }));
     } else if (payload.type === 'custom_tool_call' || payload.type === 'local_shell_call') {
+      // Codex tool calls are normalized to the canonical (Claude Code) tool
+      // vocabulary that core/extract.js's extractFacts expects: `exec` /
+      // `local_shell_call` -> `Bash{command}` so shell-command facts extract.
+      // Everything else (e.g. `apply_patch`) is passed through best-effort --
+      // extractFacts won't parse patch file paths out of it, so those file-path
+      // facts are a documented residual (not yet recognized).
       const name = payload.name || payload.type;
-      const input = payload.input || payload.arguments || payload.action || {};
-      out.push(normalizeEntry({ role: 'assistant', text: '', toolCalls: [{ name, input }] }));
+      const rawInput = payload.input || payload.arguments || payload.action || {};
+      const isShell = name === 'exec' || payload.type === 'local_shell_call';
+      const toolCall = isShell
+        ? { name: 'Bash', input: { command: typeof rawInput === 'string' ? rawInput : rawInput.command } }
+        : { name, input: rawInput };
+      out.push(normalizeEntry({ role: 'assistant', text: '', toolCalls: [toolCall] }));
     }
   }
   return out;
