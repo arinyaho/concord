@@ -19,13 +19,15 @@ export function makeActionPost({ post, cfg, store, storePath, mintId, postSystem
       const r = resolveProposal(proposal, cfg);
       if (!r.ok) { await postSystem(threadId, `cannot dispatch: ${r.reason}`); return; }
       const id = mintId();
-      setPending(store, storePath, threadId, { id, alias: r.alias, repoPath: r.repoPath, task: r.task }, deps);
       try {
+        // setPending mutates the in-memory store BEFORE its own throwable persist (fs write); if that
+        // persist throws, or if the confirm post below throws, the author never learns the id and the
+        // in-memory pendingAction would otherwise be orphaned (never runnable). Roll back on either.
+        setPending(store, storePath, threadId, { id, alias: r.alias, repoPath: r.repoPath, task: r.task }, deps);
         await postSystem(threadId, `Proposed job ${id} on ${r.alias} (${r.repoPath}): ${r.task}. Reply \`run ${id}\` to execute.`);
       } catch (e) {
-        // The proposal was recorded but the author never got the id -> roll back so it isn't orphaned.
         try { clearPending(store, storePath, threadId, deps); } catch {}
-        console.error(`[agent-team] confirm prompt post failed for thread ${threadId}; proposal discarded:`, e);
+        console.error(`[agent-team] proposal for thread ${threadId} could not be recorded/announced; discarded:`, e);
       }
     } catch (e) {
       console.error(`[agent-team] action detection failed for thread ${threadId}:`, e);

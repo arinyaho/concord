@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { makeActionPost } from "../../src/daemon/action_post.mjs";
+import { getPending } from "../../src/daemon/pending_action.mjs";
 
 function ctx() {
   const posts = [], systems = [], pend = [];
@@ -68,4 +69,25 @@ test("confirm prompt post fails: pending is rolled back, not orphaned, and wrap 
   await assert.doesNotReject(() => wp("t1", "spec", "go\nDISPATCH concord :: fix it"));
   assert.deepEqual(pend[0][1], { id: "id1", alias: "concord", repoPath: "/r", task: "fix it" }); // was recorded
   assert.deepEqual(cleared, ["t1"]); // then rolled back since the author never got the id
+});
+test("real setPending: persist throws after in-memory mutation -> rolled back, not orphaned", async () => {
+  // Uses the REAL setPending/clearPending (no *Impl injection) so the mutate-then-persist ordering is
+  // exercised for real: setPending sets state.pendingAction on the store Map, THEN calls saveThread,
+  // which here throws via a failing deps.writeFileSync (disk full / EACCES). Without the fix, the
+  // in-memory pendingAction would be left set with no confirm ever posted -> orphaned, unrunnable.
+  const store = new Map();
+  const deps = {
+    writeFileSync: () => { throw new Error("ENOSPC: no space left on device"); },
+    renameSync: () => {},
+  };
+  const wp = makeActionPost({
+    post: async () => {},
+    cfg: { repos: { concord: "/r" } },
+    store, storePath: "/s.json",
+    mintId: () => "id1",
+    postSystem: async () => {},
+    deps,
+  });
+  await assert.doesNotReject(() => wp("t1", "spec", "go\nDISPATCH concord :: fix it"));
+  assert.equal(getPending(store, "t1"), null); // rolled back, no orphan left in the in-memory store
 });
