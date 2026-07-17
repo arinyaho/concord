@@ -612,17 +612,28 @@ function main(resolveFromCwd) {
       ledger = { ...ledger, gate_open: gateOpen };
     }
 
+    // Branch fixed-signal on target type: git uses the commit journal; file
+    // targets use the per-fix artifact's edited flag (no git commit happens).
+    const isGit = !ledger.target || ledger.target.type === 'git';
     const journaled = new Map((ledger.journal || []).map((j) => [j.id, j.sha]));
     const fixedIds = [];
     const parkedIds = [];
     const fixCommits = {};
     const parkReasons = {};
     for (const id of ledger.planned || []) {
-      if (journaled.has(id)) {
+      const fx = readJson(`fix-${id}`);
+      const fixedByGit = isGit && journaled.has(id);
+      const fixedByReport = !isGit && fx && fx.edited === true;
+      if (fixedByGit) {
         fixedIds.push(id);
         fixCommits[id] = journaled.get(id);
+      } else if (fixedByReport) {
+        // File-target fix: the fixer edited the file directly; no git commit.
+        // Stamp 'file-edit' as a sentinel so the handoff clearly shows the
+        // fix landed via a direct edit, not a git commit sha.
+        fixedIds.push(id);
+        fixCommits[id] = 'file-edit';
       } else {
-        const fx = readJson(`fix-${id}`);
         parkedIds.push(id);
         parkReasons[id] = gc.validateParkReason({ kind: 'needs-decision', text: fx ? 'fix reported no edit or the file was unchanged' : 'fix artifact missing' });
       }
@@ -660,12 +671,15 @@ function main(resolveFromCwd) {
       ledger = { ...ledger, status: 'parked' };
     }
     if (decision.continue) ledger = { ...ledger, budget: { ...ledger.budget, spent: ledger.budget.spent + 1 } };
-    if (!decision.continue && fixedIds.length > 0) {
-      // Fixes already landed via commit-fix -- re-run DoD against the post-commit
+    if (isGit && !decision.continue && fixedIds.length > 0) {
+      // Git: fixes already landed via commit-fix -- re-run DoD against the post-commit
       // tree so the handoff reports the true final state, not the pre-fix round-start snapshot.
+      // File targets skip this: there is no DoD, and no git tree to re-check.
       ledger = { ...ledger, dod: runDod(repoRoot) };
     }
-    gitCheckoutTree(repoRoot); // clean any leftover dirty edit from a rejected/parked fixer
+    // Git only: clean any leftover uncommitted edit from a rejected/parked fixer.
+    // File targets have no working tree to discard.
+    if (isGit) gitCheckoutTree(repoRoot);
     ledger = { ...ledger, phase: 'done', last_recorded_round: n, _lastDecision: decision };
     writeLedger(stateDir, slug, ledger);
     process.stdout.write(JSON.stringify({ decision, handoff: renderHandoff({ ledger }) }) + '\n');

@@ -2173,3 +2173,95 @@ test('round-start file: a git target still produces targetType git in the work d
   assert.strictEqual(ledger.target.hasDoD, true);
 });
 
+// ---------------------------------------------------------------------------
+// Task 4: record non-git fixed-signal
+// ---------------------------------------------------------------------------
+
+function seedFileTargetFixesRound(dir, ref, fileRef, correctness, verify) {
+  const slug = review.targetSlug(ref);
+  let ledger = review.emptyLedger({ kind: 'file', ref, type: 'file', hasDoD: false, spec: { files: [fileRef] } });
+  ledger = review.beginRound(ledger, 'hash1').ledger;
+  ledger = { ...ledger, phase: 'fixes', planned: correctness.findings.map((f) => f.id), dod: { passed: true, deferred: true, results: [] }, gateApplied: false };
+  review.writeLedger(dir, slug, ledger);
+  const n = ledger.round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify(correctness));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify(verify));
+  return { n, slug };
+}
+
+test('record file target: fix artifact with edited:true marks finding fixed with file-edit sentinel', () => {
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  const ref = 'file:note.md';
+  const { n, slug } = seedFileTargetFixesRound(dir, ref, 'note.md',
+    { status: 'ok', examined: ['note.md'], findings: [
+      { id: 'docreview:unsupported-claim', gate: 'correctness', file: 'note.md', span: 'claim without evidence', summary: 'Claim lacks citation.' },
+    ]},
+    { status: 'ok', rejected: [] }
+  );
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-docreview:unsupported-claim.json`), JSON.stringify({ status: 'ok', edited: true, files: ['note.md'] }));
+  const out = JSON.parse(run(['record', ref], { env }));
+  const l = review.readLedger(dir, slug);
+  const f = l.findings.find((x) => x.id === 'docreview:unsupported-claim');
+  assert.strictEqual(f.status, 'fixed');
+  assert.strictEqual(f.fix_commit, 'file-edit');
+  assert.strictEqual(out.decision.continue, true);
+  assert.strictEqual(out.decision.converged, false);
+});
+
+test('record file target: fix artifact with edited:false parks needs-decision, no fix_commit', () => {
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  const ref = 'file:note.md';
+  const { n, slug } = seedFileTargetFixesRound(dir, ref, 'note.md',
+    { status: 'ok', examined: ['note.md'], findings: [
+      { id: 'docreview:unfixed', gate: 'correctness', file: 'note.md', span: 'bad claim', summary: 'Still wrong.' },
+    ]},
+    { status: 'ok', rejected: [] }
+  );
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-docreview:unfixed.json`), JSON.stringify({ status: 'ok', edited: false }));
+  run(['record', ref], { env });
+  const l = review.readLedger(dir, slug);
+  const f = l.findings.find((x) => x.id === 'docreview:unfixed');
+  assert.strictEqual(f.status, 'parked');
+  assert.ok(!f.fix_commit, 'parked finding must not carry fix_commit');
+});
+
+test('record file target: missing fix artifact parks needs-decision', () => {
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  const ref = 'file:note.md';
+  const { n, slug } = seedFileTargetFixesRound(dir, ref, 'note.md',
+    { status: 'ok', examined: ['note.md'], findings: [
+      { id: 'docreview:no-artifact', gate: 'correctness', file: 'note.md', span: 'claim', summary: 'Missing fix.' },
+    ]},
+    { status: 'ok', rejected: [] }
+  );
+  void n;
+  run(['record', ref], { env });
+  const l = review.readLedger(dir, slug);
+  const f = l.findings.find((x) => x.id === 'docreview:no-artifact');
+  assert.strictEqual(f.status, 'parked');
+});
+
+test('record git target: fixed-signal comes from the journal sha, not the fix artifact (regression lock)', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/git-record-regression',
+    { status: 'ok', examined: ['a.txt'], findings: [
+      { id: 'correctness:y', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' },
+    ]},
+    { status: 'ok', rejected: [] }
+  );
+  run(['plan-fixes', 'feat/git-record-regression'], { env });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:y.json`), JSON.stringify({ status: 'ok', edited: true }));
+  run(['commit-fix', 'feat/git-record-regression', 'correctness:y'], { env });
+  run(['record', 'feat/git-record-regression'], { env });
+  const slug = review.targetSlug('feat/git-record-regression');
+  const l = review.readLedger(dir, slug);
+  const f = l.findings.find((x) => x.id === 'correctness:y');
+  assert.strictEqual(f.status, 'fixed');
+  assert.match(f.fix_commit, /^[0-9a-f]{7,40}$/, 'git fix_commit must be a real sha');
+  assert.notStrictEqual(f.fix_commit, 'file-edit');
+});
