@@ -57,3 +57,17 @@ test("rejects a non-absolute sessionStorePath and non-positive maxRoundLen", () 
   assert.throws(() => loadConfig({ ...OKC, sessionStorePath: "rel/path" }), /sessionStorePath/);
   assert.throws(() => loadConfig({ ...OKC, maxRoundLen: 0 }), /maxRoundLen/);
 });
+
+test("roleAvatars defaults to an empty object when absent", () => {
+  const c = loadConfig(OK);
+  assert.deepEqual(c.roleAvatars, {});
+});
+test("roleAvatars accepts a map of https URLs", () => {
+  const c = loadConfig({ ...OK, roleAvatars: { spec: "https://x/a.png", reviewer: "https://x/b.png" } });
+  assert.equal(c.roleAvatars.spec, "https://x/a.png");
+});
+test("roleAvatars rejects a non-https or non-string value", () => {
+  assert.throws(() => loadConfig({ ...OK, roleAvatars: { spec: "http://x/a.png" } }), /https/i);
+  assert.throws(() => loadConfig({ ...OK, roleAvatars: { spec: 123 } }), /https/i);
+  assert.throws(() => loadConfig({ ...OK, roleAvatars: [] }), /roleAvatars/i);
+});
