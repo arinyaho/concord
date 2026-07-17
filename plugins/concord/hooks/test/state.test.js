@@ -1,10 +1,22 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { emptyModel, mergeModel } = require('../../core/state');
+// The review-until-green LEDGER (distinct from the session-state model above) is
+// persisted by core/review.js's readLedger/writeLedger. The dry-round feature
+// adds two persisted fields -- ledger.dryStreak and the extended ledger.target
+// ({type,hasDoD,...}) -- so the ledger's state round-trip is asserted here.
+const review = require('../../core/review');
 
 function delta(over) {
   return { decisions: [], openLoops: [], nexts: [], resolved: [], facts: [], ...over };
+}
+
+function tmpStateDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'state-ledger-'));
 }
 
 test('decisions keep the latest per topic', () => {
@@ -51,4 +63,31 @@ test('facts dedup: churn collapses and cannot evict high-signal facts', () => {
   assert.equal(m.facts.filter((f) => f === 'edited LEDGER.md').length, 1);
   assert.ok(m.facts.includes('ran: git commit -m x'));
   assert.ok(m.facts.includes('ran: gh pr create'));
+});
+
+// ---- ledger state round-trip: dryStreak + extended target (Task 3) ----
+
+test('ledger state: dryStreak and the extended target ({type,hasDoD}) round-trip through write/read', () => {
+  const dir = tmpStateDir();
+  const slug = review.targetSlug('file:doc.md');
+  const ledger = { ...review.emptyLedger({ kind: 'local', ref: 'file:doc.md', type: 'file', hasDoD: false }), dryStreak: 2 };
+  review.writeLedger(dir, slug, ledger);
+  const back = review.readLedger(dir, slug);
+  assert.strictEqual(back.dryStreak, 2);
+  assert.strictEqual(back.target.type, 'file');
+  assert.strictEqual(back.target.hasDoD, false);
+  assert.deepStrictEqual(back, ledger);
+});
+
+test('ledger state: a pre-existing ledger absent dryStreak/target.hasDoD round-trips and reads as absent (backward-compat)', () => {
+  const dir = tmpStateDir();
+  const slug = review.targetSlug('feat/pre-existing');
+  // No dryStreak, no target.hasDoD -> a ledger written before the dry-round feature.
+  const legacy = review.emptyLedger({ kind: 'local', ref: 'feat/pre-existing' });
+  assert.strictEqual('dryStreak' in legacy, false);
+  review.writeLedger(dir, slug, legacy);
+  const back = review.readLedger(dir, slug);
+  assert.strictEqual(back.dryStreak, undefined); // read sites default absent -> 0
+  assert.strictEqual(back.target.hasDoD, undefined); // derived as git/true downstream
+  assert.deepStrictEqual(back, legacy);
 });
