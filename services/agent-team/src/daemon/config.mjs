@@ -39,6 +39,15 @@ export function loadConfig(raw) {
   if (c.maxRoundLen !== undefined && (!Number.isInteger(c.maxRoundLen) || c.maxRoundLen < 1))
     throw new Error("config.maxRoundLen must be a positive integer");
 
+  // roleAvatars (B-3b): optional { role: httpsUrl } for per-role webhook avatars.
+  const roleAvatars = c.roleAvatars ?? {};
+  if (typeof roleAvatars !== "object" || roleAvatars === null || Array.isArray(roleAvatars))
+    throw new Error("config.roleAvatars must be an object mapping role to an https URL");
+  for (const [role, url] of Object.entries(roleAvatars)) {
+    if (typeof url !== "string" || !url.startsWith("https://"))
+      throw new Error(`config.roleAvatars.${role} must be an https:// URL string`);
+  }
+
   return {
     repos: c.repos,
     credsDir: c.credsDir,
@@ -55,5 +64,6 @@ export function loadConfig(raw) {
     conversationChannelIds: c.conversationChannelIds,
     sessionStorePath: c.sessionStorePath,
     maxRoundLen: c.maxRoundLen,
+    roleAvatars,
   };
 }
