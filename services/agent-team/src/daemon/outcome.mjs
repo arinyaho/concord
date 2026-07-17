@@ -10,6 +10,7 @@ export function isAuthExpiry(tail) { return AUTH_RE.test(tail ?? ""); }
 export async function replyForOutcome(job, outcome, { reply, diagnose, model }) {
   if (outcome.kind === "done") { await reply(job.msg, formatSuccess({ jobId: job.jobId, branch: branchFor(job.jobId) })); return; }
   if (outcome.kind === "timeout") { await reply(job.msg, formatTimeout({ jobId: job.jobId })); return; }
+  if (outcome.kind === "cancelled") { await reply(job.msg, `cancelled (${job.jobId})`); return; }
   if (isAuthExpiry(outcome.tail)) { await reply(job.msg, formatCredsExpired()); return; }
   const analysis = await diagnose(outcome.tail, model);
   await reply(job.msg, formatFailure({ analysis, tail: outcome.tail }));
