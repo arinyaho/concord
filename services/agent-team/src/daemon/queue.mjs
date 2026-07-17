@@ -4,6 +4,15 @@
 // the dockerd-managed container orphaned holding the creds mount) and frees the slot. cancel(jobId)
 // stops a running or queued job on demand (same kill as the timeout), producing a `cancelled`
 // outcome; list() reports running + queued jobs for the /status control verb.
+// Pure outcome computation, extracted so the cancel > timeout precedence can be unit-pinned
+// (setting both `_cancelled` and `timedOut` via the real timer is flaky). cancelled is checked
+// FIRST: a cancel that lands in the same tick as a timeout must still report "cancelled".
+export function computeOutcome({ cancelled, timedOut, res }) {
+  if (cancelled) return { kind: "cancelled", code: 130, tail: "cancelled" };
+  if (timedOut) return { kind: "timeout", code: 124, tail: res.tail };
+  return { kind: res.code === 0 ? "done" : "failed", code: res.code, tail: res.tail };
+}
+
 export function createQueue({ cap, queueMax, jobTimeoutMs, runJob, dockerKill, onOutcome, killTree }) {
   let active = 0;
   const fifo = [];
@@ -37,11 +46,7 @@ export function createQueue({ cap, queueMax, jobTimeoutMs, runJob, dockerKill, o
     let outcome;
     try {
       const res = await Promise.race([runJob(job), timeout, cancel]);
-      outcome = job._cancelled
-        ? { kind: "cancelled", code: 130, tail: "cancelled" }
-        : timedOut
-          ? { kind: "timeout", code: 124, tail: res.tail }
-          : { kind: res.code === 0 ? "done" : "failed", code: res.code, tail: res.tail };
+      outcome = computeOutcome({ cancelled: job._cancelled, timedOut, res });
     } catch (e) {
       outcome = { kind: "failed", code: 1, tail: String(e?.message ?? e) };
     } finally {

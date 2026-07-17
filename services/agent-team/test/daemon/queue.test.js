@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createQueue } from "../../src/daemon/queue.mjs";
+import { createQueue, computeOutcome } from "../../src/daemon/queue.mjs";
 
 const tick = () => new Promise((r) => setImmediate(r));
 
@@ -150,4 +150,42 @@ test("natural completion then cancel -> onOutcome fires once, cancel found:false
   assert.deepEqual(outcomes, [{ jobId: "a1", kind: "done" }]);
   assert.deepEqual(q.cancel("a1"), { found: false });
   assert.equal(outcomes.length, 1); // no second outcome
+});
+
+// --- computeOutcome precedence (pure) ---
+
+test("computeOutcome: cancelled beats timedOut (precedence pin)", () => {
+  // Both flags true: cancel must win. Reordering the fn to check timedOut first fails here.
+  assert.deepEqual(
+    computeOutcome({ cancelled: true, timedOut: true, res: { code: 124, tail: "timed out" } }),
+    { kind: "cancelled", code: 130, tail: "cancelled" },
+  );
+});
+
+test("computeOutcome: cancelled without timeout", () => {
+  assert.deepEqual(
+    computeOutcome({ cancelled: true, timedOut: false, res: { code: 0, tail: "" } }),
+    { kind: "cancelled", code: 130, tail: "cancelled" },
+  );
+});
+
+test("computeOutcome: timeout when not cancelled", () => {
+  assert.deepEqual(
+    computeOutcome({ cancelled: false, timedOut: true, res: { code: 124, tail: "x" } }),
+    { kind: "timeout", code: 124, tail: "x" },
+  );
+});
+
+test("computeOutcome: done on zero exit", () => {
+  assert.deepEqual(
+    computeOutcome({ cancelled: false, timedOut: false, res: { code: 0, tail: "ok" } }),
+    { kind: "done", code: 0, tail: "ok" },
+  );
+});
+
+test("computeOutcome: failed on non-zero exit", () => {
+  assert.deepEqual(
+    computeOutcome({ cancelled: false, timedOut: false, res: { code: 1, tail: "boom" } }),
+    { kind: "failed", code: 1, tail: "boom" },
+  );
 });
