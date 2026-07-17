@@ -2,7 +2,17 @@
   "name": "concord-codex",
   "version": "0.1.0-alpha.1",
   "description": "Concord review-until-green for the Codex CLI: a review-and-fix loop that keeps reviewing a code change, fixing what it finds, and re-checking until the tests pass -- driven by a deterministic CLI, with reviewers run as codex exec subprocesses.",
-  "author": { "name": "arinyaho" },
+  "author": {
+    "name": "arinyaho"
+  },
   "license": "MIT",
-  "keywords": ["review", "code-review", "codex", "harness"]
+  "keywords": [
+    "review",
+    "code-review",
+    "codex",
+    "harness",
+    "charter",
+    "session-state"
+  ],
+  "hooks": "./hooks.json"
 }
