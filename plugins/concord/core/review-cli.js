@@ -18,6 +18,7 @@ const {
   unparkFinding,
   resetUnreachable,
 } = require('./review');
+const { acquireTarget, gitDiff, gitHeadSha, gitDirty } = require('./target');
 
 function resolveStateDir(resolveFromCwd) {
   if (process.env.REVIEW_STATE_DIR) return process.env.REVIEW_STATE_DIR;
@@ -33,10 +34,9 @@ const GATE_PANEL_LENSES = ['ac-coverage', 'design-conformance', 'cross-context',
 function sh(bin, args, opts = {}) {
   return execFileSync(bin, args, { encoding: 'utf8', maxBuffer: 20 * 1024 * 1024, ...opts });
 }
-function gitDiff(repoRoot, base) {
-  const args = base ? ['diff', `${base}...HEAD`] : ['diff', 'HEAD'];
-  return sh('git', args, { cwd: repoRoot });
-}
+// gitDiff, the dirty-check (gitDirty), and the HEAD rev-parse (gitHeadSha) moved
+// to core/target.js (the target-acquisition seam). They are re-imported above so
+// existing call sites and the module's public surface stay unchanged.
 function gitCommitFix(repoRoot, findingId, summary, files) {
   // Stage only the files the fix declares -- never `-A`. A whole-tree
   // `git add -A` sweeps in any other dirty content (untracked non-gitignored
@@ -59,9 +59,10 @@ function gitIsReachable(repoRoot, sha) {
     return false;
   }
 }
-function gitIsDirty(repoRoot) {
-  return sh('git', ['status', '--porcelain'], { cwd: repoRoot }).trim().length > 0;
-}
+// Re-exported alias for the dirty-check now living in core/target.js, so the
+// module's public `gitIsDirty` surface (and its resume/record call sites) are
+// unchanged by the extract.
+const gitIsDirty = gitDirty;
 function gitIsDirtyForFile(repoRoot, file) {
   return sh('git', ['status', '--porcelain', '--', file], { cwd: repoRoot }).trim().length > 0;
 }
@@ -422,20 +423,30 @@ function main(resolveFromCwd) {
     const resumed = ledger.phase === 'gates' || ledger.phase === 'fixes';
     const resumeRound = ledger.round;
 
+    // Target acquisition goes through the core/target.js seam. On a FRESH start
+    // acquireTarget runs the dirty-check + HEAD rev-parse + diff (identical
+    // command invocations, identical dirty-tree throw). On a RESUME the checkout
+    // above already made the tree clean, so the dirty-check is deliberately
+    // skipped -- we call the seam's primitives (gitHeadSha + gitDiff) directly
+    // rather than acquireTarget, preserving today's resume-skips-dirty-check
+    // behavior (an untracked file must not block a resume). resetUnreachable
+    // stays here: it is git-ledger reachability logic, not acquisition.
+    let headSha;
+    let diff;
     if (resumed) {
       gitCheckoutTree(repoRoot); // keep journaled commits, discard uncommitted
       deleteRoundArtifacts(stateDir, resumeRound);
       ledger = { ...ledger, phase: 'idle', planned: [], resolved_absent: [], intent_parked: [] };
-    } else if (gitIsDirty(repoRoot)) {
-      throw new Error('round-start: working tree is dirty; commit or stash before review-until-green');
+      headSha = gitHeadSha(repoRoot);
+      diff = gitDiff(repoRoot, base);
+    } else {
+      const target = acquireTarget({ ref, base }, repoRoot); // throws the same dirty-tree error
+      headSha = target.identity;
+      diff = target.reviewText;
     }
-    // Dirty check is skipped when resumed -- the checkout above already made the tree clean.
-
-    const headSha = sh('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).trim();
     if (ledger.target && ledger.target.head_sha && !gitIsReachable(repoRoot, ledger.target.head_sha)) {
       ledger = resetUnreachable(ledger);
     }
-    const diff = gitDiff(repoRoot, base);
     const diffHash = contentHash(diff);
 
     if (resumed) {
