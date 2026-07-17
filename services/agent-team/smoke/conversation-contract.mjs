@@ -4,7 +4,7 @@ import { CONVERSATION_ROSTER } from "../src/daemon/conversation_roster.mjs";
 
 const cfg = { guildId: "g", userIds: ["u"], conversationChannelIds: ["c1"], maxRoundLen: 10, sessionStorePath: "/x" };
 const posts = [], store = new Map();
-const h = makeConversationHandler({
+const { handle: h } = makeConversationHandler({
   cfg, roster: CONVERSATION_ROSTER, store,
   deps: {
     createThread: async (m) => ({ id: `thr_${m.id}` }),
