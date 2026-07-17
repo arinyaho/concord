@@ -260,6 +260,30 @@ test("feedTurn on a missing thread -> guarded note, no throw", async () => {
   assert.match(systems.at(-1)[1], /closed|no longer|missing|unknown/i);
 });
 
+// advanceTurn only posts non-skip ROLE outputs -- it never posts userText itself. If every role
+// legitimately SKIPs the job-result turn (their SKIP_RULE invites "outside your area -> SKIP"),
+// nothing would be posted or logged and the author would never learn the job finished or failed.
+// feedTurn must guarantee the outcome is always visible regardless of role reactions.
+test("feedTurn posts the job outcome unconditionally, even when every role skips the result turn", async () => {
+  const { handler, systems, store } = h2({
+    runRole: async () => ({ text: "", sessionId: "s1", skip: true, reset: false }), // every role skips
+  });
+  store.set("thr1", { roleSessions: {} });
+  await handler.feedTurn("thr1", "[job result: outcome=failed ...]");
+  // The outcome was posted via postSystem -- the author sees it even though no role posted anything.
+  assert.ok(systems.some(([tid, text]) => tid === "thr1" && text === "[job result: outcome=failed ...]"));
+});
+
+// Happy path: when a role DOES react, the author still gets both the unconditional system note
+// (posted before the turn) and the role's reply (posted by advanceTurn during the turn).
+test("feedTurn: when a role reacts, both the system outcome note and the role reply are posted", async () => {
+  const { handler, posts, systems, store } = h2(); // default runRole: skip:false, posts "spec hi"
+  store.set("thr1", { roleSessions: {} });
+  await handler.feedTurn("thr1", "[job result: outcome=succeeded ...]");
+  assert.ok(systems.some(([tid, text]) => tid === "thr1" && text === "[job result: outcome=succeeded ...]"));
+  assert.deepEqual(posts.at(-1), ["thr1", "spec", "spec hi"]);
+});
+
 // The whole point of feedTurn is that a computed job outcome is NEVER silently shed the way an
 // over-the-cap author burst is: it re-enters the SAME lock + semaphore but BYPASSES the busy-drop.
 // This drives that invariant behaviorally under real saturation -- fill the cross-thread semaphore

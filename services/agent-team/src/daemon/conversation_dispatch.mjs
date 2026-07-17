@@ -91,6 +91,15 @@ export function makeConversationHandler({ cfg, roster, store, deps }) {
   // synthesized turn through the SAME lock + semaphore as a user turn, but BYPASSING the busy-drop --
   // a computed job outcome (bounded by the capability queue's own cap, not a floodable author burst)
   // must never be silently shed.
+  //
+  // advanceTurn only posts non-skip ROLE outputs -- it never posts userText itself. The conversation
+  // roles can legitimately SKIP the result turn (their SKIP_RULE invites "outside your area -> SKIP"),
+  // and if EVERY role skips, nothing would be posted or logged: the author, who confirmed `run <id>`
+  // and saw "job started", would never learn the job finished or failed. So the outcome is posted
+  // unconditionally here, BEFORE the turn runs, guaranteeing the author always sees it regardless of
+  // whether any role reacts. This mirrors the capability path (replyForOutcome posts unconditionally).
+  // Best-effort + its own try/catch: a post failure here must not crash the fire-and-forget onDone
+  // caller, nor block the turn that follows.
   async function feedTurn(threadId, userText) {
     const state = store.get(threadId);
     if (!state) {
@@ -100,6 +109,11 @@ export function makeConversationHandler({ cfg, roster, store, deps }) {
         console.error(`[agent-team] feedTurn guard notice post failed for thread ${threadId}:`, e);
       }
       return;
+    }
+    try {
+      await postSystem(threadId, userText);
+    } catch (e) {
+      console.error(`[agent-team] job-result notice post failed for thread ${threadId}:`, e);
     }
     await run(threadId, userText, state, { bypassBusyDrop: true });
   }
