@@ -43,15 +43,15 @@ const k = (x) => (x >= 1000 ? `${Math.round(x / 100) / 10}k` : `${x}`);
 
 export function formatSummaryLine(s) {
   const t = s.totals;
-  return `tokens: fresh ${k(t.freshInput)} - cached ${k(t.resumedContext)} - created ${k(t.cacheCreation)} - out ${k(t.output)} - ~${k(Math.round(t.costWeightedInput))} input-equiv (${s.turnCount} turns)`;
+  return `tokens: fresh ${k(t.freshInput)} - cached ${k(t.resumedContext)} - created ${k(t.cacheCreation)} - out ${k(t.output)} - ~${k(Math.round(t.costWeightedInput))} input-equiv(approx) (${s.turnCount} turns)`;
 }
 
 export function formatTally(s) {
   const lines = [`tokens (this conversation, ${s.turnCount} turns${s.partialTurns ? `, ${s.partialTurns} partial` : ""}):`];
   for (const [role, pr] of Object.entries(s.perRole)) {
-    lines.push(`  ${role}: fresh ${k(pr.freshInput)} - cached ${k(pr.resumedContext)} - created ${k(pr.cacheCreation)} - out ${k(pr.output)} - ~${k(Math.round(pr.costWeightedInput))} eq (${pr.turns})`);
+    lines.push(`  ${role}: fresh ${k(pr.freshInput)} - cached ${k(pr.resumedContext)} - created ${k(pr.cacheCreation)} - out ${k(pr.output)} - ~${k(Math.round(pr.costWeightedInput))} eq~approx (${pr.turns})`);
   }
   const t = s.totals;
-  lines.push(`  TOTAL: fresh ${k(t.freshInput)} - cached ${k(t.resumedContext)} - created ${k(t.cacheCreation)} - out ${k(t.output)} - ~${k(Math.round(t.costWeightedInput))} eq`);
+  lines.push(`  TOTAL: fresh ${k(t.freshInput)} - cached ${k(t.resumedContext)} - created ${k(t.cacheCreation)} - out ${k(t.output)} - ~${k(Math.round(t.costWeightedInput))} eq~approx`);
   return lines.join("\n");
 }
