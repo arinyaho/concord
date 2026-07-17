@@ -140,6 +140,8 @@ Config fields (added to the JSON shape above, all under the same file):
 
 Thread permissions: the bot invite needs **Create Public Threads** and **Send Messages in Threads**, in addition to the scopes listed under "Discord app setup" above -- the daemon opens each conversation with `msg.startThread(...)`, which fails without these.
 
+Per-role avatars (B-3b, optional): if `roleAvatars` is configured, replies post through a Discord webhook so each role shows its own name and avatar instead of an inline `**role:**` label. This requires the **Manage Webhooks** permission on the bot invite; without it, the daemon degrades cleanly and falls back to posting the inline `**role:**` label itself.
+
 **Standing assumption (load-bearing):** the conversation path does not screen who can read or post in a thread it creates -- it authorizes the *triggering* message (author in `userIds`, guild matches `guildId`) and, for follow-ups, that the thread's live parent is still a listed conversation channel. It does not check thread membership. This is safe only because the guild itself is private and author-only (the same assumption "Discord app setup" already requires for the capability channel). Do not add a `conversationChannelIds` entry that lives in a guild with any member besides the author and the bot -- doing so would let a third party read or post in threads the daemon creates, which B-1's no-third-party-ingress guarantee assumes cannot happen.
 
 ### Delegated actions (B-2)
