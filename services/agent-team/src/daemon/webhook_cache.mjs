@@ -1,0 +1,37 @@
+// Per-parent-channel Discord webhook resolver (B-3b). Gives each conversation role a distinct
+// visual voice by posting through a webhook. Client-free + unit-testable: the discord client is
+// injected as fetchChannel + getBotUserId. Webhooks belong to the PARENT text channel (a thread
+// posts through the parent's webhook + thread_id), so the cache is keyed by parent channel id and
+// one marker-named webhook is reused across all of a channel's threads (avoids the 15/channel cap).
+
+const PERMANENT = new Set([50013, 30007]); // 50013 Missing Permissions, 30007 Maximum webhooks
+
+export function makeWebhookResolver({ fetchChannel, getBotUserId, markerName }) {
+  const cache = new Map(); // parentId -> Promise<webhook | null>
+
+  async function getOrCreate(parent, parentId) {
+    try {
+      const hooks = await parent.fetchWebhooks();
+      const me = getBotUserId(); // read LATE (BLOCKER-1): client.user is null at construction
+      let wh = hooks.find((h) => me && h.owner?.id === me && h.name === markerName);
+      if (!wh) wh = await parent.createWebhook({ name: markerName });
+      return wh;
+    } catch (e) {
+      console.error(`[agent-team] webhook get-or-create failed for channel ${parentId}:`, e);
+      if (!PERMANENT.has(e?.code)) cache.delete(parentId); // transient: re-probe on next post
+      return null;
+    }
+  }
+
+  return async function resolveWebhook(threadId) {
+    const thread = await fetchChannel(threadId);
+    const parentId = thread.parentId ?? thread.id;
+    let parent = thread.parent;
+    if (!parent && thread.parentId) parent = await fetchChannel(thread.parentId);
+    parent = parent ?? thread;
+    if (cache.has(parentId)) return cache.get(parentId);
+    const p = getOrCreate(parent, parentId); // start the promise...
+    cache.set(parentId, p);                   // ...cache it synchronously (no await between) => coalesced
+    return p;
+  };
+}
