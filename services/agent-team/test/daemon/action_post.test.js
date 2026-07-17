@@ -53,3 +53,19 @@ test("a detection failure never throws out of the wrap", async () => {
   });
   await assert.doesNotReject(() => wp("t1", "spec", "go\nDISPATCH concord :: x"));
 });
+test("confirm prompt post fails: pending is rolled back, not orphaned, and wrap does not throw", async () => {
+  const pend = [], cleared = [];
+  const wp = makeActionPost({
+    post: async () => {},
+    cfg: { repos: { concord: "/r" } },
+    store: new Map(), storePath: "/s.json",
+    mintId: () => "id1",
+    postSystem: async () => { throw new Error("discord unreachable"); },
+    setPendingImpl: (s, p, tid, pending) => pend.push([tid, pending]),
+    clearPendingImpl: (s, p, tid) => cleared.push(tid),
+    deps: {},
+  });
+  await assert.doesNotReject(() => wp("t1", "spec", "go\nDISPATCH concord :: fix it"));
+  assert.deepEqual(pend[0][1], { id: "id1", alias: "concord", repoPath: "/r", task: "fix it" }); // was recorded
+  assert.deepEqual(cleared, ["t1"]); // then rolled back since the author never got the id
+});

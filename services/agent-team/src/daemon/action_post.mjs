@@ -1,6 +1,6 @@
 import { parseProposal } from "./action_proposal.mjs";
 import { resolveProposal } from "./action_gate.mjs";
-import { setPending as realSetPending } from "./pending_action.mjs";
+import { setPending as realSetPending, clearPending as realClearPending } from "./pending_action.mjs";
 
 // Wrap the injected role `post` so it detects an action proposal in a role's output. It sends the
 // STRIPPED prose FIRST (so a detection problem can never delay or drop the role's words), then --
@@ -8,8 +8,9 @@ import { setPending as realSetPending } from "./pending_action.mjs";
 // (which would misattribute it as a role failure) -- resolves the proposal, records ONE pending
 // proposal (last-wins) and posts a confirm prompt, or posts a fail-closed reason. `post` is called
 // from inside advanceTurn, itself inside the per-thread lock, so pending writes are already serialized.
-export function makeActionPost({ post, cfg, store, storePath, mintId, postSystem, setPendingImpl, deps = {} }) {
+export function makeActionPost({ post, cfg, store, storePath, mintId, postSystem, setPendingImpl, clearPendingImpl, deps = {} }) {
   const setPending = setPendingImpl ?? realSetPending;
+  const clearPending = clearPendingImpl ?? realClearPending;
   return async function wrappedPost(threadId, role, text) {
     const { proposal, prose } = parseProposal(text);
     if (prose.trim()) await post(threadId, role, prose);
@@ -19,7 +20,13 @@ export function makeActionPost({ post, cfg, store, storePath, mintId, postSystem
       if (!r.ok) { await postSystem(threadId, `cannot dispatch: ${r.reason}`); return; }
       const id = mintId();
       setPending(store, storePath, threadId, { id, alias: r.alias, repoPath: r.repoPath, task: r.task }, deps);
-      await postSystem(threadId, `Proposed job ${id} on ${r.alias} (${r.repoPath}): ${r.task}. Reply \`run ${id}\` to execute.`);
+      try {
+        await postSystem(threadId, `Proposed job ${id} on ${r.alias} (${r.repoPath}): ${r.task}. Reply \`run ${id}\` to execute.`);
+      } catch (e) {
+        // The proposal was recorded but the author never got the id -> roll back so it isn't orphaned.
+        try { clearPending(store, storePath, threadId, deps); } catch {}
+        console.error(`[agent-team] confirm prompt post failed for thread ${threadId}; proposal discarded:`, e);
+      }
     } catch (e) {
       console.error(`[agent-team] action detection failed for thread ${threadId}:`, e);
     }
