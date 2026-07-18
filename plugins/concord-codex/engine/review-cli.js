@@ -206,10 +206,18 @@ function readArtifact(stateDir, n, name) {
 function requireArtifactAfter(stateDir, n, firstName, secondName) {
   const firstPath = path.join(stateDir, `round-${n}-${firstName}.json`);
   const secondPath = path.join(stateDir, `round-${n}-${secondName}.json`);
-  if (!fs.existsSync(firstPath)) throw new Error(`harness-failure: missing gate artifact ${firstName} for round ${n}`);
-  if (!fs.existsSync(secondPath)) throw new Error(`harness-failure: missing gate artifact ${secondName} for round ${n}`);
-  const firstStat = fs.statSync(firstPath);
-  const secondStat = fs.statSync(secondPath);
+  const statArtifact = (name, artifactPath) => {
+    try {
+      return fs.statSync(artifactPath);
+    } catch (e) {
+      // existsSync followed by statSync leaves a TOCTOU gap: a reviewer can
+      // remove or replace its artifact after the existence check, leaking a
+      // raw ENOENT instead of preserving the gate's fail-closed contract.
+      throw new Error(`harness-failure: missing gate artifact ${name} for round ${n}`);
+    }
+  };
+  const firstStat = statArtifact(firstName, firstPath);
+  const secondStat = statArtifact(secondName, secondPath);
   if (secondStat.mtimeMs < firstStat.mtimeMs) {
     throw new Error(`harness-failure: round-${n}-${secondName}.json predates round-${n}-${firstName}.json -- it was spawned before ${firstName} finished writing (see review-until-green.md step 3: correctness and verify must run sequentially, never in parallel)`);
   }

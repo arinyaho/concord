@@ -306,6 +306,37 @@ test('plan-fixes: a missing correctness artifact is a harness-failure (never cle
   assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure/);
 });
 
+test('plan-fixes: a correctness artifact that vanishes before its mtime check is a harness-failure', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  const correctness = path.join(dir, `round-${n}-correctness.json`);
+  fs.writeFileSync(correctness, JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  const originalArgv = process.argv;
+  const originalEnv = process.env;
+  const originalStatSync = fs.statSync;
+  process.argv = ['node', CLI, 'plan-fixes', 'feat/x'];
+  process.env = env;
+  fs.statSync = (file, ...args) => {
+    if (file === correctness) {
+      const error = new Error(`ENOENT: no such file or directory, stat '${file}'`);
+      error.code = 'ENOENT';
+      throw error;
+    }
+    return originalStatSync(file, ...args);
+  };
+  try {
+    assert.throws(() => cli.main(), /harness-failure: missing gate artifact correctness/);
+  } finally {
+    fs.statSync = originalStatSync;
+    process.argv = originalArgv;
+    process.env = originalEnv;
+  }
+});
+
 test('plan-fixes: a verify artifact older than its correctness artifact is a harness-failure (spawn-ordering race)', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
