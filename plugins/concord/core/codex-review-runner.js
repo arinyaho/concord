@@ -59,7 +59,7 @@ async function runReviewUntilGreen(options) {
       for (const lens of lenses) {
         const artifact = path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-${lens}.json`);
         await invoke(spawn, { role: `gate-panel-${lens}`, repoRoot, stateDir: context.stateDir,
-          prompt: `Review the repository through the ${lens} lens. Previously rejected IDs: ${JSON.stringify(panel.rejectedIds || [])}. Write ONLY {"status":"ok","findings":[]} to ${artifact}; every ID must use gate:${lens}:<slug>.` });
+          prompt: `Review ${path.join(context.stateDir, `round-${context.round}-diff.txt`)} and the repository through the ${lens} lens. You MAY Read/Grep the repository and MUST read ${path.join(context.stateDir, `intent-${context.slug}.md`)} if it exists to assess the design and acceptance criteria. Previously rejected IDs: ${JSON.stringify(panel.rejectedIds || [])}. Write ONLY {"status":"ok","findings":[]} to ${artifact}; every ID must use gate:${lens}:<slug>.` });
       }
       const candidates = [];
       for (const lens of lenses) {

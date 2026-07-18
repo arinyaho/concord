@@ -107,6 +107,41 @@ test('intent and gate prompts preserve their full role contracts', () => {
   assert.match(verify, /rejected/);
 });
 
+test('panel lens prompts identify the reviewed diff and require the intent source', async () => {
+  const stateDir = temp();
+  const prompts = [];
+  let recorded = 0;
+  const cli = (args) => {
+    const [verb] = args;
+    if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
+    if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'plan-fixes') return { fixes: [] };
+    if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
+    if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
+    if (verb === 'gate-panel-round-record') return { status: 'done' };
+    throw new Error(`unexpected CLI ${verb}`);
+  };
+  const spawn = ({ role, prompt }) => {
+    prompts.push({ role, prompt });
+    if (role === 'correctness') fs.writeFileSync(path.join(stateDir, 'round-4-correctness.json'), JSON.stringify({ status: 'ok', examined: [], findings: [] }));
+    if (role === 'verify') fs.writeFileSync(path.join(stateDir, 'round-4-verify.json'), JSON.stringify({ status: 'ok', rejected: [] }));
+    if (role.startsWith('gate-panel-') && role !== 'gate-panel-verify') {
+      const lens = role.slice('gate-panel-'.length);
+      fs.writeFileSync(path.join(stateDir, `round-4-gate-panel-1-${lens}.json`), JSON.stringify({ status: 'ok', findings: [] }));
+    }
+    return { status: 0 };
+  };
+
+  await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn });
+
+  const lensPrompts = prompts.filter(({ role }) => role.startsWith('gate-panel-') && role !== 'gate-panel-verify');
+  assert.strictEqual(lensPrompts.length, 5);
+  for (const { prompt } of lensPrompts) {
+    assert.match(prompt, /round-4-diff\.txt/);
+    assert.match(prompt, /MUST read.*intent-feature-x\.md/i);
+  }
+});
+
 test('runner canonicalizes a findings artifact without changing its finding and continues to verify', async () => {
   const finding = { id: 'correctness:kept', file: 'a.txt', summary: 'keep this exact finding', span: 'bad' };
   const h = harness({ correctnessArtifact: JSON.stringify({ status: 'findings', examined: ['a.txt'], findings: [finding], ignored: true }) });
