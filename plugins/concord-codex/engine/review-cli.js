@@ -204,8 +204,12 @@ function readArtifact(stateDir, n, name) {
 // parallel, precisely so this can't happen -- this is the CLI-side check
 // that catches it if a session spawns them in parallel anyway.
 function requireArtifactAfter(stateDir, n, firstName, secondName) {
-  const firstStat = fs.statSync(path.join(stateDir, `round-${n}-${firstName}.json`));
-  const secondStat = fs.statSync(path.join(stateDir, `round-${n}-${secondName}.json`));
+  const firstPath = path.join(stateDir, `round-${n}-${firstName}.json`);
+  const secondPath = path.join(stateDir, `round-${n}-${secondName}.json`);
+  if (!fs.existsSync(firstPath)) throw new Error(`harness-failure: missing gate artifact ${firstName} for round ${n}`);
+  if (!fs.existsSync(secondPath)) throw new Error(`harness-failure: missing gate artifact ${secondName} for round ${n}`);
+  const firstStat = fs.statSync(firstPath);
+  const secondStat = fs.statSync(secondPath);
   if (secondStat.mtimeMs < firstStat.mtimeMs) {
     throw new Error(`harness-failure: round-${n}-${secondName}.json predates round-${n}-${firstName}.json -- it was spawned before ${firstName} finished writing (see review-until-green.md step 3: correctness and verify must run sequentially, never in parallel)`);
   }
@@ -616,9 +620,9 @@ function main(resolveFromCwd) {
         return null;
       }
     };
+    requireArtifactAfter(stateDir, n, 'correctness', 'verify');
     const cJson = readArtifact(stateDir, n, 'correctness');
     const vJson = readArtifact(stateDir, n, 'verify');
-    requireArtifactAfter(stateDir, n, 'correctness', 'verify');
     const candidates = gc.parseGateFindings(JSON.stringify(cJson.findings || []));
     const killedIds = gc.parseVerifyVerdict(JSON.stringify({ rejected: vJson.rejected || [] }), candidates).rejectedIds;
 
@@ -723,9 +727,9 @@ function main(resolveFromCwd) {
     // discard that round's gate-review/gate-verify findings.
     const gateApplied = !!ledger.gateApplied;
     const n = ledger.round;
+    requireArtifactAfter(stateDir, n, 'correctness', 'verify');
     const cJson = readArtifact(stateDir, n, 'correctness');
     const vJson = readArtifact(stateDir, n, 'verify');
-    requireArtifactAfter(stateDir, n, 'correctness', 'verify');
     const candidates = gc.parseGateFindings(JSON.stringify(cJson.findings || []));
     // Symmetric guard: an intent-prefixed id must never come from the
     // correctness (auto-fixing) gate -- only the intent detector may mint
