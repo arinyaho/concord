@@ -1,0 +1,180 @@
+'use strict';
+const { test } = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+const { normalizeArtifact } = require('../../core/artifact-contract');
+
+// The runner owns all sequencing. Its subprocess seam makes this a no-network
+// integration test while exercising the real artifact contract at the boundary.
+const { runReviewUntilGreen, reviewerPrompt } = require('../../core/codex-review-runner');
+
+function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'codex-runner-')); }
+
+function harness({ targetType = 'git', rounds = 1, malformed = false, retry = false, retryForever = false, correctnessArtifact, gateApplied = false, failingRole, promptDrivenFix = false } = {}) {
+  const stateDir = temp();
+  const calls = []; let round = 0; let retried = false;
+  const cli = (args) => {
+    calls.push(['cli', ...args]);
+    const [verb, ref, role] = args;
+    if (verb === 'round-start') {
+      round++;
+      return { decision: 'work', round, stateDir, targetType, dodPassed: true, intentApplied: false, gateApplied };
+    }
+    if (verb === 'artifact-normalize') {
+      if (correctnessArtifact && role === 'correctness') {
+        const artifact = path.join(stateDir, `round-${round}-correctness.json`);
+        try {
+          const canonical = normalizeArtifact(role, fs.readFileSync(artifact, 'utf8'));
+          fs.writeFileSync(artifact, JSON.stringify(canonical) + '\n');
+          return { status: 'ok' };
+        } catch (error) { throw new Error(`harness-failure: ${error.message}`); }
+      }
+      if (malformed && role === 'correctness') throw new Error('harness-failure: correctness artifact is not JSON');
+      if (retry && role === 'correctness' && (!retried || retryForever)) { retried = true; return { status: 'retry', prompt: 'REWRITE ARTIFACT' }; }
+      return { status: 'ok' };
+    }
+    if (verb === 'plan-fixes') return { fixes: round === 1 ? [{ id: 'correctness:bug', file: 'a.txt', span: 'bad', summary: 'fix it' }] : [] };
+    if (verb === 'commit-fix') {
+      if (promptDrivenFix && !fs.existsSync(path.join(stateDir, `round-${round}-fix-${role}.json`))) throw new Error('commit-fix did not receive its declared artifact');
+      return { committed: true, sha: 'abc' };
+    }
+    if (verb === 'record') return round < rounds ? { decision: { continue: true }, handoff: 'continue' } : { decision: { continue: false, converged: true }, handoff: 'LGTM' };
+    throw new Error(`unexpected CLI ${verb} ${ref}`);
+  };
+  const spawn = ({ role, prompt }) => {
+    calls.push(['spawn', role, prompt]);
+    if (role === failingRole) return { status: 1 };
+    const n = round;
+    if (role === 'correctness') fs.writeFileSync(path.join(stateDir, `round-${n}-correctness.json`), correctnessArtifact || JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+    if (role === 'verify') fs.writeFileSync(path.join(stateDir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+    if (role === 'gate') fs.writeFileSync(path.join(stateDir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
+    if (role === 'fix') {
+      const target = promptDrivenFix ? prompt.match(/write ONLY to (.+\.json): either/)?.[1] : path.join(stateDir, `round-${n}-fix-correctness:bug.json`);
+      if (!target) throw new Error('fix prompt did not name an artifact path');
+      fs.writeFileSync(target, JSON.stringify({ status: 'ok', edited: true, files: ['a.txt'] }));
+    }
+    return { status: 0 };
+  };
+  return { stateDir, calls, cli, spawn };
+}
+
+test('runner automatically executes a clean round in correctness then verify order and returns terminal handoff', async () => {
+  const h = harness();
+  const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
+  assert.strictEqual(out.handoff, 'LGTM');
+  assert.deepStrictEqual(h.calls.map((c) => c[0] === 'spawn' ? c.slice(0, 2) : c.slice(0, 2)), [
+    ['cli', 'round-start'], ['spawn', 'correctness'], ['cli', 'artifact-normalize'], ['spawn', 'verify'], ['cli', 'artifact-normalize'], ['cli', 'plan-fixes'], ['spawn', 'fix'], ['cli', 'commit-fix'], ['cli', 'record'],
+  ]);
+});
+
+test('fix prompt writes the commit-fix artifact and requires a truthful files declaration', () => {
+  const prompt = reviewerPrompt('fix', { stateDir: '/state', round: 7, finding: { id: 'correctness:bug', summary: 'repair it' } });
+  assert.match(prompt, /\/state\/round-7-fix-correctness:bug\.json/);
+  assert.match(prompt, /EVERY file/i);
+  assert.match(prompt, /"edited":false/);
+});
+
+test('fix subprocess writes the prompt-declared artifact consumed by commit-fix', async () => {
+  const h = harness({ promptDrivenFix: true });
+  await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
+  assert.ok(h.calls.some((call) => call[0] === 'cli' && call[1] === 'commit-fix'));
+});
+
+test('gate-verify subprocess failure stays lenient and lets the CLI decide', async () => {
+  const h = harness({ gateApplied: true, failingRole: 'gate-verify' });
+  const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
+  assert.strictEqual(out.handoff, 'LGTM');
+  assert.ok(h.calls.some((call) => call[0] === 'spawn' && call[1] === 'gate-verify'));
+});
+
+test('intent and gate prompts preserve their full role contracts', () => {
+  const base = { stateDir: '/state', round: 2, slug: 'feature-x' };
+  const intent = reviewerPrompt('intent', base);
+  const gate = reviewerPrompt('gate', base);
+  const verify = reviewerPrompt('gate-verify', base);
+  assert.match(intent, /exact changed line/i);
+  assert.match(intent, /verbatim requirement/i);
+  assert.match(intent, /intent:/);
+  assert.match(gate, /cross-context.*silent-gap.*ac-coverage.*design-conformance/i);
+  assert.match(gate, /Read\/Grep.*repository/i);
+  assert.match(gate, /intent-feature-x\.md/);
+  assert.match(gate, /requirement/);
+  assert.match(verify, /Reject false positives/i);
+  assert.match(verify, /new.*gate:/i);
+  assert.match(verify, /rejected/);
+});
+
+test('runner canonicalizes a findings artifact without changing its finding and continues to verify', async () => {
+  const finding = { id: 'correctness:kept', file: 'a.txt', summary: 'keep this exact finding', span: 'bad' };
+  const h = harness({ correctnessArtifact: JSON.stringify({ status: 'findings', examined: ['a.txt'], findings: [finding], ignored: true }) });
+  await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
+  const artifact = JSON.parse(fs.readFileSync(path.join(h.stateDir, 'round-1-correctness.json'), 'utf8'));
+  assert.deepStrictEqual(artifact, { status: 'ok', examined: ['a.txt'], findings: [finding] });
+  assert.ok(h.calls.some((call) => call[0] === 'spawn' && call[1] === 'verify'));
+});
+
+for (const [label, raw] of [
+  ['malformed JSON', '{not json'],
+  ['semantically missing finding summary', JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:missing', file: 'a.txt' }] })],
+]) {
+  test(`runner fail-closes ${label} before verify at the artifact contract boundary`, async () => {
+    const h = harness({ correctnessArtifact: raw });
+    await assert.rejects(runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn }), /harness-failure/);
+    assert.strictEqual(h.calls.some((call) => call[0] === 'spawn' && call[1] === 'verify'), false);
+  });
+}
+
+test('real review-cli keeps the correctness-to-verify mtime guard active', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-mtime-repo-'));
+  const stateDir = temp();
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  execFileSync('git', ['config', 'user.email', 'runner@test'], { cwd: repo });
+  execFileSync('git', ['config', 'user.name', 'runner'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n');
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'] }));
+  execFileSync('git', ['add', '.'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'init'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-am', 'change'], { cwd: repo });
+  const cli = path.join(__dirname, '..', 'review-cli.js');
+  const env = { ...process.env, REVIEW_REPO_ROOT: repo, REVIEW_STATE_DIR: stateDir };
+  const started = JSON.parse(execFileSync('node', [cli, 'round-start', 'feature/x', 'HEAD~1'], { cwd: repo, env, encoding: 'utf8' }));
+  const correctness = path.join(stateDir, `round-${started.round}-correctness.json`);
+  const verify = path.join(stateDir, `round-${started.round}-verify.json`);
+  fs.writeFileSync(correctness, JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }) + '\n');
+  fs.writeFileSync(verify, JSON.stringify({ status: 'ok', rejected: [] }) + '\n');
+  const now = Date.now() / 1000;
+  fs.utimesSync(correctness, now, now);
+  fs.utimesSync(verify, now - 5, now - 5);
+  assert.throws(() => execFileSync('node', [cli, 'plan-fixes', 'feature/x'], { cwd: repo, env, encoding: 'utf8', stdio: 'pipe' }), /predates round/);
+});
+
+test('runner appends retry prompt and retries precisely once', async () => {
+  const h = harness({ retry: true });
+  await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
+  const correctness = h.calls.filter((c) => c[0] === 'spawn' && c[1] === 'correctness');
+  assert.strictEqual(correctness.length, 2);
+  assert.match(correctness[1][2], /REWRITE ARTIFACT/);
+});
+
+test('runner fail-closes a malformed reviewer artifact before verify', async () => {
+  const h = harness({ malformed: true });
+  await assert.rejects(runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn }), /harness-failure/);
+  assert.strictEqual(h.calls.some((c) => c[0] === 'spawn' && c[1] === 'verify'), false);
+});
+
+test('runner fails closed when the retry artifact is still invalid', async () => {
+  const h = harness({ retry: true, retryForever: true });
+  await assert.rejects(runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn }), /retry exhausted/);
+  assert.strictEqual(h.calls.filter((c) => c[0] === 'spawn' && c[1] === 'correctness').length, 2);
+});
+
+test('runner loops through record continuation and file targets never commit', async () => {
+  const h = harness({ rounds: 2, targetType: 'file' });
+  await runReviewUntilGreen({ ref: 'file:note.md', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
+  assert.strictEqual(h.calls.filter((c) => c[1] === 'round-start').length, 2);
+  assert.strictEqual(h.calls.some((c) => c[1] === 'commit-fix'), false);
+});
