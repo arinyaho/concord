@@ -2,12 +2,12 @@
   "description": "Persist per-session state from the Codex rollout and re-inject it on session start.",
   "hooks": {
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "sh -c 'root=\"$PLUGIN_ROOT\"; if [ -z \"$root\" ]; then root=\"$CLAUDE_PLUGIN_ROOT\"; fi; [ -n \"$root\" ] || exit 0; exec node \"$root/hooks/session-state-writer.js\"'" } ] }
+      { "hooks": [ { "type": "command", "command": "node -e 'const cp=require(\"child_process\");const path=require(\"path\");const root=process.env.PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT;if(!root)process.exit(0);const result=cp.spawnSync(process.execPath,[path.join(root,\"hooks/session-state-writer.js\")],{stdio:\"inherit\"});if(result.error)throw result.error;process.exit(result.status??1)'" } ] }
     ],
     "SessionStart": [
       { "matcher": "startup|resume|compact", "hooks": [
-          { "type": "command", "command": "sh -c 'root=\"$PLUGIN_ROOT\"; if [ -z \"$root\" ]; then root=\"$CLAUDE_PLUGIN_ROOT\"; fi; [ -n \"$root\" ] || exit 0; exec node \"$root/hooks/session-state-injector.js\"'" },
-          { "type": "command", "command": "sh -c 'root=\"$PLUGIN_ROOT\"; if [ -z \"$root\" ]; then root=\"$CLAUDE_PLUGIN_ROOT\"; fi; [ -n \"$root\" ] || exit 0; exec node \"$root/hooks/review-injector.js\"'" }
+          { "type": "command", "command": "node -e 'const cp=require(\"child_process\");const path=require(\"path\");const root=process.env.PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT;if(!root)process.exit(0);const result=cp.spawnSync(process.execPath,[path.join(root,\"hooks/session-state-injector.js\")],{stdio:\"inherit\"});if(result.error)throw result.error;process.exit(result.status??1)'" },
+          { "type": "command", "command": "node -e 'const cp=require(\"child_process\");const path=require(\"path\");const root=process.env.PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT;if(!root)process.exit(0);const result=cp.spawnSync(process.execPath,[path.join(root,\"hooks/review-injector.js\")],{stdio:\"inherit\"});if(result.error)throw result.error;process.exit(result.status??1)'" }
         ] }
     ]
   }
