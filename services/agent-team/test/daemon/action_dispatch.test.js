@@ -35,3 +35,20 @@ test("dispatched job carries threadId", () => {
   dispatch({ pending: { id: "a1", alias: "concord", repoPath: "/r", task: "fix it" }, threadId: "t9", feedTurn: () => {} });
   assert.equal(submitted.threadId, "t9");
 });
+test("attaches the supplied progress relay lifecycle hooks to the confirmed job", async () => {
+  let submitted;
+  const relayCalls = [];
+  const relay = {
+    start: () => relayCalls.push("start"),
+    progress: (event) => relayCalls.push(event),
+    terminal: (outcome) => relayCalls.push(outcome),
+  };
+  const dispatch = makeDispatchAction({ queue: { submit: (job) => { submitted = job; return true; } } });
+
+  dispatch({ pending, threadId: "t9", feedTurn: () => {}, progressRelay: relay });
+  await submitted.onStart();
+  await submitted.onProgress({ type: "progress", phase: "reviewing" });
+  await submitted.onTerminal({ kind: "done" });
+
+  assert.deepEqual(relayCalls, ["start", { type: "progress", phase: "reviewing" }, { kind: "done" }]);
+});

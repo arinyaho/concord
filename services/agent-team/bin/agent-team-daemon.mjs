@@ -64,7 +64,7 @@ async function main() {
 
   const runJob = (job) => {
     const argv = buildLaunchArgv({ launchBin, task: job.task, repoPath: job.repoPath, credsDir: cfg.credsDir, base: cfg.base, jobId: job.jobId });
-    return runLaunchJob({ argv, env: childEnv, onChild: (c) => { job.child = c; } }, { spawn: nodeSpawn });
+    return runLaunchJob({ argv, env: childEnv, onChild: (c) => { job.child = c; }, onProgress: (event) => job.onProgress?.(event) }, { spawn: nodeSpawn });
   };
   const dockerKill = (jobId) => { try { spawnSync("docker", ["kill", `agent-team-${jobId}`]); } catch {} };
   const boundDiagnose = (tail, model) => diagnose(tail, { query, model });
