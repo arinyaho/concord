@@ -2,12 +2,12 @@
   "description": "Persist per-session state from the Codex rollout and re-inject it on session start.",
   "hooks": {
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-state-writer.js\"" } ] }
+      { "hooks": [ { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/session-state-writer.js\"" } ] }
     ],
     "SessionStart": [
       { "matcher": "startup|resume|compact", "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-state-injector.js\"" },
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/review-injector.js\"" }
+          { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/session-state-injector.js\"" },
+          { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/review-injector.js\"" }
         ] }
     ]
   }
