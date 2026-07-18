@@ -194,6 +194,29 @@ function requireRef(ref, verb) {
   if (!ref) throw new Error(`review-cli ${verb}: missing required <ref> argument`);
 }
 
+// Derive the complete changed-path set from a unified git diff. Looking only at
+// `+++ b/...` silently omits deletions (`+++ /dev/null`) and pure renames,
+// allowing a reviewer to skip them without triggering the coverage guard.
+// Keep this parser shared by artifact normalization and plan-fixes so retry and
+// fail-closed coverage enforce the same contract.
+function changedGitPaths(diffText) {
+  const paths = [];
+  const add = (file) => {
+    if (file && file !== '/dev/null' && !paths.includes(file)) paths.push(file);
+  };
+  for (const line of String(diffText).split('\n')) {
+    let match = /^--- a\/(.+?)(?:\t.*)?$/.exec(line);
+    if (match) { add(match[1]); continue; }
+    match = /^\+\+\+ b\/(.+?)(?:\t.*)?$/.exec(line);
+    if (match) { add(match[1]); continue; }
+    match = /^rename from (.+)$/.exec(line);
+    if (match) { add(match[1]); continue; }
+    match = /^rename to (.+)$/.exec(line);
+    if (match) add(match[1]);
+  }
+  return paths;
+}
+
 // Fail-closed gate artifact read (design invariant: a broken/missing gate must
 // never be silently read as "zero findings" -- that can manufacture a
 // spurious converged:clean out of a harness failure). Shared by plan-fixes
@@ -291,7 +314,7 @@ function main(resolveFromCwd) {
       // contents, not a unified diff, so their examined list stays advisory.
       if (name === 'correctness' && (!ledger.target || ledger.target.type === 'git')) {
         const diffText = fs.readFileSync(path.join(stateDir, `round-${n}-diff.txt`), 'utf8');
-        const changed = Array.from(new Set((diffText.match(/^\+\+\+ b\/(.+)$/gm) || []).map((line) => line.replace(/^\+\+\+ b\//, '').trim())));
+        const changed = changedGitPaths(diffText);
         const examined = new Set(canonical.examined);
         const missing = changed.filter((file) => !examined.has(file));
         if (missing.length) {
@@ -793,7 +816,7 @@ function main(resolveFromCwd) {
       }
     }
     // Coverage: every changed file must be in examined. This is a GIT-DIFF-shaped
-    // check -- `changed` is parsed from `+++ b/<path>` diff headers -- so both the
+    // check -- `changed` is parsed from old/new headers and rename metadata -- so both the
     // derivation and the assertion are gated on the target being git (same isGit
     // test record uses). For a file target, round-<n>-diff.txt holds raw document
     // CONTENT, not a git diff; a doc that merely QUOTES a unified diff (a line
@@ -810,7 +833,7 @@ function main(resolveFromCwd) {
       // (single-sourced diff) -- do NOT re-run git against ledger.target.base,
       // which duplicates a git call the CLI already made once this round.
       const diffText = fs.readFileSync(path.join(stateDir, `round-${n}-diff.txt`), 'utf8');
-      changed = Array.from(new Set((diffText.match(/^\+\+\+ b\/(.+)$/gm) || []).map((l) => l.replace(/^\+\+\+ b\//, '').trim())));
+      changed = changedGitPaths(diffText);
       const examined = new Set(Array.isArray(cJson.examined) ? cJson.examined : []);
       const missing = changed.filter((f) => !examined.has(f));
       if (missing.length) throw new Error(`harness-failure: coverage -- changed file(s) never examined: ${missing.join(', ')}`);
@@ -1030,4 +1053,4 @@ function runMain(resolveFromCwd) {
   }
 }
 
-module.exports = { gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitCheckoutTree, runDod, main, runMain };
+module.exports = { gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitCheckoutTree, runDod, changedGitPaths, main, runMain };

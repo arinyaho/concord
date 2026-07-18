@@ -42,6 +42,32 @@ test('review-cli is requirable as a module without executing main (guarded)', ()
   assert.strictEqual(typeof cli.runDod, 'function');
 });
 
+test('changedGitPaths includes added, modified, deleted, and rename paths without /dev/null', () => {
+  const diff = [
+    'diff --git a/modified.js b/modified.js',
+    '--- a/modified.js',
+    '+++ b/modified.js',
+    'diff --git a/added.js b/added.js',
+    '--- /dev/null',
+    '+++ b/added.js',
+    'diff --git a/deleted.js b/deleted.js',
+    '--- a/deleted.js',
+    '+++ /dev/null',
+    'diff --git a/old-name.js b/new-name.js',
+    'similarity index 100%',
+    'rename from old-name.js',
+    'rename to new-name.js',
+  ].join('\n') + '\n';
+
+  assert.deepStrictEqual(cli.changedGitPaths(diff), [
+    'modified.js',
+    'added.js',
+    'deleted.js',
+    'old-name.js',
+    'new-name.js',
+  ]);
+});
+
 test('artifact-normalize retries an invalid id once, then writes a canonical artifact', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
@@ -100,6 +126,19 @@ test('artifact-normalize fails closed when correctness coverage is still incompl
 
   assert.strictEqual(JSON.parse(run(['artifact-normalize', 'feat/x', 'correctness'], { env })).status, 'retry');
   assert.throws(() => run(['artifact-normalize', 'feat/x', 'correctness'], { env }), /harness-failure.*coverage/);
+});
+
+test('artifact-normalize retries when a deleted path is not examined', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  execFileSync('git', ['rm', '-q', 'a.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-m', 'delete a'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/delete', 'HEAD~1'], { env })).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: [], findings: [] }));
+
+  const retry = JSON.parse(run(['artifact-normalize', 'feat/delete', 'correctness'], { env }));
+  assert.strictEqual(retry.status, 'retry');
+  assert.match(retry.prompt, /a\.txt/);
 });
 
 test('git helpers operate on a real temp repo', () => {
@@ -394,6 +433,18 @@ test('plan-fixes: a changed file never examined is a harness-failure (coverage)'
     { status: 'ok', examined: [], findings: [] },
     { status: 'ok', rejected: [] });
   assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure|coverage/);
+});
+
+test('plan-fixes: a deleted path never examined is a harness-failure (coverage)', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  execFileSync('git', ['rm', '-q', 'a.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-m', 'delete a'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/delete', 'HEAD~1'], { env })).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: [], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+
+  assert.throws(() => run(['plan-fixes', 'feat/delete'], { env }), /harness-failure.*coverage.*a\.txt/);
 });
 
 // A confirmed finding whose span is absent from the file is an idempotent replay
