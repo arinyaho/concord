@@ -71,8 +71,10 @@ test('runner automatically executes a clean round in correctness then verify ord
 });
 
 test('fix prompt writes the commit-fix artifact and requires a truthful files declaration', () => {
-  const prompt = reviewerPrompt('fix', { stateDir: '/state', round: 7, finding: { id: 'correctness:bug', summary: 'repair it' } });
+  const prompt = reviewerPrompt('fix', { stateDir: '/state', round: 7, finding: { id: 'correctness:bug', file: 'src/parser.js', span: 'lines 41-43', summary: 'repair it' } });
   assert.match(prompt, /\/state\/round-7-fix-correctness:bug\.json/);
+  assert.match(prompt, /src\/parser\.js/);
+  assert.match(prompt, /lines 41-43/);
   assert.match(prompt, /EVERY file/i);
   assert.match(prompt, /"edited":false/);
 });

@@ -36,7 +36,7 @@ function reviewerPrompt(role, { stateDir, round, targetType, dodPassed, finding,
   if (role === 'intent') return `You are a design-conformance detector. Compare ${path.join(stateDir, `round-${round}-diff.txt`)} with ${path.join(stateDir, `intent-${slug}.md`)}. Raise a finding ONLY for an active contradiction of an explicit stated requirement on an exact changed line. Each finding MUST have an intent: ID, file, span containing that exact changed line, the verbatim requirement text, and summary. Never report omissions, unchanged lines, design taste, or non-normative text. Write ONLY {"status":"ok","findings":[]} to ${artifact}.${retry}`;
   if (role === 'gate') return `Review ${path.join(stateDir, `round-${round}-diff.txt`)} for defects a diff-local reviewer cannot catch. You MAY Read/Grep the repository and MUST read ${path.join(stateDir, `intent-${slug}.md`)} if it exists. Report only gate: findings in classes cross-context, silent-gap, ac-coverage, or design-conformance. Each finding needs file, span/evidence anchor, requirement text when available, and summary. Write ONLY {"status":"ok","findings":[]} to ${artifact}.${retry}`;
   if (role === 'gate-verify') return `Re-review candidates in ${path.join(stateDir, `round-${round}-gate.json`)} against the diff and repository. Reject false positives and design-taste objections; keep actionable gaps. You MAY add genuinely new gate: findings using the same file, span/evidence, requirement, and summary shape. Write ONLY {"status":"ok","rejected":[],"findings":[]} to ${artifact}.${retry}`;
-  if (role === 'fix') return `Apply the minimal correct fix for ${finding.id}: ${finding.summary}. Edit only necessary files. Then write ONLY to ${artifact}: either {"status":"ok","edited":false} if no change was warranted, or {"status":"ok","edited":true,"files":["<every edited path>"]}. The files array MUST truthfully list EVERY file edited, including required companion files.${retry}`;
+  if (role === 'fix') return `Apply the minimal correct fix for ${finding.id} at ${finding.file}, ${finding.span}: ${finding.summary}. Edit only necessary files. Then write ONLY to ${artifact}: either {"status":"ok","edited":false} if no change was warranted, or {"status":"ok","edited":true,"files":["<every edited path>"]}. The files array MUST truthfully list EVERY file edited, including required companion files.${retry}`;
   throw new Error(`harness-failure: unknown reviewer role ${role}`);
 }
 
@@ -59,7 +59,7 @@ async function runReviewUntilGreen(options) {
       for (const lens of lenses) {
         const artifact = path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-${lens}.json`);
         await invoke(spawn, { role: `gate-panel-${lens}`, repoRoot, stateDir: context.stateDir,
-          prompt: `Review the repository through the ${lens} lens. Previously rejected IDs: ${JSON.stringify(panel.rejectedIds || [])}. Write ONLY {"status":"ok","findings":[]} to ${artifact}; every ID must use gate:${lens}:<slug>.` });
+          prompt: `Review ${path.join(context.stateDir, `round-${context.round}-diff.txt`)} and the repository through the ${lens} lens. You MAY Read/Grep the repository and MUST read ${path.join(context.stateDir, `intent-${context.slug}.md`)} if it exists to assess the design and acceptance criteria. Previously rejected IDs: ${JSON.stringify(panel.rejectedIds || [])}. Write ONLY {"status":"ok","findings":[]} to ${artifact}; every ID must use gate:${lens}:<slug>.` });
       }
       const candidates = [];
       for (const lens of lenses) {
