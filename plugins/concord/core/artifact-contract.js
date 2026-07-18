@@ -17,7 +17,8 @@ class ArtifactError extends Error {
 function retryPrompt(name, prefix) {
   const shape = SHAPES[name];
   const fields = shape.arrays.map((key) => `"${key}":[]`).join(',');
-  return `Rewrite only round artifact ${name} as JSON: {"status":"ok",${fields}}. Findings require id, file, and summary; ids must use ${prefix}<stable-slug>. Do not add prose or extra top-level fields.`;
+  const prefixes = String(prefix).split('|').join(' or ');
+  return `Rewrite only round artifact ${name} as JSON: {"status":"ok",${fields}}. Findings require id, file, and summary; ids must use ${prefixes}<stable-slug>. Do not add prose or extra top-level fields.`;
 }
 
 function normalizeArtifact(name, raw) {

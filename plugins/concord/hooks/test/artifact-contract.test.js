@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { normalizeArtifact, ArtifactError } = require('../../core/artifact-contract');
+const { normalizeArtifact, ArtifactError, retryPrompt } = require('../../core/artifact-contract');
 
 test('canonical correctness artifact is preserved except unsupported top-level fields', () => {
   const finding = { id: 'correctness:real-bug', file: 'a.js', span: 'bad()', summary: 'wrong result', evidence: 'keep' };
@@ -15,6 +15,12 @@ test('findings status canonicalizes without changing finding meaning', () => {
 
 test('clean status canonicalizes to ok', () => {
   assert.deepStrictEqual(normalizeArtifact('verify', '{"status":"clean"}'), { status: 'ok', rejected: [] });
+});
+
+test('correctness retry prompt names both valid namespaces without inventing a prefix', () => {
+  const prompt = retryPrompt('correctness', 'correctness:|docreview:');
+  assert.match(prompt, /correctness:.*or.*docreview:/);
+  assert.doesNotMatch(prompt, /correctness:\|docreview:/);
 });
 
 for (const [name, raw, kind] of [
