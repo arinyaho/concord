@@ -24,10 +24,6 @@ export function createQueue({ cap, queueMax, jobTimeoutMs, runJob, dockerKill, o
       const job = fifo.shift();
       active++;
       running.set(job.jobId, job);
-      try {
-        const startPromise = job.onStart?.();
-        Promise.resolve(startPromise).catch(() => {});
-      } catch {}
       run(job).finally(() => { active--; running.delete(job.jobId); pump(); });
     }
   }
@@ -44,9 +40,13 @@ export function createQueue({ cap, queueMax, jobTimeoutMs, runJob, dockerKill, o
       }, jobTimeoutMs);
       timer.unref();
     });
-    // Cancel arm: cancel(jobId) sets job._cancelled + kills + resolves this. Stashed synchronously
-    // (no await before the race), so a later cancel() macrotask always finds the resolver.
+    // Cancel arm: cancel(jobId) sets job._cancelled + kills + resolves this. Stash it before
+    // onStart, which is allowed to synchronously cancel the job it observes as running.
     const cancel = new Promise((resolve) => { job._cancelResolve = resolve; });
+    try {
+      const startPromise = job.onStart?.();
+      Promise.resolve(startPromise).catch(() => {});
+    } catch {}
     let outcome;
     try {
       const res = await Promise.race([runJob(job), timeout, cancel]);

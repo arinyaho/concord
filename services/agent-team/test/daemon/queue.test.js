@@ -173,6 +173,24 @@ test("onStart sees a FIFO job only after it is running", async () => {
   run.resolve({ code: 0, tail: "" });
 });
 
+test("an onStart synchronous cancel resolves the running job", async () => {
+  const outcomes = [];
+  let q;
+  q = createQueue({
+    cap: 1, queueMax: 1, jobTimeoutMs: 1_000_000,
+    runJob: () => new Promise(() => {}),
+    dockerKill() {},
+    onOutcome: (j, outcome) => outcomes.push({ jobId: j.jobId, kind: outcome.kind }),
+  });
+  q.submit(job("sync-cancel", {
+    onStart() { assert.deepEqual(q.cancel("sync-cancel"), { found: true }); },
+  }));
+
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  assert.deepEqual(outcomes, [{ jobId: "sync-cancel", kind: "cancelled" }]);
+  assert.deepEqual(q.list().running, []);
+});
+
 test("cancelling a queued job skips its lifecycle relay hooks", async () => {
   const firstRun = deferred();
   const terminalCalls = [];
