@@ -6,7 +6,7 @@ const timelineContent = (timeline) => timeline.join("\n");
 
 // Owns one Discord progress message. Every mutation joins the same chain, so an edit can never
 // overtake the initial send or run beside another edit.
-export function makeProgressRelay({ send, deadlineMs = 2000 }) {
+export function makeProgressRelay({ send, deadlineMs = 2000, onError = console.error }) {
   let message;
   let started = false;
   let terminal = false;
@@ -19,13 +19,21 @@ export function makeProgressRelay({ send, deadlineMs = 2000 }) {
     return { content: timelineContent(timeline), allowedMentions: SAFE_MENTIONS };
   }
 
+  function report(error) {
+    try {
+      Promise.resolve(onError(error)).catch(() => {});
+    } catch {
+      // Reporting must not turn a best-effort relay into a job failure.
+    }
+  }
+
   function enqueue(write) {
     const next = chain.then(async () => {
       if (abandoned) return;
       try {
         await write();
-      } catch {
-        // Progress is advisory; a Discord failure must not break job completion.
+      } catch (error) {
+        report(error);
       }
     });
     chain = next;
@@ -60,6 +68,7 @@ export function makeProgressRelay({ send, deadlineMs = 2000 }) {
     const deadline = new Promise((resolve) => {
       timer = setTimeout(() => {
         abandoned = true;
+        report(new Error("progress relay terminal deadline exceeded"));
         resolve();
       }, deadlineMs);
     });

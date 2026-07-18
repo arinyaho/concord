@@ -76,7 +76,11 @@ test("terminal appends its exact known outcome once and ignores late progress an
 });
 
 test("contains send and edit failures", async () => {
-  const sendFailure = makeProgressRelay({ send: async () => { throw new Error("send failed"); } });
+  const reports = [];
+  const sendFailure = makeProgressRelay({
+    send: async () => { throw new Error("send failed"); },
+    onError: (error) => reports.push(error),
+  });
   await assert.doesNotReject(sendFailure.start());
   await assert.doesNotReject(sendFailure.progress({ type: "progress", phase: "coding" }));
   await assert.doesNotReject(sendFailure.terminal({ kind: "failed" }));
@@ -84,12 +88,14 @@ test("contains send and edit failures", async () => {
   const edits = [];
   const relay = makeProgressRelay({
     send: async () => ({ edit: async (payload) => { edits.push(payload); throw new Error("edit failed"); } }),
+    onError: (error) => reports.push(error),
   });
 
   await relay.start();
   await assert.doesNotReject(relay.progress({ type: "progress", phase: "coding" }));
   await assert.doesNotReject(relay.terminal({ kind: "done" }));
   assert.equal(edits.length, 2);
+  assert.deepEqual(reports.map((error) => error.message), ["send failed", "edit failed", "edit failed"]);
 });
 
 test("terminal deadline abandons queued writes without making concurrent edits", async () => {
@@ -98,8 +104,10 @@ test("terminal deadline abandons queued writes without making concurrent edits",
   const edits = [];
   let active = 0;
   let peak = 0;
+  const reports = [];
   const relay = makeProgressRelay({
     deadlineMs: 5,
+    onError: (error) => reports.push(error),
     send: async (payload) => {
       sends.push(payload);
       return {
@@ -125,4 +133,5 @@ test("terminal deadline abandons queued writes without making concurrent edits",
   assert.deepEqual(edits, [{ content: phases(["cloning", "coding"]), ...safe }]);
   await relay.progress({ type: "progress", phase: "reviewing" });
   assert.equal(edits.length, 1);
+  assert.deepEqual(reports.map((error) => error.message), ["progress relay terminal deadline exceeded"]);
 });
