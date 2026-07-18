@@ -56,11 +56,11 @@ async function runReviewUntilGreen(options) {
     const lenses = ['ac-coverage', 'design-conformance', 'cross-context', 'silent-gap', 'threat-model'];
     for (;;) {
       const panel = await cli(['gate-panel-round-start', ref]);
-      for (const lens of lenses) {
+      await Promise.all(lenses.map(async (lens) => {
         const artifact = path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-${lens}.json`);
         await invoke(spawn, { role: `gate-panel-${lens}`, repoRoot, stateDir: context.stateDir,
           prompt: `Review ${path.join(context.stateDir, `round-${context.round}-diff.txt`)} and the repository through the ${lens} lens. You MAY Read/Grep the repository and MUST read ${path.join(context.stateDir, `intent-${context.slug}.md`)} if it exists to assess the design and acceptance criteria. Previously rejected IDs: ${JSON.stringify(panel.rejectedIds || [])}. Write ONLY {"status":"ok","findings":[]} to ${artifact}; every ID must use gate:${lens}:<slug>.` });
-      }
+      }));
       const candidates = [];
       for (const lens of lenses) {
         try {
@@ -71,12 +71,13 @@ async function runReviewUntilGreen(options) {
       const rejected = [];
       for (const finding of candidates) {
         let survives = 0;
-        for (let vote = 0; vote < 3; vote++) {
+        const votes = await Promise.all([0, 1, 2].map(async (vote) => {
           const verdict = path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-vote-${finding.id}-${vote}.json`);
           await invoke(spawn, { role: 'gate-panel-verify', repoRoot, stateDir: context.stateDir,
             prompt: `Try to refute gate finding ${JSON.stringify(finding)}. Default to refuted if uncertain. Write ONLY {"status":"ok","survives":false} to ${verdict}.` });
-          try { if (JSON.parse(fs.readFileSync(verdict, 'utf8')).survives === true) survives++; } catch (_) { /* refuted */ }
-        }
+          try { return JSON.parse(fs.readFileSync(verdict, 'utf8')).survives === true; } catch (_) { return false; }
+        }));
+        survives = votes.filter(Boolean).length;
         if (survives < 2) rejected.push(finding.id);
       }
       fs.writeFileSync(path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-verify.json`), JSON.stringify({ status: 'ok', rejected }) + '\n');
