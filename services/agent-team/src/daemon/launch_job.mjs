@@ -44,8 +44,13 @@ export function runLaunchJob({ argv, env, tailBytes = 4000, onChild, onProgress 
           return;
         }
 
-        residual += text.slice(0, newline);
+        const linePart = text.slice(0, newline);
         text = text.slice(newline + 1);
+        if (residual.length + linePart.length > tailBytes) {
+          residual = "";
+          continue;
+        }
+        residual += linePart;
         const progress = parseProgressLine(residual);
         residual = "";
         if (progress && onProgress) onProgress(progress);

@@ -47,13 +47,25 @@ test("runLaunchJob reports logger progress across stderr chunks", async () => {
 test("runLaunchJob drops an overlong partial line until its newline", async () => {
   const child = childWithStderr();
   const progress = [];
-  const result = runLaunchJob({ argv: [], env: {}, tailBytes: 10, onProgress: (stage) => progress.push(stage) }, { spawn: () => child });
+  const result = runLaunchJob({ argv: [], env: {}, tailBytes: 60, onProgress: (stage) => progress.push(stage) }, { spawn: () => child });
 
-  child.stderr.emit("data", Buffer.from("x".repeat(11)));
+  child.stderr.emit("data", Buffer.from("x".repeat(61)));
   child.stderr.emit("data", Buffer.from('[2026-07-18T01:02:03.000Z] coder_start {}\n[2026-07-18T01:02:04.000Z] coder_commit {}\n'));
   child.emit("close", 0);
 
   const { tail } = await result;
   assert.deepEqual(progress, ["committing"]);
-  assert.equal(tail, "coder_commit {}\n".slice(-10));
+  assert.equal(tail.length, 60);
+});
+
+test("runLaunchJob drops an overlong line when its newline arrives in the same chunk", async () => {
+  const child = childWithStderr();
+  const progress = [];
+  const result = runLaunchJob({ argv: [], env: {}, tailBytes: 60, onProgress: (stage) => progress.push(stage) }, { spawn: () => child });
+
+  child.stderr.emit("data", Buffer.from(`[timestamp] coder_start {"task":"${"x".repeat(61)}"}\n[timestamp] coder_commit {}\n`));
+  child.emit("close", 0);
+
+  await result;
+  assert.deepEqual(progress, ["committing"]);
 });
