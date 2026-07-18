@@ -152,6 +152,72 @@ test("natural completion then cancel -> onOutcome fires once, cancel found:false
   assert.equal(outcomes.length, 1); // no second outcome
 });
 
+// --- lifecycle relay hooks (B-3c Task 3) ---
+
+test("onStart sees a FIFO job only after it is running", async () => {
+  const events = [];
+  let q;
+  const run = deferred();
+  q = createQueue({
+    cap: 1, queueMax: 1, jobTimeoutMs: 1_000_000,
+    runJob: () => { events.push("run"); return run.promise; },
+    dockerKill() {}, onOutcome() {},
+  });
+  const first = job("first", {
+    onStart() { events.push(`start:${q.list().running.map((j) => j.jobId).join(",")}`); },
+  });
+
+  q.submit(first);
+  await Promise.resolve();
+  assert.deepEqual(events, ["start:first", "run"]);
+  run.resolve({ code: 0, tail: "" });
+});
+
+test("cancelling a queued job skips its lifecycle relay hooks", async () => {
+  const firstRun = deferred();
+  const terminalCalls = [];
+  const q = createQueue({
+    cap: 1, queueMax: 2, jobTimeoutMs: 1_000_000,
+    runJob: (j) => j.jobId === "first" ? firstRun.promise : Promise.resolve({ code: 0, tail: "" }),
+    dockerKill() {}, onOutcome() {},
+  });
+  q.submit(job("first"));
+  q.submit(job("queued", {
+    onStart() { terminalCalls.push("start"); },
+    onTerminal() { terminalCalls.push("terminal"); },
+  }));
+
+  assert.deepEqual(q.cancel("queued"), { found: true });
+  await Promise.resolve();
+  assert.deepEqual(terminalCalls, []);
+  firstRun.resolve({ code: 0, tail: "" });
+});
+
+test("a pending onTerminal promise does not hold the queue slot", async () => {
+  const firstRun = deferred();
+  const terminal = deferred();
+  const started = [];
+  const lifecycle = [];
+  const received = [];
+  const q = createQueue({
+    cap: 1, queueMax: 2, jobTimeoutMs: 1_000_000,
+    runJob: (j) => j.jobId === "first" ? firstRun.promise : Promise.resolve({ code: 0, tail: "" }),
+    dockerKill() {},
+    onOutcome: (j, o, terminalPromise) => { lifecycle.push("outcome"); received.push({ jobId: j.jobId, terminalPromise }); },
+  });
+  q.submit(job("first", { onTerminal() { lifecycle.push("terminal"); return terminal.promise; } }));
+  q.submit(job("second", { onStart() { started.push("second"); } }));
+
+  firstRun.resolve({ code: 0, tail: "" });
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  assert.deepEqual(lifecycle, ["terminal", "outcome"]);
+  assert.deepEqual(started, ["second"]);
+  assert.equal(received.length, 1);
+  assert.equal(received[0].jobId, "first");
+  assert.equal(typeof received[0].terminalPromise?.then, "function");
+  terminal.resolve();
+});
+
 // --- computeOutcome precedence (pure) ---
 
 test("computeOutcome: cancelled beats timedOut (precedence pin)", () => {

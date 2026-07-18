@@ -3,8 +3,11 @@
 // -> its outcome goes to the capability reply path. onOutcome is called fire-and-forget by the
 // queue, so any rejection is caught here (an unhandled rejection would crash the daemon).
 export function makeOutcomeRouter({ replyForOutcome, onError }) {
-  return function onOutcome(job, outcome) {
-    const p = job.onDone ? job.onDone(outcome) : replyForOutcome(job, outcome);
-    Promise.resolve(p).catch(onError ?? (() => {}));
+  const reportError = (e) => { try { (onError ?? (() => {}))(e); } catch {} };
+  return function onOutcome(job, outcome, terminalPromise) {
+    Promise.resolve(terminalPromise)
+      .catch((e) => { reportError(e); })
+      .then(() => job.onDone ? job.onDone(outcome) : replyForOutcome(job, outcome))
+      .catch(reportError);
   };
 }

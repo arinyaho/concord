@@ -44,3 +44,34 @@ test("a rejecting onDone is .catch-guarded -> onError called, no unhandled rejec
   await new Promise((r) => setImmediate(r));
   assert.deepEqual(errors, [err]);
 });
+
+test("terminal relay settles before routing the outcome", async () => {
+  const terminal = deferred();
+  const calls = [];
+  const onOutcome = makeOutcomeRouter({
+    replyForOutcome: () => calls.push("reply"),
+    onError: () => {},
+  });
+  onOutcome({ jobId: "cap-terminal", msg: {} }, { kind: "done", code: 0, tail: "" }, terminal.promise);
+  await Promise.resolve();
+  assert.deepEqual(calls, []);
+  terminal.resolve();
+  await Promise.resolve(); await Promise.resolve();
+  assert.deepEqual(calls, ["reply"]);
+});
+
+test("a rejecting terminal relay is guarded and still routes the outcome", async () => {
+  const err = new Error("terminal blew up");
+  const errors = [];
+  const calls = [];
+  const onOutcome = makeOutcomeRouter({
+    replyForOutcome: () => calls.push("reply"),
+    onError: (e) => errors.push(e),
+  });
+  onOutcome({ jobId: "cap-terminal-error", msg: {} }, { kind: "failed", code: 1, tail: "x" }, Promise.reject(err));
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(errors, [err]);
+  assert.deepEqual(calls, ["reply"]);
+});
+
+function deferred() { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; }

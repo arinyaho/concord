@@ -24,6 +24,10 @@ export function createQueue({ cap, queueMax, jobTimeoutMs, runJob, dockerKill, o
       const job = fifo.shift();
       active++;
       running.set(job.jobId, job);
+      try {
+        const startPromise = job.onStart?.();
+        Promise.resolve(startPromise).catch(() => {});
+      } catch {}
       run(job).finally(() => { active--; running.delete(job.jobId); pump(); });
     }
   }
@@ -52,7 +56,16 @@ export function createQueue({ cap, queueMax, jobTimeoutMs, runJob, dockerKill, o
     } finally {
       clearTimeout(timer);
     }
-    onOutcome(job, outcome);
+    let terminalPromise;
+    try {
+      terminalPromise = Promise.resolve(job.onTerminal?.(outcome));
+    } catch (e) {
+      terminalPromise = Promise.reject(e);
+    }
+    // Mark this promise handled immediately; the outcome router observes the same promise and
+    // reports a rejection before it routes the final response.
+    terminalPromise.catch(() => {});
+    onOutcome(job, outcome, terminalPromise);
   }
 
   const summarize = (j) => ({ jobId: j.jobId, alias: j.alias, task: j.task, threadId: j.threadId });
