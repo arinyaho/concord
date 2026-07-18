@@ -43,10 +43,12 @@ export function createQueue({ cap, queueMax, jobTimeoutMs, runJob, dockerKill, o
     // Cancel arm: cancel(jobId) sets job._cancelled + kills + resolves this. Stash it before
     // onStart, which is allowed to synchronously cancel the job it observes as running.
     const cancel = new Promise((resolve) => { job._cancelResolve = resolve; });
+    let startPromise;
     try {
-      const startPromise = job.onStart?.();
-      Promise.resolve(startPromise).catch(() => {});
-    } catch {}
+      startPromise = Promise.resolve(job.onStart?.());
+    } catch (e) {
+      startPromise = Promise.reject(e);
+    }
     let outcome;
     try {
       // A synchronous onStart cancellation has already resolved the cancel arm. Do not launch
@@ -58,16 +60,12 @@ export function createQueue({ cap, queueMax, jobTimeoutMs, runJob, dockerKill, o
     } finally {
       clearTimeout(timer);
     }
-    let terminalPromise;
-    try {
-      terminalPromise = Promise.resolve(job.onTerminal?.(outcome));
-    } catch (e) {
-      terminalPromise = Promise.reject(e);
-    }
-    // Mark this promise handled immediately; the outcome router observes the same promise and
-    // reports a rejection before it routes the final response.
+    // Preserve visible lifecycle order without holding the execution slot: terminal waits for
+    // start settlement, and routing starts only once terminal has been invoked.
+    const started = startPromise.catch(() => {});
+    const terminalPromise = started.then(() => job.onTerminal?.(outcome));
     terminalPromise.catch(() => {});
-    onOutcome(job, outcome, terminalPromise);
+    started.then(() => onOutcome(job, outcome, terminalPromise)).catch(() => {});
   }
 
   const summarize = (j) => ({ jobId: j.jobId, alias: j.alias, task: j.task, threadId: j.threadId });
