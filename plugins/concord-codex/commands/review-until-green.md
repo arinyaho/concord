@@ -6,7 +6,7 @@ argument-hint: "[target | resume <ref>] [--broad]"
 Run the bundled deterministic runner once; do not manually orchestrate reviewers:
 
 ```sh
-node "${PLUGIN_ROOT}/bin/review-until-green.js" $ARGUMENTS
+node "${CLAUDE_PLUGIN_ROOT}/bin/review-until-green.js" $ARGUMENTS
 ```
 
 Return its terminal handoff verbatim. If it exits with `harness-failure`, report that failure without treating the target as clean.
