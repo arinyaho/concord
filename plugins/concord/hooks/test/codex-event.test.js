@@ -63,10 +63,15 @@ test('toNeutralEvent(payload, "stop") overrides source', () => {
 });
 
 function codexLauncherCommand(script) {
-  return `node -e 'const cp=require("child_process");const path=require("path");const root=process.env.PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT;if(!root)process.exit(0);const result=cp.spawnSync(process.execPath,[path.join(root,"hooks/${script}")],{stdio:"inherit"});if(result.error)throw result.error;process.exit(result.status??1)'`;
+  // POSIX sh launcher: resolve the plugin root from the environment (plain $VAR, never
+  // ${a:-b}, so Codex's manifest expander leaves it intact), then DISCOVER node even when
+  // it is absent from a scrubbed hook PATH (Codex spawns hooks with a minimal PATH that
+  // excludes nvm's node dir). Failing SOFT with exit 0 whenever the root or interpreter
+  // cannot be found means a missing node never turns session start into a hook failure.
+  return `sh -c 'r="$PLUGIN_ROOT"; [ -n "$r" ] || r="$CLAUDE_PLUGIN_ROOT"; [ -n "$r" ] || exit 0; n="$(command -v node 2>/dev/null)"; [ -n "$n" ] || { for c in "$NVM_BIN/node" "$HOME"/.nvm/versions/node/*/bin/node /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do [ -x "$c" ] && { n="$c"; break; }; done; }; [ -n "$n" ] || exit 0; exec "$n" "$r/hooks/${script}"'`;
 }
 
-test('Codex hook manifest gives every command hook the shell-expansion-free Node launcher contract', () => {
+test('Codex hook manifest gives every command hook the PATH-independent node-discovery launcher contract', () => {
   const manifest = JSON.parse(fs.readFileSync(CODEX_HOOKS, 'utf8'));
   assert.deepStrictEqual(Object.keys(manifest).sort(), ['description', 'hooks']);
   assert.deepStrictEqual(manifest.hooks, {
@@ -160,6 +165,81 @@ test(`Codex ${label} launcher successfully no-ops without a plugin root`, (t) =>
   assert.strictEqual(result.stderr, '');
 });
 }
+
+// Codex spawns hooks with a scrubbed PATH that excludes nvm's node dir, so the launcher
+// must discover node itself. These run each command with node reachable ONLY via a fake
+// $HOME/.nvm tree (never on PATH) -- the exact condition a bare-`node` command form cannot
+// survive, which is why SessionStart hooks reported "exited with code 1" on Codex resume.
+function fakeNvmHome(t) {
+  const home = tempDir(t, 'concord-codex-scrubbed-home-');
+  const binDir = path.join(home, '.nvm', 'versions', 'node', 'v-test', 'bin');
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.symlinkSync(process.execPath, path.join(binDir, 'node'));
+  return home;
+}
+
+function runCodexLauncherScrubbed({ hookEvent, hookIndex = 0, cwd, home, env }) {
+  const manifest = JSON.parse(fs.readFileSync(CODEX_HOOKS, 'utf8'));
+  const command = manifest.hooks[hookEvent][0].hooks[hookIndex].command;
+  return spawnSync('sh', ['-c', command], {
+    cwd,
+    env: { PATH: '/usr/bin:/bin', HOME: home, ...env }, // node is NOT on this PATH
+    input: '{}',
+    encoding: 'utf8',
+  });
+}
+
+for (const [hookEvent, hookIndex, label] of [
+  ['Stop', 0, 'Stop'],
+  ['SessionStart', 0, 'SessionStart state injector'],
+  ['SessionStart', 1, 'SessionStart review injector'],
+]) {
+test(`Codex ${label} launcher discovers node off a scrubbed PATH`, (t) => {
+  const project = tempDir(t, 'concord-codex-scrubbed-project-');
+  const codexHome = tempDir(t, 'concord-codex-scrubbed-codexhome-');
+  const home = fakeNvmHome(t);
+  const result = runCodexLauncherScrubbed({
+    hookEvent, hookIndex, cwd: project, home,
+    env: { PLUGIN_ROOT: CODEX_PLUGIN, CODEX_HOME: codexHome },
+  });
+  assert.strictEqual(result.status, 0, `stderr: ${result.stderr}`);
+});
+}
+
+test('Codex Stop launcher actually runs the writer when node is only reachable off a scrubbed PATH', (t) => {
+  const project = tempDir(t, 'concord-codex-scrubbed-run-project-');
+  const codexHome = tempDir(t, 'concord-codex-scrubbed-run-home-');
+  const home = fakeNvmHome(t);
+  const transcript = path.join(project, 'rollout.jsonl');
+  fs.writeFileSync(transcript, `${JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'DECISION: [scope] discovered off PATH' }] } })}\n`);
+  const manifest = JSON.parse(fs.readFileSync(CODEX_HOOKS, 'utf8'));
+  const command = manifest.hooks.Stop[0].hooks[0].command;
+  const result = spawnSync('sh', ['-c', command], {
+    cwd: project,
+    env: { PATH: '/usr/bin:/bin', HOME: home, PLUGIN_ROOT: CODEX_PLUGIN, CODEX_HOME: codexHome },
+    input: JSON.stringify({ session_id: 'scrubbed-1', transcript_path: transcript }),
+    encoding: 'utf8',
+  });
+  assert.strictEqual(result.status, 0, `stderr: ${result.stderr}`);
+  const statePath = path.join(codexStateDir(codexHome, project), 'scrubbed-1.json');
+  assert.ok(fs.existsSync(statePath), 'writer did not persist state under a scrubbed PATH');
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(statePath, 'utf8')).decisions, ['[scope] discovered off PATH']);
+});
+
+test('Codex launcher fails soft (exit 0) when node cannot be found anywhere', (t) => {
+  const project = tempDir(t, 'concord-codex-nonode-project-');
+  const home = tempDir(t, 'concord-codex-nonode-home-'); // no .nvm tree inside
+  const manifest = JSON.parse(fs.readFileSync(CODEX_HOOKS, 'utf8'));
+  const command = manifest.hooks.SessionStart[0].hooks[0].command;
+  const result = spawnSync('sh', ['-c', command], {
+    cwd: project,
+    // Standard PATH so `sh` resolves, but node is not on it (nor via NVM_BIN or $HOME/.nvm).
+    env: { PATH: '/usr/bin:/bin', HOME: home, NVM_BIN: '', PLUGIN_ROOT: CODEX_PLUGIN },
+    input: '{}',
+    encoding: 'utf8',
+  });
+  assert.strictEqual(result.status, 0, `stderr: ${result.stderr}`);
+});
 
 test('vendored Codex writer persists a normal Stop event in the cwd-derived CODEX_HOME state directory', (t) => {
   const project = tempDir(t, 'concord-codex-project-');
