@@ -79,6 +79,11 @@ test('fix prompt writes the commit-fix artifact and requires a truthful files de
   assert.match(prompt, /"edited":false/);
 });
 
+test('correctness prompt requires every changed file in examined', () => {
+  const prompt = reviewerPrompt('correctness', { stateDir: '/state', round: 7, targetType: 'git', dodPassed: true });
+  assert.match(prompt, /every changed file.*examined/i);
+});
+
 test('fix subprocess writes the prompt-declared artifact consumed by commit-fix', async () => {
   const h = harness({ promptDrivenFix: true });
   await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });

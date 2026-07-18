@@ -30,7 +30,7 @@ function reviewerPrompt(role, { stateDir, round, targetType, dodPassed, finding,
   const retry = retryPrompt ? `\n\n${retryPrompt}` : '';
   if (role === 'correctness') {
     const doc = targetType === 'file';
-    return `${doc ? 'Review the document' : 'Review the diff and surrounding code'} at ${path.join(stateDir, `round-${round}-diff.txt`)}. ${doc ? 'Find contradictions, unsupported claims, placeholders, over-claims, and omitted limitations. IDs must start docreview:.' : `Find correctness bugs, reuse/efficiency problems, and verifier-gaming. DoD already ${dodPassed ? 'passed; do not rerun tests' : 'failed; do not root-cause it'}. IDs must start correctness:.`} Write ONLY JSON to ${artifact}: {"status":"ok","examined":[],"findings":[]}.${retry}`;
+    return `${doc ? 'Review the document' : 'Review the diff and surrounding code'} at ${path.join(stateDir, `round-${round}-diff.txt`)}. ${doc ? 'Find contradictions, unsupported claims, placeholders, over-claims, and omitted limitations. IDs must start docreview:.' : `Find correctness bugs, reuse/efficiency problems, and verifier-gaming. DoD already ${dodPassed ? 'passed; do not rerun tests' : 'failed; do not root-cause it'}. IDs must start correctness:. Every changed file in the diff MUST appear in "examined".`} Write ONLY JSON to ${artifact}: {"status":"ok","examined":[],"findings":[]}.${retry}`;
   }
   if (role === 'verify') return `Re-review candidates in ${path.join(stateDir, `round-${round}-correctness.json`)} against ${path.join(stateDir, `round-${round}-diff.txt`)}. Write ONLY {"status":"ok","rejected":[]} to ${artifact}.${retry}`;
   if (role === 'intent') return `You are a design-conformance detector. Compare ${path.join(stateDir, `round-${round}-diff.txt`)} with ${path.join(stateDir, `intent-${slug}.md`)}. Raise a finding ONLY for an active contradiction of an explicit stated requirement on an exact changed line. Each finding MUST have an intent: ID, file, span containing that exact changed line, the verbatim requirement text, and summary. Never report omissions, unchanged lines, design taste, or non-normative text. Write ONLY {"status":"ok","findings":[]} to ${artifact}.${retry}`;
@@ -56,11 +56,11 @@ async function runReviewUntilGreen(options) {
     const lenses = ['ac-coverage', 'design-conformance', 'cross-context', 'silent-gap', 'threat-model'];
     for (;;) {
       const panel = await cli(['gate-panel-round-start', ref]);
-      for (const lens of lenses) {
+      await Promise.all(lenses.map(async (lens) => {
         const artifact = path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-${lens}.json`);
         await invoke(spawn, { role: `gate-panel-${lens}`, repoRoot, stateDir: context.stateDir,
           prompt: `Review ${path.join(context.stateDir, `round-${context.round}-diff.txt`)} and the repository through the ${lens} lens. You MAY Read/Grep the repository and MUST read ${path.join(context.stateDir, `intent-${context.slug}.md`)} if it exists to assess the design and acceptance criteria. Previously rejected IDs: ${JSON.stringify(panel.rejectedIds || [])}. Write ONLY {"status":"ok","findings":[]} to ${artifact}; every ID must use gate:${lens}:<slug>.` });
-      }
+      }));
       const candidates = [];
       for (const lens of lenses) {
         try {
@@ -71,12 +71,13 @@ async function runReviewUntilGreen(options) {
       const rejected = [];
       for (const finding of candidates) {
         let survives = 0;
-        for (let vote = 0; vote < 3; vote++) {
+        const votes = await Promise.all([0, 1, 2].map(async (vote) => {
           const verdict = path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-vote-${finding.id}-${vote}.json`);
           await invoke(spawn, { role: 'gate-panel-verify', repoRoot, stateDir: context.stateDir,
             prompt: `Try to refute gate finding ${JSON.stringify(finding)}. Default to refuted if uncertain. Write ONLY {"status":"ok","survives":false} to ${verdict}.` });
-          try { if (JSON.parse(fs.readFileSync(verdict, 'utf8')).survives === true) survives++; } catch (_) { /* refuted */ }
-        }
+          try { return JSON.parse(fs.readFileSync(verdict, 'utf8')).survives === true; } catch (_) { return false; }
+        }));
+        survives = votes.filter(Boolean).length;
         if (survives < 2) rejected.push(finding.id);
       }
       fs.writeFileSync(path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-verify.json`), JSON.stringify({ status: 'ok', rejected }) + '\n');
