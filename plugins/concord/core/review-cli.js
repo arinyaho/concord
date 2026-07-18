@@ -67,6 +67,28 @@ const gitIsDirty = gitDirty;
 function gitIsDirtyForFile(repoRoot, file) {
   return sh('git', ['status', '--porcelain', '--', file], { cwd: repoRoot }).trim().length > 0;
 }
+
+function pathWithin(child, parent) {
+  const relative = path.relative(parent, child);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function validateFixFiles(repoRoot, stateDir, files) {
+  const repo = path.resolve(repoRoot);
+  const artifacts = path.resolve(stateDir);
+  for (const file of files) {
+    if (typeof file !== 'string' || file.length === 0) {
+      throw new Error('harness-failure: commit-fix: declared files must be non-empty repository-relative paths');
+    }
+    const resolved = path.resolve(repo, file);
+    if (path.isAbsolute(file) || !pathWithin(resolved, repo)) {
+      throw new Error(`harness-failure: commit-fix: declared file "${file}" is outside the repository`);
+    }
+    if (pathWithin(resolved, artifacts)) {
+      throw new Error(`harness-failure: commit-fix: declared file "${file}" is a stateDir artifact`);
+    }
+  }
+}
 function gitCheckoutTree(repoRoot) {
   sh('git', ['checkout', '--', '.'], { cwd: repoRoot });
 }
@@ -172,6 +194,29 @@ function requireRef(ref, verb) {
   if (!ref) throw new Error(`review-cli ${verb}: missing required <ref> argument`);
 }
 
+// Derive the complete changed-path set from a unified git diff. Looking only at
+// `+++ b/...` silently omits deletions (`+++ /dev/null`) and pure renames,
+// allowing a reviewer to skip them without triggering the coverage guard.
+// Keep this parser shared by artifact normalization and plan-fixes so retry and
+// fail-closed coverage enforce the same contract.
+function changedGitPaths(diffText) {
+  const paths = [];
+  const add = (file) => {
+    if (file && file !== '/dev/null' && !paths.includes(file)) paths.push(file);
+  };
+  for (const line of String(diffText).split('\n')) {
+    let match = /^--- a\/(.+?)(?:\t.*)?$/.exec(line);
+    if (match) { add(match[1]); continue; }
+    match = /^\+\+\+ b\/(.+?)(?:\t.*)?$/.exec(line);
+    if (match) { add(match[1]); continue; }
+    match = /^rename from (.+)$/.exec(line);
+    if (match) { add(match[1]); continue; }
+    match = /^rename to (.+)$/.exec(line);
+    if (match) add(match[1]);
+  }
+  return paths;
+}
+
 // Fail-closed gate artifact read (design invariant: a broken/missing gate must
 // never be silently read as "zero findings" -- that can manufacture a
 // spurious converged:clean out of a harness failure). Shared by plan-fixes
@@ -206,10 +251,18 @@ function readArtifact(stateDir, n, name) {
 function requireArtifactAfter(stateDir, n, firstName, secondName) {
   const firstPath = path.join(stateDir, `round-${n}-${firstName}.json`);
   const secondPath = path.join(stateDir, `round-${n}-${secondName}.json`);
-  if (!fs.existsSync(firstPath)) throw new Error(`harness-failure: missing gate artifact ${firstName} for round ${n}`);
-  if (!fs.existsSync(secondPath)) throw new Error(`harness-failure: missing gate artifact ${secondName} for round ${n}`);
-  const firstStat = fs.statSync(firstPath);
-  const secondStat = fs.statSync(secondPath);
+  const statArtifact = (name, artifactPath) => {
+    try {
+      return fs.statSync(artifactPath);
+    } catch (e) {
+      // existsSync followed by statSync leaves a TOCTOU gap: a reviewer can
+      // remove or replace its artifact after the existence check, leaking a
+      // raw ENOENT instead of preserving the gate's fail-closed contract.
+      throw new Error(`harness-failure: missing gate artifact ${name} for round ${n}`);
+    }
+  };
+  const firstStat = statArtifact(firstName, firstPath);
+  const secondStat = statArtifact(secondName, secondPath);
   if (secondStat.mtimeMs < firstStat.mtimeMs) {
     throw new Error(`harness-failure: round-${n}-${secondName}.json predates round-${n}-${firstName}.json -- it was spawned before ${firstName} finished writing (see review-until-green.md step 3: correctness and verify must run sequentially, never in parallel)`);
   }
@@ -254,6 +307,22 @@ function main(resolveFromCwd) {
     try { raw = fs.readFileSync(p, 'utf8'); } catch (e) { throw new Error(`harness-failure: missing gate artifact ${name} for round ${n}`); }
     try {
       const canonical = artifactContract.normalizeArtifact(name, raw);
+      // Correctness coverage is part of the artifact contract for git targets:
+      // retry the reviewer while its original artifact is still intact rather
+      // than canonicalizing an incomplete examined list and discovering the
+      // problem only after verify has already run. File targets hold document
+      // contents, not a unified diff, so their examined list stays advisory.
+      if (name === 'correctness' && (!ledger.target || ledger.target.type === 'git')) {
+        const diffText = fs.readFileSync(path.join(stateDir, `round-${n}-diff.txt`), 'utf8');
+        const changed = changedGitPaths(diffText);
+        const examined = new Set(canonical.examined);
+        const missing = changed.filter((file) => !examined.has(file));
+        if (missing.length) {
+          const error = new artifactContract.ArtifactError('retry', `correctness coverage is incomplete; missing changed file(s): ${missing.join(', ')}`);
+          error.coveragePaths = changed;
+          throw error;
+        }
+      }
       fs.writeFileSync(p, JSON.stringify(canonical) + '\n');
       try { fs.unlinkSync(retryPath); } catch (e) { /* no prior retry */ }
       process.stdout.write(JSON.stringify({ status: 'ok', artifact: name }) + '\n');
@@ -262,7 +331,10 @@ function main(resolveFromCwd) {
       if (e instanceof artifactContract.ArtifactError && e.kind === 'retry') {
         if (!fs.existsSync(retryPath)) {
           fs.writeFileSync(retryPath, '1\n');
-          process.stdout.write(JSON.stringify({ status: 'retry', artifact: name, prompt: artifactContract.retryPrompt(name, ({ correctness: 'correctness:|docreview:', verify: 'correctness:|docreview:', intent: 'intent:', gate: 'gate:', 'gate-verify': 'gate:' })[name]) }) + '\n');
+          const prompt = e.coveragePaths
+            ? `Rewrite only round artifact correctness as JSON. The "examined" array MUST contain every changed path exactly as listed: ${e.coveragePaths.map((file) => JSON.stringify(file)).join(', ')}. Do not infer, omit, or rewrite paths; preserve your actual findings and do not add prose or extra top-level fields.`
+            : artifactContract.retryPrompt(name, ({ correctness: 'correctness:|docreview:', verify: 'correctness:|docreview:', intent: 'intent:', gate: 'gate:', 'gate-verify': 'gate:' })[name]);
+          process.stdout.write(JSON.stringify({ status: 'retry', artifact: name, prompt }) + '\n');
           return;
         }
       }
@@ -744,7 +816,7 @@ function main(resolveFromCwd) {
       }
     }
     // Coverage: every changed file must be in examined. This is a GIT-DIFF-shaped
-    // check -- `changed` is parsed from `+++ b/<path>` diff headers -- so both the
+    // check -- `changed` is parsed from old/new headers and rename metadata -- so both the
     // derivation and the assertion are gated on the target being git (same isGit
     // test record uses). For a file target, round-<n>-diff.txt holds raw document
     // CONTENT, not a git diff; a doc that merely QUOTES a unified diff (a line
@@ -761,7 +833,7 @@ function main(resolveFromCwd) {
       // (single-sourced diff) -- do NOT re-run git against ledger.target.base,
       // which duplicates a git call the CLI already made once this round.
       const diffText = fs.readFileSync(path.join(stateDir, `round-${n}-diff.txt`), 'utf8');
-      changed = Array.from(new Set((diffText.match(/^\+\+\+ b\/(.+)$/gm) || []).map((l) => l.replace(/^\+\+\+ b\//, '').trim())));
+      changed = changedGitPaths(diffText);
       const examined = new Set(Array.isArray(cJson.examined) ? cJson.examined : []);
       const missing = changed.filter((f) => !examined.has(f));
       if (missing.length) throw new Error(`harness-failure: coverage -- changed file(s) never examined: ${missing.join(', ')}`);
@@ -952,6 +1024,7 @@ function main(resolveFromCwd) {
     // just finding.file) matters too: a fix that legitimately edits a second
     // file must have BOTH edits land in the same attributed commit, or the
     // companion edit is silently wiped by record()'s later gitCheckoutTree.
+    if (fx && Array.isArray(fx.files)) validateFixFiles(repoRoot, stateDir, files);
     if (fx && fx.status === 'ok' && fx.edited === true && finding.file && files.some((f) => gitIsDirtyForFile(repoRoot, f))) {
       const sha = gitCommitFix(repoRoot, id, finding.summary, files);
       ledger = { ...ledger, journal: [...(ledger.journal || []), { id, sha }] };
@@ -980,4 +1053,4 @@ function runMain(resolveFromCwd) {
   }
 }
 
-module.exports = { gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitCheckoutTree, runDod, main, runMain };
+module.exports = { gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitCheckoutTree, runDod, changedGitPaths, main, runMain };

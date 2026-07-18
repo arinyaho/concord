@@ -42,6 +42,32 @@ test('review-cli is requirable as a module without executing main (guarded)', ()
   assert.strictEqual(typeof cli.runDod, 'function');
 });
 
+test('changedGitPaths includes added, modified, deleted, and rename paths without /dev/null', () => {
+  const diff = [
+    'diff --git a/modified.js b/modified.js',
+    '--- a/modified.js',
+    '+++ b/modified.js',
+    'diff --git a/added.js b/added.js',
+    '--- /dev/null',
+    '+++ b/added.js',
+    'diff --git a/deleted.js b/deleted.js',
+    '--- a/deleted.js',
+    '+++ /dev/null',
+    'diff --git a/old-name.js b/new-name.js',
+    'similarity index 100%',
+    'rename from old-name.js',
+    'rename to new-name.js',
+  ].join('\n') + '\n';
+
+  assert.deepStrictEqual(cli.changedGitPaths(diff), [
+    'modified.js',
+    'added.js',
+    'deleted.js',
+    'old-name.js',
+    'new-name.js',
+  ]);
+});
+
 test('artifact-normalize retries an invalid id once, then writes a canonical artifact', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
@@ -65,6 +91,54 @@ test('artifact-normalize fails after retry exhaustion', () => {
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', findings: [{ id: 'gate:wrong', file: 'a.txt', summary: 's' }] }));
   run(['artifact-normalize', 'feat/x', 'correctness'], { env });
   assert.throws(() => run(['artifact-normalize', 'feat/x', 'correctness'], { env }), /harness-failure/);
+});
+
+test('artifact-normalize retries correctness coverage before it writes a canonical artifact', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'new\n');
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'change two files'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  const artifact = path.join(dir, `round-${n}-correctness.json`);
+  const raw = JSON.stringify({ status: 'findings', examined: ['a.txt'], findings: [] });
+  fs.writeFileSync(artifact, raw);
+
+  const retry = JSON.parse(run(['artifact-normalize', 'feat/x', 'correctness'], { env }));
+  assert.deepStrictEqual(retry.status, 'retry');
+  assert.match(retry.prompt, /"examined"/);
+  assert.match(retry.prompt, /a\.txt/);
+  assert.match(retry.prompt, /b\.txt/);
+  assert.strictEqual(fs.readFileSync(artifact, 'utf8'), raw, 'coverage retry must not infer or rewrite examined');
+});
+
+test('artifact-normalize fails closed when correctness coverage is still incomplete after its retry', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'new\n');
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'change two files'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  const artifact = path.join(dir, `round-${n}-correctness.json`);
+  fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+
+  assert.strictEqual(JSON.parse(run(['artifact-normalize', 'feat/x', 'correctness'], { env })).status, 'retry');
+  assert.throws(() => run(['artifact-normalize', 'feat/x', 'correctness'], { env }), /harness-failure.*coverage/);
+});
+
+test('artifact-normalize retries when a deleted path is not examined', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  execFileSync('git', ['rm', '-q', 'a.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-m', 'delete a'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/delete', 'HEAD~1'], { env })).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: [], findings: [] }));
+
+  const retry = JSON.parse(run(['artifact-normalize', 'feat/delete', 'correctness'], { env }));
+  assert.strictEqual(retry.status, 'retry');
+  assert.match(retry.prompt, /a\.txt/);
 });
 
 test('git helpers operate on a real temp repo', () => {
@@ -306,6 +380,37 @@ test('plan-fixes: a missing correctness artifact is a harness-failure (never cle
   assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure/);
 });
 
+test('plan-fixes: a correctness artifact that vanishes before its mtime check is a harness-failure', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  const correctness = path.join(dir, `round-${n}-correctness.json`);
+  fs.writeFileSync(correctness, JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  const originalArgv = process.argv;
+  const originalEnv = process.env;
+  const originalStatSync = fs.statSync;
+  process.argv = ['node', CLI, 'plan-fixes', 'feat/x'];
+  process.env = env;
+  fs.statSync = (file, ...args) => {
+    if (file === correctness) {
+      const error = new Error(`ENOENT: no such file or directory, stat '${file}'`);
+      error.code = 'ENOENT';
+      throw error;
+    }
+    return originalStatSync(file, ...args);
+  };
+  try {
+    assert.throws(() => cli.main(), /harness-failure: missing gate artifact correctness/);
+  } finally {
+    fs.statSync = originalStatSync;
+    process.argv = originalArgv;
+    process.env = originalEnv;
+  }
+});
+
 test('plan-fixes: a verify artifact older than its correctness artifact is a harness-failure (spawn-ordering race)', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
@@ -328,6 +433,18 @@ test('plan-fixes: a changed file never examined is a harness-failure (coverage)'
     { status: 'ok', examined: [], findings: [] },
     { status: 'ok', rejected: [] });
   assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure|coverage/);
+});
+
+test('plan-fixes: a deleted path never examined is a harness-failure (coverage)', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  execFileSync('git', ['rm', '-q', 'a.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-m', 'delete a'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/delete', 'HEAD~1'], { env })).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: [], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+
+  assert.throws(() => run(['plan-fixes', 'feat/delete'], { env }), /harness-failure.*coverage.*a\.txt/);
 });
 
 // A confirmed finding whose span is absent from the file is an idempotent replay
@@ -466,6 +583,38 @@ test('commit-fix: a fix that declares multiple files (finding.file + companion) 
   assert.deepStrictEqual(committedFiles, ['a.txt', 'c.txt']);
   const status = execFileSync('git', ['status', '--porcelain', '--', 'b.txt'], { cwd: repo, encoding: 'utf8' });
   assert.ok(status.trim().length > 0, 'b.txt should remain dirty/untracked -- companion staging must still be scoped, not -A');
+});
+
+test('commit-fix: rejects an outside-repository path declared by a fix artifact before git add', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' }] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:real.json`), JSON.stringify({ status: 'ok', edited: true, files: ['a.txt', '/tmp/not-a-repo-file'] }));
+
+  assert.throws(
+    () => run(['commit-fix', 'feat/x', 'correctness:real'], { env }),
+    /harness-failure: commit-fix: declared file "\/tmp\/not-a-repo-file" is outside the repository/,
+  );
+  assert.strictEqual(execFileSync('git', ['status', '--porcelain', '--', 'a.txt'], { cwd: repo, encoding: 'utf8' }).trim(), 'M a.txt');
+});
+
+test('commit-fix: rejects a stateDir artifact even when stateDir is inside the repository', () => {
+  const repo = initRepo(); const dir = path.join(repo, '.review-state');
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' }] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
+  const artifact = `.review-state/round-${n}-fix-correctness:real.json`;
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:real.json`), JSON.stringify({ status: 'ok', edited: true, files: ['a.txt', artifact] }));
+
+  assert.throws(
+    () => run(['commit-fix', 'feat/x', 'correctness:real'], { env }),
+    /harness-failure: commit-fix: declared file ".*" is a stateDir artifact/,
+  );
 });
 
 test('commit-fix: idempotent -- a second call for an already-journaled id commits nothing new', () => {
