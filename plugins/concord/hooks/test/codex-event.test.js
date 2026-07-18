@@ -20,6 +20,20 @@ function runCodexWriter({ cwd, codexHome, event }) {
   });
 }
 
+function runCodexStopLauncher({ cwd, env }) {
+  const manifest = JSON.parse(fs.readFileSync(CODEX_HOOKS, 'utf8'));
+  const command = manifest.hooks.Stop[0].hooks[0].command;
+  const launcherEnv = { ...process.env };
+  delete launcherEnv.PLUGIN_ROOT;
+  delete launcherEnv.CLAUDE_PLUGIN_ROOT;
+  return spawnSync('sh', ['-c', command], {
+    cwd,
+    env: { ...launcherEnv, ...env },
+    input: '{}',
+    encoding: 'utf8',
+  });
+}
+
 function codexStateDir(codexHome, cwd) {
   return path.join(codexHome, 'concord', 'projects', fs.realpathSync(cwd).replace(/[/.]/g, '-'), 'state');
 }
@@ -44,23 +58,85 @@ test('toNeutralEvent(payload, "stop") overrides source', () => {
   assert.strictEqual(ev.cwd, '/proj');
 });
 
-test('Codex hook manifest uses the supported command-hook shape and PLUGIN_ROOT for every command', () => {
+test('Codex hook manifest gives every command hook the same root-safe launcher contract', () => {
   const manifest = JSON.parse(fs.readFileSync(CODEX_HOOKS, 'utf8'));
   assert.deepStrictEqual(Object.keys(manifest).sort(), ['description', 'hooks']);
   assert.deepStrictEqual(manifest.hooks, {
     Stop: [
-      { hooks: [{ type: 'command', command: 'node "${PLUGIN_ROOT}/hooks/session-state-writer.js"' }] },
+      { hooks: [{ type: 'command', command: 'sh -c \'root="${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}"; [ -n "$root" ] || exit 0; exec node "$root/hooks/session-state-writer.js"\'' }] },
     ],
     SessionStart: [
       {
         matcher: 'startup|resume|compact',
         hooks: [
-          { type: 'command', command: 'node "${PLUGIN_ROOT}/hooks/session-state-injector.js"' },
-          { type: 'command', command: 'node "${PLUGIN_ROOT}/hooks/review-injector.js"' },
+          { type: 'command', command: 'sh -c \'root="${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}"; [ -n "$root" ] || exit 0; exec node "$root/hooks/session-state-injector.js"\'' },
+          { type: 'command', command: 'sh -c \'root="${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}"; [ -n "$root" ] || exit 0; exec node "$root/hooks/review-injector.js"\'' },
         ],
       },
     ],
   });
+});
+
+test('Codex Stop launcher uses PLUGIN_ROOT when provided', (t) => {
+  const project = tempDir(t, 'concord-codex-launcher-project-');
+  const codexHome = tempDir(t, 'concord-codex-launcher-home-');
+  const result = runCodexStopLauncher({
+    cwd: project,
+    env: { PLUGIN_ROOT: CODEX_PLUGIN, CODEX_HOME: codexHome },
+  });
+
+  assert.strictEqual(result.status, 0);
+  assert.strictEqual(result.stdout, '');
+  assert.strictEqual(result.stderr, '');
+});
+
+test('Codex Stop launcher falls back to CLAUDE_PLUGIN_ROOT', (t) => {
+  const project = tempDir(t, 'concord-codex-launcher-project-');
+  const codexHome = tempDir(t, 'concord-codex-launcher-home-');
+  const result = runCodexStopLauncher({
+    cwd: project,
+    env: { CLAUDE_PLUGIN_ROOT: CODEX_PLUGIN, CODEX_HOME: codexHome },
+  });
+
+  assert.strictEqual(result.status, 0);
+  assert.strictEqual(result.stdout, '');
+  assert.strictEqual(result.stderr, '');
+});
+
+test('Codex Stop launcher prioritizes PLUGIN_ROOT over CLAUDE_PLUGIN_ROOT', (t) => {
+  const project = tempDir(t, 'concord-codex-launcher-project-');
+  const codexHome = tempDir(t, 'concord-codex-launcher-home-');
+  const invalidRoot = path.join(project, 'missing-plugin-root');
+  const result = runCodexStopLauncher({
+    cwd: project,
+    env: {
+      PLUGIN_ROOT: invalidRoot,
+      CLAUDE_PLUGIN_ROOT: CODEX_PLUGIN,
+      CODEX_HOME: codexHome,
+    },
+  });
+
+  assert.notStrictEqual(result.status, 0);
+});
+
+test('Codex Stop launcher preserves a node failure for an invalid sole root', (t) => {
+  const project = tempDir(t, 'concord-codex-launcher-project-');
+  const invalidRoot = path.join(project, 'missing-plugin-root');
+  const result = runCodexStopLauncher({
+    cwd: project,
+    env: { PLUGIN_ROOT: invalidRoot },
+  });
+
+  assert.notStrictEqual(result.status, 0);
+});
+
+test('Codex Stop launcher successfully no-ops without a plugin root', (t) => {
+  const project = tempDir(t, 'concord-codex-launcher-project-');
+  const result = runCodexStopLauncher({ cwd: project, env: {} });
+
+  assert.strictEqual(result.status, 0);
+  assert.strictEqual(result.stdout, '');
+  assert.strictEqual(result.stderr, '');
 });
 
 test('vendored Codex writer persists a normal Stop event in the cwd-derived CODEX_HOME state directory', (t) => {
