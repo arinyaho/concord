@@ -69,4 +69,8 @@ Run this loop. Do each step in order; do not skip, reorder, or improvise termina
 
 Never run more rounds than the CLI drives; the CLI enforces the round budget, the park-budget breaker, and convergence. A round is only real when its findings come from the subagents you spawned this session; if you ever find yourself reading a bot/CI/PR review to decide what to fix, or scheduling a wake-up to wait for one, you have left this loop -- stop and return to step 1. If a CLI verb exits non-zero with a `harness-failure:` message, stop and report it plainly -- do NOT characterize the run as clean or parked.
 
+### Artifact boundary
+
+Immediately after every reviewer writes a `correctness`, `verify`, `intent`, `gate`, or `gate-verify` artifact, run `node "./bin/review-cli.js" artifact-normalize <ref> <artifact-name>`. If it returns `{ "status":"ok" }`, continue. If it returns `{ "status":"retry", "prompt":"..." }`, run that SAME reviewer exactly once more with the returned prompt appended verbatim, then run `artifact-normalize` again. Never infer, edit, add, or remove a finding yourself. A second retry response or any `harness-failure` is terminal.
+
 If a ledger for this ref is already `parked`, tell the user resuming will NOT auto-re-run parked findings; they must `review-cli.js unpark <ref> <findingId>` first. If the park has NO findings to unpark (a no-progress or budget-exhausted park -- e.g. the DoD kept failing with nothing for the review to fix), `unpark` has no target; once the underlying cause is resolved, `review-cli.js reset <ref>` discards the ledger so the next `round-start` begins a fresh run.
