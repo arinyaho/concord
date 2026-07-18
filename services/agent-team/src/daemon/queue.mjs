@@ -49,7 +49,9 @@ export function createQueue({ cap, queueMax, jobTimeoutMs, runJob, dockerKill, o
     } catch {}
     let outcome;
     try {
-      const res = await Promise.race([runJob(job), timeout, cancel]);
+      // A synchronous onStart cancellation has already resolved the cancel arm. Do not launch
+      // work after that cancellation has killed the job's container.
+      const res = await (job._cancelled ? cancel : Promise.race([runJob(job), timeout, cancel]));
       outcome = computeOutcome({ cancelled: job._cancelled, timedOut, res });
     } catch (e) {
       outcome = { kind: "failed", code: 1, tail: String(e?.message ?? e) };
