@@ -10,7 +10,7 @@ const PROGRESS_BY_EVENT = new Map([
 // Parses the stderr line format emitted by createLogger: `[timestamp] event {json}`.
 // Unknown logger events are valid but do not represent a progress transition.
 export function parseProgressLine(line) {
-  const match = /^\[[^\]]+\] ([a-z_]+) (.+)$/.exec(line);
+  const match = /^\[[^\]\r\n]+\] ([a-z_]+) (.+)$/.exec(line);
   if (!match) return null;
   let detail;
   try {

@@ -29,6 +29,8 @@ test("parseProgressLine accepts only logger lines and maps progress events", () 
   assert.equal(parseProgressLine("coder_start {}"), null);
   assert.equal(parseProgressLine("[timestamp] coder_start not-json"), null);
   assert.equal(parseProgressLine("[timestamp] unknown {}"), null);
+  assert.equal(parseProgressLine("[t\r] coder_start {}"), null);
+  assert.equal(parseProgressLine("[t\n] coder_start {}"), null);
   for (const data of ["null", "[]", '"text"', "1", "false"]) {
     assert.equal(parseProgressLine(`[timestamp] coder_start ${data}`), null);
   }
