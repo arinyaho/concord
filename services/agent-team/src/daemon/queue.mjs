@@ -49,6 +49,7 @@ export function createQueue({ cap, queueMax, jobTimeoutMs, runJob, dockerKill, o
     } catch (e) {
       startPromise = Promise.reject(e);
     }
+    startPromise.catch(() => {});
     let outcome;
     try {
       // A synchronous onStart cancellation has already resolved the cancel arm. Do not launch
@@ -60,12 +61,16 @@ export function createQueue({ cap, queueMax, jobTimeoutMs, runJob, dockerKill, o
     } finally {
       clearTimeout(timer);
     }
-    // Preserve visible lifecycle order without holding the execution slot: terminal waits for
-    // start settlement, and routing starts only once terminal has been invoked.
-    const started = startPromise.catch(() => {});
-    const terminalPromise = started.then(() => job.onTerminal?.(outcome));
+    // The relay serializes terminal behind start when start is still pending. Invoke terminal
+    // now so a hung start cannot suppress a bounded terminal relay or the final outcome.
+    let terminalPromise;
+    try {
+      terminalPromise = Promise.resolve(job.onTerminal?.(outcome));
+    } catch (e) {
+      terminalPromise = Promise.reject(e);
+    }
     terminalPromise.catch(() => {});
-    started.then(() => onOutcome(job, outcome, terminalPromise)).catch(() => {});
+    onOutcome(job, outcome, terminalPromise);
   }
 
   const summarize = (j) => ({ jobId: j.jobId, alias: j.alias, task: j.task, threadId: j.threadId });

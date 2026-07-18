@@ -188,26 +188,53 @@ test("an onStart synchronous cancel resolves the running job", async () => {
   assert.deepEqual(q.list().running, []);
 });
 
-test("an immediate completion emits terminal after a deferred onStart settles", async () => {
+test("an immediate completion schedules terminal behind a deferred serialized start relay", async () => {
   const start = deferred();
+  const events = [];
+  let chain = Promise.resolve();
+  let terminalScheduled = false;
+  const q = createQueue({
+    cap: 1, queueMax: 1, jobTimeoutMs: 1_000_000,
+    runJob: () => Promise.resolve({ code: 0, tail: "" }),
+    dockerKill() {},
+    onOutcome: (j, outcome, terminalPromise) => terminalPromise.then(() => events.push("outcome")),
+  });
+  q.submit(job("deferred-start", {
+    onStart() {
+      events.push("start");
+      return chain = chain.then(() => start.promise).then(() => events.push("started"));
+    },
+    onTerminal() {
+      terminalScheduled = true;
+      return chain = chain.then(() => events.push("terminal"));
+    },
+  }));
+
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  assert.deepEqual(events, ["start"]);
+  assert.equal(terminalScheduled, true);
+  assert.deepEqual(q.list().running, []);
+  start.resolve();
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(events, ["start", "started", "terminal", "outcome"]);
+});
+
+test("a hung onStart does not suppress terminal or final outcome", async () => {
   const events = [];
   const q = createQueue({
     cap: 1, queueMax: 1, jobTimeoutMs: 1_000_000,
     runJob: () => Promise.resolve({ code: 0, tail: "" }),
     dockerKill() {},
-    onOutcome: () => events.push("outcome"),
+    onOutcome: (j, outcome, terminalPromise) => terminalPromise.then(() => events.push("outcome")),
   });
-  q.submit(job("deferred-start", {
-    onStart() { events.push("start"); return start.promise; },
+  q.submit(job("hung-start", {
+    onStart: () => new Promise(() => {}),
     onTerminal() { events.push("terminal"); },
   }));
 
-  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
-  assert.deepEqual(events, ["start"]);
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(events, ["terminal", "outcome"]);
   assert.deepEqual(q.list().running, []);
-  start.resolve();
-  await Promise.resolve(); await Promise.resolve();
-  assert.deepEqual(events, ["start", "terminal", "outcome"]);
 });
 
 test("cancelling a queued job skips its lifecycle relay hooks", async () => {
