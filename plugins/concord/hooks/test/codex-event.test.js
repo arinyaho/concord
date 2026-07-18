@@ -62,19 +62,23 @@ test('toNeutralEvent(payload, "stop") overrides source', () => {
   assert.strictEqual(ev.cwd, '/proj');
 });
 
-test('Codex hook manifest gives every command hook the same root-safe launcher contract', () => {
+function codexLauncherCommand(script) {
+  return `node -e 'const cp=require("child_process");const path=require("path");const root=process.env.PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT;if(!root)process.exit(0);const result=cp.spawnSync(process.execPath,[path.join(root,"hooks/${script}")],{stdio:"inherit"});if(result.error)throw result.error;process.exit(result.status??1)'`;
+}
+
+test('Codex hook manifest gives every command hook the shell-expansion-free Node launcher contract', () => {
   const manifest = JSON.parse(fs.readFileSync(CODEX_HOOKS, 'utf8'));
   assert.deepStrictEqual(Object.keys(manifest).sort(), ['description', 'hooks']);
   assert.deepStrictEqual(manifest.hooks, {
     Stop: [
-      { hooks: [{ type: 'command', command: 'sh -c \'root="$PLUGIN_ROOT"; if [ -z "$root" ]; then root="$CLAUDE_PLUGIN_ROOT"; fi; [ -n "$root" ] || exit 0; exec node "$root/hooks/session-state-writer.js"\'' }] },
+      { hooks: [{ type: 'command', command: codexLauncherCommand('session-state-writer.js') }] },
     ],
     SessionStart: [
       {
         matcher: 'startup|resume|compact',
         hooks: [
-          { type: 'command', command: 'sh -c \'root="$PLUGIN_ROOT"; if [ -z "$root" ]; then root="$CLAUDE_PLUGIN_ROOT"; fi; [ -n "$root" ] || exit 0; exec node "$root/hooks/session-state-injector.js"\'' },
-          { type: 'command', command: 'sh -c \'root="$PLUGIN_ROOT"; if [ -z "$root" ]; then root="$CLAUDE_PLUGIN_ROOT"; fi; [ -n "$root" ] || exit 0; exec node "$root/hooks/review-injector.js"\'' },
+          { type: 'command', command: codexLauncherCommand('session-state-injector.js') },
+          { type: 'command', command: codexLauncherCommand('review-injector.js') },
         ],
       },
     ],
