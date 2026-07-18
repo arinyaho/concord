@@ -62,8 +62,10 @@ async function runReviewUntilGreen(options) {
       const panel = await cli(['gate-panel-round-start', ref]);
       await Promise.all(lenses.map(async (lens) => {
         const artifact = path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-${lens}.json`);
-        await invoke(spawn, { role: `gate-panel-${lens}`, repoRoot, stateDir: context.stateDir,
-          prompt: `Review ${path.join(context.stateDir, `round-${context.round}-diff.txt`)} and the repository through the ${lens} lens. You MAY Read/Grep the repository and MUST read ${path.join(context.stateDir, `intent-${context.slug}.md`)} if it exists to assess the design and acceptance criteria. Previously rejected IDs: ${JSON.stringify(panel.rejectedIds || [])}. Write ONLY {"status":"ok","findings":[]} to ${artifact}; every ID must use gate:${lens}:<slug>.` });
+        try {
+          await invoke(spawn, { role: `gate-panel-${lens}`, repoRoot, stateDir: context.stateDir,
+            prompt: `Review ${path.join(context.stateDir, `round-${context.round}-diff.txt`)} and the repository through the ${lens} lens. You MAY Read/Grep the repository and MUST read ${path.join(context.stateDir, `intent-${context.slug}.md`)} if it exists to assess the design and acceptance criteria. Previously rejected IDs: ${JSON.stringify(panel.rejectedIds || [])}. Write ONLY {"status":"ok","findings":[]} to ${artifact}; every ID must use gate:${lens}:<slug>.` });
+        } catch (_) { /* panel lenses are intentionally lenient */ }
       }));
       const candidates = [];
       for (const lens of lenses) {

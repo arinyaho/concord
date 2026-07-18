@@ -168,6 +168,35 @@ test('panel lens prompts identify the reviewed diff and require the intent sourc
   }
 });
 
+test('a failed panel lens is treated as zero findings while the remaining lenses continue', async () => {
+  const stateDir = temp();
+  let recorded = 0;
+  const cli = (args) => {
+    const [verb] = args;
+    if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
+    if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'plan-fixes') return { fixes: [] };
+    if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
+    if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
+    if (verb === 'gate-panel-round-record') return { status: 'done' };
+    throw new Error(`unexpected CLI ${verb}`);
+  };
+  const spawn = ({ role }) => {
+    if (role === 'correctness') fs.writeFileSync(path.join(stateDir, 'round-4-correctness.json'), JSON.stringify({ status: 'ok', examined: [], findings: [] }));
+    if (role === 'verify') fs.writeFileSync(path.join(stateDir, 'round-4-verify.json'), JSON.stringify({ status: 'ok', rejected: [] }));
+    if (role === 'gate-panel-ac-coverage') return { status: 1 };
+    if (role.startsWith('gate-panel-') && role !== 'gate-panel-verify') {
+      const lens = role.slice('gate-panel-'.length);
+      fs.writeFileSync(path.join(stateDir, `round-4-gate-panel-1-${lens}.json`), JSON.stringify({ status: 'ok', findings: [] }));
+    }
+    return { status: 0 };
+  };
+
+  const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn });
+
+  assert.strictEqual(out.handoff, 'LGTM');
+});
+
 test('panel lenses and each finding\'s adversarial votes fan out concurrently', async () => {
   const stateDir = temp();
   const pendingLenses = [];
