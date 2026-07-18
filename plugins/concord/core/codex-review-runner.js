@@ -7,6 +7,7 @@ const { execFileSync, spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { targetSlug } = require('./review');
+const { isValidFindingId } = require('./gate-contract');
 
 function jsonCli(cliPath, args, repoRoot) {
   const out = execFileSync('node', [cliPath, ...args], {
@@ -95,7 +96,12 @@ async function runReviewUntilGreen(options) {
       for (const lens of lenses) {
         try {
           const raw = JSON.parse(fs.readFileSync(path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-${lens}.json`), 'utf8'));
-          for (const finding of raw.findings || []) if (finding && typeof finding.id === 'string') candidates.push(finding);
+          for (const finding of raw.findings || []) {
+            // Candidate IDs are interpolated into verdict artifact names below.
+            // Panel output is advisory and lenient, so an invalid candidate is
+            // discarded as malformed lens output rather than becoming a path.
+            if (finding && typeof finding.id === 'string' && finding.id.startsWith('gate:') && isValidFindingId(finding.id)) candidates.push(finding);
+          }
         } catch (_) { /* panel lenses are intentionally lenient */ }
       }
       const rejected = [];

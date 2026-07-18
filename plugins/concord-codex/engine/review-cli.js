@@ -284,6 +284,22 @@ function main(resolveFromCwd) {
     try { raw = fs.readFileSync(p, 'utf8'); } catch (e) { throw new Error(`harness-failure: missing gate artifact ${name} for round ${n}`); }
     try {
       const canonical = artifactContract.normalizeArtifact(name, raw);
+      // Correctness coverage is part of the artifact contract for git targets:
+      // retry the reviewer while its original artifact is still intact rather
+      // than canonicalizing an incomplete examined list and discovering the
+      // problem only after verify has already run. File targets hold document
+      // contents, not a unified diff, so their examined list stays advisory.
+      if (name === 'correctness' && (!ledger.target || ledger.target.type === 'git')) {
+        const diffText = fs.readFileSync(path.join(stateDir, `round-${n}-diff.txt`), 'utf8');
+        const changed = Array.from(new Set((diffText.match(/^\+\+\+ b\/(.+)$/gm) || []).map((line) => line.replace(/^\+\+\+ b\//, '').trim())));
+        const examined = new Set(canonical.examined);
+        const missing = changed.filter((file) => !examined.has(file));
+        if (missing.length) {
+          const error = new artifactContract.ArtifactError('retry', `correctness coverage is incomplete; missing changed file(s): ${missing.join(', ')}`);
+          error.coveragePaths = changed;
+          throw error;
+        }
+      }
       fs.writeFileSync(p, JSON.stringify(canonical) + '\n');
       try { fs.unlinkSync(retryPath); } catch (e) { /* no prior retry */ }
       process.stdout.write(JSON.stringify({ status: 'ok', artifact: name }) + '\n');
@@ -292,7 +308,10 @@ function main(resolveFromCwd) {
       if (e instanceof artifactContract.ArtifactError && e.kind === 'retry') {
         if (!fs.existsSync(retryPath)) {
           fs.writeFileSync(retryPath, '1\n');
-          process.stdout.write(JSON.stringify({ status: 'retry', artifact: name, prompt: artifactContract.retryPrompt(name, ({ correctness: 'correctness:|docreview:', verify: 'correctness:|docreview:', intent: 'intent:', gate: 'gate:', 'gate-verify': 'gate:' })[name]) }) + '\n');
+          const prompt = e.coveragePaths
+            ? `Rewrite only round artifact correctness as JSON. The "examined" array MUST contain every changed path exactly as listed: ${e.coveragePaths.map((file) => JSON.stringify(file)).join(', ')}. Do not infer, omit, or rewrite paths; preserve your actual findings and do not add prose or extra top-level fields.`
+            : artifactContract.retryPrompt(name, ({ correctness: 'correctness:|docreview:', verify: 'correctness:|docreview:', intent: 'intent:', gate: 'gate:', 'gate-verify': 'gate:' })[name]);
+          process.stdout.write(JSON.stringify({ status: 'retry', artifact: name, prompt }) + '\n');
           return;
         }
       }

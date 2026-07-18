@@ -67,6 +67,41 @@ test('artifact-normalize fails after retry exhaustion', () => {
   assert.throws(() => run(['artifact-normalize', 'feat/x', 'correctness'], { env }), /harness-failure/);
 });
 
+test('artifact-normalize retries correctness coverage before it writes a canonical artifact', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'new\n');
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'change two files'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  const artifact = path.join(dir, `round-${n}-correctness.json`);
+  const raw = JSON.stringify({ status: 'findings', examined: ['a.txt'], findings: [] });
+  fs.writeFileSync(artifact, raw);
+
+  const retry = JSON.parse(run(['artifact-normalize', 'feat/x', 'correctness'], { env }));
+  assert.deepStrictEqual(retry.status, 'retry');
+  assert.match(retry.prompt, /"examined"/);
+  assert.match(retry.prompt, /a\.txt/);
+  assert.match(retry.prompt, /b\.txt/);
+  assert.strictEqual(fs.readFileSync(artifact, 'utf8'), raw, 'coverage retry must not infer or rewrite examined');
+});
+
+test('artifact-normalize fails closed when correctness coverage is still incomplete after its retry', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'new\n');
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'change two files'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  const artifact = path.join(dir, `round-${n}-correctness.json`);
+  fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+
+  assert.strictEqual(JSON.parse(run(['artifact-normalize', 'feat/x', 'correctness'], { env })).status, 'retry');
+  assert.throws(() => run(['artifact-normalize', 'feat/x', 'correctness'], { env }), /harness-failure.*coverage/);
+});
+
 test('git helpers operate on a real temp repo', () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-git-'));
   execFileSync('git', ['init', '-q'], { cwd: repo });
