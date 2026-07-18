@@ -178,3 +178,32 @@ test('runner loops through record continuation and file targets never commit', a
   assert.strictEqual(h.calls.filter((c) => c[1] === 'round-start').length, 2);
   assert.strictEqual(h.calls.some((c) => c[1] === 'commit-fix'), false);
 });
+
+test('Codex launcher recognizes documented broad-review phrases without consuming them as target arguments', () => {
+  const dir = temp();
+  const capture = path.join(dir, 'options.json');
+  const preload = path.join(dir, 'capture-runner.js');
+  const bin = path.join(__dirname, '..', '..', '..', 'concord-codex', 'bin', 'review-until-green.js');
+  fs.writeFileSync(preload, `
+    const fs = require('node:fs');
+    const Module = require('node:module');
+    const load = Module._load;
+    Module._load = function(request, parent, isMain) {
+      if (request === '../engine/codex-review-runner') {
+        return { runReviewUntilGreen: async (options) => {
+          fs.writeFileSync(process.env.CAPTURE, JSON.stringify(options));
+          return { handoff: 'ok' };
+        } };
+      }
+      return load.apply(this, arguments);
+    };
+  `);
+  for (const args of [['feature/x', 'broad', 'review'], ['feature/x', '게이트']]) {
+    fs.rmSync(capture, { force: true });
+    execFileSync('node', ['--require', preload, bin, ...args], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
+    const options = JSON.parse(fs.readFileSync(capture, 'utf8'));
+    assert.strictEqual(options.ref, 'feature/x');
+    assert.strictEqual(options.base, undefined);
+    assert.strictEqual(options.broad, true);
+  }
+});
