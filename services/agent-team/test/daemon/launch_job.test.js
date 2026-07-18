@@ -15,14 +15,23 @@ test("branchFor names the produced branch", () => {
 });
 
 test("parseProgressLine accepts only logger lines and maps progress events", () => {
-  assert.equal(parseProgressLine('[2026-07-18T01:02:03.000Z] coder_start {"task":"fix x"}'), "coding");
-  assert.equal(parseProgressLine('[2026-07-18T01:02:03.000Z] coder_commit {"branch":"agent-team/x"}'), "committing");
+  assert.deepEqual(parseProgressLine('[2026-07-18T01:02:03.000Z] coder_start {"task":"fix x"}'), {
+    type: "progress", phase: "coding", detail: { task: "fix x" },
+  });
+  assert.deepEqual(parseProgressLine('[2026-07-18T01:02:03.000Z] coder_commit {"branch":"agent-team/x"}'), {
+    type: "progress", phase: "committing", detail: { branch: "agent-team/x" },
+  });
   for (const event of ["round_start", "review", "verify", "fix"]) {
-    assert.equal(parseProgressLine(`[2026-07-18T01:02:03.000Z] ${event} {"round":1}`), "reviewing");
+    assert.deepEqual(parseProgressLine(`[2026-07-18T01:02:03.000Z] ${event} {"round":1}`), {
+      type: "progress", phase: "reviewing", detail: { round: 1 },
+    });
   }
   assert.equal(parseProgressLine("coder_start {}"), null);
   assert.equal(parseProgressLine("[timestamp] coder_start not-json"), null);
   assert.equal(parseProgressLine("[timestamp] unknown {}"), null);
+  for (const data of ["null", "[]", '"text"', "1", "false"]) {
+    assert.equal(parseProgressLine(`[timestamp] coder_start ${data}`), null);
+  }
 });
 
 function childWithStderr() {
@@ -41,7 +50,10 @@ test("runLaunchJob reports logger progress across stderr chunks", async () => {
   child.emit("close", 0);
 
   await result;
-  assert.deepEqual(progress, ["coding", "reviewing"]);
+  assert.deepEqual(progress, [
+    { type: "progress", phase: "coding", detail: { task: "fix x" } },
+    { type: "progress", phase: "reviewing", detail: {} },
+  ]);
 });
 
 test("runLaunchJob drops an overlong partial line until its newline", async () => {
@@ -54,7 +66,7 @@ test("runLaunchJob drops an overlong partial line until its newline", async () =
   child.emit("close", 0);
 
   const { tail } = await result;
-  assert.deepEqual(progress, ["committing"]);
+  assert.deepEqual(progress, [{ type: "progress", phase: "committing", detail: {} }]);
   assert.equal(tail.length, 60);
 });
 
@@ -67,5 +79,5 @@ test("runLaunchJob drops an overlong line when its newline arrives in the same c
   child.emit("close", 0);
 
   await result;
-  assert.deepEqual(progress, ["committing"]);
+  assert.deepEqual(progress, [{ type: "progress", phase: "committing", detail: {} }]);
 });

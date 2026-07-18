@@ -12,10 +12,13 @@ const PROGRESS_BY_EVENT = new Map([
 export function parseProgressLine(line) {
   const match = /^\[[^\]]+\] ([a-z_]+) (.+)$/.exec(line);
   if (!match) return null;
+  let detail;
   try {
-    JSON.parse(match[2]);
+    detail = JSON.parse(match[2]);
   } catch {
     return null;
   }
-  return PROGRESS_BY_EVENT.get(match[1]) ?? null;
+  if (detail === null || typeof detail !== "object" || Array.isArray(detail)) return null;
+  const phase = PROGRESS_BY_EVENT.get(match[1]);
+  return phase ? { type: "progress", phase, detail } : null;
 }
