@@ -3,7 +3,7 @@
 // Codex has no in-session Task primitive. This runner is therefore the sole
 // orchestration authority: every clean-context reviewer is a `codex exec`
 // subprocess and every state transition remains owned by review-cli.
-const { execFileSync, spawnSync } = require('node:child_process');
+const { execFileSync, spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { targetSlug } = require('./review');
@@ -16,13 +16,17 @@ function jsonCli(cliPath, args, repoRoot) {
 }
 
 function codexExec({ role, prompt, repoRoot, stateDir }) {
-  const result = spawnSync('codex', [
-    'exec', '--cd', repoRoot, '--sandbox', 'workspace-write', '--add-dir', stateDir,
-    '--skip-git-repo-check', prompt,
-  ], { cwd: repoRoot, encoding: 'utf8' });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`harness-failure: ${role} subprocess exited ${result.status}`);
-  return result;
+  return new Promise((resolve, reject) => {
+    const child = spawn('codex', [
+      'exec', '--cd', repoRoot, '--sandbox', 'workspace-write', '--add-dir', stateDir,
+      '--skip-git-repo-check', prompt,
+    ], { cwd: repoRoot, stdio: 'ignore' });
+    child.once('error', reject);
+    child.once('close', (status) => {
+      if (status !== 0) reject(new Error(`harness-failure: ${role} subprocess exited ${status}`));
+      else resolve({ status });
+    });
+  });
 }
 
 function reviewerPrompt(role, { stateDir, round, targetType, dodPassed, finding, retryPrompt, slug }) {

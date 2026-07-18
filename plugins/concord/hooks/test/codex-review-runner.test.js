@@ -9,9 +9,28 @@ const { normalizeArtifact } = require('../../core/artifact-contract');
 
 // The runner owns all sequencing. Its subprocess seam makes this a no-network
 // integration test while exercising the real artifact contract at the boundary.
-const { runReviewUntilGreen, reviewerPrompt } = require('../../core/codex-review-runner');
+const { runReviewUntilGreen, reviewerPrompt, codexExec } = require('../../core/codex-review-runner');
 
 function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'codex-runner-')); }
+
+test('codexExec starts subprocesses asynchronously so panel work can overlap', async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  fs.writeFileSync(codex, `#!${process.execPath}\nsetTimeout(() => process.exit(0), 500);\n`);
+  fs.chmodSync(codex, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  try {
+    const started = Date.now();
+    const first = codexExec({ role: 'panel', prompt: 'first', repoRoot: binDir, stateDir: binDir });
+    const second = codexExec({ role: 'panel', prompt: 'second', repoRoot: binDir, stateDir: binDir });
+    assert.strictEqual(typeof first?.then, 'function');
+    await Promise.all([first, second]);
+    assert.ok(Date.now() - started < 850, 'subprocesses should overlap rather than run serially');
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
 
 function harness({ targetType = 'git', rounds = 1, malformed = false, retry = false, retryForever = false, correctnessArtifact, gateApplied = false, failingRole, promptDrivenFix = false } = {}) {
   const stateDir = temp();
