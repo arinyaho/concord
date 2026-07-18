@@ -67,6 +67,28 @@ const gitIsDirty = gitDirty;
 function gitIsDirtyForFile(repoRoot, file) {
   return sh('git', ['status', '--porcelain', '--', file], { cwd: repoRoot }).trim().length > 0;
 }
+
+function pathWithin(child, parent) {
+  const relative = path.relative(parent, child);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function validateFixFiles(repoRoot, stateDir, files) {
+  const repo = path.resolve(repoRoot);
+  const artifacts = path.resolve(stateDir);
+  for (const file of files) {
+    if (typeof file !== 'string' || file.length === 0) {
+      throw new Error('harness-failure: commit-fix: declared files must be non-empty repository-relative paths');
+    }
+    const resolved = path.resolve(repo, file);
+    if (path.isAbsolute(file) || !pathWithin(resolved, repo)) {
+      throw new Error(`harness-failure: commit-fix: declared file "${file}" is outside the repository`);
+    }
+    if (pathWithin(resolved, artifacts)) {
+      throw new Error(`harness-failure: commit-fix: declared file "${file}" is a stateDir artifact`);
+    }
+  }
+}
 function gitCheckoutTree(repoRoot) {
   sh('git', ['checkout', '--', '.'], { cwd: repoRoot });
 }
@@ -960,6 +982,7 @@ function main(resolveFromCwd) {
     // just finding.file) matters too: a fix that legitimately edits a second
     // file must have BOTH edits land in the same attributed commit, or the
     // companion edit is silently wiped by record()'s later gitCheckoutTree.
+    if (fx && Array.isArray(fx.files)) validateFixFiles(repoRoot, stateDir, files);
     if (fx && fx.status === 'ok' && fx.edited === true && finding.file && files.some((f) => gitIsDirtyForFile(repoRoot, f))) {
       const sha = gitCommitFix(repoRoot, id, finding.summary, files);
       ledger = { ...ledger, journal: [...(ledger.journal || []), { id, sha }] };

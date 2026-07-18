@@ -9,14 +9,14 @@ const { normalizeArtifact } = require('../../core/artifact-contract');
 
 // The runner owns all sequencing. Its subprocess seam makes this a no-network
 // integration test while exercising the real artifact contract at the boundary.
-const { runReviewUntilGreen, reviewerPrompt, codexExec } = require('../../core/codex-review-runner');
+const { runReviewUntilGreen, reviewerPrompt, codexExec, resolveDefaultBase } = require('../../core/codex-review-runner');
 
 function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'codex-runner-')); }
 
 test('codexExec starts subprocesses asynchronously so panel work can overlap', async () => {
   const binDir = temp();
   const codex = path.join(binDir, 'codex');
-  fs.writeFileSync(codex, `#!${process.execPath}\nsetTimeout(() => process.exit(0), 500);\n`);
+  fs.writeFileSync(codex, `#!${process.execPath}\nsetTimeout(() => process.exit(0), 1000);\n`);
   fs.chmodSync(codex, 0o755);
   const previousPath = process.env.PATH;
   process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
@@ -26,7 +26,9 @@ test('codexExec starts subprocesses asynchronously so panel work can overlap', a
     const second = codexExec({ role: 'panel', prompt: 'second', repoRoot: binDir, stateDir: binDir });
     assert.strictEqual(typeof first?.then, 'function');
     await Promise.all([first, second]);
-    assert.ok(Date.now() - started < 850, 'subprocesses should overlap rather than run serially');
+    // The full suite runs files concurrently, so leave scheduler headroom while
+    // keeping this comfortably below the 2s serial execution time.
+    assert.ok(Date.now() - started < 1800, 'subprocesses should overlap rather than run serially');
   } finally {
     process.env.PATH = previousPath;
   }
@@ -101,6 +103,48 @@ test('fix prompt writes the commit-fix artifact and requires a truthful files de
 test('correctness prompt requires every changed file in examined', () => {
   const prompt = reviewerPrompt('correctness', { stateDir: '/state', round: 7, targetType: 'git', dodPassed: true });
   assert.match(prompt, /every changed file.*examined/i);
+});
+
+test('file-target correctness prompt requires every reviewed target in examined and docreview JSON IDs', () => {
+  const prompt = reviewerPrompt('correctness', { stateDir: '/state', round: 7, targetType: 'file', dodPassed: true });
+  assert.match(prompt, /EVERY reviewed target.*examined/i);
+  assert.match(prompt, /docreview:<stable-slug>/);
+  assert.match(prompt, /"examined"/);
+  assert.match(prompt, /"findings"/);
+});
+
+test('fix prompt forbids declaring state artifacts or paths outside the repository', () => {
+  const prompt = reviewerPrompt('fix', { stateDir: '/state', round: 7, finding: { id: 'correctness:bug', file: 'src/parser.js', span: 'lines 41-43', summary: 'repair it' } });
+  assert.match(prompt, /repository-relative/i);
+  assert.match(prompt, /must not include.*artifact/i);
+  assert.match(prompt, /outside.*repository/i);
+});
+
+test('fresh runner resolves a remote default base once, while resume preserves the ledger base by omitting it', async () => {
+  const fresh = harness();
+  await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: fresh.cli, spawn: fresh.spawn, resolveDefaultBase: () => 'upstream/main' });
+  assert.deepStrictEqual(fresh.calls[0], ['cli', 'round-start', 'feature/x', 'upstream/main']);
+
+  const resumed = harness();
+  await runReviewUntilGreen({ ref: 'feature/x', base: 'must-not-override-ledger-base', resume: true, repoRoot: '/repo', runCli: resumed.cli, spawn: resumed.spawn, resolveDefaultBase: () => { throw new Error('must not resolve resume base'); } });
+  assert.deepStrictEqual(resumed.calls[0], ['cli', 'round-start', 'feature/x']);
+});
+
+test('default base resolution uses an available remote HEAD without assuming origin', () => {
+  const calls = [];
+  const base = resolveDefaultBase('/repo', (bin, args) => {
+    calls.push([bin, ...args]);
+    return 'refs/remotes/upstream/main\nrefs/remotes/origin/HEAD\n';
+  });
+  assert.strictEqual(base, 'upstream/main');
+  assert.deepStrictEqual(calls, [['git', 'for-each-ref', '--format=%(symref)', 'refs/remotes/*/HEAD']]);
+});
+
+test('default base resolution fails clearly when no remote default is advertised', () => {
+  assert.throws(
+    () => resolveDefaultBase('/repo', () => ''),
+    /cannot determine a remote default base; pass an explicit base/,
+  );
 });
 
 test('fix subprocess writes the prompt-declared artifact consumed by commit-fix', async () => {
@@ -377,4 +421,27 @@ test('Codex launcher recognizes documented broad-review phrases without consumin
     assert.strictEqual(options.base, undefined);
     assert.strictEqual(options.broad, true);
   }
+});
+
+test('Codex launcher marks resume so the runner preserves the ledger base', () => {
+  const dir = temp();
+  const capture = path.join(dir, 'options.json');
+  const preload = path.join(dir, 'capture-runner.js');
+  const bin = path.join(__dirname, '..', '..', '..', 'concord-codex', 'bin', 'review-until-green.js');
+  fs.writeFileSync(preload, `
+    const fs = require('node:fs');
+    const Module = require('node:module');
+    const load = Module._load;
+    Module._load = function(request, parent, isMain) {
+      if (request === '../engine/codex-review-runner') return { runReviewUntilGreen: async (options) => {
+        fs.writeFileSync(process.env.CAPTURE, JSON.stringify(options));
+        return { handoff: 'ok' };
+      } };
+      return load.apply(this, arguments);
+    };
+  `);
+  execFileSync('node', ['--require', preload, bin, 'resume', 'feature/x'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
+  const options = JSON.parse(fs.readFileSync(capture, 'utf8'));
+  assert.strictEqual(options.resume, true);
+  assert.strictEqual(options.base, undefined);
 });

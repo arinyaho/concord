@@ -18,6 +18,6 @@ const positional = args.filter((arg, index) => arg !== '--broad' && arg !== '--g
 const resumed = positional[0] === 'resume';
 const ref = (resumed ? positional[1] : positional[0]) || require('node:child_process').execFileSync('git', ['branch', '--show-current'], { encoding: 'utf8' }).trim();
 const base = resumed ? positional[2] : positional[1];
-runReviewUntilGreen({ ref, base, broad, repoRoot: process.cwd(), cliPath: path.join(__dirname, 'review-cli.js') })
+runReviewUntilGreen({ ref, base, broad, resume: resumed, repoRoot: process.cwd(), cliPath: path.join(__dirname, 'review-cli.js') })
   .then((result) => process.stdout.write(`${result.handoff || result.message || JSON.stringify(result)}\n`))
   .catch((error) => { process.stderr.write(`review-until-green: ${error.message}\n`); process.exit(1); });

@@ -29,18 +29,36 @@ function codexExec({ role, prompt, repoRoot, stateDir }) {
   });
 }
 
+// A fresh git review needs an explicit merge-base side of the diff. Resolve
+// the repository's advertised remote default without hard-coding `origin`;
+// repositories with no remote HEAD must name a base rather than silently
+// falling back to a working-tree diff against HEAD.
+function resolveDefaultBase(repoRoot, exec = execFileSync) {
+  let refs;
+  try {
+    refs = exec('git', ['for-each-ref', '--format=%(symref)', 'refs/remotes/*/HEAD'], { cwd: repoRoot, encoding: 'utf8' });
+  } catch (error) {
+    throw new Error('review-until-green: cannot determine a remote default base; pass an explicit base');
+  }
+  for (const ref of String(refs).split(/\r?\n/)) {
+    const match = ref.match(/^refs\/remotes\/([^/]+)\/(.+)$/);
+    if (match) return `${match[1]}/${match[2]}`;
+  }
+  throw new Error('review-until-green: cannot determine a remote default base; pass an explicit base');
+}
+
 function reviewerPrompt(role, { stateDir, round, targetType, dodPassed, finding, retryPrompt, slug }) {
   const artifact = path.join(stateDir, role === 'fix' ? `round-${round}-fix-${finding.id}.json` : `round-${round}-${role}.json`);
   const retry = retryPrompt ? `\n\n${retryPrompt}` : '';
   if (role === 'correctness') {
     const doc = targetType === 'file';
-    return `${doc ? 'Review the document' : 'Review the diff and surrounding code'} at ${path.join(stateDir, `round-${round}-diff.txt`)}. ${doc ? 'Find contradictions, unsupported claims, placeholders, over-claims, and omitted limitations. IDs must start docreview:.' : `Find correctness bugs, reuse/efficiency problems, and verifier-gaming. DoD already ${dodPassed ? 'passed; do not rerun tests' : 'failed; do not root-cause it'}. IDs must start correctness:. Every changed file in the diff MUST appear in "examined".`} Write ONLY JSON to ${artifact}: {"status":"ok","examined":[],"findings":[]}.${retry}`;
+    return `${doc ? 'Review the document' : 'Review the diff and surrounding code'} at ${path.join(stateDir, `round-${round}-diff.txt`)}. ${doc ? 'Find contradictions, unsupported claims, placeholders, over-claims, and omitted limitations. Every reviewed target MUST appear in "examined". Finding IDs MUST use docreview:<stable-slug>.' : `Find correctness bugs, reuse/efficiency problems, and verifier-gaming. DoD already ${dodPassed ? 'passed; do not rerun tests' : 'failed; do not root-cause it'}. IDs must start correctness:. Every changed file in the diff MUST appear in "examined".`} Write ONLY JSON to ${artifact}: {"status":"ok","examined":[],"findings":[]}.${retry}`;
   }
   if (role === 'verify') return `Re-review candidates in ${path.join(stateDir, `round-${round}-correctness.json`)} against ${path.join(stateDir, `round-${round}-diff.txt`)}. Write ONLY {"status":"ok","rejected":[]} to ${artifact}.${retry}`;
   if (role === 'intent') return `You are a design-conformance detector. Compare ${path.join(stateDir, `round-${round}-diff.txt`)} with ${path.join(stateDir, `intent-${slug}.md`)}. Raise a finding ONLY for an active contradiction of an explicit stated requirement on an exact changed line. Each finding MUST have an intent: ID, file, span containing that exact changed line, the verbatim requirement text, and summary. Never report omissions, unchanged lines, design taste, or non-normative text. Write ONLY {"status":"ok","findings":[]} to ${artifact}.${retry}`;
   if (role === 'gate') return `Review ${path.join(stateDir, `round-${round}-diff.txt`)} for defects a diff-local reviewer cannot catch. You MAY Read/Grep the repository and MUST read ${path.join(stateDir, `intent-${slug}.md`)} if it exists. Report only gate: findings in classes cross-context, silent-gap, ac-coverage, or design-conformance. Each finding needs file, span/evidence anchor, requirement text when available, and summary. Write ONLY {"status":"ok","findings":[]} to ${artifact}.${retry}`;
   if (role === 'gate-verify') return `Re-review candidates in ${path.join(stateDir, `round-${round}-gate.json`)} against the diff and repository. Reject false positives and design-taste objections; keep actionable gaps. You MAY add genuinely new gate: findings using the same file, span/evidence, requirement, and summary shape. Write ONLY {"status":"ok","rejected":[],"findings":[]} to ${artifact}.${retry}`;
-  if (role === 'fix') return `Apply the minimal correct fix for ${finding.id} at ${finding.file}, ${finding.span}: ${finding.summary}. Edit only necessary files. Then write ONLY to ${artifact}: either {"status":"ok","edited":false} if no change was warranted, or {"status":"ok","edited":true,"files":["<every edited path>"]}. The files array MUST truthfully list EVERY file edited, including required companion files.${retry}`;
+  if (role === 'fix') return `Apply the minimal correct fix for ${finding.id} at ${finding.file}, ${finding.span}: ${finding.summary}. Edit only necessary files. Then write ONLY to ${artifact}: either {"status":"ok","edited":false} if no change was warranted, or {"status":"ok","edited":true,"files":["<every edited path>"]}. The files array MUST truthfully list EVERY file edited, including required companion files, as repository-relative paths. It MUST NOT include this state artifact, any stateDir artifact, or any path outside the repository.${retry}`;
   throw new Error(`harness-failure: unknown reviewer role ${role}`);
 }
 
@@ -50,11 +68,17 @@ async function invoke(spawn, input) {
 }
 
 async function runReviewUntilGreen(options) {
-  const { ref, base, broad = false, repoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
+  const { ref, base, broad = false, resume = false, repoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
   if (!ref) throw new Error('review-until-green: missing target ref');
   const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot));
   const spawn = options.spawn || ((input) => codexExec(input));
   const cli = (args) => runCli(args);
+  // Never resolve a base for resume: round-start restores ledger.target.base.
+  // File targets do not have a git base at all.
+  const baseResolver = options.resolveDefaultBase || (options.runCli ? null : resolveDefaultBase);
+  const initialBase = resume
+    ? undefined
+    : (base === undefined && !ref.startsWith('file:') && baseResolver ? baseResolver(repoRoot) : base);
 
   const runPanel = async (context) => {
     const lenses = ['ac-coverage', 'design-conformance', 'cross-context', 'silent-gap', 'threat-model'];
@@ -94,7 +118,7 @@ async function runReviewUntilGreen(options) {
 
   for (;;) {
     const startArgs = ['round-start', ref];
-    if (base) startArgs.push(base);
+    if (initialBase) startArgs.push(initialBase);
     if (broad) startArgs.push('--broad');
     const started = await cli(startArgs);
     if (started.decision !== 'work') return started;
@@ -147,4 +171,4 @@ async function runReviewUntilGreen(options) {
   }
 }
 
-module.exports = { runReviewUntilGreen, reviewerPrompt, codexExec, jsonCli };
+module.exports = { runReviewUntilGreen, reviewerPrompt, codexExec, jsonCli, resolveDefaultBase };

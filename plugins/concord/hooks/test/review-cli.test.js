@@ -499,6 +499,38 @@ test('commit-fix: a fix that declares multiple files (finding.file + companion) 
   assert.ok(status.trim().length > 0, 'b.txt should remain dirty/untracked -- companion staging must still be scoped, not -A');
 });
 
+test('commit-fix: rejects an outside-repository path declared by a fix artifact before git add', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' }] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:real.json`), JSON.stringify({ status: 'ok', edited: true, files: ['a.txt', '/tmp/not-a-repo-file'] }));
+
+  assert.throws(
+    () => run(['commit-fix', 'feat/x', 'correctness:real'], { env }),
+    /harness-failure: commit-fix: declared file "\/tmp\/not-a-repo-file" is outside the repository/,
+  );
+  assert.strictEqual(execFileSync('git', ['status', '--porcelain', '--', 'a.txt'], { cwd: repo, encoding: 'utf8' }).trim(), 'M a.txt');
+});
+
+test('commit-fix: rejects a stateDir artifact even when stateDir is inside the repository', () => {
+  const repo = initRepo(); const dir = path.join(repo, '.review-state');
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' }] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
+  const artifact = `.review-state/round-${n}-fix-correctness:real.json`;
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:real.json`), JSON.stringify({ status: 'ok', edited: true, files: ['a.txt', artifact] }));
+
+  assert.throws(
+    () => run(['commit-fix', 'feat/x', 'correctness:real'], { env }),
+    /harness-failure: commit-fix: declared file ".*" is a stateDir artifact/,
+  );
+});
+
 test('commit-fix: idempotent -- a second call for an already-journaled id commits nothing new', () => {
   const repo = initRepo(); const dir = tmpDir();
   const { env, n } = seedGatesRound(repo, dir, 'feat/x',
