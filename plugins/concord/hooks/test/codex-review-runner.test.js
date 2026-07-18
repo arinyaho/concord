@@ -116,6 +116,44 @@ test('gate-verify subprocess failure stays lenient and lets the CLI decide', asy
   assert.ok(h.calls.some((call) => call[0] === 'spawn' && call[1] === 'gate-verify'));
 });
 
+test('intent and gate review chains fan out alongside the correctness-to-verify chain', async () => {
+  const stateDir = temp();
+  const pending = new Map();
+  const calls = [];
+  const cli = (args) => {
+    const [verb, , role] = args;
+    if (verb === 'round-start') return { decision: 'work', round: 1, stateDir, targetType: 'git', dodPassed: true, intentApplied: true, gateApplied: true };
+    if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'plan-fixes') return { fixes: [] };
+    if (verb === 'record') return { decision: { continue: false }, handoff: 'LGTM' };
+    throw new Error(`unexpected CLI ${verb} ${role}`);
+  };
+  const spawn = ({ role }) => {
+    calls.push(role);
+    return new Promise((resolve) => pending.set(role, resolve));
+  };
+  const complete = (role) => {
+    const artifact = path.join(stateDir, `round-1-${role}.json`);
+    if (role === 'correctness') fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', examined: [], findings: [] }));
+    if (role === 'verify') fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', rejected: [] }));
+    if (role === 'intent' || role === 'gate') fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', findings: [] }));
+    if (role === 'gate-verify') fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
+    pending.get(role)({ status: 0 });
+  };
+
+  const running = runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn });
+  await new Promise(setImmediate);
+  assert.deepStrictEqual(calls, ['correctness', 'intent', 'gate']);
+  complete('correctness');
+  complete('intent');
+  complete('gate');
+  await new Promise(setImmediate);
+  assert.deepStrictEqual(calls, ['correctness', 'intent', 'gate', 'verify', 'gate-verify']);
+  complete('verify');
+  complete('gate-verify');
+  await running;
+});
+
 test('intent and gate prompts preserve their full role contracts', () => {
   const base = { stateDir: '/state', round: 2, slug: 'feature-x' };
   const intent = reviewerPrompt('intent', base);

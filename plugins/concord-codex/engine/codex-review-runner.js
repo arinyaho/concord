@@ -111,10 +111,14 @@ async function runReviewUntilGreen(options) {
       }
     };
 
-    await runArtifactReviewer('correctness');
-    await runArtifactReviewer('verify');
-    if (started.intentApplied) await runArtifactReviewer('intent');
-    if (started.gateApplied) {
+    const reviewers = [
+      (async () => {
+        await runArtifactReviewer('correctness');
+        await runArtifactReviewer('verify');
+      })(),
+    ];
+    if (started.intentApplied) reviewers.push(runArtifactReviewer('intent'));
+    if (started.gateApplied) reviewers.push((async () => {
       await runArtifactReviewer('gate');
       // gate-verify is intentionally lenient in review-cli: a missing or
       // malformed advisory verify artifact means zero rejections/new findings,
@@ -125,7 +129,8 @@ async function runReviewUntilGreen(options) {
         // Preserve review-cli's legacy gate-verify leniency: a failed advisory
         // verifier contributes no rejections/new findings, not a harness stop.
       }
-    }
+    })());
+    await Promise.all(reviewers);
 
     const planned = await cli(['plan-fixes', ref]);
     for (const finding of planned.fixes || []) {
