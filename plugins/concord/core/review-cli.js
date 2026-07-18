@@ -7,6 +7,7 @@ const dodExec = require('./dod-exec');
 const intentLib = require('./intent');
 const gateLib = require('./gate');
 const gatePanelLib = require('./gate-panel');
+const artifactContract = require('./artifact-contract');
 const {
   targetSlug,
   readLedger,
@@ -183,14 +184,14 @@ function readArtifact(stateDir, n, name) {
   } catch (e) {
     throw new Error(`harness-failure: missing gate artifact ${name} for round ${n}`);
   }
-  let j;
   try {
-    j = JSON.parse(raw);
+    const canonical = artifactContract.normalizeArtifact(name, raw);
+    const text = JSON.stringify(canonical) + '\n';
+    if (raw !== text) fs.writeFileSync(p, text);
+    return canonical;
   } catch (e) {
-    throw new Error(`harness-failure: ${name} artifact is not JSON`);
+    throw new Error(`harness-failure: ${e.message}`);
   }
-  if (!j || j.status !== 'ok') throw new Error(`harness-failure: ${name} artifact missing status:"ok"`);
-  return j;
 }
 
 // Fail-closed ordering guard: a verify-style artifact whose mtime predates
@@ -203,8 +204,12 @@ function readArtifact(stateDir, n, name) {
 // parallel, precisely so this can't happen -- this is the CLI-side check
 // that catches it if a session spawns them in parallel anyway.
 function requireArtifactAfter(stateDir, n, firstName, secondName) {
-  const firstStat = fs.statSync(path.join(stateDir, `round-${n}-${firstName}.json`));
-  const secondStat = fs.statSync(path.join(stateDir, `round-${n}-${secondName}.json`));
+  const firstPath = path.join(stateDir, `round-${n}-${firstName}.json`);
+  const secondPath = path.join(stateDir, `round-${n}-${secondName}.json`);
+  if (!fs.existsSync(firstPath)) throw new Error(`harness-failure: missing gate artifact ${firstName} for round ${n}`);
+  if (!fs.existsSync(secondPath)) throw new Error(`harness-failure: missing gate artifact ${secondName} for round ${n}`);
+  const firstStat = fs.statSync(firstPath);
+  const secondStat = fs.statSync(secondPath);
   if (secondStat.mtimeMs < firstStat.mtimeMs) {
     throw new Error(`harness-failure: round-${n}-${secondName}.json predates round-${n}-${firstName}.json -- it was spawned before ${firstName} finished writing (see review-until-green.md step 3: correctness and verify must run sequentially, never in parallel)`);
   }
@@ -235,6 +240,35 @@ function deleteRoundArtifacts(stateDir, n) {
 function main(resolveFromCwd) {
   const [verb, ref, ...rest] = process.argv.slice(2);
   const stateDir = resolveStateDir(resolveFromCwd);
+
+  if (verb === 'artifact-normalize') {
+    requireRef(ref, 'artifact-normalize');
+    const name = rest[0];
+    const slug = targetSlug(ref);
+    const ledger = readLedger(stateDir, slug);
+    const n = ledger && ledger.round;
+    if (!n) throw new Error(`harness-failure: artifact-normalize: no active round for ref "${ref}"`);
+    const p = path.join(stateDir, `round-${n}-${name}.json`);
+    const retryPath = path.join(stateDir, `round-${n}-${name}.retry`);
+    let raw;
+    try { raw = fs.readFileSync(p, 'utf8'); } catch (e) { throw new Error(`harness-failure: missing gate artifact ${name} for round ${n}`); }
+    try {
+      const canonical = artifactContract.normalizeArtifact(name, raw);
+      fs.writeFileSync(p, JSON.stringify(canonical) + '\n');
+      try { fs.unlinkSync(retryPath); } catch (e) { /* no prior retry */ }
+      process.stdout.write(JSON.stringify({ status: 'ok', artifact: name }) + '\n');
+      return;
+    } catch (e) {
+      if (e instanceof artifactContract.ArtifactError && e.kind === 'retry') {
+        if (!fs.existsSync(retryPath)) {
+          fs.writeFileSync(retryPath, '1\n');
+          process.stdout.write(JSON.stringify({ status: 'retry', artifact: name, prompt: artifactContract.retryPrompt(name, ({ correctness: 'correctness:|docreview:', verify: 'correctness:|docreview:', intent: 'intent:', gate: 'gate:', 'gate-verify': 'gate:' })[name]) }) + '\n');
+          return;
+        }
+      }
+      throw new Error(`harness-failure: ${e.message}`);
+    }
+  }
 
   if (verb === 'show') {
     requireRef(ref, 'show');
@@ -586,9 +620,9 @@ function main(resolveFromCwd) {
         return null;
       }
     };
+    requireArtifactAfter(stateDir, n, 'correctness', 'verify');
     const cJson = readArtifact(stateDir, n, 'correctness');
     const vJson = readArtifact(stateDir, n, 'verify');
-    requireArtifactAfter(stateDir, n, 'correctness', 'verify');
     const candidates = gc.parseGateFindings(JSON.stringify(cJson.findings || []));
     const killedIds = gc.parseVerifyVerdict(JSON.stringify({ rejected: vJson.rejected || [] }), candidates).rejectedIds;
 
@@ -693,9 +727,9 @@ function main(resolveFromCwd) {
     // discard that round's gate-review/gate-verify findings.
     const gateApplied = !!ledger.gateApplied;
     const n = ledger.round;
+    requireArtifactAfter(stateDir, n, 'correctness', 'verify');
     const cJson = readArtifact(stateDir, n, 'correctness');
     const vJson = readArtifact(stateDir, n, 'verify');
-    requireArtifactAfter(stateDir, n, 'correctness', 'verify');
     const candidates = gc.parseGateFindings(JSON.stringify(cJson.findings || []));
     // Symmetric guard: an intent-prefixed id must never come from the
     // correctness (auto-fixing) gate -- only the intent detector may mint
