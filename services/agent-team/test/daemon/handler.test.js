@@ -21,6 +21,33 @@ test("authorized message -> submit once + ack", async () => {
   assert.equal(submitted[0].jobId, "ab12");
   assert.match(replies[0], /queued #ab12/);
 });
+test("direct job gets a mention-safe progress relay while queued ack and final routing remain separate", async () => {
+  const sent = [];
+  const msg = {
+    ...authoredMsg("chem: fix x"),
+    reply: async (payload) => {
+      sent.push(payload);
+      return { edit: async (payload) => sent.push(payload) };
+    },
+  };
+  let submitted;
+  const queue = { submit: (job) => { submitted = job; return true; } };
+  const handle = makeHandler({ cfg, deps: { queue, mintId: () => "ab12", reply: (m, text) => m.reply(text) } });
+
+  await handle(msg);
+  await submitted.onStart();
+  await submitted.onProgress({ type: "progress", phase: "coding" });
+  await submitted.onTerminal({ kind: "done" });
+
+  assert.match(sent[0], /queued #ab12/);
+  assert.deepEqual(sent.slice(1), [
+    { content: "cloning", allowedMentions: { parse: [] } },
+    { content: "cloning\ncoding", allowedMentions: { parse: [] } },
+    { content: "cloning\ncoding\ndone", allowedMentions: { parse: [] } },
+  ]);
+  assert.equal(submitted.msg, msg);
+  assert.equal("onDone" in submitted, false);
+});
 test("unauthorized -> no submit, no reply", async () => {
   const { deps, submitted, replies } = ctx();
   await makeHandler({ cfg, deps })({ ...authoredMsg("chem: x"), author: { id: "intruder", bot: false } });

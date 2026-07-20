@@ -295,6 +295,37 @@ test("queue full on confirm -> busy note, pending NOT cleared", async () => {
   assert.match(systems.at(-1)[1], /busy/i);
   assert.equal(store.get("thr1").pendingAction.id, "a1"); // preserved for retry
 });
+test("confirmed conversation job relays progress through the confirming channel and retains job started", async () => {
+  let dispatched;
+  const { handler, systems, store } = h2({
+    dispatchAction: (args) => { dispatched = args; return { accepted: true }; },
+  });
+  store.set("thr1", { roleSessions: {}, pendingAction: { id: "a1", alias: "concord", repoPath: "/r", task: "fix" } });
+  const sent = [];
+  const confirmingMessage = {
+    ...thr,
+    content: "run a1",
+    channel: {
+      parentId: "c1",
+      send: async (payload) => {
+        sent.push(payload);
+        return { edit: async (payload) => sent.push(payload) };
+      },
+    },
+  };
+
+  await handler.handle(confirmingMessage);
+  await dispatched.progressRelay.start();
+  await dispatched.progressRelay.progress({ type: "progress", phase: "reviewing" });
+  await dispatched.progressRelay.terminal({ kind: "done" });
+
+  assert.deepEqual(systems, [["thr1", "job started (a1)"]]);
+  assert.deepEqual(sent, [
+    { content: "cloning", allowedMentions: { parse: [] } },
+    { content: "cloning\nreviewing", allowedMentions: { parse: [] } },
+    { content: "cloning\nreviewing\ndone", allowedMentions: { parse: [] } },
+  ]);
+});
 test("ordinary message (not `run <id>`) with a pending proposal -> normal turn runs AND pending persists", async () => {
   const { handler, posts, store } = h2();
   const pending = { id: "a1", alias: "concord", repoPath: "/r", task: "fix" };

@@ -99,10 +99,7 @@ test("cancel a RUNNING job -> killTree + dockerKill, cancelled outcome, running 
   assert.deepEqual(r, { found: true });
   assert.deepEqual(killed, [4242]);
   assert.deepEqual(dockerKilled, ["a1"]);
-  // 3 ticks: cancel-promise settles the race (1), run()'s await resumes and fires onOutcome (2),
-  // run()'s own async-function promise resolves, letting the outer .finally() run (3) -- that
-  // outer .finally() is what actually deletes the job from `running`, one tick after onOutcome.
-  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  await new Promise((r) => setImmediate(r));
   assert.deepEqual(outcomes, [{ jobId: "a1", kind: "cancelled" }]);
   assert.deepEqual(q.list().running, []);
   assert.deepEqual(q.cancel("a1"), { found: false }); // idempotent after settle
@@ -144,12 +141,147 @@ test("natural completion then cancel -> onOutcome fires once, cancel found:false
   q.submit(job("a1"));
   await Promise.resolve();
   runs.get("a1").resolve({ code: 0, tail: "ok" }); // natural completion
-  // 3 ticks -- see the same accounting in the "cancel a RUNNING job" test above: onOutcome
-  // fires before the outer .finally() removes the job from `running`.
-  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  await new Promise((r) => setImmediate(r));
   assert.deepEqual(outcomes, [{ jobId: "a1", kind: "done" }]);
   assert.deepEqual(q.cancel("a1"), { found: false });
   assert.equal(outcomes.length, 1); // no second outcome
+});
+
+// --- lifecycle relay hooks (B-3c Task 3) ---
+
+test("onStart sees a FIFO job only after it is running", async () => {
+  const events = [];
+  let q;
+  const run = deferred();
+  q = createQueue({
+    cap: 1, queueMax: 1, jobTimeoutMs: 1_000_000,
+    runJob: () => { events.push("run"); return run.promise; },
+    dockerKill() {}, onOutcome() {},
+  });
+  const first = job("first", {
+    onStart() { events.push(`start:${q.list().running.map((j) => j.jobId).join(",")}`); },
+  });
+
+  q.submit(first);
+  await Promise.resolve();
+  assert.deepEqual(events, ["start:first", "run"]);
+  run.resolve({ code: 0, tail: "" });
+});
+
+test("an onStart synchronous cancel resolves the running job", async () => {
+  const outcomes = [];
+  let runJobCalls = 0;
+  let q;
+  q = createQueue({
+    cap: 1, queueMax: 1, jobTimeoutMs: 1_000_000,
+    runJob: () => { runJobCalls++; return new Promise(() => {}); },
+    dockerKill() {},
+    onOutcome: (j, outcome) => outcomes.push({ jobId: j.jobId, kind: outcome.kind }),
+  });
+  q.submit(job("sync-cancel", {
+    onStart() { assert.deepEqual(q.cancel("sync-cancel"), { found: true }); },
+  }));
+
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  assert.equal(runJobCalls, 0);
+  assert.deepEqual(outcomes, [{ jobId: "sync-cancel", kind: "cancelled" }]);
+  assert.deepEqual(q.list().running, []);
+});
+
+test("an immediate completion schedules terminal behind a deferred serialized start relay", async () => {
+  const start = deferred();
+  const events = [];
+  let chain = Promise.resolve();
+  let terminalScheduled = false;
+  const q = createQueue({
+    cap: 1, queueMax: 1, jobTimeoutMs: 1_000_000,
+    runJob: () => Promise.resolve({ code: 0, tail: "" }),
+    dockerKill() {},
+    onOutcome: (j, outcome, terminalPromise) => terminalPromise.then(() => events.push("outcome")),
+  });
+  q.submit(job("deferred-start", {
+    onStart() {
+      events.push("start");
+      return chain = chain.then(() => start.promise).then(() => events.push("started"));
+    },
+    onTerminal() {
+      terminalScheduled = true;
+      return chain = chain.then(() => events.push("terminal"));
+    },
+  }));
+
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  assert.deepEqual(events, ["start"]);
+  assert.equal(terminalScheduled, true);
+  assert.deepEqual(q.list().running, []);
+  start.resolve();
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(events, ["start", "started", "terminal", "outcome"]);
+});
+
+test("a hung onStart does not suppress terminal or final outcome", async () => {
+  const events = [];
+  const q = createQueue({
+    cap: 1, queueMax: 1, jobTimeoutMs: 1_000_000,
+    runJob: () => Promise.resolve({ code: 0, tail: "" }),
+    dockerKill() {},
+    onOutcome: (j, outcome, terminalPromise) => terminalPromise.then(() => events.push("outcome")),
+  });
+  q.submit(job("hung-start", {
+    onStart: () => new Promise(() => {}),
+    onTerminal() { events.push("terminal"); },
+  }));
+
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(events, ["terminal", "outcome"]);
+  assert.deepEqual(q.list().running, []);
+});
+
+test("cancelling a queued job skips its lifecycle relay hooks", async () => {
+  const firstRun = deferred();
+  const terminalCalls = [];
+  const q = createQueue({
+    cap: 1, queueMax: 2, jobTimeoutMs: 1_000_000,
+    runJob: (j) => j.jobId === "first" ? firstRun.promise : Promise.resolve({ code: 0, tail: "" }),
+    dockerKill() {}, onOutcome() {},
+  });
+  q.submit(job("first"));
+  q.submit(job("queued", {
+    onStart() { terminalCalls.push("start"); },
+    onTerminal() { terminalCalls.push("terminal"); },
+  }));
+
+  assert.deepEqual(q.cancel("queued"), { found: true });
+  await Promise.resolve();
+  assert.deepEqual(terminalCalls, []);
+  firstRun.resolve({ code: 0, tail: "" });
+});
+
+test("a pending onTerminal promise does not hold the queue slot", async () => {
+  const firstRun = deferred();
+  const terminal = deferred();
+  const started = [];
+  const lifecycle = [];
+  const received = [];
+  const q = createQueue({
+    cap: 1, queueMax: 2, jobTimeoutMs: 1_000_000,
+    runJob: (j) => j.jobId === "first" ? firstRun.promise : Promise.resolve({ code: 0, tail: "" }),
+    dockerKill() {},
+    onOutcome: (j, o, terminalPromise) => {
+      if (j.jobId === "first") lifecycle.push("outcome");
+      received.push({ jobId: j.jobId, terminalPromise });
+    },
+  });
+  q.submit(job("first", { onTerminal() { lifecycle.push("terminal"); return terminal.promise; } }));
+  q.submit(job("second", { onStart() { started.push("second"); } }));
+
+  firstRun.resolve({ code: 0, tail: "" });
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(lifecycle, ["terminal", "outcome"]);
+  assert.deepEqual(started, ["second"]);
+  const firstReceived = received.find((entry) => entry.jobId === "first");
+  assert.equal(typeof firstReceived?.terminalPromise?.then, "function");
+  terminal.resolve();
 });
 
 // --- computeOutcome precedence (pure) ---

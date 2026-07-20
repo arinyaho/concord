@@ -3,6 +3,7 @@ import { selectRound } from "./select_round.mjs";
 import { advanceTurn } from "./conversation.mjs";
 import { summarize, formatTally } from "./meter.mjs";
 import { parseControlVerb, handleControlVerb } from "./control_verbs.mjs";
+import { makeProgressRelay } from "./progress_relay.mjs";
 
 // The conversation routing core (bot-skip lives in the bin, ahead of this). Returns true iff it
 // handled the message. Authorized conversation-channel message -> create thread, AWAIT-seed the
@@ -160,7 +161,8 @@ export function makeConversationHandler({ cfg, roster, store, deps }) {
         const pending = getPending(store, threadId);
         if (pending) {
           if (pending.id === confirm[1]) {
-            const { accepted } = dispatchAction({ pending, threadId, feedTurn });
+            const progressRelay = makeProgressRelay({ send: (payload) => msg.channel.send(payload) });
+            const { accepted } = dispatchAction({ pending, threadId, feedTurn, progressRelay });
             if (accepted) {
               clearPending(store, cfg.sessionStorePath, threadId);
               await postSystem(threadId, `job started (${pending.id})`);
