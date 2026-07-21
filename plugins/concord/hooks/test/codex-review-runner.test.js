@@ -34,7 +34,7 @@ test('codexExec starts subprocesses asynchronously so panel work can overlap', a
   }
 });
 
-function harness({ targetType = 'git', rounds = 1, malformed = false, retry = false, retryForever = false, correctnessArtifact, gateApplied = false, failingRole, promptDrivenFix = false } = {}) {
+function harness({ targetType = 'git', rounds = 1, malformed = false, retry = false, retryForever = false, correctnessArtifact, gateApplied = false, dodDeferred = false, failingRole, promptDrivenFix = false } = {}) {
   const stateDir = temp();
   const calls = []; let round = 0; let retried = false;
   const cli = (args) => {
@@ -42,7 +42,7 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
     const [verb, ref, role] = args;
     if (verb === 'round-start') {
       round++;
-      return { decision: 'work', round, stateDir, targetType, dodPassed: true, intentApplied: false, gateApplied };
+      return { decision: 'work', round, stateDir, targetType, dodPassed: true, dodDeferred, intentApplied: false, gateApplied };
     }
     if (verb === 'artifact-normalize') {
       if (correctnessArtifact && role === 'correctness') {
@@ -103,6 +103,38 @@ test('fix prompt writes the commit-fix artifact and requires a truthful files de
 test('correctness prompt requires every changed file in examined', () => {
   const prompt = reviewerPrompt('correctness', { stateDir: '/state', round: 7, targetType: 'git', dodPassed: true });
   assert.match(prompt, /every changed file.*examined/i);
+});
+
+test('correctness prompt never claims the DoD passed when the gate was deferred', () => {
+  // round-start reports dodPassed:true under a deferral too, so a prompt built
+  // from dodPassed alone would tell the reviewer "DoD already passed; do not
+  // rerun tests" on a run where nothing was ever executed -- removing the last
+  // real check precisely when there is no gate behind it.
+  const prompt = reviewerPrompt('correctness', { stateDir: '/state', round: 7, targetType: 'git', dodPassed: true, dodDeferred: true });
+  assert.ok(!/do not rerun tests/i.test(prompt), 'a deferred gate must not be reported as an already-passed one');
+  assert.match(prompt, /no executable.*gate.*ran this run/i);
+  assert.match(prompt, /single run of the repo's own already-configured build\/test command/i);
+});
+
+test('correctness prompt keeps the real pass and real failure wordings when the gate actually ran', () => {
+  const passed = reviewerPrompt('correctness', { stateDir: '/state', round: 7, targetType: 'git', dodPassed: true, dodDeferred: false });
+  assert.match(passed, /DoD already passed; do not rerun tests\./);
+  const failed = reviewerPrompt('correctness', { stateDir: '/state', round: 7, targetType: 'git', dodPassed: false, dodDeferred: false });
+  assert.match(failed, /DoD already failed; do not root-cause it\./);
+});
+
+test('runner passes --no-dod to round-start and threads the deferral into the correctness prompt', async () => {
+  const h = harness({ dodDeferred: true });
+  await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn, noDod: true, resolveDefaultBase: () => 'upstream/main' });
+  assert.deepStrictEqual(h.calls[0], ['cli', 'round-start', 'feature/x', 'upstream/main', '--no-dod']);
+  const correctness = h.calls.find((c) => c[0] === 'spawn' && c[1] === 'correctness');
+  assert.ok(!/do not rerun tests/i.test(correctness[2]), 'the deferral must reach the reviewer prompt');
+});
+
+test('runner omits --no-dod by default -- the opt-out is never added on the runner\'s own initiative', async () => {
+  const h = harness();
+  await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn, resolveDefaultBase: () => 'upstream/main' });
+  assert.deepStrictEqual(h.calls[0], ['cli', 'round-start', 'feature/x', 'upstream/main']);
 });
 
 test('file-target correctness prompt requires every reviewed target in examined and docreview JSON IDs', () => {
@@ -451,6 +483,34 @@ test('Codex launcher recognizes documented broad-review phrases without consumin
     assert.strictEqual(options.base, undefined);
     assert.strictEqual(options.broad, true);
   }
+});
+
+test('Codex launcher forwards --no-dod without consuming it as a target argument', () => {
+  const dir = temp();
+  const capture = path.join(dir, 'options.json');
+  const preload = path.join(dir, 'capture-runner.js');
+  const bin = path.join(__dirname, '..', '..', '..', 'concord-codex', 'bin', 'review-until-green.js');
+  fs.writeFileSync(preload, `
+    const fs = require('node:fs');
+    const Module = require('node:module');
+    const load = Module._load;
+    Module._load = function(request, parent, isMain) {
+      if (request === '../engine/codex-review-runner') return { runReviewUntilGreen: async (options) => {
+        fs.writeFileSync(process.env.CAPTURE, JSON.stringify(options));
+        return { handoff: 'ok' };
+      } };
+      return load.apply(this, arguments);
+    };
+  `);
+  execFileSync('node', ['--require', preload, bin, 'feature/x', '--no-dod'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
+  const options = JSON.parse(fs.readFileSync(capture, 'utf8'));
+  assert.strictEqual(options.ref, 'feature/x');
+  assert.strictEqual(options.base, undefined); // the flag must not be mistaken for base
+  assert.strictEqual(options.noDod, true);
+
+  fs.rmSync(capture, { force: true });
+  execFileSync('node', ['--require', preload, bin, 'feature/x'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
+  assert.strictEqual(JSON.parse(fs.readFileSync(capture, 'utf8')).noDod, false);
 });
 
 test('Codex launcher marks resume so the runner preserves the ledger base', () => {
