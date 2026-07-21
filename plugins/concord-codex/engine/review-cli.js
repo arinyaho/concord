@@ -779,7 +779,7 @@ function main(resolveFromCwd) {
       fixCommits[id] = journaled.get(id) || 'span already absent (idempotent replay)';
     }
     const outcome = {
-      dodPassed: !!(ledger.dod && ledger.dod.passed), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons,
+      dodPassed: !!(ledger.dod && ledger.dod.passed), dodDeferred: !!(ledger.dod && ledger.dod.deferred), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons,
       intentReviewCount: (ledger.intent_parked || []).length,
       gateOpenCount: gateOpen.length,
       panelConfigured: !!(gateCfg && gateCfg.panel),

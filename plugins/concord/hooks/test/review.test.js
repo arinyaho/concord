@@ -475,6 +475,18 @@ test('decideTermination: parkedCount===0 (or absent) does not itself force parke
   assert.strictEqual(d.converged, true);
 });
 
+test('decideTermination: a deferred DoD converges without claiming the gate ran', () => {
+  const base = { openFindingsCount: 0, fixedCount: 0, specDoubtScope: 'none', noProgress: false, budgetSpent: 0, maxRounds: 5 };
+  const ran = review.decideTermination({ ...base, dodPassed: true });
+  const deferred = review.decideTermination({ ...base, dodPassed: true, dodDeferred: true });
+  assert.strictEqual(deferred.converged, true);
+  // The decision object must not contradict the handoff's "DoD: DEFERRED" line.
+  assert.ok(!/ran and passed/.test(deferred.reason), `deferred reason claims the gate ran: ${deferred.reason}`);
+  assert.match(deferred.reason, /deferred/i);
+  // A real pass keeps its existing wording verbatim.
+  assert.strictEqual(ran.reason, 'DoD-exec ran and passed, zero open findings, and no fixes this round (stable)');
+});
+
 test('parkBudgetExceeded: true once needs-decision parks reach the threshold', () => {
   const ledger = review.emptyLedger({ kind: 'local', ref: 'x' });
   ledger.findings = [

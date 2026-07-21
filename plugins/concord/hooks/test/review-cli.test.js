@@ -1473,6 +1473,24 @@ test('record: a --no-dod round with a committed fix reaches its terminal decisio
   assert.match(out.handoff, /DoD: DEFERRED \(--no-dod/);
 });
 
+test('record: a converged --no-dod run does not report that the DoD ran and passed', () => {
+  // The handoff says "DoD: DEFERRED" while the machine-readable decision.reason
+  // used to say "DoD-exec ran and passed" -- the exact false-clean claim the
+  // deferral path exists to avoid. The two must agree.
+  const repo = initRepoWithoutDodConfig();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--no-dod'], { env })).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  run(['plan-fixes', 'feat/x'], { env });
+
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.converged, true);
+  assert.ok(!/ran and passed/.test(out.decision.reason), `converged reason claims the gate ran: ${out.decision.reason}`);
+  assert.match(out.handoff, /DoD: DEFERRED \(--no-dod/);
+});
+
 test('round-start: a gate-pending ledger is a re-runnable stop (resets to converging, keeps dismissed)', () => {
   const dir = tmpDir();
   const repo = initRepo();
