@@ -48,12 +48,18 @@ function resolveDefaultBase(repoRoot, exec = execFileSync) {
   throw new Error('review-until-green: cannot determine a remote default base; pass an explicit base');
 }
 
-function reviewerPrompt(role, { stateDir, round, targetType, dodPassed, finding, retryPrompt, slug }) {
+function reviewerPrompt(role, { stateDir, round, targetType, dodPassed, dodDeferred, finding, retryPrompt, slug }) {
   const artifact = path.join(stateDir, role === 'fix' ? `round-${round}-fix-${finding.id}.json` : `round-${round}-${role}.json`);
   const retry = retryPrompt ? `\n\n${retryPrompt}` : '';
   if (role === 'correctness') {
     const doc = targetType === 'file';
-    return `${doc ? 'Review the document' : 'Review the diff and surrounding code'} at ${path.join(stateDir, `round-${round}-diff.txt`)}. ${doc ? 'Find contradictions, unsupported claims, placeholders, over-claims, and omitted limitations. Every reviewed target MUST appear in "examined". Finding IDs MUST use docreview:<stable-slug>.' : `Find correctness bugs, reuse/efficiency problems, and verifier-gaming. DoD already ${dodPassed ? 'passed; do not rerun tests' : 'failed; do not root-cause it'}. IDs must start correctness:. Every changed file in the diff MUST appear in "examined".`} Write ONLY JSON to ${artifact}: {"status":"ok","examined":[],"findings":[]}.${retry}`;
+    // Under a deferral round-start still reports dodPassed:true, so this note
+    // must key off dodDeferred: telling a reviewer "DoD already passed; do not
+    // rerun tests" when no gate ran removes the only remaining check.
+    const dodNote = dodDeferred
+      ? "No executable DoD gate ran this run; a single run of the repo's own already-configured build/test command is acceptable if you genuinely need one."
+      : `DoD already ${dodPassed ? 'passed; do not rerun tests' : 'failed; do not root-cause it'}.`;
+    return `${doc ? 'Review the document' : 'Review the diff and surrounding code'} at ${path.join(stateDir, `round-${round}-diff.txt`)}. ${doc ? 'Find contradictions, unsupported claims, placeholders, over-claims, and omitted limitations. Every reviewed target MUST appear in "examined". Finding IDs MUST use docreview:<stable-slug>.' : `Find correctness bugs, reuse/efficiency problems, and verifier-gaming. ${dodNote} IDs must start correctness:. Every changed file in the diff MUST appear in "examined".`} Write ONLY JSON to ${artifact}: {"status":"ok","examined":[],"findings":[]}.${retry}`;
   }
   if (role === 'verify') return `Re-review candidates in ${path.join(stateDir, `round-${round}-correctness.json`)} against ${path.join(stateDir, `round-${round}-diff.txt`)}. Write ONLY {"status":"ok","rejected":[]} to ${artifact}.${retry}`;
   if (role === 'intent') return `You are a design-conformance detector. Compare ${path.join(stateDir, `round-${round}-diff.txt`)} with ${path.join(stateDir, `intent-${slug}.md`)}. Raise a finding ONLY for an active contradiction of an explicit stated requirement on an exact changed line. Each finding MUST have an intent: ID, file, span containing that exact changed line, the verbatim requirement text, and summary. Never report omissions, unchanged lines, design taste, or non-normative text. Write ONLY {"status":"ok","findings":[]} to ${artifact}.${retry}`;
@@ -69,7 +75,7 @@ async function invoke(spawn, input) {
 }
 
 async function runReviewUntilGreen(options) {
-  const { ref, base, broad = false, resume = false, repoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
+  const { ref, base, broad = false, noDod = false, resume = false, repoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
   if (!ref) throw new Error('review-until-green: missing target ref');
   const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot));
   const spawn = options.spawn || ((input) => codexExec(input));
@@ -126,9 +132,10 @@ async function runReviewUntilGreen(options) {
     const startArgs = ['round-start', ref];
     if (initialBase) startArgs.push(initialBase);
     if (broad) startArgs.push('--broad');
+    if (noDod) startArgs.push('--no-dod');
     const started = await cli(startArgs);
     if (started.decision !== 'work') return started;
-    const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodPassed: started.dodPassed, slug: targetSlug(ref) };
+    const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodPassed: started.dodPassed, dodDeferred: started.dodDeferred, slug: targetSlug(ref) };
 
     const runArtifactReviewer = async (role) => {
       let retryPrompt;

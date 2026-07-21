@@ -138,7 +138,11 @@ function renderHandoff(result) {
   const dodLine = !ledger.dod
     ? 'DoD: not run'
     : ledger.dod.deferred
-      ? 'DoD: DEFERRED (no executable gate declared; validate out-of-band, e.g. post-deploy e2e)'
+      // The per-run --no-dod opt-out is NOT a declaration that the repo has no
+      // gate -- nothing was declared. Saying so would misreport the run.
+      ? (ledger.dod.deferredBy === '--no-dod'
+        ? 'DoD: DEFERRED (--no-dod: no executable gate ran this run)'
+        : 'DoD: DEFERRED (no executable gate declared; validate out-of-band, e.g. post-deploy e2e)')
       : ledger.dod.passed
         ? 'DoD: passed'
         : 'DoD: FAILED';
@@ -493,7 +497,15 @@ function main(resolveFromCwd) {
     // error against a nonsense ref).
     const BROAD_FLAGS = new Set(['--broad', '--gate']);
     const broadFlagPassed = rest.some((a) => BROAD_FLAGS.has(a));
-    const positional = rest.filter((a) => !BROAD_FLAGS.has(a));
+    // Executable-DoD opt-out (--no-dod): the same deferral `"dod": null` in
+    // review.config.json declares, asked for per-run instead. It exists because
+    // an ABSENT config is a hard harness-failure (deliberately -- a silent
+    // default gate manufactures a false clean), and authoring the config to get
+    // past that then trips the dirty-tree guard. The review gates still run; the
+    // DoD is reported deferred and never faked to a pass.
+    const NO_DOD_FLAGS = new Set(['--no-dod']);
+    const noDodFlagPassed = rest.some((a) => NO_DOD_FLAGS.has(a));
+    const positional = rest.filter((a) => !BROAD_FLAGS.has(a) && !NO_DOD_FLAGS.has(a));
     for (const tok of positional) {
       if (tok.startsWith('--')) throw new Error(`review-cli round-start: unknown flag "${tok}"`);
     }
@@ -621,6 +633,10 @@ function main(resolveFromCwd) {
     // above. plan-fixes reads this ledger field instead of re-deriving from
     // review.config.json (see Task 3).
     const gateApplied = !!gateCfg || broadFlagPassed || !!ledger.gateApplied;
+    // Sticky for the same reason gateApplied is: once a run has opted out of the
+    // executable gate, round 2's round-start must not have to repeat --no-dod
+    // (and must not throw on the absent config it was told to work without).
+    const dodDeferred = noDodFlagPassed || !!ledger.dodDeferred;
     if (intentCfg) {
       const intentPath = path.join(stateDir, `intent-${slug}.md`);
       if (!ledger.intentHash) {
@@ -643,7 +659,17 @@ function main(resolveFromCwd) {
     // review-until-green can declare done). File targets carry hasDoD:false
     // and skip the DoD entirely -- runDod would throw in a non-git dir because
     // review.config.json is not expected to exist there.
-    const dod = isFileTarget ? { passed: true, deferred: true, results: [] } : runDod(repoRoot);
+    // `deferredBy` discriminates WHY: only the flag path sets it, so the handoff
+    // can say the flag deferred the gate instead of claiming (falsely) that the
+    // repo declared it had none. The file-target and `"dod": null` paths stay
+    // undiscriminated and keep their existing wording.
+    // runDod must not be CALLED at all on the flag path -- calling it is what
+    // throws when there is no review.config.json to read.
+    const dod = isFileTarget
+      ? { passed: true, deferred: true, results: [] }
+      : dodDeferred
+        ? { passed: true, deferred: true, deferredBy: '--no-dod', results: [] }
+        : runDod(repoRoot);
     // Persist the extended target object. For file targets, add type/hasDoD/spec
     // so later verbs (record, decideTermination) can branch on target type without
     // re-parsing the ref. For git targets, the existing ref/base/head_sha fields
@@ -653,9 +679,13 @@ function main(resolveFromCwd) {
     const targetUpdate = isFileTarget
       ? { ...baseTarget, type: 'file', hasDoD: false, spec: fileSpec }
       : { ...baseTarget, type: 'git', hasDoD: true, spec: { ref, base }, base, head_sha: headSha };
-    ledger = { ...ledger, dod, phase: 'gates', gateApplied, target: targetUpdate };
+    ledger = { ...ledger, dod, phase: 'gates', gateApplied, dodDeferred, target: targetUpdate };
     writeLedger(stateDir, slug, ledger);
-    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, intentApplied: !!intentCfg, gateApplied, targetType, stateDir }) + '\n');
+    // dodPassed keeps its shape for existing callers, but under a deferral its
+    // `true` means "nothing blocked the round", not "the gate ran and passed" --
+    // a driver that turns it into "DoD already passed; do not rerun tests" would
+    // be removing the last real check. dodDeferred is how a caller tells them apart.
+    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, dodDeferred: !!dod.deferred, intentApplied: !!intentCfg, gateApplied, targetType, stateDir }) + '\n');
     return;
   }
 
@@ -770,10 +800,13 @@ function main(resolveFromCwd) {
       ledger = { ...ledger, status: 'parked' };
     }
     if (decision.continue) ledger = { ...ledger, budget: { ...ledger.budget, spent: ledger.budget.spent + 1 } };
-    if (isGit && !decision.continue && fixedIds.length > 0) {
+    if (isGit && !ledger.dodDeferred && !decision.continue && fixedIds.length > 0) {
       // Git: fixes already landed via commit-fix -- re-run DoD against the post-commit
       // tree so the handoff reports the true final state, not the pre-fix round-start snapshot.
       // File targets skip this: there is no DoD, and no git tree to re-check.
+      // A --no-dod run skips it too: there is no gate to re-run, and calling
+      // runDod here would throw on the very absence the flag was passed for --
+      // at the very end of an otherwise successful run, losing the handoff.
       ledger = { ...ledger, dod: runDod(repoRoot) };
     }
     // Git only: clean any leftover uncommitted edit from a rejected/parked fixer.
