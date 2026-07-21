@@ -22,7 +22,7 @@ function loadDodConfig(repoRoot, readFileFn = fs.readFileSync) {
   } catch (e) {
     if (e && e.code === 'ENOENT') {
       throw new Error(
-        `harness-failure: no ${CONFIG_FILENAME} at the repo root -- declare your DoD gate, e.g. {"dod":["node --test"]} or {"dod":["pnpm build"]}. concord will not run a silent default gate that can pass on a repo it never actually tested (false clean) -- or re-run round-start with --no-dod to review without an executable gate (the handoff will report DoD as deferred).`,
+        `harness-failure: no ${CONFIG_FILENAME} at the repo root -- declare your DoD gate, e.g. {"dod":["node --test"]} or {"dod":["pnpm build"]}. concord will not run a silent default gate that can pass on a repo it never actually tested (false clean) -- or re-run with --no-dod to review without an executable gate (the handoff will report DoD as deferred).`,
       );
     }
     throw new Error(`harness-failure: ${CONFIG_FILENAME} is present but unreadable: ${e && e.message ? e.message : e}`);
