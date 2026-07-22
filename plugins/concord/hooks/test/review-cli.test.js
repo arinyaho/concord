@@ -1240,7 +1240,9 @@ test('a review.config.json with "dod": null converges with the DoD reported DEFE
   // A deferred DoD must not block convergence: zero open findings -> converged.
   assert.strictEqual(out.decision.converged, true, 'dod:null should allow convergence when no findings remain');
   // The handoff must clearly label the DoD deferred, never fake it as "passed".
-  assert.match(out.handoff, /DEFERRED/);
+  // The wording is the CONFIG opt-out's own: something was in fact declared here
+  // (`"dod": null`), unlike the per-run --no-dod flag, which has its own line.
+  assert.match(out.handoff, /DoD: DEFERRED \(no executable gate declared; validate out-of-band, e\.g\. post-deploy e2e\)/);
   assert.ok(!out.handoff.includes('DoD: passed'), 'deferred DoD must never be reported as "DoD: passed"');
 });
 
@@ -1337,6 +1339,156 @@ test('round-start: gateApplied is false when neither the config gate block nor -
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
   const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
   assert.strictEqual(out.gateApplied, false);
+});
+
+// ---- --no-dod: explicit per-run deferral of the executable gate ----
+
+// A repo that never declared a DoD gate. round-start's runDod fails closed here
+// (that is deliberate -- a silent default gate manufactures a false clean), so
+// every test below exercises the explicit opt-out instead of the config file.
+function initRepoWithoutDodConfig() {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-no-dod-'));
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  execFileSync('git', ['config', 'user.email', 't@t'], { cwd: repo });
+  execFileSync('git', ['config', 'user.name', 't'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n');
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'init'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  return repo;
+}
+
+test('round-start: WITHOUT --no-dod a repo with no review.config.json still fails closed', () => {
+  const repo = initRepoWithoutDodConfig();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  assert.throws(() => run(['round-start', 'feat/x', 'HEAD~1'], { env }), /harness-failure: no review\.config\.json/);
+});
+
+test('round-start: --no-dod starts a run in a repo with no review.config.json at all', () => {
+  const repo = initRepoWithoutDodConfig();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--no-dod'], { env }));
+  assert.strictEqual(out.decision, 'work');
+  // dodPassed stays true (existing callers depend on the field), so the new
+  // dodDeferred boolean is the only thing that tells a caller this was a
+  // deferral rather than a gate that actually ran and passed.
+  assert.strictEqual(out.dodPassed, true);
+  assert.strictEqual(out.dodDeferred, true);
+  const ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.strictEqual(ledger.dod.deferred, true);
+  assert.strictEqual(ledger.dod.deferredBy, '--no-dod');
+  assert.strictEqual(ledger.dodDeferred, true);
+});
+
+test('round-start: --no-dod works before the base token too (order-independent)', () => {
+  const repo = initRepoWithoutDodConfig();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const out = JSON.parse(run(['round-start', 'feat/x', '--no-dod', 'HEAD~1'], { env }));
+  assert.strictEqual(out.decision, 'work');
+  const ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.strictEqual(ledger.target.base, 'HEAD~1'); // the flag must not get mistaken for base
+});
+
+test('round-start: --no-dod alongside --broad is not an unknown-flag error', () => {
+  const repo = initRepoWithoutDodConfig();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--broad', '--no-dod'], { env }));
+  assert.strictEqual(out.decision, 'work');
+  assert.strictEqual(out.gateApplied, true);
+  assert.strictEqual(out.dodDeferred, true);
+});
+
+test('round-start: dodDeferred is sticky -- a later round-start omitting --no-dod keeps the gate deferred', () => {
+  const repo = initRepoWithoutDodConfig();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const first = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--no-dod'], { env }));
+  assert.strictEqual(first.dodDeferred, true);
+
+  // Same re-drive path the gateApplied stickiness test uses: phase is already
+  // 'gates', so this round-start re-drives the round with no flag. Without the
+  // sticky ledger field runDod would run here and throw harness-failure.
+  const second = JSON.parse(run(['round-start', 'feat/x'], { env }));
+  assert.strictEqual(second.decision, 'work');
+  assert.strictEqual(second.dodDeferred, true);
+});
+
+test('round-start: dodDeferred is false on a normal run whose repo declares a real gate', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.strictEqual(out.dodDeferred, false);
+  assert.ok(!review.readLedger(dir, review.targetSlug('feat/x')).dodDeferred);
+});
+
+test('renderHandoff: a --no-dod deferral names the flag, and does not claim a gate was declared', () => {
+  const repo = initRepoWithoutDodConfig();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--no-dod'], { env })).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  run(['plan-fixes', 'feat/x'], { env });
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.match(out.handoff, /DoD: DEFERRED \(--no-dod: no executable gate ran this run\)/);
+  // Nothing was "declared" here -- the config-level opt-out's wording would be a lie.
+  assert.ok(!out.handoff.includes('no executable gate declared'), '--no-dod must not borrow the dod:null wording');
+  assert.ok(!out.handoff.includes('DoD: passed'), 'a deferred DoD must never be reported as "DoD: passed"');
+});
+
+test('record: a --no-dod round with a committed fix reaches its terminal decision without re-running the DoD', () => {
+  // record re-runs the DoD after a terminal round that landed fixes, so the
+  // very last step of an otherwise successful --no-dod run used to throw
+  // "harness-failure: no review.config.json" and lose the whole handoff.
+  const repo = initRepoWithoutDodConfig();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--no-dod'], { env })).round;
+  fs.writeFileSync(
+    path.join(dir, `round-${n}-correctness.json`),
+    JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [
+      { id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' },
+      { id: 'correctness:unfixable', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'y' } ] }),
+  );
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  run(['plan-fixes', 'feat/x'], { env });
+
+  // One finding is genuinely fixed and committed; the other's fixer never wrote
+  // an artifact, so it parks -- a terminal decision that still carries a fix.
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:real.json`), JSON.stringify({ status: 'ok', edited: true }));
+  run(['commit-fix', 'feat/x', 'correctness:real'], { env });
+
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.continue, false);
+  assert.strictEqual(out.decision.parked, true);
+  assert.match(out.handoff, /DoD: DEFERRED \(--no-dod/);
+});
+
+test('record: a converged --no-dod run does not report that the DoD ran and passed', () => {
+  // The handoff says "DoD: DEFERRED" while the machine-readable decision.reason
+  // used to say "DoD-exec ran and passed" -- the exact false-clean claim the
+  // deferral path exists to avoid. The two must agree.
+  const repo = initRepoWithoutDodConfig();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--no-dod'], { env })).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  run(['plan-fixes', 'feat/x'], { env });
+
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.converged, true);
+  assert.ok(!/ran and passed/.test(out.decision.reason), `converged reason claims the gate ran: ${out.decision.reason}`);
+  assert.match(out.handoff, /DoD: DEFERRED \(--no-dod/);
 });
 
 test('round-start: a gate-pending ledger is a re-runnable stop (resets to converging, keeps dismissed)', () => {

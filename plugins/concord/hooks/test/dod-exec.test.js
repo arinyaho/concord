@@ -27,6 +27,24 @@ test('loadDodConfig: missing review.config.json throws harness-failure (no silen
   );
 });
 
+test('loadDodConfig: the ENOENT message names BOTH resolutions -- declare a gate, or re-run with --no-dod', () => {
+  // The absent-config failure is deliberately hard, but it is also the first
+  // thing a user hits in a repo that has never run concord. The message must
+  // hand the agent both honest exits so it can present them rather than
+  // guessing: author the config, or defer the executable gate explicitly.
+  const dir = tmpDir(); // guaranteed empty -- no review.config.json written
+  assert.throws(
+    () => dodExec.loadDodConfig(dir),
+    (err) => {
+      assert.match(err.message, /harness-failure/);
+      assert.match(err.message, /\{"dod":\["node --test"\]\}/);
+      assert.match(err.message, /--no-dod/);
+      assert.match(err.message, /deferred/);
+      return true;
+    },
+  );
+});
+
 test('loadDodConfig: reads a configured "dod" command list from the repo root', () => {
   const dir = tmpDir();
   fs.writeFileSync(path.join(dir, 'review.config.json'), JSON.stringify({ dod: ['npm run lint', 'npm test'] }));

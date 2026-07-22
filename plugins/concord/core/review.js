@@ -193,7 +193,7 @@ function dedupeAgainstSeen(findings, seen) {
 // Oscillation detection (a finding toggling fixed -> reopened -> fixed) is
 // deliberately out of scope for this shell (deferred per the plan).
 function decideTermination(roundOutcome) {
-  const { dodPassed, openFindingsCount, specDoubtScope, noProgress, budgetSpent, maxRounds, fixedCount = 0, parkedCount = 0, intentReviewCount = 0, gateOpenCount = 0, panelConfigured = false, panelDone = false, hasDoD = true, dryStreak = 0 } = roundOutcome;
+  const { dodPassed, dodDeferred = false, openFindingsCount, specDoubtScope, noProgress, budgetSpent, maxRounds, fixedCount = 0, parkedCount = 0, intentReviewCount = 0, gateOpenCount = 0, panelConfigured = false, panelDone = false, hasDoD = true, dryStreak = 0 } = roundOutcome;
 
   if (specDoubtScope === 'whole-diff') {
     return { continue: false, converged: false, parked: false, abandoned: true, reason: 'spec-doubt invalidates the whole diff' };
@@ -246,7 +246,18 @@ function decideTermination(roundOutcome) {
     if (panelConfigured && !panelDone) {
       return { continue: false, converged: false, parked: false, abandoned: false, panelPending: true, reason: 'diff-local clean and no open GATE findings, but the holistic GATE panel has not run yet this convergence attempt' };
     }
-    return { continue: false, converged: true, parked: false, abandoned: false, reason: 'DoD-exec ran and passed, zero open findings, and no fixes this round (stable)' };
+    // A deferred DoD reaches this clause with dodPassed:true, but nothing was
+    // executed -- `{"dod": null}` in review.config.json or a --no-dod run. Saying
+    // "DoD-exec ran and passed" there is the exact false-clean claim the deferral
+    // path exists to avoid, so the machine-readable reason names the deferral
+    // instead. The handoff's own DoD line already says DEFERRED; this keeps the
+    // decision object from contradicting it.
+    return {
+      continue: false, converged: true, parked: false, abandoned: false,
+      reason: dodDeferred
+        ? 'DoD-exec deferred (no executable gate ran), zero open findings, and no fixes this round (stable)'
+        : 'DoD-exec ran and passed, zero open findings, and no fixes this round (stable)',
+    };
   }
   if (budgetSpent >= maxRounds) {
     return { continue: false, converged: false, parked: true, abandoned: false, reason: 'round budget exhausted' };
@@ -413,6 +424,7 @@ function applyRoundOutcome(ledger, outcome) {
 
   const decision = decideTermination({
     dodPassed: !!outcome.dodPassed,
+    dodDeferred: !!outcome.dodDeferred,
     openFindingsCount,
     specDoubtScope: outcome.specDoubtScope || 'none',
     noProgress,
