@@ -137,12 +137,15 @@ test('runner omits --no-dod by default -- the opt-out is never added on the runn
   assert.deepStrictEqual(h.calls[0], ['cli', 'round-start', 'feature/x', 'upstream/main']);
 });
 
-test('file-target correctness prompt requires every reviewed target in examined and docreview JSON IDs', () => {
+test('file-target correctness prompt requires contract-complete docreview findings', () => {
   const prompt = reviewerPrompt('correctness', { stateDir: '/state', round: 7, targetType: 'file', dodPassed: true });
   assert.match(prompt, /EVERY reviewed target.*examined/i);
   assert.match(prompt, /docreview:<stable-slug>/);
   assert.match(prompt, /"examined"/);
   assert.match(prompt, /"findings"/);
+  assert.match(prompt, /"file":"<path>"/);
+  assert.match(prompt, /"span":"<exact offending text>"/);
+  assert.match(prompt, /"summary":"<one sentence>"/);
 });
 
 test('fix prompt forbids declaring state artifacts or paths outside the repository', () => {
