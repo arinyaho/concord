@@ -1,0 +1,38 @@
+# Codex reviewer prerequisites and failure modes
+
+The reviewer passes run as `codex exec` subprocesses. This file covers what must be true for them to run unattended, and the failures to recognize.
+
+## Prerequisites
+
+- **Codex CLI on PATH.** `command -v codex`. Verified working with Codex CLI 0.144.x.
+- **Codex authenticated.** `~/.codex/auth.json` must exist (`codex login`). An unauthenticated `codex exec` fails immediately.
+- **A clean working tree before `round-start`.** Concord reviews `base...HEAD`; a dirty tree is rejected. Commit or stash first.
+- **The target checked out locally.** A PR is reviewed by its local head branch (`gh pr checkout <n>`), not via the GitHub API.
+
+## The three flags, and why each is non-optional
+
+`codex exec --cd "<repoRoot>" --sandbox workspace-write --add-dir "<stateDir>" --skip-git-repo-check "<PROMPT>"`
+
+- `--cd "<repoRoot>"` — the reviewer reads the diff and repo from here.
+- `--sandbox workspace-write` — the reviewer needs to write its JSON artifact. A read-only sandbox denies the write and the artifact never appears.
+- `--add-dir "<stateDir>"` — the artifact lands in the CLI-owned state directory, which sits under `~/.claude/...`, OUTSIDE the `--cd` workspace. Without this grant every artifact write is denied as "outside the project." This is the single most common cause of an empty/missing artifact.
+- `--skip-git-repo-check` — an unattended `codex exec` against a directory not in Codex's trust table hits the trusted-directory prompt and, with no TTY to answer, **hangs forever**. This flag bypasses that prompt. Its `--help` one-liner understates it; it also skips the trust prompt, not just the git-repo check.
+
+## Keep reviewer output OUT of your context
+
+Always redirect: `... "<PROMPT>" > "<stateDir>/codex-<role>.log" 2>&1`. Then read the artifact JSON, never the log. If you let `codex exec` stream to your Bash result, GPT-5's full reasoning floods your context and the token-offload benefit is gone. The log is there for debugging a failed run only.
+
+## Failure modes to recognize
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Artifact file never appears, exit 0 | missing `--add-dir <stateDir>`, or a read-only sandbox | add `--add-dir` and `--sandbox workspace-write` |
+| `codex exec` hangs indefinitely | trust-directory prompt, no TTY | add `--skip-git-repo-check` |
+| Exit non-zero, log shows auth error | Codex not logged in | `codex login`, then retry |
+| `artifact-normalize` returns `retry` | reviewer wrote a malformed/partial artifact | re-run that ONE reviewer once with the returned prompt appended, then normalize again (exactly as the driver specifies) — a second retry or any `harness-failure` is terminal |
+| `round-start`: `no review.config.json` | repo has no declared DoD gate | surface both resolutions to the user (declare a committed gate, or `--no-dod`); never pick `--no-dod` yourself |
+| `round-start`: working tree is dirty | uncommitted changes | commit or stash, then retry |
+
+## Cost note
+
+A broad round (correctness + verify + 5-lens panel + 3-way adversarial verify per finding) can be 15–20 `codex exec` processes, each a full model run billed to the user's Codex plan. This is the honest cost of clean-context cross-engine review. Mention it if the user seems unaware, especially before a `--broad` run.
