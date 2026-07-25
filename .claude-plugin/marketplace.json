@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "concord",
-      "description": "Harness-engineering tools: a per-session state checkpoint plus a cross-session task charter, persisted from the transcript and re-injected on resume, compaction, or a fresh session.",
+      "description": "Harness-engineering tools: a per-session state checkpoint plus a cross-session task charter, persisted from the transcript and re-injected on resume, compaction, or a fresh session. Includes a skill that runs the review-and-fix loop with another AI's CLI performing each round's review.",
       "author": { "name": "arinyaho" },
       "category": "development",
       "source": "./plugins/concord",
