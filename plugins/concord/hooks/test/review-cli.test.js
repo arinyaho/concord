@@ -1435,11 +1435,14 @@ test('round-start: dodDeferred is sticky -- a later round-start omitting --no-do
   assert.strictEqual(first.dodDeferred, true);
 
   // Same re-drive path the gateApplied stickiness test uses: phase is already
-  // 'gates', so this round-start re-drives the round with no flag. Without the
-  // sticky ledger field runDod would run here and throw harness-failure.
+  // 'gates', so this round-start re-drives the round with no flag. This repo has
+  // no review.config.json, so dodDeferred alone would stay true even with the
+  // stickiness broken -- runDod would defer with deferredBy 'no-config'. Only
+  // deferredBy still naming the flag proves the sticky ledger field carried over.
   const second = JSON.parse(run(['round-start', 'feat/x'], { env }));
   assert.strictEqual(second.decision, 'work');
   assert.strictEqual(second.dodDeferred, true);
+  assert.strictEqual(review.readLedger(dir, review.targetSlug('feat/x')).dod.deferredBy, '--no-dod');
 });
 
 test('round-start: dodDeferred is false on a normal run whose repo declares a real gate', () => {
