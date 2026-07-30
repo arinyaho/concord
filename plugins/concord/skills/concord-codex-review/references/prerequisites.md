@@ -30,7 +30,7 @@ Always redirect: `... "<PROMPT>" > "<stateDir>/codex-<role>.log" 2>&1`. Then rea
 | `codex exec` hangs indefinitely | trust-directory prompt, no TTY | add `--skip-git-repo-check` |
 | Exit non-zero, log shows auth error | Codex not logged in | `codex login`, then retry |
 | `artifact-normalize` returns `retry` | reviewer wrote a malformed/partial artifact | re-run that ONE reviewer once with the returned prompt appended, then normalize again (exactly as the driver specifies) — a second retry or any `harness-failure` is terminal |
-| `round-start`: `no review.config.json` | repo has no declared DoD gate | surface both resolutions to the user (declare a committed gate, or `--no-dod`); never pick `--no-dod` yourself |
+| handoff says `DoD: DEFERRED (no review.config.json)` | repo has no declared DoD gate | expected — report the deferral, do not call the run verified; a committed `{"dod":[...]}` gates future runs |
 | `round-start`: working tree is dirty | uncommitted changes | commit or stash, then retry |
 
 ## Cost note

@@ -94,9 +94,16 @@ function gitCheckoutTree(repoRoot) {
 }
 function runDod(repoRoot) {
   const cfg = dodExec.loadDodConfig(repoRoot);
-  if (cfg.deferred) return { passed: true, deferred: true, results: [] };
+  // deferredBy is carried through so the handoff can say WHY (an absent config
+  // is not the same claim as `"dod": null`, which declares there is no gate).
+  if (cfg.deferred) return { passed: true, deferred: true, deferredBy: cfg.deferredBy, results: [] };
   return dodExec.runDodExec({ cwd: repoRoot, commands: cfg.dod, execFn: dodExec.defaultExecFn });
 }
+
+const DOD_DEFERRAL_LINES = {
+  '--no-dod': 'DoD: DEFERRED (--no-dod: no executable gate ran this run)',
+  'no-config': `DoD: DEFERRED (no ${dodExec.CONFIG_FILENAME}: reviewed without an executable gate -- add {"dod":["<your test command>"]} to gate future runs)`,
+};
 
 // Terminal handoff (design §8): rounds, killed/fixed/parked counts, a per-fix
 // rationale digest, and the needs-decision packets -- the "one consolidated
@@ -138,11 +145,11 @@ function renderHandoff(result) {
   const dodLine = !ledger.dod
     ? 'DoD: not run'
     : ledger.dod.deferred
-      // The per-run --no-dod opt-out is NOT a declaration that the repo has no
-      // gate -- nothing was declared. Saying so would misreport the run.
-      ? (ledger.dod.deferredBy === '--no-dod'
-        ? 'DoD: DEFERRED (--no-dod: no executable gate ran this run)'
-        : 'DoD: DEFERRED (no executable gate declared; validate out-of-band, e.g. post-deploy e2e)')
+      // Neither the --no-dod flag nor an absent config is a DECLARATION that the
+      // repo has no gate -- nothing was declared. Saying so would misreport the
+      // run, so each reason gets its own wording.
+      ? (DOD_DEFERRAL_LINES[ledger.dod.deferredBy]
+        || 'DoD: DEFERRED (no executable gate declared; validate out-of-band, e.g. post-deploy e2e)')
       : ledger.dod.passed
         ? 'DoD: passed'
         : 'DoD: FAILED';
@@ -663,13 +670,18 @@ function main(resolveFromCwd) {
     // can say the flag deferred the gate instead of claiming (falsely) that the
     // repo declared it had none. The file-target and `"dod": null` paths stay
     // undiscriminated and keep their existing wording.
-    // runDod must not be CALLED at all on the flag path -- calling it is what
-    // throws when there is no review.config.json to read.
+    // runDod must not be CALLED at all on the flag path -- the flag says "skip
+    // whatever is configured", so reading the config would be pointless work.
     const dod = isFileTarget
       ? { passed: true, deferred: true, results: [] }
       : dodDeferred
         ? { passed: true, deferred: true, deferredBy: '--no-dod', results: [] }
         : runDod(repoRoot);
+    // An absent config no longer blocks the run, but it must not pass quietly
+    // either: warn every round, and the handoff repeats it at the end.
+    if (dod.deferredBy === 'no-config') {
+      process.stderr.write(`review-cli: warning: no ${dodExec.CONFIG_FILENAME} at the repo root -- reviewing without an executable DoD gate (reported as DEFERRED, never as passed)\n`);
+    }
     // Persist the extended target object. For file targets, add type/hasDoD/spec
     // so later verbs (record, decideTermination) can branch on target type without
     // re-parsing the ref. For git targets, the existing ref/base/head_sha fields

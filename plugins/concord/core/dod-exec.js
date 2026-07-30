@@ -9,21 +9,21 @@ const path = require('node:path');
 
 const CONFIG_FILENAME = 'review.config.json';
 
-// Reads `review.config.json` from repoRoot. An ABSENT config is a hard error
-// (harness-failure): there is no silent default. On a repo with no node tests,
-// a silent `node --test` default finds 0 tests, exits 0, and manufactures a
-// false-clean DoD pass -- violating concord's fail-closed / distrust-green
-// principle. The user must declare their gate explicitly. A PRESENT-BUT-CORRUPT
-// config also fails closed.
+// Reads `review.config.json` from repoRoot. An ABSENT config DEFERS the gate:
+// the review still converges, and the handoff says so ("DEFERRED (no
+// review.config.json)"), never "passed". What must never happen is a silent
+// DEFAULT gate -- `node --test` on a repo with no node tests finds 0 tests,
+// exits 0, and manufactures a false-clean pass. Deferring is honest; defaulting
+// is not. A PRESENT-BUT-CORRUPT config still fails closed: a file that was
+// written and then broke means an intent existed, and skipping it silently is
+// the real accident.
 function loadDodConfig(repoRoot, readFileFn = fs.readFileSync) {
   let raw;
   try {
     raw = readFileFn(path.join(repoRoot, CONFIG_FILENAME), 'utf8');
   } catch (e) {
     if (e && e.code === 'ENOENT') {
-      throw new Error(
-        `harness-failure: no ${CONFIG_FILENAME} at the repo root -- declare your DoD gate, e.g. {"dod":["node --test"]} or {"dod":["pnpm build"]}. concord will not run a silent default gate that can pass on a repo it never actually tested (false clean) -- or re-run with --no-dod to review without an executable gate (the handoff will report DoD as deferred).`,
-      );
+      return { deferred: true, deferredBy: 'no-config' };
     }
     throw new Error(`harness-failure: ${CONFIG_FILENAME} is present but unreadable: ${e && e.message ? e.message : e}`);
   }

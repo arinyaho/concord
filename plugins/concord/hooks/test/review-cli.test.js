@@ -1359,11 +1359,35 @@ function initRepoWithoutDodConfig() {
   return repo;
 }
 
-test('round-start: WITHOUT --no-dod a repo with no review.config.json still fails closed', () => {
+test('round-start: a repo with no review.config.json runs, deferring the DoD instead of blocking', () => {
+  // The whole point: a repo that never declared a gate is still reviewable.
+  // Nothing is faked to a pass -- dodDeferred is what tells callers apart.
   const repo = initRepoWithoutDodConfig();
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
-  assert.throws(() => run(['round-start', 'feat/x', 'HEAD~1'], { env }), /harness-failure: no review\.config\.json/);
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.strictEqual(out.decision, 'work');
+  assert.strictEqual(out.dodDeferred, true);
+  const ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.strictEqual(ledger.dod.deferredBy, 'no-config');
+});
+
+test('record: the handoff names the absent config as the reason, and never says passed', () => {
+  const repo = initRepoWithoutDodConfig();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  fs.writeFileSync(
+    path.join(dir, `round-${n}-correctness.json`),
+    JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }),
+  );
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  run(['plan-fixes', 'feat/x'], { env });
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.match(out.handoff, /DoD: DEFERRED \(no review\.config\.json/);
+  assert.ok(!out.handoff.includes('DoD: passed'), 'a deferred DoD must never be reported as "DoD: passed"');
+  // Nothing was declared here, so the dod:null wording would be a lie.
+  assert.ok(!out.handoff.includes('no executable gate declared'), 'absent config must not borrow the dod:null wording');
 });
 
 test('round-start: --no-dod starts a run in a repo with no review.config.json at all', () => {
