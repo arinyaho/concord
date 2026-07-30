@@ -505,11 +505,11 @@ function main(resolveFromCwd) {
     const BROAD_FLAGS = new Set(['--broad', '--gate']);
     const broadFlagPassed = rest.some((a) => BROAD_FLAGS.has(a));
     // Executable-DoD opt-out (--no-dod): the same deferral `"dod": null` in
-    // review.config.json declares, asked for per-run instead. It exists because
-    // an ABSENT config is a hard harness-failure (deliberately -- a silent
-    // default gate manufactures a false clean), and authoring the config to get
-    // past that then trips the dirty-tree guard. The review gates still run; the
-    // DoD is reported deferred and never faked to a pass.
+    // review.config.json declares, asked for per-run instead. It exists for a
+    // repo that HAS a config with real `dod` commands but wants the executable
+    // gate skipped for this run (a config-less repo already defers on its own).
+    // The review gates still run; the DoD is reported deferred and never faked
+    // to a pass.
     const NO_DOD_FLAGS = new Set(['--no-dod']);
     const noDodFlagPassed = rest.some((a) => NO_DOD_FLAGS.has(a));
     const positional = rest.filter((a) => !BROAD_FLAGS.has(a) && !NO_DOD_FLAGS.has(a));
@@ -816,9 +816,8 @@ function main(resolveFromCwd) {
       // Git: fixes already landed via commit-fix -- re-run DoD against the post-commit
       // tree so the handoff reports the true final state, not the pre-fix round-start snapshot.
       // File targets skip this: there is no DoD, and no git tree to re-check.
-      // A --no-dod run skips it too: there is no gate to re-run, and calling
-      // runDod here would throw on the very absence the flag was passed for --
-      // at the very end of an otherwise successful run, losing the handoff.
+      // A deferred-DoD run (--no-dod, or no config) skips it too: there is no
+      // gate to re-run, and runDod would only re-report the same deferral.
       ledger = { ...ledger, dod: runDod(repoRoot) };
     }
     // Git only: clean any leftover uncommitted edit from a rejected/parked fixer.
