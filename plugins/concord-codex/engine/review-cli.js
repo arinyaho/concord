@@ -666,10 +666,11 @@ function main(resolveFromCwd) {
     // review-until-green can declare done). File targets carry hasDoD:false
     // and skip the DoD entirely -- runDod would throw in a non-git dir because
     // review.config.json is not expected to exist there.
-    // `deferredBy` discriminates WHY: only the flag path sets it, so the handoff
-    // can say the flag deferred the gate instead of claiming (falsely) that the
-    // repo declared it had none. The file-target and `"dod": null` paths stay
-    // undiscriminated and keep their existing wording.
+    // `deferredBy` discriminates WHY, so the handoff never claims (falsely) that
+    // the repo declared it had no gate: '--no-dod' for the flag path, 'no-config'
+    // for an absent review.config.json (set by loadDodConfig) -- both have their
+    // own DOD_DEFERRAL_LINES wording. The file-target and `"dod": null` paths set
+    // no deferredBy and keep the generic wording.
     // runDod must not be CALLED at all on the flag path -- the flag says "skip
     // whatever is configured", so reading the config would be pointless work.
     const dod = isFileTarget
