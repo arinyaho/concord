@@ -642,7 +642,8 @@ function main(resolveFromCwd) {
     const gateApplied = !!gateCfg || broadFlagPassed || !!ledger.gateApplied;
     // Sticky for the same reason gateApplied is: once a run has opted out of the
     // executable gate, round 2's round-start must not have to repeat --no-dod
-    // (and must not throw on the absent config it was told to work without).
+    // (without stickiness a repo that DOES have `dod` commands would run the
+    // gate the caller asked to skip).
     const dodDeferred = noDodFlagPassed || !!ledger.dodDeferred;
     if (intentCfg) {
       const intentPath = path.join(stateDir, `intent-${slug}.md`);
