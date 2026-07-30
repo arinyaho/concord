@@ -34,10 +34,12 @@ function loadDodConfig(repoRoot, readFileFn = fs.readFileSync) {
     throw new Error(`harness-failure: ${CONFIG_FILENAME} is present but malformed: ${e && e.message ? e.message : e}`);
   }
   // Explicit opt-out: `"dod": null` declares there is no executable gate (an
-  // infra/VTL/CDK change validated out-of-band, e.g. post-deploy e2e). Distinct
-  // from an ABSENT config (harness-failure) and from a command list: the review
-  // gates still run, but the executable DoD is deferred, never faked to a false
-  // clean.
+  // infra/VTL/CDK change validated out-of-band, e.g. post-deploy e2e). Both this
+  // and an ABSENT config defer, but for different reasons -- absent means nothing
+  // was ever declared (`deferredBy: 'no-config'`), `null` means the repo declared
+  // it has no executable gate -- so the handoff wording differs. Either way the
+  // review gates still run and the executable DoD is deferred, never faked to a
+  // false clean.
   if (parsed && parsed.dod === null) {
     return { deferred: true };
   }
