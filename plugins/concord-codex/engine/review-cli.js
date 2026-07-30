@@ -816,8 +816,10 @@ function main(resolveFromCwd) {
       // Git: fixes already landed via commit-fix -- re-run DoD against the post-commit
       // tree so the handoff reports the true final state, not the pre-fix round-start snapshot.
       // File targets skip this: there is no DoD, and no git tree to re-check.
-      // A deferred-DoD run (--no-dod, or no config) skips it too: there is no
-      // gate to re-run, and runDod would only re-report the same deferral.
+      // An explicitly opted-out run (--no-dod) skips it too: there is no gate to
+      // re-run. A no-config run still re-enters runDod on purpose -- a config added
+      // during the run takes effect, and if there is still none it simply re-reports
+      // the same deferral.
       ledger = { ...ledger, dod: runDod(repoRoot) };
     }
     // Git only: clean any leftover uncommitted edit from a rejected/parked fixer.
