@@ -94,9 +94,16 @@ function gitCheckoutTree(repoRoot) {
 }
 function runDod(repoRoot) {
   const cfg = dodExec.loadDodConfig(repoRoot);
-  if (cfg.deferred) return { passed: true, deferred: true, results: [] };
+  // deferredBy is carried through so the handoff can say WHY (an absent config
+  // is not the same claim as `"dod": null`, which declares there is no gate).
+  if (cfg.deferred) return { passed: true, deferred: true, deferredBy: cfg.deferredBy, results: [] };
   return dodExec.runDodExec({ cwd: repoRoot, commands: cfg.dod, execFn: dodExec.defaultExecFn });
 }
+
+const DOD_DEFERRAL_LINES = {
+  '--no-dod': 'DoD: DEFERRED (--no-dod: no executable gate ran this run)',
+  'no-config': `DoD: DEFERRED (no ${dodExec.CONFIG_FILENAME}: reviewed without an executable gate -- add {"dod":["<your test command>"]} to gate future runs)`,
+};
 
 // Terminal handoff (design §8): rounds, killed/fixed/parked counts, a per-fix
 // rationale digest, and the needs-decision packets -- the "one consolidated
@@ -138,11 +145,11 @@ function renderHandoff(result) {
   const dodLine = !ledger.dod
     ? 'DoD: not run'
     : ledger.dod.deferred
-      // The per-run --no-dod opt-out is NOT a declaration that the repo has no
-      // gate -- nothing was declared. Saying so would misreport the run.
-      ? (ledger.dod.deferredBy === '--no-dod'
-        ? 'DoD: DEFERRED (--no-dod: no executable gate ran this run)'
-        : 'DoD: DEFERRED (no executable gate declared; validate out-of-band, e.g. post-deploy e2e)')
+      // Neither the --no-dod flag nor an absent config is a DECLARATION that the
+      // repo has no gate -- nothing was declared. Saying so would misreport the
+      // run, so each reason gets its own wording.
+      ? (DOD_DEFERRAL_LINES[ledger.dod.deferredBy]
+        || 'DoD: DEFERRED (no executable gate declared; validate out-of-band, e.g. post-deploy e2e)')
       : ledger.dod.passed
         ? 'DoD: passed'
         : 'DoD: FAILED';
@@ -498,11 +505,11 @@ function main(resolveFromCwd) {
     const BROAD_FLAGS = new Set(['--broad', '--gate']);
     const broadFlagPassed = rest.some((a) => BROAD_FLAGS.has(a));
     // Executable-DoD opt-out (--no-dod): the same deferral `"dod": null` in
-    // review.config.json declares, asked for per-run instead. It exists because
-    // an ABSENT config is a hard harness-failure (deliberately -- a silent
-    // default gate manufactures a false clean), and authoring the config to get
-    // past that then trips the dirty-tree guard. The review gates still run; the
-    // DoD is reported deferred and never faked to a pass.
+    // review.config.json declares, asked for per-run instead. It exists for a
+    // repo that HAS a config with real `dod` commands but wants the executable
+    // gate skipped for this run (a config-less repo already defers on its own).
+    // The review gates still run; the DoD is reported deferred and never faked
+    // to a pass.
     const NO_DOD_FLAGS = new Set(['--no-dod']);
     const noDodFlagPassed = rest.some((a) => NO_DOD_FLAGS.has(a));
     const positional = rest.filter((a) => !BROAD_FLAGS.has(a) && !NO_DOD_FLAGS.has(a));
@@ -635,7 +642,8 @@ function main(resolveFromCwd) {
     const gateApplied = !!gateCfg || broadFlagPassed || !!ledger.gateApplied;
     // Sticky for the same reason gateApplied is: once a run has opted out of the
     // executable gate, round 2's round-start must not have to repeat --no-dod
-    // (and must not throw on the absent config it was told to work without).
+    // (without stickiness a repo that DOES have `dod` commands would run the
+    // gate the caller asked to skip).
     const dodDeferred = noDodFlagPassed || !!ledger.dodDeferred;
     if (intentCfg) {
       const intentPath = path.join(stateDir, `intent-${slug}.md`);
@@ -657,19 +665,25 @@ function main(resolveFromCwd) {
 
     // DoD is a git-target concept (a CI command the code must pass before
     // review-until-green can declare done). File targets carry hasDoD:false
-    // and skip the DoD entirely -- runDod would throw in a non-git dir because
-    // review.config.json is not expected to exist there.
-    // `deferredBy` discriminates WHY: only the flag path sets it, so the handoff
-    // can say the flag deferred the gate instead of claiming (falsely) that the
-    // repo declared it had none. The file-target and `"dod": null` paths stay
-    // undiscriminated and keep their existing wording.
-    // runDod must not be CALLED at all on the flag path -- calling it is what
-    // throws when there is no review.config.json to read.
+    // and skip the DoD entirely -- a file/doc review must not run the repo's
+    // build/test commands, which say nothing about the reviewed file.
+    // `deferredBy` discriminates WHY, so the handoff never claims (falsely) that
+    // the repo declared it had no gate: '--no-dod' for the flag path, 'no-config'
+    // for an absent review.config.json (set by loadDodConfig) -- both have their
+    // own DOD_DEFERRAL_LINES wording. The file-target and `"dod": null` paths set
+    // no deferredBy and keep the generic wording.
+    // runDod must not be CALLED at all on the flag path -- the flag says "skip
+    // whatever is configured", so reading the config would be pointless work.
     const dod = isFileTarget
       ? { passed: true, deferred: true, results: [] }
       : dodDeferred
         ? { passed: true, deferred: true, deferredBy: '--no-dod', results: [] }
         : runDod(repoRoot);
+    // An absent config no longer blocks the run, but it must not pass quietly
+    // either: warn every round, and the handoff repeats it at the end.
+    if (dod.deferredBy === 'no-config') {
+      process.stderr.write(`review-cli: warning: no ${dodExec.CONFIG_FILENAME} at the repo root -- reviewing without an executable DoD gate (reported as DEFERRED, never as passed)\n`);
+    }
     // Persist the extended target object. For file targets, add type/hasDoD/spec
     // so later verbs (record, decideTermination) can branch on target type without
     // re-parsing the ref. For git targets, the existing ref/base/head_sha fields
@@ -804,9 +818,10 @@ function main(resolveFromCwd) {
       // Git: fixes already landed via commit-fix -- re-run DoD against the post-commit
       // tree so the handoff reports the true final state, not the pre-fix round-start snapshot.
       // File targets skip this: there is no DoD, and no git tree to re-check.
-      // A --no-dod run skips it too: there is no gate to re-run, and calling
-      // runDod here would throw on the very absence the flag was passed for --
-      // at the very end of an otherwise successful run, losing the handoff.
+      // An explicitly opted-out run (--no-dod) skips it too: there is no gate to
+      // re-run. A no-config run still re-enters runDod on purpose -- a config added
+      // during the run takes effect, and if there is still none it simply re-reports
+      // the same deferral.
       ledger = { ...ledger, dod: runDod(repoRoot) };
     }
     // Git only: clean any leftover uncommitted edit from a rejected/parked fixer.

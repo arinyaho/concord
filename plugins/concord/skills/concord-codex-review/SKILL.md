@@ -65,7 +65,7 @@ Concord reviews a **local git diff** (`base...HEAD`), so the target must be chec
 
 ## Step 2 — DoD gate
 
-Concord refuses to start without a declared DoD gate (`review.config.json`). If `round-start` returns `harness-failure: no review.config.json`, surface BOTH resolutions to the user and let them pick — declare a gate in a committed `review.config.json`, or re-run with `--no-dod` (review gates only, DoD reported deferred). Never choose `--no-dod` on your own initiative; passing it is the user's decision.
+A repo with no `review.config.json` runs fine — the loop converges on the review gates alone and the handoff says `DoD: DEFERRED`. Relay that deferral instead of calling the run verified, and mention that a committed `{"dod":["<test command>"]}` would gate future runs. Never pass `--no-dod` on your own initiative to skip a gate that is failing; that is the user's decision.
 
 ## Step 3 — run the loop with Codex reviewers
 

@@ -1343,9 +1343,10 @@ test('round-start: gateApplied is false when neither the config gate block nor -
 
 // ---- --no-dod: explicit per-run deferral of the executable gate ----
 
-// A repo that never declared a DoD gate. round-start's runDod fails closed here
-// (that is deliberate -- a silent default gate manufactures a false clean), so
-// every test below exercises the explicit opt-out instead of the config file.
+// A repo that never declared a DoD gate. round-start defers on its own here
+// (deferredBy: 'no-config') rather than faking a pass -- a silent default gate
+// would manufacture a false clean. The --no-dod tests below cover the explicit
+// opt-out flag on top of that.
 function initRepoWithoutDodConfig() {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-no-dod-'));
   execFileSync('git', ['init', '-q'], { cwd: repo });
@@ -1359,11 +1360,35 @@ function initRepoWithoutDodConfig() {
   return repo;
 }
 
-test('round-start: WITHOUT --no-dod a repo with no review.config.json still fails closed', () => {
+test('round-start: a repo with no review.config.json runs, deferring the DoD instead of blocking', () => {
+  // The whole point: a repo that never declared a gate is still reviewable.
+  // Nothing is faked to a pass -- dodDeferred is what tells callers apart.
   const repo = initRepoWithoutDodConfig();
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
-  assert.throws(() => run(['round-start', 'feat/x', 'HEAD~1'], { env }), /harness-failure: no review\.config\.json/);
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.strictEqual(out.decision, 'work');
+  assert.strictEqual(out.dodDeferred, true);
+  const ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.strictEqual(ledger.dod.deferredBy, 'no-config');
+});
+
+test('record: the handoff names the absent config as the reason, and never says passed', () => {
+  const repo = initRepoWithoutDodConfig();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  fs.writeFileSync(
+    path.join(dir, `round-${n}-correctness.json`),
+    JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }),
+  );
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  run(['plan-fixes', 'feat/x'], { env });
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.match(out.handoff, /DoD: DEFERRED \(no review\.config\.json/);
+  assert.ok(!out.handoff.includes('DoD: passed'), 'a deferred DoD must never be reported as "DoD: passed"');
+  // Nothing was declared here, so the dod:null wording would be a lie.
+  assert.ok(!out.handoff.includes('no executable gate declared'), 'absent config must not borrow the dod:null wording');
 });
 
 test('round-start: --no-dod starts a run in a repo with no review.config.json at all', () => {
@@ -1411,11 +1436,14 @@ test('round-start: dodDeferred is sticky -- a later round-start omitting --no-do
   assert.strictEqual(first.dodDeferred, true);
 
   // Same re-drive path the gateApplied stickiness test uses: phase is already
-  // 'gates', so this round-start re-drives the round with no flag. Without the
-  // sticky ledger field runDod would run here and throw harness-failure.
+  // 'gates', so this round-start re-drives the round with no flag. This repo has
+  // no review.config.json, so dodDeferred alone would stay true even with the
+  // stickiness broken -- runDod would defer with deferredBy 'no-config'. Only
+  // deferredBy still naming the flag proves the sticky ledger field carried over.
   const second = JSON.parse(run(['round-start', 'feat/x'], { env }));
   assert.strictEqual(second.decision, 'work');
   assert.strictEqual(second.dodDeferred, true);
+  assert.strictEqual(review.readLedger(dir, review.targetSlug('feat/x')).dod.deferredBy, '--no-dod');
 });
 
 test('round-start: dodDeferred is false on a normal run whose repo declares a real gate', () => {

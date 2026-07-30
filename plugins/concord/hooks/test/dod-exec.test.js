@@ -12,37 +12,26 @@ function tmpDir() {
 
 // ---- loadDodConfig ----
 
-// UPDATED (was: "falls back to the default command list") -- old behavior was
-// ENOENT -> return { dod: DEFAULT_DOD_COMMANDS }. Fix makes ENOENT fail-closed
-// (throws harness-failure). Test now asserts the correct post-fix behavior.
-test('loadDodConfig: missing review.config.json throws harness-failure (no silent fallback)', () => {
+// An absent config DEFERS the gate instead of blocking the run: the review
+// still converges and the handoff says DEFERRED. The false-clean footgun this
+// guards against is a silent DEFAULT gate (`node --test` on a repo with no node
+// tests exits 0 having run nothing), not the deferral.
+test('loadDodConfig: missing review.config.json defers the gate (no throw, no silent default)', () => {
   const dir = tmpDir(); // guaranteed empty -- no review.config.json written
-  assert.throws(
-    () => dodExec.loadDodConfig(dir),
-    (err) => {
-      assert.match(err.message, /harness-failure/);
-      assert.match(err.message, /review\.config\.json/);
-      return true;
-    },
-  );
+  const cfg = dodExec.loadDodConfig(dir);
+  assert.strictEqual(cfg.deferred, true);
+  assert.strictEqual(cfg.deferredBy, 'no-config');
+  assert.strictEqual(cfg.dod, undefined); // never a default command list
 });
 
-test('loadDodConfig: the ENOENT message names BOTH resolutions -- declare a gate, or re-run with --no-dod', () => {
-  // The absent-config failure is deliberately hard, but it is also the first
-  // thing a user hits in a repo that has never run concord. The message must
-  // hand the agent both honest exits so it can present them rather than
-  // guessing: author the config, or defer the executable gate explicitly.
-  const dir = tmpDir(); // guaranteed empty -- no review.config.json written
-  assert.throws(
-    () => dodExec.loadDodConfig(dir),
-    (err) => {
-      assert.match(err.message, /harness-failure/);
-      assert.match(err.message, /\{"dod":\["node --test"\]\}/);
-      assert.match(err.message, /--no-dod/);
-      assert.match(err.message, /deferred/);
-      return true;
-    },
-  );
+test('loadDodConfig: an absent config via injected readFileFn (ENOENT) defers, does not throw', () => {
+  const readFileFn = () => {
+    const e = new Error('ENOENT: no such file or directory');
+    e.code = 'ENOENT';
+    throw e;
+  };
+  const cfg = dodExec.loadDodConfig('/repo', readFileFn);
+  assert.deepStrictEqual(cfg, { deferred: true, deferredBy: 'no-config' });
 });
 
 test('loadDodConfig: reads a configured "dod" command list from the repo root', () => {
@@ -50,26 +39,6 @@ test('loadDodConfig: reads a configured "dod" command list from the repo root', 
   fs.writeFileSync(path.join(dir, 'review.config.json'), JSON.stringify({ dod: ['npm run lint', 'npm test'] }));
   const cfg = dodExec.loadDodConfig(dir);
   assert.deepStrictEqual(cfg.dod, ['npm run lint', 'npm test']);
-});
-
-// UPDATED (was: "absent config (ENOENT via injected readFileFn) falls back to
-// the default, does not throw") -- old behavior returned DEFAULT_DOD_COMMANDS
-// on ENOENT. Fix makes ENOENT fail-closed: throws harness-failure so concord
-// never passes a DoD gate it never actually ran (false-clean footgun).
-test('loadDodConfig throws harness-failure when review.config.json is absent (no silent default gate)', () => {
-  const readFileFn = () => {
-    const e = new Error('ENOENT: no such file or directory');
-    e.code = 'ENOENT';
-    throw e;
-  };
-  assert.throws(
-    () => dodExec.loadDodConfig('/repo', readFileFn),
-    (err) => {
-      assert.match(err.message, /harness-failure/);
-      assert.match(err.message, /review\.config\.json/);
-      return true;
-    },
-  );
 });
 
 test('loadDodConfig: present-but-corrupt config (bad JSON) throws harness-failure, does NOT degrade to default', () => {
