@@ -1343,9 +1343,10 @@ test('round-start: gateApplied is false when neither the config gate block nor -
 
 // ---- --no-dod: explicit per-run deferral of the executable gate ----
 
-// A repo that never declared a DoD gate. round-start's runDod fails closed here
-// (that is deliberate -- a silent default gate manufactures a false clean), so
-// every test below exercises the explicit opt-out instead of the config file.
+// A repo that never declared a DoD gate. round-start defers on its own here
+// (deferredBy: 'no-config') rather than faking a pass -- a silent default gate
+// would manufacture a false clean. The --no-dod tests below cover the explicit
+// opt-out flag on top of that.
 function initRepoWithoutDodConfig() {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-no-dod-'));
   execFileSync('git', ['init', '-q'], { cwd: repo });
