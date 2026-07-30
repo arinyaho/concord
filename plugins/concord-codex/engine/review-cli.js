@@ -664,8 +664,8 @@ function main(resolveFromCwd) {
 
     // DoD is a git-target concept (a CI command the code must pass before
     // review-until-green can declare done). File targets carry hasDoD:false
-    // and skip the DoD entirely -- runDod would throw in a non-git dir because
-    // review.config.json is not expected to exist there.
+    // and skip the DoD entirely -- a file/doc review must not run the repo's
+    // build/test commands, which say nothing about the reviewed file.
     // `deferredBy` discriminates WHY, so the handoff never claims (falsely) that
     // the repo declared it had no gate: '--no-dod' for the flag path, 'no-config'
     // for an absent review.config.json (set by loadDodConfig) -- both have their
