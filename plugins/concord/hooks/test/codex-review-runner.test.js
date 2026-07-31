@@ -282,6 +282,42 @@ test('panel lens prompts identify the reviewed diff and require the intent sourc
   }
 });
 
+test('panel lens and adversarial-vote prompts carry the blocked-tool clause', async () => {
+  const stateDir = temp();
+  const prompts = [];
+  let recorded = 0;
+  const cli = (args) => {
+    const [verb] = args;
+    if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
+    if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'plan-fixes') return { fixes: [] };
+    if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
+    if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
+    if (verb === 'gate-panel-round-record') return { status: 'done' };
+    throw new Error(`unexpected CLI ${verb}`);
+  };
+  const spawn = ({ role, prompt }) => {
+    prompts.push({ role, prompt });
+    if (role === 'correctness') fs.writeFileSync(path.join(stateDir, 'round-4-correctness.json'), JSON.stringify({ status: 'ok', examined: [], findings: [] }));
+    if (role === 'verify') fs.writeFileSync(path.join(stateDir, 'round-4-verify.json'), JSON.stringify({ status: 'ok', rejected: [] }));
+    if (role.startsWith('gate-panel-') && role !== 'gate-panel-verify') {
+      const lens = role.slice('gate-panel-'.length);
+      // One lens must emit a candidate so the adversarial vote prompts exist.
+      const findings = lens === 'ac-coverage' ? [{ id: 'gate:ac-coverage:gap', file: 'a.js', span: 'x', summary: 's' }] : [];
+      fs.writeFileSync(path.join(stateDir, `round-4-gate-panel-1-${lens}.json`), JSON.stringify({ status: 'ok', findings }));
+    }
+    return { status: 0 };
+  };
+
+  await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn });
+
+  // Same clause reviewerPrompt appends: a reviewer that loses a tool must say so.
+  const clause = /do NOT substitute a weaker method.*"status":"ok","blocked"/;
+  const panelPrompts = prompts.filter(({ role }) => role.startsWith('gate-panel-'));
+  assert.strictEqual(panelPrompts.length, 8); // 5 lenses + 3 votes
+  for (const { role, prompt } of panelPrompts) assert.match(prompt, clause, `${role} prompt is missing the blocked clause`);
+});
+
 test('a failed panel lens is treated as zero findings while the remaining lenses continue', async () => {
   const stateDir = temp();
   let recorded = 0;
