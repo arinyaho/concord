@@ -125,7 +125,19 @@ async function runReviewUntilGreen(options) {
           const verdict = path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-vote-${finding.id}-${vote}.json`);
           await invoke(spawn, { role: 'gate-panel-verify', repoRoot, stateDir: context.stateDir,
             prompt: `Try to refute gate finding ${JSON.stringify(finding)}. Default to refuted if uncertain. Write ONLY {"status":"ok","survives":false} to ${verdict}.${BLOCKED_CLAUSE}` });
-          try { return JSON.parse(fs.readFileSync(verdict, 'utf8')).survives === true; } catch (_) { return false; }
+          let raw;
+          // Missing/unparseable verdict stays lenient (counts as refuted), but a
+          // voter that DECLARED `blocked` never performed the refutation it was
+          // assigned -- tallying that as a refutation is the false clean the
+          // field exists to prevent, so it fails the round like every other
+          // panel read path (review-cli.js requireNotBlocked).
+          try { raw = JSON.parse(fs.readFileSync(verdict, 'utf8')); } catch (_) { return false; }
+          const blocked = raw ? raw.blocked : undefined;
+          if (blocked !== undefined && !(Array.isArray(blocked) && !blocked.length)) {
+            const detail = Array.isArray(blocked) ? blocked.map((b) => String(b)).join('; ') : String(blocked);
+            throw new Error(`harness-failure: gate-panel vote ${vote} on ${finding.id} could not run: ${detail} -- it was blocked from the method it was assigned, so this round has no usable verdict. Fix the reviewer's environment (sandbox, permissions, missing tool) and re-run; do not accept the artifact.`);
+          }
+          return raw ? raw.survives === true : false;
         }));
         survives = votes.filter(Boolean).length;
         if (survives < 2) rejected.push(finding.id);

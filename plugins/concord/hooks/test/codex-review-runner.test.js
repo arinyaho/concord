@@ -318,6 +318,44 @@ test('panel lens and adversarial-vote prompts carry the blocked-tool clause', as
   for (const { role, prompt } of panelPrompts) assert.match(prompt, clause, `${role} prompt is missing the blocked clause`);
 });
 
+test('an adversarial vote that declares blocked fails the round instead of counting as a refutation', async () => {
+  const stateDir = temp();
+  let recorded = 0;
+  const cli = (args) => {
+    const [verb] = args;
+    if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
+    if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'plan-fixes') return { fixes: [] };
+    if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
+    if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
+    if (verb === 'gate-panel-round-record') return { status: 'done' };
+    throw new Error(`unexpected CLI ${verb}`);
+  };
+  const spawn = ({ role }) => {
+    if (role === 'correctness') fs.writeFileSync(path.join(stateDir, 'round-4-correctness.json'), JSON.stringify({ status: 'ok', examined: [], findings: [] }));
+    if (role === 'verify') fs.writeFileSync(path.join(stateDir, 'round-4-verify.json'), JSON.stringify({ status: 'ok', rejected: [] }));
+    if (role.startsWith('gate-panel-') && role !== 'gate-panel-verify') {
+      const lens = role.slice('gate-panel-'.length);
+      const findings = lens === 'ac-coverage' ? [{ id: 'gate:ac-coverage:gap', file: 'a.js', span: 'x', summary: 's' }] : [];
+      fs.writeFileSync(path.join(stateDir, `round-4-gate-panel-1-${lens}.json`), JSON.stringify({ status: 'ok', findings }));
+    }
+    if (role === 'gate-panel-verify') {
+      // Every voter obeys the blocked clause: none of them actually attempted
+      // the refutation, so the finding must not be silently rejected.
+      for (const vote of [0, 1, 2]) {
+        fs.writeFileSync(path.join(stateDir, `round-4-gate-panel-1-vote-gate:ac-coverage:gap-${vote}.json`),
+          JSON.stringify({ status: 'ok', blocked: ['grep: denied by sandbox'] }));
+      }
+    }
+    return { status: 0 };
+  };
+
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn }),
+    /harness-failure: gate-panel vote .* could not run: grep: denied by sandbox/,
+  );
+});
+
 test('a failed panel lens is treated as zero findings while the remaining lenses continue', async () => {
   const stateDir = temp();
   let recorded = 0;
