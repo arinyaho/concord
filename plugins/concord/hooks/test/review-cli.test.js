@@ -1629,6 +1629,22 @@ test('plan-fixes: a --broad-enabled round folds gate findings into gate_open exa
   assert.strictEqual(after.gate_open[0].id, 'gate:cross-context:flagged');
 });
 
+test('plan-fixes: a gate-verify artifact that DECLARES blocked is a harness-failure, not lenient zero-rejections', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
+  execFileSync('git', ['commit', '-aqm', 'enable gate'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [], blocked: ['grep: denied by sandbox'] }));
+  assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure[\s\S]*could not run/);
+});
+
 test('plan-fixes: a gate-verify-added finding (distrust-green) merges into gate_open', () => {
   const repo = initRepo();
   const dir = tmpDir();
@@ -2240,6 +2256,30 @@ test('gate-panel-round-record: a missing/malformed lens file contributes zero fi
   const out = JSON.parse(run(['gate-panel-round-record', 'feat/x'], { env }));
   assert.strictEqual(out.status, 'running'); // 1st dry round -- not an error
   assert.strictEqual(out.newlyConfirmedCount, 0);
+});
+
+test('gate-panel-round-record: a lens that DECLARES blocked is a harness-failure, not a zero-findings dry round', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  seedPanelRoundConfig(repo);
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] });
+  // Schema-valid, zero findings -- but the lens says its assigned check never ran.
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-threat-model.json`),
+    JSON.stringify({ status: 'ok', findings: [], blocked: ['grep: denied by sandbox'] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  assert.throws(() => run(['gate-panel-round-record', 'feat/x'], { env }), /harness-failure[\s\S]*could not run/);
+});
+
+test('gate-panel-round-record: a panel verify that DECLARES blocked is a harness-failure, not a silent nothing-survives', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  seedPanelRoundConfig(repo);
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] });
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-verify.json`),
+    JSON.stringify({ status: 'ok', rejected: [], blocked: ['git: not on PATH'] }));
+  assert.throws(() => run(['gate-panel-round-record', 'feat/x'], { env }), /harness-failure[\s\S]*could not run/);
 });
 
 test('gate-panel-round-record: a finding whose id class does not match its lens filename is a harness-failure', () => {

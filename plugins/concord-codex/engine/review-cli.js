@@ -271,6 +271,21 @@ function readArtifact(stateDir, n, name) {
   }
 }
 
+// A DECLARED `blocked` is terminal even on the read paths that are otherwise
+// lenient (panel lenses, panel verify, gate-verify). Those paths tolerate a
+// missing or malformed artifact as "zero findings" so one flaky subagent can't
+// blow up an expensive round -- but a non-empty `blocked` is not flakiness: it
+// is the reviewer positively stating the check it was assigned never ran.
+// Reading that as zero findings advances the panel's dry streak and can
+// converge it to `done` -- exactly the false clean the `blocked` field exists
+// to prevent. Mirrors normalizeArtifact's fatal handling in artifact-contract.js.
+function requireNotBlocked(what, parsed) {
+  const blocked = parsed && parsed.blocked;
+  if (Array.isArray(blocked) && blocked.length) {
+    throw new Error(`harness-failure: ${what} reviewer could not run: ${blocked.map((b) => String(b)).join('; ')} -- it was blocked from the method it was assigned, so this round has no usable verdict. Fix the reviewer's environment (sandbox, permissions, missing tool) and re-run; do not accept the artifact.`);
+  }
+}
+
 // Fail-closed ordering guard: a verify-style artifact whose mtime predates
 // the artifact it was supposed to review means it was spawned before that
 // artifact finished writing -- possibly racing ahead on a missing/empty
@@ -434,6 +449,7 @@ function main(resolveFromCwd) {
       } catch (e) {
         continue;
       }
+      requireNotBlocked(`gate-panel round ${m} "${lens}" lens`, raw);
       let findings;
       try {
         findings = gc.parseGateFindings(JSON.stringify(raw.findings || []));
@@ -464,9 +480,15 @@ function main(resolveFromCwd) {
     // survived -- promoting unverified findings by default would defeat the
     // entire point of an adversarial-verify pass (distrust-green).
     let survivedIds;
+    let vRaw;
     try {
-      const vRaw = JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-gate-panel-${m}-verify.json`), 'utf8'));
-      if (vRaw.status !== 'ok' || !Array.isArray(vRaw.rejected)) {
+      vRaw = JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-gate-panel-${m}-verify.json`), 'utf8'));
+    } catch (e) {
+      vRaw = null; // missing or unparseable -- lenient, nothing survives below
+    }
+    requireNotBlocked(`gate-panel round ${m} verify`, vRaw);
+    try {
+      if (!vRaw || vRaw.status !== 'ok' || !Array.isArray(vRaw.rejected)) {
         throw new Error('malformed verify artifact shape');
       }
       // Entries are `{ id, reason }` or (legacy) a bare id -- this artifact is
@@ -1001,6 +1023,7 @@ function main(resolveFromCwd) {
       // broken verify pass is not a harness-failure -- it just means no
       // rejections and no verify-added findings this round.
       const gvRaw = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-gate-verify.json`), 'utf8')); } catch (e) { return { rejected: [], findings: [] }; } })();
+      requireNotBlocked('gate-verify', gvRaw); // a DECLARED block is not the flakiness this lenience covers
       let verifyFindings;
       try { verifyFindings = gc.parseGateFindings(JSON.stringify(gvRaw.findings || [])); }
       catch (e) { verifyFindings = []; }
