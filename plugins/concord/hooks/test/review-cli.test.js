@@ -2282,6 +2282,19 @@ test('gate-panel-round-record: a panel verify that DECLARES blocked is a harness
   assert.throws(() => run(['gate-panel-round-record', 'feat/x'], { env }), /harness-failure[\s\S]*could not run/);
 });
 
+test('gate-panel-round-record: a lens whose blocked is a non-array is still a harness-failure', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  seedPanelRoundConfig(repo);
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] });
+  // Same declaration, written as a bare string -- must not read as zero findings.
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-threat-model.json`),
+    JSON.stringify({ status: 'ok', findings: [], blocked: 'playwright: denied' }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  assert.throws(() => run(['gate-panel-round-record', 'feat/x'], { env }), /harness-failure[\s\S]*playwright: denied/);
+});
+
 test('gate-panel-round-record: a finding whose id class does not match its lens filename is a harness-failure', () => {
   const repo = initRepo(); const dir = tmpDir();
   seedPanelRoundConfig(repo);

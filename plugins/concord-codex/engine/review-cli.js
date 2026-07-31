@@ -280,9 +280,15 @@ function readArtifact(stateDir, n, name) {
 // converge it to `done` -- exactly the false clean the `blocked` field exists
 // to prevent. Mirrors normalizeArtifact's fatal handling in artifact-contract.js.
 function requireNotBlocked(what, parsed) {
-  const blocked = parsed && parsed.blocked;
-  if (Array.isArray(blocked) && blocked.length) {
-    throw new Error(`harness-failure: ${what} reviewer could not run: ${blocked.map((b) => String(b)).join('; ')} -- it was blocked from the method it was assigned, so this round has no usable verdict. Fix the reviewer's environment (sandbox, permissions, missing tool) and re-run; do not accept the artifact.`);
+  const blocked = parsed ? parsed.blocked : undefined;
+  // Any DECLARED `blocked` is terminal, whatever shape it was written in: only
+  // an absent field or an explicitly empty array is a clean reviewer. A
+  // non-array `blocked` (e.g. the string "playwright: denied") is fatal in
+  // normalizeArtifact, so treating it as zero findings here would be the same
+  // false clean by a different door.
+  if (blocked !== undefined && !(Array.isArray(blocked) && !blocked.length)) {
+    const detail = Array.isArray(blocked) ? blocked.map((b) => String(b)).join('; ') : String(blocked);
+    throw new Error(`harness-failure: ${what} reviewer could not run: ${detail} -- it was blocked from the method it was assigned, so this round has no usable verdict. Fix the reviewer's environment (sandbox, permissions, missing tool) and re-run; do not accept the artifact.`);
   }
 }
 
