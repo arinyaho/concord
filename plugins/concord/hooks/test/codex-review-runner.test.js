@@ -316,6 +316,19 @@ test('panel lens and adversarial-vote prompts carry the blocked-tool clause', as
   const panelPrompts = prompts.filter(({ role }) => role.startsWith('gate-panel-'));
   assert.strictEqual(panelPrompts.length, 8); // 5 lenses + 3 votes
   for (const { role, prompt } of panelPrompts) assert.match(prompt, clause, `${role} prompt is missing the blocked clause`);
+
+  // The reviewerPrompt half of the same guard: every review-class role carries
+  // the clause, including the ones this run spawned for real.
+  const spawnedReviewers = prompts.filter(({ role }) => role === 'correctness' || role === 'verify');
+  assert.strictEqual(spawnedReviewers.length, 2);
+  for (const { role, prompt } of spawnedReviewers) assert.match(prompt, clause, `${role} prompt is missing the blocked clause`);
+  const base = { stateDir: '/state', round: 2, targetType: 'git', dodPassed: true, slug: 'feature-x' };
+  for (const role of ['correctness', 'verify', 'intent', 'gate', 'gate-verify']) {
+    assert.match(reviewerPrompt(role, base), clause, `${role} prompt is missing the blocked clause`);
+  }
+  // `fix` is not a review-class prompt: it edits code rather than emitting a
+  // verdict, so it deliberately does not get the clause.
+  assert.doesNotMatch(reviewerPrompt('fix', { ...base, finding: { id: 'correctness:bug', file: 'a.js', span: 'x', summary: 's' } }), clause);
 });
 
 test('an adversarial vote that declares blocked fails the round instead of counting as a refutation', async () => {
