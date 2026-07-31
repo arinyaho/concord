@@ -30,3 +30,38 @@ for (const [name, raw, kind] of [
 ]) test(`${name} invalid artifact is classified ${kind}`, () => {
   assert.throws(() => normalizeArtifact(name, raw), (error) => error instanceof ArtifactError && error.kind === kind);
 });
+
+test('a rejection carries its stated basis and canonicalizes to {id, reason}', () => {
+  const raw = '{"status":"ok","rejected":[{"id":"correctness:x","reason":"  measured with playwright: box is 320px  "}]}';
+  assert.deepStrictEqual(normalizeArtifact('verify', raw), { status: 'ok', rejected: [{ id: 'correctness:x', reason: 'measured with playwright: box is 320px' }] });
+});
+
+for (const [label, raw] of [
+  ['a bare id string', '{"status":"ok","rejected":["correctness:x"]}'],
+  ['an empty reason', '{"status":"ok","rejected":[{"id":"correctness:x","reason":"  "}]}'],
+]) test(`a rejection with ${label} retries instead of killing the finding`, () => {
+  assert.throws(() => normalizeArtifact('verify', raw), (e) => e instanceof ArtifactError && e.kind === 'retry' && /reason/.test(e.message));
+});
+
+test('a reviewer that reports a blocked tool fails the round instead of producing a verdict', () => {
+  const raw = '{"status":"ok","rejected":[],"blocked":["playwright: browser launch denied by sandbox"]}';
+  assert.throws(() => normalizeArtifact('verify', raw), (e) => e instanceof ArtifactError && e.kind === 'fatal' && /browser launch denied/.test(e.message));
+});
+
+test('an empty blocked array is a clean reviewer, not a failure', () => {
+  assert.deepStrictEqual(normalizeArtifact('verify', '{"status":"ok","rejected":[],"blocked":[]}'), { status: 'ok', rejected: [] });
+});
+
+test('blocked wins over an unsupported status, so the reviewer is never retried into dropping it', () => {
+  const raw = '{"status":"blocked","rejected":[],"blocked":["playwright: browser launch denied by sandbox"]}';
+  assert.throws(() => normalizeArtifact('verify', raw), (e) => e instanceof ArtifactError && e.kind === 'fatal' && /browser launch denied/.test(e.message));
+});
+
+test('the retry prompt never tells a blocked reviewer to drop "blocked"', () => {
+  assert.match(retryPrompt('verify', 'correctness:|docreview:'), /"blocked"/);
+});
+
+test('the verify retry prompt spells out the rejection object shape', () => {
+  assert.match(retryPrompt('verify', 'correctness:|docreview:'), /"reason"/);
+  assert.doesNotMatch(retryPrompt('correctness', 'correctness:|docreview:'), /"reason"/);
+});
