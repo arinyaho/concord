@@ -342,7 +342,7 @@ test('plan-fixes: returns confirmed, non-killed, still-open findings and sets ph
     { status: 'ok', examined: ['a.txt'], findings: [
       { id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' },
       { id: 'correctness:fp', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'y' } ] },
-    { status: 'ok', rejected: ['correctness:fp'] });
+    { status: 'ok', rejected: [{ id: 'correctness:fp', reason: 're-read a.txt: the span is inside a comment' }] });
   const out = JSON.parse(run(['plan-fixes', 'feat/x'], { env }));
   assert.deepStrictEqual(out.fixes.map((f) => f.id), ['correctness:real']);
   const l = review.readLedger(dir, review.targetSlug('feat/x'));
@@ -2753,4 +2753,76 @@ test('record git target: fixed-signal comes from the journal sha, not the fix ar
   assert.strictEqual(f.status, 'fixed');
   assert.match(f.fix_commit, /^[0-9a-f]{7,40}$/, 'git fix_commit must be a real sha');
   assert.notStrictEqual(f.fix_commit, 'file-edit');
+});
+
+test('artifact-normalize accepts the on-disk file name as well as the role', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  assert.strictEqual(JSON.parse(run(['artifact-normalize', 'feat/x', `round-${n}-correctness.json`], { env })).artifact, 'correctness');
+  const bad = runCapture(['artifact-normalize', 'feat/x', 'nonsense'], { env });
+  assert.match(bad.stderr, /unknown artifact "nonsense"/);
+});
+
+test('a stale/absent ledger error names the state dir it resolved', () => {
+  const dir = tmpDir();
+  const r = runCapture(['artifact-normalize', 'feat/x', 'correctness'], { env: { ...process.env, REVIEW_STATE_DIR: dir } });
+  assert.match(r.stderr, new RegExp(`state dir ${dir.replace(/[/\\^$*+?.()|[\]{}]/g, '\\$&')}`));
+});
+
+test('a blocked reviewer fails the round rather than shipping a verdict', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' }] },
+    { status: 'ok', rejected: [], blocked: ['playwright: browser launch denied by sandbox'] });
+  const r = runCapture(['artifact-normalize', 'feat/x', 'verify'], { env });
+  assert.notStrictEqual(r.status, 0);
+  assert.match(r.stderr, /harness-failure.*browser launch denied/);
+  // Fatal, not retry: a second attempt in the same environment stays a failure.
+  assert.notStrictEqual(runCapture(['artifact-normalize', 'feat/x', 'verify'], { env }).status, 0);
+  assert.ok(fs.existsSync(path.join(dir, `round-${n}-verify.json`)));
+});
+
+test('record surfaces each kill with the basis the reviewer gave', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:fp', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'y' }] },
+    { status: 'ok', rejected: [{ id: 'correctness:fp', reason: 'measured the rendered box at 320px; no overflow' }] });
+  run(['plan-fixes', 'feat/x'], { env });
+  const rec = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.match(rec.handoff, /Killed \(rejected as false-positive\)/);
+  assert.match(rec.handoff, /measured the rendered box at 320px/);
+});
+
+test('rerun re-arms a converged ledger while keeping the finished run in runs[]', () => {
+  const repo = initRepo(); const dir = tmpDir(); const slug = review.targetSlug('feat/x');
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  assert.strictEqual(JSON.parse(run(['record', 'feat/x'], { env })).decision.continue, false);
+  assert.strictEqual(review.readLedger(dir, slug).status, 'clean');
+  assert.strictEqual(JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).decision, 'terminal');
+
+  const out = JSON.parse(run(['rerun', 'feat/x', '--engine', 'codex'], { env }));
+  assert.strictEqual(out.run, 2);
+  assert.strictEqual(out.archived.status, 'clean');
+  const l = review.readLedger(dir, slug);
+  assert.strictEqual(l.status, 'converging');
+  assert.strictEqual(l.engine, 'codex');
+  assert.strictEqual(l.runs.length, 1);
+  assert.strictEqual(l.runs[0].rounds, n);
+  assert.deepStrictEqual(l.findings, []); // blind: the second engine sees no prior conclusions
+  assert.ok(!fs.existsSync(path.join(dir, `round-${n}-correctness.json`)), 'prior round artifacts are swept');
+  assert.strictEqual(JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).decision, 'work');
+});
+
+test('rerun without a prior ledger says so instead of silently starting one', () => {
+  const dir = tmpDir();
+  const r = runCapture(['rerun', 'feat/nope'], { env: { ...process.env, REVIEW_STATE_DIR: dir } });
+  assert.notStrictEqual(r.status, 0);
+  assert.match(r.stderr, /no ledger for ref "feat\/nope"/);
 });

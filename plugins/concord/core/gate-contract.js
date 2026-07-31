@@ -52,7 +52,12 @@ function parseVerifyVerdict(rawText, candidateFindings) {
   } catch (e) {
     throw new Error(`verify gate did not return valid JSON: ${e.message}`);
   }
-  const rejected = Array.isArray(parsed.rejected) ? parsed.rejected.filter((id) => typeof id === 'string') : [];
+  // A rejection is `{ id, reason }` after normalization (the reason is what
+  // makes it auditable); a bare id string is still read for the artifacts that
+  // never pass through normalizeArtifact (the lenient gate-panel verify).
+  const rejected = (Array.isArray(parsed.rejected) ? parsed.rejected : [])
+    .map((entry) => (typeof entry === 'string' ? entry : entry && entry.id))
+    .filter((id) => typeof id === 'string');
   const validIds = new Set((candidateFindings || []).map((f) => f.id));
   return { rejectedIds: rejected.filter((id) => validIds.has(id)) };
 }

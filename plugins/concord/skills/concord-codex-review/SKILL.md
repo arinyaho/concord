@@ -63,6 +63,8 @@ From the user's natural-language request, determine what to review, then hand a 
 
 Concord reviews a **local git diff** (`base...HEAD`), so the target must be checked out locally. The working tree must be clean before `round-start` (commit or stash first) — same as any Concord run.
 
+**If the ref already converged under a different engine** (`round-start` returns `{"decision":"terminal","status":"clean"}`), that is the normal case for this skill — a second opinion on a branch Claude already reviewed. Run `node "$REVIEW_CLI" rerun <ref> --engine codex` first, NOT `reset`. `rerun` archives the finished run into the ledger's `runs[]` (rounds, fix digest, kill rationales) and re-arms it, so both runs stay in the handoff and are attributable by engine; `reset` throws the first run's history away. The Codex run starts blind by design — no prior findings are carried forward, because the value here is uncorrelated eyes, and seeding the second engine with the first's conclusions destroys exactly that.
+
 ## Step 2 — DoD gate
 
 A repo with no `review.config.json` runs fine — the loop converges on the review gates alone and the handoff says `DoD: DEFERRED`. Relay that deferral instead of calling the run verified, and mention that a committed `{"dod":["<test command>"]}` would gate future runs. Never pass `--no-dod` on your own initiative to skip a gate that is failing; that is the user's decision.
@@ -79,12 +81,25 @@ A reviewer subprocess needs write access to the repo (for its own reasoning scra
 # <PROMPT> is the EXACT reviewer prompt the driver tells you to give this subagent.
 # <stateDir> is what round-start printed.
 codex exec --cd "<repoRoot>" --sandbox workspace-write --add-dir "<stateDir>" \
-  --skip-git-repo-check "<PROMPT>" > "<stateDir>/codex-<role>.log" 2>&1
+  --skip-git-repo-check "<PROMPT>" < /dev/null > "<stateDir>/codex-<role>.log" 2>&1
 ```
 
+- `< /dev/null` is required — driven from a non-interactive harness, stdin is an open pipe that never reaches EOF, so `codex exec` prints `Reading additional input from stdin...` and blocks indefinitely with zero progress. Every invocation below carries it, including the fan-out loop.
 - `--add-dir "<stateDir>"` is required — without it the artifact write fails as writing outside the sandbox.
 - `--skip-git-repo-check` prevents an unattended trust prompt from hanging the subprocess.
 - After it exits, read `<stateDir>/round-<n>-<role>.json` (the artifact), not the log. Then run `artifact-normalize` exactly as the driver instructs.
+
+### `--sandbox workspace-write` cannot launch a browser
+
+`workspace-write` blocks the process spawns Chromium needs, so any reviewer pass asked to **measure rendered layout** (Playwright, Puppeteer, a headless screenshot) fails inside it — typically `browserType.launch: Target page, context or browser has been closed`. This is the single most dangerous failure mode of this skill: a reviewer that cannot launch a browser may fall back to grepping CSS and still emit a confident, schema-valid verdict.
+
+So, before you spawn a reviewer whose prompt mandates measurement:
+
+1. **Decide up front** whether this review needs a browser (the diff touches rendered UI and the prompt says "measured, not reasoned from CSS", or equivalent).
+2. **If it does, ask the user** before escalating to `--sandbox danger-full-access`. Permission escalation is the user's call, never yours. Say plainly what it grants and why the pass needs it.
+3. **If they decline, do not run the pass with a weaker method.** Concord's reviewer prompts require a blocked reviewer to emit `"blocked": ["<tool>: <what failed>"]`, which `artifact-normalize` treats as a terminal harness-failure. That loud failure is the correct outcome — report it, and never present the round as clean.
+
+Never silently downgrade the method. A grep standing in for a measurement is exactly the failure this skill's cross-model premise is supposed to catch, not commit.
 
 ### Sequential vs parallel — obey the driver's ordering
 
@@ -96,7 +111,7 @@ The driver's "wait for the artifact" dependencies are engine-independent; honor 
 ```bash
 for lens in ac-coverage design-conformance cross-context silent-gap threat-model; do
   codex exec --cd "<repoRoot>" --sandbox workspace-write --add-dir "<stateDir>" \
-    --skip-git-repo-check "<PROMPT for $lens>" > "<stateDir>/codex-panel-$lens.log" 2>&1 &
+    --skip-git-repo-check "<PROMPT for $lens>" < /dev/null > "<stateDir>/codex-panel-$lens.log" 2>&1 &
 done
 wait
 ```

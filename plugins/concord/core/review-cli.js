@@ -26,6 +26,16 @@ function resolveStateDir(resolveFromCwd) {
   return resolveFromCwd();
 }
 
+// Every "no ledger / no active round" error is really "you are pointed at a
+// different state dir than the run you mean" -- the dir is derived from cwd, so
+// running a verb one directory up from the worktree silently keys a different
+// project. Naming the resolved dir (and where it came from) turns a mystifying
+// harness-failure into an obvious one.
+function stateDirHint(stateDir) {
+  const origin = process.env.REVIEW_STATE_DIR ? 'from REVIEW_STATE_DIR' : `derived from cwd ${process.cwd()}`;
+  return `(state dir ${stateDir}, ${origin})`;
+}
+
 const GATE_PANEL_LENSES = ['ac-coverage', 'design-conformance', 'cross-context', 'silent-gap', 'threat-model'];
 
 // Impure git/DoD boundary. lib/review.js and lib/gate-contract.js stay pure
@@ -140,6 +150,10 @@ function renderHandoff(result) {
   const lines = [];
   lines.push(`review-until-green: target ${ledger.target && ledger.target.ref} -- status: ${ledger.status}`);
   lines.push(`rounds: ${ledger.round}/${ledger.budget.max_rounds} (spent ${ledger.budget.spent})`);
+  if (ledger.engine) lines.push(`reviewer engine: ${ledger.engine}`);
+  for (const r of ledger.runs || []) {
+    lines.push(`prior run #${r.run} (${r.engine || 'engine unrecorded'}): ${r.status} -- ${r.rounds} round(s), ${(r.fixed || []).length} fixed, ${(r.parked || []).length} parked, ${(r.killed || []).length} killed`);
+  }
   if (aborted) lines.push(`ABORTED (${aborted.kind}): ${aborted.message}`);
 
   const dodLine = !ledger.dod
@@ -168,6 +182,13 @@ function renderHandoff(result) {
     const conf = ledger.status === 'intent-review' ? ' (pending confirmation)' : '';
     lines.push('', `Fix digest${conf}:`);
     for (const f of fixed) lines.push(`  - [${f.id}] ${f.summary} -> commit ${f.fix_commit}`);
+  }
+  // A killed finding is a real finding a reviewer talked the loop out of. Show
+  // the basis it gave, so a rejection can be audited from the handoff alone.
+  const killedDigest = ledger.killed_digest || [];
+  if (killedDigest.length) {
+    lines.push('', 'Killed (rejected as false-positive) -- the reviewer\'s stated basis:');
+    for (const k of killedDigest) lines.push(`  - [${k.id}] ${k.reason || '(no basis recorded -- pre-contract artifact)'}`);
   }
   const intentParked = ledger.intent_parked || [];
   if (intentParked.length) {
@@ -307,11 +328,20 @@ function main(resolveFromCwd) {
 
   if (verb === 'artifact-normalize') {
     requireRef(ref, 'artifact-normalize');
-    const name = rest[0];
+    // The argument is the artifact ROLE, but the driver doc's `<artifact-name>`
+    // reads as the on-disk file name to more than one operator -- and passing
+    // `round-1-correctness.json` failed as a TERMINAL harness-failure on a
+    // working setup. Accept both forms rather than making a naming ambiguity
+    // stop a run, and name the valid roles when it is neither.
+    const rawName = rest[0];
+    const name = String(rawName == null ? '' : rawName).replace(/^round-\d+-/, '').replace(/\.json$/, '');
+    if (!artifactContract.ARTIFACT_ROLES.includes(name)) {
+      throw new Error(`harness-failure: artifact-normalize: unknown artifact "${rawName}" (expected one of ${artifactContract.ARTIFACT_ROLES.join(' | ')}, or the matching round-<n>-<role>.json file name)`);
+    }
     const slug = targetSlug(ref);
     const ledger = readLedger(stateDir, slug);
     const n = ledger && ledger.round;
-    if (!n) throw new Error(`harness-failure: artifact-normalize: no active round for ref "${ref}"`);
+    if (!n) throw new Error(`harness-failure: artifact-normalize: no active round for ref "${ref}" ${stateDirHint(stateDir)} -- run this verb from the same directory as round-start, or set REVIEW_STATE_DIR`);
     const p = path.join(stateDir, `round-${n}-${name}.json`);
     const retryPath = path.join(stateDir, `round-${n}-${name}.retry`);
     let raw;
@@ -368,7 +398,7 @@ function main(resolveFromCwd) {
     if (!gateCfg || !gateCfg.panel) throw new Error('harness-failure: gate-panel-round-start: gate.panel is not enabled in review.config.json');
     const slug = targetSlug(ref);
     const ledger = readLedger(stateDir, slug);
-    if (!ledger) throw new Error(`harness-failure: gate-panel-round-start: no ledger for ref "${ref}"`);
+    if (!ledger) throw new Error(`harness-failure: gate-panel-round-start: no ledger for ref "${ref}" ${stateDirHint(stateDir)}`);
     const gp = ledger.gate_panel || gatePanelLib.emptyGatePanel();
     if (gp.status === 'done') throw new Error('harness-failure: gate-panel-round-start: the panel already finished this convergence attempt -- call record, not another panel round');
     const round = (gp.round || 0) + 1;
@@ -384,7 +414,7 @@ function main(resolveFromCwd) {
     if (!gateCfg || !gateCfg.panel) throw new Error('harness-failure: gate-panel-round-record: gate.panel is not enabled in review.config.json');
     const slug = targetSlug(ref);
     let ledger = readLedger(stateDir, slug);
-    if (!ledger) throw new Error(`harness-failure: gate-panel-round-record: no ledger for ref "${ref}"`);
+    if (!ledger) throw new Error(`harness-failure: gate-panel-round-record: no ledger for ref "${ref}" ${stateDirHint(stateDir)}`);
     const gp = ledger.gate_panel || gatePanelLib.emptyGatePanel();
     if (gp.status === 'done') throw new Error('harness-failure: gate-panel-round-record: the panel already finished this convergence attempt');
     const n = ledger.round;
@@ -439,7 +469,9 @@ function main(resolveFromCwd) {
       if (vRaw.status !== 'ok' || !Array.isArray(vRaw.rejected)) {
         throw new Error('malformed verify artifact shape');
       }
-      const rejected = new Set(vRaw.rejected);
+      // Entries are `{ id, reason }` or (legacy) a bare id -- this artifact is
+      // deliberately outside the normalize path, so it accepts both.
+      const rejected = new Set(vRaw.rejected.map((entry) => (typeof entry === 'string' ? entry : entry && entry.id)));
       survivedIds = allCandidates.map((f) => f.id).filter((id) => !rejected.has(id));
     } catch (e) {
       survivedIds = []; // missing, unreadable, or shape-malformed verify artifact -- nothing survives this round
@@ -722,7 +754,7 @@ function main(resolveFromCwd) {
       );
       return;
     }
-    if (!ledger || ledger.phase !== 'fixes') throw new Error(`record: expected phase "fixes", got "${ledger && ledger.phase}"`);
+    if (!ledger || ledger.phase !== 'fixes') throw new Error(`record: expected phase "fixes", got "${ledger && ledger.phase}" ${stateDirHint(stateDir)}`);
 
     // Per-finding fix artifacts (round-<n>-fix-<id>.json) stay lenient: a
     // missing/non-ok fix artifact is a legitimate outcome (the fixer never
@@ -741,6 +773,11 @@ function main(resolveFromCwd) {
     const vJson = readArtifact(stateDir, n, 'verify');
     const candidates = gc.parseGateFindings(JSON.stringify(cJson.findings || []));
     const killedIds = gc.parseVerifyVerdict(JSON.stringify({ rejected: vJson.rejected || [] }), candidates).rejectedIds;
+    // Carry each rejection's stated basis into the ledger so the handoff can
+    // show WHY a finding was killed. Without it the handoff reports only a
+    // count, and a rejection backed by a real measurement is indistinguishable
+    // from one backed by a guess unless someone reads the reviewer's log.
+    const rejectionReasons = new Map((vJson.rejected || []).map((r) => (typeof r === 'string' ? [r, ''] : [r.id, r.reason || ''])));
 
     // Holistic GATE panel (spec: 2026-07-15-gate-holistic-panel-design.md):
     // once the panel has finished (gate-panel-round-record set gate_panel.status
@@ -801,6 +838,14 @@ function main(resolveFromCwd) {
     };
     let { ledger: applied, decision } = R.applyRoundOutcome(ledger, outcome);
     ledger = applied;
+    // Deduped by id: a re-driven round (resume) records the same kills again.
+    const priorKilled = new Set((ledger.killed_digest || []).map((k) => k.id));
+    ledger = {
+      ...ledger,
+      killed_digest: (ledger.killed_digest || []).concat(
+        killedIds.filter((id) => !priorKilled.has(id)).map((id) => ({ id, round: n, reason: rejectionReasons.get(id) || '' })),
+      ),
+    };
     // Park-budget override BEFORE the charge below, so a forced terminus doesn't burn a round.
     if (R.parkBudgetExceeded(ledger, REVIEW_PARK_BUDGET_DEFAULT)) {
       // converged/parked must move together with continue here -- a stale
@@ -839,7 +884,7 @@ function main(resolveFromCwd) {
     const gc = require('./gate-contract');
     const slug = targetSlug(ref);
     const ledger = readLedger(stateDir, slug);
-    if (!ledger || ledger.phase !== 'gates') throw new Error(`plan-fixes: expected phase "gates", got "${ledger && ledger.phase}"`);
+    if (!ledger || ledger.phase !== 'gates') throw new Error(`plan-fixes: expected phase "gates", got "${ledger && ledger.phase}" ${stateDirHint(stateDir)}`);
     // Read round-start's decision from the ledger, not a fresh
     // review.config.json read: gateApplied may have come from the --broad
     // flag, which leaves no trace in the config file. Re-deriving from
@@ -1003,7 +1048,7 @@ function main(resolveFromCwd) {
     if (!findingId) throw new Error('review-cli unpark: missing required <findingId> argument');
     const slug = targetSlug(ref);
     const ledger = readLedger(stateDir, slug);
-    if (!ledger) throw new Error(`review-cli unpark: no ledger for ref "${ref}"`);
+    if (!ledger) throw new Error(`review-cli unpark: no ledger for ref "${ref}" ${stateDirHint(stateDir)}`);
     const next = unparkFinding(ledger, findingId);
     writeLedger(stateDir, slug, next);
     process.stdout.write(`unparked ${findingId}; ledger status is now "${next.status}".\n`);
@@ -1017,7 +1062,7 @@ function main(resolveFromCwd) {
     if (!gateId.startsWith('gate:')) throw new Error(`review-cli dismiss: ${gateId} must be a gate: id`);
     const slug = targetSlug(ref);
     const ledger = readLedger(stateDir, slug);
-    if (!ledger) throw new Error(`review-cli dismiss: no ledger for ref "${ref}"`);
+    if (!ledger) throw new Error(`review-cli dismiss: no ledger for ref "${ref}" ${stateDirHint(stateDir)}`);
     const dismissed = Array.from(new Set([...(ledger.gate_dismissed || []), gateId]));
     const gateOpen = (ledger.gate_open || []).filter((f) => f.id !== gateId);
     writeLedger(stateDir, slug, { ...ledger, gate_dismissed: dismissed, gate_open: gateOpen });
@@ -1047,6 +1092,46 @@ function main(resolveFromCwd) {
     return;
   }
 
+  // Second opinion on an already-converged ref. `round-start` on a `clean`
+  // ledger is terminal forever, and the only prior lever was `reset` -- which
+  // discards the finished run's rounds, fix digest, and kill rationales. A
+  // cross-engine re-review is exactly the case that must NOT pay that price:
+  // `rerun` archives a compact summary of the finished run into `runs[]` and
+  // re-arms the ledger. The new run starts BLIND (no findings carried forward)
+  // -- the value of a second engine is uncorrelated eyes, and seeding it with
+  // the first run's conclusions is the one thing that destroys that.
+  // `gate_dismissed` is the exception: a finding a human retired stays retired,
+  // same as it does across a gate-pending re-run.
+  if (verb === 'rerun') {
+    requireRef(ref, 'rerun');
+    const engineFlag = rest.indexOf('--engine');
+    if (engineFlag >= 0 && !rest[engineFlag + 1]) throw new Error('review-cli rerun: --engine needs a name (e.g. --engine codex)');
+    const engine = engineFlag >= 0 ? rest[engineFlag + 1] : null;
+    const slug = targetSlug(ref);
+    const prior = readLedger(stateDir, slug);
+    if (!prior) throw new Error(`review-cli rerun: no ledger for ref "${ref}" ${stateDirHint(stateDir)} -- there is no run to re-run; just start a normal run.`);
+    const runs = (prior.runs || []).concat([{
+      run: (prior.runs || []).length + 1,
+      engine: prior.engine || null,
+      status: prior.status,
+      rounds: prior.round || 0,
+      fixed: (prior.findings || []).filter((f) => f.status === 'fixed').map((f) => ({ id: f.id, summary: f.summary, fix_commit: f.fix_commit })),
+      parked: (prior.findings || []).filter((f) => f.status === 'parked').map((f) => f.id),
+      killed: prior.killed_digest || [],
+      gate_open: (prior.gate_open || []).map((f) => f.id),
+    }]);
+    const fresh = {
+      ...emptyLedger(prior.target || { kind: 'local', ref }),
+      runs,
+      engine,
+      gate_dismissed: prior.gate_dismissed || [],
+    };
+    for (let n = 1; n <= (prior.round || 0); n++) deleteRoundArtifacts(stateDir, n);
+    writeLedger(stateDir, slug, fresh);
+    process.stdout.write(JSON.stringify({ status: 'ok', run: runs.length + 1, engine, archived: runs[runs.length - 1] }) + '\n');
+    return;
+  }
+
   if (verb === 'commit-fix') {
     requireRef(ref, 'commit-fix');
     const id = rest[0];
@@ -1054,7 +1139,7 @@ function main(resolveFromCwd) {
     const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
     const slug = targetSlug(ref);
     let ledger = readLedger(stateDir, slug);
-    if (!ledger || ledger.phase !== 'fixes') throw new Error(`commit-fix: expected phase "fixes", got "${ledger && ledger.phase}"`);
+    if (!ledger || ledger.phase !== 'fixes') throw new Error(`commit-fix: expected phase "fixes", got "${ledger && ledger.phase}" ${stateDirHint(stateDir)}`);
     const n = ledger.round;
     if ((ledger.journal || []).some((j) => j.id === id)) { process.stdout.write(JSON.stringify({ committed: false, reason: 'already journaled' }) + '\n'); return; } // idempotent
     const fx = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-fix-${id}.json`), 'utf8')); } catch (e) { return null; } })();
@@ -1084,7 +1169,7 @@ function main(resolveFromCwd) {
     return;
   }
 
-  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | plan-fixes | commit-fix | record | gate-panel-round-start | gate-panel-round-record | unpark | dismiss | reset)`);
+  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | plan-fixes | commit-fix | record | gate-panel-round-start | gate-panel-round-record | unpark | dismiss | reset | rerun | artifact-normalize)`);
 }
 
 // Wraps main() with the graceful operator-facing error format. Exported (not

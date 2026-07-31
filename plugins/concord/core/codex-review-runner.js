@@ -48,9 +48,17 @@ function resolveDefaultBase(repoRoot, exec = execFileSync) {
   throw new Error('review-until-green: cannot determine a remote default base; pass an explicit base');
 }
 
+// The loop makes reviewers hunt verifier-gaming in the diff; this is the same
+// guard pointed at the reviewer's own evidence. A reviewer that loses a tool it
+// was told to use (denied by the sandbox, missing, crashed) otherwise emits a
+// confident schema-valid verdict produced by a check it never ran -- which
+// artifact-normalize cannot distinguish from a real one. Declaring `blocked`
+// makes the round fail loudly instead, which is the correct outcome.
+const BLOCKED_CLAUSE = ' If you cannot run a tool this task requires (missing, denied by sandbox or permissions, crashed, timed out), do NOT substitute a weaker method and do NOT stay silent: write {"status":"ok","blocked":["<tool>: <what failed>"]} and stop.';
+
 function reviewerPrompt(role, { stateDir, round, targetType, dodPassed, dodDeferred, finding, retryPrompt, slug }) {
   const artifact = path.join(stateDir, role === 'fix' ? `round-${round}-fix-${finding.id}.json` : `round-${round}-${role}.json`);
-  const retry = retryPrompt ? `\n\n${retryPrompt}` : '';
+  const retry = `${role === 'fix' ? '' : BLOCKED_CLAUSE}${retryPrompt ? `\n\n${retryPrompt}` : ''}`;
   if (role === 'correctness') {
     const doc = targetType === 'file';
     // Under a deferral round-start still reports dodPassed:true, so this note
@@ -61,10 +69,10 @@ function reviewerPrompt(role, { stateDir, round, targetType, dodPassed, dodDefer
       : `DoD already ${dodPassed ? 'passed; do not rerun tests' : 'failed; do not root-cause it'}.`;
     return `${doc ? 'Review the document' : 'Review the diff and surrounding code'} at ${path.join(stateDir, `round-${round}-diff.txt`)}. ${doc ? 'Find contradictions, unsupported claims, placeholders, over-claims, and omitted limitations. Every reviewed target MUST appear in "examined". Finding IDs MUST use docreview:<stable-slug>.' : `Find correctness bugs, reuse/efficiency problems, and verifier-gaming. ${dodNote} IDs must start correctness:. Every changed file in the diff MUST appear in "examined".`} Write ONLY JSON to ${artifact}: {"status":"ok","examined":[],"findings":[]}.${retry}`;
   }
-  if (role === 'verify') return `Re-review candidates in ${path.join(stateDir, `round-${round}-correctness.json`)} against ${path.join(stateDir, `round-${round}-diff.txt`)}. Write ONLY {"status":"ok","rejected":[]} to ${artifact}.${retry}`;
+  if (role === 'verify') return `Re-review candidates in ${path.join(stateDir, `round-${round}-correctness.json`)} against ${path.join(stateDir, `round-${round}-diff.txt`)}. Write ONLY {"status":"ok","rejected":[]} to ${artifact}; each rejection is {"id":"<finding id>","reason":"<one line naming what you actually ran, measured, or read to reject it>"} -- a rejection with no stated basis is rejected by the artifact contract.${retry}`;
   if (role === 'intent') return `You are a design-conformance detector. Compare ${path.join(stateDir, `round-${round}-diff.txt`)} with ${path.join(stateDir, `intent-${slug}.md`)}. Raise a finding ONLY for an active contradiction of an explicit stated requirement on an exact changed line. Each finding MUST have an intent: ID, file, span containing that exact changed line, the verbatim requirement text, and summary. Never report omissions, unchanged lines, design taste, or non-normative text. Write ONLY {"status":"ok","findings":[]} to ${artifact}.${retry}`;
   if (role === 'gate') return `Review ${path.join(stateDir, `round-${round}-diff.txt`)} for defects a diff-local reviewer cannot catch. You MAY Read/Grep the repository and MUST read ${path.join(stateDir, `intent-${slug}.md`)} if it exists. Report only gate: findings in classes cross-context, silent-gap, ac-coverage, or design-conformance. Each finding needs file, span/evidence anchor, requirement text when available, and summary. Write ONLY {"status":"ok","findings":[]} to ${artifact}.${retry}`;
-  if (role === 'gate-verify') return `Re-review candidates in ${path.join(stateDir, `round-${round}-gate.json`)} against the diff and repository. Reject false positives and design-taste objections; keep actionable gaps. You MAY add genuinely new gate: findings using the same file, span/evidence, requirement, and summary shape. Write ONLY {"status":"ok","rejected":[],"findings":[]} to ${artifact}.${retry}`;
+  if (role === 'gate-verify') return `Re-review candidates in ${path.join(stateDir, `round-${round}-gate.json`)} against the diff and repository. Reject false positives and design-taste objections; keep actionable gaps. You MAY add genuinely new gate: findings using the same file, span/evidence, requirement, and summary shape. Write ONLY {"status":"ok","rejected":[],"findings":[]} to ${artifact}; each rejection is {"id":"<finding id>","reason":"<one line naming what you actually ran, measured, or read to reject it>"}.${retry}`;
   if (role === 'fix') return `Apply the minimal correct fix for ${finding.id} at ${finding.file}, ${finding.span}: ${finding.summary}. Edit only necessary files. Then write ONLY to ${artifact}: either {"status":"ok","edited":false} if no change was warranted, or {"status":"ok","edited":true,"files":["<every edited path>"]}. The files array MUST truthfully list EVERY file edited, including required companion files, as repository-relative paths. It MUST NOT include this state artifact, any stateDir artifact, or any path outside the repository.${retry}`;
   throw new Error(`harness-failure: unknown reviewer role ${role}`);
 }
