@@ -21,7 +21,7 @@ function retryPrompt(name, prefix) {
   const rejectedRule = shape.arrays.includes('rejected')
     ? ` Each "rejected" entry is an object {"id":"<finding id>","reason":"<one line naming what you actually ran, measured, or read to reject it>"} -- a bare id string is not accepted.`
     : '';
-  return `Rewrite only round artifact ${name} as JSON: {"status":"ok",${fields}}. Findings require id, file, and summary; ids must use ${prefixes}<stable-slug>.${rejectedRule} Do not add prose or extra top-level fields.`;
+  return `Rewrite only round artifact ${name} as JSON: {"status":"ok",${fields}}. Findings require id, file, and summary; ids must use ${prefixes}<stable-slug>.${rejectedRule} Do not add prose or extra top-level fields, with one exception: if you could not run the method you were assigned, keep (or add) "blocked":["<tool>: <what failed>"] -- never drop it to make this artifact validate.`;
 }
 
 function normalizeArtifact(name, raw) {
@@ -30,7 +30,11 @@ function normalizeArtifact(name, raw) {
   let parsed;
   try { parsed = JSON.parse(raw); } catch (e) { throw new ArtifactError('fatal', `${name} artifact is not JSON`); }
   if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new ArtifactError('fatal', `${name} artifact must be an object`);
-  if (!['ok', 'findings', 'clean'].includes(parsed.status)) throw new ArtifactError('retry', `${name} artifact has unsupported status`);
+  // Checked BEFORE `status`: a blocked reviewer often pairs the declaration
+  // with `"status":"blocked"`, and treating that as a mere status problem would
+  // hand it the retry prompt -- which tells it to emit a schema-valid verdict
+  // without extra fields, i.e. to drop the very declaration that must fail the
+  // round. A declared block wins over whatever status it came with.
   // A reviewer that could not run a tool it was told to use must say so in
   // `blocked` rather than quietly substituting a weaker method. This is fatal,
   // not a retry: re-running the same reviewer in the same broken environment
@@ -43,6 +47,7 @@ function normalizeArtifact(name, raw) {
       throw new ArtifactError('fatal', `${name} reviewer could not run: ${parsed.blocked.map((b) => String(b)).join('; ')} -- it was blocked from the method it was assigned, so this round has no usable verdict. Fix the reviewer's environment (sandbox, permissions, missing tool) and re-run; do not accept the artifact.`);
     }
   }
+  if (!['ok', 'findings', 'clean'].includes(parsed.status)) throw new ArtifactError('retry', `${name} artifact has unsupported status`);
   const canonical = { status: 'ok' };
   for (const key of shape.arrays) {
     const value = parsed[key] === undefined ? [] : parsed[key];
