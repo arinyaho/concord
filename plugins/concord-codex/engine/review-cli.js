@@ -525,6 +525,11 @@ function main(resolveFromCwd) {
     const slug = targetSlug(ref);
     let ledger = readLedger(stateDir, slug) || emptyLedger({ kind: 'local', ref });
 
+    // Captured before the clearing paths below wipe intent_parked. Handed to the
+    // intent detector so the SAME objection keeps the SAME id across rounds --
+    // dedupe is by id, so a re-slugged repeat surfaces to the human twice.
+    const priorIntentIds = (ledger.intent_parked || []).map((f) => f.id);
+
     // intent-review is a re-runnable stop state: a fresh round-start clears it,
     // nulls diff_content_hash so beginRound advances a real round, and clears
     // intentHash + deletes the cached artifact so intent RE-FETCHES -- picking up
@@ -720,6 +725,23 @@ function main(resolveFromCwd) {
         }
         const sha = contentHash(cached);
         if (sha !== ledger.intentHash) throw new Error('harness-failure: intent artifact changed mid-drive (hash mismatch)');
+        // Drift check. The cache stays authoritative for the run -- that is what
+        // makes "this review ran against THESE requirements" mean anything -- but
+        // a SILENT stale cache makes the detector re-report a contradiction the
+        // human already fixed at the source, with no way to notice. So re-fetch
+        // every round and compare hashes only; a change stops the round and the
+        // human resets. Never adopt the new text mid-run: that is the mid-swap
+        // this cache exists to prevent.
+        let fresh;
+        try {
+          fresh = intentLib.fetchIntent({ command: intentCfg.command, cwd: repoRoot, ref, base });
+        } catch (e) {
+          const why = String((e && e.message) || e).replace(/^harness-failure:\s*/, '');
+          throw new Error(`harness-failure: intent drift-check fetch failed (the cached intent is intact; this is a fetch failure, not a changed source): ${why}`);
+        }
+        if (fresh.sha !== ledger.intentHash) {
+          throw new Error(`harness-failure: intent source changed since this run began (run has ${ledger.intentHash.slice(0, 12)}, source now ${fresh.sha.slice(0, 12)}); this run keeps reviewing against the intent it started with -- reset to adopt the new one: review-cli.js reset ${ref}`);
+        }
       }
     }
 
@@ -759,7 +781,7 @@ function main(resolveFromCwd) {
     // `true` means "nothing blocked the round", not "the gate ran and passed" --
     // a driver that turns it into "DoD already passed; do not rerun tests" would
     // be removing the last real check. dodDeferred is how a caller tells them apart.
-    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, dodDeferred: !!dod.deferred, intentApplied: !!intentCfg, gateApplied, targetType, stateDir }) + '\n');
+    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, dodDeferred: !!dod.deferred, intentApplied: !!intentCfg, priorIntentIds, gateApplied, targetType, stateDir }) + '\n');
     return;
   }
 

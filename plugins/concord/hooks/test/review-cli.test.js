@@ -905,6 +905,95 @@ test('round-start: intent-review re-entry re-fetches and advances a round', () =
   assert.ok(fs.existsSync(path.join(dir, `intent-${slug}.md`))); // re-fetched
 });
 
+// Intent source that lives OUTSIDE the repo (the repo tree must stay clean) and
+// counts its own invocations, so the drift tests can both mutate the source and
+// assert the per-round fetch cost.
+function intentSource(text) {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-src-'));
+  const file = path.join(d, 'intent.md');
+  const counter = path.join(d, 'count');
+  fs.writeFileSync(file, text);
+  fs.writeFileSync(counter, '');
+  return {
+    command: `printf . >> ${counter}; cat ${file}`,
+    set: (t) => fs.writeFileSync(file, t),
+    remove: () => fs.unlinkSync(file),
+    fetches: () => fs.readFileSync(counter, 'utf8').length,
+  };
+}
+
+test('round-start: intent source unchanged -> re-fetches once to compare, round proceeds', () => {
+  const src = intentSource('REQ: retry three times');
+  const repo = initRepoWithIntent(src.command);
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  run(['round-start', 'feat/x', 'HEAD~1'], { env });
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.strictEqual(out.decision, 'work');
+  assert.strictEqual(out.intentApplied, true);
+  assert.strictEqual(src.fetches(), 2); // one per round, no more
+  const slug = review.targetSlug('feat/x');
+  assert.strictEqual(fs.readFileSync(path.join(dir, `intent-${slug}.md`), 'utf8'), 'REQ: retry three times');
+});
+
+test('round-start: intent source changed mid-run -> stops and says to reset, cache untouched', () => {
+  const src = intentSource('REQ: retry three times');
+  const repo = initRepoWithIntent(src.command);
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  run(['round-start', 'feat/x', 'HEAD~1'], { env });
+  src.set('REQ: retry twice'); // the human corrected the design source mid-run
+  const r = runCapture(['round-start', 'feat/x', 'HEAD~1'], { env });
+  assert.notStrictEqual(r.status, 0);
+  assert.match(r.stderr, /intent source changed since this run began/);
+  assert.match(r.stderr, /reset/);
+  const slug = review.targetSlug('feat/x');
+  // neither silently stale-and-quiet nor silently adopted: the artifact is the original
+  assert.strictEqual(fs.readFileSync(path.join(dir, `intent-${slug}.md`), 'utf8'), 'REQ: retry three times');
+});
+
+test('round-start: drift-check fetch failure reads differently from a changed source', () => {
+  const src = intentSource('REQ');
+  const repo = initRepoWithIntent(src.command);
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  run(['round-start', 'feat/x', 'HEAD~1'], { env });
+  src.remove(); // source unreachable -> cat exits non-zero
+  const r = runCapture(['round-start', 'feat/x', 'HEAD~1'], { env });
+  assert.notStrictEqual(r.status, 0);
+  assert.match(r.stderr, /drift-check fetch failed/);
+  assert.doesNotMatch(r.stderr, /intent source changed/);
+});
+
+test('round-start: reports the prior round\'s open intent ids so the detector reuses them', () => {
+  const repo = initRepoWithIntent('printf "REQ"');
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const first = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.deepStrictEqual(first.priorIntentIds, []);
+  const slug = review.targetSlug('feat/x');
+  let ledger = review.readLedger(dir, slug);
+  ledger = { ...ledger, status: 'intent-review', phase: 'done', intent_parked: [{ id: 'intent:scope-not-a-key-listing', file: 'a.txt', span: 'two', requirement: 'REQ', summary: 's' }] };
+  review.writeLedger(dir, slug, ledger);
+  const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.deepStrictEqual(out.priorIntentIds, ['intent:scope-not-a-key-listing']);
+});
+
+test('review-driver: the intent-detector prompt demands id reuse across rounds', () => {
+  const md = fs.readFileSync(path.join(__dirname, '..', '..', 'core', 'review-driver.md'), 'utf8');
+  const prompt = md.slice(md.indexOf('You are a design-conformance detector'), md.indexOf('If there are no contradictions'));
+  assert.match(prompt, /priorIntentIds/);
+  assert.match(prompt, /REUSE that `id` verbatim/);
+});
+
 function writeArtifact(dir, n, name, obj) {
   fs.writeFileSync(path.join(dir, `round-${n}-${name}.json`), JSON.stringify(obj));
 }
