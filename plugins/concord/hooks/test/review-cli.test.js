@@ -991,6 +991,40 @@ test('round-start: gate-pending re-entry adopts a changed intent source instead 
   assert.strictEqual(fs.readFileSync(path.join(dir, `intent-${slug}.md`), 'utf8'), 'REQ: retry twice'); // NEW intent
 });
 
+test('unpark: a parked run carrying an intent finding adopts a changed intent source on re-run', () => {
+  const src = intentSource('REQ: retry three times');
+  const repo = initRepoWithIntent(src.command);
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  run(['round-start', 'feat/x', 'HEAD~1'], { env });
+  const slug = review.targetSlug('feat/x');
+  // A parked terminus that still carries an intent finding: applyRoundOutcome
+  // gives 'parked' precedence over 'intent-review', so the handoff prints the
+  // intent remedy ("fix the code or the design source, then re-run") while the
+  // ledger status is 'parked'.
+  const ledger = review.readLedger(dir, slug);
+  review.writeLedger(dir, slug, {
+    ...ledger,
+    status: 'parked',
+    phase: 'done',
+    findings: [{ id: 'c:stuck', status: 'parked', park_reason: 'no progress' }],
+    intent_parked: [{ id: 'intent:retry-count', file: 'a.txt', span: 'two', requirement: 'REQ', summary: 's' }],
+  });
+  // The human takes the documented remedy: corrects the design source AND the code.
+  src.set('REQ: retry twice');
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'three\n');
+  execFileSync('git', ['commit', '-aqm', 'remedy'], { cwd: repo });
+  run(['unpark', 'feat/x', 'c:stuck'], { env });
+  const r = runCapture(['round-start', 'feat/x', 'HEAD~2'], { env });
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.strictEqual(JSON.parse(r.stdout).decision, 'work');
+  assert.strictEqual(fs.readFileSync(path.join(dir, `intent-${slug}.md`), 'utf8'), 'REQ: retry twice'); // NEW intent
+  // the repeated objection keeps its id across the re-entry
+  assert.deepStrictEqual(JSON.parse(r.stdout).priorIntentIds, ['intent:retry-count']);
+});
+
 test('round-start: reports the prior round\'s open intent ids so the detector reuses them', () => {
   const repo = initRepoWithIntent('printf "REQ"');
   const dir = tmpDir();

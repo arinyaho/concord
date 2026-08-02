@@ -222,6 +222,19 @@ function renderHandoff(result) {
   return lines.join('\n');
 }
 
+// Every re-entry that follows a HUMAN decision routes here. The three stop
+// states a human re-enters from -- intent-review, gate-pending, and unparking a
+// parked run -- all print a remedy that includes "correct the design source",
+// so the next look must start from a re-fetched intent: dropping intentHash and
+// the cached artifact makes round-start fetch fresh instead of tripping the
+// drift check on a change the human was told to make.
+// NOT for a mid-round resume or a gate-panel-pending restart: those are the
+// SAME run continuing, and their intent stays pinned.
+function clearIntentForFreshLook(stateDir, slug, ledger) {
+  try { fs.unlinkSync(path.join(stateDir, `intent-${slug}.md`)); } catch (e) {}
+  return { ...ledger, intentHash: null, intentBytes: null };
+}
+
 function requireRef(ref, verb) {
   if (!ref) throw new Error(`review-cli ${verb}: missing required <ref> argument`);
 }
@@ -537,8 +550,8 @@ function main(resolveFromCwd) {
     // intentHash + deletes the cached artifact so intent RE-FETCHES -- picking up
     // a correction the human made to the design source to retire a false positive.
     if (ledger.status === 'intent-review') {
-      try { fs.unlinkSync(path.join(stateDir, `intent-${slug}.md`)); } catch (e) {}
-      ledger = { ...ledger, status: 'converging', diff_content_hash: null, intentHash: null, intentBytes: null, intent_parked: [], gate_panel: gatePanelLib.emptyGatePanel() };
+      ledger = clearIntentForFreshLook(stateDir, slug, ledger);
+      ledger = { ...ledger, status: 'converging', diff_content_hash: null, intent_parked: [], gate_panel: gatePanelLib.emptyGatePanel() };
     }
 
     // gate-pending, like intent-review, is a re-runnable stop state: a fresh
@@ -553,8 +566,8 @@ function main(resolveFromCwd) {
     // includes editing the design source, so a re-run is a NEW run against
     // possibly-new requirements and must re-fetch rather than trip the drift check.
     if (ledger.status === 'gate-pending') {
-      try { fs.unlinkSync(path.join(stateDir, `intent-${slug}.md`)); } catch (e) {}
-      ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_open: [], intentHash: null, intentBytes: null, gate_panel: gatePanelLib.emptyGatePanel() };
+      ledger = clearIntentForFreshLook(stateDir, slug, ledger);
+      ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_open: [], gate_panel: gatePanelLib.emptyGatePanel() };
     }
 
     // gate-panel-pending is also re-runnable: a session may have crashed or been
@@ -1106,7 +1119,13 @@ function main(resolveFromCwd) {
     const slug = targetSlug(ref);
     const ledger = readLedger(stateDir, slug);
     if (!ledger) throw new Error(`review-cli unpark: no ledger for ref "${ref}" ${stateDirHint(stateDir)}`);
-    const next = unparkFinding(ledger, findingId);
+    // `unpark` is the ONLY re-entry out of a parked ledger (round-start treats
+    // 'parked' as terminal), so the fresh-look clearing belongs here rather than
+    // in a third round-start branch: by the time round-start sees it, the ledger
+    // is plain 'converging' and indistinguishable from a mid-round resume.
+    // intent_parked is deliberately left alone -- round-start reads it for
+    // priorIntentIds so a repeated objection keeps its id.
+    const next = clearIntentForFreshLook(stateDir, slug, unparkFinding(ledger, findingId));
     writeLedger(stateDir, slug, next);
     process.stdout.write(`unparked ${findingId}; ledger status is now "${next.status}".\n`);
     return;
