@@ -971,6 +971,26 @@ test('round-start: drift-check fetch failure reads differently from a changed so
   assert.doesNotMatch(r.stderr, /intent source changed/);
 });
 
+test('round-start: gate-pending re-entry adopts a changed intent source instead of failing on drift', () => {
+  const src = intentSource('REQ: retry three times');
+  const repo = initRepoWithIntent(src.command);
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  run(['round-start', 'feat/x', 'HEAD~1'], { env });
+  const slug = review.targetSlug('feat/x');
+  // simulate a prior gate-pending terminus, whose documented remedy is
+  // "fix the code or the design source and re-run"
+  const ledger = review.readLedger(dir, slug);
+  review.writeLedger(dir, slug, { ...ledger, status: 'gate-pending', phase: 'done', gate_open: [{ id: 'gate:x' }] });
+  src.set('REQ: retry twice'); // the human took the documented remedy
+  const r = runCapture(['round-start', 'feat/x', 'HEAD~1'], { env });
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.strictEqual(JSON.parse(r.stdout).decision, 'work');
+  assert.strictEqual(fs.readFileSync(path.join(dir, `intent-${slug}.md`), 'utf8'), 'REQ: retry twice'); // NEW intent
+});
+
 test('round-start: reports the prior round\'s open intent ids so the detector reuses them', () => {
   const repo = initRepoWithIntent('printf "REQ"');
   const dir = tmpDir();

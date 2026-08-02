@@ -546,9 +546,13 @@ function main(resolveFromCwd) {
     // resets -- the panel must re-run fresh on every convergence attempt (design
     // decision 4: "exactly once per convergence attempt", not once per ledger
     // lifetime), otherwise stale confirmed findings from the prior panel run would
-    // keep resurfacing in gate_open even after being fixed or dismissed.
+    // keep resurfacing in gate_open even after being fixed or dismissed. Intent is
+    // cleared for the same reason intent-review clears it: the documented remedy
+    // includes editing the design source, so a re-run is a NEW run against
+    // possibly-new requirements and must re-fetch rather than trip the drift check.
     if (ledger.status === 'gate-pending') {
-      ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_open: [], gate_panel: gatePanelLib.emptyGatePanel() };
+      try { fs.unlinkSync(path.join(stateDir, `intent-${slug}.md`)); } catch (e) {}
+      ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_open: [], intentHash: null, intentBytes: null, gate_panel: gatePanelLib.emptyGatePanel() };
     }
 
     // gate-panel-pending is also re-runnable: a session may have crashed or been
