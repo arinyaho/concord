@@ -198,14 +198,16 @@ test('intent and gate review chains fan out alongside the correctness-to-verify 
   const calls = [];
   const cli = (args) => {
     const [verb, , role] = args;
-    if (verb === 'round-start') return { decision: 'work', round: 1, stateDir, targetType: 'git', dodPassed: true, intentApplied: true, gateApplied: true };
+    if (verb === 'round-start') return { decision: 'work', round: 1, stateDir, targetType: 'git', dodPassed: true, intentApplied: true, gateApplied: true, priorIntentIds: ['intent:retry-count'] };
     if (verb === 'artifact-normalize') return { status: 'ok' };
     if (verb === 'plan-fixes') return { fixes: [] };
     if (verb === 'record') return { decision: { continue: false }, handoff: 'LGTM' };
     throw new Error(`unexpected CLI ${verb} ${role}`);
   };
-  const spawn = ({ role }) => {
+  const spawn = ({ role, prompt }) => {
     calls.push(role);
+    // round-start's priorIntentIds must actually reach the intent prompt.
+    if (role === 'intent') assert.match(prompt, /\["intent:retry-count"\]/);
     return new Promise((resolve) => pending.set(role, resolve));
   };
   const complete = (role) => {
@@ -238,6 +240,8 @@ test('intent and gate prompts preserve their full role contracts', () => {
   assert.match(intent, /exact changed line/i);
   assert.match(intent, /verbatim requirement/i);
   assert.match(intent, /intent:/);
+  assert.match(reviewerPrompt('intent', { ...base, priorIntentIds: ['intent:scope-not-a-key-listing'] }), /REUSE that id verbatim/i);
+  assert.match(reviewerPrompt('intent', { ...base, priorIntentIds: ['intent:scope-not-a-key-listing'] }), /\["intent:scope-not-a-key-listing"\]/);
   assert.match(gate, /cross-context.*silent-gap.*ac-coverage.*design-conformance/i);
   assert.match(gate, /Read\/Grep.*repository/i);
   assert.match(gate, /intent-feature-x\.md/);
