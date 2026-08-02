@@ -527,7 +527,9 @@ function main(resolveFromCwd) {
 
     // Captured before the clearing paths below wipe intent_parked. Handed to the
     // intent detector so the SAME objection keeps the SAME id across rounds --
-    // dedupe is by id, so a re-slugged repeat surfaces to the human twice.
+    // nothing dedupes intent findings by id; the id is how a human re-reading the
+    // handoff recognises an objection they already saw. A re-slugged repeat reads
+    // as a new problem.
     const priorIntentIds = (ledger.intent_parked || []).map((f) => f.id);
 
     // intent-review is a re-runnable stop state: a fresh round-start clears it,

@@ -36,7 +36,7 @@ Run this loop. Do each step in order; do not skip, reorder, or improvise termina
 
    > You are a design-conformance detector. Inputs: the diff at `<stateDir>/round-<n>-diff.txt` and the stated requirements at `<stateDir>/intent-<slug>.md`. Write a JSON file to `<stateDir>/round-<n>-intent.json` of the form `{ "status": "ok", "findings": [ ... ] }`.
    >
-   > You are also handed `priorIntentIds` from `round-start` -- the still-open intent findings from the previous round. For the SAME objection against the SAME requirement, REUSE that `id` verbatim so it dedups; mint a new `id` ONLY for a genuinely new objection. A re-slugged repeat is reported to the human twice as if it were two problems.
+   > You are also handed `priorIntentIds` from `round-start` -- the still-open intent findings from the previous round. For the SAME objection against the SAME requirement, REUSE that `id` verbatim so the human re-reading the handoff recognises it as the objection they already saw; mint a new `id` ONLY for a genuinely new objection. Nothing dedupes intent findings by id, so a re-slugged repeat reads as a second, new problem.
    >
    > Raise a finding ONLY for an active contradiction of an explicit, stated requirement, on a line the diff added or changed: the intent states X unambiguously and a changed line does not-X. Each finding is `{ "id": "intent:<slug>", "file": "<changed file path>", "span": "<the exact contradicting changed line>", "requirement": "<the verbatim requirement text it contradicts>", "summary": "<one line>" }`. The `id` MUST start with `intent:`. The `file` MUST be one the diff changed.
    >
