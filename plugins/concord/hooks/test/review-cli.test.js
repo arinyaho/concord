@@ -988,10 +988,13 @@ test('round-start: reports the prior round\'s open intent ids so the detector re
 });
 
 test('review-driver: the intent-detector prompt demands id reuse across rounds', () => {
-  const md = fs.readFileSync(path.join(__dirname, '..', '..', 'core', 'review-driver.md'), 'utf8');
-  const prompt = md.slice(md.indexOf('You are a design-conformance detector'), md.indexOf('If there are no contradictions'));
-  assert.match(prompt, /priorIntentIds/);
-  assert.match(prompt, /REUSE that `id` verbatim/);
+  // The composed command file is what a run actually consumes; the core source is its input.
+  for (const rel of [['commands', 'review-until-green.md'], ['core', 'review-driver.md']]) {
+    const md = fs.readFileSync(path.join(__dirname, '..', '..', ...rel), 'utf8');
+    const prompt = md.slice(md.indexOf('You are a design-conformance detector'), md.indexOf('If there are no contradictions'));
+    assert.match(prompt, /priorIntentIds/, rel.join('/'));
+    assert.match(prompt, /REUSE that `id` verbatim/, rel.join('/'));
+  }
 });
 
 function writeArtifact(dir, n, name, obj) {
