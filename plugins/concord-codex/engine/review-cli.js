@@ -222,6 +222,19 @@ function renderHandoff(result) {
   return lines.join('\n');
 }
 
+// Every re-entry that follows a HUMAN decision routes here. The three stop
+// states a human re-enters from -- intent-review, gate-pending, and unparking a
+// parked run -- all print a remedy that includes "correct the design source",
+// so the next look must start from a re-fetched intent: dropping intentHash and
+// the cached artifact makes round-start fetch fresh instead of tripping the
+// drift check on a change the human was told to make.
+// NOT for a mid-round resume or a gate-panel-pending restart: those are the
+// SAME run continuing, and their intent stays pinned.
+function clearIntentForFreshLook(stateDir, slug, ledger) {
+  try { fs.unlinkSync(path.join(stateDir, `intent-${slug}.md`)); } catch (e) {}
+  return { ...ledger, intentHash: null, intentBytes: null };
+}
+
 function requireRef(ref, verb) {
   if (!ref) throw new Error(`review-cli ${verb}: missing required <ref> argument`);
 }
@@ -525,13 +538,20 @@ function main(resolveFromCwd) {
     const slug = targetSlug(ref);
     let ledger = readLedger(stateDir, slug) || emptyLedger({ kind: 'local', ref });
 
+    // Captured before the clearing paths below wipe intent_parked. Handed to the
+    // intent detector so the SAME objection keeps the SAME id across rounds --
+    // nothing dedupes intent findings by id; the id is how a human re-reading the
+    // handoff recognises an objection they already saw. A re-slugged repeat reads
+    // as a new problem.
+    const priorIntentIds = (ledger.intent_parked || []).map((f) => f.id);
+
     // intent-review is a re-runnable stop state: a fresh round-start clears it,
     // nulls diff_content_hash so beginRound advances a real round, and clears
     // intentHash + deletes the cached artifact so intent RE-FETCHES -- picking up
     // a correction the human made to the design source to retire a false positive.
     if (ledger.status === 'intent-review') {
-      try { fs.unlinkSync(path.join(stateDir, `intent-${slug}.md`)); } catch (e) {}
-      ledger = { ...ledger, status: 'converging', diff_content_hash: null, intentHash: null, intentBytes: null, intent_parked: [], gate_panel: gatePanelLib.emptyGatePanel() };
+      ledger = clearIntentForFreshLook(stateDir, slug, ledger);
+      ledger = { ...ledger, status: 'converging', diff_content_hash: null, intent_parked: [], gate_panel: gatePanelLib.emptyGatePanel() };
     }
 
     // gate-pending, like intent-review, is a re-runnable stop state: a fresh
@@ -541,8 +561,12 @@ function main(resolveFromCwd) {
     // resets -- the panel must re-run fresh on every convergence attempt (design
     // decision 4: "exactly once per convergence attempt", not once per ledger
     // lifetime), otherwise stale confirmed findings from the prior panel run would
-    // keep resurfacing in gate_open even after being fixed or dismissed.
+    // keep resurfacing in gate_open even after being fixed or dismissed. Intent is
+    // cleared for the same reason intent-review clears it: the documented remedy
+    // includes editing the design source, so a re-run is a NEW run against
+    // possibly-new requirements and must re-fetch rather than trip the drift check.
     if (ledger.status === 'gate-pending') {
+      ledger = clearIntentForFreshLook(stateDir, slug, ledger);
       ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_open: [], gate_panel: gatePanelLib.emptyGatePanel() };
     }
 
@@ -720,6 +744,23 @@ function main(resolveFromCwd) {
         }
         const sha = contentHash(cached);
         if (sha !== ledger.intentHash) throw new Error('harness-failure: intent artifact changed mid-drive (hash mismatch)');
+        // Drift check. The cache stays authoritative for the run -- that is what
+        // makes "this review ran against THESE requirements" mean anything -- but
+        // a SILENT stale cache makes the detector re-report a contradiction the
+        // human already fixed at the source, with no way to notice. So re-fetch
+        // every round and compare hashes only; a change stops the round and the
+        // human resets. Never adopt the new text mid-run: that is the mid-swap
+        // this cache exists to prevent.
+        let fresh;
+        try {
+          fresh = intentLib.fetchIntent({ command: intentCfg.command, cwd: repoRoot, ref, base });
+        } catch (e) {
+          const why = String((e && e.message) || e).replace(/^harness-failure:\s*/, '');
+          throw new Error(`harness-failure: intent drift-check fetch failed (the cached intent is intact; this is a fetch failure, not a changed source): ${why}`);
+        }
+        if (fresh.sha !== ledger.intentHash) {
+          throw new Error(`harness-failure: intent source changed since this run began (run has ${ledger.intentHash.slice(0, 12)}, source now ${fresh.sha.slice(0, 12)}); this run keeps reviewing against the intent it started with -- reset to adopt the new one: review-cli.js reset ${ref}`);
+        }
       }
     }
 
@@ -759,7 +800,7 @@ function main(resolveFromCwd) {
     // `true` means "nothing blocked the round", not "the gate ran and passed" --
     // a driver that turns it into "DoD already passed; do not rerun tests" would
     // be removing the last real check. dodDeferred is how a caller tells them apart.
-    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, dodDeferred: !!dod.deferred, intentApplied: !!intentCfg, gateApplied, targetType, stateDir }) + '\n');
+    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, dodDeferred: !!dod.deferred, intentApplied: !!intentCfg, priorIntentIds, gateApplied, targetType, stateDir }) + '\n');
     return;
   }
 
@@ -1078,7 +1119,13 @@ function main(resolveFromCwd) {
     const slug = targetSlug(ref);
     const ledger = readLedger(stateDir, slug);
     if (!ledger) throw new Error(`review-cli unpark: no ledger for ref "${ref}" ${stateDirHint(stateDir)}`);
-    const next = unparkFinding(ledger, findingId);
+    // `unpark` is the ONLY re-entry out of a parked ledger (round-start treats
+    // 'parked' as terminal), so the fresh-look clearing belongs here rather than
+    // in a third round-start branch: by the time round-start sees it, the ledger
+    // is plain 'converging' and indistinguishable from a mid-round resume.
+    // intent_parked is deliberately left alone -- round-start reads it for
+    // priorIntentIds so a repeated objection keeps its id.
+    const next = clearIntentForFreshLook(stateDir, slug, unparkFinding(ledger, findingId));
     writeLedger(stateDir, slug, next);
     process.stdout.write(`unparked ${findingId}; ledger status is now "${next.status}".\n`);
     return;
