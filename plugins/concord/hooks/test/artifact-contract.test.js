@@ -14,7 +14,7 @@ test('findings status canonicalizes without changing finding meaning', () => {
 });
 
 test('clean status canonicalizes to ok', () => {
-  assert.deepStrictEqual(normalizeArtifact('verify', '{"status":"clean"}'), { status: 'ok', rejected: [] });
+  assert.deepStrictEqual(normalizeArtifact('verify', '{"status":"clean"}'), { status: 'ok', rejected: [], findings: [] });
 });
 
 test('correctness retry prompt names both valid namespaces without inventing a prefix', () => {
@@ -33,7 +33,7 @@ for (const [name, raw, kind] of [
 
 test('a rejection carries its stated basis and canonicalizes to {id, reason}', () => {
   const raw = '{"status":"ok","rejected":[{"id":"correctness:x","reason":"  measured with playwright: box is 320px  "}]}';
-  assert.deepStrictEqual(normalizeArtifact('verify', raw), { status: 'ok', rejected: [{ id: 'correctness:x', reason: 'measured with playwright: box is 320px' }] });
+  assert.deepStrictEqual(normalizeArtifact('verify', raw), { status: 'ok', rejected: [{ id: 'correctness:x', reason: 'measured with playwright: box is 320px' }], findings: [] });
 });
 
 for (const [label, raw] of [
@@ -49,7 +49,7 @@ test('a reviewer that reports a blocked tool fails the round instead of producin
 });
 
 test('an empty blocked array is a clean reviewer, not a failure', () => {
-  assert.deepStrictEqual(normalizeArtifact('verify', '{"status":"ok","rejected":[],"blocked":[]}'), { status: 'ok', rejected: [] });
+  assert.deepStrictEqual(normalizeArtifact('verify', '{"status":"ok","rejected":[],"blocked":[]}'), { status: 'ok', rejected: [], findings: [] });
 });
 
 test('blocked wins over an unsupported status, so the reviewer is never retried into dropping it', () => {

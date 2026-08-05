@@ -54,7 +54,7 @@ test('e2e: file target converges in 3 rounds with zero git operations in the fil
   fs.writeFileSync(notePath, '# Design Note\nThis approach is proven to be optimal without any evidence.\n');
 
   // Step 2: round-start file:note.md
-  const rs1 = JSON.parse(run(['round-start', ref], { env }));
+  const rs1 = JSON.parse(run(['round-start', ref], { env })); // a file target is broad-disarmed by default: no gate artifact expected
   assert.strictEqual(rs1.decision, 'work', 'round 1 round-start must yield decision=work');
   assert.strictEqual(rs1.targetType, 'file', 'round 1 round-start must report targetType=file');
   const n1 = rs1.round;

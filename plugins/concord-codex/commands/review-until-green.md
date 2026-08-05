@@ -1,6 +1,6 @@
 ---
 description: Deterministically review, fix, commit, and repeat with clean-context Codex subprocesses until the Concord harness reaches a terminal decision.
-argument-hint: "[target | resume <ref>] [--broad] [--no-dod]"
+argument-hint: "[target | resume <ref>] [--no-broad] [--no-dod]"
 ---
 
 Run the bundled deterministic runner once; do not manually orchestrate reviewers:

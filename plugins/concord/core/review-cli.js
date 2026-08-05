@@ -145,6 +145,26 @@ function renderDodFailure(dod) {
   return out;
 }
 
+// The round's candidate findings: the correctness pass PLUS anything the verify
+// pass's different lens added (distrust-green, same as the gate pair). Every
+// stage that asks "what did this round find" must go through here -- plan-fixes
+// routes them, commit-fix looks up the finding a fix belongs to, and record
+// folds them into the ledger. A stage that reads the correctness artifact alone
+// silently drops the verify-added ones at ITS step, which looks exactly like
+// the harness working: the finding was raised, and then nothing happened.
+// Deduped by id with the correctness entry winning a collision.
+function roundCandidates(gc, cJson, vJson) {
+  const byId = new Map();
+  for (const f of gc.parseGateFindings(JSON.stringify((vJson && vJson.findings) || []))) byId.set(f.id, f);
+  for (const f of gc.parseGateFindings(JSON.stringify((cJson && cJson.findings) || []))) byId.set(f.id, f);
+  return Array.from(byId.values());
+}
+
+// Statuses where the panel question is settled for good: the run concluded and
+// the panel either ran or never will. Anything else (converging mid-run,
+// gate-panel-pending, intent-review) still has the panel ahead of it.
+const PANEL_SETTLED_STATUSES = new Set(['clean', 'gate-pending', 'parked', 'abandoned']);
+
 function renderHandoff(result) {
   const { ledger, aborted } = result;
   const lines = [];
@@ -199,8 +219,38 @@ function renderHandoff(result) {
       lines.push(`    contradicts: ${f.span || '(no line)'}`);
     }
   }
+  // Where broad review actually ran. The front pass and the panel cover
+  // different halves (latent tree defects vs defects this loop's own fixes
+  // introduced), so a run with only one of them is not fully covered -- say
+  // which one ran rather than letting "clean" imply both.
+  const gateRounds = ledger.gate_rounds || [];
+  if (gateRounds.length) lines.push(`Broad review (front pass): round ${gateRounds.join(', ')}`);
+  else if (ledger.gateArmed === false) {
+    // Discriminate WHY, the same way dod.deferredBy does: a file target is
+    // disarmed by the CLI itself, and blaming a flag nobody passed sends the
+    // reader looking for an opt-out that is not in their invocation.
+    lines.push(ledger.gateDisarmedBy === 'file-target'
+      ? 'Broad review (front pass): not applicable to a file target (pass --broad to sweep the tree against it)'
+      : 'Broad review (front pass): skipped (--no-broad)');
+  }
   if (ledger.gate_panel && ledger.gate_panel.status === 'done' && ledger.gate_panel.round > 0) {
     lines.push(`Broad-review panel: ${ledger.gate_panel.round} round(s), ${(ledger.gate_panel.confirmed || []).length} confirmed`);
+  } else if (ledger.gateDisarmedBy === '--no-broad' && ledger.gate_panel_configured) {
+    // The opt-out declined a half this repo has configured -- say so, rather
+    // than letting the absent line read as "there was no panel to run".
+    lines.push('Broad-review panel: skipped (--no-broad); this repo has it enabled');
+  } else if (gateRounds.length && PANEL_SETTLED_STATUSES.has(ledger.status)) {
+    // Only at a conclusion, and only when the panel genuinely never ran: a
+    // gate-panel-pending run has the panel still ahead of it (the status line
+    // already says so), and a mid-run round has not reached the question yet.
+    // parked and abandoned count -- the run is over and the panel never ran, so
+    // the missing half is exactly as unswept as it is on a clean conclusion.
+    // gate-pending is the exception when the panel IS configured: gateOpenCount
+    // takes priority over panelPending, so the panel is deferred to the next
+    // convergence attempt, not skipped.
+    lines.push(ledger.gate_panel_configured
+      ? 'Broad-review panel: not run on this attempt -- it runs once the diff-local loop converges with no open broad findings'
+      : 'Broad-review panel: did not run -- defects this run\'s own fixes introduced were not swept; the panel is that half ({"gate":{"panel":true}} in review.config.json)');
   }
   const gateOpen = ledger.gate_open || [];
   if (gateOpen.length) {
@@ -551,7 +601,7 @@ function main(resolveFromCwd) {
     // a correction the human made to the design source to retire a false positive.
     if (ledger.status === 'intent-review') {
       ledger = clearIntentForFreshLook(stateDir, slug, ledger);
-      ledger = { ...ledger, status: 'converging', diff_content_hash: null, intent_parked: [], gate_panel: gatePanelLib.emptyGatePanel() };
+      ledger = { ...ledger, status: 'converging', diff_content_hash: null, intent_parked: [], gate_panel: gatePanelLib.emptyGatePanel(), gate_rounds: [] };
     }
 
     // gate-pending, like intent-review, is a re-runnable stop state: a fresh
@@ -561,13 +611,20 @@ function main(resolveFromCwd) {
     // resets -- the panel must re-run fresh on every convergence attempt (design
     // decision 4: "exactly once per convergence attempt", not once per ledger
     // lifetime), otherwise stale confirmed findings from the prior panel run would
-    // keep resurfacing in gate_open even after being fixed or dismissed. Intent is
+    // keep resurfacing in gate_open even after being fixed or dismissed.
+    // gate_rounds resets for the same reason -- it is what makes the front pass
+    // fire, and a new convergence attempt that cleared gate_open without it
+    // would erase the standing broad findings and never re-derive them, then
+    // report clean. Both re-runnable stop states above clear it; the
+    // gate-panel-pending reset below deliberately does NOT, because that is an
+    // interrupted panel resuming WITHIN the same attempt, not a new one.
+    // Intent is
     // cleared for the same reason intent-review clears it: the documented remedy
     // includes editing the design source, so a re-run is a NEW run against
     // possibly-new requirements and must re-fetch rather than trip the drift check.
     if (ledger.status === 'gate-pending') {
       ledger = clearIntentForFreshLook(stateDir, slug, ledger);
-      ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_open: [], gate_panel: gatePanelLib.emptyGatePanel() };
+      ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_open: [], gate_panel: gatePanelLib.emptyGatePanel(), gate_rounds: [] };
     }
 
     // gate-panel-pending is also re-runnable: a session may have crashed or been
@@ -579,15 +636,16 @@ function main(resolveFromCwd) {
       ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_panel: gatePanelLib.emptyGatePanel() };
     }
 
-    // Broad-review enable flag (--broad, alias --gate): a per-invocation
-    // override so a repo can turn broad review on without editing
-    // review.config.json. Lives among round-start's trailing arguments,
-    // order-independent against the optional `base` token below. Any other
-    // "--"-prefixed token is a usage error rather than silently falling
-    // through to `base` (which would produce a confusing downstream git
-    // error against a nonsense ref).
+    // Broad review is ARMED BY DEFAULT; these flags are the per-invocation
+    // overrides. --broad/--gate re-arm a ledger that opted out; --no-broad opts
+    // out. Both live among round-start's trailing arguments, order-independent
+    // against the optional `base` token below. Any other "--"-prefixed token is
+    // a usage error rather than silently falling through to `base` (which would
+    // produce a confusing downstream git error against a nonsense ref).
     const BROAD_FLAGS = new Set(['--broad', '--gate']);
     const broadFlagPassed = rest.some((a) => BROAD_FLAGS.has(a));
+    const NO_BROAD_FLAGS = new Set(['--no-broad']);
+    const noBroadFlagPassed = rest.some((a) => NO_BROAD_FLAGS.has(a));
     // Executable-DoD opt-out (--no-dod): the same deferral `"dod": null` in
     // review.config.json declares, asked for per-run instead. It exists for a
     // repo that HAS a config with real `dod` commands but wants the executable
@@ -596,7 +654,7 @@ function main(resolveFromCwd) {
     // to a pass.
     const NO_DOD_FLAGS = new Set(['--no-dod']);
     const noDodFlagPassed = rest.some((a) => NO_DOD_FLAGS.has(a));
-    const positional = rest.filter((a) => !BROAD_FLAGS.has(a) && !NO_DOD_FLAGS.has(a));
+    const positional = rest.filter((a) => !BROAD_FLAGS.has(a) && !NO_BROAD_FLAGS.has(a) && !NO_DOD_FLAGS.has(a));
     for (const tok of positional) {
       if (tok.startsWith('--')) throw new Error(`review-cli round-start: unknown flag "${tok}"`);
     }
@@ -717,13 +775,47 @@ function main(resolveFromCwd) {
     fs.writeFileSync(path.join(stateDir, `round-${ledger.round}-diff.txt`), diff);
 
     const intentCfg = intentLib.loadIntentConfig(repoRoot);
-    const gateCfg = gateLib.loadGateConfig(repoRoot);
-    // Sticky: once broad review is applied for this ledger (config, flag, or a
-    // prior round), it stays applied even if a later round-start call omits the
-    // flag -- mirrors how `base` falls back to the persisted `ledger.target.base`
-    // above. plan-fixes reads this ledger field instead of re-deriving from
-    // review.config.json (see Task 3).
-    const gateApplied = !!gateCfg || broadFlagPassed || !!ledger.gateApplied;
+    // ARMED (does this run do broad review at all) vs FIRED (does the gate pair
+    // run THIS round) are two different questions -- keep them apart.
+    //
+    // Armed is sticky and defaults to true, so round 2 need not repeat a flag
+    // and an opt-out survives the rest of the run: --no-broad disarms, and
+    // --broad/--gate re-arm a ledger that disarmed earlier.
+    // Precedence: this invocation's flag, then the ledger's sticky answer, then
+    // the target-type default. A file target defaults to DISARMED -- the gate
+    // pair's prompt is written against a git diff ("an unchanged file whose
+    // invariant a CHANGED LINE breaks") and it sweeps the repository, which a
+    // doc review in a directory that is not even a git repo has no use for --
+    // but that is a DEFAULT, not an override: reading it ahead of the sticky
+    // field would re-disarm a file run that armed with `--broad`, and the next
+    // plan-fixes would drop that round's gate findings on the floor.
+    // A ledger written before gateArmed existed has no boolean here and falls
+    // through to the target-type default, which is what it ran under.
+    const gateArmed = broadFlagPassed ? true
+      : noBroadFlagPassed ? false
+      : typeof ledger.gateArmed === 'boolean' ? ledger.gateArmed
+      : !isFileTarget;
+    const gateDisarmedBy = gateArmed ? null : (noBroadFlagPassed ? '--no-broad' : isFileTarget ? 'file-target' : ledger.gateDisarmedBy || '--no-broad');
+    // Fired only on the FIRST armed round. The pair reads the whole repository,
+    // and the defects it is built for -- cross-context violations, design
+    // conformance, latent gaps -- live in a tree that does not change round to
+    // round, so re-reading it every round pays repo-wide cost N times for a
+    // finding set that cannot move. Catching them in round 1 also means they
+    // are fixed in the same edit that caused them, not six rounds later.
+    // The tail -- defects THIS loop's own fixes introduce -- is the holistic
+    // panel's job (`gate.panel`), which fires once the diff-local loop
+    // converges. Front pass and panel deliberately cover different halves; a
+    // repo with the panel off gets the front half only, and the handoff says so.
+    // A mid-round resume re-drives the SAME round and must still report the pair
+    // as this round's work -- plan-fixes reads gateApplied to decide the gate
+    // artifact is mandatory, so flipping it off on a resume would silently
+    // discard the round's broad findings.
+    const gateRounds = Array.isArray(ledger.gate_rounds) ? ledger.gate_rounds : [];
+    // Per-round, not sticky: plan-fixes reads this ledger field to decide the
+    // round's gate artifact is mandatory, and round-start rewrites it below
+    // before plan-fixes runs. Re-deriving from review.config.json there would
+    // silently miss a flag-enabled round and discard its findings.
+    const gateApplied = gateArmed && (gateRounds.length === 0 || gateRounds.includes(ledger.round));
     // Sticky for the same reason gateApplied is: once a run has opted out of the
     // executable gate, round 2's round-start must not have to repeat --no-dod
     // (without stickiness a repo that DOES have `dod` commands would run the
@@ -794,7 +886,17 @@ function main(resolveFromCwd) {
     const targetUpdate = isFileTarget
       ? { ...baseTarget, type: 'file', hasDoD: false, spec: fileSpec }
       : { ...baseTarget, type: 'git', hasDoD: true, spec: { ref, base }, base, head_sha: headSha };
-    ledger = { ...ledger, dod, phase: 'gates', gateApplied, dodDeferred, target: targetUpdate };
+    ledger = {
+      ...ledger,
+      dod,
+      phase: 'gates',
+      gateArmed,
+      gateDisarmedBy,
+      gateApplied,
+      gate_rounds: gateApplied && !gateRounds.includes(ledger.round) ? [...gateRounds, ledger.round] : gateRounds,
+      dodDeferred,
+      target: targetUpdate,
+    };
     writeLedger(stateDir, slug, ledger);
     // dodPassed keeps its shape for existing callers, but under a deferral its
     // `true` means "nothing blocked the round", not "the gate ran and passed" --
@@ -840,7 +942,7 @@ function main(resolveFromCwd) {
     requireArtifactAfter(stateDir, n, 'correctness', 'verify');
     const cJson = readArtifact(stateDir, n, 'correctness');
     const vJson = readArtifact(stateDir, n, 'verify');
-    const candidates = gc.parseGateFindings(JSON.stringify(cJson.findings || []));
+    const candidates = roundCandidates(gc, cJson, vJson);
     const killedIds = gc.parseVerifyVerdict(JSON.stringify({ rejected: vJson.rejected || [] }), candidates).rejectedIds;
     // Carry each rejection's stated basis into the ledger so the handoff can
     // show WHY a finding was killed. Without it the handoff reports only a
@@ -902,11 +1004,26 @@ function main(resolveFromCwd) {
       dodPassed: !!(ledger.dod && ledger.dod.passed), dodDeferred: !!(ledger.dod && ledger.dod.deferred), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons,
       intentReviewCount: (ledger.intent_parked || []).length,
       gateOpenCount: gateOpen.length,
-      panelConfigured: !!(gateCfg && gateCfg.panel),
+      // --no-broad opts the run out of broad review, and the panel IS broad
+      // review's other half -- running it anyway would hand the opt-out run the
+      // most expensive half of what it declined. (Before broad review became
+      // the default this could not happen: a gate.panel block implied a gate
+      // config, which is what armed the gate in the first place.)
+      //
+      // Keyed on the REASON, not on gateArmed: a file target is disarmed by the
+      // CLI's own default, because the gate PAIR's prompt is git-diff-shaped --
+      // that says nothing about the panel, whose lenses read the review text and
+      // the intent doc and worked for file targets before this change. Only the
+      // user's explicit opt-out declines the panel.
+      panelConfigured: !!(gateCfg && gateCfg.panel) && ledger.gateDisarmedBy !== '--no-broad',
       panelDone: !!(ledger.gate_panel && ledger.gate_panel.status === 'done'),
     };
     let { ledger: applied, decision } = R.applyRoundOutcome(ledger, outcome);
-    ledger = applied;
+    // Persisted so renderHandoff can tell "the panel is off in this repo" from
+    // "the panel is on and still ahead of this run" -- it only receives the
+    // ledger, and telling someone to enable a panel they already enabled sends
+    // them editing a config that is already correct.
+    ledger = { ...applied, gate_panel_configured: !!(gateCfg && gateCfg.panel) };
     // Deduped by id: a re-driven round (resume) records the same kills again.
     const priorKilled = new Set((ledger.killed_digest || []).map((k) => k.id));
     ledger = {
@@ -964,17 +1081,17 @@ function main(resolveFromCwd) {
     requireArtifactAfter(stateDir, n, 'correctness', 'verify');
     const cJson = readArtifact(stateDir, n, 'correctness');
     const vJson = readArtifact(stateDir, n, 'verify');
-    const candidates = gc.parseGateFindings(JSON.stringify(cJson.findings || []));
+    const candidates = roundCandidates(gc, cJson, vJson);
     // Symmetric guard: an intent-prefixed id must never come from the
     // correctness (auto-fixing) gate -- only the intent detector may mint
     // "intent:" ids. Catching this here (not just on the intent side) keeps
     // the fold below trustworthy even if a gate misbehaves or is spoofed.
     for (const c of candidates) {
       if (c.id.startsWith('intent:')) {
-        throw new Error(`harness-failure: intent-prefixed id "${c.id}" in the correctness artifact -- intent findings must come from the intent detector, never the auto-fixing gate`);
+        throw new Error(`harness-failure: intent-prefixed id "${c.id}" in the correctness or verify artifact -- intent findings must come from the intent detector, never the auto-fixing gate`);
       }
       if (c.id.startsWith('gate:')) {
-        throw new Error(`harness-failure: gate-prefixed id "${c.id}" in the correctness artifact -- gate findings must come from the gate reviewer, never the auto-fixing gate`);
+        throw new Error(`harness-failure: gate-prefixed id "${c.id}" in the correctness or verify artifact -- gate findings must come from the gate reviewer, never the auto-fixing gate`);
       }
     }
     // Coverage: every changed file must be in examined. This is a GIT-DIFF-shaped
@@ -1055,8 +1172,13 @@ function main(resolveFromCwd) {
     // intent detector -- if the gate was applied this round, its artifact is
     // mandatory. Deliberately NOT filtered to changed files (unchanged-sibling
     // cross-context is the point). gate: namespace is guarded symmetrically.
-    let gateOpen = [];
-    if (gateApplied) {
+    // A round the pair did NOT fire in (every round after the front pass) has no
+    // gate artifact to fold and no verdict on the standing set -- carry it
+    // forward untouched. Recomputing from an absent artifact would read as "the
+    // gate reported nothing" and silently erase findings the front pass raised,
+    // letting the run converge clean over them.
+    let gateOpen = ledger.gate_open || [];
+    if (gateApplied) { // the fold below replaces gateOpen wholesale
       const gJson = readArtifact(stateDir, n, 'gate'); // fail-closed
       let gFindings;
       try { gFindings = gc.parseGateFindings(JSON.stringify(gJson.findings || [])); }
@@ -1219,8 +1341,13 @@ function main(resolveFromCwd) {
     const n = ledger.round;
     if ((ledger.journal || []).some((j) => j.id === id)) { process.stdout.write(JSON.stringify({ committed: false, reason: 'already journaled' }) + '\n'); return; } // idempotent
     const fx = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-fix-${id}.json`), 'utf8')); } catch (e) { return null; } })();
-    const cJson = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-correctness.json`), 'utf8')); } catch (e) { return { findings: [] }; } })();
-    const finding = (cJson.findings || []).find((f) => f.id === id) || { summary: '', file: null };
+    const readRound = (role) => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-${role}.json`), 'utf8')); } catch (e) { return { findings: [] }; } };
+    // Both artifacts, for the same reason plan-fixes reads both: a verify-added
+    // finding that resolved to `{file: null}` here would fail the file guard
+    // below and report "no edit or file unchanged" -- silently discarding a fix
+    // the fixer actually made, which record then reverts with the tree checkout.
+    const finding = roundCandidates(require('./gate-contract'), readRound('correctness'), readRound('verify'))
+      .find((f) => f.id === id) || { summary: '', file: null };
     // The fix subagent declares every file it touched via `files` (finding.file
     // plus any companion edit -- e.g. a caller/import the fix legitimately had
     // to update). Fall back to [finding.file] for backward compatibility with

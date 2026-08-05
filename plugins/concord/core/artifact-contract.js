@@ -4,7 +4,7 @@ const { isValidFindingId } = require('./gate-contract');
 
 const SHAPES = {
   correctness: { arrays: ['examined', 'findings'], prefixes: ['correctness:', 'docreview:'] },
-  verify: { arrays: ['rejected'], prefixes: ['correctness:', 'docreview:'] },
+  verify: { arrays: ['rejected', 'findings'], prefixes: ['correctness:', 'docreview:'] }, // findings: distrust-green, same as gate-verify
   intent: { arrays: ['findings'], prefixes: ['intent:'] },
   gate: { arrays: ['findings'], prefixes: ['gate:'] },
   'gate-verify': { arrays: ['rejected', 'findings'], prefixes: ['gate:'] },

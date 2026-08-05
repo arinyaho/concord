@@ -74,7 +74,9 @@ function emptyLedger(target) {
     gate_open: [],
     gate_dismissed: [],
     gate_panel: emptyGatePanel(),
-    gateApplied: false,
+    gateArmed: null, // unresolved: round-start resolves it from flag / target type, then it is sticky
+    gate_rounds: [], // rounds the gate pair actually fired in (front pass: just the first)
+    gateApplied: false, // per-round: did the pair fire THIS round
   };
 }
 
@@ -289,7 +291,15 @@ function resetUnreachable(ledger) {
   const resetIds = new Set((ledger.findings || []).filter((f) => f.status === 'fixed' || f.status === 'parked').map((f) => f.id));
   const findings = (ledger.findings || []).map((f) => (resetIds.has(f.id) ? { ...f, status: 'open', fix_commit: null, park_reason: null } : f));
   const seen = (ledger.seen || []).filter((s) => !resetIds.has(s.id));
-  return { ...ledger, findings, seen, status: 'converging' };
+  // The history this run reviewed is gone (force-push/rebase mid-run), so the
+  // broad findings derived from it are about code that no longer exists. Drop
+  // them and re-arm the front pass -- carrying them forward would keep a stale
+  // gap standing against a rewritten tree with nothing left that can retire it,
+  // since the drop rules only run on a round the gate pair actually fires in.
+  // gate_panel goes too: `record` re-merges a done panel's confirmed findings
+  // into gate_open on every round, so leaving it would resurrect the very
+  // findings this drop just retired -- against a tree that no longer has them.
+  return { ...ledger, findings, seen, status: 'converging', gate_open: [], gate_rounds: [], gate_panel: emptyGatePanel() };
 }
 
 // ---------------------------------------------------------------------------
