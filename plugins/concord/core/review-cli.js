@@ -145,6 +145,21 @@ function renderDodFailure(dod) {
   return out;
 }
 
+// The round's candidate findings: the correctness pass PLUS anything the verify
+// pass's different lens added (distrust-green, same as the gate pair). Every
+// stage that asks "what did this round find" must go through here -- plan-fixes
+// routes them, commit-fix looks up the finding a fix belongs to, and record
+// folds them into the ledger. A stage that reads the correctness artifact alone
+// silently drops the verify-added ones at ITS step, which looks exactly like
+// the harness working: the finding was raised, and then nothing happened.
+// Deduped by id with the correctness entry winning a collision.
+function roundCandidates(gc, cJson, vJson) {
+  const byId = new Map();
+  for (const f of gc.parseGateFindings(JSON.stringify((vJson && vJson.findings) || []))) byId.set(f.id, f);
+  for (const f of gc.parseGateFindings(JSON.stringify((cJson && cJson.findings) || []))) byId.set(f.id, f);
+  return Array.from(byId.values());
+}
+
 // Statuses where the panel question is settled for good: the run concluded and
 // the panel either ran or never will. Anything else (converging mid-run,
 // gate-panel-pending, intent-review) still has the panel ahead of it.
@@ -927,7 +942,7 @@ function main(resolveFromCwd) {
     requireArtifactAfter(stateDir, n, 'correctness', 'verify');
     const cJson = readArtifact(stateDir, n, 'correctness');
     const vJson = readArtifact(stateDir, n, 'verify');
-    const candidates = gc.parseGateFindings(JSON.stringify(cJson.findings || []));
+    const candidates = roundCandidates(gc, cJson, vJson);
     const killedIds = gc.parseVerifyVerdict(JSON.stringify({ rejected: vJson.rejected || [] }), candidates).rejectedIds;
     // Carry each rejection's stated basis into the ledger so the handoff can
     // show WHY a finding was killed. Without it the handoff reports only a
@@ -1066,18 +1081,7 @@ function main(resolveFromCwd) {
     requireArtifactAfter(stateDir, n, 'correctness', 'verify');
     const cJson = readArtifact(stateDir, n, 'correctness');
     const vJson = readArtifact(stateDir, n, 'verify');
-    // Distrust-green, the same way the gate pair does it: the verify pass reviews
-    // with a different lens, so a class of bug the first pass missed can surface
-    // there. Without this fold it would be written to the artifact and silently
-    // dropped -- the reviewer's work discarded by the harness, which is the one
-    // failure this loop cannot detect from the outside. Deduped by id with the
-    // correctness entry winning, so a verify finding that restates a candidate
-    // collapses into it rather than doubling.
-    const verifyAdded = gc.parseGateFindings(JSON.stringify(vJson.findings || []));
-    const byId = new Map();
-    for (const f of verifyAdded) byId.set(f.id, f);
-    for (const f of gc.parseGateFindings(JSON.stringify(cJson.findings || []))) byId.set(f.id, f);
-    const candidates = Array.from(byId.values());
+    const candidates = roundCandidates(gc, cJson, vJson);
     // Symmetric guard: an intent-prefixed id must never come from the
     // correctness (auto-fixing) gate -- only the intent detector may mint
     // "intent:" ids. Catching this here (not just on the intent side) keeps
@@ -1337,8 +1341,13 @@ function main(resolveFromCwd) {
     const n = ledger.round;
     if ((ledger.journal || []).some((j) => j.id === id)) { process.stdout.write(JSON.stringify({ committed: false, reason: 'already journaled' }) + '\n'); return; } // idempotent
     const fx = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-fix-${id}.json`), 'utf8')); } catch (e) { return null; } })();
-    const cJson = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-correctness.json`), 'utf8')); } catch (e) { return { findings: [] }; } })();
-    const finding = (cJson.findings || []).find((f) => f.id === id) || { summary: '', file: null };
+    const readRound = (role) => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-${role}.json`), 'utf8')); } catch (e) { return { findings: [] }; } };
+    // Both artifacts, for the same reason plan-fixes reads both: a verify-added
+    // finding that resolved to `{file: null}` here would fail the file guard
+    // below and report "no edit or file unchanged" -- silently discarding a fix
+    // the fixer actually made, which record then reverts with the tree checkout.
+    const finding = roundCandidates(require('./gate-contract'), readRound('correctness'), readRound('verify'))
+      .find((f) => f.id === id) || { summary: '', file: null };
     // The fix subagent declares every file it touched via `files` (finding.file
     // plus any companion edit -- e.g. a caller/import the fix legitimately had
     // to update). Fall back to [finding.file] for backward compatibility with

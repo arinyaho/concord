@@ -1871,6 +1871,30 @@ test('plan-fixes: a verify-added finding (distrust-green) is routed to the fixer
   assert.deepStrictEqual(out.fixes.map((f) => f.id), ['correctness:verify-caught-it']);
 });
 
+test('commit-fix + record: a verify-added finding is committed and ledgered like a correctness one', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [], findings: [
+      { id: 'correctness:verify-caught-it', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'the second lens caught it' },
+    ] });
+  run(['plan-fixes', 'feat/x'], { env });
+  // The fixer edits and declares its files, exactly as for a correctness finding.
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two-fixed\n');
+  writeArtifact(dir, n, 'fix-correctness:verify-caught-it', { status: 'ok', edited: true, files: ['a.txt'] });
+  const cf = JSON.parse(run(['commit-fix', 'feat/x', 'correctness:verify-caught-it'], { env }));
+  // Looking the finding up in the correctness artifact alone resolves it to
+  // {file: null}, the file guard short-circuits, and record's tree checkout
+  // then reverts the fixer's work -- a silent drop one stage later.
+  assert.strictEqual(cf.committed, true);
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  const ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.deepStrictEqual(ledger.findings.map((f) => [f.id, f.status]), [['correctness:verify-caught-it', 'fixed']]);
+  assert.ok(ledger.seen.some((sn) => sn.id === 'correctness:verify-caught-it'), 'a seen entry is what lets the next round dedupe or reopen it');
+  assert.match(out.handoff, /1 fixed/);
+  assert.strictEqual(fs.readFileSync(path.join(repo, 'a.txt'), 'utf8'), 'two-fixed\n');
+});
+
 test('plan-fixes: a verify finding sharing an id with a correctness finding does not duplicate', () => {
   const repo = initRepo(); const dir = tmpDir();
   const { env } = seedGatesRound(repo, dir, 'feat/x',
