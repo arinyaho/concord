@@ -83,7 +83,7 @@ async function invoke(spawn, input) {
 }
 
 async function runReviewUntilGreen(options) {
-  const { ref, base, broad = false, noDod = false, resume = false, repoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
+  const { ref, base, broad = false, noBroad = false, noDod = false, resume = false, repoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
   if (!ref) throw new Error('review-until-green: missing target ref');
   const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot));
   const spawn = options.spawn || ((input) => codexExec(input));
@@ -152,6 +152,7 @@ async function runReviewUntilGreen(options) {
     const startArgs = ['round-start', ref];
     if (initialBase) startArgs.push(initialBase);
     if (broad) startArgs.push('--broad');
+    if (noBroad) startArgs.push('--no-broad'); // broad review is on by default; this is the opt-out
     if (noDod) startArgs.push('--no-dod');
     const started = await cli(startArgs);
     if (started.decision !== 'work') return started;

@@ -74,7 +74,9 @@ function emptyLedger(target) {
     gate_open: [],
     gate_dismissed: [],
     gate_panel: emptyGatePanel(),
-    gateApplied: false,
+    gateArmed: true, // broad review is on by default; --no-broad disarms
+    gate_rounds: [], // rounds the gate pair actually fired in (front pass: just the first)
+    gateApplied: false, // per-round: did the pair fire THIS round
   };
 }
 
