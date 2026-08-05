@@ -296,7 +296,10 @@ function resetUnreachable(ledger) {
   // them and re-arm the front pass -- carrying them forward would keep a stale
   // gap standing against a rewritten tree with nothing left that can retire it,
   // since the drop rules only run on a round the gate pair actually fires in.
-  return { ...ledger, findings, seen, status: 'converging', gate_open: [], gate_rounds: [] };
+  // gate_panel goes too: `record` re-merges a done panel's confirmed findings
+  // into gate_open on every round, so leaving it would resurrect the very
+  // findings this drop just retired -- against a tree that no longer has them.
+  return { ...ledger, findings, seen, status: 'converging', gate_open: [], gate_rounds: [], gate_panel: emptyGatePanel() };
 }
 
 // ---------------------------------------------------------------------------
