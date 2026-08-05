@@ -2122,6 +2122,35 @@ test('renderHandoff: gate-pending surfaces the advisory broad review findings se
   assert.match(out.handoff, /anchor: if \(!target\) return;/); // evidence/span surfaces as the anchor
 });
 
+test('round-start: a gate-pending re-run re-arms the front pass, it does not erase the broad findings and converge clean', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const slug = review.targetSlug('feat/x');
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+
+  // Round 1: the front pass raises a broad finding -> gate-pending.
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'gate', { status: 'ok', findings: [
+    { id: 'gate:cross-context:x', file: 'unchanged.js', span: '', summary: 'a real gap', requirement: 'r' },
+  ] });
+  writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  assert.strictEqual(JSON.parse(run(['record', 'feat/x'], { env })).decision.gatePending, true);
+
+  // The documented remedy for gate-pending is "fix it and re-run -- a fresh run
+  // re-evaluates broad review". The reset clears gate_open, so unless it also
+  // re-arms the front pass the standing finding is erased with nothing to
+  // re-derive it, and the next round converges clean over a gap nobody resolved.
+  const rerun = JSON.parse(run(['round-start', 'feat/x'], { env, broadDefault: true }));
+  assert.strictEqual(rerun.decision, 'work');
+  assert.strictEqual(rerun.gateApplied, true, 'the new convergence attempt must re-run the front pass');
+  assert.deepStrictEqual(review.readLedger(dir, slug).gate_rounds, [rerun.round]);
+});
+
 test('renderHandoff: names which half of broad review ran -- front pass round, panel not run', () => {
   const repo = initRepo();
   const dir = tmpDir();
@@ -2306,11 +2335,12 @@ test('e2e: a carried finding whose file DID change since base is dropped when th
   // file (a.txt) is now in the diff since base (the fix touched it) -- a fix
   // plausibly addressed it -- so it must be dropped, not carried.
   //
-  // The pair fires once (front pass), so a LATER round only re-runs it when the
-  // run was re-armed (--broad after --no-broad, or a rerun). That is the path
-  // this drop rule covers, and clearing gate_rounds is how the ledger records
-  // it -- a round with no gate verdict at all carries the standing set instead
-  // (the unchanged-file test above).
+  // The pair fires once (front pass), so a LATER round only re-runs it on a new
+  // convergence attempt -- the gate-pending/intent-review re-run paths clear
+  // gate_rounds, which is what re-arms the front pass (see the re-fire test
+  // above). Writing gate_rounds directly is the short way to reach that state
+  // without driving a full stop-and-re-run here. A round with no gate verdict
+  // at all carries the standing set instead (the unchanged-file test above).
   review.writeLedger(dir, slug, { ...review.readLedger(dir, slug), gate_rounds: [] });
   n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~2'], { env, broadDefault: true })).round;
   writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
