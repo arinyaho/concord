@@ -40,4 +40,4 @@ Always redirect: `... "<PROMPT>" > "<stateDir>/codex-<role>.log" 2>&1`. Then rea
 
 ## Cost note
 
-A broad round (correctness + verify + 5-lens panel + 3-way adversarial verify per finding) can be 15–20 `codex exec` processes, each a full model run billed to the user's Codex plan. This is the honest cost of clean-context cross-engine review. Mention it if the user seems unaware, especially before a `--broad` run.
+A broad round (correctness + verify + 5-lens panel + 3-way adversarial verify per finding) can be 15–20 `codex exec` processes, each a full model run billed to the user's Codex plan. This is the honest cost of clean-context cross-engine review. Broad review is on by default, so a run reaches this cost without anyone asking for it: the front pass is two processes on round 1, and a repo with `gate.panel` enabled pays the panel at convergence. Mention it if the user seems unaware; `--no-broad` is the opt-out.
