@@ -560,7 +560,7 @@ function main(resolveFromCwd) {
     // a correction the human made to the design source to retire a false positive.
     if (ledger.status === 'intent-review') {
       ledger = clearIntentForFreshLook(stateDir, slug, ledger);
-      ledger = { ...ledger, status: 'converging', diff_content_hash: null, intent_parked: [], gate_panel: gatePanelLib.emptyGatePanel() };
+      ledger = { ...ledger, status: 'converging', diff_content_hash: null, intent_parked: [], gate_panel: gatePanelLib.emptyGatePanel(), gate_rounds: [] };
     }
 
     // gate-pending, like intent-review, is a re-runnable stop state: a fresh
@@ -570,13 +570,20 @@ function main(resolveFromCwd) {
     // resets -- the panel must re-run fresh on every convergence attempt (design
     // decision 4: "exactly once per convergence attempt", not once per ledger
     // lifetime), otherwise stale confirmed findings from the prior panel run would
-    // keep resurfacing in gate_open even after being fixed or dismissed. Intent is
+    // keep resurfacing in gate_open even after being fixed or dismissed.
+    // gate_rounds resets for the same reason -- it is what makes the front pass
+    // fire, and a new convergence attempt that cleared gate_open without it
+    // would erase the standing broad findings and never re-derive them, then
+    // report clean. Both re-runnable stop states above clear it; the
+    // gate-panel-pending reset below deliberately does NOT, because that is an
+    // interrupted panel resuming WITHIN the same attempt, not a new one.
+    // Intent is
     // cleared for the same reason intent-review clears it: the documented remedy
     // includes editing the design source, so a re-run is a NEW run against
     // possibly-new requirements and must re-fetch rather than trip the drift check.
     if (ledger.status === 'gate-pending') {
       ledger = clearIntentForFreshLook(stateDir, slug, ledger);
-      ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_open: [], gate_panel: gatePanelLib.emptyGatePanel() };
+      ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_open: [], gate_panel: gatePanelLib.emptyGatePanel(), gate_rounds: [] };
     }
 
     // gate-panel-pending is also re-runnable: a session may have crashed or been
