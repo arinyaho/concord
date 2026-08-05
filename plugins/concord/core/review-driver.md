@@ -20,7 +20,7 @@ Never soften that clause, and never accept an artifact from a reviewer you know 
 
 Run this loop. Do each step in order; do not skip, reorder, or improvise termination.
 
-1. `node "<review-cli>" round-start <ref> [base] [--broad] [--no-dod]`
+1. `node "<review-cli>" round-start <ref> [base] [--no-broad] [--no-dod]`
    - `decision: "terminal"` or `"no-op"` -> stop; report the CLI's message.
    - `decision: "work"` -> continue: proceed straight to step 2 in THIS session. Do not pause, defer, or wait on anything external first. Note the `round` number `n`, the `stateDir` path it prints (`stateDir` is the CLI-owned directory for this run's artifacts; every path below is relative to it), and the `dodPassed` and `dodDeferred` booleans -- step 2 passes them to the correctness subagent. When `dodDeferred` is `true`, `dodPassed` is `true` only because nothing blocked the round, NOT because a gate ran and passed; the two must never be conflated.
 2. Read the file at `<stateDir>/round-<n>-diff.txt` (the file round-start just wrote -- for a git target this is a diff; for a file target this is the current content of the target file). Spawn ONE correctness review subagent per the harness spawn-include (clean context -- do not paste your own prior reasoning). The prompt to give it depends on `targetType` from the round-start output:
