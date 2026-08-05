@@ -757,12 +757,20 @@ function main(resolveFromCwd) {
     // Armed is sticky and defaults to true, so round 2 need not repeat a flag
     // and an opt-out survives the rest of the run: --no-broad disarms, and
     // --broad/--gate re-arm a ledger that disarmed earlier.
-    // A file target is disarmed by default: the gate pair's prompt is written
-    // against a git diff ("an unchanged file whose invariant a CHANGED LINE
-    // breaks") and it sweeps the repository, which a doc review in a directory
-    // that is not even a git repo has no use for. `--broad` still forces it on
-    // for someone who wants the sweep against a spec.
-    const gateArmed = broadFlagPassed ? true : (noBroadFlagPassed || isFileTarget) ? false : ledger.gateArmed !== false;
+    // Precedence: this invocation's flag, then the ledger's sticky answer, then
+    // the target-type default. A file target defaults to DISARMED -- the gate
+    // pair's prompt is written against a git diff ("an unchanged file whose
+    // invariant a CHANGED LINE breaks") and it sweeps the repository, which a
+    // doc review in a directory that is not even a git repo has no use for --
+    // but that is a DEFAULT, not an override: reading it ahead of the sticky
+    // field would re-disarm a file run that armed with `--broad`, and the next
+    // plan-fixes would drop that round's gate findings on the floor.
+    // A ledger written before gateArmed existed has no boolean here and falls
+    // through to the target-type default, which is what it ran under.
+    const gateArmed = broadFlagPassed ? true
+      : noBroadFlagPassed ? false
+      : typeof ledger.gateArmed === 'boolean' ? ledger.gateArmed
+      : !isFileTarget;
     const gateDisarmedBy = gateArmed ? null : (noBroadFlagPassed ? '--no-broad' : isFileTarget ? 'file-target' : ledger.gateDisarmedBy || '--no-broad');
     // Fired only on the FIRST armed round. The pair reads the whole repository,
     // and the defects it is built for -- cross-context violations, design

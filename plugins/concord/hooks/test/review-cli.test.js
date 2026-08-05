@@ -1566,6 +1566,10 @@ test('round-start file: a file target is broad-disarmed by default, and --broad 
   // ...but it stays available for someone who does want the tree swept against a spec.
   const forced = JSON.parse(run(['round-start', 'file:note.md', '--broad'], { env }));
   assert.strictEqual(forced.gateApplied, true);
+  // ...and that arming is STICKY, like the git path's: a re-drive without the
+  // flag must not silently re-disarm and drop the round's gate findings.
+  const redriven = JSON.parse(run(['round-start', 'file:note.md'], { env, broadDefault: true }));
+  assert.strictEqual(redriven.gateApplied, true);
 });
 
 test('renderHandoff file: a disarmed file target does not blame --no-broad for a flag nobody passed', () => {
