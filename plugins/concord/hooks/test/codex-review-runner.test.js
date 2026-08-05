@@ -165,6 +165,21 @@ test('verify prompt asks for the distrust-green findings channel the CLI actuall
   assert.match(prompt, /catch a bug the first pass missed/);
 });
 
+test('correctness and verify prompts exclude the intent artifact -- the state dir is on --add-dir', () => {
+  for (const role of ['correctness', 'verify']) {
+    const prompt = reviewerPrompt(role, { stateDir: '/state', round: 3, targetType: 'git', dodPassed: true, slug: 'feat-x' });
+    // Without this the reviewer can read intent-<slug>.md and raise a design
+    // objection under a correctness: id, which the loop then AUTO-FIXES --
+    // the opposite of intent's report-only-to-a-human contract.
+    assert.match(prompt, /Ignore any intent-\*\.md file/);
+  }
+});
+
+test('gate prompt states the three-segment id shape -- a two-segment id defaults the class silently', () => {
+  const prompt = reviewerPrompt('gate', { stateDir: '/state', round: 3, targetType: 'git', dodPassed: true, slug: 'feat-x' });
+  assert.match(prompt, /gate:<class>:<slug>/);
+});
+
 test('fix prompt forbids declaring state artifacts or paths outside the repository', () => {
   const prompt = reviewerPrompt('fix', { stateDir: '/state', round: 7, finding: { id: 'correctness:bug', file: 'src/parser.js', span: 'lines 41-43', summary: 'repair it' } });
   assert.match(prompt, /repository-relative/i);
