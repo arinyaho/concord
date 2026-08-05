@@ -54,7 +54,7 @@ test('e2e: file target converges in 3 rounds with zero git operations in the fil
   fs.writeFileSync(notePath, '# Design Note\nThis approach is proven to be optimal without any evidence.\n');
 
   // Step 2: round-start file:note.md
-  const rs1 = JSON.parse(run(['round-start', ref, '--no-broad'], { env })); // this e2e drives the diff-local loop only
+  const rs1 = JSON.parse(run(['round-start', ref], { env })); // a file target is broad-disarmed by default: no gate artifact expected
   assert.strictEqual(rs1.decision, 'work', 'round 1 round-start must yield decision=work');
   assert.strictEqual(rs1.targetType, 'file', 'round 1 round-start must report targetType=file');
   const n1 = rs1.round;
@@ -118,7 +118,7 @@ test('e2e: file target converges in 3 rounds with zero git operations in the fil
   // =========================================================================
 
   // Step 6a: round-start file:note.md (content changed since round 1 -> new identity).
-  const rs2 = JSON.parse(run(['round-start', ref, '--no-broad'], { env }));
+  const rs2 = JSON.parse(run(['round-start', ref], { env }));
   assert.strictEqual(rs2.decision, 'work', 'round 2 round-start must yield decision=work');
   assert.strictEqual(rs2.targetType, 'file', 'round 2 round-start must report targetType=file');
   const n2 = rs2.round;
@@ -156,7 +156,7 @@ test('e2e: file target converges in 3 rounds with zero git operations in the fil
   // With reReviewOnStableContent:true, beginRound must still advance a real round
   // (not no-op), so dryStreak can reach 2 and the run converges. This is the
   // proof that the Task 7 fix works: round 3 runs on genuinely identical content.
-  const rs3 = JSON.parse(run(['round-start', ref, '--no-broad'], { env }));
+  const rs3 = JSON.parse(run(['round-start', ref], { env }));
   assert.strictEqual(rs3.decision, 'work', 'round 3 round-start must yield decision=work (reReviewOnStableContent bypasses no-op)');
   const n3 = rs3.round;
   assert.ok(n3 > n2, 'round number must advance for round 3');
@@ -231,7 +231,7 @@ test('e2e: a file-target run spawns ZERO git processes (PATH-shim git-exec spy)'
   fs.writeFileSync(notePath, '# Doc\nan unsupported claim\n');
 
   // Drive a full round: round-start -> plan-fixes -> record.
-  const rs = JSON.parse(run(['round-start', ref, '--no-broad'], { env }));
+  const rs = JSON.parse(run(['round-start', ref], { env }));
   assert.strictEqual(rs.targetType, 'file', 'must be a file target');
   const n = rs.round;
   writeArtifact(stateDir, n, 'correctness', {

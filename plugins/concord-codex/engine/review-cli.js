@@ -750,7 +750,12 @@ function main(resolveFromCwd) {
     // Armed is sticky and defaults to true, so round 2 need not repeat a flag
     // and an opt-out survives the rest of the run: --no-broad disarms, and
     // --broad/--gate re-arm a ledger that disarmed earlier.
-    const gateArmed = broadFlagPassed ? true : noBroadFlagPassed ? false : ledger.gateArmed !== false;
+    // A file target is disarmed by default: the gate pair's prompt is written
+    // against a git diff ("an unchanged file whose invariant a CHANGED LINE
+    // breaks") and it sweeps the repository, which a doc review in a directory
+    // that is not even a git repo has no use for. `--broad` still forces it on
+    // for someone who wants the sweep against a spec.
+    const gateArmed = broadFlagPassed ? true : (noBroadFlagPassed || isFileTarget) ? false : ledger.gateArmed !== false;
     // Fired only on the FIRST armed round. The pair reads the whole repository,
     // and the defects it is built for -- cross-context violations, design
     // conformance, latent gaps -- live in a tree that does not change round to
@@ -1121,8 +1126,8 @@ function main(resolveFromCwd) {
     // forward untouched. Recomputing from an absent artifact would read as "the
     // gate reported nothing" and silently erase findings the front pass raised,
     // letting the run converge clean over them.
-    let gateOpen = gateApplied ? [] : ledger.gate_open || [];
-    if (gateApplied) {
+    let gateOpen = ledger.gate_open || [];
+    if (gateApplied) { // the fold below replaces gateOpen wholesale
       const gJson = readArtifact(stateDir, n, 'gate'); // fail-closed
       let gFindings;
       try { gFindings = gc.parseGateFindings(JSON.stringify(gJson.findings || [])); }

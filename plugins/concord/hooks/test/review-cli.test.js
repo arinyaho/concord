@@ -1553,6 +1553,21 @@ test('record: --no-broad also opts out of the holistic panel -- the opt-out run 
   assert.strictEqual(out.decision.converged, true);
 });
 
+test('round-start file: a file target is broad-disarmed by default, and --broad still forces the sweep', () => {
+  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-broad-')); // NOT a git repo
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
+  fs.writeFileSync(path.join(fileDir, 'note.md'), '# note\n\nsome prose.\n');
+  // The gate pair's prompt is written against a git diff and sweeps the repo,
+  // which a doc review -- possibly outside a git repo entirely -- cannot use.
+  const out = JSON.parse(run(['round-start', 'file:note.md'], { env, broadDefault: true }));
+  assert.strictEqual(out.targetType, 'file');
+  assert.strictEqual(out.gateApplied, false);
+  // ...but it stays available for someone who does want the tree swept against a spec.
+  const forced = JSON.parse(run(['round-start', 'file:note.md', '--broad'], { env }));
+  assert.strictEqual(forced.gateApplied, true);
+});
+
 test('round-start: --broad re-arms a ledger that opted out earlier', () => {
   const repo = initRepo(); // NOTE: no "gate" block in review.config.json
   const dir = tmpDir();
