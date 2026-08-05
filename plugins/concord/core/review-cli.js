@@ -226,7 +226,12 @@ function renderHandoff(result) {
     // already says so), and a mid-run round has not reached the question yet.
     // parked and abandoned count -- the run is over and the panel never ran, so
     // the missing half is exactly as unswept as it is on a clean conclusion.
-    lines.push('Broad-review panel: did not run -- defects this run\'s own fixes introduced were not swept; the panel is that half ({"gate":{"panel":true}} in review.config.json)');
+    // gate-pending is the exception when the panel IS configured: gateOpenCount
+    // takes priority over panelPending, so the panel is deferred to the next
+    // convergence attempt, not skipped.
+    lines.push(ledger.gate_panel_configured
+      ? 'Broad-review panel: not run on this attempt -- it runs once the diff-local loop converges with no open broad findings'
+      : 'Broad-review panel: did not run -- defects this run\'s own fixes introduced were not swept; the panel is that half ({"gate":{"panel":true}} in review.config.json)');
   }
   const gateOpen = ledger.gate_open || [];
   if (gateOpen.length) {
@@ -989,7 +994,11 @@ function main(resolveFromCwd) {
       panelDone: !!(ledger.gate_panel && ledger.gate_panel.status === 'done'),
     };
     let { ledger: applied, decision } = R.applyRoundOutcome(ledger, outcome);
-    ledger = applied;
+    // Persisted so renderHandoff can tell "the panel is off in this repo" from
+    // "the panel is on and still ahead of this run" -- it only receives the
+    // ledger, and telling someone to enable a panel they already enabled sends
+    // them editing a config that is already correct.
+    ledger = { ...applied, gate_panel_configured: !!(gateCfg && gateCfg.panel) };
     // Deduped by id: a re-driven round (resume) records the same kills again.
     const priorKilled = new Set((ledger.killed_digest || []).map((k) => k.id));
     ledger = {

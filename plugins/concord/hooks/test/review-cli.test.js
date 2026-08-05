@@ -2224,6 +2224,30 @@ test('renderHandoff: names which half of broad review ran -- front pass round, p
   assert.match(out.handoff, /Broad-review panel: did not run/);
 });
 
+test('renderHandoff: a gate-pending stop in a panel-enabled repo says the panel is deferred, not "enable the panel"', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
+  execFileSync('git', ['commit', '-aqm', 'enable panel'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'gate', { status: 'ok', findings: [
+    { id: 'gate:silent-gap:x', file: 'a.txt', span: '', summary: 'a real gap', requirement: 'r' },
+  ] });
+  writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.gatePending, true);
+  // An open broad finding outranks panelPending, so the panel is still ahead of
+  // the NEXT convergence attempt -- telling this user to enable it is a no-op.
+  assert.doesNotMatch(out.handoff, /enable/);
+  assert.match(out.handoff, /Broad-review panel: not run on this attempt/);
+});
+
 test('renderHandoff: --no-broad is reported, never left to read as "broad review found nothing"', () => {
   const repo = initRepo();
   const dir = tmpDir();
