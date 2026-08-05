@@ -208,7 +208,10 @@ function renderHandoff(result) {
   else if (ledger.gateArmed === false) lines.push('Broad review (front pass): skipped (--no-broad)');
   if (ledger.gate_panel && ledger.gate_panel.status === 'done' && ledger.gate_panel.round > 0) {
     lines.push(`Broad-review panel: ${ledger.gate_panel.round} round(s), ${(ledger.gate_panel.confirmed || []).length} confirmed`);
-  } else if (gateRounds.length) {
+  } else if (gateRounds.length && (ledger.status === 'clean' || ledger.status === 'gate-pending')) {
+    // Only at a conclusion, and only when the panel genuinely never ran: a
+    // gate-panel-pending run has the panel still ahead of it (the status line
+    // already says so), and a mid-run round has not reached the question yet.
     lines.push('Broad-review panel: did not run -- defects this run\'s own fixes introduced were not swept; the panel is that half ({"gate":{"panel":true}} in review.config.json)');
   }
   const gateOpen = ledger.gate_open || [];
@@ -948,7 +951,12 @@ function main(resolveFromCwd) {
       dodPassed: !!(ledger.dod && ledger.dod.passed), dodDeferred: !!(ledger.dod && ledger.dod.deferred), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons,
       intentReviewCount: (ledger.intent_parked || []).length,
       gateOpenCount: gateOpen.length,
-      panelConfigured: !!(gateCfg && gateCfg.panel),
+      // --no-broad opts the run out of broad review, and the panel IS broad
+      // review's other half -- running it anyway would hand the opt-out run the
+      // most expensive half of what it declined. (Before broad review became
+      // the default this could not happen: a gate.panel block implied a gate
+      // config, which is what armed the gate in the first place.)
+      panelConfigured: !!(gateCfg && gateCfg.panel) && ledger.gateArmed !== false,
       panelDone: !!(ledger.gate_panel && ledger.gate_panel.status === 'done'),
     };
     let { ledger: applied, decision } = R.applyRoundOutcome(ledger, outcome);
