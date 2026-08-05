@@ -2259,7 +2259,7 @@ test('record: park-budget override on a gate-pending round clears gatePending, l
 // round, while a finding on a file the diff DID touch is dropped (a fix
 // plausibly addressed it).
 
-test('e2e: a flaky round (gate goes silent) does not erase a standing finding on an UNCHANGED file -- must not converge clean', () => {
+test('e2e: a round with no gate verdict does not erase a standing finding on an UNCHANGED file -- must not converge clean', () => {
   const repo = initRepo();
   fs.writeFileSync(path.join(repo, 'unchanged.txt'), 'stable\n'); // never touched by the branch
   fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
@@ -2295,21 +2295,23 @@ test('e2e: a flaky round (gate goes silent) does not erase a standing finding on
   let ledger = review.readLedger(dir, slug);
   assert.ok(ledger.gate_open.some((f) => f.id === 'gate:cross-context:g'), 'G must be recorded after round 1');
 
-  // --- round 2: correctness is clean, and the GATE WENT SILENT (flaky round --
-  // it re-examined but failed to re-report G, even though the gap is still real).
+  // --- round 2: correctness is clean and the pair does NOT fire (the front pass
+  // already ran in round 1), so this round produces no gate verdict at all. It
+  // must carry G rather than read the absent artifact as "the gate found
+  // nothing". The carry-forward DROP rules are not what this covers -- they need
+  // a firing round (the sibling test below) and are unit-tested in gate.test.js.
   n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~2'], { env, broadDefault: true })).round; // base + change + fix commits
+  assert.strictEqual(review.readLedger(dir, slug).gateApplied, false, 'the front pass fired in round 1; round 2 must have no gate verdict');
   writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
   writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
-  writeArtifact(dir, n, 'gate', { status: 'ok', findings: [] }); // silent -- G not re-reported
-  writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
   run(['plan-fixes', 'feat/x'], { env });
   out = JSON.parse(run(['record', 'feat/x'], { env }));
 
-  // The flaky round must NOT be allowed to erase G nor converge clean.
-  assert.strictEqual(out.decision.converged, false, 'a flaky gate round must not converge clean with a standing unchanged-file finding erased');
+  // The verdict-less round must NOT be allowed to erase G nor converge clean.
+  assert.strictEqual(out.decision.converged, false, 'a round with no gate verdict must not converge clean with a standing unchanged-file finding erased');
   assert.strictEqual(out.decision.gatePending, true);
   ledger = review.readLedger(dir, slug);
-  assert.ok(ledger.gate_open.some((f) => f.id === 'gate:cross-context:g'), 'G must survive a silent round on an unchanged file');
+  assert.ok(ledger.gate_open.some((f) => f.id === 'gate:cross-context:g'), 'G must survive a round that produced no gate verdict');
   assert.strictEqual(ledger.status, 'gate-pending');
 });
 
