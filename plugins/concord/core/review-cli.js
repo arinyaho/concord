@@ -1066,17 +1066,28 @@ function main(resolveFromCwd) {
     requireArtifactAfter(stateDir, n, 'correctness', 'verify');
     const cJson = readArtifact(stateDir, n, 'correctness');
     const vJson = readArtifact(stateDir, n, 'verify');
-    const candidates = gc.parseGateFindings(JSON.stringify(cJson.findings || []));
+    // Distrust-green, the same way the gate pair does it: the verify pass reviews
+    // with a different lens, so a class of bug the first pass missed can surface
+    // there. Without this fold it would be written to the artifact and silently
+    // dropped -- the reviewer's work discarded by the harness, which is the one
+    // failure this loop cannot detect from the outside. Deduped by id with the
+    // correctness entry winning, so a verify finding that restates a candidate
+    // collapses into it rather than doubling.
+    const verifyAdded = gc.parseGateFindings(JSON.stringify(vJson.findings || []));
+    const byId = new Map();
+    for (const f of verifyAdded) byId.set(f.id, f);
+    for (const f of gc.parseGateFindings(JSON.stringify(cJson.findings || []))) byId.set(f.id, f);
+    const candidates = Array.from(byId.values());
     // Symmetric guard: an intent-prefixed id must never come from the
     // correctness (auto-fixing) gate -- only the intent detector may mint
     // "intent:" ids. Catching this here (not just on the intent side) keeps
     // the fold below trustworthy even if a gate misbehaves or is spoofed.
     for (const c of candidates) {
       if (c.id.startsWith('intent:')) {
-        throw new Error(`harness-failure: intent-prefixed id "${c.id}" in the correctness artifact -- intent findings must come from the intent detector, never the auto-fixing gate`);
+        throw new Error(`harness-failure: intent-prefixed id "${c.id}" in the correctness or verify artifact -- intent findings must come from the intent detector, never the auto-fixing gate`);
       }
       if (c.id.startsWith('gate:')) {
-        throw new Error(`harness-failure: gate-prefixed id "${c.id}" in the correctness artifact -- gate findings must come from the gate reviewer, never the auto-fixing gate`);
+        throw new Error(`harness-failure: gate-prefixed id "${c.id}" in the correctness or verify artifact -- gate findings must come from the gate reviewer, never the auto-fixing gate`);
       }
     }
     // Coverage: every changed file must be in examined. This is a GIT-DIFF-shaped

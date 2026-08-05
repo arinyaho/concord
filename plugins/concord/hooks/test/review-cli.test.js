@@ -1860,6 +1860,52 @@ test('round-start: gate-pending re-entry on an IDENTICAL diff still yields work,
   assert.deepStrictEqual(after.gate_open, []); // cleared for a fresh evaluation
 });
 
+test('plan-fixes: a verify-added finding (distrust-green) is routed to the fixer, not silently dropped', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [], findings: [
+      { id: 'correctness:verify-caught-it', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'the second lens caught what the first missed' },
+    ] });
+  const out = JSON.parse(run(['plan-fixes', 'feat/x'], { env }));
+  assert.deepStrictEqual(out.fixes.map((f) => f.id), ['correctness:verify-caught-it']);
+});
+
+test('plan-fixes: a verify finding sharing an id with a correctness finding does not duplicate', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [
+      { id: 'correctness:same', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'from the first pass' },
+    ] },
+    { status: 'ok', rejected: [], findings: [
+      { id: 'correctness:same', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'restated by the second pass' },
+    ] });
+  const out = JSON.parse(run(['plan-fixes', 'feat/x'], { env }));
+  assert.deepStrictEqual(out.fixes.map((f) => f.id), ['correctness:same']);
+  assert.match(out.fixes[0].summary, /from the first pass/); // correctness wins the collision
+});
+
+test('plan-fixes: a verify-added finding that verify also rejects is dropped, not surfaced', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [{ id: 'correctness:self-rejected', reason: 'read the surrounding code; the guard is already there' }], findings: [
+      { id: 'correctness:self-rejected', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'raised then retracted' },
+    ] });
+  const out = JSON.parse(run(['plan-fixes', 'feat/x'], { env }));
+  assert.deepStrictEqual(out.fixes, []);
+});
+
+test('plan-fixes: a gate-prefixed id in the verify findings is a harness-failure (symmetric guard)', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [], findings: [
+      { id: 'gate:cross-context:x', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'wrong namespace' },
+    ] });
+  assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure/);
+});
+
 test('plan-fixes: folds gate + gate-verify artifacts into gate_open, honoring dismissed, never into fixes', () => {
   const repo = initRepo();
   const dir = tmpDir();
