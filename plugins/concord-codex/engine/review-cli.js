@@ -210,7 +210,14 @@ function renderHandoff(result) {
   // which one ran rather than letting "clean" imply both.
   const gateRounds = ledger.gate_rounds || [];
   if (gateRounds.length) lines.push(`Broad review (front pass): round ${gateRounds.join(', ')}`);
-  else if (ledger.gateArmed === false) lines.push('Broad review (front pass): skipped (--no-broad)');
+  else if (ledger.gateArmed === false) {
+    // Discriminate WHY, the same way dod.deferredBy does: a file target is
+    // disarmed by the CLI itself, and blaming a flag nobody passed sends the
+    // reader looking for an opt-out that is not in their invocation.
+    lines.push(ledger.gateDisarmedBy === 'file-target'
+      ? 'Broad review (front pass): not applicable to a file target (pass --broad to sweep the tree against it)'
+      : 'Broad review (front pass): skipped (--no-broad)');
+  }
   if (ledger.gate_panel && ledger.gate_panel.status === 'done' && ledger.gate_panel.round > 0) {
     lines.push(`Broad-review panel: ${ledger.gate_panel.round} round(s), ${(ledger.gate_panel.confirmed || []).length} confirmed`);
   } else if (gateRounds.length && PANEL_SETTLED_STATUSES.has(ledger.status)) {
@@ -756,6 +763,7 @@ function main(resolveFromCwd) {
     // that is not even a git repo has no use for. `--broad` still forces it on
     // for someone who wants the sweep against a spec.
     const gateArmed = broadFlagPassed ? true : (noBroadFlagPassed || isFileTarget) ? false : ledger.gateArmed !== false;
+    const gateDisarmedBy = gateArmed ? null : (noBroadFlagPassed ? '--no-broad' : isFileTarget ? 'file-target' : ledger.gateDisarmedBy || '--no-broad');
     // Fired only on the FIRST armed round. The pair reads the whole repository,
     // and the defects it is built for -- cross-context violations, design
     // conformance, latent gaps -- live in a tree that does not change round to
@@ -851,6 +859,7 @@ function main(resolveFromCwd) {
       dod,
       phase: 'gates',
       gateArmed,
+      gateDisarmedBy,
       gateApplied,
       gate_rounds: gateApplied && !gateRounds.includes(ledger.round) ? [...gateRounds, ledger.round] : gateRounds,
       dodDeferred,

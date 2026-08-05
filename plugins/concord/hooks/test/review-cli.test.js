@@ -1568,6 +1568,20 @@ test('round-start file: a file target is broad-disarmed by default, and --broad 
   assert.strictEqual(forced.gateApplied, true);
 });
 
+test('renderHandoff file: a disarmed file target does not blame --no-broad for a flag nobody passed', () => {
+  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-handoff-'));
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
+  fs.writeFileSync(path.join(fileDir, 'note.md'), '# note\n\nsome prose.\n');
+  const n = JSON.parse(run(['round-start', 'file:note.md'], { env, broadDefault: true })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['note.md'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'file:note.md'], { env });
+  const out = JSON.parse(run(['record', 'file:note.md'], { env }));
+  assert.doesNotMatch(out.handoff, /skipped \(--no-broad\)/);
+  assert.match(out.handoff, /not applicable to a file target/);
+});
+
 test('round-start: --broad re-arms a ledger that opted out earlier', () => {
   const repo = initRepo(); // NOTE: no "gate" block in review.config.json
   const dir = tmpDir();
