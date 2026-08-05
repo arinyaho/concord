@@ -145,6 +145,11 @@ function renderDodFailure(dod) {
   return out;
 }
 
+// Statuses where the panel question is settled for good: the run concluded and
+// the panel either ran or never will. Anything else (converging mid-run,
+// gate-panel-pending, intent-review) still has the panel ahead of it.
+const PANEL_SETTLED_STATUSES = new Set(['clean', 'gate-pending', 'parked', 'abandoned']);
+
 function renderHandoff(result) {
   const { ledger, aborted } = result;
   const lines = [];
@@ -208,10 +213,12 @@ function renderHandoff(result) {
   else if (ledger.gateArmed === false) lines.push('Broad review (front pass): skipped (--no-broad)');
   if (ledger.gate_panel && ledger.gate_panel.status === 'done' && ledger.gate_panel.round > 0) {
     lines.push(`Broad-review panel: ${ledger.gate_panel.round} round(s), ${(ledger.gate_panel.confirmed || []).length} confirmed`);
-  } else if (gateRounds.length && (ledger.status === 'clean' || ledger.status === 'gate-pending')) {
+  } else if (gateRounds.length && PANEL_SETTLED_STATUSES.has(ledger.status)) {
     // Only at a conclusion, and only when the panel genuinely never ran: a
     // gate-panel-pending run has the panel still ahead of it (the status line
     // already says so), and a mid-run round has not reached the question yet.
+    // parked and abandoned count -- the run is over and the panel never ran, so
+    // the missing half is exactly as unswept as it is on a clean conclusion.
     lines.push('Broad-review panel: did not run -- defects this run\'s own fixes introduced were not swept; the panel is that half ({"gate":{"panel":true}} in review.config.json)');
   }
   const gateOpen = ledger.gate_open || [];
