@@ -137,12 +137,47 @@ test('runner omits --no-dod by default -- the opt-out is never added on the runn
   assert.deepStrictEqual(h.calls[0], ['cli', 'round-start', 'feature/x', 'upstream/main']);
 });
 
-test('file-target correctness prompt requires every reviewed target in examined and docreview JSON IDs', () => {
+test('file-target correctness prompt requires contract-complete docreview findings', () => {
   const prompt = reviewerPrompt('correctness', { stateDir: '/state', round: 7, targetType: 'file', dodPassed: true });
   assert.match(prompt, /EVERY reviewed target.*examined/i);
   assert.match(prompt, /docreview:<stable-slug>/);
   assert.match(prompt, /"examined"/);
   assert.match(prompt, /"findings"/);
+  // The artifact contract rejects a finding with no file, so a prompt that asks
+  // only for an id and an examined list fails the round before verification.
+  assert.match(prompt, /"file":"<path>"/);
+  assert.match(prompt, /"span":"<exact offending text>"/);
+  assert.match(prompt, /"summary":"<one sentence>"/);
+});
+
+test('git-target correctness prompt states the finding shape too -- a finding with no file is fatal, not retried', () => {
+  const prompt = reviewerPrompt('correctness', { stateDir: '/state', round: 3, targetType: 'git', dodPassed: true });
+  assert.match(prompt, /"file":"<path>"/);
+  assert.match(prompt, /"span":"<exact offending text>"/);
+  assert.match(prompt, /"summary":"<one sentence>"/);
+});
+
+test('verify prompt asks for the distrust-green findings channel the CLI actually reads', () => {
+  const prompt = reviewerPrompt('verify', { stateDir: '/state', round: 3, targetType: 'git', dodPassed: true });
+  // plan-fixes/commit-fix/record all merge verify's `findings` into the candidate
+  // set; a prompt that says "write ONLY {status,rejected}" loses them silently.
+  assert.match(prompt, /"findings":\[\]/);
+  assert.match(prompt, /catch a bug the first pass missed/);
+});
+
+test('correctness and verify prompts exclude the intent artifact -- the state dir is on --add-dir', () => {
+  for (const role of ['correctness', 'verify']) {
+    const prompt = reviewerPrompt(role, { stateDir: '/state', round: 3, targetType: 'git', dodPassed: true, slug: 'feat-x' });
+    // Without this the reviewer can read intent-<slug>.md and raise a design
+    // objection under a correctness: id, which the loop then AUTO-FIXES --
+    // the opposite of intent's report-only-to-a-human contract.
+    assert.match(prompt, /Ignore any intent-\*\.md file/);
+  }
+});
+
+test('gate prompt states the three-segment id shape -- a two-segment id defaults the class silently', () => {
+  const prompt = reviewerPrompt('gate', { stateDir: '/state', round: 3, targetType: 'git', dodPassed: true, slug: 'feat-x' });
+  assert.match(prompt, /gate:<class>:<slug>/);
 });
 
 test('fix prompt forbids declaring state artifacts or paths outside the repository', () => {
