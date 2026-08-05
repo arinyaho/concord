@@ -220,6 +220,10 @@ function renderHandoff(result) {
   }
   if (ledger.gate_panel && ledger.gate_panel.status === 'done' && ledger.gate_panel.round > 0) {
     lines.push(`Broad-review panel: ${ledger.gate_panel.round} round(s), ${(ledger.gate_panel.confirmed || []).length} confirmed`);
+  } else if (ledger.gateDisarmedBy === '--no-broad' && ledger.gate_panel_configured) {
+    // The opt-out declined a half this repo has configured -- say so, rather
+    // than letting the absent line read as "there was no panel to run".
+    lines.push('Broad-review panel: skipped (--no-broad); this repo has it enabled');
   } else if (gateRounds.length && PANEL_SETTLED_STATUSES.has(ledger.status)) {
     // Only at a conclusion, and only when the panel genuinely never ran: a
     // gate-panel-pending run has the panel still ahead of it (the status line
@@ -990,7 +994,13 @@ function main(resolveFromCwd) {
       // most expensive half of what it declined. (Before broad review became
       // the default this could not happen: a gate.panel block implied a gate
       // config, which is what armed the gate in the first place.)
-      panelConfigured: !!(gateCfg && gateCfg.panel) && ledger.gateArmed !== false,
+      //
+      // Keyed on the REASON, not on gateArmed: a file target is disarmed by the
+      // CLI's own default, because the gate PAIR's prompt is git-diff-shaped --
+      // that says nothing about the panel, whose lenses read the review text and
+      // the intent doc and worked for file targets before this change. Only the
+      // user's explicit opt-out declines the panel.
+      panelConfigured: !!(gateCfg && gateCfg.panel) && ledger.gateDisarmedBy !== '--no-broad',
       panelDone: !!(ledger.gate_panel && ledger.gate_panel.status === 'done'),
     };
     let { ledger: applied, decision } = R.applyRoundOutcome(ledger, outcome);

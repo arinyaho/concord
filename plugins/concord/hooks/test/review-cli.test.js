@@ -1586,6 +1586,48 @@ test('renderHandoff file: a disarmed file target does not blame --no-broad for a
   assert.match(out.handoff, /not applicable to a file target/);
 });
 
+test('record file: a configured gate.panel still runs for a file target -- the pair is disarmed, the panel is not', () => {
+  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-panel-'));
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
+  fs.writeFileSync(path.join(fileDir, 'note.md'), '# note\n\nsome prose.\n');
+  fs.writeFileSync(path.join(fileDir, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
+  // A file target converges on a dry streak of clean rounds, so drive rounds
+  // until the CLI stops asking for another one.
+  let out;
+  for (let i = 0; i < 5; i++) {
+    const rs = JSON.parse(run(['round-start', 'file:note.md'], { env, broadDefault: true }));
+    if (rs.decision !== 'work') break;
+    assert.strictEqual(rs.gateApplied, false); // the pair's prompt is git-diff-shaped
+    writeArtifact(dir, rs.round, 'correctness', { status: 'ok', examined: ['note.md'], findings: [] });
+    writeArtifact(dir, rs.round, 'verify', { status: 'ok', rejected: [] });
+    run(['plan-fixes', 'file:note.md'], { env });
+    out = JSON.parse(run(['record', 'file:note.md'], { env }));
+    if (!out.decision.continue) break;
+  }
+  // ...but the panel's lenses read the review text and the intent doc, which a
+  // file target has. Disarming the pair by default must not silently drop a
+  // half this repo explicitly configured.
+  assert.strictEqual(out.decision.panelPending, true);
+});
+
+test('renderHandoff: --no-broad in a panel-enabled repo says the panel was skipped, not nothing at all', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
+  execFileSync('git', ['commit', '-aqm', 'enable panel'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--no-broad'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.converged, true);
+  assert.match(out.handoff, /Broad-review panel: skipped \(--no-broad\); this repo has it enabled/);
+});
+
 test('round-start: --broad re-arms a ledger that opted out earlier', () => {
   const repo = initRepo(); // NOTE: no "gate" block in review.config.json
   const dir = tmpDir();
