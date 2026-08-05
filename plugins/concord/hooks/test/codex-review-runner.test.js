@@ -150,6 +150,21 @@ test('file-target correctness prompt requires contract-complete docreview findin
   assert.match(prompt, /"summary":"<one sentence>"/);
 });
 
+test('git-target correctness prompt states the finding shape too -- a finding with no file is fatal, not retried', () => {
+  const prompt = reviewerPrompt('correctness', { stateDir: '/state', round: 3, targetType: 'git', dodPassed: true });
+  assert.match(prompt, /"file":"<path>"/);
+  assert.match(prompt, /"span":"<exact offending text>"/);
+  assert.match(prompt, /"summary":"<one sentence>"/);
+});
+
+test('verify prompt asks for the distrust-green findings channel the CLI actually reads', () => {
+  const prompt = reviewerPrompt('verify', { stateDir: '/state', round: 3, targetType: 'git', dodPassed: true });
+  // plan-fixes/commit-fix/record all merge verify's `findings` into the candidate
+  // set; a prompt that says "write ONLY {status,rejected}" loses them silently.
+  assert.match(prompt, /"findings":\[\]/);
+  assert.match(prompt, /catch a bug the first pass missed/);
+});
+
 test('fix prompt forbids declaring state artifacts or paths outside the repository', () => {
   const prompt = reviewerPrompt('fix', { stateDir: '/state', round: 7, finding: { id: 'correctness:bug', file: 'src/parser.js', span: 'lines 41-43', summary: 'repair it' } });
   assert.match(prompt, /repository-relative/i);
