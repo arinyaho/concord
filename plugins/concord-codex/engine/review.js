@@ -291,7 +291,12 @@ function resetUnreachable(ledger) {
   const resetIds = new Set((ledger.findings || []).filter((f) => f.status === 'fixed' || f.status === 'parked').map((f) => f.id));
   const findings = (ledger.findings || []).map((f) => (resetIds.has(f.id) ? { ...f, status: 'open', fix_commit: null, park_reason: null } : f));
   const seen = (ledger.seen || []).filter((s) => !resetIds.has(s.id));
-  return { ...ledger, findings, seen, status: 'converging' };
+  // The history this run reviewed is gone (force-push/rebase mid-run), so the
+  // broad findings derived from it are about code that no longer exists. Drop
+  // them and re-arm the front pass -- carrying them forward would keep a stale
+  // gap standing against a rewritten tree with nothing left that can retire it,
+  // since the drop rules only run on a round the gate pair actually fires in.
+  return { ...ledger, findings, seen, status: 'converging', gate_open: [], gate_rounds: [] };
 }
 
 // ---------------------------------------------------------------------------
