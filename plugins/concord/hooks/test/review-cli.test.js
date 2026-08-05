@@ -338,12 +338,19 @@ test('review-cli shim: a thrown error prints the graceful "review-cli: <msg>" li
   assert.ok(!/\n {4}at /.test(stderr), `stderr must not contain a raw Node stack-trace frame, got:\n${stderr}`);
 });
 
-function seedGatesRound(repo, dir, ref, correctness, verify) {
+// `armBroad` runs the round with broad review at its real default (armed), and
+// seeds the empty round-1 gate artifact the front pass would have written. The
+// panel is broad review's other half, so a panel test must not disarm broad.
+function seedGatesRound(repo, dir, ref, correctness, verify, { armBroad = false } = {}) {
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
-  run(['round-start', ref, 'HEAD~1'], { env });
+  run(['round-start', ref, 'HEAD~1'], { env, broadDefault: armBroad });
   const n = review.readLedger(dir, review.targetSlug(ref)).round;
+  if (armBroad) {
+    fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
+    fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  }
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify(correctness));
   fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify(verify));
   return { env, n };
@@ -1405,12 +1412,10 @@ test('a review.config.json with "dod": null converges with the DoD reported DEFE
   assert.ok(!out.handoff.includes('DoD: passed'), 'deferred DoD must never be reported as "DoD: passed"');
 });
 
-test('round-start: signals gateApplied when review.config.json has a gate block', () => {
-  const repo = initRepo();
+test('round-start: the front pass fires with NO gate block in review.config.json -- arming is not config-derived', () => {
+  const repo = initRepo(); // NOTE: initRepo's review.config.json has no "gate" block
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
-  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
-  execFileSync('git', ['commit', '-aqm', 'enable gate'], { cwd: repo });
   fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
   const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true }));
@@ -1525,10 +1530,27 @@ test('round-start: --no-broad disarms the front pass, and the opt-out is sticky'
   fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
   const first = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--no-broad'], { env, broadDefault: true }));
-  assert.strictEqual(first.gateApplied, false); // explicit opt-out beats the config gate block
+  assert.strictEqual(first.gateApplied, false);
   const second = JSON.parse(run(['round-start', 'feat/x'], { env, broadDefault: true }));
   assert.strictEqual(second.gateApplied, false); // sticky: round 2 need not repeat the flag
   assert.deepStrictEqual(review.readLedger(dir, review.targetSlug('feat/x')).gate_rounds, []);
+});
+
+test('record: --no-broad also opts out of the holistic panel -- the opt-out run never pays broad review\'s expensive half', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
+  execFileSync('git', ['commit', '-aqm', 'enable panel'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--no-broad'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.ok(!out.decision.panelPending, 'a --no-broad run must not be sent into the panel');
+  assert.strictEqual(out.decision.converged, true);
 });
 
 test('round-start: --broad re-arms a ledger that opted out earlier', () => {
@@ -2042,7 +2064,7 @@ test('record: gate.panel enabled and diff-local + lightweight-gate clean -> pane
   execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
   const { env, n } = seedGatesRound(repo, dir, 'feat/x',
     { status: 'ok', examined: ['a.txt'], findings: [] },
-    { status: 'ok', rejected: [] });
+    { status: 'ok', rejected: [] }, { armBroad: true });
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
   const planOut = JSON.parse(run(['plan-fixes', 'feat/x'], { env }));
@@ -2070,7 +2092,7 @@ test('record: after gate_panel.status is "done" with a confirmed finding, record
   execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
   const { env, n } = seedGatesRound(repo, dir, 'feat/x',
     { status: 'ok', examined: ['a.txt'], findings: [] },
-    { status: 'ok', rejected: [] });
+    { status: 'ok', rejected: [] }, { armBroad: true });
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
   run(['plan-fixes', 'feat/x'], { env });
@@ -2403,7 +2425,7 @@ test('gate-panel-round-start: first call -> round 1, empty rejectedIds', () => {
   execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
   const { env } = seedGatesRound(repo, dir, 'feat/x',
     { status: 'ok', examined: ['a.txt'], findings: [] },
-    { status: 'ok', rejected: [] });
+    { status: 'ok', rejected: [] }, { armBroad: true });
   const out = JSON.parse(run(['gate-panel-round-start', 'feat/x'], { env }));
   assert.strictEqual(out.round, 1);
   assert.deepStrictEqual(out.rejectedIds, []);
@@ -2417,7 +2439,7 @@ test('gate-panel-round-start: reports the NEXT round number and the accumulated 
   execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
   const { env } = seedGatesRound(repo, dir, 'feat/x',
     { status: 'ok', examined: ['a.txt'], findings: [] },
-    { status: 'ok', rejected: [] });
+    { status: 'ok', rejected: [] }, { armBroad: true });
   let ledger = review.readLedger(dir, review.targetSlug('feat/x'));
   ledger = { ...ledger, gate_panel: { status: 'running', round: 2, dryStreak: 1, confirmed: [], rejectedIds: ['gate:threat-model:false-lead'] } };
   review.writeLedger(dir, review.targetSlug('feat/x'), ledger);
@@ -2433,7 +2455,7 @@ test('gate-panel-round-start: panel already "done" -> harness-failure (call reco
   execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
   const { env } = seedGatesRound(repo, dir, 'feat/x',
     { status: 'ok', examined: ['a.txt'], findings: [] },
-    { status: 'ok', rejected: [] });
+    { status: 'ok', rejected: [] }, { armBroad: true });
   let ledger = review.readLedger(dir, review.targetSlug('feat/x'));
   ledger = { ...ledger, gate_panel: { status: 'done', round: 2, dryStreak: 2, confirmed: [], rejectedIds: [] } };
   review.writeLedger(dir, review.targetSlug('feat/x'), ledger);
@@ -2626,7 +2648,7 @@ test('e2e: gate.panel enabled -- full cycle: record signals panelPending, 3 pane
   execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
   const { env, n } = seedGatesRound(repo, dir, 'feat/x',
     { status: 'ok', examined: ['a.txt'], findings: [] },
-    { status: 'ok', rejected: [] });
+    { status: 'ok', rejected: [] }, { armBroad: true });
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
 
@@ -2682,7 +2704,7 @@ test('e2e: gate_panel resets on a second convergence attempt -- round-start re-a
   // over 3 rounds (1 real, then 2 dry) -- same shape as the existing full-cycle e2e test.
   const { env, n } = seedGatesRound(repo, dir, 'feat/x',
     { status: 'ok', examined: ['a.txt'], findings: [] },
-    { status: 'ok', rejected: [] });
+    { status: 'ok', rejected: [] }, { armBroad: true });
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
   run(['plan-fixes', 'feat/x'], { env });
@@ -2767,7 +2789,7 @@ test('renderHandoff (via record): reports GATE panel round count and confirmed c
   execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
   const { env, n } = seedGatesRound(repo, dir, 'feat/x',
     { status: 'ok', examined: ['a.txt'], findings: [] },
-    { status: 'ok', rejected: [] });
+    { status: 'ok', rejected: [] }, { armBroad: true });
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
   run(['plan-fixes', 'feat/x'], { env });
