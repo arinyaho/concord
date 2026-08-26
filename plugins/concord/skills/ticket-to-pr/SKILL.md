@@ -17,7 +17,7 @@ One unit of work, one branch, one PR carrying the design and the code together. 
 
 | # | Stage | Exit condition |
 |---|---|---|
-| 1 | The work has acceptance criteria and a definition of done | Every criterion names an observation, not an intention. The DoD says which gates are executable and which are deferred |
+| 1 | The work has acceptance criteria and a definition of done, and the tracker says it started | Every criterion names an observation, not an intention. The DoD says which gates are executable and which are deferred. The board reflects that work began |
 | 2 | Design note, committed where the next reader finds it | The decision, the trade-off it costs, and the residual exposure are all written down |
 | 3 | Review the design note | `/review-until-green file:<path>` |
 | 4 | Plan | Each task ends in something runnable and independently rejectable |
@@ -26,6 +26,10 @@ One unit of work, one branch, one PR carrying the design and the code together. 
 | 7 | End-to-end red | The claimed breakage reproduces against the unchanged code |
 | 8 | End-to-end green | The same check passes against the change |
 | 9 | One PR | Design, docs and code in the same PR; every document contradicted by the change corrected in it |
+
+If the work is tracked somewhere, move it to in-progress before stage 2, not after stage 9 — a ticket sitting in the backlog while its branch already has commits is a board that lies to everyone reading it. Expect the transition to fail closed on preconditions the tracker does not advertise: an assignee, a parent item that must itself be in-progress, an intermediate status that cannot be skipped. These are cheap to hit and slow to diagnose, so attempt the transition and read the refusal rather than assuming it will go through.
+
+Nothing here moves the work to done. Stage 9 ends at a PR URL, and done follows a merge, which is not this pipeline's decision to make.
 
 Stages 1, 2 and 4 have no single owner here — use whatever the repository already provides (a tracker, a `docs/` convention, a planning skill). Stages 3 and 6 are Concord's `review-until-green`. Stages 7 and 8 are described below, because they are the ones that get skipped.
 
@@ -79,6 +83,7 @@ If the repository tracks known gaps or limitations, check both directions. Does 
 - Copying a premise out of a code comment into a design document
 - A green run whose image tags and dependency pins are not written down anywhere
 - A residual exposure that exists only in the design note you just wrote
+- A branch with commits on it while the tracker still says the work has not started
 
 ## Notes
 
