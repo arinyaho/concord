@@ -19,9 +19,11 @@ const DEPTH_ROLES = {
   panel: ['correctness', 'verify', ...PANEL_LENSES, 'gate-panel-verify'],
 };
 
+const DEPTHS = Object.keys(DEPTH_ROLES);
+
 function planRoles(depth, opts = {}) {
   if (!Object.hasOwn(DEPTH_ROLES, depth)) {
-    throw new Error(`harness-failure: report: unknown depth "${depth}" (expected correctness, gate or panel)`);
+    throw new Error(`harness-failure: report: unknown depth "${depth}" (expected ${DEPTHS.join(', ')})`);
   }
   const roles = DEPTH_ROLES[depth];
   return opts.intent ? [...roles, 'intent'] : [...roles];
@@ -102,7 +104,7 @@ function foldFindings({ candidates, rejections }) {
   for (const r of rejections || []) {
     const id = r && r.id;
     if (!raised.has(id) || killed.has(id)) continue;
-    if (typeof r.reason !== 'string' || !r.reason) {
+    if (typeof r.reason !== 'string' || !r.reason.trim()) {
       throw new Error(`harness-failure: report: rejection of ${id} is missing "reason"`);
     }
     killed.set(id, { id, reason: r.reason });
@@ -156,4 +158,4 @@ function buildFailure(what) {
   return { schema: SCHEMA, failed: what };
 }
 
-module.exports = { SCHEMA, PANEL_LENSES, planRoles, artifactShape, foldFindings, buildReport, buildFailure };
+module.exports = { SCHEMA, PANEL_LENSES, DEPTHS, planRoles, artifactShape, foldFindings, buildReport, buildFailure };

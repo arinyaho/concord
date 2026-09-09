@@ -109,6 +109,13 @@ test('foldFindings: a rejection with a missing or empty reason is a harness fail
     }),
     /harness-failure: report: rejection of gate:silent-gap:no-retry is missing "reason"/,
   );
+  assert.throws(
+    () => report.foldFindings({
+      candidates: [{ id: 'gate:silent-gap:no-retry', file: 'a.js', span: 'x', summary: 's' }],
+      rejections: [{ id: 'gate:silent-gap:no-retry', reason: '   ' }],
+    }),
+    /harness-failure: report: rejection of gate:silent-gap:no-retry is missing "reason"/,
+  );
 });
 
 test('foldFindings: the same id raised twice is reported once', () => {
@@ -293,7 +300,7 @@ test('the panel fold is a single pass: no round, dry streak or convergence state
   // The converging loop's panel stops after two rounds contribute nothing new.
   // A report is one round, so that rule has nothing to converge and this module
   // must not carry its state -- if it ever does, a reader will assume a loop.
-  assert.deepStrictEqual(Object.keys(report).sort(), ['PANEL_LENSES', 'SCHEMA', 'artifactShape', 'buildFailure', 'buildReport', 'foldFindings', 'planRoles']);
+  assert.deepStrictEqual(Object.keys(report).sort(), ['DEPTHS', 'PANEL_LENSES', 'SCHEMA', 'artifactShape', 'buildFailure', 'buildReport', 'foldFindings', 'planRoles']);
   const twice = report.foldFindings({
     candidates: [{ id: 'gate:threat-model:key-in-log', file: 'a.js', span: 'x', summary: 's' }],
     rejections: [],
@@ -311,7 +318,7 @@ test('artifactShape: every shape it can return is a role artifact-contract.js ac
   // hardcoding the role list here -- a hardcoded list would drift the same
   // way the bug this test guards against did.
   const roles = new Set();
-  for (const depth of Object.keys({ correctness: 0, gate: 0, panel: 0 })) {
+  for (const depth of report.DEPTHS) {
     for (const intent of [false, true]) {
       for (const role of report.planRoles(depth, { intent })) roles.add(role);
     }
