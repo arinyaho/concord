@@ -20,4 +20,42 @@ function planRoles(depth, opts = {}) {
   return opts.intent ? [...roles, 'intent'] : [...roles];
 }
 
-module.exports = { PANEL_LENSES, planRoles };
+// Normalize one finder artifact entry into the report's finding shape. Missing
+// optional text becomes '' rather than undefined so the emitted JSON has a
+// stable set of keys -- a consumer should not have to distinguish "absent" from
+// "empty" for a field the contract always carries.
+function toReportFinding(f) {
+  if (!isValidFindingId(f && f.id)) {
+    throw new Error(`harness-failure: report: finding id ${JSON.stringify(f && f.id)} is not a valid finding id`);
+  }
+  return {
+    id: f.id,
+    file: typeof f.file === 'string' ? f.file : '',
+    span: typeof f.span === 'string' ? f.span : '',
+    requirement: typeof f.requirement === 'string' ? f.requirement : '',
+    summary: typeof f.summary === 'string' ? f.summary : '',
+  };
+}
+
+// A rejection kills a finding, so it is only meaningful against one that was
+// actually raised: a rejection naming an id nobody raised is dropped rather
+// than published, which would otherwise let a verifier pad `rejected` with
+// findings that never existed.
+function foldFindings({ candidates, rejections }) {
+  const raised = new Map();
+  for (const c of candidates || []) {
+    const f = toReportFinding(c);
+    if (!raised.has(f.id)) raised.set(f.id, f);
+  }
+  const killed = new Map();
+  for (const r of rejections || []) {
+    const id = r && r.id;
+    if (raised.has(id) && !killed.has(id)) killed.set(id, { id, reason: typeof r.reason === 'string' ? r.reason : '' });
+  }
+  return {
+    findings: [...raised.values()].filter((f) => !killed.has(f.id)),
+    rejected: [...killed.values()],
+  };
+}
+
+module.exports = { PANEL_LENSES, planRoles, foldFindings };
