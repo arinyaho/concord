@@ -50,6 +50,16 @@ test('planRoles: an unknown depth is a harness failure, not a silent default', (
   assert.throws(() => report.planRoles('deep'), /harness-failure: report: unknown depth "deep"/);
 });
 
+test('planRoles: an inherited Object.prototype key is not a depth (prototype pollution guard)', () => {
+  assert.throws(() => report.planRoles('toString'), /harness-failure: report: unknown depth "toString"/);
+  assert.throws(() => report.planRoles('constructor'), /harness-failure: report: unknown depth "constructor"/);
+});
+
+test('artifactShape: an inherited Object.prototype key has no artifact shape (prototype pollution guard)', () => {
+  assert.throws(() => report.artifactShape('toString'), /harness-failure: report: unknown role "toString"/);
+  assert.throws(() => report.artifactShape('constructor'), /harness-failure: report: unknown role "constructor"/);
+});
+
 test('foldFindings: a candidate with no rejection survives', () => {
   const out = report.foldFindings({
     candidates: [{ id: 'correctness:stale-session', file: 'a.js', span: 'x', summary: 's' }],
@@ -82,6 +92,23 @@ test('foldFindings: a rejected candidate moves to rejected with its reason', () 
   });
   assert.deepStrictEqual(out.findings, []);
   assert.deepStrictEqual(out.rejected, [{ id: 'gate:silent-gap:no-retry', reason: 'read handler.js:44, the retry is there' }]);
+});
+
+test('foldFindings: a rejection with a missing or empty reason is a harness failure, not silently blanked', () => {
+  assert.throws(
+    () => report.foldFindings({
+      candidates: [{ id: 'gate:silent-gap:no-retry', file: 'a.js', span: 'x', summary: 's' }],
+      rejections: [{ id: 'gate:silent-gap:no-retry' }],
+    }),
+    /harness-failure: report: rejection of gate:silent-gap:no-retry is missing "reason"/,
+  );
+  assert.throws(
+    () => report.foldFindings({
+      candidates: [{ id: 'gate:silent-gap:no-retry', file: 'a.js', span: 'x', summary: 's' }],
+      rejections: [{ id: 'gate:silent-gap:no-retry', reason: '' }],
+    }),
+    /harness-failure: report: rejection of gate:silent-gap:no-retry is missing "reason"/,
+  );
 });
 
 test('foldFindings: the same id raised twice is reported once', () => {
@@ -129,6 +156,22 @@ test('buildReport: intent findings come from intentFindings, never from candidat
   assert.deepStrictEqual(out.examined, ['a.js', 'b.js']);
   assert.deepStrictEqual(out.findings.map((f) => f.id), ['correctness:a']);
   assert.deepStrictEqual(out.advisory.map((f) => f.id), ['intent:contradicts-ac']);
+});
+
+test('buildReport: an advisory entry carries exactly the advisory schema keys, no "class"', () => {
+  const out = report.buildReport({
+    target: { type: 'git', identity: 'abc1234', base: 'def5678' },
+    depth: 'correctness',
+    intent: 'docs/ticket.md',
+    examined: [],
+    candidates: [],
+    rejections: [],
+    intentFindings: [{ id: 'intent:contradicts-ac', file: 'b.js', span: 'y', requirement: 'must retry', summary: 'does not retry' }],
+  });
+  assert.deepStrictEqual(Object.keys(out.advisory[0]).sort(), ['file', 'id', 'requirement', 'span', 'summary']);
+  assert.deepStrictEqual(out.advisory[0], {
+    id: 'intent:contradicts-ac', file: 'b.js', span: 'y', requirement: 'must retry', summary: 'does not retry',
+  });
 });
 
 test('buildReport: an intent-prefixed id in candidates is NOT sniffed into advisory -- routing is by argument, not by prefix', () => {

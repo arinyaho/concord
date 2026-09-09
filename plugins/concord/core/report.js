@@ -20,8 +20,10 @@ const DEPTH_ROLES = {
 };
 
 function planRoles(depth, opts = {}) {
+  if (!Object.hasOwn(DEPTH_ROLES, depth)) {
+    throw new Error(`harness-failure: report: unknown depth "${depth}" (expected correctness, gate or panel)`);
+  }
   const roles = DEPTH_ROLES[depth];
-  if (!roles) throw new Error(`harness-failure: report: unknown depth "${depth}" (expected correctness, gate or panel)`);
   return opts.intent ? [...roles, 'intent'] : [...roles];
 }
 
@@ -44,9 +46,10 @@ const ROLE_SHAPES = {
 };
 
 function artifactShape(role) {
-  const shape = ROLE_SHAPES[role];
-  if (!shape) throw new Error(`harness-failure: report: unknown role "${role}" has no artifact shape`);
-  return shape;
+  if (!Object.hasOwn(ROLE_SHAPES, role)) {
+    throw new Error(`harness-failure: report: unknown role "${role}" has no artifact shape`);
+  }
+  return ROLE_SHAPES[role];
 }
 
 // Normalize one finder artifact entry into the report's finding shape. Missing
@@ -98,7 +101,11 @@ function foldFindings({ candidates, rejections }) {
   const killed = new Map();
   for (const r of rejections || []) {
     const id = r && r.id;
-    if (raised.has(id) && !killed.has(id)) killed.set(id, { id, reason: typeof r.reason === 'string' ? r.reason : '' });
+    if (!raised.has(id) || killed.has(id)) continue;
+    if (typeof r.reason !== 'string' || !r.reason) {
+      throw new Error(`harness-failure: report: rejection of ${id} is missing "reason"`);
+    }
+    killed.set(id, { id, reason: r.reason });
   }
   return {
     findings: [...raised.values()].filter((f) => !killed.has(f.id)),
@@ -118,7 +125,14 @@ const SCHEMA = 'concord.report/1';
 // a routing decision that belongs to whoever assembled `candidates`
 // (knowing which artifact came from the intent role), not to a string match.
 function buildReport({ target, depth, intent, examined, candidates, rejections, intentFindings = [] }) {
-  const advisory = intentFindings.map(toReportFinding);
+  // Advisory entries have no gate class -- they are never folded against a
+  // verifier, so `class` (a fold-and-verify concept) would be a key the
+  // design's advisory schema does not declare. Strip it here rather than
+  // giving toReportFinding an options flag for one caller.
+  const advisory = intentFindings.map((f) => {
+    const { class: _cls, ...rest } = toReportFinding(f);
+    return rest;
+  });
   if (intent == null && advisory.length) {
     throw new Error('harness-failure: report: advisory findings present but intent is null (the intent role did not run)');
   }

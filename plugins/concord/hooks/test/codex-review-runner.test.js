@@ -13,6 +13,23 @@ const { runReviewUntilGreen, reviewerPrompt, codexExec, resolveDefaultBase } = r
 
 function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'codex-runner-')); }
 
+test('codex-review-runner.js has no hardcoded copy of the panel lens list -- it must import report.js\'s PANEL_LENSES', () => {
+  // Guards the third-copy bug: this module used to hardcode the five lens
+  // names alongside report.js's PANEL_LENSES (review-cli.js's own copy), so
+  // adding a sixth lens would silently spawn it in one path and skip it in
+  // the other. A source grep for a literal 5-element lens array catches a
+  // regression even if some future refactor stops calling it "lenses".
+  const src = fs.readFileSync(require.resolve('../../core/codex-review-runner.js'), 'utf8');
+  assert.ok(
+    /require\(['"]\.\/report['"]\)/.test(src),
+    'codex-review-runner.js must require ./report to get PANEL_LENSES',
+  );
+  assert.ok(
+    !/\[\s*['"]ac-coverage['"]\s*,\s*['"]design-conformance['"]\s*,\s*['"]cross-context['"]\s*,\s*['"]silent-gap['"]\s*,\s*['"]threat-model['"]\s*\]/.test(src),
+    'codex-review-runner.js must not hardcode the panel lens list -- import report.js\'s PANEL_LENSES instead',
+  );
+});
+
 test('codexExec starts subprocesses asynchronously so panel work can overlap', async () => {
   const binDir = temp();
   const codex = path.join(binDir, 'codex');

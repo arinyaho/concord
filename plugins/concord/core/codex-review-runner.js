@@ -8,6 +8,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { targetSlug } = require('./review');
 const { isValidFindingId } = require('./gate-contract');
+const { PANEL_LENSES } = require('./report');
 
 function jsonCli(cliPath, args, repoRoot) {
   const out = execFileSync('node', [cliPath, ...args], {
@@ -96,7 +97,7 @@ async function runReviewUntilGreen(options) {
     : (base === undefined && !ref.startsWith('file:') && baseResolver ? baseResolver(repoRoot) : base);
 
   const runPanel = async (context) => {
-    const lenses = ['ac-coverage', 'design-conformance', 'cross-context', 'silent-gap', 'threat-model'];
+    const lenses = PANEL_LENSES;
     for (;;) {
       const panel = await cli(['gate-panel-round-start', ref]);
       await Promise.all(lenses.map(async (lens) => {
