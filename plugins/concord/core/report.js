@@ -58,4 +58,27 @@ function foldFindings({ candidates, rejections }) {
   };
 }
 
-module.exports = { PANEL_LENSES, planRoles, foldFindings };
+const SCHEMA = 'concord.report/1';
+
+// The intent role's findings bypass the fold on purpose: a contradiction
+// between a stated intent and the code has no known correct side, so there is
+// nothing for a verifier to adjudicate. They are reported unfiltered under
+// `advisory`, and a rejection naming one is ignored rather than honoured.
+function buildReport({ target, depth, intent, examined, candidates, rejections }) {
+  const all = candidates || [];
+  const advisory = all.filter((f) => String(f && f.id).startsWith('intent:')).map(toReportFinding);
+  const rest = all.filter((f) => !String(f && f.id).startsWith('intent:'));
+  const folded = foldFindings({ candidates: rest, rejections });
+  return {
+    schema: SCHEMA,
+    target,
+    depth,
+    intent: intent == null ? null : intent,
+    examined: [...new Set(examined || [])].sort(),
+    findings: folded.findings,
+    advisory,
+    rejected: folded.rejected,
+  };
+}
+
+module.exports = { PANEL_LENSES, planRoles, foldFindings, SCHEMA, buildReport };

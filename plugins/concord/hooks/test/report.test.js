@@ -73,3 +73,63 @@ test('foldFindings: a candidate whose id violates the contract is a harness fail
     /harness-failure: report: finding id "Not An Id" is not a valid finding id/,
   );
 });
+
+test('buildReport: intent findings go to advisory, never to findings', () => {
+  const out = report.buildReport({
+    target: { type: 'git', identity: 'abc1234', base: 'def5678' },
+    depth: 'gate',
+    intent: 'docs/ticket.md',
+    examined: ['b.js', 'a.js', 'b.js'],
+    candidates: [
+      { id: 'correctness:a', file: 'a.js', span: 'x', summary: 'a bug' },
+      { id: 'intent:contradicts-ac', file: 'b.js', span: 'y', requirement: 'must retry', summary: 'does not retry' },
+    ],
+    rejections: [],
+  });
+  assert.strictEqual(out.schema, 'concord.report/1');
+  assert.deepStrictEqual(out.target, { type: 'git', identity: 'abc1234', base: 'def5678' });
+  assert.strictEqual(out.depth, 'gate');
+  assert.strictEqual(out.intent, 'docs/ticket.md');
+  assert.deepStrictEqual(out.examined, ['a.js', 'b.js']);
+  assert.deepStrictEqual(out.findings.map((f) => f.id), ['correctness:a']);
+  assert.deepStrictEqual(out.advisory.map((f) => f.id), ['intent:contradicts-ac']);
+});
+
+test('buildReport: an intent finding is never rejected, even if a verifier names it', () => {
+  const out = report.buildReport({
+    target: { type: 'git', identity: 'abc1234', base: 'def5678' },
+    depth: 'correctness',
+    intent: 'docs/ticket.md',
+    examined: [],
+    candidates: [{ id: 'intent:contradicts-ac', file: 'b.js', span: 'y', summary: 's' }],
+    rejections: [{ id: 'intent:contradicts-ac', reason: 'design taste' }],
+  });
+  assert.deepStrictEqual(out.advisory.map((f) => f.id), ['intent:contradicts-ac']);
+  assert.deepStrictEqual(out.rejected, []);
+});
+
+test('buildReport: no intent asked for means null intent and empty advisory', () => {
+  const out = report.buildReport({
+    target: { type: 'git', identity: 'abc1234', base: 'def5678' },
+    depth: 'panel',
+    intent: null,
+    examined: ['a.js'],
+    candidates: [],
+    rejections: [],
+  });
+  assert.strictEqual(out.intent, null);
+  assert.deepStrictEqual(out.advisory, []);
+  assert.deepStrictEqual(out.findings, []);
+});
+
+test('buildReport: a clean review still carries every key, so an empty report is not a missing one', () => {
+  const out = report.buildReport({
+    target: { type: 'git', identity: 'abc1234', base: 'def5678' },
+    depth: 'correctness',
+    intent: null,
+    examined: [],
+    candidates: [],
+    rejections: [],
+  });
+  assert.deepStrictEqual(Object.keys(out), ['schema', 'target', 'depth', 'intent', 'examined', 'findings', 'advisory', 'rejected']);
+});
