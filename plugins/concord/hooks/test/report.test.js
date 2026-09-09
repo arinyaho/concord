@@ -2,6 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const report = require('../../core/report');
+const artifactContract = require('../../core/artifact-contract');
 
 test('planRoles: correctness depth is the diff-local pair', () => {
   assert.deepStrictEqual(report.planRoles('correctness'), ['correctness', 'verify']);
@@ -261,8 +262,51 @@ test('the panel fold is a single pass: no round, dry streak or convergence state
   assert.deepStrictEqual(twice, again); // no accumulated state between calls
 });
 
+test('artifactShape: every shape it can return is a role artifact-contract.js actually accepts', () => {
+  // Walk every role report.js can hand to artifactShape (the full planRoles
+  // surface, both with and without intent, across every depth) rather than
+  // hardcoding the role list here -- a hardcoded list would drift the same
+  // way the bug this test guards against did.
+  const roles = new Set();
+  for (const depth of Object.keys({ correctness: 0, gate: 0, panel: 0 })) {
+    for (const intent of [false, true]) {
+      for (const role of report.planRoles(depth, { intent })) roles.add(role);
+    }
+  }
+  assert.ok(roles.size > 0);
+  for (const role of roles) {
+    const shape = report.artifactShape(role);
+    assert.ok(
+      artifactContract.ARTIFACT_ROLES.includes(shape),
+      `artifactShape("${role}") returned "${shape}", which artifact-contract.js does not accept (known shapes: ${artifactContract.ARTIFACT_ROLES.join(', ')})`,
+    );
+  }
+});
+
+// Regex-greps source text for fs/child_process access. This is a cheap,
+// honest check, NOT proof of purity: it does not follow requires
+// transitively (beyond the one hop to gate-contract.js below), does not
+// evaluate dynamic specifiers built from a variable or string concatenation,
+// and would miss purity broken through a dependency's dependency. A real
+// module-graph walk would catch those; this does not, on purpose (see the
+// finding this guards: a purity test that only greps source text).
+function requiresForbiddenIO(src) {
+  // Matches `require('fs')`, `require("node:fs")`, `require('fs/promises')`,
+  // `require('node:fs/promises')`, `require('child_process')`, and the same
+  // forms via dynamic `import(...)`, for either module in one pass.
+  return /\b(?:require|import)\(\s*['"](?:node:)?(?:fs(?:\/promises)?|child_process)['"]\s*\)/.test(src);
+}
+
 test('report.js is pure: it reaches neither the filesystem nor a subprocess', () => {
   const src = require('node:fs').readFileSync(require.resolve('../../core/report.js'), 'utf8');
-  assert.ok(!/require\(['"](node:)?fs['"]\)/.test(src), 'report.js must not require fs');
-  assert.ok(!/require\(['"](node:)?child_process['"]\)/.test(src), 'report.js must not require child_process');
+  assert.ok(!requiresForbiddenIO(src), 'report.js must not require fs, fs/promises, or child_process');
+});
+
+test('report.js is pure one hop deep: its own dependency (gate-contract.js) must not reach fs or child_process either', () => {
+  // A transitive require would defeat the point of the direct check above --
+  // report.js could stay textually clean while gate-contract.js (the one
+  // module it requires) does the impure work on its behalf. This checks one
+  // hop; it does not walk the full dependency graph (see requiresForbiddenIO).
+  const src = require('node:fs').readFileSync(require.resolve('../../core/gate-contract.js'), 'utf8');
+  assert.ok(!requiresForbiddenIO(src), 'gate-contract.js (required by report.js) must not require fs or child_process');
 });
