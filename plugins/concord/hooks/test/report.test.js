@@ -133,3 +133,31 @@ test('buildReport: a clean review still carries every key, so an empty report is
   });
   assert.deepStrictEqual(Object.keys(out), ['schema', 'target', 'depth', 'intent', 'examined', 'findings', 'advisory', 'rejected']);
 });
+
+test('buildFailure: a failure carries no findings key, so it cannot read as a clean review', () => {
+  const out = report.buildFailure('threat-model lens produced no artifact');
+  assert.deepStrictEqual(out, { schema: 'concord.report/1', failed: 'threat-model lens produced no artifact' });
+  assert.ok(!('findings' in out));
+});
+
+test('the panel fold is a single pass: no round, dry streak or convergence state exists here', () => {
+  // The converging loop's panel stops after two rounds contribute nothing new.
+  // A report is one round, so that rule has nothing to converge and this module
+  // must not carry its state -- if it ever does, a reader will assume a loop.
+  assert.deepStrictEqual(Object.keys(report).sort(), ['PANEL_LENSES', 'SCHEMA', 'buildFailure', 'buildReport', 'foldFindings', 'planRoles']);
+  const twice = report.foldFindings({
+    candidates: [{ id: 'gate:threat-model:key-in-log', file: 'a.js', span: 'x', summary: 's' }],
+    rejections: [],
+  });
+  const again = report.foldFindings({
+    candidates: [{ id: 'gate:threat-model:key-in-log', file: 'a.js', span: 'x', summary: 's' }],
+    rejections: [],
+  });
+  assert.deepStrictEqual(twice, again); // no accumulated state between calls
+});
+
+test('report.js is pure: it reaches neither the filesystem nor a subprocess', () => {
+  const src = require('node:fs').readFileSync(require.resolve('../../core/report.js'), 'utf8');
+  assert.ok(!/require\(['"]node:fs['"]\)/.test(src), 'report.js must not require node:fs');
+  assert.ok(!/require\(['"]node:child_process['"]\)/.test(src), 'report.js must not require node:child_process');
+});
