@@ -8,10 +8,15 @@ const { isValidFindingId } = require('./gate-contract');
 // first four are also the gate pair's classes; threat-model exists only here.
 const PANEL_LENSES = ['ac-coverage', 'design-conformance', 'cross-context', 'silent-gap', 'threat-model'];
 
+// The panel's three-adversarial-verifier fan-out (review-driver.md step (c):
+// spawn 3 refute-by-default verifiers per candidate, take the majority) is the
+// driver's concern, not a role this module plans. All three verdicts fold into
+// ONE artifact, read by the single 'gate-panel-verify' role below -- do not
+// read this list as "one role per verifier".
 const DEPTH_ROLES = {
   correctness: ['correctness', 'verify'],
   gate: ['correctness', 'verify', 'gate', 'gate-verify'],
-  panel: ['correctness', 'verify', ...PANEL_LENSES, 'panel-verify'],
+  panel: ['correctness', 'verify', ...PANEL_LENSES, 'gate-panel-verify'],
 };
 
 function planRoles(depth, opts = {}) {
@@ -20,20 +25,63 @@ function planRoles(depth, opts = {}) {
   return opts.intent ? [...roles, 'intent'] : [...roles];
 }
 
+// Maps a SPAWN role name to the artifact-contract SHAPE its artifact must
+// validate against. The five lenses and 'gate' all write gate:-prefixed
+// findings, so they share the 'gate' shape; the two verifier roles share
+// 'gate-verify'. correctness/verify/intent are already contract names.
+const ROLE_SHAPES = {
+  'ac-coverage': 'gate',
+  'design-conformance': 'gate',
+  'cross-context': 'gate',
+  'silent-gap': 'gate',
+  'threat-model': 'gate',
+  gate: 'gate',
+  'gate-panel-verify': 'gate-verify',
+  'gate-verify': 'gate-verify',
+  correctness: 'correctness',
+  verify: 'verify',
+  intent: 'intent',
+};
+
+function artifactShape(role) {
+  const shape = ROLE_SHAPES[role];
+  if (!shape) throw new Error(`harness-failure: report: unknown role "${role}" has no artifact shape`);
+  return shape;
+}
+
 // Normalize one finder artifact entry into the report's finding shape. Missing
 // optional text becomes '' rather than undefined so the emitted JSON has a
 // stable set of keys -- a consumer should not have to distinguish "absent" from
-// "empty" for a field the contract always carries.
+// "empty" for a field the contract always carries. `file` and `summary` are
+// required upstream by artifact-contract.js (a finding missing either is
+// fatal there), so silently coercing them to '' here would publish a report
+// finding artifact-contract would have rejected -- fail loudly instead.
 function toReportFinding(f) {
   if (!isValidFindingId(f && f.id)) {
     throw new Error(`harness-failure: report: finding id ${JSON.stringify(f && f.id)} is not a valid finding id`);
   }
+  if (typeof f.file !== 'string' || !f.file) {
+    throw new Error(`harness-failure: report: finding ${f.id} is missing "file"`);
+  }
+  if (typeof f.summary !== 'string' || !f.summary) {
+    throw new Error(`harness-failure: report: finding ${f.id} is missing "summary"`);
+  }
+  // `class`: NOT reused from gate.js's toGateFinding, whose 'cross-context'
+  // fallback for a class-less id is a gate-namespace default that is wrong
+  // here -- a two-segment `correctness:` or `intent:` id has no gate class at
+  // all, and mislabeling it cross-context would be a fabricated fact, not a
+  // sane default. Derive it directly: a three-segment `gate:<class>:<slug>`
+  // id's class is its middle segment; any other (two-segment) id's class is
+  // its prefix.
+  const seg = String(f.id).split(':');
+  const cls = seg.length >= 3 ? seg[1] : seg[0];
   return {
     id: f.id,
-    file: typeof f.file === 'string' ? f.file : '',
+    class: cls,
+    file: f.file,
     span: typeof f.span === 'string' ? f.span : '',
     requirement: typeof f.requirement === 'string' ? f.requirement : '',
-    summary: typeof f.summary === 'string' ? f.summary : '',
+    summary: f.summary,
   };
 }
 
@@ -64,11 +112,17 @@ const SCHEMA = 'concord.report/1';
 // between a stated intent and the code has no known correct side, so there is
 // nothing for a verifier to adjudicate. They are reported unfiltered under
 // `advisory`, and a rejection naming one is ignored rather than honoured.
-function buildReport({ target, depth, intent, examined, candidates, rejections }) {
-  const all = candidates || [];
-  const advisory = all.filter((f) => String(f && f.id).startsWith('intent:')).map(toReportFinding);
-  const rest = all.filter((f) => !String(f && f.id).startsWith('intent:'));
-  const folded = foldFindings({ candidates: rest, rejections });
+// `intentFindings` is its own argument rather than sniffed out of `candidates`
+// by an `intent:` prefix -- a prefix sniff would route ANY reviewer's
+// `intent:`-prefixed id to advisory and exempt it from verification, which is
+// a routing decision that belongs to whoever assembled `candidates`
+// (knowing which artifact came from the intent role), not to a string match.
+function buildReport({ target, depth, intent, examined, candidates, rejections, intentFindings = [] }) {
+  const advisory = intentFindings.map(toReportFinding);
+  if (intent == null && advisory.length) {
+    throw new Error('harness-failure: report: advisory findings present but intent is null (the intent role did not run)');
+  }
+  const folded = foldFindings({ candidates: candidates || [], rejections });
   return {
     schema: SCHEMA,
     target,
@@ -82,7 +136,10 @@ function buildReport({ target, depth, intent, examined, candidates, rejections }
 }
 
 function buildFailure(what) {
-  return { schema: SCHEMA, failed: String(what) };
+  if (typeof what !== 'string' || !what) {
+    throw new Error(`harness-failure: report: buildFailure requires a non-empty string, got ${JSON.stringify(what)}`);
+  }
+  return { schema: SCHEMA, failed: what };
 }
 
-module.exports = { SCHEMA, PANEL_LENSES, planRoles, foldFindings, buildReport, buildFailure };
+module.exports = { SCHEMA, PANEL_LENSES, planRoles, artifactShape, foldFindings, buildReport, buildFailure };
