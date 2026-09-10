@@ -8,6 +8,7 @@ const intentLib = require('./intent');
 const gateLib = require('./gate');
 const gatePanelLib = require('./gate-panel');
 const artifactContract = require('./artifact-contract');
+const reportLib = require('./report');
 const {
   targetSlug,
   readLedger,
@@ -36,7 +37,9 @@ function stateDirHint(stateDir) {
   return `(state dir ${stateDir}, ${origin})`;
 }
 
-const GATE_PANEL_LENSES = ['ac-coverage', 'design-conformance', 'cross-context', 'silent-gap', 'threat-model'];
+// Single source of truth is report.js's PANEL_LENSES (the pure module) --
+// this alias keeps the rest of this file's call sites unchanged.
+const GATE_PANEL_LENSES = reportLib.PANEL_LENSES;
 
 // Impure git/DoD boundary. lib/review.js and lib/gate-contract.js stay pure
 // (no child_process, no fs beyond ledger I/O); all process/git/DoD work for
