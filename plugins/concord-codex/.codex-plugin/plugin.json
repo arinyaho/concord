@@ -1,7 +1,7 @@
 {
   "name": "concord-codex",
-  "version": "0.9.0-alpha.17",
-  "description": "Codex harness-engineering tools: session-state checkpoint, cross-session charter, review-until-green, and provider-neutral ticket-writing.",
+  "version": "0.9.0-alpha.18",
+  "description": "Codex harness-engineering tools: session-state checkpoint, cross-session charter, review-until-green, provider-neutral ticket-writing, and ticket-to-pr.",
   "author": {
     "name": "arinyaho"
   },
@@ -14,6 +14,7 @@
     "charter",
     "session-state",
     "ticket-writing",
+    "ticket-to-pr",
     "ticket"
   ],
   "hooks": "./hooks.json"

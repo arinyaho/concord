@@ -20,7 +20,9 @@ codex plugin marketplace add arinyaho/concord
 codex plugin add concord-codex@arinyaho-concord
 ```
 
-The Codex plugin ships the session-state checkpoint, `/charter`, `/review-until-green`, and provider-neutral `ticket-writing`. Reviewers run as `codex exec` subprocesses.
+Run those commands in a shell, then start or restart Codex. Use `ticket-writing` and `ticket-to-pr` in a Codex conversation; they are skills, not shell commands.
+
+The Codex plugin ships the session-state checkpoint, `/charter`, `/review-until-green`, provider-neutral `ticket-writing`, and `ticket-to-pr`. Reviewers and fixers run as `codex exec` subprocesses.
 
 ## Update
 
@@ -41,7 +43,7 @@ codex plugin add concord-codex@arinyaho-concord
 ## Plugins
 
 - `concord` (Claude Code) - a per-session state checkpoint, cross-session task charter, `/review-until-green`, `ticket-to-pr`, provider-neutral `ticket-writing`, and a cross-model skill that lets Codex perform review passes while Claude drives and fixes.
-- `concord-codex` (Codex) - the same state checkpoint, charter, review loop, and `ticket-writing`, packaged natively for Codex. It reuses the vendor-neutral core verbatim; reviewers and fixers run as `codex exec` subprocesses.
+- `concord-codex` (Codex) - the same state checkpoint, charter, review loop, `ticket-writing`, and `ticket-to-pr`, packaged natively for Codex. It reuses the vendor-neutral core and shared skills verbatim; reviewers and fixers run as `codex exec` subprocesses.
 
 ## Track map
 
@@ -53,5 +55,6 @@ The plugins come from a diagnosis of recurring session dysfunction:
 - Edit round-trip waste (edit-before-read, string-not-found).
 - Manual cross-session review<->fix ping-pong that ends on a weak "looks good" gate -> the `concord` plugin (`/review-until-green` review-and-fix loop).
 - Tickets that leave the next agent guessing about product intent, design constraints, or proof -> the shared `ticket-writing` skill.
+- Multi-stage ticket work that skips reproducible red/green evidence or opens a PR with unfinished gates -> the shared `ticket-to-pr` skill.
 
 Design notes and implementation plans for each fix are kept in Notion, not in this repo.
