@@ -59,12 +59,19 @@ pluginInstallE2ETest('clean Claude and Codex installs discover the same shared s
   const codex = read(path.join(codexInstall.installedPath, 'skills/ticket-writing/SKILL.md'));
   const claudeTicketToPr = read(path.join(claudeInstall.installPath, 'skills/ticket-to-pr/SKILL.md'));
   const codexTicketToPr = read(path.join(codexInstall.installedPath, 'skills/ticket-to-pr/SKILL.md'));
+  const claudeSkills = run(
+    'claude',
+    ['-p', '/help', '--output-format', 'stream-json', '--verbose'],
+    claudeEnv,
+  ).trim().split('\n').map((line) => JSON.parse(line))
+    .find(({ subtype }) => subtype === 'init')?.skills;
   const codexSkills = JSON.parse(run('codex', ['debug', 'prompt-input'], codexEnv))
     .flatMap(({ content = [] }) => content)
     .find(({ text }) => text?.startsWith('<skills_instructions>'))?.text;
 
   assert.equal(codex, claude);
   assert.equal(codexTicketToPr, claudeTicketToPr);
+  assert.ok(claudeSkills?.includes('concord:ticket-to-pr'));
   assert.match(codexSkills, /(?:^|\n)- concord-codex:ticket-to-pr: /);
   assert.match(claude, /^---\nname: ticket-writing\ndescription: Use when /);
   assert.match(claudeTicketToPr, /^---\nname: ticket-to-pr\ndescription: >-/);
