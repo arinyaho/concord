@@ -45,6 +45,7 @@ test('ticket-writing grounds implementation tickets before it writes them', () =
     'only when the user explicitly requests or approves that tracker mutation',
     'without mutating the tracker',
     'read the created or updated ticket back',
+    'Only when the user explicitly requests or approves implementation',
     'ticket-to-pr',
   ]) {
     assert.ok(skill.includes(required), `missing ticket contract: ${required}`);

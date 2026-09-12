@@ -53,7 +53,7 @@ If the user explicitly requests or approves an in-progress transition and the pr
 
 ## Handoff
 
-When an implementation workflow such as `ticket-to-pr` is available, hand the accepted ticket to it for code change and PR work. Ticket writing ends with a durable, implementation-ready contract; it does not perform the implementation.
+Only when the user explicitly requests or approves implementation and an implementation workflow such as `ticket-to-pr` is available, hand the accepted ticket to it for code change and PR work. Ticket writing ends with a durable, implementation-ready contract; it does not perform the implementation.
 
 ## Example
 
