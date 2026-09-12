@@ -8,12 +8,17 @@ const path = require('node:path');
 
 const REPO = path.join(__dirname, '..', '..', '..', '..');
 const CLAUDE_SKILL = path.join(REPO, 'plugins/concord/skills/ticket-writing/SKILL.md');
+const CODEX_SKILL = path.join(REPO, 'plugins/concord-codex/skills/ticket-writing/SKILL.md');
 
 function read(file) {
   return fs.readFileSync(file, 'utf8');
 }
 
 const pluginInstallE2ETest = process.env.CONCORD_RUN_PLUGIN_INSTALL_E2E === '1' ? test : test.skip;
+
+test('Claude and Codex source packages ship the same ticket-writing skill', () => {
+  assert.equal(read(CODEX_SKILL), read(CLAUDE_SKILL));
+});
 
 pluginInstallE2ETest('clean Claude and Codex installs discover the same provider-neutral ticket-writing skill', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concord-ticket-writing-'));
