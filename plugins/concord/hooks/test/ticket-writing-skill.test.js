@@ -41,6 +41,8 @@ test('ticket-writing grounds implementation tickets before it writes them', () =
     'explicit approval before closing or superseding an existing ticket',
     'Use a draft or proposal state only when the provider exposes one',
     'the provider exposes an in-progress state',
+    'only when the user explicitly requests or approves that tracker mutation',
+    'without mutating the tracker',
     'read the created or updated ticket back',
     'ticket-to-pr',
   ]) {

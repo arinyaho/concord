@@ -47,7 +47,7 @@ A ticket is ready for implementation only when no unresolved question can materi
 
 ## Publish and verify
 
-Create or update the ticket, then read the created or updated ticket back. Verify its title, body, fields, links, and actual status. Report rejected fields or transitions as failures; never claim a requested state was applied when the provider refused it.
+Create or update the ticket only when the user explicitly requests or approves that tracker mutation. A request to draft, rewrite, or refine ticket content without that authorization must return the content without mutating the tracker. After an authorized create or update, read the created or updated ticket back. Verify its title, body, fields, links, and actual status. Report rejected fields or transitions as failures; never claim a requested state was applied when the provider refused it.
 
 If work should start now and the provider exposes an in-progress state, use its discovered transition without skipping preconditions. Otherwise, preserve the current state and report that no in-progress transition was available.
 
