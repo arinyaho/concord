@@ -16,7 +16,7 @@ One unit of work, one branch, one PR carrying the design and the code together. 
 |---|---|---|
 | 0 | Branch | A dedicated work branch exists, is checked out, and starts from the intended base; create it if absent |
 | 1 | End-to-end red | The claimed breakage reproduces against the unchanged code |
-| 2 | The work has acceptance criteria and a definition of done, and the tracker says it started | Every criterion names an observation, not an intention. The DoD says which gates are executable and which are deferred. The board reflects that work began |
+| 2 | The work has acceptance criteria and a definition of done, and any approved in-progress transition is applied | Every criterion names an observation, not an intention. The DoD says which gates are executable and which are deferred. The board reflects that work began only when the user approved that transition |
 | 3 | Design note, committed where the next reader finds it | The decision, the trade-off it costs, and the residual exposure are all written down |
 | 4 | Review the design note | `/review-until-green file:<path>` |
 | 5 | Plan | Each task ends in something runnable and independently rejectable |
@@ -25,7 +25,7 @@ One unit of work, one branch, one PR carrying the design and the code together. 
 | 8 | End-to-end green | The same check passes against the change |
 | 9 | One PR | Design, docs and code in the same PR; every document contradicted by the change corrected in it |
 
-If the work is tracked somewhere, move it to in-progress before stage 3, not after stage 9 — a ticket sitting in the backlog while its branch already has commits is a board that lies to everyone reading it. Expect the transition to fail closed on preconditions the tracker does not advertise: an assignee, a parent item that must itself be in-progress, an intermediate status that cannot be skipped. These are cheap to hit and slow to diagnose, so attempt the transition and read the refusal rather than assuming it will go through.
+If the work is tracked somewhere and the user explicitly requests or approves an in-progress transition, move it before stage 3, not after stage 9 — a ticket sitting in the backlog while its branch already has commits is a board that lies to everyone reading it. Otherwise, preserve the current state. Expect an approved transition to fail closed on preconditions the tracker does not advertise: an assignee, a parent item that must itself be in-progress, an intermediate status that cannot be skipped. These are cheap to hit and slow to diagnose, so attempt the approved transition and read the refusal rather than assuming it will go through.
 
 Nothing here moves the work to done. Stage 9 ends at a PR URL, and done follows a merge, which is not this pipeline's decision to make.
 
