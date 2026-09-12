@@ -20,7 +20,7 @@ codex plugin marketplace add arinyaho/concord
 codex plugin add concord-codex@arinyaho-concord
 ```
 
-The Codex plugin ships `/review-until-green`; reviewers run as `codex exec` subprocesses. (Session-state and charter are Claude-Code-only for now.)
+The Codex plugin ships the session-state checkpoint, `/charter`, `/review-until-green`, and provider-neutral `ticket-writing`. Reviewers run as `codex exec` subprocesses.
 
 ## Update
 
@@ -40,8 +40,8 @@ codex plugin add concord-codex@arinyaho-concord
 
 ## Plugins
 
-- `concord` (Claude Code) - a bundle of harness-engineering tools. Currently: a per-session state checkpoint (persists + re-injects session state so the model stops re-reading its own transcript), a cross-session task charter (north-star framing + merged decisions, so a fresh session inherits the founding task context), and a review-and-fix loop (`/review-until-green`) that keeps reviewing a code change, fixing what it finds, and re-checking until the tests pass - with the loop state saved so a fresh session picks up where the last one stopped instead of starting over. More capabilities to come.
-- `concord-codex` (Codex) - the same `/review-until-green` review-and-fix loop, running natively under the Codex CLI. Reuses the vendor-neutral core verbatim (a self-contained vendored copy lives in the plugin); reviewers and fixers run as `codex exec` subprocesses.
+- `concord` (Claude Code) - a per-session state checkpoint, cross-session task charter, `/review-until-green`, `ticket-to-pr`, provider-neutral `ticket-writing`, and a cross-model skill that lets Codex perform review passes while Claude drives and fixes.
+- `concord-codex` (Codex) - the same state checkpoint, charter, review loop, and `ticket-writing`, packaged natively for Codex. It reuses the vendor-neutral core verbatim; reviewers and fixers run as `codex exec` subprocesses.
 
 ## Track map
 
@@ -52,5 +52,6 @@ The plugins come from a diagnosis of recurring session dysfunction:
 - Monster resumed sessions (session hygiene).
 - Edit round-trip waste (edit-before-read, string-not-found).
 - Manual cross-session review<->fix ping-pong that ends on a weak "looks good" gate -> the `concord` plugin (`/review-until-green` review-and-fix loop).
+- Tickets that leave the next agent guessing about product intent, design constraints, or proof -> the shared `ticket-writing` skill.
 
 Design notes and implementation plans for each fix are kept in Notion, not in this repo.

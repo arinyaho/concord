@@ -1,12 +1,12 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "arinyaho-concord",
-  "description": "Harness-engineering tooling for the Claude Code workflow.",
+  "description": "Harness-engineering and provider-neutral ticket-writing tooling for Claude Code.",
   "owner": { "name": "arinyaho", "url": "https://github.com/arinyaho" },
   "plugins": [
     {
       "name": "concord",
-      "description": "Harness-engineering tools: a per-session state checkpoint plus a cross-session task charter, persisted from the transcript and re-injected on resume, compaction, or a fresh session. Includes a skill that runs the review-and-fix loop with another AI's CLI performing each round's review.",
+      "description": "Harness-engineering tools for state, charter, review-until-green, ticket-to-pr, provider-neutral ticket-writing, and cross-model review.",
       "author": { "name": "arinyaho" },
       "category": "development",
       "source": "./plugins/concord",
