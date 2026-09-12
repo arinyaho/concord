@@ -55,7 +55,7 @@ Sweep the whole branch diff for documents the change **contradicts** — a remov
 
 That finds contradiction, and contradiction is half of it. The other half is what **omits** you: a section that described the thing without ever asserting the invariant you changed is not wrong — it is now incomplete, and incompleteness has no string to grep for. Find those by asking which documents tell an operator what to do with this thing, and reading them.
 
-Sort every finding into one of three, and record the third as well as the first two: corrected in this PR, owned by a follow-up item that carries the procedure, or deliberately unchanged.
+Sort every finding into one of three, and record the third as well as the first two: corrected in this PR, owned by a follow-up item that carries the procedure, or deliberately unchanged. The latter two dispositions apply only to non-contradictory findings; every document contradicted by the change must be corrected in this PR before stage 9 exits.
 
 If the repository tracks known gaps or limitations, check both directions. Does the change close a row — an adjacent row is not the same row, so read it before claiming it. And does it create a residual that deserves one? A risk your own design note names, that nothing tracks, is a gap you introduced.
 
