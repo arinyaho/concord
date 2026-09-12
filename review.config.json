@@ -1,1 +1,1 @@
-{"dod":["node --test"]}
+{"dod":["CONCORD_RUN_PLUGIN_INSTALL_E2E=1 node --test"]}
