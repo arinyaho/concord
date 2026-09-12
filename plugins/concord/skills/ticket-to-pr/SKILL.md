@@ -2,7 +2,7 @@
 name: ticket-to-pr
 description: >-
   Use when a request names a unit of work and asks for it to be taken through several stages at once —
-  "이 티켓 설계부터 PR까지", "ES2-1234부터 하자", "take this issue through design, implementation and a PR",
+  "이 티켓 설계부터 PR까지", "take this issue through design, implementation and a PR",
   "이거 끝까지 해서 PR 올려줘". Do NOT use for a single-stage request (just fix this, just review this).
 ---
 
