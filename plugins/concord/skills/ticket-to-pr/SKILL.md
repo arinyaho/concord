@@ -3,10 +3,8 @@ name: ticket-to-pr
 description: >-
   Use when a request names a unit of work and asks for it to be taken through several stages at once —
   "이 티켓 설계부터 PR까지", "ES2-1234부터 하자", "take this issue through design, implementation and a PR",
-  "이거 끝까지 해서 PR 올려줘". Also use whenever a change is justified by a claim that something is
-  currently broken and the breakage has not been reproduced yet — the skill's core is the discipline
-  that makes such a claim a fact instead of a premise the whole diff inherits. Do NOT use for a
-  single-stage request (just fix this, just review this) or for work with no branch behind it.
+  "이거 끝까지 해서 PR 올려줘". Do NOT use for a single-stage request (just fix this, just review this)
+  or for work with no branch behind it.
 ---
 
 # Ticket to PR
@@ -17,25 +15,25 @@ One unit of work, one branch, one PR carrying the design and the code together. 
 
 | # | Stage | Exit condition |
 |---|---|---|
-| 1 | The work has acceptance criteria and a definition of done, and the tracker says it started | Every criterion names an observation, not an intention. The DoD says which gates are executable and which are deferred. The board reflects that work began |
-| 2 | Design note, committed where the next reader finds it | The decision, the trade-off it costs, and the residual exposure are all written down |
-| 3 | Review the design note | `/review-until-green file:<path>` |
-| 4 | Plan | Each task ends in something runnable and independently rejectable |
-| 5 | Implement | Red test first, verified red for the right reason, and executing where CI will execute it |
-| 6 | Review the diff | `/review-until-green <branch>` |
-| 7 | End-to-end red | The claimed breakage reproduces against the unchanged code |
+| 1 | End-to-end red | The claimed breakage reproduces against the unchanged code |
+| 2 | The work has acceptance criteria and a definition of done, and the tracker says it started | Every criterion names an observation, not an intention. The DoD says which gates are executable and which are deferred. The board reflects that work began |
+| 3 | Design note, committed where the next reader finds it | The decision, the trade-off it costs, and the residual exposure are all written down |
+| 4 | Review the design note | `/review-until-green file:<path>` |
+| 5 | Plan | Each task ends in something runnable and independently rejectable |
+| 6 | Implement | Red test first, verified red for the right reason, and executing where CI will execute it |
+| 7 | Review the diff | `/review-until-green <branch>` |
 | 8 | End-to-end green | The same check passes against the change |
 | 9 | One PR | Design, docs and code in the same PR; every document contradicted by the change corrected in it |
 
-If the work is tracked somewhere, move it to in-progress before stage 2, not after stage 9 — a ticket sitting in the backlog while its branch already has commits is a board that lies to everyone reading it. Expect the transition to fail closed on preconditions the tracker does not advertise: an assignee, a parent item that must itself be in-progress, an intermediate status that cannot be skipped. These are cheap to hit and slow to diagnose, so attempt the transition and read the refusal rather than assuming it will go through.
+If the work is tracked somewhere, move it to in-progress before stage 3, not after stage 9 — a ticket sitting in the backlog while its branch already has commits is a board that lies to everyone reading it. Expect the transition to fail closed on preconditions the tracker does not advertise: an assignee, a parent item that must itself be in-progress, an intermediate status that cannot be skipped. These are cheap to hit and slow to diagnose, so attempt the transition and read the refusal rather than assuming it will go through.
 
 Nothing here moves the work to done. Stage 9 ends at a PR URL, and done follows a merge, which is not this pipeline's decision to make.
 
-Stages 1, 2 and 4 have no single owner here — use whatever the repository already provides (a tracker, a `docs/` convention, a planning skill). Stages 3 and 6 are Concord's `review-until-green`. Stages 7 and 8 are described below, because they are the ones that get skipped.
+Stages 2, 3 and 5 have no single owner here — use whatever the repository already provides (a tracker, a `docs/` convention, a planning skill). Stages 4 and 7 are Concord's `review-until-green`. Stages 1 and 8 are described below, because they are the ones that get skipped.
 
-## Stage 7 is the one that gets skipped
+## Stage 1 is the one that gets skipped
 
-A change justified by "X is broken" is a claim about the world. The red run is what makes it a fact — not evidence you collect afterwards to decorate a PR. If stage 7 is blocked (an image to build, an environment to stand up), stage 7 is blocked. Shipping the PR with "red run pending" in the body is how a false premise reaches review.
+A change justified by "X is broken" is a claim about the world. The red run is what makes it a fact — not evidence you collect afterwards to decorate a PR. If stage 1 is blocked (an image to build, an environment to stand up), stage 1 is blocked. Shipping the PR with "red run pending" in the body is how a false premise reaches review.
 
 **Reproduce the harm, not the mechanism.** A unit test proving "the code registers the wrong certificate" can be verified red and still prove nothing, because the claim was "and therefore login breaks" — which lives in someone else's system. The red must be observed at the altitude of the consequence the ticket names.
 
@@ -47,7 +45,7 @@ A change justified by "X is broken" is a claim about the world. The red run is w
 
 ## What review cannot do for you
 
-Stages 3 and 6 read the artifacts in front of them. When the design note, the plan, the code comments and the diff all inherit the same false premise, no number of review rounds falsifies it — they agree with each other. In the run this skill came from, four rounds and ten findings left the premise untouched; the first run against the unchanged code broke it in one command.
+Stages 4 and 7 read the artifacts in front of them. When the design note, the plan, the code comments and the diff all inherit the same false premise, no number of review rounds falsifies it — they agree with each other. In the run this skill came from, four rounds and ten findings left the premise untouched; the first run against the unchanged code broke it in one command.
 
 So: contradictions inside the source are a signal to go measure, not a licence to resolve them in the direction you already chose. Two comments in one file disagreeing about what the code trusts means nobody knows. Open the execution path and find out.
 
