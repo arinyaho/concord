@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "arinyaho-concord",
-  "description": "Harness-engineering and provider-neutral ticket-writing tooling for Claude Code.",
+  "description": "Harness-engineering and provider-neutral ticket workflows for Claude Code and Codex.",
   "owner": { "name": "arinyaho", "url": "https://github.com/arinyaho" },
   "plugins": [
     {
