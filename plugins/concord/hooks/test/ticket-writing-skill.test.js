@@ -64,6 +64,7 @@ test('ticket-writing grounds implementation tickets before it writes them', () =
     'agreed design',
     'current behavior',
     'observed evidence',
+    'If evidence refutes the premise, report the contradiction and stop before any tracker mutation. Revise or publish a different ticket only after the user explicitly confirms the corrected premise and scope',
     'If one is found, stop before creating a ticket: reuse the existing work when it already covers the requested outcome, otherwise ask the user how to proceed',
     'If no destination can be established or multiple destinations remain plausible',
     'A content-only draft may proceed with the tracker and project explicitly unset',

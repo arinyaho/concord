@@ -15,7 +15,7 @@ Before writing:
 2. Read the authoritative product brief, accepted requirements, and agreed design that govern the work. Record links and decision status. A draft or backlog proposal is context, not agreed direction.
 3. Inspect current behavior in the shipped artifact or code path. Treat documents as intent, not proof of current behavior. Record observed evidence for every claim that motivates work.
 4. Search for duplicate or superseding work when the tracker supports it. If one is found, stop before creating a ticket: reuse the existing work when it already covers the requested outcome, otherwise ask the user how to proceed.
-5. Stop for a material product decision that the sources do not settle. If evidence refutes the premise, report the contradiction and revise only within the requested scope. Require explicit approval before closing or superseding an existing ticket.
+5. Stop for a material product decision that the sources do not settle. If evidence refutes the premise, report the contradiction and stop before any tracker mutation. Revise or publish a different ticket only after the user explicitly confirms the corrected premise and scope. Require explicit approval before closing or superseding an existing ticket.
 
 For an authorized tracker mutation, use the available authenticated provider integration. If none exists for the resolved destination, stop and report the missing access; never invent a provider, account, or project. Discover supported fields and statuses before writing. Leave optional metadata unset unless the user or an authoritative project source supplies it; never invent an assignee, priority, estimate, due date, label, or workflow state.
 
