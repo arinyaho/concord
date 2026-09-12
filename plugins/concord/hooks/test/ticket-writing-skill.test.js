@@ -59,6 +59,7 @@ test('ticket-writing grounds implementation tickets before it writes them', () =
     'agreed design',
     'current behavior',
     'observed evidence',
+    'If one is found, stop before creating a ticket: reuse the existing work when it already covers the requested outcome, otherwise ask the user how to proceed',
     'If no destination can be established or multiple destinations remain plausible',
     'A content-only draft may proceed with the tracker and project explicitly unset',
     'If none exists for the resolved destination, stop and report the missing access',
