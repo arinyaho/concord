@@ -59,9 +59,13 @@ pluginInstallE2ETest('clean Claude and Codex installs discover the same shared s
   const codex = read(path.join(codexInstall.installedPath, 'skills/ticket-writing/SKILL.md'));
   const claudeTicketToPr = read(path.join(claudeInstall.installPath, 'skills/ticket-to-pr/SKILL.md'));
   const codexTicketToPr = read(path.join(codexInstall.installedPath, 'skills/ticket-to-pr/SKILL.md'));
+  const codexSkills = JSON.parse(run('codex', ['debug', 'prompt-input'], codexEnv))
+    .flatMap(({ content = [] }) => content)
+    .find(({ text }) => text?.startsWith('<skills_instructions>'))?.text;
 
   assert.equal(codex, claude);
   assert.equal(codexTicketToPr, claudeTicketToPr);
+  assert.match(codexSkills, /(?:^|\n)- concord-codex:ticket-to-pr: /);
   assert.match(claude, /^---\nname: ticket-writing\ndescription: Use when /);
   assert.match(claudeTicketToPr, /^---\nname: ticket-to-pr\ndescription: >-/);
   for (const provider of ['Notion', 'Jira', 'GitHub Issues']) assert.match(claude, new RegExp(provider));
