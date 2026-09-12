@@ -15,7 +15,7 @@ One unit of work, one branch, one PR carrying the design and the code together. 
 | # | Stage | Exit condition |
 |---|---|---|
 | 0 | Branch | A dedicated work branch exists, is checked out, and starts from the intended base; create it if absent |
-| 1 | End-to-end red | The claimed breakage reproduces against the unchanged code |
+| 1 | End-to-end red | For a defect, the claimed breakage reproduces against the unchanged code; for a feature, an end-to-end acceptance check fails because the requested behavior is absent |
 | 2 | The work has acceptance criteria and a definition of done, and any approved in-progress transition is applied | Every criterion names an observation, not an intention. The DoD says which gates are executable and which are deferred. The board reflects that work began only when the user approved that transition |
 | 3 | Design note, committed where the next reader finds it | The decision, the trade-off it costs, and the residual exposure are all written down |
 | 4 | Review the design note | `/review-until-green file:<path>` |
