@@ -13,7 +13,9 @@ function read(file) {
   return fs.readFileSync(file, 'utf8');
 }
 
-test('clean Claude and Codex installs discover the same provider-neutral ticket-writing skill', (t) => {
+const pluginInstallE2ETest = process.env.CONCORD_RUN_PLUGIN_INSTALL_E2E === '1' ? test : test.skip;
+
+pluginInstallE2ETest('clean Claude and Codex installs discover the same provider-neutral ticket-writing skill', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concord-ticket-writing-'));
   const home = path.join(root, 'home');
   const claudeConfig = path.join(root, 'claude');
