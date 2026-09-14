@@ -22,7 +22,8 @@ function normalizeUsage(raw) {
   const providerInputTokens = number(raw && raw.input_tokens);
   const cachedInputTokens = number(raw && raw.cached_input_tokens);
   const reasoningOutputTokens = number(raw && raw.reasoning_output_tokens);
-  const outputTokens = number(raw && raw.output_tokens);
+  const providerOutputTokens = number(raw && raw.output_tokens);
+  const outputTokens = providerOutputTokens === null || reasoningOutputTokens === null ? null : number(providerOutputTokens - reasoningOutputTokens);
   const reportedTotal = number(raw && raw.total_tokens);
   const totalWasReported = !!raw && Object.prototype.hasOwnProperty.call(raw, 'total_tokens');
   const usagePartial = [providerInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens].some((value) => value === null)
@@ -35,7 +36,7 @@ function normalizeUsage(raw) {
     reasoningOutputTokens,
     outputTokens,
     totalTokens: !totalWasReported && !usagePartial
-      ? providerInputTokens + outputTokens
+      ? providerInputTokens + providerOutputTokens
       : reportedTotal,
   };
   return { usage, usagePartial: usagePartial || usage.totalTokens === null };

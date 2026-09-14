@@ -68,7 +68,7 @@ test('codexExec parses documented turn.completed usage without retaining agent o
       inputTokens: 100,
       cachedInputTokens: 20,
       reasoningOutputTokens: 3,
-      outputTokens: 7,
+      outputTokens: 4,
       totalTokens: 127,
     });
   } finally {
