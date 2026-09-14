@@ -163,6 +163,16 @@ test('uses only the exact single Write ONLY destination, never an earlier input 
   assert.strictEqual(core.recordForEvent(event({ transcript, prompt: `${prompt}. Write ONLY JSON to ${correctness}`, response: successfulResponse() }), stateDir), null);
 });
 
+test('recognizes the manual Claude intent output directive', () => {
+  const { transcript, stateDir } = setup();
+  const intent = path.join(stateDir, 'round-2-intent.json');
+  const prompt = `You are a design-conformance detector. Write a JSON file to ${intent} of the form {"status":"ok","findings":[]}.`;
+  const record = core.recordForEvent(event({ transcript, prompt, response: successfulResponse() }), stateDir);
+
+  assert.strictEqual(record.role, 'intent');
+  assert.strictEqual(record.artifactPath, intent);
+});
+
 test('marks a transcript ending at an assistant tool-use response partial', () => {
   const { transcript, stateDir } = setup();
   const childTranscript = writeSubagentTranscript(transcript, [

@@ -32,7 +32,7 @@ function activeLedger(stateDir, round) {
 function artifactFromPrompt(prompt, stateDir) {
   if (typeof prompt !== 'string') return null;
   const escaped = path.resolve(stateDir).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const directive = new RegExp(`\\bwrite\\s+ONLY\\b[\\s\\S]{0,1000}?\\bto\\s+${escaped}[/\\\\](round-(\\d+)-([A-Za-z0-9:._-]+)\\.json)`, 'gi');
+  const directive = new RegExp(`(?:\\bwrite\\s+ONLY\\b[\\s\\S]{0,1000}?\\bto|\\bwrite\\s+a\\s+JSON\\s+file\\s+to)\\s+${escaped}[/\\\\](round-(\\d+)-([A-Za-z0-9:._-]+)\\.json)`, 'gi');
   const matches = Array.from(prompt.matchAll(directive));
   if (matches.length !== 1) return null;
   const match = matches[0];
