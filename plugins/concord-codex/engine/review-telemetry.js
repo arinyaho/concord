@@ -43,7 +43,7 @@ function joinAgentUsage(tool, agent) {
     reasoningOutputTokens: null,
     outputTokens: agentUsage.outputTokens,
     totalTokens: agentUsage.totalTokens,
-    usagePartial: agentUsage.usagePartial || hookDisagrees || modelDisagrees || tool.duplicateEvidence === true,
+    usagePartial: agentUsage.usagePartial || hookDisagrees || modelDisagrees || tool.duplicateEvidence === true || !Number.isSafeInteger(tool.attempt) || tool.attempt < 1,
     providerUsage: agentUsage.providerUsage,
   };
 }

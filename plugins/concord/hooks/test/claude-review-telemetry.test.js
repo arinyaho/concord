@@ -85,7 +85,7 @@ function assistantRow({ requestId, messageId, model = 'claude-sonnet-4-5-2025092
   };
 }
 
-test('joins SubagentStop transcript totals and counts only the last streaming row per request', () => {
+test('joins SubagentStop transcript totals but stays partial without a telemetry slot', () => {
   const { transcript, stateDir } = setup();
   const prompt = `Write ONLY to ${path.join(stateDir, 'round-2-correctness.json')}`;
   const childTranscript = writeSubagentTranscript(transcript, [
@@ -132,7 +132,7 @@ test('joins SubagentStop transcript totals and counts only the last streaming ro
     reasoningOutputTokens: null,
     outputTokens: 11,
     totalTokens: 83,
-    usagePartial: false,
+    usagePartial: true,
     providerUsage: {
       input_tokens: 13,
       cache_creation_input_tokens: 24,
