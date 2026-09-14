@@ -37,6 +37,16 @@ test('paired evaluator fails closed on mismatched pairing identity and partial u
   assert.ok(report.unevaluable.includes('partial usage: seeded#0'));
 });
 
+test('paired evaluator fails closed on malformed runs', () => {
+  for (const malformed of [null, 1]) {
+    const baseline = read('baseline.json');
+    baseline.runs[0] = malformed;
+    const report = compareReviewResults(baseline, read('candidate.json'));
+    assert.strictEqual(report.pass, false);
+    assert.ok(report.unevaluable.includes('baseline run is invalid'));
+  }
+});
+
 test('paired evaluator rejects a candidate-only false clean by pair identity', () => {
   const baseline = read('baseline.json');
   const candidate = read('candidate.json');

@@ -71,6 +71,7 @@ function compareReviewResults(baseline, candidate) {
     const result = new Map();
     const seeds = new Set();
     for (const run of manifest?.runs || []) {
+      if (!run || typeof run !== 'object') { note(`${name} run is invalid`); continue; }
       const runKey = key(run);
       if (!run.scenarioId || !Number.isInteger(run.repetition) || run.repetition < 0) note(`${name} run identity is invalid: ${runKey}`);
       if (result.has(runKey)) note(`${name} duplicate run: ${runKey}`);
