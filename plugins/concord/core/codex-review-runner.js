@@ -35,7 +35,7 @@ function normalizeUsage(raw) {
     reasoningOutputTokens,
     outputTokens,
     totalTokens: !totalWasReported && !usagePartial
-      ? providerInputTokens + reasoningOutputTokens + outputTokens
+      ? providerInputTokens + outputTokens
       : reportedTotal,
   };
   return { usage, usagePartial: usagePartial || usage.totalTokens === null };
