@@ -28,7 +28,7 @@ function normalizeUsage(raw) {
   const totalWasReported = !!raw && Object.prototype.hasOwnProperty.call(raw, 'total_tokens');
   const usagePartial = [providerInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens].some((value) => value === null)
     || (providerInputTokens !== null && cachedInputTokens !== null && cachedInputTokens > providerInputTokens)
-    || (totalWasReported && reportedTotal === null);
+    || (totalWasReported && reportedTotal !== providerInputTokens + providerOutputTokens);
   const inputTokens = usagePartial ? null : providerInputTokens - cachedInputTokens;
   const usage = {
     inputTokens,

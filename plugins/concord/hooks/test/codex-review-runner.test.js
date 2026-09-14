@@ -76,6 +76,21 @@ test('codexExec parses documented turn.completed usage without retaining agent o
   }
 });
 
+test('codexExec marks usage with an inconsistent reported total as partial', async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  fs.writeFileSync(codex, `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 120, cached_input_tokens: 20, output_tokens: 7, reasoning_output_tokens: 3, total_tokens: 126 } }) + '\\n');\n`);
+  fs.chmodSync(codex, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  try {
+    const result = await codexExec({ role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir });
+    assert.strictEqual(result.usagePartial, true);
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
 test('codexExec marks a successful subprocess with no usage event as partial', async () => {
   const binDir = temp();
   const codex = path.join(binDir, 'codex');
