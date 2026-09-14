@@ -37,6 +37,19 @@ test('paired evaluator fails closed on mismatched pairing identity and partial u
   assert.ok(report.unevaluable.includes('partial usage: seeded#0'));
 });
 
+test('paired evaluator rejects parent proxy tokens without provenance', () => {
+  for (const field of ['parentProxyTokenizerVersion', 'parentProxyContentHash']) {
+    const baseline = read('baseline.json');
+    const candidate = read('candidate.json');
+    delete candidate.runs[0][field];
+
+    const report = compareReviewResults(baseline, candidate);
+
+    assert.strictEqual(report.pass, false);
+    assert.ok(report.unevaluable.includes('candidate parent proxy provenance invalid: seeded#0'));
+  }
+});
+
 test('paired evaluator fails closed on malformed runs', () => {
   for (const malformed of [null, 1]) {
     const baseline = read('baseline.json');
