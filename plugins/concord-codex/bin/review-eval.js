@@ -5,9 +5,9 @@ const { compareReviewStage } = require('../engine/review-eval');
 
 const [stageFlag, stage, baselinePath, previousPath, candidatePath, ...extra] = process.argv.slice(2);
 const valid = stageFlag === '--stage' && /^pr[1-5]$/.test(stage) && baselinePath && !extra.length
-  && (stage === 'pr1' ? !previousPath && !candidatePath : previousPath && candidatePath);
+  && (stage === 'pr1' ? previousPath && !candidatePath : previousPath && candidatePath);
 if (!valid) {
-  process.stderr.write('usage: review-eval --stage pr1 <pr1-matrix.json> | --stage pr2|pr3|pr4|pr5 <pr1-matrix.json> <previous-matrix.json> <candidate-matrix.json>\n');
+  process.stderr.write('usage: review-eval --stage pr1 <pr1-matrix.json> <replay-matrix.json> | --stage pr2|pr3|pr4|pr5 <pr1-matrix.json> <previous-matrix.json> <candidate-matrix.json>\n');
   process.exit(2);
 }
 try {

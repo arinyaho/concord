@@ -238,15 +238,28 @@ test('PR5 applies final thresholds only against exact PR1', () => {
   assert.strictEqual(report.final.engines.codex.gates.tokens.pass, true);
 });
 
+test('PR1 validates a separately recorded deterministic replay', () => {
+  const revision = 'a'.repeat(40);
+  const pr1 = matrix('baseline', revision, 100);
+  const replay = matrix('candidate', revision, 100);
+  assert.strictEqual(compareReviewStage('pr1', pr1, replay).pass, true);
+  replay.engines.codex.runs.find((run) => run.scenarioId === 'seeded' && run.repetition === 0).acceptedFindings = [];
+
+  assert.strictEqual(compareReviewStage('pr1', pr1, replay).pass, false);
+  assert.strictEqual(compareReviewStage('pr1', pr1).pass, false);
+});
+
 test('review-eval CLI requires stage', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-eval-'));
+  const pr1Revision = 'a'.repeat(40);
   const pr4Revision = 'd'.repeat(40);
-  for (const [name, value] of [['pr1', matrix('baseline', 'a'.repeat(40), 100)], ['pr4', matrix('baseline', pr4Revision, 65)], ['pr5', matrix('candidate', 'e'.repeat(40), 60, pr4Revision)]]) fs.writeFileSync(path.join(dir, `${name}.json`), JSON.stringify(value));
+  for (const [name, value] of [['pr1', matrix('baseline', pr1Revision, 100)], ['pr1-replay', matrix('candidate', pr1Revision, 100)], ['pr4', matrix('baseline', pr4Revision, 65)], ['pr5', matrix('candidate', 'e'.repeat(40), 60, pr4Revision)]]) fs.writeFileSync(path.join(dir, `${name}.json`), JSON.stringify(value));
   const cli = path.resolve(__dirname, '../../../concord-codex/bin/review-eval.js');
   const result = spawnSync(process.execPath, [cli, '--stage', 'pr5', path.join(dir, 'pr1.json'), path.join(dir, 'pr4.json'), path.join(dir, 'pr5.json')], { encoding: 'utf8' });
   assert.strictEqual(result.status, 0, result.stderr); assert.strictEqual(JSON.parse(result.stdout).pass, true);
   assert.notStrictEqual(spawnSync(process.execPath, [cli, path.join(dir, 'pr1.json'), path.join(dir, 'pr5.json')]).status, 0);
-  const baselineOnly = spawnSync(process.execPath, [cli, '--stage', 'pr1', path.join(dir, 'pr1.json')], { encoding: 'utf8' });
-  assert.strictEqual(baselineOnly.status, 0, baselineOnly.stderr);
-  assert.strictEqual(JSON.parse(baselineOnly.stdout).pass, true);
+  const pr1Validation = spawnSync(process.execPath, [cli, '--stage', 'pr1', path.join(dir, 'pr1.json'), path.join(dir, 'pr1-replay.json')], { encoding: 'utf8' });
+  assert.strictEqual(pr1Validation.status, 0, pr1Validation.stderr);
+  assert.strictEqual(JSON.parse(pr1Validation.stdout).pass, true);
+  assert.notStrictEqual(spawnSync(process.execPath, [cli, '--stage', 'pr1', path.join(dir, 'pr1.json')]).status, 0);
 });

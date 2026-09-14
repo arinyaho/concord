@@ -264,13 +264,13 @@ function matrixRevision(matrix) {
 
 function compareReviewStage(stage, pr1, previous, candidate) {
   if (stage === 'pr1') {
-    const replay = structuredClone(pr1);
-    for (const engine of REQUIRED_ENGINES) for (const run of replay?.engines?.[engine]?.runs || []) {
-      for (const field of ['randomSeed', 'parentSessionId', 'checkoutId', 'artifactDirectoryId']) if (typeof run[field] === 'string') run[field] += '-validation';
-    }
+    const replay = previous;
     const validation = compareReviewMatrix(pr1, replay);
     const unevaluable = [...validation.unevaluable];
-    if (!matrixRevision(pr1)) unevaluable.push('PR1 revision is missing or inconsistent across engines');
+    const pr1Revision = matrixRevision(pr1); const replayRevision = matrixRevision(replay);
+    if (!pr1Revision) unevaluable.push('PR1 revision is missing or inconsistent across engines');
+    if (!replayRevision) unevaluable.push('PR1 replay revision is missing or inconsistent across engines');
+    else if (pr1Revision && replayRevision !== pr1Revision) unevaluable.push('PR1 replay revision must match the measured PR1 revision');
     return { pass: !unevaluable.length && validation.evaluable && validation.qualityPass, finalThresholdApplied: false, unevaluable, validation };
   }
   if (!/^pr[2-5]$/.test(stage)) return { pass: false, unevaluable: [`unsupported comparison stage: ${stage}`] };
