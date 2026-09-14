@@ -50,6 +50,26 @@ test('paired evaluator rejects parent proxy tokens without provenance', () => {
   }
 });
 
+test('paired evaluator rejects a zero-token baseline pair in a multi-scenario corpus', () => {
+  const baseline = read('baseline.json');
+  const candidate = read('candidate.json');
+  for (const manifest of [baseline, candidate]) {
+    manifest.scenarios.control = structuredClone(manifest.scenarios.seeded);
+    manifest.runs.push(...manifest.runs.map((run) => ({
+      ...structuredClone(run),
+      scenarioId: 'control',
+      randomSeed: `${run.randomSeed}-control`,
+    })));
+  }
+  baseline.runs[0].telemetry.totalTokens = 0;
+  baseline.runs[0].parentProxyTokens = 0;
+
+  const report = compareReviewResults(baseline, candidate);
+
+  assert.strictEqual(report.pass, false);
+  assert.ok(report.unevaluable.includes('baseline token total is zero: seeded#0'));
+});
+
 test('paired evaluator fails closed on malformed runs', () => {
   for (const malformed of [null, 1]) {
     const baseline = read('baseline.json');

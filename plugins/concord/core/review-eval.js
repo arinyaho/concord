@@ -156,7 +156,8 @@ function compareReviewResults(baseline, candidate) {
     if (base.telemetry?.partialCalls === 0 && cand.telemetry?.partialCalls === 0) {
       const baseTokens = base.telemetry.totalTokens + base.parentProxyTokens;
       const candidateTokens = cand.telemetry.totalTokens + cand.parentProxyTokens;
-      if (baseTokens > 0) tokenChanges.push((candidateTokens - baseTokens) / baseTokens);
+      if (baseTokens <= 0) note(`baseline token total is zero: ${pairKey}`);
+      else tokenChanges.push((candidateTokens - baseTokens) / baseTokens);
     }
   }
 
