@@ -5,6 +5,7 @@ const PAIRING_KEYS = ['targetSnapshot', 'targetDiff', 'intent', 'model', 'reason
 const RUN_PAIRING_KEYS = ['targetDiffIdentity', 'targetDiffHash', 'intentIdentity', 'intentHash'];
 const REMOVED_PARENT_FIELDS = ['parentProxyContents', 'parentProxyTokenizerVersion', 'parentProxyContentHash', 'parentProxyTokens'];
 const TERMINALS = ['clean', 'parked', 'abandoned', 'intent-review', 'gate-pending', 'budget-stopped', 'harness-failure'];
+const DOD_RESULTS = ['passed', 'failed', 'deferred', 'not-run'];
 
 function sorted(values) { return [...new Set(values || [])].sort(); }
 function canonical(value) {
@@ -122,6 +123,7 @@ function compareReviewResults(baseline, candidate, options = {}) {
       const expectedProbes = manifest.scenarios?.[run.scenarioId]?.expectedProbes || [];
       if (!run.expectedProbeResults || typeof run.expectedProbeResults !== 'object' || Array.isArray(run.expectedProbeResults) ||
           !same(Object.keys(run.expectedProbeResults).sort(), [...expectedProbes].sort()) || Object.values(run.expectedProbeResults).some((value) => typeof value !== 'boolean')) note(`${name} probe results mismatch: ${key}`);
+      if (!DOD_RESULTS.includes(run.dod)) note(`${name} DoD result invalid: ${key}`);
       validateTelemetry(name, key, engine, run, note);
     }
     return { runs: result, seeds, isolated };

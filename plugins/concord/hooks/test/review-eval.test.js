@@ -148,6 +148,16 @@ test('hasExecutableDoD false is the sole exemption and probesByFinding is total'
   assert.ok(report.unevaluable.includes('scenario probesByFinding missing: seeded:seeded::bug'));
 });
 
+test('rejects an invalid DoD result on matching non-clean runs', () => {
+  const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
+  for (const side of [baseline, candidate]) side.engines.codex.runs.find((run) => run.scenarioId === 'malformed-blocked' && run.repetition === 0).dod = 'garbage';
+
+  const report = compareReviewMatrix(baseline, candidate).engines.codex;
+  assert.strictEqual(report.pass, false);
+  assert.ok(report.unevaluable.includes('baseline DoD result invalid: malformed-blocked#0'));
+  assert.ok(report.unevaluable.includes('candidate DoD result invalid: malformed-blocked#0'));
+});
+
 test('scenario classifications, terminal enums, mappings, and probe results are strict', () => {
   const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
   for (const side of [baseline, candidate]) {
