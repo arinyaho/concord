@@ -241,8 +241,22 @@ function recordForEvent(event, stateDir) {
   return event.hook_event_name === 'SubagentStop' ? subagentRecord(event) : toolRecord(event, stateDir);
 }
 
+function hasActiveReviewTool(stateDir, agentId) {
+  let names;
+  try { names = fs.readdirSync(stateDir); } catch { return false; }
+  for (const name of names) {
+    if (!/^review-telemetry-[0-9a-f]{64}\.json$/.test(name)) continue;
+    try {
+      const tool = JSON.parse(fs.readFileSync(path.join(stateDir, name), 'utf8'));
+      if (tool.agentId === agentId && activeLedger(stateDir, tool.round)?.target.ref === tool.targetRef) return true;
+    } catch {}
+  }
+  return false;
+}
+
 function writeRecord(stateDir, record) {
   if (!record) return false;
+  if (record.kind === 'agent-usage' && !hasActiveReviewTool(stateDir, record.agentId)) return false;
   fs.mkdirSync(stateDir, { recursive: true });
   const identity = record.kind === 'agent-usage' ? `agent:${record.agentId}:${record.observationId}` : `tool:${record.invocationId}`;
   const digest = crypto.createHash('sha256').update(identity).digest('hex');

@@ -217,6 +217,14 @@ test('stores repeated SubagentStop observations append-only and folds the invoca
   assert.strictEqual(ledger.telemetry.entries[0].usagePartial, true);
 });
 
+test('does not persist a SubagentStop without a matching review tool', () => {
+  const { transcript, stateDir } = setup();
+  const record = core.recordForEvent({ hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'unrelated-agent' }, stateDir);
+
+  assert.strictEqual(core.writeRecord(stateDir, record), false);
+  assert.deepStrictEqual(fs.readdirSync(stateDir).filter((name) => name.startsWith('review-agent-telemetry-')), []);
+});
+
 test('marks repeated terminal tool hooks partial instead of discarding the duplicate', () => {
   const { transcript, stateDir } = setup();
   const prompt = `Write ONLY to ${path.join(stateDir, 'round-2-correctness.json')}`;
