@@ -65,7 +65,7 @@ test('codexExec parses documented turn.completed usage without retaining agent o
     assert.ok(Number.isFinite(result.elapsedMs) && result.elapsedMs >= 0);
     assert.strictEqual(result.usagePartial, false);
     assert.deepStrictEqual(result.usage, {
-      inputTokens: 120,
+      inputTokens: 100,
       cachedInputTokens: 20,
       reasoningOutputTokens: 3,
       outputTokens: 7,
@@ -178,15 +178,21 @@ test('runner reports aggregate and per-role subprocess telemetry', async () => {
       partialCalls: 0,
       inputTokens: 600,
       cachedInputTokens: 60,
+      reasoningOutputTokens: 0,
       outputTokens: 6,
       totalTokens: 666,
       elapsedMs: 60,
     },
     byRole: {
-      correctness: { calls: 1, partialCalls: 0, ...usageByRole.correctness, elapsedMs: 10 },
-      verify: { calls: 1, partialCalls: 0, ...usageByRole.verify, elapsedMs: 20 },
-      fix: { calls: 1, partialCalls: 0, ...usageByRole.fix, elapsedMs: 30 },
+      correctness: { calls: 1, partialCalls: 0, reasoningOutputTokens: 0, ...usageByRole.correctness, elapsedMs: 10 },
+      verify: { calls: 1, partialCalls: 0, reasoningOutputTokens: 0, ...usageByRole.verify, elapsedMs: 20 },
+      fix: { calls: 1, partialCalls: 0, reasoningOutputTokens: 0, ...usageByRole.fix, elapsedMs: 30 },
     },
+    invocations: [
+      { role: 'correctness', round: 1, model: null, reasoningEffort: null, status: 0, usagePartial: false, ...usageByRole.correctness, reasoningOutputTokens: 0, elapsedMs: 10 },
+      { role: 'verify', round: 1, model: null, reasoningEffort: null, status: 0, usagePartial: false, ...usageByRole.verify, reasoningOutputTokens: 0, elapsedMs: 20 },
+      { role: 'fix', round: 1, model: null, reasoningEffort: null, status: 0, usagePartial: false, ...usageByRole.fix, reasoningOutputTokens: 0, elapsedMs: 30 },
+    ],
   });
   assert.match(out.handoff, /usage: 3 calls, 0 partial, 666 tokens, 60ms/);
 });

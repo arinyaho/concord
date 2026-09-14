@@ -3,7 +3,12 @@
 const PAIRING_KEYS = ['targetSnapshot', 'targetDiff', 'intent', 'model', 'reasoningEffort', 'reviewConfig'];
 
 function sorted(values) { return Array.from(new Set(values || [])).sort(); }
-function same(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]));
+  return value;
+}
+function same(a, b) { return JSON.stringify(canonical(a)) === JSON.stringify(canonical(b)); }
 function key(run) { return `${run.scenarioId}#${run.repetition}`; }
 
 // Cornish-Fisher expansion for the two-sided 95% Student t critical value.
@@ -55,6 +60,11 @@ function compareReviewResults(baseline, candidate) {
   for (const id of scenarioIds) {
     if (!baselineScenarios[id] || !candidateScenarios[id]) note(`scenario missing from one manifest: ${id}`);
     else if (!same(baselineScenarios[id], candidateScenarios[id])) note(`scenario metadata mismatch: ${id}`);
+    const scenario = baselineScenarios[id];
+    if (scenario && typeof scenario.behaviorPreserving !== 'boolean') note(`behavior-preserving flag missing: ${id}`);
+    for (const field of ['seededDefects', 'nonDefects', 'allowedTerminalOutcomes']) {
+      if (!Array.isArray(scenario?.[field]) || scenario[field].some((value) => typeof value !== 'string')) note(`scenario ${field} is invalid: ${id}`);
+    }
   }
 
   const index = (manifest, name) => {
@@ -73,12 +83,15 @@ function compareReviewResults(baseline, candidate) {
   };
   const baselineRuns = index(baseline, 'baseline');
   const candidateRuns = index(candidate, 'candidate');
+  const baselineSeeds = new Set(Array.from(baselineRuns.values(), (run) => run.randomSeed));
+  for (const run of candidateRuns.values()) if (baselineSeeds.has(run.randomSeed)) note(`paired random seed is reused: ${run.randomSeed}`);
   const pairKeys = sorted([...baselineRuns.keys(), ...candidateRuns.keys()]);
   const repetitions = new Map();
   const additionalFalseClean = [];
   const behaviorMismatches = [];
   const acceptedBaseline = new Set();
   const acceptedCandidate = new Set();
+  const tokenChanges = [];
   const secondary = {
     baseline: { calls: 0, elapsedMs: 0 },
     candidate: { calls: 0, elapsedMs: 0 },
@@ -107,10 +120,13 @@ function compareReviewResults(baseline, candidate) {
       }
       if (!['passed', 'failed', 'deferred', 'not-run'].includes(run.dod)) note(`${name} DoD result invalid: ${pairKey}`);
       if (!['clean', 'parked', 'abandoned', 'intent-review', 'gate-pending', 'budget-stopped', 'harness-failure'].includes(run.terminal)) note(`${name} terminal outcome invalid: ${pairKey}`);
+      if (!Array.isArray(run.fixedFindings) || run.fixedFindings.some((id) => typeof id !== 'string')) note(`${name} fixed findings missing: ${pairKey}`);
       if (!run.telemetry || run.telemetry.partialCalls !== 0) note(`partial usage: ${pairKey}`);
       if (!Number.isFinite(run.telemetry?.totalTokens) || run.telemetry.totalTokens < 0 || !Number.isFinite(run.parentProxyTokens) || run.parentProxyTokens < 0) note(`token total invalid: ${pairKey}`);
-      secondary[name].calls += Number.isFinite(run.telemetry?.calls) ? run.telemetry.calls : 0;
-      secondary[name].elapsedMs += Number.isFinite(run.telemetry?.elapsedMs) ? run.telemetry.elapsedMs : 0;
+      if (!Number.isSafeInteger(run.telemetry?.calls) || run.telemetry.calls < 0) note(`${name} subprocess count invalid: ${pairKey}`);
+      else secondary[name].calls += run.telemetry.calls;
+      if (!Number.isFinite(run.telemetry?.elapsedMs) || run.telemetry.elapsedMs < 0) note(`${name} elapsed time invalid: ${pairKey}`);
+      else secondary[name].elapsedMs += run.telemetry.elapsedMs;
     }
 
     if (scenario.behaviorPreserving === true) {
@@ -134,11 +150,15 @@ function compareReviewResults(baseline, candidate) {
     repetition.baseTokens += (base.telemetry?.totalTokens || 0) + (base.parentProxyTokens || 0);
     repetition.candidateTokens += (cand.telemetry?.totalTokens || 0) + (cand.parentProxyTokens || 0);
     repetitions.set(base.repetition, repetition);
+    if (base.telemetry?.partialCalls === 0 && cand.telemetry?.partialCalls === 0) {
+      const baseTokens = base.telemetry.totalTokens + base.parentProxyTokens;
+      const candidateTokens = cand.telemetry.totalTokens + cand.parentProxyTokens;
+      if (baseTokens > 0) tokenChanges.push((candidateTokens - baseTokens) / baseTokens);
+    }
   }
 
   const recallDifferences = [];
   const falsePositiveDifferences = [];
-  const tokenChanges = [];
   for (const [repetitionId, repetition] of repetitions) {
     if (repetition.scenarios.size !== scenarioIds.length) note(`incomplete corpus repetition: ${repetitionId}`);
     if (!repetition.seeded) note(`no seeded defects in repetition: ${repetitionId}`);
@@ -146,7 +166,6 @@ function compareReviewResults(baseline, candidate) {
     if (!repetition.nonDefects) note(`no non-defects in repetition: ${repetitionId}`);
     else falsePositiveDifferences.push((repetition.candidateFalsePositives - repetition.baseFalsePositives) / repetition.nonDefects);
     if (repetition.baseTokens <= 0) note(`baseline token total is zero: ${repetitionId}`);
-    else tokenChanges.push((repetition.candidateTokens - repetition.baseTokens) / repetition.baseTokens);
   }
   if (repetitions.size < 30) note(`fewer than 30 paired repetitions: ${repetitions.size}`);
 

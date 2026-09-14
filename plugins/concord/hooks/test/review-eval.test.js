@@ -14,8 +14,10 @@ test('paired evaluator passes identity-preserving telemetry fixture', () => {
   assert.strictEqual(report.pass, true);
   assert.deepStrictEqual(report.unevaluable, []);
   assert.deepStrictEqual(report.gates.falseClean.additionalPairs, []);
-  assert.strictEqual(report.gates.recall.lowerBound >= -0.05, true);
-  assert.strictEqual(report.gates.falsePositive.upperBound <= 0.05, true);
+  assert.strictEqual(report.gates.recall.lowerBound, 0);
+  assert.strictEqual(report.gates.recall.upperBound, 0);
+  assert.strictEqual(report.gates.falsePositive.lowerBound, 0);
+  assert.strictEqual(report.gates.falsePositive.upperBound, 0);
   assert.deepStrictEqual(report.gates.behavior.mismatchedPairs, []);
   assert.ok(report.gates.tokens.medianPairedChange <= -0.30);
   assert.deepStrictEqual(report.identities.acceptedBaseline, ['correctness:seeded-bug']);

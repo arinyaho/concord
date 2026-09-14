@@ -18,20 +18,24 @@ function jsonCli(cliPath, args, repoRoot) {
 }
 
 function normalizeUsage(raw) {
-  const number = (value) => Number.isFinite(value) && value >= 0 ? value : null;
-  const inputTokens = number(raw && raw.input_tokens);
+  const number = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const providerInputTokens = number(raw && raw.input_tokens);
   const cachedInputTokens = number(raw && raw.cached_input_tokens);
   const reasoningOutputTokens = number(raw && raw.reasoning_output_tokens);
   const outputTokens = number(raw && raw.output_tokens);
   const reportedTotal = number(raw && raw.total_tokens);
-  const usagePartial = [inputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens].some((value) => value === null);
+  const totalWasReported = !!raw && Object.prototype.hasOwnProperty.call(raw, 'total_tokens');
+  const usagePartial = [providerInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens].some((value) => value === null)
+    || (providerInputTokens !== null && cachedInputTokens !== null && cachedInputTokens > providerInputTokens)
+    || (totalWasReported && reportedTotal === null);
+  const inputTokens = usagePartial ? null : providerInputTokens - cachedInputTokens;
   const usage = {
     inputTokens,
     cachedInputTokens,
     reasoningOutputTokens,
     outputTokens,
-    totalTokens: reportedTotal === null && !usagePartial
-      ? inputTokens + reasoningOutputTokens + outputTokens
+    totalTokens: !totalWasReported && !usagePartial
+      ? providerInputTokens + reasoningOutputTokens + outputTokens
       : reportedTotal,
   };
   return { usage, usagePartial: usagePartial || usage.totalTokens === null };
@@ -126,30 +130,54 @@ async function runReviewUntilGreen(options) {
   const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot));
   const rawSpawn = options.spawn || ((input) => codexExec(input));
   const telemetry = {
-    total: { calls: 0, partialCalls: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0 },
+    total: { calls: 0, partialCalls: 0, inputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0 },
     byRole: {},
+    invocations: [],
   };
-  const spawn = async (input) => {
-    const result = await rawSpawn(input);
+  let currentRound = null;
+  let telemetryPath = null;
+  const persistTelemetry = () => {
+    if (!telemetryPath) return;
+    const temporary = `${telemetryPath}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, `${JSON.stringify(telemetry)}\n`);
+    fs.renameSync(temporary, telemetryPath);
+  };
+  const record = (input, result) => {
     const usage = result && result.usage || {};
+    const partial = !result || result.usagePartial !== false;
     const values = {
       inputTokens: Number.isFinite(usage.inputTokens) ? usage.inputTokens : 0,
       cachedInputTokens: Number.isFinite(usage.cachedInputTokens) ? usage.cachedInputTokens : 0,
+      reasoningOutputTokens: Number.isFinite(usage.reasoningOutputTokens) ? usage.reasoningOutputTokens : 0,
       outputTokens: Number.isFinite(usage.outputTokens) ? usage.outputTokens : 0,
       totalTokens: Number.isFinite(usage.totalTokens) ? usage.totalTokens : 0,
       elapsedMs: Number.isFinite(result && result.elapsedMs) ? result.elapsedMs : 0,
     };
-    const partial = !result || result.usagePartial !== false;
     const role = input.role;
     const aggregate = telemetry.byRole[role] || (telemetry.byRole[role] = {
-      calls: 0, partialCalls: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0,
+      calls: 0, partialCalls: 0, inputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0,
     });
     for (const target of [aggregate, telemetry.total]) {
       target.calls++;
       if (partial) target.partialCalls++;
       for (const key of Object.keys(values)) target[key] += values[key];
     }
-    return result;
+    telemetry.invocations.push({
+      role, round: currentRound, model: null, reasoningEffort: null,
+      status: result && Number.isInteger(result.status) ? result.status : null,
+      usagePartial: partial, ...values,
+    });
+    persistTelemetry();
+  };
+  const spawn = async (input) => {
+    try {
+      const result = await rawSpawn(input);
+      record(input, result);
+      return result;
+    } catch (error) {
+      record(input, null);
+      throw error;
+    }
   };
   const withTelemetry = (result) => {
     const output = { ...result, telemetry };
@@ -228,6 +256,8 @@ async function runReviewUntilGreen(options) {
     if (noDod) startArgs.push('--no-dod');
     const started = await cli(startArgs);
     if (started.decision !== 'work') return withTelemetry(started);
+    currentRound = started.round;
+    if (!telemetryPath) telemetryPath = path.join(started.stateDir, `telemetry-${targetSlug(ref)}.json`);
     const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodPassed: started.dodPassed, dodDeferred: started.dodDeferred, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref) };
 
     const runArtifactReviewer = async (role) => {
