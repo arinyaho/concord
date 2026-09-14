@@ -82,6 +82,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -105,6 +109,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -128,6 +136,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -151,6 +163,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -174,6 +190,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -197,6 +217,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -220,6 +244,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -243,6 +271,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -266,6 +298,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -289,6 +325,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -312,6 +352,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -335,6 +379,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -358,6 +406,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -381,6 +433,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -404,6 +460,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -427,6 +487,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -450,6 +514,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -473,6 +541,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -496,6 +568,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -519,6 +595,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -542,6 +622,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -565,6 +649,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -588,6 +676,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -611,6 +703,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -634,6 +730,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -657,6 +757,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -680,6 +784,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -703,6 +811,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -726,6 +838,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -749,6 +865,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -768,6 +888,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -787,6 +911,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -806,6 +934,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -829,6 +961,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -848,6 +984,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -867,6 +1007,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -886,6 +1030,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -909,6 +1057,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -928,6 +1080,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -947,6 +1103,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -966,6 +1126,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -989,6 +1153,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1008,6 +1176,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1027,6 +1199,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1046,6 +1222,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1069,6 +1249,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1088,6 +1272,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1107,6 +1295,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1126,6 +1318,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1149,6 +1345,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1168,6 +1368,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1187,6 +1391,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1206,6 +1414,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1229,6 +1441,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1248,6 +1464,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1267,6 +1487,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1286,6 +1510,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1309,6 +1537,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1328,6 +1560,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1347,6 +1583,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1366,6 +1606,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1389,6 +1633,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1408,6 +1656,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1427,6 +1679,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1446,6 +1702,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1469,6 +1729,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1488,6 +1752,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1507,6 +1775,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1526,6 +1798,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1549,6 +1825,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1568,6 +1848,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1587,6 +1871,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1606,6 +1894,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1629,6 +1921,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1648,6 +1944,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1667,6 +1967,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1686,6 +1990,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1709,6 +2017,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1728,6 +2040,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1747,6 +2063,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1766,6 +2086,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1789,6 +2113,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1808,6 +2136,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1827,6 +2159,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1846,6 +2182,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1869,6 +2209,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1888,6 +2232,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1907,6 +2255,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1926,6 +2278,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1949,6 +2305,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1968,6 +2328,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -1987,6 +2351,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2006,6 +2374,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2029,6 +2401,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2048,6 +2424,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2067,6 +2447,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2086,6 +2470,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2109,6 +2497,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2128,6 +2520,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2147,6 +2543,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2166,6 +2566,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2189,6 +2593,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2208,6 +2616,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2227,6 +2639,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2246,6 +2662,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2269,6 +2689,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2288,6 +2712,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2307,6 +2735,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2326,6 +2758,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2349,6 +2785,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2368,6 +2808,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2387,6 +2831,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2406,6 +2854,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2429,6 +2881,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2448,6 +2904,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2467,6 +2927,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2486,6 +2950,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2509,6 +2977,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2528,6 +3000,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2547,6 +3023,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2566,6 +3046,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2589,6 +3073,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2608,6 +3096,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2627,6 +3119,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2646,6 +3142,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2669,6 +3169,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2688,6 +3192,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2707,6 +3215,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2726,6 +3238,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2749,6 +3265,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2768,6 +3288,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2787,6 +3311,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2806,6 +3334,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2829,6 +3361,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2848,6 +3384,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2867,6 +3407,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2886,6 +3430,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2909,6 +3457,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2928,6 +3480,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2947,6 +3503,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2966,6 +3526,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -2989,6 +3553,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -3008,6 +3576,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -3027,6 +3599,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -3046,6 +3622,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -3069,6 +3649,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -3088,6 +3672,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -3107,6 +3695,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -3126,6 +3718,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }
@@ -3149,6 +3745,10 @@
       "telemetry": {
         "calls": 2,
         "partialCalls": 0,
+        "inputTokens": 100,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+        "outputTokens": 0,
         "totalTokens": 100,
         "elapsedMs": 100
       }

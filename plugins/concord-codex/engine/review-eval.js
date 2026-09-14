@@ -124,7 +124,10 @@ function compareReviewResults(baseline, candidate) {
       if (!Array.isArray(run.fixedFindings) || run.fixedFindings.some((id) => typeof id !== 'string')) note(`${name} fixed findings missing: ${pairKey}`);
       else for (const id of run.fixedFindings) if (!declared.has(id)) note(`unadjudicated fixed identity: ${pairKey}:${id}`);
       if (!run.telemetry || run.telemetry.partialCalls !== 0) note(`partial usage: ${pairKey}`);
-      if (!Number.isFinite(run.telemetry?.totalTokens) || run.telemetry.totalTokens < 0 || !Number.isFinite(run.parentProxyTokens) || run.parentProxyTokens < 0) note(`token total invalid: ${pairKey}`);
+      const tokenComponents = ['inputTokens', 'cachedInputTokens', 'reasoningOutputTokens', 'outputTokens'].map((field) => run.telemetry?.[field]);
+      if (!Number.isSafeInteger(run.telemetry?.totalTokens) || run.telemetry.totalTokens < 0 || !Number.isFinite(run.parentProxyTokens) || run.parentProxyTokens < 0) note(`token total invalid: ${pairKey}`);
+      if (tokenComponents.some((value) => !Number.isSafeInteger(value) || value < 0)) note(`${name} subprocess token components invalid: ${pairKey}`);
+      else if (run.telemetry.totalTokens !== tokenComponents[0] + tokenComponents[1] + tokenComponents[3]) note(`${name} subprocess token total mismatch: ${pairKey}`);
       if (typeof run.parentProxyTokenizerVersion !== 'string' || !run.parentProxyTokenizerVersion.trim() || typeof run.parentProxyContentHash !== 'string' || !run.parentProxyContentHash.trim()) note(`${name} parent proxy provenance invalid: ${pairKey}`);
       if (!Number.isSafeInteger(run.telemetry?.calls) || run.telemetry.calls < 0) note(`${name} subprocess count invalid: ${pairKey}`);
       else secondary[name].calls += run.telemetry.calls;

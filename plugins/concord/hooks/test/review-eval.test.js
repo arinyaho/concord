@@ -39,6 +39,23 @@ test('paired evaluator fails closed on mismatched pairing identity and partial u
   assert.ok(report.unevaluable.includes('partial usage: seeded#0'));
 });
 
+test('paired evaluator rejects a subprocess total that disagrees with its components', () => {
+  const baseline = read('baseline.json');
+  const candidate = read('candidate.json');
+  Object.assign(candidate.runs[0].telemetry, {
+    inputTokens: 40,
+    cachedInputTokens: 10,
+    reasoningOutputTokens: 5,
+    outputTokens: 10,
+    totalTokens: 0,
+  });
+
+  const report = compareReviewResults(baseline, candidate);
+
+  assert.strictEqual(report.pass, false);
+  assert.ok(report.unevaluable.includes('candidate subprocess token total mismatch: seeded#0'));
+});
+
 test('paired evaluator rejects parent proxy tokens without provenance', () => {
   for (const field of ['parentProxyTokenizerVersion', 'parentProxyContentHash']) {
     const baseline = read('baseline.json');
