@@ -98,6 +98,7 @@ function toolRecord(event, stateDir) {
     provider: 'anthropic',
     providerSchema: 'claude-agent-hook-v1',
     status: started ? 'started' : (failed ? 'failed' : (typeof response.status === 'string' ? response.status : 'completed')),
+    ...(started ? { startedAtMs: Date.now() } : {}),
     elapsedMs: nonnegativeInteger(failed ? event.duration_ms : response.totalDurationMs),
     inputTokens: values.input_tokens,
     cacheWriteInputTokens: values.cache_creation_input_tokens,
@@ -120,6 +121,7 @@ function emptyAgentRecord(agentId) {
     provider: 'anthropic',
     providerSchema: TRANSCRIPT_SCHEMA,
     status: 'stopped',
+    stoppedAtMs: Date.now(),
     resolvedModel: null,
     inputTokens: null,
     cacheWriteInputTokens: null,
@@ -272,7 +274,10 @@ function writeRecord(stateDir, record) {
     try {
       const existing = JSON.parse(fs.readFileSync(destination, 'utf8'));
       if ((existing.status === 'started' && record.status !== 'started') || (existing.usagePartial && !record.usagePartial)) {
-        if (existing.duplicateEvidence) fs.writeFileSync(temporary, JSON.stringify({ ...record, duplicateEvidence: true, usagePartial: true }));
+        const replacement = existing.status === 'started' && nonnegativeInteger(existing.startedAtMs) !== null
+          ? { ...record, startedAtMs: existing.startedAtMs }
+          : record;
+        fs.writeFileSync(temporary, JSON.stringify(existing.duplicateEvidence ? { ...replacement, duplicateEvidence: true, usagePartial: true } : replacement));
         fs.renameSync(temporary, destination);
         return true;
       }

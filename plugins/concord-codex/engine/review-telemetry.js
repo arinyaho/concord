@@ -21,7 +21,7 @@ function aggregate(entries) {
 }
 
 function publicToolRecord(tool) {
-  const { kind, hookUsagePartial, ...record } = tool;
+  const { kind, hookUsagePartial, startedAtMs, ...record } = tool;
   return record;
 }
 
@@ -31,19 +31,24 @@ function joinAgentUsage(tool, agent) {
   const hookHasUsage = HOOK_USAGE_FIELDS.some((field) => Number.isSafeInteger(tool.providerUsage?.[field])) || Number.isSafeInteger(tool.totalTokens);
   const hookDisagrees = hookHasUsage && (tool.hookUsagePartial || HOOK_USAGE_FIELDS.some((field) => tool.providerUsage[field] !== agent.lastRequestUsage?.[field]));
   const modelDisagrees = tool.resolvedModel && agent.resolvedModel && tool.resolvedModel !== agent.resolvedModel;
-  const { observationId, transcriptWaitMs, ...agentUsage } = agent;
+  const observedElapsedMs = Number.isSafeInteger(tool.startedAtMs) && Number.isSafeInteger(agent.stoppedAtMs) && agent.stoppedAtMs >= tool.startedAtMs
+    ? agent.stoppedAtMs - tool.startedAtMs
+    : null;
+  const elapsedMs = Number.isSafeInteger(tool.elapsedMs) ? tool.elapsedMs : observedElapsedMs;
+  const { observationId, transcriptWaitMs, stoppedAtMs, ...agentUsage } = agent;
   return {
     ...output,
     resolvedModel: agentUsage.resolvedModel || tool.resolvedModel,
     providerSchema: agentUsage.providerSchema,
-    status: tool.status === 'started' ? 'completed' : tool.status,
+    status: 'completed',
+    elapsedMs,
     inputTokens: agentUsage.inputTokens,
     cacheWriteInputTokens: agentUsage.cacheWriteInputTokens,
     cachedInputTokens: agentUsage.cachedInputTokens,
     reasoningOutputTokens: null,
     outputTokens: agentUsage.outputTokens,
     totalTokens: agentUsage.totalTokens,
-    usagePartial: agentUsage.usagePartial || hookDisagrees || modelDisagrees || tool.duplicateEvidence === true || !Number.isSafeInteger(tool.attempt) || tool.attempt < 1,
+    usagePartial: agentUsage.usagePartial || hookDisagrees || modelDisagrees || tool.duplicateEvidence === true || !Number.isSafeInteger(tool.attempt) || tool.attempt < 1 || elapsedMs === null,
     providerUsage: agentUsage.providerUsage,
   };
 }

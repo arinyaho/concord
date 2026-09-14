@@ -299,6 +299,35 @@ test('records launch and terminal hook evidence as partial until SubagentStop ar
   assert.strictEqual(ledger.telemetry.entries[0].status, 'completed');
 });
 
+test('joins a background launch with observed completion status and elapsed time', () => {
+  const { transcript, stateDir } = setup();
+  const artifactPath = path.join(stateDir, 'round-2-correctness.json');
+  const ledgerPath = path.join(stateDir, 'review-feat-x.json');
+  const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+  ledger.telemetrySlots = [{ artifactPath, attempt: 1, role: 'correctness', round: 2 }];
+  fs.writeFileSync(ledgerPath, JSON.stringify(ledger));
+  const prompt = `Write ONLY to ${artifactPath}`;
+  const started = core.recordForEvent(event({ transcript, hook: 'PreToolUse', prompt }), stateDir);
+  assert.ok(Number.isSafeInteger(started.startedAtMs));
+  started.startedAtMs = 100;
+  core.writeRecord(stateDir, started);
+  core.writeRecord(stateDir, core.recordForEvent(event({ transcript, prompt, response: { agentId: 'agent-7', status: 'async_launched' } }), stateDir));
+  const childTranscript = writeSubagentTranscript(transcript, [
+    assistantRow({ requestId: 'req-1', messageId: 'msg-1', input: 1, create: 0, read: 0, output: 1 }),
+  ]);
+  const stopped = core.recordForEvent({
+    hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-7', agent_transcript_path: childTranscript,
+  }, stateDir);
+  assert.ok(Number.isSafeInteger(stopped.stoppedAtMs));
+  stopped.stoppedAtMs = 350;
+  core.writeRecord(stateDir, stopped);
+
+  const entry = reviewTelemetry.foldTelemetry(stateDir, ledger).telemetry.entries[0];
+  assert.deepStrictEqual({ status: entry.status, elapsedMs: entry.elapsedMs, usagePartial: entry.usagePartial }, {
+    status: 'completed', elapsedMs: 250, usagePartial: false,
+  });
+});
+
 test('retains failed and inconsistent invocations as partial telemetry', () => {
   const { transcript, stateDir } = setup();
   const prompt = `Write ONLY to ${path.join(stateDir, 'round-2-verify.json')}`;
