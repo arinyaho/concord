@@ -197,6 +197,33 @@ test('runner reports aggregate and per-role subprocess telemetry', async () => {
   assert.match(out.handoff, /usage: 3 calls, 0 partial, 666 tokens, 60ms/);
 });
 
+test('resumed runner preserves telemetry from the previous process', async () => {
+  const h = harness();
+  const telemetryPath = path.join(h.stateDir, 'telemetry-feature-x.json');
+  fs.writeFileSync(telemetryPath, JSON.stringify({
+    total: { calls: 1, partialCalls: 0, inputTokens: 10, cachedInputTokens: 1, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 16, elapsedMs: 20 },
+    byRole: {
+      correctness: { calls: 1, partialCalls: 0, inputTokens: 10, cachedInputTokens: 1, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 16, elapsedMs: 20 },
+    },
+    invocations: [
+      { role: 'correctness', round: 4, model: null, reasoningEffort: null, status: 0, usagePartial: false, inputTokens: 10, cachedInputTokens: 1, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 16, elapsedMs: 20 },
+    ],
+  }) + '\n');
+
+  const out = await runReviewUntilGreen({ ref: 'feature/x', resume: true, repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
+
+  assert.deepStrictEqual(out.telemetry.total, {
+    calls: 4, partialCalls: 3, inputTokens: 10, cachedInputTokens: 1, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 16, elapsedMs: 20,
+  });
+  assert.deepStrictEqual(out.telemetry.invocations.map(({ role, round }) => ({ role, round })), [
+    { role: 'correctness', round: 4 },
+    { role: 'correctness', round: 1 },
+    { role: 'verify', round: 1 },
+    { role: 'fix', round: 1 },
+  ]);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(telemetryPath, 'utf8')), out.telemetry);
+});
+
 test('fix prompt writes the commit-fix artifact and requires a truthful files declaration', () => {
   const prompt = reviewerPrompt('fix', { stateDir: '/state', round: 7, finding: { id: 'correctness:bug', file: 'src/parser.js', span: 'lines 41-43', summary: 'repair it' } });
   assert.match(prompt, /\/state\/round-7-fix-correctness:bug\.json/);

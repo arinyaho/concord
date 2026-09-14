@@ -258,6 +258,7 @@ async function runReviewUntilGreen(options) {
     if (started.decision !== 'work') return withTelemetry(started);
     currentRound = started.round;
     if (!telemetryPath) telemetryPath = path.join(started.stateDir, `telemetry-${targetSlug(ref)}.json`);
+    if (resume && fs.existsSync(telemetryPath)) Object.assign(telemetry, JSON.parse(fs.readFileSync(telemetryPath, 'utf8')));
     const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodPassed: started.dodPassed, dodDeferred: started.dodDeferred, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref) };
 
     const runArtifactReviewer = async (role) => {
