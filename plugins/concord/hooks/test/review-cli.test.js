@@ -299,10 +299,13 @@ test('review-cli reset: re-arms a finding-less parked ledger so round-start star
   assert.strictEqual(JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).decision, 'terminal');
 
   // reset discards the ledger and sweeps the discarded run's round artifacts.
+  const codexTelemetry = path.join(dir, `telemetry-${slug}.json`);
+  fs.writeFileSync(codexTelemetry, '{}');
   const out = run(['reset', 'feat/x'], { env });
   assert.match(out, /reset ref "feat\/x" \(was "parked"\)/);
   assert.strictEqual(review.readLedger(dir, slug), null);
   assert.ok(!fs.existsSync(path.join(dir, `round-${n}-correctness.json`)), 'stale round artifact must be swept');
+  assert.ok(!fs.existsSync(codexTelemetry), 'stale Codex telemetry must be swept');
 
   // Now round-start begins a genuinely fresh run.
   assert.strictEqual(JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).decision, 'work');
@@ -1071,6 +1074,15 @@ test('review-driver: the intent-detector prompt demands id reuse across rounds',
   }
 });
 
+test('manual review drivers persist a telemetry slot immediately before every subagent launch', () => {
+  for (const rel of [['commands', 'review-until-green.md'], ['core', 'review-driver.md']]) {
+    const md = fs.readFileSync(path.join(__dirname, '..', '..', ...rel), 'utf8');
+    assert.match(md, /telemetry-slot <ref> <exact-output-artifact-path>/, rel.join('/'));
+    assert.match(md, /immediately before every.*subagent.*spawn/i, rel.join('/'));
+    assert.match(md, /retries.*failed attempts/i, rel.join('/'));
+  }
+});
+
 function writeArtifact(dir, n, name, obj) {
   fs.writeFileSync(path.join(dir, `round-${n}-${name}.json`), JSON.stringify(obj));
 }
@@ -1687,6 +1699,56 @@ test('record: the handoff names the absent config as the reason, and never says 
   assert.ok(!out.handoff.includes('DoD: passed'), 'a deferred DoD must never be reported as "DoD: passed"');
   // Nothing was declared here, so the dod:null wording would be a lie.
   assert.ok(!out.handoff.includes('no executable gate declared'), 'absent config must not borrow the dod:null wording');
+});
+
+test('record returns persisted Claude review telemetry in JSON and the human handoff', () => {
+  const repo = initRepoWithoutDodConfig();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const n = JSON.parse(run(['round-start', 'feat/telemetry', 'HEAD~1'], { env })).round;
+  fs.writeFileSync(path.join(dir, `review-telemetry-${'a'.repeat(64)}.json`), JSON.stringify({
+    kind: 'tool-use',
+    engine: 'claude-code', targetRef: 'feat/telemetry', role: 'correctness', round: n,
+    invocationId: 'toolu-telemetry', agentId: 'agent-telemetry', usagePartial: true, hookUsagePartial: false, elapsedMs: 12,
+    inputTokens: 10, cacheWriteInputTokens: 2, cachedInputTokens: 3,
+    reasoningOutputTokens: null, outputTokens: 4, totalTokens: 19,
+    providerUsage: { input_tokens: 10, cache_creation_input_tokens: 2, cache_read_input_tokens: 3, output_tokens: 4 },
+  }));
+  fs.writeFileSync(path.join(dir, `review-agent-telemetry-${'b'.repeat(64)}.json`), JSON.stringify({
+    kind: 'agent-usage', engine: 'claude-code', agentId: 'agent-telemetry', provider: 'anthropic',
+    providerSchema: 'claude-subagent-transcript-2.1.268-v1', status: 'stopped', resolvedModel: 'claude-sonnet-4-5-20250929',
+    inputTokens: 10, cacheWriteInputTokens: 2, cachedInputTokens: 3, reasoningOutputTokens: null,
+    outputTokens: 4, totalTokens: 19, usagePartial: false,
+    providerUsage: { input_tokens: 10, cache_creation_input_tokens: 2, cache_read_input_tokens: 3, output_tokens: 4 },
+    lastRequestUsage: { input_tokens: 10, cache_creation_input_tokens: 2, cache_read_input_tokens: 3, output_tokens: 4 },
+  }));
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  run(['plan-fixes', 'feat/telemetry'], { env });
+
+  const out = JSON.parse(run(['record', 'feat/telemetry'], { env }));
+
+  assert.strictEqual(out.telemetry.calls, 1);
+  assert.strictEqual(out.telemetry.totalTokens, 19);
+  assert.match(out.handoff, /review usage: 19 tokens across 1 call\(s\), 0 partial/);
+});
+
+test('telemetry-slot persists monotonically numbered attempts for one exact destination', () => {
+  const repo = initRepoWithoutDodConfig();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const started = JSON.parse(run(['round-start', 'feat/slots', 'HEAD~1'], { env }));
+  const artifact = path.join(dir, `round-${started.round}-correctness.json`);
+
+  const first = JSON.parse(run(['telemetry-slot', 'feat/slots', artifact], { env }));
+  const second = JSON.parse(run(['telemetry-slot', 'feat/slots', artifact], { env }));
+
+  assert.deepStrictEqual([first.attempt, second.attempt], [1, 2]);
+  const ledger = review.readLedger(dir, review.targetSlug('feat/slots'));
+  assert.deepStrictEqual(ledger.telemetrySlots.map(({ artifactPath, attempt, role, round }) => ({ artifactPath, attempt, role, round })), [
+    { artifactPath: artifact, attempt: 1, role: 'correctness', round: started.round },
+    { artifactPath: artifact, attempt: 2, role: 'correctness', round: started.round },
+  ]);
 });
 
 test('round-start: --no-dod starts a run in a repo with no review.config.json at all', () => {
@@ -3323,6 +3385,12 @@ test('rerun re-arms a converged ledger while keeping the finished run in runs[]'
   assert.strictEqual(JSON.parse(run(['record', 'feat/x'], { env })).decision.continue, false);
   assert.strictEqual(review.readLedger(dir, slug).status, 'clean');
   assert.strictEqual(JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).decision, 'terminal');
+  fs.writeFileSync(path.join(dir, `review-telemetry-${'b'.repeat(64)}.json`), JSON.stringify({
+    engine: 'claude-code', targetRef: 'feat/x', role: 'correctness', round: n,
+    invocationId: 'old-run', usagePartial: false, totalTokens: 10,
+  }));
+  const codexTelemetry = path.join(dir, `telemetry-${slug}.json`);
+  fs.writeFileSync(codexTelemetry, '{}');
 
   const out = JSON.parse(run(['rerun', 'feat/x', '--engine', 'codex'], { env }));
   assert.strictEqual(out.run, 2);
@@ -3332,6 +3400,9 @@ test('rerun re-arms a converged ledger while keeping the finished run in runs[]'
   assert.strictEqual(l.engine, 'codex');
   assert.strictEqual(l.runs.length, 1);
   assert.strictEqual(l.runs[0].rounds, n);
+  assert.strictEqual(l.runs[0].telemetry.calls, 1);
+  assert.strictEqual(l.telemetry, undefined);
+  assert.ok(!fs.existsSync(codexTelemetry), 'prior Codex telemetry must be swept');
   assert.deepStrictEqual(l.findings, []); // blind: the second engine sees no prior conclusions
   assert.ok(!fs.existsSync(path.join(dir, `round-${n}-correctness.json`)), 'prior round artifacts are swept');
   assert.strictEqual(JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).decision, 'work');

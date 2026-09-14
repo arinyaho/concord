@@ -33,7 +33,7 @@ test('codex-review-runner.js has no hardcoded copy of the panel lens list -- it 
 test('codexExec starts subprocesses asynchronously so panel work can overlap', async () => {
   const binDir = temp();
   const codex = path.join(binDir, 'codex');
-  fs.writeFileSync(codex, `#!${process.execPath}\nsetTimeout(() => process.exit(0), 1000);\n`);
+  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.154.0\\n');\nelse setTimeout(() => process.exit(0), 1000);\n`);
   fs.chmodSync(codex, 0o755);
   const previousPath = process.env.PATH;
   process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
@@ -54,7 +54,7 @@ test('codexExec starts subprocesses asynchronously so panel work can overlap', a
 test('codexExec parses documented turn.completed usage without retaining agent output', async () => {
   const binDir = temp();
   const codex = path.join(binDir, 'codex');
-  fs.writeFileSync(codex, `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'discard me' } }) + '\\n');\nprocess.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 120, cached_input_tokens: 20, output_tokens: 7, reasoning_output_tokens: 3 } }) + '\\n');\n`);
+  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.154.0\\n');\nelse { process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'discard me' } }) + '\\n');\nprocess.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 120, cached_input_tokens: 20, cache_write_input_tokens: 5, output_tokens: 7, reasoning_output_tokens: 3 } }) + '\\n'); }\n`);
   fs.chmodSync(codex, 0o755);
   const previousPath = process.env.PATH;
   process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
@@ -62,24 +62,36 @@ test('codexExec parses documented turn.completed usage without retaining agent o
     const result = await codexExec({ role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir });
     assert.strictEqual(result.status, 0);
     assert.strictEqual(result.role, 'correctness');
+    assert.strictEqual(result.engine, 'codex');
+    assert.strictEqual(result.provider, 'openai');
+    assert.strictEqual(result.providerSchema, 'codex-exec-json-v1');
+    assert.match(result.invocationId, /^[0-9a-f-]{36}$/);
     assert.ok(Number.isFinite(result.elapsedMs) && result.elapsedMs >= 0);
     assert.strictEqual(result.usagePartial, false);
     assert.deepStrictEqual(result.usage, {
-      inputTokens: 100,
+      inputTokens: 95,
       cachedInputTokens: 20,
+      cacheWriteInputTokens: 5,
       reasoningOutputTokens: 3,
       outputTokens: 4,
       totalTokens: 127,
+    });
+    assert.deepStrictEqual(result.providerUsage, {
+      input_tokens: 120,
+      cached_input_tokens: 20,
+      cache_write_input_tokens: 5,
+      output_tokens: 7,
+      reasoning_output_tokens: 3,
     });
   } finally {
     process.env.PATH = previousPath;
   }
 });
 
-test('codexExec marks usage with an inconsistent reported total as partial', async () => {
+test('codexExec rejects extra usage fields from the pinned schema', async () => {
   const binDir = temp();
   const codex = path.join(binDir, 'codex');
-  fs.writeFileSync(codex, `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 120, cached_input_tokens: 20, output_tokens: 7, reasoning_output_tokens: 3, total_tokens: 126 } }) + '\\n');\n`);
+  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.154.0\\n');\nelse process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 120, cached_input_tokens: 20, cache_write_input_tokens: 5, output_tokens: 7, reasoning_output_tokens: 3, total_tokens: 127 } }) + '\\n');\n`);
   fs.chmodSync(codex, 0o755);
   const previousPath = process.env.PATH;
   process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
@@ -94,7 +106,7 @@ test('codexExec marks usage with an inconsistent reported total as partial', asy
 test('codexExec marks a successful subprocess with no usage event as partial', async () => {
   const binDir = temp();
   const codex = path.join(binDir, 'codex');
-  fs.writeFileSync(codex, `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');\n`);
+  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.154.0\\n');\nelse process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');\n`);
   fs.chmodSync(codex, 0o755);
   const previousPath = process.env.PATH;
   process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
@@ -105,10 +117,48 @@ test('codexExec marks a successful subprocess with no usage event as partial', a
     assert.deepStrictEqual(result.usage, {
       inputTokens: null,
       cachedInputTokens: null,
+      cacheWriteInputTokens: null,
       reasoningOutputTokens: null,
       outputTokens: null,
       totalTokens: null,
     });
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
+for (const [name, body] of [
+  ['malformed JSONL', `'not json\\n'`],
+  ['unknown event', `JSON.stringify({ type: 'future.event' }) + '\\n'`],
+  ['unknown item', `JSON.stringify({ type: 'item.completed', item: { type: 'future_item' } }) + '\\n' + JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } }) + '\\n'`],
+  ['duplicate completion', `JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } }) + '\\n' + JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } }) + '\\n'`],
+  ['all-zero default usage', `JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 0, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0 } }) + '\\n'`],
+  ['collaboration evidence', `JSON.stringify({ type: 'item.completed', item: { type: 'collaboration_tool_call' } }) + '\\n' + JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } }) + '\\n'`],
+]) test(`codexExec marks ${name} partial`, async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.154.0\\n');\nelse process.stdout.write(${body});\n`);
+  fs.chmodSync(codex, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  try {
+    assert.strictEqual((await codexExec({ role: 'verify', prompt: 'review', repoRoot: binDir, stateDir: binDir })).usagePartial, true);
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
+test('codexExec marks a CLI version mismatch partial', async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.155.0\\n');\nelse process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } }) + '\\n');\n`);
+  fs.chmodSync(codex, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  try {
+    const result = await codexExec({ role: 'verify', prompt: 'review', repoRoot: binDir, stateDir: binDir });
+    assert.strictEqual(result.cliVersion, 'codex-cli 0.155.0');
+    assert.strictEqual(result.usagePartial, true);
   } finally {
     process.env.PATH = previousPath;
   }
@@ -136,6 +186,10 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
       if (malformed && role === 'correctness') throw new Error('harness-failure: correctness artifact is not JSON');
       if (retry && role === 'correctness' && (!retried || retryForever)) { retried = true; return { status: 'retry', prompt: 'REWRITE ARTIFACT' }; }
       return { status: 'ok' };
+    }
+    if (verb === 'telemetry-slot') {
+      const artifactPath = role;
+      return { artifactPath, attempt: calls.filter((call) => call[0] === 'cli' && call[1] === 'telemetry-slot' && call[3] === artifactPath).length, role: path.basename(artifactPath).includes('-fix-') ? 'fix' : path.basename(artifactPath).match(/^round-\d+-(.+)\.json$/)?.[1], round };
     }
     if (verb === 'plan-fixes') return { fixes: round === 1 ? [{ id: 'correctness:bug', file: 'a.txt', span: 'bad', summary: 'fix it' }] : [] };
     if (verb === 'commit-fix') {
@@ -167,16 +221,16 @@ test('runner automatically executes a clean round in correctness then verify ord
   const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
   assert.strictEqual(out.handoff, 'LGTM\nusage: 3 calls, 3 partial, 0 tokens, 0ms');
   assert.deepStrictEqual(h.calls.map((c) => c[0] === 'spawn' ? c.slice(0, 2) : c.slice(0, 2)), [
-    ['cli', 'round-start'], ['spawn', 'correctness'], ['cli', 'artifact-normalize'], ['spawn', 'verify'], ['cli', 'artifact-normalize'], ['cli', 'plan-fixes'], ['spawn', 'fix'], ['cli', 'commit-fix'], ['cli', 'record'],
+    ['cli', 'round-start'], ['cli', 'telemetry-slot'], ['spawn', 'correctness'], ['cli', 'artifact-normalize'], ['cli', 'telemetry-slot'], ['spawn', 'verify'], ['cli', 'artifact-normalize'], ['cli', 'plan-fixes'], ['cli', 'telemetry-slot'], ['spawn', 'fix'], ['cli', 'commit-fix'], ['cli', 'record'],
   ]);
 });
 
 test('runner reports aggregate and per-role subprocess telemetry', async () => {
   const h = harness();
   const usageByRole = {
-    correctness: { inputTokens: 100, cachedInputTokens: 10, outputTokens: 1, totalTokens: 111 },
-    verify: { inputTokens: 200, cachedInputTokens: 20, outputTokens: 2, totalTokens: 222 },
-    fix: { inputTokens: 300, cachedInputTokens: 30, outputTokens: 3, totalTokens: 333 },
+    correctness: { inputTokens: 100, cacheWriteInputTokens: 0, cachedInputTokens: 10, outputTokens: 1, totalTokens: 111 },
+    verify: { inputTokens: 200, cacheWriteInputTokens: 0, cachedInputTokens: 20, outputTokens: 2, totalTokens: 222 },
+    fix: { inputTokens: 300, cacheWriteInputTokens: 0, cachedInputTokens: 30, outputTokens: 3, totalTokens: 333 },
   };
   const spawn = async (input) => ({
     ...await h.spawn(input),
@@ -192,6 +246,7 @@ test('runner reports aggregate and per-role subprocess telemetry', async () => {
       calls: 3,
       partialCalls: 0,
       inputTokens: 600,
+      cacheWriteInputTokens: 0,
       cachedInputTokens: 60,
       reasoningOutputTokens: 0,
       outputTokens: 6,
@@ -204,9 +259,9 @@ test('runner reports aggregate and per-role subprocess telemetry', async () => {
       fix: { calls: 1, partialCalls: 0, reasoningOutputTokens: 0, ...usageByRole.fix, elapsedMs: 30 },
     },
     invocations: [
-      { role: 'correctness', round: 1, model: null, reasoningEffort: null, status: 0, usagePartial: false, ...usageByRole.correctness, reasoningOutputTokens: 0, elapsedMs: 10 },
-      { role: 'verify', round: 1, model: null, reasoningEffort: null, status: 0, usagePartial: false, ...usageByRole.verify, reasoningOutputTokens: 0, elapsedMs: 20 },
-      { role: 'fix', round: 1, model: null, reasoningEffort: null, status: 0, usagePartial: false, ...usageByRole.fix, reasoningOutputTokens: 0, elapsedMs: 30 },
+      { role: 'correctness', round: 1, model: null, resolvedModel: null, reasoningEffort: null, status: 0, usagePartial: false, ...usageByRole.correctness, reasoningOutputTokens: 0, elapsedMs: 10, artifactPath: path.join(h.stateDir, 'round-1-correctness.json'), attempt: 1 },
+      { role: 'verify', round: 1, model: null, resolvedModel: null, reasoningEffort: null, status: 0, usagePartial: false, ...usageByRole.verify, reasoningOutputTokens: 0, elapsedMs: 20, artifactPath: path.join(h.stateDir, 'round-1-verify.json'), attempt: 1 },
+      { role: 'fix', round: 1, model: null, resolvedModel: null, reasoningEffort: null, status: 0, usagePartial: false, ...usageByRole.fix, reasoningOutputTokens: 0, elapsedMs: 30, artifactPath: path.join(h.stateDir, 'round-1-fix-correctness:bug.json'), attempt: 1 },
     ],
   });
   assert.match(out.handoff, /usage: 3 calls, 0 partial, 666 tokens, 60ms/);
@@ -228,7 +283,7 @@ test('resumed runner preserves telemetry from the previous process', async () =>
   const out = await runReviewUntilGreen({ ref: 'feature/x', resume: true, repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
 
   assert.deepStrictEqual(out.telemetry.total, {
-    calls: 4, partialCalls: 3, inputTokens: 10, cachedInputTokens: 1, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 16, elapsedMs: 20,
+    calls: 4, partialCalls: 3, inputTokens: 10, cacheWriteInputTokens: 0, cachedInputTokens: 1, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 16, elapsedMs: 20,
   });
   assert.deepStrictEqual(out.telemetry.invocations.map(({ role, round }) => ({ role, round })), [
     { role: 'correctness', round: 4 },
@@ -242,9 +297,9 @@ test('resumed runner preserves telemetry from the previous process', async () =>
 test('resumed runner returns persisted telemetry when round-start is already terminal', async () => {
   const stateDir = temp();
   const persisted = {
-    total: { calls: 1, partialCalls: 0, inputTokens: 10, cachedInputTokens: 1, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 16, elapsedMs: 20 },
+    total: { calls: 1, partialCalls: 0, inputTokens: 10, cacheWriteInputTokens: 0, cachedInputTokens: 1, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 16, elapsedMs: 20 },
     byRole: {
-      correctness: { calls: 1, partialCalls: 0, inputTokens: 10, cachedInputTokens: 1, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 16, elapsedMs: 20 },
+      correctness: { calls: 1, partialCalls: 0, inputTokens: 10, cacheWriteInputTokens: 0, cachedInputTokens: 1, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 16, elapsedMs: 20 },
     },
     invocations: [
       { role: 'correctness', round: 4, model: null, reasoningEffort: null, status: 0, usagePartial: false, inputTokens: 10, cachedInputTokens: 1, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 16, elapsedMs: 20 },

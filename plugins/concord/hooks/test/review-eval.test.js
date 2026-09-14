@@ -2,175 +2,200 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { compareReviewResults } = require('../../core/review-eval');
+const { compareReviewMatrix, compareReviewStage } = require('../../core/review-eval');
 
-const fixtures = path.join(__dirname, 'fixtures', 'review-eval');
-const read = (name) => JSON.parse(fs.readFileSync(path.join(fixtures, name), 'utf8'));
+function scenario({ defects = [], confirmed = [], nonDefects = [], fixes = [], probes = [], allowed = ['clean'], executable = true } = {}) {
+  return {
+    behaviorPreserving: true, hasExecutableDoD: executable,
+    seededDefects: defects, confirmedDefects: confirmed, nonDefects, requiredFixes: fixes,
+    expectedProbes: probes,
+    probesByFinding: Object.fromEntries([...new Set([...defects, ...confirmed, ...fixes])].map((id) => [id, probes.length ? probes : [`probe:${id}`]])),
+    allowedTerminalOutcomes: allowed,
+  };
+}
 
-test('paired evaluator passes identity-preserving telemetry fixture', () => {
-  const baseline = read('baseline.json');
-  const report = compareReviewResults(baseline, read('candidate.json'));
-  assert.deepStrictEqual(Object.keys(baseline.scenarios).sort(), ['clean', 'false-positive', 'fix-round', 'malformed-blocked', 'seeded']);
+const SCENARIOS = {
+  clean: scenario(),
+  seeded: scenario({ defects: ['seeded::bug'], fixes: ['seeded::bug'], probes: ['probe:seeded'] }),
+  'false-positive': scenario({ nonDefects: ['false-positive::trap'] }),
+  'malformed-blocked': scenario({ allowed: ['harness-failure'], executable: false }),
+  holistic: scenario({ defects: ['holistic::gap'], fixes: ['holistic::gap'], probes: ['probe:holistic'] }),
+  'fix-round': scenario({ defects: ['fix-round::bug'], confirmed: ['fix-round::bug'], fixes: ['fix-round::bug'], probes: ['probe:fix'] }),
+};
+
+function telemetry(engine, total) {
+  return engine === 'claude-code'
+    ? { calls: 2, partialCalls: 0, inputTokens: total - 30, cacheWriteInputTokens: 10, cachedInputTokens: 10, reasoningOutputTokens: null, outputTokens: 10, totalTokens: total, elapsedMs: 100 }
+    : { calls: 2, partialCalls: 0, inputTokens: total - 30, cacheWriteInputTokens: 0, cachedInputTokens: 10, reasoningOutputTokens: 10, outputTokens: 10, totalTokens: total, elapsedMs: 100 };
+}
+
+function manifest(engine, side, revision, total = side === 'baseline' ? 100 : 60) {
+  const runs = [];
+  for (let repetition = 0; repetition < 30; repetition++) {
+    for (const [scenarioId, metadata] of Object.entries(SCENARIOS)) {
+      const fixes = [...new Set([...metadata.seededDefects, ...metadata.confirmedDefects, ...metadata.requiredFixes])];
+      runs.push({
+        scenarioId, repetition, independent: true, randomSeed: `${engine}-${side}-${scenarioId}-${repetition}`,
+        parentSessionId: `session-${engine}-${side}-${scenarioId}-${repetition}`,
+        checkoutId: `checkout-${engine}-${side}-${scenarioId}-${repetition}`,
+        artifactDirectoryId: `artifacts-${engine}-${side}-${scenarioId}-${repetition}`,
+        scheduleBlock: Math.floor(repetition / 6) + 1, schedulePosition: repetition % 6 + 1,
+        firstSide: repetition % 2 === 0 ? 'baseline' : 'candidate',
+        targetDiffIdentity: `diff-${scenarioId}`, targetDiffHash: `hash-diff-${scenarioId}`,
+        intentIdentity: 'none', intentHash: 'none', acceptedFindings: fixes, fixedFindings: fixes,
+        fixCommits: Object.fromEntries(fixes.map((id) => [id, 'a'.repeat(40)])), confirmationFindings: [],
+        expectedProbeResults: Object.fromEntries(metadata.expectedProbes.map((id) => [id, true])),
+        dod: metadata.hasExecutableDoD ? 'passed' : 'deferred', terminal: metadata.allowedTerminalOutcomes[0],
+        telemetry: telemetry(engine, total), resolvedModel: engine === 'claude-code' ? 'claude-sonnet-4-5-20250929' : 'unavailable',
+      });
+    }
+  }
+  return {
+    schemaVersion: 2, toolRevision: revision, repetitions: 30,
+    pairing: {
+      targetSnapshot: 'snapshot-1', targetDiff: 'diff-corpus-1', intent: 'intent-1', model: 'pinned-model', reasoningEffort: 'high', reviewConfig: 'config-1',
+      engine, provider: engine === 'claude-code' ? 'anthropic' : 'openai',
+      providerSchema: engine === 'claude-code' ? 'claude-subagent-transcript-2.1.268-v1' : 'codex-exec-json-v1',
+      corpusRevision: 'review-eval-v2', evaluationMode: 'replay',
+    },
+    scenarios: structuredClone(SCENARIOS), runs,
+  };
+}
+
+function matrix(side, revision, total) {
+  return { schemaVersion: 2, engines: {
+    'claude-code': manifest('claude-code', side, revision, total),
+    codex: manifest('codex', side, revision, total),
+  } };
+}
+
+test('schema v2 paired evaluator passes both engines independently', () => {
+  const report = compareReviewMatrix(matrix('baseline', 'pr1'), matrix('candidate', 'pr5'));
   assert.strictEqual(report.pass, true);
-  assert.deepStrictEqual(report.unevaluable, []);
-  assert.deepStrictEqual(report.gates.falseClean.additionalPairs, []);
-  assert.strictEqual(report.gates.recall.lowerBound, 0);
-  assert.strictEqual(report.gates.recall.upperBound, 0);
-  assert.strictEqual(report.gates.falsePositive.lowerBound, 0);
-  assert.strictEqual(report.gates.falsePositive.upperBound, 0);
-  assert.deepStrictEqual(report.gates.behavior.mismatchedPairs, []);
-  assert.ok(report.gates.tokens.medianPairedChange <= -0.30);
-  assert.deepStrictEqual(report.identities.acceptedBaseline, ['correctness:fix-round-bug', 'correctness:seeded-bug']);
-  assert.deepStrictEqual(report.identities.acceptedCandidate, ['correctness:fix-round-bug', 'correctness:seeded-bug']);
-  assert.strictEqual(report.secondary.baseline.calls, 300);
-  assert.strictEqual(report.secondary.candidate.calls, 300);
-});
-
-test('paired evaluator fails closed on mismatched pairing identity and partial usage', () => {
-  const baseline = read('baseline.json');
-  const candidate = read('candidate.json');
-  candidate.pairing.model = 'different-model';
-  candidate.runs[0].telemetry.partialCalls = 1;
-  const report = compareReviewResults(baseline, candidate);
-  assert.strictEqual(report.pass, false);
-  assert.ok(report.unevaluable.includes('pairing identity mismatch: model'));
-  assert.ok(report.unevaluable.includes('partial usage: seeded#0'));
-});
-
-test('paired evaluator rejects a subprocess total that disagrees with its components', () => {
-  const baseline = read('baseline.json');
-  const candidate = read('candidate.json');
-  Object.assign(candidate.runs[0].telemetry, {
-    inputTokens: 40,
-    cachedInputTokens: 10,
-    reasoningOutputTokens: 5,
-    outputTokens: 10,
-    totalTokens: 0,
-  });
-
-  const report = compareReviewResults(baseline, candidate);
-
-  assert.strictEqual(report.pass, false);
-  assert.ok(report.unevaluable.includes('candidate subprocess token total mismatch: seeded#0'));
-});
-
-test('paired evaluator rejects parent proxy tokens without provenance', () => {
-  for (const field of ['parentProxyTokenizerVersion', 'parentProxyContentHash']) {
-    const baseline = read('baseline.json');
-    const candidate = read('candidate.json');
-    delete candidate.runs[0][field];
-
-    const report = compareReviewResults(baseline, candidate);
-
-    assert.strictEqual(report.pass, false);
-    assert.ok(report.unevaluable.includes('candidate parent proxy provenance invalid: seeded#0'));
+  for (const engine of ['claude-code', 'codex']) {
+    assert.deepStrictEqual(report.engines[engine].unevaluable, []);
+    assert.strictEqual(report.engines[engine].gates.falseClean.pass, true);
+    assert.strictEqual(report.engines[engine].gates.confirmedDefects.pass, true);
+    assert.strictEqual(report.engines[engine].gates.tokens.medianPairedChange, -0.4);
+    assert.strictEqual(report.engines[engine].gates.tokens.pass, true);
+    assert.strictEqual(report.engines[engine].gates.terminals.values.clean.sampleSize, 30);
   }
 });
 
-test('paired evaluator rejects a parent proxy token count that disagrees with its rendered content', () => {
-  const baseline = read('baseline.json');
-  const candidate = read('candidate.json');
-  candidate.runs[0].parentProxyTokens = 1;
-
-  const report = compareReviewResults(baseline, candidate);
-
+test('rejects version 1 and every removed parent-proxy field', () => {
+  const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
+  baseline.schemaVersion = 1; candidate.engines.codex.runs.find((run) => run.scenarioId === 'seeded' && run.repetition === 0).parentProxyTokens = 10;
+  const report = compareReviewMatrix(baseline, candidate);
   assert.strictEqual(report.pass, false);
-  assert.ok(report.unevaluable.includes('candidate parent proxy token count mismatch: seeded#0'));
+  assert.ok(report.unevaluable.includes('baseline matrix schemaVersion must be 2'));
+  assert.ok(report.engines.codex.unevaluable.includes('candidate removed parent proxy field: seeded#0:parentProxyTokens'));
 });
 
-test('paired evaluator rejects a zero-token baseline pair in a multi-scenario corpus', () => {
-  const baseline = read('baseline.json');
-  const candidate = read('candidate.json');
-  for (const manifest of [baseline, candidate]) {
-    manifest.scenarios.control = structuredClone(manifest.scenarios.seeded);
-    manifest.runs.push(...manifest.runs.map((run) => ({
-      ...structuredClone(run),
-      scenarioId: 'control',
-      randomSeed: `${run.randomSeed}-control`,
-    })));
+test('requires the frozen 30-repetition alternating block schedule', () => {
+  const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
+  candidate.engines.codex.runs.find((run) => run.scenarioId === 'seeded' && run.repetition === 0).firstSide = 'candidate'; candidate.engines.codex.runs.pop();
+  const report = compareReviewMatrix(baseline, candidate).engines.codex;
+  assert.strictEqual(report.pass, false);
+  assert.ok(report.unevaluable.some((message) => message.includes('frozen schedule mismatch: seeded#0')));
+  assert.ok(report.unevaluable.some((message) => message.includes('missing paired run')));
+});
+
+test('requires exact per-scenario target diff and intent identities', () => {
+  const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
+  candidate.engines.codex.runs.find((run) => run.scenarioId === 'seeded' && run.repetition === 0).targetDiffHash = 'different';
+  const report = compareReviewMatrix(baseline, candidate).engines.codex;
+  assert.ok(report.unevaluable.includes('scenario pairing mismatch: seeded#0:targetDiffHash'));
+});
+
+test('provider component equations are engine-specific', () => {
+  const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
+  candidate.engines['claude-code'].runs.find((run) => run.scenarioId === 'seeded' && run.repetition === 0).telemetry.reasoningOutputTokens = 1;
+  candidate.engines.codex.runs.find((run) => run.scenarioId === 'seeded' && run.repetition === 0).telemetry.cacheWriteInputTokens = 2;
+  const report = compareReviewMatrix(baseline, candidate);
+  assert.ok(report.engines['claude-code'].unevaluable.includes('candidate Claude reasoning output must be null: seeded#0'));
+  assert.ok(report.engines.codex.unevaluable.includes('candidate token total mismatch: seeded#0'));
+});
+
+test('a false clean fails on both sides and confirmed defects fail even when non-clean', () => {
+  const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
+  for (const side of [baseline, candidate]) {
+    const run = side.engines.codex.runs.find((item) => item.scenarioId === 'seeded' && item.repetition === 0);
+    Object.assign(run, { acceptedFindings: [], fixedFindings: [], fixCommits: {} });
   }
-  baseline.runs[0].telemetry.totalTokens = 0;
-  baseline.runs[0].parentProxyTokens = 0;
+  let report = compareReviewMatrix(baseline, candidate).engines.codex;
+  assert.deepStrictEqual(report.gates.falseClean.baselinePairs, ['seeded#0']);
+  assert.deepStrictEqual(report.gates.falseClean.candidatePairs, ['seeded#0']);
 
-  const report = compareReviewResults(baseline, candidate);
-
-  assert.strictEqual(report.pass, false);
-  assert.ok(report.unevaluable.includes('baseline token total is zero: seeded#0'));
-});
-
-test('paired evaluator fails closed on malformed runs', () => {
-  for (const malformed of [null, 1]) {
-    const baseline = read('baseline.json');
-    baseline.runs[0] = malformed;
-    const report = compareReviewResults(baseline, read('candidate.json'));
-    assert.strictEqual(report.pass, false);
-    assert.ok(report.unevaluable.includes('baseline run is invalid'));
+  const base2 = matrix('baseline', 'pr1'); const cand2 = matrix('candidate', 'pr5');
+  for (const side of [base2, cand2]) {
+    const run = side.engines.codex.runs.find((item) => item.scenarioId === 'fix-round' && item.repetition === 0);
+    run.terminal = 'parked'; run.acceptedFindings = [];
+    side.engines.codex.scenarios['fix-round'].allowedTerminalOutcomes.push('parked');
   }
+  report = compareReviewMatrix(base2, cand2).engines.codex;
+  assert.strictEqual(report.gates.confirmedDefects.pass, false);
 });
 
-test('paired evaluator rejects non-string random seeds', () => {
-  for (const seed of [{ replayed: true }, ['replayed']]) {
-    const baseline = read('baseline.json');
-    baseline.runs[0].randomSeed = structuredClone(seed);
-    baseline.runs[1].randomSeed = structuredClone(seed);
-    const report = compareReviewResults(baseline, read('candidate.json'));
-    assert.strictEqual(report.pass, false);
-    assert.deepStrictEqual(report.unevaluable, [
-      'baseline run is not independently identified: seeded#0',
-      'baseline run is not independently identified: seeded#1',
-    ]);
+test('hasExecutableDoD false is the sole exemption and probesByFinding is total', () => {
+  const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
+  candidate.engines.codex.runs.find((run) => run.scenarioId === 'clean').dod = 'deferred';
+  delete candidate.engines.codex.scenarios.seeded.probesByFinding['seeded::bug'];
+  const report = compareReviewMatrix(baseline, candidate).engines.codex;
+  assert.ok(report.unevaluable.includes('candidate clean DoD mismatch: clean#0'));
+  assert.ok(report.unevaluable.includes('scenario probesByFinding missing: seeded:seeded::bug'));
+});
+
+test('resolved model disagreement is unevaluable while Codex unavailable is disclosed', () => {
+  const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
+  candidate.engines['claude-code'].runs.find((run) => run.scenarioId === 'seeded' && run.repetition === 0).resolvedModel = 'different';
+  const report = compareReviewMatrix(baseline, candidate);
+  assert.ok(report.engines['claude-code'].unevaluable.includes('resolved model mismatch: seeded#0'));
+  assert.ok(report.engines.codex.limitations.includes('actual model identity unavailable'));
+});
+
+test('an exposed requested configuration resolves to one model identity across all invocations', () => {
+  const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
+  for (const side of [baseline, candidate]) {
+    for (const run of side.engines['claude-code'].runs.filter((item) => item.repetition === 1)) run.resolvedModel = 'claude-sonnet-rerouted';
   }
-});
-
-test('paired evaluator rejects fabricated fixed finding identities', () => {
-  const baseline = read('baseline.json');
-  const candidate = read('candidate.json');
-  baseline.runs[0].fixedFindings = ['correctness:fabricated-repair'];
-  candidate.runs[0].fixedFindings = ['correctness:fabricated-repair'];
-  const report = compareReviewResults(baseline, candidate);
+  const report = compareReviewMatrix(baseline, candidate).engines['claude-code'];
   assert.strictEqual(report.pass, false);
-  assert.ok(report.unevaluable.includes('unadjudicated fixed identity: seeded#0:correctness:fabricated-repair'));
+  assert.ok(report.unevaluable.includes('resolved model identity is mixed'));
 });
 
-test('paired evaluator rejects fixed findings without a committed edit', () => {
-  const baseline = read('baseline.json');
-  const candidate = read('candidate.json');
-  delete candidate.runs[0].fixCommits;
-
-  const report = compareReviewResults(baseline, candidate);
-
-  assert.strictEqual(report.pass, false);
-  assert.ok(report.unevaluable.includes('candidate fixed finding lacks commit evidence: seeded#0:correctness:seeded-bug'));
+test('a strong Codex result cannot hide a Claude regression or missing engine', () => {
+  const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
+  candidate.engines['claude-code'].runs[0].telemetry.partialCalls = 1;
+  let report = compareReviewMatrix(baseline, candidate);
+  assert.strictEqual(report.engines.codex.pass, true); assert.strictEqual(report.pass, false);
+  delete candidate.engines['claude-code']; report = compareReviewMatrix(baseline, candidate);
+  assert.ok(report.unevaluable.includes('candidate engine is missing: claude-code'));
 });
 
-test('paired evaluator rejects fixed findings that recur in confirmation', () => {
-  const baseline = read('baseline.json');
-  const candidate = read('candidate.json');
-  candidate.runs[0].confirmationFindings = ['correctness:seeded-bug'];
-
-  const report = compareReviewResults(baseline, candidate);
-
-  assert.strictEqual(report.pass, false);
-  assert.ok(report.unevaluable.includes('candidate fixed finding recurred in confirmation: seeded#0:correctness:seeded-bug'));
+test('PR2-4 report token progress after adjacent and PR1 quality gates', () => {
+  const report = compareReviewStage('pr2', matrix('baseline', 'pr1', 100), matrix('baseline', 'pr1', 100), matrix('candidate', 'pr2', 95));
+  assert.strictEqual(report.pass, true); assert.strictEqual(report.finalThresholdApplied, false);
+  assert.strictEqual(report.adjacent.engines.codex.gates.tokens.medianPairedChange, -0.05);
 });
 
-test('paired evaluator rejects a candidate-only false clean by pair identity', () => {
-  const baseline = read('baseline.json');
-  const candidate = read('candidate.json');
-  baseline.runs[0].terminal = 'parked';
-  candidate.runs[0].terminal = 'clean';
-  baseline.scenarios.seeded.allowedTerminalOutcomes = ['parked'];
-  candidate.scenarios.seeded.allowedTerminalOutcomes = ['parked'];
-  const report = compareReviewResults(baseline, candidate);
-  assert.strictEqual(report.pass, false);
-  assert.deepStrictEqual(report.gates.falseClean.additionalPairs, ['seeded#0']);
+test('PR5 applies final thresholds only against exact PR1', () => {
+  const report = compareReviewStage('pr5', matrix('baseline', 'pr1', 100), matrix('baseline', 'pr4', 65), matrix('candidate', 'pr5', 60));
+  assert.strictEqual(report.pass, true);
+  assert.strictEqual(report.adjacent.engines.codex.gates.tokens.pass, false);
+  assert.strictEqual(report.final.engines.codex.gates.tokens.pass, true);
 });
 
-test('review-eval CLI prints JSON and exits according to the gates', () => {
+test('review-eval CLI requires stage', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-eval-'));
+  for (const [name, value] of [['pr1', matrix('baseline', 'pr1', 100)], ['pr4', matrix('baseline', 'pr4', 65)], ['pr5', matrix('candidate', 'pr5', 60)]]) fs.writeFileSync(path.join(dir, `${name}.json`), JSON.stringify(value));
   const cli = path.resolve(__dirname, '../../../concord-codex/bin/review-eval.js');
-  const result = spawnSync(process.execPath, [cli, path.join(fixtures, 'baseline.json'), path.join(fixtures, 'candidate.json')], { encoding: 'utf8' });
-  assert.strictEqual(result.status, 0, result.stderr);
-  assert.strictEqual(JSON.parse(result.stdout).pass, true);
+  const result = spawnSync(process.execPath, [cli, '--stage', 'pr5', path.join(dir, 'pr1.json'), path.join(dir, 'pr4.json'), path.join(dir, 'pr5.json')], { encoding: 'utf8' });
+  assert.strictEqual(result.status, 0, result.stderr); assert.strictEqual(JSON.parse(result.stdout).pass, true);
+  assert.notStrictEqual(spawnSync(process.execPath, [cli, path.join(dir, 'pr1.json'), path.join(dir, 'pr5.json')]).status, 0);
+  const baselineOnly = spawnSync(process.execPath, [cli, '--stage', 'pr1', path.join(dir, 'pr1.json')], { encoding: 'utf8' });
+  assert.strictEqual(baselineOnly.status, 0, baselineOnly.stderr);
+  assert.strictEqual(JSON.parse(baselineOnly.stdout).pass, true);
 });

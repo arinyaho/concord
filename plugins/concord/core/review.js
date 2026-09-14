@@ -23,7 +23,8 @@ function ledgerPath(stateDir, slug) {
 // never throws and blocks the caller).
 function readLedger(stateDir, slug) {
   try {
-    return JSON.parse(fs.readFileSync(ledgerPath(stateDir, slug), 'utf8'));
+    const ledger = JSON.parse(fs.readFileSync(ledgerPath(stateDir, slug), 'utf8'));
+    return require('./review-telemetry').foldTelemetry(stateDir, ledger);
   } catch (e) {
     return null;
   }
@@ -506,7 +507,7 @@ function listLedgers(stateDir) {
   }
   const out = [];
   for (const n of names) {
-    const m = /^review-(.+)\.json$/.exec(n);
+    const m = /^review-(?!telemetry-)(.+)\.json$/.exec(n);
     if (!m) continue;
     const ledger = readLedger(stateDir, m[1]);
     if (ledger) out.push({ slug: m[1], ledger });

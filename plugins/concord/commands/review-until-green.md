@@ -32,6 +32,8 @@ reference below means: spawn that subagent this way.
 
 Never soften that clause, and never accept an artifact from a reviewer you know was blocked -- a non-empty `blocked` is terminal wherever the CLI reads the artifact (`artifact-normalize` for the fail-closed roles, and `plan-fixes`/`gate-panel-round-record` for the leniently-read gate-verify and panel artifacts), precisely so a degraded reviewer cannot produce a verdict.
 
+Immediately before every review/fix subagent spawn, run `node "${CLAUDE_PLUGIN_ROOT}/hooks/review-cli.js" telemetry-slot <ref> <exact-output-artifact-path>` using the single JSON destination named by that prompt. Do this for correctness, verify, intent, gate, fixes, panel lenses, votes, retries, and failed attempts; each call allocates the attempt number used to reconcile missing, duplicate, or orphan telemetry without changing the prompt or launch order.
+
 Run this loop. Do each step in order; do not skip, reorder, or improvise termination.
 
 1. `node "${CLAUDE_PLUGIN_ROOT}/hooks/review-cli.js" round-start <ref> [base] [--no-broad] [--no-dod]`
@@ -89,4 +91,3 @@ Two of those failures are about the reviewer's own evidence, not its JSON. A `re
 If a ledger for this ref is already `parked`, tell the user resuming will NOT auto-re-run parked findings; they must `review-cli.js unpark <ref> <findingId>` first. If the park has NO findings to unpark (a no-progress or budget-exhausted park -- e.g. the DoD kept failing with nothing for the review to fix), `unpark` has no target; once the underlying cause is resolved, `review-cli.js reset <ref>` discards the ledger so the next `round-start` begins a fresh run.
 
 If the ledger is already `clean` and the user wants a SECOND review of the same ref -- typically with a different reviewer engine, for uncorrelated eyes -- use `review-cli.js rerun <ref> [--engine <name>]`, not `reset`. `rerun` archives the finished run (rounds, fix digest, kill rationales, gate ids) into the ledger's `runs[]` and re-arms it, so the next `round-start` drives a real round; the handoff reports every prior run. `reset` throws that history away. The new run starts blind on purpose: no findings are carried forward, because a second engine seeded with the first one's conclusions is no longer an independent look. `--engine <name>` is a free-text label recorded in the ledger and the handoff so the two runs are attributable.
-

@@ -174,6 +174,7 @@ function renderHandoff(result) {
   lines.push(`review-until-green: target ${ledger.target && ledger.target.ref} -- status: ${ledger.status}`);
   lines.push(`rounds: ${ledger.round}/${ledger.budget.max_rounds} (spent ${ledger.budget.spent})`);
   if (ledger.engine) lines.push(`reviewer engine: ${ledger.engine}`);
+  if (ledger.telemetry) lines.push(`review usage: ${ledger.telemetry.totalTokens} tokens across ${ledger.telemetry.calls} call(s), ${ledger.telemetry.partialCalls} partial`);
   for (const r of ledger.runs || []) {
     lines.push(`prior run #${r.run} (${r.engine || 'engine unrecorded'}): ${r.status} -- ${r.rounds} round(s), ${(r.fixed || []).length} fixed, ${(r.parked || []).length} parked, ${(r.killed || []).length} killed`);
   }
@@ -412,6 +413,25 @@ function deleteRoundArtifacts(stateDir, n) {
 function main(resolveFromCwd) {
   const [verb, ref, ...rest] = process.argv.slice(2);
   const stateDir = resolveStateDir(resolveFromCwd);
+
+  if (verb === 'telemetry-slot') {
+    requireRef(ref, 'telemetry-slot');
+    const artifactPath = path.resolve(String(rest[0] || ''));
+    const slug = targetSlug(ref);
+    const ledger = readLedger(stateDir, slug);
+    if (!ledger || !['gates', 'fixes'].includes(ledger.phase)) throw new Error(`telemetry-slot: no active review work for ref "${ref}" ${stateDirHint(stateDir)}`);
+    if (path.dirname(artifactPath) !== path.resolve(stateDir)) throw new Error('telemetry-slot: artifact destination must be directly inside the state directory');
+    const match = new RegExp(`^round-${ledger.round}-([A-Za-z0-9:._-]+)\\.json$`).exec(path.basename(artifactPath));
+    if (!match) throw new Error(`telemetry-slot: destination does not belong to active round ${ledger.round}`);
+    const suffix = match[1];
+    const role = suffix.startsWith('fix-') ? 'fix' : suffix;
+    const slots = Array.isArray(ledger.telemetrySlots) ? ledger.telemetrySlots : [];
+    const attempt = slots.filter((slot) => slot.artifactPath === artifactPath).length + 1;
+    const slot = { artifactPath, attempt, role, round: ledger.round };
+    writeLedger(stateDir, slug, { ...ledger, telemetrySlots: [...slots, slot] });
+    process.stdout.write(`${JSON.stringify(slot)}\n`);
+    return;
+  }
 
   if (verb === 'artifact-normalize') {
     requireRef(ref, 'artifact-normalize');
@@ -924,7 +944,7 @@ function main(resolveFromCwd) {
     // guard-first ordering would throw on replay instead of reaching this branch.
     if (ledger && ledger.phase === 'done' && ledger.last_recorded_round === n) {
       process.stdout.write(
-        JSON.stringify({ decision: ledger._lastDecision || { continue: false }, handoff: renderHandoff({ ledger }) }) + '\n'
+        JSON.stringify({ decision: ledger._lastDecision || { continue: false }, handoff: renderHandoff({ ledger }), telemetry: ledger.telemetry || null }) + '\n'
       );
       return;
     }
@@ -1063,7 +1083,7 @@ function main(resolveFromCwd) {
     if (isGit) gitCheckoutTree(repoRoot);
     ledger = { ...ledger, phase: 'done', last_recorded_round: n, _lastDecision: decision };
     writeLedger(stateDir, slug, ledger);
-    process.stdout.write(JSON.stringify({ decision, handoff: renderHandoff({ ledger }) }) + '\n');
+    process.stdout.write(JSON.stringify({ decision, handoff: renderHandoff({ ledger }), telemetry: ledger.telemetry || null }) + '\n');
     return;
   }
 
@@ -1286,6 +1306,7 @@ function main(resolveFromCwd) {
       return;
     }
     deleteLedger(stateDir, slug);
+    require('./review-telemetry').deleteTelemetry(stateDir, ref, slug);
     for (let n = 1; n <= (prior.round || 0); n++) deleteRoundArtifacts(stateDir, n);
     process.stdout.write(
       `reset ref "${ref}" (was "${prior.status}"); cleared ${prior.round || 0} round(s) of artifacts. The next round-start begins a fresh run.\n`,
@@ -1320,6 +1341,7 @@ function main(resolveFromCwd) {
       parked: (prior.findings || []).filter((f) => f.status === 'parked').map((f) => f.id),
       killed: prior.killed_digest || [],
       gate_open: (prior.gate_open || []).map((f) => f.id),
+      telemetry: prior.telemetry || null,
     }]);
     const fresh = {
       ...emptyLedger(prior.target || { kind: 'local', ref }),
@@ -1328,6 +1350,7 @@ function main(resolveFromCwd) {
       gate_dismissed: prior.gate_dismissed || [],
     };
     for (let n = 1; n <= (prior.round || 0); n++) deleteRoundArtifacts(stateDir, n);
+    require('./review-telemetry').deleteTelemetry(stateDir, ref, slug);
     writeLedger(stateDir, slug, fresh);
     process.stdout.write(JSON.stringify({ status: 'ok', run: runs.length + 1, engine, archived: runs[runs.length - 1] }) + '\n');
     return;
@@ -1375,7 +1398,7 @@ function main(resolveFromCwd) {
     return;
   }
 
-  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | plan-fixes | commit-fix | record | gate-panel-round-start | gate-panel-round-record | unpark | dismiss | reset | rerun | artifact-normalize)`);
+  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | telemetry-slot | plan-fixes | commit-fix | record | gate-panel-round-start | gate-panel-round-record | unpark | dismiss | reset | rerun | artifact-normalize)`);
 }
 
 // Wraps main() with the graceful operator-facing error format. Exported (not

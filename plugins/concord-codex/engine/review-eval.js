@@ -1,213 +1,275 @@
 'use strict';
 
-const crypto = require('node:crypto');
+const REQUIRED_ENGINES = ['claude-code', 'codex'];
+const PAIRING_KEYS = ['targetSnapshot', 'targetDiff', 'intent', 'model', 'reasoningEffort', 'reviewConfig', 'engine', 'provider', 'providerSchema', 'corpusRevision', 'evaluationMode'];
+const RUN_PAIRING_KEYS = ['targetDiffIdentity', 'targetDiffHash', 'intentIdentity', 'intentHash'];
+const REMOVED_PARENT_FIELDS = ['parentProxyContents', 'parentProxyTokenizerVersion', 'parentProxyContentHash', 'parentProxyTokens'];
+const TERMINALS = ['clean', 'parked', 'abandoned', 'intent-review', 'gate-pending', 'budget-stopped', 'harness-failure'];
 
-const PAIRING_KEYS = ['targetSnapshot', 'targetDiff', 'intent', 'model', 'reasoningEffort', 'reviewConfig'];
-const PARENT_PROXY_TOKENIZER = 'utf8-bytes-v1';
-
-function sorted(values) { return Array.from(new Set(values || [])).sort(); }
+function sorted(values) { return [...new Set(values || [])].sort(); }
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]));
   return value;
 }
 function same(a, b) { return JSON.stringify(canonical(a)) === JSON.stringify(canonical(b)); }
-function key(run) { return `${run.scenarioId}#${run.repetition}`; }
+function runKey(run) { return `${run?.scenarioId}#${run?.repetition}`; }
+function validId(id, scenarioId) { return typeof id === 'string' && id.startsWith(`${scenarioId}::`) && id.length > scenarioId.length + 2; }
+function nonnegative(value) { return Number.isSafeInteger(value) && value >= 0; }
 
-// Cornish-Fisher expansion for the two-sided 95% Student t critical value.
-// The evaluator rejects n < 30, where this expansion is comfortably accurate.
 function tCritical95(df) {
-  const z = 1.959963984540054;
-  const z2 = z * z;
-  const z3 = z2 * z;
-  const z5 = z3 * z2;
-  const z7 = z5 * z2;
-  return z + (z3 + z) / (4 * df)
-    + (5 * z5 + 16 * z3 + 3 * z) / (96 * df ** 2)
-    + (3 * z7 + 19 * z5 + 17 * z3 - 15 * z) / (384 * df ** 3);
+  const z = 1.959963984540054; const z2 = z * z; const z3 = z2 * z; const z5 = z3 * z2; const z7 = z5 * z2;
+  return z + (z3 + z) / (4 * df) + (5 * z5 + 16 * z3 + 3 * z) / (96 * df ** 2) + (3 * z7 + 19 * z5 + 17 * z3 - 15 * z) / (384 * df ** 3);
 }
-
 function interval(values) {
-  if (!values.length) return { mean: null, lowerBound: null, upperBound: null };
+  if (!values.length) return { sampleSize: 0, mean: null, lowerBound: null, upperBound: null };
   const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-  if (values.length === 1) return { mean, lowerBound: mean, upperBound: mean };
+  if (values.length === 1) return { sampleSize: 1, mean, lowerBound: mean, upperBound: mean };
   const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (values.length - 1);
   const margin = tCritical95(values.length - 1) * Math.sqrt(variance / values.length);
-  return { mean, lowerBound: mean - margin, upperBound: mean + margin };
+  return { sampleSize: values.length, mean, lowerBound: mean - margin, upperBound: mean + margin };
 }
-
 function median(values) {
   if (!values.length) return null;
-  const ordered = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(ordered.length / 2);
+  const ordered = [...values].sort((a, b) => a - b); const middle = Math.floor(ordered.length / 2);
   return ordered.length % 2 ? ordered[middle] : (ordered[middle - 1] + ordered[middle]) / 2;
 }
 
-function compareReviewResults(baseline, candidate) {
-  const unevaluable = [];
-  const note = (message) => { if (!unevaluable.includes(message)) unevaluable.push(message); };
+function expectedSchedule(repetition) {
+  return { scheduleBlock: Math.floor(repetition / 6) + 1, schedulePosition: repetition % 6 + 1, firstSide: repetition % 2 === 0 ? 'baseline' : 'candidate' };
+}
+
+function validateTelemetry(name, pairKey, engine, run, note) {
+  for (const field of REMOVED_PARENT_FIELDS) if (Object.hasOwn(run, field)) note(`${name} removed parent proxy field: ${pairKey}:${field}`);
+  const telemetry = run.telemetry;
+  if (!telemetry || telemetry.partialCalls !== 0) note(`${name} partial usage: ${pairKey}`);
+  if (!nonnegative(telemetry?.calls)) note(`${name} subprocess count invalid: ${pairKey}`);
+  if (!nonnegative(telemetry?.elapsedMs)) note(`${name} elapsed time invalid: ${pairKey}`);
+  const fields = ['inputTokens', 'cacheWriteInputTokens', 'cachedInputTokens', 'outputTokens'];
+  if (engine === 'codex') fields.push('reasoningOutputTokens');
+  if (fields.some((field) => !nonnegative(telemetry?.[field])) || !nonnegative(telemetry?.totalTokens)) note(`${name} token components invalid: ${pairKey}`);
+  else if (fields.reduce((sum, field) => sum + telemetry[field], 0) !== telemetry.totalTokens) note(`${name} token total mismatch: ${pairKey}`);
+  if (engine === 'claude-code' && telemetry?.reasoningOutputTokens !== null) note(`${name} Claude reasoning output must be null: ${pairKey}`);
+}
+
+function compareReviewResults(baseline, candidate, options = {}) {
+  const engine = options.engine || baseline?.pairing?.engine;
+  const unevaluable = []; const note = (message) => { if (!unevaluable.includes(message)) unevaluable.push(message); };
   for (const [name, manifest] of [['baseline', baseline], ['candidate', candidate]]) {
-    if (!manifest || manifest.version !== 1) note(`${name} manifest version must be 1`);
-    if (!manifest || !manifest.toolRevision) note(`${name} tool revision is missing`);
-    if (!manifest || !manifest.scenarios || typeof manifest.scenarios !== 'object') note(`${name} scenarios are missing`);
-    if (!manifest || !Array.isArray(manifest.runs)) note(`${name} runs are missing`);
+    if (manifest?.schemaVersion !== 2) note(`${name} manifest schemaVersion must be 2`);
+    if (typeof manifest?.toolRevision !== 'string' || !manifest.toolRevision) note(`${name} tool revision is missing`);
+    if (manifest?.repetitions !== 30) note('calibrated repetition count must be 30');
+    if (!manifest?.scenarios || typeof manifest.scenarios !== 'object' || Array.isArray(manifest.scenarios)) note(`${name} scenarios are missing`);
+    if (!Array.isArray(manifest?.runs)) note(`${name} runs are missing`);
+    for (const field of REMOVED_PARENT_FIELDS) if (Object.hasOwn(manifest || {}, field)) note(`${name} removed parent proxy field: manifest:${field}`);
   }
   for (const field of PAIRING_KEYS) {
-    if (!baseline?.pairing?.[field] || !candidate?.pairing?.[field]) note(`pairing identity missing: ${field}`);
+    if (baseline?.pairing?.[field] === undefined || candidate?.pairing?.[field] === undefined) note(`pairing identity missing: ${field}`);
     else if (baseline.pairing[field] !== candidate.pairing[field]) note(`pairing identity mismatch: ${field}`);
   }
+  if (baseline?.pairing?.engine !== engine || candidate?.pairing?.engine !== engine) note('pairing identity mismatch: engine');
+  const expectedSchema = engine === 'claude-code' ? 'claude-subagent-transcript-2.1.268-v1' : 'codex-exec-json-v1';
+  if (baseline?.pairing?.providerSchema !== expectedSchema || candidate?.pairing?.providerSchema !== expectedSchema) note(`provider schema does not match engine: ${engine}`);
+  if (!['live', 'replay'].includes(baseline?.pairing?.evaluationMode)) note(`unsupported evaluation mode: ${baseline?.pairing?.evaluationMode}`);
 
-  const baselineScenarios = baseline?.scenarios || {};
-  const candidateScenarios = candidate?.scenarios || {};
+  const baselineScenarios = baseline?.scenarios || {}; const candidateScenarios = candidate?.scenarios || {};
   const scenarioIds = sorted([...Object.keys(baselineScenarios), ...Object.keys(candidateScenarios)]);
-  for (const id of scenarioIds) {
-    if (!baselineScenarios[id] || !candidateScenarios[id]) note(`scenario missing from one manifest: ${id}`);
-    else if (!same(baselineScenarios[id], candidateScenarios[id])) note(`scenario metadata mismatch: ${id}`);
-    const scenario = baselineScenarios[id];
-    if (scenario && typeof scenario.behaviorPreserving !== 'boolean') note(`behavior-preserving flag missing: ${id}`);
-    for (const field of ['seededDefects', 'nonDefects', 'allowedTerminalOutcomes']) {
-      if (!Array.isArray(scenario?.[field]) || scenario[field].some((value) => typeof value !== 'string')) note(`scenario ${field} is invalid: ${id}`);
+  const frozenTerminals = new Set();
+  for (const scenarioId of scenarioIds) {
+    const scenario = baselineScenarios[scenarioId]; const other = candidateScenarios[scenarioId];
+    if (!scenario || !other) { note(`scenario missing from one manifest: ${scenarioId}`); continue; }
+    if (!same(scenario, other)) note(`scenario metadata mismatch: ${scenarioId}`);
+    if (typeof scenario.behaviorPreserving !== 'boolean') note(`scenario behavior-preserving flag missing: ${scenarioId}`);
+    if (typeof scenario.hasExecutableDoD !== 'boolean') note(`scenario hasExecutableDoD invalid: ${scenarioId}`);
+    for (const field of ['seededDefects', 'confirmedDefects', 'nonDefects', 'requiredFixes', 'expectedProbes', 'allowedTerminalOutcomes']) {
+      if (!Array.isArray(scenario[field]) || scenario[field].some((value) => typeof value !== 'string')) note(`scenario ${field} is invalid: ${scenarioId}`);
     }
+    for (const metadata of [scenario, other]) {
+      const identities = sorted([...(metadata.seededDefects || []), ...(metadata.confirmedDefects || []), ...(metadata.requiredFixes || []), ...(metadata.nonDefects || [])]);
+      for (const id of identities) if (!validId(id, scenarioId)) note(`scenario identity is not qualified: ${scenarioId}:${id}`);
+      const expectedProbes = new Set(metadata.expectedProbes || []);
+      for (const id of sorted([...(metadata.seededDefects || []), ...(metadata.confirmedDefects || []), ...(metadata.requiredFixes || [])])) {
+        const probes = metadata.probesByFinding?.[id];
+        if (!Array.isArray(probes) || !probes.length) note(`scenario probesByFinding missing: ${scenarioId}:${id}`);
+        else if (probes.some((probe) => !expectedProbes.has(probe))) note(`scenario probesByFinding unknown probe: ${scenarioId}:${id}`);
+      }
+    }
+    for (const terminal of scenario.allowedTerminalOutcomes || []) frozenTerminals.add(terminal);
   }
 
-  const index = (manifest, name) => {
-    const result = new Map();
-    const seeds = new Set();
+  function index(manifest, name) {
+    const result = new Map(); const seeds = new Set();
+    const isolated = Object.fromEntries(['parentSessionId', 'checkoutId', 'artifactDirectoryId'].map((field) => [field, new Set()]));
     for (const run of manifest?.runs || []) {
       if (!run || typeof run !== 'object') { note(`${name} run is invalid`); continue; }
-      const runKey = key(run);
-      if (!run.scenarioId || !Number.isInteger(run.repetition) || run.repetition < 0) note(`${name} run identity is invalid: ${runKey}`);
-      if (result.has(runKey)) note(`${name} duplicate run: ${runKey}`);
-      result.set(runKey, run);
-      if (run.independent !== true || typeof run.randomSeed !== 'string' || !run.randomSeed) note(`${name} run is not independently identified: ${runKey}`);
-      else if (seeds.has(run.randomSeed)) note(`${name} random seed is reused: ${run.randomSeed}`);
-      seeds.add(run.randomSeed);
-    }
-    return result;
-  };
-  const baselineRuns = index(baseline, 'baseline');
-  const candidateRuns = index(candidate, 'candidate');
-  const baselineSeeds = new Set(Array.from(baselineRuns.values(), (run) => run.randomSeed));
-  for (const run of candidateRuns.values()) if (baselineSeeds.has(run.randomSeed)) note(`paired random seed is reused: ${run.randomSeed}`);
-  const pairKeys = sorted([...baselineRuns.keys(), ...candidateRuns.keys()]);
-  const repetitions = new Map();
-  const additionalFalseClean = [];
-  const behaviorMismatches = [];
-  const acceptedBaseline = new Set();
-  const acceptedCandidate = new Set();
-  const tokenChanges = [];
-  const secondary = {
-    baseline: { calls: 0, elapsedMs: 0 },
-    candidate: { calls: 0, elapsedMs: 0 },
-  };
-
-  for (const pairKey of pairKeys) {
-    const base = baselineRuns.get(pairKey);
-    const cand = candidateRuns.get(pairKey);
-    if (!base || !cand) { note(`missing paired run: ${pairKey}`); continue; }
-    const scenario = baselineScenarios[base.scenarioId];
-    if (!scenario) { note(`unknown scenario: ${pairKey}`); continue; }
-    const allowed = Array.isArray(scenario.allowedTerminalOutcomes) ? scenario.allowedTerminalOutcomes : [];
-    if (!allowed.length) note(`allowed terminal outcomes missing: ${pairKey}`);
-    const baseFalseClean = base.terminal === 'clean' && !allowed.includes('clean');
-    const candidateFalseClean = cand.terminal === 'clean' && !allowed.includes('clean');
-    if (candidateFalseClean && !baseFalseClean) additionalFalseClean.push(pairKey);
-
-    const seeded = sorted(scenario.seededDefects);
-    const nonDefects = sorted(scenario.nonDefects);
-    const declared = new Set([...seeded, ...nonDefects]);
-    const evidencedFixed = { baseline: [], candidate: [] };
-    for (const [name, run, destination, manifest] of [['baseline', base, acceptedBaseline, baseline], ['candidate', cand, acceptedCandidate, candidate]]) {
-      if (!Array.isArray(run.acceptedFindings)) note(`${name} accepted findings missing: ${pairKey}`);
-      for (const id of run.acceptedFindings || []) {
-        destination.add(id);
-        if (!declared.has(id)) note(`unadjudicated accepted identity: ${pairKey}:${id}`);
+      const key = runKey(run);
+      if (!(run.scenarioId in (manifest.scenarios || {})) || !Number.isInteger(run.repetition) || run.repetition < 0 || run.repetition >= 30) note(`${name} run identity is invalid: ${key}`);
+      if (result.has(key)) note(`${name} duplicate run: ${key}`); else result.set(key, run);
+      if (run.independent !== true || typeof run.randomSeed !== 'string' || !run.randomSeed) note(`${name} run is not independently identified: ${key}`);
+      else if (seeds.has(run.randomSeed)) note(`${name} random seed is reused: ${run.randomSeed}`); else seeds.add(run.randomSeed);
+      const schedule = expectedSchedule(run.repetition);
+      if (Object.keys(schedule).some((field) => run[field] !== schedule[field])) note(`${name} frozen schedule mismatch: ${key}`);
+      for (const [field, seen] of Object.entries(isolated)) {
+        if (typeof run[field] !== 'string' || !run[field]) note(`${name} isolation identity is missing: ${key}:${field}`);
+        else if (seen.has(run[field])) note(`${name} isolation identity is reused: ${run[field]}`); else seen.add(run[field]);
       }
-      if (!['passed', 'failed', 'deferred', 'not-run'].includes(run.dod)) note(`${name} DoD result invalid: ${pairKey}`);
-      if (!['clean', 'parked', 'abandoned', 'intent-review', 'gate-pending', 'budget-stopped', 'harness-failure'].includes(run.terminal)) note(`${name} terminal outcome invalid: ${pairKey}`);
-      if (!Array.isArray(run.fixedFindings) || run.fixedFindings.some((id) => typeof id !== 'string')) note(`${name} fixed findings missing: ${pairKey}`);
-      else for (const id of run.fixedFindings) {
-        if (!declared.has(id)) note(`unadjudicated fixed identity: ${pairKey}:${id}`);
-        const commit = run.fixCommits?.[id];
-        if (typeof commit !== 'string' || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(commit)) note(`${name} fixed finding lacks commit evidence: ${pairKey}:${id}`);
-        else if (!Array.isArray(run.confirmationFindings) || run.confirmationFindings.some((confirmationId) => typeof confirmationId !== 'string')) note(`${name} fixed finding lacks confirmation evidence: ${pairKey}:${id}`);
-        else if (run.confirmationFindings.includes(id)) note(`${name} fixed finding recurred in confirmation: ${pairKey}:${id}`);
-        else evidencedFixed[name].push(id);
-      }
-      if (!run.telemetry || run.telemetry.partialCalls !== 0) note(`partial usage: ${pairKey}`);
-      const tokenComponents = ['inputTokens', 'cachedInputTokens', 'reasoningOutputTokens', 'outputTokens'].map((field) => run.telemetry?.[field]);
-      if (!Number.isSafeInteger(run.telemetry?.totalTokens) || run.telemetry.totalTokens < 0 || !Number.isFinite(run.parentProxyTokens) || run.parentProxyTokens < 0) note(`token total invalid: ${pairKey}`);
-      if (tokenComponents.some((value) => !Number.isSafeInteger(value) || value < 0)) note(`${name} subprocess token components invalid: ${pairKey}`);
-      else if (run.telemetry.totalTokens !== tokenComponents[0] + tokenComponents[1] + tokenComponents[3]) note(`${name} subprocess token total mismatch: ${pairKey}`);
-      const proxyContent = manifest.parentProxyContents?.[run.parentProxyContentHash];
-      if (run.parentProxyTokenizerVersion !== PARENT_PROXY_TOKENIZER || typeof run.parentProxyContentHash !== 'string' || !run.parentProxyContentHash.trim() || typeof proxyContent !== 'string') note(`${name} parent proxy provenance invalid: ${pairKey}`);
-      else if (crypto.createHash('sha256').update(proxyContent).digest('hex') !== run.parentProxyContentHash) note(`${name} parent proxy content hash mismatch: ${pairKey}`);
-      else if (Buffer.byteLength(proxyContent, 'utf8') !== run.parentProxyTokens) note(`${name} parent proxy token count mismatch: ${pairKey}`);
-      if (!Number.isSafeInteger(run.telemetry?.calls) || run.telemetry.calls < 0) note(`${name} subprocess count invalid: ${pairKey}`);
-      else secondary[name].calls += run.telemetry.calls;
-      if (!Number.isFinite(run.telemetry?.elapsedMs) || run.telemetry.elapsedMs < 0) note(`${name} elapsed time invalid: ${pairKey}`);
-      else secondary[name].elapsedMs += run.telemetry.elapsedMs;
+      validateTelemetry(name, key, engine, run, note);
     }
-
-    if (scenario.behaviorPreserving === true) {
-      const baseTuple = [sorted(evidencedFixed.baseline), base.dod, base.terminal];
-      const candidateTuple = [sorted(evidencedFixed.candidate), cand.dod, cand.terminal];
-      if (!same(baseTuple, candidateTuple)) behaviorMismatches.push(pairKey);
-    }
-
-    const repetition = repetitions.get(base.repetition) || {
-      scenarios: new Set(), seeded: 0, baseHits: 0, candidateHits: 0,
-      nonDefects: 0, baseFalsePositives: 0, candidateFalsePositives: 0,
-      baseTokens: 0, candidateTokens: 0,
-    };
-    repetition.scenarios.add(base.scenarioId);
-    repetition.seeded += seeded.length;
-    repetition.baseHits += seeded.filter((id) => (base.acceptedFindings || []).includes(id)).length;
-    repetition.candidateHits += seeded.filter((id) => (cand.acceptedFindings || []).includes(id)).length;
-    repetition.nonDefects += nonDefects.length;
-    repetition.baseFalsePositives += nonDefects.filter((id) => (base.acceptedFindings || []).includes(id)).length;
-    repetition.candidateFalsePositives += nonDefects.filter((id) => (cand.acceptedFindings || []).includes(id)).length;
-    repetition.baseTokens += (base.telemetry?.totalTokens || 0) + (base.parentProxyTokens || 0);
-    repetition.candidateTokens += (cand.telemetry?.totalTokens || 0) + (cand.parentProxyTokens || 0);
-    repetitions.set(base.repetition, repetition);
-    if (base.telemetry?.partialCalls === 0 && cand.telemetry?.partialCalls === 0) {
-      const baseTokens = base.telemetry.totalTokens + base.parentProxyTokens;
-      const candidateTokens = cand.telemetry.totalTokens + cand.parentProxyTokens;
-      if (baseTokens <= 0) note(`baseline token total is zero: ${pairKey}`);
-      else tokenChanges.push((candidateTokens - baseTokens) / baseTokens);
-    }
+    return { runs: result, seeds, isolated };
   }
+  const baseIndex = index(baseline, 'baseline'); const candidateIndex = index(candidate, 'candidate');
+  const baseModels = new Set([...baseIndex.runs.values()].map((run) => run.resolvedModel));
+  const candidateModels = new Set([...candidateIndex.runs.values()].map((run) => run.resolvedModel));
+  if (engine === 'claude-code' && (baseModels.size !== 1 || candidateModels.size !== 1)) note('resolved model identity is mixed');
+  if (engine === 'codex' && ([...baseModels, ...candidateModels].some((model) => model !== 'unavailable'))) note('Codex resolved model identity must be unavailable');
+  for (const seed of candidateIndex.seeds) if (baseIndex.seeds.has(seed)) note(`paired random seed is reused: ${seed}`);
+  for (const field of Object.keys(baseIndex.isolated)) for (const value of candidateIndex.isolated[field]) if (baseIndex.isolated[field].has(value)) note(`isolation identity is reused across sides: ${value}`);
 
-  const recallDifferences = [];
-  const falsePositiveDifferences = [];
+  const baselineFalseClean = []; const candidateFalseClean = []; const confirmedFailures = { baseline: [], candidate: [] }; const behaviorMismatches = [];
+  const repetitions = new Map(); const accepted = { baseline: new Set(), candidate: new Set() };
+  for (let repetition = 0; repetition < 30; repetition++) repetitions.set(repetition, {
+    scenarios: new Set(), seeded: 0, baselineHits: 0, candidateHits: 0, nonDefects: 0, baselineFalsePositives: 0, candidateFalsePositives: 0,
+    fixes: 0, baselineFixes: 0, candidateFixes: 0, baselineTerminals: {}, candidateTerminals: {}, baselineTokens: 0, candidateTokens: 0,
+  });
+
+  const allKeys = sorted([...baseIndex.runs.keys(), ...candidateIndex.runs.keys()]);
+  for (const key of allKeys) {
+    const base = baseIndex.runs.get(key); const cand = candidateIndex.runs.get(key);
+    if (!base || !cand) { note(`missing paired run: ${key}`); continue; }
+    const scenario = baselineScenarios[base.scenarioId]; if (!scenario) continue;
+    for (const field of RUN_PAIRING_KEYS) {
+      if (typeof base[field] !== 'string' || !base[field] || typeof cand[field] !== 'string' || !cand[field]) note(`scenario pairing identity missing: ${key}:${field}`);
+      else if (base[field] !== cand[field]) note(`scenario pairing mismatch: ${key}:${field}`);
+    }
+    for (const field of ['scheduleBlock', 'schedulePosition', 'firstSide']) if (base[field] !== cand[field]) note(`paired schedule mismatch: ${key}:${field}`);
+    if (engine === 'claude-code') {
+      if (!base.resolvedModel || !cand.resolvedModel || base.resolvedModel === 'unavailable' || cand.resolvedModel === 'unavailable') note(`resolved model missing: ${key}`);
+      else if (base.resolvedModel !== cand.resolvedModel) note(`resolved model mismatch: ${key}`);
+    } else if (base.resolvedModel !== cand.resolvedModel) note(`resolved model mismatch: ${key}`);
+
+    const declared = new Set([...(scenario.seededDefects || []), ...(scenario.confirmedDefects || []), ...(scenario.requiredFixes || []), ...(scenario.nonDefects || [])]);
+    const adjudicatedBase = sorted(base.adjudicatedNonDefects || []); const adjudicatedCandidate = sorted(cand.adjudicatedNonDefects || []);
+    if (!same(adjudicatedBase, adjudicatedCandidate)) note(`adjudicated non-defects mismatch: ${key}`);
+    for (const id of [...adjudicatedBase, ...adjudicatedCandidate]) if (!validId(id, base.scenarioId)) note(`adjudicated non-defect identity is not qualified: ${key}:${id}`);
+    const nonDefects = sorted([...(scenario.nonDefects || []), ...adjudicatedBase]);
+    for (const id of nonDefects) declared.add(id);
+    const fixed = { baseline: [], candidate: [] };
+    for (const [name, run] of [['baseline', base], ['candidate', cand]]) {
+      if (!Array.isArray(run.acceptedFindings)) note(`${name} accepted findings missing: ${key}`);
+      for (const id of run.acceptedFindings || []) { accepted[name].add(id); if (!declared.has(id)) note(`unadjudicated accepted identity: ${key}:${id}`); }
+      if (!Array.isArray(run.fixedFindings)) note(`${name} fixed findings missing: ${key}`);
+      for (const id of run.fixedFindings || []) {
+        if (!declared.has(id)) note(`unadjudicated fixed identity: ${key}:${id}`);
+        else if (!(run.acceptedFindings || []).includes(id)) note(`${name} fixed finding was not accepted: ${key}:${id}`);
+        else if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(run.fixCommits?.[id] || '')) note(`${name} fixed finding lacks commit evidence: ${key}:${id}`);
+        else if (!Array.isArray(run.confirmationFindings) || run.confirmationFindings.includes(id)) note(`${name} fixed finding recurred in confirmation: ${key}:${id}`);
+        else fixed[name].push(id);
+      }
+      if (!TERMINALS.includes(run.terminal)) note(`${name} terminal outcome invalid: ${key}`);
+      else if (!(scenario.allowedTerminalOutcomes || []).includes(run.terminal)) note(`${name} terminal outcome is not allowed: ${key}:${run.terminal}`);
+      const expectedDod = scenario.hasExecutableDoD ? 'passed' : 'deferred';
+      if (run.terminal === 'clean' && run.dod !== expectedDod) note(`${name} clean DoD mismatch: ${key}`);
+    }
+    const probesPass = (run, identity) => (scenario.probesByFinding?.[identity] || []).every((probe) => run.expectedProbeResults?.[probe] === true);
+    const allProbesPass = (run) => (scenario.expectedProbes || []).every((probe) => run.expectedProbeResults?.[probe] === true);
+    const resolved = (run, name, identity) => (run.acceptedFindings || []).includes(identity) && fixed[name].includes(identity) && probesPass(run, identity);
+    for (const identity of scenario.confirmedDefects || []) for (const [name, run] of [['baseline', base], ['candidate', cand]]) if (!resolved(run, name, identity)) confirmedFailures[name].push(`${key}:${identity}`);
+    const falseClean = (run, name) => run.terminal === 'clean' && (
+      !(scenario.allowedTerminalOutcomes || []).includes('clean') || run.dod !== (scenario.hasExecutableDoD ? 'passed' : 'deferred') ||
+      [...new Set([...(scenario.seededDefects || []), ...(scenario.confirmedDefects || []), ...(scenario.requiredFixes || [])])].some((identity) => !resolved(run, name, identity)) || !allProbesPass(run)
+    );
+    if (falseClean(base, 'baseline')) baselineFalseClean.push(key); if (falseClean(cand, 'candidate')) candidateFalseClean.push(key);
+    if (scenario.behaviorPreserving && baseline.pairing?.evaluationMode === 'replay') {
+      const tuple = (run, name) => [sorted(run.acceptedFindings), sorted(fixed[name]), run.dod, run.terminal, run.expectedProbeResults || {}];
+      if (!same(tuple(base, 'baseline'), tuple(cand, 'candidate'))) behaviorMismatches.push(key);
+    }
+    const repetition = repetitions.get(base.repetition); repetition.scenarios.add(base.scenarioId);
+    const seeded = scenario.seededDefects || []; const fixes = scenario.requiredFixes || [];
+    repetition.seeded += seeded.length; repetition.baselineHits += seeded.filter((id) => (base.acceptedFindings || []).includes(id)).length; repetition.candidateHits += seeded.filter((id) => (cand.acceptedFindings || []).includes(id)).length;
+    repetition.nonDefects += nonDefects.length; repetition.baselineFalsePositives += nonDefects.filter((id) => (base.acceptedFindings || []).includes(id)).length; repetition.candidateFalsePositives += nonDefects.filter((id) => (cand.acceptedFindings || []).includes(id)).length;
+    repetition.fixes += fixes.length; repetition.baselineFixes += fixes.filter((id) => resolved(base, 'baseline', id)).length; repetition.candidateFixes += fixes.filter((id) => resolved(cand, 'candidate', id)).length;
+    repetition.baselineTerminals[base.terminal] = (repetition.baselineTerminals[base.terminal] || 0) + 1; repetition.candidateTerminals[cand.terminal] = (repetition.candidateTerminals[cand.terminal] || 0) + 1;
+    repetition.baselineTokens += base.telemetry?.totalTokens || 0; repetition.candidateTokens += cand.telemetry?.totalTokens || 0;
+  }
+  if (baseIndex.runs.size !== 30 * scenarioIds.length) note(`baseline run count mismatch: expected ${30 * scenarioIds.length}, got ${baseIndex.runs.size}`);
+  if (candidateIndex.runs.size !== 30 * scenarioIds.length) note(`candidate run count mismatch: expected ${30 * scenarioIds.length}, got ${candidateIndex.runs.size}`);
+
+  const recall = []; const falsePositive = []; const successfulFix = []; const tokenChanges = [];
   for (const [repetitionId, repetition] of repetitions) {
     if (repetition.scenarios.size !== scenarioIds.length) note(`incomplete corpus repetition: ${repetitionId}`);
-    if (!repetition.seeded) note(`no seeded defects in repetition: ${repetitionId}`);
-    else recallDifferences.push((repetition.candidateHits - repetition.baseHits) / repetition.seeded);
-    if (!repetition.nonDefects) note(`no non-defects in repetition: ${repetitionId}`);
-    else falsePositiveDifferences.push((repetition.candidateFalsePositives - repetition.baseFalsePositives) / repetition.nonDefects);
-    if (repetition.baseTokens <= 0) note(`baseline token total is zero: ${repetitionId}`);
+    if (!repetition.seeded) note(`no seeded defects in repetition: ${repetitionId}`); else recall.push((repetition.candidateHits - repetition.baselineHits) / repetition.seeded);
+    if (!repetition.nonDefects) note(`no non-defects in repetition: ${repetitionId}`); else falsePositive.push((repetition.candidateFalsePositives - repetition.baselineFalsePositives) / repetition.nonDefects);
+    if (!repetition.fixes) note(`no required fixes in repetition: ${repetitionId}`); else successfulFix.push((repetition.candidateFixes - repetition.baselineFixes) / repetition.fixes);
+    if (repetition.baselineTokens <= 0) note(`baseline token total is zero: ${repetitionId}`); else tokenChanges.push((repetition.candidateTokens - repetition.baselineTokens) / repetition.baselineTokens);
   }
-  if (repetitions.size < 30) note(`fewer than 30 paired repetitions: ${repetitions.size}`);
-
-  const recall = interval(recallDifferences);
-  const falsePositive = interval(falsePositiveDifferences);
+  const terminalValues = Object.fromEntries([...frozenTerminals].map((terminal) => {
+    const values = [...repetitions.values()].map((repetition) => ((repetition.candidateTerminals[terminal] || 0) - (repetition.baselineTerminals[terminal] || 0)) / scenarioIds.length);
+    const bounds = interval(values); return [terminal, { pass: bounds.lowerBound >= -0.05 && bounds.upperBound <= 0.05, ...bounds }];
+  }));
+  const recallBounds = interval(recall); const falsePositiveBounds = interval(falsePositive); const successfulFixBounds = interval(successfulFix);
+  const baselineTotal = [...repetitions.values()].reduce((sum, value) => sum + value.baselineTokens, 0); const candidateTotal = [...repetitions.values()].reduce((sum, value) => sum + value.candidateTokens, 0);
   const tokenMedian = median(tokenChanges);
   const gates = {
-    falseClean: { pass: additionalFalseClean.length === 0, additionalPairs: additionalFalseClean },
-    recall: { pass: recall.lowerBound !== null && recall.lowerBound >= -0.05, ...recall },
-    falsePositive: { pass: falsePositive.upperBound !== null && falsePositive.upperBound <= 0.05, ...falsePositive },
-    behavior: { pass: behaviorMismatches.length === 0, mismatchedPairs: behaviorMismatches },
-    tokens: { pass: tokenMedian !== null && tokenMedian <= -0.30, medianPairedChange: tokenMedian },
+    falseClean: { pass: !baselineFalseClean.length && !candidateFalseClean.length, baselinePairs: baselineFalseClean, candidatePairs: candidateFalseClean, additionalPairs: candidateFalseClean.filter((key) => !baselineFalseClean.includes(key)) },
+    confirmedDefects: { pass: !confirmedFailures.baseline.length && !confirmedFailures.candidate.length, baselinePairs: confirmedFailures.baseline, candidatePairs: confirmedFailures.candidate },
+    recall: { pass: recallBounds.lowerBound !== null && recallBounds.lowerBound >= -0.05, ...recallBounds },
+    falsePositive: { pass: falsePositiveBounds.upperBound !== null && falsePositiveBounds.upperBound <= 0.05, ...falsePositiveBounds },
+    successfulFix: { pass: successfulFixBounds.lowerBound !== null && successfulFixBounds.lowerBound >= -0.05, ...successfulFixBounds },
+    terminals: { pass: Object.keys(terminalValues).length > 0 && Object.values(terminalValues).every((value) => value.pass), values: terminalValues },
+    behavior: { applied: baseline.pairing?.evaluationMode === 'replay', pass: baseline.pairing?.evaluationMode !== 'replay' || !behaviorMismatches.length, mismatchedPairs: behaviorMismatches },
+    tokens: { pass: tokenMedian !== null && tokenMedian <= -0.30 && candidateTotal <= 0.70 * baselineTotal, medianPairedChange: tokenMedian, baselineTotal, candidateTotal },
   };
+  const qualityPass = ['falseClean', 'confirmedDefects', 'recall', 'falsePositive', 'successfulFix', 'terminals', 'behavior'].every((name) => gates[name].pass);
   return {
-    pass: unevaluable.length === 0 && Object.values(gates).every((gate) => gate.pass),
-    unevaluable,
-    repetitions: repetitions.size,
-    gates,
-    identities: { acceptedBaseline: sorted(acceptedBaseline), acceptedCandidate: sorted(acceptedCandidate) },
-    secondary,
+    pass: !unevaluable.length && qualityPass && gates.tokens.pass, evaluable: !unevaluable.length, qualityPass, tokenPass: gates.tokens.pass,
+    unevaluable, repetitions: repetitions.size, gates,
+    identities: { acceptedBaseline: sorted(accepted.baseline), acceptedCandidate: sorted(accepted.candidate) },
+    secondary: {
+      baseline: { calls: [...baseIndex.runs.values()].reduce((sum, run) => sum + (run.telemetry?.calls || 0), 0), elapsedMs: [...baseIndex.runs.values()].reduce((sum, run) => sum + (run.telemetry?.elapsedMs || 0), 0) },
+      candidate: { calls: [...candidateIndex.runs.values()].reduce((sum, run) => sum + (run.telemetry?.calls || 0), 0), elapsedMs: [...candidateIndex.runs.values()].reduce((sum, run) => sum + (run.telemetry?.elapsedMs || 0), 0) },
+    },
+    limitations: engine === 'codex' ? ['actual model identity unavailable', 'unobservable child work cannot be scored'] : [],
   };
 }
 
-module.exports = { compareReviewResults, interval, median };
+function compareReviewMatrix(baseline, candidate) {
+  const unevaluable = []; const engines = {};
+  if (baseline?.schemaVersion !== 2) unevaluable.push('baseline matrix schemaVersion must be 2');
+  if (candidate?.schemaVersion !== 2) unevaluable.push('candidate matrix schemaVersion must be 2');
+  for (const engine of REQUIRED_ENGINES) {
+    if (!baseline?.engines?.[engine]) unevaluable.push(`baseline engine is missing: ${engine}`);
+    if (!candidate?.engines?.[engine]) unevaluable.push(`candidate engine is missing: ${engine}`);
+    if (baseline?.engines?.[engine] && candidate?.engines?.[engine]) engines[engine] = compareReviewResults(baseline.engines[engine], candidate.engines[engine], { engine });
+  }
+  const qualityPass = !unevaluable.length && REQUIRED_ENGINES.every((engine) => engines[engine]?.evaluable && engines[engine]?.qualityPass);
+  const tokenPass = !unevaluable.length && REQUIRED_ENGINES.every((engine) => engines[engine]?.tokenPass);
+  return { pass: qualityPass && tokenPass, evaluable: !unevaluable.length && REQUIRED_ENGINES.every((engine) => engines[engine]?.evaluable), qualityPass, tokenPass, unevaluable, engines };
+}
+
+function matrixRevision(matrix) {
+  const revisions = new Set(REQUIRED_ENGINES.map((engine) => matrix?.engines?.[engine]?.toolRevision).filter(Boolean));
+  return revisions.size === 1 ? [...revisions][0] : null;
+}
+
+function compareReviewStage(stage, pr1, previous, candidate) {
+  if (stage === 'pr1') {
+    const replay = structuredClone(pr1);
+    for (const engine of REQUIRED_ENGINES) for (const run of replay?.engines?.[engine]?.runs || []) {
+      for (const field of ['randomSeed', 'parentSessionId', 'checkoutId', 'artifactDirectoryId']) if (typeof run[field] === 'string') run[field] += '-validation';
+    }
+    const validation = compareReviewMatrix(pr1, replay);
+    return { pass: validation.evaluable && validation.qualityPass, finalThresholdApplied: false, unevaluable: validation.unevaluable, validation };
+  }
+  if (!/^pr[2-5]$/.test(stage)) return { pass: false, unevaluable: [`unsupported comparison stage: ${stage}`] };
+  const number = Number(stage.slice(2)); const expectedPrevious = `pr${number - 1}`;
+  const unevaluable = [];
+  if (matrixRevision(pr1) !== 'pr1') unevaluable.push('frozen baseline revision must be pr1');
+  if (matrixRevision(previous) !== expectedPrevious) unevaluable.push(`adjacent revision must be ${expectedPrevious}`);
+  if (matrixRevision(candidate) !== stage) unevaluable.push(`candidate revision must be ${stage}`);
+  const adjacent = compareReviewMatrix(previous, candidate); const final = compareReviewMatrix(pr1, candidate);
+  const comparisonPass = (report) => report.evaluable && report.qualityPass;
+  const pass = !unevaluable.length && comparisonPass(adjacent) && comparisonPass(final) && (stage !== 'pr5' || final.tokenPass);
+  return { pass, finalThresholdApplied: stage === 'pr5', unevaluable, adjacent, final };
+}
+
+module.exports = { compareReviewResults, compareReviewMatrix, compareReviewStage, interval, median };
