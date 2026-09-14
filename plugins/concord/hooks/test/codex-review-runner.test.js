@@ -326,6 +326,16 @@ test('fix subprocess writes the prompt-declared artifact consumed by commit-fix'
   assert.ok(h.calls.some((call) => call[0] === 'cli' && call[1] === 'commit-fix'));
 });
 
+test('runner fails closed when a required reviewer subprocess is terminated by a signal', async () => {
+  const h = harness();
+  const spawn = (input) => input.role === 'correctness' ? { status: null } : h.spawn(input);
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn }),
+    /harness-failure: correctness subprocess exited null/,
+  );
+  assert.strictEqual(h.calls.some((call) => call[0] === 'spawn' && call[1] === 'verify'), false);
+});
+
 test('gate-verify subprocess failure stays lenient and lets the CLI decide', async () => {
   const h = harness({ gateApplied: true, failingRole: 'gate-verify' });
   const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });

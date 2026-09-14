@@ -121,7 +121,7 @@ function reviewerPrompt(role, { stateDir, round, targetType, dodPassed, dodDefer
 
 async function invoke(spawn, input) {
   const result = await spawn(input);
-  if (result && result.status != null && result.status !== 0) throw new Error(`harness-failure: ${input.role} subprocess exited ${result.status}`);
+  if (result && result.status !== 0) throw new Error(`harness-failure: ${input.role} subprocess exited ${result.status}`);
 }
 
 async function runReviewUntilGreen(options) {
