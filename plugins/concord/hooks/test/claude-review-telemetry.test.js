@@ -207,6 +207,24 @@ test('stores repeated SubagentStop observations append-only and folds the invoca
   assert.strictEqual(ledger.telemetry.entries[0].usagePartial, true);
 });
 
+test('marks repeated terminal tool hooks partial instead of discarding the duplicate', () => {
+  const { transcript, stateDir } = setup();
+  const prompt = `Write ONLY to ${path.join(stateDir, 'round-2-correctness.json')}`;
+  const childTranscript = writeSubagentTranscript(transcript, [
+    assistantRow({ requestId: 'req-1', messageId: 'msg-1', input: 100, create: 20, read: 30, output: 15 }),
+  ]);
+  const completed = core.recordForEvent(event({ transcript, prompt, response: successfulResponse() }), stateDir);
+  assert.strictEqual(core.writeRecord(stateDir, completed), true);
+  assert.strictEqual(core.writeRecord(stateDir, completed), false);
+  core.writeRecord(stateDir, core.recordForEvent({
+    hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-7', agent_transcript_path: childTranscript,
+  }, stateDir));
+
+  const ledger = reviewTelemetry.foldTelemetry(stateDir, JSON.parse(fs.readFileSync(path.join(stateDir, 'review-feat-x.json'), 'utf8')));
+
+  assert.strictEqual(ledger.telemetry.entries[0].usagePartial, true);
+});
+
 test('retains successful PostToolUse usage as a partial final-request audit', () => {
   const { transcript, stateDir } = setup();
   const prompt = `Write ONLY to ${path.join(stateDir, 'round-2-correctness.json')}`;
@@ -278,6 +296,33 @@ test('retains failed and inconsistent invocations as partial telemetry', () => {
   const inconsistent = core.recordForEvent(event({ transcript, id: 'bad-total', prompt, response }), stateDir);
   assert.strictEqual(inconsistent.usagePartial, true);
   assert.strictEqual(inconsistent.totalTokens, 999);
+});
+
+test('folding a complete hook with an unreadable transcript is fail-soft and partial', () => {
+  const { transcript, stateDir } = setup();
+  const prompt = `Write ONLY to ${path.join(stateDir, 'round-2-correctness.json')}`;
+  core.writeRecord(stateDir, core.recordForEvent(event({ transcript, prompt, response: successfulResponse() }), stateDir));
+  const partial = core.recordForEvent({
+    hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-7', agent_transcript_path: path.join(path.dirname(transcript), 'missing.jsonl'),
+  }, stateDir);
+  core.writeRecord(stateDir, partial);
+
+  const ledger = reviewTelemetry.foldTelemetry(stateDir, JSON.parse(fs.readFileSync(path.join(stateDir, 'review-feat-x.json'), 'utf8')));
+
+  assert.strictEqual(ledger.telemetry.calls, 1);
+  assert.strictEqual(ledger.telemetry.partialCalls, 1);
+});
+
+test('a malformed telemetry artifact cannot disappear into a clean fold', () => {
+  const { stateDir } = setup();
+  const ledger = JSON.parse(fs.readFileSync(path.join(stateDir, 'review-feat-x.json'), 'utf8'));
+  ledger.telemetrySlots = [{ artifactPath: path.join(stateDir, 'round-2-correctness.json'), attempt: 1, role: 'correctness', round: 2 }];
+  fs.writeFileSync(path.join(stateDir, `review-telemetry-${'f'.repeat(64)}.json`), 'not json');
+
+  const folded = reviewTelemetry.foldTelemetry(stateDir, ledger);
+
+  assert.strictEqual(folded.telemetry.partialCalls, 2);
+  assert.ok(folded.telemetry.entries.some((entry) => entry.status === 'malformed'));
 });
 
 test('ignores unrelated prompts, inactive rounds, unsupported tools, and path traversal', () => {

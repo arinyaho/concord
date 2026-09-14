@@ -43,7 +43,7 @@ function joinAgentUsage(tool, agent) {
     reasoningOutputTokens: null,
     outputTokens: agentUsage.outputTokens,
     totalTokens: agentUsage.totalTokens,
-    usagePartial: agentUsage.usagePartial || hookDisagrees || modelDisagrees,
+    usagePartial: agentUsage.usagePartial || hookDisagrees || modelDisagrees || tool.duplicateEvidence === true,
     providerUsage: agentUsage.providerUsage,
   };
 }
@@ -54,6 +54,7 @@ function foldTelemetry(stateDir, ledger) {
   try { names = fs.readdirSync(stateDir); } catch { return ledger; }
   const tools = new Map((ledger.telemetry?.entries || []).filter((entry) => typeof entry?.invocationId === 'string').map((entry) => [entry.invocationId, { kind: 'tool-use', ...entry }]));
   const agents = new Map();
+  const malformed = [];
   for (const name of names) {
     try {
       if (/^review-telemetry-[0-9a-f]{64}\.json$/.test(name)) {
@@ -68,14 +69,18 @@ function foldTelemetry(stateDir, ledger) {
         }
       }
     } catch {
-      // Malformed telemetry cannot affect review behavior.
+      if (/^review-(?:agent-)?telemetry-[0-9a-f]{64}\.json$/.test(name)) malformed.push({
+        engine: 'claude-code', role: 'unknown', round: null, invocationId: null, status: 'malformed', usagePartial: true,
+        artifactPath: path.join(stateDir, name), elapsedMs: null, inputTokens: null, cacheWriteInputTokens: null,
+        cachedInputTokens: null, reasoningOutputTokens: null, outputTokens: null, totalTokens: null,
+      });
     }
   }
   let entries = Array.from(tools.values(), (tool) => {
     const observations = agents.get(tool.agentId) || [];
     const joined = joinAgentUsage(tool, observations.length === 1 ? observations[0] : observations.at(-1));
     return observations.length > 1 ? { ...joined, usagePartial: true } : joined;
-  });
+  }).concat(malformed);
   const slots = Array.isArray(ledger.telemetrySlots) ? ledger.telemetrySlots : [];
   if (slots.length) {
     const keyed = new Map();

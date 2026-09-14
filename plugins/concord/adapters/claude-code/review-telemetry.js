@@ -258,8 +258,13 @@ function writeRecord(stateDir, record) {
     try {
       const existing = JSON.parse(fs.readFileSync(destination, 'utf8'));
       if ((existing.status === 'started' && record.status !== 'started') || (existing.usagePartial && !record.usagePartial)) {
+        if (existing.duplicateEvidence) fs.writeFileSync(temporary, JSON.stringify({ ...record, duplicateEvidence: true, usagePartial: true }));
         fs.renameSync(temporary, destination);
         return true;
+      }
+      if (record.kind === 'tool-use') {
+        fs.writeFileSync(temporary, JSON.stringify({ ...existing, duplicateEvidence: true, usagePartial: true }));
+        fs.renameSync(temporary, destination);
       }
     } catch {
       // Preserve malformed evidence for operator inspection.

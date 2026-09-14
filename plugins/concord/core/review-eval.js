@@ -85,14 +85,20 @@ function compareReviewResults(baseline, candidate, options = {}) {
       if (!Array.isArray(scenario[field]) || scenario[field].some((value) => typeof value !== 'string')) note(`scenario ${field} is invalid: ${scenarioId}`);
     }
     for (const metadata of [scenario, other]) {
-      const identities = sorted([...(metadata.seededDefects || []), ...(metadata.confirmedDefects || []), ...(metadata.requiredFixes || []), ...(metadata.nonDefects || [])]);
+      const classifications = ['seededDefects', 'confirmedDefects', 'requiredFixes', 'nonDefects'];
+      const identities = sorted(classifications.flatMap((field) => metadata[field] || []));
       for (const id of identities) if (!validId(id, scenarioId)) note(`scenario identity is not qualified: ${scenarioId}:${id}`);
+      const defects = new Set(['seededDefects', 'confirmedDefects', 'requiredFixes'].flatMap((field) => metadata[field] || []));
+      for (const id of metadata.nonDefects || []) if (defects.has(id)) note(`scenario finding classifications overlap: ${scenarioId}:${id}`);
       const expectedProbes = new Set(metadata.expectedProbes || []);
-      for (const id of sorted([...(metadata.seededDefects || []), ...(metadata.confirmedDefects || []), ...(metadata.requiredFixes || [])])) {
+      const mappedIdentities = sorted([...(metadata.seededDefects || []), ...(metadata.confirmedDefects || []), ...(metadata.requiredFixes || [])]);
+      for (const id of mappedIdentities) {
         const probes = metadata.probesByFinding?.[id];
         if (!Array.isArray(probes) || !probes.length) note(`scenario probesByFinding missing: ${scenarioId}:${id}`);
         else if (probes.some((probe) => !expectedProbes.has(probe))) note(`scenario probesByFinding unknown probe: ${scenarioId}:${id}`);
       }
+      for (const id of Object.keys(metadata.probesByFinding || {})) if (!mappedIdentities.includes(id)) note(`scenario probesByFinding has unknown identity: ${scenarioId}:${id}`);
+      for (const terminal of metadata.allowedTerminalOutcomes || []) if (!TERMINALS.includes(terminal)) note(`scenario terminal is invalid: ${scenarioId}:${terminal}`);
     }
     for (const terminal of scenario.allowedTerminalOutcomes || []) frozenTerminals.add(terminal);
   }
@@ -113,6 +119,9 @@ function compareReviewResults(baseline, candidate, options = {}) {
         if (typeof run[field] !== 'string' || !run[field]) note(`${name} isolation identity is missing: ${key}:${field}`);
         else if (seen.has(run[field])) note(`${name} isolation identity is reused: ${run[field]}`); else seen.add(run[field]);
       }
+      const expectedProbes = manifest.scenarios?.[run.scenarioId]?.expectedProbes || [];
+      if (!run.expectedProbeResults || typeof run.expectedProbeResults !== 'object' || Array.isArray(run.expectedProbeResults) ||
+          !same(Object.keys(run.expectedProbeResults).sort(), [...expectedProbes].sort()) || Object.values(run.expectedProbeResults).some((value) => typeof value !== 'boolean')) note(`${name} probe results mismatch: ${key}`);
       validateTelemetry(name, key, engine, run, note);
     }
     return { runs: result, seeds, isolated };
@@ -258,14 +267,20 @@ function compareReviewStage(stage, pr1, previous, candidate) {
       for (const field of ['randomSeed', 'parentSessionId', 'checkoutId', 'artifactDirectoryId']) if (typeof run[field] === 'string') run[field] += '-validation';
     }
     const validation = compareReviewMatrix(pr1, replay);
-    return { pass: validation.evaluable && validation.qualityPass, finalThresholdApplied: false, unevaluable: validation.unevaluable, validation };
+    const unevaluable = [...validation.unevaluable];
+    if (!matrixRevision(pr1)) unevaluable.push('PR1 revision is missing or inconsistent across engines');
+    return { pass: !unevaluable.length && validation.evaluable && validation.qualityPass, finalThresholdApplied: false, unevaluable, validation };
   }
   if (!/^pr[2-5]$/.test(stage)) return { pass: false, unevaluable: [`unsupported comparison stage: ${stage}`] };
-  const number = Number(stage.slice(2)); const expectedPrevious = `pr${number - 1}`;
+  const number = Number(stage.slice(2));
   const unevaluable = [];
-  if (matrixRevision(pr1) !== 'pr1') unevaluable.push('frozen baseline revision must be pr1');
-  if (matrixRevision(previous) !== expectedPrevious) unevaluable.push(`adjacent revision must be ${expectedPrevious}`);
-  if (matrixRevision(candidate) !== stage) unevaluable.push(`candidate revision must be ${stage}`);
+  const pr1Revision = matrixRevision(pr1); const previousRevision = matrixRevision(previous); const candidateRevision = matrixRevision(candidate);
+  if (!pr1Revision) unevaluable.push('PR1 revision is missing or inconsistent across engines');
+  if (!previousRevision) unevaluable.push('preceding revision is missing or inconsistent across engines');
+  if (!candidateRevision) unevaluable.push('candidate revision is missing or inconsistent across engines');
+  if (number === 2 && pr1Revision && previousRevision && pr1Revision !== previousRevision) unevaluable.push('PR2 preceding revision must match the frozen PR1 revision');
+  if (candidateRevision && previousRevision && candidateRevision === previousRevision) unevaluable.push('candidate revision must differ from the preceding revision');
+  if (number > 2 && pr1Revision && previousRevision && pr1Revision === previousRevision) unevaluable.push('preceding revision must differ from the frozen PR1 revision');
   const adjacent = compareReviewMatrix(previous, candidate); const final = compareReviewMatrix(pr1, candidate);
   const comparisonPass = (report) => report.evaluable && report.qualityPass;
   const pass = !unevaluable.length && comparisonPass(adjacent) && comparisonPass(final) && (stage !== 'pr5' || final.tokenPass);

@@ -148,6 +148,23 @@ test('hasExecutableDoD false is the sole exemption and probesByFinding is total'
   assert.ok(report.unevaluable.includes('scenario probesByFinding missing: seeded:seeded::bug'));
 });
 
+test('scenario classifications, terminal enums, mappings, and probe results are strict', () => {
+  const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
+  for (const side of [baseline, candidate]) {
+    const scenario = side.engines.codex.scenarios.seeded;
+    scenario.nonDefects.push('seeded::bug');
+    scenario.allowedTerminalOutcomes.push('typo-terminal');
+    scenario.probesByFinding['seeded::extra'] = ['probe:seeded'];
+    const run = side.engines.codex.runs.find((item) => item.scenarioId === 'seeded' && item.repetition === 0);
+    run.expectedProbeResults.extra = true;
+  }
+  const report = compareReviewMatrix(baseline, candidate).engines.codex;
+  assert.ok(report.unevaluable.includes('scenario finding classifications overlap: seeded:seeded::bug'));
+  assert.ok(report.unevaluable.includes('scenario terminal is invalid: seeded:typo-terminal'));
+  assert.ok(report.unevaluable.includes('scenario probesByFinding has unknown identity: seeded:seeded::extra'));
+  assert.ok(report.unevaluable.includes('baseline probe results mismatch: seeded#0'));
+});
+
 test('resolved model disagreement is unevaluable while Codex unavailable is disclosed', () => {
   const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
   candidate.engines['claude-code'].runs.find((run) => run.scenarioId === 'seeded' && run.repetition === 0).resolvedModel = 'different';
@@ -179,6 +196,14 @@ test('PR2-4 report token progress after adjacent and PR1 quality gates', () => {
   const report = compareReviewStage('pr2', matrix('baseline', 'pr1', 100), matrix('baseline', 'pr1', 100), matrix('candidate', 'pr2', 95));
   assert.strictEqual(report.pass, true); assert.strictEqual(report.finalThresholdApplied, false);
   assert.strictEqual(report.adjacent.engines.codex.gates.tokens.medianPairedChange, -0.05);
+});
+
+test('stage comparisons accept exact commit revisions rather than PR labels', () => {
+  const pr1 = matrix('baseline', 'a'.repeat(40));
+  const candidate = matrix('candidate', 'b'.repeat(40));
+  assert.strictEqual(compareReviewStage('pr2', pr1, structuredClone(pr1), candidate).pass, true);
+  const repeated = compareReviewStage('pr2', pr1, structuredClone(pr1), matrix('candidate', 'a'.repeat(40)));
+  assert.ok(repeated.unevaluable.includes('candidate revision must differ from the preceding revision'));
 });
 
 test('PR5 applies final thresholds only against exact PR1', () => {
