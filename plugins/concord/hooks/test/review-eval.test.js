@@ -65,8 +65,8 @@ function manifest(engine, side, revision, total = side === 'baseline' ? 100 : 60
   };
 }
 
-function matrix(side, revision, total) {
-  return { schemaVersion: 2, engines: {
+function matrix(side, revision, total, precedingRevision) {
+  return { schemaVersion: 2, ...(precedingRevision ? { precedingRevision } : {}), engines: {
     'claude-code': manifest('claude-code', side, revision, total),
     codex: manifest('codex', side, revision, total),
   } };
@@ -203,21 +203,36 @@ test('a strong Codex result cannot hide a Claude regression or missing engine', 
 });
 
 test('PR2-4 report token progress after adjacent and PR1 quality gates', () => {
-  const report = compareReviewStage('pr2', matrix('baseline', 'pr1', 100), matrix('baseline', 'pr1', 100), matrix('candidate', 'pr2', 95));
+  const pr1Revision = 'a'.repeat(40);
+  const report = compareReviewStage('pr2', matrix('baseline', pr1Revision, 100), matrix('baseline', pr1Revision, 100), matrix('candidate', 'b'.repeat(40), 95, pr1Revision));
   assert.strictEqual(report.pass, true); assert.strictEqual(report.finalThresholdApplied, false);
   assert.strictEqual(report.adjacent.engines.codex.gates.tokens.medianPairedChange, -0.05);
 });
 
 test('stage comparisons accept exact commit revisions rather than PR labels', () => {
-  const pr1 = matrix('baseline', 'a'.repeat(40));
-  const candidate = matrix('candidate', 'b'.repeat(40));
+  const pr1Revision = 'a'.repeat(40);
+  const pr1 = matrix('baseline', pr1Revision);
+  const candidate = matrix('candidate', 'b'.repeat(40), undefined, pr1Revision);
   assert.strictEqual(compareReviewStage('pr2', pr1, structuredClone(pr1), candidate).pass, true);
-  const repeated = compareReviewStage('pr2', pr1, structuredClone(pr1), matrix('candidate', 'a'.repeat(40)));
+  const repeated = compareReviewStage('pr2', pr1, structuredClone(pr1), matrix('candidate', pr1Revision, undefined, pr1Revision));
   assert.ok(repeated.unevaluable.includes('candidate revision must differ from the preceding revision'));
+  const labelled = compareReviewStage('pr2', matrix('baseline', 'pr1'), matrix('baseline', 'pr1'), matrix('candidate', 'pr2', undefined, 'pr1'));
+  assert.ok(labelled.unevaluable.includes('PR1 revision is missing or inconsistent across engines'));
+});
+
+test('stage comparison rejects a previous matrix unrelated to the candidate chain', () => {
+  const pr1 = matrix('baseline', 'a'.repeat(40));
+  const candidate = matrix('candidate', 'c'.repeat(40));
+  candidate.precedingRevision = 'b'.repeat(40);
+
+  const report = compareReviewStage('pr3', pr1, matrix('baseline', 'd'.repeat(40)), candidate);
+  assert.strictEqual(report.pass, false);
+  assert.ok(report.unevaluable.includes('candidate preceding revision does not match the measured preceding revision'));
 });
 
 test('PR5 applies final thresholds only against exact PR1', () => {
-  const report = compareReviewStage('pr5', matrix('baseline', 'pr1', 100), matrix('baseline', 'pr4', 65), matrix('candidate', 'pr5', 60));
+  const pr4Revision = 'd'.repeat(40);
+  const report = compareReviewStage('pr5', matrix('baseline', 'a'.repeat(40), 100), matrix('baseline', pr4Revision, 65), matrix('candidate', 'e'.repeat(40), 60, pr4Revision));
   assert.strictEqual(report.pass, true);
   assert.strictEqual(report.adjacent.engines.codex.gates.tokens.pass, false);
   assert.strictEqual(report.final.engines.codex.gates.tokens.pass, true);
@@ -225,7 +240,8 @@ test('PR5 applies final thresholds only against exact PR1', () => {
 
 test('review-eval CLI requires stage', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-eval-'));
-  for (const [name, value] of [['pr1', matrix('baseline', 'pr1', 100)], ['pr4', matrix('baseline', 'pr4', 65)], ['pr5', matrix('candidate', 'pr5', 60)]]) fs.writeFileSync(path.join(dir, `${name}.json`), JSON.stringify(value));
+  const pr4Revision = 'd'.repeat(40);
+  for (const [name, value] of [['pr1', matrix('baseline', 'a'.repeat(40), 100)], ['pr4', matrix('baseline', pr4Revision, 65)], ['pr5', matrix('candidate', 'e'.repeat(40), 60, pr4Revision)]]) fs.writeFileSync(path.join(dir, `${name}.json`), JSON.stringify(value));
   const cli = path.resolve(__dirname, '../../../concord-codex/bin/review-eval.js');
   const result = spawnSync(process.execPath, [cli, '--stage', 'pr5', path.join(dir, 'pr1.json'), path.join(dir, 'pr4.json'), path.join(dir, 'pr5.json')], { encoding: 'utf8' });
   assert.strictEqual(result.status, 0, result.stderr); assert.strictEqual(JSON.parse(result.stdout).pass, true);

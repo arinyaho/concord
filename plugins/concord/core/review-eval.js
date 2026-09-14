@@ -258,8 +258,8 @@ function compareReviewMatrix(baseline, candidate) {
 }
 
 function matrixRevision(matrix) {
-  const revisions = new Set(REQUIRED_ENGINES.map((engine) => matrix?.engines?.[engine]?.toolRevision).filter(Boolean));
-  return revisions.size === 1 ? [...revisions][0] : null;
+  const revisions = REQUIRED_ENGINES.map((engine) => matrix?.engines?.[engine]?.toolRevision);
+  return revisions.every((revision) => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(revision)) && new Set(revisions).size === 1 ? revisions[0] : null;
 }
 
 function compareReviewStage(stage, pr1, previous, candidate) {
@@ -277,12 +277,14 @@ function compareReviewStage(stage, pr1, previous, candidate) {
   const number = Number(stage.slice(2));
   const unevaluable = [];
   const pr1Revision = matrixRevision(pr1); const previousRevision = matrixRevision(previous); const candidateRevision = matrixRevision(candidate);
+  const candidatePrecedingRevision = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(candidate?.precedingRevision) ? candidate.precedingRevision : null;
   if (!pr1Revision) unevaluable.push('PR1 revision is missing or inconsistent across engines');
   if (!previousRevision) unevaluable.push('preceding revision is missing or inconsistent across engines');
   if (!candidateRevision) unevaluable.push('candidate revision is missing or inconsistent across engines');
+  if (!candidatePrecedingRevision) unevaluable.push('candidate preceding revision is missing or invalid');
   if (number === 2 && pr1Revision && previousRevision && pr1Revision !== previousRevision) unevaluable.push('PR2 preceding revision must match the frozen PR1 revision');
   if (candidateRevision && previousRevision && candidateRevision === previousRevision) unevaluable.push('candidate revision must differ from the preceding revision');
-  if (number > 2 && pr1Revision && previousRevision && pr1Revision === previousRevision) unevaluable.push('preceding revision must differ from the frozen PR1 revision');
+  if (candidatePrecedingRevision && previousRevision && candidatePrecedingRevision !== previousRevision) unevaluable.push('candidate preceding revision does not match the measured preceding revision');
   const adjacent = compareReviewMatrix(previous, candidate); const final = compareReviewMatrix(pr1, candidate);
   const comparisonPass = (report) => report.evaluable && report.qualityPass;
   const pass = !unevaluable.length && comparisonPass(adjacent) && comparisonPass(final) && (stage !== 'pr5' || final.tokenPass);
