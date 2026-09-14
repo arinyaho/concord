@@ -76,7 +76,7 @@ function compareReviewResults(baseline, candidate) {
       if (!run.scenarioId || !Number.isInteger(run.repetition) || run.repetition < 0) note(`${name} run identity is invalid: ${runKey}`);
       if (result.has(runKey)) note(`${name} duplicate run: ${runKey}`);
       result.set(runKey, run);
-      if (run.independent !== true || !run.randomSeed) note(`${name} run is not independently identified: ${runKey}`);
+      if (run.independent !== true || typeof run.randomSeed !== 'string' || !run.randomSeed) note(`${name} run is not independently identified: ${runKey}`);
       else if (seeds.has(run.randomSeed)) note(`${name} random seed is reused: ${run.randomSeed}`);
       seeds.add(run.randomSeed);
     }

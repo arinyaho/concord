@@ -47,6 +47,20 @@ test('paired evaluator fails closed on malformed runs', () => {
   }
 });
 
+test('paired evaluator rejects non-string random seeds', () => {
+  for (const seed of [{ replayed: true }, ['replayed']]) {
+    const baseline = read('baseline.json');
+    baseline.runs[0].randomSeed = structuredClone(seed);
+    baseline.runs[1].randomSeed = structuredClone(seed);
+    const report = compareReviewResults(baseline, read('candidate.json'));
+    assert.strictEqual(report.pass, false);
+    assert.deepStrictEqual(report.unevaluable, [
+      'baseline run is not independently identified: seeded#0',
+      'baseline run is not independently identified: seeded#1',
+    ]);
+  }
+});
+
 test('paired evaluator rejects fabricated fixed finding identities', () => {
   const baseline = read('baseline.json');
   const candidate = read('candidate.json');
