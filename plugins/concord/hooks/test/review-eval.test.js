@@ -47,6 +47,16 @@ test('paired evaluator fails closed on malformed runs', () => {
   }
 });
 
+test('paired evaluator rejects fabricated fixed finding identities', () => {
+  const baseline = read('baseline.json');
+  const candidate = read('candidate.json');
+  baseline.runs[0].fixedFindings = ['correctness:fabricated-repair'];
+  candidate.runs[0].fixedFindings = ['correctness:fabricated-repair'];
+  const report = compareReviewResults(baseline, candidate);
+  assert.strictEqual(report.pass, false);
+  assert.ok(report.unevaluable.includes('unadjudicated fixed identity: seeded#0:correctness:fabricated-repair'));
+});
+
 test('paired evaluator rejects a candidate-only false clean by pair identity', () => {
   const baseline = read('baseline.json');
   const candidate = read('candidate.json');

@@ -122,6 +122,7 @@ function compareReviewResults(baseline, candidate) {
       if (!['passed', 'failed', 'deferred', 'not-run'].includes(run.dod)) note(`${name} DoD result invalid: ${pairKey}`);
       if (!['clean', 'parked', 'abandoned', 'intent-review', 'gate-pending', 'budget-stopped', 'harness-failure'].includes(run.terminal)) note(`${name} terminal outcome invalid: ${pairKey}`);
       if (!Array.isArray(run.fixedFindings) || run.fixedFindings.some((id) => typeof id !== 'string')) note(`${name} fixed findings missing: ${pairKey}`);
+      else for (const id of run.fixedFindings) if (!declared.has(id)) note(`unadjudicated fixed identity: ${pairKey}:${id}`);
       if (!run.telemetry || run.telemetry.partialCalls !== 0) note(`partial usage: ${pairKey}`);
       if (!Number.isFinite(run.telemetry?.totalTokens) || run.telemetry.totalTokens < 0 || !Number.isFinite(run.parentProxyTokens) || run.parentProxyTokens < 0) note(`token total invalid: ${pairKey}`);
       if (!Number.isSafeInteger(run.telemetry?.calls) || run.telemetry.calls < 0) note(`${name} subprocess count invalid: ${pairKey}`);
