@@ -54,17 +54,22 @@ test('codexExec starts subprocesses asynchronously so panel work can overlap', a
 test('codexExec parses documented turn.completed usage without retaining agent output', async () => {
   const binDir = temp();
   const codex = path.join(binDir, 'codex');
-  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.154.0\\n');\nelse { process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'discard me' } }) + '\\n');\nprocess.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 120, cached_input_tokens: 20, cache_write_input_tokens: 5, output_tokens: 7, reasoning_output_tokens: 3 } }) + '\\n'); }\n`);
+  const capture = path.join(binDir, 'args.json');
+  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.154.0\\n');\nelse { require('node:fs').writeFileSync(${JSON.stringify(capture)}, JSON.stringify(process.argv.slice(2)));\nprocess.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'discard me' } }) + '\\n');\nprocess.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 120, cached_input_tokens: 20, cache_write_input_tokens: 5, output_tokens: 7, reasoning_output_tokens: 3 } }) + '\\n'); }\n`);
   fs.chmodSync(codex, 0o755);
   const previousPath = process.env.PATH;
   process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
   try {
-    const result = await codexExec({ role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir });
+    const result = await codexExec({ role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir, requestedModel: 'gpt-5.1-codex' });
+    const args = JSON.parse(fs.readFileSync(capture, 'utf8'));
+    assert.deepStrictEqual(args.slice(args.indexOf('--model'), args.indexOf('--model') + 2), ['--model', 'gpt-5.1-codex']);
     assert.strictEqual(result.status, 0);
     assert.strictEqual(result.role, 'correctness');
     assert.strictEqual(result.engine, 'codex');
     assert.strictEqual(result.provider, 'openai');
     assert.strictEqual(result.providerSchema, 'codex-exec-json-v1');
+    assert.strictEqual(result.requestedModel, 'gpt-5.1-codex');
+    assert.strictEqual(result.resolvedModel, 'unavailable');
     assert.match(result.invocationId, /^[0-9a-f-]{36}$/);
     assert.ok(Number.isFinite(result.elapsedMs) && result.elapsedMs >= 0);
     assert.strictEqual(result.usagePartial, false);
@@ -239,7 +244,7 @@ test('runner reports aggregate and per-role subprocess telemetry', async () => {
     usagePartial: false,
   });
 
-  const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn });
+  const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn, model: 'gpt-5.1-codex' });
 
   assert.deepStrictEqual(out.telemetry, {
     total: {
@@ -259,9 +264,9 @@ test('runner reports aggregate and per-role subprocess telemetry', async () => {
       fix: { calls: 1, partialCalls: 0, reasoningOutputTokens: 0, ...usageByRole.fix, elapsedMs: 30 },
     },
     invocations: [
-      { role: 'correctness', round: 1, model: null, resolvedModel: null, reasoningEffort: null, status: 0, usagePartial: false, ...usageByRole.correctness, reasoningOutputTokens: 0, elapsedMs: 10, artifactPath: path.join(h.stateDir, 'round-1-correctness.json'), attempt: 1 },
-      { role: 'verify', round: 1, model: null, resolvedModel: null, reasoningEffort: null, status: 0, usagePartial: false, ...usageByRole.verify, reasoningOutputTokens: 0, elapsedMs: 20, artifactPath: path.join(h.stateDir, 'round-1-verify.json'), attempt: 1 },
-      { role: 'fix', round: 1, model: null, resolvedModel: null, reasoningEffort: null, status: 0, usagePartial: false, ...usageByRole.fix, reasoningOutputTokens: 0, elapsedMs: 30, artifactPath: path.join(h.stateDir, 'round-1-fix-correctness:bug.json'), attempt: 1 },
+      { role: 'correctness', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: null, status: 0, usagePartial: false, ...usageByRole.correctness, reasoningOutputTokens: 0, elapsedMs: 10, artifactPath: path.join(h.stateDir, 'round-1-correctness.json'), attempt: 1 },
+      { role: 'verify', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: null, status: 0, usagePartial: false, ...usageByRole.verify, reasoningOutputTokens: 0, elapsedMs: 20, artifactPath: path.join(h.stateDir, 'round-1-verify.json'), attempt: 1 },
+      { role: 'fix', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: null, status: 0, usagePartial: false, ...usageByRole.fix, reasoningOutputTokens: 0, elapsedMs: 30, artifactPath: path.join(h.stateDir, 'round-1-fix-correctness:bug.json'), attempt: 1 },
     ],
   });
   assert.match(out.handoff, /usage: 3 calls, 0 partial, 666 tokens, 60ms/);
@@ -849,7 +854,7 @@ test('Codex launcher recognizes documented broad-review phrases without consumin
   }
 });
 
-test('Codex launcher forwards --no-dod without consuming it as a target argument', () => {
+test('Codex launcher forwards --no-dod and --model without consuming them as target arguments', () => {
   const dir = temp();
   const capture = path.join(dir, 'options.json');
   const preload = path.join(dir, 'capture-runner.js');
@@ -866,11 +871,12 @@ test('Codex launcher forwards --no-dod without consuming it as a target argument
       return load.apply(this, arguments);
     };
   `);
-  execFileSync('node', ['--require', preload, bin, 'feature/x', '--no-dod'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
+  execFileSync('node', ['--require', preload, bin, 'feature/x', '--no-dod', '--model', 'gpt-5.1-codex'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
   const options = JSON.parse(fs.readFileSync(capture, 'utf8'));
   assert.strictEqual(options.ref, 'feature/x');
   assert.strictEqual(options.base, undefined); // the flag must not be mistaken for base
   assert.strictEqual(options.noDod, true);
+  assert.strictEqual(options.model, 'gpt-5.1-codex');
 
   fs.rmSync(capture, { force: true });
   execFileSync('node', ['--require', preload, bin, 'feature/x'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });

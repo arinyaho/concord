@@ -54,14 +54,16 @@ function sameKeys(actual, expected) {
   return actual.length === expected.length && [...actual].sort().every((key, index) => key === [...expected].sort()[index]);
 }
 
-function codexExec({ role, prompt, repoRoot, stateDir }) {
+function codexExec({ role, prompt, repoRoot, stateDir, requestedModel }) {
   return new Promise((resolve, reject) => {
     const invocationId = crypto.randomUUID();
     const startedAt = Date.now();
+    const model = typeof requestedModel === 'string' && requestedModel.trim() ? requestedModel : null;
     let cliVersion = null;
     try { cliVersion = execFileSync('codex', ['--version'], { cwd: repoRoot, encoding: 'utf8', timeout: 5000 }).trim(); } catch {}
     const child = spawn('codex', [
       'exec', '--cd', repoRoot, '--sandbox', 'workspace-write', '--add-dir', stateDir,
+      ...(model ? ['--model', model] : []),
       '--skip-git-repo-check', '--json', prompt,
     ], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] });
     let pending = '';
@@ -103,7 +105,7 @@ function codexExec({ role, prompt, repoRoot, stateDir }) {
       const normalized = normalizeUsage(usage);
       resolve({
         status, role, engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', cliVersion,
-        resolvedModel: 'unavailable', invocationId, elapsedMs: Date.now() - startedAt,
+        requestedModel: model, resolvedModel: 'unavailable', invocationId, elapsedMs: Date.now() - startedAt,
         ...normalized,
         usagePartial: normalized.usagePartial || streamPartial || completionCount !== 1 || status !== 0,
         evidence: { collaboration: collaborationEvidenceCount, errors: errorEvidenceCount },
@@ -210,7 +212,7 @@ async function runReviewUntilGreen(options) {
       for (const key of Object.keys(values)) target[key] += values[key];
     }
     telemetry.invocations.push({
-      role, round: currentRound, model: result?.requestedModel || null, resolvedModel: result?.resolvedModel || null, reasoningEffort: result?.reasoningEffort || null,
+      role, round: currentRound, model: input.requestedModel || result?.requestedModel || null, resolvedModel: result?.resolvedModel || null, reasoningEffort: result?.reasoningEffort || null,
       status: result && Number.isInteger(result.status) ? result.status : null,
       usagePartial: partial, ...values,
       ...(input.telemetrySlot || {}),
@@ -322,7 +324,7 @@ async function runReviewUntilGreen(options) {
         try { telemetrySlot = await cli(['telemetry-slot', ref, artifactPath]); }
         catch (error) { if (!options.runCli) throw error; }
       }
-      return invoke(spawn, { ...input, ...(telemetrySlot ? { telemetrySlot } : {}) });
+      return invoke(spawn, { ...input, ...(options.model ? { requestedModel: options.model } : {}), ...(telemetrySlot ? { telemetrySlot } : {}) });
     };
 
     const runArtifactReviewer = async (role) => {
