@@ -17,16 +17,53 @@ function jsonCli(cliPath, args, repoRoot) {
   try { return JSON.parse(out); } catch (e) { throw new Error(`harness-failure: review-cli ${args[0]} returned non-JSON output`); }
 }
 
+function normalizeUsage(raw) {
+  const number = (value) => Number.isFinite(value) && value >= 0 ? value : null;
+  const inputTokens = number(raw && raw.input_tokens);
+  const cachedInputTokens = number(raw && raw.cached_input_tokens);
+  const reasoningOutputTokens = number(raw && raw.reasoning_output_tokens);
+  const outputTokens = number(raw && raw.output_tokens);
+  const reportedTotal = number(raw && raw.total_tokens);
+  const usagePartial = [inputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens].some((value) => value === null);
+  const usage = {
+    inputTokens,
+    cachedInputTokens,
+    reasoningOutputTokens,
+    outputTokens,
+    totalTokens: reportedTotal === null && !usagePartial
+      ? inputTokens + reasoningOutputTokens + outputTokens
+      : reportedTotal,
+  };
+  return { usage, usagePartial: usagePartial || usage.totalTokens === null };
+}
+
 function codexExec({ role, prompt, repoRoot, stateDir }) {
   return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
     const child = spawn('codex', [
       'exec', '--cd', repoRoot, '--sandbox', 'workspace-write', '--add-dir', stateDir,
-      '--skip-git-repo-check', prompt,
-    ], { cwd: repoRoot, stdio: 'ignore' });
+      '--skip-git-repo-check', '--json', prompt,
+    ], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] });
+    let pending = '';
+    let usage;
+    const consume = (line) => {
+      if (!line.trim()) return;
+      try {
+        const event = JSON.parse(line);
+        if (event.type === 'turn.completed' && event.usage) usage = event.usage;
+      } catch (_) { /* malformed telemetry is reported as partial, not as reviewer success */ }
+    };
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      pending += chunk;
+      const lines = pending.split(/\r?\n/);
+      pending = lines.pop();
+      for (const line of lines) consume(line);
+    });
     child.once('error', reject);
     child.once('close', (status) => {
-      if (status !== 0) reject(new Error(`harness-failure: ${role} subprocess exited ${status}`));
-      else resolve({ status });
+      consume(pending);
+      resolve({ status, role, elapsedMs: Date.now() - startedAt, ...normalizeUsage(usage) });
     });
   });
 }
@@ -87,7 +124,41 @@ async function runReviewUntilGreen(options) {
   const { ref, base, broad = false, noBroad = false, noDod = false, resume = false, repoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
   if (!ref) throw new Error('review-until-green: missing target ref');
   const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot));
-  const spawn = options.spawn || ((input) => codexExec(input));
+  const rawSpawn = options.spawn || ((input) => codexExec(input));
+  const telemetry = {
+    total: { calls: 0, partialCalls: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0 },
+    byRole: {},
+  };
+  const spawn = async (input) => {
+    const result = await rawSpawn(input);
+    const usage = result && result.usage || {};
+    const values = {
+      inputTokens: Number.isFinite(usage.inputTokens) ? usage.inputTokens : 0,
+      cachedInputTokens: Number.isFinite(usage.cachedInputTokens) ? usage.cachedInputTokens : 0,
+      outputTokens: Number.isFinite(usage.outputTokens) ? usage.outputTokens : 0,
+      totalTokens: Number.isFinite(usage.totalTokens) ? usage.totalTokens : 0,
+      elapsedMs: Number.isFinite(result && result.elapsedMs) ? result.elapsedMs : 0,
+    };
+    const partial = !result || result.usagePartial !== false;
+    const role = input.role;
+    const aggregate = telemetry.byRole[role] || (telemetry.byRole[role] = {
+      calls: 0, partialCalls: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0,
+    });
+    for (const target of [aggregate, telemetry.total]) {
+      target.calls++;
+      if (partial) target.partialCalls++;
+      for (const key of Object.keys(values)) target[key] += values[key];
+    }
+    return result;
+  };
+  const withTelemetry = (result) => {
+    const output = { ...result, telemetry };
+    if (typeof output.handoff === 'string') {
+      const total = telemetry.total;
+      output.handoff += `\nusage: ${total.calls} calls, ${total.partialCalls} partial, ${total.totalTokens} tokens, ${total.elapsedMs}ms`;
+    }
+    return output;
+  };
   const cli = (args) => runCli(args);
   // Never resolve a base for resume: round-start restores ledger.target.base.
   // File targets do not have a git base at all.
@@ -156,7 +227,7 @@ async function runReviewUntilGreen(options) {
     if (noBroad) startArgs.push('--no-broad'); // broad review is on by default; this is the opt-out
     if (noDod) startArgs.push('--no-dod');
     const started = await cli(startArgs);
-    if (started.decision !== 'work') return started;
+    if (started.decision !== 'work') return withTelemetry(started);
     const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodPassed: started.dodPassed, dodDeferred: started.dodDeferred, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref) };
 
     const runArtifactReviewer = async (role) => {
@@ -202,7 +273,7 @@ async function runReviewUntilGreen(options) {
       recorded = await cli(['record', ref]);
     }
     if (recorded.decision && recorded.decision.continue) continue;
-    return recorded;
+    return withTelemetry(recorded);
   }
 }
 

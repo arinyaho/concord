@@ -51,6 +51,54 @@ test('codexExec starts subprocesses asynchronously so panel work can overlap', a
   }
 });
 
+test('codexExec parses documented turn.completed usage without retaining agent output', async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  fs.writeFileSync(codex, `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'discard me' } }) + '\\n');\nprocess.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 120, cached_input_tokens: 20, output_tokens: 7, reasoning_output_tokens: 3 } }) + '\\n');\n`);
+  fs.chmodSync(codex, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  try {
+    const result = await codexExec({ role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir });
+    assert.strictEqual(result.status, 0);
+    assert.strictEqual(result.role, 'correctness');
+    assert.ok(Number.isFinite(result.elapsedMs) && result.elapsedMs >= 0);
+    assert.strictEqual(result.usagePartial, false);
+    assert.deepStrictEqual(result.usage, {
+      inputTokens: 120,
+      cachedInputTokens: 20,
+      reasoningOutputTokens: 3,
+      outputTokens: 7,
+      totalTokens: 130,
+    });
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
+test('codexExec marks a successful subprocess with no usage event as partial', async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  fs.writeFileSync(codex, `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');\n`);
+  fs.chmodSync(codex, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  try {
+    const result = await codexExec({ role: 'verify', prompt: 'review', repoRoot: binDir, stateDir: binDir });
+    assert.strictEqual(result.status, 0);
+    assert.strictEqual(result.usagePartial, true);
+    assert.deepStrictEqual(result.usage, {
+      inputTokens: null,
+      cachedInputTokens: null,
+      reasoningOutputTokens: null,
+      outputTokens: null,
+      totalTokens: null,
+    });
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
 function harness({ targetType = 'git', rounds = 1, malformed = false, retry = false, retryForever = false, correctnessArtifact, gateApplied = false, dodDeferred = false, failingRole, promptDrivenFix = false } = {}) {
   const stateDir = temp();
   const calls = []; let round = 0; let retried = false;
@@ -102,10 +150,45 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
 test('runner automatically executes a clean round in correctness then verify order and returns terminal handoff', async () => {
   const h = harness();
   const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
-  assert.strictEqual(out.handoff, 'LGTM');
+  assert.strictEqual(out.handoff, 'LGTM\nusage: 3 calls, 3 partial, 0 tokens, 0ms');
   assert.deepStrictEqual(h.calls.map((c) => c[0] === 'spawn' ? c.slice(0, 2) : c.slice(0, 2)), [
     ['cli', 'round-start'], ['spawn', 'correctness'], ['cli', 'artifact-normalize'], ['spawn', 'verify'], ['cli', 'artifact-normalize'], ['cli', 'plan-fixes'], ['spawn', 'fix'], ['cli', 'commit-fix'], ['cli', 'record'],
   ]);
+});
+
+test('runner reports aggregate and per-role subprocess telemetry', async () => {
+  const h = harness();
+  const usageByRole = {
+    correctness: { inputTokens: 100, cachedInputTokens: 10, outputTokens: 1, totalTokens: 111 },
+    verify: { inputTokens: 200, cachedInputTokens: 20, outputTokens: 2, totalTokens: 222 },
+    fix: { inputTokens: 300, cachedInputTokens: 30, outputTokens: 3, totalTokens: 333 },
+  };
+  const spawn = async (input) => ({
+    ...await h.spawn(input),
+    elapsedMs: input.role === 'correctness' ? 10 : input.role === 'verify' ? 20 : 30,
+    usage: usageByRole[input.role],
+    usagePartial: false,
+  });
+
+  const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn });
+
+  assert.deepStrictEqual(out.telemetry, {
+    total: {
+      calls: 3,
+      partialCalls: 0,
+      inputTokens: 600,
+      cachedInputTokens: 60,
+      outputTokens: 6,
+      totalTokens: 666,
+      elapsedMs: 60,
+    },
+    byRole: {
+      correctness: { calls: 1, partialCalls: 0, ...usageByRole.correctness, elapsedMs: 10 },
+      verify: { calls: 1, partialCalls: 0, ...usageByRole.verify, elapsedMs: 20 },
+      fix: { calls: 1, partialCalls: 0, ...usageByRole.fix, elapsedMs: 30 },
+    },
+  });
+  assert.match(out.handoff, /usage: 3 calls, 0 partial, 666 tokens, 60ms/);
 });
 
 test('fix prompt writes the commit-fix artifact and requires a truthful files declaration', () => {
@@ -240,7 +323,7 @@ test('fix subprocess writes the prompt-declared artifact consumed by commit-fix'
 test('gate-verify subprocess failure stays lenient and lets the CLI decide', async () => {
   const h = harness({ gateApplied: true, failingRole: 'gate-verify' });
   const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
-  assert.strictEqual(out.handoff, 'LGTM');
+  assert.strictEqual(out.handoff, 'LGTM\nusage: 5 calls, 5 partial, 0 tokens, 0ms');
   assert.ok(h.calls.some((call) => call[0] === 'spawn' && call[1] === 'gate-verify'));
 });
 
@@ -451,7 +534,7 @@ test('a failed panel lens is treated as zero findings while the remaining lenses
 
   const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn });
 
-  assert.strictEqual(out.handoff, 'LGTM');
+  assert.strictEqual(out.handoff, 'LGTM\nusage: 7 calls, 7 partial, 0 tokens, 0ms');
 });
 
 test('panel lenses and each finding\'s adversarial votes fan out concurrently', async () => {

@@ -1,0 +1,659 @@
+{
+  "version": 1,
+  "pairing": {
+    "targetSnapshot": "snapshot-1",
+    "targetDiff": "diff-1",
+    "intent": "intent-1",
+    "model": "gpt-5",
+    "reasoningEffort": "high",
+    "reviewConfig": "config-1"
+  },
+  "toolRevision": "baseline-revision",
+  "scenarios": {
+    "seeded": {
+      "behaviorPreserving": true,
+      "seededDefects": [
+        "correctness:seeded-bug"
+      ],
+      "nonDefects": [
+        "correctness:not-a-bug"
+      ],
+      "allowedTerminalOutcomes": [
+        "clean",
+        "parked"
+      ]
+    }
+  },
+  "runs": [
+    {
+      "scenarioId": "seeded",
+      "repetition": 0,
+      "independent": true,
+      "randomSeed": "baseline-0",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 1,
+      "independent": true,
+      "randomSeed": "baseline-1",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 2,
+      "independent": true,
+      "randomSeed": "baseline-2",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 3,
+      "independent": true,
+      "randomSeed": "baseline-3",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 4,
+      "independent": true,
+      "randomSeed": "baseline-4",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 5,
+      "independent": true,
+      "randomSeed": "baseline-5",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 6,
+      "independent": true,
+      "randomSeed": "baseline-6",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 7,
+      "independent": true,
+      "randomSeed": "baseline-7",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 8,
+      "independent": true,
+      "randomSeed": "baseline-8",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 9,
+      "independent": true,
+      "randomSeed": "baseline-9",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 10,
+      "independent": true,
+      "randomSeed": "baseline-10",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 11,
+      "independent": true,
+      "randomSeed": "baseline-11",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 12,
+      "independent": true,
+      "randomSeed": "baseline-12",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 13,
+      "independent": true,
+      "randomSeed": "baseline-13",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 14,
+      "independent": true,
+      "randomSeed": "baseline-14",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 15,
+      "independent": true,
+      "randomSeed": "baseline-15",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 16,
+      "independent": true,
+      "randomSeed": "baseline-16",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 17,
+      "independent": true,
+      "randomSeed": "baseline-17",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 18,
+      "independent": true,
+      "randomSeed": "baseline-18",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 19,
+      "independent": true,
+      "randomSeed": "baseline-19",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 20,
+      "independent": true,
+      "randomSeed": "baseline-20",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 21,
+      "independent": true,
+      "randomSeed": "baseline-21",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 22,
+      "independent": true,
+      "randomSeed": "baseline-22",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 23,
+      "independent": true,
+      "randomSeed": "baseline-23",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 24,
+      "independent": true,
+      "randomSeed": "baseline-24",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 25,
+      "independent": true,
+      "randomSeed": "baseline-25",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 26,
+      "independent": true,
+      "randomSeed": "baseline-26",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 27,
+      "independent": true,
+      "randomSeed": "baseline-27",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 28,
+      "independent": true,
+      "randomSeed": "baseline-28",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    },
+    {
+      "scenarioId": "seeded",
+      "repetition": 29,
+      "independent": true,
+      "randomSeed": "baseline-29",
+      "acceptedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "fixedFindings": [
+        "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 100,
+        "elapsedMs": 100
+      }
+    }
+  ]
+}
