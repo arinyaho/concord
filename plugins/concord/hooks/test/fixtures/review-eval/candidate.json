@@ -91,7 +91,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "cccccccccccccccccccccccccccccccccccccca0"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -118,7 +122,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "cccccccccccccccccccccccccccccccccccccca1"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -145,7 +153,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "cccccccccccccccccccccccccccccccccccccca2"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -172,7 +184,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "cccccccccccccccccccccccccccccccccccccca3"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -199,7 +215,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "cccccccccccccccccccccccccccccccccccccca4"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -226,7 +246,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "cccccccccccccccccccccccccccccccccccccca5"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -253,7 +277,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "cccccccccccccccccccccccccccccccccccccca6"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -280,7 +308,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "cccccccccccccccccccccccccccccccccccccca7"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -307,7 +339,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "cccccccccccccccccccccccccccccccccccccca8"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -334,7 +370,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "cccccccccccccccccccccccccccccccccccccca9"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -361,7 +401,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "ccccccccccccccccccccccccccccccccccccca10"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -388,7 +432,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "ccccccccccccccccccccccccccccccccccccca11"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -415,7 +463,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "ccccccccccccccccccccccccccccccccccccca12"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -442,7 +494,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "ccccccccccccccccccccccccccccccccccccca13"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -469,7 +525,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "ccccccccccccccccccccccccccccccccccccca14"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -496,7 +556,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "ccccccccccccccccccccccccccccccccccccca15"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -523,7 +587,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "ccccccccccccccccccccccccccccccccccccca16"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -550,7 +618,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "ccccccccccccccccccccccccccccccccccccca17"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -577,7 +649,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "ccccccccccccccccccccccccccccccccccccca18"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -604,7 +680,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "ccccccccccccccccccccccccccccccccccccca19"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -631,7 +711,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "ccccccccccccccccccccccccccccccccccccca20"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -658,7 +742,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "ccccccccccccccccccccccccccccccccccccca21"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -685,7 +773,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "ccccccccccccccccccccccccccccccccccccca22"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -712,7 +804,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "ccccccccccccccccccccccccccccccccccccca23"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -739,7 +835,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "ccccccccccccccccccccccccccccccccccccca24"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -766,7 +866,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "ccccccccccccccccccccccccccccccccccccca25"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -793,7 +897,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "ccccccccccccccccccccccccccccccccccccca26"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -820,7 +928,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "ccccccccccccccccccccccccccccccccccccca27"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -847,7 +959,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "ccccccccccccccccccccccccccccccccccccca28"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "seeded",
@@ -874,7 +990,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:seeded-bug": "ccccccccccccccccccccccccccccccccccccca29"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -970,7 +1090,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "ccccccccccccccccccccccccccccccccccccccf0"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -1066,7 +1190,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "ccccccccccccccccccccccccccccccccccccccf1"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -1162,7 +1290,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "ccccccccccccccccccccccccccccccccccccccf2"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -1258,7 +1390,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "ccccccccccccccccccccccccccccccccccccccf3"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -1354,7 +1490,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "ccccccccccccccccccccccccccccccccccccccf4"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -1450,7 +1590,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "ccccccccccccccccccccccccccccccccccccccf5"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -1546,7 +1690,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "ccccccccccccccccccccccccccccccccccccccf6"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -1642,7 +1790,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "ccccccccccccccccccccccccccccccccccccccf7"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -1738,7 +1890,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "ccccccccccccccccccccccccccccccccccccccf8"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -1834,7 +1990,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "ccccccccccccccccccccccccccccccccccccccf9"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -1930,7 +2090,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "cccccccccccccccccccccccccccccccccccccf10"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -2026,7 +2190,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "cccccccccccccccccccccccccccccccccccccf11"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -2122,7 +2290,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "cccccccccccccccccccccccccccccccccccccf12"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -2218,7 +2390,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "cccccccccccccccccccccccccccccccccccccf13"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -2314,7 +2490,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "cccccccccccccccccccccccccccccccccccccf14"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -2410,7 +2590,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "cccccccccccccccccccccccccccccccccccccf15"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -2506,7 +2690,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "cccccccccccccccccccccccccccccccccccccf16"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -2602,7 +2790,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "cccccccccccccccccccccccccccccccccccccf17"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -2698,7 +2890,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "cccccccccccccccccccccccccccccccccccccf18"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -2794,7 +2990,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "cccccccccccccccccccccccccccccccccccccf19"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -2890,7 +3090,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "cccccccccccccccccccccccccccccccccccccf20"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -2986,7 +3190,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "cccccccccccccccccccccccccccccccccccccf21"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -3082,7 +3290,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "cccccccccccccccccccccccccccccccccccccf22"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -3178,7 +3390,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "cccccccccccccccccccccccccccccccccccccf23"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -3274,7 +3490,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "cccccccccccccccccccccccccccccccccccccf24"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -3370,7 +3590,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "cccccccccccccccccccccccccccccccccccccf25"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -3466,7 +3690,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "cccccccccccccccccccccccccccccccccccccf26"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -3562,7 +3790,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "cccccccccccccccccccccccccccccccccccccf27"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -3658,7 +3890,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "cccccccccccccccccccccccccccccccccccccf28"
+      },
+      "confirmationFindings": []
     },
     {
       "scenarioId": "clean",
@@ -3754,7 +3990,11 @@
         "outputTokens": 0,
         "totalTokens": 60,
         "elapsedMs": 80
-      }
+      },
+      "fixCommits": {
+        "correctness:fix-round-bug": "cccccccccccccccccccccccccccccccccccccf29"
+      },
+      "confirmationFindings": []
     }
   ]
 }

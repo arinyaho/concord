@@ -116,6 +116,7 @@ function compareReviewResults(baseline, candidate) {
     const seeded = sorted(scenario.seededDefects);
     const nonDefects = sorted(scenario.nonDefects);
     const declared = new Set([...seeded, ...nonDefects]);
+    const evidencedFixed = { baseline: [], candidate: [] };
     for (const [name, run, destination, manifest] of [['baseline', base, acceptedBaseline, baseline], ['candidate', cand, acceptedCandidate, candidate]]) {
       if (!Array.isArray(run.acceptedFindings)) note(`${name} accepted findings missing: ${pairKey}`);
       for (const id of run.acceptedFindings || []) {
@@ -125,7 +126,14 @@ function compareReviewResults(baseline, candidate) {
       if (!['passed', 'failed', 'deferred', 'not-run'].includes(run.dod)) note(`${name} DoD result invalid: ${pairKey}`);
       if (!['clean', 'parked', 'abandoned', 'intent-review', 'gate-pending', 'budget-stopped', 'harness-failure'].includes(run.terminal)) note(`${name} terminal outcome invalid: ${pairKey}`);
       if (!Array.isArray(run.fixedFindings) || run.fixedFindings.some((id) => typeof id !== 'string')) note(`${name} fixed findings missing: ${pairKey}`);
-      else for (const id of run.fixedFindings) if (!declared.has(id)) note(`unadjudicated fixed identity: ${pairKey}:${id}`);
+      else for (const id of run.fixedFindings) {
+        if (!declared.has(id)) note(`unadjudicated fixed identity: ${pairKey}:${id}`);
+        const commit = run.fixCommits?.[id];
+        if (typeof commit !== 'string' || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(commit)) note(`${name} fixed finding lacks commit evidence: ${pairKey}:${id}`);
+        else if (!Array.isArray(run.confirmationFindings) || run.confirmationFindings.some((confirmationId) => typeof confirmationId !== 'string')) note(`${name} fixed finding lacks confirmation evidence: ${pairKey}:${id}`);
+        else if (run.confirmationFindings.includes(id)) note(`${name} fixed finding recurred in confirmation: ${pairKey}:${id}`);
+        else evidencedFixed[name].push(id);
+      }
       if (!run.telemetry || run.telemetry.partialCalls !== 0) note(`partial usage: ${pairKey}`);
       const tokenComponents = ['inputTokens', 'cachedInputTokens', 'reasoningOutputTokens', 'outputTokens'].map((field) => run.telemetry?.[field]);
       if (!Number.isSafeInteger(run.telemetry?.totalTokens) || run.telemetry.totalTokens < 0 || !Number.isFinite(run.parentProxyTokens) || run.parentProxyTokens < 0) note(`token total invalid: ${pairKey}`);
@@ -142,8 +150,8 @@ function compareReviewResults(baseline, candidate) {
     }
 
     if (scenario.behaviorPreserving === true) {
-      const baseTuple = [sorted(base.fixedFindings), base.dod, base.terminal];
-      const candidateTuple = [sorted(cand.fixedFindings), cand.dod, cand.terminal];
+      const baseTuple = [sorted(evidencedFixed.baseline), base.dod, base.terminal];
+      const candidateTuple = [sorted(evidencedFixed.candidate), cand.dod, cand.terminal];
       if (!same(baseTuple, candidateTuple)) behaviorMismatches.push(pairKey);
     }
 

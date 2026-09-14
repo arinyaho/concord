@@ -134,6 +134,28 @@ test('paired evaluator rejects fabricated fixed finding identities', () => {
   assert.ok(report.unevaluable.includes('unadjudicated fixed identity: seeded#0:correctness:fabricated-repair'));
 });
 
+test('paired evaluator rejects fixed findings without a committed edit', () => {
+  const baseline = read('baseline.json');
+  const candidate = read('candidate.json');
+  delete candidate.runs[0].fixCommits;
+
+  const report = compareReviewResults(baseline, candidate);
+
+  assert.strictEqual(report.pass, false);
+  assert.ok(report.unevaluable.includes('candidate fixed finding lacks commit evidence: seeded#0:correctness:seeded-bug'));
+});
+
+test('paired evaluator rejects fixed findings that recur in confirmation', () => {
+  const baseline = read('baseline.json');
+  const candidate = read('candidate.json');
+  candidate.runs[0].confirmationFindings = ['correctness:seeded-bug'];
+
+  const report = compareReviewResults(baseline, candidate);
+
+  assert.strictEqual(report.pass, false);
+  assert.ok(report.unevaluable.includes('candidate fixed finding recurred in confirmation: seeded#0:correctness:seeded-bug'));
+});
+
 test('paired evaluator rejects a candidate-only false clean by pair identity', () => {
   const baseline = read('baseline.json');
   const candidate = read('candidate.json');
