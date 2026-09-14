@@ -195,11 +195,30 @@ test('waits within the bound for a delayed stable terminal transcript append', a
 
   const record = core.recordForEvent({
     hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-7', agent_transcript_path: childTranscript,
+    last_assistant_message: 'done',
   }, stateDir);
   await new Promise((resolve) => writer.once('exit', resolve));
 
   assert.strictEqual(record.usagePartial, false);
   assert.strictEqual(record.totalTokens, 3);
+});
+
+test('waits for the transcript row matching SubagentStop last_assistant_message', async () => {
+  const { transcript, stateDir } = setup();
+  const childTranscript = writeSubagentTranscript(transcript, [
+    assistantRow({ requestId: 'req-stream', messageId: 'msg-stream', input: 1, create: 0, read: 0, output: 1, content: [{ type: 'text', text: 'draft' }] }),
+  ]);
+  const finalRow = JSON.stringify(assistantRow({ requestId: 'req-stream', messageId: 'msg-stream', input: 1, create: 0, read: 0, output: 5, content: [{ type: 'text', text: 'final' }] })) + '\n';
+  const writer = spawn(process.execPath, ['-e', 'setTimeout(() => require("node:fs").appendFileSync(process.argv[1], process.argv[2]), 140)', childTranscript, finalRow]);
+
+  const record = core.recordForEvent({
+    hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-7', agent_transcript_path: childTranscript,
+    last_assistant_message: 'final',
+  }, stateDir);
+  await new Promise((resolve) => writer.once('exit', resolve));
+
+  assert.strictEqual(record.usagePartial, false);
+  assert.strictEqual(record.totalTokens, 6);
 });
 
 test('stores repeated SubagentStop observations append-only and folds the invocation as partial', () => {
@@ -317,6 +336,7 @@ test('joins a background launch with observed completion status and elapsed time
   ]);
   const stopped = core.recordForEvent({
     hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-7', agent_transcript_path: childTranscript,
+    last_assistant_message: 'done',
   }, stateDir);
   assert.ok(Number.isSafeInteger(stopped.stoppedAtMs));
   stopped.stoppedAtMs = 350;

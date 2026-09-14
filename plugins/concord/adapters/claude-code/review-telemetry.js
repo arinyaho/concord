@@ -135,7 +135,7 @@ function emptyAgentRecord(agentId) {
   };
 }
 
-function hasUniqueTerminalSnapshot(text, agentId) {
+function hasUniqueTerminalSnapshot(text, agentId, lastAssistantMessage) {
   const rows = new Map(); let order = 0;
   for (const line of text.split('\n').filter(Boolean)) {
     let row;
@@ -143,10 +143,14 @@ function hasUniqueTerminalSnapshot(text, agentId) {
     if (row?.type !== 'assistant' || row.agentId !== agentId) continue;
     const requestId = row.requestId; const messageId = row.message?.id; const content = row.message?.content;
     if (typeof requestId !== 'string' || typeof messageId !== 'string' || !Array.isArray(content)) return false;
-    rows.set(`${requestId}\0${messageId}`, { terminal: content.length > 0 && !content.some((block) => block?.type === 'tool_use'), order: order++ });
+    const textBlocks = content.filter((block) => block?.type === 'text');
+    const terminal = content.length > 0 && !content.some((block) => block?.type === 'tool_use');
+    const messageMatches = typeof lastAssistantMessage !== 'string' || !lastAssistantMessage
+      || (textBlocks.length > 0 && textBlocks.every((block) => typeof block.text === 'string') && textBlocks.map((block) => block.text).join('') === lastAssistantMessage);
+    rows.set(`${requestId}\0${messageId}`, { terminal, messageMatches, order: order++ });
   }
   const values = [...rows.values()]; const terminals = values.filter((row) => row.terminal);
-  return terminals.length === 1 && terminals[0].order === Math.max(...values.map((row) => row.order));
+  return terminals.length === 1 && terminals[0].messageMatches && terminals[0].order === Math.max(...values.map((row) => row.order));
 }
 
 function subagentRecord(event) {
@@ -172,7 +176,7 @@ function subagentRecord(event) {
       const after = fs.statSync(transcriptPath);
       const identity = `${after.dev}:${after.ino}:${after.size}:${after.mtimeMs}`;
       if (before.dev === after.dev && before.ino === after.ino && before.size === after.size && before.mtimeMs === after.mtimeMs
-        && text.endsWith('\n') && identity === previousIdentity && hasUniqueTerminalSnapshot(text, event.agent_id)) {
+        && text.endsWith('\n') && identity === previousIdentity && hasUniqueTerminalSnapshot(text, event.agent_id, event.last_assistant_message)) {
         snapshot = text;
         break;
       }
@@ -186,7 +190,7 @@ function subagentRecord(event) {
   const requestToMessage = new Map();
   const messageToRequest = new Map();
   let lastRequestUsage = null;
-  let invalid = false;
+  let invalid = typeof event.last_assistant_message !== 'string' || !event.last_assistant_message;
   let order = 0;
   for (const line of lines) {
     let row;
