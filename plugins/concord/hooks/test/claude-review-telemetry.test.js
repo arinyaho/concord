@@ -221,6 +221,28 @@ test('waits for the transcript row matching SubagentStop last_assistant_message'
   assert.strictEqual(record.totalTokens, 6);
 });
 
+test('marks inconsistent repeated request rows partial', () => {
+  const { transcript, stateDir } = setup();
+  const cases = [
+    ['model change',
+      assistantRow({ requestId: 'req-model', messageId: 'msg-model', model: 'model-a', input: 10, create: 2, read: 3, output: 4, content: [{ type: 'text', text: 'draft' }] }),
+      assistantRow({ requestId: 'req-model', messageId: 'msg-model', model: 'model-b', input: 10, create: 2, read: 3, output: 5 })],
+    ['usage decrease',
+      assistantRow({ requestId: 'req-usage', messageId: 'msg-usage', input: 10, create: 2, read: 3, output: 4, content: [{ type: 'text', text: 'draft' }] }),
+      assistantRow({ requestId: 'req-usage', messageId: 'msg-usage', input: 9, create: 2, read: 3, output: 5 })],
+  ];
+
+  for (const [label, first, second] of cases) {
+    const childTranscript = writeSubagentTranscript(transcript, [first, second]);
+    const record = core.recordForEvent({
+      hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-7',
+      agent_transcript_path: childTranscript, last_assistant_message: 'done',
+    }, stateDir);
+
+    assert.strictEqual(record.usagePartial, true, label);
+  }
+});
+
 test('stores repeated SubagentStop observations append-only and folds the invocation as partial', () => {
   const { transcript, stateDir } = setup();
   const prompt = `Write ONLY to ${path.join(stateDir, 'round-2-correctness.json')}`;

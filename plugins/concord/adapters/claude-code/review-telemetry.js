@@ -211,7 +211,10 @@ function subagentRecord(event) {
     const content = Array.isArray(row.message.content) ? row.message.content : null;
     const terminal = !!content && content.length > 0 && !content.some((block) => block?.type === 'tool_use');
     if (!content) invalid = true;
-    requests.set(`${requestId}\0${messageId}`, { model, usage, terminal, order: order++ });
+    const requestKey = `${requestId}\0${messageId}`;
+    const previous = requests.get(requestKey);
+    if (previous && (previous.model !== model || USAGE_FIELDS.some((field) => usage[field] < previous.usage[field]))) invalid = true;
+    requests.set(requestKey, { model, usage, terminal, order: order++ });
     lastRequestUsage = usage;
   }
   if (!requests.size) return partial;
