@@ -10,6 +10,16 @@
   },
   "toolRevision": "candidate-revision",
   "scenarios": {
+    "clean": {
+      "behaviorPreserving": true,
+      "seededDefects": [],
+      "nonDefects": [
+        "correctness:clean-diff"
+      ],
+      "allowedTerminalOutcomes": [
+        "clean"
+      ]
+    },
     "seeded": {
       "behaviorPreserving": true,
       "seededDefects": [
@@ -21,6 +31,34 @@
       "allowedTerminalOutcomes": [
         "clean",
         "parked"
+      ]
+    },
+    "false-positive": {
+      "behaviorPreserving": true,
+      "seededDefects": [],
+      "nonDefects": [
+        "correctness:false-positive-candidate"
+      ],
+      "allowedTerminalOutcomes": [
+        "clean"
+      ]
+    },
+    "malformed-blocked": {
+      "behaviorPreserving": true,
+      "seededDefects": [],
+      "nonDefects": [],
+      "allowedTerminalOutcomes": [
+        "harness-failure"
+      ]
+    },
+    "fix-round": {
+      "behaviorPreserving": true,
+      "seededDefects": [
+        "correctness:fix-round-bug"
+      ],
+      "nonDefects": [],
+      "allowedTerminalOutcomes": [
+        "clean"
       ]
     }
   },
@@ -702,6 +740,2406 @@
       ],
       "fixedFindings": [
         "correctness:seeded-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 0,
+      "independent": true,
+      "randomSeed": "candidate-clean-0",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 0,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-0",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 0,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-0",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 0,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-0",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 1,
+      "independent": true,
+      "randomSeed": "candidate-clean-1",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 1,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-1",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 1,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-1",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 1,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-1",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 2,
+      "independent": true,
+      "randomSeed": "candidate-clean-2",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 2,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-2",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 2,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-2",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 2,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-2",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 3,
+      "independent": true,
+      "randomSeed": "candidate-clean-3",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 3,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-3",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 3,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-3",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 3,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-3",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 4,
+      "independent": true,
+      "randomSeed": "candidate-clean-4",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 4,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-4",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 4,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-4",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 4,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-4",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 5,
+      "independent": true,
+      "randomSeed": "candidate-clean-5",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 5,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-5",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 5,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-5",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 5,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-5",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 6,
+      "independent": true,
+      "randomSeed": "candidate-clean-6",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 6,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-6",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 6,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-6",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 6,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-6",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 7,
+      "independent": true,
+      "randomSeed": "candidate-clean-7",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 7,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-7",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 7,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-7",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 7,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-7",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 8,
+      "independent": true,
+      "randomSeed": "candidate-clean-8",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 8,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-8",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 8,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-8",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 8,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-8",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 9,
+      "independent": true,
+      "randomSeed": "candidate-clean-9",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 9,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-9",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 9,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-9",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 9,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-9",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 10,
+      "independent": true,
+      "randomSeed": "candidate-clean-10",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 10,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-10",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 10,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-10",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 10,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-10",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 11,
+      "independent": true,
+      "randomSeed": "candidate-clean-11",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 11,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-11",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 11,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-11",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 11,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-11",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 12,
+      "independent": true,
+      "randomSeed": "candidate-clean-12",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 12,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-12",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 12,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-12",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 12,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-12",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 13,
+      "independent": true,
+      "randomSeed": "candidate-clean-13",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 13,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-13",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 13,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-13",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 13,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-13",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 14,
+      "independent": true,
+      "randomSeed": "candidate-clean-14",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 14,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-14",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 14,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-14",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 14,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-14",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 15,
+      "independent": true,
+      "randomSeed": "candidate-clean-15",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 15,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-15",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 15,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-15",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 15,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-15",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 16,
+      "independent": true,
+      "randomSeed": "candidate-clean-16",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 16,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-16",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 16,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-16",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 16,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-16",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 17,
+      "independent": true,
+      "randomSeed": "candidate-clean-17",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 17,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-17",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 17,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-17",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 17,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-17",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 18,
+      "independent": true,
+      "randomSeed": "candidate-clean-18",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 18,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-18",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 18,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-18",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 18,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-18",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 19,
+      "independent": true,
+      "randomSeed": "candidate-clean-19",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 19,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-19",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 19,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-19",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 19,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-19",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 20,
+      "independent": true,
+      "randomSeed": "candidate-clean-20",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 20,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-20",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 20,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-20",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 20,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-20",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 21,
+      "independent": true,
+      "randomSeed": "candidate-clean-21",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 21,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-21",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 21,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-21",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 21,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-21",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 22,
+      "independent": true,
+      "randomSeed": "candidate-clean-22",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 22,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-22",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 22,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-22",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 22,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-22",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 23,
+      "independent": true,
+      "randomSeed": "candidate-clean-23",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 23,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-23",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 23,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-23",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 23,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-23",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 24,
+      "independent": true,
+      "randomSeed": "candidate-clean-24",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 24,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-24",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 24,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-24",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 24,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-24",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 25,
+      "independent": true,
+      "randomSeed": "candidate-clean-25",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 25,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-25",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 25,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-25",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 25,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-25",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 26,
+      "independent": true,
+      "randomSeed": "candidate-clean-26",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 26,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-26",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 26,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-26",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 26,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-26",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 27,
+      "independent": true,
+      "randomSeed": "candidate-clean-27",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 27,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-27",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 27,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-27",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 27,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-27",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 28,
+      "independent": true,
+      "randomSeed": "candidate-clean-28",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 28,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-28",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 28,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-28",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 28,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-28",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "clean",
+      "repetition": 29,
+      "independent": true,
+      "randomSeed": "candidate-clean-29",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "false-positive",
+      "repetition": 29,
+      "independent": true,
+      "randomSeed": "candidate-false-positive-29",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "passed",
+      "terminal": "clean",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "malformed-blocked",
+      "repetition": 29,
+      "independent": true,
+      "randomSeed": "candidate-malformed-blocked-29",
+      "acceptedFindings": [],
+      "fixedFindings": [],
+      "dod": "not-run",
+      "terminal": "harness-failure",
+      "parentProxyTokenizerVersion": "test-tokenizer",
+      "parentProxyContentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parentProxyTokens": 10,
+      "telemetry": {
+        "calls": 2,
+        "partialCalls": 0,
+        "totalTokens": 60,
+        "elapsedMs": 80
+      }
+    },
+    {
+      "scenarioId": "fix-round",
+      "repetition": 29,
+      "independent": true,
+      "randomSeed": "candidate-fix-round-29",
+      "acceptedFindings": [
+        "correctness:fix-round-bug"
+      ],
+      "fixedFindings": [
+        "correctness:fix-round-bug"
       ],
       "dod": "passed",
       "terminal": "clean",

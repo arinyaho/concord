@@ -10,7 +10,9 @@ const fixtures = path.join(__dirname, 'fixtures', 'review-eval');
 const read = (name) => JSON.parse(fs.readFileSync(path.join(fixtures, name), 'utf8'));
 
 test('paired evaluator passes identity-preserving telemetry fixture', () => {
-  const report = compareReviewResults(read('baseline.json'), read('candidate.json'));
+  const baseline = read('baseline.json');
+  const report = compareReviewResults(baseline, read('candidate.json'));
+  assert.deepStrictEqual(Object.keys(baseline.scenarios).sort(), ['clean', 'false-positive', 'fix-round', 'malformed-blocked', 'seeded']);
   assert.strictEqual(report.pass, true);
   assert.deepStrictEqual(report.unevaluable, []);
   assert.deepStrictEqual(report.gates.falseClean.additionalPairs, []);
@@ -20,10 +22,10 @@ test('paired evaluator passes identity-preserving telemetry fixture', () => {
   assert.strictEqual(report.gates.falsePositive.upperBound, 0);
   assert.deepStrictEqual(report.gates.behavior.mismatchedPairs, []);
   assert.ok(report.gates.tokens.medianPairedChange <= -0.30);
-  assert.deepStrictEqual(report.identities.acceptedBaseline, ['correctness:seeded-bug']);
-  assert.deepStrictEqual(report.identities.acceptedCandidate, ['correctness:seeded-bug']);
-  assert.strictEqual(report.secondary.baseline.calls, 60);
-  assert.strictEqual(report.secondary.candidate.calls, 60);
+  assert.deepStrictEqual(report.identities.acceptedBaseline, ['correctness:fix-round-bug', 'correctness:seeded-bug']);
+  assert.deepStrictEqual(report.identities.acceptedCandidate, ['correctness:fix-round-bug', 'correctness:seeded-bug']);
+  assert.strictEqual(report.secondary.baseline.calls, 300);
+  assert.strictEqual(report.secondary.candidate.calls, 300);
 });
 
 test('paired evaluator fails closed on mismatched pairing identity and partial usage', () => {
