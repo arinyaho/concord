@@ -224,6 +224,31 @@ test('resumed runner preserves telemetry from the previous process', async () =>
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(telemetryPath, 'utf8')), out.telemetry);
 });
 
+test('resumed runner returns persisted telemetry when round-start is already terminal', async () => {
+  const stateDir = temp();
+  const persisted = {
+    total: { calls: 1, partialCalls: 0, inputTokens: 10, cachedInputTokens: 1, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 16, elapsedMs: 20 },
+    byRole: {
+      correctness: { calls: 1, partialCalls: 0, inputTokens: 10, cachedInputTokens: 1, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 16, elapsedMs: 20 },
+    },
+    invocations: [
+      { role: 'correctness', round: 4, model: null, reasoningEffort: null, status: 0, usagePartial: false, inputTokens: 10, cachedInputTokens: 1, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 16, elapsedMs: 20 },
+    ],
+  };
+  fs.writeFileSync(path.join(stateDir, 'telemetry-feature-x.json'), `${JSON.stringify(persisted)}\n`);
+
+  const out = await runReviewUntilGreen({
+    ref: 'feature/x',
+    resume: true,
+    repoRoot: '/repo',
+    runCli: () => ({ decision: 'terminal', stateDir, handoff: 'LGTM' }),
+    spawn: () => { throw new Error('terminal resume must not spawn'); },
+  });
+
+  assert.deepStrictEqual(out.telemetry, persisted);
+  assert.strictEqual(out.handoff, 'LGTM\nusage: 1 calls, 0 partial, 16 tokens, 20ms');
+});
+
 test('fix prompt writes the commit-fix artifact and requires a truthful files declaration', () => {
   const prompt = reviewerPrompt('fix', { stateDir: '/state', round: 7, finding: { id: 'correctness:bug', file: 'src/parser.js', span: 'lines 41-43', summary: 'repair it' } });
   assert.match(prompt, /\/state\/round-7-fix-correctness:bug\.json/);
