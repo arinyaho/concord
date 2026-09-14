@@ -69,6 +69,17 @@ test('paired evaluator rejects parent proxy tokens without provenance', () => {
   }
 });
 
+test('paired evaluator rejects a parent proxy token count that disagrees with its rendered content', () => {
+  const baseline = read('baseline.json');
+  const candidate = read('candidate.json');
+  candidate.runs[0].parentProxyTokens = 1;
+
+  const report = compareReviewResults(baseline, candidate);
+
+  assert.strictEqual(report.pass, false);
+  assert.ok(report.unevaluable.includes('candidate parent proxy token count mismatch: seeded#0'));
+});
+
 test('paired evaluator rejects a zero-token baseline pair in a multi-scenario corpus', () => {
   const baseline = read('baseline.json');
   const candidate = read('candidate.json');

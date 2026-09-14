@@ -1,6 +1,9 @@
 'use strict';
 
+const crypto = require('node:crypto');
+
 const PAIRING_KEYS = ['targetSnapshot', 'targetDiff', 'intent', 'model', 'reasoningEffort', 'reviewConfig'];
+const PARENT_PROXY_TOKENIZER = 'utf8-bytes-v1';
 
 function sorted(values) { return Array.from(new Set(values || [])).sort(); }
 function canonical(value) {
@@ -113,7 +116,7 @@ function compareReviewResults(baseline, candidate) {
     const seeded = sorted(scenario.seededDefects);
     const nonDefects = sorted(scenario.nonDefects);
     const declared = new Set([...seeded, ...nonDefects]);
-    for (const [name, run, destination] of [['baseline', base, acceptedBaseline], ['candidate', cand, acceptedCandidate]]) {
+    for (const [name, run, destination, manifest] of [['baseline', base, acceptedBaseline, baseline], ['candidate', cand, acceptedCandidate, candidate]]) {
       if (!Array.isArray(run.acceptedFindings)) note(`${name} accepted findings missing: ${pairKey}`);
       for (const id of run.acceptedFindings || []) {
         destination.add(id);
@@ -128,7 +131,10 @@ function compareReviewResults(baseline, candidate) {
       if (!Number.isSafeInteger(run.telemetry?.totalTokens) || run.telemetry.totalTokens < 0 || !Number.isFinite(run.parentProxyTokens) || run.parentProxyTokens < 0) note(`token total invalid: ${pairKey}`);
       if (tokenComponents.some((value) => !Number.isSafeInteger(value) || value < 0)) note(`${name} subprocess token components invalid: ${pairKey}`);
       else if (run.telemetry.totalTokens !== tokenComponents[0] + tokenComponents[1] + tokenComponents[3]) note(`${name} subprocess token total mismatch: ${pairKey}`);
-      if (typeof run.parentProxyTokenizerVersion !== 'string' || !run.parentProxyTokenizerVersion.trim() || typeof run.parentProxyContentHash !== 'string' || !run.parentProxyContentHash.trim()) note(`${name} parent proxy provenance invalid: ${pairKey}`);
+      const proxyContent = manifest.parentProxyContents?.[run.parentProxyContentHash];
+      if (run.parentProxyTokenizerVersion !== PARENT_PROXY_TOKENIZER || typeof run.parentProxyContentHash !== 'string' || !run.parentProxyContentHash.trim() || typeof proxyContent !== 'string') note(`${name} parent proxy provenance invalid: ${pairKey}`);
+      else if (crypto.createHash('sha256').update(proxyContent).digest('hex') !== run.parentProxyContentHash) note(`${name} parent proxy content hash mismatch: ${pairKey}`);
+      else if (Buffer.byteLength(proxyContent, 'utf8') !== run.parentProxyTokens) note(`${name} parent proxy token count mismatch: ${pairKey}`);
       if (!Number.isSafeInteger(run.telemetry?.calls) || run.telemetry.calls < 0) note(`${name} subprocess count invalid: ${pairKey}`);
       else secondary[name].calls += run.telemetry.calls;
       if (!Number.isFinite(run.telemetry?.elapsedMs) || run.telemetry.elapsedMs < 0) note(`${name} elapsed time invalid: ${pairKey}`);
