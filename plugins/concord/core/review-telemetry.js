@@ -81,6 +81,8 @@ function foldTelemetry(stateDir, ledger) {
       });
     }
   }
+  const targetAgentIds = new Set(Array.from(tools.values(), (tool) => tool.agentId).filter((agentId) => typeof agentId === 'string'));
+  for (const agentId of agents.keys()) if (!targetAgentIds.has(agentId)) agents.delete(agentId);
   let entries = Array.from(tools.values(), (tool) => {
     const observations = agents.get(tool.agentId) || [];
     const joined = joinAgentUsage(tool, observations.length === 1 ? observations[0] : observations.at(-1));

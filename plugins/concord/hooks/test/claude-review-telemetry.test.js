@@ -471,6 +471,36 @@ test('folds matching records into the active ledger once', () => {
   assert.deepStrictEqual(replay.telemetry.entries.map((entry) => entry.invocationId), ['toolu_01']);
 });
 
+test('ignores agent observations belonging to another review target', () => {
+  const { transcript, stateDir } = setup();
+  const artifactPath = path.join(stateDir, 'round-2-correctness.json');
+  const ledger = JSON.parse(fs.readFileSync(path.join(stateDir, 'review-feat-x.json'), 'utf8'));
+  ledger.telemetrySlots = [{ artifactPath, attempt: 1, role: 'correctness', round: 2 }];
+  fs.writeFileSync(path.join(stateDir, 'review-feat-x.json'), JSON.stringify(ledger));
+  const prompt = `Write ONLY to ${artifactPath}`;
+  const tool = core.recordForEvent(event({ transcript, prompt, response: successfulResponse() }), stateDir);
+  core.writeRecord(stateDir, tool);
+  const childTranscript = writeSubagentTranscript(transcript, [
+    assistantRow({ requestId: 'req-1', messageId: 'msg-1', input: 100, create: 20, read: 30, output: 15 }),
+  ]);
+  const agent = core.recordForEvent({
+    hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-7',
+    agent_transcript_path: childTranscript, last_assistant_message: 'done',
+  }, stateDir);
+  core.writeRecord(stateDir, agent);
+  fs.writeFileSync(path.join(stateDir, `review-telemetry-${'d'.repeat(64)}.json`), JSON.stringify({
+    ...tool, targetRef: 'feat/other', invocationId: 'other-tool', agentId: 'other-agent',
+  }));
+  fs.writeFileSync(path.join(stateDir, `review-agent-telemetry-${'e'.repeat(64)}.json`), JSON.stringify({
+    ...agent, agentId: 'other-agent', observationId: 'other-observation',
+  }));
+
+  const folded = reviewTelemetry.foldTelemetry(stateDir, ledger);
+
+  assert.deepStrictEqual(folded.telemetry.entries.map((entry) => entry.agentId), ['agent-7']);
+  assert.strictEqual(folded.telemetry.partialCalls, 0);
+});
+
 test('a persisted attempt slot with its entire hook missing remains visible and partial', () => {
   const { stateDir } = setup();
   const ledgerPath = path.join(stateDir, 'review-feat-x.json');
