@@ -545,7 +545,6 @@ test('applyRoundOutcome: budget exhausted parks remaining open findings', () => 
   let ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
   ledger.budget.max_rounds = 1;
   ledger = review.beginRound(ledger, 'hash-1').ledger; // round=1
-  ledger.budget.spent = 1; // budget is charged at record now, not beginRound; simulate a prior record charge
   const { ledger: after, decision } = review.applyRoundOutcome(ledger, {
     dodPassed: false,
     findings: [finding({ id: 'f3', status: 'confirmed' })],

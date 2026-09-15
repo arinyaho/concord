@@ -852,7 +852,7 @@ test('record: a fix-committing round that terminates re-runs DoD on the post-com
   // Force this fix-committing round to be the terminus via round budget exhaustion.
   const slug = review.targetSlug('feat/x');
   let ledger = review.readLedger(dir, slug);
-  ledger = { ...ledger, budget: { ...ledger.budget, max_rounds: 1, spent: 1 } };
+  ledger = { ...ledger, budget: { ...ledger.budget, max_rounds: 1, spent: 0 } };
   review.writeLedger(dir, slug, ledger);
   const out = JSON.parse(run(['record', 'feat/x'], { env }));
   const after = review.readLedger(dir, slug);
@@ -3431,7 +3431,7 @@ test('rerun re-arms a converged ledger while keeping the finished run in runs[]'
   assert.strictEqual(review.readLedger(dir, slug).status, 'clean');
   assert.strictEqual(JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).decision, 'terminal');
   fs.writeFileSync(path.join(dir, `review-telemetry-${'b'.repeat(64)}.json`), JSON.stringify({
-    engine: 'claude-code', targetRef: 'feat/x', role: 'correctness', round: n,
+    engine: 'claude-code', provider: 'anthropic', targetRef: 'feat/x', role: 'correctness', round: n,
     invocationId: 'old-run', usagePartial: false, totalTokens: 10,
   }));
   const codexTelemetry = path.join(dir, `telemetry-${slug}.json`);
