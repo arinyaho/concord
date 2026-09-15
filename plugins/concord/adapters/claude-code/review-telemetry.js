@@ -22,11 +22,12 @@ function activeLedger(stateDir, round, artifactPath) {
     try {
       const ledger = JSON.parse(fs.readFileSync(path.join(stateDir, name), 'utf8'));
       const doingReviewWork = ledger.phase === 'gates' || ledger.phase === 'fixes' || ledger.status === 'gate-panel-pending';
-      if (ledger.round === round && ACTIVE_STATUSES.has(ledger.status) && doingReviewWork && typeof ledger.target?.ref === 'string') matches.push(ledger);
+      if ((round === undefined || ledger.round === round) && ACTIVE_STATUSES.has(ledger.status) && doingReviewWork && typeof ledger.target?.ref === 'string') matches.push(ledger);
     } catch {
       // Ignore unrelated or incomplete state files.
     }
   }
+  if (round === undefined) return matches[0] || null;
   const slotted = artifactPath
     ? matches.filter((ledger) => (ledger.telemetrySlots || []).some((slot) => slot?.artifactPath === artifactPath))
     : [];
@@ -283,6 +284,7 @@ function subagentRecord(event, pendingTool) {
 function recordForEvent(event, stateDir) {
   if (!event || typeof event !== 'object') return null;
   if (event.hook_event_name !== 'SubagentStop') return toolRecord(event, stateDir);
+  if (!activeLedger(stateDir)) return null;
   const probe = {
     agentId: event.agent_id,
     parentTranscriptPath: typeof event.transcript_path === 'string' ? path.resolve(event.transcript_path) : null,

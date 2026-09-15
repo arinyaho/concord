@@ -15,6 +15,17 @@ const CODEX_VERSION = 'codex-cli 0.154.0';
 const CODEX_USAGE_FIELDS = ['input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens', 'reasoning_output_tokens'];
 const CODEX_EVENT_TYPES = new Set(['thread.started', 'turn.started', 'turn.completed', 'turn.failed', 'item.started', 'item.updated', 'item.completed', 'error']);
 const CODEX_ITEM_TYPES = new Set(['agent_message', 'reasoning', 'command_execution', 'file_change', 'mcp_tool_call', 'web_search', 'todo_list', 'error', 'collaboration_tool_call', 'collab_agent_tool_call']);
+let versionCache = null;
+
+function codexCliVersion(repoRoot) {
+  const searchPath = process.env.PATH || '';
+  if (!versionCache || versionCache.searchPath !== searchPath) {
+    let value = null;
+    try { value = execFileSync('codex', ['--version'], { cwd: repoRoot, encoding: 'utf8', timeout: 5000 }).trim(); } catch {}
+    versionCache = { searchPath, value };
+  }
+  return versionCache.value;
+}
 
 function jsonCli(cliPath, args, repoRoot) {
   const out = execFileSync('node', [cliPath, ...args], {
@@ -60,8 +71,7 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
     const model = typeof requestedModel === 'string' && requestedModel.trim() ? requestedModel : null;
     const effort = typeof reasoningEffort === 'string' && reasoningEffort.trim() ? reasoningEffort : null;
     const tier = typeof serviceTier === 'string' && serviceTier.trim() ? serviceTier : null;
-    let cliVersion = null;
-    try { cliVersion = execFileSync('codex', ['--version'], { cwd: repoRoot, encoding: 'utf8', timeout: 5000 }).trim(); } catch {}
+    const cliVersion = codexCliVersion(repoRoot);
     const startedAt = Date.now();
     const child = spawn('codex', [
       'exec', '--cd', repoRoot, '--sandbox', 'workspace-write', '--add-dir', stateDir,

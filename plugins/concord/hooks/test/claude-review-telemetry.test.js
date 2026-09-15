@@ -359,6 +359,31 @@ test('does not persist a SubagentStop without a matching review tool', () => {
   assert.deepStrictEqual(fs.readdirSync(stateDir).filter((name) => name.startsWith('review-agent-telemetry-')), []);
 });
 
+test('does not read a subagent transcript when no review ledger is active', () => {
+  const { transcript, stateDir } = setup();
+  const ledgerPath = path.join(stateDir, 'review-feat-x.json');
+  const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+  fs.writeFileSync(ledgerPath, JSON.stringify({ ...ledger, status: 'clean' }));
+  const childTranscript = writeSubagentTranscript(transcript, [
+    assistantRow({ requestId: 'req-1', messageId: 'msg-1', input: 1, create: 0, read: 0, output: 1 }),
+  ]);
+  const resolvedChildTranscript = fs.realpathSync(childTranscript);
+  const readFileSync = fs.readFileSync;
+  let transcriptReads = 0;
+  fs.readFileSync = (...args) => {
+    if (args[0] === resolvedChildTranscript) transcriptReads++;
+    return readFileSync(...args);
+  };
+  try {
+    assert.strictEqual(core.recordForEvent({
+      hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-7', agent_transcript_path: childTranscript,
+    }, stateDir), null);
+  } finally {
+    fs.readFileSync = readFileSync;
+  }
+  assert.strictEqual(transcriptReads, 0);
+});
+
 test('preserves a foreground SubagentStop until PostToolUse supplies the exact agent identity', () => {
   const { transcript, stateDir } = setup();
   const artifactPath = path.join(stateDir, 'round-2-correctness.json');

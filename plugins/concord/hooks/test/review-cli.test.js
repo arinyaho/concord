@@ -1783,6 +1783,11 @@ test('a Codex-owned slot without runner evidence stays visible as a missing part
     { engine: 'codex', provider: 'openai', role: 'correctness', status: 'missing' },
   ]);
   assert.strictEqual(ledger.telemetry, undefined);
+  fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${started.round}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  run(['plan-fixes', 'feat/codex-slots'], { env });
+  const recorded = JSON.parse(run(['record', 'feat/codex-slots'], { env }));
+  assert.match(recorded.handoff, /review usage: unknown tokens across 1 call\(s\), 1 partial/);
 });
 
 test('round-start: --no-dod starts a run in a repo with no review.config.json at all', () => {

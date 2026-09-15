@@ -51,6 +51,25 @@ test('codexExec starts subprocesses asynchronously so panel work can overlap', a
   }
 });
 
+test('codexExec probes the CLI version once for concurrent calls', async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  const probes = path.join(binDir, 'probes');
+  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) { require('node:fs').appendFileSync(${JSON.stringify(probes)}, '1'); process.stdout.write('codex-cli 0.154.0\\n'); }\nelse process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } }) + '\\n');\n`);
+  fs.chmodSync(codex, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  try {
+    await Promise.all([
+      codexExec({ role: 'correctness', prompt: 'first', repoRoot: binDir, stateDir: binDir }),
+      codexExec({ role: 'verify', prompt: 'second', repoRoot: binDir, stateDir: binDir }),
+    ]);
+    assert.strictEqual(fs.readFileSync(probes, 'utf8'), '1');
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
 test('codexExec parses documented turn.completed usage without retaining agent output', async () => {
   const binDir = temp();
   const codex = path.join(binDir, 'codex');
