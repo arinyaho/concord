@@ -506,6 +506,7 @@ function listLedgers(stateDir) {
   }
   const out = [];
   for (const n of names) {
+    if (/^review-(?:agent-)?telemetry-[0-9a-f]{64}\.json$/.test(n)) continue;
     const m = /^review-(.+)\.json$/.exec(n);
     if (!m) continue;
     const ledger = readLedger(stateDir, m[1]);

@@ -4,11 +4,28 @@
 // orchestration authority: every clean-context reviewer is a `codex exec`
 // subprocess and every state transition remains owned by review-cli.
 const { execFileSync, spawn } = require('node:child_process');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { targetSlug } = require('./review');
+const { ledgerPath, targetSlug } = require('./review');
 const { isValidFindingId } = require('./gate-contract');
 const { PANEL_LENSES } = require('./report');
+
+const CODEX_VERSION = 'codex-cli 0.154.0';
+const CODEX_USAGE_FIELDS = ['input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens', 'reasoning_output_tokens'];
+const CODEX_EVENT_TYPES = new Set(['thread.started', 'turn.started', 'turn.completed', 'turn.failed', 'item.started', 'item.updated', 'item.completed', 'error']);
+const CODEX_ITEM_TYPES = new Set(['agent_message', 'reasoning', 'command_execution', 'file_change', 'mcp_tool_call', 'web_search', 'todo_list', 'error', 'collaboration_tool_call', 'collab_agent_tool_call']);
+let versionCache = null;
+
+function codexCliVersion(repoRoot) {
+  const searchPath = process.env.PATH || '';
+  if (!versionCache || versionCache.searchPath !== searchPath) {
+    let value = null;
+    try { value = execFileSync('codex', ['--version'], { cwd: repoRoot, encoding: 'utf8', timeout: 5000 }).trim(); } catch {}
+    versionCache = { searchPath, value };
+  }
+  return versionCache.value;
+}
 
 function jsonCli(cliPath, args, repoRoot) {
   const out = execFileSync('node', [cliPath, ...args], {
@@ -17,16 +34,97 @@ function jsonCli(cliPath, args, repoRoot) {
   try { return JSON.parse(out); } catch (e) { throw new Error(`harness-failure: review-cli ${args[0]} returned non-JSON output`); }
 }
 
-function codexExec({ role, prompt, repoRoot, stateDir }) {
+function normalizeUsage(raw) {
+  const number = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const providerUsage = Object.fromEntries(Object.entries(raw || {}).filter(([, value]) => Number.isSafeInteger(value) && value >= 0));
+  const exactKeys = raw && sameKeys(Object.keys(raw), CODEX_USAGE_FIELDS);
+  const providerInputTokens = number(raw && raw.input_tokens);
+  const cachedInputTokens = number(raw && raw.cached_input_tokens);
+  const cacheWriteInputTokens = number(raw && raw.cache_write_input_tokens);
+  const reasoningOutputTokens = number(raw && raw.reasoning_output_tokens);
+  const providerOutputTokens = number(raw && raw.output_tokens);
+  const outputTokens = providerOutputTokens === null || reasoningOutputTokens === null ? null : number(providerOutputTokens - reasoningOutputTokens);
+  const totalTokens = providerInputTokens === null || providerOutputTokens === null ? null : providerInputTokens + providerOutputTokens;
+  const usagePartial = !exactKeys
+    || [providerInputTokens, cachedInputTokens, cacheWriteInputTokens, reasoningOutputTokens, outputTokens].some((value) => value === null)
+    || (providerInputTokens !== null && cachedInputTokens !== null && cacheWriteInputTokens !== null && cachedInputTokens + cacheWriteInputTokens > providerInputTokens)
+    || totalTokens === 0;
+  const inputTokens = usagePartial ? null : providerInputTokens - cachedInputTokens - cacheWriteInputTokens;
+  const usage = {
+    inputTokens,
+    cachedInputTokens,
+    cacheWriteInputTokens,
+    reasoningOutputTokens,
+    outputTokens,
+    totalTokens: usagePartial ? null : totalTokens,
+  };
+  return { usage, usagePartial, providerUsage };
+}
+
+function sameKeys(actual, expected) {
+  return actual.length === expected.length && [...actual].sort().every((key, index) => key === [...expected].sort()[index]);
+}
+
+function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoningEffort, serviceTier }) {
   return new Promise((resolve, reject) => {
+    const invocationId = crypto.randomUUID();
+    const model = typeof requestedModel === 'string' && requestedModel.trim() ? requestedModel : null;
+    const effort = typeof reasoningEffort === 'string' && reasoningEffort.trim() ? reasoningEffort : null;
+    const tier = typeof serviceTier === 'string' && serviceTier.trim() ? serviceTier : null;
+    const cliVersion = codexCliVersion(repoRoot);
+    const startedAt = Date.now();
     const child = spawn('codex', [
       'exec', '--cd', repoRoot, '--sandbox', 'workspace-write', '--add-dir', stateDir,
-      '--skip-git-repo-check', prompt,
-    ], { cwd: repoRoot, stdio: 'ignore' });
+      ...(model ? ['--model', model] : []),
+      ...(effort ? ['--config', `model_reasoning_effort=${JSON.stringify(effort)}`] : []),
+      ...(tier ? ['--config', `service_tier=${JSON.stringify(tier)}`] : []),
+      '--skip-git-repo-check', '--json', prompt,
+    ], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] });
+    let pending = '';
+    let usage;
+    let completionCount = 0;
+    let streamPartial = cliVersion !== CODEX_VERSION;
+    let collaborationEvidenceCount = 0;
+    let errorEvidenceCount = 0;
+    const consume = (line) => {
+      if (!line.trim()) return;
+      try {
+        const event = JSON.parse(line);
+        if (!event || !CODEX_EVENT_TYPES.has(event.type)) streamPartial = true;
+        if (/^item\./.test(event?.type || '') && (!event.item || !CODEX_ITEM_TYPES.has(event.item.type))) streamPartial = true;
+        if (event.type === 'turn.completed') {
+          completionCount++;
+          usage = event.usage;
+        }
+        if (event.type === 'error' || event.type === 'turn.failed' || event.item?.type === 'error') {
+          errorEvidenceCount++;
+          streamPartial = true;
+        }
+        if (/collab|agent/i.test(String(event.item?.type || event.type)) && event.item?.type !== 'agent_message') {
+          collaborationEvidenceCount++;
+          streamPartial = true;
+        }
+      } catch (_) { streamPartial = true; }
+    };
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      pending += chunk;
+      const lines = pending.split(/\r?\n/);
+      pending = lines.pop();
+      for (const line of lines) consume(line);
+    });
     child.once('error', reject);
     child.once('close', (status) => {
-      if (status !== 0) reject(new Error(`harness-failure: ${role} subprocess exited ${status}`));
-      else resolve({ status });
+      consume(pending);
+      const normalized = normalizeUsage(usage);
+      resolve({
+        status, role, engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', cliVersion,
+        requestedModel: model, reasoningEffort: effort, serviceTier: tier, resolvedModel: 'unavailable', invocationId, elapsedMs: Date.now() - startedAt,
+        ...normalized,
+        usagePartial: normalized.usagePartial || streamPartial || completionCount !== 1 || status !== 0,
+        ...(cliVersion !== CODEX_VERSION ? { usageStatus: 'unsupported-cli-version' } : {}),
+        evidence: { collaboration: collaborationEvidenceCount, errors: errorEvidenceCount },
+      });
     });
   });
 }
@@ -80,14 +178,158 @@ function reviewerPrompt(role, { stateDir, round, targetType, dodPassed, dodDefer
 
 async function invoke(spawn, input) {
   const result = await spawn(input);
-  if (result && result.status != null && result.status !== 0) throw new Error(`harness-failure: ${input.role} subprocess exited ${result.status}`);
+  if (result && result.status !== 0) throw new Error(`harness-failure: ${input.role} subprocess exited ${result.status}`);
+}
+
+function destinationFromPrompt(prompt, stateDir) {
+  if (typeof prompt !== 'string' || typeof stateDir !== 'string') return null;
+  const escaped = path.resolve(stateDir).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const directive = new RegExp(`\\bwrite\\s+ONLY\\b[\\s\\S]{0,1000}?\\bto\\s+[\`'"]?(${escaped}[/\\\\]round-\\d+-[A-Za-z0-9:._-]+\\.json)[\`'"]?`, 'gi');
+  const matches = [...prompt.matchAll(directive)];
+  return matches.length === 1 ? path.resolve(matches[0][1]) : null;
+}
+
+function summarizeInvocations(invocations) {
+  const empty = () => ({ calls: 0, partialCalls: 0, inputTokens: 0, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0 });
+  const total = empty(); const byRole = {};
+  for (const invocation of invocations) {
+    const role = invocation.role; const roleTotal = byRole[role] || (byRole[role] = empty());
+    for (const target of [total, roleTotal]) {
+      target.calls++;
+      if (invocation.usagePartial !== false) target.partialCalls++;
+      if (invocation.usageStatus === 'unsupported-cli-version') {
+        target.unsupportedCliVersionCalls = (target.unsupportedCliVersionCalls || 0) + 1;
+        target.unsupportedCliVersions = Array.from(new Set([...(target.unsupportedCliVersions || []), invocation.cliVersion].filter(Boolean))).sort();
+      }
+      for (const field of ['inputTokens', 'cacheWriteInputTokens', 'cachedInputTokens', 'reasoningOutputTokens', 'outputTokens', 'totalTokens', 'elapsedMs']) {
+        if (Number.isFinite(invocation[field])) target[field] += invocation[field];
+      }
+    }
+  }
+  return { total, byRole, invocations };
+}
+
+function reconcileCodexTelemetry(telemetry, stateDir, ref, includeAllSlots, currentRound) {
+  let slots;
+  try {
+    const ledger = JSON.parse(fs.readFileSync(ledgerPath(stateDir, targetSlug(ref)), 'utf8'));
+    slots = (ledger.telemetrySlots || []).filter((slot) => slot?.engine === 'codex' && slot.provider === 'openai');
+  } catch { return telemetry; }
+  const invocations = (telemetry.invocations || []).filter((invocation) => invocation.slotMissing !== true);
+  if (!includeAllSlots) {
+    const invocationSlots = new Set(invocations.map((invocation) => JSON.stringify([invocation.artifactPath, invocation.attempt])));
+    slots = slots.filter((slot) => slot.round === currentRound || invocationSlots.has(JSON.stringify([slot.artifactPath, slot.attempt])));
+  }
+  if (!slots.length) return telemetry;
+  const keyed = new Map();
+  for (const invocation of invocations) {
+    const key = JSON.stringify([invocation.artifactPath, invocation.attempt]);
+    const matches = keyed.get(key) || [];
+    matches.push(invocation); keyed.set(key, matches);
+  }
+  const reconciled = []; const consumed = new Set();
+  for (const slot of slots) {
+    const matches = keyed.get(JSON.stringify([slot.artifactPath, slot.attempt])) || [];
+    if (!matches.length) {
+      reconciled.push({
+        ...slot, invocationId: null, status: null, usagePartial: true, slotMissing: true,
+        model: null, resolvedModel: null, reasoningEffort: null, serviceTier: null,
+        inputTokens: 0, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0,
+        outputTokens: 0, totalTokens: 0, elapsedMs: 0,
+      });
+    } else {
+      for (const invocation of matches) {
+        consumed.add(invocation);
+        reconciled.push(matches.length === 1 ? invocation : { ...invocation, usagePartial: true, duplicateEvidence: true });
+      }
+    }
+  }
+  for (const invocation of invocations) if (!consumed.has(invocation)) reconciled.push({ ...invocation, usagePartial: true, orphan: true });
+  return summarizeInvocations(reconciled);
 }
 
 async function runReviewUntilGreen(options) {
   const { ref, base, broad = false, noBroad = false, noDod = false, resume = false, repoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
   if (!ref) throw new Error('review-until-green: missing target ref');
   const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot));
-  const spawn = options.spawn || ((input) => codexExec(input));
+  const rawSpawn = options.spawn || ((input) => codexExec(input));
+  const telemetry = {
+    total: { calls: 0, partialCalls: 0, inputTokens: 0, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0 },
+    byRole: {},
+    invocations: [],
+  };
+  let currentRound = null;
+  let telemetryPath = null;
+  let telemetryLoaded = false;
+  let telemetryLoadedFromDisk = false;
+  const persistTelemetry = () => {
+    if (!telemetryPath) return;
+    const temporary = `${telemetryPath}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, `${JSON.stringify(telemetry)}\n`);
+    fs.renameSync(temporary, telemetryPath);
+  };
+  const record = (input, result) => {
+    const usage = result && result.usage || {};
+    const partial = !result || result.usagePartial !== false;
+    const values = {
+      inputTokens: Number.isFinite(usage.inputTokens) ? usage.inputTokens : 0,
+      cacheWriteInputTokens: Number.isFinite(usage.cacheWriteInputTokens) ? usage.cacheWriteInputTokens : 0,
+      cachedInputTokens: Number.isFinite(usage.cachedInputTokens) ? usage.cachedInputTokens : 0,
+      reasoningOutputTokens: Number.isFinite(usage.reasoningOutputTokens) ? usage.reasoningOutputTokens : 0,
+      outputTokens: Number.isFinite(usage.outputTokens) ? usage.outputTokens : 0,
+      totalTokens: Number.isFinite(usage.totalTokens) ? usage.totalTokens : 0,
+      elapsedMs: Number.isFinite(result && result.elapsedMs) ? result.elapsedMs : 0,
+    };
+    const role = input.role;
+    const aggregate = telemetry.byRole[role] || (telemetry.byRole[role] = {
+      calls: 0, partialCalls: 0, inputTokens: 0, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0,
+    });
+    for (const target of [aggregate, telemetry.total]) {
+      target.calls++;
+      if (partial) target.partialCalls++;
+      if (result?.usageStatus === 'unsupported-cli-version') {
+        target.unsupportedCliVersionCalls = (target.unsupportedCliVersionCalls || 0) + 1;
+        target.unsupportedCliVersions = Array.from(new Set([...(target.unsupportedCliVersions || []), result.cliVersion].filter(Boolean))).sort();
+      }
+      for (const key of Object.keys(values)) target[key] += values[key];
+    }
+    telemetry.invocations.push({
+      ...(input.telemetrySlot || {}),
+      role, round: currentRound, model: input.requestedModel || result?.requestedModel || null, resolvedModel: result?.resolvedModel || null,
+      reasoningEffort: input.reasoningEffort || result?.reasoningEffort || null, serviceTier: input.serviceTier || result?.serviceTier || null,
+      status: result && Number.isInteger(result.status) ? result.status : null,
+      usagePartial: partial, ...values,
+      ...(result?.usageStatus ? { usageStatus: result.usageStatus } : {}),
+      ...(result && result.invocationId ? { engine: result.engine, provider: result.provider, providerSchema: result.providerSchema, invocationId: result.invocationId } : {}),
+      ...(result?.cliVersion ? { cliVersion: result.cliVersion } : {}),
+      ...(result?.evidence ? { evidence: result.evidence } : {}),
+      ...(result && result.providerUsage && Object.keys(result.providerUsage).length ? { providerUsage: result.providerUsage } : {}),
+    });
+    persistTelemetry();
+  };
+  const spawn = async (input) => {
+    try {
+      const result = await rawSpawn(input);
+      record(input, result);
+      return result;
+    } catch (error) {
+      record(input, null);
+      throw error;
+    }
+  };
+  const withTelemetry = (result) => {
+    Object.assign(telemetry, reconcileCodexTelemetry(telemetry, telemetryPath && path.dirname(telemetryPath), ref, telemetryLoadedFromDisk, currentRound));
+    persistTelemetry();
+    const output = { ...result, telemetry };
+    if (typeof output.handoff === 'string') {
+      const total = telemetry.total;
+      output.handoff += `\nusage: ${total.calls} calls, ${total.partialCalls} partial, ${total.totalTokens} tokens, ${total.elapsedMs}ms`;
+    }
+    if ((result?.decision === 'terminal' || result?.decision?.continue === false) && telemetryPath) {
+      try { fs.unlinkSync(telemetryPath); } catch {}
+    }
+    return output;
+  };
   const cli = (args) => runCli(args);
   // Never resolve a base for resume: round-start restores ledger.target.base.
   // File targets do not have a git base at all.
@@ -96,14 +338,14 @@ async function runReviewUntilGreen(options) {
     ? undefined
     : (base === undefined && !ref.startsWith('file:') && baseResolver ? baseResolver(repoRoot) : base);
 
-  const runPanel = async (context) => {
+  const runPanel = async (context, launch) => {
     const lenses = PANEL_LENSES;
     for (;;) {
       const panel = await cli(['gate-panel-round-start', ref]);
       await Promise.all(lenses.map(async (lens) => {
         const artifact = path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-${lens}.json`);
         try {
-          await invoke(spawn, { role: `gate-panel-${lens}`, repoRoot, stateDir: context.stateDir,
+          await launch({ role: `gate-panel-${lens}`, repoRoot, stateDir: context.stateDir,
             prompt: `Review ${path.join(context.stateDir, `round-${context.round}-diff.txt`)} and the repository through the ${lens} lens. You MAY Read/Grep the repository and MUST read ${path.join(context.stateDir, `intent-${context.slug}.md`)} if it exists to assess the design and acceptance criteria. Previously rejected IDs: ${JSON.stringify(panel.rejectedIds || [])} -- do not re-raise one unless you found something the earlier round did not. Every candidate faces three adversarial verifiers that default to REFUTED when uncertain and decide by majority, so a gap you cannot anchor in evidence will not survive: substantiate what you raise rather than raising more. Write ONLY {"status":"ok","findings":[]} to ${artifact}; every ID must use gate:${lens}:<slug>.${BLOCKED_CLAUSE}` });
         } catch (_) { /* panel lenses are intentionally lenient */ }
       }));
@@ -124,7 +366,7 @@ async function runReviewUntilGreen(options) {
         let survives = 0;
         const votes = await Promise.all([0, 1, 2].map(async (vote) => {
           const verdict = path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-vote-${finding.id}-${vote}.json`);
-          await invoke(spawn, { role: 'gate-panel-verify', repoRoot, stateDir: context.stateDir,
+          await launch({ role: 'gate-panel-verify', repoRoot, stateDir: context.stateDir,
             prompt: `Try to refute gate finding ${JSON.stringify(finding)}. Default to refuted if uncertain. Write ONLY {"status":"ok","survives":false} to ${verdict}.${BLOCKED_CLAUSE}` });
           let raw;
           // Missing/unparseable verdict stays lenient (counts as refuted), but a
@@ -156,13 +398,40 @@ async function runReviewUntilGreen(options) {
     if (noBroad) startArgs.push('--no-broad'); // broad review is on by default; this is the opt-out
     if (noDod) startArgs.push('--no-dod');
     const started = await cli(startArgs);
-    if (started.decision !== 'work') return started;
+    if (!telemetryPath) telemetryPath = path.join(started.stateDir, `telemetry-${targetSlug(ref)}.json`);
+    if (!telemetryLoaded) {
+      telemetryLoadedFromDisk = fs.existsSync(telemetryPath);
+      if (telemetryLoadedFromDisk) {
+        Object.assign(telemetry, JSON.parse(fs.readFileSync(telemetryPath, 'utf8')));
+        for (const aggregate of [telemetry.total, ...Object.values(telemetry.byRole || {})]) if (!Number.isFinite(aggregate.cacheWriteInputTokens)) aggregate.cacheWriteInputTokens = 0;
+      }
+    }
+    telemetryLoaded = true;
+    if (started.decision !== 'work') return withTelemetry(started);
+    currentRound = started.round;
     const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodPassed: started.dodPassed, dodDeferred: started.dodDeferred, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref) };
+    let slotAllocation = Promise.resolve();
+    const launch = async (input) => {
+      const artifactPath = destinationFromPrompt(input.prompt, input.stateDir);
+      let telemetrySlot = null;
+      if (artifactPath) {
+        const allocation = slotAllocation.then(() => cli(['telemetry-slot', ref, artifactPath, '--engine', 'codex']));
+        slotAllocation = allocation.catch(() => {});
+        telemetrySlot = await allocation;
+      }
+      return invoke(spawn, {
+        ...input,
+        ...(options.model ? { requestedModel: options.model } : {}),
+        ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
+        ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
+        ...(telemetrySlot ? { telemetrySlot } : {}),
+      });
+    };
 
     const runArtifactReviewer = async (role) => {
       let retryPrompt;
       for (let attempt = 0; attempt < 2; attempt++) {
-        await invoke(spawn, { role, prompt: reviewerPrompt(role, { ...context, retryPrompt }), repoRoot, stateDir: context.stateDir });
+        await launch({ role, prompt: reviewerPrompt(role, { ...context, retryPrompt }), repoRoot, stateDir: context.stateDir });
         const normalized = await cli(['artifact-normalize', ref, role]);
         if (normalized.status === 'ok') return;
         if (normalized.status !== 'retry' || attempt === 1) throw new Error(`harness-failure: ${role} artifact retry exhausted`);
@@ -183,7 +452,7 @@ async function runReviewUntilGreen(options) {
       // malformed advisory verify artifact means zero rejections/new findings,
       // not a harness failure. Do not route it through artifact-normalize.
       try {
-        await invoke(spawn, { role: 'gate-verify', prompt: reviewerPrompt('gate-verify', context), repoRoot, stateDir: context.stateDir });
+        await launch({ role: 'gate-verify', prompt: reviewerPrompt('gate-verify', context), repoRoot, stateDir: context.stateDir });
       } catch (_) {
         // Preserve review-cli's legacy gate-verify leniency: a failed advisory
         // verifier contributes no rejections/new findings, not a harness stop.
@@ -193,16 +462,16 @@ async function runReviewUntilGreen(options) {
 
     const planned = await cli(['plan-fixes', ref]);
     for (const finding of planned.fixes || []) {
-      await invoke(spawn, { role: 'fix', prompt: reviewerPrompt('fix', { ...context, finding }), repoRoot, stateDir: context.stateDir });
+      await launch({ role: 'fix', prompt: reviewerPrompt('fix', { ...context, finding }), repoRoot, stateDir: context.stateDir });
       if (started.targetType !== 'file') await cli(['commit-fix', ref, finding.id]);
     }
     let recorded = await cli(['record', ref]);
     if (recorded.decision && recorded.decision.panelPending) {
-      await runPanel(context);
+      await runPanel(context, launch);
       recorded = await cli(['record', ref]);
     }
     if (recorded.decision && recorded.decision.continue) continue;
-    return recorded;
+    return withTelemetry(recorded);
   }
 }
 

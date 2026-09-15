@@ -432,6 +432,25 @@ test('applyRoundOutcome: dod passed and all findings fixed -> NOT clean yet (con
   assert.strictEqual(after.status, 'converging');
 });
 
+test('applyRoundOutcome: a final budgeted fix round still gets its confirmation round', () => {
+  const open = finding({ id: 'correctness:last-fix', status: 'open' });
+  const ledger = {
+    ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }),
+    round: 3,
+    budget: { max_rounds: 3, spent: 2 },
+    findings: [open],
+  };
+
+  const { ledger: after, decision } = review.applyRoundOutcome(ledger, {
+    dodPassed: true,
+    findings: [{ ...open, status: 'confirmed' }],
+    fixedIds: [open.id], parkedIds: [], killedIds: [], specDoubtScope: 'none',
+  });
+
+  assert.strictEqual(decision.continue, true);
+  assert.strictEqual(after.status, 'converging');
+});
+
 test('applyRoundOutcome: a zero-fix round with dod passed and no open findings converges (the confirmation round)', () => {
   let ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
   ledger = review.beginRound(ledger, 'h').ledger;
@@ -545,7 +564,7 @@ test('applyRoundOutcome: budget exhausted parks remaining open findings', () => 
   let ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
   ledger.budget.max_rounds = 1;
   ledger = review.beginRound(ledger, 'hash-1').ledger; // round=1
-  ledger.budget.spent = 1; // budget is charged at record now, not beginRound; simulate a prior record charge
+  ledger.budget.spent = 1; // budget is charged at record, so model an already-spent round
   const { ledger: after, decision } = review.applyRoundOutcome(ledger, {
     dodPassed: false,
     findings: [finding({ id: 'f3', status: 'confirmed' })],
@@ -657,12 +676,30 @@ test('unparkFinding: throws for an unknown finding id', () => {
 test('listLedgers: reads every review-*.json in the state dir, skips non-matching files', () => {
   const dir = tmpStateDir();
   const l1 = review.emptyLedger({ kind: 'local', ref: 'feat/a' });
+  const l2 = review.emptyLedger({ kind: 'local', ref: 'telemetry-cleanup' });
   review.writeLedger(dir, 'feat-a', l1);
+  review.writeLedger(dir, 'telemetry-cleanup', l2);
+  fs.writeFileSync(path.join(dir, `review-telemetry-${'a'.repeat(64)}.json`), '{}');
+  fs.writeFileSync(path.join(dir, `review-agent-telemetry-${'b'.repeat(64)}.json`), '{}');
   fs.writeFileSync(path.join(dir, 'charter.md'), 'not a ledger');
   fs.writeFileSync(path.join(dir, 'sess1.json'), '{}'); // a session-state file, not a review ledger
   const found = review.listLedgers(dir);
-  assert.strictEqual(found.length, 1);
-  assert.strictEqual(found[0].slug, 'feat-a');
+  assert.deepStrictEqual(found.map(({ slug, ledger }) => [slug, ledger.target.ref]).sort(), [
+    ['feat-a', 'feat/a'],
+    ['telemetry-cleanup', 'telemetry-cleanup'],
+  ]);
+});
+
+test('readLedger does not scan and fold telemetry artifacts on ordinary state reads', () => {
+  const dir = tmpStateDir();
+  const ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  review.writeLedger(dir, 'feat-x', ledger);
+  fs.writeFileSync(path.join(dir, `review-telemetry-${'c'.repeat(64)}.json`), JSON.stringify({
+    engine: 'claude-code', provider: 'anthropic', targetRef: 'feat/x', role: 'correctness', round: 1,
+    invocationId: 'tool-1', usagePartial: true, totalTokens: 1,
+  }));
+
+  assert.strictEqual(review.readLedger(dir, 'feat-x').telemetry, undefined);
 });
 
 test('listLedgers: returns [] for a missing state dir', () => {

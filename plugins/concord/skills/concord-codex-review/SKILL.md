@@ -26,12 +26,13 @@ This skill keeps **Claude as the driver and fixer** and swaps **the reviewer eng
 
 This is one direction of a symmetric idea: the reviewer engine is an independent axis from the driving harness, so the mirror arrangement (a Codex-driven loop reviewed by Claude) belongs to the Codex packaging's own spawn strategy rather than to this skill.
 
-## The core idea: drive Concord's own loop, deviate in exactly two places
+## The core idea: drive Concord's own loop, deviate in exactly three places
 
-You do **not** reimplement the review loop here. Concord's Claude-Code command doc IS the loop — round choreography, the exact reviewer prompts, the "wait for the artifact" ordering, dedupe, termination. Follow it verbatim, with two — and only two — substitutions:
+You do **not** reimplement the review loop here. Concord's Claude-Code command doc IS the loop — round choreography, the exact reviewer prompts, the "wait for the artifact" ordering, dedupe, termination. Follow it verbatim, with three — and only three — substitutions:
 
 1. **Reviewer/verify/gate/panel/intent subagents → `codex exec` subprocesses.** Wherever the driver says to spawn a review-class subagent via the Task tool, run that same prompt as a `codex exec` subprocess instead (recipe below). The prompt already tells the reviewer to write ONLY its JSON artifact to the state directory; Codex honors it identically.
 2. **Fix subagents stay Claude — you apply them in-session.** The fixer must remain the driving engine (it edits the working tree and commits, and the loop's single-writer discipline lives here). Where the driver says to spawn a fix subagent, YOU apply the minimal correct fix with your own Edit tool, then run `commit-fix` exactly as the driver says.
+3. **Telemetry slots follow the spawned engine.** Immediately before every Codex review-class spawn, replace the driver's slot command with `node "$REVIEW_CLI" telemetry-slot <ref> <exact-output-artifact-path> --engine codex`. Fixes still run in Claude, so immediately before each fix keep `telemetry-slot <ref> <exact-output-artifact-path> --engine claude-code`.
 
 Everything else — `round-start`, `plan-fixes`, `commit-fix`, `record`, `artifact-normalize`, the panel sub-loop, the terminal-decision handling — you run unchanged. You still make NO judgement about findings, DoD, or termination; the CLI decides.
 
@@ -71,7 +72,7 @@ A repo with no `review.config.json` runs fine — the loop converges on the revi
 
 ## Step 3 — run the loop with Codex reviewers
 
-Drive `$REVIEW_CLI` per `$DRIVER_DOC`. The one thing that changes is how you spawn each review-class subagent. Use this recipe.
+Drive `$REVIEW_CLI` per `$DRIVER_DOC`. The review-class spawn and its telemetry engine attribution change together. Use this recipe.
 
 ### The codex-exec reviewer recipe
 
@@ -80,6 +81,7 @@ A reviewer subprocess needs write access to the repo (for its own reasoning scra
 ```bash
 # <PROMPT> is the EXACT reviewer prompt the driver tells you to give this subagent.
 # <stateDir> is what round-start printed.
+node "$REVIEW_CLI" telemetry-slot <ref> "<exact-output-artifact-path>" --engine codex
 codex exec --cd "<repoRoot>" --sandbox workspace-write --add-dir "<stateDir>" \
   --skip-git-repo-check "<PROMPT>" < /dev/null > "<stateDir>/codex-<role>.log" 2>&1
 ```
