@@ -1753,6 +1753,10 @@ test('record returns persisted Claude review telemetry in JSON and the human han
   assert.strictEqual(out.telemetry.totalTokens, 19);
   assert.match(out.handoff, /review usage: 19 tokens across 1 call\(s\), 0 partial/);
   assert.deepStrictEqual([fs.existsSync(toolTelemetry), fs.existsSync(agentTelemetry)], [false, false]);
+  const shown = JSON.parse(run(['show', 'feat/telemetry'], { env }));
+  assert.deepStrictEqual(shown.telemetry.entries.map(({ invocationId, totalTokens, usagePartial }) => ({ invocationId, totalTokens, usagePartial })), [
+    { invocationId: 'toolu-telemetry', totalTokens: 19, usagePartial: false },
+  ]);
 });
 
 test('telemetry-slot persists monotonically numbered attempts for one exact destination', () => {

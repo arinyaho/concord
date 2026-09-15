@@ -209,14 +209,18 @@ function summarizeInvocations(invocations) {
   return { total, byRole, invocations };
 }
 
-function reconcileCodexTelemetry(telemetry, stateDir, ref) {
+function reconcileCodexTelemetry(telemetry, stateDir, ref, includeAllSlots, currentRound) {
   let slots;
   try {
     const ledger = JSON.parse(fs.readFileSync(ledgerPath(stateDir, targetSlug(ref)), 'utf8'));
     slots = (ledger.telemetrySlots || []).filter((slot) => slot?.engine === 'codex' && slot.provider === 'openai');
   } catch { return telemetry; }
-  if (!slots.length) return telemetry;
   const invocations = (telemetry.invocations || []).filter((invocation) => invocation.slotMissing !== true);
+  if (!includeAllSlots) {
+    const invocationSlots = new Set(invocations.map((invocation) => JSON.stringify([invocation.artifactPath, invocation.attempt])));
+    slots = slots.filter((slot) => slot.round === currentRound || invocationSlots.has(JSON.stringify([slot.artifactPath, slot.attempt])));
+  }
+  if (!slots.length) return telemetry;
   const keyed = new Map();
   for (const invocation of invocations) {
     const key = JSON.stringify([invocation.artifactPath, invocation.attempt]);
@@ -257,6 +261,7 @@ async function runReviewUntilGreen(options) {
   let currentRound = null;
   let telemetryPath = null;
   let telemetryLoaded = false;
+  let telemetryLoadedFromDisk = false;
   const persistTelemetry = () => {
     if (!telemetryPath) return;
     const temporary = `${telemetryPath}.${process.pid}.tmp`;
@@ -313,7 +318,7 @@ async function runReviewUntilGreen(options) {
     }
   };
   const withTelemetry = (result) => {
-    Object.assign(telemetry, reconcileCodexTelemetry(telemetry, telemetryPath && path.dirname(telemetryPath), ref));
+    Object.assign(telemetry, reconcileCodexTelemetry(telemetry, telemetryPath && path.dirname(telemetryPath), ref, telemetryLoadedFromDisk, currentRound));
     persistTelemetry();
     const output = { ...result, telemetry };
     if (typeof output.handoff === 'string') {
@@ -394,19 +399,25 @@ async function runReviewUntilGreen(options) {
     if (noDod) startArgs.push('--no-dod');
     const started = await cli(startArgs);
     if (!telemetryPath) telemetryPath = path.join(started.stateDir, `telemetry-${targetSlug(ref)}.json`);
-    if (!telemetryLoaded && fs.existsSync(telemetryPath)) {
-      Object.assign(telemetry, JSON.parse(fs.readFileSync(telemetryPath, 'utf8')));
-      for (const aggregate of [telemetry.total, ...Object.values(telemetry.byRole || {})]) if (!Number.isFinite(aggregate.cacheWriteInputTokens)) aggregate.cacheWriteInputTokens = 0;
+    if (!telemetryLoaded) {
+      telemetryLoadedFromDisk = fs.existsSync(telemetryPath);
+      if (telemetryLoadedFromDisk) {
+        Object.assign(telemetry, JSON.parse(fs.readFileSync(telemetryPath, 'utf8')));
+        for (const aggregate of [telemetry.total, ...Object.values(telemetry.byRole || {})]) if (!Number.isFinite(aggregate.cacheWriteInputTokens)) aggregate.cacheWriteInputTokens = 0;
+      }
     }
     telemetryLoaded = true;
     if (started.decision !== 'work') return withTelemetry(started);
     currentRound = started.round;
     const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodPassed: started.dodPassed, dodDeferred: started.dodDeferred, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref) };
+    let slotAllocation = Promise.resolve();
     const launch = async (input) => {
       const artifactPath = destinationFromPrompt(input.prompt, input.stateDir);
       let telemetrySlot = null;
       if (artifactPath) {
-        telemetrySlot = await cli(['telemetry-slot', ref, artifactPath, '--engine', 'codex']);
+        const allocation = slotAllocation.then(() => cli(['telemetry-slot', ref, artifactPath, '--engine', 'codex']));
+        slotAllocation = allocation.catch(() => {});
+        telemetrySlot = await allocation;
       }
       return invoke(spawn, {
         ...input,

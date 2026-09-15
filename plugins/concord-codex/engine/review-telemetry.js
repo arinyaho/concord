@@ -133,7 +133,7 @@ function foldTelemetry(stateDir, ledger, slug) {
   if (!ledger || typeof ledger.target?.ref !== 'string') return ledger;
   let names;
   try { names = fs.readdirSync(stateDir); } catch { return ledger; }
-  const tools = new Map((ledger.telemetry?.entries || []).filter((entry) => entry?.engine === 'claude-code' && entry.provider === 'anthropic' && typeof entry.invocationId === 'string').map((entry) => [entry.invocationId, { kind: 'tool-use', ...entry }]));
+  const tools = new Map((ledger.telemetry?.entries || []).filter((entry) => entry?.engine === 'claude-code' && entry.provider === 'anthropic' && typeof entry.invocationId === 'string').map((entry) => [entry.invocationId, { kind: 'folded', ...entry }]));
   const agents = new Map();
   const malformed = [];
   for (const name of names) {
@@ -160,6 +160,7 @@ function foldTelemetry(stateDir, ledger, slug) {
   const targetAgentIds = new Set(Array.from(tools.values(), (tool) => tool.agentId).filter((agentId) => typeof agentId === 'string'));
   for (const agentId of agents.keys()) if (!targetAgentIds.has(agentId)) agents.delete(agentId);
   let entries = Array.from(tools.values(), (tool) => {
+    if (tool.kind === 'folded') return publicToolRecord(tool);
     const observations = (agents.get(tool.agentId) || []).filter((agent) => (
       typeof tool.parentTranscriptPath === 'string' && agent.parentTranscriptPath === tool.parentTranscriptPath
     ));

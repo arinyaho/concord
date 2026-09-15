@@ -402,6 +402,49 @@ test('terminal runner returns persisted telemetry even when the caller omits res
   assert.strictEqual(out.handoff, 'LGTM\nusage: 1 calls, 0 partial, 16 tokens, 20ms');
 });
 
+test('terminal runner without a telemetry file ignores historical ledger slots', async () => {
+  const stateDir = temp();
+  fs.writeFileSync(path.join(stateDir, 'review-feature-x.json'), JSON.stringify({
+    target: { ref: 'feature/x' },
+    telemetrySlots: [
+      { engine: 'codex', provider: 'openai', artifactPath: '/old/one.json', attempt: 1, role: 'correctness', round: 1 },
+      { engine: 'codex', provider: 'openai', artifactPath: '/old/two.json', attempt: 1, role: 'verify', round: 1 },
+    ],
+  }));
+
+  const out = await runReviewUntilGreen({
+    ref: 'feature/x', repoRoot: '/repo',
+    runCli: () => ({ decision: 'terminal', stateDir, handoff: 'LGTM' }),
+    spawn: () => { throw new Error('terminal invocation must not spawn'); },
+  });
+
+  assert.deepStrictEqual(out.telemetry.total, {
+    calls: 0, partialCalls: 0, inputTokens: 0, cacheWriteInputTokens: 0, cachedInputTokens: 0,
+    reasoningOutputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0,
+  });
+  assert.strictEqual(out.handoff, 'LGTM\nusage: 0 calls, 0 partial, 0 tokens, 0ms');
+});
+
+test('active round without a telemetry file preserves a preexisting missing slot from that round', async () => {
+  const h = harness();
+  const ledgerPath = path.join(h.stateDir, 'review-feature-x.json');
+  const slots = [{ engine: 'codex', provider: 'openai', artifactPath: '/missing.json', attempt: 1, role: 'correctness', round: 1 }];
+  const writeSlots = () => fs.writeFileSync(ledgerPath, JSON.stringify({ target: { ref: 'feature/x' }, telemetrySlots: slots }));
+  writeSlots();
+  const cli = (args) => {
+    const result = h.cli(args);
+    if (args[0] === 'telemetry-slot') {
+      slots.push(result);
+      writeSlots();
+    }
+    return result;
+  };
+
+  const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn: h.spawn });
+
+  assert.ok(out.telemetry.invocations.some((invocation) => invocation.artifactPath === '/missing.json' && invocation.slotMissing === true));
+});
+
 test('resumed runner preserves a Codex slot whose subprocess lifecycle record is missing', async () => {
   const stateDir = temp();
   const artifactPath = path.join(stateDir, 'round-4-correctness.json');
@@ -793,11 +836,17 @@ test('panel lenses and each finding\'s adversarial votes fan out concurrently', 
   const pendingLenses = [];
   const pendingVotes = [];
   let recorded = 0;
-  const cli = (args) => {
+  let activeSlots = 0; let maxActiveSlots = 0;
+  const cli = async (args) => {
     const [verb] = args;
     if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
     if (verb === 'artifact-normalize') return { status: 'ok' };
-    if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
+    if (verb === 'telemetry-slot') {
+      activeSlots++; maxActiveSlots = Math.max(maxActiveSlots, activeSlots);
+      await new Promise(setImmediate);
+      activeSlots--;
+      return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
+    }
     if (verb === 'plan-fixes') return { fixes: [] };
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
@@ -815,7 +864,7 @@ test('panel lenses and each finding\'s adversarial votes fan out concurrently', 
   };
 
   const running = runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn });
-  await new Promise(setImmediate);
+  for (let i = 0; i < 10 && pendingLenses.length < 5; i++) await new Promise(setImmediate);
   assert.strictEqual(pendingLenses.length, 5);
   for (const { role, resolve } of pendingLenses) {
     const lens = role.slice('gate-panel-'.length);
@@ -823,13 +872,14 @@ test('panel lenses and each finding\'s adversarial votes fan out concurrently', 
     fs.writeFileSync(path.join(stateDir, `round-4-gate-panel-1-${lens}.json`), JSON.stringify({ status: 'ok', findings }));
     resolve({ status: 0 });
   }
-  await new Promise(setImmediate);
+  for (let i = 0; i < 10 && pendingVotes.length < 3; i++) await new Promise(setImmediate);
   assert.strictEqual(pendingVotes.length, 3);
   for (const resolve of pendingVotes) {
     fs.writeFileSync(path.join(stateDir, `round-4-gate-panel-1-vote-gate:ac-coverage:gap-${pendingVotes.indexOf(resolve)}.json`), JSON.stringify({ status: 'ok', survives: false }));
     resolve({ status: 0 });
   }
   await running;
+  assert.strictEqual(maxActiveSlots, 1);
 });
 
 test('panel candidates with unsafe IDs never reach an interpolated verdict path', async () => {
