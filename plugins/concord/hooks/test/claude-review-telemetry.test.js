@@ -487,6 +487,26 @@ test('ignores stale idle ledgers when associating an active invocation', () => {
   assert.strictEqual(record.targetRef, 'feat/x');
 });
 
+test('allocates the same attempt slot independently for sequential review targets', () => {
+  const { transcript, stateDir } = setup();
+  const ledgerPath = path.join(stateDir, 'review-feat-x.json');
+  const artifactPath = path.join(stateDir, 'round-2-correctness.json');
+  const firstLedger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+  firstLedger.telemetrySlots = [{ artifactPath, attempt: 1, role: 'correctness', round: 2 }];
+  fs.writeFileSync(ledgerPath, JSON.stringify(firstLedger));
+  const prompt = `Write ONLY to ${artifactPath}`;
+  const first = core.recordForEvent(event({ transcript, id: 'target-a', prompt, response: successfulResponse() }), stateDir);
+  assert.deepStrictEqual({ targetRef: first.targetRef, attempt: first.attempt }, { targetRef: 'feat/x', attempt: 1 });
+  assert.strictEqual(core.writeRecord(stateDir, first), true);
+
+  fs.writeFileSync(ledgerPath, JSON.stringify({ ...firstLedger, target: { ref: 'feat/y' } }));
+  const second = core.recordForEvent(event({ transcript, id: 'target-b', prompt, response: successfulResponse() }), stateDir);
+
+  assert.deepStrictEqual({ invocationId: second.invocationId, targetRef: second.targetRef, attempt: second.attempt }, {
+    invocationId: 'target-b', targetRef: 'feat/y', attempt: 1,
+  });
+});
+
 test('hook writes one atomic record per tool-use identity and emits no output', () => {
   const { transcript, stateDir } = setup();
   const prompt = `Write ONLY to ${path.join(stateDir, 'round-2-correctness.json')}`;

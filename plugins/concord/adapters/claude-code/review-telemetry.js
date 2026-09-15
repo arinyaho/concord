@@ -45,11 +45,11 @@ function artifactFromPrompt(prompt, stateDir) {
   return { round, role: suffix.startsWith('fix-') ? 'fix' : suffix, targetRef: ledger.target.ref, artifactPath };
 }
 
-function attemptFor(stateDir, artifactPath, invocationId) {
+function attemptFor(stateDir, artifactPath, invocationId, targetRef) {
   const digest = crypto.createHash('sha256').update(`tool:${invocationId}`).digest('hex');
   try {
     const existing = JSON.parse(fs.readFileSync(path.join(stateDir, `review-telemetry-${digest}.json`), 'utf8'));
-    if (existing.artifactPath === artifactPath && Number.isInteger(existing.attempt)) return existing.attempt;
+    if (existing.targetRef === targetRef && existing.artifactPath === artifactPath && Number.isInteger(existing.attempt)) return existing.attempt;
   } catch {}
   const used = new Set();
   try {
@@ -57,7 +57,7 @@ function attemptFor(stateDir, artifactPath, invocationId) {
       if (!/^review-telemetry-[0-9a-f]{64}\.json$/.test(name)) continue;
       try {
         const record = JSON.parse(fs.readFileSync(path.join(stateDir, name), 'utf8'));
-        if (record.artifactPath === artifactPath && Number.isInteger(record.attempt)) used.add(record.attempt);
+        if (record.targetRef === targetRef && record.artifactPath === artifactPath && Number.isInteger(record.attempt)) used.add(record.attempt);
       } catch {}
     }
   } catch {}
@@ -90,7 +90,7 @@ function toolRecord(event, stateDir) {
     role: artifact.role,
     round: artifact.round,
     artifactPath: artifact.artifactPath,
-    attempt: attemptFor(stateDir, artifact.artifactPath, event.tool_use_id),
+    attempt: attemptFor(stateDir, artifact.artifactPath, event.tool_use_id, artifact.targetRef),
     invocationId: event.tool_use_id,
     agentId: typeof response.agentId === 'string' ? response.agentId : null,
     parentTranscriptPath: typeof event.transcript_path === 'string' ? path.resolve(event.transcript_path) : null,
