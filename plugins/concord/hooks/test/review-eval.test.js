@@ -119,6 +119,19 @@ test('provider component equations are engine-specific', () => {
   assert.ok(report.engines.codex.unevaluable.includes('candidate token total mismatch: seeded#0'));
 });
 
+test('rejects zero-call telemetry even when every aggregate is internally consistent', () => {
+  const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
+  Object.assign(candidate.engines.codex.runs.find((run) => run.scenarioId === 'seeded' && run.repetition === 0).telemetry, {
+    calls: 0, partialCalls: 0, inputTokens: 0, cacheWriteInputTokens: 0, cachedInputTokens: 0,
+    reasoningOutputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0,
+  });
+
+  const report = compareReviewMatrix(baseline, candidate).engines.codex;
+
+  assert.strictEqual(report.pass, false);
+  assert.ok(report.unevaluable.includes('candidate subprocess count invalid: seeded#0'));
+});
+
 test('a false clean fails on both sides and confirmed defects fail even when non-clean', () => {
   const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
   for (const side of [baseline, candidate]) {

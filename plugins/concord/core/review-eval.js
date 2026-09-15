@@ -44,7 +44,7 @@ function validateTelemetry(name, pairKey, engine, run, note) {
   for (const field of REMOVED_PARENT_FIELDS) if (Object.hasOwn(run, field)) note(`${name} removed parent proxy field: ${pairKey}:${field}`);
   const telemetry = run.telemetry;
   if (!telemetry || telemetry.partialCalls !== 0) note(`${name} partial usage: ${pairKey}`);
-  if (!nonnegative(telemetry?.calls)) note(`${name} subprocess count invalid: ${pairKey}`);
+  if (!nonnegative(telemetry?.calls) || telemetry.calls === 0) note(`${name} subprocess count invalid: ${pairKey}`);
   if (!nonnegative(telemetry?.elapsedMs)) note(`${name} elapsed time invalid: ${pairKey}`);
   const fields = ['inputTokens', 'cacheWriteInputTokens', 'cachedInputTokens', 'outputTokens'];
   if (engine === 'codex') fields.push('reasoningOutputTokens');
