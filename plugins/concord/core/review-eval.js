@@ -7,11 +7,38 @@ const RUN_PAIRING_KEYS = ['targetDiffIdentity', 'targetDiffHash', 'intentIdentit
 const REMOVED_PARENT_FIELDS = ['parentProxyContents', 'parentProxyTokenizerVersion', 'parentProxyContentHash', 'parentProxyTokens'];
 const TERMINALS = ['clean', 'parked', 'abandoned', 'intent-review', 'gate-pending', 'budget-stopped', 'harness-failure'];
 const DOD_RESULTS = ['passed', 'failed', 'deferred', 'not-run'];
+const HOLISTIC_DEFECTS = ['ac-coverage', 'design-conformance', 'cross-context', 'silent-gap', 'threat-model']
+  .map((lens) => `holistic::gate:${lens}:gap`);
+function frozenScenario({ seededDefects = [], confirmedDefects = [], nonDefects = [], requiredFixes = [], allowedTerminalOutcomes = ['clean'], hasExecutableDoD = true } = {}) {
+  const defectIds = [...new Set([...seededDefects, ...confirmedDefects, ...requiredFixes])];
+  const expectedProbes = defectIds.map((id) => `probe:${id}`);
+  return {
+    behaviorPreserving: true, confirmedDefects, seededDefects, nonDefects, requiredFixes, expectedProbes,
+    allowedTerminalOutcomes, hasExecutableDoD,
+    probesByFinding: Object.fromEntries(defectIds.map((id) => [id, [`probe:${id}`]])),
+  };
+}
 const FROZEN_CORPORA = {
   'review-eval-v2': {
-    scenarioIds: ['clean', 'false-positive', 'fix-round', 'holistic', 'malformed-blocked', 'seeded'],
-    holisticLenses: ['ac-coverage', 'design-conformance', 'cross-context', 'silent-gap', 'threat-model'],
-    confirmedDefectScenarioId: 'fix-round',
+    clean: frozenScenario({ nonDefects: ['clean::correctness:clean-diff'] }),
+    seeded: frozenScenario({
+      seededDefects: ['seeded::correctness:seeded-bug'], nonDefects: ['seeded::correctness:not-a-bug'],
+      allowedTerminalOutcomes: ['clean', 'parked'],
+    }),
+    'false-positive': frozenScenario({ nonDefects: [
+      'false-positive::correctness:false-positive-candidate',
+      'false-positive::gate:ac-coverage:false-positive-candidate',
+      'false-positive::gate:design-conformance:false-positive-candidate',
+      'false-positive::gate:cross-context:false-positive-candidate',
+      'false-positive::gate:silent-gap:false-positive-candidate',
+      'false-positive::gate:threat-model:false-positive-candidate',
+    ] }),
+    'malformed-blocked': frozenScenario({ allowedTerminalOutcomes: ['harness-failure'], hasExecutableDoD: false }),
+    'fix-round': frozenScenario({
+      seededDefects: ['fix-round::correctness:fix-round-bug'], confirmedDefects: ['fix-round::correctness:fix-round-bug'],
+      requiredFixes: ['fix-round::correctness:fix-round-bug'],
+    }),
+    holistic: frozenScenario({ seededDefects: HOLISTIC_DEFECTS, requiredFixes: HOLISTIC_DEFECTS }),
   },
 };
 
@@ -87,12 +114,7 @@ function compareReviewResults(baseline, candidate, options = {}) {
     const revision = manifest?.pairing?.corpusRevision; const corpus = FROZEN_CORPORA[revision];
     if (!nonemptyString(revision)) continue;
     if (!corpus) { note(`${name} unsupported frozen corpus revision: ${revision}`); continue; }
-    if (!same(Object.keys(manifest?.scenarios || {}).sort(), corpus.scenarioIds)) note(`${name} frozen corpus inventory mismatch: ${revision}`);
-    for (const lens of corpus.holisticLenses) {
-      const prefix = `holistic::gate:${lens}:`;
-      if (!(manifest?.scenarios?.holistic?.seededDefects || []).some((id) => typeof id === 'string' && id.startsWith(prefix) && id.length > prefix.length)) note(`${name} frozen corpus holistic lens missing: ${lens}`);
-    }
-    if (!(manifest?.scenarios?.[corpus.confirmedDefectScenarioId]?.confirmedDefects || []).length) note(`${name} frozen corpus confirmed defects missing: ${corpus.confirmedDefectScenarioId}`);
+    if (!same(manifest?.scenarios, corpus)) note(`${name} frozen corpus metadata mismatch: ${revision}`);
   }
   const scenarioIds = sorted([...Object.keys(baselineScenarios), ...Object.keys(candidateScenarios)]);
   const frozenTerminals = new Set();

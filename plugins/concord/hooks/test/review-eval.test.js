@@ -7,12 +7,14 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { compareReviewMatrix, compareReviewStage } = require('../../core/review-eval');
 
-function scenario({ defects = [], confirmed = [], nonDefects = [], fixes = [], probes = [], allowed = ['clean'], executable = true } = {}) {
+function scenario({ defects = [], confirmed = [], nonDefects = [], fixes = [], allowed = ['clean'], executable = true } = {}) {
+  const defectIds = [...new Set([...defects, ...confirmed, ...fixes])];
+  const probes = defectIds.map((id) => `probe:${id}`);
   return {
     behaviorPreserving: true, hasExecutableDoD: executable,
     seededDefects: defects, confirmedDefects: confirmed, nonDefects, requiredFixes: fixes,
     expectedProbes: probes,
-    probesByFinding: Object.fromEntries([...new Set([...defects, ...confirmed, ...fixes])].map((id) => [id, probes.length ? probes : [`probe:${id}`]])),
+    probesByFinding: Object.fromEntries(defectIds.map((id) => [id, [`probe:${id}`]])),
     allowedTerminalOutcomes: allowed,
   };
 }
@@ -20,12 +22,22 @@ function scenario({ defects = [], confirmed = [], nonDefects = [], fixes = [], p
 const HOLISTIC_DEFECTS = ['ac-coverage', 'design-conformance', 'cross-context', 'silent-gap', 'threat-model']
   .map((lens) => `holistic::gate:${lens}:gap`);
 const SCENARIOS = {
-  clean: scenario(),
-  seeded: scenario({ defects: ['seeded::bug'], fixes: ['seeded::bug'], probes: ['probe:seeded'] }),
-  'false-positive': scenario({ nonDefects: ['false-positive::trap'] }),
+  clean: scenario({ nonDefects: ['clean::correctness:clean-diff'] }),
+  seeded: scenario({ defects: ['seeded::correctness:seeded-bug'], nonDefects: ['seeded::correctness:not-a-bug'], allowed: ['clean', 'parked'] }),
+  'false-positive': scenario({ nonDefects: [
+    'false-positive::correctness:false-positive-candidate',
+    'false-positive::gate:ac-coverage:false-positive-candidate',
+    'false-positive::gate:design-conformance:false-positive-candidate',
+    'false-positive::gate:cross-context:false-positive-candidate',
+    'false-positive::gate:silent-gap:false-positive-candidate',
+    'false-positive::gate:threat-model:false-positive-candidate',
+  ] }),
   'malformed-blocked': scenario({ allowed: ['harness-failure'], executable: false }),
-  holistic: scenario({ defects: HOLISTIC_DEFECTS, fixes: HOLISTIC_DEFECTS, probes: ['probe:holistic'] }),
-  'fix-round': scenario({ defects: ['fix-round::bug'], confirmed: ['fix-round::bug'], fixes: ['fix-round::bug'], probes: ['probe:fix'] }),
+  holistic: scenario({ defects: HOLISTIC_DEFECTS, fixes: HOLISTIC_DEFECTS }),
+  'fix-round': scenario({
+    defects: ['fix-round::correctness:fix-round-bug'], confirmed: ['fix-round::correctness:fix-round-bug'],
+    fixes: ['fix-round::correctness:fix-round-bug'],
+  }),
 };
 
 function telemetry(engine, total) {
@@ -151,10 +163,38 @@ test('rejects a self-declared corpus that omits frozen hard evidence', () => {
   const report = compareReviewMatrix(baseline, candidate).engines.codex;
 
   assert.strictEqual(report.evaluable, false);
-  assert.ok(report.unevaluable.includes('baseline frozen corpus inventory mismatch: review-eval-v2'));
-  assert.ok(report.unevaluable.includes('candidate frozen corpus inventory mismatch: review-eval-v2'));
-  assert.ok(report.unevaluable.includes('baseline frozen corpus confirmed defects missing: fix-round'));
-  assert.ok(report.unevaluable.includes('candidate frozen corpus confirmed defects missing: fix-round'));
+  assert.ok(report.unevaluable.includes('baseline frozen corpus metadata mismatch: review-eval-v2'));
+  assert.ok(report.unevaluable.includes('candidate frozen corpus metadata mismatch: review-eval-v2'));
+});
+
+test('rejects exact frozen scenario metadata drift even when both manifests agree', () => {
+  const mutations = {
+    'defects and probes': (side) => {
+      Object.assign(side.engines.codex.scenarios.seeded, { seededDefects: [], expectedProbes: [], probesByFinding: {} });
+      for (const run of side.engines.codex.runs.filter((item) => item.scenarioId === 'seeded')) {
+        Object.assign(run, { acceptedFindings: [], fixedFindings: [], fixCommits: {}, expectedProbeResults: {} });
+      }
+    },
+    DoD: (side) => {
+      side.engines.codex.scenarios.seeded.hasExecutableDoD = false;
+      for (const run of side.engines.codex.runs.filter((item) => item.scenarioId === 'seeded')) run.dod = 'deferred';
+    },
+    terminals: (side) => {
+      side.engines.codex.scenarios.seeded.allowedTerminalOutcomes = ['parked'];
+      for (const run of side.engines.codex.runs.filter((item) => item.scenarioId === 'seeded')) run.terminal = 'parked';
+    },
+  };
+  for (const [label, mutate] of Object.entries(mutations)) {
+    const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
+    for (const side of [baseline, candidate]) mutate(side);
+
+    const report = compareReviewMatrix(baseline, candidate).engines.codex;
+
+    assert.strictEqual(report.evaluable, false, label);
+    for (const side of ['baseline', 'candidate']) {
+      assert.ok(report.unevaluable.includes(`${side} frozen corpus metadata mismatch: review-eval-v2`), label);
+    }
+  }
 });
 
 test('checked-in matrices satisfy the frozen corpus revision', () => {
@@ -213,10 +253,10 @@ test('a false clean fails on both sides and confirmed defects fail even when non
 test('hasExecutableDoD false is the sole exemption and probesByFinding is total', () => {
   const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
   candidate.engines.codex.runs.find((run) => run.scenarioId === 'clean').dod = 'deferred';
-  delete candidate.engines.codex.scenarios.seeded.probesByFinding['seeded::bug'];
+  delete candidate.engines.codex.scenarios.seeded.probesByFinding['seeded::correctness:seeded-bug'];
   const report = compareReviewMatrix(baseline, candidate).engines.codex;
   assert.ok(report.unevaluable.includes('candidate clean DoD mismatch: clean#0'));
-  assert.ok(report.unevaluable.includes('scenario probesByFinding missing: seeded:seeded::bug'));
+  assert.ok(report.unevaluable.includes('scenario probesByFinding missing: seeded:seeded::correctness:seeded-bug'));
 });
 
 test('rejects an invalid DoD result on matching non-clean runs', () => {
@@ -233,14 +273,14 @@ test('scenario classifications, terminal enums, mappings, and probe results are 
   const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
   for (const side of [baseline, candidate]) {
     const scenario = side.engines.codex.scenarios.seeded;
-    scenario.nonDefects.push('seeded::bug');
+    scenario.nonDefects.push('seeded::correctness:seeded-bug');
     scenario.allowedTerminalOutcomes.push('typo-terminal');
-    scenario.probesByFinding['seeded::extra'] = ['probe:seeded'];
+    scenario.probesByFinding['seeded::extra'] = ['probe:seeded::correctness:seeded-bug'];
     const run = side.engines.codex.runs.find((item) => item.scenarioId === 'seeded' && item.repetition === 0);
     run.expectedProbeResults.extra = true;
   }
   const report = compareReviewMatrix(baseline, candidate).engines.codex;
-  assert.ok(report.unevaluable.includes('scenario finding classifications overlap: seeded:seeded::bug'));
+  assert.ok(report.unevaluable.includes('scenario finding classifications overlap: seeded:seeded::correctness:seeded-bug'));
   assert.ok(report.unevaluable.includes('scenario terminal is invalid: seeded:typo-terminal'));
   assert.ok(report.unevaluable.includes('scenario probesByFinding has unknown identity: seeded:seeded::extra'));
   assert.ok(report.unevaluable.includes('baseline probe results mismatch: seeded#0'));
@@ -249,13 +289,13 @@ test('scenario classifications, terminal enums, mappings, and probe results are 
 test('adjudicated non-defects cannot reuse a declared defect identity', () => {
   const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
   for (const side of [baseline, candidate]) {
-    side.engines.codex.runs.find((run) => run.scenarioId === 'seeded' && run.repetition === 0).adjudicatedNonDefects = ['seeded::bug'];
+    side.engines.codex.runs.find((run) => run.scenarioId === 'seeded' && run.repetition === 0).adjudicatedNonDefects = ['seeded::correctness:seeded-bug'];
   }
 
   const report = compareReviewMatrix(baseline, candidate).engines.codex;
 
   assert.strictEqual(report.pass, false);
-  assert.ok(report.unevaluable.includes('adjudicated non-defect overlaps defect: seeded#0:seeded::bug'));
+  assert.ok(report.unevaluable.includes('adjudicated non-defect overlaps defect: seeded#0:seeded::correctness:seeded-bug'));
 });
 
 test('resolved model disagreement is unevaluable while Codex unavailable is disclosed', () => {
