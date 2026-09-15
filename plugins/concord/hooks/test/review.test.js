@@ -656,12 +656,18 @@ test('unparkFinding: throws for an unknown finding id', () => {
 test('listLedgers: reads every review-*.json in the state dir, skips non-matching files', () => {
   const dir = tmpStateDir();
   const l1 = review.emptyLedger({ kind: 'local', ref: 'feat/a' });
+  const l2 = review.emptyLedger({ kind: 'local', ref: 'telemetry-cleanup' });
   review.writeLedger(dir, 'feat-a', l1);
+  review.writeLedger(dir, 'telemetry-cleanup', l2);
+  fs.writeFileSync(path.join(dir, `review-telemetry-${'a'.repeat(64)}.json`), '{}');
+  fs.writeFileSync(path.join(dir, `review-agent-telemetry-${'b'.repeat(64)}.json`), '{}');
   fs.writeFileSync(path.join(dir, 'charter.md'), 'not a ledger');
   fs.writeFileSync(path.join(dir, 'sess1.json'), '{}'); // a session-state file, not a review ledger
   const found = review.listLedgers(dir);
-  assert.strictEqual(found.length, 1);
-  assert.strictEqual(found[0].slug, 'feat-a');
+  assert.deepStrictEqual(found.map(({ slug, ledger }) => [slug, ledger.target.ref]).sort(), [
+    ['feat-a', 'feat/a'],
+    ['telemetry-cleanup', 'telemetry-cleanup'],
+  ]);
 });
 
 test('listLedgers: returns [] for a missing state dir', () => {

@@ -17,7 +17,7 @@ function activeLedger(stateDir, round) {
   try { names = fs.readdirSync(stateDir); } catch { return null; }
   const matches = [];
   for (const name of names) {
-    if (!/^review-(?!telemetry-).+\.json$/.test(name)) continue;
+    if (/^review-(?:agent-)?telemetry-[0-9a-f]{64}\.json$/.test(name) || !/^review-.+\.json$/.test(name)) continue;
     try {
       const ledger = JSON.parse(fs.readFileSync(path.join(stateDir, name), 'utf8'));
       const doingReviewWork = ledger.phase === 'gates' || ledger.phase === 'fixes' || ledger.status === 'gate-panel-pending';
@@ -32,7 +32,7 @@ function activeLedger(stateDir, round) {
 function artifactFromPrompt(prompt, stateDir) {
   if (typeof prompt !== 'string') return null;
   const escaped = path.resolve(stateDir).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const directive = new RegExp(`(?:\\bwrite\\s+ONLY\\b[\\s\\S]{0,1000}?\\bto|\\bwrite\\s+a\\s+JSON\\s+file\\s+to)\\s+${escaped}[/\\\\](round-(\\d+)-([A-Za-z0-9:._-]+)\\.json)`, 'gi');
+  const directive = new RegExp(`(?:\\bwrite\\s+ONLY\\b[\\s\\S]{0,1000}?\\bto|\\bwrite\\s+a\\s+JSON\\s+file\\s+to)\\s+[\`'"]?${escaped}[/\\\\](round-(\\d+)-([A-Za-z0-9:._-]+)\\.json)[\`'"]?`, 'gi');
   const matches = Array.from(prompt.matchAll(directive));
   if (matches.length !== 1) return null;
   const match = matches[0];
@@ -246,7 +246,12 @@ function subagentRecord(event) {
 
 function recordForEvent(event, stateDir) {
   if (!event || typeof event !== 'object') return null;
-  return event.hook_event_name === 'SubagentStop' ? subagentRecord(event) : toolRecord(event, stateDir);
+  if (event.hook_event_name !== 'SubagentStop') return toolRecord(event, stateDir);
+  const probe = {
+    agentId: event.agent_id,
+    parentTranscriptPath: typeof event.transcript_path === 'string' ? path.resolve(event.transcript_path) : null,
+  };
+  return hasActiveReviewTool(stateDir, probe) ? subagentRecord(event) : null;
 }
 
 function hasActiveReviewTool(stateDir, record) {

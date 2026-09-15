@@ -242,7 +242,9 @@ function compareReviewResults(baseline, candidate, options = {}) {
       const tuple = (run, name) => [sorted(run.acceptedFindings), sorted(fixed[name]), run.dod, run.terminal, run.expectedProbeResults || {}];
       if (!same(tuple(base, 'baseline'), tuple(cand, 'candidate'))) behaviorMismatches.push(key);
     }
-    const repetition = repetitions.get(base.repetition); repetition.scenarios.add(base.scenarioId);
+    const repetition = repetitions.get(base.repetition);
+    if (!repetition) continue;
+    repetition.scenarios.add(base.scenarioId);
     const seeded = scenario.seededDefects || []; const fixes = scenario.requiredFixes || [];
     repetition.seeded += seeded.length; repetition.baselineHits += seeded.filter((id) => (base.acceptedFindings || []).includes(id)).length; repetition.candidateHits += seeded.filter((id) => (cand.acceptedFindings || []).includes(id)).length;
     repetition.nonDefects += nonDefects.length; repetition.baselineFalsePositives += nonDefects.filter((id) => (base.acceptedFindings || []).includes(id)).length; repetition.candidateFalsePositives += nonDefects.filter((id) => (cand.acceptedFindings || []).includes(id)).length;

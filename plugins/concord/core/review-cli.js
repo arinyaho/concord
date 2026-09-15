@@ -1311,7 +1311,7 @@ function main(resolveFromCwd) {
       return;
     }
     deleteLedger(stateDir, slug);
-    require('./review-telemetry').deleteTelemetry(stateDir, ref, slug);
+    require('./review-telemetry').deleteTelemetry(stateDir, prior.target?.ref || ref, slug);
     for (let n = 1; n <= (prior.round || 0); n++) deleteRoundArtifacts(stateDir, n);
     process.stdout.write(
       `reset ref "${ref}" (was "${prior.status}"); cleared ${prior.round || 0} round(s) of artifacts. The next round-start begins a fresh run.\n`,
@@ -1355,7 +1355,7 @@ function main(resolveFromCwd) {
       gate_dismissed: prior.gate_dismissed || [],
     };
     for (let n = 1; n <= (prior.round || 0); n++) deleteRoundArtifacts(stateDir, n);
-    require('./review-telemetry').deleteTelemetry(stateDir, ref, slug);
+    require('./review-telemetry').deleteTelemetry(stateDir, prior.target?.ref || ref, slug);
     writeLedger(stateDir, slug, fresh);
     process.stdout.write(JSON.stringify({ status: 'ok', run: runs.length + 1, engine, archived: runs[runs.length - 1] }) + '\n');
     return;

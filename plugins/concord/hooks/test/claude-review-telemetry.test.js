@@ -57,6 +57,11 @@ function successfulResponse() {
   };
 }
 
+function recordActiveTool(transcript, stateDir) {
+  const prompt = `Write ONLY to ${path.join(stateDir, 'round-2-correctness.json')}`;
+  core.writeRecord(stateDir, core.recordForEvent(event({ transcript, prompt, response: successfulResponse() }), stateDir));
+}
+
 function writeSubagentTranscript(parentTranscript, rows) {
   const directory = path.join(path.dirname(parentTranscript), 'subagents');
   fs.mkdirSync(directory, { recursive: true });
@@ -188,6 +193,30 @@ test('uses only the exact single Write ONLY destination, never an earlier input 
   assert.strictEqual(core.recordForEvent(event({ transcript, prompt: `${prompt}. Write ONLY JSON to ${correctness}`, response: successfulResponse() }), stateDir), null);
 });
 
+test('accepts the driver documented backtick-quoted output path', () => {
+  const { transcript, stateDir } = setup();
+  const verify = path.join(stateDir, 'round-2-verify.json');
+  const prompt = `Write ONLY {"status":"ok"} to \`${verify}\``;
+
+  const record = core.recordForEvent(event({ transcript, prompt, response: successfulResponse() }), stateDir);
+
+  assert.strictEqual(record.role, 'verify');
+  assert.strictEqual(record.artifactPath, verify);
+});
+
+test('accepts a real ledger whose target slug begins with telemetry-', () => {
+  const { transcript, stateDir } = setup();
+  fs.unlinkSync(path.join(stateDir, 'review-feat-x.json'));
+  fs.writeFileSync(path.join(stateDir, 'review-telemetry-cleanup.json'), JSON.stringify({
+    target: { ref: 'telemetry-cleanup' }, status: 'converging', phase: 'gates', round: 2,
+  }));
+  const correctness = path.join(stateDir, 'round-2-correctness.json');
+
+  const record = core.recordForEvent(event({ transcript, prompt: `Write ONLY to ${correctness}`, response: successfulResponse() }), stateDir);
+
+  assert.strictEqual(record.targetRef, 'telemetry-cleanup');
+});
+
 test('recognizes the manual Claude intent output directive', () => {
   const { transcript, stateDir } = setup();
   const intent = path.join(stateDir, 'round-2-intent.json');
@@ -200,6 +229,7 @@ test('recognizes the manual Claude intent output directive', () => {
 
 test('marks a transcript ending at an assistant tool-use response partial', () => {
   const { transcript, stateDir } = setup();
+  recordActiveTool(transcript, stateDir);
   const childTranscript = writeSubagentTranscript(transcript, [
     assistantRow({ requestId: 'req-1', messageId: 'msg-1', input: 1, create: 0, read: 0, output: 1, content: [{ type: 'tool_use' }] }),
   ]);
@@ -211,6 +241,7 @@ test('marks a transcript ending at an assistant tool-use response partial', () =
 
 test('waits within the bound for a delayed stable terminal transcript append', async () => {
   const { transcript, stateDir } = setup();
+  recordActiveTool(transcript, stateDir);
   const directory = path.join(path.dirname(transcript), 'subagents');
   fs.mkdirSync(directory, { recursive: true });
   const childTranscript = path.join(directory, 'agent-agent-7.jsonl');
@@ -230,6 +261,7 @@ test('waits within the bound for a delayed stable terminal transcript append', a
 
 test('waits for the transcript row matching SubagentStop last_assistant_message', async () => {
   const { transcript, stateDir } = setup();
+  recordActiveTool(transcript, stateDir);
   const childTranscript = writeSubagentTranscript(transcript, [
     assistantRow({ requestId: 'req-stream', messageId: 'msg-stream', input: 1, create: 0, read: 0, output: 1, content: [{ type: 'text', text: 'draft' }] }),
   ]);
@@ -248,6 +280,7 @@ test('waits for the transcript row matching SubagentStop last_assistant_message'
 
 test('marks inconsistent repeated request rows partial', () => {
   const { transcript, stateDir } = setup();
+  recordActiveTool(transcript, stateDir);
   const cases = [
     ['model change',
       assistantRow({ requestId: 'req-model', messageId: 'msg-model', model: 'model-a', input: 10, create: 2, read: 3, output: 4, content: [{ type: 'text', text: 'draft' }] }),
@@ -287,7 +320,7 @@ test('does not persist a SubagentStop without a matching review tool', () => {
   const { transcript, stateDir } = setup();
   const record = core.recordForEvent({ hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'unrelated-agent' }, stateDir);
 
-  assert.strictEqual(core.writeRecord(stateDir, record), false);
+  assert.strictEqual(record, null);
   assert.deepStrictEqual(fs.readdirSync(stateDir).filter((name) => name.startsWith('review-agent-telemetry-')), []);
 });
 
@@ -637,7 +670,7 @@ test('does not join a reused agent identity from another parent transcript', () 
     hook_event_name: 'SubagentStop', transcript_path: foreign.transcript, agent_id: 'agent-7',
     agent_transcript_path: childTranscript, last_assistant_message: 'done',
   }, stateDir);
-  fs.writeFileSync(path.join(stateDir, `review-agent-telemetry-${'c'.repeat(64)}.json`), JSON.stringify(foreignAgent));
+  assert.strictEqual(foreignAgent, null);
 
   const entry = reviewTelemetry.foldTelemetry(stateDir, ledger).telemetry.entries[0];
 

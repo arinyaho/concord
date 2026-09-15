@@ -176,8 +176,7 @@ test('codexExec marks a CLI version mismatch partial', async () => {
   }
 });
 
-function harness({ targetType = 'git', rounds = 1, malformed = false, retry = false, retryForever = false, correctnessArtifact, gateApplied = false, dodDeferred = false, failingRole, promptDrivenFix = false } = {}) {
-  const stateDir = temp();
+function harness({ targetType = 'git', rounds = 1, malformed = false, retry = false, retryForever = false, correctnessArtifact, gateApplied = false, dodDeferred = false, failingRole, promptDrivenFix = false, stateDir = temp(), slotIdentity = {} } = {}) {
   const calls = []; let round = 0; let retried = false;
   const cli = (args) => {
     calls.push(['cli', ...args]);
@@ -201,7 +200,7 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
     }
     if (verb === 'telemetry-slot') {
       const artifactPath = role;
-      return { engine: 'codex', provider: 'openai', artifactPath, attempt: calls.filter((call) => call[0] === 'cli' && call[1] === 'telemetry-slot' && call[3] === artifactPath).length, role: path.basename(artifactPath).includes('-fix-') ? 'fix' : path.basename(artifactPath).match(/^round-\d+-(.+)\.json$/)?.[1], round };
+      return { engine: 'codex', provider: 'openai', artifactPath, attempt: calls.filter((call) => call[0] === 'cli' && call[1] === 'telemetry-slot' && call[3] === artifactPath).length, role: path.basename(artifactPath).includes('-fix-') ? 'fix' : path.basename(artifactPath).match(/^round-\d+-(.+)\.json$/)?.[1], round, ...slotIdentity };
     }
     if (verb === 'plan-fixes') return { fixes: round === 1 ? [{ id: 'correctness:bug', file: 'a.txt', span: 'bad', summary: 'fix it' }] : [] };
     if (verb === 'commit-fix') {
@@ -236,6 +235,28 @@ test('runner automatically executes a clean round in correctness then verify ord
     ['cli', 'round-start'], ['cli', 'telemetry-slot'], ['spawn', 'correctness'], ['cli', 'artifact-normalize'], ['cli', 'telemetry-slot'], ['spawn', 'verify'], ['cli', 'artifact-normalize'], ['cli', 'plan-fixes'], ['cli', 'telemetry-slot'], ['spawn', 'fix'], ['cli', 'commit-fix'], ['cli', 'record'],
   ]);
   assert.ok(h.calls.filter((call) => call[0] === 'cli' && call[1] === 'telemetry-slot').every((call) => call.slice(-2).join(' ') === '--engine codex'));
+});
+
+test('runner records slots when the review state directory contains whitespace', async () => {
+  const stateDir = path.join(temp(), 'state dir');
+  fs.mkdirSync(stateDir);
+  const h = harness({ stateDir });
+
+  await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
+
+  assert.strictEqual(h.calls.filter((call) => call[0] === 'cli' && call[1] === 'telemetry-slot').length, 3);
+});
+
+test('runner keeps invocation role and round when slot metadata disagrees', async () => {
+  const h = harness({ slotIdentity: { role: 'artifact-derived-role', round: 99 } });
+
+  const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
+
+  assert.deepStrictEqual(out.telemetry.invocations.map(({ role, round }) => ({ role, round })), [
+    { role: 'correctness', round: 1 },
+    { role: 'verify', round: 1 },
+    { role: 'fix', round: 1 },
+  ]);
 });
 
 test('runner reports aggregate and per-role subprocess telemetry', async () => {

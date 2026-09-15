@@ -121,6 +121,19 @@ test('requires the frozen 30-repetition alternating block schedule', () => {
   assert.ok(report.unevaluable.some((message) => message.includes('missing paired run')));
 });
 
+test('reports an out-of-range repetition as unevaluable instead of throwing', () => {
+  const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
+  for (const side of [baseline, candidate]) {
+    side.engines.codex.runs.find((run) => run.scenarioId === 'seeded' && run.repetition === 0).repetition = 30;
+  }
+
+  const report = compareReviewMatrix(baseline, candidate).engines.codex;
+
+  assert.strictEqual(report.pass, false);
+  assert.ok(report.unevaluable.includes('baseline run identity is invalid: seeded#30'));
+  assert.ok(report.unevaluable.includes('candidate run identity is invalid: seeded#30'));
+});
+
 test('requires exact per-scenario target diff and intent identities', () => {
   const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
   candidate.engines.codex.runs.find((run) => run.scenarioId === 'seeded' && run.repetition === 0).targetDiffHash = 'different';
