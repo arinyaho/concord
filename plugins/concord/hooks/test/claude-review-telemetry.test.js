@@ -623,6 +623,51 @@ test('does not join a reused agent identity from another parent transcript', () 
   });
 });
 
+test('deleteTelemetry retains a reused agent identity owned by another target', () => {
+  const { transcript, stateDir } = setup();
+  const foreignTranscript = path.join(path.dirname(transcript), 'foreign.jsonl');
+  const usage = { input_tokens: 10, cache_creation_input_tokens: 2, cache_read_input_tokens: 3, output_tokens: 4 };
+  const tool = (targetRef, invocationId, parentTranscriptPath) => ({
+    kind: 'tool-use', engine: 'claude-code', targetRef, role: 'correctness', round: 2,
+    artifactPath: path.join(stateDir, `round-2-${invocationId}.json`), attempt: 1, invocationId,
+    agentId: 'agent-reused', parentTranscriptPath, startedAtMs: 1, status: 'completed',
+    hookUsagePartial: false, elapsedMs: null, totalTokens: 19, providerUsage: usage,
+  });
+  const agent = (observationId, parentTranscriptPath) => ({
+    kind: 'agent-usage', engine: 'claude-code', agentId: 'agent-reused', observationId,
+    parentTranscriptPath, stoppedAtMs: 13, providerSchema: 'claude-subagent-transcript-2.1.268-v1',
+    status: 'stopped', resolvedModel: 'claude-sonnet-4-5-20250929', inputTokens: 10,
+    cacheWriteInputTokens: 2, cachedInputTokens: 3, reasoningOutputTokens: null, outputTokens: 4,
+    totalTokens: 19, usagePartial: false, providerUsage: usage,
+  });
+  const records = {
+    targetTool: path.join(stateDir, `review-telemetry-${'a'.repeat(64)}.json`),
+    foreignTool: path.join(stateDir, `review-telemetry-${'b'.repeat(64)}.json`),
+    targetAgent: path.join(stateDir, `review-agent-telemetry-${'c'.repeat(64)}.json`),
+    foreignAgent: path.join(stateDir, `review-agent-telemetry-${'d'.repeat(64)}.json`),
+  };
+  const targetTool = tool('feat/x', 'tool-target', transcript);
+  const foreignTool = tool('feat/y', 'tool-foreign', foreignTranscript);
+  fs.writeFileSync(records.targetTool, JSON.stringify(targetTool));
+  fs.writeFileSync(records.foreignTool, JSON.stringify(foreignTool));
+  fs.writeFileSync(records.targetAgent, JSON.stringify(agent('observation-target', transcript)));
+  fs.writeFileSync(records.foreignAgent, JSON.stringify(agent('observation-foreign', foreignTranscript)));
+
+  reviewTelemetry.deleteTelemetry(stateDir, 'feat/x', 'feat-x');
+
+  assert.deepStrictEqual(Object.fromEntries(Object.entries(records).map(([name, file]) => [name, fs.existsSync(file)])), {
+    targetTool: false, foreignTool: true, targetAgent: false, foreignAgent: true,
+  });
+  const foreignLedger = {
+    target: { ref: 'feat/y' },
+    telemetrySlots: [{ artifactPath: foreignTool.artifactPath, attempt: 1, role: 'correctness', round: 2 }],
+  };
+  const folded = reviewTelemetry.foldTelemetry(stateDir, foreignLedger);
+  assert.deepStrictEqual(folded.telemetry.entries.map(({ invocationId, agentId, totalTokens, usagePartial }) => ({ invocationId, agentId, totalTokens, usagePartial })), [{
+    invocationId: 'tool-foreign', agentId: 'agent-reused', totalTokens: 19, usagePartial: false,
+  }]);
+});
+
 test('a persisted attempt slot with its entire hook missing remains visible and partial', () => {
   const { stateDir } = setup();
   const ledgerPath = path.join(stateDir, 'review-feat-x.json');

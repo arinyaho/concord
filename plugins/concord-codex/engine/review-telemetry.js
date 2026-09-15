@@ -25,6 +25,12 @@ function publicToolRecord(tool) {
   return record;
 }
 
+function agentAssociation(record) {
+  return typeof record?.agentId === 'string' && typeof record.parentTranscriptPath === 'string'
+    ? JSON.stringify([record.agentId, record.parentTranscriptPath])
+    : null;
+}
+
 function joinAgentUsage(tool, agent) {
   const output = publicToolRecord(tool);
   if (!agent || tool.status === 'failed') return { ...output, usagePartial: true };
@@ -136,14 +142,15 @@ function deleteTelemetry(stateDir, targetRef, targetSlug) {
   }
   let names;
   try { names = fs.readdirSync(stateDir); } catch { return; }
-  const usedAgentIds = new Set();
+  const usedAgentAssociations = new Set();
   for (const name of names) {
     if (!/^review-telemetry-[0-9a-f]{64}\.json$/.test(name)) continue;
     const file = path.join(stateDir, name);
     try {
       const entry = JSON.parse(fs.readFileSync(file, 'utf8'));
       if (entry.targetRef === targetRef) {
-        if (typeof entry.agentId === 'string') usedAgentIds.add(entry.agentId);
+        const association = agentAssociation(entry);
+        if (association) usedAgentAssociations.add(association);
         fs.unlinkSync(file);
       }
     } catch {
@@ -153,7 +160,7 @@ function deleteTelemetry(stateDir, targetRef, targetSlug) {
   for (const name of fs.readdirSync(stateDir)) {
     if (!/^review-agent-telemetry-[0-9a-f]{64}\.json$/.test(name)) continue;
     const file = path.join(stateDir, name);
-    try { if (usedAgentIds.has(JSON.parse(fs.readFileSync(file, 'utf8')).agentId)) fs.unlinkSync(file); } catch {}
+    try { if (usedAgentAssociations.has(agentAssociation(JSON.parse(fs.readFileSync(file, 'utf8'))))) fs.unlinkSync(file); } catch {}
   }
 }
 
