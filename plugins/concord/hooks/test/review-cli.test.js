@@ -1706,16 +1706,21 @@ test('record returns persisted Claude review telemetry in JSON and the human han
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   const n = JSON.parse(run(['round-start', 'feat/telemetry', 'HEAD~1'], { env })).round;
+  const artifact = path.join(dir, `round-${n}-correctness.json`);
+  const parentTranscriptPath = path.join(dir, 'parent.jsonl');
+  run(['telemetry-slot', 'feat/telemetry', artifact], { env });
   fs.writeFileSync(path.join(dir, `review-telemetry-${'a'.repeat(64)}.json`), JSON.stringify({
     kind: 'tool-use',
     engine: 'claude-code', targetRef: 'feat/telemetry', role: 'correctness', round: n,
-    invocationId: 'toolu-telemetry', agentId: 'agent-telemetry', usagePartial: true, hookUsagePartial: false, elapsedMs: 12,
+    artifactPath: artifact, attempt: 1, invocationId: 'toolu-telemetry', agentId: 'agent-telemetry', parentTranscriptPath, startedAtMs: 1,
+    usagePartial: true, hookUsagePartial: false, elapsedMs: 12,
     inputTokens: 10, cacheWriteInputTokens: 2, cachedInputTokens: 3,
     reasoningOutputTokens: null, outputTokens: 4, totalTokens: 19,
     providerUsage: { input_tokens: 10, cache_creation_input_tokens: 2, cache_read_input_tokens: 3, output_tokens: 4 },
   }));
   fs.writeFileSync(path.join(dir, `review-agent-telemetry-${'b'.repeat(64)}.json`), JSON.stringify({
     kind: 'agent-usage', engine: 'claude-code', agentId: 'agent-telemetry', provider: 'anthropic',
+    parentTranscriptPath, stoppedAtMs: 13,
     providerSchema: 'claude-subagent-transcript-2.1.268-v1', status: 'stopped', resolvedModel: 'claude-sonnet-4-5-20250929',
     inputTokens: 10, cacheWriteInputTokens: 2, cachedInputTokens: 3, reasoningOutputTokens: null,
     outputTokens: 4, totalTokens: 19, usagePartial: false,
