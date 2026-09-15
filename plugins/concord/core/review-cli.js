@@ -9,6 +9,7 @@ const gateLib = require('./gate');
 const gatePanelLib = require('./gate-panel');
 const artifactContract = require('./artifact-contract');
 const reportLib = require('./report');
+const reviewTelemetry = require('./review-telemetry');
 const {
   targetSlug,
   readLedger,
@@ -429,7 +430,7 @@ function main(resolveFromCwd) {
     const match = new RegExp(`^round-${ledger.round}-([A-Za-z0-9:._-]+)\\.json$`).exec(path.basename(artifactPath));
     if (!match) throw new Error(`telemetry-slot: destination does not belong to active round ${ledger.round}`);
     const suffix = match[1];
-    const role = suffix.startsWith('fix-') ? 'fix' : suffix;
+    const role = reviewTelemetry.roleFromArtifactSuffix(suffix);
     const slots = Array.isArray(ledger.telemetrySlots) ? ledger.telemetrySlots : [];
     const attempt = slots.filter((slot) => slot.engine === engine && slot.artifactPath === artifactPath).length + 1;
     const slot = { engine, provider, artifactPath, attempt, role, round: ledger.round };
@@ -498,7 +499,7 @@ function main(resolveFromCwd) {
   if (verb === 'show') {
     requireRef(ref, 'show');
     const slug = targetSlug(ref);
-    const ledger = readLedger(stateDir, slug) || emptyLedger({ kind: 'local', ref });
+    const ledger = reviewTelemetry.foldTelemetry(stateDir, readLedger(stateDir, slug), slug) || emptyLedger({ kind: 'local', ref });
     process.stdout.write(JSON.stringify(ledger) + '\n');
     return;
   }
@@ -941,7 +942,7 @@ function main(resolveFromCwd) {
     const R = require('./review');
     const { REVIEW_PARK_BUDGET_DEFAULT } = require('./config');
     const slug = targetSlug(ref);
-    let ledger = readLedger(stateDir, slug);
+    let ledger = reviewTelemetry.foldTelemetry(stateDir, readLedger(stateDir, slug), slug);
     const n = ledger && ledger.round;
 
     // Idempotency-first: this MUST be checked before the phase guard below,
@@ -1311,7 +1312,7 @@ function main(resolveFromCwd) {
       return;
     }
     deleteLedger(stateDir, slug);
-    require('./review-telemetry').deleteTelemetry(stateDir, prior.target?.ref || ref, slug);
+    reviewTelemetry.deleteTelemetry(stateDir, prior.target?.ref || ref, slug);
     for (let n = 1; n <= (prior.round || 0); n++) deleteRoundArtifacts(stateDir, n);
     process.stdout.write(
       `reset ref "${ref}" (was "${prior.status}"); cleared ${prior.round || 0} round(s) of artifacts. The next round-start begins a fresh run.\n`,
@@ -1335,7 +1336,7 @@ function main(resolveFromCwd) {
     if (engineFlag >= 0 && !rest[engineFlag + 1]) throw new Error('review-cli rerun: --engine needs a name (e.g. --engine codex)');
     const engine = engineFlag >= 0 ? rest[engineFlag + 1] : null;
     const slug = targetSlug(ref);
-    const prior = readLedger(stateDir, slug);
+    const prior = reviewTelemetry.foldTelemetry(stateDir, readLedger(stateDir, slug), slug);
     if (!prior) throw new Error(`review-cli rerun: no ledger for ref "${ref}" ${stateDirHint(stateDir)} -- there is no run to re-run; just start a normal run.`);
     const runs = (prior.runs || []).concat([{
       run: (prior.runs || []).length + 1,
@@ -1355,7 +1356,7 @@ function main(resolveFromCwd) {
       gate_dismissed: prior.gate_dismissed || [],
     };
     for (let n = 1; n <= (prior.round || 0); n++) deleteRoundArtifacts(stateDir, n);
-    require('./review-telemetry').deleteTelemetry(stateDir, prior.target?.ref || ref, slug);
+    reviewTelemetry.deleteTelemetry(stateDir, prior.target?.ref || ref, slug);
     writeLedger(stateDir, slug, fresh);
     process.stdout.write(JSON.stringify({ status: 'ok', run: runs.length + 1, engine, archived: runs[runs.length - 1] }) + '\n');
     return;

@@ -690,6 +690,18 @@ test('listLedgers: reads every review-*.json in the state dir, skips non-matchin
   ]);
 });
 
+test('readLedger does not scan and fold telemetry artifacts on ordinary state reads', () => {
+  const dir = tmpStateDir();
+  const ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  review.writeLedger(dir, 'feat-x', ledger);
+  fs.writeFileSync(path.join(dir, `review-telemetry-${'c'.repeat(64)}.json`), JSON.stringify({
+    engine: 'claude-code', provider: 'anthropic', targetRef: 'feat/x', role: 'correctness', round: 1,
+    invocationId: 'tool-1', usagePartial: true, totalTokens: 1,
+  }));
+
+  assert.strictEqual(review.readLedger(dir, 'feat-x').telemetry, undefined);
+});
+
 test('listLedgers: returns [] for a missing state dir', () => {
   assert.deepStrictEqual(review.listLedgers(path.join(os.tmpdir(), 'does-not-exist-xyz')), []);
 });

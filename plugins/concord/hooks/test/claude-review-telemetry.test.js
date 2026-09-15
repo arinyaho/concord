@@ -70,7 +70,7 @@ function writeSubagentTranscript(parentTranscript, rows) {
   return transcript;
 }
 
-function assistantRow({ requestId, messageId, model = 'claude-sonnet-4-5-20250929', input, create, read, output, content = [{ type: 'text', text: 'done' }] }) {
+function assistantRow({ requestId, messageId, model = 'claude-sonnet-4-5-20250929', input, create, read, output, content = [{ type: 'text', text: 'done' }], iterations = [{}] }) {
   return {
     type: 'assistant',
     agentId: 'agent-7',
@@ -85,6 +85,7 @@ function assistantRow({ requestId, messageId, model = 'claude-sonnet-4-5-2025092
         cache_creation_input_tokens: create,
         cache_read_input_tokens: read,
         output_tokens: output,
+        ...(iterations === null ? {} : { iterations }),
       },
     },
   };
@@ -220,6 +221,22 @@ test('accepts a real ledger whose target slug begins with telemetry-', () => {
   assert.strictEqual(record.targetRef, 'telemetry-cleanup');
 });
 
+test('uses the artifact telemetry slot when another ref has a stale active ledger at the same round', () => {
+  const { transcript, stateDir } = setup();
+  const artifactPath = path.join(stateDir, 'round-2-correctness.json');
+  const ledgerPath = path.join(stateDir, 'review-feat-x.json');
+  const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+  ledger.telemetrySlots = [{ engine: 'claude-code', provider: 'anthropic', artifactPath, attempt: 1, role: 'correctness', round: 2 }];
+  fs.writeFileSync(ledgerPath, JSON.stringify(ledger));
+  fs.writeFileSync(path.join(stateDir, 'review-stale.json'), JSON.stringify({
+    target: { ref: 'feat/stale' }, status: 'converging', phase: 'gates', round: 2,
+  }));
+
+  const record = core.recordForEvent(event({ transcript, prompt: `Write ONLY to ${artifactPath}`, response: successfulResponse() }), stateDir);
+
+  assert.strictEqual(record.targetRef, 'feat/x');
+});
+
 test('recognizes the manual Claude intent output directive', () => {
   const { transcript, stateDir } = setup();
   const intent = path.join(stateDir, 'round-2-intent.json');
@@ -239,6 +256,21 @@ test('marks a transcript ending at an assistant tool-use response partial', () =
   const record = core.recordForEvent({
     hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-7', agent_transcript_path: childTranscript,
   }, stateDir);
+  assert.strictEqual(record.usagePartial, true);
+});
+
+test('marks a stable terminal request partial when its final usage snapshot lacks iterations', () => {
+  const { transcript, stateDir } = setup();
+  recordActiveTool(transcript, stateDir);
+  const row = assistantRow({ requestId: 'req-stream', messageId: 'msg-stream', input: 9, create: 0, read: 0, output: 2 });
+  delete row.message.usage.iterations;
+  const childTranscript = writeSubagentTranscript(transcript, [row]);
+
+  const record = core.recordForEvent({
+    hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-7',
+    agent_transcript_path: childTranscript, last_assistant_message: 'done',
+  }, stateDir);
+
   assert.strictEqual(record.usagePartial, true);
 });
 

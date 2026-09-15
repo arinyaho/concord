@@ -23,8 +23,7 @@ function ledgerPath(stateDir, slug) {
 // never throws and blocks the caller).
 function readLedger(stateDir, slug) {
   try {
-    const ledger = JSON.parse(fs.readFileSync(ledgerPath(stateDir, slug), 'utf8'));
-    return require('./review-telemetry').foldTelemetry(stateDir, ledger);
+    return JSON.parse(fs.readFileSync(ledgerPath(stateDir, slug), 'utf8'));
   } catch (e) {
     return null;
   }

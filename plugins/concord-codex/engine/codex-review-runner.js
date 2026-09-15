@@ -57,12 +57,12 @@ function sameKeys(actual, expected) {
 function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoningEffort, serviceTier }) {
   return new Promise((resolve, reject) => {
     const invocationId = crypto.randomUUID();
-    const startedAt = Date.now();
     const model = typeof requestedModel === 'string' && requestedModel.trim() ? requestedModel : null;
     const effort = typeof reasoningEffort === 'string' && reasoningEffort.trim() ? reasoningEffort : null;
     const tier = typeof serviceTier === 'string' && serviceTier.trim() ? serviceTier : null;
     let cliVersion = null;
     try { cliVersion = execFileSync('codex', ['--version'], { cwd: repoRoot, encoding: 'utf8', timeout: 5000 }).trim(); } catch {}
+    const startedAt = Date.now();
     const child = spawn('codex', [
       'exec', '--cd', repoRoot, '--sandbox', 'workspace-write', '--add-dir', stateDir,
       ...(model ? ['--model', model] : []),

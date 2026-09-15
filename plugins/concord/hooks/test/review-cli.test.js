@@ -1766,7 +1766,7 @@ test('telemetry-slot persists monotonically numbered attempts for one exact dest
   ]);
 });
 
-test('Codex-owned telemetry slots do not synthesize missing Claude calls', () => {
+test('a Codex-owned slot without runner evidence stays visible as a missing partial call', () => {
   const repo = initRepoWithoutDodConfig();
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
@@ -1777,6 +1777,11 @@ test('Codex-owned telemetry slots do not synthesize missing Claude calls', () =>
   const ledger = review.readLedger(dir, review.targetSlug('feat/codex-slots'));
 
   assert.deepStrictEqual({ engine: slot.engine, provider: slot.provider }, { engine: 'codex', provider: 'openai' });
+  const out = JSON.parse(run(['show', 'feat/codex-slots'], { env }));
+  assert.deepStrictEqual({ calls: out.telemetry.calls, partialCalls: out.telemetry.partialCalls }, { calls: 1, partialCalls: 1 });
+  assert.deepStrictEqual(out.telemetry.entries.map(({ engine, provider, role, status }) => ({ engine, provider, role, status })), [
+    { engine: 'codex', provider: 'openai', role: 'correctness', status: 'missing' },
+  ]);
   assert.strictEqual(ledger.telemetry, undefined);
 });
 
@@ -2327,7 +2332,10 @@ test('telemetry-slot accepts only the done ledger that is actively panel-pending
 
   const slot = JSON.parse(run(['telemetry-slot', 'feat/x', lensPath, '--engine', 'claude-code'], { env }));
 
-  assert.deepStrictEqual(slot, { engine: 'claude-code', provider: 'anthropic', artifactPath: lensPath, attempt: 1, role: `gate-panel-${panelRound}-threat-model`, round: n });
+  assert.deepStrictEqual(slot, { engine: 'claude-code', provider: 'anthropic', artifactPath: lensPath, attempt: 1, role: 'gate-panel-threat-model', round: n });
+  const votePath = path.join(dir, `round-${n}-gate-panel-${panelRound}-vote-gate:threat-model:x-0.json`);
+  const voteSlot = JSON.parse(run(['telemetry-slot', 'feat/x', votePath, '--engine', 'claude-code'], { env }));
+  assert.strictEqual(voteSlot.role, 'gate-panel-verify');
   const slug = review.targetSlug('feat/x');
   const ledger = review.readLedger(dir, slug);
   review.writeLedger(dir, slug, { ...ledger, status: 'clean' });
@@ -3466,6 +3474,24 @@ test('rerun without a prior ledger says so instead of silently starting one', ()
   const r = runCapture(['rerun', 'feat/nope'], { env: { ...process.env, REVIEW_STATE_DIR: dir } });
   assert.notStrictEqual(r.status, 0);
   assert.match(r.stderr, /no ledger for ref "feat\/nope"/);
+});
+
+test('rerun archives persisted Codex runner telemetry before deleting its file', () => {
+  const dir = tmpDir(); const slug = review.targetSlug('feat/codex-run');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  const ledger = { ...review.emptyLedger({ kind: 'local', ref: 'feat/codex-run' }), status: 'clean', phase: 'done', engine: 'codex' };
+  review.writeLedger(dir, slug, ledger);
+  fs.writeFileSync(path.join(dir, `telemetry-${slug}.json`), JSON.stringify({
+    total: { calls: 1, partialCalls: 0, inputTokens: 10, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 15, elapsedMs: 20 },
+    byRole: { correctness: { calls: 1, partialCalls: 0, inputTokens: 10, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 15, elapsedMs: 20 } },
+    invocations: [{ engine: 'codex', provider: 'openai', role: 'correctness', invocationId: 'codex-1', usagePartial: false, inputTokens: 10, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 15, elapsedMs: 20 }],
+  }));
+
+  const out = JSON.parse(run(['rerun', 'feat/codex-run', '--engine', 'claude-code'], { env }));
+
+  assert.strictEqual(out.archived.telemetry.totalTokens, 15);
+  assert.strictEqual(out.archived.telemetry.entries[0].invocationId, 'codex-1');
+  assert.ok(!fs.existsSync(path.join(dir, `telemetry-${slug}.json`)));
 });
 
 test('reset and rerun delete telemetry by the ledger target ref when called with its slug', () => {

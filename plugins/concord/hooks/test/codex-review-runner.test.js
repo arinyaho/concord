@@ -100,6 +100,21 @@ test('codexExec parses documented turn.completed usage without retaining agent o
   }
 });
 
+test('codexExec elapsed time excludes the synchronous version probe', async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 900); process.stdout.write('codex-cli 0.154.0\\n'); }\nelse process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } }) + '\\n');\n`);
+  fs.chmodSync(codex, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  try {
+    const result = await codexExec({ role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir });
+    assert.ok(result.elapsedMs < 800, `review elapsed time included version probe: ${result.elapsedMs}ms`);
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
 test('codexExec rejects extra usage fields from the pinned schema', async () => {
   const binDir = temp();
   const codex = path.join(binDir, 'codex');

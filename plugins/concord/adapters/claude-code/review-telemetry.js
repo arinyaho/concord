@@ -2,6 +2,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { roleFromArtifactSuffix } = require('../../core/review-telemetry');
 
 const ACTIVE_STATUSES = new Set(['converging', 'gate-panel-pending', 'intent-review']);
 const TRANSCRIPT_VERSION = '2.1.268';
@@ -12,7 +13,7 @@ function nonnegativeInteger(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
-function activeLedger(stateDir, round) {
+function activeLedger(stateDir, round, artifactPath) {
   let names;
   try { names = fs.readdirSync(stateDir); } catch { return null; }
   const matches = [];
@@ -26,7 +27,10 @@ function activeLedger(stateDir, round) {
       // Ignore unrelated or incomplete state files.
     }
   }
-  return matches.length === 1 ? matches[0] : null;
+  const slotted = artifactPath
+    ? matches.filter((ledger) => (ledger.telemetrySlots || []).some((slot) => slot?.artifactPath === artifactPath))
+    : [];
+  return slotted.length === 1 ? slotted[0] : matches.length === 1 ? matches[0] : null;
 }
 
 function artifactFromPrompt(prompt, stateDir) {
@@ -39,10 +43,10 @@ function artifactFromPrompt(prompt, stateDir) {
   const artifactPath = path.resolve(stateDir, match[1]);
   if (path.dirname(artifactPath) !== path.resolve(stateDir)) return null;
   const round = Number(match[2]);
-  const ledger = activeLedger(stateDir, round);
+  const ledger = activeLedger(stateDir, round, artifactPath);
   if (!ledger) return null;
   const suffix = match[3];
-  return { round, role: suffix.startsWith('fix-') ? 'fix' : suffix, targetRef: ledger.target.ref, artifactPath };
+  return { round, role: roleFromArtifactSuffix(suffix), targetRef: ledger.target.ref, artifactPath };
 }
 
 function attemptFor(stateDir, artifactPath, invocationId, targetRef) {
@@ -62,7 +66,7 @@ function attemptFor(stateDir, artifactPath, invocationId, targetRef) {
     }
   } catch {}
   try {
-    const ledger = activeLedger(stateDir, Number(path.basename(artifactPath).match(/^round-(\d+)-/)?.[1]));
+    const ledger = activeLedger(stateDir, Number(path.basename(artifactPath).match(/^round-(\d+)-/)?.[1]), artifactPath);
     return (ledger?.telemetrySlots || []).find((slot) => slot.artifactPath === artifactPath && !used.has(slot.attempt))?.attempt || null;
   } catch { return null; }
 }
@@ -245,7 +249,7 @@ function subagentRecord(event, pendingTool) {
     const requestKey = `${requestId}\0${messageId}`;
     const previous = requests.get(requestKey);
     if (previous && (previous.model !== model || USAGE_FIELDS.some((field) => usage[field] < previous.usage[field]))) invalid = true;
-    requests.set(requestKey, { model, usage, terminal, order: order++ });
+    requests.set(requestKey, { model, usage, terminal, finalUsage: Array.isArray(row.message.usage.iterations), order: order++ });
   }
   if (!requests.size) return partial;
 
@@ -260,6 +264,7 @@ function subagentRecord(event, pendingTool) {
   }
   const lastOrder = Math.max(...Array.from(requests.values(), (request) => request.order));
   if (terminalRows.length !== 1 || terminalRows[0].order !== lastOrder) invalid = true;
+  if (Array.from(requests.values()).some((request) => !request.finalUsage)) invalid = true;
   return {
     ...partial,
     resolvedModel: models.size === 1 ? Array.from(models)[0] : null,
@@ -301,7 +306,7 @@ function activeReviewTool(stateDir, record) {
       const pendingAgent = tool.status === 'started' && tool.agentId === null
         && (!record.pendingInvocationId || tool.invocationId === record.pendingInvocationId)
         && (!record.artifactPath || tool.artifactPath === record.artifactPath);
-      if (!sameParent || (!matchingAgent && !pendingAgent) || activeLedger(stateDir, tool.round)?.target.ref !== tool.targetRef) continue;
+      if (!sameParent || (!matchingAgent && !pendingAgent) || activeLedger(stateDir, tool.round, tool.artifactPath)?.target.ref !== tool.targetRef) continue;
       if (matchingAgent) exact = tool;
       else pending.push(tool);
     } catch {}

@@ -17,7 +17,15 @@ function summary(entries) {
 function aggregate(entries) {
   const byRole = {};
   for (const role of new Set(entries.map((entry) => entry.role))) byRole[role] = summary(entries.filter((entry) => entry.role === role));
-  return { engine: entries[0].engine, ...summary(entries), byRole, entries };
+  const engines = new Set(entries.map((entry) => entry.engine));
+  return { engine: engines.size === 1 ? entries[0].engine : 'mixed', ...summary(entries), byRole, entries };
+}
+
+function roleFromArtifactSuffix(suffix) {
+  if (suffix.startsWith('fix-')) return 'fix';
+  const panel = /^gate-panel-\d+-(.+)$/.exec(suffix);
+  if (!panel) return suffix;
+  return panel[1].startsWith('vote-') ? 'gate-panel-verify' : `gate-panel-${panel[1]}`;
 }
 
 function publicToolRecord(tool) {
@@ -63,7 +71,59 @@ function joinAgentUsage(tool, agent) {
   };
 }
 
-function foldTelemetry(stateDir, ledger) {
+function reconcileSlots(entries, slots) {
+  if (!slots.length) return entries;
+  const keyed = new Map();
+  for (const entry of entries) {
+    const key = `${entry.artifactPath}\0${entry.attempt}`;
+    const matches = keyed.get(key) || [];
+    matches.push(entry);
+    keyed.set(key, matches);
+  }
+  const reconciled = [];
+  const consumed = new Set();
+  for (const slot of slots) {
+    const matches = keyed.get(`${slot.artifactPath}\0${slot.attempt}`) || [];
+    if (!matches.length) {
+      reconciled.push({
+        ...slot, invocationId: null, status: 'missing', usagePartial: true,
+        elapsedMs: null, inputTokens: null, cacheWriteInputTokens: null, cachedInputTokens: null,
+        reasoningOutputTokens: null, outputTokens: null, totalTokens: null,
+      });
+    } else {
+      for (const entry of matches) reconciled.push(matches.length === 1 ? entry : { ...entry, usagePartial: true, duplicateEvidence: true });
+      for (const entry of matches) consumed.add(entry);
+    }
+  }
+  for (const entry of entries) if (!consumed.has(entry)) reconciled.push({ ...entry, usagePartial: true, orphan: true });
+  return reconciled;
+}
+
+function codexEntries(stateDir, ledger, slug) {
+  const entries = new Map((ledger.telemetry?.entries || [])
+    .filter((entry) => entry?.engine === 'codex' && typeof entry.invocationId === 'string')
+    .map((entry) => [entry.invocationId, entry]));
+  if (slug) {
+    const file = path.join(stateDir, `telemetry-${slug}.json`);
+    try {
+      const telemetry = JSON.parse(fs.readFileSync(file, 'utf8'));
+      for (const entry of telemetry.invocations || []) if (entry?.engine === 'codex' && typeof entry.invocationId === 'string') entries.set(entry.invocationId, entry);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') entries.set('malformed', {
+        engine: 'codex', provider: 'openai', role: 'unknown', round: null, invocationId: null,
+        status: 'malformed', usagePartial: true, artifactPath: file, elapsedMs: null,
+        inputTokens: null, cacheWriteInputTokens: null, cachedInputTokens: null,
+        reasoningOutputTokens: null, outputTokens: null, totalTokens: null,
+      });
+    }
+  }
+  const slots = Array.isArray(ledger.telemetrySlots)
+    ? ledger.telemetrySlots.filter((slot) => slot?.engine === 'codex' && slot.provider === 'openai')
+    : [];
+  return reconcileSlots([...entries.values()], slots);
+}
+
+function foldTelemetry(stateDir, ledger, slug) {
   if (!ledger || typeof ledger.target?.ref !== 'string') return ledger;
   let names;
   try { names = fs.readdirSync(stateDir); } catch { return ledger; }
@@ -104,30 +164,7 @@ function foldTelemetry(stateDir, ledger) {
     ? ledger.telemetrySlots.filter((slot) => slot?.engine === 'claude-code' && slot.provider === 'anthropic')
     : [];
   if (slots.length) {
-    const keyed = new Map();
-    for (const entry of entries) {
-      const key = `${entry.artifactPath}\0${entry.attempt}`;
-      const matches = keyed.get(key) || [];
-      matches.push(entry);
-      keyed.set(key, matches);
-    }
-    const reconciled = [];
-    const consumed = new Set();
-    for (const slot of slots) {
-      const key = `${slot.artifactPath}\0${slot.attempt}`;
-      const matches = keyed.get(key) || [];
-      if (!matches.length) {
-        reconciled.push({
-          engine: 'claude-code', ...slot, invocationId: null, status: 'missing', usagePartial: true,
-          elapsedMs: null, inputTokens: null, cacheWriteInputTokens: null, cachedInputTokens: null,
-          reasoningOutputTokens: null, outputTokens: null, totalTokens: null,
-        });
-      } else {
-        for (const entry of matches) reconciled.push(matches.length === 1 ? entry : { ...entry, usagePartial: true });
-        for (const entry of matches) consumed.add(entry);
-      }
-    }
-    for (const entry of entries) if (!consumed.has(entry)) reconciled.push({ ...entry, usagePartial: true, orphan: true });
+    const reconciled = reconcileSlots(entries, slots);
     const joinedAgentIds = new Set(entries.map((entry) => entry.agentId).filter(Boolean));
     for (const [agentId, observations] of agents) if (!joinedAgentIds.has(agentId)) {
       reconciled.push({
@@ -138,6 +175,7 @@ function foldTelemetry(stateDir, ledger) {
     }
     entries = reconciled;
   }
+  entries = entries.concat(codexEntries(stateDir, ledger, slug));
   entries.sort((a, b) => `${a.artifactPath || ''}\0${a.attempt || 0}\0${a.invocationId || ''}`.localeCompare(`${b.artifactPath || ''}\0${b.attempt || 0}\0${b.invocationId || ''}`));
   return entries.length ? { ...ledger, telemetry: aggregate(entries) } : ledger;
 }
@@ -173,4 +211,4 @@ function deleteTelemetry(stateDir, targetRef, targetSlug) {
   }
 }
 
-module.exports = { foldTelemetry, deleteTelemetry };
+module.exports = { foldTelemetry, deleteTelemetry, roleFromArtifactSuffix };
