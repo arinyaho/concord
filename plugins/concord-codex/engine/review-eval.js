@@ -17,6 +17,7 @@ function same(a, b) { return JSON.stringify(canonical(a)) === JSON.stringify(can
 function runKey(run) { return `${run?.scenarioId}#${run?.repetition}`; }
 function validId(id, scenarioId) { return typeof id === 'string' && id.startsWith(`${scenarioId}::`) && id.length > scenarioId.length + 2; }
 function nonnegative(value) { return Number.isSafeInteger(value) && value >= 0; }
+function nonemptyString(value) { return typeof value === 'string' && value.trim().length > 0; }
 
 function tCritical95(df) {
   const z = 1.959963984540054; const z2 = z * z; const z3 = z2 * z; const z5 = z3 * z2; const z7 = z5 * z2;
@@ -65,7 +66,7 @@ function compareReviewResults(baseline, candidate, options = {}) {
     for (const field of REMOVED_PARENT_FIELDS) if (Object.hasOwn(manifest || {}, field)) note(`${name} removed parent proxy field: manifest:${field}`);
   }
   for (const field of PAIRING_KEYS) {
-    if (baseline?.pairing?.[field] === undefined || candidate?.pairing?.[field] === undefined) note(`pairing identity missing: ${field}`);
+    if (!nonemptyString(baseline?.pairing?.[field]) || !nonemptyString(candidate?.pairing?.[field])) note(`pairing identity missing: ${field}`);
     else if (baseline.pairing[field] !== candidate.pairing[field]) note(`pairing identity mismatch: ${field}`);
   }
   if (baseline?.pairing?.engine !== engine || candidate?.pairing?.engine !== engine) note('pairing identity mismatch: engine');

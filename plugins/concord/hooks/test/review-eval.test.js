@@ -110,6 +110,21 @@ test('requires exact per-scenario target diff and intent identities', () => {
   assert.ok(report.unevaluable.includes('scenario pairing mismatch: seeded#0:targetDiffHash'));
 });
 
+test('requires non-empty string pairing identities before comparing them', () => {
+  const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
+  for (const side of [baseline, candidate]) {
+    side.engines.codex.pairing.targetSnapshot = null;
+    side.engines.codex.pairing.model = 42;
+    side.engines.codex.pairing.evaluationMode = 'invalid';
+  }
+
+  const report = compareReviewMatrix(baseline, candidate).engines.codex;
+
+  assert.ok(report.unevaluable.includes('pairing identity missing: targetSnapshot'));
+  assert.ok(report.unevaluable.includes('pairing identity missing: model'));
+  assert.ok(report.unevaluable.includes('unsupported evaluation mode: invalid'));
+});
+
 test('provider component equations are engine-specific', () => {
   const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
   candidate.engines['claude-code'].runs.find((run) => run.scenarioId === 'seeded' && run.repetition === 0).telemetry.reasoningOutputTokens = 1;
