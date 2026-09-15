@@ -2285,6 +2285,30 @@ test('record: gate.panel enabled and diff-local + lightweight-gate clean -> pane
   assert.strictEqual(rec.decision.converged, false);
 });
 
+test('telemetry-slot accepts only the done ledger that is actively panel-pending', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] }, { armBroad: true });
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
+  run(['plan-fixes', 'feat/x'], { env });
+  assert.strictEqual(JSON.parse(run(['record', 'feat/x'], { env })).decision.panelPending, true);
+  const panelRound = JSON.parse(run(['gate-panel-round-start', 'feat/x'], { env })).round;
+  const lensPath = path.join(dir, `round-${n}-gate-panel-${panelRound}-threat-model.json`);
+
+  const slot = JSON.parse(run(['telemetry-slot', 'feat/x', lensPath], { env }));
+
+  assert.deepStrictEqual(slot, { artifactPath: lensPath, attempt: 1, role: `gate-panel-${panelRound}-threat-model`, round: n });
+  const slug = review.targetSlug('feat/x');
+  const ledger = review.readLedger(dir, slug);
+  review.writeLedger(dir, slug, { ...ledger, status: 'clean' });
+  assert.throws(() => run(['telemetry-slot', 'feat/x', path.join(dir, `round-${n}-gate-panel-${panelRound}-verify.json`)], { env }), /no active review work/);
+});
+
 test('record: gate.panel enabled but NOT configured (absent gate.panel) -> converges clean as before (no behavior change)', () => {
   const repo = initRepo(); const dir = tmpDir();
   const { env } = seedGatesRound(repo, dir, 'feat/x',

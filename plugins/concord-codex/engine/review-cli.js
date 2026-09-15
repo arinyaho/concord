@@ -419,7 +419,8 @@ function main(resolveFromCwd) {
     const artifactPath = path.resolve(String(rest[0] || ''));
     const slug = targetSlug(ref);
     const ledger = readLedger(stateDir, slug);
-    if (!ledger || !['gates', 'fixes'].includes(ledger.phase)) throw new Error(`telemetry-slot: no active review work for ref "${ref}" ${stateDirHint(stateDir)}`);
+    const panelPending = ledger?.phase === 'done' && ledger.status === 'gate-panel-pending';
+    if (!ledger || (!['gates', 'fixes'].includes(ledger.phase) && !panelPending)) throw new Error(`telemetry-slot: no active review work for ref "${ref}" ${stateDirHint(stateDir)}`);
     if (path.dirname(artifactPath) !== path.resolve(stateDir)) throw new Error('telemetry-slot: artifact destination must be directly inside the state directory');
     const match = new RegExp(`^round-${ledger.round}-([A-Za-z0-9:._-]+)\\.json$`).exec(path.basename(artifactPath));
     if (!match) throw new Error(`telemetry-slot: destination does not belong to active round ${ledger.round}`);
