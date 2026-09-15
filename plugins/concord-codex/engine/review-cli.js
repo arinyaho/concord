@@ -417,6 +417,10 @@ function main(resolveFromCwd) {
   if (verb === 'telemetry-slot') {
     requireRef(ref, 'telemetry-slot');
     const artifactPath = path.resolve(String(rest[0] || ''));
+    const engine = rest[1] === '--engine' ? rest[2] : null;
+    const providers = { 'claude-code': 'anthropic', codex: 'openai' };
+    if (rest.length !== 3 || !Object.hasOwn(providers, engine)) throw new Error('telemetry-slot: requires --engine claude-code|codex');
+    const provider = providers[engine];
     const slug = targetSlug(ref);
     const ledger = readLedger(stateDir, slug);
     const panelPending = ledger?.phase === 'done' && ledger.status === 'gate-panel-pending';
@@ -427,8 +431,8 @@ function main(resolveFromCwd) {
     const suffix = match[1];
     const role = suffix.startsWith('fix-') ? 'fix' : suffix;
     const slots = Array.isArray(ledger.telemetrySlots) ? ledger.telemetrySlots : [];
-    const attempt = slots.filter((slot) => slot.artifactPath === artifactPath).length + 1;
-    const slot = { artifactPath, attempt, role, round: ledger.round };
+    const attempt = slots.filter((slot) => slot.engine === engine && slot.artifactPath === artifactPath).length + 1;
+    const slot = { engine, provider, artifactPath, attempt, role, round: ledger.round };
     writeLedger(stateDir, slug, { ...ledger, telemetrySlots: [...slots, slot] });
     process.stdout.write(`${JSON.stringify(slot)}\n`);
     return;

@@ -159,7 +159,7 @@ test('audits multi-request transcript totals against aggregate Agent hook usage'
   const artifactPath = path.join(stateDir, 'round-2-correctness.json');
   const ledgerPath = path.join(stateDir, 'review-feat-x.json');
   const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
-  ledger.telemetrySlots = [{ artifactPath, attempt: 1, role: 'correctness', round: 2 }];
+  ledger.telemetrySlots = [{ engine: 'claude-code', provider: 'anthropic', artifactPath, attempt: 1, role: 'correctness', round: 2 }];
   fs.writeFileSync(ledgerPath, JSON.stringify(ledger));
   const prompt = `Write ONLY to ${artifactPath}`;
   core.writeRecord(stateDir, core.recordForEvent(event({ transcript, prompt, response: successfulResponse() }), stateDir));
@@ -296,7 +296,7 @@ test('preserves a foreground SubagentStop until PostToolUse supplies the exact a
   const artifactPath = path.join(stateDir, 'round-2-correctness.json');
   const ledgerPath = path.join(stateDir, 'review-feat-x.json');
   const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
-  ledger.telemetrySlots = [{ artifactPath, attempt: 1, role: 'correctness', round: 2 }];
+  ledger.telemetrySlots = [{ engine: 'claude-code', provider: 'anthropic', artifactPath, attempt: 1, role: 'correctness', round: 2 }];
   fs.writeFileSync(ledgerPath, JSON.stringify(ledger));
   const prompt = `Write ONLY to ${artifactPath}`;
 
@@ -422,7 +422,7 @@ test('joins a background launch with observed completion status and elapsed time
   const artifactPath = path.join(stateDir, 'round-2-correctness.json');
   const ledgerPath = path.join(stateDir, 'review-feat-x.json');
   const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
-  ledger.telemetrySlots = [{ artifactPath, attempt: 1, role: 'correctness', round: 2 }];
+  ledger.telemetrySlots = [{ engine: 'claude-code', provider: 'anthropic', artifactPath, attempt: 1, role: 'correctness', round: 2 }];
   fs.writeFileSync(ledgerPath, JSON.stringify(ledger));
   const prompt = `Write ONLY to ${artifactPath}`;
   const started = core.recordForEvent(event({ transcript, hook: 'PreToolUse', prompt }), stateDir);
@@ -482,7 +482,7 @@ test('folding a complete hook with an unreadable transcript is fail-soft and par
 test('a malformed telemetry artifact cannot disappear into a clean fold', () => {
   const { stateDir } = setup();
   const ledger = JSON.parse(fs.readFileSync(path.join(stateDir, 'review-feat-x.json'), 'utf8'));
-  ledger.telemetrySlots = [{ artifactPath: path.join(stateDir, 'round-2-correctness.json'), attempt: 1, role: 'correctness', round: 2 }];
+  ledger.telemetrySlots = [{ engine: 'claude-code', provider: 'anthropic', artifactPath: path.join(stateDir, 'round-2-correctness.json'), attempt: 1, role: 'correctness', round: 2 }];
   fs.writeFileSync(path.join(stateDir, `review-telemetry-${'f'.repeat(64)}.json`), 'not json');
 
   const folded = reviewTelemetry.foldTelemetry(stateDir, ledger);
@@ -517,7 +517,7 @@ test('allocates the same attempt slot independently for sequential review target
   const ledgerPath = path.join(stateDir, 'review-feat-x.json');
   const artifactPath = path.join(stateDir, 'round-2-correctness.json');
   const firstLedger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
-  firstLedger.telemetrySlots = [{ artifactPath, attempt: 1, role: 'correctness', round: 2 }];
+  firstLedger.telemetrySlots = [{ engine: 'claude-code', provider: 'anthropic', artifactPath, attempt: 1, role: 'correctness', round: 2 }];
   fs.writeFileSync(ledgerPath, JSON.stringify(firstLedger));
   const prompt = `Write ONLY to ${artifactPath}`;
   const first = core.recordForEvent(event({ transcript, id: 'target-a', prompt, response: successfulResponse() }), stateDir);
@@ -572,7 +572,7 @@ test('ignores agent observations belonging to another review target', () => {
   const { transcript, stateDir } = setup();
   const artifactPath = path.join(stateDir, 'round-2-correctness.json');
   const ledger = JSON.parse(fs.readFileSync(path.join(stateDir, 'review-feat-x.json'), 'utf8'));
-  ledger.telemetrySlots = [{ artifactPath, attempt: 1, role: 'correctness', round: 2 }];
+  ledger.telemetrySlots = [{ engine: 'claude-code', provider: 'anthropic', artifactPath, attempt: 1, role: 'correctness', round: 2 }];
   fs.writeFileSync(path.join(stateDir, 'review-feat-x.json'), JSON.stringify(ledger));
   const prompt = `Write ONLY to ${artifactPath}`;
   const tool = core.recordForEvent(event({ transcript, prompt, response: successfulResponse() }), stateDir);
@@ -603,7 +603,7 @@ test('does not join a reused agent identity from another parent transcript', () 
   const foreign = setup();
   const artifactPath = path.join(stateDir, 'round-2-correctness.json');
   const ledger = JSON.parse(fs.readFileSync(path.join(stateDir, 'review-feat-x.json'), 'utf8'));
-  ledger.telemetrySlots = [{ artifactPath, attempt: 1, role: 'correctness', round: 2 }];
+  ledger.telemetrySlots = [{ engine: 'claude-code', provider: 'anthropic', artifactPath, attempt: 1, role: 'correctness', round: 2 }];
   fs.writeFileSync(path.join(stateDir, 'review-feat-x.json'), JSON.stringify(ledger));
   const prompt = `Write ONLY to ${artifactPath}`;
   core.writeRecord(stateDir, core.recordForEvent(event({ transcript, prompt, response: successfulResponse() }), stateDir));
@@ -628,13 +628,13 @@ test('deleteTelemetry retains a reused agent identity owned by another target', 
   const foreignTranscript = path.join(path.dirname(transcript), 'foreign.jsonl');
   const usage = { input_tokens: 10, cache_creation_input_tokens: 2, cache_read_input_tokens: 3, output_tokens: 4 };
   const tool = (targetRef, invocationId, parentTranscriptPath) => ({
-    kind: 'tool-use', engine: 'claude-code', targetRef, role: 'correctness', round: 2,
+    kind: 'tool-use', engine: 'claude-code', provider: 'anthropic', targetRef, role: 'correctness', round: 2,
     artifactPath: path.join(stateDir, `round-2-${invocationId}.json`), attempt: 1, invocationId,
     agentId: 'agent-reused', parentTranscriptPath, startedAtMs: 1, status: 'completed',
     hookUsagePartial: false, elapsedMs: null, totalTokens: 19, providerUsage: usage,
   });
   const agent = (observationId, parentTranscriptPath) => ({
-    kind: 'agent-usage', engine: 'claude-code', agentId: 'agent-reused', observationId,
+    kind: 'agent-usage', engine: 'claude-code', provider: 'anthropic', agentId: 'agent-reused', observationId,
     parentTranscriptPath, stoppedAtMs: 13, providerSchema: 'claude-subagent-transcript-2.1.268-v1',
     status: 'stopped', resolvedModel: 'claude-sonnet-4-5-20250929', inputTokens: 10,
     cacheWriteInputTokens: 2, cachedInputTokens: 3, reasoningOutputTokens: null, outputTokens: 4,
@@ -660,7 +660,7 @@ test('deleteTelemetry retains a reused agent identity owned by another target', 
   });
   const foreignLedger = {
     target: { ref: 'feat/y' },
-    telemetrySlots: [{ artifactPath: foreignTool.artifactPath, attempt: 1, role: 'correctness', round: 2 }],
+    telemetrySlots: [{ engine: 'claude-code', provider: 'anthropic', artifactPath: foreignTool.artifactPath, attempt: 1, role: 'correctness', round: 2 }],
   };
   const folded = reviewTelemetry.foldTelemetry(stateDir, foreignLedger);
   assert.deepStrictEqual(folded.telemetry.entries.map(({ invocationId, agentId, totalTokens, usagePartial }) => ({ invocationId, agentId, totalTokens, usagePartial })), [{
@@ -672,7 +672,7 @@ test('a persisted attempt slot with its entire hook missing remains visible and 
   const { stateDir } = setup();
   const ledgerPath = path.join(stateDir, 'review-feat-x.json');
   const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
-  ledger.telemetrySlots = [{ artifactPath: path.join(stateDir, 'round-2-correctness.json'), attempt: 1, role: 'correctness', round: 2 }];
+  ledger.telemetrySlots = [{ engine: 'claude-code', provider: 'anthropic', artifactPath: path.join(stateDir, 'round-2-correctness.json'), attempt: 1, role: 'correctness', round: 2 }];
 
   const folded = reviewTelemetry.foldTelemetry(stateDir, ledger);
 

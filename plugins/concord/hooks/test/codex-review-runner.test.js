@@ -201,7 +201,7 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
     }
     if (verb === 'telemetry-slot') {
       const artifactPath = role;
-      return { artifactPath, attempt: calls.filter((call) => call[0] === 'cli' && call[1] === 'telemetry-slot' && call[3] === artifactPath).length, role: path.basename(artifactPath).includes('-fix-') ? 'fix' : path.basename(artifactPath).match(/^round-\d+-(.+)\.json$/)?.[1], round };
+      return { engine: 'codex', provider: 'openai', artifactPath, attempt: calls.filter((call) => call[0] === 'cli' && call[1] === 'telemetry-slot' && call[3] === artifactPath).length, role: path.basename(artifactPath).includes('-fix-') ? 'fix' : path.basename(artifactPath).match(/^round-\d+-(.+)\.json$/)?.[1], round };
     }
     if (verb === 'plan-fixes') return { fixes: round === 1 ? [{ id: 'correctness:bug', file: 'a.txt', span: 'bad', summary: 'fix it' }] : [] };
     if (verb === 'commit-fix') {
@@ -235,6 +235,7 @@ test('runner automatically executes a clean round in correctness then verify ord
   assert.deepStrictEqual(h.calls.map((c) => c[0] === 'spawn' ? c.slice(0, 2) : c.slice(0, 2)), [
     ['cli', 'round-start'], ['cli', 'telemetry-slot'], ['spawn', 'correctness'], ['cli', 'artifact-normalize'], ['cli', 'telemetry-slot'], ['spawn', 'verify'], ['cli', 'artifact-normalize'], ['cli', 'plan-fixes'], ['cli', 'telemetry-slot'], ['spawn', 'fix'], ['cli', 'commit-fix'], ['cli', 'record'],
   ]);
+  assert.ok(h.calls.filter((call) => call[0] === 'cli' && call[1] === 'telemetry-slot').every((call) => call.slice(-2).join(' ') === '--engine codex'));
 });
 
 test('runner reports aggregate and per-role subprocess telemetry', async () => {
@@ -274,9 +275,9 @@ test('runner reports aggregate and per-role subprocess telemetry', async () => {
       fix: { calls: 1, partialCalls: 0, reasoningOutputTokens: 0, ...usageByRole.fix, elapsedMs: 30 },
     },
     invocations: [
-      { role: 'correctness', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.correctness, reasoningOutputTokens: 0, elapsedMs: 10, artifactPath: path.join(h.stateDir, 'round-1-correctness.json'), attempt: 1 },
-      { role: 'verify', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.verify, reasoningOutputTokens: 0, elapsedMs: 20, artifactPath: path.join(h.stateDir, 'round-1-verify.json'), attempt: 1 },
-      { role: 'fix', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.fix, reasoningOutputTokens: 0, elapsedMs: 30, artifactPath: path.join(h.stateDir, 'round-1-fix-correctness:bug.json'), attempt: 1 },
+      { engine: 'codex', provider: 'openai', role: 'correctness', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.correctness, reasoningOutputTokens: 0, elapsedMs: 10, artifactPath: path.join(h.stateDir, 'round-1-correctness.json'), attempt: 1 },
+      { engine: 'codex', provider: 'openai', role: 'verify', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.verify, reasoningOutputTokens: 0, elapsedMs: 20, artifactPath: path.join(h.stateDir, 'round-1-verify.json'), attempt: 1 },
+      { engine: 'codex', provider: 'openai', role: 'fix', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.fix, reasoningOutputTokens: 0, elapsedMs: 30, artifactPath: path.join(h.stateDir, 'round-1-fix-correctness:bug.json'), attempt: 1 },
     ],
   });
   assert.match(out.handoff, /usage: 3 calls, 0 partial, 666 tokens, 60ms/);
@@ -309,7 +310,7 @@ test('resumed runner preserves telemetry from the previous process', async () =>
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(telemetryPath, 'utf8')), out.telemetry);
 });
 
-test('resumed runner returns persisted telemetry when round-start is already terminal', async () => {
+test('terminal runner returns persisted telemetry even when the caller omits resume', async () => {
   const stateDir = temp();
   const persisted = {
     total: { calls: 1, partialCalls: 0, inputTokens: 10, cacheWriteInputTokens: 0, cachedInputTokens: 1, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 16, elapsedMs: 20 },
@@ -324,7 +325,6 @@ test('resumed runner returns persisted telemetry when round-start is already ter
 
   const out = await runReviewUntilGreen({
     ref: 'feature/x',
-    resume: true,
     repoRoot: '/repo',
     runCli: () => ({ decision: 'terminal', stateDir, handoff: 'LGTM' }),
     spawn: () => { throw new Error('terminal resume must not spawn'); },
@@ -332,6 +332,31 @@ test('resumed runner returns persisted telemetry when round-start is already ter
 
   assert.deepStrictEqual(out.telemetry, persisted);
   assert.strictEqual(out.handoff, 'LGTM\nusage: 1 calls, 0 partial, 16 tokens, 20ms');
+});
+
+test('resumed runner preserves a Codex slot whose subprocess lifecycle record is missing', async () => {
+  const stateDir = temp();
+  const artifactPath = path.join(stateDir, 'round-4-correctness.json');
+  fs.writeFileSync(path.join(stateDir, 'review-feature-x.json'), JSON.stringify({
+    target: { ref: 'feature/x' },
+    telemetrySlots: [{ engine: 'codex', provider: 'openai', artifactPath, attempt: 1, role: 'correctness', round: 4 }],
+  }));
+  fs.writeFileSync(path.join(stateDir, 'telemetry-feature-x.json'), JSON.stringify({
+    total: { calls: 0, partialCalls: 0, inputTokens: 0, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0 },
+    byRole: {}, invocations: [],
+  }));
+
+  const out = await runReviewUntilGreen({
+    ref: 'feature/x', resume: true, repoRoot: '/repo',
+    runCli: () => ({ decision: 'terminal', stateDir, handoff: 'LGTM' }),
+    spawn: () => { throw new Error('terminal resume must not spawn'); },
+  });
+
+  assert.strictEqual(out.telemetry.total.calls, 1);
+  assert.strictEqual(out.telemetry.total.partialCalls, 1);
+  assert.deepStrictEqual(out.telemetry.invocations.map(({ engine, provider, artifactPath: artifact, attempt, usagePartial }) => ({ engine, provider, artifact, attempt, usagePartial })), [
+    { engine: 'codex', provider: 'openai', artifact: artifactPath, attempt: 1, usagePartial: true },
+  ]);
 });
 
 test('fix prompt writes the commit-fix artifact and requires a truthful files declaration', () => {

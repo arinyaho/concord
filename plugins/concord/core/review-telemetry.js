@@ -63,17 +63,17 @@ function foldTelemetry(stateDir, ledger) {
   if (!ledger || typeof ledger.target?.ref !== 'string') return ledger;
   let names;
   try { names = fs.readdirSync(stateDir); } catch { return ledger; }
-  const tools = new Map((ledger.telemetry?.entries || []).filter((entry) => typeof entry?.invocationId === 'string').map((entry) => [entry.invocationId, { kind: 'tool-use', ...entry }]));
+  const tools = new Map((ledger.telemetry?.entries || []).filter((entry) => entry?.engine === 'claude-code' && entry.provider === 'anthropic' && typeof entry.invocationId === 'string').map((entry) => [entry.invocationId, { kind: 'tool-use', ...entry }]));
   const agents = new Map();
   const malformed = [];
   for (const name of names) {
     try {
       if (/^review-telemetry-[0-9a-f]{64}\.json$/.test(name)) {
         const entry = JSON.parse(fs.readFileSync(path.join(stateDir, name), 'utf8'));
-        if (entry.targetRef === ledger.target.ref && typeof entry.invocationId === 'string') tools.set(entry.invocationId, entry);
+        if (entry.engine === 'claude-code' && entry.provider === 'anthropic' && entry.targetRef === ledger.target.ref && typeof entry.invocationId === 'string') tools.set(entry.invocationId, entry);
       } else if (/^review-agent-telemetry-[0-9a-f]{64}\.json$/.test(name)) {
         const entry = JSON.parse(fs.readFileSync(path.join(stateDir, name), 'utf8'));
-        if (typeof entry.agentId === 'string') {
+        if (entry.engine === 'claude-code' && entry.provider === 'anthropic' && typeof entry.agentId === 'string') {
           const observations = agents.get(entry.agentId) || [];
           observations.push(entry);
           agents.set(entry.agentId, observations);
@@ -96,7 +96,9 @@ function foldTelemetry(stateDir, ledger) {
     const joined = joinAgentUsage(tool, observations.length === 1 ? observations[0] : observations.at(-1));
     return observations.length > 1 ? { ...joined, usagePartial: true } : joined;
   }).concat(malformed);
-  const slots = Array.isArray(ledger.telemetrySlots) ? ledger.telemetrySlots : [];
+  const slots = Array.isArray(ledger.telemetrySlots)
+    ? ledger.telemetrySlots.filter((slot) => slot?.engine === 'claude-code' && slot.provider === 'anthropic')
+    : [];
   if (slots.length) {
     const keyed = new Map();
     for (const entry of entries) {

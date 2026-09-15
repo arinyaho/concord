@@ -32,7 +32,7 @@ reference below means: spawn that subagent this way.
 
 Never soften that clause, and never accept an artifact from a reviewer you know was blocked -- a non-empty `blocked` is terminal wherever the CLI reads the artifact (`artifact-normalize` for the fail-closed roles, and `plan-fixes`/`gate-panel-round-record` for the leniently-read gate-verify and panel artifacts), precisely so a degraded reviewer cannot produce a verdict.
 
-Immediately before every review/fix subagent spawn, run `node "${CLAUDE_PLUGIN_ROOT}/hooks/review-cli.js" telemetry-slot <ref> <exact-output-artifact-path>` using the single JSON destination named by that prompt. Do this for correctness, verify, intent, gate, fixes, panel lenses, votes, retries, and failed attempts; each call allocates the attempt number used to reconcile missing, duplicate, or orphan telemetry without changing the prompt or launch order.
+Immediately before every review/fix subagent spawn, run `node "${CLAUDE_PLUGIN_ROOT}/hooks/review-cli.js" telemetry-slot <ref> <exact-output-artifact-path> --engine claude-code` using the single JSON destination named by that prompt. Do this for correctness, verify, intent, gate, fixes, panel lenses, votes, retries, and failed attempts; each call allocates an engine-owned attempt number used to reconcile missing, duplicate, or orphan telemetry without changing the prompt or launch order.
 
 Run this loop. Do each step in order; do not skip, reorder, or improvise termination.
 
