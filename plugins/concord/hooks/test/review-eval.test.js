@@ -188,6 +188,18 @@ test('scenario classifications, terminal enums, mappings, and probe results are 
   assert.ok(report.unevaluable.includes('baseline probe results mismatch: seeded#0'));
 });
 
+test('adjudicated non-defects cannot reuse a declared defect identity', () => {
+  const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
+  for (const side of [baseline, candidate]) {
+    side.engines.codex.runs.find((run) => run.scenarioId === 'seeded' && run.repetition === 0).adjudicatedNonDefects = ['seeded::bug'];
+  }
+
+  const report = compareReviewMatrix(baseline, candidate).engines.codex;
+
+  assert.strictEqual(report.pass, false);
+  assert.ok(report.unevaluable.includes('adjudicated non-defect overlaps defect: seeded#0:seeded::bug'));
+});
+
 test('resolved model disagreement is unevaluable while Codex unavailable is disclosed', () => {
   const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
   candidate.engines['claude-code'].runs.find((run) => run.scenarioId === 'seeded' && run.repetition === 0).resolvedModel = 'different';

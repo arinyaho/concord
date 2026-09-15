@@ -162,6 +162,8 @@ function compareReviewResults(baseline, candidate, options = {}) {
     const adjudicatedBase = sorted(base.adjudicatedNonDefects || []); const adjudicatedCandidate = sorted(cand.adjudicatedNonDefects || []);
     if (!same(adjudicatedBase, adjudicatedCandidate)) note(`adjudicated non-defects mismatch: ${key}`);
     for (const id of [...adjudicatedBase, ...adjudicatedCandidate]) if (!validId(id, base.scenarioId)) note(`adjudicated non-defect identity is not qualified: ${key}:${id}`);
+    const defectIds = new Set([...(scenario.seededDefects || []), ...(scenario.confirmedDefects || []), ...(scenario.requiredFixes || [])]);
+    for (const id of [...adjudicatedBase, ...adjudicatedCandidate]) if (defectIds.has(id)) note(`adjudicated non-defect overlaps defect: ${key}:${id}`);
     const nonDefects = sorted([...(scenario.nonDefects || []), ...adjudicatedBase]);
     for (const id of nonDefects) declared.add(id);
     const fixed = { baseline: [], candidate: [] };
