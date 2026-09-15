@@ -538,6 +538,7 @@ test('hook writes one atomic record per tool-use identity and emits no output', 
   for (const id of ['parallel-a', 'parallel-b', 'parallel-a']) {
     const result = spawnSync(process.execPath, [HOOK], {
       encoding: 'utf8',
+      env: { ...process.env, REVIEW_STATE_DIR: '' },
       input: JSON.stringify(event({ transcript, id, prompt, response: successfulResponse() })),
     });
     assert.strictEqual(result.status, 0, result.stderr);
@@ -549,6 +550,28 @@ test('hook writes one atomic record per tool-use identity and emits no output', 
   assert.strictEqual(files.length, 2);
   const records = files.map((name) => JSON.parse(fs.readFileSync(path.join(stateDir, name), 'utf8')));
   assert.deepStrictEqual(records.map((record) => record.invocationId).sort(), ['parallel-a', 'parallel-b']);
+});
+
+test('hook writes telemetry to an explicit REVIEW_STATE_DIR override', () => {
+  const { transcript, stateDir: transcriptStateDir } = setup();
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-review-override-'));
+  fs.copyFileSync(path.join(transcriptStateDir, 'review-feat-x.json'), path.join(stateDir, 'review-feat-x.json'));
+  const prompt = `Write ONLY to ${path.join(stateDir, 'round-2-correctness.json')}`;
+
+  const result = spawnSync(process.execPath, [HOOK], {
+    encoding: 'utf8',
+    env: { ...process.env, REVIEW_STATE_DIR: stateDir },
+    input: JSON.stringify(event({ transcript, id: 'override-record', prompt, response: successfulResponse() })),
+  });
+
+  assert.strictEqual(result.status, 0, result.stderr);
+  assert.strictEqual(result.stdout, '');
+  assert.strictEqual(result.stderr, '');
+  const records = fs.readdirSync(stateDir)
+    .filter((name) => name.startsWith('review-telemetry-'))
+    .map((name) => JSON.parse(fs.readFileSync(path.join(stateDir, name), 'utf8')).invocationId);
+  assert.deepStrictEqual(records, ['override-record']);
+  assert.deepStrictEqual(fs.readdirSync(transcriptStateDir).filter((name) => name.startsWith('review-telemetry-')), []);
 });
 
 test('folds matching records into the active ledger once', () => {
