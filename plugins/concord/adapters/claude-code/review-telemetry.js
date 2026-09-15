@@ -93,6 +93,7 @@ function toolRecord(event, stateDir) {
     attempt: attemptFor(stateDir, artifact.artifactPath, event.tool_use_id),
     invocationId: event.tool_use_id,
     agentId: typeof response.agentId === 'string' ? response.agentId : null,
+    parentTranscriptPath: typeof event.transcript_path === 'string' ? path.resolve(event.transcript_path) : null,
     requestedModel: typeof event.tool_input.model === 'string' ? event.tool_input.model : null,
     resolvedModel: typeof response.resolvedModel === 'string' ? response.resolvedModel : null,
     provider: 'anthropic',
@@ -112,11 +113,12 @@ function toolRecord(event, stateDir) {
   };
 }
 
-function emptyAgentRecord(agentId) {
+function emptyAgentRecord(agentId, parentTranscriptPath) {
   return {
     kind: 'agent-usage',
     engine: 'claude-code',
     agentId,
+    parentTranscriptPath,
     observationId: crypto.randomUUID(),
     provider: 'anthropic',
     providerSchema: TRANSCRIPT_SCHEMA,
@@ -155,7 +157,8 @@ function hasUniqueTerminalSnapshot(text, agentId, lastAssistantMessage) {
 
 function subagentRecord(event) {
   if (event.hook_event_name !== 'SubagentStop' || typeof event.agent_id !== 'string' || !event.agent_id) return null;
-  const partial = emptyAgentRecord(event.agent_id);
+  const parentTranscriptPath = typeof event.transcript_path === 'string' ? path.resolve(event.transcript_path) : null;
+  const partial = emptyAgentRecord(event.agent_id, parentTranscriptPath);
   if (typeof event.transcript_path !== 'string' || typeof event.agent_transcript_path !== 'string') return partial;
   let expectedDirectory;
   let transcriptPath;
@@ -250,14 +253,17 @@ function recordForEvent(event, stateDir) {
   return event.hook_event_name === 'SubagentStop' ? subagentRecord(event) : toolRecord(event, stateDir);
 }
 
-function hasActiveReviewTool(stateDir, agentId) {
+function hasActiveReviewTool(stateDir, record) {
   let names;
   try { names = fs.readdirSync(stateDir); } catch { return false; }
   for (const name of names) {
     if (!/^review-telemetry-[0-9a-f]{64}\.json$/.test(name)) continue;
     try {
       const tool = JSON.parse(fs.readFileSync(path.join(stateDir, name), 'utf8'));
-      if (tool.agentId === agentId && activeLedger(stateDir, tool.round)?.target.ref === tool.targetRef) return true;
+      const sameParent = typeof record.parentTranscriptPath === 'string' && tool.parentTranscriptPath === record.parentTranscriptPath;
+      const matchingAgent = tool.agentId === record.agentId;
+      const pendingAgent = tool.status === 'started' && tool.agentId === null;
+      if (sameParent && (matchingAgent || pendingAgent) && activeLedger(stateDir, tool.round)?.target.ref === tool.targetRef) return true;
     } catch {}
   }
   return false;
@@ -265,7 +271,7 @@ function hasActiveReviewTool(stateDir, agentId) {
 
 function writeRecord(stateDir, record) {
   if (!record) return false;
-  if (record.kind === 'agent-usage' && !hasActiveReviewTool(stateDir, record.agentId)) return false;
+  if (record.kind === 'agent-usage' && !hasActiveReviewTool(stateDir, record)) return false;
   fs.mkdirSync(stateDir, { recursive: true });
   const identity = record.kind === 'agent-usage' ? `agent:${record.agentId}:${record.observationId}` : `tool:${record.invocationId}`;
   const digest = crypto.createHash('sha256').update(identity).digest('hex');

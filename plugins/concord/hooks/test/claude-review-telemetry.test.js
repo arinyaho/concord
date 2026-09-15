@@ -266,6 +266,57 @@ test('does not persist a SubagentStop without a matching review tool', () => {
   assert.deepStrictEqual(fs.readdirSync(stateDir).filter((name) => name.startsWith('review-agent-telemetry-')), []);
 });
 
+test('preserves a foreground SubagentStop until PostToolUse supplies the exact agent identity', () => {
+  const { transcript, stateDir } = setup();
+  const artifactPath = path.join(stateDir, 'round-2-correctness.json');
+  const ledgerPath = path.join(stateDir, 'review-feat-x.json');
+  const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+  ledger.telemetrySlots = [{ artifactPath, attempt: 1, role: 'correctness', round: 2 }];
+  fs.writeFileSync(ledgerPath, JSON.stringify(ledger));
+  const prompt = `Write ONLY to ${artifactPath}`;
+
+  assert.strictEqual(core.writeRecord(stateDir, core.recordForEvent(event({ transcript, hook: 'PreToolUse', prompt }), stateDir)), true);
+  const childTranscript = writeSubagentTranscript(transcript, [
+    assistantRow({ requestId: 'req-1', messageId: 'msg-1', input: 1, create: 2, read: 3, output: 4 }),
+  ]);
+  const stopped = core.recordForEvent({
+    hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-7',
+    agent_transcript_path: childTranscript, last_assistant_message: 'done',
+  }, stateDir);
+  assert.strictEqual(core.writeRecord(stateDir, stopped), true);
+
+  const beforePost = reviewTelemetry.foldTelemetry(stateDir, ledger).telemetry.entries;
+  assert.deepStrictEqual(beforePost.map(({ invocationId, agentId, status, usagePartial }) => ({ invocationId, agentId, status, usagePartial })), [{
+    invocationId: 'toolu_01', agentId: null, status: 'started', usagePartial: true,
+  }]);
+
+  const response = successfulResponse();
+  response.totalTokens = 10;
+  response.usage = { input_tokens: 1, cache_creation_input_tokens: 2, cache_read_input_tokens: 3, output_tokens: 4 };
+  assert.strictEqual(core.writeRecord(stateDir, core.recordForEvent(event({ transcript, prompt, response }), stateDir)), true);
+  const afterPost = reviewTelemetry.foldTelemetry(stateDir, ledger).telemetry.entries;
+  assert.deepStrictEqual(afterPost.map(({ invocationId, agentId, status, totalTokens, usagePartial }) => ({ invocationId, agentId, status, totalTokens, usagePartial })), [{
+    invocationId: 'toolu_01', agentId: 'agent-7', status: 'completed', totalTokens: 10, usagePartial: false,
+  }]);
+});
+
+test('does not let a pending review tool preserve a stop from another parent transcript', () => {
+  const { transcript, stateDir } = setup();
+  const foreign = setup();
+  const prompt = `Write ONLY to ${path.join(stateDir, 'round-2-correctness.json')}`;
+  assert.strictEqual(core.writeRecord(stateDir, core.recordForEvent(event({ transcript, hook: 'PreToolUse', prompt }), stateDir)), true);
+  const childTranscript = writeSubagentTranscript(foreign.transcript, [
+    assistantRow({ requestId: 'req-foreign', messageId: 'msg-foreign', input: 1, create: 0, read: 0, output: 1 }),
+  ]);
+  const stopped = core.recordForEvent({
+    hook_event_name: 'SubagentStop', transcript_path: foreign.transcript, agent_id: 'agent-7',
+    agent_transcript_path: childTranscript, last_assistant_message: 'done',
+  }, stateDir);
+
+  assert.strictEqual(core.writeRecord(stateDir, stopped), false);
+  assert.deepStrictEqual(fs.readdirSync(stateDir).filter((name) => name.startsWith('review-agent-telemetry-')), []);
+});
+
 test('marks repeated terminal tool hooks partial instead of discarding the duplicate', () => {
   const { transcript, stateDir } = setup();
   const prompt = `Write ONLY to ${path.join(stateDir, 'round-2-correctness.json')}`;
@@ -299,6 +350,7 @@ test('retains successful PostToolUse usage as a partial final-request audit', ()
     attempt: null,
     invocationId: 'toolu_01',
     agentId: 'agent-7',
+    parentTranscriptPath: path.resolve(transcript),
     requestedModel: 'sonnet',
     resolvedModel: 'claude-sonnet-4-5-20250929',
     provider: 'anthropic',
@@ -499,6 +551,31 @@ test('ignores agent observations belonging to another review target', () => {
 
   assert.deepStrictEqual(folded.telemetry.entries.map((entry) => entry.agentId), ['agent-7']);
   assert.strictEqual(folded.telemetry.partialCalls, 0);
+});
+
+test('does not join a reused agent identity from another parent transcript', () => {
+  const { transcript, stateDir } = setup();
+  const foreign = setup();
+  const artifactPath = path.join(stateDir, 'round-2-correctness.json');
+  const ledger = JSON.parse(fs.readFileSync(path.join(stateDir, 'review-feat-x.json'), 'utf8'));
+  ledger.telemetrySlots = [{ artifactPath, attempt: 1, role: 'correctness', round: 2 }];
+  fs.writeFileSync(path.join(stateDir, 'review-feat-x.json'), JSON.stringify(ledger));
+  const prompt = `Write ONLY to ${artifactPath}`;
+  core.writeRecord(stateDir, core.recordForEvent(event({ transcript, prompt, response: successfulResponse() }), stateDir));
+  const childTranscript = writeSubagentTranscript(foreign.transcript, [
+    assistantRow({ requestId: 'req-foreign', messageId: 'msg-foreign', input: 1, create: 0, read: 0, output: 1 }),
+  ]);
+  const foreignAgent = core.recordForEvent({
+    hook_event_name: 'SubagentStop', transcript_path: foreign.transcript, agent_id: 'agent-7',
+    agent_transcript_path: childTranscript, last_assistant_message: 'done',
+  }, stateDir);
+  fs.writeFileSync(path.join(stateDir, `review-agent-telemetry-${'c'.repeat(64)}.json`), JSON.stringify(foreignAgent));
+
+  const entry = reviewTelemetry.foldTelemetry(stateDir, ledger).telemetry.entries[0];
+
+  assert.deepStrictEqual({ providerSchema: entry.providerSchema, totalTokens: entry.totalTokens, usagePartial: entry.usagePartial }, {
+    providerSchema: 'claude-agent-hook-v1', totalTokens: 165, usagePartial: true,
+  });
 });
 
 test('a persisted attempt slot with its entire hook missing remains visible and partial', () => {

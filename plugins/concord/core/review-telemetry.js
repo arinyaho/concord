@@ -21,7 +21,7 @@ function aggregate(entries) {
 }
 
 function publicToolRecord(tool) {
-  const { kind, hookUsagePartial, startedAtMs, ...record } = tool;
+  const { kind, hookUsagePartial, parentTranscriptPath, startedAtMs, ...record } = tool;
   return record;
 }
 
@@ -35,7 +35,7 @@ function joinAgentUsage(tool, agent) {
     ? agent.stoppedAtMs - tool.startedAtMs
     : null;
   const elapsedMs = Number.isSafeInteger(tool.elapsedMs) ? tool.elapsedMs : observedElapsedMs;
-  const { observationId, transcriptWaitMs, stoppedAtMs, ...agentUsage } = agent;
+  const { observationId, parentTranscriptPath, transcriptWaitMs, stoppedAtMs, ...agentUsage } = agent;
   return {
     ...output,
     resolvedModel: agentUsage.resolvedModel || tool.resolvedModel,
@@ -84,7 +84,9 @@ function foldTelemetry(stateDir, ledger) {
   const targetAgentIds = new Set(Array.from(tools.values(), (tool) => tool.agentId).filter((agentId) => typeof agentId === 'string'));
   for (const agentId of agents.keys()) if (!targetAgentIds.has(agentId)) agents.delete(agentId);
   let entries = Array.from(tools.values(), (tool) => {
-    const observations = agents.get(tool.agentId) || [];
+    const observations = (agents.get(tool.agentId) || []).filter((agent) => (
+      typeof tool.parentTranscriptPath === 'string' && agent.parentTranscriptPath === tool.parentTranscriptPath
+    ));
     const joined = joinAgentUsage(tool, observations.length === 1 ? observations[0] : observations.at(-1));
     return observations.length > 1 ? { ...joined, usagePartial: true } : joined;
   }).concat(malformed);
