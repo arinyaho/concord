@@ -64,7 +64,9 @@ function manifest(engine, side, revision, total = side === 'baseline' ? 100 : 60
         expectedProbeResults: Object.fromEntries(metadata.expectedProbes.map((id) => [id, true])),
         dod: metadata.hasExecutableDoD ? 'passed' : 'deferred', terminal: metadata.allowedTerminalOutcomes[0],
         telemetry: telemetry(engine, total), resolvedModel: engine === 'claude-code' ? 'claude-sonnet-4-5-20250929' : 'unavailable',
-        ...(engine === 'codex' ? { model: 'pinned-model', reasoningEffort: 'high', serviceTier: 'default' } : {}),
+        ...(engine === 'codex'
+          ? { model: 'pinned-model', reasoningEffort: 'high', serviceTier: 'default' }
+          : { requestedModel: 'pinned-model' }),
       });
     }
   }
@@ -135,6 +137,18 @@ test('requires every run to carry the paired requested inference configuration',
   assert.strictEqual(report.evaluable, false);
   assert.ok(report.unevaluable.includes('candidate requested configuration mismatch: seeded#0:serviceTier'));
   assert.ok(report.limitations.includes('actual reasoning effort and service tier unavailable'));
+});
+
+test('requires every Claude run to carry the paired requested model', () => {
+  const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
+  delete baseline.engines['claude-code'].runs.find((run) => run.scenarioId === 'seeded' && run.repetition === 0).requestedModel;
+  candidate.engines['claude-code'].runs.find((run) => run.scenarioId === 'seeded' && run.repetition === 0).requestedModel = 'different';
+
+  const report = compareReviewMatrix(baseline, candidate).engines['claude-code'];
+
+  assert.strictEqual(report.evaluable, false);
+  assert.ok(report.unevaluable.includes('baseline requested configuration missing: seeded#0:requestedModel'));
+  assert.ok(report.unevaluable.includes('candidate requested configuration mismatch: seeded#0:requestedModel'));
 });
 
 test('requires non-empty string pairing identities before comparing them', () => {

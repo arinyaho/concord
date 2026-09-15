@@ -153,9 +153,9 @@ function compareReviewResults(baseline, candidate, options = {}) {
       if (!run || typeof run !== 'object') { note(`${name} run is invalid`); continue; }
       const key = runKey(run);
       if (!(run.scenarioId in (manifest.scenarios || {})) || !Number.isInteger(run.repetition) || run.repetition < 0 || run.repetition >= 30) note(`${name} run identity is invalid: ${key}`);
-      if (engine === 'codex') for (const field of CODEX_CONFIG_FIELDS) {
+      for (const field of engine === 'codex' ? CODEX_CONFIG_FIELDS : ['requestedModel']) {
         if (!nonemptyString(run[field])) note(`${name} requested configuration missing: ${key}:${field}`);
-        else if (run[field] !== manifest.pairing?.[field]) note(`${name} requested configuration mismatch: ${key}:${field}`);
+        else if (run[field] !== manifest.pairing?.[field === 'requestedModel' ? 'model' : field]) note(`${name} requested configuration mismatch: ${key}:${field}`);
       }
       if (result.has(key)) note(`${name} duplicate run: ${key}`); else result.set(key, run);
       if (run.independent !== true || typeof run.randomSeed !== 'string' || !run.randomSeed) note(`${name} run is not independently identified: ${key}`);
