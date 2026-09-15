@@ -18,16 +18,20 @@ const broad = args.includes('--broad') || args.includes('--gate') || broadPhrase
 // left in, it would be read as `ref` or `base` and passed to git as a ref.
 const noBroad = args.includes('--no-broad');
 const noDod = args.includes('--no-dod');
-const modelIndex = args.indexOf('--model');
-const model = modelIndex === -1 ? undefined : args[modelIndex + 1];
-if (modelIndex !== -1 && (!model || model.startsWith('--') || args.indexOf('--model', modelIndex + 1) !== -1)) {
-  process.stderr.write('review-until-green: --model requires exactly one value\n');
-  process.exit(1);
+const inference = {};
+const inferenceArgs = new Set();
+for (const [flag, field] of [['--model', 'model'], ['--reasoning-effort', 'reasoningEffort'], ['--service-tier', 'serviceTier']]) {
+  const index = args.indexOf(flag); const value = index === -1 ? undefined : args[index + 1];
+  if (index !== -1 && (!value || !value.trim() || value.startsWith('--') || args.indexOf(flag, index + 1) !== -1)) {
+    process.stderr.write(`review-until-green: ${flag} requires exactly one value\n`);
+    process.exit(1);
+  }
+  if (index !== -1) { inference[field] = value; inferenceArgs.add(index); inferenceArgs.add(index + 1); }
 }
-const positional = args.filter((arg, index) => arg !== '--broad' && arg !== '--gate' && arg !== '--no-broad' && arg !== '--no-dod' && (modelIndex === -1 || (index !== modelIndex && index !== modelIndex + 1)) && !broadPhraseArgs.has(index));
+const positional = args.filter((arg, index) => arg !== '--broad' && arg !== '--gate' && arg !== '--no-broad' && arg !== '--no-dod' && !inferenceArgs.has(index) && !broadPhraseArgs.has(index));
 const resumed = positional[0] === 'resume';
 const ref = (resumed ? positional[1] : positional[0]) || require('node:child_process').execFileSync('git', ['branch', '--show-current'], { encoding: 'utf8' }).trim();
 const base = resumed ? positional[2] : positional[1];
-runReviewUntilGreen({ ref, base, broad, noBroad, noDod, model, resume: resumed, repoRoot: process.cwd(), cliPath: path.join(__dirname, 'review-cli.js') })
+runReviewUntilGreen({ ref, base, broad, noBroad, noDod, ...inference, resume: resumed, repoRoot: process.cwd(), cliPath: path.join(__dirname, 'review-cli.js') })
   .then((result) => process.stdout.write(`${result.handoff || result.message || JSON.stringify(result)}\n`))
   .catch((error) => { process.stderr.write(`review-until-green: ${error.message}\n`); process.exit(1); });

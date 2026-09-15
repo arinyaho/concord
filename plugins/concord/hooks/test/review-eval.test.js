@@ -52,6 +52,7 @@ function manifest(engine, side, revision, total = side === 'baseline' ? 100 : 60
         expectedProbeResults: Object.fromEntries(metadata.expectedProbes.map((id) => [id, true])),
         dod: metadata.hasExecutableDoD ? 'passed' : 'deferred', terminal: metadata.allowedTerminalOutcomes[0],
         telemetry: telemetry(engine, total), resolvedModel: engine === 'claude-code' ? 'claude-sonnet-4-5-20250929' : 'unavailable',
+        ...(engine === 'codex' ? { model: 'pinned-model', reasoningEffort: 'high', serviceTier: 'default' } : {}),
       });
     }
   }
@@ -60,6 +61,7 @@ function manifest(engine, side, revision, total = side === 'baseline' ? 100 : 60
     pairing: {
       targetSnapshot: 'snapshot-1', targetDiff: 'diff-corpus-1', intent: 'intent-1', model: 'pinned-model', reasoningEffort: 'high', reviewConfig: 'config-1',
       engine, provider: engine === 'claude-code' ? 'anthropic' : 'openai',
+      ...(engine === 'codex' ? { serviceTier: 'default' } : {}),
       providerSchema: engine === 'claude-code' ? 'claude-subagent-transcript-2.1.268-v1' : 'codex-exec-json-v1',
       corpusRevision: 'review-eval-v2', evaluationMode: 'replay',
     },
@@ -110,6 +112,17 @@ test('requires exact per-scenario target diff and intent identities', () => {
   candidate.engines.codex.runs.find((run) => run.scenarioId === 'seeded' && run.repetition === 0).targetDiffHash = 'different';
   const report = compareReviewMatrix(baseline, candidate).engines.codex;
   assert.ok(report.unevaluable.includes('scenario pairing mismatch: seeded#0:targetDiffHash'));
+});
+
+test('requires every run to carry the paired requested inference configuration', () => {
+  const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
+  candidate.engines.codex.runs.find((run) => run.scenarioId === 'seeded' && run.repetition === 0).serviceTier = 'priority';
+
+  const report = compareReviewMatrix(baseline, candidate).engines.codex;
+
+  assert.strictEqual(report.evaluable, false);
+  assert.ok(report.unevaluable.includes('candidate requested configuration mismatch: seeded#0:serviceTier'));
+  assert.ok(report.limitations.includes('actual reasoning effort and service tier unavailable'));
 });
 
 test('requires non-empty string pairing identities before comparing them', () => {

@@ -2,6 +2,7 @@
 
 const REQUIRED_ENGINES = ['claude-code', 'codex'];
 const PAIRING_KEYS = ['targetSnapshot', 'targetDiff', 'intent', 'model', 'reasoningEffort', 'reviewConfig', 'engine', 'provider', 'providerSchema', 'corpusRevision', 'evaluationMode'];
+const CODEX_CONFIG_FIELDS = ['model', 'reasoningEffort', 'serviceTier'];
 const RUN_PAIRING_KEYS = ['targetDiffIdentity', 'targetDiffHash', 'intentIdentity', 'intentHash'];
 const REMOVED_PARENT_FIELDS = ['parentProxyContents', 'parentProxyTokenizerVersion', 'parentProxyContentHash', 'parentProxyTokens'];
 const TERMINALS = ['clean', 'parked', 'abandoned', 'intent-review', 'gate-pending', 'budget-stopped', 'harness-failure'];
@@ -72,7 +73,7 @@ function compareReviewResults(baseline, candidate, options = {}) {
     if (!Array.isArray(manifest?.runs)) note(`${name} runs are missing`);
     for (const field of REMOVED_PARENT_FIELDS) if (Object.hasOwn(manifest || {}, field)) note(`${name} removed parent proxy field: manifest:${field}`);
   }
-  for (const field of PAIRING_KEYS) {
+  for (const field of engine === 'codex' ? [...PAIRING_KEYS, 'serviceTier'] : PAIRING_KEYS) {
     if (!nonemptyString(baseline?.pairing?.[field]) || !nonemptyString(candidate?.pairing?.[field])) note(`pairing identity missing: ${field}`);
     else if (baseline.pairing[field] !== candidate.pairing[field]) note(`pairing identity mismatch: ${field}`);
   }
@@ -130,6 +131,10 @@ function compareReviewResults(baseline, candidate, options = {}) {
       if (!run || typeof run !== 'object') { note(`${name} run is invalid`); continue; }
       const key = runKey(run);
       if (!(run.scenarioId in (manifest.scenarios || {})) || !Number.isInteger(run.repetition) || run.repetition < 0 || run.repetition >= 30) note(`${name} run identity is invalid: ${key}`);
+      if (engine === 'codex') for (const field of CODEX_CONFIG_FIELDS) {
+        if (!nonemptyString(run[field])) note(`${name} requested configuration missing: ${key}:${field}`);
+        else if (run[field] !== manifest.pairing?.[field]) note(`${name} requested configuration mismatch: ${key}:${field}`);
+      }
       if (result.has(key)) note(`${name} duplicate run: ${key}`); else result.set(key, run);
       if (run.independent !== true || typeof run.randomSeed !== 'string' || !run.randomSeed) note(`${name} run is not independently identified: ${key}`);
       else if (seeds.has(run.randomSeed)) note(`${name} random seed is reused: ${run.randomSeed}`); else seeds.add(run.randomSeed);
@@ -260,7 +265,7 @@ function compareReviewResults(baseline, candidate, options = {}) {
       baseline: { calls: [...baseIndex.runs.values()].reduce((sum, run) => sum + (run.telemetry?.calls || 0), 0), elapsedMs: [...baseIndex.runs.values()].reduce((sum, run) => sum + (run.telemetry?.elapsedMs || 0), 0) },
       candidate: { calls: [...candidateIndex.runs.values()].reduce((sum, run) => sum + (run.telemetry?.calls || 0), 0), elapsedMs: [...candidateIndex.runs.values()].reduce((sum, run) => sum + (run.telemetry?.elapsedMs || 0), 0) },
     },
-    limitations: engine === 'codex' ? ['actual model identity unavailable', 'unobservable child work cannot be scored'] : [],
+    limitations: engine === 'codex' ? ['actual model identity unavailable', 'actual reasoning effort and service tier unavailable', 'unobservable child work cannot be scored'] : [],
   };
 }
 
