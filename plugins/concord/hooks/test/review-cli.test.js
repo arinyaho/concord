@@ -852,7 +852,7 @@ test('record: a fix-committing round that terminates re-runs DoD on the post-com
   // Force this fix-committing round to be the terminus via round budget exhaustion.
   const slug = review.targetSlug('feat/x');
   let ledger = review.readLedger(dir, slug);
-  ledger = { ...ledger, budget: { ...ledger.budget, max_rounds: 1, spent: 0 } };
+  ledger = { ...ledger, budget: { ...ledger.budget, max_rounds: 1, spent: 1 } };
   review.writeLedger(dir, slug, ledger);
   const out = JSON.parse(run(['record', 'feat/x'], { env }));
   const after = review.readLedger(dir, slug);
@@ -1083,6 +1083,13 @@ test('manual review drivers persist a telemetry slot immediately before every su
     assert.match(md, /retries.*failed attempts/i, rel.join('/'));
     assert.match(md, /round-<n>-gate-panel-<m>-vote-<finding-id>-<vote-index>\.json/, rel.join('/'));
   }
+});
+
+test('the Codex reviewer skill attributes swapped reviewer slots to Codex and Claude fixer slots to Claude', () => {
+  const md = fs.readFileSync(path.join(__dirname, '..', '..', 'skills', 'concord-codex-review', 'SKILL.md'), 'utf8');
+
+  assert.match(md, /telemetry-slot[^\n]+--engine codex/);
+  assert.match(md, /fix[^\n]+telemetry-slot[^\n]+--engine claude-code/i);
 });
 
 function writeArtifact(dir, n, name, obj) {

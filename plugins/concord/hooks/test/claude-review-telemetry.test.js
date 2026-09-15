@@ -395,6 +395,28 @@ test('defers pending SubagentStop parsing and discards a concurrent unrelated ag
   assert.deepStrictEqual(agents.map(({ agentId, totalTokens }) => ({ agentId, totalTokens })), [{ agentId: 'agent-7', totalTokens: 10 }]);
 });
 
+test('uses the agent transcript prompt to associate a stop with one of several parallel review tools', () => {
+  const { transcript, stateDir } = setup();
+  const correctness = path.join(stateDir, 'round-2-correctness.json');
+  const gate = path.join(stateDir, 'round-2-gate.json');
+  const correctnessPrompt = `Write ONLY to ${correctness}`;
+  const gatePrompt = `Write ONLY to ${gate}`;
+  assert.strictEqual(core.writeRecord(stateDir, core.recordForEvent(event({ transcript, id: 'tool-correctness', hook: 'PreToolUse', prompt: correctnessPrompt }), stateDir)), true);
+  assert.strictEqual(core.writeRecord(stateDir, core.recordForEvent(event({ transcript, id: 'tool-gate', hook: 'PreToolUse', prompt: gatePrompt }), stateDir)), true);
+  const childTranscript = writeSubagentTranscript(transcript, [
+    { type: 'user', agentId: 'agent-7', message: { role: 'user', content: gatePrompt } },
+    assistantRow({ requestId: 'req-gate', messageId: 'msg-gate', input: 1, create: 2, read: 3, output: 4 }),
+  ]);
+
+  const stopped = core.recordForEvent({
+    hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-7',
+    agent_transcript_path: childTranscript, last_assistant_message: 'done',
+  }, stateDir);
+
+  assert.strictEqual(stopped.pendingInvocationId, 'tool-gate');
+  assert.strictEqual(core.writeRecord(stateDir, stopped), true);
+});
+
 test('deleteTelemetry removes a deferred agent observation when its pending tool never completes', () => {
   const { transcript, stateDir } = setup();
   const prompt = `Write ONLY to ${path.join(stateDir, 'round-2-correctness.json')}`;

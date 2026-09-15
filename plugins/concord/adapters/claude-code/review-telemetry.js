@@ -156,19 +156,35 @@ function hasUniqueTerminalSnapshot(text, agentId, lastAssistantMessage, lastAssi
   return terminals.length === 1 && terminals[0].messageMatches && terminals[0].order === Math.max(...values.map((row) => row.order));
 }
 
+function resolvedAgentTranscriptPath(event) {
+  if (typeof event.transcript_path !== 'string' || typeof event.agent_transcript_path !== 'string') return null;
+  try {
+    const parent = path.resolve(event.transcript_path);
+    const expectedDirectory = fs.realpathSync(path.join(path.dirname(parent), path.basename(parent, '.jsonl'), 'subagents'));
+    const transcriptPath = fs.realpathSync(event.agent_transcript_path);
+    return path.dirname(transcriptPath) === expectedDirectory ? transcriptPath : null;
+  } catch { return null; }
+}
+
+function artifactPathFromAgentTranscript(event, stateDir) {
+  const transcriptPath = resolvedAgentTranscriptPath(event);
+  if (!transcriptPath) return null;
+  try {
+    const row = JSON.parse(fs.readFileSync(transcriptPath, 'utf8').split('\n').find(Boolean));
+    if (row?.type !== 'user' || row.agentId !== event.agent_id) return null;
+    const content = row.message?.content;
+    const prompt = typeof content === 'string' ? content
+      : (Array.isArray(content) ? content.filter((block) => block?.type === 'text' && typeof block.text === 'string').map((block) => block.text).join('') : null);
+    return artifactFromPrompt(prompt, stateDir)?.artifactPath || null;
+  } catch { return null; }
+}
+
 function subagentRecord(event, pendingTool) {
   if (event.hook_event_name !== 'SubagentStop' || typeof event.agent_id !== 'string' || !event.agent_id) return null;
   const parentTranscriptPath = typeof event.transcript_path === 'string' ? path.resolve(event.transcript_path) : null;
   const partial = emptyAgentRecord(event.agent_id, parentTranscriptPath);
-  if (typeof event.transcript_path !== 'string' || typeof event.agent_transcript_path !== 'string') return partial;
-  let expectedDirectory;
-  let transcriptPath;
-  try {
-    const parent = path.resolve(event.transcript_path);
-    expectedDirectory = fs.realpathSync(path.join(path.dirname(parent), path.basename(parent, '.jsonl'), 'subagents'));
-    transcriptPath = fs.realpathSync(event.agent_transcript_path);
-  } catch { return partial; }
-  if (path.dirname(transcriptPath) !== expectedDirectory) return partial;
+  const transcriptPath = resolvedAgentTranscriptPath(event);
+  if (!transcriptPath) return partial;
   if (pendingTool) return {
     ...partial,
     pendingInvocationId: pendingTool.invocationId,
@@ -265,6 +281,7 @@ function recordForEvent(event, stateDir) {
   const probe = {
     agentId: event.agent_id,
     parentTranscriptPath: typeof event.transcript_path === 'string' ? path.resolve(event.transcript_path) : null,
+    artifactPath: artifactPathFromAgentTranscript(event, stateDir),
   };
   const tool = activeReviewTool(stateDir, probe);
   return tool ? subagentRecord(event, tool.agentId === null ? tool : null) : null;
@@ -282,7 +299,8 @@ function activeReviewTool(stateDir, record) {
       const sameParent = typeof record.parentTranscriptPath === 'string' && tool.parentTranscriptPath === record.parentTranscriptPath;
       const matchingAgent = tool.agentId === record.agentId;
       const pendingAgent = tool.status === 'started' && tool.agentId === null
-        && (!record.pendingInvocationId || tool.invocationId === record.pendingInvocationId);
+        && (!record.pendingInvocationId || tool.invocationId === record.pendingInvocationId)
+        && (!record.artifactPath || tool.artifactPath === record.artifactPath);
       if (!sameParent || (!matchingAgent && !pendingAgent) || activeLedger(stateDir, tool.round)?.target.ref !== tool.targetRef) continue;
       if (matchingAgent) exact = tool;
       else pending.push(tool);

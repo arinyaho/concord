@@ -432,6 +432,25 @@ test('applyRoundOutcome: dod passed and all findings fixed -> NOT clean yet (con
   assert.strictEqual(after.status, 'converging');
 });
 
+test('applyRoundOutcome: a final budgeted fix round still gets its confirmation round', () => {
+  const open = finding({ id: 'correctness:last-fix', status: 'open' });
+  const ledger = {
+    ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }),
+    round: 3,
+    budget: { max_rounds: 3, spent: 2 },
+    findings: [open],
+  };
+
+  const { ledger: after, decision } = review.applyRoundOutcome(ledger, {
+    dodPassed: true,
+    findings: [{ ...open, status: 'confirmed' }],
+    fixedIds: [open.id], parkedIds: [], killedIds: [], specDoubtScope: 'none',
+  });
+
+  assert.strictEqual(decision.continue, true);
+  assert.strictEqual(after.status, 'converging');
+});
+
 test('applyRoundOutcome: a zero-fix round with dod passed and no open findings converges (the confirmation round)', () => {
   let ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
   ledger = review.beginRound(ledger, 'h').ledger;
@@ -545,6 +564,7 @@ test('applyRoundOutcome: budget exhausted parks remaining open findings', () => 
   let ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
   ledger.budget.max_rounds = 1;
   ledger = review.beginRound(ledger, 'hash-1').ledger; // round=1
+  ledger.budget.spent = 1; // budget is charged at record, so model an already-spent round
   const { ledger: after, decision } = review.applyRoundOutcome(ledger, {
     dodPassed: false,
     findings: [finding({ id: 'f3', status: 'confirmed' })],

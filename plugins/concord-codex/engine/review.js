@@ -439,9 +439,7 @@ function applyRoundOutcome(ledger, outcome) {
     openFindingsCount,
     specDoubtScope: outcome.specDoubtScope || 'none',
     noProgress,
-    // The current round is already spent when its outcome is recorded. The
-    // persisted continuation counter intentionally lags until record() returns.
-    budgetSpent: Math.max(ledger.budget.spent, ledger.round),
+    budgetSpent: ledger.budget.spent,
     maxRounds: ledger.budget.max_rounds,
     fixedCount: (outcome.fixedIds || []).length, // COUNT, not the in-scope Set named fixedIds
     parkedCount: (outcome.parkedIds || []).length, // COUNT, not the in-scope Set named parkedIds
