@@ -133,7 +133,6 @@ function emptyAgentRecord(agentId, parentTranscriptPath) {
     totalTokens: null,
     usagePartial: true,
     providerUsage: {},
-    lastRequestUsage: null,
   };
 }
 
@@ -192,7 +191,6 @@ function subagentRecord(event) {
   const requests = new Map();
   const requestToMessage = new Map();
   const messageToRequest = new Map();
-  let lastRequestUsage = null;
   let invalid = typeof event.last_assistant_message !== 'string' || !event.last_assistant_message;
   let order = 0;
   for (const line of lines) {
@@ -218,7 +216,6 @@ function subagentRecord(event) {
     const previous = requests.get(requestKey);
     if (previous && (previous.model !== model || USAGE_FIELDS.some((field) => usage[field] < previous.usage[field]))) invalid = true;
     requests.set(requestKey, { model, usage, terminal, order: order++ });
-    lastRequestUsage = usage;
   }
   if (!requests.size) return partial;
 
@@ -243,7 +240,6 @@ function subagentRecord(event) {
     totalTokens: Object.values(totals).reduce((sum, value) => sum + value, 0),
     usagePartial: invalid || models.size !== 1,
     providerUsage: totals,
-    lastRequestUsage,
     transcriptWaitMs: waitMs,
   };
 }

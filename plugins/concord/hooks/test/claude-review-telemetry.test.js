@@ -154,6 +154,31 @@ test('joins SubagentStop transcript totals but stays partial without a telemetry
   assert.strictEqual(core.recordForEvent({ ...stoppedEvent, agent_transcript_path: malformedTranscript }, stateDir).usagePartial, true);
 });
 
+test('audits multi-request transcript totals against aggregate Agent hook usage', () => {
+  const { transcript, stateDir } = setup();
+  const artifactPath = path.join(stateDir, 'round-2-correctness.json');
+  const ledgerPath = path.join(stateDir, 'review-feat-x.json');
+  const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+  ledger.telemetrySlots = [{ artifactPath, attempt: 1, role: 'correctness', round: 2 }];
+  fs.writeFileSync(ledgerPath, JSON.stringify(ledger));
+  const prompt = `Write ONLY to ${artifactPath}`;
+  core.writeRecord(stateDir, core.recordForEvent(event({ transcript, prompt, response: successfulResponse() }), stateDir));
+  const childTranscript = writeSubagentTranscript(transcript, [
+    assistantRow({ requestId: 'req-1', messageId: 'msg-1', input: 90, create: 20, read: 30, output: 10, content: [{ type: 'tool_use' }] }),
+    assistantRow({ requestId: 'req-2', messageId: 'msg-2', input: 10, create: 0, read: 0, output: 5 }),
+  ]);
+  core.writeRecord(stateDir, core.recordForEvent({
+    hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-7',
+    agent_transcript_path: childTranscript, last_assistant_message: 'done',
+  }, stateDir));
+
+  const entry = reviewTelemetry.foldTelemetry(stateDir, ledger).telemetry.entries[0];
+
+  assert.deepStrictEqual({ totalTokens: entry.totalTokens, usagePartial: entry.usagePartial }, {
+    totalTokens: 165, usagePartial: false,
+  });
+});
+
 test('uses only the exact single Write ONLY destination, never an earlier input path', () => {
   const { transcript, stateDir } = setup();
   const correctness = path.join(stateDir, 'round-2-correctness.json');
@@ -335,7 +360,7 @@ test('marks repeated terminal tool hooks partial instead of discarding the dupli
   assert.strictEqual(ledger.telemetry.entries[0].usagePartial, true);
 });
 
-test('retains successful PostToolUse usage as a partial final-request audit', () => {
+test('retains successful PostToolUse usage as a partial aggregate audit', () => {
   const { transcript, stateDir } = setup();
   const prompt = `Write ONLY to ${path.join(stateDir, 'round-2-correctness.json')}`;
   const record = core.recordForEvent(event({ transcript, prompt, response: successfulResponse() }), stateDir);

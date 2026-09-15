@@ -29,7 +29,7 @@ function joinAgentUsage(tool, agent) {
   const output = publicToolRecord(tool);
   if (!agent || tool.status === 'failed') return { ...output, usagePartial: true };
   const hookHasUsage = HOOK_USAGE_FIELDS.some((field) => Number.isSafeInteger(tool.providerUsage?.[field])) || Number.isSafeInteger(tool.totalTokens);
-  const hookDisagrees = hookHasUsage && (tool.hookUsagePartial || HOOK_USAGE_FIELDS.some((field) => tool.providerUsage[field] !== agent.lastRequestUsage?.[field]));
+  const hookDisagrees = hookHasUsage && (tool.hookUsagePartial || HOOK_USAGE_FIELDS.some((field) => tool.providerUsage[field] !== agent.providerUsage?.[field]));
   const modelDisagrees = tool.resolvedModel && agent.resolvedModel && tool.resolvedModel !== agent.resolvedModel;
   const observedElapsedMs = Number.isSafeInteger(tool.startedAtMs) && Number.isSafeInteger(agent.stoppedAtMs) && agent.stoppedAtMs >= tool.startedAtMs
     ? agent.stoppedAtMs - tool.startedAtMs

@@ -1725,7 +1725,6 @@ test('record returns persisted Claude review telemetry in JSON and the human han
     inputTokens: 10, cacheWriteInputTokens: 2, cachedInputTokens: 3, reasoningOutputTokens: null,
     outputTokens: 4, totalTokens: 19, usagePartial: false,
     providerUsage: { input_tokens: 10, cache_creation_input_tokens: 2, cache_read_input_tokens: 3, output_tokens: 4 },
-    lastRequestUsage: { input_tokens: 10, cache_creation_input_tokens: 2, cache_read_input_tokens: 3, output_tokens: 4 },
   }));
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
