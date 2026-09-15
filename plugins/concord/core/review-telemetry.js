@@ -35,13 +35,17 @@ function joinAgentUsage(tool, agent) {
   const output = publicToolRecord(tool);
   if (!agent || tool.status === 'failed') return { ...output, usagePartial: true };
   const hookHasUsage = HOOK_USAGE_FIELDS.some((field) => Number.isSafeInteger(tool.providerUsage?.[field])) || Number.isSafeInteger(tool.totalTokens);
-  const hookDisagrees = hookHasUsage && (tool.hookUsagePartial || HOOK_USAGE_FIELDS.some((field) => tool.providerUsage[field] !== agent.providerUsage?.[field]));
+  const hookDisagrees = hookHasUsage && (tool.hookUsagePartial
+    || (agent.finalRequestUsage && HOOK_USAGE_FIELDS.some((field) => tool.providerUsage[field] !== agent.finalRequestUsage[field])));
   const modelDisagrees = tool.resolvedModel && agent.resolvedModel && tool.resolvedModel !== agent.resolvedModel;
   const observedElapsedMs = Number.isSafeInteger(tool.startedAtMs) && Number.isSafeInteger(agent.stoppedAtMs) && agent.stoppedAtMs >= tool.startedAtMs
     ? agent.stoppedAtMs - tool.startedAtMs
     : null;
   const elapsedMs = Number.isSafeInteger(tool.elapsedMs) ? tool.elapsedMs : observedElapsedMs;
-  const { observationId, parentTranscriptPath, transcriptWaitMs, stoppedAtMs, ...agentUsage } = agent;
+  const {
+    observationId, parentTranscriptPath, transcriptWaitMs, stoppedAtMs, finalRequestUsage,
+    pendingInvocationId, pendingTargetRef, agentTranscriptPath, lastAssistantMessageHash, ...agentUsage
+  } = agent;
   return {
     ...output,
     resolvedModel: agentUsage.resolvedModel || tool.resolvedModel,
@@ -162,7 +166,10 @@ function deleteTelemetry(stateDir, targetRef, targetSlug) {
   for (const name of fs.readdirSync(stateDir)) {
     if (!/^review-agent-telemetry-[0-9a-f]{64}\.json$/.test(name)) continue;
     const file = path.join(stateDir, name);
-    try { if (usedAgentAssociations.has(agentAssociation(JSON.parse(fs.readFileSync(file, 'utf8'))))) fs.unlinkSync(file); } catch {}
+    try {
+      const entry = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (entry.pendingTargetRef === targetRef || usedAgentAssociations.has(agentAssociation(entry))) fs.unlinkSync(file);
+    } catch {}
   }
 }
 

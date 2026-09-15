@@ -136,7 +136,7 @@ function emptyAgentRecord(agentId, parentTranscriptPath) {
   };
 }
 
-function hasUniqueTerminalSnapshot(text, agentId, lastAssistantMessage) {
+function hasUniqueTerminalSnapshot(text, agentId, lastAssistantMessage, lastAssistantMessageHash) {
   const rows = new Map(); let order = 0;
   for (const line of text.split('\n').filter(Boolean)) {
     let row;
@@ -146,15 +146,17 @@ function hasUniqueTerminalSnapshot(text, agentId, lastAssistantMessage) {
     if (typeof requestId !== 'string' || typeof messageId !== 'string' || !Array.isArray(content)) return false;
     const textBlocks = content.filter((block) => block?.type === 'text');
     const terminal = content.length > 0 && !content.some((block) => block?.type === 'tool_use');
-    const messageMatches = typeof lastAssistantMessage !== 'string' || !lastAssistantMessage
-      || (textBlocks.length > 0 && textBlocks.every((block) => typeof block.text === 'string') && textBlocks.map((block) => block.text).join('') === lastAssistantMessage);
+    const message = textBlocks.length > 0 && textBlocks.every((block) => typeof block.text === 'string') ? textBlocks.map((block) => block.text).join('') : null;
+    const messageMatches = (typeof lastAssistantMessage !== 'string' || !lastAssistantMessage || message === lastAssistantMessage)
+      && (typeof lastAssistantMessageHash !== 'string' || !lastAssistantMessageHash
+        || (message !== null && crypto.createHash('sha256').update(message).digest('hex') === lastAssistantMessageHash));
     rows.set(`${requestId}\0${messageId}`, { terminal, messageMatches, order: order++ });
   }
   const values = [...rows.values()]; const terminals = values.filter((row) => row.terminal);
   return terminals.length === 1 && terminals[0].messageMatches && terminals[0].order === Math.max(...values.map((row) => row.order));
 }
 
-function subagentRecord(event) {
+function subagentRecord(event, pendingTool) {
   if (event.hook_event_name !== 'SubagentStop' || typeof event.agent_id !== 'string' || !event.agent_id) return null;
   const parentTranscriptPath = typeof event.transcript_path === 'string' ? path.resolve(event.transcript_path) : null;
   const partial = emptyAgentRecord(event.agent_id, parentTranscriptPath);
@@ -162,10 +164,20 @@ function subagentRecord(event) {
   let expectedDirectory;
   let transcriptPath;
   try {
-    expectedDirectory = fs.realpathSync(path.join(path.dirname(path.resolve(event.transcript_path)), 'subagents'));
+    const parent = path.resolve(event.transcript_path);
+    expectedDirectory = fs.realpathSync(path.join(path.dirname(parent), path.basename(parent, '.jsonl'), 'subagents'));
     transcriptPath = fs.realpathSync(event.agent_transcript_path);
   } catch { return partial; }
   if (path.dirname(transcriptPath) !== expectedDirectory) return partial;
+  if (pendingTool) return {
+    ...partial,
+    pendingInvocationId: pendingTool.invocationId,
+    pendingTargetRef: pendingTool.targetRef,
+    agentTranscriptPath: transcriptPath,
+    lastAssistantMessageHash: typeof event.last_assistant_message === 'string' && event.last_assistant_message
+      ? crypto.createHash('sha256').update(event.last_assistant_message).digest('hex')
+      : null,
+  };
 
   let snapshot;
   const waitMs = 500;
@@ -178,7 +190,8 @@ function subagentRecord(event) {
       const after = fs.statSync(transcriptPath);
       const identity = `${after.dev}:${after.ino}:${after.size}:${after.mtimeMs}`;
       if (before.dev === after.dev && before.ino === after.ino && before.size === after.size && before.mtimeMs === after.mtimeMs
-        && text.endsWith('\n') && identity === previousIdentity && hasUniqueTerminalSnapshot(text, event.agent_id, event.last_assistant_message)) {
+        && text.endsWith('\n') && identity === previousIdentity
+        && hasUniqueTerminalSnapshot(text, event.agent_id, event.last_assistant_message, event.last_assistant_message_hash)) {
         snapshot = text;
         break;
       }
@@ -191,7 +204,8 @@ function subagentRecord(event) {
   const requests = new Map();
   const requestToMessage = new Map();
   const messageToRequest = new Map();
-  let invalid = typeof event.last_assistant_message !== 'string' || !event.last_assistant_message;
+  let invalid = !(typeof event.last_assistant_message === 'string' && event.last_assistant_message)
+    && !(typeof event.last_assistant_message_hash === 'string' && event.last_assistant_message_hash);
   let order = 0;
   for (const line of lines) {
     let row;
@@ -240,6 +254,7 @@ function subagentRecord(event) {
     totalTokens: Object.values(totals).reduce((sum, value) => sum + value, 0),
     usagePartial: invalid || models.size !== 1,
     providerUsage: totals,
+    finalRequestUsage: terminalRows.length === 1 ? terminalRows[0].usage : null,
     transcriptWaitMs: waitMs,
   };
 }
@@ -251,28 +266,66 @@ function recordForEvent(event, stateDir) {
     agentId: event.agent_id,
     parentTranscriptPath: typeof event.transcript_path === 'string' ? path.resolve(event.transcript_path) : null,
   };
-  return hasActiveReviewTool(stateDir, probe) ? subagentRecord(event) : null;
+  const tool = activeReviewTool(stateDir, probe);
+  return tool ? subagentRecord(event, tool.agentId === null ? tool : null) : null;
 }
 
-function hasActiveReviewTool(stateDir, record) {
+function activeReviewTool(stateDir, record) {
   let names;
-  try { names = fs.readdirSync(stateDir); } catch { return false; }
+  try { names = fs.readdirSync(stateDir); } catch { return null; }
+  let exact = null;
+  const pending = [];
   for (const name of names) {
     if (!/^review-telemetry-[0-9a-f]{64}\.json$/.test(name)) continue;
     try {
       const tool = JSON.parse(fs.readFileSync(path.join(stateDir, name), 'utf8'));
       const sameParent = typeof record.parentTranscriptPath === 'string' && tool.parentTranscriptPath === record.parentTranscriptPath;
       const matchingAgent = tool.agentId === record.agentId;
-      const pendingAgent = tool.status === 'started' && tool.agentId === null;
-      if (sameParent && (matchingAgent || pendingAgent) && activeLedger(stateDir, tool.round)?.target.ref === tool.targetRef) return true;
+      const pendingAgent = tool.status === 'started' && tool.agentId === null
+        && (!record.pendingInvocationId || tool.invocationId === record.pendingInvocationId);
+      if (!sameParent || (!matchingAgent && !pendingAgent) || activeLedger(stateDir, tool.round)?.target.ref !== tool.targetRef) continue;
+      if (matchingAgent) exact = tool;
+      else pending.push(tool);
     } catch {}
   }
-  return false;
+  return exact || (pending.length === 1 ? pending[0] : null);
+}
+
+function settlePendingAgentRecords(stateDir, tool) {
+  if (tool.kind !== 'tool-use' || tool.status === 'started' || typeof tool.agentId !== 'string') return;
+  let names;
+  try { names = fs.readdirSync(stateDir); } catch { return; }
+  for (const name of names) {
+    if (!/^review-agent-telemetry-[0-9a-f]{64}\.json$/.test(name)) continue;
+    const file = path.join(stateDir, name);
+    let temporary;
+    try {
+      const pending = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (pending.pendingInvocationId !== tool.invocationId) continue;
+      if (pending.agentId !== tool.agentId) {
+        fs.unlinkSync(file);
+        continue;
+      }
+      const parsed = subagentRecord({
+        hook_event_name: 'SubagentStop',
+        transcript_path: pending.parentTranscriptPath,
+        agent_id: pending.agentId,
+        agent_transcript_path: pending.agentTranscriptPath,
+        last_assistant_message_hash: pending.lastAssistantMessageHash,
+      });
+      temporary = `${file}.${process.pid}-${crypto.randomBytes(6).toString('hex')}.tmp`;
+      fs.writeFileSync(temporary, JSON.stringify({ ...parsed, observationId: pending.observationId }), { flag: 'wx', mode: 0o600 });
+      fs.renameSync(temporary, file);
+    } catch {
+      // Preserve malformed evidence for operator inspection.
+    } finally { if (temporary) try { fs.unlinkSync(temporary); } catch {} }
+  }
 }
 
 function writeRecord(stateDir, record) {
   if (!record) return false;
-  if (record.kind === 'agent-usage' && !hasActiveReviewTool(stateDir, record)) return false;
+  const activeTool = record.kind === 'agent-usage' ? activeReviewTool(stateDir, record) : null;
+  if (record.kind === 'agent-usage' && !activeTool) return false;
   fs.mkdirSync(stateDir, { recursive: true });
   const identity = record.kind === 'agent-usage' ? `agent:${record.agentId}:${record.observationId}` : `tool:${record.invocationId}`;
   const digest = crypto.createHash('sha256').update(identity).digest('hex');
@@ -282,6 +335,7 @@ function writeRecord(stateDir, record) {
   fs.writeFileSync(temporary, JSON.stringify(record), { flag: 'wx', mode: 0o600 });
   try {
     fs.linkSync(temporary, destination);
+    settlePendingAgentRecords(stateDir, activeTool || record);
     return true;
   } catch (error) {
     if (!error || error.code !== 'EEXIST') throw error;
@@ -293,11 +347,13 @@ function writeRecord(stateDir, record) {
           : record;
         fs.writeFileSync(temporary, JSON.stringify(existing.duplicateEvidence ? { ...replacement, duplicateEvidence: true, usagePartial: true } : replacement));
         fs.renameSync(temporary, destination);
+        settlePendingAgentRecords(stateDir, activeTool || record);
         return true;
       }
       if (record.kind === 'tool-use') {
         fs.writeFileSync(temporary, JSON.stringify({ ...existing, duplicateEvidence: true, usagePartial: true }));
         fs.renameSync(temporary, destination);
+        settlePendingAgentRecords(stateDir, activeTool || record);
       }
     } catch {
       // Preserve malformed evidence for operator inspection.

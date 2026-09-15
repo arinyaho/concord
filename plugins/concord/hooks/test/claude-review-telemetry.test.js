@@ -63,7 +63,7 @@ function recordActiveTool(transcript, stateDir) {
 }
 
 function writeSubagentTranscript(parentTranscript, rows) {
-  const directory = path.join(path.dirname(parentTranscript), 'subagents');
+  const directory = path.join(path.dirname(parentTranscript), path.basename(parentTranscript, '.jsonl'), 'subagents');
   fs.mkdirSync(directory, { recursive: true });
   const transcript = path.join(directory, 'agent-agent-7.jsonl');
   fs.writeFileSync(transcript, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`);
@@ -159,7 +159,7 @@ test('joins SubagentStop transcript totals but stays partial without a telemetry
   assert.strictEqual(core.recordForEvent({ ...stoppedEvent, agent_transcript_path: malformedTranscript }, stateDir).usagePartial, true);
 });
 
-test('audits multi-request transcript totals against aggregate Agent hook usage', () => {
+test('audits multi-request transcript totals against final-request Agent hook usage', () => {
   const { transcript, stateDir } = setup();
   const artifactPath = path.join(stateDir, 'round-2-correctness.json');
   const ledgerPath = path.join(stateDir, 'review-feat-x.json');
@@ -167,7 +167,10 @@ test('audits multi-request transcript totals against aggregate Agent hook usage'
   ledger.telemetrySlots = [{ engine: 'claude-code', provider: 'anthropic', artifactPath, attempt: 1, role: 'correctness', round: 2 }];
   fs.writeFileSync(ledgerPath, JSON.stringify(ledger));
   const prompt = `Write ONLY to ${artifactPath}`;
-  core.writeRecord(stateDir, core.recordForEvent(event({ transcript, prompt, response: successfulResponse() }), stateDir));
+  const response = successfulResponse();
+  response.totalTokens = 15;
+  response.usage = { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 5 };
+  core.writeRecord(stateDir, core.recordForEvent(event({ transcript, prompt, response }), stateDir));
   const childTranscript = writeSubagentTranscript(transcript, [
     assistantRow({ requestId: 'req-1', messageId: 'msg-1', input: 90, create: 20, read: 30, output: 10, content: [{ type: 'tool_use' }] }),
     assistantRow({ requestId: 'req-2', messageId: 'msg-2', input: 10, create: 0, read: 0, output: 5 }),
@@ -242,7 +245,7 @@ test('marks a transcript ending at an assistant tool-use response partial', () =
 test('waits within the bound for a delayed stable terminal transcript append', async () => {
   const { transcript, stateDir } = setup();
   recordActiveTool(transcript, stateDir);
-  const directory = path.join(path.dirname(transcript), 'subagents');
+  const directory = path.join(path.dirname(transcript), path.basename(transcript, '.jsonl'), 'subagents');
   fs.mkdirSync(directory, { recursive: true });
   const childTranscript = path.join(directory, 'agent-agent-7.jsonl');
   fs.writeFileSync(childTranscript, '');
@@ -356,6 +359,58 @@ test('preserves a foreground SubagentStop until PostToolUse supplies the exact a
   assert.deepStrictEqual(afterPost.map(({ invocationId, agentId, status, totalTokens, usagePartial }) => ({ invocationId, agentId, status, totalTokens, usagePartial })), [{
     invocationId: 'toolu_01', agentId: 'agent-7', status: 'completed', totalTokens: 10, usagePartial: false,
   }]);
+});
+
+test('defers pending SubagentStop parsing and discards a concurrent unrelated agent once PostToolUse identifies the reviewer', () => {
+  const { transcript, stateDir } = setup();
+  const prompt = `Write ONLY to ${path.join(stateDir, 'round-2-correctness.json')}`;
+  assert.strictEqual(core.writeRecord(stateDir, core.recordForEvent(event({ transcript, hook: 'PreToolUse', prompt }), stateDir)), true);
+
+  const unrelatedTranscript = writeSubagentTranscript(transcript, [
+    { ...assistantRow({ requestId: 'req-other', messageId: 'msg-other', input: 50, create: 0, read: 0, output: 5 }), agentId: 'agent-other' },
+  ]);
+  const unrelated = core.recordForEvent({
+    hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-other',
+    agent_transcript_path: unrelatedTranscript, last_assistant_message: 'done',
+  }, stateDir);
+  assert.deepStrictEqual({ totalTokens: unrelated.totalTokens, usagePartial: unrelated.usagePartial }, { totalTokens: null, usagePartial: true });
+  assert.strictEqual(core.writeRecord(stateDir, unrelated), true);
+
+  const reviewerTranscript = writeSubagentTranscript(transcript, [
+    assistantRow({ requestId: 'req-review', messageId: 'msg-review', input: 1, create: 2, read: 3, output: 4 }),
+  ]);
+  const reviewer = core.recordForEvent({
+    hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-7',
+    agent_transcript_path: reviewerTranscript, last_assistant_message: 'done',
+  }, stateDir);
+  assert.strictEqual(core.writeRecord(stateDir, reviewer), true);
+
+  const response = successfulResponse();
+  response.totalTokens = 10;
+  response.usage = { input_tokens: 1, cache_creation_input_tokens: 2, cache_read_input_tokens: 3, output_tokens: 4 };
+  assert.strictEqual(core.writeRecord(stateDir, core.recordForEvent(event({ transcript, prompt, response }), stateDir)), true);
+
+  const agents = fs.readdirSync(stateDir).filter((name) => name.startsWith('review-agent-telemetry-'))
+    .map((name) => JSON.parse(fs.readFileSync(path.join(stateDir, name), 'utf8')));
+  assert.deepStrictEqual(agents.map(({ agentId, totalTokens }) => ({ agentId, totalTokens })), [{ agentId: 'agent-7', totalTokens: 10 }]);
+});
+
+test('deleteTelemetry removes a deferred agent observation when its pending tool never completes', () => {
+  const { transcript, stateDir } = setup();
+  const prompt = `Write ONLY to ${path.join(stateDir, 'round-2-correctness.json')}`;
+  assert.strictEqual(core.writeRecord(stateDir, core.recordForEvent(event({ transcript, hook: 'PreToolUse', prompt }), stateDir)), true);
+  const childTranscript = writeSubagentTranscript(transcript, [
+    { ...assistantRow({ requestId: 'req-other', messageId: 'msg-other', input: 1, create: 0, read: 0, output: 1 }), agentId: 'agent-other' },
+  ]);
+  const stopped = core.recordForEvent({
+    hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-other',
+    agent_transcript_path: childTranscript, last_assistant_message: 'done',
+  }, stateDir);
+  assert.strictEqual(core.writeRecord(stateDir, stopped), true);
+
+  reviewTelemetry.deleteTelemetry(stateDir, 'feat/x', 'feat-x');
+
+  assert.deepStrictEqual(fs.readdirSync(stateDir).filter((name) => name.startsWith('review-agent-telemetry-')), []);
 });
 
 test('does not let a pending review tool preserve a stop from another parent transcript', () => {

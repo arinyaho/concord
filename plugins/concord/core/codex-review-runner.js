@@ -383,8 +383,7 @@ async function runReviewUntilGreen(options) {
       const artifactPath = destinationFromPrompt(input.prompt, input.stateDir);
       let telemetrySlot = null;
       if (artifactPath) {
-        try { telemetrySlot = await cli(['telemetry-slot', ref, artifactPath, '--engine', 'codex']); }
-        catch (error) { if (!options.runCli) throw error; }
+        telemetrySlot = await cli(['telemetry-slot', ref, artifactPath, '--engine', 'codex']);
       }
       return invoke(spawn, {
         ...input,

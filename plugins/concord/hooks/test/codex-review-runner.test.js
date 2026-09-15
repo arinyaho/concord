@@ -247,6 +247,17 @@ test('runner records slots when the review state directory contains whitespace',
   assert.strictEqual(h.calls.filter((call) => call[0] === 'cli' && call[1] === 'telemetry-slot').length, 3);
 });
 
+test('runner fails before spawning when telemetry slot allocation fails', async () => {
+  const h = harness();
+  const cli = (args) => {
+    if (args[0] === 'telemetry-slot') throw new Error('slot allocation failed');
+    return h.cli(args);
+  };
+
+  await assert.rejects(runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn: h.spawn }), /slot allocation failed/);
+  assert.strictEqual(h.calls.some((call) => call[0] === 'spawn'), false);
+});
+
 test('runner keeps invocation role and round when slot metadata disagrees', async () => {
   const h = harness({ slotIdentity: { role: 'artifact-derived-role', round: 99 } });
 
@@ -534,6 +545,7 @@ test('intent and gate review chains fan out alongside the correctness-to-verify 
     const [verb, , role] = args;
     if (verb === 'round-start') return { decision: 'work', round: 1, stateDir, targetType: 'git', dodPassed: true, intentApplied: true, gateApplied: true, priorIntentIds: ['intent:retry-count'] };
     if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: role, attempt: 1 };
     if (verb === 'plan-fixes') return { fixes: [] };
     if (verb === 'record') return { decision: { continue: false }, handoff: 'LGTM' };
     throw new Error(`unexpected CLI ${verb} ${role}`);
@@ -593,6 +605,7 @@ test('panel lens prompts identify the reviewed diff and require the intent sourc
     const [verb] = args;
     if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
     if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
     if (verb === 'plan-fixes') return { fixes: [] };
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
@@ -628,6 +641,7 @@ test('panel lens and adversarial-vote prompts carry the blocked-tool clause', as
     const [verb] = args;
     if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
     if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
     if (verb === 'plan-fixes') return { fixes: [] };
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
@@ -676,6 +690,7 @@ test('an adversarial vote that declares blocked fails the round instead of count
     const [verb] = args;
     if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
     if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
     if (verb === 'plan-fixes') return { fixes: [] };
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
@@ -714,6 +729,7 @@ test('a failed panel lens is treated as zero findings while the remaining lenses
     const [verb] = args;
     if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
     if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
     if (verb === 'plan-fixes') return { fixes: [] };
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
@@ -745,6 +761,7 @@ test('panel lenses and each finding\'s adversarial votes fan out concurrently', 
     const [verb] = args;
     if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
     if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
     if (verb === 'plan-fixes') return { fixes: [] };
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
@@ -787,6 +804,7 @@ test('panel candidates with unsafe IDs never reach an interpolated verdict path'
     const [verb] = args;
     if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
     if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
     if (verb === 'plan-fixes') return { fixes: [] };
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };

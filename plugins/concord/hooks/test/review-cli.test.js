@@ -1081,6 +1081,7 @@ test('manual review drivers persist a telemetry slot immediately before every su
     assert.match(md, /--engine claude-code/, rel.join('/'));
     assert.match(md, /immediately before every.*subagent.*spawn/i, rel.join('/'));
     assert.match(md, /retries.*failed attempts/i, rel.join('/'));
+    assert.match(md, /round-<n>-gate-panel-<m>-vote-<finding-id>-<vote-index>\.json/, rel.join('/'));
   }
 });
 
