@@ -6,6 +6,13 @@ const RUN_PAIRING_KEYS = ['targetDiffIdentity', 'targetDiffHash', 'intentIdentit
 const REMOVED_PARENT_FIELDS = ['parentProxyContents', 'parentProxyTokenizerVersion', 'parentProxyContentHash', 'parentProxyTokens'];
 const TERMINALS = ['clean', 'parked', 'abandoned', 'intent-review', 'gate-pending', 'budget-stopped', 'harness-failure'];
 const DOD_RESULTS = ['passed', 'failed', 'deferred', 'not-run'];
+const FROZEN_CORPORA = {
+  'review-eval-v2': {
+    scenarioIds: ['clean', 'false-positive', 'fix-round', 'holistic', 'malformed-blocked', 'seeded'],
+    holisticLenses: ['ac-coverage', 'design-conformance', 'cross-context', 'silent-gap', 'threat-model'],
+    confirmedDefectScenarioId: 'fix-round',
+  },
+};
 
 function sorted(values) { return [...new Set(values || [])].sort(); }
 function canonical(value) {
@@ -75,6 +82,17 @@ function compareReviewResults(baseline, candidate, options = {}) {
   if (!['live', 'replay'].includes(baseline?.pairing?.evaluationMode)) note(`unsupported evaluation mode: ${baseline?.pairing?.evaluationMode}`);
 
   const baselineScenarios = baseline?.scenarios || {}; const candidateScenarios = candidate?.scenarios || {};
+  for (const [name, manifest] of [['baseline', baseline], ['candidate', candidate]]) {
+    const revision = manifest?.pairing?.corpusRevision; const corpus = FROZEN_CORPORA[revision];
+    if (!nonemptyString(revision)) continue;
+    if (!corpus) { note(`${name} unsupported frozen corpus revision: ${revision}`); continue; }
+    if (!same(Object.keys(manifest?.scenarios || {}).sort(), corpus.scenarioIds)) note(`${name} frozen corpus inventory mismatch: ${revision}`);
+    for (const lens of corpus.holisticLenses) {
+      const prefix = `holistic::gate:${lens}:`;
+      if (!(manifest?.scenarios?.holistic?.seededDefects || []).some((id) => typeof id === 'string' && id.startsWith(prefix) && id.length > prefix.length)) note(`${name} frozen corpus holistic lens missing: ${lens}`);
+    }
+    if (!(manifest?.scenarios?.[corpus.confirmedDefectScenarioId]?.confirmedDefects || []).length) note(`${name} frozen corpus confirmed defects missing: ${corpus.confirmedDefectScenarioId}`);
+  }
   const scenarioIds = sorted([...Object.keys(baselineScenarios), ...Object.keys(candidateScenarios)]);
   const frozenTerminals = new Set();
   for (const scenarioId of scenarioIds) {

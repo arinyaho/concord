@@ -17,12 +17,14 @@ function scenario({ defects = [], confirmed = [], nonDefects = [], fixes = [], p
   };
 }
 
+const HOLISTIC_DEFECTS = ['ac-coverage', 'design-conformance', 'cross-context', 'silent-gap', 'threat-model']
+  .map((lens) => `holistic::gate:${lens}:gap`);
 const SCENARIOS = {
   clean: scenario(),
   seeded: scenario({ defects: ['seeded::bug'], fixes: ['seeded::bug'], probes: ['probe:seeded'] }),
   'false-positive': scenario({ nonDefects: ['false-positive::trap'] }),
   'malformed-blocked': scenario({ allowed: ['harness-failure'], executable: false }),
-  holistic: scenario({ defects: ['holistic::gap'], fixes: ['holistic::gap'], probes: ['probe:holistic'] }),
+  holistic: scenario({ defects: HOLISTIC_DEFECTS, fixes: HOLISTIC_DEFECTS, probes: ['probe:holistic'] }),
   'fix-round': scenario({ defects: ['fix-round::bug'], confirmed: ['fix-round::bug'], fixes: ['fix-round::bug'], probes: ['probe:fix'] }),
 };
 
@@ -123,6 +125,34 @@ test('requires non-empty string pairing identities before comparing them', () =>
   assert.ok(report.unevaluable.includes('pairing identity missing: targetSnapshot'));
   assert.ok(report.unevaluable.includes('pairing identity missing: model'));
   assert.ok(report.unevaluable.includes('unsupported evaluation mode: invalid'));
+});
+
+test('rejects a self-declared corpus that omits frozen hard evidence', () => {
+  const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
+  for (const side of [baseline, candidate]) {
+    delete side.engines.codex.scenarios.holistic;
+    side.engines.codex.scenarios['fix-round'].confirmedDefects = [];
+    side.engines.codex.runs = side.engines.codex.runs.filter((run) => run.scenarioId !== 'holistic');
+  }
+
+  const report = compareReviewMatrix(baseline, candidate).engines.codex;
+
+  assert.strictEqual(report.evaluable, false);
+  assert.ok(report.unevaluable.includes('baseline frozen corpus inventory mismatch: review-eval-v2'));
+  assert.ok(report.unevaluable.includes('candidate frozen corpus inventory mismatch: review-eval-v2'));
+  assert.ok(report.unevaluable.includes('baseline frozen corpus confirmed defects missing: fix-round'));
+  assert.ok(report.unevaluable.includes('candidate frozen corpus confirmed defects missing: fix-round'));
+});
+
+test('checked-in matrices satisfy the frozen corpus revision', () => {
+  const fixtures = path.join(__dirname, 'fixtures', 'review-eval');
+  const baseline = JSON.parse(fs.readFileSync(path.join(fixtures, 'baseline.json'), 'utf8'));
+  const candidate = JSON.parse(fs.readFileSync(path.join(fixtures, 'candidate.json'), 'utf8'));
+
+  const report = compareReviewMatrix(baseline, candidate);
+
+  assert.strictEqual(report.evaluable, true, JSON.stringify(report.unevaluable));
+  assert.strictEqual(report.pass, true);
 });
 
 test('provider component equations are engine-specific', () => {
