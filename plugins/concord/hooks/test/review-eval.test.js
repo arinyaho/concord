@@ -179,6 +179,21 @@ test('requires non-empty string pairing identities before comparing them', () =>
   assert.ok(report.unevaluable.includes('unsupported evaluation mode: invalid'));
 });
 
+test('reports unsupported CLI versions instead of generic partial usage', () => {
+  const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
+  const run = baseline.engines.codex.runs.find((item) => item.scenarioId === 'seeded' && item.repetition === 0);
+  Object.assign(run.telemetry, {
+    partialCalls: 1,
+    unsupportedCliVersionCalls: 1,
+    unsupportedCliVersions: ['codex-cli 0.155.0'],
+  });
+
+  const report = compareReviewMatrix(baseline, candidate).engines.codex;
+
+  assert.ok(report.unevaluable.includes('baseline unsupported CLI version: seeded#0:codex-cli 0.155.0'));
+  assert.ok(!report.unevaluable.includes('baseline partial usage: seeded#0'));
+});
+
 test('rejects a self-declared corpus that omits frozen hard evidence', () => {
   const baseline = matrix('baseline', 'pr1'); const candidate = matrix('candidate', 'pr5');
   for (const side of [baseline, candidate]) {

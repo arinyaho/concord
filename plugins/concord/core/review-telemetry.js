@@ -7,6 +7,11 @@ const HOOK_USAGE_FIELDS = ['input_tokens', 'cache_creation_input_tokens', 'cache
 
 function summary(entries) {
   const result = { calls: entries.length, partialCalls: entries.filter((entry) => entry.usagePartial).length };
+  const unsupported = entries.filter((entry) => entry.usageStatus === 'unsupported-cli-version');
+  if (unsupported.length) {
+    result.unsupportedCliVersionCalls = unsupported.length;
+    result.unsupportedCliVersions = Array.from(new Set(unsupported.map((entry) => entry.cliVersion).filter(Boolean))).sort();
+  }
   for (const field of SUM_FIELDS) {
     const values = entries.map((entry) => entry[field]).filter((value) => Number.isSafeInteger(value) && value >= 0);
     result[field] = values.length ? values.reduce((sum, value) => sum + value, 0) : null;
@@ -67,6 +72,7 @@ function joinAgentUsage(tool, agent) {
     outputTokens: agentUsage.outputTokens,
     totalTokens: agentUsage.totalTokens,
     usagePartial: agentUsage.usagePartial || hookDisagrees || modelDisagrees || tool.duplicateEvidence === true || !Number.isSafeInteger(tool.attempt) || tool.attempt < 1 || elapsedMs === null,
+    ...(agentUsage.usageStatus ? { usageStatus: agentUsage.usageStatus, cliVersion: agentUsage.cliVersion } : {}),
     providerUsage: agentUsage.providerUsage,
   };
 }
@@ -164,16 +170,7 @@ function foldTelemetry(stateDir, ledger, slug) {
     ? ledger.telemetrySlots.filter((slot) => slot?.engine === 'claude-code' && slot.provider === 'anthropic')
     : [];
   if (slots.length) {
-    const reconciled = reconcileSlots(entries, slots);
-    const joinedAgentIds = new Set(entries.map((entry) => entry.agentId).filter(Boolean));
-    for (const [agentId, observations] of agents) if (!joinedAgentIds.has(agentId)) {
-      reconciled.push({
-        engine: 'claude-code', role: 'unknown', round: null, invocationId: null, agentId, status: 'orphan', usagePartial: true,
-        elapsedMs: null, inputTokens: null, cacheWriteInputTokens: null, cachedInputTokens: null,
-        reasoningOutputTokens: null, outputTokens: null, totalTokens: null, orphanObservations: observations.length,
-      });
-    }
-    entries = reconciled;
+    entries = reconcileSlots(entries, slots);
   }
   entries = entries.concat(codexEntries(stateDir, ledger, slug));
   entries.sort((a, b) => `${a.artifactPath || ''}\0${a.attempt || 0}\0${a.invocationId || ''}`.localeCompare(`${b.artifactPath || ''}\0${b.attempt || 0}\0${b.invocationId || ''}`));

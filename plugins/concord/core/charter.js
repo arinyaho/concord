@@ -91,7 +91,7 @@ function sessionModelFiles(stateDir, cap) {
     return [];
   }
   const files = names
-    .filter((n) => n.endsWith('.json') && !/^review-(?:agent-)?telemetry-[0-9a-f]{64}\.json$/.test(n))
+    .filter((n) => n.endsWith('.json') && !/^(?:review-(?:agent-)?telemetry-[0-9a-f]{64}|telemetry-.+)\.json$/.test(n))
     .map((n) => {
       const p = path.join(stateDir, n);
       let mtimeMs = 0;

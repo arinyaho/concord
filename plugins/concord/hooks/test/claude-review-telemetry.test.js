@@ -70,12 +70,12 @@ function writeSubagentTranscript(parentTranscript, rows) {
   return transcript;
 }
 
-function assistantRow({ requestId, messageId, model = 'claude-sonnet-4-5-20250929', input, create, read, output, content = [{ type: 'text', text: 'done' }], iterations = [{}] }) {
+function assistantRow({ requestId, messageId, model = 'claude-sonnet-4-5-20250929', version = '2.1.268', input, create, read, output, content = [{ type: 'text', text: 'done' }], iterations = [{}] }) {
   return {
     type: 'assistant',
     agentId: 'agent-7',
     requestId,
-    version: '2.1.268',
+    version,
     message: {
       id: messageId,
       model,
@@ -90,6 +90,29 @@ function assistantRow({ requestId, messageId, model = 'claude-sonnet-4-5-2025092
     },
   };
 }
+
+test('surfaces an unsupported Claude CLI transcript version separately from generic partial usage', () => {
+  const { transcript, stateDir } = setup();
+  const artifactPath = path.join(stateDir, 'round-2-correctness.json');
+  const ledger = JSON.parse(fs.readFileSync(path.join(stateDir, 'review-feat-x.json'), 'utf8'));
+  ledger.telemetrySlots = [{ engine: 'claude-code', provider: 'anthropic', artifactPath, attempt: 1, role: 'correctness', round: 2 }];
+  fs.writeFileSync(path.join(stateDir, 'review-feat-x.json'), JSON.stringify(ledger));
+  core.writeRecord(stateDir, core.recordForEvent(event({ transcript, prompt: `Write ONLY to ${artifactPath}`, response: successfulResponse() }), stateDir));
+  const childTranscript = writeSubagentTranscript(transcript, [
+    assistantRow({ requestId: 'req-1', messageId: 'msg-1', version: '2.1.269', input: 1, create: 0, read: 0, output: 1 }),
+  ]);
+  core.writeRecord(stateDir, core.recordForEvent({
+    hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-7',
+    agent_transcript_path: childTranscript, last_assistant_message: 'done',
+  }, stateDir));
+
+  const telemetry = reviewTelemetry.foldTelemetry(stateDir, ledger).telemetry;
+
+  assert.strictEqual(telemetry.entries[0].usageStatus, 'unsupported-cli-version');
+  assert.strictEqual(telemetry.entries[0].cliVersion, '2.1.269');
+  assert.deepStrictEqual(telemetry.unsupportedCliVersions, ['2.1.269']);
+  assert.strictEqual(telemetry.unsupportedCliVersionCalls, 1);
+});
 
 test('joins SubagentStop transcript totals but stays partial without a telemetry slot', () => {
   const { transcript, stateDir } = setup();

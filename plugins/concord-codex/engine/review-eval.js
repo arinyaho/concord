@@ -79,7 +79,10 @@ function expectedSchedule(repetition) {
 function validateTelemetry(name, pairKey, engine, run, note) {
   for (const field of REMOVED_PARENT_FIELDS) if (Object.hasOwn(run, field)) note(`${name} removed parent proxy field: ${pairKey}:${field}`);
   const telemetry = run.telemetry;
-  if (!telemetry || telemetry.partialCalls !== 0) note(`${name} partial usage: ${pairKey}`);
+  const unsupportedVersions = Array.isArray(telemetry?.unsupportedCliVersions) ? telemetry.unsupportedCliVersions.filter(nonemptyString) : [];
+  for (const version of unsupportedVersions) note(`${name} unsupported CLI version: ${pairKey}:${version}`);
+  const explainedPartialCalls = unsupportedVersions.length && nonnegative(telemetry?.unsupportedCliVersionCalls) ? telemetry.unsupportedCliVersionCalls : 0;
+  if (!telemetry || telemetry.partialCalls !== explainedPartialCalls) note(`${name} partial usage: ${pairKey}`);
   if (!nonnegative(telemetry?.calls) || telemetry.calls === 0) note(`${name} subprocess count invalid: ${pairKey}`);
   if (!nonnegative(telemetry?.elapsedMs)) note(`${name} elapsed time invalid: ${pairKey}`);
   const fields = ['inputTokens', 'cacheWriteInputTokens', 'cachedInputTokens', 'outputTokens'];

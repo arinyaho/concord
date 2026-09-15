@@ -205,6 +205,7 @@ test('codexExec marks a CLI version mismatch partial', async () => {
     const result = await codexExec({ role: 'verify', prompt: 'review', repoRoot: binDir, stateDir: binDir });
     assert.strictEqual(result.cliVersion, 'codex-cli 0.155.0');
     assert.strictEqual(result.usagePartial, true);
+    assert.strictEqual(result.usageStatus, 'unsupported-cli-version');
   } finally {
     process.env.PATH = previousPath;
   }
@@ -269,6 +270,7 @@ test('runner automatically executes a clean round in correctness then verify ord
     ['cli', 'round-start'], ['cli', 'telemetry-slot'], ['spawn', 'correctness'], ['cli', 'artifact-normalize'], ['cli', 'telemetry-slot'], ['spawn', 'verify'], ['cli', 'artifact-normalize'], ['cli', 'plan-fixes'], ['cli', 'telemetry-slot'], ['spawn', 'fix'], ['cli', 'commit-fix'], ['cli', 'record'],
   ]);
   assert.ok(h.calls.filter((call) => call[0] === 'cli' && call[1] === 'telemetry-slot').every((call) => call.slice(-2).join(' ') === '--engine codex'));
+  assert.strictEqual(fs.existsSync(path.join(h.stateDir, 'telemetry-feature-x.json')), false);
 });
 
 test('runner records slots when the review state directory contains whitespace', async () => {
@@ -373,7 +375,7 @@ test('resumed runner preserves telemetry from the previous process', async () =>
     { role: 'verify', round: 1 },
     { role: 'fix', round: 1 },
   ]);
-  assert.deepStrictEqual(JSON.parse(fs.readFileSync(telemetryPath, 'utf8')), out.telemetry);
+  assert.strictEqual(fs.existsSync(telemetryPath), false);
 });
 
 test('terminal runner returns persisted telemetry even when the caller omits resume', async () => {

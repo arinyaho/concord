@@ -122,6 +122,7 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
         requestedModel: model, reasoningEffort: effort, serviceTier: tier, resolvedModel: 'unavailable', invocationId, elapsedMs: Date.now() - startedAt,
         ...normalized,
         usagePartial: normalized.usagePartial || streamPartial || completionCount !== 1 || status !== 0,
+        ...(cliVersion !== CODEX_VERSION ? { usageStatus: 'unsupported-cli-version' } : {}),
         evidence: { collaboration: collaborationEvidenceCount, errors: errorEvidenceCount },
       });
     });
@@ -196,6 +197,10 @@ function summarizeInvocations(invocations) {
     for (const target of [total, roleTotal]) {
       target.calls++;
       if (invocation.usagePartial !== false) target.partialCalls++;
+      if (invocation.usageStatus === 'unsupported-cli-version') {
+        target.unsupportedCliVersionCalls = (target.unsupportedCliVersionCalls || 0) + 1;
+        target.unsupportedCliVersions = Array.from(new Set([...(target.unsupportedCliVersions || []), invocation.cliVersion].filter(Boolean))).sort();
+      }
       for (const field of ['inputTokens', 'cacheWriteInputTokens', 'cachedInputTokens', 'reasoningOutputTokens', 'outputTokens', 'totalTokens', 'elapsedMs']) {
         if (Number.isFinite(invocation[field])) target[field] += invocation[field];
       }
@@ -277,6 +282,10 @@ async function runReviewUntilGreen(options) {
     for (const target of [aggregate, telemetry.total]) {
       target.calls++;
       if (partial) target.partialCalls++;
+      if (result?.usageStatus === 'unsupported-cli-version') {
+        target.unsupportedCliVersionCalls = (target.unsupportedCliVersionCalls || 0) + 1;
+        target.unsupportedCliVersions = Array.from(new Set([...(target.unsupportedCliVersions || []), result.cliVersion].filter(Boolean))).sort();
+      }
       for (const key of Object.keys(values)) target[key] += values[key];
     }
     telemetry.invocations.push({
@@ -285,6 +294,7 @@ async function runReviewUntilGreen(options) {
       reasoningEffort: input.reasoningEffort || result?.reasoningEffort || null, serviceTier: input.serviceTier || result?.serviceTier || null,
       status: result && Number.isInteger(result.status) ? result.status : null,
       usagePartial: partial, ...values,
+      ...(result?.usageStatus ? { usageStatus: result.usageStatus } : {}),
       ...(result && result.invocationId ? { engine: result.engine, provider: result.provider, providerSchema: result.providerSchema, invocationId: result.invocationId } : {}),
       ...(result?.cliVersion ? { cliVersion: result.cliVersion } : {}),
       ...(result?.evidence ? { evidence: result.evidence } : {}),
@@ -309,6 +319,9 @@ async function runReviewUntilGreen(options) {
     if (typeof output.handoff === 'string') {
       const total = telemetry.total;
       output.handoff += `\nusage: ${total.calls} calls, ${total.partialCalls} partial, ${total.totalTokens} tokens, ${total.elapsedMs}ms`;
+    }
+    if ((result?.decision === 'terminal' || result?.decision?.continue === false) && telemetryPath) {
+      try { fs.unlinkSync(telemetryPath); } catch {}
     }
     return output;
   };

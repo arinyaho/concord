@@ -107,6 +107,19 @@ test('mergeSessions: review telemetry artifacts do not consume the session cap',
   assert.deepStrictEqual(charter.mergeSessions(dir).openLoops, ['kept']);
 });
 
+test('mergeSessions: Codex runner telemetry artifacts do not consume the session cap', () => {
+  const dir = tmpStateDir();
+  const base = Date.now() - 100000;
+  writeSessionModel(dir, 'sessA', { openLoops: ['kept'], decisions: [], nexts: [], facts: [] }, base);
+  for (let i = 0; i < 30; i++) {
+    const file = path.join(dir, `telemetry-feature-${i}.json`);
+    fs.writeFileSync(file, '{}');
+    fs.utimesSync(file, new Date(base + i + 1), new Date(base + i + 1));
+  }
+
+  assert.deepStrictEqual(charter.mergeSessions(dir).openLoops, ['kept']);
+});
+
 test('renderCharter: includes north-star and non-empty sections only', () => {
   const md = charter.renderCharter('preserve founding context', {
     openLoops: ['drift kills flat-file'],

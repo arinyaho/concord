@@ -225,6 +225,7 @@ function subagentRecord(event, pendingTool) {
   const requests = new Map();
   const requestToMessage = new Map();
   const messageToRequest = new Map();
+  const unsupportedVersions = new Set();
   let invalid = !(typeof event.last_assistant_message === 'string' && event.last_assistant_message)
     && !(typeof event.last_assistant_message_hash === 'string' && event.last_assistant_message_hash);
   let order = 0;
@@ -236,6 +237,7 @@ function subagentRecord(event, pendingTool) {
     const messageId = typeof row.message.id === 'string' && row.message.id ? row.message.id : null;
     const model = typeof row.message.model === 'string' && row.message.model ? row.message.model : null;
     const usage = Object.fromEntries(USAGE_FIELDS.map((field) => [field, nonnegativeInteger(row.message.usage[field])]));
+    if (row.version !== TRANSCRIPT_VERSION) unsupportedVersions.add(typeof row.version === 'string' && row.version ? row.version : 'unknown');
     if (!requestId || !messageId || !model || row.version !== TRANSCRIPT_VERSION || row.agentId !== event.agent_id || Object.values(usage).includes(null)) {
       invalid = true;
       continue;
@@ -252,7 +254,10 @@ function subagentRecord(event, pendingTool) {
     if (previous && (previous.model !== model || USAGE_FIELDS.some((field) => usage[field] < previous.usage[field]))) invalid = true;
     requests.set(requestKey, { model, usage, terminal, finalUsage: Array.isArray(row.message.usage.iterations), order: order++ });
   }
-  if (!requests.size) return partial;
+  const unsupported = unsupportedVersions.size ? {
+    usageStatus: 'unsupported-cli-version', cliVersion: Array.from(unsupportedVersions).sort().join(','),
+  } : {};
+  if (!requests.size) return { ...partial, ...unsupported };
 
   const models = new Set();
   const totals = Object.fromEntries(USAGE_FIELDS.map((field) => [field, 0]));
@@ -275,6 +280,7 @@ function subagentRecord(event, pendingTool) {
     outputTokens: totals.output_tokens,
     totalTokens: Object.values(totals).reduce((sum, value) => sum + value, 0),
     usagePartial: invalid || models.size !== 1,
+    ...unsupported,
     providerUsage: totals,
     finalRequestUsage: terminalRows.length === 1 ? terminalRows[0].usage : null,
     transcriptWaitMs: waitMs,

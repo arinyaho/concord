@@ -744,6 +744,11 @@ test('record: tripping the park budget forces status parked and continue false, 
   }
   ledger = { ...ledger, findings: priorParks };
   review.writeLedger(dir, slug, ledger);
+  const telemetryFile = path.join(dir, `review-telemetry-${'c'.repeat(64)}.json`);
+  fs.writeFileSync(telemetryFile, JSON.stringify({
+    engine: 'claude-code', provider: 'anthropic', targetRef: 'feat/x', role: 'correctness', round: n,
+    artifactPath: path.join(dir, `round-${n}-correctness.json`), attempt: 1, invocationId: 'parked-tool', usagePartial: true,
+  }));
   // no fix artifact and no commit-fix call for correctness:new -> it parks too
   const out = JSON.parse(run(['record', 'feat/x'], { env }));
   assert.strictEqual(out.decision.continue, false);
@@ -752,6 +757,7 @@ test('record: tripping the park budget forces status parked and continue false, 
   const l = review.readLedger(dir, slug);
   assert.strictEqual(l.status, 'parked');
   assert.strictEqual(l.budget.spent, 0); // park-budget-forced terminus does not consume a round
+  assert.strictEqual(fs.existsSync(telemetryFile), false);
 });
 
 // --- Phantom-fix false-green regression lock (3 tests) ---
@@ -1717,8 +1723,10 @@ test('record returns persisted Claude review telemetry in JSON and the human han
   const n = JSON.parse(run(['round-start', 'feat/telemetry', 'HEAD~1'], { env })).round;
   const artifact = path.join(dir, `round-${n}-correctness.json`);
   const parentTranscriptPath = path.join(dir, 'parent.jsonl');
+  const toolTelemetry = path.join(dir, `review-telemetry-${'a'.repeat(64)}.json`);
+  const agentTelemetry = path.join(dir, `review-agent-telemetry-${'b'.repeat(64)}.json`);
   run(['telemetry-slot', 'feat/telemetry', artifact, '--engine', 'claude-code'], { env });
-  fs.writeFileSync(path.join(dir, `review-telemetry-${'a'.repeat(64)}.json`), JSON.stringify({
+  fs.writeFileSync(toolTelemetry, JSON.stringify({
     kind: 'tool-use',
     engine: 'claude-code', provider: 'anthropic', targetRef: 'feat/telemetry', role: 'correctness', round: n,
     artifactPath: artifact, attempt: 1, invocationId: 'toolu-telemetry', agentId: 'agent-telemetry', parentTranscriptPath, startedAtMs: 1,
@@ -1727,7 +1735,7 @@ test('record returns persisted Claude review telemetry in JSON and the human han
     reasoningOutputTokens: null, outputTokens: 4, totalTokens: 19,
     providerUsage: { input_tokens: 10, cache_creation_input_tokens: 2, cache_read_input_tokens: 3, output_tokens: 4 },
   }));
-  fs.writeFileSync(path.join(dir, `review-agent-telemetry-${'b'.repeat(64)}.json`), JSON.stringify({
+  fs.writeFileSync(agentTelemetry, JSON.stringify({
     kind: 'agent-usage', engine: 'claude-code', agentId: 'agent-telemetry', provider: 'anthropic',
     parentTranscriptPath, stoppedAtMs: 13,
     providerSchema: 'claude-subagent-transcript-2.1.268-v1', status: 'stopped', resolvedModel: 'claude-sonnet-4-5-20250929',
@@ -1744,6 +1752,7 @@ test('record returns persisted Claude review telemetry in JSON and the human han
   assert.strictEqual(out.telemetry.calls, 1);
   assert.strictEqual(out.telemetry.totalTokens, 19);
   assert.match(out.handoff, /review usage: 19 tokens across 1 call\(s\), 0 partial/);
+  assert.deepStrictEqual([fs.existsSync(toolTelemetry), fs.existsSync(agentTelemetry)], [false, false]);
 });
 
 test('telemetry-slot persists monotonically numbered attempts for one exact destination', () => {

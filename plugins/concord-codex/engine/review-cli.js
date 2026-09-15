@@ -942,18 +942,20 @@ function main(resolveFromCwd) {
     const R = require('./review');
     const { REVIEW_PARK_BUDGET_DEFAULT } = require('./config');
     const slug = targetSlug(ref);
-    let ledger = reviewTelemetry.foldTelemetry(stateDir, readLedger(stateDir, slug), slug);
+    let ledger = readLedger(stateDir, slug);
     const n = ledger && ledger.round;
 
     // Idempotency-first: this MUST be checked before the phase guard below,
     // since the first successful record already flips phase to 'done' -- a
     // guard-first ordering would throw on replay instead of reaching this branch.
     if (ledger && ledger.phase === 'done' && ledger.last_recorded_round === n) {
+      if (ledger.status === 'clean' || ledger.status === 'parked') reviewTelemetry.deleteTelemetry(stateDir, ledger.target?.ref || ref, slug);
       process.stdout.write(
         JSON.stringify({ decision: ledger._lastDecision || { continue: false }, handoff: renderHandoff({ ledger }), telemetry: ledger.telemetry || null }) + '\n'
       );
       return;
     }
+    ledger = reviewTelemetry.foldTelemetry(stateDir, ledger, slug);
     if (!ledger || ledger.phase !== 'fixes') throw new Error(`record: expected phase "fixes", got "${ledger && ledger.phase}" ${stateDirHint(stateDir)}`);
 
     // Per-finding fix artifacts (round-<n>-fix-<id>.json) stay lenient: a
@@ -1089,6 +1091,7 @@ function main(resolveFromCwd) {
     if (isGit) gitCheckoutTree(repoRoot);
     ledger = { ...ledger, phase: 'done', last_recorded_round: n, _lastDecision: decision };
     writeLedger(stateDir, slug, ledger);
+    if (ledger.status === 'clean' || ledger.status === 'parked') reviewTelemetry.deleteTelemetry(stateDir, ledger.target?.ref || ref, slug);
     process.stdout.write(JSON.stringify({ decision, handoff: renderHandoff({ ledger }), telemetry: ledger.telemetry || null }) + '\n');
     return;
   }
@@ -1336,7 +1339,8 @@ function main(resolveFromCwd) {
     if (engineFlag >= 0 && !rest[engineFlag + 1]) throw new Error('review-cli rerun: --engine needs a name (e.g. --engine codex)');
     const engine = engineFlag >= 0 ? rest[engineFlag + 1] : null;
     const slug = targetSlug(ref);
-    const prior = reviewTelemetry.foldTelemetry(stateDir, readLedger(stateDir, slug), slug);
+    const stored = readLedger(stateDir, slug);
+    const prior = stored?.telemetry ? stored : reviewTelemetry.foldTelemetry(stateDir, stored, slug);
     if (!prior) throw new Error(`review-cli rerun: no ledger for ref "${ref}" ${stateDirHint(stateDir)} -- there is no run to re-run; just start a normal run.`);
     const runs = (prior.runs || []).concat([{
       run: (prior.runs || []).length + 1,
