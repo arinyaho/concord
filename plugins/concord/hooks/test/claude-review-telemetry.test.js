@@ -298,7 +298,7 @@ test('accepts final usage markers from a redacted real 2.1.268 subagent transcri
   assert.strictEqual(record.outputTokens, 947);
 });
 
-test('marks a completed transcript partial when a tool request has only a streaming placeholder', () => {
+test('excludes a streaming placeholder from an otherwise complete transcript total', () => {
   const { transcript, stateDir } = setup();
   recordActiveTool(transcript, stateDir);
   const childTranscript = writeSubagentTranscript(transcript, [
@@ -311,7 +311,8 @@ test('marks a completed transcript partial when a tool request has only a stream
     agent_transcript_path: childTranscript, last_assistant_message: 'done',
   }, stateDir);
 
-  assert.strictEqual(record.usagePartial, true);
+  assert.strictEqual(record.usagePartial, false);
+  assert.strictEqual(record.outputTokens, 100);
 });
 
 test('waits within the bound for a delayed stable terminal transcript append', async () => {

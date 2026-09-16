@@ -250,9 +250,11 @@ function subagentRecord(event, pendingTool) {
     const terminal = !!content && content.length > 0 && !content.some((block) => block?.type === 'tool_use');
     if (!content) invalid = true;
     const requestKey = `${requestId}\0${messageId}`;
+    const finalUsage = terminal || (typeof row.message.stop_reason === 'string' && !!row.message.stop_reason);
+    if (!finalUsage) continue;
     const previous = requests.get(requestKey);
     if (previous && (previous.model !== model || USAGE_FIELDS.some((field) => usage[field] < previous.usage[field]))) invalid = true;
-    requests.set(requestKey, { model, usage, terminal, finalUsage: terminal || (typeof row.message.stop_reason === 'string' && !!row.message.stop_reason), order: order++ });
+    requests.set(requestKey, { model, usage, terminal, order: order++ });
   }
   const unsupported = unsupportedVersions.size ? {
     usageStatus: 'unsupported-cli-version', cliVersion: Array.from(unsupportedVersions).sort().join(','),
@@ -270,7 +272,6 @@ function subagentRecord(event, pendingTool) {
   }
   const lastOrder = Math.max(...Array.from(requests.values(), (request) => request.order));
   if (terminalRows.length !== 1 || terminalRows[0].order !== lastOrder) invalid = true;
-  if (Array.from(requests.values()).some((request) => !request.finalUsage)) invalid = true;
   return {
     ...partial,
     resolvedModel: models.size === 1 ? Array.from(models)[0] : null,
