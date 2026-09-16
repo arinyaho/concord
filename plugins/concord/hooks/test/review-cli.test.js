@@ -1725,6 +1725,7 @@ test('record returns persisted Claude review telemetry in JSON and the human han
   const parentTranscriptPath = path.join(dir, 'parent.jsonl');
   const toolTelemetry = path.join(dir, `review-telemetry-${'a'.repeat(64)}.json`);
   const agentTelemetry = path.join(dir, `review-agent-telemetry-${'b'.repeat(64)}.json`);
+  const malformedTelemetry = path.join(dir, `review-telemetry-${'c'.repeat(64)}.json`);
   run(['telemetry-slot', 'feat/telemetry', artifact, '--engine', 'claude-code'], { env });
   fs.writeFileSync(toolTelemetry, JSON.stringify({
     kind: 'tool-use',
@@ -1743,6 +1744,7 @@ test('record returns persisted Claude review telemetry in JSON and the human han
     outputTokens: 4, totalTokens: 19, usagePartial: false,
     providerUsage: { input_tokens: 10, cache_creation_input_tokens: 2, cache_read_input_tokens: 3, output_tokens: 4 },
   }));
+  fs.writeFileSync(malformedTelemetry, 'not json');
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   run(['plan-fixes', 'feat/telemetry'], { env });
@@ -1750,12 +1752,14 @@ test('record returns persisted Claude review telemetry in JSON and the human han
   const out = JSON.parse(run(['record', 'feat/telemetry'], { env }));
 
   assert.strictEqual(out.telemetry.calls, 1);
+  assert.strictEqual(out.telemetry.malformedCalls, 1);
   assert.strictEqual(out.telemetry.totalTokens, 19);
-  assert.match(out.handoff, /review usage: 19 tokens across 1 call\(s\), 0 partial/);
+  assert.match(out.handoff, /review usage: 19 tokens across 1 call\(s\), 0 partial, 1 malformed/);
   assert.deepStrictEqual([fs.existsSync(toolTelemetry), fs.existsSync(agentTelemetry)], [false, false]);
   const shown = JSON.parse(run(['show', 'feat/telemetry'], { env }));
-  assert.deepStrictEqual(shown.telemetry.entries.map(({ invocationId, totalTokens, usagePartial }) => ({ invocationId, totalTokens, usagePartial })), [
-    { invocationId: 'toolu-telemetry', totalTokens: 19, usagePartial: false },
+  assert.deepStrictEqual(shown.telemetry.entries.map(({ status, invocationId, totalTokens, usagePartial }) => ({ status, invocationId, totalTokens, usagePartial })), [
+    { status: 'malformed', invocationId: null, totalTokens: null, usagePartial: true },
+    { status: undefined, invocationId: 'toolu-telemetry', totalTokens: 19, usagePartial: false },
   ]);
 });
 

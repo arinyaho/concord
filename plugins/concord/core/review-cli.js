@@ -175,7 +175,7 @@ function renderHandoff(result) {
   lines.push(`review-until-green: target ${ledger.target && ledger.target.ref} -- status: ${ledger.status}`);
   lines.push(`rounds: ${ledger.round}/${ledger.budget.max_rounds} (spent ${ledger.budget.spent})`);
   if (ledger.engine) lines.push(`reviewer engine: ${ledger.engine}`);
-  if (ledger.telemetry) lines.push(`review usage: ${ledger.telemetry.totalTokens ?? 'unknown'} tokens across ${ledger.telemetry.calls} call(s), ${ledger.telemetry.partialCalls} partial${ledger.telemetry.missingCalls ? `, ${ledger.telemetry.missingCalls} missing` : ''}`);
+  if (ledger.telemetry) lines.push(`review usage: ${ledger.telemetry.totalTokens ?? 'unknown'} tokens across ${ledger.telemetry.calls} call(s), ${ledger.telemetry.partialCalls} partial${ledger.telemetry.missingCalls ? `, ${ledger.telemetry.missingCalls} missing` : ''}${ledger.telemetry.malformedCalls ? `, ${ledger.telemetry.malformedCalls} malformed` : ''}`);
   for (const r of ledger.runs || []) {
     lines.push(`prior run #${r.run} (${r.engine || 'engine unrecorded'}): ${r.status} -- ${r.rounds} round(s), ${(r.fixed || []).length} fixed, ${(r.parked || []).length} parked, ${(r.killed || []).length} killed`);
   }

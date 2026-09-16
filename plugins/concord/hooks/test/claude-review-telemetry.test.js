@@ -283,7 +283,7 @@ test('marks a transcript ending at an assistant tool-use response partial', () =
   assert.strictEqual(record.usagePartial, true);
 });
 
-test('accepts final usage markers from a redacted real 2.1.268 subagent transcript', () => {
+test('accepts a full redacted real 2.1.268 subagent transcript', () => {
   const { transcript, stateDir } = setup();
   recordActiveTool(transcript, stateDir);
   const fixture = path.join(__dirname, 'fixtures', 'claude-subagent-2.1.268-redacted.jsonl');
@@ -295,14 +295,14 @@ test('accepts final usage markers from a redacted real 2.1.268 subagent transcri
   }, stateDir);
 
   assert.strictEqual(record.usagePartial, false);
-  assert.strictEqual(record.outputTokens, 947);
+  assert.strictEqual(record.outputTokens, 17358);
 });
 
 test('excludes a streaming placeholder from an otherwise complete transcript total', () => {
   const { transcript, stateDir } = setup();
   recordActiveTool(transcript, stateDir);
   const childTranscript = writeSubagentTranscript(transcript, [
-    assistantRow({ requestId: 'req-tool', messageId: 'msg-tool', input: 2, create: 0, read: 0, output: 3, content: [{ type: 'tool_use' }], iterations: null, stopReason: null }),
+    assistantRow({ requestId: 'req-terminal', messageId: 'msg-terminal', input: 2, create: 0, read: 0, output: 3, content: [{ type: 'thinking' }], iterations: null, stopReason: null }),
     assistantRow({ requestId: 'req-terminal', messageId: 'msg-terminal', input: 2, create: 0, read: 0, output: 100, iterations: null, stopReason: null }),
   ]);
 
@@ -696,6 +696,7 @@ test('a malformed telemetry artifact cannot disappear into a clean fold', () => 
   const folded = reviewTelemetry.foldTelemetry(stateDir, ledger);
 
   assert.strictEqual(folded.telemetry.partialCalls, 0);
+  assert.strictEqual(folded.telemetry.malformedCalls, 1);
   assert.ok(folded.telemetry.entries.some((entry) => entry.status === 'malformed'));
 });
 

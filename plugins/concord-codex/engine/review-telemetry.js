@@ -10,6 +10,8 @@ function summary(entries) {
   const result = { calls: observed.length, partialCalls: observed.filter((entry) => entry.usagePartial).length };
   const missingCalls = entries.filter((entry) => entry.status === 'missing' || entry.slotMissing === true).length;
   if (missingCalls) result.missingCalls = missingCalls;
+  const malformedCalls = entries.filter((entry) => entry.status === 'malformed').length;
+  if (malformedCalls) result.malformedCalls = malformedCalls;
   const unsupported = entries.filter((entry) => entry.usageStatus === 'unsupported-cli-version');
   if (unsupported.length) {
     result.unsupportedCliVersionCalls = unsupported.length;

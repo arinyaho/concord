@@ -141,6 +141,17 @@ function emptyAgentRecord(agentId, parentTranscriptPath) {
   };
 }
 
+function terminalMessage(content, lastAssistantMessage, lastAssistantMessageHash) {
+  if (!Array.isArray(content) || content.some((block) => block?.type === 'tool_use')) return null;
+  const textBlocks = content.filter((block) => block?.type === 'text');
+  if (!textBlocks.length || !textBlocks.every((block) => typeof block.text === 'string')) return null;
+  const message = textBlocks.map((block) => block.text).join('');
+  if (typeof lastAssistantMessage === 'string' && lastAssistantMessage && message !== lastAssistantMessage) return null;
+  if (typeof lastAssistantMessageHash === 'string' && lastAssistantMessageHash
+    && crypto.createHash('sha256').update(message).digest('hex') !== lastAssistantMessageHash) return null;
+  return message;
+}
+
 function hasUniqueTerminalSnapshot(text, agentId, lastAssistantMessage, lastAssistantMessageHash) {
   const rows = new Map(); let order = 0;
   for (const line of text.split('\n').filter(Boolean)) {
@@ -149,16 +160,11 @@ function hasUniqueTerminalSnapshot(text, agentId, lastAssistantMessage, lastAssi
     if (row?.type !== 'assistant' || row.agentId !== agentId) continue;
     const requestId = row.requestId; const messageId = row.message?.id; const content = row.message?.content;
     if (typeof requestId !== 'string' || typeof messageId !== 'string' || !Array.isArray(content)) return false;
-    const textBlocks = content.filter((block) => block?.type === 'text');
-    const terminal = content.length > 0 && !content.some((block) => block?.type === 'tool_use');
-    const message = textBlocks.length > 0 && textBlocks.every((block) => typeof block.text === 'string') ? textBlocks.map((block) => block.text).join('') : null;
-    const messageMatches = (typeof lastAssistantMessage !== 'string' || !lastAssistantMessage || message === lastAssistantMessage)
-      && (typeof lastAssistantMessageHash !== 'string' || !lastAssistantMessageHash
-        || (message !== null && crypto.createHash('sha256').update(message).digest('hex') === lastAssistantMessageHash));
-    rows.set(`${requestId}\0${messageId}`, { terminal, messageMatches, order: order++ });
+    const terminal = terminalMessage(content, lastAssistantMessage, lastAssistantMessageHash) !== null;
+    rows.set(`${requestId}\0${messageId}`, { terminal, order: order++ });
   }
   const values = [...rows.values()]; const terminals = values.filter((row) => row.terminal);
-  return terminals.length === 1 && terminals[0].messageMatches && terminals[0].order === Math.max(...values.map((row) => row.order));
+  return terminals.length === 1 && terminals[0].order === Math.max(...values.map((row) => row.order));
 }
 
 function resolvedAgentTranscriptPath(event) {
@@ -247,11 +253,9 @@ function subagentRecord(event, pendingTool) {
     requestToMessage.set(requestId, messageId);
     messageToRequest.set(messageId, requestId);
     const content = Array.isArray(row.message.content) ? row.message.content : null;
-    const terminal = !!content && content.length > 0 && !content.some((block) => block?.type === 'tool_use');
+    const terminal = terminalMessage(content, event.last_assistant_message, event.last_assistant_message_hash) !== null;
     if (!content) invalid = true;
     const requestKey = `${requestId}\0${messageId}`;
-    const finalUsage = terminal || (typeof row.message.stop_reason === 'string' && !!row.message.stop_reason);
-    if (!finalUsage) continue;
     const previous = requests.get(requestKey);
     if (previous && (previous.model !== model || USAGE_FIELDS.some((field) => usage[field] < previous.usage[field]))) invalid = true;
     requests.set(requestKey, { model, usage, terminal, order: order++ });
