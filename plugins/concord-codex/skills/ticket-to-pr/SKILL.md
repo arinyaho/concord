@@ -23,7 +23,7 @@ One unit of work, one branch, one PR carrying the design and the code together. 
 | 6 | Implement | Red test first, verified red for the right reason, and executing where CI will execute it |
 | 7 | Review the diff | `/review-until-green <branch>` |
 | 8 | End-to-end green | The same check passes against the change |
-| 9 | One PR | Design, docs and code in the same PR; every document contradicted by the change corrected in it |
+| 9 | One PR | Design, docs and code in the same PR; the repository's PR template followed; every document contradicted by the change corrected in it |
 
 If the work is tracked somewhere and the user explicitly requests or approves an in-progress transition, move it before stage 3, not after stage 9 — a ticket sitting in the backlog while its branch already has commits is a board that lies to everyone reading it. Otherwise, preserve the current state. Expect an approved transition to fail closed on preconditions the tracker does not advertise: an assignee, a parent item that must itself be in-progress, an intermediate status that cannot be skipped. These are cheap to hit and slow to diagnose, so attempt the approved transition and read the refusal rather than assuming it will go through.
 
@@ -49,7 +49,24 @@ Stages 4 and 7 read the artifacts in front of them. When the design note, the pl
 
 So: contradictions inside the source are a signal to go measure, not a licence to resolve them in the direction you already chose. Two comments in one file disagreeing about what the code trusts means nobody knows. Open the execution path and find out.
 
-## Stage 9: the documents that never quoted you
+## Stage 9: PR and documentation
+
+Immediately before drafting the PR body, find and read the repository's applicable PR template. If several templates exist, use the one that applies to this change. Follow its prompts and ordering; do not replace them with fixed sections from this skill. If no template exists, use the content rules below without inventing a house format.
+
+The design note is the durable reasoning record: keep the detailed causal argument, alternatives, counterexamples, bidirectional proof, trade-offs and residual exposure there. The PR body is the reviewer's decision summary. Link to the design note for that supporting detail instead of repeating it.
+
+In addition to every applicable template prompt, include only the following non-template content:
+
+- The observable problem
+- The changed behavior
+- The checks actually run and their results
+- Compatibility, migration, security or other impacts that affect the review decision
+
+Use terms already present in the code or existing documentation. Do not invent metaphors, personification or new labels. If an unavoidable specialist term is not already defined, define it once in plain language.
+
+Before submission, edit the whole body once for role and duplication: each item above should appear once even when the template asks related questions in multiple places. Merge or remove repeated paragraphs, remove explanation that does not affect the review decision, and leave detailed domain reasoning behind the design-note link.
+
+### Documentation sweep
 
 Sweep the whole branch diff for documents the change **contradicts** — a removed name still asserted elsewhere, a limitation other documents describe, an interface the change widened. Grep for the identifiers you touched, not only the files you edited.
 
