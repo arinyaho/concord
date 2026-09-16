@@ -118,7 +118,11 @@ function codexEntries(stateDir, ledger, slug) {
     const file = path.join(stateDir, `telemetry-${slug}.json`);
     try {
       const telemetry = JSON.parse(fs.readFileSync(file, 'utf8'));
-      for (const entry of telemetry.invocations || []) if (entry?.engine === 'codex' && typeof entry.invocationId === 'string') entries.set(entry.invocationId, entry);
+      for (const entry of telemetry.invocations || []) {
+        if (entry?.engine !== 'codex') continue;
+        if (typeof entry.invocationId === 'string') entries.set(entry.invocationId, entry);
+        else if (entry.status === 'malformed') entries.set(`malformed:${entry.artifactPath || file}`, entry);
+      }
     } catch (error) {
       if (error?.code !== 'ENOENT') entries.set('malformed', {
         engine: 'codex', provider: 'openai', role: 'unknown', round: null, invocationId: null,

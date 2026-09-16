@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { normalizeArtifact } = require('../../core/artifact-contract');
+const { foldTelemetry } = require('../../core/review-telemetry');
 
 // The runner owns all sequencing. Its subprocess seam makes this a no-network
 // integration test while exercising the real artifact contract at the boundary.
@@ -309,9 +310,9 @@ test('runner keeps invocation role and round when slot metadata disagrees', asyn
 test('runner reports aggregate and per-role subprocess telemetry', async () => {
   const h = harness();
   const usageByRole = {
-    correctness: { inputTokens: 100, cacheWriteInputTokens: 0, cachedInputTokens: 10, outputTokens: 1, totalTokens: 111 },
-    verify: { inputTokens: 200, cacheWriteInputTokens: 0, cachedInputTokens: 20, outputTokens: 2, totalTokens: 222 },
-    fix: { inputTokens: 300, cacheWriteInputTokens: 0, cachedInputTokens: 30, outputTokens: 3, totalTokens: 333 },
+    correctness: { inputTokens: 100, cacheWriteInputTokens: 0, cachedInputTokens: 10, reasoningOutputTokens: 0, outputTokens: 1, totalTokens: 111 },
+    verify: { inputTokens: 200, cacheWriteInputTokens: 0, cachedInputTokens: 20, reasoningOutputTokens: 0, outputTokens: 2, totalTokens: 222 },
+    fix: { inputTokens: 300, cacheWriteInputTokens: 0, cachedInputTokens: 30, reasoningOutputTokens: 0, outputTokens: 3, totalTokens: 333 },
   };
   const spawn = async (input) => ({
     ...await h.spawn(input),
@@ -338,14 +339,14 @@ test('runner reports aggregate and per-role subprocess telemetry', async () => {
       elapsedMs: 60,
     },
     byRole: {
-      correctness: { calls: 1, partialCalls: 0, reasoningOutputTokens: 0, ...usageByRole.correctness, elapsedMs: 10 },
-      verify: { calls: 1, partialCalls: 0, reasoningOutputTokens: 0, ...usageByRole.verify, elapsedMs: 20 },
-      fix: { calls: 1, partialCalls: 0, reasoningOutputTokens: 0, ...usageByRole.fix, elapsedMs: 30 },
+      correctness: { calls: 1, partialCalls: 0, ...usageByRole.correctness, elapsedMs: 10 },
+      verify: { calls: 1, partialCalls: 0, ...usageByRole.verify, elapsedMs: 20 },
+      fix: { calls: 1, partialCalls: 0, ...usageByRole.fix, elapsedMs: 30 },
     },
     invocations: [
-      { engine: 'codex', provider: 'openai', role: 'correctness', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.correctness, reasoningOutputTokens: 0, elapsedMs: 10, artifactPath: path.join(h.stateDir, 'round-1-correctness.json'), attempt: 1 },
-      { engine: 'codex', provider: 'openai', role: 'verify', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.verify, reasoningOutputTokens: 0, elapsedMs: 20, artifactPath: path.join(h.stateDir, 'round-1-verify.json'), attempt: 1 },
-      { engine: 'codex', provider: 'openai', role: 'fix', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.fix, reasoningOutputTokens: 0, elapsedMs: 30, artifactPath: path.join(h.stateDir, 'round-1-fix-correctness:bug.json'), attempt: 1 },
+      { engine: 'codex', provider: 'openai', role: 'correctness', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.correctness, elapsedMs: 10, artifactPath: path.join(h.stateDir, 'round-1-correctness.json'), attempt: 1 },
+      { engine: 'codex', provider: 'openai', role: 'verify', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.verify, elapsedMs: 20, artifactPath: path.join(h.stateDir, 'round-1-verify.json'), attempt: 1 },
+      { engine: 'codex', provider: 'openai', role: 'fix', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.fix, elapsedMs: 30, artifactPath: path.join(h.stateDir, 'round-1-fix-correctness:bug.json'), attempt: 1 },
     ],
   });
   assert.strictEqual(out.handoff, 'LGTM');
@@ -376,6 +377,50 @@ test('resumed runner preserves telemetry from the previous process', async () =>
     { role: 'fix', round: 1 },
   ]);
   assert.strictEqual(fs.existsSync(telemetryPath), false);
+});
+
+test('resumed runner preserves a corrupt telemetry file as malformed evidence', async () => {
+  const stateDir = temp();
+  const telemetryPath = path.join(stateDir, 'telemetry-feature-x.json');
+  fs.writeFileSync(telemetryPath, 'not json');
+
+  const out = await runReviewUntilGreen({
+    ref: 'feature/x', resume: true, repoRoot: '/repo',
+    runCli: () => ({ decision: 'terminal', stateDir, handoff: 'LGTM' }),
+    spawn: () => { throw new Error('terminal resume must not spawn'); },
+  });
+
+  assert.deepStrictEqual(out.telemetry.invocations.map(({ status, invocationId, artifactPath }) => ({ status, invocationId, artifactPath })), [
+    { status: 'malformed', invocationId: null, artifactPath: telemetryPath },
+  ]);
+  assert.strictEqual(out.telemetry.total.malformedCalls, 1);
+  fs.writeFileSync(telemetryPath, JSON.stringify(out.telemetry));
+  const folded = foldTelemetry(stateDir, { target: { ref: 'feature/x' } }, 'feature-x').telemetry;
+  assert.strictEqual(folded.malformedCalls, 1);
+  assert.strictEqual(folded.calls, 0);
+});
+
+test('runner persists unknown Codex token components as null', async () => {
+  const h = harness();
+  let invocation = 0;
+  const spawn = async (input) => ({
+    ...await h.spawn(input), engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1',
+    invocationId: `invocation-${++invocation}`, usagePartial: true,
+  });
+  const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn });
+  const fields = ['inputTokens', 'cacheWriteInputTokens', 'cachedInputTokens', 'reasoningOutputTokens', 'outputTokens', 'totalTokens'];
+  assert.deepStrictEqual(out.telemetry.invocations.map((entry) => fields.map((field) => entry[field])), [
+    fields.map(() => null), fields.map(() => null), fields.map(() => null),
+  ]);
+
+  const telemetryPath = path.join(h.stateDir, 'telemetry-feature-x.json');
+  fs.writeFileSync(telemetryPath, JSON.stringify(out.telemetry));
+  const folded = foldTelemetry(h.stateDir, {
+    target: { ref: 'feature/x' },
+    telemetrySlots: out.telemetry.invocations.map(({ artifactPath, attempt, role, round }) => ({ engine: 'codex', provider: 'openai', artifactPath, attempt, role, round })),
+  }, 'feature-x').telemetry;
+  assert.strictEqual(folded.totalTokens, null);
+  assert.strictEqual(folded.partialCalls, 3);
 });
 
 test('terminal runner returns persisted telemetry even when the caller omits resume', async () => {

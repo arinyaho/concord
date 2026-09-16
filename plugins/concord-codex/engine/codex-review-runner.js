@@ -212,13 +212,13 @@ async function runReviewUntilGreen(options) {
     const usage = result && result.usage || {};
     const partial = !result || result.usagePartial !== false;
     const values = {
-      inputTokens: Number.isFinite(usage.inputTokens) ? usage.inputTokens : 0,
-      cacheWriteInputTokens: Number.isFinite(usage.cacheWriteInputTokens) ? usage.cacheWriteInputTokens : 0,
-      cachedInputTokens: Number.isFinite(usage.cachedInputTokens) ? usage.cachedInputTokens : 0,
-      reasoningOutputTokens: Number.isFinite(usage.reasoningOutputTokens) ? usage.reasoningOutputTokens : 0,
-      outputTokens: Number.isFinite(usage.outputTokens) ? usage.outputTokens : 0,
-      totalTokens: Number.isFinite(usage.totalTokens) ? usage.totalTokens : 0,
-      elapsedMs: Number.isFinite(result && result.elapsedMs) ? result.elapsedMs : 0,
+      inputTokens: Number.isFinite(usage.inputTokens) ? usage.inputTokens : null,
+      cacheWriteInputTokens: Number.isFinite(usage.cacheWriteInputTokens) ? usage.cacheWriteInputTokens : null,
+      cachedInputTokens: Number.isFinite(usage.cachedInputTokens) ? usage.cachedInputTokens : null,
+      reasoningOutputTokens: Number.isFinite(usage.reasoningOutputTokens) ? usage.reasoningOutputTokens : null,
+      outputTokens: Number.isFinite(usage.outputTokens) ? usage.outputTokens : null,
+      totalTokens: Number.isFinite(usage.totalTokens) ? usage.totalTokens : null,
+      elapsedMs: Number.isFinite(result && result.elapsedMs) ? result.elapsedMs : null,
     };
     const role = input.role;
     const aggregate = telemetry.byRole[role] || (telemetry.byRole[role] = {
@@ -231,7 +231,7 @@ async function runReviewUntilGreen(options) {
         target.unsupportedCliVersionCalls = (target.unsupportedCliVersionCalls || 0) + 1;
         target.unsupportedCliVersions = Array.from(new Set([...(target.unsupportedCliVersions || []), result.cliVersion].filter(Boolean))).sort();
       }
-      for (const key of Object.keys(values)) target[key] += values[key];
+      for (const key of Object.keys(values)) if (values[key] !== null) target[key] += values[key];
     }
     telemetry.invocations.push({
       ...(input.telemetrySlot || {}),
@@ -336,8 +336,18 @@ async function runReviewUntilGreen(options) {
     if (!telemetryPath) telemetryPath = path.join(started.stateDir, `telemetry-${targetSlug(ref)}.json`);
     if (!telemetryLoaded) {
       if (fs.existsSync(telemetryPath)) {
-        Object.assign(telemetry, JSON.parse(fs.readFileSync(telemetryPath, 'utf8')));
-        for (const aggregate of [telemetry.total, ...Object.values(telemetry.byRole || {})]) if (!Number.isFinite(aggregate.cacheWriteInputTokens)) aggregate.cacheWriteInputTokens = 0;
+        try {
+          Object.assign(telemetry, JSON.parse(fs.readFileSync(telemetryPath, 'utf8')));
+          for (const aggregate of [telemetry.total, ...Object.values(telemetry.byRole || {})]) if (!Number.isFinite(aggregate.cacheWriteInputTokens)) aggregate.cacheWriteInputTokens = 0;
+        } catch {
+          telemetry.total.malformedCalls = 1;
+          telemetry.invocations.push({
+            engine: 'codex', provider: 'openai', role: 'unknown', round: null, invocationId: null,
+            status: 'malformed', usagePartial: true, artifactPath: telemetryPath, elapsedMs: null,
+            inputTokens: null, cacheWriteInputTokens: null, cachedInputTokens: null,
+            reasoningOutputTokens: null, outputTokens: null, totalTokens: null,
+          });
+        }
       }
     }
     telemetryLoaded = true;
