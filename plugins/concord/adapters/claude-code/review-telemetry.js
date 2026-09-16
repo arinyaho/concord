@@ -252,7 +252,7 @@ function subagentRecord(event, pendingTool) {
     const requestKey = `${requestId}\0${messageId}`;
     const previous = requests.get(requestKey);
     if (previous && (previous.model !== model || USAGE_FIELDS.some((field) => usage[field] < previous.usage[field]))) invalid = true;
-    requests.set(requestKey, { model, usage, terminal, finalUsage: Array.isArray(row.message.usage.iterations), order: order++ });
+    requests.set(requestKey, { model, usage, terminal, finalUsage: terminal || (typeof row.message.stop_reason === 'string' && !!row.message.stop_reason), order: order++ });
   }
   const unsupported = unsupportedVersions.size ? {
     usageStatus: 'unsupported-cli-version', cliVersion: Array.from(unsupportedVersions).sort().join(','),

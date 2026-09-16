@@ -460,6 +460,19 @@ test('runner leaves the CLI-authored usage line as the only handoff usage summar
   assert.strictEqual(out.handoff, 'LGTM\nreview usage: 42 tokens across 3 call(s), 0 partial');
 });
 
+test('runner returns the CLI-folded telemetry as the authoritative aggregate', async () => {
+  const h = harness();
+  const folded = { engine: 'codex', calls: 3, partialCalls: 0, missingCalls: 1, entries: [] };
+  const cli = (args) => {
+    const result = h.cli(args);
+    return args[0] === 'record' ? { ...result, telemetry: folded } : result;
+  };
+
+  const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn: h.spawn });
+
+  assert.strictEqual(out.telemetry, folded);
+});
+
 test('resumed runner reconciles only slots evidenced by its telemetry file', async () => {
   const stateDir = temp();
   const currentArtifact = path.join(stateDir, 'round-4-correctness.json');
@@ -493,7 +506,7 @@ test('resumed runner reconciles only slots evidenced by its telemetry file', asy
   assert.strictEqual(out.telemetry.total.partialCalls, 0);
 });
 
-test('active round without a telemetry file preserves a preexisting missing slot from that round', async () => {
+test('runner leaves missing-slot synthesis to the CLI fold', async () => {
   const h = harness();
   const ledgerPath = path.join(h.stateDir, 'review-feature-x.json');
   const slots = [{ engine: 'codex', provider: 'openai', artifactPath: '/missing.json', attempt: 1, role: 'correctness', round: 1 }];
@@ -510,9 +523,9 @@ test('active round without a telemetry file preserves a preexisting missing slot
 
   const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn: h.spawn });
 
-  assert.ok(out.telemetry.invocations.some((invocation) => invocation.artifactPath === '/missing.json' && invocation.slotMissing === true));
+  assert.strictEqual(out.telemetry.invocations.some((invocation) => invocation.artifactPath === '/missing.json'), false);
   assert.deepStrictEqual({ calls: out.telemetry.total.calls, partialCalls: out.telemetry.total.partialCalls, missingCalls: out.telemetry.total.missingCalls }, {
-    calls: 3, partialCalls: 3, missingCalls: 1,
+    calls: 3, partialCalls: 3, missingCalls: undefined,
   });
 });
 

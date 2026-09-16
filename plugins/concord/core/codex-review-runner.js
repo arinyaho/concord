@@ -7,7 +7,7 @@ const { execFileSync, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { ledgerPath, targetSlug } = require('./review');
+const { targetSlug } = require('./review');
 const { isValidFindingId } = require('./gate-contract');
 const { PANEL_LENSES } = require('./report');
 
@@ -189,64 +189,6 @@ function destinationFromPrompt(prompt, stateDir) {
   return matches.length === 1 ? path.resolve(matches[0][1]) : null;
 }
 
-function summarizeInvocations(invocations) {
-  const empty = () => ({ calls: 0, partialCalls: 0, inputTokens: 0, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0 });
-  const total = empty(); const byRole = {};
-  for (const invocation of invocations) {
-    const role = invocation.role; const roleTotal = byRole[role] || (byRole[role] = empty());
-    for (const target of [total, roleTotal]) {
-      if (invocation.slotMissing !== true) target.calls++;
-      if (invocation.slotMissing === true) target.missingCalls = (target.missingCalls || 0) + 1;
-      if (invocation.slotMissing !== true && invocation.usagePartial !== false) target.partialCalls++;
-      if (invocation.usageStatus === 'unsupported-cli-version') {
-        target.unsupportedCliVersionCalls = (target.unsupportedCliVersionCalls || 0) + 1;
-        target.unsupportedCliVersions = Array.from(new Set([...(target.unsupportedCliVersions || []), invocation.cliVersion].filter(Boolean))).sort();
-      }
-      for (const field of ['inputTokens', 'cacheWriteInputTokens', 'cachedInputTokens', 'reasoningOutputTokens', 'outputTokens', 'totalTokens', 'elapsedMs']) {
-        if (Number.isFinite(invocation[field])) target[field] += invocation[field];
-      }
-    }
-  }
-  return { total, byRole, invocations };
-}
-
-function reconcileCodexTelemetry(telemetry, stateDir, ref, currentRound) {
-  let slots;
-  try {
-    const ledger = JSON.parse(fs.readFileSync(ledgerPath(stateDir, targetSlug(ref)), 'utf8'));
-    slots = (ledger.telemetrySlots || []).filter((slot) => slot?.engine === 'codex' && slot.provider === 'openai');
-  } catch { return telemetry; }
-  const invocations = (telemetry.invocations || []).filter((invocation) => invocation.slotMissing !== true);
-  const invocationSlots = new Set(invocations.map((invocation) => JSON.stringify([invocation.artifactPath, invocation.attempt])));
-  slots = slots.filter((slot) => slot.round === currentRound || invocationSlots.has(JSON.stringify([slot.artifactPath, slot.attempt])));
-  if (!slots.length) return telemetry;
-  const keyed = new Map();
-  for (const invocation of invocations) {
-    const key = JSON.stringify([invocation.artifactPath, invocation.attempt]);
-    const matches = keyed.get(key) || [];
-    matches.push(invocation); keyed.set(key, matches);
-  }
-  const reconciled = []; const consumed = new Set();
-  for (const slot of slots) {
-    const matches = keyed.get(JSON.stringify([slot.artifactPath, slot.attempt])) || [];
-    if (!matches.length) {
-      reconciled.push({
-        ...slot, invocationId: null, status: null, usagePartial: true, slotMissing: true,
-        model: null, resolvedModel: null, reasoningEffort: null, serviceTier: null,
-        inputTokens: 0, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0,
-        outputTokens: 0, totalTokens: 0, elapsedMs: 0,
-      });
-    } else {
-      for (const invocation of matches) {
-        consumed.add(invocation);
-        reconciled.push(matches.length === 1 ? invocation : { ...invocation, usagePartial: true, duplicateEvidence: true });
-      }
-    }
-  }
-  for (const invocation of invocations) if (!consumed.has(invocation)) reconciled.push({ ...invocation, usagePartial: true, orphan: true });
-  return summarizeInvocations(reconciled);
-}
-
 async function runReviewUntilGreen(options) {
   const { ref, base, broad = false, noBroad = false, noDod = false, resume = false, repoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
   if (!ref) throw new Error('review-until-green: missing target ref');
@@ -260,7 +202,6 @@ async function runReviewUntilGreen(options) {
   let currentRound = null;
   let telemetryPath = null;
   let telemetryLoaded = false;
-  let telemetryLoadedFromDisk = false;
   const persistTelemetry = () => {
     if (!telemetryPath) return;
     const temporary = `${telemetryPath}.${process.pid}.tmp`;
@@ -317,9 +258,8 @@ async function runReviewUntilGreen(options) {
     }
   };
   const withTelemetry = (result) => {
-    Object.assign(telemetry, reconcileCodexTelemetry(telemetry, telemetryPath && path.dirname(telemetryPath), ref, currentRound));
     persistTelemetry();
-    const output = { ...result, telemetry };
+    const output = { ...result, telemetry: result?.telemetry || telemetry };
     if ((result?.decision === 'terminal' || result?.decision === 'no-op' || result?.decision?.converged === true || result?.decision?.parked === true) && telemetryPath) {
       try { fs.unlinkSync(telemetryPath); } catch {}
     }
@@ -395,8 +335,7 @@ async function runReviewUntilGreen(options) {
     const started = await cli(startArgs);
     if (!telemetryPath) telemetryPath = path.join(started.stateDir, `telemetry-${targetSlug(ref)}.json`);
     if (!telemetryLoaded) {
-      telemetryLoadedFromDisk = fs.existsSync(telemetryPath);
-      if (telemetryLoadedFromDisk) {
+      if (fs.existsSync(telemetryPath)) {
         Object.assign(telemetry, JSON.parse(fs.readFileSync(telemetryPath, 'utf8')));
         for (const aggregate of [telemetry.total, ...Object.values(telemetry.byRole || {})]) if (!Number.isFinite(aggregate.cacheWriteInputTokens)) aggregate.cacheWriteInputTokens = 0;
       }

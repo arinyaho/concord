@@ -70,7 +70,7 @@ function writeSubagentTranscript(parentTranscript, rows) {
   return transcript;
 }
 
-function assistantRow({ requestId, messageId, model = 'claude-sonnet-4-5-20250929', version = '2.1.268', input, create, read, output, content = [{ type: 'text', text: 'done' }], iterations = [{}] }) {
+function assistantRow({ requestId, messageId, model = 'claude-sonnet-4-5-20250929', version = '2.1.268', input, create, read, output, content = [{ type: 'text', text: 'done' }], iterations = [{}], stopReason }) {
   return {
     type: 'assistant',
     agentId: 'agent-7',
@@ -80,6 +80,7 @@ function assistantRow({ requestId, messageId, model = 'claude-sonnet-4-5-2025092
       id: messageId,
       model,
       content,
+      stop_reason: stopReason === undefined ? (content.some((block) => block.type === 'tool_use') ? 'tool_use' : 'end_turn') : stopReason,
       usage: {
         input_tokens: input,
         cache_creation_input_tokens: create,
@@ -282,12 +283,28 @@ test('marks a transcript ending at an assistant tool-use response partial', () =
   assert.strictEqual(record.usagePartial, true);
 });
 
-test('marks a stable terminal request partial when its final usage snapshot lacks iterations', () => {
+test('accepts final usage markers from a redacted real 2.1.268 subagent transcript', () => {
   const { transcript, stateDir } = setup();
   recordActiveTool(transcript, stateDir);
-  const row = assistantRow({ requestId: 'req-stream', messageId: 'msg-stream', input: 9, create: 0, read: 0, output: 2 });
-  delete row.message.usage.iterations;
-  const childTranscript = writeSubagentTranscript(transcript, [row]);
+  const fixture = path.join(__dirname, 'fixtures', 'claude-subagent-2.1.268-redacted.jsonl');
+  const childTranscript = writeSubagentTranscript(transcript, fs.readFileSync(fixture, 'utf8').trim().split('\n').map(JSON.parse));
+
+  const record = core.recordForEvent({
+    hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-7',
+    agent_transcript_path: childTranscript, last_assistant_message: 'done',
+  }, stateDir);
+
+  assert.strictEqual(record.usagePartial, false);
+  assert.strictEqual(record.outputTokens, 947);
+});
+
+test('marks a completed transcript partial when a tool request has only a streaming placeholder', () => {
+  const { transcript, stateDir } = setup();
+  recordActiveTool(transcript, stateDir);
+  const childTranscript = writeSubagentTranscript(transcript, [
+    assistantRow({ requestId: 'req-tool', messageId: 'msg-tool', input: 2, create: 0, read: 0, output: 3, content: [{ type: 'tool_use' }], iterations: null, stopReason: null }),
+    assistantRow({ requestId: 'req-terminal', messageId: 'msg-terminal', input: 2, create: 0, read: 0, output: 100, iterations: null, stopReason: null }),
+  ]);
 
   const record = core.recordForEvent({
     hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-7',
@@ -607,7 +624,7 @@ test('records launch and terminal hook evidence as partial until SubagentStop ar
   assert.strictEqual(ledger.telemetry.entries[0].status, 'completed');
 });
 
-test('joins a background launch with observed completion status and elapsed time', () => {
+test('joins a background launch while carrying the tool status and observed elapsed time', () => {
   const { transcript, stateDir } = setup();
   const artifactPath = path.join(stateDir, 'round-2-correctness.json');
   const ledgerPath = path.join(stateDir, 'review-feat-x.json');
@@ -633,7 +650,7 @@ test('joins a background launch with observed completion status and elapsed time
 
   const entry = reviewTelemetry.foldTelemetry(stateDir, ledger).telemetry.entries[0];
   assert.deepStrictEqual({ status: entry.status, elapsedMs: entry.elapsedMs, usagePartial: entry.usagePartial }, {
-    status: 'completed', elapsedMs: 250, usagePartial: false,
+    status: 'async_launched', elapsedMs: 250, usagePartial: false,
   });
 });
 

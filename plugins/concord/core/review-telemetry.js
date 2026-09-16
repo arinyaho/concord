@@ -66,7 +66,7 @@ function joinAgentUsage(tool, agent) {
     ...output,
     resolvedModel: agentUsage.resolvedModel || tool.resolvedModel,
     providerSchema: agentUsage.providerSchema,
-    status: 'completed',
+    status: tool.status,
     elapsedMs,
     inputTokens: agentUsage.inputTokens,
     cacheWriteInputTokens: agentUsage.cacheWriteInputTokens,
