@@ -423,6 +423,41 @@ test('runner persists unknown Codex token components as null', async () => {
   assert.strictEqual(folded.partialCalls, 3);
 });
 
+test('runner removes persisted telemetry when the review is abandoned', async () => {
+  const h = harness();
+  const cli = (args) => args[0] === 'record'
+    ? { decision: { continue: false, abandoned: true }, handoff: 'abandoned' }
+    : h.cli(args);
+
+  await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn: h.spawn });
+
+  assert.strictEqual(fs.existsSync(path.join(h.stateDir, 'telemetry-feature-x.json')), false);
+});
+
+test('runner preserves a rejected Codex spawn as a failed invocation', async () => {
+  const h = harness();
+  const cli = (args) => args[0] === 'telemetry-slot' ? null : h.cli(args);
+  const previousPath = process.env.PATH;
+  process.env.PATH = temp();
+  try {
+    await assert.rejects(
+      runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli }),
+      { code: 'ENOENT' },
+    );
+  } finally {
+    process.env.PATH = previousPath;
+  }
+
+  const telemetryPath = path.join(h.stateDir, 'telemetry-feature-x.json');
+  const telemetry = JSON.parse(fs.readFileSync(telemetryPath, 'utf8'));
+  assert.strictEqual(telemetry.invocations[0].status, 'failed');
+  assert.match(telemetry.invocations[0].invocationId, /^[0-9a-f-]{36}$/);
+  const folded = foldTelemetry(h.stateDir, { target: { ref: 'feature/x' } }, 'feature-x').telemetry;
+  assert.deepStrictEqual({ calls: folded.calls, partialCalls: folded.partialCalls, status: folded.entries[0].status }, {
+    calls: 1, partialCalls: 1, status: 'failed',
+  });
+});
+
 test('terminal runner returns persisted telemetry even when the caller omits resume', async () => {
   const stateDir = temp();
   const persisted = {

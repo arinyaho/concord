@@ -113,7 +113,14 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
       pending = lines.pop();
       for (const line of lines) consume(line);
     });
-    child.once('error', reject);
+    child.once('error', (error) => {
+      error.telemetry = {
+        status: 'failed', role, engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', cliVersion,
+        requestedModel: model, reasoningEffort: effort, serviceTier: tier, resolvedModel: 'unavailable', invocationId,
+        elapsedMs: Date.now() - startedAt, usagePartial: true,
+      };
+      reject(error);
+    });
     child.once('close', (status) => {
       consume(pending);
       const normalized = normalizeUsage(usage);
@@ -237,7 +244,7 @@ async function runReviewUntilGreen(options) {
       ...(input.telemetrySlot || {}),
       role, round: currentRound, model: input.requestedModel || result?.requestedModel || null, resolvedModel: result?.resolvedModel || null,
       reasoningEffort: input.reasoningEffort || result?.reasoningEffort || null, serviceTier: input.serviceTier || result?.serviceTier || null,
-      status: result && Number.isInteger(result.status) ? result.status : null,
+      status: result && (Number.isInteger(result.status) || result.status === 'failed') ? result.status : null,
       usagePartial: partial, ...values,
       ...(result?.usageStatus ? { usageStatus: result.usageStatus } : {}),
       ...(result && result.invocationId ? { engine: result.engine, provider: result.provider, providerSchema: result.providerSchema, invocationId: result.invocationId } : {}),
@@ -253,14 +260,14 @@ async function runReviewUntilGreen(options) {
       record(input, result);
       return result;
     } catch (error) {
-      record(input, null);
+      record(input, error?.telemetry || null);
       throw error;
     }
   };
   const withTelemetry = (result) => {
     persistTelemetry();
     const output = { ...result, telemetry: result?.telemetry || telemetry };
-    if ((result?.decision === 'terminal' || result?.decision === 'no-op' || result?.decision?.converged === true || result?.decision?.parked === true) && telemetryPath) {
+    if ((result?.decision === 'terminal' || result?.decision === 'no-op' || result?.decision?.converged === true || result?.decision?.parked === true || result?.decision?.abandoned === true) && telemetryPath) {
       try { fs.unlinkSync(telemetryPath); } catch {}
     }
     return output;

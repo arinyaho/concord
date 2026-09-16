@@ -949,7 +949,7 @@ function main(resolveFromCwd) {
     // since the first successful record already flips phase to 'done' -- a
     // guard-first ordering would throw on replay instead of reaching this branch.
     if (ledger && ledger.phase === 'done' && ledger.last_recorded_round === n) {
-      if (ledger.status === 'clean' || ledger.status === 'parked') reviewTelemetry.deleteTelemetry(stateDir, ledger.target?.ref || ref, slug);
+      if (R.TERMINAL_STATUSES.has(ledger.status)) reviewTelemetry.deleteTelemetry(stateDir, ledger.target?.ref || ref, slug);
       process.stdout.write(
         JSON.stringify({ decision: ledger._lastDecision || { continue: false }, handoff: renderHandoff({ ledger }), telemetry: ledger.telemetry || null }) + '\n'
       );
@@ -1091,7 +1091,7 @@ function main(resolveFromCwd) {
     if (isGit) gitCheckoutTree(repoRoot);
     ledger = { ...ledger, phase: 'done', last_recorded_round: n, _lastDecision: decision };
     writeLedger(stateDir, slug, ledger);
-    if (ledger.status === 'clean' || ledger.status === 'parked') reviewTelemetry.deleteTelemetry(stateDir, ledger.target?.ref || ref, slug);
+    if (R.TERMINAL_STATUSES.has(ledger.status)) reviewTelemetry.deleteTelemetry(stateDir, ledger.target?.ref || ref, slug);
     process.stdout.write(JSON.stringify({ decision, handoff: renderHandoff({ ledger }), telemetry: ledger.telemetry || null }) + '\n');
     return;
   }

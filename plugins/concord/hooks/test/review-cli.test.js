@@ -727,6 +727,28 @@ test('record: idempotent -- a second record for the same round re-prints and doe
   assert.strictEqual(spent1, spent2);       // no double charge
 });
 
+test('record: an idempotent abandoned terminus deletes every telemetry artifact', () => {
+  const dir = tmpDir(); const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  review.writeLedger(dir, slug, {
+    ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }),
+    status: 'abandoned', phase: 'done', last_recorded_round: 0,
+    _lastDecision: { continue: false, abandoned: true },
+  });
+  const files = [
+    path.join(dir, `review-telemetry-${'a'.repeat(64)}.json`),
+    path.join(dir, `review-agent-telemetry-${'b'.repeat(64)}.json`),
+    path.join(dir, `telemetry-${slug}.json`),
+  ];
+  fs.writeFileSync(files[0], JSON.stringify({ targetRef: 'feat/x', agentId: 'agent-1', parentTranscriptPath: '/parent' }));
+  fs.writeFileSync(files[1], JSON.stringify({ agentId: 'agent-1', parentTranscriptPath: '/parent' }));
+  fs.writeFileSync(files[2], '{}');
+
+  run(['record', 'feat/x'], { env });
+
+  assert.deepStrictEqual(files.map(fs.existsSync), [false, false, false]);
+});
+
 test('record: tripping the park budget forces status parked and continue false, without charging a round', () => {
   const { REVIEW_PARK_BUDGET_DEFAULT } = require('../../core/config');
   const repo = initRepo(); const dir = tmpDir();
