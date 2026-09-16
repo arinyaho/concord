@@ -316,6 +316,7 @@ test('runner reports aggregate and per-role subprocess telemetry', async () => {
   };
   const spawn = async (input) => ({
     ...await h.spawn(input),
+    engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: `invocation-${input.role}`,
     elapsedMs: input.role === 'correctness' ? 10 : input.role === 'verify' ? 20 : 30,
     usage: usageByRole[input.role],
     usagePartial: false,
@@ -344,9 +345,9 @@ test('runner reports aggregate and per-role subprocess telemetry', async () => {
       fix: { calls: 1, partialCalls: 0, ...usageByRole.fix, elapsedMs: 30 },
     },
     invocations: [
-      { engine: 'codex', provider: 'openai', role: 'correctness', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.correctness, elapsedMs: 10, artifactPath: path.join(h.stateDir, 'round-1-correctness.json'), attempt: 1 },
-      { engine: 'codex', provider: 'openai', role: 'verify', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.verify, elapsedMs: 20, artifactPath: path.join(h.stateDir, 'round-1-verify.json'), attempt: 1 },
-      { engine: 'codex', provider: 'openai', role: 'fix', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.fix, elapsedMs: 30, artifactPath: path.join(h.stateDir, 'round-1-fix-correctness:bug.json'), attempt: 1 },
+      { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-correctness', role: 'correctness', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.correctness, elapsedMs: 10, artifactPath: path.join(h.stateDir, 'round-1-correctness.json'), attempt: 1 },
+      { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-verify', role: 'verify', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.verify, elapsedMs: 20, artifactPath: path.join(h.stateDir, 'round-1-verify.json'), attempt: 1 },
+      { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-fix', role: 'fix', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.fix, elapsedMs: 30, artifactPath: path.join(h.stateDir, 'round-1-fix-correctness:bug.json'), attempt: 1 },
     ],
   });
   assert.strictEqual(out.handoff, 'LGTM');
@@ -451,6 +452,33 @@ test('runner preserves a rejected Codex spawn as a failed invocation', async () 
   const telemetryPath = path.join(h.stateDir, 'telemetry-feature-x.json');
   const telemetry = JSON.parse(fs.readFileSync(telemetryPath, 'utf8'));
   assert.strictEqual(telemetry.invocations[0].status, 'failed');
+  assert.match(telemetry.invocations[0].invocationId, /^[0-9a-f-]{36}$/);
+  const folded = foldTelemetry(h.stateDir, { target: { ref: 'feature/x' } }, 'feature-x').telemetry;
+  assert.deepStrictEqual({ calls: folded.calls, partialCalls: folded.partialCalls, status: folded.entries[0].status }, {
+    calls: 1, partialCalls: 1, status: 'failed',
+  });
+});
+
+test('runner stamps Codex identity on a custom spawn rejection without telemetry', async () => {
+  const h = harness();
+  const cli = (args) => args[0] === 'telemetry-slot' ? null : h.cli(args);
+
+  await assert.rejects(
+    runReviewUntilGreen({
+      ref: 'feature/x',
+      repoRoot: '/repo',
+      runCli: cli,
+      spawn: async () => { throw new Error('spawn failed'); },
+    }),
+    /spawn failed/,
+  );
+
+  const telemetryPath = path.join(h.stateDir, 'telemetry-feature-x.json');
+  const telemetry = JSON.parse(fs.readFileSync(telemetryPath, 'utf8'));
+  assert.deepStrictEqual(
+    { status: telemetry.invocations[0].status, engine: telemetry.invocations[0].engine, provider: telemetry.invocations[0].provider },
+    { status: 'failed', engine: 'codex', provider: 'openai' },
+  );
   assert.match(telemetry.invocations[0].invocationId, /^[0-9a-f-]{36}$/);
   const folded = foldTelemetry(h.stateDir, { target: { ref: 'feature/x' } }, 'feature-x').telemetry;
   assert.deepStrictEqual({ calls: folded.calls, partialCalls: folded.partialCalls, status: folded.entries[0].status }, {

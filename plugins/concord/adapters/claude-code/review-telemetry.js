@@ -2,6 +2,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { artifactDestinationFromPrompt } = require('../../core/review-artifact');
 const { roleFromArtifactSuffix } = require('../../core/review-telemetry');
 
 const ACTIVE_STATUSES = new Set(['converging', 'gate-panel-pending', 'intent-review']);
@@ -35,18 +36,14 @@ function activeLedger(stateDir, round, artifactPath) {
 }
 
 function artifactFromPrompt(prompt, stateDir) {
-  if (typeof prompt !== 'string') return null;
-  const escaped = path.resolve(stateDir).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const directive = new RegExp(`(?:\\bwrite\\s+ONLY\\b[\\s\\S]{0,1000}?\\bto|\\bwrite\\s+a\\s+JSON\\s+file\\s+to)\\s+[\`'"]?${escaped}[/\\\\](round-(\\d+)-([A-Za-z0-9:._-]+)\\.json)[\`'"]?`, 'gi');
-  const matches = Array.from(prompt.matchAll(directive));
-  if (matches.length !== 1) return null;
-  const match = matches[0];
-  const artifactPath = path.resolve(stateDir, match[1]);
-  if (path.dirname(artifactPath) !== path.resolve(stateDir)) return null;
-  const round = Number(match[2]);
+  const artifactPath = artifactDestinationFromPrompt(prompt, stateDir);
+  if (!artifactPath) return null;
+  const match = path.basename(artifactPath).match(/^round-(\d+)-([A-Za-z0-9:._-]+)\.json$/);
+  if (!match) return null;
+  const round = Number(match[1]);
   const ledger = activeLedger(stateDir, round, artifactPath);
   if (!ledger) return null;
-  const suffix = match[3];
+  const suffix = match[2];
   return { round, role: roleFromArtifactSuffix(suffix), targetRef: ledger.target.ref, artifactPath };
 }
 

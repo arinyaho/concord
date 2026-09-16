@@ -8,6 +8,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { targetSlug } = require('./review');
+const { artifactDestinationFromPrompt } = require('./review-artifact');
 const { isValidFindingId } = require('./gate-contract');
 const { PANEL_LENSES } = require('./report');
 
@@ -188,14 +189,6 @@ async function invoke(spawn, input) {
   if (result && result.status !== 0) throw new Error(`harness-failure: ${input.role} subprocess exited ${result.status}`);
 }
 
-function destinationFromPrompt(prompt, stateDir) {
-  if (typeof prompt !== 'string' || typeof stateDir !== 'string') return null;
-  const escaped = path.resolve(stateDir).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const directive = new RegExp(`\\bwrite\\s+ONLY\\b[\\s\\S]{0,1000}?\\bto\\s+[\`'"]?(${escaped}[/\\\\]round-\\d+-[A-Za-z0-9:._-]+\\.json)[\`'"]?`, 'gi');
-  const matches = [...prompt.matchAll(directive)];
-  return matches.length === 1 ? path.resolve(matches[0][1]) : null;
-}
-
 async function runReviewUntilGreen(options) {
   const { ref, base, broad = false, noBroad = false, noDod = false, resume = false, repoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
   if (!ref) throw new Error('review-until-green: missing target ref');
@@ -255,12 +248,15 @@ async function runReviewUntilGreen(options) {
     persistTelemetry();
   };
   const spawn = async (input) => {
+    const identity = {
+      engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: crypto.randomUUID(),
+    };
     try {
       const result = await rawSpawn(input);
-      record(input, result);
+      record(input, { ...identity, ...result });
       return result;
     } catch (error) {
-      record(input, error?.telemetry || null);
+      record(input, { ...identity, status: 'failed', usagePartial: true, ...(error?.telemetry || {}) });
       throw error;
     }
   };
@@ -362,7 +358,7 @@ async function runReviewUntilGreen(options) {
     const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodPassed: started.dodPassed, dodDeferred: started.dodDeferred, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref) };
     let slotAllocation = Promise.resolve();
     const launch = async (input) => {
-      const artifactPath = destinationFromPrompt(input.prompt, input.stateDir);
+      const artifactPath = artifactDestinationFromPrompt(input.prompt, input.stateDir);
       let telemetrySlot = null;
       if (artifactPath) {
         const allocation = slotAllocation.then(() => cli(['telemetry-slot', ref, artifactPath, '--engine', 'codex']));

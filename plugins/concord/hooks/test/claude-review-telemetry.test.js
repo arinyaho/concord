@@ -221,6 +221,39 @@ test('uses only the exact single Write ONLY destination, never an earlier input 
   assert.strictEqual(core.recordForEvent(event({ transcript, prompt: `${prompt}. Write ONLY JSON to ${correctness}`, response: successfulResponse() }), stateDir), null);
 });
 
+test('recognizes every artifact output directive in the review driver', () => {
+  const { transcript, stateDir } = setup();
+  const driver = fs.readFileSync(path.join(__dirname, '..', '..', 'core', 'review-driver.md'), 'utf8');
+  const directives = [...driver.matchAll(/(?:\bwrites?\s+ONLY\b[\s\S]{0,1000}?\bto|\bwrite\s+a\s+JSON\s+file\s+to)\s+(?:its\s+own\s+)?`?(<stateDir>\/round-[^`\s]+\.json)`?/gi)];
+  const expand = (value) => value
+    .replaceAll('<stateDir>', stateDir)
+    .replaceAll('<n>', '2')
+    .replaceAll('<m>', '1')
+    .replaceAll('<lens>', 'threat-model')
+    .replaceAll('<finding-id>', 'finding')
+    .replaceAll('<vote-index>', '0')
+    .replaceAll('<id>', 'finding');
+
+  const records = directives.map((match) => core.recordForEvent(event({
+    transcript,
+    prompt: expand(match[0]),
+    response: successfulResponse(),
+  }), stateDir));
+
+  assert.deepStrictEqual(records.map((record) => record && path.basename(record.artifactPath)), [
+    'round-2-correctness.json',
+    'round-2-correctness.json',
+    'round-2-verify.json',
+    'round-2-intent.json',
+    'round-2-gate.json',
+    'round-2-gate-verify.json',
+    'round-2-fix-finding.json',
+    'round-2-gate-panel-1-threat-model.json',
+    'round-2-gate-panel-1-vote-finding-0.json',
+    'round-2-gate-panel-1-verify.json',
+  ]);
+});
+
 test('accepts the driver documented backtick-quoted output path', () => {
   const { transcript, stateDir } = setup();
   const verify = path.join(stateDir, 'round-2-verify.json');
