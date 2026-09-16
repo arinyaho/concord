@@ -9,6 +9,7 @@ const gateLib = require('./gate');
 const gatePanelLib = require('./gate-panel');
 const artifactContract = require('./artifact-contract');
 const reportLib = require('./report');
+const reviewTelemetry = require('./review-telemetry');
 const {
   targetSlug,
   readLedger,
@@ -174,6 +175,7 @@ function renderHandoff(result) {
   lines.push(`review-until-green: target ${ledger.target && ledger.target.ref} -- status: ${ledger.status}`);
   lines.push(`rounds: ${ledger.round}/${ledger.budget.max_rounds} (spent ${ledger.budget.spent})`);
   if (ledger.engine) lines.push(`reviewer engine: ${ledger.engine}`);
+  if (ledger.telemetry) lines.push(`review usage: ${ledger.telemetry.totalTokens ?? 'unknown'} tokens across ${ledger.telemetry.calls} call(s), ${ledger.telemetry.partialCalls} partial${ledger.telemetry.missingCalls ? `, ${ledger.telemetry.missingCalls} missing` : ''}${ledger.telemetry.malformedCalls ? `, ${ledger.telemetry.malformedCalls} malformed` : ''}`);
   for (const r of ledger.runs || []) {
     lines.push(`prior run #${r.run} (${r.engine || 'engine unrecorded'}): ${r.status} -- ${r.rounds} round(s), ${(r.fixed || []).length} fixed, ${(r.parked || []).length} parked, ${(r.killed || []).length} killed`);
   }
@@ -413,6 +415,30 @@ function main(resolveFromCwd) {
   const [verb, ref, ...rest] = process.argv.slice(2);
   const stateDir = resolveStateDir(resolveFromCwd);
 
+  if (verb === 'telemetry-slot') {
+    requireRef(ref, 'telemetry-slot');
+    const artifactPath = path.resolve(String(rest[0] || ''));
+    const engine = rest[1] === '--engine' ? rest[2] : null;
+    const providers = { 'claude-code': 'anthropic', codex: 'openai' };
+    if (rest.length !== 3 || !Object.hasOwn(providers, engine)) throw new Error('telemetry-slot: requires --engine claude-code|codex');
+    const provider = providers[engine];
+    const slug = targetSlug(ref);
+    const ledger = readLedger(stateDir, slug);
+    const panelPending = ledger?.phase === 'done' && ledger.status === 'gate-panel-pending';
+    if (!ledger || (!['gates', 'fixes'].includes(ledger.phase) && !panelPending)) throw new Error(`telemetry-slot: no active review work for ref "${ref}" ${stateDirHint(stateDir)}`);
+    if (path.dirname(artifactPath) !== path.resolve(stateDir)) throw new Error('telemetry-slot: artifact destination must be directly inside the state directory');
+    const match = new RegExp(`^round-${ledger.round}-([A-Za-z0-9:._-]+)\\.json$`).exec(path.basename(artifactPath));
+    if (!match) throw new Error(`telemetry-slot: destination does not belong to active round ${ledger.round}`);
+    const suffix = match[1];
+    const role = reviewTelemetry.roleFromArtifactSuffix(suffix);
+    const slots = Array.isArray(ledger.telemetrySlots) ? ledger.telemetrySlots : [];
+    const attempt = slots.filter((slot) => slot.engine === engine && slot.artifactPath === artifactPath).length + 1;
+    const slot = { engine, provider, artifactPath, attempt, role, round: ledger.round };
+    writeLedger(stateDir, slug, { ...ledger, telemetrySlots: [...slots, slot] });
+    process.stdout.write(`${JSON.stringify(slot)}\n`);
+    return;
+  }
+
   if (verb === 'artifact-normalize') {
     requireRef(ref, 'artifact-normalize');
     // The argument is the artifact ROLE, but the driver doc's `<artifact-name>`
@@ -473,7 +499,7 @@ function main(resolveFromCwd) {
   if (verb === 'show') {
     requireRef(ref, 'show');
     const slug = targetSlug(ref);
-    const ledger = readLedger(stateDir, slug) || emptyLedger({ kind: 'local', ref });
+    const ledger = reviewTelemetry.foldTelemetry(stateDir, readLedger(stateDir, slug), slug) || emptyLedger({ kind: 'local', ref });
     process.stdout.write(JSON.stringify(ledger) + '\n');
     return;
   }
@@ -923,11 +949,13 @@ function main(resolveFromCwd) {
     // since the first successful record already flips phase to 'done' -- a
     // guard-first ordering would throw on replay instead of reaching this branch.
     if (ledger && ledger.phase === 'done' && ledger.last_recorded_round === n) {
+      if (R.TERMINAL_STATUSES.has(ledger.status)) reviewTelemetry.deleteTelemetry(stateDir, ledger.target?.ref || ref, slug);
       process.stdout.write(
-        JSON.stringify({ decision: ledger._lastDecision || { continue: false }, handoff: renderHandoff({ ledger }) }) + '\n'
+        JSON.stringify({ decision: ledger._lastDecision || { continue: false }, handoff: renderHandoff({ ledger }), telemetry: ledger.telemetry || null }) + '\n'
       );
       return;
     }
+    ledger = reviewTelemetry.foldTelemetry(stateDir, ledger, slug);
     if (!ledger || ledger.phase !== 'fixes') throw new Error(`record: expected phase "fixes", got "${ledger && ledger.phase}" ${stateDirHint(stateDir)}`);
 
     // Per-finding fix artifacts (round-<n>-fix-<id>.json) stay lenient: a
@@ -1063,7 +1091,8 @@ function main(resolveFromCwd) {
     if (isGit) gitCheckoutTree(repoRoot);
     ledger = { ...ledger, phase: 'done', last_recorded_round: n, _lastDecision: decision };
     writeLedger(stateDir, slug, ledger);
-    process.stdout.write(JSON.stringify({ decision, handoff: renderHandoff({ ledger }) }) + '\n');
+    if (R.TERMINAL_STATUSES.has(ledger.status)) reviewTelemetry.deleteTelemetry(stateDir, ledger.target?.ref || ref, slug);
+    process.stdout.write(JSON.stringify({ decision, handoff: renderHandoff({ ledger }), telemetry: ledger.telemetry || null }) + '\n');
     return;
   }
 
@@ -1286,6 +1315,7 @@ function main(resolveFromCwd) {
       return;
     }
     deleteLedger(stateDir, slug);
+    reviewTelemetry.deleteTelemetry(stateDir, prior.target?.ref || ref, slug);
     for (let n = 1; n <= (prior.round || 0); n++) deleteRoundArtifacts(stateDir, n);
     process.stdout.write(
       `reset ref "${ref}" (was "${prior.status}"); cleared ${prior.round || 0} round(s) of artifacts. The next round-start begins a fresh run.\n`,
@@ -1309,7 +1339,8 @@ function main(resolveFromCwd) {
     if (engineFlag >= 0 && !rest[engineFlag + 1]) throw new Error('review-cli rerun: --engine needs a name (e.g. --engine codex)');
     const engine = engineFlag >= 0 ? rest[engineFlag + 1] : null;
     const slug = targetSlug(ref);
-    const prior = readLedger(stateDir, slug);
+    const stored = readLedger(stateDir, slug);
+    const prior = reviewTelemetry.foldTelemetry(stateDir, stored, slug);
     if (!prior) throw new Error(`review-cli rerun: no ledger for ref "${ref}" ${stateDirHint(stateDir)} -- there is no run to re-run; just start a normal run.`);
     const runs = (prior.runs || []).concat([{
       run: (prior.runs || []).length + 1,
@@ -1320,6 +1351,7 @@ function main(resolveFromCwd) {
       parked: (prior.findings || []).filter((f) => f.status === 'parked').map((f) => f.id),
       killed: prior.killed_digest || [],
       gate_open: (prior.gate_open || []).map((f) => f.id),
+      telemetry: prior.telemetry || null,
     }]);
     const fresh = {
       ...emptyLedger(prior.target || { kind: 'local', ref }),
@@ -1328,6 +1360,7 @@ function main(resolveFromCwd) {
       gate_dismissed: prior.gate_dismissed || [],
     };
     for (let n = 1; n <= (prior.round || 0); n++) deleteRoundArtifacts(stateDir, n);
+    reviewTelemetry.deleteTelemetry(stateDir, prior.target?.ref || ref, slug);
     writeLedger(stateDir, slug, fresh);
     process.stdout.write(JSON.stringify({ status: 'ok', run: runs.length + 1, engine, archived: runs[runs.length - 1] }) + '\n');
     return;
@@ -1375,7 +1408,7 @@ function main(resolveFromCwd) {
     return;
   }
 
-  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | plan-fixes | commit-fix | record | gate-panel-round-start | gate-panel-round-record | unpark | dismiss | reset | rerun | artifact-normalize)`);
+  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | telemetry-slot | plan-fixes | commit-fix | record | gate-panel-round-start | gate-panel-round-record | unpark | dismiss | reset | rerun | artifact-normalize)`);
 }
 
 // Wraps main() with the graceful operator-facing error format. Exported (not

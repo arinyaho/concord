@@ -93,6 +93,33 @@ test('mergeSessions: excludeSid and non-json files ignored', () => {
   assert.ok(!m.openLoops.includes('loop-b'));
 });
 
+test('mergeSessions: review telemetry artifacts do not consume the session cap', () => {
+  const dir = tmpStateDir();
+  const base = Date.now() - 100000;
+  writeSessionModel(dir, 'sessA', { openLoops: ['kept'], decisions: [], nexts: [], facts: [] }, base);
+  for (let i = 0; i < 30; i++) {
+    const prefix = i % 2 ? 'review-telemetry' : 'review-agent-telemetry';
+    const file = path.join(dir, `${prefix}-${i.toString(16).padStart(64, '0')}.json`);
+    fs.writeFileSync(file, '{}');
+    fs.utimesSync(file, new Date(base + i + 1), new Date(base + i + 1));
+  }
+
+  assert.deepStrictEqual(charter.mergeSessions(dir).openLoops, ['kept']);
+});
+
+test('mergeSessions: Codex runner telemetry artifacts do not consume the session cap', () => {
+  const dir = tmpStateDir();
+  const base = Date.now() - 100000;
+  writeSessionModel(dir, 'sessA', { openLoops: ['kept'], decisions: [], nexts: [], facts: [] }, base);
+  for (let i = 0; i < 30; i++) {
+    const file = path.join(dir, `telemetry-feature-${i}.json`);
+    fs.writeFileSync(file, '{}');
+    fs.utimesSync(file, new Date(base + i + 1), new Date(base + i + 1));
+  }
+
+  assert.deepStrictEqual(charter.mergeSessions(dir).openLoops, ['kept']);
+});
+
 test('renderCharter: includes north-star and non-empty sections only', () => {
   const md = charter.renderCharter('preserve founding context', {
     openLoops: ['drift kills flat-file'],

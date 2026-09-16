@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { normalizeArtifact } = require('../../core/artifact-contract');
+const { foldTelemetry } = require('../../core/review-telemetry');
 
 // The runner owns all sequencing. Its subprocess seam makes this a no-network
 // integration test while exercising the real artifact contract at the boundary.
@@ -33,7 +34,7 @@ test('codex-review-runner.js has no hardcoded copy of the panel lens list -- it 
 test('codexExec starts subprocesses asynchronously so panel work can overlap', async () => {
   const binDir = temp();
   const codex = path.join(binDir, 'codex');
-  fs.writeFileSync(codex, `#!${process.execPath}\nsetTimeout(() => process.exit(0), 1000);\n`);
+  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.154.0\\n');\nelse setTimeout(() => process.exit(0), 1000);\n`);
   fs.chmodSync(codex, 0o755);
   const previousPath = process.env.PATH;
   process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
@@ -51,8 +52,167 @@ test('codexExec starts subprocesses asynchronously so panel work can overlap', a
   }
 });
 
-function harness({ targetType = 'git', rounds = 1, malformed = false, retry = false, retryForever = false, correctnessArtifact, gateApplied = false, dodDeferred = false, failingRole, promptDrivenFix = false } = {}) {
-  const stateDir = temp();
+test('codexExec probes the CLI version once for concurrent calls', async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  const probes = path.join(binDir, 'probes');
+  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) { require('node:fs').appendFileSync(${JSON.stringify(probes)}, '1'); process.stdout.write('codex-cli 0.154.0\\n'); }\nelse process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } }) + '\\n');\n`);
+  fs.chmodSync(codex, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  try {
+    await Promise.all([
+      codexExec({ role: 'correctness', prompt: 'first', repoRoot: binDir, stateDir: binDir }),
+      codexExec({ role: 'verify', prompt: 'second', repoRoot: binDir, stateDir: binDir }),
+    ]);
+    assert.strictEqual(fs.readFileSync(probes, 'utf8'), '1');
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
+test('codexExec parses documented turn.completed usage without retaining agent output', async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  const capture = path.join(binDir, 'args.json');
+  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.154.0\\n');\nelse { require('node:fs').writeFileSync(${JSON.stringify(capture)}, JSON.stringify(process.argv.slice(2)));\nprocess.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'discard me' } }) + '\\n');\nprocess.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 120, cached_input_tokens: 20, cache_write_input_tokens: 5, output_tokens: 7, reasoning_output_tokens: 3 } }) + '\\n'); }\n`);
+  fs.chmodSync(codex, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  try {
+    const result = await codexExec({
+      role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir,
+      requestedModel: 'gpt-5.1-codex', reasoningEffort: 'high', serviceTier: 'priority',
+    });
+    const args = JSON.parse(fs.readFileSync(capture, 'utf8'));
+    assert.deepStrictEqual(args.slice(args.indexOf('--model'), args.indexOf('--model') + 2), ['--model', 'gpt-5.1-codex']);
+    assert.ok(args.includes('model_reasoning_effort="high"'));
+    assert.ok(args.includes('service_tier="priority"'));
+    assert.strictEqual(result.status, 0);
+    assert.strictEqual(result.role, 'correctness');
+    assert.strictEqual(result.engine, 'codex');
+    assert.strictEqual(result.provider, 'openai');
+    assert.strictEqual(result.providerSchema, 'codex-exec-json-v1');
+    assert.strictEqual(result.requestedModel, 'gpt-5.1-codex');
+    assert.strictEqual(result.reasoningEffort, 'high');
+    assert.strictEqual(result.serviceTier, 'priority');
+    assert.strictEqual(result.resolvedModel, 'unavailable');
+    assert.match(result.invocationId, /^[0-9a-f-]{36}$/);
+    assert.ok(Number.isFinite(result.elapsedMs) && result.elapsedMs >= 0);
+    assert.strictEqual(result.usagePartial, false);
+    assert.deepStrictEqual(result.usage, {
+      inputTokens: 95,
+      cachedInputTokens: 20,
+      cacheWriteInputTokens: 5,
+      reasoningOutputTokens: 3,
+      outputTokens: 4,
+      totalTokens: 127,
+    });
+    assert.deepStrictEqual(result.providerUsage, {
+      input_tokens: 120,
+      cached_input_tokens: 20,
+      cache_write_input_tokens: 5,
+      output_tokens: 7,
+      reasoning_output_tokens: 3,
+    });
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
+test('codexExec elapsed time excludes the synchronous version probe', async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 900); process.stdout.write('codex-cli 0.154.0\\n'); }\nelse process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } }) + '\\n');\n`);
+  fs.chmodSync(codex, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  try {
+    const result = await codexExec({ role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir });
+    assert.ok(result.elapsedMs < 800, `review elapsed time included version probe: ${result.elapsedMs}ms`);
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
+test('codexExec rejects extra usage fields from the pinned schema', async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.154.0\\n');\nelse process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 120, cached_input_tokens: 20, cache_write_input_tokens: 5, output_tokens: 7, reasoning_output_tokens: 3, total_tokens: 127 } }) + '\\n');\n`);
+  fs.chmodSync(codex, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  try {
+    const result = await codexExec({ role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir });
+    assert.strictEqual(result.usagePartial, true);
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
+test('codexExec marks a successful subprocess with no usage event as partial', async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.154.0\\n');\nelse process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');\n`);
+  fs.chmodSync(codex, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  try {
+    const result = await codexExec({ role: 'verify', prompt: 'review', repoRoot: binDir, stateDir: binDir });
+    assert.strictEqual(result.status, 0);
+    assert.strictEqual(result.usagePartial, true);
+    assert.deepStrictEqual(result.usage, {
+      inputTokens: null,
+      cachedInputTokens: null,
+      cacheWriteInputTokens: null,
+      reasoningOutputTokens: null,
+      outputTokens: null,
+      totalTokens: null,
+    });
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
+for (const [name, body] of [
+  ['malformed JSONL', `'not json\\n'`],
+  ['unknown event', `JSON.stringify({ type: 'future.event' }) + '\\n'`],
+  ['unknown item', `JSON.stringify({ type: 'item.completed', item: { type: 'future_item' } }) + '\\n' + JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } }) + '\\n'`],
+  ['duplicate completion', `JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } }) + '\\n' + JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } }) + '\\n'`],
+  ['all-zero default usage', `JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 0, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0 } }) + '\\n'`],
+  ['collaboration evidence', `JSON.stringify({ type: 'item.completed', item: { type: 'collaboration_tool_call' } }) + '\\n' + JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } }) + '\\n'`],
+]) test(`codexExec marks ${name} partial`, async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.154.0\\n');\nelse process.stdout.write(${body});\n`);
+  fs.chmodSync(codex, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  try {
+    assert.strictEqual((await codexExec({ role: 'verify', prompt: 'review', repoRoot: binDir, stateDir: binDir })).usagePartial, true);
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
+test('codexExec marks a CLI version mismatch partial', async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.155.0\\n');\nelse process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } }) + '\\n');\n`);
+  fs.chmodSync(codex, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  try {
+    const result = await codexExec({ role: 'verify', prompt: 'review', repoRoot: binDir, stateDir: binDir });
+    assert.strictEqual(result.cliVersion, 'codex-cli 0.155.0');
+    assert.strictEqual(result.usagePartial, true);
+    assert.strictEqual(result.usageStatus, 'unsupported-cli-version');
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
+function harness({ targetType = 'git', rounds = 1, malformed = false, retry = false, retryForever = false, correctnessArtifact, gateApplied = false, dodDeferred = false, failingRole, promptDrivenFix = false, stateDir = temp(), slotIdentity = {} } = {}) {
   const calls = []; let round = 0; let retried = false;
   const cli = (args) => {
     calls.push(['cli', ...args]);
@@ -73,6 +233,10 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
       if (malformed && role === 'correctness') throw new Error('harness-failure: correctness artifact is not JSON');
       if (retry && role === 'correctness' && (!retried || retryForever)) { retried = true; return { status: 'retry', prompt: 'REWRITE ARTIFACT' }; }
       return { status: 'ok' };
+    }
+    if (verb === 'telemetry-slot') {
+      const artifactPath = role;
+      return { engine: 'codex', provider: 'openai', artifactPath, attempt: calls.filter((call) => call[0] === 'cli' && call[1] === 'telemetry-slot' && call[3] === artifactPath).length, role: path.basename(artifactPath).includes('-fix-') ? 'fix' : path.basename(artifactPath).match(/^round-\d+-(.+)\.json$/)?.[1], round, ...slotIdentity };
     }
     if (verb === 'plan-fixes') return { fixes: round === 1 ? [{ id: 'correctness:bug', file: 'a.txt', span: 'bad', summary: 'fix it' }] : [] };
     if (verb === 'commit-fix') {
@@ -104,8 +268,416 @@ test('runner automatically executes a clean round in correctness then verify ord
   const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
   assert.strictEqual(out.handoff, 'LGTM');
   assert.deepStrictEqual(h.calls.map((c) => c[0] === 'spawn' ? c.slice(0, 2) : c.slice(0, 2)), [
-    ['cli', 'round-start'], ['spawn', 'correctness'], ['cli', 'artifact-normalize'], ['spawn', 'verify'], ['cli', 'artifact-normalize'], ['cli', 'plan-fixes'], ['spawn', 'fix'], ['cli', 'commit-fix'], ['cli', 'record'],
+    ['cli', 'round-start'], ['cli', 'telemetry-slot'], ['spawn', 'correctness'], ['cli', 'artifact-normalize'], ['cli', 'telemetry-slot'], ['spawn', 'verify'], ['cli', 'artifact-normalize'], ['cli', 'plan-fixes'], ['cli', 'telemetry-slot'], ['spawn', 'fix'], ['cli', 'commit-fix'], ['cli', 'record'],
   ]);
+  assert.ok(h.calls.filter((call) => call[0] === 'cli' && call[1] === 'telemetry-slot').every((call) => call.slice(-2).join(' ') === '--engine codex'));
+  assert.strictEqual(fs.existsSync(path.join(h.stateDir, 'telemetry-feature-x.json')), false);
+});
+
+test('runner records slots when the review state directory contains whitespace', async () => {
+  const stateDir = path.join(temp(), 'state dir');
+  fs.mkdirSync(stateDir);
+  const h = harness({ stateDir });
+
+  await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
+
+  assert.strictEqual(h.calls.filter((call) => call[0] === 'cli' && call[1] === 'telemetry-slot').length, 3);
+});
+
+test('runner fails before spawning when telemetry slot allocation fails', async () => {
+  const h = harness();
+  const cli = (args) => {
+    if (args[0] === 'telemetry-slot') throw new Error('slot allocation failed');
+    return h.cli(args);
+  };
+
+  await assert.rejects(runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn: h.spawn }), /slot allocation failed/);
+  assert.strictEqual(h.calls.some((call) => call[0] === 'spawn'), false);
+});
+
+test('runner keeps invocation role and round when slot metadata disagrees', async () => {
+  const h = harness({ slotIdentity: { role: 'artifact-derived-role', round: 99 } });
+
+  const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
+
+  assert.deepStrictEqual(out.telemetry.invocations.map(({ role, round }) => ({ role, round })), [
+    { role: 'correctness', round: 1 },
+    { role: 'verify', round: 1 },
+    { role: 'fix', round: 1 },
+  ]);
+});
+
+test('runner reports aggregate and per-role subprocess telemetry', async () => {
+  const h = harness();
+  const usageByRole = {
+    correctness: { inputTokens: 100, cacheWriteInputTokens: 0, cachedInputTokens: 10, reasoningOutputTokens: 0, outputTokens: 1, totalTokens: 111 },
+    verify: { inputTokens: 200, cacheWriteInputTokens: 0, cachedInputTokens: 20, reasoningOutputTokens: 0, outputTokens: 2, totalTokens: 222 },
+    fix: { inputTokens: 300, cacheWriteInputTokens: 0, cachedInputTokens: 30, reasoningOutputTokens: 0, outputTokens: 3, totalTokens: 333 },
+  };
+  const spawn = async (input) => ({
+    ...await h.spawn(input),
+    engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: `invocation-${input.role}`,
+    elapsedMs: input.role === 'correctness' ? 10 : input.role === 'verify' ? 20 : 30,
+    usage: usageByRole[input.role],
+    usagePartial: false,
+  });
+
+  const out = await runReviewUntilGreen({
+    ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn,
+    model: 'gpt-5.1-codex', reasoningEffort: 'high', serviceTier: 'priority',
+  });
+
+  assert.deepStrictEqual(out.telemetry, {
+    total: {
+      calls: 3,
+      partialCalls: 0,
+      inputTokens: 600,
+      cacheWriteInputTokens: 0,
+      cachedInputTokens: 60,
+      reasoningOutputTokens: 0,
+      outputTokens: 6,
+      totalTokens: 666,
+      elapsedMs: 60,
+    },
+    byRole: {
+      correctness: { calls: 1, partialCalls: 0, ...usageByRole.correctness, elapsedMs: 10 },
+      verify: { calls: 1, partialCalls: 0, ...usageByRole.verify, elapsedMs: 20 },
+      fix: { calls: 1, partialCalls: 0, ...usageByRole.fix, elapsedMs: 30 },
+    },
+    invocations: [
+      { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-correctness', role: 'correctness', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.correctness, elapsedMs: 10, artifactPath: path.join(h.stateDir, 'round-1-correctness.json'), attempt: 1 },
+      { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-verify', role: 'verify', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.verify, elapsedMs: 20, artifactPath: path.join(h.stateDir, 'round-1-verify.json'), attempt: 1 },
+      { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-fix', role: 'fix', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.fix, elapsedMs: 30, artifactPath: path.join(h.stateDir, 'round-1-fix-correctness:bug.json'), attempt: 1 },
+    ],
+  });
+  assert.strictEqual(out.handoff, 'LGTM');
+});
+
+test('resumed runner preserves telemetry from the previous process', async () => {
+  const h = harness();
+  const telemetryPath = path.join(h.stateDir, 'telemetry-feature-x.json');
+  fs.writeFileSync(telemetryPath, JSON.stringify({
+    total: { calls: 1, partialCalls: 0, inputTokens: 10, cachedInputTokens: 1, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 16, elapsedMs: 20 },
+    byRole: {
+      correctness: { calls: 1, partialCalls: 0, inputTokens: 10, cachedInputTokens: 1, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 16, elapsedMs: 20 },
+    },
+    invocations: [
+      { role: 'correctness', round: 4, model: null, reasoningEffort: null, status: 0, usagePartial: false, inputTokens: 10, cachedInputTokens: 1, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 16, elapsedMs: 20 },
+    ],
+  }) + '\n');
+
+  const out = await runReviewUntilGreen({ ref: 'feature/x', resume: true, repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
+
+  assert.deepStrictEqual(out.telemetry.total, {
+    calls: 4, partialCalls: 3, inputTokens: 10, cacheWriteInputTokens: 0, cachedInputTokens: 1, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 16, elapsedMs: 20,
+  });
+  assert.deepStrictEqual(out.telemetry.invocations.map(({ role, round }) => ({ role, round })), [
+    { role: 'correctness', round: 4 },
+    { role: 'correctness', round: 1 },
+    { role: 'verify', round: 1 },
+    { role: 'fix', round: 1 },
+  ]);
+  assert.strictEqual(fs.existsSync(telemetryPath), false);
+});
+
+test('resumed runner preserves a corrupt telemetry file as malformed evidence', async () => {
+  const stateDir = temp();
+  const telemetryPath = path.join(stateDir, 'telemetry-feature-x.json');
+  fs.writeFileSync(telemetryPath, 'not json');
+
+  const out = await runReviewUntilGreen({
+    ref: 'feature/x', resume: true, repoRoot: '/repo',
+    runCli: () => ({ decision: 'terminal', stateDir, handoff: 'LGTM' }),
+    spawn: () => { throw new Error('terminal resume must not spawn'); },
+  });
+
+  assert.deepStrictEqual(out.telemetry.invocations.map(({ status, invocationId, artifactPath }) => ({ status, invocationId, artifactPath })), [
+    { status: 'malformed', invocationId: null, artifactPath: telemetryPath },
+  ]);
+  assert.strictEqual(out.telemetry.total.malformedCalls, 1);
+  fs.writeFileSync(telemetryPath, JSON.stringify(out.telemetry));
+  const folded = foldTelemetry(stateDir, { target: { ref: 'feature/x' } }, 'feature-x').telemetry;
+  assert.strictEqual(folded.malformedCalls, 1);
+  assert.strictEqual(folded.calls, 0);
+});
+
+test('runner persists unknown Codex token components as null', async () => {
+  const h = harness();
+  let invocation = 0;
+  const spawn = async (input) => ({
+    ...await h.spawn(input), engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1',
+    invocationId: `invocation-${++invocation}`, usagePartial: true,
+  });
+  const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn });
+  const fields = ['inputTokens', 'cacheWriteInputTokens', 'cachedInputTokens', 'reasoningOutputTokens', 'outputTokens', 'totalTokens'];
+  assert.deepStrictEqual(out.telemetry.invocations.map((entry) => fields.map((field) => entry[field])), [
+    fields.map(() => null), fields.map(() => null), fields.map(() => null),
+  ]);
+
+  const telemetryPath = path.join(h.stateDir, 'telemetry-feature-x.json');
+  fs.writeFileSync(telemetryPath, JSON.stringify(out.telemetry));
+  const folded = foldTelemetry(h.stateDir, {
+    target: { ref: 'feature/x' },
+    telemetrySlots: out.telemetry.invocations.map(({ artifactPath, attempt, role, round }) => ({ engine: 'codex', provider: 'openai', artifactPath, attempt, role, round })),
+  }, 'feature-x').telemetry;
+  assert.strictEqual(folded.totalTokens, null);
+  assert.strictEqual(folded.partialCalls, 3);
+});
+
+test('runner removes persisted telemetry when the review is abandoned', async () => {
+  const h = harness();
+  const cli = (args) => args[0] === 'record'
+    ? { decision: { continue: false, abandoned: true }, handoff: 'abandoned' }
+    : h.cli(args);
+
+  await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn: h.spawn });
+
+  assert.strictEqual(fs.existsSync(path.join(h.stateDir, 'telemetry-feature-x.json')), false);
+});
+
+test('runner preserves a rejected Codex spawn as a failed invocation', async () => {
+  const h = harness();
+  const cli = (args) => args[0] === 'telemetry-slot' ? null : h.cli(args);
+  const previousPath = process.env.PATH;
+  process.env.PATH = temp();
+  try {
+    await assert.rejects(
+      runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli }),
+      { code: 'ENOENT' },
+    );
+  } finally {
+    process.env.PATH = previousPath;
+  }
+
+  const telemetryPath = path.join(h.stateDir, 'telemetry-feature-x.json');
+  const telemetry = JSON.parse(fs.readFileSync(telemetryPath, 'utf8'));
+  assert.strictEqual(telemetry.invocations[0].status, 'failed');
+  assert.match(telemetry.invocations[0].invocationId, /^[0-9a-f-]{36}$/);
+  const folded = foldTelemetry(h.stateDir, { target: { ref: 'feature/x' } }, 'feature-x').telemetry;
+  assert.deepStrictEqual({ calls: folded.calls, partialCalls: folded.partialCalls, status: folded.entries[0].status }, {
+    calls: 1, partialCalls: 1, status: 'failed',
+  });
+});
+
+test('runner stamps Codex identity on a custom spawn rejection without telemetry', async () => {
+  const h = harness();
+  const cli = (args) => args[0] === 'telemetry-slot' ? null : h.cli(args);
+
+  await assert.rejects(
+    runReviewUntilGreen({
+      ref: 'feature/x',
+      repoRoot: '/repo',
+      runCli: cli,
+      spawn: async () => { throw new Error('spawn failed'); },
+    }),
+    /spawn failed/,
+  );
+
+  const telemetryPath = path.join(h.stateDir, 'telemetry-feature-x.json');
+  const telemetry = JSON.parse(fs.readFileSync(telemetryPath, 'utf8'));
+  assert.deepStrictEqual(
+    { status: telemetry.invocations[0].status, engine: telemetry.invocations[0].engine, provider: telemetry.invocations[0].provider },
+    { status: 'failed', engine: 'codex', provider: 'openai' },
+  );
+  assert.match(telemetry.invocations[0].invocationId, /^[0-9a-f-]{36}$/);
+  const folded = foldTelemetry(h.stateDir, { target: { ref: 'feature/x' } }, 'feature-x').telemetry;
+  assert.deepStrictEqual({ calls: folded.calls, partialCalls: folded.partialCalls, status: folded.entries[0].status }, {
+    calls: 1, partialCalls: 1, status: 'failed',
+  });
+});
+
+test('terminal runner returns persisted telemetry even when the caller omits resume', async () => {
+  const stateDir = temp();
+  const persisted = {
+    total: { calls: 1, partialCalls: 0, inputTokens: 10, cacheWriteInputTokens: 0, cachedInputTokens: 1, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 16, elapsedMs: 20 },
+    byRole: {
+      correctness: { calls: 1, partialCalls: 0, inputTokens: 10, cacheWriteInputTokens: 0, cachedInputTokens: 1, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 16, elapsedMs: 20 },
+    },
+    invocations: [
+      { role: 'correctness', round: 4, model: null, reasoningEffort: null, status: 0, usagePartial: false, inputTokens: 10, cachedInputTokens: 1, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 16, elapsedMs: 20 },
+    ],
+  };
+  fs.writeFileSync(path.join(stateDir, 'telemetry-feature-x.json'), `${JSON.stringify(persisted)}\n`);
+
+  const out = await runReviewUntilGreen({
+    ref: 'feature/x',
+    repoRoot: '/repo',
+    runCli: () => ({ decision: 'terminal', stateDir, handoff: 'LGTM' }),
+    spawn: () => { throw new Error('terminal resume must not spawn'); },
+  });
+
+  assert.deepStrictEqual(out.telemetry, persisted);
+  assert.strictEqual(out.handoff, 'LGTM');
+});
+
+test('terminal runner without a telemetry file ignores historical ledger slots', async () => {
+  const stateDir = temp();
+  fs.writeFileSync(path.join(stateDir, 'review-feature-x.json'), JSON.stringify({
+    target: { ref: 'feature/x' },
+    telemetrySlots: [
+      { engine: 'codex', provider: 'openai', artifactPath: '/old/one.json', attempt: 1, role: 'correctness', round: 1 },
+      { engine: 'codex', provider: 'openai', artifactPath: '/old/two.json', attempt: 1, role: 'verify', round: 1 },
+    ],
+  }));
+
+  const out = await runReviewUntilGreen({
+    ref: 'feature/x', repoRoot: '/repo',
+    runCli: () => ({ decision: 'terminal', stateDir, handoff: 'LGTM' }),
+    spawn: () => { throw new Error('terminal invocation must not spawn'); },
+  });
+
+  assert.deepStrictEqual(out.telemetry.total, {
+    calls: 0, partialCalls: 0, inputTokens: 0, cacheWriteInputTokens: 0, cachedInputTokens: 0,
+    reasoningOutputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0,
+  });
+  assert.strictEqual(out.handoff, 'LGTM');
+});
+
+test('no-op runner does not leave an empty telemetry file for the next invocation', async () => {
+  const stateDir = temp();
+
+  const out = await runReviewUntilGreen({
+    ref: 'feature/x', repoRoot: '/repo',
+    runCli: () => ({ decision: 'no-op', stateDir }),
+    spawn: () => { throw new Error('no-op invocation must not spawn'); },
+  });
+
+  assert.strictEqual(out.telemetry.total.calls, 0);
+  assert.strictEqual(fs.existsSync(path.join(stateDir, 'telemetry-feature-x.json')), false);
+});
+
+test('no-op runner preserves telemetry from an interrupted round', async () => {
+  const stateDir = temp();
+  const telemetryPath = path.join(stateDir, 'telemetry-feature-x.json');
+  const persisted = {
+    total: { calls: 1, partialCalls: 1, inputTokens: 0, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 1 },
+    byRole: {},
+    invocations: [{ engine: 'codex', provider: 'openai', invocationId: 'failed-1', role: 'correctness', round: 1, status: 'failed', usagePartial: true }],
+  };
+  fs.writeFileSync(telemetryPath, JSON.stringify(persisted));
+
+  const out = await runReviewUntilGreen({
+    ref: 'feature/x', repoRoot: '/repo',
+    runCli: () => ({ decision: 'no-op', stateDir }),
+    spawn: () => { throw new Error('no-op invocation must not spawn'); },
+  });
+
+  assert.strictEqual(out.telemetry.invocations[0].invocationId, 'failed-1');
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(telemetryPath, 'utf8')), persisted);
+});
+
+test('runner preserves telemetry when record stops for a re-runnable decision', async () => {
+  const h = harness();
+  const cli = (args) => args[0] === 'record'
+    ? { decision: { continue: false, intentReview: true }, handoff: 'resolve intent' }
+    : h.cli(args);
+
+  await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn: h.spawn });
+
+  assert.strictEqual(fs.existsSync(path.join(h.stateDir, 'telemetry-feature-x.json')), true);
+});
+
+test('runner leaves the CLI-authored usage line as the only handoff usage summary', async () => {
+  const h = harness();
+  const cli = (args) => args[0] === 'record'
+    ? { decision: { continue: false, converged: true }, handoff: 'LGTM\nreview usage: 42 tokens across 3 call(s), 0 partial' }
+    : h.cli(args);
+
+  const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn: h.spawn });
+
+  assert.strictEqual(out.handoff, 'LGTM\nreview usage: 42 tokens across 3 call(s), 0 partial');
+});
+
+test('runner returns the CLI-folded telemetry as the authoritative aggregate', async () => {
+  const h = harness();
+  const folded = { engine: 'codex', calls: 3, partialCalls: 0, missingCalls: 1, entries: [] };
+  const cli = (args) => {
+    const result = h.cli(args);
+    return args[0] === 'record' ? { ...result, telemetry: folded } : result;
+  };
+
+  const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn: h.spawn });
+
+  assert.strictEqual(out.telemetry, folded);
+});
+
+test('resumed runner reconciles only slots evidenced by its telemetry file', async () => {
+  const stateDir = temp();
+  const currentArtifact = path.join(stateDir, 'round-4-correctness.json');
+  fs.writeFileSync(path.join(stateDir, 'review-feature-x.json'), JSON.stringify({
+    target: { ref: 'feature/x' },
+    telemetrySlots: [
+      { engine: 'codex', provider: 'openai', artifactPath: '/prior/round-1-correctness.json', attempt: 1, role: 'correctness', round: 1 },
+      { engine: 'codex', provider: 'openai', artifactPath: currentArtifact, attempt: 1, role: 'correctness', round: 4 },
+    ],
+  }));
+  fs.writeFileSync(path.join(stateDir, 'telemetry-feature-x.json'), JSON.stringify({
+    total: { calls: 1, partialCalls: 0, inputTokens: 1, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, outputTokens: 1, totalTokens: 2, elapsedMs: 1 },
+    byRole: {},
+    invocations: [{
+      engine: 'codex', provider: 'openai', role: 'correctness', round: 4,
+      artifactPath: currentArtifact, attempt: 1, invocationId: 'current', status: 0,
+      usagePartial: false, inputTokens: 1, cacheWriteInputTokens: 0, cachedInputTokens: 0,
+      reasoningOutputTokens: 0, outputTokens: 1, totalTokens: 2, elapsedMs: 1,
+    }],
+  }));
+
+  const out = await runReviewUntilGreen({
+    ref: 'feature/x', resume: true, repoRoot: '/repo',
+    runCli: () => ({ decision: 'terminal', stateDir, handoff: 'LGTM' }),
+    spawn: () => { throw new Error('terminal resume must not spawn'); },
+  });
+
+  assert.deepStrictEqual(out.telemetry.invocations.map(({ invocationId, artifactPath }) => ({ invocationId, artifactPath })), [
+    { invocationId: 'current', artifactPath: currentArtifact },
+  ]);
+  assert.strictEqual(out.telemetry.total.partialCalls, 0);
+});
+
+test('runner leaves missing-slot synthesis to the CLI fold', async () => {
+  const h = harness();
+  const ledgerPath = path.join(h.stateDir, 'review-feature-x.json');
+  const slots = [{ engine: 'codex', provider: 'openai', artifactPath: '/missing.json', attempt: 1, role: 'correctness', round: 1 }];
+  const writeSlots = () => fs.writeFileSync(ledgerPath, JSON.stringify({ target: { ref: 'feature/x' }, telemetrySlots: slots }));
+  writeSlots();
+  const cli = (args) => {
+    const result = h.cli(args);
+    if (args[0] === 'telemetry-slot') {
+      slots.push(result);
+      writeSlots();
+    }
+    return result;
+  };
+
+  const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn: h.spawn });
+
+  assert.strictEqual(out.telemetry.invocations.some((invocation) => invocation.artifactPath === '/missing.json'), false);
+  assert.deepStrictEqual({ calls: out.telemetry.total.calls, partialCalls: out.telemetry.total.partialCalls, missingCalls: out.telemetry.total.missingCalls }, {
+    calls: 3, partialCalls: 3, missingCalls: undefined,
+  });
+});
+
+test('terminal runner does not invent a missing call from an otherwise empty persisted file', async () => {
+  const stateDir = temp();
+  const artifactPath = path.join(stateDir, 'round-4-correctness.json');
+  fs.writeFileSync(path.join(stateDir, 'review-feature-x.json'), JSON.stringify({
+    target: { ref: 'feature/x' },
+    telemetrySlots: [{ engine: 'codex', provider: 'openai', artifactPath, attempt: 1, role: 'correctness', round: 4 }],
+  }));
+  fs.writeFileSync(path.join(stateDir, 'telemetry-feature-x.json'), JSON.stringify({
+    total: { calls: 0, partialCalls: 0, inputTokens: 0, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0 },
+    byRole: {}, invocations: [],
+  }));
+
+  const out = await runReviewUntilGreen({
+    ref: 'feature/x', resume: true, repoRoot: '/repo',
+    runCli: () => ({ decision: 'terminal', stateDir, handoff: 'LGTM' }),
+    spawn: () => { throw new Error('terminal resume must not spawn'); },
+  });
+
+  assert.strictEqual(out.telemetry.total.calls, 0);
+  assert.strictEqual(out.telemetry.total.partialCalls, 0);
+  assert.deepStrictEqual(out.telemetry.invocations, []);
 });
 
 test('fix prompt writes the commit-fix artifact and requires a truthful files declaration', () => {
@@ -237,6 +809,16 @@ test('fix subprocess writes the prompt-declared artifact consumed by commit-fix'
   assert.ok(h.calls.some((call) => call[0] === 'cli' && call[1] === 'commit-fix'));
 });
 
+test('runner fails closed when a required reviewer subprocess is terminated by a signal', async () => {
+  const h = harness();
+  const spawn = (input) => input.role === 'correctness' ? { status: null } : h.spawn(input);
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn }),
+    /harness-failure: correctness subprocess exited null/,
+  );
+  assert.strictEqual(h.calls.some((call) => call[0] === 'spawn' && call[1] === 'verify'), false);
+});
+
 test('gate-verify subprocess failure stays lenient and lets the CLI decide', async () => {
   const h = harness({ gateApplied: true, failingRole: 'gate-verify' });
   const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
@@ -252,6 +834,7 @@ test('intent and gate review chains fan out alongside the correctness-to-verify 
     const [verb, , role] = args;
     if (verb === 'round-start') return { decision: 'work', round: 1, stateDir, targetType: 'git', dodPassed: true, intentApplied: true, gateApplied: true, priorIntentIds: ['intent:retry-count'] };
     if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: role, attempt: 1 };
     if (verb === 'plan-fixes') return { fixes: [] };
     if (verb === 'record') return { decision: { continue: false }, handoff: 'LGTM' };
     throw new Error(`unexpected CLI ${verb} ${role}`);
@@ -311,6 +894,7 @@ test('panel lens prompts identify the reviewed diff and require the intent sourc
     const [verb] = args;
     if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
     if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
     if (verb === 'plan-fixes') return { fixes: [] };
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
@@ -346,6 +930,7 @@ test('panel lens and adversarial-vote prompts carry the blocked-tool clause', as
     const [verb] = args;
     if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
     if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
     if (verb === 'plan-fixes') return { fixes: [] };
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
@@ -394,6 +979,7 @@ test('an adversarial vote that declares blocked fails the round instead of count
     const [verb] = args;
     if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
     if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
     if (verb === 'plan-fixes') return { fixes: [] };
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
@@ -432,6 +1018,7 @@ test('a failed panel lens is treated as zero findings while the remaining lenses
     const [verb] = args;
     if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
     if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
     if (verb === 'plan-fixes') return { fixes: [] };
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
@@ -459,10 +1046,17 @@ test('panel lenses and each finding\'s adversarial votes fan out concurrently', 
   const pendingLenses = [];
   const pendingVotes = [];
   let recorded = 0;
-  const cli = (args) => {
+  let activeSlots = 0; let maxActiveSlots = 0;
+  const cli = async (args) => {
     const [verb] = args;
     if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
     if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'telemetry-slot') {
+      activeSlots++; maxActiveSlots = Math.max(maxActiveSlots, activeSlots);
+      await new Promise(setImmediate);
+      activeSlots--;
+      return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
+    }
     if (verb === 'plan-fixes') return { fixes: [] };
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
@@ -480,7 +1074,7 @@ test('panel lenses and each finding\'s adversarial votes fan out concurrently', 
   };
 
   const running = runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn });
-  await new Promise(setImmediate);
+  for (let i = 0; i < 10 && pendingLenses.length < 5; i++) await new Promise(setImmediate);
   assert.strictEqual(pendingLenses.length, 5);
   for (const { role, resolve } of pendingLenses) {
     const lens = role.slice('gate-panel-'.length);
@@ -488,13 +1082,14 @@ test('panel lenses and each finding\'s adversarial votes fan out concurrently', 
     fs.writeFileSync(path.join(stateDir, `round-4-gate-panel-1-${lens}.json`), JSON.stringify({ status: 'ok', findings }));
     resolve({ status: 0 });
   }
-  await new Promise(setImmediate);
+  for (let i = 0; i < 10 && pendingVotes.length < 3; i++) await new Promise(setImmediate);
   assert.strictEqual(pendingVotes.length, 3);
   for (const resolve of pendingVotes) {
     fs.writeFileSync(path.join(stateDir, `round-4-gate-panel-1-vote-gate:ac-coverage:gap-${pendingVotes.indexOf(resolve)}.json`), JSON.stringify({ status: 'ok', survives: false }));
     resolve({ status: 0 });
   }
   await running;
+  assert.strictEqual(maxActiveSlots, 1);
 });
 
 test('panel candidates with unsafe IDs never reach an interpolated verdict path', async () => {
@@ -505,6 +1100,7 @@ test('panel candidates with unsafe IDs never reach an interpolated verdict path'
     const [verb] = args;
     if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
     if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
     if (verb === 'plan-fixes') return { fixes: [] };
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
@@ -628,7 +1224,7 @@ test('Codex launcher recognizes documented broad-review phrases without consumin
   }
 });
 
-test('Codex launcher forwards --no-dod without consuming it as a target argument', () => {
+test('Codex launcher forwards explicit inference config without consuming it as target arguments', () => {
   const dir = temp();
   const capture = path.join(dir, 'options.json');
   const preload = path.join(dir, 'capture-runner.js');
@@ -645,11 +1241,14 @@ test('Codex launcher forwards --no-dod without consuming it as a target argument
       return load.apply(this, arguments);
     };
   `);
-  execFileSync('node', ['--require', preload, bin, 'feature/x', '--no-dod'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
+  execFileSync('node', ['--require', preload, bin, 'feature/x', '--no-dod', '--model', 'gpt-5.1-codex', '--reasoning-effort', 'high', '--service-tier', 'priority'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
   const options = JSON.parse(fs.readFileSync(capture, 'utf8'));
   assert.strictEqual(options.ref, 'feature/x');
   assert.strictEqual(options.base, undefined); // the flag must not be mistaken for base
   assert.strictEqual(options.noDod, true);
+  assert.strictEqual(options.model, 'gpt-5.1-codex');
+  assert.strictEqual(options.reasoningEffort, 'high');
+  assert.strictEqual(options.serviceTier, 'priority');
 
   fs.rmSync(capture, { force: true });
   execFileSync('node', ['--require', preload, bin, 'feature/x'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
