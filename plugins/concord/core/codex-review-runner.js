@@ -195,7 +195,8 @@ function summarizeInvocations(invocations) {
   for (const invocation of invocations) {
     const role = invocation.role; const roleTotal = byRole[role] || (byRole[role] = empty());
     for (const target of [total, roleTotal]) {
-      target.calls++;
+      if (invocation.slotMissing !== true) target.calls++;
+      if (invocation.slotMissing === true) target.missingCalls = (target.missingCalls || 0) + 1;
       if (invocation.usagePartial !== false) target.partialCalls++;
       if (invocation.usageStatus === 'unsupported-cli-version') {
         target.unsupportedCliVersionCalls = (target.unsupportedCliVersionCalls || 0) + 1;
@@ -209,17 +210,15 @@ function summarizeInvocations(invocations) {
   return { total, byRole, invocations };
 }
 
-function reconcileCodexTelemetry(telemetry, stateDir, ref, includeAllSlots, currentRound) {
+function reconcileCodexTelemetry(telemetry, stateDir, ref, currentRound) {
   let slots;
   try {
     const ledger = JSON.parse(fs.readFileSync(ledgerPath(stateDir, targetSlug(ref)), 'utf8'));
     slots = (ledger.telemetrySlots || []).filter((slot) => slot?.engine === 'codex' && slot.provider === 'openai');
   } catch { return telemetry; }
   const invocations = (telemetry.invocations || []).filter((invocation) => invocation.slotMissing !== true);
-  if (!includeAllSlots) {
-    const invocationSlots = new Set(invocations.map((invocation) => JSON.stringify([invocation.artifactPath, invocation.attempt])));
-    slots = slots.filter((slot) => slot.round === currentRound || invocationSlots.has(JSON.stringify([slot.artifactPath, slot.attempt])));
-  }
+  const invocationSlots = new Set(invocations.map((invocation) => JSON.stringify([invocation.artifactPath, invocation.attempt])));
+  slots = slots.filter((slot) => slot.round === currentRound || invocationSlots.has(JSON.stringify([slot.artifactPath, slot.attempt])));
   if (!slots.length) return telemetry;
   const keyed = new Map();
   for (const invocation of invocations) {
@@ -318,14 +317,14 @@ async function runReviewUntilGreen(options) {
     }
   };
   const withTelemetry = (result) => {
-    Object.assign(telemetry, reconcileCodexTelemetry(telemetry, telemetryPath && path.dirname(telemetryPath), ref, telemetryLoadedFromDisk, currentRound));
+    Object.assign(telemetry, reconcileCodexTelemetry(telemetry, telemetryPath && path.dirname(telemetryPath), ref, currentRound));
     persistTelemetry();
     const output = { ...result, telemetry };
     if (typeof output.handoff === 'string') {
       const total = telemetry.total;
-      output.handoff += `\nusage: ${total.calls} calls, ${total.partialCalls} partial, ${total.totalTokens} tokens, ${total.elapsedMs}ms`;
+      output.handoff += `\nusage: ${total.calls} calls, ${total.partialCalls} partial${total.missingCalls ? `, ${total.missingCalls} missing` : ''}, ${total.totalTokens} tokens, ${total.elapsedMs}ms`;
     }
-    if ((result?.decision === 'terminal' || result?.decision?.continue === false) && telemetryPath) {
+    if ((result?.decision === 'terminal' || result?.decision === 'no-op' || result?.decision?.continue === false) && telemetryPath) {
       try { fs.unlinkSync(telemetryPath); } catch {}
     }
     return output;

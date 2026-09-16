@@ -6,7 +6,10 @@ const SUM_FIELDS = ['elapsedMs', 'inputTokens', 'cacheWriteInputTokens', 'cached
 const HOOK_USAGE_FIELDS = ['input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens', 'output_tokens'];
 
 function summary(entries) {
-  const result = { calls: entries.length, partialCalls: entries.filter((entry) => entry.usagePartial).length };
+  const observed = entries.filter((entry) => typeof entry.invocationId === 'string');
+  const result = { calls: observed.length, partialCalls: entries.filter((entry) => entry.usagePartial).length };
+  const missingCalls = entries.filter((entry) => entry.status === 'missing' || entry.slotMissing === true).length;
+  if (missingCalls) result.missingCalls = missingCalls;
   const unsupported = entries.filter((entry) => entry.usageStatus === 'unsupported-cli-version');
   if (unsupported.length) {
     result.unsupportedCliVersionCalls = unsupported.length;

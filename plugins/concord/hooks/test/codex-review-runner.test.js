@@ -425,6 +425,52 @@ test('terminal runner without a telemetry file ignores historical ledger slots',
   assert.strictEqual(out.handoff, 'LGTM\nusage: 0 calls, 0 partial, 0 tokens, 0ms');
 });
 
+test('no-op runner does not leave an empty telemetry file for the next invocation', async () => {
+  const stateDir = temp();
+
+  const out = await runReviewUntilGreen({
+    ref: 'feature/x', repoRoot: '/repo',
+    runCli: () => ({ decision: 'no-op', stateDir }),
+    spawn: () => { throw new Error('no-op invocation must not spawn'); },
+  });
+
+  assert.strictEqual(out.telemetry.total.calls, 0);
+  assert.strictEqual(fs.existsSync(path.join(stateDir, 'telemetry-feature-x.json')), false);
+});
+
+test('resumed runner reconciles only slots evidenced by its telemetry file', async () => {
+  const stateDir = temp();
+  const currentArtifact = path.join(stateDir, 'round-4-correctness.json');
+  fs.writeFileSync(path.join(stateDir, 'review-feature-x.json'), JSON.stringify({
+    target: { ref: 'feature/x' },
+    telemetrySlots: [
+      { engine: 'codex', provider: 'openai', artifactPath: '/prior/round-1-correctness.json', attempt: 1, role: 'correctness', round: 1 },
+      { engine: 'codex', provider: 'openai', artifactPath: currentArtifact, attempt: 1, role: 'correctness', round: 4 },
+    ],
+  }));
+  fs.writeFileSync(path.join(stateDir, 'telemetry-feature-x.json'), JSON.stringify({
+    total: { calls: 1, partialCalls: 0, inputTokens: 1, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, outputTokens: 1, totalTokens: 2, elapsedMs: 1 },
+    byRole: {},
+    invocations: [{
+      engine: 'codex', provider: 'openai', role: 'correctness', round: 4,
+      artifactPath: currentArtifact, attempt: 1, invocationId: 'current', status: 0,
+      usagePartial: false, inputTokens: 1, cacheWriteInputTokens: 0, cachedInputTokens: 0,
+      reasoningOutputTokens: 0, outputTokens: 1, totalTokens: 2, elapsedMs: 1,
+    }],
+  }));
+
+  const out = await runReviewUntilGreen({
+    ref: 'feature/x', resume: true, repoRoot: '/repo',
+    runCli: () => ({ decision: 'terminal', stateDir, handoff: 'LGTM' }),
+    spawn: () => { throw new Error('terminal resume must not spawn'); },
+  });
+
+  assert.deepStrictEqual(out.telemetry.invocations.map(({ invocationId, artifactPath }) => ({ invocationId, artifactPath })), [
+    { invocationId: 'current', artifactPath: currentArtifact },
+  ]);
+  assert.strictEqual(out.telemetry.total.partialCalls, 0);
+});
+
 test('active round without a telemetry file preserves a preexisting missing slot from that round', async () => {
   const h = harness();
   const ledgerPath = path.join(h.stateDir, 'review-feature-x.json');
@@ -443,9 +489,12 @@ test('active round without a telemetry file preserves a preexisting missing slot
   const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn: h.spawn });
 
   assert.ok(out.telemetry.invocations.some((invocation) => invocation.artifactPath === '/missing.json' && invocation.slotMissing === true));
+  assert.deepStrictEqual({ calls: out.telemetry.total.calls, partialCalls: out.telemetry.total.partialCalls, missingCalls: out.telemetry.total.missingCalls }, {
+    calls: 3, partialCalls: 4, missingCalls: 1,
+  });
 });
 
-test('resumed runner preserves a Codex slot whose subprocess lifecycle record is missing', async () => {
+test('terminal runner does not invent a missing call from an otherwise empty persisted file', async () => {
   const stateDir = temp();
   const artifactPath = path.join(stateDir, 'round-4-correctness.json');
   fs.writeFileSync(path.join(stateDir, 'review-feature-x.json'), JSON.stringify({
@@ -463,11 +512,9 @@ test('resumed runner preserves a Codex slot whose subprocess lifecycle record is
     spawn: () => { throw new Error('terminal resume must not spawn'); },
   });
 
-  assert.strictEqual(out.telemetry.total.calls, 1);
-  assert.strictEqual(out.telemetry.total.partialCalls, 1);
-  assert.deepStrictEqual(out.telemetry.invocations.map(({ engine, provider, artifactPath: artifact, attempt, usagePartial }) => ({ engine, provider, artifact, attempt, usagePartial })), [
-    { engine: 'codex', provider: 'openai', artifact: artifactPath, attempt: 1, usagePartial: true },
-  ]);
+  assert.strictEqual(out.telemetry.total.calls, 0);
+  assert.strictEqual(out.telemetry.total.partialCalls, 0);
+  assert.deepStrictEqual(out.telemetry.invocations, []);
 });
 
 test('fix prompt writes the commit-fix artifact and requires a truthful files declaration', () => {

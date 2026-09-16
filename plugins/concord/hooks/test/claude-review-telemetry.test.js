@@ -889,7 +889,8 @@ test('a persisted attempt slot with its entire hook missing remains visible and 
 
   const folded = reviewTelemetry.foldTelemetry(stateDir, ledger);
 
-  assert.strictEqual(folded.telemetry.calls, 1);
+  assert.strictEqual(folded.telemetry.calls, 0);
+  assert.strictEqual(folded.telemetry.missingCalls, 1);
   assert.strictEqual(folded.telemetry.partialCalls, 1);
   assert.strictEqual(folded.telemetry.entries[0].status, 'missing');
   assert.strictEqual(folded.telemetry.entries[0].attempt, 1);

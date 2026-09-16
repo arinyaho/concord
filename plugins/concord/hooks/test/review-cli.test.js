@@ -1091,11 +1091,11 @@ test('manual review drivers persist a telemetry slot immediately before every su
   }
 });
 
-test('the Codex reviewer skill attributes swapped reviewer slots to Codex and Claude fixer slots to Claude', () => {
+test('the Codex reviewer skill does not allocate telemetry slots it cannot fill', () => {
   const md = fs.readFileSync(path.join(__dirname, '..', '..', 'skills', 'concord-codex-review', 'SKILL.md'), 'utf8');
 
-  assert.match(md, /telemetry-slot[^\n]+--engine codex/);
-  assert.match(md, /fix[^\n]+telemetry-slot[^\n]+--engine claude-code/i);
+  assert.doesNotMatch(md, /telemetry-slot/);
+  assert.match(md, /per-spawn telemetry is not captured/i);
 });
 
 function writeArtifact(dir, n, name, obj) {
@@ -1791,7 +1791,7 @@ test('a Codex-owned slot without runner evidence stays visible as a missing part
 
   assert.deepStrictEqual({ engine: slot.engine, provider: slot.provider }, { engine: 'codex', provider: 'openai' });
   const out = JSON.parse(run(['show', 'feat/codex-slots'], { env }));
-  assert.deepStrictEqual({ calls: out.telemetry.calls, partialCalls: out.telemetry.partialCalls }, { calls: 1, partialCalls: 1 });
+  assert.deepStrictEqual({ calls: out.telemetry.calls, partialCalls: out.telemetry.partialCalls, missingCalls: out.telemetry.missingCalls }, { calls: 0, partialCalls: 1, missingCalls: 1 });
   assert.deepStrictEqual(out.telemetry.entries.map(({ engine, provider, role, status }) => ({ engine, provider, role, status })), [
     { engine: 'codex', provider: 'openai', role: 'correctness', status: 'missing' },
   ]);
@@ -1800,7 +1800,7 @@ test('a Codex-owned slot without runner evidence stays visible as a missing part
   fs.writeFileSync(path.join(dir, `round-${started.round}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   run(['plan-fixes', 'feat/codex-slots'], { env });
   const recorded = JSON.parse(run(['record', 'feat/codex-slots'], { env }));
-  assert.match(recorded.handoff, /review usage: unknown tokens across 1 call\(s\), 1 partial/);
+  assert.match(recorded.handoff, /review usage: unknown tokens across 0 call\(s\), 1 partial, 1 missing/);
 });
 
 test('round-start: --no-dod starts a run in a repo with no review.config.json at all', () => {
