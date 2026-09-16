@@ -265,9 +265,8 @@ async function runReviewUntilGreen(options) {
     }
   };
   const withTelemetry = (result) => {
-    persistTelemetry();
     const output = { ...result, telemetry: result?.telemetry || telemetry };
-    if ((result?.decision === 'terminal' || result?.decision === 'no-op' || result?.decision?.converged === true || result?.decision?.parked === true || result?.decision?.abandoned === true) && telemetryPath) {
+    if ((result?.decision === 'terminal' || result?.decision?.converged === true || result?.decision?.parked === true || result?.decision?.abandoned === true) && telemetryPath) {
       try { fs.unlinkSync(telemetryPath); } catch {}
     }
     return output;

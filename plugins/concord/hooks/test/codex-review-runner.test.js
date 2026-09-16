@@ -518,6 +518,26 @@ test('no-op runner does not leave an empty telemetry file for the next invocatio
   assert.strictEqual(fs.existsSync(path.join(stateDir, 'telemetry-feature-x.json')), false);
 });
 
+test('no-op runner preserves telemetry from an interrupted round', async () => {
+  const stateDir = temp();
+  const telemetryPath = path.join(stateDir, 'telemetry-feature-x.json');
+  const persisted = {
+    total: { calls: 1, partialCalls: 1, inputTokens: 0, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 1 },
+    byRole: {},
+    invocations: [{ engine: 'codex', provider: 'openai', invocationId: 'failed-1', role: 'correctness', round: 1, status: 'failed', usagePartial: true }],
+  };
+  fs.writeFileSync(telemetryPath, JSON.stringify(persisted));
+
+  const out = await runReviewUntilGreen({
+    ref: 'feature/x', repoRoot: '/repo',
+    runCli: () => ({ decision: 'no-op', stateDir }),
+    spawn: () => { throw new Error('no-op invocation must not spawn'); },
+  });
+
+  assert.strictEqual(out.telemetry.invocations[0].invocationId, 'failed-1');
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(telemetryPath, 'utf8')), persisted);
+});
+
 test('runner preserves telemetry when record stops for a re-runnable decision', async () => {
   const h = harness();
   const cli = (args) => args[0] === 'record'
