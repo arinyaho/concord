@@ -55,7 +55,7 @@ Immediately before drafting the PR body, find and read the repository's applicab
 
 The design note is the durable reasoning record: keep the detailed causal argument, alternatives, counterexamples, bidirectional proof, trade-offs and residual exposure there. The PR body is the reviewer's decision summary. Link to the design note for that supporting detail instead of repeating it.
 
-Include only:
+When a PR template applies, complete every one of its prompts, including required issue links, rollout plans, screenshots, or other information. Beyond those template requirements, include only:
 
 - The observable problem
 - The changed behavior
