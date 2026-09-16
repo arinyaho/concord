@@ -197,7 +197,7 @@ function summarizeInvocations(invocations) {
     for (const target of [total, roleTotal]) {
       if (invocation.slotMissing !== true) target.calls++;
       if (invocation.slotMissing === true) target.missingCalls = (target.missingCalls || 0) + 1;
-      if (invocation.usagePartial !== false) target.partialCalls++;
+      if (invocation.slotMissing !== true && invocation.usagePartial !== false) target.partialCalls++;
       if (invocation.usageStatus === 'unsupported-cli-version') {
         target.unsupportedCliVersionCalls = (target.unsupportedCliVersionCalls || 0) + 1;
         target.unsupportedCliVersions = Array.from(new Set([...(target.unsupportedCliVersions || []), invocation.cliVersion].filter(Boolean))).sort();
@@ -320,11 +320,7 @@ async function runReviewUntilGreen(options) {
     Object.assign(telemetry, reconcileCodexTelemetry(telemetry, telemetryPath && path.dirname(telemetryPath), ref, currentRound));
     persistTelemetry();
     const output = { ...result, telemetry };
-    if (typeof output.handoff === 'string') {
-      const total = telemetry.total;
-      output.handoff += `\nusage: ${total.calls} calls, ${total.partialCalls} partial${total.missingCalls ? `, ${total.missingCalls} missing` : ''}, ${total.totalTokens} tokens, ${total.elapsedMs}ms`;
-    }
-    if ((result?.decision === 'terminal' || result?.decision === 'no-op' || result?.decision?.continue === false) && telemetryPath) {
+    if ((result?.decision === 'terminal' || result?.decision === 'no-op' || result?.decision?.converged === true || result?.decision?.parked === true) && telemetryPath) {
       try { fs.unlinkSync(telemetryPath); } catch {}
     }
     return output;

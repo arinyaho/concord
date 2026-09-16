@@ -265,7 +265,7 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
 test('runner automatically executes a clean round in correctness then verify order and returns terminal handoff', async () => {
   const h = harness();
   const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
-  assert.strictEqual(out.handoff, 'LGTM\nusage: 3 calls, 3 partial, 0 tokens, 0ms');
+  assert.strictEqual(out.handoff, 'LGTM');
   assert.deepStrictEqual(h.calls.map((c) => c[0] === 'spawn' ? c.slice(0, 2) : c.slice(0, 2)), [
     ['cli', 'round-start'], ['cli', 'telemetry-slot'], ['spawn', 'correctness'], ['cli', 'artifact-normalize'], ['cli', 'telemetry-slot'], ['spawn', 'verify'], ['cli', 'artifact-normalize'], ['cli', 'plan-fixes'], ['cli', 'telemetry-slot'], ['spawn', 'fix'], ['cli', 'commit-fix'], ['cli', 'record'],
   ]);
@@ -348,7 +348,7 @@ test('runner reports aggregate and per-role subprocess telemetry', async () => {
       { engine: 'codex', provider: 'openai', role: 'fix', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.fix, reasoningOutputTokens: 0, elapsedMs: 30, artifactPath: path.join(h.stateDir, 'round-1-fix-correctness:bug.json'), attempt: 1 },
     ],
   });
-  assert.match(out.handoff, /usage: 3 calls, 0 partial, 666 tokens, 60ms/);
+  assert.strictEqual(out.handoff, 'LGTM');
 });
 
 test('resumed runner preserves telemetry from the previous process', async () => {
@@ -399,7 +399,7 @@ test('terminal runner returns persisted telemetry even when the caller omits res
   });
 
   assert.deepStrictEqual(out.telemetry, persisted);
-  assert.strictEqual(out.handoff, 'LGTM\nusage: 1 calls, 0 partial, 16 tokens, 20ms');
+  assert.strictEqual(out.handoff, 'LGTM');
 });
 
 test('terminal runner without a telemetry file ignores historical ledger slots', async () => {
@@ -422,7 +422,7 @@ test('terminal runner without a telemetry file ignores historical ledger slots',
     calls: 0, partialCalls: 0, inputTokens: 0, cacheWriteInputTokens: 0, cachedInputTokens: 0,
     reasoningOutputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0,
   });
-  assert.strictEqual(out.handoff, 'LGTM\nusage: 0 calls, 0 partial, 0 tokens, 0ms');
+  assert.strictEqual(out.handoff, 'LGTM');
 });
 
 test('no-op runner does not leave an empty telemetry file for the next invocation', async () => {
@@ -436,6 +436,28 @@ test('no-op runner does not leave an empty telemetry file for the next invocatio
 
   assert.strictEqual(out.telemetry.total.calls, 0);
   assert.strictEqual(fs.existsSync(path.join(stateDir, 'telemetry-feature-x.json')), false);
+});
+
+test('runner preserves telemetry when record stops for a re-runnable decision', async () => {
+  const h = harness();
+  const cli = (args) => args[0] === 'record'
+    ? { decision: { continue: false, intentReview: true }, handoff: 'resolve intent' }
+    : h.cli(args);
+
+  await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn: h.spawn });
+
+  assert.strictEqual(fs.existsSync(path.join(h.stateDir, 'telemetry-feature-x.json')), true);
+});
+
+test('runner leaves the CLI-authored usage line as the only handoff usage summary', async () => {
+  const h = harness();
+  const cli = (args) => args[0] === 'record'
+    ? { decision: { continue: false, converged: true }, handoff: 'LGTM\nreview usage: 42 tokens across 3 call(s), 0 partial' }
+    : h.cli(args);
+
+  const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn: h.spawn });
+
+  assert.strictEqual(out.handoff, 'LGTM\nreview usage: 42 tokens across 3 call(s), 0 partial');
 });
 
 test('resumed runner reconciles only slots evidenced by its telemetry file', async () => {
@@ -490,7 +512,7 @@ test('active round without a telemetry file preserves a preexisting missing slot
 
   assert.ok(out.telemetry.invocations.some((invocation) => invocation.artifactPath === '/missing.json' && invocation.slotMissing === true));
   assert.deepStrictEqual({ calls: out.telemetry.total.calls, partialCalls: out.telemetry.total.partialCalls, missingCalls: out.telemetry.total.missingCalls }, {
-    calls: 3, partialCalls: 4, missingCalls: 1,
+    calls: 3, partialCalls: 3, missingCalls: 1,
   });
 });
 
@@ -659,7 +681,7 @@ test('runner fails closed when a required reviewer subprocess is terminated by a
 test('gate-verify subprocess failure stays lenient and lets the CLI decide', async () => {
   const h = harness({ gateApplied: true, failingRole: 'gate-verify' });
   const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
-  assert.strictEqual(out.handoff, 'LGTM\nusage: 5 calls, 5 partial, 0 tokens, 0ms');
+  assert.strictEqual(out.handoff, 'LGTM');
   assert.ok(h.calls.some((call) => call[0] === 'spawn' && call[1] === 'gate-verify'));
 });
 
@@ -875,7 +897,7 @@ test('a failed panel lens is treated as zero findings while the remaining lenses
 
   const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn });
 
-  assert.strictEqual(out.handoff, 'LGTM\nusage: 7 calls, 7 partial, 0 tokens, 0ms');
+  assert.strictEqual(out.handoff, 'LGTM');
 });
 
 test('panel lenses and each finding\'s adversarial votes fan out concurrently', async () => {

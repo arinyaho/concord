@@ -1779,7 +1779,7 @@ test('telemetry-slot persists monotonically numbered attempts for one exact dest
   ]);
 });
 
-test('a Codex-owned slot without runner evidence stays visible as a missing partial call', () => {
+test('a Codex-owned slot without runner evidence stays visible but is not counted as a call', () => {
   const repo = initRepoWithoutDodConfig();
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
@@ -1791,7 +1791,7 @@ test('a Codex-owned slot without runner evidence stays visible as a missing part
 
   assert.deepStrictEqual({ engine: slot.engine, provider: slot.provider }, { engine: 'codex', provider: 'openai' });
   const out = JSON.parse(run(['show', 'feat/codex-slots'], { env }));
-  assert.deepStrictEqual({ calls: out.telemetry.calls, partialCalls: out.telemetry.partialCalls, missingCalls: out.telemetry.missingCalls }, { calls: 0, partialCalls: 1, missingCalls: 1 });
+  assert.deepStrictEqual({ calls: out.telemetry.calls, partialCalls: out.telemetry.partialCalls, missingCalls: out.telemetry.missingCalls }, { calls: 0, partialCalls: 0, missingCalls: 1 });
   assert.deepStrictEqual(out.telemetry.entries.map(({ engine, provider, role, status }) => ({ engine, provider, role, status })), [
     { engine: 'codex', provider: 'openai', role: 'correctness', status: 'missing' },
   ]);
@@ -1800,7 +1800,7 @@ test('a Codex-owned slot without runner evidence stays visible as a missing part
   fs.writeFileSync(path.join(dir, `round-${started.round}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   run(['plan-fixes', 'feat/codex-slots'], { env });
   const recorded = JSON.parse(run(['record', 'feat/codex-slots'], { env }));
-  assert.match(recorded.handoff, /review usage: unknown tokens across 0 call\(s\), 1 partial, 1 missing/);
+  assert.match(recorded.handoff, /review usage: unknown tokens across 0 call\(s\), 0 partial, 1 missing/);
 });
 
 test('round-start: --no-dod starts a run in a repo with no review.config.json at all', () => {
@@ -3497,7 +3497,11 @@ test('rerun without a prior ledger says so instead of silently starting one', ()
 test('rerun archives persisted Codex runner telemetry before deleting its file', () => {
   const dir = tmpDir(); const slug = review.targetSlug('feat/codex-run');
   const env = { ...process.env, REVIEW_STATE_DIR: dir };
-  const ledger = { ...review.emptyLedger({ kind: 'local', ref: 'feat/codex-run' }), status: 'clean', phase: 'done', engine: 'codex' };
+  const oldEntry = { engine: 'codex', provider: 'openai', role: 'correctness', invocationId: 'codex-old', usagePartial: false, inputTokens: 1, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, outputTokens: 1, totalTokens: 2, elapsedMs: 3 };
+  const ledger = {
+    ...review.emptyLedger({ kind: 'local', ref: 'feat/codex-run' }), status: 'clean', phase: 'done', engine: 'codex',
+    telemetry: { engine: 'codex', calls: 1, partialCalls: 0, inputTokens: 1, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, outputTokens: 1, totalTokens: 2, elapsedMs: 3, byRole: {}, entries: [oldEntry] },
+  };
   review.writeLedger(dir, slug, ledger);
   fs.writeFileSync(path.join(dir, `telemetry-${slug}.json`), JSON.stringify({
     total: { calls: 1, partialCalls: 0, inputTokens: 10, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 15, elapsedMs: 20 },
@@ -3507,8 +3511,8 @@ test('rerun archives persisted Codex runner telemetry before deleting its file',
 
   const out = JSON.parse(run(['rerun', 'feat/codex-run', '--engine', 'claude-code'], { env }));
 
-  assert.strictEqual(out.archived.telemetry.totalTokens, 15);
-  assert.strictEqual(out.archived.telemetry.entries[0].invocationId, 'codex-1');
+  assert.strictEqual(out.archived.telemetry.totalTokens, 17);
+  assert.deepStrictEqual(out.archived.telemetry.entries.map((entry) => entry.invocationId).sort(), ['codex-1', 'codex-old']);
   assert.ok(!fs.existsSync(path.join(dir, `telemetry-${slug}.json`)));
 });
 

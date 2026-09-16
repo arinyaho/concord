@@ -1340,7 +1340,7 @@ function main(resolveFromCwd) {
     const engine = engineFlag >= 0 ? rest[engineFlag + 1] : null;
     const slug = targetSlug(ref);
     const stored = readLedger(stateDir, slug);
-    const prior = stored?.telemetry ? stored : reviewTelemetry.foldTelemetry(stateDir, stored, slug);
+    const prior = reviewTelemetry.foldTelemetry(stateDir, stored, slug);
     if (!prior) throw new Error(`review-cli rerun: no ledger for ref "${ref}" ${stateDirHint(stateDir)} -- there is no run to re-run; just start a normal run.`);
     const runs = (prior.runs || []).concat([{
       run: (prior.runs || []).length + 1,

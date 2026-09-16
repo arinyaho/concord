@@ -677,7 +677,7 @@ test('a malformed telemetry artifact cannot disappear into a clean fold', () => 
 
   const folded = reviewTelemetry.foldTelemetry(stateDir, ledger);
 
-  assert.strictEqual(folded.telemetry.partialCalls, 2);
+  assert.strictEqual(folded.telemetry.partialCalls, 0);
   assert.ok(folded.telemetry.entries.some((entry) => entry.status === 'malformed'));
 });
 
@@ -881,7 +881,7 @@ test('deleteTelemetry retains a reused agent identity owned by another target', 
   }]);
 });
 
-test('a persisted attempt slot with its entire hook missing remains visible and partial', () => {
+test('a persisted attempt slot with its entire hook missing remains visible but is not counted as a call', () => {
   const { stateDir } = setup();
   const ledgerPath = path.join(stateDir, 'review-feat-x.json');
   const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
@@ -891,7 +891,7 @@ test('a persisted attempt slot with its entire hook missing remains visible and 
 
   assert.strictEqual(folded.telemetry.calls, 0);
   assert.strictEqual(folded.telemetry.missingCalls, 1);
-  assert.strictEqual(folded.telemetry.partialCalls, 1);
+  assert.strictEqual(folded.telemetry.partialCalls, 0);
   assert.strictEqual(folded.telemetry.entries[0].status, 'missing');
   assert.strictEqual(folded.telemetry.entries[0].attempt, 1);
 });

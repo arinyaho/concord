@@ -7,7 +7,7 @@ const HOOK_USAGE_FIELDS = ['input_tokens', 'cache_creation_input_tokens', 'cache
 
 function summary(entries) {
   const observed = entries.filter((entry) => typeof entry.invocationId === 'string');
-  const result = { calls: observed.length, partialCalls: entries.filter((entry) => entry.usagePartial).length };
+  const result = { calls: observed.length, partialCalls: observed.filter((entry) => entry.usagePartial).length };
   const missingCalls = entries.filter((entry) => entry.status === 'missing' || entry.slotMissing === true).length;
   if (missingCalls) result.missingCalls = missingCalls;
   const unsupported = entries.filter((entry) => entry.usageStatus === 'unsupported-cli-version');
