@@ -23,12 +23,14 @@ const CODEX_ITEM_TYPES = new Set(['agent_message', 'reasoning', 'command_executi
 let codexResolutionCache = null;
 
 function redactSecrets(value) {
+  // A bounded stderr capture can end inside a quoted value or escape sequence.
+  // Treat an unterminated sensitive value as secret through the end of input.
   return String(value || '')
-    .replace(/(authorization\s*:\s*)(?:bearer\s+)?[^\s\r\n]+/gi, '$1[REDACTED]')
+    .replace(/(authorization\s*:\s*)[^\r\n]+/gi, '$1[REDACTED]')
     .replace(/\bbearer\s+[a-z0-9._~+/=-]{8,}/gi, 'Bearer [REDACTED]')
-    .replace(/(["'](?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|credential)["']\s*:\s*)["'][^"'\r\n]*["']/gi, '$1"[REDACTED]"')
-    .replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|credential)\s*[=:]\s*)[^\s,;]+/gi, '$1[REDACTED]')
-    .replace(/\b(?:sk|rk|pk|gh[pousr]|github_pat)_[a-z0-9_-]{8,}\b/gi, '[REDACTED]')
+    .replace(/(["'](?:[a-z0-9]+[_-])*(?:authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|credential)["']\s*:\s*)(?:"(?:\\[\s\S]|[^"\\])*(?:"|\\?$)|'(?:\\[\s\S]|[^'\\])*(?:'|\\?$))/gi, '$1"[REDACTED]"')
+    .replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|credential)\s*[=:]\s*)(?:"(?:\\[\s\S]|[^"\\])*(?:"|\\?$)|'(?:\\[\s\S]|[^'\\])*(?:'|\\?$)|[^\s,;]+)/gi, '$1[REDACTED]')
+    .replace(/\b(?:sk[-_]|(?:rk|pk|gh[pousr]|github_pat)_)[a-z0-9_-]{8,}\b/gi, '[REDACTED]')
     .replace(/(https?:\/\/[^\s/:@]+:)[^\s/@]+@/gi, '$1[REDACTED]@');
 }
 
@@ -45,32 +47,33 @@ function safeDiagnostic(value, maxBytes = STDERR_DIAGNOSTIC_LIMIT) {
 }
 
 function pathEnv(env, platform) {
-  if (platform !== 'win32') return env.PATH || '';
+  if (platform !== 'win32') return env.PATH;
   const key = Object.keys(env).find((name) => name.toLowerCase() === 'path');
-  return key ? env[key] : '';
+  return key ? env[key] : undefined;
 }
 
-function pathExecutable(name, env, platform, access = fs.accessSync) {
+function* pathExecutables(name, env, platform, repoRoot, access = fs.accessSync) {
   const pathValue = pathEnv(env, platform);
+  // Let the subprocess use its default search path when PATH is unset.
+  if (pathValue == null) return;
   const delimiter = platform === 'win32' ? ';' : path.delimiter;
   const pathApi = platform === 'win32' ? path.win32 : path;
   const extensions = platform === 'win32'
     ? String(env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
     : [''];
-  for (const directory of String(pathValue).split(delimiter).filter(Boolean)) {
+  for (const directory of String(pathValue).split(delimiter)) {
     for (const extension of extensions) {
-      const candidate = pathApi.resolve(directory, `${name}${extension.toLowerCase()}`);
+      const candidate = pathApi.resolve(repoRoot, directory, `${name}${extension.toLowerCase()}`);
       try {
         access(candidate, platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK);
-        return candidate;
+        if (fs.statSync(candidate).isFile()) yield candidate;
       } catch {}
       if (platform === 'win32' && extension !== extension.toLowerCase()) {
-        const upperCandidate = pathApi.resolve(directory, `${name}${extension}`);
-        try { access(upperCandidate, fs.constants.F_OK); return upperCandidate; } catch {}
+        const upperCandidate = pathApi.resolve(repoRoot, directory, `${name}${extension}`);
+        try { access(upperCandidate, fs.constants.F_OK); if (fs.statSync(upperCandidate).isFile()) yield upperCandidate; } catch {}
       }
     }
   }
-  return null;
 }
 
 function defaultCodexProbe(command, repoRoot, env) {
@@ -102,7 +105,8 @@ function resolveCodexExecutable(repoRoot, options = {}) {
   const cacheKey = JSON.stringify([repoRoot, platform, searchPath, env.PATHEXT || '', override]);
   if (!options.probe && codexResolutionCache?.key === cacheKey) return codexResolutionCache.value;
 
-  const located = pathExecutable('codex', env, platform, options.access);
+  const pathMatches = pathExecutables('codex', env, platform, repoRoot, options.access);
+  const located = pathMatches.next().value;
   const pathCommand = platform === 'win32' ? 'codex' : (located || 'codex');
   const candidates = override
     ? [{ command: override, display: safeDiagnostic(override, 1024), source: CODEX_BIN_ENV }]
@@ -112,7 +116,8 @@ function resolveCodexExecutable(repoRoot, options = {}) {
     ];
   const failures = [];
   const probe = options.probe || defaultCodexProbe;
-  for (const candidate of candidates) {
+  while (candidates.length) {
+    const candidate = candidates.shift();
     let result;
     try { result = probe(candidate.command, repoRoot, env); } catch (error) { result = { error }; }
     const failure = probeFailure(result);
@@ -122,6 +127,12 @@ function resolveCodexExecutable(repoRoot, options = {}) {
       return value;
     }
     failures.push({ candidate, failure });
+    // An executable file can still fail to launch if its interpreter/loader is
+    // missing. POSIX PATH lookup skips that ENOENT and tries the next entry.
+    if (candidate.source === 'PATH' && platform !== 'win32' && result?.error?.code === 'ENOENT') {
+      const next = pathMatches.next().value;
+      if (next) candidates.unshift({ command: next, display: next, source: 'PATH' });
+    }
   }
 
   const checked = failures.map(({ candidate, failure }) => `- ${candidate.display} (${candidate.source}): ${failure}`).join('\n');
