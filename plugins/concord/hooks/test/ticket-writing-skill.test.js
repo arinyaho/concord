@@ -168,6 +168,7 @@ test('maintained package metadata and docs advertise the shared capability set',
   ].map((file) => read(path.join(REPO, file)));
 
   for (const contents of files) assert.match(contents, /ticket-writing/i);
+  for (const contents of files) assert.match(contents, /proposal-package-authoring/i);
   assert.doesNotMatch(files[0], /Session-state and charter are Claude-Code-only/i);
 
   const claudeManifest = JSON.parse(files[1]);
