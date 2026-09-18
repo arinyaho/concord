@@ -998,8 +998,7 @@ function main(resolveFromCwd) {
     // targets use the per-fix artifact's edited flag (no git commit happens).
     const isGit = !ledger.target || ledger.target.type === 'git';
     const journaled = ledger.journal || [];
-    const journalEntryFor = (finding) => journaled.find((j) => j.id === finding.id)
-      || journaled.find((j) => j.file !== finding.file && Array.isArray(j.files) && j.files.includes(finding.file) && j.span === finding.span);
+    const journalEntryFor = (finding) => journaled.find((j) => j.id === finding.id);
     const fixedIds = [];
     const parkedIds = [];
     const fixCommits = {};
@@ -1180,8 +1179,7 @@ function main(resolveFromCwd) {
     // never matched. Marking those 'fixed' would converge green with a confirmed
     // bug still live, so route them to the fixer instead (it adds the missing
     // code -> a real commit, or reports no-edit -> record parks it needs-decision).
-    const isReplay = (f) => !spanPresent(f.file, f.span) && ((ledger.journal || []).some((j) => j.id === f.id)
-      || (ledger.journal || []).some((j) => j.file !== f.file && Array.isArray(j.files) && j.files.includes(f.file) && j.span === f.span));
+    const isReplay = (f) => !spanPresent(f.file, f.span) && (ledger.journal || []).some((j) => j.id === f.id);
     const fixes = confirmedNonKilled
       .filter((f) => !isReplay(f))
       .map((f) => ({ id: f.id, file: f.file, span: f.span, summary: f.summary }));
