@@ -42,6 +42,25 @@ test('Claude and Codex source packages ship the same proposal-package-authoring 
   }
 });
 
+test('ticket-to-pr keeps Notion lifecycle transitions bounded and unambiguous', () => {
+  const skill = read(CLAUDE_TICKET_TO_PR);
+  const entry = skill.indexOf('At pipeline entry');
+  const prCreation = skill.indexOf('After the PR URL exists');
+
+  assert.ok(entry >= 0, 'missing the Notion lifecycle entry transition');
+  assert.ok(prCreation > entry, 'the PR transition must follow the entry transition');
+  assert.match(skill, /contains the PR URL and is `In review` or `Done`, both verified/);
+  assert.match(skill.slice(entry, prCreation), /exactly one editable status property.*one `In progress` and one `In review` option/s);
+  assert.match(skill.slice(entry, prCreation), /already `In review` or `Done`, preserve it/);
+  assert.match(skill.slice(entry, prCreation), /all other current statuses are blockers/);
+  assert.match(skill.slice(entry, prCreation), /cannot expose this standard lifecycle is a blocker/);
+  assert.match(skill.slice(prCreation), /exactly one eligible PR URL field is empty or already has the same URL/);
+  assert.match(skill.slice(prCreation), /otherwise append an idempotent labelled `PR:` link/);
+  assert.match(skill.slice(prCreation), /verify the exact PR URL before changing the status/);
+  assert.match(skill.slice(prCreation), /same status property.*only from `In progress` to `In review`/s);
+  assert.match(skill.slice(prCreation), /Do not move the ticket to Done/);
+});
+
 pluginInstallE2ETest('clean Claude and Codex installs discover the same shared skills', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concord-ticket-writing-'));
   const home = path.join(root, 'home');
