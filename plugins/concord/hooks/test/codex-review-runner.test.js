@@ -693,6 +693,7 @@ test('fix prompt requires an explicit, span-absent claim for a distinct planned 
   assert.match(prompt, /exact span must be absent/i);
   assert.match(prompt, /correctness:mirror/);
   assert.doesNotMatch(prompt, /other planned fixes: \["correctness:bug"/);
+  assert.match(prompt, /"files":\["<every edited path>"\],"resolvedFindingIds":\["<distinct planned mirror finding id>"\]\}/);
 });
 
 test('file-target fix prompt omits git-only mirror claims', () => {
@@ -1226,6 +1227,7 @@ test('Codex launcher --help exits without invoking the runner', () => {
   `);
   const output = execFileSync('node', ['--require', preload, bin, '--help'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
   assert.match(output, /^Usage: review-until-green/m);
+  assert.match(output, /resume <ref>/);
   assert.strictEqual(fs.existsSync(capture), false);
 });
 

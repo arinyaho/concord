@@ -88,6 +88,14 @@ function gitHeadFileContains(repoRoot, file, span) {
     return false;
   }
 }
+function gitWorktreeFileLacksSpan(repoRoot, file, span) {
+  try {
+    return !fs.readFileSync(path.join(repoRoot, file), 'utf8').includes(span);
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return true;
+    throw e;
+  }
+}
 
 function pathWithin(child, parent) {
   const relative = path.relative(parent, child);
@@ -1039,9 +1047,15 @@ function main(resolveFromCwd) {
     // unfixable), never silently marked 'fixed'. Stamp the real journal sha (not
     // a sentinel) so the handoff's fix digest shows the actual commit.
     for (const id of ledger.resolved_absent || []) {
-      fixedIds.push(id);
       const finding = candidates.find((f) => f.id === id);
-      fixCommits[id] = (finding && journalEntryFor(finding)?.sha) || 'span already absent (idempotent replay)';
+      const journal = finding && journalEntryFor(finding);
+      if (journal && finding.span && gitWorktreeFileLacksSpan(repoRoot, finding.file, finding.span)) {
+        fixedIds.push(id);
+        fixCommits[id] = journal.sha;
+      } else {
+        parkedIds.push(id);
+        parkReasons[id] = gc.validateParkReason({ kind: 'needs-decision', text: 'a previously absent span returned before record' });
+      }
     }
     const outcome = {
       dodPassed: !!(ledger.dod && ledger.dod.passed), dodDeferred: !!(ledger.dod && ledger.dod.deferred), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons,
@@ -1421,9 +1435,9 @@ function main(resolveFromCwd) {
           || !files.includes(finding.file) || !files.includes(counterpart.file) || !gitIsDirtyForFile(repoRoot, finding.file)
           || !gitIsDirtyForFile(repoRoot, counterpart.file) || !finding.span
           || !gitHeadFileContains(repoRoot, finding.file, finding.span)
-          || fs.readFileSync(path.join(repoRoot, finding.file), 'utf8').includes(finding.span) || !counterpart.span
+          || !gitWorktreeFileLacksSpan(repoRoot, finding.file, finding.span) || !counterpart.span
           || !gitHeadFileContains(repoRoot, counterpart.file, counterpart.span)
-          || fs.readFileSync(path.join(repoRoot, counterpart.file), 'utf8').includes(counterpart.span)) {
+          || !gitWorktreeFileLacksSpan(repoRoot, counterpart.file, counterpart.span)) {
           throw new Error(`harness-failure: commit-fix: invalid resolved finding claim "${resolvedId}"`);
         }
         resolutions.push({ id: counterpart.id, file: counterpart.file, span: counterpart.span });

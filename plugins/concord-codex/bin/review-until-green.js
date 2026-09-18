@@ -5,7 +5,7 @@ const { runReviewUntilGreen } = require('../engine/codex-review-runner');
 
 const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
-  process.stdout.write('Usage: review-until-green [<branch> [<base>] | file:<path-or-glob>] [--broad|--no-broad] [--no-dod]\n');
+  process.stdout.write('Usage: review-until-green [<branch> [<base>] | file:<path-or-glob> | resume <ref>] [--broad|--no-broad] [--no-dod]\n');
   process.exit(0);
 }
 const broadPhraseArgs = new Set();

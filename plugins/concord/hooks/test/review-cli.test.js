@@ -505,6 +505,27 @@ test('plan-fixes + record: a confirmed finding whose span is already absent from
   assert.strictEqual(out.decision.parked, false); // does not strand convergence
 });
 
+test('record: a replayed absent span that returns before record is parked, not fixed', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env } = seedGatesRound(repo, dir, 'feat/reintroduced-span',
+    { status: 'ok', examined: ['a.txt'], findings: [
+      { id: 'correctness:absent', gate: 'correctness', file: 'a.txt', span: 'this-span-is-not-in-the-file', summary: 'x' } ] },
+    { status: 'ok', rejected: [] });
+  const slug = review.targetSlug('feat/reintroduced-span');
+  let ledger = review.readLedger(dir, slug);
+  ledger = { ...ledger, journal: [{ id: 'correctness:absent', sha: 'priorsha123' }] };
+  review.writeLedger(dir, slug, ledger);
+
+  run(['plan-fixes', 'feat/reintroduced-span'], { env });
+  assert.deepStrictEqual(review.readLedger(dir, slug).resolved_absent, ['correctness:absent']);
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\nthis-span-is-not-in-the-file\n');
+
+  const out = JSON.parse(run(['record', 'feat/reintroduced-span'], { env }));
+  const finding = review.readLedger(dir, slug).findings.find((x) => x.id === 'correctness:absent');
+  assert.strictEqual(finding.status, 'parked');
+  assert.strictEqual(out.decision.parked, true);
+});
+
 test('record: a companion-file journal entry does not fix a distinct live finding', () => {
   const repo = initRepo(); const dir = tmpDir();
   fs.writeFileSync(path.join(repo, 'b.txt'), 'companion\n');
@@ -575,6 +596,37 @@ test('commit-fix + record: an explicit mirrored finding claim resolves the decla
   assert.strictEqual(findings.find((f) => f.id === 'correctness:b').status, 'fixed');
   assert.strictEqual(findings.find((f) => f.id === 'correctness:b').fix_commit, committed.sha);
   assert.strictEqual(out.decision.parked, false);
+});
+
+test('commit-fix: permits a mirror claim when either edited file was deleted', () => {
+  for (const deleted of ['a.txt', 'b.txt']) {
+    const repo = initRepo(); const dir = tmpDir();
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'source span\n');
+    fs.writeFileSync(path.join(repo, 'b.txt'), 'mirror span\n');
+    execFileSync('git', ['add', 'a.txt', 'b.txt'], { cwd: repo });
+    execFileSync('git', ['commit', '-qm', 'add mirrored files'], { cwd: repo });
+    const { env, n } = seedGatesRound(repo, dir, `feat/deleted-${deleted}`,
+      { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [
+        { id: 'correctness:a', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'source mirror' },
+        { id: 'correctness:b', gate: 'correctness', file: 'b.txt', span: 'mirror span', summary: 'companion mirror' },
+      ] },
+      { status: 'ok', rejected: [] });
+    run(['plan-fixes', `feat/deleted-${deleted}`], { env });
+    fs.rmSync(path.join(repo, deleted));
+    if (deleted === 'a.txt') fs.writeFileSync(path.join(repo, 'b.txt'), 'mirror fixed\n');
+    else fs.writeFileSync(path.join(repo, 'a.txt'), 'source fixed\n');
+    const primary = deleted === 'a.txt' ? 'correctness:a' : 'correctness:b';
+    const counterpart = primary === 'correctness:a' ? 'correctness:b' : 'correctness:a';
+    fs.writeFileSync(path.join(dir, `round-${n}-fix-${primary}.json`), JSON.stringify({
+      status: 'ok', edited: true, files: ['a.txt', 'b.txt'], resolvedFindingIds: [counterpart],
+    }));
+    assert.strictEqual(JSON.parse(run(['commit-fix', `feat/deleted-${deleted}`, primary], { env })).committed, true);
+    const out = JSON.parse(run(['record', `feat/deleted-${deleted}`], { env }));
+    const findings = review.readLedger(dir, review.targetSlug(`feat/deleted-${deleted}`)).findings;
+    assert.strictEqual(findings.find((f) => f.id === 'correctness:a').status, 'fixed');
+    assert.strictEqual(findings.find((f) => f.id === 'correctness:b').status, 'fixed');
+    assert.strictEqual(out.decision.parked, false);
+  }
 });
 
 test('commit-fix: rejects a mirrored claim when the primary span remains live', () => {
