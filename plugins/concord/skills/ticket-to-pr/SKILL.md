@@ -15,7 +15,7 @@ One unit of work, one branch, one PR carrying the design and the code together. 
 | # | Stage | Exit condition |
 |---|---|---|
 | 0 | Branch | A dedicated work branch exists, is checked out, and starts from the intended base; create it if absent |
-| 1 | The work has agreed acceptance criteria and a definition of done, and any approved in-progress transition is applied | Every criterion names an observation, not an intention. The DoD says which gates are executable and which are deferred. The board reflects that work began only when the user approved that transition; a supplied Notion ticket has reached `In progress` without regressing a later status, and is verified |
+| 1 | The work has agreed acceptance criteria and a definition of done, and any approved in-progress transition is applied | Every criterion names an observation, not an intention. The DoD says which gates are executable and which are deferred. The board reflects that work began only when the user approved that transition; a supplied Notion ticket has reached `In progress`, or remains in a verified later or terminal status, without regression |
 | 2 | End-to-end red | For a defect, the claimed breakage reproduces against the unchanged code; for a feature, an end-to-end acceptance check derived from those criteria fails because the requested behavior is absent |
 | 3 | Design note, committed where the next reader finds it | The decision, the trade-off it costs, and the residual exposure are all written down |
 | 4 | Review the design note | `/review-until-green file:<path>` |
