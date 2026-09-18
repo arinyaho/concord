@@ -577,6 +577,32 @@ test('commit-fix + record: an explicit mirrored finding claim resolves the decla
   assert.strictEqual(out.decision.parked, false);
 });
 
+test('commit-fix: rejects a mirrored claim when the counterpart span was already absent at HEAD', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'source span\n');
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'mirror already absent\n');
+  execFileSync('git', ['add', 'a.txt', 'b.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add mirrored files'], { cwd: repo });
+  const { env, n } = seedGatesRound(repo, dir, 'feat/mirror-claim-preexisting-absence',
+    { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [
+      { id: 'correctness:a', gate: 'correctness', file: 'a.txt', span: 'source span', summary: 'source mirror' },
+      { id: 'correctness:b', gate: 'correctness', file: 'b.txt', span: 'mirror span', summary: 'companion mirror' },
+    ] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/mirror-claim-preexisting-absence'], { env });
+
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'source fixed\n');
+  fs.appendFileSync(path.join(repo, 'b.txt'), 'unrelated dirty change\n');
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:a.json`), JSON.stringify({
+    status: 'ok', edited: true, files: ['a.txt', 'b.txt'], resolvedFindingIds: ['correctness:b'],
+  }));
+
+  assert.throws(
+    () => run(['commit-fix', 'feat/mirror-claim-preexisting-absence', 'correctness:a'], { env }),
+    /harness-failure: commit-fix: invalid resolved finding claim "correctness:b"/,
+  );
+});
+
 test('commit-fix: rejects an unknown mirrored finding claim before committing', () => {
   const repo = initRepo(); const dir = tmpDir();
   const { env, n } = seedGatesRound(repo, dir, 'feat/mirror-claim-invalid',
