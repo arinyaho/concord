@@ -1,6 +1,6 @@
 ---
 description: Deterministically review, fix, commit, and repeat with clean-context Codex subprocesses until the Concord harness reaches a terminal decision.
-argument-hint: "[target | resume <ref>] [--no-broad] [--no-dod]"
+argument-hint: "[target | file:<path-or-glob> | resume <ref>] [--broad|--no-broad] [--no-dod]"
 ---
 
 Run the bundled deterministic runner once; do not manually orchestrate reviewers:
@@ -8,6 +8,8 @@ Run the bundled deterministic runner once; do not manually orchestrate reviewers
 ```sh
 node "${CLAUDE_PLUGIN_ROOT}/bin/review-until-green.js" $ARGUMENTS
 ```
+
+Use `file:<path-or-glob>` for the explicit documentation-only profile. It skips the full branch DoD and broad front pass by default. `--broad` opts into the repository-wide front pass; an enabled broad-review panel can still review the repository unless `--no-broad` suppresses it.
 
 Return its terminal handoff verbatim. If it exits with `harness-failure`, report that failure without treating the target as clean.
 

@@ -11,6 +11,7 @@ const { foldTelemetry } = require('../../core/review-telemetry');
 // The runner owns all sequencing. Its subprocess seam makes this a no-network
 // integration test while exercising the real artifact contract at the boundary.
 const { runReviewUntilGreen, reviewerPrompt, codexExec, resolveDefaultBase } = require('../../core/codex-review-runner');
+const { reviewerPrompt: packagedReviewerPrompt } = require('../../../concord-codex/engine/codex-review-runner');
 
 function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'codex-runner-')); }
 
@@ -680,13 +681,25 @@ test('terminal runner does not invent a missing call from an otherwise empty per
   assert.deepStrictEqual(out.telemetry.invocations, []);
 });
 
-test('fix prompt writes the commit-fix artifact and requires a truthful files declaration', () => {
-  const prompt = reviewerPrompt('fix', { stateDir: '/state', round: 7, finding: { id: 'correctness:bug', file: 'src/parser.js', span: 'lines 41-43', summary: 'repair it' } });
+test('fix prompt requires an explicit, span-absent claim for a distinct planned mirror finding', () => {
+  const prompt = reviewerPrompt('fix', { stateDir: '/state', round: 7, finding: { id: 'correctness:bug', file: 'src/parser.js', span: 'lines 41-43', summary: 'repair it' }, plannedFindingIds: ['correctness:bug', 'correctness:mirror'] });
   assert.match(prompt, /\/state\/round-7-fix-correctness:bug\.json/);
   assert.match(prompt, /src\/parser\.js/);
   assert.match(prompt, /lines 41-43/);
   assert.match(prompt, /EVERY file/i);
   assert.match(prompt, /"edited":false/);
+  assert.match(prompt, /"resolvedFindingIds"/);
+  assert.match(prompt, /distinct planned mirror finding/i);
+  assert.match(prompt, /exact span must be absent/i);
+  assert.match(prompt, /correctness:mirror/);
+  assert.doesNotMatch(prompt, /other planned fixes: \["correctness:bug"/);
+  assert.match(prompt, /"files":\["<every edited path>"\],"resolvedFindingIds":\["<distinct planned mirror finding id>"\]\}/);
+});
+
+test('file-target fix prompt omits git-only mirror claims', () => {
+  const prompt = reviewerPrompt('fix', { stateDir: '/state', round: 7, targetType: 'file', finding: { id: 'correctness:bug', file: 'note.md', span: 'bad', summary: 'fix it' }, plannedFindingIds: ['correctness:bug', 'correctness:mirror'] });
+  assert.doesNotMatch(prompt, /resolvedFindingIds|mirror finding|correctness:mirror/);
+  assert.match(prompt, /\{"status":"ok","edited":true,"files":\["<every edited path>"\]\}\./);
 });
 
 test('correctness prompt requires every changed file in examined', () => {
@@ -1193,6 +1206,29 @@ test('runner loops through record continuation and file targets never commit', a
   await runReviewUntilGreen({ ref: 'file:note.md', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
   assert.strictEqual(h.calls.filter((c) => c[1] === 'round-start').length, 2);
   assert.strictEqual(h.calls.some((c) => c[1] === 'commit-fix'), false);
+});
+
+test('Codex launcher --help exits without invoking the runner', () => {
+  const dir = temp();
+  const capture = path.join(dir, 'options.json');
+  const preload = path.join(dir, 'capture-runner.js');
+  const bin = path.join(__dirname, '..', '..', '..', 'concord-codex', 'bin', 'review-until-green.js');
+  fs.writeFileSync(preload, `
+    const fs = require('node:fs');
+    const Module = require('node:module');
+    const load = Module._load;
+    Module._load = function(request, parent, isMain) {
+      if (request === '../engine/codex-review-runner') return { runReviewUntilGreen: async (options) => {
+        fs.writeFileSync(process.env.CAPTURE, JSON.stringify(options));
+        return { handoff: 'unexpected' };
+      } };
+      return load.apply(this, arguments);
+    };
+  `);
+  const output = execFileSync('node', ['--require', preload, bin, '--help'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
+  assert.match(output, /^Usage: review-until-green/m);
+  assert.match(output, /resume <ref>/);
+  assert.strictEqual(fs.existsSync(capture), false);
 });
 
 test('Codex launcher recognizes documented broad-review phrases without consuming them as target arguments', () => {

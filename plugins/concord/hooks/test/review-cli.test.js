@@ -505,6 +505,225 @@ test('plan-fixes + record: a confirmed finding whose span is already absent from
   assert.strictEqual(out.decision.parked, false); // does not strand convergence
 });
 
+test('record: a replayed absent span that returns before record is parked, not fixed', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env } = seedGatesRound(repo, dir, 'feat/reintroduced-span',
+    { status: 'ok', examined: ['a.txt'], findings: [
+      { id: 'correctness:absent', gate: 'correctness', file: 'a.txt', span: 'this-span-is-not-in-the-file', summary: 'x' } ] },
+    { status: 'ok', rejected: [] });
+  const slug = review.targetSlug('feat/reintroduced-span');
+  let ledger = review.readLedger(dir, slug);
+  ledger = { ...ledger, journal: [{ id: 'correctness:absent', sha: 'priorsha123' }] };
+  review.writeLedger(dir, slug, ledger);
+
+  run(['plan-fixes', 'feat/reintroduced-span'], { env });
+  assert.deepStrictEqual(review.readLedger(dir, slug).resolved_absent, ['correctness:absent']);
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\nthis-span-is-not-in-the-file\n');
+
+  const out = JSON.parse(run(['record', 'feat/reintroduced-span'], { env }));
+  const finding = review.readLedger(dir, slug).findings.find((x) => x.id === 'correctness:absent');
+  assert.strictEqual(finding.status, 'parked');
+  assert.strictEqual(out.decision.parked, true);
+});
+
+test('record: a companion-file journal entry does not fix a distinct live finding', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'companion\n');
+  execFileSync('git', ['add', 'b.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add companion'], { cwd: repo });
+  const { env } = seedGatesRound(repo, dir, 'feat/mirror',
+    { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [
+      { id: 'correctness:b', gate: 'correctness', file: 'b.txt', span: 'live-span', summary: 'still needs a fix' },
+    ] },
+    { status: 'ok', rejected: [] });
+  const slug = review.targetSlug('feat/mirror');
+  let ledger = review.readLedger(dir, slug);
+  ledger = { ...ledger, journal: [{ id: 'correctness:a', sha: 'companionsha', file: 'a.txt', files: ['a.txt', 'b.txt'], span: 'live-span' }] };
+  review.writeLedger(dir, slug, ledger);
+
+  assert.deepStrictEqual(JSON.parse(run(['plan-fixes', 'feat/mirror'], { env })).fixes.map((f) => f.id), ['correctness:b']);
+  const out = JSON.parse(run(['record', 'feat/mirror'], { env }));
+  const finding = review.readLedger(dir, slug).findings.find((f) => f.id === 'correctness:b');
+  assert.strictEqual(finding.status, 'parked');
+  assert.notStrictEqual(out.decision.converged, true);
+});
+
+test('plan-fixes: a companion-file journal entry does not replay an absent-span finding with a different id', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'companion\n');
+  execFileSync('git', ['add', 'b.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add companion'], { cwd: repo });
+  const { env } = seedGatesRound(repo, dir, 'feat/companion-absent',
+    { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [
+      { id: 'correctness:b', gate: 'correctness', file: 'b.txt', span: 'MISSING_FUNC_XYZ', summary: 'required function is absent' },
+    ] },
+    { status: 'ok', rejected: [] });
+  const slug = review.targetSlug('feat/companion-absent');
+  let ledger = review.readLedger(dir, slug);
+  ledger = { ...ledger, journal: [{ id: 'correctness:a', sha: 'companionsha', file: 'a.txt', files: ['a.txt', 'b.txt'], span: 'MISSING_FUNC_XYZ' }] };
+  review.writeLedger(dir, slug, ledger);
+
+  const planOut = JSON.parse(run(['plan-fixes', 'feat/companion-absent'], { env }));
+  assert.deepStrictEqual(planOut.fixes.map((f) => f.id), ['correctness:b']);
+  assert.deepStrictEqual(review.readLedger(dir, slug).resolved_absent, []);
+});
+
+test('commit-fix + record: an explicit mirrored finding claim resolves the declared counterpart', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'source span\n');
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'mirror span\n');
+  execFileSync('git', ['add', 'a.txt', 'b.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add mirrored files'], { cwd: repo });
+  const { env, n } = seedGatesRound(repo, dir, 'feat/mirror-claim',
+    { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [
+      { id: 'correctness:a', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'source mirror' },
+      { id: 'correctness:b', gate: 'correctness', file: 'b.txt', span: 'mirror span', summary: 'companion mirror' },
+    ] },
+    { status: 'ok', rejected: [] });
+  assert.deepStrictEqual(JSON.parse(run(['plan-fixes', 'feat/mirror-claim'], { env })).fixes.map((f) => f.id), ['correctness:a', 'correctness:b']);
+
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'source fixed\n');
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'mirror fixed\n');
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:a.json`), JSON.stringify({
+    status: 'ok', edited: true, files: ['a.txt', 'b.txt'], resolvedFindingIds: ['correctness:b'],
+  }));
+  const committed = JSON.parse(run(['commit-fix', 'feat/mirror-claim', 'correctness:a'], { env }));
+  assert.strictEqual(committed.committed, true);
+
+  const out = JSON.parse(run(['record', 'feat/mirror-claim'], { env }));
+  const findings = review.readLedger(dir, review.targetSlug('feat/mirror-claim')).findings;
+  assert.strictEqual(findings.find((f) => f.id === 'correctness:a').status, 'fixed');
+  assert.strictEqual(findings.find((f) => f.id === 'correctness:b').status, 'fixed');
+  assert.strictEqual(findings.find((f) => f.id === 'correctness:b').fix_commit, committed.sha);
+  assert.strictEqual(out.decision.parked, false);
+});
+
+test('commit-fix: permits a mirror claim when either edited file was deleted', () => {
+  for (const deleted of ['a.txt', 'b.txt']) {
+    const repo = initRepo(); const dir = tmpDir();
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'source span\n');
+    fs.writeFileSync(path.join(repo, 'b.txt'), 'mirror span\n');
+    execFileSync('git', ['add', 'a.txt', 'b.txt'], { cwd: repo });
+    execFileSync('git', ['commit', '-qm', 'add mirrored files'], { cwd: repo });
+    const { env, n } = seedGatesRound(repo, dir, `feat/deleted-${deleted}`,
+      { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [
+        { id: 'correctness:a', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'source mirror' },
+        { id: 'correctness:b', gate: 'correctness', file: 'b.txt', span: 'mirror span', summary: 'companion mirror' },
+      ] },
+      { status: 'ok', rejected: [] });
+    run(['plan-fixes', `feat/deleted-${deleted}`], { env });
+    fs.rmSync(path.join(repo, deleted));
+    if (deleted === 'a.txt') fs.writeFileSync(path.join(repo, 'b.txt'), 'mirror fixed\n');
+    else fs.writeFileSync(path.join(repo, 'a.txt'), 'source fixed\n');
+    const primary = deleted === 'a.txt' ? 'correctness:a' : 'correctness:b';
+    const counterpart = primary === 'correctness:a' ? 'correctness:b' : 'correctness:a';
+    fs.writeFileSync(path.join(dir, `round-${n}-fix-${primary}.json`), JSON.stringify({
+      status: 'ok', edited: true, files: ['a.txt', 'b.txt'], resolvedFindingIds: [counterpart],
+    }));
+    assert.strictEqual(JSON.parse(run(['commit-fix', `feat/deleted-${deleted}`, primary], { env })).committed, true);
+    const out = JSON.parse(run(['record', `feat/deleted-${deleted}`], { env }));
+    const findings = review.readLedger(dir, review.targetSlug(`feat/deleted-${deleted}`)).findings;
+    assert.strictEqual(findings.find((f) => f.id === 'correctness:a').status, 'fixed');
+    assert.strictEqual(findings.find((f) => f.id === 'correctness:b').status, 'fixed');
+    assert.strictEqual(out.decision.parked, false);
+  }
+});
+
+test('record: treats a deleted resolved counterpart as span-absent', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'mirror span\n');
+  execFileSync('git', ['add', 'b.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add mirrored file'], { cwd: repo });
+  const { env, n } = seedGatesRound(repo, dir, 'feat/deleted-counterpart',
+    { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [
+      { id: 'correctness:a', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'source mirror' },
+      { id: 'correctness:b', gate: 'correctness', file: 'b.txt', span: 'mirror span', summary: 'companion mirror' },
+    ] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/deleted-counterpart'], { env });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'source fixed\n');
+  fs.rmSync(path.join(repo, 'b.txt'));
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:a.json`), JSON.stringify({
+    status: 'ok', edited: true, files: ['a.txt', 'b.txt'], resolvedFindingIds: ['correctness:b'],
+  }));
+  assert.strictEqual(JSON.parse(run(['commit-fix', 'feat/deleted-counterpart', 'correctness:a'], { env })).committed, true);
+  const out = JSON.parse(run(['record', 'feat/deleted-counterpart'], { env }));
+  const finding = review.readLedger(dir, review.targetSlug('feat/deleted-counterpart')).findings.find((f) => f.id === 'correctness:b');
+  assert.strictEqual(finding.status, 'fixed');
+  assert.strictEqual(out.decision.parked, false);
+});
+
+test('commit-fix: rejects a mirrored claim when the primary span remains live', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'source span\n');
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'mirror span\n');
+  execFileSync('git', ['add', 'a.txt', 'b.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add mirrored files'], { cwd: repo });
+  const { env, n } = seedGatesRound(repo, dir, 'feat/mirror-claim-primary-live',
+    { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [
+      { id: 'correctness:a', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'source mirror' },
+      { id: 'correctness:b', gate: 'correctness', file: 'b.txt', span: 'mirror span', summary: 'companion mirror' },
+    ] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/mirror-claim-primary-live'], { env });
+
+  fs.appendFileSync(path.join(repo, 'a.txt'), 'unrelated dirty change\n');
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'mirror fixed\n');
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:a.json`), JSON.stringify({
+    status: 'ok', edited: true, files: ['a.txt', 'b.txt'], resolvedFindingIds: ['correctness:b'],
+  }));
+
+  assert.throws(
+    () => run(['commit-fix', 'feat/mirror-claim-primary-live', 'correctness:a'], { env }),
+    /harness-failure: commit-fix: invalid resolved finding claim "correctness:b"/,
+  );
+});
+
+test('commit-fix: rejects a mirrored claim when the counterpart span was already absent at HEAD', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'source span\n');
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'mirror already absent\n');
+  execFileSync('git', ['add', 'a.txt', 'b.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add mirrored files'], { cwd: repo });
+  const { env, n } = seedGatesRound(repo, dir, 'feat/mirror-claim-preexisting-absence',
+    { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [
+      { id: 'correctness:a', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'source mirror' },
+      { id: 'correctness:b', gate: 'correctness', file: 'b.txt', span: 'mirror span', summary: 'companion mirror' },
+    ] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/mirror-claim-preexisting-absence'], { env });
+
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'source fixed\n');
+  fs.appendFileSync(path.join(repo, 'b.txt'), 'unrelated dirty change\n');
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:a.json`), JSON.stringify({
+    status: 'ok', edited: true, files: ['a.txt', 'b.txt'], resolvedFindingIds: ['correctness:b'],
+  }));
+
+  assert.throws(
+    () => run(['commit-fix', 'feat/mirror-claim-preexisting-absence', 'correctness:a'], { env }),
+    /harness-failure: commit-fix: invalid resolved finding claim "correctness:b"/,
+  );
+});
+
+test('commit-fix: rejects an unknown mirrored finding claim before committing', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/mirror-claim-invalid',
+    { status: 'ok', examined: ['a.txt'], findings: [
+      { id: 'correctness:a', gate: 'correctness', file: 'a.txt', span: 'one', summary: 'source mirror' },
+    ] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/mirror-claim-invalid'], { env });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:a.json`), JSON.stringify({
+    status: 'ok', edited: true, files: ['a.txt'], resolvedFindingIds: ['correctness:unknown'],
+  }));
+  assert.throws(
+    () => run(['commit-fix', 'feat/mirror-claim-invalid', 'correctness:a'], { env }),
+    /harness-failure: commit-fix: invalid resolved finding claim "correctness:unknown"/,
+  );
+  assert.strictEqual(execFileSync('git', ['status', '--porcelain', '--', 'a.txt'], { cwd: repo, encoding: 'utf8' }).trim(), 'M a.txt');
+});
+
 test('commit-fix: commits one fix and journals it', () => {
   const repo = initRepo(); const dir = tmpDir();
   const { env, n } = seedGatesRound(repo, dir, 'feat/x',

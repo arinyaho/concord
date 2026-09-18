@@ -81,6 +81,21 @@ const gitIsDirty = gitDirty;
 function gitIsDirtyForFile(repoRoot, file) {
   return sh('git', ['status', '--porcelain', '--', file], { cwd: repoRoot }).trim().length > 0;
 }
+function gitHeadFileContains(repoRoot, file, span) {
+  try {
+    return sh('git', ['show', `HEAD:${file}`], { cwd: repoRoot }).includes(span);
+  } catch (e) {
+    return false;
+  }
+}
+function gitWorktreeFileLacksSpan(repoRoot, file, span) {
+  try {
+    return !fs.readFileSync(path.join(repoRoot, file), 'utf8').includes(span);
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return true;
+    throw e;
+  }
+}
 
 function pathWithin(child, parent) {
   const relative = path.relative(parent, child);
@@ -997,18 +1012,22 @@ function main(resolveFromCwd) {
     // Branch fixed-signal on target type: git uses the commit journal; file
     // targets use the per-fix artifact's edited flag (no git commit happens).
     const isGit = !ledger.target || ledger.target.type === 'git';
-    const journaled = new Map((ledger.journal || []).map((j) => [j.id, j.sha]));
+    const journaled = ledger.journal || [];
+    const journalEntryFor = (finding) => journaled.find((j) => j.id === finding.id)
+      || journaled.find((j) => (j.resolutions || []).some((r) => r.id === finding.id && r.file === finding.file && r.span === finding.span)
+        && finding.span && gitWorktreeFileLacksSpan(repoRoot, finding.file, finding.span));
     const fixedIds = [];
     const parkedIds = [];
     const fixCommits = {};
     const parkReasons = {};
     for (const id of ledger.planned || []) {
       const fx = readJson(`fix-${id}`);
-      const fixedByGit = isGit && journaled.has(id);
+      const finding = candidates.find((f) => f.id === id);
+      const fixedByGit = isGit && finding && journalEntryFor(finding);
       const fixedByReport = !isGit && fx && fx.edited === true;
       if (fixedByGit) {
         fixedIds.push(id);
-        fixCommits[id] = journaled.get(id);
+        fixCommits[id] = journalEntryFor(finding).sha;
       } else if (fixedByReport) {
         // File-target fix: the fixer edited the file directly; no git commit.
         // Stamp 'file-edit' as a sentinel so the handoff clearly shows the
@@ -1028,8 +1047,15 @@ function main(resolveFromCwd) {
     // unfixable), never silently marked 'fixed'. Stamp the real journal sha (not
     // a sentinel) so the handoff's fix digest shows the actual commit.
     for (const id of ledger.resolved_absent || []) {
-      fixedIds.push(id);
-      fixCommits[id] = journaled.get(id) || 'span already absent (idempotent replay)';
+      const finding = candidates.find((f) => f.id === id);
+      const journal = finding && journalEntryFor(finding);
+      if (journal && finding.span && gitWorktreeFileLacksSpan(repoRoot, finding.file, finding.span)) {
+        fixedIds.push(id);
+        fixCommits[id] = journal.sha;
+      } else {
+        parkedIds.push(id);
+        parkReasons[id] = gc.validateParkReason({ kind: 'needs-decision', text: 'a previously absent span returned before record' });
+      }
     }
     const outcome = {
       dodPassed: !!(ledger.dod && ledger.dod.passed), dodDeferred: !!(ledger.dod && ledger.dod.deferred), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons,
@@ -1176,8 +1202,8 @@ function main(resolveFromCwd) {
     // never matched. Marking those 'fixed' would converge green with a confirmed
     // bug still live, so route them to the fixer instead (it adds the missing
     // code -> a real commit, or reports no-edit -> record parks it needs-decision).
-    const journaledIds = new Set((ledger.journal || []).map((j) => j.id));
-    const isReplay = (f) => !spanPresent(f.file, f.span) && journaledIds.has(f.id);
+    const isReplay = (f) => !spanPresent(f.file, f.span) && (ledger.journal || []).some((j) => j.id === f.id
+      || (j.resolutions || []).some((r) => r.id === f.id && r.file === f.file && r.span === f.span));
     const fixes = confirmedNonKilled
       .filter((f) => !isReplay(f))
       .map((f) => ({ id: f.id, file: f.file, span: f.span, summary: f.summary }));
@@ -1382,7 +1408,8 @@ function main(resolveFromCwd) {
     // finding that resolved to `{file: null}` here would fail the file guard
     // below and report "no edit or file unchanged" -- silently discarding a fix
     // the fixer actually made, which record then reverts with the tree checkout.
-    const finding = roundCandidates(require('./gate-contract'), readRound('correctness'), readRound('verify'))
+    const candidates = roundCandidates(require('./gate-contract'), readRound('correctness'), readRound('verify'));
+    const finding = candidates
       .find((f) => f.id === id) || { summary: '', file: null };
     // The fix subagent declares every file it touched via `files` (finding.file
     // plus any companion edit -- e.g. a caller/import the fix legitimately had
@@ -1397,9 +1424,28 @@ function main(resolveFromCwd) {
     // file must have BOTH edits land in the same attributed commit, or the
     // companion edit is silently wiped by record()'s later gitCheckoutTree.
     if (fx && Array.isArray(fx.files)) validateFixFiles(repoRoot, stateDir, files);
+    const resolutions = [];
+    if (fx && Object.hasOwn(fx, 'resolvedFindingIds')) {
+      if (!Array.isArray(fx.resolvedFindingIds) || new Set(fx.resolvedFindingIds).size !== fx.resolvedFindingIds.length) {
+        throw new Error('harness-failure: commit-fix: resolvedFindingIds must be a unique array');
+      }
+      for (const resolvedId of fx.resolvedFindingIds) {
+        const counterpart = candidates.find((f) => f.id === resolvedId);
+        if (typeof resolvedId !== 'string' || resolvedId === id || !counterpart || !(ledger.planned || []).includes(resolvedId)
+          || !files.includes(finding.file) || !files.includes(counterpart.file) || !gitIsDirtyForFile(repoRoot, finding.file)
+          || !gitIsDirtyForFile(repoRoot, counterpart.file) || !finding.span
+          || !gitHeadFileContains(repoRoot, finding.file, finding.span)
+          || !gitWorktreeFileLacksSpan(repoRoot, finding.file, finding.span) || !counterpart.span
+          || !gitHeadFileContains(repoRoot, counterpart.file, counterpart.span)
+          || !gitWorktreeFileLacksSpan(repoRoot, counterpart.file, counterpart.span)) {
+          throw new Error(`harness-failure: commit-fix: invalid resolved finding claim "${resolvedId}"`);
+        }
+        resolutions.push({ id: counterpart.id, file: counterpart.file, span: counterpart.span });
+      }
+    }
     if (fx && fx.status === 'ok' && fx.edited === true && finding.file && files.some((f) => gitIsDirtyForFile(repoRoot, f))) {
       const sha = gitCommitFix(repoRoot, id, finding.summary, files);
-      ledger = { ...ledger, journal: [...(ledger.journal || []), { id, sha }] };
+      ledger = { ...ledger, journal: [...(ledger.journal || []), { id, sha, file: finding.file, files, span: finding.span, resolutions }] };
       writeLedger(stateDir, slug, ledger);
       process.stdout.write(JSON.stringify({ committed: true, sha }) + '\n');
     } else {
