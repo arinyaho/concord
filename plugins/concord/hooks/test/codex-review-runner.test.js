@@ -698,6 +698,7 @@ test('fix prompt requires an explicit, span-absent claim for a distinct planned 
 test('file-target fix prompt omits git-only mirror claims', () => {
   const prompt = reviewerPrompt('fix', { stateDir: '/state', round: 7, targetType: 'file', finding: { id: 'correctness:bug', file: 'note.md', span: 'bad', summary: 'fix it' }, plannedFindingIds: ['correctness:bug', 'correctness:mirror'] });
   assert.doesNotMatch(prompt, /resolvedFindingIds|mirror finding|correctness:mirror/);
+  assert.match(prompt, /\{"status":"ok","edited":true,"files":\["<every edited path>"\]\}\./);
 });
 
 test('correctness prompt requires every changed file in examined', () => {

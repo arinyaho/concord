@@ -125,7 +125,7 @@ By default Codex uses its configured model. If the user asks to tier a pass — 
 
 ### Fixes (Claude)
 
-When the driver reaches `plan-fixes` and the per-fix step: for EACH planned fix, apply the minimal correct change yourself with Edit, write the driver's expected `round-<n>-fix-<id>.json` (`{"status":"ok","edited":true,"files":[...],"resolvedFindingIds":[...]}`). Omit `resolvedFindingIds` unless the same commit resolves a distinct planned mirror finding whose exact span is absent from a declared file, then run `commit-fix` before the next fix — sequentially, one at a time, exactly as the driver specifies. This is the only place you use your own tools instead of Codex; it is deliberate.
+When the driver reaches `plan-fixes` and the per-fix step: for EACH planned fix, apply the minimal correct change yourself with Edit, write the driver's expected `round-<n>-fix-<id>.json` (`{"status":"ok","edited":true,"files":[...]}`). On Git targets only, add `resolvedFindingIds` when the same commit resolves a distinct planned mirror finding whose exact span is absent from a declared file; file targets skip `commit-fix` and must omit it. Then run `commit-fix` before the next Git fix — sequentially, one at a time, exactly as the driver specifies. This is the only place you use your own tools instead of Codex; it is deliberate.
 
 ## Step 4 — report
 
