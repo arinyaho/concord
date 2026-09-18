@@ -53,6 +53,7 @@ test('ticket-to-pr keeps Notion lifecycle transitions bounded and unambiguous', 
   assert.match(skill.slice(entry, prCreation), /exactly one editable status property.*one `In progress` and one `In review` option/s);
   assert.match(skill.slice(entry, prCreation), /already `In review` or `Done`, preserve it/);
   assert.match(skill.slice(entry, prCreation), /all other current statuses are blockers/);
+  assert.match(skill.slice(entry, prCreation), /cannot expose this standard lifecycle is a blocker/);
   assert.match(skill.slice(prCreation), /exactly one eligible PR URL field is empty or already has the same URL/);
   assert.match(skill.slice(prCreation), /otherwise append an idempotent labelled `PR:` link/);
   assert.match(skill.slice(prCreation), /verify the exact PR URL before changing the status/);
