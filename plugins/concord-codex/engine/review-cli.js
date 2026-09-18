@@ -1413,6 +1413,7 @@ function main(resolveFromCwd) {
         if (typeof resolvedId !== 'string' || resolvedId === id || !counterpart || !(ledger.planned || []).includes(resolvedId)
           || !files.includes(finding.file) || !files.includes(counterpart.file) || !gitIsDirtyForFile(repoRoot, finding.file)
           || !gitIsDirtyForFile(repoRoot, counterpart.file) || !counterpart.span
+          || !sh('git', ['show', `HEAD:${counterpart.file}`], { cwd: repoRoot }).includes(counterpart.span)
           || fs.readFileSync(path.join(repoRoot, counterpart.file), 'utf8').includes(counterpart.span)) {
           throw new Error(`harness-failure: commit-fix: invalid resolved finding claim "${resolvedId}"`);
         }
