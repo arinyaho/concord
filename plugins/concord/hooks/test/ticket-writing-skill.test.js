@@ -44,6 +44,7 @@ test('Claude and Codex source packages ship the same review-until-lgtm skill', (
   assert.match(read(CLAUDE_REVIEW_UNTIL_LGTM), /full bounded window/);
   assert.match(read(CLAUDE_REVIEW_UNTIL_LGTM), /durable PR marker/);
   assert.match(read(CLAUDE_REVIEW_UNTIL_LGTM), /latest matching review associated with the latest request/);
+  assert.match(read(CLAUDE_REVIEW_UNTIL_LGTM), /matching review activity/);
 });
 
 test('Claude and Codex source packages ship the same proposal-package-authoring skill', () => {

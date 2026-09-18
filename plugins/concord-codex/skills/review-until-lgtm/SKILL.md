@@ -10,7 +10,7 @@ Use this after implementation and ordinary review are complete. It is a GitHub o
 ## Observe the current review
 
 1. Resolve and record the exact PR head SHA before requesting or judging a review. Inspect only reviews, summary comments, threads, and reactions attached to that exact commit; ignore stale results.
-2. A matching review is one authored by GitHub Codex and bound to the exact head SHA, regardless of its state. If no matching review exists, request one review once through the repository's configured GitHub Codex mechanism. Do not send a request on every poll.
+2. A matching review is one authored by GitHub Codex and bound to the exact head SHA, regardless of its state. Treat bot-authored summary activity that names that SHA as matching review activity while no review object exists; it is in progress, not an invitation to request another review. If no matching activity exists, request one review once through the repository's configured GitHub Codex mechanism. Do not send a request on every poll.
 3. Poll GitHub with the configured authenticated GitHub CLI profile. Record the latest matching review associated with the latest request, its completion state, its summary, unresolved threads authored by that same bot, and whether that bot added the configured explicit LGTM reaction to that summary. Do not combine the summary, threads, or reactions from separate reviews.
 
 ## Decide and stop
