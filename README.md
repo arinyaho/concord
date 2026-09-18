@@ -42,8 +42,8 @@ codex plugin add concord-codex@arinyaho-concord
 
 ## Plugins
 
-- `concord` (Claude Code) - a per-session state checkpoint, cross-session task charter, `/review-until-green`, `ticket-to-pr`, provider-neutral `ticket-writing`, and a cross-model skill that lets Codex perform review passes while Claude drives and fixes.
-- `concord-codex` (Codex) - the same state checkpoint, charter, review loop, `ticket-writing`, and `ticket-to-pr`, packaged natively for Codex. It reuses the vendor-neutral core and shared skills verbatim; reviewers and fixers run as `codex exec` subprocesses.
+- `concord` (Claude Code) - a per-session state checkpoint, cross-session task charter, `/review-until-green`, `ticket-to-pr`, provider-neutral `ticket-writing`, `proposal-package-authoring`, and a cross-model skill that lets Codex perform review passes while Claude drives and fixes.
+- `concord-codex` (Codex) - the same state checkpoint, charter, review loop, `ticket-writing`, `ticket-to-pr`, and `proposal-package-authoring`, packaged natively for Codex. It reuses the vendor-neutral core and shared skills verbatim; reviewers and fixers run as `codex exec` subprocesses.
 
 ## Track map
 
