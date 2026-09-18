@@ -11,6 +11,12 @@ const CLAUDE_SKILL = path.join(REPO, 'plugins/concord/skills/ticket-writing/SKIL
 const CODEX_SKILL = path.join(REPO, 'plugins/concord-codex/skills/ticket-writing/SKILL.md');
 const CLAUDE_TICKET_TO_PR = path.join(REPO, 'plugins/concord/skills/ticket-to-pr/SKILL.md');
 const CODEX_TICKET_TO_PR = path.join(REPO, 'plugins/concord-codex/skills/ticket-to-pr/SKILL.md');
+const PROPOSAL_SKILL_FILES = [
+  'SKILL.md',
+  'references/content-and-evidence.md',
+  'references/visual-authoring.md',
+  'references/delivery.md',
+];
 
 function read(file) {
   return fs.readFileSync(file, 'utf8');
@@ -25,6 +31,15 @@ test('Claude and Codex source packages ship the same ticket-writing skill', () =
 test('Claude and Codex source packages ship the same ticket-to-pr skill', () => {
   assert.ok(fs.existsSync(CODEX_TICKET_TO_PR), 'Codex source package is missing ticket-to-pr');
   assert.equal(read(CODEX_TICKET_TO_PR), read(CLAUDE_TICKET_TO_PR));
+});
+
+test('Claude and Codex source packages ship the same proposal-package-authoring skill', () => {
+  for (const file of PROPOSAL_SKILL_FILES) {
+    const claude = path.join(REPO, 'plugins/concord/skills/proposal-package-authoring', file);
+    const codex = path.join(REPO, 'plugins/concord-codex/skills/proposal-package-authoring', file);
+    assert.ok(fs.existsSync(codex), `Codex source package is missing ${file}`);
+    assert.equal(read(codex), read(claude));
+  }
 });
 
 pluginInstallE2ETest('clean Claude and Codex installs discover the same shared skills', (t) => {
@@ -59,6 +74,8 @@ pluginInstallE2ETest('clean Claude and Codex installs discover the same shared s
   const codex = read(path.join(codexInstall.installedPath, 'skills/ticket-writing/SKILL.md'));
   const claudeTicketToPr = read(path.join(claudeInstall.installPath, 'skills/ticket-to-pr/SKILL.md'));
   const codexTicketToPr = read(path.join(codexInstall.installedPath, 'skills/ticket-to-pr/SKILL.md'));
+  const claudeProposal = read(path.join(claudeInstall.installPath, 'skills/proposal-package-authoring/SKILL.md'));
+  const codexProposal = read(path.join(codexInstall.installedPath, 'skills/proposal-package-authoring/SKILL.md'));
   const claudeSkills = run(
     'claude',
     ['-p', '/help', '--output-format', 'stream-json', '--verbose'],
@@ -71,10 +88,14 @@ pluginInstallE2ETest('clean Claude and Codex installs discover the same shared s
 
   assert.equal(codex, claude);
   assert.equal(codexTicketToPr, claudeTicketToPr);
+  assert.equal(codexProposal, claudeProposal);
   assert.ok(claudeSkills?.includes('concord:ticket-to-pr'));
+  assert.ok(claudeSkills?.includes('concord:proposal-package-authoring'));
   assert.match(codexSkills, /(?:^|\n)- concord-codex:ticket-to-pr: /);
+  assert.match(codexSkills, /(?:^|\n)- concord-codex:proposal-package-authoring: /);
   assert.match(claude, /^---\nname: ticket-writing\ndescription: Use when /);
   assert.match(claudeTicketToPr, /^---\nname: ticket-to-pr\ndescription: >-/);
+  assert.match(claudeProposal, /^---\nname: proposal-package-authoring\ndescription: /);
   for (const provider of ['Notion', 'Jira', 'GitHub Issues']) assert.match(claude, new RegExp(provider));
 });
 
