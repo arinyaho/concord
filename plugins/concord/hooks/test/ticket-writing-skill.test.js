@@ -42,6 +42,19 @@ test('Claude and Codex source packages ship the same proposal-package-authoring 
   }
 });
 
+test('ticket-to-pr synchronizes a Notion ticket at pipeline entry and PR creation', () => {
+  const skill = read(CLAUDE_TICKET_TO_PR);
+
+  for (const required of [
+    '## Notion ticket lifecycle',
+    'In progress',
+    'After the PR URL exists',
+    'In review',
+    'Do not move the ticket to Done',
+    'read the ticket back',
+  ]) assert.ok(skill.includes(required), `missing Notion lifecycle contract: ${required}`);
+});
+
 pluginInstallE2ETest('clean Claude and Codex installs discover the same shared skills', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concord-ticket-writing-'));
   const home = path.join(root, 'home');
