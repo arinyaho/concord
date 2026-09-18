@@ -66,6 +66,18 @@ for (const runner of ['../../core/codex-review-runner', '../../../concord-codex/
     }
   });
 
+  test(`${runner} redacts Basic authorization assignments without consuming following diagnostics`, () => {
+    const { redactSecrets } = require(runner);
+    for (const key of ['Authorization', 'Proxy-Authorization']) {
+      for (const separator of ['=', ':']) {
+        for (const value of ['Basic dXNlcjpwYXNz', '"Basic dXNlcjpwYXNz"', "'Basic dXNlcjpwYXNz'"]) {
+          const input = `${key}${separator}${value} next=visible`;
+          assert.strictEqual(redactSecrets(input), `${key}${separator}[REDACTED] next=visible`);
+        }
+      }
+    }
+  });
+
   test(`${runner} redacts quoted prefixed credential keys`, () => {
     const { redactSecrets } = require(runner);
     for (const key of ['client_secret', 'OPENAI_API_KEY', 'x-api-key']) {
@@ -74,6 +86,24 @@ for (const runner of ['../../core/codex-review-runner', '../../../concord-codex/
         assert.strictEqual(redactSecrets(`${prefix}ordinary value${quote},"next":"visible"}`), `{${quote}${key}${quote}: "[REDACTED]","next":"visible"}`);
         assert.strictEqual(redactSecrets(`${prefix}ordinary value`), `{${quote}${key}${quote}: "[REDACTED]"`);
       }
+    }
+  });
+
+  test(`${runner} redacts AWS credential fields and Slack xox tokens`, () => {
+    const { redactSecrets } = require(runner);
+    for (const key of ['AWS_SECRET_ACCESS_KEY', 'AWS_ACCESS_KEY_ID']) {
+      for (const quote of ['"', "'"]) {
+        const json = `{${quote}${key}${quote}:${quote}credential-value-123456${quote},"next":"visible"}`;
+        assert.strictEqual(redactSecrets(json), `{${quote}${key}${quote}:"[REDACTED]","next":"visible"}`);
+      }
+      assert.strictEqual(redactSecrets(`${key}=credential-value-123456 next=visible`), `${key}=[REDACTED] next=visible`);
+      assert.strictEqual(redactSecrets(`${key}: credential-value-123456 next=visible`), `${key}: [REDACTED] next=visible`);
+    }
+
+    for (const kind of ['a', 'b', 'p', 'r', 's']) {
+      const token = `xox${kind}-1234567890-abcdefghijklmnop`;
+      assert.strictEqual(redactSecrets(`slack=${token} next=visible`), 'slack=[REDACTED] next=visible');
+      assert.strictEqual(redactSecrets(token), '[REDACTED]');
     }
   });
 
@@ -291,6 +321,37 @@ for (const platform of ['linux', 'win32']) {
   });
 }
 
+for (const runner of ['../../core/codex-review-runner', '../../../concord-codex/engine/codex-review-runner']) {
+  test(`${runner} preserves the exact native Windows PATH executable selected through PATHEXT`, () => {
+    const expected = 'C:\\trusted\\codex.EXE';
+    const probed = [];
+    const resolved = require(runner).resolveCodexExecutable('C:\\repo', {
+      env: { Path: 'C:\\trusted', PATHEXT: '.EXE;.COM' },
+      platform: 'win32',
+      access(candidate) {
+        if (candidate !== expected) {
+          const error = new Error(`missing ${candidate}`);
+          error.code = 'ENOENT';
+          throw error;
+        }
+      },
+      stat(candidate) {
+        assert.strictEqual(candidate, expected);
+        return { isFile: () => true };
+      },
+      probe(command) {
+        probed.push(command);
+        return { status: 0, stdout: 'codex-cli windows-test\n' };
+      },
+    });
+
+    assert.strictEqual(resolved.command, expected);
+    assert.strictEqual(resolved.path, expected);
+    assert.strictEqual(resolved.source, 'PATH');
+    assert.deepStrictEqual(probed, [expected]);
+  });
+}
+
 test('codexExec starts subprocesses asynchronously so panel work can overlap', async () => {
   const binDir = temp();
   const codex = path.join(binDir, 'codex');
@@ -353,7 +414,7 @@ test('codexExec uses the exact executable selected by the version probe', async 
 test('failed Codex stderr is redacted and size-limited in the harness failure', async () => {
   const binDir = temp();
   const codex = path.join(binDir, 'codex');
-  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.154.0\\n');\nelse { process.stderr.write('Authorization: Bearer super-secret-bearer\\ntoken=top-secret-token\\n' + 'x'.repeat(20000)); process.exit(1); }\n`);
+  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.154.0\\n');\nelse { process.stderr.write('Authorization: Bearer super-secret-bearer\\ntoken=top-secret-token\\nAWS_SECRET_ACCESS_KEY=fakeSecretValue123456789\\nslack=' + 'xox' + 'b-1234567890-abcdefghijklmnop\\n' + 'x'.repeat(20000)); process.exit(1); }\n`);
   fs.chmodSync(codex, 0o755);
   const previousOverride = process.env.CONCORD_CODEX_BIN;
   process.env.CONCORD_CODEX_BIN = codex;
@@ -365,7 +426,7 @@ test('failed Codex stderr is redacted and size-limited in the harness failure', 
         assert.match(error.message, /harness-failure: correctness subprocess exited 1/);
         assert.match(error.message, /Codex stderr \(redacted, max 8192 bytes\)/);
         assert.match(error.message, /\[REDACTED\]/);
-        assert.doesNotMatch(error.message, /super-secret-bearer|top-secret-token/);
+        assert.doesNotMatch(error.message, /super-secret-bearer|top-secret-token|fakeSecretValue|xoxb-/);
         assert.match(error.message, /\.\.\.\[truncated\]/);
         assert.ok(Buffer.byteLength(error.message) < 8500, `diagnostic exceeded its bound: ${Buffer.byteLength(error.message)} bytes`);
         return true;

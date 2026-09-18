@@ -26,11 +26,12 @@ function redactSecrets(value) {
   // A bounded stderr capture can end inside a quoted value or escape sequence.
   // Treat an unterminated sensitive value as secret through the end of input.
   return String(value || '')
-    .replace(/(authorization\s*:\s*)[^\r\n]+/gi, '$1[REDACTED]')
+    .replace(/((?:proxy[-_])?authorization\s*[=:]\s*)(?:"(?:\\[\s\S]|[^"\\])*(?:"|\\?$)|'(?:\\[\s\S]|[^'\\])*(?:'|\\?$)|(?:(?:basic|bearer)\s+)?[^\s,;]+)/gi, '$1[REDACTED]')
     .replace(/\bbearer\s+[a-z0-9._~+/=-]{8,}/gi, 'Bearer [REDACTED]')
-    .replace(/(["'](?:[a-z0-9]+[_-])*(?:authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|credential)["']\s*:\s*)(?:"(?:\\[\s\S]|[^"\\])*(?:"|\\?$)|'(?:\\[\s\S]|[^'\\])*(?:'|\\?$))/gi, '$1"[REDACTED]"')
-    .replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|credential)\s*[=:]\s*)(?:"(?:\\[\s\S]|[^"\\])*(?:"|\\?$)|'(?:\\[\s\S]|[^'\\])*(?:'|\\?$)|[^\s,;]+)/gi, '$1[REDACTED]')
+    .replace(/(["'](?:[a-z0-9]+[_-])*(?:authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|secret[_-]?access[_-]?key|access[_-]?key[_-]?id|token|secret|password|credential)["']\s*:\s*)(?:"(?:\\[\s\S]|[^"\\])*(?:"|\\?$)|'(?:\\[\s\S]|[^'\\])*(?:'|\\?$))/gi, '$1"[REDACTED]"')
+    .replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret[_-]?access[_-]?key|access[_-]?key[_-]?id|token|secret|password|credential)\s*[=:]\s*)(?:"(?:\\[\s\S]|[^"\\])*(?:"|\\?$)|'(?:\\[\s\S]|[^'\\])*(?:'|\\?$)|[^\s,;]+)/gi, '$1[REDACTED]')
     .replace(/\b(?:sk[-_]|(?:rk|pk|gh[pousr]|github_pat)_)[a-z0-9_-]{8,}\b/gi, '[REDACTED]')
+    .replace(/\bxox[a-z]-[a-z0-9-]{8,}\b/gi, '[REDACTED]')
     .replace(/(https?:\/\/[^\s/:@]+:)[^\s/@]+@/gi, '$1[REDACTED]@');
 }
 
@@ -52,7 +53,7 @@ function pathEnv(env, platform) {
   return key ? env[key] : undefined;
 }
 
-function* pathExecutables(name, env, platform, repoRoot, access = fs.accessSync) {
+function* pathExecutables(name, env, platform, repoRoot, access = fs.accessSync, stat = fs.statSync) {
   const pathValue = pathEnv(env, platform);
   // Let the subprocess use its default search path when PATH is unset.
   if (pathValue == null) return;
@@ -66,11 +67,11 @@ function* pathExecutables(name, env, platform, repoRoot, access = fs.accessSync)
       const candidate = pathApi.resolve(repoRoot, directory, `${name}${extension.toLowerCase()}`);
       try {
         access(candidate, platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK);
-        if (fs.statSync(candidate).isFile()) yield candidate;
+        if (stat(candidate).isFile()) yield candidate;
       } catch {}
       if (platform === 'win32' && extension !== extension.toLowerCase()) {
         const upperCandidate = pathApi.resolve(repoRoot, directory, `${name}${extension}`);
-        try { access(upperCandidate, fs.constants.F_OK); if (fs.statSync(upperCandidate).isFile()) yield upperCandidate; } catch {}
+        try { access(upperCandidate, fs.constants.F_OK); if (stat(upperCandidate).isFile()) yield upperCandidate; } catch {}
       }
     }
   }
@@ -105,9 +106,9 @@ function resolveCodexExecutable(repoRoot, options = {}) {
   const cacheKey = JSON.stringify([repoRoot, platform, searchPath, env.PATHEXT || '', override]);
   if (!options.probe && codexResolutionCache?.key === cacheKey) return codexResolutionCache.value;
 
-  const pathMatches = pathExecutables('codex', env, platform, repoRoot, options.access);
+  const pathMatches = pathExecutables('codex', env, platform, repoRoot, options.access, options.stat);
   const located = pathMatches.next().value;
-  const pathCommand = platform === 'win32' ? 'codex' : (located || 'codex');
+  const pathCommand = located || 'codex';
   const candidates = override
     ? [{ command: override, display: safeDiagnostic(override, 1024), source: CODEX_BIN_ENV }]
     : [
