@@ -507,7 +507,7 @@ test('plan-fixes + record: a confirmed finding whose span is already absent from
 
 test('record: a companion-file journal entry does not fix a distinct live finding', () => {
   const repo = initRepo(); const dir = tmpDir();
-  fs.writeFileSync(path.join(repo, 'b.txt'), 'live-span\n');
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'companion\n');
   execFileSync('git', ['add', 'b.txt'], { cwd: repo });
   execFileSync('git', ['commit', '-qm', 'add companion'], { cwd: repo });
   const { env } = seedGatesRound(repo, dir, 'feat/mirror',
