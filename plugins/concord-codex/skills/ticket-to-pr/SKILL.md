@@ -31,6 +31,10 @@ Nothing here moves the work to done. Stage 9 ends at a PR URL, and done follows 
 
 Stages 1, 3 and 5 have no single owner here — use whatever the repository already provides (a tracker, a `docs/` convention, a planning skill). Stages 4 and 7 are Concord's `review-until-green`. Stages 2 and 8 are described below, because they are the ones that get skipped.
 
+## Delegation
+
+Unless the user explicitly directs otherwise, keep implementation and review with the active agent; do not hand either stage to another AI. When the user, selected model, or CLI harness expressly requires subagents, create only the required subagents. A review must be independent of each agent whose change it assesses. Where their models can be selected, prefer Terra or Sonnet over GPT Sol or Claude Opus; choose the reasoning effort appropriate to the work.
+
 ## Stage 2 is the one that gets skipped
 
 A change justified by "X is broken" is a claim about the world. The red run is what makes it a fact — not evidence you collect afterwards to decorate a PR. If stage 2 is blocked (an image to build, an environment to stand up), stage 2 is blocked. Shipping the PR with "red run pending" in the body is how a false premise reaches review.
