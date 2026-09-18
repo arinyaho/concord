@@ -11,6 +11,7 @@ const { foldTelemetry } = require('../../core/review-telemetry');
 // The runner owns all sequencing. Its subprocess seam makes this a no-network
 // integration test while exercising the real artifact contract at the boundary.
 const { runReviewUntilGreen, reviewerPrompt, codexExec, resolveDefaultBase } = require('../../core/codex-review-runner');
+const { reviewerPrompt: packagedReviewerPrompt } = require('../../../concord-codex/engine/codex-review-runner');
 
 function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'codex-runner-')); }
 
@@ -692,6 +693,11 @@ test('fix prompt requires an explicit, span-absent claim for a distinct planned 
   assert.match(prompt, /exact span must be absent/i);
   assert.match(prompt, /correctness:mirror/);
   assert.doesNotMatch(prompt, /other planned fixes: \["correctness:bug"/);
+});
+
+test('file-target fix prompt omits git-only mirror claims', () => {
+  const prompt = packagedReviewerPrompt('fix', { stateDir: '/state', round: 7, targetType: 'file', finding: { id: 'correctness:bug', file: 'note.md', span: 'bad', summary: 'fix it' }, plannedFindingIds: ['correctness:bug', 'correctness:mirror'] });
+  assert.doesNotMatch(prompt, /resolvedFindingIds|mirror finding|correctness:mirror/);
 });
 
 test('correctness prompt requires every changed file in examined', () => {
