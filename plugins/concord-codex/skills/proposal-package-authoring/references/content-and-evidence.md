@@ -18,7 +18,7 @@ Never turn an unsupported aspiration into a committed fact. Preserve unresolved 
 - Record confirmed deviations from the written RFP, including test environment and measurement method.
 - Resolve which file is canonical before editing when multiple copies exist.
 - Separate requirement satisfaction from implementation scope. “충족” states whether the requirement is met; “구축 범위” states what will be delivered to meet it.
-- A final proposal must not retain `미충족` or `부분충족`. Close the gap, narrow the claim to a demonstrably satisfied interpretation, or escalate the unresolved requirement before finalization.
+- A final proposal must not retain `미충족` or `부분충족`. Close the gap, or narrow the claim to a demonstrably satisfied interpretation only when the customer has confirmed that interpretation (including through official Q&A); otherwise escalate the unresolved requirement before finalization.
 - Avoid vague future-tense claims such as “제공 가능” when the evaluator may interpret them as unavailable. State committed scope and evidence.
 
 ## Paired deck manifest
