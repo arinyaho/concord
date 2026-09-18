@@ -629,6 +629,30 @@ test('commit-fix: permits a mirror claim when either edited file was deleted', (
   }
 });
 
+test('record: treats a deleted resolved counterpart as span-absent', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'mirror span\n');
+  execFileSync('git', ['add', 'b.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add mirrored file'], { cwd: repo });
+  const { env, n } = seedGatesRound(repo, dir, 'feat/deleted-counterpart',
+    { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [
+      { id: 'correctness:a', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'source mirror' },
+      { id: 'correctness:b', gate: 'correctness', file: 'b.txt', span: 'mirror span', summary: 'companion mirror' },
+    ] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/deleted-counterpart'], { env });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'source fixed\n');
+  fs.rmSync(path.join(repo, 'b.txt'));
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:a.json`), JSON.stringify({
+    status: 'ok', edited: true, files: ['a.txt', 'b.txt'], resolvedFindingIds: ['correctness:b'],
+  }));
+  assert.strictEqual(JSON.parse(run(['commit-fix', 'feat/deleted-counterpart', 'correctness:a'], { env })).committed, true);
+  const out = JSON.parse(run(['record', 'feat/deleted-counterpart'], { env }));
+  const finding = review.readLedger(dir, review.targetSlug('feat/deleted-counterpart')).findings.find((f) => f.id === 'correctness:b');
+  assert.strictEqual(finding.status, 'fixed');
+  assert.strictEqual(out.decision.parked, false);
+});
+
 test('commit-fix: rejects a mirrored claim when the primary span remains live', () => {
   const repo = initRepo(); const dir = tmpDir();
   fs.writeFileSync(path.join(repo, 'a.txt'), 'source span\n');

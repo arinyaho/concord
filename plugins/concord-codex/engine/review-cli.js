@@ -1015,7 +1015,7 @@ function main(resolveFromCwd) {
     const journaled = ledger.journal || [];
     const journalEntryFor = (finding) => journaled.find((j) => j.id === finding.id)
       || journaled.find((j) => (j.resolutions || []).some((r) => r.id === finding.id && r.file === finding.file && r.span === finding.span)
-        && finding.span && (() => { try { return !fs.readFileSync(path.join(repoRoot, finding.file), 'utf8').includes(finding.span); } catch (e) { return false; } })());
+        && finding.span && gitWorktreeFileLacksSpan(repoRoot, finding.file, finding.span));
     const fixedIds = [];
     const parkedIds = [];
     const fixCommits = {};
