@@ -17,3 +17,9 @@ Background: `docs/superpowers/specs/2026-07-16-vendor-agnostic-harness-adapter-d
 ## Implementation status
 
 `command`, `reviewer`, and `statedir` shipped with `review-until-green`. `lifecycle` and `transcript` then shipped with the Codex session-state checkpoint and charter. The self-contained `plugins/concord-codex/engine/` copy and drift tests keep the shared core and Codex adapters synchronized. Unit, hook-contract, bundle-drift, and direct-verb end-to-end checks cover the implemented ports; remaining runtime trade-offs are recorded in `GAPS.md`.
+
+## Codex executable selection
+
+The review runner resolves the executable once before `review-cli` starts or resumes a run. With no configuration, it probes the `codex` selected from `PATH`; on macOS only, a failed PATH probe automatically falls back to `/Applications/ChatGPT.app/Contents/Resources/codex`. `CONCORD_CODEX_BIN` is an optional, strict, highest-priority override for troubleshooting or custom installations. A candidate is accepted only when its `--version` probe exits successfully, and the accepted command is reused for every `codex exec` subprocess so probing and execution cannot select different installations.
+
+An invalid explicit override fails closed and reports only redacted, bounded diagnostics; it never falls through to another candidate. Subprocess stderr stays quiet on success. On failure, the terminal handoff includes a redacted excerpt capped at 8 KiB. Concord never removes quarantine attributes, disables Gatekeeper, requests administrator privileges, or downloads a replacement executable.

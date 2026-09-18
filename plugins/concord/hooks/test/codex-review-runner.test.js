@@ -1,5 +1,5 @@
 'use strict';
-const { test } = require('node:test');
+const { test, beforeEach } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -10,9 +10,19 @@ const { foldTelemetry } = require('../../core/review-telemetry');
 
 // The runner owns all sequencing. Its subprocess seam makes this a no-network
 // integration test while exercising the real artifact contract at the boundary.
-const { runReviewUntilGreen, reviewerPrompt, codexExec, resolveDefaultBase } = require('../../core/codex-review-runner');
+const { runReviewUntilGreen, reviewerPrompt, codexExec, resolveCodexExecutable, resolveDefaultBase } = require('../../core/codex-review-runner');
 
 function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'codex-runner-')); }
+
+// Keep subprocess fixtures from selecting the caller's real Codex executable.
+beforeEach((t) => {
+  const previousOverride = process.env.CONCORD_CODEX_BIN;
+  delete process.env.CONCORD_CODEX_BIN;
+  t.after(() => {
+    if (previousOverride === undefined) delete process.env.CONCORD_CODEX_BIN;
+    else process.env.CONCORD_CODEX_BIN = previousOverride;
+  });
+});
 
 test('codex-review-runner.js has no hardcoded copy of the panel lens list -- it must import report.js\'s PANEL_LENSES', () => {
   // Guards the third-copy bug: this module used to hardcode the five lens
@@ -30,6 +40,317 @@ test('codex-review-runner.js has no hardcoded copy of the panel lens list -- it 
     'codex-review-runner.js must not hardcode the panel lens list -- import report.js\'s PANEL_LENSES instead',
   );
 });
+
+test('Codex resolver selects a PATH executable whose --version probe succeeds', () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  fs.writeFileSync(codex, `#!${process.execPath}\nprocess.stdout.write('codex-cli 0.154.0\\n');\n`);
+  fs.chmodSync(codex, 0o755);
+
+  const resolved = resolveCodexExecutable(binDir, { env: { PATH: binDir }, platform: 'linux' });
+
+  assert.strictEqual(resolved.command, codex);
+  assert.strictEqual(resolved.path, codex);
+  assert.strictEqual(resolved.source, 'PATH');
+  assert.strictEqual(resolved.version, 'codex-cli 0.154.0');
+});
+
+for (const runner of ['../../core/codex-review-runner', '../../../concord-codex/engine/codex-review-runner']) {
+  test(`${runner} redacts quoted authorization headers`, () => {
+    const { redactSecrets } = require(runner);
+    for (const key of ['Authorization', 'authorization', 'AUTHORIZATION']) {
+      for (const quote of ['"', "'"]) {
+        const input = `{${quote}${key}${quote}: ${quote}Basic dXNlcjpwYXNz${quote},"next":"visible"}`;
+        assert.strictEqual(redactSecrets(input), `{${quote}${key}${quote}: "[REDACTED]","next":"visible"}`);
+      }
+    }
+  });
+
+  test(`${runner} redacts Basic authorization assignments without consuming following diagnostics`, () => {
+    const { redactSecrets } = require(runner);
+    for (const key of ['Authorization', 'Proxy-Authorization']) {
+      for (const separator of ['=', ':']) {
+        for (const value of ['Basic dXNlcjpwYXNz', '"Basic dXNlcjpwYXNz"', "'Basic dXNlcjpwYXNz'"]) {
+          const input = `${key}${separator}${value} next=visible`;
+          assert.strictEqual(redactSecrets(input), `${key}${separator}[REDACTED] next=visible`);
+        }
+      }
+    }
+  });
+
+  test(`${runner} redacts quoted prefixed credential keys`, () => {
+    const { redactSecrets } = require(runner);
+    for (const key of ['client_secret', 'OPENAI_API_KEY', 'x-api-key']) {
+      for (const quote of ['"', "'"]) {
+        const prefix = `{${quote}${key}${quote}: ${quote}`;
+        assert.strictEqual(redactSecrets(`${prefix}ordinary value${quote},"next":"visible"}`), `{${quote}${key}${quote}: "[REDACTED]","next":"visible"}`);
+        assert.strictEqual(redactSecrets(`${prefix}ordinary value`), `{${quote}${key}${quote}: "[REDACTED]"`);
+      }
+    }
+  });
+
+  test(`${runner} redacts AWS credential fields and Slack xox tokens`, () => {
+    const { redactSecrets } = require(runner);
+    for (const key of ['AWS_SECRET_ACCESS_KEY', 'AWS_ACCESS_KEY_ID']) {
+      for (const quote of ['"', "'"]) {
+        const json = `{${quote}${key}${quote}:${quote}credential-value-123456${quote},"next":"visible"}`;
+        assert.strictEqual(redactSecrets(json), `{${quote}${key}${quote}:"[REDACTED]","next":"visible"}`);
+      }
+      assert.strictEqual(redactSecrets(`${key}=credential-value-123456 next=visible`), `${key}=[REDACTED] next=visible`);
+      assert.strictEqual(redactSecrets(`${key}: credential-value-123456 next=visible`), `${key}: [REDACTED] next=visible`);
+    }
+
+    for (const kind of ['a', 'b', 'p', 'r', 's']) {
+      const token = `xox${kind}-1234567890-abcdefghijklmnop`;
+      assert.strictEqual(redactSecrets(`slack=${token} next=visible`), 'slack=[REDACTED] next=visible');
+      assert.strictEqual(redactSecrets(token), '[REDACTED]');
+    }
+  });
+
+  test(`${runner} redacts complete quoted-key values with mixed and escaped quotes`, () => {
+    const { redactSecrets } = require(runner);
+    for (const secret of ["first' second", 'first" second', 'first\\" second', 'first\\', '']) {
+      const input = JSON.stringify({ password: secret, next: 'visible' });
+      assert.strictEqual(redactSecrets(input), '{"password":"[REDACTED]","next":"visible"}');
+    }
+    for (const value of [String.raw`'first" second'`, String.raw`'first\' second'`, String.raw`'first\\'`]) {
+      assert.strictEqual(redactSecrets(`{'password':${value},'next':'visible'}`), `{'password':"[REDACTED]",'next':'visible'}`);
+    }
+  });
+
+  test(`${runner} redacts complete quoted assignment values`, () => {
+    const { redactSecrets } = require(runner);
+    for (const value of ['"first second"', "'first second'", '"first,second;third"', '"first\' second"', String.raw`"first\" second"`, String.raw`'first\' second'`]) {
+      for (const separator of ['=', ':']) {
+        assert.strictEqual(redactSecrets(`password ${separator} ${value} next=visible`), `password ${separator} [REDACTED] next=visible`);
+      }
+    }
+    assert.strictEqual(redactSecrets('token=plain, next=visible'), 'token=[REDACTED], next=visible');
+  });
+
+  test(`${runner} redacts incomplete quoted sensitive values`, () => {
+    const { redactSecrets } = require(runner);
+    for (const prefix of ['{"secret":"', "{'secret':'", '{"Authorization":"', "{'Authorization':'", 'password="', "password='"]) {
+      for (const suffix of ['', '\\', '\n...[capture truncated]', '\\\n...[capture truncated]']) {
+        const result = redactSecrets(`${prefix}leaked secret,;${suffix}`);
+        assert.match(result, /\[REDACTED\]/);
+        assert.doesNotMatch(result, /leaked|secret,;/);
+      }
+    }
+  });
+
+  test(`${runner} redacts quoted secrets cut off by the stderr capture limit`, async (t) => {
+    const root = temp();
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const codex = path.join(root, 'codex');
+    fs.writeFileSync(codex, `#!${process.execPath}\nconst prefix = process.argv.at(-1);\nprocess.stderr.write(prefix + 'leaked secret,;'.repeat(4000) + prefix.at(-1), () => process.exit(1));\n`);
+    fs.chmodSync(codex, 0o755);
+    for (const prefix of ['{"secret":"', "{'secret':'", 'password="', "password='"]) {
+      const result = await require(runner).codexExec({
+        role: 'correctness', prompt: prefix, repoRoot: root, stateDir: root,
+        codexExecutable: { command: codex, version: 'codex-cli 0.154.0' },
+      });
+      assert.strictEqual(result.status, 1);
+      assert.match(result.stderrDiagnostic, /\[REDACTED\]/);
+      assert.doesNotMatch(result.stderrDiagnostic, /leaked|secret,;/);
+      assert.ok(Buffer.byteLength(result.stderrDiagnostic) <= 8192);
+    }
+  });
+
+  for (const platform of ['linux', 'darwin']) {
+    test(`${runner} continues PATH lookup after a missing interpreter on ${platform}`, (t) => {
+      const root = temp();
+      t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+      const first = path.join(root, 'first');
+      const second = path.join(root, 'second');
+      fs.mkdirSync(first);
+      fs.mkdirSync(second);
+      const broken = path.join(first, 'codex');
+      fs.writeFileSync(broken, `#!${path.join(root, 'missing-interpreter')}\n`);
+      fs.chmodSync(broken, 0o755);
+      const codex = path.join(second, 'codex');
+      fs.writeFileSync(codex, `#!${process.execPath}\nprocess.stdout.write('codex-cli 0.154.0\\n');\n`);
+      fs.chmodSync(codex, 0o755);
+      const env = { PATH: [first, second].join(path.delimiter) };
+      const resolve = require(runner).resolveCodexExecutable;
+
+      const resolved = resolve(root, { env, platform });
+      assert.strictEqual(resolved.command, codex);
+      assert.strictEqual(resolved.path, codex);
+      assert.strictEqual(resolved.source, 'PATH');
+      assert.strictEqual(resolved.version, 'codex-cli 0.154.0');
+      assert.throws(() => resolve(root, {
+        env: { ...env, CONCORD_CODEX_BIN: broken }, platform,
+      }), /CONCORD_CODEX_BIN is authoritative/);
+
+      for (const failure of [{ status: 1, stderr: 'ENOENT' }, { error: { code: 'EACCES' } }]) {
+        const calls = [];
+        const options = {
+          env, platform,
+          probe: (command) => {
+            calls.push(command);
+            return command === broken ? failure : { status: 0, stdout: 'codex-cli fallback\n' };
+          },
+        };
+        if (platform === 'darwin') {
+          assert.strictEqual(resolve(root, options).source, 'macOS ChatGPT app');
+          assert.deepStrictEqual(calls, [broken, '/Applications/ChatGPT.app/Contents/Resources/codex']);
+        } else {
+          assert.throws(() => resolve(root, options), /no usable Codex executable/);
+          assert.deepStrictEqual(calls, [broken]);
+        }
+      }
+    });
+
+    test(`${runner} distinguishes unset PATH from empty PATH entries on ${platform}`, (t) => {
+      const root = temp();
+      t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+      const codex = path.join(root, 'codex');
+      fs.writeFileSync(codex, '#!/bin/sh\nexit 0\n');
+      fs.chmodSync(codex, 0o755);
+
+      for (const [env, expected] of [[{}, 'codex'], [{ PATH: '' }, codex], [{ PATH: ':' }, codex]]) {
+        const calls = [];
+        const resolved = require(runner).resolveCodexExecutable(root, {
+          env, platform,
+          probe: (command) => {
+            calls.push(command);
+            return { status: 0, stdout: 'codex-cli 0.154.0\n' };
+          },
+        });
+        assert.deepStrictEqual(calls, [expected]);
+        assert.strictEqual(resolved.command, expected);
+      }
+    });
+
+    test(`${runner} skips PATH directories and accepts executable symlinks on ${platform}`, (t) => {
+      const root = temp();
+      t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+      const first = path.join(root, 'first');
+      const second = path.join(root, 'second');
+      fs.mkdirSync(path.join(first, 'codex'), { recursive: true });
+      fs.mkdirSync(second);
+      const executable = path.join(root, 'real-codex');
+      fs.writeFileSync(executable, `#!${process.execPath}\nprocess.stdout.write('codex-cli 0.154.0\\n');\n`);
+      fs.chmodSync(executable, 0o755);
+      const codex = path.join(second, 'codex');
+      fs.symlinkSync(executable, codex);
+
+      const resolved = require(runner).resolveCodexExecutable(root, {
+        env: { PATH: [first, second].join(path.delimiter) }, platform,
+      });
+
+      assert.strictEqual(resolved.command, codex);
+      assert.strictEqual(resolved.source, 'PATH');
+      assert.strictEqual(resolved.version, 'codex-cli 0.154.0');
+    });
+  }
+}
+
+for (const [failureName, pathFailure] of [
+  ['ENOENT', { error: Object.assign(new Error('spawn codex ENOENT'), { code: 'ENOENT' }) }],
+  ['exit 1', { status: 1, stderr: 'native launcher missing: ENOENT' }],
+]) {
+  test(`Codex resolver falls back to the macOS app when the PATH probe fails with ${failureName}`, () => {
+    const calls = [];
+    const resolved = resolveCodexExecutable('/repo', {
+      env: { PATH: '' },
+      platform: 'darwin',
+      probe: (command) => {
+        calls.push(command);
+        return command === '/Applications/ChatGPT.app/Contents/Resources/codex'
+          ? { status: 0, stdout: 'codex-cli 0.154.0-alpha.6.2\n' }
+          : pathFailure;
+      },
+    });
+
+    assert.deepStrictEqual(calls, ['codex', '/Applications/ChatGPT.app/Contents/Resources/codex']);
+    assert.strictEqual(resolved.command, '/Applications/ChatGPT.app/Contents/Resources/codex');
+    assert.strictEqual(resolved.source, 'macOS ChatGPT app');
+  });
+}
+
+test('CONCORD_CODEX_BIN is highest priority and is authoritative when invalid', () => {
+  const override = '/trusted/tools/codex';
+  const calls = [];
+  const resolved = resolveCodexExecutable('/repo', {
+    env: { PATH: '/path/bin', CONCORD_CODEX_BIN: override },
+    platform: 'darwin',
+    probe: (command) => { calls.push(command); return { status: 0, stdout: 'codex-cli override\n' }; },
+  });
+  assert.strictEqual(resolved.command, override);
+  assert.deepStrictEqual(calls, [override]);
+
+  const invalidCalls = [];
+  assert.throws(() => resolveCodexExecutable('/repo', {
+    env: { PATH: '/path/bin', CONCORD_CODEX_BIN: '/broken/codex' },
+    platform: 'darwin',
+    probe: (command) => { invalidCalls.push(command); return { status: 1, stderr: 'bad executable' }; },
+  }), (error) => {
+    assert.match(error.message, /harness-failure: no usable Codex executable/);
+    assert.match(error.message, /CONCORD_CODEX_BIN is authoritative/);
+    assert.match(error.message, /abnormal exit \(status 1\)/);
+    return true;
+  });
+  assert.deepStrictEqual(invalidCalls, ['/broken/codex']);
+});
+
+test('Codex resolver reports every failed macOS candidate and override guidance', () => {
+  assert.throws(() => resolveCodexExecutable('/repo', {
+    env: { PATH: '' },
+    platform: 'darwin',
+    probe: (command) => command === 'codex'
+      ? { error: Object.assign(new Error('spawn codex ENOENT'), { code: 'ENOENT' }) }
+      : { status: 1, stderr: 'application launch denied' },
+  }), (error) => {
+    assert.match(error.message, /codex \(PATH lookup\).*ENOENT/);
+    assert.match(error.message, /\/Applications\/ChatGPT\.app\/Contents\/Resources\/codex.*abnormal exit \(status 1\)/);
+    assert.match(error.message, /CONCORD_CODEX_BIN=\/absolute\/path\/to\/codex/);
+    return true;
+  });
+});
+
+for (const platform of ['linux', 'win32']) {
+  test(`Codex resolver does not consider the macOS app fallback on ${platform}`, () => {
+    const calls = [];
+    assert.throws(() => resolveCodexExecutable('/repo', {
+      env: { PATH: '' }, platform,
+      probe: (command) => { calls.push(command); return { error: Object.assign(new Error('missing'), { code: 'ENOENT' }) }; },
+    }), /no usable Codex executable/);
+    assert.deepStrictEqual(calls, ['codex']);
+  });
+}
+
+for (const runner of ['../../core/codex-review-runner', '../../../concord-codex/engine/codex-review-runner']) {
+  test(`${runner} preserves the exact native Windows PATH executable selected through PATHEXT`, () => {
+    const expected = 'C:\\trusted\\codex.EXE';
+    const probed = [];
+    const resolved = require(runner).resolveCodexExecutable('C:\\repo', {
+      env: { Path: 'C:\\trusted', PATHEXT: '.EXE;.COM' },
+      platform: 'win32',
+      access(candidate) {
+        if (candidate !== expected) {
+          const error = new Error(`missing ${candidate}`);
+          error.code = 'ENOENT';
+          throw error;
+        }
+      },
+      stat(candidate) {
+        assert.strictEqual(candidate, expected);
+        return { isFile: () => true };
+      },
+      probe(command) {
+        probed.push(command);
+        return { status: 0, stdout: 'codex-cli windows-test\n' };
+      },
+    });
+
+    assert.strictEqual(resolved.command, expected);
+    assert.strictEqual(resolved.path, expected);
+    assert.strictEqual(resolved.source, 'PATH');
+    assert.deepStrictEqual(probed, [expected]);
+  });
+}
 
 test('codexExec starts subprocesses asynchronously so panel work can overlap', async () => {
   const binDir = temp();
@@ -68,6 +389,52 @@ test('codexExec probes the CLI version once for concurrent calls', async () => {
     assert.strictEqual(fs.readFileSync(probes, 'utf8'), '1');
   } finally {
     process.env.PATH = previousPath;
+  }
+});
+
+test('codexExec uses the exact executable selected by the version probe', async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  const capture = path.join(binDir, 'executables');
+  fs.writeFileSync(codex, `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(capture)}, __filename + '\\n');\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.154.0\\n');\nelse process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } }) + '\\n');\n`);
+  fs.chmodSync(codex, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = binDir;
+  try {
+    await codexExec({ role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir });
+    const executables = fs.readFileSync(capture, 'utf8').trim().split('\n');
+    assert.strictEqual(executables.length, 2);
+    assert.strictEqual(executables[0], executables[1]);
+    assert.strictEqual(fs.realpathSync(executables[0]), fs.realpathSync(codex));
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
+test('failed Codex stderr is redacted and size-limited in the harness failure', async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.154.0\\n');\nelse { process.stderr.write('Authorization: Bearer super-secret-bearer\\ntoken=top-secret-token\\nAWS_SECRET_ACCESS_KEY=fakeSecretValue123456789\\nslack=' + 'xox' + 'b-1234567890-abcdefghijklmnop\\n' + 'x'.repeat(20000)); process.exit(1); }\n`);
+  fs.chmodSync(codex, 0o755);
+  const previousOverride = process.env.CONCORD_CODEX_BIN;
+  process.env.CONCORD_CODEX_BIN = codex;
+  const h = harness();
+  try {
+    await assert.rejects(
+      runReviewUntilGreen({ ref: 'feature/x', repoRoot: binDir, runCli: h.cli }),
+      (error) => {
+        assert.match(error.message, /harness-failure: correctness subprocess exited 1/);
+        assert.match(error.message, /Codex stderr \(redacted, max 8192 bytes\)/);
+        assert.match(error.message, /\[REDACTED\]/);
+        assert.doesNotMatch(error.message, /super-secret-bearer|top-secret-token|fakeSecretValue|xoxb-/);
+        assert.match(error.message, /\.\.\.\[truncated\]/);
+        assert.ok(Buffer.byteLength(error.message) < 8500, `diagnostic exceeded its bound: ${Buffer.byteLength(error.message)} bytes`);
+        return true;
+      },
+    );
+  } finally {
+    if (previousOverride === undefined) delete process.env.CONCORD_CODEX_BIN;
+    else process.env.CONCORD_CODEX_BIN = previousOverride;
   }
 });
 
@@ -435,28 +802,18 @@ test('runner removes persisted telemetry when the review is abandoned', async ()
   assert.strictEqual(fs.existsSync(path.join(h.stateDir, 'telemetry-feature-x.json')), false);
 });
 
-test('runner preserves a rejected Codex spawn as a failed invocation', async () => {
-  const h = harness();
-  const cli = (args) => args[0] === 'telemetry-slot' ? null : h.cli(args);
-  const previousPath = process.env.PATH;
-  process.env.PATH = temp();
-  try {
-    await assert.rejects(
-      runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli }),
-      { code: 'ENOENT' },
-    );
-  } finally {
-    process.env.PATH = previousPath;
-  }
-
-  const telemetryPath = path.join(h.stateDir, 'telemetry-feature-x.json');
-  const telemetry = JSON.parse(fs.readFileSync(telemetryPath, 'utf8'));
-  assert.strictEqual(telemetry.invocations[0].status, 'failed');
-  assert.match(telemetry.invocations[0].invocationId, /^[0-9a-f-]{36}$/);
-  const folded = foldTelemetry(h.stateDir, { target: { ref: 'feature/x' } }, 'feature-x').telemetry;
-  assert.deepStrictEqual({ calls: folded.calls, partialCalls: folded.partialCalls, status: folded.entries[0].status }, {
-    calls: 1, partialCalls: 1, status: 'failed',
-  });
+test('runner resolves Codex before review-cli can create or resume review state', async () => {
+  let cliCalls = 0;
+  await assert.rejects(
+    runReviewUntilGreen({
+      ref: 'feature/x',
+      repoRoot: '/repo',
+      runCli: () => { cliCalls++; throw new Error('review-cli must not run'); },
+      resolveCodexExecutable: () => { throw new Error('harness-failure: no usable Codex executable; set CONCORD_CODEX_BIN=/absolute/path/to/codex'); },
+    }),
+    /harness-failure: no usable Codex executable.*CONCORD_CODEX_BIN/s,
+  );
+  assert.strictEqual(cliCalls, 0);
 });
 
 test('runner stamps Codex identity on a custom spawn rejection without telemetry', async () => {

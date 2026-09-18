@@ -24,6 +24,17 @@ Run those commands in a shell, then start or restart Codex. Use `ticket-writing`
 
 The Codex plugin ships the session-state checkpoint, `/charter`, `/review-until-green`, provider-neutral `ticket-writing`, `ticket-to-pr`, and `proposal-package-authoring`. Reviewers and fixers run as `codex exec` subprocesses.
 
+`review-until-green` probes the Codex executable with `--version` before it starts a review and uses that exact executable for every `codex exec` subprocess. It normally selects `codex` from `PATH`. On macOS, if that candidate cannot be launched successfully, it automatically checks the trusted CLI bundled at `/Applications/ChatGPT.app/Contents/Resources/codex`; macOS users do not need to configure anything or alter Gatekeeper, quarantine attributes, or other system security settings.
+
+For troubleshooting or a custom Codex installation, an explicit override is available:
+
+```sh
+CONCORD_CODEX_BIN=/Applications/ChatGPT.app/Contents/Resources/codex \
+  node plugins/concord-codex/bin/review-until-green.js <target>
+```
+
+`CONCORD_CODEX_BIN` is optional and authoritative: if it is set and its `--version` probe fails, the review stops with a diagnostic instead of silently trying another binary.
+
 ## Update
 
 ### Claude Code

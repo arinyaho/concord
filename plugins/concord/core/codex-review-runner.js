@@ -3,7 +3,7 @@
 // Codex has no in-session Task primitive. This runner is therefore the sole
 // orchestration authority: every clean-context reviewer is a `codex exec`
 // subprocess and every state transition remains owned by review-cli.
-const { execFileSync, spawn } = require('node:child_process');
+const { execFileSync, spawn, spawnSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -13,19 +13,134 @@ const { isValidFindingId } = require('./gate-contract');
 const { PANEL_LENSES } = require('./report');
 
 const CODEX_VERSION = 'codex-cli 0.154.0';
+const CODEX_BIN_ENV = 'CONCORD_CODEX_BIN';
+const MACOS_APP_CODEX = '/Applications/ChatGPT.app/Contents/Resources/codex';
+const STDERR_DIAGNOSTIC_LIMIT = 8192;
+const STDERR_CAPTURE_LIMIT = STDERR_DIAGNOSTIC_LIMIT * 4;
 const CODEX_USAGE_FIELDS = ['input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens', 'reasoning_output_tokens'];
 const CODEX_EVENT_TYPES = new Set(['thread.started', 'turn.started', 'turn.completed', 'turn.failed', 'item.started', 'item.updated', 'item.completed', 'error']);
 const CODEX_ITEM_TYPES = new Set(['agent_message', 'reasoning', 'command_execution', 'file_change', 'mcp_tool_call', 'web_search', 'todo_list', 'error', 'collaboration_tool_call', 'collab_agent_tool_call']);
-let versionCache = null;
+let codexResolutionCache = null;
 
-function codexCliVersion(repoRoot) {
-  const searchPath = process.env.PATH || '';
-  if (!versionCache || versionCache.searchPath !== searchPath) {
-    let value = null;
-    try { value = execFileSync('codex', ['--version'], { cwd: repoRoot, encoding: 'utf8', timeout: 5000 }).trim(); } catch {}
-    versionCache = { searchPath, value };
+function redactSecrets(value) {
+  // A bounded stderr capture can end inside a quoted value or escape sequence.
+  // Treat an unterminated sensitive value as secret through the end of input.
+  return String(value || '')
+    .replace(/((?:proxy[-_])?authorization\s*[=:]\s*)(?:"(?:\\[\s\S]|[^"\\])*(?:"|\\?$)|'(?:\\[\s\S]|[^'\\])*(?:'|\\?$)|(?:(?:basic|bearer)\s+)?[^\s,;]+)/gi, '$1[REDACTED]')
+    .replace(/\bbearer\s+[a-z0-9._~+/=-]{8,}/gi, 'Bearer [REDACTED]')
+    .replace(/(["'](?:[a-z0-9]+[_-])*(?:authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|secret[_-]?access[_-]?key|access[_-]?key[_-]?id|token|secret|password|credential)["']\s*:\s*)(?:"(?:\\[\s\S]|[^"\\])*(?:"|\\?$)|'(?:\\[\s\S]|[^'\\])*(?:'|\\?$))/gi, '$1"[REDACTED]"')
+    .replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret[_-]?access[_-]?key|access[_-]?key[_-]?id|token|secret|password|credential)\s*[=:]\s*)(?:"(?:\\[\s\S]|[^"\\])*(?:"|\\?$)|'(?:\\[\s\S]|[^'\\])*(?:'|\\?$)|[^\s,;]+)/gi, '$1[REDACTED]')
+    .replace(/\b(?:sk[-_]|(?:rk|pk|gh[pousr]|github_pat)_)[a-z0-9_-]{8,}\b/gi, '[REDACTED]')
+    .replace(/\bxox[a-z]-[a-z0-9-]{8,}\b/gi, '[REDACTED]')
+    .replace(/(https?:\/\/[^\s/:@]+:)[^\s/@]+@/gi, '$1[REDACTED]@');
+}
+
+function truncateUtf8(value, maxBytes) {
+  const marker = '\n...[truncated]';
+  const buffer = Buffer.from(String(value || ''));
+  if (buffer.length <= maxBytes) return buffer.toString();
+  const body = buffer.subarray(0, Math.max(0, maxBytes - Buffer.byteLength(marker))).toString().replace(/\uFFFD$/, '');
+  return `${body}${marker}`;
+}
+
+function safeDiagnostic(value, maxBytes = STDERR_DIAGNOSTIC_LIMIT) {
+  return truncateUtf8(redactSecrets(value).trim(), maxBytes);
+}
+
+function pathEnv(env, platform) {
+  if (platform !== 'win32') return env.PATH;
+  const key = Object.keys(env).find((name) => name.toLowerCase() === 'path');
+  return key ? env[key] : undefined;
+}
+
+function* pathExecutables(name, env, platform, repoRoot, access = fs.accessSync, stat = fs.statSync) {
+  const pathValue = pathEnv(env, platform);
+  // Let the subprocess use its default search path when PATH is unset.
+  if (pathValue == null) return;
+  const delimiter = platform === 'win32' ? ';' : path.delimiter;
+  const pathApi = platform === 'win32' ? path.win32 : path;
+  const extensions = platform === 'win32'
+    ? String(env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
+    : [''];
+  for (const directory of String(pathValue).split(delimiter)) {
+    for (const extension of extensions) {
+      const candidate = pathApi.resolve(repoRoot, directory, `${name}${extension.toLowerCase()}`);
+      try {
+        access(candidate, platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK);
+        if (stat(candidate).isFile()) yield candidate;
+      } catch {}
+      if (platform === 'win32' && extension !== extension.toLowerCase()) {
+        const upperCandidate = pathApi.resolve(repoRoot, directory, `${name}${extension}`);
+        try { access(upperCandidate, fs.constants.F_OK); if (stat(upperCandidate).isFile()) yield upperCandidate; } catch {}
+      }
+    }
   }
-  return versionCache.value;
+}
+
+function defaultCodexProbe(command, repoRoot, env) {
+  return spawnSync(command, ['--version'], {
+    cwd: repoRoot, env, encoding: 'utf8', timeout: 5000, windowsHide: true, maxBuffer: 64 * 1024,
+  });
+}
+
+function probeFailure(result) {
+  if (result && result.error) {
+    const code = result.error.code || 'spawn-error';
+    const kind = code === 'ENOENT' ? 'ENOENT (not found)'
+      : (code === 'EACCES' || code === 'EPERM') ? `execution denied (${code})`
+        : code === 'ETIMEDOUT' ? 'probe timed out' : `spawn error (${code})`;
+    return `${kind}${result.error.message ? `: ${safeDiagnostic(result.error.message, 1024)}` : ''}`;
+  }
+  if (result && result.status === 0) return null;
+  if (result && result.signal) return `terminated by signal ${result.signal}`;
+  const status = result && Number.isInteger(result.status) ? result.status : 'unknown';
+  const stderr = safeDiagnostic(result && result.stderr, 2048);
+  return `abnormal exit (status ${status})${stderr ? `: ${stderr}` : ''}`;
+}
+
+function resolveCodexExecutable(repoRoot, options = {}) {
+  const env = options.env || process.env;
+  const platform = options.platform || process.platform;
+  const override = typeof env[CODEX_BIN_ENV] === 'string' ? env[CODEX_BIN_ENV].trim() : '';
+  const searchPath = pathEnv(env, platform);
+  const cacheKey = JSON.stringify([repoRoot, platform, searchPath, env.PATHEXT || '', override]);
+  if (!options.probe && codexResolutionCache?.key === cacheKey) return codexResolutionCache.value;
+
+  const pathMatches = pathExecutables('codex', env, platform, repoRoot, options.access, options.stat);
+  const located = pathMatches.next().value;
+  const pathCommand = located || 'codex';
+  const candidates = override
+    ? [{ command: override, display: safeDiagnostic(override, 1024), source: CODEX_BIN_ENV }]
+    : [
+      { command: pathCommand, display: located || 'codex (PATH lookup)', source: 'PATH' },
+      ...(platform === 'darwin' ? [{ command: MACOS_APP_CODEX, display: MACOS_APP_CODEX, source: 'macOS ChatGPT app' }] : []),
+    ];
+  const failures = [];
+  const probe = options.probe || defaultCodexProbe;
+  while (candidates.length) {
+    const candidate = candidates.shift();
+    let result;
+    try { result = probe(candidate.command, repoRoot, env); } catch (error) { result = { error }; }
+    const failure = probeFailure(result);
+    if (!failure) {
+      const value = { command: candidate.command, path: candidate.display, source: candidate.source, version: String(result.stdout || '').trim() };
+      if (!options.probe) codexResolutionCache = { key: cacheKey, value };
+      return value;
+    }
+    failures.push({ candidate, failure });
+    // An executable file can still fail to launch if its interpreter/loader is
+    // missing. POSIX PATH lookup skips that ENOENT and tries the next entry.
+    if (candidate.source === 'PATH' && platform !== 'win32' && result?.error?.code === 'ENOENT') {
+      const next = pathMatches.next().value;
+      if (next) candidates.unshift({ command: next, display: next, source: 'PATH' });
+    }
+  }
+
+  const checked = failures.map(({ candidate, failure }) => `- ${candidate.display} (${candidate.source}): ${failure}`).join('\n');
+  const policy = override
+    ? `${CODEX_BIN_ENV} is authoritative when set, so Concord did not fall back to PATH or the macOS app bundle.`
+    : `Set ${CODEX_BIN_ENV}=/absolute/path/to/codex to select a trusted executable explicitly.`;
+  throw new Error(`harness-failure: no usable Codex executable was found before review started.\nChecked candidates:\n${checked}\n${policy}`);
 }
 
 function jsonCli(cliPath, args, repoRoot) {
@@ -66,22 +181,25 @@ function sameKeys(actual, expected) {
   return actual.length === expected.length && [...actual].sort().every((key, index) => key === [...expected].sort()[index]);
 }
 
-function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoningEffort, serviceTier }) {
+function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoningEffort, serviceTier, codexExecutable }) {
   return new Promise((resolve, reject) => {
+    const resolvedCodex = codexExecutable || resolveCodexExecutable(repoRoot);
     const invocationId = crypto.randomUUID();
     const model = typeof requestedModel === 'string' && requestedModel.trim() ? requestedModel : null;
     const effort = typeof reasoningEffort === 'string' && reasoningEffort.trim() ? reasoningEffort : null;
     const tier = typeof serviceTier === 'string' && serviceTier.trim() ? serviceTier : null;
-    const cliVersion = codexCliVersion(repoRoot);
+    const cliVersion = resolvedCodex.version;
     const startedAt = Date.now();
-    const child = spawn('codex', [
+    const child = spawn(resolvedCodex.command, [
       'exec', '--cd', repoRoot, '--sandbox', 'workspace-write', '--add-dir', stateDir,
       ...(model ? ['--model', model] : []),
       ...(effort ? ['--config', `model_reasoning_effort=${JSON.stringify(effort)}`] : []),
       ...(tier ? ['--config', `service_tier=${JSON.stringify(tier)}`] : []),
       '--skip-git-repo-check', '--json', prompt,
-    ], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] });
+    ], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] });
     let pending = '';
+    let stderr = '';
+    let stderrCaptureTruncated = false;
     let usage;
     let completionCount = 0;
     let streamPartial = cliVersion !== CODEX_VERSION;
@@ -114,15 +232,27 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
       pending = lines.pop();
       for (const line of lines) consume(line);
     });
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => {
+      const remaining = STDERR_CAPTURE_LIMIT - Buffer.byteLength(stderr);
+      if (remaining <= 0) { stderrCaptureTruncated = true; return; }
+      const buffer = Buffer.from(chunk);
+      if (buffer.length > remaining) stderrCaptureTruncated = true;
+      stderr += buffer.subarray(0, remaining).toString().replace(/\uFFFD$/, '');
+    });
+    const stderrDiagnostic = () => safeDiagnostic(`${stderr}${stderrCaptureTruncated ? '\n...[capture truncated]' : ''}`);
     child.once('error', (error) => {
-      error.telemetry = {
+      const diagnostic = stderrDiagnostic();
+      const wrapped = new Error(`harness-failure: ${role} Codex subprocess could not start (${error.code || 'spawn-error'}): ${safeDiagnostic(error.message, 1024)}${diagnostic ? `\nCodex stderr (redacted, max ${STDERR_DIAGNOSTIC_LIMIT} bytes):\n${diagnostic}` : ''}`);
+      wrapped.code = error.code;
+      wrapped.telemetry = {
         status: 'failed', role, engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', cliVersion,
         requestedModel: model, reasoningEffort: effort, serviceTier: tier, resolvedModel: 'unavailable', invocationId,
         elapsedMs: Date.now() - startedAt, usagePartial: true,
       };
-      reject(error);
+      reject(wrapped);
     });
-    child.once('close', (status) => {
+    child.once('close', (status, signal) => {
       consume(pending);
       const normalized = normalizeUsage(usage);
       resolve({
@@ -132,6 +262,8 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
         usagePartial: normalized.usagePartial || streamPartial || completionCount !== 1 || status !== 0,
         ...(cliVersion !== CODEX_VERSION ? { usageStatus: 'unsupported-cli-version' } : {}),
         evidence: { collaboration: collaborationEvidenceCount, errors: errorEvidenceCount },
+        ...(signal ? { signal } : {}),
+        ...(status !== 0 && stderrDiagnostic() ? { stderrDiagnostic: stderrDiagnostic() } : {}),
       });
     });
   });
@@ -186,14 +318,19 @@ function reviewerPrompt(role, { stateDir, round, targetType, dodPassed, dodDefer
 
 async function invoke(spawn, input) {
   const result = await spawn(input);
-  if (result && result.status !== 0) throw new Error(`harness-failure: ${input.role} subprocess exited ${result.status}`);
+  if (result && result.status !== 0) {
+    const cause = result.signal ? `terminated by signal ${result.signal}` : `exited ${result.status}`;
+    const stderr = result.stderrDiagnostic ? `\nCodex stderr (redacted, max ${STDERR_DIAGNOSTIC_LIMIT} bytes):\n${result.stderrDiagnostic}` : '';
+    throw new Error(`harness-failure: ${input.role} subprocess ${cause}${stderr}`);
+  }
 }
 
 async function runReviewUntilGreen(options) {
   const { ref, base, broad = false, noBroad = false, noDod = false, resume = false, repoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
   if (!ref) throw new Error('review-until-green: missing target ref');
+  const resolvedCodex = options.spawn ? null : (options.resolveCodexExecutable || resolveCodexExecutable)(repoRoot);
   const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot));
-  const rawSpawn = options.spawn || ((input) => codexExec(input));
+  const rawSpawn = options.spawn || ((input) => codexExec({ ...input, codexExecutable: resolvedCodex }));
   const telemetry = {
     total: { calls: 0, partialCalls: 0, inputTokens: 0, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0 },
     byRole: {},
@@ -421,4 +558,4 @@ async function runReviewUntilGreen(options) {
   }
 }
 
-module.exports = { runReviewUntilGreen, reviewerPrompt, codexExec, jsonCli, resolveDefaultBase };
+module.exports = { runReviewUntilGreen, reviewerPrompt, codexExec, resolveCodexExecutable, jsonCli, resolveDefaultBase, redactSecrets };
