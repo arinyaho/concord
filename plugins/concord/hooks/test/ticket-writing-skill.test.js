@@ -42,17 +42,18 @@ test('Claude and Codex source packages ship the same proposal-package-authoring 
   }
 });
 
-test('ticket-to-pr synchronizes a Notion ticket at pipeline entry and PR creation', () => {
+test('ticket-to-pr makes Notion lifecycle transitions monotonic and unambiguous', () => {
   const skill = read(CLAUDE_TICKET_TO_PR);
+  const entry = skill.indexOf('At pipeline entry');
+  const prCreation = skill.indexOf('After the PR URL exists');
 
-  for (const required of [
-    '## Notion ticket lifecycle',
-    'In progress',
-    'After the PR URL exists',
-    'In review',
-    'Do not move the ticket to Done',
-    'read the ticket back',
-  ]) assert.ok(skill.includes(required), `missing Notion lifecycle contract: ${required}`);
+  assert.ok(entry >= 0, 'missing the Notion lifecycle entry transition');
+  assert.ok(prCreation > entry, 'the PR transition must follow the entry transition');
+  assert.match(skill.slice(entry, prCreation), /already means `In review` or `Done`, preserve it/);
+  assert.match(skill.slice(entry, prCreation), /exactly one status.*means `In progress`/s);
+  assert.match(skill.slice(prCreation), /explicitly for the PR.*same URL/s);
+  assert.match(skill.slice(prCreation), /exactly one status.*means `In review`/s);
+  assert.match(skill.slice(prCreation), /Do not move the ticket to Done/);
 });
 
 pluginInstallE2ETest('clean Claude and Codex installs discover the same shared skills', (t) => {
