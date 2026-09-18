@@ -998,7 +998,9 @@ function main(resolveFromCwd) {
     // targets use the per-fix artifact's edited flag (no git commit happens).
     const isGit = !ledger.target || ledger.target.type === 'git';
     const journaled = ledger.journal || [];
-    const journalEntryFor = (finding) => journaled.find((j) => j.id === finding.id);
+    const journalEntryFor = (finding) => journaled.find((j) => j.id === finding.id)
+      || journaled.find((j) => (j.resolutions || []).some((r) => r.id === finding.id && r.file === finding.file && r.span === finding.span)
+        && finding.span && (() => { try { return !fs.readFileSync(path.join(repoRoot, finding.file), 'utf8').includes(finding.span); } catch (e) { return false; } })());
     const fixedIds = [];
     const parkedIds = [];
     const fixCommits = {};
@@ -1179,7 +1181,8 @@ function main(resolveFromCwd) {
     // never matched. Marking those 'fixed' would converge green with a confirmed
     // bug still live, so route them to the fixer instead (it adds the missing
     // code -> a real commit, or reports no-edit -> record parks it needs-decision).
-    const isReplay = (f) => !spanPresent(f.file, f.span) && (ledger.journal || []).some((j) => j.id === f.id);
+    const isReplay = (f) => !spanPresent(f.file, f.span) && (ledger.journal || []).some((j) => j.id === f.id
+      || (j.resolutions || []).some((r) => r.id === f.id && r.file === f.file && r.span === f.span));
     const fixes = confirmedNonKilled
       .filter((f) => !isReplay(f))
       .map((f) => ({ id: f.id, file: f.file, span: f.span, summary: f.summary }));
@@ -1384,7 +1387,8 @@ function main(resolveFromCwd) {
     // finding that resolved to `{file: null}` here would fail the file guard
     // below and report "no edit or file unchanged" -- silently discarding a fix
     // the fixer actually made, which record then reverts with the tree checkout.
-    const finding = roundCandidates(require('./gate-contract'), readRound('correctness'), readRound('verify'))
+    const candidates = roundCandidates(require('./gate-contract'), readRound('correctness'), readRound('verify'));
+    const finding = candidates
       .find((f) => f.id === id) || { summary: '', file: null };
     // The fix subagent declares every file it touched via `files` (finding.file
     // plus any companion edit -- e.g. a caller/import the fix legitimately had
@@ -1399,9 +1403,25 @@ function main(resolveFromCwd) {
     // file must have BOTH edits land in the same attributed commit, or the
     // companion edit is silently wiped by record()'s later gitCheckoutTree.
     if (fx && Array.isArray(fx.files)) validateFixFiles(repoRoot, stateDir, files);
+    const resolutions = [];
+    if (fx && Object.hasOwn(fx, 'resolvedFindingIds')) {
+      if (!Array.isArray(fx.resolvedFindingIds) || new Set(fx.resolvedFindingIds).size !== fx.resolvedFindingIds.length) {
+        throw new Error('harness-failure: commit-fix: resolvedFindingIds must be a unique array');
+      }
+      for (const resolvedId of fx.resolvedFindingIds) {
+        const counterpart = candidates.find((f) => f.id === resolvedId);
+        if (typeof resolvedId !== 'string' || resolvedId === id || !counterpart || !(ledger.planned || []).includes(resolvedId)
+          || !files.includes(finding.file) || !files.includes(counterpart.file) || !gitIsDirtyForFile(repoRoot, finding.file)
+          || !gitIsDirtyForFile(repoRoot, counterpart.file) || !counterpart.span
+          || fs.readFileSync(path.join(repoRoot, counterpart.file), 'utf8').includes(counterpart.span)) {
+          throw new Error(`harness-failure: commit-fix: invalid resolved finding claim "${resolvedId}"`);
+        }
+        resolutions.push({ id: counterpart.id, file: counterpart.file, span: counterpart.span });
+      }
+    }
     if (fx && fx.status === 'ok' && fx.edited === true && finding.file && files.some((f) => gitIsDirtyForFile(repoRoot, f))) {
       const sha = gitCommitFix(repoRoot, id, finding.summary, files);
-      ledger = { ...ledger, journal: [...(ledger.journal || []), { id, sha, file: finding.file, files, span: finding.span }] };
+      ledger = { ...ledger, journal: [...(ledger.journal || []), { id, sha, file: finding.file, files, span: finding.span, resolutions }] };
       writeLedger(stateDir, slug, ledger);
       process.stdout.write(JSON.stringify({ committed: true, sha }) + '\n');
     } else {

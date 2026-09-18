@@ -680,13 +680,18 @@ test('terminal runner does not invent a missing call from an otherwise empty per
   assert.deepStrictEqual(out.telemetry.invocations, []);
 });
 
-test('fix prompt writes the commit-fix artifact and requires a truthful files declaration', () => {
-  const prompt = reviewerPrompt('fix', { stateDir: '/state', round: 7, finding: { id: 'correctness:bug', file: 'src/parser.js', span: 'lines 41-43', summary: 'repair it' } });
+test('fix prompt requires an explicit, span-absent claim for a distinct planned mirror finding', () => {
+  const prompt = reviewerPrompt('fix', { stateDir: '/state', round: 7, finding: { id: 'correctness:bug', file: 'src/parser.js', span: 'lines 41-43', summary: 'repair it' }, plannedFindingIds: ['correctness:bug', 'correctness:mirror'] });
   assert.match(prompt, /\/state\/round-7-fix-correctness:bug\.json/);
   assert.match(prompt, /src\/parser\.js/);
   assert.match(prompt, /lines 41-43/);
   assert.match(prompt, /EVERY file/i);
   assert.match(prompt, /"edited":false/);
+  assert.match(prompt, /"resolvedFindingIds"/);
+  assert.match(prompt, /distinct planned mirror finding/i);
+  assert.match(prompt, /exact span must be absent/i);
+  assert.match(prompt, /correctness:mirror/);
+  assert.doesNotMatch(prompt, /other planned fixes: \["correctness:bug"/);
 });
 
 test('correctness prompt requires every changed file in examined', () => {
