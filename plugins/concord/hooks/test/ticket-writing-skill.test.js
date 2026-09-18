@@ -42,30 +42,21 @@ test('Claude and Codex source packages ship the same proposal-package-authoring 
   }
 });
 
-test('ticket-to-pr makes Notion lifecycle transitions monotonic and unambiguous', () => {
+test('ticket-to-pr keeps Notion lifecycle transitions bounded and unambiguous', () => {
   const skill = read(CLAUDE_TICKET_TO_PR);
   const entry = skill.indexOf('At pipeline entry');
   const prCreation = skill.indexOf('After the PR URL exists');
 
   assert.ok(entry >= 0, 'missing the Notion lifecycle entry transition');
   assert.ok(prCreation > entry, 'the PR transition must follow the entry transition');
-  assert.match(skill, /contains the PR URL and is `In review`, or remains a later or terminal status/);
-  assert.match(skill, /has reached `In progress`, or remains in a verified later or terminal status/);
-  assert.match(skill.slice(entry, prCreation), /already means `In review` or `Done`, preserve it/);
-  assert.match(skill.slice(entry, prCreation), /exactly one status.*means `In progress`/s);
-  assert.match(skill.slice(entry, prCreation), /explicitly an unambiguous pre-start status/);
-  assert.match(skill.slice(entry, prCreation), /later or terminal status/);
-  assert.match(skill.slice(entry, prCreation), /without requiring an `In progress` status mapping/);
-  assert.match(skill.slice(prCreation), /explicitly for the PR.*same URL/s);
-  assert.match(skill.slice(prCreation), /When exactly one is eligible/);
-  assert.match(skill.slice(prCreation), /If no eligible PR URL field exists, use the ticket-body fallback/);
-  assert.match(skill.slice(prCreation), /multiple eligible PR URL fields/);
-  assert.match(skill.slice(prCreation), /contains a different URL, preserve it and use the ticket-body fallback/);
-  assert.match(skill.slice(prCreation), /ticket-body fallback can complete after verification/);
-  assert.match(skill.slice(prCreation), /verify the exact PR URL before performing the status transition/);
-  assert.match(skill.slice(prCreation), /Only then transition/);
-  assert.match(skill.slice(prCreation), /same labelled `PR:` link.*append only when absent/s);
-  assert.match(skill.slice(prCreation), /exactly one status.*means `In review`/s);
+  assert.match(skill, /contains the PR URL and is `In review` or `Done`, both verified/);
+  assert.match(skill.slice(entry, prCreation), /exactly one editable status property.*one `In progress` and one `In review` option/s);
+  assert.match(skill.slice(entry, prCreation), /already `In review` or `Done`, preserve it/);
+  assert.match(skill.slice(entry, prCreation), /all other current statuses are blockers/);
+  assert.match(skill.slice(prCreation), /exactly one eligible PR URL field is empty or already has the same URL/);
+  assert.match(skill.slice(prCreation), /otherwise append an idempotent labelled `PR:` link/);
+  assert.match(skill.slice(prCreation), /verify the exact PR URL before changing the status/);
+  assert.match(skill.slice(prCreation), /same status property.*only from `In progress` to `In review`/s);
   assert.match(skill.slice(prCreation), /Do not move the ticket to Done/);
 });
 
