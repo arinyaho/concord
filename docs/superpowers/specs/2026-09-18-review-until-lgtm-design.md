@@ -6,9 +6,9 @@ Add a shared `review-until-lgtm` skill rather than a new review engine. The GitH
 
 ## Contract
 
-The skill records the exact PR head SHA, a completed review authored by GitHub Codex and bound to that SHA, unresolved threads authored by that same bot, and the configured LGTM reaction from that bot on the matching review summary. A run is green only when all of those observations match the current head. A completed review with no open threads but no LGTM reaction is reported as `completed-without-lgtm`, which is not green.
+The skill records the exact PR head SHA, the latest GitHub Codex review bound to that SHA regardless of its state, unresolved threads authored by that same bot, and the configured LGTM reaction from that bot on that review's summary. A run is green only when all of those observations match the current head. It waits through the bounded reaction window after a matching review completes, then reports a completed review with no open threads but no LGTM reaction as `completed-without-lgtm`, which is not green.
 
-Stale reviews are ignored. The skill makes at most one additional request for the current head, then stops and reports the external outcome. It never edits source, fabricates an LGTM, or posts repeated requests while monitoring.
+Stale reviews are ignored. The skill persists the one allowed retry in a durable PR marker for the current head, then stops and reports the external outcome. It never edits source, fabricates an LGTM, or posts repeated requests while monitoring.
 
 ## Plan
 

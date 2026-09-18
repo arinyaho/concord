@@ -40,6 +40,10 @@ test('Claude and Codex source packages ship the same review-until-lgtm skill', (
   assert.equal(read(CODEX_REVIEW_UNTIL_LGTM), read(CLAUDE_REVIEW_UNTIL_LGTM));
   assert.match(read(CLAUDE_REVIEW_UNTIL_LGTM), /exact PR head SHA/);
   assert.match(read(CLAUDE_REVIEW_UNTIL_LGTM), /not green/);
+  assert.match(read(CLAUDE_REVIEW_UNTIL_LGTM), /regardless of its state/);
+  assert.match(read(CLAUDE_REVIEW_UNTIL_LGTM), /full bounded window/);
+  assert.match(read(CLAUDE_REVIEW_UNTIL_LGTM), /durable PR marker/);
+  assert.match(read(CLAUDE_REVIEW_UNTIL_LGTM), /latest matching review associated with the latest request/);
 });
 
 test('Claude and Codex source packages ship the same proposal-package-authoring skill', () => {
