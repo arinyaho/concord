@@ -998,8 +998,7 @@ function main(resolveFromCwd) {
     // targets use the per-fix artifact's edited flag (no git commit happens).
     const isGit = !ledger.target || ledger.target.type === 'git';
     const journaled = ledger.journal || [];
-    const journalEntryFor = (finding) => journaled.find((j) => j.id === finding.id)
-      || journaled.find((j) => j.file !== finding.file && Array.isArray(j.files) && j.files.includes(finding.file) && j.span === finding.span);
+    const journalEntryFor = (finding) => journaled.find((j) => j.id === finding.id);
     const fixedIds = [];
     const parkedIds = [];
     const fixCommits = {};
