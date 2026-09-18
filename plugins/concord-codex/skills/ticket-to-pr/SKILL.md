@@ -33,7 +33,7 @@ Stages 1, 3 and 5 have no single owner here — use whatever the repository alre
 
 ## Delegation
 
-Unless the user explicitly directs otherwise, keep implementation and review with the active agent; do not hand either stage to another AI. When the user, the selected model, or the CLI harness expressly requires delegation, use separate subagents for implementation and review so an implementer does not review its own change. If the selected model or harness does not create those subagents itself, create them. Where their models can be selected, prefer Terra or Sonnet over GPT Sol or Claude Opus; choose the reasoning effort appropriate to the work.
+Unless the user explicitly directs otherwise, keep implementation and review with the active agent; do not hand either stage to another AI. When the user or selected model expressly requires separate implementation and review subagents, use them so an implementer does not review its own change. A CLI harness requirement for a clean-context review subprocess requires that independent reviewer, not a separate implementer. If a user, selected model, or harness requires subagents it does not create itself, create only the required subagents. Where their models can be selected, prefer Terra or Sonnet over GPT Sol or Claude Opus; choose the reasoning effort appropriate to the work.
 
 ## Stage 2 is the one that gets skipped
 
