@@ -1419,7 +1419,9 @@ function main(resolveFromCwd) {
         const counterpart = candidates.find((f) => f.id === resolvedId);
         if (typeof resolvedId !== 'string' || resolvedId === id || !counterpart || !(ledger.planned || []).includes(resolvedId)
           || !files.includes(finding.file) || !files.includes(counterpart.file) || !gitIsDirtyForFile(repoRoot, finding.file)
-          || !gitIsDirtyForFile(repoRoot, counterpart.file) || !counterpart.span
+          || !gitIsDirtyForFile(repoRoot, counterpart.file) || !finding.span
+          || !gitHeadFileContains(repoRoot, finding.file, finding.span)
+          || fs.readFileSync(path.join(repoRoot, finding.file), 'utf8').includes(finding.span) || !counterpart.span
           || !gitHeadFileContains(repoRoot, counterpart.file, counterpart.span)
           || fs.readFileSync(path.join(repoRoot, counterpart.file), 'utf8').includes(counterpart.span)) {
           throw new Error(`harness-failure: commit-fix: invalid resolved finding claim "${resolvedId}"`);
