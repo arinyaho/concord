@@ -505,6 +505,29 @@ test('plan-fixes + record: a confirmed finding whose span is already absent from
   assert.strictEqual(out.decision.parked, false); // does not strand convergence
 });
 
+test('plan-fixes + record: a distinct mirrored finding uses its declared companion commit', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'other\n');
+  execFileSync('git', ['add', 'b.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add companion'], { cwd: repo });
+  const { env } = seedGatesRound(repo, dir, 'feat/mirror',
+    { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [
+      { id: 'correctness:b', gate: 'correctness', file: 'b.txt', span: 'removed-span', summary: 'mirror' },
+    ] },
+    { status: 'ok', rejected: [] });
+  const slug = review.targetSlug('feat/mirror');
+  let ledger = review.readLedger(dir, slug);
+  ledger = { ...ledger, journal: [{ id: 'correctness:a', sha: 'mirrorsha', file: 'a.txt', files: ['a.txt', 'b.txt'], span: 'removed-span' }] };
+  review.writeLedger(dir, slug, ledger);
+
+  assert.deepStrictEqual(JSON.parse(run(['plan-fixes', 'feat/mirror'], { env })).fixes, []);
+  assert.deepStrictEqual(review.readLedger(dir, slug).resolved_absent, ['correctness:b']);
+  run(['record', 'feat/mirror'], { env });
+  const finding = review.readLedger(dir, slug).findings.find((f) => f.id === 'correctness:b');
+  assert.strictEqual(finding.status, 'fixed');
+  assert.strictEqual(finding.fix_commit, 'mirrorsha');
+});
+
 test('commit-fix: commits one fix and journals it', () => {
   const repo = initRepo(); const dir = tmpDir();
   const { env, n } = seedGatesRound(repo, dir, 'feat/x',

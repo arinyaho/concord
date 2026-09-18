@@ -997,18 +997,21 @@ function main(resolveFromCwd) {
     // Branch fixed-signal on target type: git uses the commit journal; file
     // targets use the per-fix artifact's edited flag (no git commit happens).
     const isGit = !ledger.target || ledger.target.type === 'git';
-    const journaled = new Map((ledger.journal || []).map((j) => [j.id, j.sha]));
+    const journaled = ledger.journal || [];
+    const journalEntryFor = (finding) => journaled.find((j) => j.id === finding.id)
+      || journaled.find((j) => j.file !== finding.file && Array.isArray(j.files) && j.files.includes(finding.file) && j.span === finding.span);
     const fixedIds = [];
     const parkedIds = [];
     const fixCommits = {};
     const parkReasons = {};
     for (const id of ledger.planned || []) {
       const fx = readJson(`fix-${id}`);
-      const fixedByGit = isGit && journaled.has(id);
+      const finding = candidates.find((f) => f.id === id);
+      const fixedByGit = isGit && finding && journalEntryFor(finding);
       const fixedByReport = !isGit && fx && fx.edited === true;
       if (fixedByGit) {
         fixedIds.push(id);
-        fixCommits[id] = journaled.get(id);
+        fixCommits[id] = journalEntryFor(finding).sha;
       } else if (fixedByReport) {
         // File-target fix: the fixer edited the file directly; no git commit.
         // Stamp 'file-edit' as a sentinel so the handoff clearly shows the
@@ -1029,7 +1032,8 @@ function main(resolveFromCwd) {
     // a sentinel) so the handoff's fix digest shows the actual commit.
     for (const id of ledger.resolved_absent || []) {
       fixedIds.push(id);
-      fixCommits[id] = journaled.get(id) || 'span already absent (idempotent replay)';
+      const finding = candidates.find((f) => f.id === id);
+      fixCommits[id] = (finding && journalEntryFor(finding)?.sha) || 'span already absent (idempotent replay)';
     }
     const outcome = {
       dodPassed: !!(ledger.dod && ledger.dod.passed), dodDeferred: !!(ledger.dod && ledger.dod.deferred), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons,
@@ -1176,8 +1180,8 @@ function main(resolveFromCwd) {
     // never matched. Marking those 'fixed' would converge green with a confirmed
     // bug still live, so route them to the fixer instead (it adds the missing
     // code -> a real commit, or reports no-edit -> record parks it needs-decision).
-    const journaledIds = new Set((ledger.journal || []).map((j) => j.id));
-    const isReplay = (f) => !spanPresent(f.file, f.span) && journaledIds.has(f.id);
+    const isReplay = (f) => !spanPresent(f.file, f.span) && ((ledger.journal || []).some((j) => j.id === f.id)
+      || (ledger.journal || []).some((j) => j.file !== f.file && Array.isArray(j.files) && j.files.includes(f.file) && j.span === f.span));
     const fixes = confirmedNonKilled
       .filter((f) => !isReplay(f))
       .map((f) => ({ id: f.id, file: f.file, span: f.span, summary: f.summary }));
@@ -1399,7 +1403,7 @@ function main(resolveFromCwd) {
     if (fx && Array.isArray(fx.files)) validateFixFiles(repoRoot, stateDir, files);
     if (fx && fx.status === 'ok' && fx.edited === true && finding.file && files.some((f) => gitIsDirtyForFile(repoRoot, f))) {
       const sha = gitCommitFix(repoRoot, id, finding.summary, files);
-      ledger = { ...ledger, journal: [...(ledger.journal || []), { id, sha }] };
+      ledger = { ...ledger, journal: [...(ledger.journal || []), { id, sha, file: finding.file, files, span: finding.span }] };
       writeLedger(stateDir, slug, ledger);
       process.stdout.write(JSON.stringify({ committed: true, sha }) + '\n');
     } else {
