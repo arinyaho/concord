@@ -9,7 +9,7 @@ Run the bundled deterministic runner once; do not manually orchestrate reviewers
 node "${CLAUDE_PLUGIN_ROOT}/bin/review-until-green.js" $ARGUMENTS
 ```
 
-Use `file:<path-or-glob>` for the explicit documentation-only profile. It reviews only the supplied files and skips the full branch DoD and broad front pass by default. `--broad` opts into the repository-wide front pass; a configured panel remains part of broad review unless `--no-broad` suppresses it.
+Use `file:<path-or-glob>` for the explicit documentation-only profile. It skips the full branch DoD and broad front pass by default. `--broad` opts into the repository-wide front pass; an enabled broad-review panel can still review the repository unless `--no-broad` suppresses it.
 
 Return its terminal handoff verbatim. If it exits with `harness-failure`, report that failure without treating the target as clean.
 
