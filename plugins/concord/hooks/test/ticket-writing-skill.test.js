@@ -11,6 +11,8 @@ const CLAUDE_SKILL = path.join(REPO, 'plugins/concord/skills/ticket-writing/SKIL
 const CODEX_SKILL = path.join(REPO, 'plugins/concord-codex/skills/ticket-writing/SKILL.md');
 const CLAUDE_TICKET_TO_PR = path.join(REPO, 'plugins/concord/skills/ticket-to-pr/SKILL.md');
 const CODEX_TICKET_TO_PR = path.join(REPO, 'plugins/concord-codex/skills/ticket-to-pr/SKILL.md');
+const CLAUDE_REVIEW_UNTIL_LGTM = path.join(REPO, 'plugins/concord/skills/review-until-lgtm/SKILL.md');
+const CODEX_REVIEW_UNTIL_LGTM = path.join(REPO, 'plugins/concord-codex/skills/review-until-lgtm/SKILL.md');
 const PROPOSAL_SKILL_FILES = [
   'SKILL.md',
   'references/content-and-evidence.md',
@@ -31,6 +33,13 @@ test('Claude and Codex source packages ship the same ticket-writing skill', () =
 test('Claude and Codex source packages ship the same ticket-to-pr skill', () => {
   assert.ok(fs.existsSync(CODEX_TICKET_TO_PR), 'Codex source package is missing ticket-to-pr');
   assert.equal(read(CODEX_TICKET_TO_PR), read(CLAUDE_TICKET_TO_PR));
+});
+
+test('Claude and Codex source packages ship the same review-until-lgtm skill', () => {
+  assert.ok(fs.existsSync(CODEX_REVIEW_UNTIL_LGTM), 'Codex source package is missing review-until-lgtm');
+  assert.equal(read(CODEX_REVIEW_UNTIL_LGTM), read(CLAUDE_REVIEW_UNTIL_LGTM));
+  assert.match(read(CLAUDE_REVIEW_UNTIL_LGTM), /exact PR head SHA/);
+  assert.match(read(CLAUDE_REVIEW_UNTIL_LGTM), /not green/);
 });
 
 test('Claude and Codex source packages ship the same proposal-package-authoring skill', () => {
@@ -93,6 +102,8 @@ pluginInstallE2ETest('clean Claude and Codex installs discover the same shared s
   const codex = read(path.join(codexInstall.installedPath, 'skills/ticket-writing/SKILL.md'));
   const claudeTicketToPr = read(path.join(claudeInstall.installPath, 'skills/ticket-to-pr/SKILL.md'));
   const codexTicketToPr = read(path.join(codexInstall.installedPath, 'skills/ticket-to-pr/SKILL.md'));
+  const claudeReviewUntilLgtm = read(path.join(claudeInstall.installPath, 'skills/review-until-lgtm/SKILL.md'));
+  const codexReviewUntilLgtm = read(path.join(codexInstall.installedPath, 'skills/review-until-lgtm/SKILL.md'));
   const claudeProposal = read(path.join(claudeInstall.installPath, 'skills/proposal-package-authoring/SKILL.md'));
   const codexProposal = read(path.join(codexInstall.installedPath, 'skills/proposal-package-authoring/SKILL.md'));
   for (const file of PROPOSAL_SKILL_FILES.slice(1)) {
@@ -113,13 +124,17 @@ pluginInstallE2ETest('clean Claude and Codex installs discover the same shared s
 
   assert.equal(codex, claude);
   assert.equal(codexTicketToPr, claudeTicketToPr);
+  assert.equal(codexReviewUntilLgtm, claudeReviewUntilLgtm);
   assert.equal(codexProposal, claudeProposal);
   assert.ok(claudeSkills?.includes('concord:ticket-to-pr'));
+  assert.ok(claudeSkills?.includes('concord:review-until-lgtm'));
   assert.ok(claudeSkills?.includes('concord:proposal-package-authoring'));
   assert.match(codexSkills, /(?:^|\n)- concord-codex:ticket-to-pr: /);
+  assert.match(codexSkills, /(?:^|\n)- concord-codex:review-until-lgtm: /);
   assert.match(codexSkills, /(?:^|\n)- concord-codex:proposal-package-authoring: /);
   assert.match(claude, /^---\nname: ticket-writing\ndescription: Use when /);
   assert.match(claudeTicketToPr, /^---\nname: ticket-to-pr\ndescription: >-/);
+  assert.match(claudeReviewUntilLgtm, /^---\nname: review-until-lgtm\ndescription: Use when /);
   assert.match(claudeProposal, /^---\nname: proposal-package-authoring\ndescription: /);
   for (const provider of ['Notion', 'Jira', 'GitHub Issues']) assert.match(claude, new RegExp(provider));
 });
@@ -188,6 +203,7 @@ test('maintained package metadata and docs advertise the shared capability set',
 
   for (const contents of files) assert.match(contents, /ticket-writing/i);
   for (const contents of files) assert.match(contents, /proposal-package-authoring/i);
+  for (const contents of files) assert.match(contents, /review-until-lgtm/i);
   assert.doesNotMatch(files[0], /Session-state and charter are Claude-Code-only/i);
 
   const claudeManifest = JSON.parse(files[1]);

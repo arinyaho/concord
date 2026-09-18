@@ -1,7 +1,7 @@
 {
   "name": "concord",
   "version": "0.9.0-alpha.20",
-  "description": "Claude Code harness-engineering tools: session-state checkpoint, cross-session charter, review-until-green, ticket-to-pr, provider-neutral ticket-writing, proposal-package-authoring, and cross-model review with Codex reviewers.",
+  "description": "Claude Code harness-engineering tools: session-state checkpoint, cross-session charter, review-until-green, review-until-lgtm, ticket-to-pr, provider-neutral ticket-writing, proposal-package-authoring, and cross-model review with Codex reviewers.",
   "author": {
     "name": "arinyaho",
     "url": "https://github.com/arinyaho"
@@ -15,6 +15,7 @@
     "session-state",
     "charter",
     "review",
+    "review-until-lgtm",
     "code-review",
     "ticket-writing",
     "ticket",
