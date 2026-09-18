@@ -51,7 +51,11 @@ test('ticket-to-pr makes Notion lifecycle transitions monotonic and unambiguous'
   assert.ok(prCreation > entry, 'the PR transition must follow the entry transition');
   assert.match(skill.slice(entry, prCreation), /already means `In review` or `Done`, preserve it/);
   assert.match(skill.slice(entry, prCreation), /exactly one status.*means `In progress`/s);
+  assert.match(skill.slice(entry, prCreation), /explicitly an unambiguous pre-start status/);
+  assert.match(skill.slice(entry, prCreation), /later or terminal status/);
   assert.match(skill.slice(prCreation), /explicitly for the PR.*same URL/s);
+  assert.match(skill.slice(prCreation), /exactly one eligible PR URL field/);
+  assert.match(skill.slice(prCreation), /same labelled `PR:` link.*append only when absent/s);
   assert.match(skill.slice(prCreation), /exactly one status.*means `In review`/s);
   assert.match(skill.slice(prCreation), /Do not move the ticket to Done/);
 });
