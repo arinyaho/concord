@@ -527,6 +527,26 @@ test('record: a companion-file journal entry does not fix a distinct live findin
   assert.notStrictEqual(out.decision.converged, true);
 });
 
+test('plan-fixes: a companion-file journal entry does not replay an absent-span finding with a different id', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'companion\n');
+  execFileSync('git', ['add', 'b.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add companion'], { cwd: repo });
+  const { env } = seedGatesRound(repo, dir, 'feat/companion-absent',
+    { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [
+      { id: 'correctness:b', gate: 'correctness', file: 'b.txt', span: 'MISSING_FUNC_XYZ', summary: 'required function is absent' },
+    ] },
+    { status: 'ok', rejected: [] });
+  const slug = review.targetSlug('feat/companion-absent');
+  let ledger = review.readLedger(dir, slug);
+  ledger = { ...ledger, journal: [{ id: 'correctness:a', sha: 'companionsha', file: 'a.txt', files: ['a.txt', 'b.txt'], span: 'MISSING_FUNC_XYZ' }] };
+  review.writeLedger(dir, slug, ledger);
+
+  const planOut = JSON.parse(run(['plan-fixes', 'feat/companion-absent'], { env }));
+  assert.deepStrictEqual(planOut.fixes.map((f) => f.id), ['correctness:b']);
+  assert.deepStrictEqual(review.readLedger(dir, slug).resolved_absent, []);
+});
+
 test('commit-fix: commits one fix and journals it', () => {
   const repo = initRepo(); const dir = tmpDir();
   const { env, n } = seedGatesRound(repo, dir, 'feat/x',
