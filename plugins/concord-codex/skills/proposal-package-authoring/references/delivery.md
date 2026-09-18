@@ -6,7 +6,7 @@ Treat PPTX and PDF downloadability as a delivery requirement, not cleanup after 
 
 - Record the submission limit or a practical delivery-channel budget in `deck.md`; warn before the deck approaches it.
 - Size raster assets for actual placement before insertion. Crop unused regions and downsample to a reasonable multiple of displayed dimensions; editor cropping may retain the full source asset.
-- Use JPEG for photographs without transparency, PNG only for transparency or lossless line detail, and native objects or SVG for compatible logos, icons, and diagrams. Preserve original assets separately when needed.
+- Use JPEG for photographs without transparency, PNG only for transparency or lossless line detail, and native objects for compatible logos, icons, and diagrams. Preserve original assets separately when needed.
 - Generate or source images at the intended aspect ratio instead of heavily cropping oversized general-purpose images.
 - Put repeated branding and backgrounds on the master or layout and reuse a canonical asset.
 - Keep tables, charts, and required diagrams native rather than replacing them with large screenshots. Do not save space by rasterizing evidence that must remain editable.
