@@ -27,7 +27,7 @@ The pipeline ends with one or more verified PR URLs, or with evidence that no co
 
 - Apply `ticket-writing` to create or repair each ticket. Do not reproduce its ticket schema or weaken its grounding and read-back requirements.
 - Apply `ticket-to-pr` independently to each implementation-ready ticket. Preserve its one-unit-of-work, one-branch, one-PR contract and every red, design, review, green, documentation, and PR exit condition.
-- Run the `review-until-green` command where `ticket-to-pr` requires it as the diff-local gate. When an independent reviewer role is authorized, give that reviewer the contract and evidence packet separately; it must not inherit the implementer's reasoning context.
+- For every ticket's diff review, override `ticket-to-pr`'s default invocation with `/review-until-green <branch> <target-base>`, using the target base recorded in the execution handoff: the intended PR base for ordinary tickets (including develop or release branches), or the prerequisite branch for stacked tickets. Pass that base explicitly on every diff-review run so the gate covers only the ticket's PR diff. When an independent reviewer role is authorized, give that reviewer the contract and evidence packet separately; it must not inherit the implementer's reasoning context.
 
 If any required Concord skill or command is unavailable, stop at the current stage and report the missing dependency instead of approximating its contract.
 
