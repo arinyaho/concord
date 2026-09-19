@@ -41,6 +41,7 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(skill, /project-scoped index.*normalized objective fingerprint.*run key/is);
   assert.match(skill, /search the index before creating/i);
   assert.match(skill, /On every reuse.*authoritative source.*version.*persisted.*invalidate.*contract.*approvals.*tickets.*execution.*stage 1/is);
+  assert.match(skill, /source changed.*re-arm.*affected file-target review ledger.*review-cli\.js rerun file:<path>.*stage 3/is);
   assert.match(skill, /durable user-state root.*deterministic project fingerprint.*run key/is);
   assert.match(skill, /Do not use.*temporary directory/i);
   assert.match(skill, /Never reuse one run directory for another key/i);
