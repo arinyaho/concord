@@ -57,7 +57,7 @@ Execute tickets sequentially by default. Parallelize only independent tickets wi
 
 The initiative exits successfully when every approved ticket has one of these verified dispositions:
 
-- A PR URL whose head, base, body, documentation disposition, and tracker link were read back, whose current head commit SHA, target base branch, and resolved base commit SHA match the recorded passing review gates, and whose required PR checks are all in a successful terminal state for that revision pair; a pending, failed, or missing required check leaves the ticket `BLOCKED`
+- A PR URL whose head, base, body, documentation disposition, and tracker link were read back, whose current head commit SHA, target base branch, and resolved base commit SHA match the recorded passing review gates, and for which every required PR check is in a successful terminal state for that revision pair; a pending, failed, or missing required check leaves the ticket `BLOCKED`
 - `NO PR NEEDED`, supported by a discriminating current-behavior check and a read-back of the ticket's explicitly approved no-change closure or supersession
 
 At completion, compare the live PR revision pair with the recorded review evidence, including the current tip of a stacked prerequisite base. Missing revision evidence or any head or base drift invalidates the review and check gates and leaves the ticket `BLOCKED`. Re-arm the diff-local ledger with `review-cli.js rerun <ref>`, rerun the stage 3 review cycle against the current head and base (including every required independent review), rerun required checks, and repeat the PR read-back and revision comparison before reporting completion.
