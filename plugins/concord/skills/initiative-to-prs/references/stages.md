@@ -29,7 +29,7 @@ Present a concise evidence verdict, material decisions with realistic options an
 
 Use `ticket-writing` for every approved ticket. Reuse or update existing work when it already owns the outcome. Create new tickets only for approved gaps. Keep provider-native formatting and the project's artifact language.
 
-Synchronize an affected product or architecture design only when the approved contract changes it and project instructions authorize that document system. Keep product design timeless and keep implementation paths and test locations in local plans or tickets.
+Synchronize an affected product or architecture design only when the user explicitly approved that specific mutation at checkpoint 1, the approved contract changes it, and project instructions authorize that document system. Keep product design timeless and keep implementation paths and test locations in local plans or tickets.
 
 Read every ticket and changed design record back. Verify exact titles, bodies, links, attachments, statuses, acceptance criteria, Definition of Done, decisions, and preserved fields. A ticket is not ready when an unresolved question can change its outcome, scope, or design direction. Do not count comments, implementation notes, or a screenshot alone as acceptance criteria or Definition of Done.
 
