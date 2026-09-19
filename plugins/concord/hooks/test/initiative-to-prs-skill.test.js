@@ -44,8 +44,8 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(skill, /project-scoped index.*normalized objective fingerprint.*run key/is);
   assert.match(skill, /search the index before creating/i);
   assert.match(skill, /On every reuse.*authoritative source.*version.*persisted.*invalidate.*contract.*approvals.*tickets.*execution.*stage 1/is);
-  assert.match(skill, /source changed.*re-arm.*affected file-target review ledger.*rerun file:<path>.*runtime-specific packaged review CLI path.*stage 3/is);
-  assert.match(skill, /current initiative objective.*authorization envelope.*persisted.*invalidate.*reconciliation.*before any mutation/is);
+  assert.match(skill, /source version.*current initiative objective.*authorization envelope.*invalidation.*affected file-target and diff review ledger.*rerun <ref>.*runtime-specific packaged review CLI path.*stage 1/is);
+  assert.match(skill, /objective.*authorization envelope.*differs.*reconciliation.*before any mutation/is);
   assert.match(codexReviewCommand, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/bin\/review-cli\.js" rerun <ref>/);
   assert.match(skill, /durable user-state root.*deterministic project fingerprint.*run key/is);
   assert.match(skill, /Do not use.*temporary directory/i);
@@ -74,6 +74,7 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(stages, /Execute each ticket/);
   assert.match(stages, /every required PR check.*successful terminal state/i);
   assert.match(stages, /pending, failed, or missing required check.*`BLOCKED`/i);
+  assert.match(stages, /integration rewrote history.*force-with-lease.*fetched live head SHA.*repository policy.*`BLOCKED`/is);
 });
 
 test('initiative-to-prs reconciles approved tickets before a no-PR exit', () => {
