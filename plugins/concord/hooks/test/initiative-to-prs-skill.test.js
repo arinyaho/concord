@@ -43,7 +43,9 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(skill, /Checkpoint 2 authorizes implementation mutations/i);
   assert.match(stages, /No tracker or design-document mutation occurs before this checkpoint/i);
   assert.match(stages, /Continue only after the user approves implementation of that exact set/i);
+  assert.match(stages, /design-note review gate.*before planning or implementation begins/i);
   assert.match(stages, /contract review supplements rather than replaces `review-until-green`/i);
+  assert.match(stages, /apply the fix.*fresh independent review.*repeat until clean/is);
   assert.match(skill, /one or more verified PR URLs/i);
   assert.match(skill, /Never merge, release, or deploy to production/);
   assert.match(stages, /Evidence and contract/);
@@ -83,6 +85,8 @@ test('initiative-to-prs routes models by task shape and bounds delegation', () =
   assert.match(routing, /at most two children total/i);
   assert.match(routing, /one source-extraction child plus one contract-decision child/i);
   assert.match(routing, /Record the requested and resolved model/i);
+  assert.doesNotMatch(routing, /\b(?:FAST|BALANCED)\b/);
+  assert.match(routing, /orchestrator, source extraction, readiness audit, implementation, independent review, or final mutations/i);
 });
 
 test('initiative-to-prs handoffs carry evidence without copying session history', () => {

@@ -30,7 +30,7 @@ Implementation and independent review are sibling stages created by the orchestr
 
 Use clean context for every child. On Codex, request the model and reasoning effort explicitly when the spawn mechanism supports them. On Claude Code, request the model alias explicitly. Record the requested and resolved model, provider, effort when exposed, escalation trigger, and any fallback in the stage handoff.
 
-Never silently substitute a model. For FAST, BALANCED, implementation, review, or final-mutation work, an unavailable requested model may fall back to the documented model for the same role in the active runtime when the handoff records the substitution. A required deep contract decision has no automatic downgrade; return the unresolved decision to the user when Astra (`gpt-6-astra`) or Opus is unavailable.
+Never silently substitute a model. For orchestrator, source extraction, readiness audit, implementation, independent review, or final mutations, an unavailable requested model may fall back to the documented model for the same role in the active runtime when the handoff records the substitution. A required deep contract decision has no automatic downgrade; return the unresolved decision to the user when Astra (`gpt-6-astra`) or Opus is unavailable.
 
 ## Stage composition
 
