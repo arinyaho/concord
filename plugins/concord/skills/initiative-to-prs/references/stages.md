@@ -45,7 +45,7 @@ Execute dependency-ready tickets with `ticket-to-pr`. Its stage exits and delega
 
 The implementer establishes the unchanged red at the altitude of the ticket's observable outcome, writes the design and plan required by `ticket-to-pr`, implements the smallest root-cause change, proves the check runs where CI runs it, and reaches local green. If a discriminating current-behavior reproduction shows that unchanged behavior satisfies the acceptance check, return `NO PR NEEDED` and correct the initiative record instead of changing code.
 
-The independent reviewer receives only the ticket contract, evidence identity, branch or diff, verification commands, and implementation handoff. It verifies premise, contract coverage, reachability, security and data boundaries, test execution, documentation completeness, and unnecessary complexity. It does not edit the branch.
+The independent reviewer receives only the ticket contract, evidence identity, branch or diff, and verification commands. It verifies premise, contract coverage, reachability, security and data boundaries, test execution, documentation completeness, and unnecessary complexity. It does not edit the branch.
 
 Final mutations apply verified findings, rerun the same green check plus repository-required checks, sweep affected documentation, push the branch, create the PR from the repository template, attach the exact PR URL to the ticket where authorized, and read both PR and ticket back. A finding that changes the approved product contract returns to the user; a correctness finding within the contract is fixed without a routine checkpoint.
 
