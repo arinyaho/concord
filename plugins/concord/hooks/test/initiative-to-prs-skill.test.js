@@ -31,7 +31,10 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(skill, /target the downstream PR at the prerequisite branch/i);
   assert.match(skill, /verified stacked PR is a completion disposition/i);
   assert.match(skill, /ordinary.*fetch.*base.*remote-tracking ref.*immutable fetched SHA/is);
-  assert.match(skill, /named owner.*After the prerequisite merges.*retargets.*reruns.*checks.*reads back/is);
+  assert.match(skill, /named owner.*After the prerequisite merges.*fetches.*live downstream PR head.*integrated base/is);
+  assert.match(skill, /clean worktree.*no unpushed commits.*reset/is);
+  assert.match(skill, /discriminating acceptance check.*fetched integrated base.*no longer red.*reconciliation/is);
+  assert.match(skill, /restacks.*locally.*full stage 3 review cycle.*independent review.*required checks.*push(?:es)?.*retarget(?:s)?.*read(?:s)? back/is);
   assert.match(skill, /follow-up is outside initiative completion/i);
   assert.match(skill, /maps each immutable source URL or tracker identifier.*stable run key/is);
   assert.match(skill, /project-scoped index.*normalized objective fingerprint.*run key/is);
@@ -42,6 +45,8 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(skill, /two mandatory human checkpoints/i);
   assert.match(skill, /Checkpoint 1 authorizes creation or update of the approved tickets/i);
   assert.match(skill, /Checkpoint 2 authorizes implementation mutations/i);
+  assert.match(skill, /approved tickets and external design records have been written and read back/i);
+  assert.match(skill, /repository-backed design records.*assigned ticket.*branch and PR/is);
   assert.match(stages, /No tracker or design-document mutation occurs before this checkpoint/i);
   assert.match(stages, /proposed design-record mutation.*specific approval/i);
   assert.match(stages, /Continue only after the user approves implementation of that exact set/i);
