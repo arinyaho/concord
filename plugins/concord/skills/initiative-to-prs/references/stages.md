@@ -43,7 +43,7 @@ Present the read-back ticket set, design changes, dependency order, observable a
 
 Execute dependency-ready tickets with `ticket-to-pr`. Its stage exits and delegation rule remain authoritative: unless the user, selected model, or CLI harness expressly requires subagents, keep implementation, review, and final mutations with the active agent. Use `model-routing.md` only to select required roles and models when that authorization exists.
 
-The implementer establishes the unchanged red at the altitude of the ticket's observable outcome, writes the design and plan required by `ticket-to-pr`, implements the smallest root-cause change, proves the check runs where CI runs it, and reaches local green. If a discriminating current-behavior reproduction shows that unchanged behavior satisfies the acceptance check, return `NO PR NEEDED` and correct the initiative record instead of changing code.
+The implementer establishes the unchanged red at the altitude of the ticket's observable outcome, writes the design and plan required by `ticket-to-pr`, implements the smallest root-cause change, proves the check runs where CI runs it, and reaches local green. If a discriminating current-behavior reproduction shows that unchanged behavior satisfies the acceptance check, do not enter `ticket-to-pr`'s PR exit. Return `NO PR NEEDED` only after recording the reproduction and reconciling the approved ticket to an explicitly approved no-change closure or supersession, then reading it back; without that authorization or read-back, the ticket is `BLOCKED`, not a successful no-PR disposition. Then correct the initiative record instead of changing code.
 
 The independent reviewer receives only the ticket contract, evidence identity, branch or diff, and verification commands. It verifies premise, contract coverage, reachability, security and data boundaries, test execution, documentation completeness, and unnecessary complexity. It does not edit the branch.
 
@@ -56,6 +56,6 @@ Execute tickets sequentially by default. Parallelize only independent tickets wi
 The initiative exits successfully when every approved ticket has one of these verified dispositions:
 
 - A PR URL whose head, base, body, checks, documentation disposition, and tracker link were read back
-- `NO PR NEEDED`, supported by a discriminating current-behavior check
+- `NO PR NEEDED`, supported by a discriminating current-behavior check and a read-back of the ticket's explicitly approved no-change closure or supersession
 
 If any approved ticket is `BLOCKED`, the initiative exits blocked rather than successfully. Report the exact failed exit condition, owner, and unblock condition alongside the completed dispositions. Never describe an open PR as merged, released, deployed, or available to customers.

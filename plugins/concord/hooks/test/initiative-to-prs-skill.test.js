@@ -42,6 +42,15 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(stages, /Execute each ticket/);
 });
 
+test('initiative-to-prs reconciles approved tickets before a no-PR exit', () => {
+  const stages = read('concord', 'references/stages.md');
+
+  assert.match(stages, /do not enter `ticket-to-pr`'s PR exit/i);
+  assert.match(stages, /`NO PR NEEDED` only after.*approved ticket.*explicitly approved no-change closure or supersession.*read.*back/is);
+  assert.match(stages, /without that authorization or read-back.*`BLOCKED`/is);
+  assert.match(stages, /`NO PR NEEDED`, supported by a discriminating current-behavior check and a read-back of the ticket's explicitly approved no-change closure or supersession/);
+});
+
 test('initiative-to-prs routes models by task shape and bounds delegation', () => {
   const routing = read('concord', 'references/model-routing.md');
 
