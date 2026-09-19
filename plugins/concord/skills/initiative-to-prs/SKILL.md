@@ -44,6 +44,8 @@ After the second checkpoint, proceed through PR creation without routine pauses.
 
 Prefer one ticket for one independently testable user-visible outcome. Split for any repository boundary because `ticket-to-pr` produces one branch and one PR per ticket. Also split for a different owner, deployment boundary, hard dependency, or independently valuable outcome. Record dependencies explicitly and execute them in order. Parallel execution is allowed only when tickets use independent branches and worktrees, share no mutable state, and neither one's contract can change the other.
 
+When a downstream ticket in the same repository depends on an unmerged prerequisite PR, use an explicit stacked delivery: branch from the prerequisite PR head, target the downstream PR at the prerequisite branch, record the stack in both handoffs and PR bodies, and retarget the downstream PR to the repository's normal base only after the prerequisite merges. If repository or provider rules do not permit that stack, keep the downstream ticket blocked until the prerequisite is integrated.
+
 ## Delegation
 
 Keep the main agent on orchestration, decisions, state, and concise user briefings. Route evidence gathering, implementation, independent review, and final mutations according to `model-routing.md`. Give each child only the applicable project root, stage instructions, previous handoff, exact user decisions, and authorization envelope. Never pass the full conversation.

@@ -27,6 +27,9 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(skill, /^---\nname: initiative-to-prs\ndescription: /);
   assert.match(skill, /ticket-writing/);
   assert.match(skill, /ticket-to-pr/);
+  assert.match(skill, /branch from the prerequisite PR head/i);
+  assert.match(skill, /target the downstream PR at the prerequisite branch/i);
+  assert.match(skill, /retarget.*normal base.*after the prerequisite merges/i);
   assert.match(skill, /two mandatory human checkpoints/i);
   assert.match(skill, /one or more verified PR URLs/i);
   assert.match(skill, /Never merge, release, or deploy to production/);
