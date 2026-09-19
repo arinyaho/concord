@@ -1,12 +1,12 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "arinyaho-concord",
-  "description": "Harness-engineering and provider-neutral ticket workflows for Claude Code and Codex.",
+  "description": "Harness-engineering and provider-neutral initiative and ticket workflows for Claude Code and Codex.",
   "owner": { "name": "arinyaho", "url": "https://github.com/arinyaho" },
   "plugins": [
     {
       "name": "concord",
-      "description": "Harness-engineering tools for state, charter, review-until-green, review-until-lgtm, ticket-to-pr, provider-neutral ticket-writing, proposal-package-authoring, and cross-model review.",
+      "description": "Harness-engineering tools for state, charter, review-until-green, review-until-lgtm, initiative-to-prs, ticket-to-pr, provider-neutral ticket-writing, proposal-package-authoring, and cross-model review.",
       "author": { "name": "arinyaho" },
       "category": "development",
       "source": "./plugins/concord",

@@ -11,6 +11,14 @@ const CLAUDE_SKILL = path.join(REPO, 'plugins/concord/skills/ticket-writing/SKIL
 const CODEX_SKILL = path.join(REPO, 'plugins/concord-codex/skills/ticket-writing/SKILL.md');
 const CLAUDE_TICKET_TO_PR = path.join(REPO, 'plugins/concord/skills/ticket-to-pr/SKILL.md');
 const CODEX_TICKET_TO_PR = path.join(REPO, 'plugins/concord-codex/skills/ticket-to-pr/SKILL.md');
+const CLAUDE_INITIATIVE_TO_PRS = path.join(REPO, 'plugins/concord/skills/initiative-to-prs/SKILL.md');
+const CODEX_INITIATIVE_TO_PRS = path.join(REPO, 'plugins/concord-codex/skills/initiative-to-prs/SKILL.md');
+const INITIATIVE_TO_PRS_FILES = [
+  'SKILL.md',
+  'references/stages.md',
+  'references/model-routing.md',
+  'references/handoff-contract.md',
+];
 const CLAUDE_REVIEW_UNTIL_LGTM = path.join(REPO, 'plugins/concord/skills/review-until-lgtm/SKILL.md');
 const CODEX_REVIEW_UNTIL_LGTM = path.join(REPO, 'plugins/concord-codex/skills/review-until-lgtm/SKILL.md');
 const PROPOSAL_SKILL_FILES = [
@@ -33,6 +41,15 @@ test('Claude and Codex source packages ship the same ticket-writing skill', () =
 test('Claude and Codex source packages ship the same ticket-to-pr skill', () => {
   assert.ok(fs.existsSync(CODEX_TICKET_TO_PR), 'Codex source package is missing ticket-to-pr');
   assert.equal(read(CODEX_TICKET_TO_PR), read(CLAUDE_TICKET_TO_PR));
+});
+
+test('Claude and Codex source packages ship the same initiative-to-prs skill', () => {
+  for (const file of INITIATIVE_TO_PRS_FILES) {
+    const claude = path.join(REPO, 'plugins/concord/skills/initiative-to-prs', file);
+    const codex = path.join(REPO, 'plugins/concord-codex/skills/initiative-to-prs', file);
+    assert.ok(fs.existsSync(codex), `Codex source package is missing initiative-to-prs/${file}`);
+    assert.equal(read(codex), read(claude));
+  }
 });
 
 test('Claude and Codex source packages ship the same review-until-lgtm skill', () => {
@@ -107,6 +124,14 @@ pluginInstallE2ETest('clean Claude and Codex installs discover the same shared s
   const codex = read(path.join(codexInstall.installedPath, 'skills/ticket-writing/SKILL.md'));
   const claudeTicketToPr = read(path.join(claudeInstall.installPath, 'skills/ticket-to-pr/SKILL.md'));
   const codexTicketToPr = read(path.join(codexInstall.installedPath, 'skills/ticket-to-pr/SKILL.md'));
+  const claudeInitiativeToPrs = read(path.join(claudeInstall.installPath, 'skills/initiative-to-prs/SKILL.md'));
+  const codexInitiativeToPrs = read(path.join(codexInstall.installedPath, 'skills/initiative-to-prs/SKILL.md'));
+  for (const file of INITIATIVE_TO_PRS_FILES.slice(1)) {
+    assert.equal(
+      read(path.join(claudeInstall.installPath, 'skills/initiative-to-prs', file)),
+      read(path.join(codexInstall.installedPath, 'skills/initiative-to-prs', file)),
+    );
+  }
   const claudeReviewUntilLgtm = read(path.join(claudeInstall.installPath, 'skills/review-until-lgtm/SKILL.md'));
   const codexReviewUntilLgtm = read(path.join(codexInstall.installedPath, 'skills/review-until-lgtm/SKILL.md'));
   const claudeProposal = read(path.join(claudeInstall.installPath, 'skills/proposal-package-authoring/SKILL.md'));
@@ -129,16 +154,20 @@ pluginInstallE2ETest('clean Claude and Codex installs discover the same shared s
 
   assert.equal(codex, claude);
   assert.equal(codexTicketToPr, claudeTicketToPr);
+  assert.equal(codexInitiativeToPrs, claudeInitiativeToPrs);
   assert.equal(codexReviewUntilLgtm, claudeReviewUntilLgtm);
   assert.equal(codexProposal, claudeProposal);
   assert.ok(claudeSkills?.includes('concord:ticket-to-pr'));
+  assert.ok(claudeSkills?.includes('concord:initiative-to-prs'));
   assert.ok(claudeSkills?.includes('concord:review-until-lgtm'));
   assert.ok(claudeSkills?.includes('concord:proposal-package-authoring'));
   assert.match(codexSkills, /(?:^|\n)- concord-codex:ticket-to-pr: /);
+  assert.match(codexSkills, /(?:^|\n)- concord-codex:initiative-to-prs: /);
   assert.match(codexSkills, /(?:^|\n)- concord-codex:review-until-lgtm: /);
   assert.match(codexSkills, /(?:^|\n)- concord-codex:proposal-package-authoring: /);
   assert.match(claude, /^---\nname: ticket-writing\ndescription: Use when /);
   assert.match(claudeTicketToPr, /^---\nname: ticket-to-pr\ndescription: >-/);
+  assert.match(claudeInitiativeToPrs, /^---\nname: initiative-to-prs\ndescription: >-/);
   assert.match(claudeReviewUntilLgtm, /^---\nname: review-until-lgtm\ndescription: Use when /);
   assert.match(claudeProposal, /^---\nname: proposal-package-authoring\ndescription: /);
   for (const provider of ['Notion', 'Jira', 'GitHub Issues']) assert.match(claude, new RegExp(provider));
@@ -207,6 +236,7 @@ test('maintained package metadata and docs advertise the shared capability set',
   ].map((file) => read(path.join(REPO, file)));
 
   for (const contents of files) assert.match(contents, /ticket-writing/i);
+  for (const contents of files) assert.match(contents, /initiative-to-prs/i);
   for (const contents of files) assert.match(contents, /proposal-package-authoring/i);
   for (const contents of files) assert.match(contents, /review-until-lgtm/i);
   assert.doesNotMatch(files[0], /Session-state and charter are Claude-Code-only/i);
@@ -215,11 +245,15 @@ test('maintained package metadata and docs advertise the shared capability set',
   const codexManifest = JSON.parse(files[2]);
   assert.match(claudeManifest.description, /ticket-to-pr/);
   assert.match(codexManifest.description, /ticket-to-pr/);
+  assert.match(claudeManifest.description, /initiative-to-prs/);
+  assert.match(codexManifest.description, /initiative-to-prs/);
 
   const claudeSummary = files[0].split('\n').find((line) => line.startsWith('- `concord` (Claude Code)'));
   const codexSummary = files[0].split('\n').find((line) => line.startsWith('- `concord-codex` (Codex)'));
   assert.match(claudeSummary, /ticket-to-pr/);
   assert.match(codexSummary, /ticket-to-pr/);
+  assert.match(claudeSummary, /initiative-to-prs/);
+  assert.match(codexSummary, /initiative-to-prs/);
 
   const adapter = read(path.join(REPO, 'plugins/concord/adapters/codex/README.md'));
   const gaps = read(path.join(REPO, 'plugins/concord/adapters/codex/GAPS.md'));
