@@ -13,7 +13,7 @@ Turn an initiative into the smallest implementation-ready ticket set, then carry
 
 ## Contract
 
-The explicit request to take an initiative to PRs authorizes the ordinary mutations needed by this pipeline after its checkpoints: create or update the approved tickets, apply unambiguous in-progress and review transitions, create branches and worktrees, commit and push changes, and open PRs. Follow narrower repository or provider rules when they exist. Closing or superseding tickets still requires explicit approval.
+The explicit request to take an initiative to PRs authorizes the ordinary mutations needed by this pipeline at its checkpoints. Checkpoint 1 authorizes creation or update of the approved tickets and any specifically approved design record. Checkpoint 2 authorizes implementation mutations: unambiguous in-progress and review transitions, branches and worktrees, commits and pushes, and PR creation. Follow narrower repository or provider rules when they exist. Closing or superseding tickets still requires explicit approval.
 
 The pipeline ends with one or more verified PR URLs, or with evidence that no code change is required. Never merge, release, or deploy to production. A blocked gate remains blocked; do not turn it into a PR-body caveat.
 
@@ -42,7 +42,7 @@ After the second checkpoint, proceed through PR creation without routine pauses.
 
 ## Ticket set
 
-Prefer one ticket for one independently testable user-visible outcome. Split only for a different owner, repository boundary that must ship independently, deployment boundary, hard dependency, or independently valuable outcome. Record dependencies explicitly and execute them in order. Parallel execution is allowed only when tickets use independent branches and worktrees, share no mutable state, and neither one's contract can change the other.
+Prefer one ticket for one independently testable user-visible outcome. Split for any repository boundary because `ticket-to-pr` produces one branch and one PR per ticket. Also split for a different owner, deployment boundary, hard dependency, or independently valuable outcome. Record dependencies explicitly and execute them in order. Parallel execution is allowed only when tickets use independent branches and worktrees, share no mutable state, and neither one's contract can change the other.
 
 ## Delegation
 
