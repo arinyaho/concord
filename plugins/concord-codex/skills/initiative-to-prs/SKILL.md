@@ -20,16 +20,16 @@ The pipeline ends with one or more verified PR URLs, or with evidence that no co
 ## Bootstrap
 
 1. Read the applicable project instructions and discover the authoritative brief, tracker, repositories, documentation system, target branches, validation commands, and available agent mechanisms. Infer these from the workspace when one answer is clear. Ask only when multiple plausible destinations or materially different interpretations remain.
-2. Create a project-scoped run directory using Concord state when the harness exposes it, otherwise use a temporary directory and report its absolute path. Keep `state.md` there with the initiative, current stage, artifact paths, ticket and PR URLs, decisions, authorization envelope, requested and resolved models, exit verdicts, and blockers. Never record secrets or customer-identifying data.
+2. Locate and resume an existing project-scoped run for this initiative from Concord state or a supplied handoff path. If none exists, create one using Concord state when the harness exposes it, otherwise use a temporary directory and report its absolute path. Keep `state.md` there with the initiative, current stage, artifact paths, ticket and PR URLs, decisions, authorization envelope, requested and resolved models, exit verdicts, and blockers. Never record secrets or customer-identifying data.
 3. Read [references/stages.md](references/stages.md), [references/model-routing.md](references/model-routing.md), and [references/handoff-contract.md](references/handoff-contract.md). Execute one dependency-ready stage at a time and persist its handoff before advancing.
 
 ## Composition
 
 - Apply `ticket-writing` to create or repair each ticket. Do not reproduce its ticket schema or weaken its grounding and read-back requirements.
 - Apply `ticket-to-pr` independently to each implementation-ready ticket. Preserve its one-unit-of-work, one-branch, one-PR contract and every red, design, review, green, documentation, and PR exit condition.
-- Use `review-until-green` where `ticket-to-pr` requires it. An independent review must not inherit the implementer's reasoning context.
+- Run the `review-until-green` command where `ticket-to-pr` requires it. An independent review must not inherit the implementer's reasoning context.
 
-If any required Concord skill is unavailable, stop at the current stage and report the missing dependency instead of approximating its contract.
+If any required Concord skill or command is unavailable, stop at the current stage and report the missing dependency instead of approximating its contract.
 
 ## Human checkpoints
 

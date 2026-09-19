@@ -22,6 +22,7 @@ Do not copy the parent conversation, raw document corpus, full transcript, binar
 
 The orchestrator passes a child only:
 
+- The initiative objective and authoritative source references needed for the stage
 - The applicable project root and instructions
 - The stage reference
 - The immediately preceding handoff or ticket execution handoff

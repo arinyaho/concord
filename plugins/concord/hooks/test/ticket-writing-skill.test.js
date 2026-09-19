@@ -13,6 +13,12 @@ const CLAUDE_TICKET_TO_PR = path.join(REPO, 'plugins/concord/skills/ticket-to-pr
 const CODEX_TICKET_TO_PR = path.join(REPO, 'plugins/concord-codex/skills/ticket-to-pr/SKILL.md');
 const CLAUDE_INITIATIVE_TO_PRS = path.join(REPO, 'plugins/concord/skills/initiative-to-prs/SKILL.md');
 const CODEX_INITIATIVE_TO_PRS = path.join(REPO, 'plugins/concord-codex/skills/initiative-to-prs/SKILL.md');
+const INITIATIVE_TO_PRS_FILES = [
+  'SKILL.md',
+  'references/stages.md',
+  'references/model-routing.md',
+  'references/handoff-contract.md',
+];
 const CLAUDE_REVIEW_UNTIL_LGTM = path.join(REPO, 'plugins/concord/skills/review-until-lgtm/SKILL.md');
 const CODEX_REVIEW_UNTIL_LGTM = path.join(REPO, 'plugins/concord-codex/skills/review-until-lgtm/SKILL.md');
 const PROPOSAL_SKILL_FILES = [
@@ -38,8 +44,12 @@ test('Claude and Codex source packages ship the same ticket-to-pr skill', () => 
 });
 
 test('Claude and Codex source packages ship the same initiative-to-prs skill', () => {
-  assert.ok(fs.existsSync(CODEX_INITIATIVE_TO_PRS), 'Codex source package is missing initiative-to-prs');
-  assert.equal(read(CODEX_INITIATIVE_TO_PRS), read(CLAUDE_INITIATIVE_TO_PRS));
+  for (const file of INITIATIVE_TO_PRS_FILES) {
+    const claude = path.join(REPO, 'plugins/concord/skills/initiative-to-prs', file);
+    const codex = path.join(REPO, 'plugins/concord-codex/skills/initiative-to-prs', file);
+    assert.ok(fs.existsSync(codex), `Codex source package is missing initiative-to-prs/${file}`);
+    assert.equal(read(codex), read(claude));
+  }
 });
 
 test('Claude and Codex source packages ship the same review-until-lgtm skill', () => {
@@ -116,6 +126,12 @@ pluginInstallE2ETest('clean Claude and Codex installs discover the same shared s
   const codexTicketToPr = read(path.join(codexInstall.installedPath, 'skills/ticket-to-pr/SKILL.md'));
   const claudeInitiativeToPrs = read(path.join(claudeInstall.installPath, 'skills/initiative-to-prs/SKILL.md'));
   const codexInitiativeToPrs = read(path.join(codexInstall.installedPath, 'skills/initiative-to-prs/SKILL.md'));
+  for (const file of INITIATIVE_TO_PRS_FILES.slice(1)) {
+    assert.equal(
+      read(path.join(claudeInstall.installPath, 'skills/initiative-to-prs', file)),
+      read(path.join(codexInstall.installedPath, 'skills/initiative-to-prs', file)),
+    );
+  }
   const claudeReviewUntilLgtm = read(path.join(claudeInstall.installPath, 'skills/review-until-lgtm/SKILL.md'));
   const codexReviewUntilLgtm = read(path.join(codexInstall.installedPath, 'skills/review-until-lgtm/SKILL.md'));
   const claudeProposal = read(path.join(claudeInstall.installPath, 'skills/proposal-package-authoring/SKILL.md'));
