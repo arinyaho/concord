@@ -41,7 +41,7 @@ Present the read-back ticket set, design changes, dependency order, observable a
 
 ## 3. Execute each ticket
 
-Execute dependency-ready tickets with `ticket-to-pr`. Its stage exits remain authoritative. The initiative orchestrator selects separate roles for implementation, independent review, and final mutations using `model-routing.md`; this explicit delegation satisfies `ticket-to-pr`'s requirement that AI handoff be user- or harness-directed.
+Execute dependency-ready tickets with `ticket-to-pr`. Its stage exits and delegation rule remain authoritative: unless the user, selected model, or CLI harness expressly requires subagents, keep implementation, review, and final mutations with the active agent. Use `model-routing.md` only to select required roles and models when that authorization exists.
 
 The implementer establishes the unchanged red at the altitude of the ticket's observable outcome, writes the design and plan required by `ticket-to-pr`, implements the smallest root-cause change, proves the check runs where CI runs it, and reaches local green. If a discriminating current-behavior reproduction shows that unchanged behavior satisfies the acceptance check, return `NO PR NEEDED` and correct the initiative record instead of changing code.
 
