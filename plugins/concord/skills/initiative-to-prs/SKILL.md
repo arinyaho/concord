@@ -48,7 +48,7 @@ When a downstream ticket in the same repository depends on an unmerged prerequis
 
 ## Delegation
 
-Keep the main agent on orchestration, decisions, state, and concise user briefings. Route evidence gathering, implementation, independent review, and final mutations according to `model-routing.md`. Give each child only the applicable project root, stage instructions, previous handoff, exact user decisions, and authorization envelope. Never pass the full conversation.
+Keep the main agent on orchestration, decisions, state, and concise user briefings. Route evidence gathering, implementation, independent review, and final mutations according to `model-routing.md`. Give each child only the applicable project root, stage instructions, previous handoff, exact user decisions, and authorization envelope. For independent review, omit the implementer's handoff and build the packet directly from the approved contract, source evidence, exact reviewed head and base, verification commands, and authorization envelope. Never pass the full conversation.
 
 Model assignment is a plan, not an obligation to spawn. Delegate only when isolated context, independent work, or specialist judgment saves time or protects review independence. Keep dependent mutations sequential.
 

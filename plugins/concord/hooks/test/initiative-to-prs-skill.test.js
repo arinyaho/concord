@@ -46,6 +46,7 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(stages, /design-note review gate.*before planning or implementation begins/i);
   assert.match(stages, /contract review supplements rather than replaces `review-until-green`/i);
   assert.match(stages, /apply the fix.*fresh independent review.*repeat until clean/is);
+  assert.match(stages, /invalidate.*ticket.*downstream handoffs.*ticket set.*checkpoint 2/is);
   assert.match(skill, /one or more verified PR URLs/i);
   assert.match(skill, /Never merge, release, or deploy to production/);
   assert.match(stages, /Evidence and contract/);
@@ -65,6 +66,7 @@ test('initiative-to-prs reconciles approved tickets before a no-PR exit', () => 
 });
 
 test('initiative-to-prs routes models by task shape and bounds delegation', () => {
+  const skill = read('concord', 'SKILL.md');
   const routing = read('concord', 'references/model-routing.md');
 
   for (const role of [
@@ -87,6 +89,7 @@ test('initiative-to-prs routes models by task shape and bounds delegation', () =
   assert.match(routing, /Record the requested and resolved model/i);
   assert.doesNotMatch(routing, /\b(?:FAST|BALANCED)\b/);
   assert.match(routing, /orchestrator, source extraction, readiness audit, implementation, independent review, or final mutations/i);
+  assert.match(skill, /independent review.*omit the implementer's handoff.*approved contract.*source evidence.*reviewed head and base.*verification commands/is);
 });
 
 test('initiative-to-prs handoffs carry evidence without copying session history', () => {
