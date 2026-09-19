@@ -31,13 +31,15 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(skill, /branch from the prerequisite PR head/i);
   assert.match(skill, /target the downstream PR at the prerequisite branch/i);
   assert.match(skill, /verified stacked PR is a completion disposition/i);
-  assert.match(skill, /ordinary.*fetch.*base.*remote-tracking ref.*immutable fetched SHA/is);
+  assert.match(skill, /ordinary.*fetch.*base.*immutable fetched commit SHA/is);
+  assert.doesNotMatch(skill, /remote-tracking ref or an immutable fetched SHA/i);
   assert.match(skill, /named owner.*After the prerequisite merges.*fetches.*live downstream PR head.*integrated base/is);
   assert.match(skill, /clean worktree.*no unpushed commits.*reset/is);
   assert.match(skill, /discriminating acceptance check.*fetched integrated base.*no longer red.*reconciliation/is);
   assert.match(skill, /integrate.*exact fetched integrated base.*repository policy.*`BLOCKED`.*full stage 3 review cycle/is);
   assert.match(skill, /restack.*force-with-lease.*fetched.*head SHA.*repository policy.*`BLOCKED`/is);
   assert.match(skill, /final head.*resolved base SHA.*recorded review pair.*drift.*integration.*full stage 3 review cycle/is);
+  assert.match(skill, /drift.*restart.*live downstream PR head.*integrated base.*clean[- ]worktree.*reset.*discriminating acceptance check/is);
   assert.match(skill, /restacks.*locally.*full stage 3 review cycle.*independent review.*required checks.*push(?:es)?.*retarget(?:s)?.*read(?:s)? back/is);
   assert.match(skill, /follow-up is outside initiative completion/i);
   assert.match(skill, /maps each immutable source URL or tracker identifier.*stable run key/is);
@@ -70,6 +72,7 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(skill, /one or more verified PR URLs/i);
   assert.match(skill, /Never merge, release, or deploy to production/);
   assert.match(stages, /Evidence and contract/);
+  assert.match(stages, /For PR-backed dispositions only.*live PR revision pair/is);
   assert.match(stages, /Ticket set/);
   assert.match(stages, /Execute each ticket/);
   assert.match(stages, /every required PR check.*successful terminal state/i);
