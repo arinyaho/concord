@@ -9,6 +9,12 @@ Run the bundled deterministic runner once; do not manually orchestrate reviewers
 node "${CLAUDE_PLUGIN_ROOT}/bin/review-until-green.js" $ARGUMENTS
 ```
 
+For ledger operations required by composed workflows, invoke the packaged CLI directly:
+
+```sh
+node "${CLAUDE_PLUGIN_ROOT}/bin/review-cli.js" rerun <ref>
+```
+
 Use `file:<path-or-glob>` for the explicit documentation-only profile. It skips the full branch DoD and broad front pass by default. `--broad` opts into the repository-wide front pass; an enabled broad-review panel can still review the repository unless `--no-broad` suppresses it.
 
 Return its terminal handoff verbatim. If it exits with `harness-failure`, report that failure without treating the target as clean.
