@@ -32,7 +32,9 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(skill, /verified stacked PR is a completion disposition/i);
   assert.match(skill, /named owner.*After the prerequisite merges.*retargets.*reruns.*checks.*reads back/is);
   assert.match(skill, /follow-up is outside initiative completion/i);
-  assert.match(skill, /stable run key.*immutable source URL or tracker identifier/is);
+  assert.match(skill, /maps each immutable source URL or tracker identifier.*stable run key/is);
+  assert.match(skill, /project-scoped index.*normalized objective fingerprint.*run key/is);
+  assert.match(skill, /search the index before creating/i);
   assert.match(skill, /Never reuse one run directory for another key/i);
   assert.match(skill, /two mandatory human checkpoints/i);
   assert.match(skill, /Checkpoint 1 authorizes creation or update of the approved tickets/i);
@@ -45,6 +47,8 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(stages, /Evidence and contract/);
   assert.match(stages, /Ticket set/);
   assert.match(stages, /Execute each ticket/);
+  assert.match(stages, /every required PR check.*successful terminal state/i);
+  assert.match(stages, /pending, failed, or missing required check.*`BLOCKED`/i);
 });
 
 test('initiative-to-prs reconciles approved tickets before a no-PR exit', () => {
@@ -74,6 +78,8 @@ test('initiative-to-prs routes models by task shape and bounds delegation', () =
   }
   assert.match(routing, /maximum delegation depth is two/i);
   assert.match(routing, /at most two specialist children/i);
+  assert.match(routing, /at most two children total/i);
+  assert.match(routing, /one source-extraction child plus one contract-decision child/i);
   assert.match(routing, /Record the requested and resolved model/i);
 });
 

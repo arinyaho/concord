@@ -55,7 +55,7 @@ Execute tickets sequentially by default. Parallelize only independent tickets wi
 
 The initiative exits successfully when every approved ticket has one of these verified dispositions:
 
-- A PR URL whose head, base, body, checks, documentation disposition, and tracker link were read back
+- A PR URL whose head, base, body, documentation disposition, and tracker link were read back, with every required PR check in a successful terminal state; a pending, failed, or missing required check leaves the ticket `BLOCKED`
 - `NO PR NEEDED`, supported by a discriminating current-behavior check and a read-back of the ticket's explicitly approved no-change closure or supersession
 
 If any approved ticket is `BLOCKED`, the initiative exits blocked rather than successfully. Report the exact failed exit condition, owner, and unblock condition alongside the completed dispositions. Never describe an open PR as merged, released, deployed, or available to customers.

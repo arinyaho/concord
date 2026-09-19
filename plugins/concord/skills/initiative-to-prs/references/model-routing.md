@@ -36,7 +36,7 @@ Never silently substitute a model. For FAST, BALANCED, implementation, review, o
 
 | Stage | Stage owner | Permitted specialist children |
 |---|---|---|
-| Evidence and contract | readiness audit | Up to two source-extraction children for independent corpora; one contract-decision child only when an escalation condition is met |
+| Evidence and contract | readiness audit | At most two children total: up to two source-extraction children for independent corpora when no contract decision is needed, or one source-extraction child plus one contract-decision child when an escalation condition is met |
 | Ticket set | final mutations | None by default; the same agent writes and reads back each tracker or design mutation sequentially |
 | Ticket implementation | implementation | Up to two Terra (`gpt-5.6-terra`) high-effort or Sonnet repository tracers for independent repositories; only the stage owner edits code |
 | Independent review | independent review | Up to two fresh Terra (`gpt-5.6-terra`) high- or xhigh-effort or Sonnet specialists for bounded security, test, or cross-context questions |
