@@ -13,7 +13,7 @@ Turn an initiative into the smallest implementation-ready ticket set, then carry
 
 ## Contract
 
-The explicit request to take an initiative to PRs authorizes the ordinary mutations needed by this pipeline after its checkpoints: create or update the approved tickets, apply unambiguous in-progress and review transitions, create branches and worktrees, commit and push changes, and open PRs. Follow narrower repository or provider rules when they exist. Closing or superseding tickets still requires explicit approval.
+The explicit request to take an initiative to PRs authorizes the ordinary mutations needed by this pipeline at their respective checkpoints: after the first, create or update the approved tickets; after the second, apply unambiguous in-progress and review transitions, create branches and worktrees, commit and push changes, and open PRs. Follow narrower repository or provider rules when they exist. Closing or superseding tickets still requires explicit approval.
 
 The pipeline ends with one or more verified PR URLs, or with evidence that no code change is required. Never merge, release, or deploy to production. A blocked gate remains blocked; do not turn it into a PR-body caveat.
 
