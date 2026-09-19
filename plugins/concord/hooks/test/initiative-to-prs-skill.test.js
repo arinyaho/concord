@@ -30,6 +30,8 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(skill, /ticket-to-pr/);
   assert.match(skill, /branch from the prerequisite PR head/i);
   assert.match(skill, /target the downstream PR at the prerequisite branch/i);
+  assert.match(skill, /review-until-green <downstream-branch> <fetched-prerequisite-head-sha>/i);
+  assert.doesNotMatch(skill, /review-until-green <downstream-branch> <prerequisite-branch>/i);
   assert.match(skill, /verified stacked PR is a completion disposition/i);
   assert.match(skill, /ordinary.*fetch.*base.*immutable fetched commit SHA/is);
   assert.doesNotMatch(skill, /remote-tracking ref or an immutable fetched SHA/i);
@@ -48,6 +50,7 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(skill, /On every reuse.*authoritative source.*version.*persisted.*invalidate.*contract.*approvals.*tickets.*execution.*stage 1/is);
   assert.match(skill, /source version.*current initiative objective.*authorization envelope.*invalidation.*affected file-target and diff review ledger.*rerun <ref>.*runtime-specific packaged review CLI path.*stage 1/is);
   assert.match(skill, /objective.*authorization envelope.*differs.*reconciliation.*before any mutation/is);
+  assert.match(skill, /before each mutation-capable stage.*recheck.*authoritative source.*version.*same invalidation.*reconciliation/is);
   assert.match(codexReviewCommand, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/bin\/review-cli\.js" rerun <ref>/);
   assert.match(skill, /durable user-state root.*deterministic project fingerprint.*run key/is);
   assert.match(skill, /Do not use.*temporary directory/i);
@@ -69,10 +72,13 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(stages, /rerun <ref>.*runtime-specific packaged review CLI path/is);
   assert.doesNotMatch(`${skill}\n${stages}`, /`review-cli\.js /);
   assert.match(stages, /invalidate.*ticket.*downstream handoffs.*ticket set.*checkpoint 2/is);
+  assert.match(stages, /Every approved contract revision.*ticket set.*update and read back.*ticket.*checkpoint 2/is);
+  assert.match(stages, /Only a revision.*design record.*checkpoint 1/is);
   assert.match(skill, /one or more verified PR URLs/i);
   assert.match(skill, /Never merge, release, or deploy to production/);
   assert.match(stages, /Evidence and contract/);
   assert.match(stages, /For PR-backed dispositions only.*live PR revision pair/is);
+  assert.match(stages, /acceptance check.*no longer red.*existing PR.*authoriz.*clos.*read[- ]back.*`BLOCKED`/is);
   assert.match(stages, /Ticket set/);
   assert.match(stages, /Execute each ticket/);
   assert.match(stages, /every required PR check.*successful terminal state/i);
