@@ -41,7 +41,7 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(skill, /project-scoped index.*normalized objective fingerprint.*run key/is);
   assert.match(skill, /search the index before creating/i);
   assert.match(skill, /On every reuse.*authoritative source.*version.*persisted.*invalidate.*contract.*approvals.*tickets.*execution.*stage 1/is);
-  assert.match(skill, /source changed.*re-arm.*affected file-target review ledger.*review-cli\.js rerun file:<path>.*stage 3/is);
+  assert.match(skill, /source changed.*re-arm.*affected file-target review ledger.*rerun file:<path>.*runtime-specific packaged review CLI path.*stage 3/is);
   assert.match(skill, /durable user-state root.*deterministic project fingerprint.*run key/is);
   assert.match(skill, /Do not use.*temporary directory/i);
   assert.match(skill, /Never reuse one run directory for another key/i);
@@ -59,6 +59,8 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(stages, /contract review supplements rather than replaces `review-until-green`/i);
   assert.match(stages, /apply the fix.*fresh independent review.*repeat until clean/is);
   assert.match(stages, /commit.*accepted (?:fix|change).*re-arm.*review-until-green/is);
+  assert.match(stages, /rerun <ref>.*runtime-specific packaged review CLI path/is);
+  assert.doesNotMatch(`${skill}\n${stages}`, /`review-cli\.js /);
   assert.match(stages, /invalidate.*ticket.*downstream handoffs.*ticket set.*checkpoint 2/is);
   assert.match(skill, /one or more verified PR URLs/i);
   assert.match(skill, /Never merge, release, or deploy to production/);
