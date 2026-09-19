@@ -73,7 +73,8 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(stages, /Ticket set/);
   assert.match(stages, /Execute each ticket/);
   assert.match(stages, /every required PR check.*successful terminal state/i);
-  assert.match(stages, /pending, failed, or missing required check.*`BLOCKED`/i);
+  assert.match(stages, /pending.*in progress.*terminal failure.*missing required check.*expired.*`BLOCKED`/is);
+  assert.match(stages, /wait.*required PR checks.*final head.*base.*bounded.*terminal failure.*expired.*`BLOCKED`/is);
   assert.match(stages, /integration rewrote history.*force-with-lease.*fetched live head SHA.*repository policy.*`BLOCKED`/is);
 });
 
