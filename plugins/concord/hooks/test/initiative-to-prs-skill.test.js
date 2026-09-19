@@ -50,7 +50,8 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(stages, /No tracker or design-document mutation occurs before this checkpoint/i);
   assert.match(stages, /proposed design-record mutation.*specific approval/i);
   assert.match(stages, /Continue only after the user approves implementation of that exact set/i);
-  assert.match(stages, /design-note review gate.*before planning or implementation begins/i);
+  assert.match(stages, /file-target review.*before planning or implementation begins/i);
+  assert.match(stages, /writes the design.*commit.*initial design note.*file-target review.*commit.*accepted review fixes.*before planning/is);
   assert.match(stages, /synthetic.*teardown.*read-back.*authorization.*retain.*named owner/is);
   assert.match(stages, /contract review supplements rather than replaces `review-until-green`/i);
   assert.match(stages, /apply the fix.*fresh independent review.*repeat until clean/is);
