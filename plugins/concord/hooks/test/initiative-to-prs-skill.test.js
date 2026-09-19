@@ -29,12 +29,17 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(skill, /ticket-to-pr/);
   assert.match(skill, /branch from the prerequisite PR head/i);
   assert.match(skill, /target the downstream PR at the prerequisite branch/i);
-  assert.match(skill, /retarget.*normal base only after the prerequisite merges/i);
+  assert.match(skill, /verified stacked PR is a completion disposition/i);
+  assert.match(skill, /named owner.*After the prerequisite merges.*retargets.*reruns.*checks.*reads back/is);
+  assert.match(skill, /follow-up is outside initiative completion/i);
+  assert.match(skill, /stable run key.*immutable source URL or tracker identifier/is);
+  assert.match(skill, /Never reuse one run directory for another key/i);
   assert.match(skill, /two mandatory human checkpoints/i);
   assert.match(skill, /Checkpoint 1 authorizes creation or update of the approved tickets/i);
   assert.match(skill, /Checkpoint 2 authorizes implementation mutations/i);
   assert.match(stages, /No tracker or design-document mutation occurs before this checkpoint/i);
   assert.match(stages, /Continue only after the user approves implementation of that exact set/i);
+  assert.match(stages, /contract review supplements rather than replaces `review-until-green`/i);
   assert.match(skill, /one or more verified PR URLs/i);
   assert.match(skill, /Never merge, release, or deploy to production/);
   assert.match(stages, /Evidence and contract/);

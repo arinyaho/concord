@@ -20,14 +20,14 @@ The pipeline ends with one or more verified PR URLs, or with evidence that no co
 ## Bootstrap
 
 1. Read the applicable project instructions and discover the authoritative brief, tracker, repositories, documentation system, target branches, validation commands, and available agent mechanisms. Infer these from the workspace when one answer is clear. Ask only when multiple plausible destinations or materially different interpretations remain.
-2. Locate and resume an existing project-scoped run for this initiative from Concord state or a supplied handoff path. If none exists, create one using Concord state when the harness exposes it, otherwise use a temporary directory and report its absolute path. Keep `state.md` there with the initiative, current stage, artifact paths, ticket and PR URLs, decisions, authorization envelope, requested and resolved models, exit verdicts, and blockers. Never record secrets or customer-identifying data.
+2. Derive a stable run key from an immutable source URL or tracker identifier. If none exists, generate the key once and return it in every handoff. Locate or create a separate directory for that key under project-scoped Concord state; when the harness exposes no state root, create a dedicated temporary directory and report its absolute path. Never reuse one run directory for another key. Keep `state.md` there with the run key, initiative, current stage, artifact paths, ticket and PR URLs, decisions, authorization envelope, requested and resolved models, exit verdicts, and blockers. Never record secrets or customer-identifying data.
 3. Read [references/stages.md](references/stages.md), [references/model-routing.md](references/model-routing.md), and [references/handoff-contract.md](references/handoff-contract.md). Execute one dependency-ready stage at a time and persist its handoff before advancing.
 
 ## Composition
 
 - Apply `ticket-writing` to create or repair each ticket. Do not reproduce its ticket schema or weaken its grounding and read-back requirements.
 - Apply `ticket-to-pr` independently to each implementation-ready ticket. Preserve its one-unit-of-work, one-branch, one-PR contract and every red, design, review, green, documentation, and PR exit condition.
-- Run the `review-until-green` command where `ticket-to-pr` requires it. An independent review must not inherit the implementer's reasoning context.
+- Run the `review-until-green` command where `ticket-to-pr` requires it as the diff-local gate. When an independent reviewer role is authorized, give that reviewer the contract and evidence packet separately; it must not inherit the implementer's reasoning context.
 
 If any required Concord skill or command is unavailable, stop at the current stage and report the missing dependency instead of approximating its contract.
 
@@ -44,7 +44,7 @@ After the second checkpoint, proceed through PR creation without routine pauses.
 
 Prefer one ticket for one independently testable user-visible outcome. Split for any repository boundary because `ticket-to-pr` produces one branch and one PR per ticket. Also split for a different owner, deployment boundary, hard dependency, or independently valuable outcome. Record dependencies explicitly and execute them in order. Parallel execution is allowed only when tickets use independent branches and worktrees, share no mutable state, and neither one's contract can change the other.
 
-When a downstream ticket in the same repository depends on an unmerged prerequisite PR, use an explicit stacked delivery: branch from the prerequisite PR head, target the downstream PR at the prerequisite branch, record the stack in both handoffs and PR bodies, and retarget the downstream PR to the repository's normal base only after the prerequisite merges. The final-mutations role keeps the initiative open until it observes that merge, retargets the downstream PR, and reads its new base back; the initial stacked-PR read-back is not a completion disposition. If repository or provider rules do not permit that stack, keep the downstream ticket blocked until the prerequisite is integrated.
+When a downstream ticket in the same repository depends on an unmerged prerequisite PR, use an explicit stacked delivery: branch from the prerequisite PR head and target the downstream PR at the prerequisite branch. A verified stacked PR is a completion disposition when its handoff and PR body record the prerequisite branch, normal base, and named owner for the follow-up. After the prerequisite merges, that owner retargets the downstream PR, reruns its required checks against the new base, and reads back the base and check results. This follow-up is outside initiative completion because this pipeline does not merge PRs. If repository or provider rules do not permit that stack, keep the downstream ticket blocked until the prerequisite is integrated.
 
 ## Delegation
 
