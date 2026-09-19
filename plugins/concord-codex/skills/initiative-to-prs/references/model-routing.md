@@ -24,7 +24,7 @@ Use Sol (`gpt-5.6-sol`) at high for Codex final mutations when accepted findings
 
 ## Delegation bounds
 
-The maximum delegation depth is two: orchestrator to stage agent to specialist child. A stage agent may create at most two specialist children, and only for independent source extraction, isolated repository tracing, or a bounded specialist question. Work directly for simple searches, sequential mutations, single-file edits, and tasks whose intermediate context must remain together.
+The maximum delegation depth is two: orchestrator to stage agent to specialist child. A stage agent may create at most two specialist children, and only for independent source extraction, isolated repository tracing, or a bounded specialist question. These are initiative-level optional specialists. Workers required internally by composed Concord commands such as `review-until-green` do not count toward this initiative-level cap; those commands enforce their own orchestration contract. Work directly for simple searches, sequential mutations, single-file edits, and tasks whose intermediate context must remain together.
 
 Implementation and independent review are sibling stages created by the orchestrator, never parent and child. Final mutations remain sequential because they edit shared branch and tracker state.
 

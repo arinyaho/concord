@@ -25,7 +25,7 @@ If current behavior already satisfies the approved outcome, propose a no-change 
 
 ### Human checkpoint 1
 
-Present a concise evidence verdict, material decisions with realistic options and consequences, recommended contract, proposed tickets, dependencies, and any no-change items. Record the user's exact decisions and ticket-set approval. No tracker or design-document mutation occurs before this checkpoint.
+Present a concise evidence verdict, material decisions with realistic options and consequences, recommended contract, proposed tickets, dependencies, any no-change items, and each proposed design-record mutation. Record the user's exact decisions, ticket-set approval, and specific approval or rejection of every proposed design-record mutation. No tracker or design-document mutation occurs before this checkpoint.
 
 ## 2. Ticket set
 

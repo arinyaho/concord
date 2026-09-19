@@ -43,6 +43,7 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(skill, /Checkpoint 1 authorizes creation or update of the approved tickets/i);
   assert.match(skill, /Checkpoint 2 authorizes implementation mutations/i);
   assert.match(stages, /No tracker or design-document mutation occurs before this checkpoint/i);
+  assert.match(stages, /proposed design-record mutation.*specific approval/i);
   assert.match(stages, /Continue only after the user approves implementation of that exact set/i);
   assert.match(stages, /design-note review gate.*before planning or implementation begins/i);
   assert.match(stages, /synthetic.*teardown.*read-back.*authorization.*retain.*named owner/is);
@@ -86,6 +87,7 @@ test('initiative-to-prs routes models by task shape and bounds delegation', () =
     assert.match(routing, new RegExp(model));
   }
   assert.match(routing, /maximum delegation depth is two/i);
+  assert.match(routing, /initiative-level optional specialists.*composed Concord commands.*do not count/is);
   assert.match(routing, /at most two specialist children/i);
   assert.match(routing, /at most two children total/i);
   assert.match(routing, /one source-extraction child plus one contract-decision child/i);
