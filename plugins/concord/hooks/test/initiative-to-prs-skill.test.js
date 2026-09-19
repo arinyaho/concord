@@ -35,6 +35,8 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(skill, /maps each immutable source URL or tracker identifier.*stable run key/is);
   assert.match(skill, /project-scoped index.*normalized objective fingerprint.*run key/is);
   assert.match(skill, /search the index before creating/i);
+  assert.match(skill, /durable user-state root.*deterministic project fingerprint.*run key/is);
+  assert.match(skill, /Do not use.*temporary directory/i);
   assert.match(skill, /Never reuse one run directory for another key/i);
   assert.match(skill, /two mandatory human checkpoints/i);
   assert.match(skill, /Checkpoint 1 authorizes creation or update of the approved tickets/i);
