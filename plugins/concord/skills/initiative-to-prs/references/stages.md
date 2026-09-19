@@ -57,6 +57,5 @@ The initiative exits successfully when every approved ticket has one of these ve
 
 - A PR URL whose head, base, body, checks, documentation disposition, and tracker link were read back
 - `NO PR NEEDED`, supported by a discriminating current-behavior check
-- `BLOCKED`, with the exact failed exit condition, owner, and unblock condition
 
 Report these dispositions together. Never describe an open PR as merged, released, deployed, or available to customers.
