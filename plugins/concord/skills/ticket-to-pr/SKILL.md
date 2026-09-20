@@ -51,7 +51,7 @@ Unless the user explicitly directs otherwise, keep implementation and review wit
 
 A change justified by "X is broken" is a claim about the world. The red run is what makes it a fact — not evidence you collect afterwards to decorate a PR. If stage 2 is blocked (an image to build, an environment to stand up), stage 2 is blocked. Shipping the PR with "red run pending" in the body is how a false premise reaches review.
 
-**Reproduce the harm, not the mechanism.** A unit test proving "the code registers the wrong certificate" can be verified red and still prove nothing, because the claim was "and therefore login breaks" — which lives in someone else's system. The red must be observed at the altitude of the consequence the ticket names.
+**Reproduce the harm, not the mechanism.** A unit test proving "the code registers the wrong certificate" can be verified red and still prove nothing, because the claim was "and therefore login breaks" — which lives in someone else's system. For a single-repository ticket, the red must show the outcome consequence the ticket names. For a repository unit, the red must show that unit's contract consequence and reference the separately recorded shared outcome-level red.
 
 **When the shipped configuration cannot show it,** the answer is not to skip the red. Construct the configuration that can — a second profile, a different code path, a harness that builds both the before and the after artifact — and say in the test itself which configuration it discriminates on. A check that passes identically before and after is not evidence; label it so no later reader mistakes it for proof.
 

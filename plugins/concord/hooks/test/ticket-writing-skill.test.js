@@ -83,6 +83,7 @@ test('ticket-to-pr keeps Notion lifecycle transitions bounded and unambiguous', 
   assert.match(skill, /one repository implementation unit, one branch, one PR/i);
   assert.match(skill, /Record a discriminating outcome-level red.*unchanged combined system/is);
   assert.match(skill, /narrowest executable check.*real consumer.*combined artifacts/is);
+  assert.match(skill, /For a repository unit.*contract consequence.*shared outcome-level red/is);
   assert.match(skill, /do not move the outcome ticket to `READY FOR TEST` or `Done`/i);
   assert.match(skill.slice(entry, prCreation), /exactly one editable status property.*one `In progress` and one `In review` option/s);
   assert.match(skill.slice(entry, prCreation), /already `In review` or `Done`, preserve it/);
