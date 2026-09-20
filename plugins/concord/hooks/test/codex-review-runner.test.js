@@ -183,7 +183,11 @@ for (const runner of ['../../core/codex-review-runner', '../../../concord-codex/
         env: { ...env, CONCORD_CODEX_BIN: broken }, platform,
       }), /CONCORD_CODEX_BIN is authoritative/);
 
-      for (const failure of [{ status: 1, stderr: 'ENOENT' }, { error: { code: 'EACCES' } }]) {
+      for (const failure of [
+        { error: { code: 'ENOENT' } },
+        { error: { code: 'EACCES' } },
+        { error: { code: 'EPERM' } },
+      ]) {
         const calls = [];
         const options = {
           env, platform,
@@ -192,13 +196,10 @@ for (const runner of ['../../core/codex-review-runner', '../../../concord-codex/
             return command === broken ? failure : { status: 0, stdout: 'codex-cli fallback\n' };
           },
         };
-        if (platform === 'darwin') {
-          assert.strictEqual(resolve(root, options).source, 'macOS ChatGPT app');
-          assert.deepStrictEqual(calls, [broken, '/Applications/ChatGPT.app/Contents/Resources/codex']);
-        } else {
-          assert.throws(() => resolve(root, options), /no usable Codex executable/);
-          assert.deepStrictEqual(calls, [broken]);
-        }
+        const resolvedFallback = resolve(root, options);
+        assert.strictEqual(resolvedFallback.command, codex);
+        assert.strictEqual(resolvedFallback.source, 'PATH');
+        assert.deepStrictEqual(calls, [broken, codex]);
       }
     });
 
@@ -349,6 +350,22 @@ for (const runner of ['../../core/codex-review-runner', '../../../concord-codex/
     assert.strictEqual(resolved.path, expected);
     assert.strictEqual(resolved.source, 'PATH');
     assert.deepStrictEqual(probed, [expected]);
+  });
+
+  test(`${runner} launches Windows command shims through cmd.exe without putting the prompt in its command line`, () => {
+    const { codexInvocation } = require(runner);
+    const script = 'C:\\Codex Tools\\codex.cmd';
+    const env = { ComSpec: 'C:\\Windows\\System32\\cmd.exe' };
+    const probe = codexInvocation(script, ['--version'], 'win32', env);
+    const exec = codexInvocation(script, ['exec', '--cd', 'C:\\repo & unsafe', '--json', '-'], 'win32', env);
+
+    assert.strictEqual(probe.command, env.ComSpec);
+    assert.deepStrictEqual(probe.args.slice(0, 4), ['/d', '/v:off', '/s', '/c']);
+    assert.match(probe.args[4], /^"C:\\Codex Tools\\codex\.cmd" "--version"$/);
+    assert.strictEqual(exec.command, env.ComSpec);
+    assert.match(exec.args[4], /^"C:\\Codex Tools\\codex\.cmd" /);
+    assert.match(exec.args[4], /"C:\\repo \^& unsafe"/);
+    assert.match(exec.args[4], /"-"$/);
   });
 }
 

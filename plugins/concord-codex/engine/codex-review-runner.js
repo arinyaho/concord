@@ -77,8 +77,34 @@ function* pathExecutables(name, env, platform, repoRoot, access = fs.accessSync,
   }
 }
 
-function defaultCodexProbe(command, repoRoot, env) {
-  return spawnSync(command, ['--version'], {
+function isWindowsCommandScript(command, platform) {
+  return platform === 'win32' && /\.(?:cmd|bat)$/i.test(command);
+}
+
+function quoteWindowsCmdArgument(value) {
+  const text = String(value);
+  if (/[\0\r\n]/.test(text)) throw new Error('Windows command arguments cannot contain NUL or newlines');
+  // cmd.exe expands %VAR% even inside double quotes. Delayed expansion is
+  // disabled below, and the remaining metacharacters are caret-escaped.
+  return `"${text
+    .replace(/\^/g, '^^')
+    .replace(/%/g, '%%')
+    .replace(/[&|<>()]/g, '^$&')
+    .replace(/"/g, '^"')}"`;
+}
+
+function codexInvocation(command, args, platform = process.platform, env = process.env) {
+  if (!isWindowsCommandScript(command, platform)) return { command, args };
+  const cmd = env.ComSpec || env.COMSPEC || 'cmd.exe';
+  return {
+    command: cmd,
+    args: ['/d', '/v:off', '/s', '/c', [command, ...args].map(quoteWindowsCmdArgument).join(' ')],
+  };
+}
+
+function defaultCodexProbe(command, repoRoot, env, platform = process.platform) {
+  const invocation = codexInvocation(command, ['--version'], platform, env);
+  return spawnSync(invocation.command, invocation.args, {
     cwd: repoRoot, env, encoding: 'utf8', timeout: 5000, windowsHide: true, maxBuffer: 64 * 1024,
   });
 }
@@ -120,7 +146,7 @@ function resolveCodexExecutable(repoRoot, options = {}) {
   while (candidates.length) {
     const candidate = candidates.shift();
     let result;
-    try { result = probe(candidate.command, repoRoot, env); } catch (error) { result = { error }; }
+    try { result = probe(candidate.command, repoRoot, env, platform); } catch (error) { result = { error }; }
     const failure = probeFailure(result);
     if (!failure) {
       const value = { command: candidate.command, path: candidate.display, source: candidate.source, version: String(result.stdout || '').trim() };
@@ -129,8 +155,9 @@ function resolveCodexExecutable(repoRoot, options = {}) {
     }
     failures.push({ candidate, failure });
     // An executable file can still fail to launch if its interpreter/loader is
-    // missing. POSIX PATH lookup skips that ENOENT and tries the next entry.
-    if (candidate.source === 'PATH' && platform !== 'win32' && result?.error?.code === 'ENOENT') {
+    // missing or execution is denied. POSIX PATH lookup skips either failure
+    // and tries the next entry.
+    if (candidate.source === 'PATH' && platform !== 'win32' && ['ENOENT', 'EACCES', 'EPERM'].includes(result?.error?.code)) {
       const next = pathMatches.next().value;
       if (next) candidates.unshift({ command: next, display: next, source: 'PATH' });
     }
@@ -190,13 +217,24 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
     const tier = typeof serviceTier === 'string' && serviceTier.trim() ? serviceTier : null;
     const cliVersion = resolvedCodex.version;
     const startedAt = Date.now();
-    const child = spawn(resolvedCodex.command, [
+    const cliArgs = [
       'exec', '--cd', repoRoot, '--sandbox', 'workspace-write', '--add-dir', stateDir,
       ...(model ? ['--model', model] : []),
       ...(effort ? ['--config', `model_reasoning_effort=${JSON.stringify(effort)}`] : []),
       ...(tier ? ['--config', `service_tier=${JSON.stringify(tier)}`] : []),
-      '--skip-git-repo-check', '--json', prompt,
-    ], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] });
+      '--skip-git-repo-check', '--json',
+    ];
+    const batchScript = isWindowsCommandScript(resolvedCodex.command, process.platform);
+    const invocation = codexInvocation(resolvedCodex.command, [...cliArgs, batchScript ? '-' : prompt]);
+    const child = spawn(invocation.command, invocation.args, {
+      cwd: repoRoot, stdio: [batchScript ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+    });
+    if (batchScript) {
+      // Supplying the review prompt on stdin avoids passing its untrusted text
+      // through cmd.exe while preserving Codex's documented `exec -` behavior.
+      child.stdin.on('error', () => {});
+      child.stdin.end(prompt);
+    }
     let pending = '';
     let stderr = '';
     let stderrCaptureTruncated = false;
@@ -558,4 +596,4 @@ async function runReviewUntilGreen(options) {
   }
 }
 
-module.exports = { runReviewUntilGreen, reviewerPrompt, codexExec, resolveCodexExecutable, jsonCli, resolveDefaultBase, redactSecrets };
+module.exports = { runReviewUntilGreen, reviewerPrompt, codexExec, resolveCodexExecutable, jsonCli, resolveDefaultBase, redactSecrets, codexInvocation };
