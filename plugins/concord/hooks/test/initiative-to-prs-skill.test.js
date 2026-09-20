@@ -94,6 +94,7 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
 test('initiative-to-prs reconciles approved tickets before a no-PR exit', () => {
   const stages = read('concord', 'references/stages.md');
 
+  assert.match(stages, /already satisfies.*repository unit's contract check.*do not enter `ticket-to-pr`'s PR exit/is);
   assert.match(stages, /do not enter `ticket-to-pr`'s PR exit/i);
   assert.match(stages, /`NO PR NEEDED` only after.*approved work.*explicitly approved no-change closure or supersession.*removal of an unnecessary unit.*read.*back/is);
   assert.match(stages, /without that authorization or read-back.*`BLOCKED`/is);
