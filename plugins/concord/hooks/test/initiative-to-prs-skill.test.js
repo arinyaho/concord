@@ -59,12 +59,16 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(skill, /Checkpoint 1 authorizes creation or update of the approved tickets/i);
   assert.match(skill, /Checkpoint 2 authorizes implementation mutations/i);
   assert.match(skill, /approved tickets and external design records have been written and read back/i);
-  assert.match(skill, /repository-backed design records.*assigned ticket.*branch and PR/is);
+  assert.match(skill, /repository-backed design records.*assigned ticket and repository unit.*planned branch.*PR disposition/is);
   assert.match(stages, /No tracker or design-document mutation occurs before this checkpoint/i);
   assert.match(stages, /proposed design-record mutation.*specific approval/i);
   assert.match(stages, /Continue only after the user approves implementation of that exact set/i);
+  assert.match(skill, /repository boundary requires a separate implementation unit and PR, not automatically another outcome ticket/i);
+  assert.match(skill, /one owner can verify the combined result.*ordered implementation record/is);
+  assert.match(stages, /one execution handoff per implementation unit.*artifact\/version prerequisites/is);
+  assert.match(stages, /not `READY FOR TEST` until the exact combined artifacts are deployed.*runnable QA hand-off/is);
   assert.match(stages, /file-target review.*before planning or implementation begins/i);
-  assert.match(stages, /writes the design.*commit.*initial design note.*file-target review.*commit.*accepted review fixes.*before planning/is);
+  assert.match(stages, /Write the design.*Commit.*initial design note.*file-target review.*commit.*accepted review fixes.*before planning/is);
   assert.match(stages, /synthetic.*teardown.*read-back.*authorization.*retain.*named owner/is);
   assert.match(stages, /contract review supplements rather than replaces `review-until-green`/i);
   assert.match(stages, /apply the fix.*fresh independent review.*repeat until clean/is);
@@ -80,7 +84,7 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(stages, /For PR-backed dispositions only.*live PR revision pair/is);
   assert.match(stages, /acceptance check.*no longer red.*existing PR.*authoriz.*clos.*read[- ]back.*`BLOCKED`/is);
   assert.match(stages, /Ticket set/);
-  assert.match(stages, /Execute each ticket/);
+  assert.match(stages, /Execute each repository unit/);
   assert.match(stages, /every required PR check.*successful terminal state/i);
   assert.match(stages, /pending.*in progress.*terminal failure.*missing required check.*expired.*`BLOCKED`/is);
   assert.match(stages, /wait.*required PR checks.*final head.*base.*bounded.*terminal failure.*expired.*`BLOCKED`/is);
@@ -90,10 +94,12 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
 test('initiative-to-prs reconciles approved tickets before a no-PR exit', () => {
   const stages = read('concord', 'references/stages.md');
 
+  assert.match(stages, /already satisfies.*repository unit's contract check.*do not enter `ticket-to-pr`'s PR exit/is);
+  assert.match(stages, /Re-run the relevant discriminating check.*unit's contract check.*exact fetched live base/is);
   assert.match(stages, /do not enter `ticket-to-pr`'s PR exit/i);
-  assert.match(stages, /`NO PR NEEDED` only after.*approved ticket.*explicitly approved no-change closure or supersession.*read.*back/is);
+  assert.match(stages, /`NO PR NEEDED` only after.*approved work.*explicitly approved no-change closure or supersession.*removal of an unnecessary unit.*read.*back/is);
   assert.match(stages, /without that authorization or read-back.*`BLOCKED`/is);
-  assert.match(stages, /`NO PR NEEDED`, supported by a discriminating current-behavior check and a read-back of the ticket's explicitly approved no-change closure or supersession/);
+  assert.match(stages, /`NO PR NEEDED`, supported by a discriminating current-behavior check and a read-back of the explicitly approved ticket closure or supersession, or removal of an unnecessary unit through checkpoint 2 without closing the outcome ticket/);
 });
 
 test('initiative-to-prs routes models by task shape and bounds delegation', () => {

@@ -80,7 +80,11 @@ test('ticket-to-pr keeps Notion lifecycle transitions bounded and unambiguous', 
 
   assert.ok(entry >= 0, 'missing the Notion lifecycle entry transition');
   assert.ok(prCreation > entry, 'the PR transition must follow the entry transition');
-  assert.match(skill, /contains the PR URL and is `In review` or `Done`, both verified/);
+  assert.match(skill, /one repository implementation unit, one branch, one PR/i);
+  assert.match(skill, /Record a discriminating outcome-level red.*unchanged combined system/is);
+  assert.match(skill, /narrowest executable check.*real consumer.*combined artifacts/is);
+  assert.match(skill, /For a repository unit.*contract consequence.*shared outcome-level red/is);
+  assert.match(skill, /do not move the outcome ticket to `READY FOR TEST` or `Done`/i);
   assert.match(skill.slice(entry, prCreation), /exactly one editable status property.*one `In progress` and one `In review` option/s);
   assert.match(skill.slice(entry, prCreation), /already `In review` or `Done`, preserve it/);
   assert.match(skill.slice(entry, prCreation), /all other current statuses are blockers/);
@@ -89,6 +93,8 @@ test('ticket-to-pr keeps Notion lifecycle transitions bounded and unambiguous', 
   assert.match(skill.slice(prCreation), /otherwise append an idempotent labelled `PR:` link/);
   assert.match(skill.slice(prCreation), /verify the exact PR URL before changing the status/);
   assert.match(skill.slice(prCreation), /same status property.*only from `In progress` to `In review`/s);
+  assert.match(skill.slice(prCreation), /multi-repository outcome.*without overwriting another unit's URL/is);
+  assert.match(skill.slice(prCreation), /preserve its status until every required unit PR has been read back/is);
   assert.match(skill.slice(prCreation), /Do not move the ticket to Done/);
 });
 

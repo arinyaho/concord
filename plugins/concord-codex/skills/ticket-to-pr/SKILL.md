@@ -8,7 +8,13 @@ description: >-
 
 # Ticket to PR
 
-One unit of work, one branch, one PR carrying the design and the code together. The stages below are a contract, not a suggested order: each one has an exit condition, and a stage whose exit condition is blocked stays blocked. It does not become a note in the PR body.
+One repository implementation unit, one branch, one PR carrying the design and the code together. Ordinarily the unit is the whole ticket. An approved outcome ticket may contain several repository units under the conditions below. The stages are a contract, not a suggested order: each one has an exit condition, and a stage whose exit condition is blocked stays blocked. It does not become a note in the PR body.
+
+## One outcome across repositories
+
+When one set of acceptance criteria requires multiple repositories, keep one outcome ticket and execute these stages once per repository unit. Each unit has its own branch, PR, owner, dependency, and executable red/green check for the behavior it changes. Record the exact upstream package version or deployment artifact consumed by a downstream unit; a proposed version is not a verified pin. The outcome ticket names one integration owner and maintains an ordered record of all units, PR URLs, checks, and hand-offs. Use a separate ticket only for an independently acceptable result or a genuinely separate owner or release lifecycle that needs its own tracker status.
+
+Record a discriminating outcome-level red against the unchanged combined system before treating the outcome as established. Stages 2 and 8 for each repository unit then use the narrowest executable check that proves that unit's contribution, including its real consumer when a library contract requires one. Do not describe a unit's green as end-to-end green for the outcome. The integration owner later checks the same outcome behavior against the exact combined artifacts. If a required package release, pin, deployment, or environment is unavailable, record the outcome check as blocked with its owner and unblock condition; do not move the outcome ticket to `READY FOR TEST` or `Done`. This PR pipeline never authorizes a release or deployment.
 
 ## The stages
 
@@ -16,24 +22,24 @@ One unit of work, one branch, one PR carrying the design and the code together. 
 |---|---|---|
 | 0 | Branch | A dedicated work branch exists, is checked out, and starts from the intended base; create it if absent |
 | 1 | The work has agreed acceptance criteria and a definition of done, and any approved in-progress transition is applied | Every criterion names an observation, not an intention. The DoD says which gates are executable and which are deferred. The board reflects that work began only when the user approved that transition; a supplied Notion ticket is verified at `In progress`, `In review`, or `Done` |
-| 2 | End-to-end red | For a defect, the claimed breakage reproduces against the unchanged code; for a feature, an end-to-end acceptance check derived from those criteria fails because the requested behavior is absent |
+| 2 | Discriminating red | For a single-repository ticket, the claimed breakage or absent feature reproduces at the outcome level against unchanged code. For a repository unit under a multi-repository ticket, its contract check fails against the unchanged unit and the shared outcome-level red has been recorded |
 | 3 | Design note, committed where the next reader finds it | The decision, the trade-off it costs, and the residual exposure are all written down |
 | 4 | Review the design note | `/review-until-green file:<path>` |
 | 5 | Plan | Each task ends in something runnable and independently rejectable |
 | 6 | Implement | Red test first, verified red for the right reason, and executing where CI will execute it |
 | 7 | Review the diff | `/review-until-green <branch>` |
-| 8 | End-to-end green | The same check passes against the change |
-| 9 | One PR | Design, docs and code in the same PR; the repository's PR template followed; every document contradicted by the change corrected in it; a supplied Notion ticket contains the PR URL and is `In review` or `Done`, both verified |
+| 8 | Discriminating green | The same check passes against the changed unit and records the exact dependencies used. The combined outcome check remains a separate ticket gate for multi-repository work |
+| 9 | One PR per unit | Design, docs and code in the same repository PR; the repository's PR template followed; every document contradicted by the change corrected in it; the exact PR URL is read back from the tracker when that mutation is authorized |
 
 If the work is tracked somewhere and the user explicitly requests or approves an in-progress transition, move it before stage 3, not after stage 9 — a ticket sitting in the backlog while its branch already has commits is a board that lies to everyone reading it. Otherwise, preserve the current state. Expect an approved transition to fail closed on preconditions the tracker does not advertise: an assignee, a parent item that must itself be in-progress, an intermediate status that cannot be skipped. These are cheap to hit and slow to diagnose, so attempt the approved transition and read the refusal rather than assuming it will go through.
 
-Nothing here moves the work to done. Stage 9 ends at a PR URL, and done follows a merge, which is not this pipeline's decision to make.
+Nothing here moves the outcome to `READY FOR TEST` or `Done`. Stage 9 ends at a PR URL. Merge, release, deployment, combined QA, and the outcome ticket's final status are separate decisions.
 
 ## Notion ticket lifecycle
 
 When the input work item is a Notion ticket, the `ticket-to-pr` request authorizes its lifecycle updates. At pipeline entry, before stage 3, read the ticket and its database schema. Resolve exactly one editable status property with one `In progress` and one `In review` option, and use that same property throughout; otherwise stop and report the blocker. A database that cannot expose this standard lifecycle is a blocker even when the current status needs no transition. If the current status is already `In review` or `Done`, preserve it and verify the readback. If it is `In progress`, preserve and verify it. Transition only an explicitly unambiguous pre-start status to `In progress`, then verify the readback; all other current statuses are blockers.
 
-After the PR URL exists, an eligible PR URL field is an editable URL field explicitly for the PR. When exactly one eligible PR URL field is empty or already has the same URL, write it; otherwise append an idempotent labelled `PR:` link to the ticket body, only when absent. Read the ticket back to verify the exact PR URL before changing the status. Preserve `In review` or `Done`; otherwise, use the same status property to transition only from `In progress` to `In review`, then verify URL and status in the readback. If any update or verification fails, report the failure; do not claim the stage completed. Do not move the ticket to Done: merge remains outside this pipeline.
+After the PR URL exists, an eligible PR URL field is an editable URL field explicitly for the PR. For a single-PR ticket, when exactly one eligible PR URL field is empty or already has the same URL, write it; otherwise append an idempotent labelled `PR:` link to the ticket body, only when absent. For a multi-repository outcome, append or update the PR link in its repository implementation record without overwriting another unit's URL. Read the ticket back to verify the exact PR URL before changing the status. Preserve `In review` or `Done`; for a single-PR ticket, otherwise use the same status property to transition only from `In progress` to `In review`, then verify URL and status in the readback. For a multi-repository outcome, preserve its status until every required unit PR has been read back; only then may an approved `In review` transition occur. If any update or verification fails, report the failure; do not claim the stage completed. Do not move the ticket to Done.
 
 Stages 1, 3 and 5 have no single owner here — use whatever the repository already provides (a tracker, a `docs/` convention, a planning skill). Stages 4 and 7 are Concord's `review-until-green`. Stages 2 and 8 are described below, because they are the ones that get skipped.
 
@@ -45,7 +51,7 @@ Unless the user explicitly directs otherwise, keep implementation and review wit
 
 A change justified by "X is broken" is a claim about the world. The red run is what makes it a fact — not evidence you collect afterwards to decorate a PR. If stage 2 is blocked (an image to build, an environment to stand up), stage 2 is blocked. Shipping the PR with "red run pending" in the body is how a false premise reaches review.
 
-**Reproduce the harm, not the mechanism.** A unit test proving "the code registers the wrong certificate" can be verified red and still prove nothing, because the claim was "and therefore login breaks" — which lives in someone else's system. The red must be observed at the altitude of the consequence the ticket names.
+**Reproduce the harm, not the mechanism.** A unit test proving "the code registers the wrong certificate" can be verified red and still prove nothing, because the claim was "and therefore login breaks" — which lives in someone else's system. For a single-repository ticket, the red must show the outcome consequence the ticket names. For a repository unit, the red must show that unit's contract consequence and reference the separately recorded shared outcome-level red.
 
 **When the shipped configuration cannot show it,** the answer is not to skip the red. Construct the configuration that can — a second profile, a different code path, a harness that builds both the before and the after artifact — and say in the test itself which configuration it discriminates on. A check that passes identically before and after is not evidence; label it so no later reader mistakes it for proof.
 
