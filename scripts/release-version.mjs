@@ -101,6 +101,7 @@ const manifests = [
   path.join(root, 'plugins/concord-codex/.codex-plugin/plugin.json'),
   path.join(root, 'plugins/concord-copilot/plugin.json'),
 ];
+const marketplacePath = path.join(root, '.github/plugin/marketplace.json');
 
 const updatedManifests = manifests.map((manifestPath) => {
   const manifestText = fs.readFileSync(manifestPath, 'utf8');
@@ -108,8 +109,23 @@ const updatedManifests = manifests.map((manifestPath) => {
   return [manifestPath, replaceVersion(manifestText, manifest.version, releaseVersion)];
 });
 
+const marketplaceText = fs.readFileSync(marketplacePath, 'utf8');
+const marketplace = JSON.parse(marketplaceText);
+const copilotPlugins = marketplace.plugins?.filter(({ name }) => name === 'concord-copilot') || [];
+if (typeof marketplace.metadata?.version !== 'string' || copilotPlugins.length !== 1 || typeof copilotPlugins[0].version !== 'string') {
+  throw new Error('Copilot marketplace must contain metadata and concord-copilot versions');
+}
+const updatedMarketplace = {
+  ...marketplace,
+  metadata: { ...marketplace.metadata, version: releaseVersion },
+  plugins: marketplace.plugins.map((plugin) => plugin.name === 'concord-copilot'
+    ? { ...plugin, version: releaseVersion }
+    : plugin),
+};
+const updatedMarketplaceText = `${JSON.stringify(updatedMarketplace, null, 2)}${marketplaceText.endsWith('\n') ? '\n' : ''}`;
+
 const versionFile = path.join(root, 'VERSION');
-for (const target of [versionFile, ...manifests]) {
+for (const target of [versionFile, ...manifests, marketplacePath]) {
   fs.accessSync(target, fs.constants.W_OK);
 }
 
@@ -118,3 +134,4 @@ fs.writeFileSync(versionFile, `${releaseVersion}\n`);
 for (const [manifestPath, contents] of updatedManifests) {
   fs.writeFileSync(manifestPath, contents);
 }
+fs.writeFileSync(marketplacePath, updatedMarketplaceText);

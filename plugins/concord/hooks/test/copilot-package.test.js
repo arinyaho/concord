@@ -144,7 +144,10 @@ pluginInstallE2ETest('clean Copilot config installs, updates, and removes the pl
 
   run(['plugin', 'marketplace', 'add', REPO]);
   assert.match(run(['plugin', 'install', 'concord-copilot@arinyaho-concord']), /installed successfully/i);
-  assert.match(run(['plugin', 'list']), /concord-copilot.*0\.9\.0-alpha\.26/i);
+  const installedPlugins = run(['plugin', 'list']);
+  const releaseVersion = fs.readFileSync(path.join(REPO, 'VERSION'), 'utf8').trim();
+  assert.match(installedPlugins, /concord-copilot@arinyaho-concord/i);
+  assert.ok(installedPlugins.includes(`v${releaseVersion}`));
   assert.match(
     run(['plugin', 'update', 'concord-copilot@arinyaho-concord']),
     /updated|already.*latest|loaded live.*nothing to update/i,
