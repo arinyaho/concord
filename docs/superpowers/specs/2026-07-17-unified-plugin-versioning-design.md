@@ -2,13 +2,13 @@
 
 ## Goal
 
-Claude's `concord` plugin and Codex's `concord-codex` plugin are released as one Concord version. A release must never expose different version numbers for the two plugins.
+The Claude Code, Codex, and GitHub Copilot distributions are released as one Concord version. A release must never expose different version numbers across the three plugins or their versioned marketplace metadata.
 
 ## Single source of truth
 
 The repository-root `VERSION` file contains the only human-maintained release version. It holds one SemVer-compatible version string and a trailing newline.
 
-Both plugin manifests continue to contain their required `version` fields, but those fields are derived release artifacts. No contributor updates either manifest version directly.
+The three plugin manifests and the GitHub Copilot marketplace continue to contain required `version` fields, but those fields are derived release artifacts. Contributors do not update them directly.
 
 ## Release operation
 
@@ -17,21 +17,19 @@ Both plugin manifests continue to contain their required `version` fields, but t
 1. validates that `<version>` is a SemVer release or prerelease version;
 2. writes that value to `VERSION`;
 3. updates `plugins/concord/.claude-plugin/plugin.json`;
-4. updates `plugins/concord-codex/.codex-plugin/plugin.json`; and
-5. preserves all unrelated JSON fields and formatting.
+4. updates `plugins/concord-codex/.codex-plugin/plugin.json`;
+5. updates `plugins/concord-copilot/plugin.json`;
+6. updates `.github/plugin/marketplace.json` metadata and `concord-copilot` entry versions; and
+7. preserves unrelated JSON fields.
 
 The script is idempotent: running it with the already-current version produces no file-content changes.
 
 ## Guardrail and tests
 
-A Node test reads `VERSION` and both manifests, then asserts the three values are identical. The test uses the actual repository files, so direct edits to only one plugin manifest fail the normal test suite.
+A Node test reads `VERSION`, all three manifests, and both Copilot marketplace version fields, then asserts the six values are identical. The test uses the actual repository files, so a partial manual update fails the normal test suite.
 
-The test also exercises the release script against a temporary copy of the three version files to prove that a single invocation updates each target without modifying unrelated manifest fields.
-
-## Initial migration
-
-The initial unified version is `0.9.0-alpha.2`, matching the current Claude plugin release. The migration updates Codex from `0.1.0-alpha.1` to that version through the release script, then verifies the parity test and the existing plugin tests.
+The test also exercises the release script against an isolated release tree to prove that a single invocation updates every target without modifying unrelated fields and that a preflight failure leaves existing files unchanged.
 
 ## Scope
 
-This change only unifies version metadata and its release workflow. It does not assert feature parity between Claude and Codex, alter marketplace names, or make either plugin's installation/update process cross-install the other plugin.
+This contract only unifies version metadata and its release workflow. It does not assert feature parity, alter marketplace names, or make one distribution's installation/update process cross-install another distribution.
