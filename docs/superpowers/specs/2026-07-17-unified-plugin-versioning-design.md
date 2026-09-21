@@ -19,7 +19,7 @@ The three plugin manifests and the GitHub Copilot marketplace continue to contai
 3. updates `plugins/concord/.claude-plugin/plugin.json`;
 4. updates `plugins/concord-codex/.codex-plugin/plugin.json`;
 5. updates `plugins/concord-copilot/plugin.json`;
-6. updates `.github/plugin/marketplace.json` metadata and `concord-copilot` entry versions; and
+6. updates `.github/plugin/marketplace.json` metadata and `concord` entry versions; and
 7. preserves unrelated JSON fields.
 
 The script is idempotent: running it with the already-current version produces no file-content changes.
@@ -32,4 +32,4 @@ The test also exercises the release script against an isolated release tree to p
 
 ## Scope
 
-This contract only unifies version metadata and its release workflow. It does not assert feature parity, alter marketplace names, or make one distribution's installation/update process cross-install another distribution.
+This contract unifies version metadata and its release workflow. All harness marketplaces expose the shared plugin name `concord`, while their source directories and installation mechanisms remain independent.

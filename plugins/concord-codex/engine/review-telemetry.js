@@ -4,6 +4,7 @@ const path = require('node:path');
 
 const SUM_FIELDS = ['elapsedMs', 'inputTokens', 'cacheWriteInputTokens', 'cachedInputTokens', 'reasoningOutputTokens', 'outputTokens', 'totalTokens'];
 const HOOK_USAGE_FIELDS = ['input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens', 'output_tokens'];
+const RUNNER_ENGINES = new Set(['claude', 'codex', 'copilot']);
 
 function summary(entries) {
   const observed = entries.filter((entry) => typeof entry.invocationId === 'string');
@@ -110,16 +111,16 @@ function reconcileSlots(entries, slots) {
   return reconciled;
 }
 
-function codexEntries(stateDir, ledger, slug) {
+function runnerEntries(stateDir, ledger, slug) {
   const entries = new Map((ledger.telemetry?.entries || [])
-    .filter((entry) => entry?.engine === 'codex' && typeof entry.invocationId === 'string')
+    .filter((entry) => RUNNER_ENGINES.has(entry?.engine) && typeof entry.invocationId === 'string')
     .map((entry) => [entry.invocationId, entry]));
   if (slug) {
     const file = path.join(stateDir, `telemetry-${slug}.json`);
     try {
       const telemetry = JSON.parse(fs.readFileSync(file, 'utf8'));
       for (const entry of telemetry.invocations || []) {
-        if (entry?.engine !== 'codex') continue;
+        if (!RUNNER_ENGINES.has(entry?.engine)) continue;
         if (typeof entry.invocationId === 'string') entries.set(entry.invocationId, entry);
         else if (entry.status === 'malformed') entries.set(`malformed:${entry.artifactPath || file}`, entry);
       }
@@ -133,7 +134,7 @@ function codexEntries(stateDir, ledger, slug) {
     }
   }
   const slots = Array.isArray(ledger.telemetrySlots)
-    ? ledger.telemetrySlots.filter((slot) => slot?.engine === 'codex' && slot.provider === 'openai')
+    ? ledger.telemetrySlots.filter((slot) => RUNNER_ENGINES.has(slot?.engine))
     : [];
   return reconcileSlots([...entries.values()], slots);
 }
@@ -182,7 +183,7 @@ function foldTelemetry(stateDir, ledger, slug) {
   if (slots.length) {
     entries = reconcileSlots(entries, slots);
   }
-  entries = entries.concat(codexEntries(stateDir, ledger, slug));
+  entries = entries.concat(runnerEntries(stateDir, ledger, slug));
   entries.sort((a, b) => `${a.artifactPath || ''}\0${a.attempt || 0}\0${a.invocationId || ''}`.localeCompare(`${b.artifactPath || ''}\0${b.attempt || 0}\0${b.invocationId || ''}`));
   return entries.length ? { ...ledger, telemetry: aggregate(entries) } : ledger;
 }

@@ -733,6 +733,22 @@ test('a malformed telemetry artifact cannot disappear into a clean fold', () => 
   assert.ok(folded.telemetry.entries.some((entry) => entry.status === 'malformed'));
 });
 
+test('folds persisted runner telemetry for every CLI provider', () => {
+  const { stateDir } = setup();
+  const ledger = JSON.parse(fs.readFileSync(path.join(stateDir, 'review-feat-x.json'), 'utf8'));
+  const invocations = [
+    { engine: 'claude', provider: 'anthropic', providerSchema: 'claude-print-json-v1', invocationId: 'claude-1', role: 'correctness', round: 2, artifactPath: path.join(stateDir, 'artifact-0.json'), attempt: 1, status: 0, usagePartial: true },
+    { engine: 'copilot', provider: 'github', providerSchema: 'copilot-prompt-v1', invocationId: 'copilot-1', role: 'fix', round: 2, artifactPath: path.join(stateDir, 'artifact-1.json'), attempt: 1, status: 0, usagePartial: true },
+  ];
+  ledger.telemetrySlots = invocations.map(({ engine, provider, role, round, artifactPath, attempt }) => ({ engine, provider, role, round, artifactPath, attempt }));
+  fs.writeFileSync(path.join(stateDir, 'telemetry-feat-x.json'), JSON.stringify({ invocations }));
+
+  const folded = reviewTelemetry.foldTelemetry(stateDir, ledger, 'feat-x');
+
+  assert.strictEqual(folded.telemetry.calls, 2);
+  assert.deepStrictEqual(folded.telemetry.entries.map((entry) => entry.engine).sort(), ['claude', 'copilot']);
+});
+
 test('ignores unrelated prompts, inactive rounds, unsupported tools, and path traversal', () => {
   const { transcript, stateDir } = setup();
   const response = successfulResponse();
