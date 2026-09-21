@@ -1,6 +1,6 @@
 ---
-description: Repeatedly review a branch or PR, fix what the review finds, and re-check -- looping until the tests actually pass, or handing back the few things a person has to decide. The loop's state is saved, so a later session picks up where this one stopped. It reviews AND fixes AND repeats, unlike a one-shot review; the reviewing, verifying, and fixing happen as subagents spawned inline in this session (no separate headless process), driven step by step by a deterministic CLI that owns rounds, dedupe, and termination. Use when the user wants a change taken all the way to passing -- "review and fix my branch until it passes", "keep reviewing and fixing until it's green", "make this mergeable", "get this to LGTM", "run review until green". For a single review with no fixes, use /code-review instead.
-argument-hint: "[target | resume <ref>] [--no-broad] [--no-dod]"
+description: Repeatedly review a branch or PR, fix what the review finds, and re-check until the deterministic Concord CLI reaches a terminal decision. Reviewer and fixer providers and models may be selected independently.
+argument-hint: "[target | resume <ref>] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--no-broad] [--no-dod]"
 ---
 
 <!-- Composed from plugins/concord/core/review-driver.md + plugins/concord/adapters/claude-code/spawn-include.md. Edit those sources, not this file, then recompose. -->
@@ -11,7 +11,7 @@ Concord IS the reviewer. The findings for every round come from the review subag
 
 Arguments: `$ARGUMENTS`
 
-Determine the target ref: empty -> current branch (`git branch --show-current`); `resume <ref>` -> the ref after `resume`; else the arguments as-is. Optional base ref is the second token (default the repo's remote main branch, `origin/<main>` -- a local base can be stale (behind its remote), which sweeps unrelated merged changes into the diff).
+Remove the recognized provider/model option-value pairs before determining the target ref: empty -> current branch (`git branch --show-current`); `resume <ref>` -> the ref after `resume`; else the first positional argument. Optional base ref is the second positional token (default the repo's remote main branch, `origin/<main>` -- a local base can be stale (behind its remote), which sweeps unrelated merged changes into the diff).
 
 To review a local file or document instead of a git diff (a design/spec `.md`, a note -- reviewable even in a directory that is not a git repository), pass a single `file:<path-or-glob>` token as the ref, where `<path-or-glob>` is a literal path OR a simple single-`*` glob resolved against the repo root: `round-start file:note.md` or `round-start file:*.md` (the glob pulls in every match, concatenated in sorted order). This is the ONLY file-target form -- there is no `--files` flag. A file target has no base and no DoD; `round-start` reports `targetType: 'file'` and the per-round flow branches on it (see step 2).
 
@@ -19,12 +19,14 @@ Broad review is ON by default and needs no flag: the CLI fires the gate pair on 
 
 Also check whether this invocation asked to run without an executable DoD gate: if the arguments contain the literal token `--no-dod`, pass `--no-dod` to every `round-start` call for the rest of this run (harmless to repeat -- the deferral is sticky once applied). The review gates still run; the executable DoD is reported as deferred and never faked to a pass. Pass this flag ONLY when the user's invocation asked for it. Never add `--no-dod` on your own initiative to get past a failing gate -- skipping a check that is failing is the user's decision, never yours. (You do not need it for a repo with no `review.config.json`: that case already defers on its own.)
 
-**Claude Code spawn mechanism.** Spawn each reviewer subagent with the `Task`
-tool, `general-purpose` agent, in a CLEAN context (do not paste prior reasoning).
-Parallel spawns issued as multiple tool calls in one message run concurrently;
-sequential dependencies ("wait for the file") mean issue the dependent Task only
-after the prior subagent's artifact exists. Every "per the harness spawn-include"
-reference below means: spawn that subagent this way.
+**Provider routing.** Parse `--reviewer <claude|codex|copilot>`, `--reviewer-model <model>`, `--fixer <claude|codex|copilot>`, and `--fixer-model <model>` from the invocation. Providers default to `claude`; models default to the selected provider's configured model. Use the reviewer selection for every review-class role and the fixer selection only for step 5. Carry the same selections through every round and resume. Reject missing values and unknown providers before `round-start`; never substitute another provider or model.
+
+For a Claude role, use the native `Task` tool with the `general-purpose` agent in a CLEAN context and pass the requested model explicitly when one was supplied. For a non-Claude role, start a clean non-interactive CLI process in the repository root:
+
+- Codex: `codex exec --cd <repoRoot> --sandbox workspace-write --add-dir <stateDir> --skip-git-repo-check [--model <model>] "<prompt>"`
+- Copilot: `copilot -C <repoRoot> -p "<prompt>" --silent --allow-all-tools --allow-all-paths --no-ask-user [--model <model>]`
+
+The external CLI must write the requested artifact itself. Redirect its output away from the parent context and treat a missing executable, authentication/model failure, non-zero exit, missing artifact, or blocked operation as a harness failure. Parallel spawns run concurrently only where the driver permits it; sequential dependencies wait for the prior artifact. Allocate `telemetry-slot --engine claude-code` only for native Claude roles because external CLI evidence is not authenticated by Claude's agent hooks. Every "per the harness spawn-include" reference below means: dispatch the role according to this selection.
 
 **Append this clause verbatim to EVERY review-class subagent prompt you spawn** -- correctness, verify, intent, gate-review, gate-verify, each panel lens, each adversarial verify. The loop makes reviewers hunt verifier-gaming in the diff; this is the same guard pointed at the reviewer's own evidence, and nothing else in the loop provides it:
 
@@ -32,11 +34,11 @@ reference below means: spawn that subagent this way.
 
 Never soften that clause, and never accept an artifact from a reviewer you know was blocked -- a non-empty `blocked` is terminal wherever the CLI reads the artifact (`artifact-normalize` for the fail-closed roles, and `plan-fixes`/`gate-panel-round-record` for the leniently-read gate-verify and panel artifacts), precisely so a degraded reviewer cannot produce a verdict.
 
-Immediately before every review/fix subagent spawn, run `node "${CLAUDE_PLUGIN_ROOT}/hooks/review-cli.js" telemetry-slot <ref> <exact-output-artifact-path> --engine claude-code` using the single JSON destination named by that prompt. Do this for correctness, verify, intent, gate, fixes, panel lenses, votes, retries, and failed attempts; each call allocates an engine-owned attempt number used to reconcile missing, duplicate, or orphan telemetry without changing the prompt or launch order.
+Immediately before every native Claude review/fix subagent spawn, run `node "${CLAUDE_PLUGIN_ROOT}/hooks/review-cli.js" telemetry-slot <ref> <exact-output-artifact-path> --engine claude-code` using the single JSON destination named by that prompt. Do not allocate a synthetic slot for an external provider CLI. Each native call allocates an engine-owned attempt number used to reconcile missing, duplicate, or orphan telemetry without changing the prompt or launch order.
 
 Run this loop. Do each step in order; do not skip, reorder, or improvise termination.
 
-1. `node "${CLAUDE_PLUGIN_ROOT}/hooks/review-cli.js" round-start <ref> [base] [--no-broad] [--no-dod]`
+1. `node "${CLAUDE_PLUGIN_ROOT}/hooks/review-cli.js" round-start <ref> [base] [--reviewer <provider>] [--reviewer-model <model>] [--fixer <provider>] [--fixer-model <model>] [--no-broad] [--no-dod]`
    - `decision: "terminal"` or `"no-op"` -> stop; report the CLI's message.
    - `decision: "work"` -> continue: proceed straight to step 2 in THIS session. Do not pause, defer, or wait on anything external first. Note the `round` number `n`, the `stateDir` path it prints (`stateDir` is the CLI-owned directory for this run's artifacts; every path below is relative to it), and the `dodPassed` and `dodDeferred` booleans -- step 2 passes them to the correctness subagent. When `dodDeferred` is `true`, `dodPassed` is `true` only because nothing blocked the round, NOT because a gate ran and passed; the two must never be conflated.
 2. Read the file at `<stateDir>/round-<n>-diff.txt` (the file round-start just wrote -- for a git target this is a diff; for a file target this is the current content of the target file). Spawn ONE correctness review subagent per the harness spawn-include (clean context -- do not paste your own prior reasoning). The prompt to give it depends on `targetType` from the round-start output:

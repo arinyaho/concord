@@ -9,7 +9,7 @@
   },
   "plugins": [
     {
-      "name": "concord-copilot",
+      "name": "concord",
       "description": "Persistent project charter and Concord workflows for GitHub Copilot",
       "version": "0.9.0-alpha.27",
       "source": "./plugins/concord-copilot"
