@@ -99,6 +99,7 @@ const root = process.env.CONCORD_VERSION_ROOT || path.resolve(scriptDirectory, '
 const manifests = [
   path.join(root, 'plugins/concord/.claude-plugin/plugin.json'),
   path.join(root, 'plugins/concord-codex/.codex-plugin/plugin.json'),
+  path.join(root, 'plugins/concord-copilot/plugin.json'),
 ];
 
 const updatedManifests = manifests.map((manifestPath) => {

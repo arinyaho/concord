@@ -1,0 +1,20 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "concord-copilot",
+  "version": "0.9.0-alpha.26",
+  "description": "Concord workflows and persistent project charter support for GitHub Copilot.",
+  "author": {
+    "name": "arinyaho",
+    "url": "https://github.com/arinyaho"
+  },
+  "homepage": "https://github.com/arinyaho/concord",
+  "repository": "https://github.com/arinyaho/concord",
+  "license": "MIT",
+  "keywords": [
+    "github-copilot",
+    "harness",
+    "charter",
+    "session-state",
+    "review"
+  ]
+}
