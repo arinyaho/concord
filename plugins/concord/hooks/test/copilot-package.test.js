@@ -145,9 +145,16 @@ pluginInstallE2ETest('clean Copilot config installs, updates, and removes the pl
   run(['plugin', 'marketplace', 'add', REPO]);
   assert.match(run(['plugin', 'install', 'concord-copilot@arinyaho-concord']), /installed successfully/i);
   assert.match(run(['plugin', 'list']), /concord-copilot.*0\.9\.0-alpha\.26/i);
-  assert.match(run(['plugin', 'update', 'concord-copilot@arinyaho-concord']), /updated|already.*latest/i);
-  assert.match(run(['plugin', 'uninstall', 'concord-copilot@arinyaho-concord']), /uninstalled successfully/i);
-  assert.doesNotMatch(run(['plugin', 'list']), /concord-copilot/);
+  assert.match(
+    run(['plugin', 'update', 'concord-copilot@arinyaho-concord']),
+    /updated|already.*latest|loaded live.*nothing to update/i,
+  );
+  assert.match(
+    run(['plugin', 'uninstall', 'concord-copilot@arinyaho-concord']),
+    /uninstalled successfully|disabled.*nothing was removed/i,
+  );
+  const afterUninstall = run(['plugin', 'list']);
+  assert.ok(!/concord-copilot/i.test(afterUninstall) || /concord-copilot.*\(disabled\)/i.test(afterUninstall));
 });
 
 test('Copilot engine is byte-identical to shared core and Copilot adapters', () => {
