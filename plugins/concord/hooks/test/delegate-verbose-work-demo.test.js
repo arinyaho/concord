@@ -1,9 +1,9 @@
 'use strict';
 // Demonstrates the scenario named by the "delegate-verbose-work" ticket item: a session
 // answering one broad question (e.g. "every caller of X across the repo") either issues
-// many grep calls itself on the main thread (the observed anti-pattern — up to 58 in one
-// recorded session) or routes the whole sweep to a subagent and keeps only its conclusion,
-// per plugins/concord/skills/delegate-verbose-work/SKILL.md.
+// many grep calls itself on the main thread (the anti-pattern this skill guards against)
+// or routes the whole sweep to a subagent and keeps only its conclusion, per
+// plugins/concord/skills/delegate-verbose-work/SKILL.md.
 //
 // This does not drive a real LLM; it models the two policies mechanically so the
 // before/after reduction in main-thread tool calls is deterministic and repo-local.
@@ -15,8 +15,7 @@ const path = require('node:path');
 const REPO = path.join(__dirname, '..', '..', '..', '..');
 const SKILL = path.join(REPO, 'plugins/concord/skills/delegate-verbose-work/SKILL.md');
 
-// A sweep needing this many grep calls to answer one question (mirrors the observed
-// 32-58 direct grep calls in a session that had no delegation guidance).
+// Models a broad sweep needing many grep calls to answer one question.
 const SWEEP_SIZE = 40;
 
 // Two independent ledgers stand in for "main thread" and "dispatched subagent": the
