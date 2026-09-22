@@ -31,7 +31,11 @@ the many tool calls and reports back only the conclusion.
 
 ## How
 
-Route it the way `initiative-to-prs` and `ticket-to-pr` already do: give the subagent the exact
-question and enough context to answer it standalone, and ask for a conclusion, not a transcript —
-"report file paths and line numbers, not the full grep output." Discard the sweep once you have
-the conclusion; do not pull it back into the main thread's context.
+Give the subagent the exact question and enough context to answer it standalone, and ask for a
+conclusion, not a transcript — "report file paths and line numbers, not the full grep output."
+Discard the sweep once you have the conclusion; do not pull it back into the main thread's
+context.
+
+If this trigger fires while running under a more specific skill that sets its own delegation
+default (for example `ticket-to-pr`'s "keep implementation, review, and final mutations with the
+active agent unless a subagent is expressly required"), that skill's contract wins.
