@@ -70,7 +70,7 @@ Back up `CONCORD_COPILOT_HOME` or `~/.copilot/concord` first when persistent Con
 
 ## Plugins
 
-- `concord` (Claude Code) - a per-session state checkpoint, cross-session task charter, `review-until-green`, `review-until-lgtm`, `initiative-to-prs`, `ticket-to-pr`, `ticket-writing`, and `proposal-package-authoring`.
+- `concord` (Claude Code) - a per-session state checkpoint, cross-session task charter, `review-until-green`, `review-until-lgtm`, `initiative-to-prs`, `ticket-to-pr`, `ticket-writing`, `proposal-package-authoring`, and `delegate-verbose-work`.
 - `concord` (Codex) - the same `review-until-green`, `review-until-lgtm`, `initiative-to-prs`, `ticket-to-pr`, `ticket-writing`, and `proposal-package-authoring` workflows packaged natively for Codex and backed by the vendor-neutral core.
 - `concord` (GitHub Copilot) - explicit project charter persistence and the shared workflow set. It deliberately omits transcript-derived checkpoints and uses only documented hook fields.
 
