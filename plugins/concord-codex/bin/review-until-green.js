@@ -5,7 +5,7 @@ const { runReviewUntilGreen } = require('../engine/codex-review-runner');
 
 const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
-  process.stdout.write('Usage: review-until-green [<branch> [<base>] | file:<path-or-glob> | resume <ref>] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--broad|--no-broad] [--no-dod]\n');
+  process.stdout.write('Usage: review-until-green [<branch> [<base>] | file:<path-or-glob> | resume <ref>] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--reasoning-effort <effort>] [--service-tier <tier>] [--broad|--no-broad] [--no-dod]\n');
   process.exit(0);
 }
 const broadPhraseArgs = new Set();
@@ -24,7 +24,7 @@ const noBroad = args.includes('--no-broad');
 const noDod = args.includes('--no-dod');
 const inference = {};
 const inferenceArgs = new Set();
-for (const [flag, field] of [['--reviewer', 'reviewer'], ['--reviewer-model', 'reviewerModel'], ['--fixer', 'fixer'], ['--fixer-model', 'fixerModel']]) {
+for (const [flag, field] of [['--reviewer', 'reviewer'], ['--reviewer-model', 'reviewerModel'], ['--fixer', 'fixer'], ['--fixer-model', 'fixerModel'], ['--reasoning-effort', 'reasoningEffort'], ['--service-tier', 'serviceTier']]) {
   const index = args.indexOf(flag); const value = index === -1 ? undefined : args[index + 1];
   if (index !== -1 && (!value || !value.trim() || value.startsWith('--') || args.indexOf(flag, index + 1) !== -1)) {
     process.stderr.write(`review-until-green: ${flag} requires exactly one value\n`);

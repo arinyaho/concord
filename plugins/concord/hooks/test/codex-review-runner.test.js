@@ -1322,7 +1322,7 @@ test('Codex launcher forwards independent reviewer and fixer routing without con
       return load.apply(this, arguments);
     };
   `);
-  execFileSync('node', ['--require', preload, bin, 'feature/x', '--no-dod', '--reviewer', 'claude', '--reviewer-model', 'claude-opus-4-1', '--fixer', 'copilot', '--fixer-model', 'gpt-5.2'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
+  execFileSync('node', ['--require', preload, bin, 'feature/x', '--no-dod', '--reviewer', 'claude', '--reviewer-model', 'claude-opus-4-1', '--fixer', 'copilot', '--fixer-model', 'gpt-5.2', '--reasoning-effort', 'high', '--service-tier', 'priority'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
   const options = JSON.parse(fs.readFileSync(capture, 'utf8'));
   assert.strictEqual(options.ref, 'feature/x');
   assert.strictEqual(options.base, undefined); // the flag must not be mistaken for base
@@ -1331,6 +1331,8 @@ test('Codex launcher forwards independent reviewer and fixer routing without con
   assert.strictEqual(options.reviewerModel, 'claude-opus-4-1');
   assert.strictEqual(options.fixer, 'copilot');
   assert.strictEqual(options.fixerModel, 'gpt-5.2');
+  assert.strictEqual(options.reasoningEffort, 'high');
+  assert.strictEqual(options.serviceTier, 'priority');
 
   fs.rmSync(capture, { force: true });
   execFileSync('node', ['--require', preload, bin, 'feature/x'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
