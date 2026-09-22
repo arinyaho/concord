@@ -255,8 +255,8 @@ async function runReviewUntilGreen(options) {
   const { ref, base, broad = false, noBroad = false, noDod = false, resume = false, repoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
   if (!ref) throw new Error('review-until-green: missing target ref');
   const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot));
-  const reviewer = options.reviewer || 'codex';
-  const fixer = options.fixer || 'codex';
+  let reviewer = options.reviewer || 'codex';
+  let fixer = options.fixer || 'codex';
   for (const provider of [reviewer, fixer]) {
     if (!PROVIDERS.has(provider)) throw new Error(`review-until-green: unsupported provider "${provider}"`);
   }
@@ -404,10 +404,19 @@ async function runReviewUntilGreen(options) {
     if (broad) startArgs.push('--broad');
     if (noBroad) startArgs.push('--no-broad'); // broad review is on by default; this is the opt-out
     if (noDod) startArgs.push('--no-dod');
-    startArgs.push('--reviewer', reviewer, '--fixer', fixer);
+    // On resume, an unpassed reviewer/fixer must NOT be resent as the 'codex'
+    // default -- round-start rejects a request that conflicts with the
+    // ledger's persisted routing. Omit it and let round-start fall back to
+    // ledger.reviewRouting, which it already supports.
+    if (!resume || options.reviewer) startArgs.push('--reviewer', reviewer);
+    if (!resume || options.fixer) startArgs.push('--fixer', fixer);
     if (options.reviewerModel) startArgs.push('--reviewer-model', options.reviewerModel);
     if (options.fixerModel) startArgs.push('--fixer-model', options.fixerModel);
     const started = await cli(startArgs);
+    if (started.reviewRouting) {
+      reviewer = started.reviewRouting.reviewer || reviewer;
+      fixer = started.reviewRouting.fixer || fixer;
+    }
     if (!telemetryPath) telemetryPath = path.join(started.stateDir, `telemetry-${targetSlug(ref)}.json`);
     if (!telemetryLoaded) {
       if (fs.existsSync(telemetryPath)) {

@@ -274,8 +274,8 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
     if (verb === 'record') return round < rounds ? { decision: { continue: true }, handoff: 'continue' } : { decision: { continue: false, converged: true }, handoff: 'LGTM' };
     throw new Error(`unexpected CLI ${verb} ${ref}`);
   };
-  const spawn = ({ role, prompt }) => {
-    calls.push(['spawn', role, prompt]);
+  const spawn = ({ role, prompt, provider }) => {
+    calls.push(['spawn', role, prompt, provider]);
     if (role === failingRole) return { status: 1 };
     const n = round;
     if (role === 'correctness') fs.writeFileSync(path.join(stateDir, `round-${n}-correctness.json`), correctnessArtifact || JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
@@ -824,7 +824,35 @@ test('fresh runner resolves a remote default base once, while resume preserves t
 
   const resumed = harness();
   await runReviewUntilGreen({ ref: 'feature/x', base: 'must-not-override-ledger-base', resume: true, repoRoot: '/repo', runCli: resumed.cli, spawn: resumed.spawn, resolveDefaultBase: () => { throw new Error('must not resolve resume base'); } });
-  assert.deepStrictEqual(resumed.calls[0], ['cli', 'round-start', 'feature/x', '--reviewer', 'codex', '--fixer', 'codex']);
+  // No --reviewer/--fixer passed on resume: round-start must fall back to
+  // ledger.reviewRouting rather than receiving a materialized 'codex' default.
+  assert.deepStrictEqual(resumed.calls[0], ['cli', 'round-start', 'feature/x']);
+});
+
+test('resuming a run started with non-default routing does not resend the codex default and does not throw', async () => {
+  // round-start rejects an explicit --reviewer/--fixer that conflicts with the
+  // ledger's persisted routing. A resume call that never received routing
+  // options used to still materialize the 'codex' default and resend it,
+  // throwing on resume even though the caller asked for nothing -- defeating
+  // routing persistence. This exercises the runner's resume path end-to-end,
+  // not review-cli.js directly, since that is exactly the gap the bug hid in.
+  const h = harness();
+  // First round-start call: report the routing this run was actually started
+  // with (claude/copilot), as review-cli's ledger would restore it.
+  h.cli = ((original) => (args) => {
+    const result = original(args);
+    if (args[0] === 'round-start') result.reviewRouting = { reviewer: 'claude', fixer: 'copilot' };
+    return result;
+  })(h.cli);
+  await runReviewUntilGreen({ ref: 'feature/x', resume: true, repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
+  assert.deepStrictEqual(h.calls[0], ['cli', 'round-start', 'feature/x']);
+  const correctness = h.calls.find((c) => c[0] === 'spawn' && c[1] === 'correctness');
+  assert.ok(correctness, 'resume must still dispatch the review round rather than throwing');
+  // The restored ledger routing (claude/copilot), not the 'codex' default,
+  // must be what actually gets dispatched.
+  assert.strictEqual(correctness[3], 'claude');
+  const fix = h.calls.find((c) => c[0] === 'spawn' && c[1] === 'fix');
+  assert.strictEqual(fix[3], 'copilot');
 });
 
 test('default base resolution uses an available remote HEAD without assuming origin', () => {
