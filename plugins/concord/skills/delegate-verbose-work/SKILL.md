@@ -37,5 +37,5 @@ Discard the sweep once you have the conclusion; do not pull it back into the mai
 context.
 
 If this trigger fires while running under a more specific skill that sets its own delegation
-default (for example `ticket-to-pr`'s "keep implementation, review, and final mutations with the
-active agent unless a subagent is expressly required"), that skill's contract wins.
+default (for example `ticket-to-pr`'s "keep implementation and review with the active agent; do
+not hand either stage to another AI"), that skill's contract wins.
