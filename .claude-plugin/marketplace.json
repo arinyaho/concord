@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "concord",
-      "description": "Harness-engineering tools for state, charter, review-until-green, review-until-lgtm, initiative-to-prs, ticket-to-pr, provider-neutral ticket-writing, proposal-package-authoring, and provider-routed review.",
+      "description": "Harness-engineering tools for state, charter, review-until-green, review-until-lgtm, initiative-to-prs, ticket-to-pr, provider-neutral ticket-writing, proposal-package-authoring, delegate-verbose-work, and provider-routed review.",
       "author": { "name": "arinyaho" },
       "category": "development",
       "source": "./plugins/concord",
