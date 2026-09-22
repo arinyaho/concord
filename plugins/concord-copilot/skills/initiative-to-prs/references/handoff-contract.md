@@ -37,14 +37,14 @@ A stage that reads the same source document, ticket, or code file more than once
 
 ## Investigation reuse on relaunch
 
-A worktree-isolated investigative subagent (an `Agent` tool call with `isolation: "worktree"`) can lose its worktree between dispatch and resumption — the harness cleans it up, or the resume follows a long idle period. When the orchestrator relaunches or resumes work that shows signs of that loss (the worktree path no longer exists, the branch has no new commits since dispatch, or the resumed agent reports starting an investigation it already reported finishing), do not let the resumed subagent start blind.
+A worktree-isolated investigative subagent this stage spawns (an `Agent` tool call with `isolation: "worktree"`) loses its worktree whenever the harness cleans it up between dispatch and resumption — this is guaranteed, not occasional, for a read-only investigative subagent: it makes no changes by construction, and the harness cleans up an unchanged worktree by default. A relaunch or resume that follows a long idle period carries the same risk. Do not let the resumed subagent start blind.
 
 Before it repeats an expensive sweep, do one of:
 
 - If an earlier notification from that subagent already reported a conclusion, pass that conclusion forward in the resume prompt instead of a bare re-dispatch, and instruct the subagent to use it unless it finds the conclusion stale or contradicted.
 - If no conclusion was received yet, ask the resumed subagent to report what it already found — including any note it can recover from its own prior output — before it redoes the sweep, and have it redo only the portion that report cannot answer.
 
-Losing worktree state is the harness's failure; redoing the investigation without checking for what survived is the orchestrator's. The orchestrator, not the resumed subagent, is the one holding the last notification, so the orchestrator is the one obligated to hand it forward.
+Losing worktree state is the harness's; redoing the investigation without checking for what survived is the orchestrator's. The orchestrator, not the resumed subagent, is the one holding the last notification, so the orchestrator is the one obligated to hand it forward.
 
 ## Exit rules
 

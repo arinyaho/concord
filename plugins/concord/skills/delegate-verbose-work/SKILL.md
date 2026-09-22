@@ -39,3 +39,23 @@ context.
 If this trigger fires while running under a more specific skill that sets its own delegation
 default (for example `ticket-to-pr`'s "keep implementation and review with the active agent; do
 not hand either stage to another AI"), that skill's contract wins.
+
+## Resuming after worktree loss
+
+A worktree-isolated investigative subagent (an `Agent` tool call with `isolation: "worktree"`)
+loses its worktree whenever the harness cleans it up between dispatch and resumption — this is
+guaranteed, not occasional, for a read-only investigative subagent: it makes no changes by
+construction, and the harness cleans up an unchanged worktree by default. A relaunch or resume
+that follows a long idle period carries the same risk. Do not let the resumed subagent start
+blind and redo the sweep from scratch:
+
+- If an earlier notification from that subagent already reported a conclusion, pass that
+  conclusion forward in the resume prompt instead of a bare re-dispatch, and instruct the
+  subagent to use it unless it finds the conclusion stale or contradicted.
+- If no conclusion was received yet, ask the resumed subagent to report what it already found —
+  including any note it can recover from its own prior output — before it redoes the sweep, and
+  have it redo only the portion that report cannot answer.
+
+Losing worktree state is the harness's; redoing the investigation without checking for what
+survived is the orchestrator's. The orchestrator, not the resumed subagent, is the one holding
+the last notification, so the orchestrator is the one obligated to hand it forward.
