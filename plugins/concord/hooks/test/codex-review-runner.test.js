@@ -10,7 +10,7 @@ const { foldTelemetry } = require('../../core/review-telemetry');
 
 // The runner owns all sequencing. Its subprocess seam makes this a no-network
 // integration test while exercising the real artifact contract at the boundary.
-const { runReviewUntilGreen, reviewerPrompt, codexExec, resolveDefaultBase } = require('../../core/codex-review-runner');
+const { runReviewUntilGreen, reviewerPrompt, codexExec, providerExec, resolveDefaultBase } = require('../../core/codex-review-runner');
 const { reviewerPrompt: packagedReviewerPrompt } = require('../../../concord-codex/engine/codex-review-runner');
 
 function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'codex-runner-')); }
@@ -116,6 +116,33 @@ test('codexExec parses documented turn.completed usage without retaining agent o
       output_tokens: 7,
       reasoning_output_tokens: 3,
     });
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
+for (const [provider, executable, expectedArgs] of [
+  ['claude', 'claude', ['-p', '--model', 'review-model', '--add-dir']],
+  ['copilot', 'copilot', ['-p', '--model', 'review-model', '--allow-all-tools', '--allow-all-paths', '--no-ask-user']],
+]) test(`providerExec invokes ${provider} non-interactively with the requested model`, async () => {
+  const binDir = temp();
+  const executablePath = path.join(binDir, executable);
+  const capture = path.join(binDir, 'args.json');
+  fs.writeFileSync(executablePath, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(capture)}, JSON.stringify(process.argv.slice(2)));\n`);
+  fs.chmodSync(executablePath, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  try {
+    const result = await providerExec({
+      provider, role: 'correctness', prompt: 'review', repoRoot: binDir,
+      stateDir: binDir, requestedModel: 'review-model',
+    });
+    const args = JSON.parse(fs.readFileSync(capture, 'utf8'));
+    for (const expected of expectedArgs) assert.ok(args.includes(expected), `${provider} arguments omitted ${expected}`);
+    assert.strictEqual(result.status, 0);
+    assert.strictEqual(result.engine, provider);
+    assert.strictEqual(result.requestedModel, 'review-model');
+    assert.strictEqual(result.usagePartial, true);
   } finally {
     process.env.PATH = previousPath;
   }
@@ -247,8 +274,8 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
     if (verb === 'record') return round < rounds ? { decision: { continue: true }, handoff: 'continue' } : { decision: { continue: false, converged: true }, handoff: 'LGTM' };
     throw new Error(`unexpected CLI ${verb} ${ref}`);
   };
-  const spawn = ({ role, prompt }) => {
-    calls.push(['spawn', role, prompt]);
+  const spawn = ({ role, prompt, provider }) => {
+    calls.push(['spawn', role, prompt, provider]);
     if (role === failingRole) return { status: 1 };
     const n = round;
     if (role === 'correctness') fs.writeFileSync(path.join(stateDir, `round-${n}-correctness.json`), correctnessArtifact || JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
@@ -325,7 +352,8 @@ test('runner reports aggregate and per-role subprocess telemetry', async () => {
 
   const out = await runReviewUntilGreen({
     ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn,
-    model: 'gpt-5.1-codex', reasoningEffort: 'high', serviceTier: 'priority',
+    reviewerModel: 'gpt-5.1-codex', fixerModel: 'gpt-5.1-codex',
+    reasoningEffort: 'high', serviceTier: 'priority',
   });
 
   assert.deepStrictEqual(out.telemetry, {
@@ -728,7 +756,7 @@ test('correctness prompt keeps the real pass and real failure wordings when the 
 test('runner passes --no-dod to round-start and threads the deferral into the correctness prompt', async () => {
   const h = harness({ dodDeferred: true });
   await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn, noDod: true, resolveDefaultBase: () => 'upstream/main' });
-  assert.deepStrictEqual(h.calls[0], ['cli', 'round-start', 'feature/x', 'upstream/main', '--no-dod']);
+  assert.deepStrictEqual(h.calls[0], ['cli', 'round-start', 'feature/x', 'upstream/main', '--no-dod', '--reviewer', 'codex', '--fixer', 'codex']);
   const correctness = h.calls.find((c) => c[0] === 'spawn' && c[1] === 'correctness');
   assert.ok(!/do not rerun tests/i.test(correctness[2]), 'the deferral must reach the reviewer prompt');
 });
@@ -736,7 +764,7 @@ test('runner passes --no-dod to round-start and threads the deferral into the co
 test('runner omits --no-dod by default -- the opt-out is never added on the runner\'s own initiative', async () => {
   const h = harness();
   await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn, resolveDefaultBase: () => 'upstream/main' });
-  assert.deepStrictEqual(h.calls[0], ['cli', 'round-start', 'feature/x', 'upstream/main']);
+  assert.deepStrictEqual(h.calls[0], ['cli', 'round-start', 'feature/x', 'upstream/main', '--reviewer', 'codex', '--fixer', 'codex']);
 });
 
 test('file-target correctness prompt requires contract-complete docreview findings', () => {
@@ -792,11 +820,65 @@ test('fix prompt forbids declaring state artifacts or paths outside the reposito
 test('fresh runner resolves a remote default base once, while resume preserves the ledger base by omitting it', async () => {
   const fresh = harness();
   await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: fresh.cli, spawn: fresh.spawn, resolveDefaultBase: () => 'upstream/main' });
-  assert.deepStrictEqual(fresh.calls[0], ['cli', 'round-start', 'feature/x', 'upstream/main']);
+  assert.deepStrictEqual(fresh.calls[0], ['cli', 'round-start', 'feature/x', 'upstream/main', '--reviewer', 'codex', '--fixer', 'codex']);
 
   const resumed = harness();
   await runReviewUntilGreen({ ref: 'feature/x', base: 'must-not-override-ledger-base', resume: true, repoRoot: '/repo', runCli: resumed.cli, spawn: resumed.spawn, resolveDefaultBase: () => { throw new Error('must not resolve resume base'); } });
+  // No --reviewer/--fixer passed on resume: round-start must fall back to
+  // ledger.reviewRouting rather than receiving a materialized 'codex' default.
   assert.deepStrictEqual(resumed.calls[0], ['cli', 'round-start', 'feature/x']);
+});
+
+test('resuming a run started with non-default routing does not resend the codex default and does not throw', async () => {
+  // round-start rejects an explicit --reviewer/--fixer that conflicts with the
+  // ledger's persisted routing. A resume call that never received routing
+  // options used to still materialize the 'codex' default and resend it,
+  // throwing on resume even though the caller asked for nothing -- defeating
+  // routing persistence. This exercises the runner's resume path end-to-end,
+  // not review-cli.js directly, since that is exactly the gap the bug hid in.
+  const h = harness();
+  // First round-start call: report the routing this run was actually started
+  // with (claude/copilot), as review-cli's ledger would restore it.
+  h.cli = ((original) => (args) => {
+    const result = original(args);
+    if (args[0] === 'round-start') result.reviewRouting = { reviewer: 'claude', fixer: 'copilot' };
+    return result;
+  })(h.cli);
+  await runReviewUntilGreen({ ref: 'feature/x', resume: true, repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
+  assert.deepStrictEqual(h.calls[0], ['cli', 'round-start', 'feature/x']);
+  const correctness = h.calls.find((c) => c[0] === 'spawn' && c[1] === 'correctness');
+  assert.ok(correctness, 'resume must still dispatch the review round rather than throwing');
+  // The restored ledger routing (claude/copilot), not the 'codex' default,
+  // must be what actually gets dispatched.
+  assert.strictEqual(correctness[3], 'claude');
+  const fix = h.calls.find((c) => c[0] === 'spawn' && c[1] === 'fix');
+  assert.strictEqual(fix[3], 'copilot');
+});
+
+test('resuming a run started with a pinned model restores it instead of dropping to the provider default', async () => {
+  // round-start's ledger restores reviewer/fixer provider on resume, but the
+  // runner used to keep reading options.reviewerModel/fixerModel directly for
+  // launch() -- unset on a bare `resume` call -- silently dropping a model
+  // that was pinned when the run started. This exercises the resume path
+  // end-to-end so the dropped field cannot hide behind review-cli.js's own tests.
+  const h = harness();
+  h.cli = ((original) => (args) => {
+    const result = original(args);
+    if (args[0] === 'round-start') {
+      result.reviewRouting = { reviewer: 'claude', reviewerModel: 'claude-opus-4-1', fixer: 'copilot', fixerModel: 'gpt-5.2' };
+    }
+    return result;
+  })(h.cli);
+  const requestedModels = [];
+  const spawn = (input) => {
+    requestedModels.push([input.role, input.requestedModel]);
+    return h.spawn(input);
+  };
+  await runReviewUntilGreen({ ref: 'feature/x', resume: true, repoRoot: '/repo', runCli: h.cli, spawn });
+  const correctness = requestedModels.find(([role]) => role === 'correctness');
+  const fix = requestedModels.find(([role]) => role === 'fix');
+  assert.strictEqual(correctness[1], 'claude-opus-4-1');
+  assert.strictEqual(fix[1], 'gpt-5.2');
 });
 
 test('default base resolution uses an available remote HEAD without assuming origin', () => {
@@ -1208,6 +1290,23 @@ test('runner loops through record continuation and file targets never commit', a
   assert.strictEqual(h.calls.some((c) => c[1] === 'commit-fix'), false);
 });
 
+test('runner routes review and fix roles to independent providers and models', async () => {
+  const h = harness({ promptDrivenFix: true });
+  const routed = [];
+  await runReviewUntilGreen({
+    ref: 'feature/x', repoRoot: '/repo', runCli: h.cli,
+    reviewer: 'claude', reviewerModel: 'claude-opus-4-1',
+    fixer: 'copilot', fixerModel: 'gpt-5.2',
+    spawn: async (input) => {
+      routed.push({ role: input.role, provider: input.provider, model: input.requestedModel });
+      return h.spawn(input);
+    },
+  });
+  assert.ok(routed.some(({ role, provider, model }) => role === 'correctness' && provider === 'claude' && model === 'claude-opus-4-1'));
+  assert.ok(routed.some(({ role, provider, model }) => role === 'fix' && provider === 'copilot' && model === 'gpt-5.2'));
+  assert.ok(routed.filter(({ role }) => role !== 'fix').every(({ provider }) => provider === 'claude'));
+});
+
 test('Codex launcher --help exits without invoking the runner', () => {
   const dir = temp();
   const capture = path.join(dir, 'options.json');
@@ -1260,7 +1359,7 @@ test('Codex launcher recognizes documented broad-review phrases without consumin
   }
 });
 
-test('Codex launcher forwards explicit inference config without consuming it as target arguments', () => {
+test('Codex launcher forwards independent reviewer and fixer routing without consuming it as target arguments', () => {
   const dir = temp();
   const capture = path.join(dir, 'options.json');
   const preload = path.join(dir, 'capture-runner.js');
@@ -1277,12 +1376,15 @@ test('Codex launcher forwards explicit inference config without consuming it as 
       return load.apply(this, arguments);
     };
   `);
-  execFileSync('node', ['--require', preload, bin, 'feature/x', '--no-dod', '--model', 'gpt-5.1-codex', '--reasoning-effort', 'high', '--service-tier', 'priority'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
+  execFileSync('node', ['--require', preload, bin, 'feature/x', '--no-dod', '--reviewer', 'claude', '--reviewer-model', 'claude-opus-4-1', '--fixer', 'copilot', '--fixer-model', 'gpt-5.2', '--reasoning-effort', 'high', '--service-tier', 'priority'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
   const options = JSON.parse(fs.readFileSync(capture, 'utf8'));
   assert.strictEqual(options.ref, 'feature/x');
   assert.strictEqual(options.base, undefined); // the flag must not be mistaken for base
   assert.strictEqual(options.noDod, true);
-  assert.strictEqual(options.model, 'gpt-5.1-codex');
+  assert.strictEqual(options.reviewer, 'claude');
+  assert.strictEqual(options.reviewerModel, 'claude-opus-4-1');
+  assert.strictEqual(options.fixer, 'copilot');
+  assert.strictEqual(options.fixerModel, 'gpt-5.2');
   assert.strictEqual(options.reasoningEffort, 'high');
   assert.strictEqual(options.serviceTier, 'priority');
 

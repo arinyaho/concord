@@ -17,7 +17,7 @@ function read(relativePath) {
 test('Copilot package uses Agent Plugins 1.0 fixed component locations', () => {
   const manifest = JSON.parse(read('plugin.json'));
   assert.equal(manifest.$schema, 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json');
-  assert.equal(manifest.name, 'concord-copilot');
+  assert.equal(manifest.name, 'concord');
 
   const hooks = JSON.parse(read('com.github.copilot/hooks/hooks.json'));
   assert.deepEqual(Object.keys(hooks.hooks).sort(), ['SessionStart', 'UserPromptSubmit']);
@@ -39,17 +39,17 @@ test('Copilot package exposes charter as both a skill and slash command', () => 
 
 test('Copilot marketplace points at the Copilot distribution', () => {
   const marketplace = JSON.parse(fs.readFileSync(path.join(REPO, '.github/plugin/marketplace.json'), 'utf8'));
-  const plugin = marketplace.plugins.find(({ name }) => name === 'concord-copilot');
-  assert.ok(plugin, 'marketplace is missing concord-copilot');
+  const plugin = marketplace.plugins.find(({ name }) => name === 'concord');
+  assert.ok(plugin, 'marketplace is missing concord');
   assert.equal(plugin.source, './plugins/concord-copilot');
 });
 
 test('README documents the Copilot lifecycle and degraded mode', () => {
   const readme = fs.readFileSync(path.join(REPO, 'README.md'), 'utf8');
   assert.match(readme, /copilot plugin marketplace add arinyaho\/concord/);
-  assert.match(readme, /copilot plugin install concord-copilot@arinyaho-concord/);
-  assert.match(readme, /copilot plugin update concord-copilot@arinyaho-concord/);
-  assert.match(readme, /copilot plugin uninstall concord-copilot@arinyaho-concord/);
+  assert.match(readme, /copilot plugin install concord@arinyaho-concord/);
+  assert.match(readme, /copilot plugin update concord@arinyaho-concord/);
+  assert.match(readme, /copilot plugin uninstall concord@arinyaho-concord/);
   assert.match(readme, /Preview hooks/i);
   assert.match(readme, /automatic transcript-derived checkpoints are unavailable/i);
   assert.match(readme, /CONCORD_COPILOT_HOME/);
@@ -58,7 +58,6 @@ test('README documents the Copilot lifecycle and degraded mode', () => {
 test('Copilot package exposes the approved workflow set', () => {
   const expected = [
     'charter',
-    'cross-model-review',
     'initiative-to-prs',
     'proposal-package-authoring',
     'review-until-green',
@@ -94,15 +93,16 @@ test('portable Copilot skills remain byte-identical to the shared source', () =>
 
 test('Copilot-specific orchestration uses native clean-context agents and explicit degradation', () => {
   const review = read('skills/review-until-green/SKILL.md');
-  const crossModel = read('skills/cross-model-review/SKILL.md');
   const routing = read('skills/initiative-to-prs/references/model-routing.md');
   assert.match(review, /Concord Reviewer/);
   assert.match(review, /clean context/i);
   assert.match(review, /review-cli\.js/);
   assert.match(review, /do not invoke `telemetry-slot`/i);
   assert.match(review, /telemetry.*unavailable/i);
-  assert.match(crossModel, /different.*model/i);
-  assert.match(crossModel, /unavailable.*stop/i);
+  assert.match(review, /--reviewer-model/);
+  assert.match(review, /--fixer-model/);
+  assert.match(review, /native/i);
+  assert.match(review, /CLI/i);
   assert.doesNotMatch(routing, /Codex|Claude Code/);
 
   for (const agent of ['concord-reviewer.agent.md', 'concord-fixer.agent.md']) {
@@ -143,21 +143,21 @@ pluginInstallE2ETest('clean Copilot config installs, updates, and removes the pl
   });
 
   run(['plugin', 'marketplace', 'add', REPO]);
-  assert.match(run(['plugin', 'install', 'concord-copilot@arinyaho-concord']), /installed successfully/i);
+  assert.match(run(['plugin', 'install', 'concord@arinyaho-concord']), /installed successfully/i);
   const installedPlugins = run(['plugin', 'list']);
   const releaseVersion = fs.readFileSync(path.join(REPO, 'VERSION'), 'utf8').trim();
-  assert.match(installedPlugins, /concord-copilot@arinyaho-concord/i);
+  assert.match(installedPlugins, /concord@arinyaho-concord/i);
   assert.ok(installedPlugins.includes(`v${releaseVersion}`));
   assert.match(
-    run(['plugin', 'update', 'concord-copilot@arinyaho-concord']),
+    run(['plugin', 'update', 'concord@arinyaho-concord']),
     /updated|already.*latest|loaded live.*nothing to update/i,
   );
   assert.match(
-    run(['plugin', 'uninstall', 'concord-copilot@arinyaho-concord']),
+    run(['plugin', 'uninstall', 'concord@arinyaho-concord']),
     /uninstalled successfully|disabled.*nothing was removed/i,
   );
   const afterUninstall = run(['plugin', 'list']);
-  assert.ok(!/concord-copilot/i.test(afterUninstall) || /concord-copilot.*\(disabled\)/i.test(afterUninstall));
+  assert.ok(!/concord@/i.test(afterUninstall) || /concord@.*\(disabled\)/i.test(afterUninstall));
 });
 
 test('Copilot engine is byte-identical to shared core and Copilot adapters', () => {

@@ -122,7 +122,7 @@ pluginInstallE2ETest('clean Claude and Codex installs discover the same shared s
   run('codex', ['plugin', 'marketplace', 'add', REPO, '--json'], codexEnv);
   const codexInstall = JSON.parse(run(
     'codex',
-    ['plugin', 'add', 'concord-codex@arinyaho-concord', '--json'],
+    ['plugin', 'add', 'concord@arinyaho-concord', '--json'],
     codexEnv,
   ));
 
@@ -167,10 +167,10 @@ pluginInstallE2ETest('clean Claude and Codex installs discover the same shared s
   assert.ok(claudeSkills?.includes('concord:initiative-to-prs'));
   assert.ok(claudeSkills?.includes('concord:review-until-lgtm'));
   assert.ok(claudeSkills?.includes('concord:proposal-package-authoring'));
-  assert.match(codexSkills, /(?:^|\n)- concord-codex:ticket-to-pr: /);
-  assert.match(codexSkills, /(?:^|\n)- concord-codex:initiative-to-prs: /);
-  assert.match(codexSkills, /(?:^|\n)- concord-codex:review-until-lgtm: /);
-  assert.match(codexSkills, /(?:^|\n)- concord-codex:proposal-package-authoring: /);
+  assert.match(codexSkills, /(?:^|\n)- concord:ticket-to-pr: /);
+  assert.match(codexSkills, /(?:^|\n)- concord:initiative-to-prs: /);
+  assert.match(codexSkills, /(?:^|\n)- concord:review-until-lgtm: /);
+  assert.match(codexSkills, /(?:^|\n)- concord:proposal-package-authoring: /);
   assert.match(claude, /^---\nname: ticket-writing\ndescription: Use when /);
   assert.match(claudeTicketToPr, /^---\nname: ticket-to-pr\ndescription: >-/);
   assert.match(claudeInitiativeToPrs, /^---\nname: initiative-to-prs\ndescription: >-/);
@@ -255,7 +255,7 @@ test('maintained package metadata and docs advertise the shared capability set',
   assert.match(codexManifest.description, /initiative-to-prs/);
 
   const claudeSummary = files[0].split('\n').find((line) => line.startsWith('- `concord` (Claude Code)'));
-  const codexSummary = files[0].split('\n').find((line) => line.startsWith('- `concord-codex` (Codex)'));
+  const codexSummary = files[0].split('\n').find((line) => line.startsWith('- `concord` (Codex)'));
   assert.match(claudeSummary, /ticket-to-pr/);
   assert.match(codexSummary, /ticket-to-pr/);
   assert.match(claudeSummary, /initiative-to-prs/);

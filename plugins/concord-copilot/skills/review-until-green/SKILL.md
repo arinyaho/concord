@@ -1,6 +1,6 @@
 ---
 name: review-until-green
-description: Run Concord's deterministic review-and-fix loop with clean-context GitHub Copilot reviewer and fixer subagents until the CLI returns a terminal decision.
+description: Run Concord's deterministic review-and-fix loop with independently selected Claude, Codex, or Copilot reviewer and fixer providers and models.
 ---
 
 # Review Until Green
@@ -9,10 +9,17 @@ Use the bundled `../../bin/review-cli.js` as the sole authority on rounds, dedup
 
 Resolve the target from the request. Invoke CLI verbs as `node <plugin-root>/bin/review-cli.js <verb> ...`; the skill base directory identifies the installed plugin root. Never infer the path from another harness cache.
 
+Parse `--reviewer <claude|codex|copilot>`, `--reviewer-model <model>`, `--fixer <claude|codex|copilot>`, and `--fixer-model <model>`. Providers default to `copilot`; models default to the selected provider's configured model. Apply the reviewer selection to every review-class role and the fixer selection only to planned fixes. Preserve the selections through every round and resume. Reject unknown providers and unavailable requested models; never silently substitute a provider or model.
+
 One driver step is unavailable in this harness: do not invoke `telemetry-slot`. Copilot Agent Host does not expose stable provider-usage records that the shared telemetry reconciler can authenticate, so per-spawn telemetry is unavailable. Do not create synthetic Claude or Codex slots, and do not claim token measurements in the handoff.
 
-For every review-class role, invoke the `Concord Reviewer` custom agent in clean context and pass only the exact target, diff artifact, prior finding IDs, required output schema, and blocked-tool clause from the driver. Write its returned JSON verbatim to the artifact path before invoking the next dependent CLI verb. Independent roles may run in parallel only where the driver explicitly permits it.
+For a Copilot review role, invoke the native `Concord Reviewer` custom agent in clean context, passing `--reviewer-model` as the subagent model when supplied. For a Copilot fix role, invoke the native `Concord Fixer` custom agent sequentially and pass `--fixer-model` when supplied. Pass only the bounded driver prompt and write returned JSON verbatim to the requested artifact path.
 
-For every planned fix, invoke `Concord Fixer` sequentially, then follow the driver's artifact and `commit-fix` contract before starting another fix. The main agent remains the driver and does not judge findings or termination.
+For a non-Copilot role, invoke a clean provider CLI process in the repository root and require it to write the requested artifact directly:
 
-If `agent/runSubagent`, either custom agent, filesystem access to the state directory, or a required model/tool is unavailable, stop and report the missing capability. Do not replace clean-context review with an in-context opinion and do not report the run as clean.
+- Claude: `claude -p [--model <model>] --output-format json --no-session-persistence --permission-mode acceptEdits --permission-prompts none --add-dir <stateDir> "<prompt>"`
+- Codex: `codex exec --cd <repoRoot> --sandbox workspace-write --add-dir <stateDir> --skip-git-repo-check [--model <model>] "<prompt>"`
+
+Redirect external CLI output away from the parent context. A missing executable, authentication/model failure, non-zero exit, missing artifact, denied operation, or declared block is a harness failure. Independent review roles may run in parallel only where the driver explicitly permits it; fixes remain sequential and each is followed by the driver's `commit-fix` contract.
+
+If `agent/runSubagent`, a selected CLI, filesystem access to the state directory, authentication, or a required model/tool is unavailable, stop and report the missing capability. Do not replace clean-context review with an in-context opinion and do not report the run as clean.

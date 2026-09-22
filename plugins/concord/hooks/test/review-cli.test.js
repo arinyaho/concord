@@ -1321,22 +1321,23 @@ test('review-driver: the intent-detector prompt demands id reuse across rounds',
   }
 });
 
-test('manual review drivers persist a telemetry slot immediately before every subagent launch', () => {
-  for (const rel of [['commands', 'review-until-green.md'], ['core', 'review-driver.md']]) {
-    const md = fs.readFileSync(path.join(__dirname, '..', '..', ...rel), 'utf8');
-    assert.match(md, /telemetry-slot <ref> <exact-output-artifact-path>/, rel.join('/'));
-    assert.match(md, /--engine claude-code/, rel.join('/'));
-    assert.match(md, /immediately before every.*subagent.*spawn/i, rel.join('/'));
-    assert.match(md, /retries.*failed attempts/i, rel.join('/'));
-    assert.match(md, /round-<n>-gate-panel-<m>-vote-<finding-id>-<vote-index>\.json/, rel.join('/'));
-  }
+test('manual review drivers allocate telemetry only when the selected adapter exposes it', () => {
+  const command = fs.readFileSync(path.join(__dirname, '..', '..', 'commands', 'review-until-green.md'), 'utf8');
+  const driver = fs.readFileSync(path.join(__dirname, '..', '..', 'core', 'review-driver.md'), 'utf8');
+  assert.match(command, /telemetry-slot <ref> <exact-output-artifact-path>/);
+  assert.match(command, /--engine claude-code/);
+  assert.match(command, /only for native Claude roles/i);
+  assert.match(driver, /authenticated telemetry/i);
+  assert.match(driver, /Do not allocate synthetic slots/i);
+  assert.match(command, /round-<n>-gate-panel-<m>-vote-<finding-id>-<vote-index>\.json/);
 });
 
-test('the Codex reviewer skill does not allocate telemetry slots it cannot fill', () => {
-  const md = fs.readFileSync(path.join(__dirname, '..', '..', 'skills', 'concord-codex-review', 'SKILL.md'), 'utf8');
-
-  assert.doesNotMatch(md, /telemetry-slot/);
-  assert.match(md, /per-spawn telemetry is not captured/i);
+test('review-until-green owns provider routing without a separate Codex review skill', () => {
+  const root = path.join(__dirname, '..', '..');
+  const md = fs.readFileSync(path.join(root, 'commands', 'review-until-green.md'), 'utf8');
+  assert.strictEqual(fs.existsSync(path.join(root, 'skills', 'concord-codex-review')), false);
+  assert.match(md, /--reviewer <claude\|codex\|copilot>/);
+  assert.match(md, /--fixer <claude\|codex\|copilot>/);
 });
 
 function writeArtifact(dir, n, name, obj) {
@@ -1742,6 +1743,41 @@ test('round-start: an unrecognized "--" flag is a clear usage error, not silentl
   fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
   assert.throws(() => run(['round-start', 'feat/x', '--typo'], { env }), /unknown flag "--typo"/);
+});
+
+test('round-start: provider and model routing is persisted and restored on resume', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const routing = {
+    reviewer: 'claude', reviewerModel: 'claude-opus-4-1',
+    fixer: 'copilot', fixerModel: 'gpt-5.2',
+  };
+  const first = JSON.parse(run([
+    'round-start', 'feat/x', 'HEAD~1',
+    '--reviewer', routing.reviewer, '--reviewer-model', routing.reviewerModel,
+    '--fixer', routing.fixer, '--fixer-model', routing.fixerModel,
+  ], { env }));
+  assert.deepStrictEqual(first.reviewRouting, routing);
+  assert.deepStrictEqual(review.readLedger(dir, review.targetSlug('feat/x')).reviewRouting, routing);
+
+  const resumed = JSON.parse(run(['round-start', 'feat/x'], { env }));
+  assert.deepStrictEqual(resumed.reviewRouting, routing);
+});
+
+test('round-start: resume rejects a routing change', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  run(['round-start', 'feat/x', 'HEAD~1', '--reviewer', 'claude', '--fixer', 'copilot'], { env });
+  assert.throws(
+    () => run(['round-start', 'feat/x', '--reviewer', 'codex'], { env }),
+    /routing differs from the active run/,
+  );
 });
 
 test('round-start: a mid-round resume keeps gateApplied true for the round that already fired', () => {

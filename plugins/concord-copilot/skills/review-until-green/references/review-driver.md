@@ -4,7 +4,7 @@ Concord IS the reviewer. The findings for every round come from the review subag
 
 Arguments: `<arguments>` -- the harness-resolved invocation arguments; each packaging layer wires this to its own argument-substitution token (the same way `<review-cli>` is wired to the CLI path).
 
-Determine the target ref: empty -> current branch (`git branch --show-current`); `resume <ref>` -> the ref after `resume`; else the arguments as-is. Optional base ref is the second token (default the repo's remote main branch, `origin/<main>` -- a local base can be stale (behind its remote), which sweeps unrelated merged changes into the diff).
+Remove the recognized provider/model option-value pairs before determining the target ref: empty -> current branch (`git branch --show-current`); `resume <ref>` -> the ref after `resume`; else the first positional argument. Optional base ref is the second positional token (default the repo's remote main branch, `origin/<main>` -- a local base can be stale (behind its remote), which sweeps unrelated merged changes into the diff).
 
 To review a local file or document instead of a git diff (a design/spec `.md`, a note -- reviewable even in a directory that is not a git repository), pass a single `file:<path-or-glob>` token as the ref, where `<path-or-glob>` is a literal path OR a simple single-`*` glob resolved against the repo root: `round-start file:note.md` or `round-start file:*.md` (the glob pulls in every match, concatenated in sorted order). This is the ONLY file-target form -- there is no `--files` flag. A file target has no base and no DoD; `round-start` reports `targetType: 'file'` and the per-round flow branches on it (see step 2).
 
@@ -18,11 +18,11 @@ Also check whether this invocation asked to run without an executable DoD gate: 
 
 Never soften that clause, and never accept an artifact from a reviewer you know was blocked -- a non-empty `blocked` is terminal wherever the CLI reads the artifact (`artifact-normalize` for the fail-closed roles, and `plan-fixes`/`gate-panel-round-record` for the leniently-read gate-verify and panel artifacts), precisely so a degraded reviewer cannot produce a verdict.
 
-Immediately before every review/fix subagent spawn, run `node "<review-cli>" telemetry-slot <ref> <exact-output-artifact-path> --engine claude-code` using the single JSON destination named by that prompt. Do this for correctness, verify, intent, gate, fixes, panel lenses, votes, retries, and failed attempts; each call allocates an engine-owned attempt number used to reconcile missing, duplicate, or orphan telemetry without changing the prompt or launch order.
+Immediately before a spawn whose harness adapter exposes authenticated telemetry, allocate the exact output artifact through `telemetry-slot` using the engine named by that adapter. Do not allocate synthetic slots for provider CLIs or native hosts that lack stable usage evidence. The adapter's routing instructions are authoritative for whether a slot exists; allocation never changes prompt or launch ordering.
 
 Run this loop. Do each step in order; do not skip, reorder, or improvise termination.
 
-1. `node "<review-cli>" round-start <ref> [base] [--no-broad] [--no-dod]`
+1. `node "<review-cli>" round-start <ref> [base] [--reviewer <provider>] [--reviewer-model <model>] [--fixer <provider>] [--fixer-model <model>] [--no-broad] [--no-dod]`
    - `decision: "terminal"` or `"no-op"` -> stop; report the CLI's message.
    - `decision: "work"` -> continue: proceed straight to step 2 in THIS session. Do not pause, defer, or wait on anything external first. Note the `round` number `n`, the `stateDir` path it prints (`stateDir` is the CLI-owned directory for this run's artifacts; every path below is relative to it), and the `dodPassed` and `dodDeferred` booleans -- step 2 passes them to the correctness subagent. When `dodDeferred` is `true`, `dodPassed` is `true` only because nothing blocked the round, NOT because a gate ran and passed; the two must never be conflated.
 2. Read the file at `<stateDir>/round-<n>-diff.txt` (the file round-start just wrote -- for a git target this is a diff; for a file target this is the current content of the target file). Spawn ONE correctness review subagent per the harness spawn-include (clean context -- do not paste your own prior reasoning). The prompt to give it depends on `targetType` from the round-start output:

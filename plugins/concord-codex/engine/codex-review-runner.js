@@ -16,6 +16,7 @@ const CODEX_VERSION = 'codex-cli 0.154.0';
 const CODEX_USAGE_FIELDS = ['input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens', 'reasoning_output_tokens'];
 const CODEX_EVENT_TYPES = new Set(['thread.started', 'turn.started', 'turn.completed', 'turn.failed', 'item.started', 'item.updated', 'item.completed', 'error']);
 const CODEX_ITEM_TYPES = new Set(['agent_message', 'reasoning', 'command_execution', 'file_change', 'mcp_tool_call', 'web_search', 'todo_list', 'error', 'collaboration_tool_call', 'collab_agent_tool_call']);
+const PROVIDERS = new Set(['claude', 'codex', 'copilot']);
 let versionCache = null;
 
 function codexCliVersion(repoRoot) {
@@ -137,6 +138,63 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
   });
 }
 
+function providerExec(input) {
+  const { provider, role, prompt, repoRoot, stateDir } = input;
+  if (!PROVIDERS.has(provider)) throw new Error(`harness-failure: unsupported provider "${provider}"`);
+  if (provider === 'codex') return codexExec(input);
+
+  const requestedModel = typeof input.requestedModel === 'string' && input.requestedModel.trim()
+    ? input.requestedModel
+    : null;
+  const invocationId = crypto.randomUUID();
+  const startedAt = Date.now();
+  const executable = provider;
+  const args = provider === 'claude'
+    ? [
+        '-p',
+        ...(requestedModel ? ['--model', requestedModel] : []),
+        '--output-format', 'json', '--no-session-persistence',
+        '--permission-mode', 'acceptEdits', '--permission-prompts', 'none',
+        '--add-dir', stateDir, prompt,
+      ]
+    : [
+        '-p', prompt,
+        ...(requestedModel ? ['--model', requestedModel] : []),
+        '--silent', '--allow-all-tools', '--allow-all-paths', '--no-ask-user',
+        '-C', repoRoot,
+      ];
+  const providerName = provider === 'claude' ? 'anthropic' : 'github';
+  const providerSchema = provider === 'claude' ? 'claude-print-json-v1' : 'copilot-prompt-v1';
+
+  const OUTPUT_LIMIT = 4000;
+  const truncate = (text) => (text.length > OUTPUT_LIMIT ? `${text.slice(0, OUTPUT_LIMIT)}\n...(truncated)` : text);
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, args, { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.once('error', (error) => {
+      error.telemetry = {
+        status: 'failed', role, engine: provider, provider: providerName, providerSchema,
+        requestedModel, resolvedModel: 'unavailable', invocationId,
+        elapsedMs: Date.now() - startedAt, usagePartial: true,
+        stdout: truncate(stdout), stderr: truncate(stderr),
+      };
+      reject(error);
+    });
+    child.once('close', (status) => resolve({
+      status, role, engine: provider, provider: providerName, providerSchema,
+      requestedModel, resolvedModel: 'unavailable', invocationId,
+      elapsedMs: Date.now() - startedAt, usagePartial: true,
+      stdout: truncate(stdout), stderr: truncate(stderr),
+    }));
+  });
+}
+
 // A fresh git review needs an explicit merge-base side of the diff. Resolve
 // the repository's advertised remote default without hard-coding `origin`;
 // repositories with no remote HEAD must name a base rather than silently
@@ -197,7 +255,14 @@ async function runReviewUntilGreen(options) {
   const { ref, base, broad = false, noBroad = false, noDod = false, resume = false, repoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
   if (!ref) throw new Error('review-until-green: missing target ref');
   const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot));
-  const rawSpawn = options.spawn || ((input) => codexExec(input));
+  let reviewer = options.reviewer || 'codex';
+  let fixer = options.fixer || 'codex';
+  let reviewerModel = options.reviewerModel;
+  let fixerModel = options.fixerModel;
+  for (const provider of [reviewer, fixer]) {
+    if (!PROVIDERS.has(provider)) throw new Error(`review-until-green: unsupported provider "${provider}"`);
+  }
+  const rawSpawn = options.spawn || ((input) => providerExec(input));
   const telemetry = {
     total: { calls: 0, partialCalls: 0, inputTokens: 0, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0 },
     byRole: {},
@@ -252,8 +317,11 @@ async function runReviewUntilGreen(options) {
     persistTelemetry();
   };
   const spawn = async (input) => {
+    const provider = input.provider;
+    const providerName = provider === 'claude' ? 'anthropic' : provider === 'codex' ? 'openai' : 'github';
+    const providerSchema = provider === 'claude' ? 'claude-print-json-v1' : provider === 'codex' ? 'codex-exec-json-v1' : 'copilot-prompt-v1';
     const identity = {
-      engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: crypto.randomUUID(),
+      engine: provider, provider: providerName, providerSchema, invocationId: crypto.randomUUID(),
     };
     try {
       const result = await rawSpawn(input);
@@ -338,7 +406,21 @@ async function runReviewUntilGreen(options) {
     if (broad) startArgs.push('--broad');
     if (noBroad) startArgs.push('--no-broad'); // broad review is on by default; this is the opt-out
     if (noDod) startArgs.push('--no-dod');
+    // On resume, an unpassed reviewer/fixer must NOT be resent as the 'codex'
+    // default -- round-start rejects a request that conflicts with the
+    // ledger's persisted routing. Omit it and let round-start fall back to
+    // ledger.reviewRouting, which it already supports.
+    if (!resume || options.reviewer) startArgs.push('--reviewer', reviewer);
+    if (!resume || options.fixer) startArgs.push('--fixer', fixer);
+    if (options.reviewerModel) startArgs.push('--reviewer-model', options.reviewerModel);
+    if (options.fixerModel) startArgs.push('--fixer-model', options.fixerModel);
     const started = await cli(startArgs);
+    if (started.reviewRouting) {
+      reviewer = started.reviewRouting.reviewer || reviewer;
+      fixer = started.reviewRouting.fixer || fixer;
+      reviewerModel = started.reviewRouting.reviewerModel || reviewerModel;
+      fixerModel = started.reviewRouting.fixerModel || fixerModel;
+    }
     if (!telemetryPath) telemetryPath = path.join(started.stateDir, `telemetry-${targetSlug(ref)}.json`);
     if (!telemetryLoaded) {
       if (fs.existsSync(telemetryPath)) {
@@ -363,15 +445,19 @@ async function runReviewUntilGreen(options) {
     let slotAllocation = Promise.resolve();
     const launch = async (input) => {
       const artifactPath = artifactDestinationFromPrompt(input.prompt, input.stateDir);
+      const isFix = input.role === 'fix';
+      const provider = isFix ? fixer : reviewer;
+      const requestedModel = isFix ? fixerModel : reviewerModel;
       let telemetrySlot = null;
-      if (artifactPath) {
+      if (artifactPath && provider === 'codex') {
         const allocation = slotAllocation.then(() => cli(['telemetry-slot', ref, artifactPath, '--engine', 'codex']));
         slotAllocation = allocation.catch(() => {});
         telemetrySlot = await allocation;
       }
       return invoke(spawn, {
         ...input,
-        ...(options.model ? { requestedModel: options.model } : {}),
+        provider,
+        ...(requestedModel ? { requestedModel } : {}),
         ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
         ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
         ...(telemetrySlot ? { telemetrySlot } : {}),
@@ -425,4 +511,4 @@ async function runReviewUntilGreen(options) {
   }
 }
 
-module.exports = { runReviewUntilGreen, reviewerPrompt, codexExec, jsonCli, resolveDefaultBase };
+module.exports = { runReviewUntilGreen, reviewerPrompt, codexExec, providerExec, jsonCli, resolveDefaultBase };

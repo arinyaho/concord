@@ -111,14 +111,14 @@ const updatedManifests = manifests.map((manifestPath) => {
 
 const marketplaceText = fs.readFileSync(marketplacePath, 'utf8');
 const marketplace = JSON.parse(marketplaceText);
-const copilotPlugins = marketplace.plugins?.filter(({ name }) => name === 'concord-copilot') || [];
+const copilotPlugins = marketplace.plugins?.filter(({ name }) => name === 'concord') || [];
 if (typeof marketplace.metadata?.version !== 'string' || copilotPlugins.length !== 1 || typeof copilotPlugins[0].version !== 'string') {
-  throw new Error('Copilot marketplace must contain metadata and concord-copilot versions');
+  throw new Error('Copilot marketplace must contain metadata and concord versions');
 }
 const updatedMarketplace = {
   ...marketplace,
   metadata: { ...marketplace.metadata, version: releaseVersion },
-  plugins: marketplace.plugins.map((plugin) => plugin.name === 'concord-copilot'
+  plugins: marketplace.plugins.map((plugin) => plugin.name === 'concord'
     ? { ...plugin, version: releaseVersion }
     : plugin),
 };

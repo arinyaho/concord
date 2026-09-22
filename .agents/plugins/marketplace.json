@@ -3,7 +3,7 @@
   "interface": { "displayName": "Concord (Codex)" },
   "plugins": [
     {
-      "name": "concord-codex",
+      "name": "concord",
       "source": { "source": "local", "path": "./plugins/concord-codex" },
       "policy": { "installation": "AVAILABLE", "authentication": "ON_USE" },
       "category": "Developer Tools"

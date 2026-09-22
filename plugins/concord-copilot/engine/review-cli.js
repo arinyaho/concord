@@ -189,6 +189,11 @@ function renderHandoff(result) {
   const lines = [];
   lines.push(`review-until-green: target ${ledger.target && ledger.target.ref} -- status: ${ledger.status}`);
   lines.push(`rounds: ${ledger.round}/${ledger.budget.max_rounds} (spent ${ledger.budget.spent})`);
+  if (ledger.reviewRouting) {
+    const reviewer = `${ledger.reviewRouting.reviewer || 'host-default'}${ledger.reviewRouting.reviewerModel ? ` (${ledger.reviewRouting.reviewerModel})` : ''}`;
+    const fixer = `${ledger.reviewRouting.fixer || 'host-default'}${ledger.reviewRouting.fixerModel ? ` (${ledger.reviewRouting.fixerModel})` : ''}`;
+    lines.push(`routing: reviewer ${reviewer}; fixer ${fixer}`);
+  }
   if (ledger.engine) lines.push(`reviewer engine: ${ledger.engine}`);
   if (ledger.telemetry) lines.push(`review usage: ${ledger.telemetry.totalTokens ?? 'unknown'} tokens across ${ledger.telemetry.calls} call(s), ${ledger.telemetry.partialCalls} partial${ledger.telemetry.missingCalls ? `, ${ledger.telemetry.missingCalls} missing` : ''}${ledger.telemetry.malformedCalls ? `, ${ledger.telemetry.malformedCalls} malformed` : ''}`);
   for (const r of ledger.runs || []) {
@@ -631,6 +636,39 @@ function main(resolveFromCwd) {
     const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
     const slug = targetSlug(ref);
     let ledger = readLedger(stateDir, slug) || emptyLedger({ kind: 'local', ref });
+    const ROUTING_FLAGS = new Map([
+      ['--reviewer', 'reviewer'],
+      ['--reviewer-model', 'reviewerModel'],
+      ['--fixer', 'fixer'],
+      ['--fixer-model', 'fixerModel'],
+    ]);
+    const routingIndexes = new Set();
+    const requestedRouting = {};
+    for (let index = 0; index < rest.length; index++) {
+      const field = ROUTING_FLAGS.get(rest[index]);
+      if (!field) continue;
+      const value = rest[index + 1];
+      if (!value || value.startsWith('--') || Object.hasOwn(requestedRouting, field)) {
+        throw new Error(`review-cli round-start: ${rest[index]} requires exactly one value`);
+      }
+      requestedRouting[field] = value;
+      routingIndexes.add(index);
+      routingIndexes.add(index + 1);
+      index++;
+    }
+    for (const field of ['reviewer', 'fixer']) {
+      if (requestedRouting[field] && !['claude', 'codex', 'copilot'].includes(requestedRouting[field])) {
+        throw new Error(`review-cli round-start: --${field} must be claude, codex, or copilot`);
+      }
+    }
+    if (ledger.reviewRouting) {
+      for (const [field, value] of Object.entries(requestedRouting)) {
+        if (ledger.reviewRouting[field] !== value) {
+          throw new Error('review-cli round-start: routing differs from the active run; reset or rerun before changing provider or model');
+        }
+      }
+    }
+    const reviewRouting = ledger.reviewRouting || (Object.keys(requestedRouting).length ? requestedRouting : null);
 
     // Captured before the clearing paths below wipe intent_parked. Handed to the
     // intent detector so the SAME objection keeps the SAME id across rounds --
@@ -698,7 +736,7 @@ function main(resolveFromCwd) {
     // to a pass.
     const NO_DOD_FLAGS = new Set(['--no-dod']);
     const noDodFlagPassed = rest.some((a) => NO_DOD_FLAGS.has(a));
-    const positional = rest.filter((a) => !BROAD_FLAGS.has(a) && !NO_BROAD_FLAGS.has(a) && !NO_DOD_FLAGS.has(a));
+    const positional = rest.filter((a, index) => !BROAD_FLAGS.has(a) && !NO_BROAD_FLAGS.has(a) && !NO_DOD_FLAGS.has(a) && !routingIndexes.has(index));
     for (const tok of positional) {
       if (tok.startsWith('--')) throw new Error(`review-cli round-start: unknown flag "${tok}"`);
     }
@@ -939,6 +977,7 @@ function main(resolveFromCwd) {
       gateApplied,
       gate_rounds: gateApplied && !gateRounds.includes(ledger.round) ? [...gateRounds, ledger.round] : gateRounds,
       dodDeferred,
+      reviewRouting,
       target: targetUpdate,
     };
     writeLedger(stateDir, slug, ledger);
@@ -946,7 +985,7 @@ function main(resolveFromCwd) {
     // `true` means "nothing blocked the round", not "the gate ran and passed" --
     // a driver that turns it into "DoD already passed; do not rerun tests" would
     // be removing the last real check. dodDeferred is how a caller tells them apart.
-    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, dodDeferred: !!dod.deferred, intentApplied: !!intentCfg, priorIntentIds, gateApplied, targetType, stateDir }) + '\n');
+    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, dodDeferred: !!dod.deferred, intentApplied: !!intentCfg, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir }) + '\n');
     return;
   }
 
@@ -1371,6 +1410,7 @@ function main(resolveFromCwd) {
     const runs = (prior.runs || []).concat([{
       run: (prior.runs || []).length + 1,
       engine: prior.engine || null,
+      reviewRouting: prior.reviewRouting || null,
       status: prior.status,
       rounds: prior.round || 0,
       fixed: (prior.findings || []).filter((f) => f.status === 'fixed').map((f) => ({ id: f.id, summary: f.summary, fix_commit: f.fix_commit })),
