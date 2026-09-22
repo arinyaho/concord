@@ -15,6 +15,7 @@ const path = require('node:path');
 const REPO = path.join(__dirname, '..', '..', '..', '..');
 const HANDOFF_CONTRACT = path.join(REPO, 'plugins/concord/skills/initiative-to-prs/references/handoff-contract.md');
 const HANDOFF_CONTRACT_CODEX = path.join(REPO, 'plugins/concord-codex/skills/initiative-to-prs/references/handoff-contract.md');
+const HANDOFF_CONTRACT_COPILOT = path.join(REPO, 'plugins/concord-copilot/skills/initiative-to-prs/references/handoff-contract.md');
 
 // A session touches the same document at each of these points while doing
 // unrelated work in between (mirrors ticket-to-pr stages 1, 3, and 9 all
@@ -60,7 +61,9 @@ test('read-once discipline reduces repeated re-Reads of the same document', () =
 test('the read-once discipline the demo models is actually documented', () => {
   const claude = fs.readFileSync(HANDOFF_CONTRACT, 'utf8');
   const codex = fs.readFileSync(HANDOFF_CONTRACT_CODEX, 'utf8');
+  const copilot = fs.readFileSync(HANDOFF_CONTRACT_COPILOT, 'utf8');
   assert.match(claude, /## Read-once discipline/);
   assert.match(claude, /consult the note first/);
   assert.equal(codex, claude, 'concord-codex handoff-contract.md drifted from the shared source');
+  assert.equal(copilot, claude, 'concord-copilot handoff-contract.md drifted from the shared source');
 });
