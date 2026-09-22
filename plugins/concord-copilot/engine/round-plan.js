@@ -6,10 +6,14 @@
 // live session itself spawn subagents by following plugins/concord/core/
 // review-driver.md verbatim. The spawn mechanism differs structurally and
 // stays separate in each caller; this module is the single source for what
-// gets spawned, in what sequence, and with what wording. review-driver.md
-// embeds this module's prompt fragments byte-for-byte where it names them
-// (see round-plan-sync.test.js); the JS callers use reviewerPrompt() to
-// generate the prompt they actually send.
+// gets spawned, in what sequence, and with what wording. Three
+// review-driver.md-shaped artifacts exist -- core/review-driver.md, the
+// hand-composed commands/review-until-green.md, and the Copilot-vendored
+// skills/review-until-green/references/review-driver.md -- and each embeds
+// this module's prompt fragments byte-for-byte where it names them;
+// round-plan-sync.test.js enforces all three individually (see that file's
+// own tests, not a single blanket guarantee). The JS callers use
+// reviewerPrompt() to generate the prompt they actually send.
 const path = require('node:path');
 
 // Order and parallelism, mirrored by review-driver.md steps 2-3 and

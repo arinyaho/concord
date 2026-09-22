@@ -59,3 +59,20 @@ test('the vendored Codex engine copy of round-plan.js is byte-identical to core 
   const src = fs.readFileSync(path.join(CORE, 'round-plan.js'));
   assert.ok(fs.readFileSync(vendored).equals(src), 'plugins/concord-codex/engine/round-plan.js drifted -- re-run node plugins/concord-codex/bin/bundle.mjs');
 });
+
+test('the Copilot-vendored review-driver.md copy embeds GATE_SWEEP_CLAUSE byte-for-byte', () => {
+  // Unlike round-plan.js (a generic byte-identity test in copilot-package.test.js
+  // already covers its vendored copies), this file is produced by a plain
+  // fs.copyFileSync in plugins/concord-copilot/bin/bundle.mjs with no
+  // byte-identity guard of its own -- so it must be checked directly here,
+  // the same way core/review-driver.md and commands/review-until-green.md are.
+  const REPO = path.join(__dirname, '..', '..', '..', '..');
+  const copilotDriverText = fs.readFileSync(
+    path.join(REPO, 'plugins/concord-copilot/skills/review-until-green/references/review-driver.md'),
+    'utf8',
+  );
+  assert.ok(
+    copilotDriverText.includes(GATE_SWEEP_CLAUSE),
+    'plugins/concord-copilot/skills/review-until-green/references/review-driver.md gate-review prompt has drifted from round-plan.js GATE_SWEEP_CLAUSE -- re-run node plugins/concord-copilot/bin/bundle.mjs',
+  );
+});
