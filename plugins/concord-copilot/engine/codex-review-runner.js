@@ -166,13 +166,23 @@ function providerExec(input) {
   const providerName = provider === 'claude' ? 'anthropic' : 'github';
   const providerSchema = provider === 'claude' ? 'claude-print-json-v1' : 'copilot-prompt-v1';
 
+  const OUTPUT_LIMIT = 4000;
+  const truncate = (text) => (text.length > OUTPUT_LIMIT ? `${text.slice(0, OUTPUT_LIMIT)}\n...(truncated)` : text);
+
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { cwd: repoRoot, stdio: ['ignore', 'ignore', 'ignore'] });
+    const child = spawn(executable, args, { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
     child.once('error', (error) => {
       error.telemetry = {
         status: 'failed', role, engine: provider, provider: providerName, providerSchema,
         requestedModel, resolvedModel: 'unavailable', invocationId,
         elapsedMs: Date.now() - startedAt, usagePartial: true,
+        stdout: truncate(stdout), stderr: truncate(stderr),
       };
       reject(error);
     });
@@ -180,6 +190,7 @@ function providerExec(input) {
       status, role, engine: provider, provider: providerName, providerSchema,
       requestedModel, resolvedModel: 'unavailable', invocationId,
       elapsedMs: Date.now() - startedAt, usagePartial: true,
+      stdout: truncate(stdout), stderr: truncate(stderr),
     }));
   });
 }
