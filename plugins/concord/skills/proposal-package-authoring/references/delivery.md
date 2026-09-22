@@ -23,6 +23,7 @@ Treat PPTX and PDF downloadability as a delivery requirement, not cleanup after 
 - Run whole-deck PPTX and PDF verification before submission and after changes to the master, shared layouts, theme fonts, page size, slide order, or other cross-slide structures.
 - Measure PPTX and PDF sizes against the budget and confirm both files can be downloaded, opened, and shared through the intended channel.
 - At whole-deck verification, render every slide and inspect a montage plus full-size views of dense or high-risk pages.
+- Delegate that inspection to a subagent instead of loading each render into your own context: give it the rendered image and the exact check (clipping in this region, a substituted font, whether this crop matches spec), and have it return only the extracted finding — a verdict, the offending region, or the exact text — never the full image. Load a render directly yourself only when the same look-and-feel judgment must be compared holistically across many pages at once and no single per-page check would substitute.
 - Check clipping, overlap, substituted fonts, unintended line breaks, chart and table legibility, image quality, alignment, and background changes.
 - Confirm notes, links, and slide order survived conversion.
 - Reopen the final artifact in the target editor when possible and verify intended content remains editable.
