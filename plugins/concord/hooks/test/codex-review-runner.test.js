@@ -855,6 +855,32 @@ test('resuming a run started with non-default routing does not resend the codex 
   assert.strictEqual(fix[3], 'copilot');
 });
 
+test('resuming a run started with a pinned model restores it instead of dropping to the provider default', async () => {
+  // round-start's ledger restores reviewer/fixer provider on resume, but the
+  // runner used to keep reading options.reviewerModel/fixerModel directly for
+  // launch() -- unset on a bare `resume` call -- silently dropping a model
+  // that was pinned when the run started. This exercises the resume path
+  // end-to-end so the dropped field cannot hide behind review-cli.js's own tests.
+  const h = harness();
+  h.cli = ((original) => (args) => {
+    const result = original(args);
+    if (args[0] === 'round-start') {
+      result.reviewRouting = { reviewer: 'claude', reviewerModel: 'claude-opus-4-1', fixer: 'copilot', fixerModel: 'gpt-5.2' };
+    }
+    return result;
+  })(h.cli);
+  const requestedModels = [];
+  const spawn = (input) => {
+    requestedModels.push([input.role, input.requestedModel]);
+    return h.spawn(input);
+  };
+  await runReviewUntilGreen({ ref: 'feature/x', resume: true, repoRoot: '/repo', runCli: h.cli, spawn });
+  const correctness = requestedModels.find(([role]) => role === 'correctness');
+  const fix = requestedModels.find(([role]) => role === 'fix');
+  assert.strictEqual(correctness[1], 'claude-opus-4-1');
+  assert.strictEqual(fix[1], 'gpt-5.2');
+});
+
 test('default base resolution uses an available remote HEAD without assuming origin', () => {
   const calls = [];
   const base = resolveDefaultBase('/repo', (bin, args) => {

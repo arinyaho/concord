@@ -257,6 +257,8 @@ async function runReviewUntilGreen(options) {
   const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot));
   let reviewer = options.reviewer || 'codex';
   let fixer = options.fixer || 'codex';
+  let reviewerModel = options.reviewerModel;
+  let fixerModel = options.fixerModel;
   for (const provider of [reviewer, fixer]) {
     if (!PROVIDERS.has(provider)) throw new Error(`review-until-green: unsupported provider "${provider}"`);
   }
@@ -416,6 +418,8 @@ async function runReviewUntilGreen(options) {
     if (started.reviewRouting) {
       reviewer = started.reviewRouting.reviewer || reviewer;
       fixer = started.reviewRouting.fixer || fixer;
+      reviewerModel = started.reviewRouting.reviewerModel || reviewerModel;
+      fixerModel = started.reviewRouting.fixerModel || fixerModel;
     }
     if (!telemetryPath) telemetryPath = path.join(started.stateDir, `telemetry-${targetSlug(ref)}.json`);
     if (!telemetryLoaded) {
@@ -443,7 +447,7 @@ async function runReviewUntilGreen(options) {
       const artifactPath = artifactDestinationFromPrompt(input.prompt, input.stateDir);
       const isFix = input.role === 'fix';
       const provider = isFix ? fixer : reviewer;
-      const requestedModel = isFix ? options.fixerModel : options.reviewerModel;
+      const requestedModel = isFix ? fixerModel : reviewerModel;
       let telemetrySlot = null;
       if (artifactPath && provider === 'codex') {
         const allocation = slotAllocation.then(() => cli(['telemetry-slot', ref, artifactPath, '--engine', 'codex']));
