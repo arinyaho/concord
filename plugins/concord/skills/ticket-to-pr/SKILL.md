@@ -47,7 +47,7 @@ Stages 1, 3 and 5 have no single owner here — use whatever the repository alre
 
 Unless the user explicitly directs otherwise, keep implementation and review with the active agent; do not hand either stage to another AI. When the user, selected model, or CLI harness expressly requires subagents, create only the required subagents. A review must be independent of each agent whose change it assesses. Where their models can be selected, prefer Terra or Sonnet over GPT Sol or Claude Opus; choose the reasoning effort appropriate to the work.
 
-If a caller (e.g. `initiative-to-prs`) has already delegated stage 6 implementation to a subagent and that subagent runs stage 7's `/review-until-green` itself, the harness-specific spawn-include (see `review-until-green`'s driver) governs how that subagent must spawn its own reviewer subagents — it must block on each sequential spawn rather than relying on the harness's async default, or the loop stalls every round waiting for an external nudge.
+If a caller (e.g. `initiative-to-prs`) has already delegated stage 6 implementation to a subagent and that subagent runs stage 7's `/review-until-green` itself, that nested invocation must still converge without needing an external nudge to resume it. On a harness whose subagent primitive defaults to background/async execution, the session driving `review-until-green` must force each reviewer spawn it owns to block synchronously (see `review-until-green`'s own harness-specific driver for how) — an idle nested loop waiting on a notification that never reaches it is the failure mode to avoid.
 
 ## Stage 2 is the one that gets skipped
 
