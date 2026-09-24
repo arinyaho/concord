@@ -9,7 +9,11 @@
 // Decision: warn, never block. A hard gate on grep/rg would also stop a legitimate large
 // sweep the model has correctly decided not to delegate (e.g. its answer feeds the very
 // next tool call, per the skill's own "when not to" list); a non-blocking reminder costs
-// nothing when the model was already right to proceed.
+// nothing when the model was already right to proceed. This is also why the hook fires on
+// PostToolUse rather than PreToolUse: PreToolUse's hookSpecificOutput schema has no
+// additionalContext field (only permissionDecision/permissionDecisionReason/updatedInput),
+// so a PreToolUse reminder is silently dropped by the runtime. PostToolUse supports
+// additionalContext and, since the Bash call already ran, there is nothing left to block.
 //
 // Trade-off: the word-boundary match on `grep`/`rg` accepts occasional false positives
 // (the words appearing inside an unrelated command string) in exchange for a single cheap

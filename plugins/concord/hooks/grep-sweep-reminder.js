@@ -13,8 +13,7 @@ try {
     if (shouldRemind(count)) {
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          permissionDecision: 'allow',
+          hookEventName: 'PostToolUse',
           additionalContext: reminderText(count),
         },
       }));

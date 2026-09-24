@@ -1,7 +1,10 @@
 'use strict';
-// Proves the three acceptance criteria from the "PreToolUse 훅으로 grep 스윕 임계치
+// Proves the three acceptance criteria from the "PostToolUse 훅으로 grep 스윕 임계치
 // 리마인더 강제" ticket: (1) no reminder under threshold, (2) a reminder is injected at/after
-// threshold, (3) the Bash call is never blocked regardless of threshold state.
+// threshold, (3) the Bash call is never blocked regardless of threshold state. Runs on
+// PostToolUse (not PreToolUse) because only PostToolUse's hookSpecificOutput schema supports
+// additionalContext; PostToolUse also has no permissionDecision mechanism at all, so "never
+// blocks" is structurally guaranteed rather than merely asserted.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -17,7 +20,7 @@ function setup() {
 }
 
 function bashEvent(sessionId, transcript, command) {
-  return { session_id: sessionId, transcript_path: transcript, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } };
+  return { session_id: sessionId, transcript_path: transcript, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command } };
 }
 
 function run(event) {
@@ -38,7 +41,7 @@ test('grep-sweep-reminder: a reminder is injected once the threshold is reached'
   let out = null;
   for (let i = 0; i < 10; i += 1) out = run(bashEvent(sessionId, transcript, 'grep -rn foo src/'));
   assert.ok(out, 'expected a reminder at the 10th matching call');
-  assert.equal(out.hookSpecificOutput.hookEventName, 'PreToolUse');
+  assert.equal(out.hookSpecificOutput.hookEventName, 'PostToolUse');
   assert.match(out.hookSpecificOutput.additionalContext, /delegate-verbose-work/);
 });
 
@@ -52,11 +55,13 @@ test('grep-sweep-reminder: keeps reminding periodically past the threshold, not 
   assert.deepEqual(reminders, [10, 20]);
 });
 
-test('grep-sweep-reminder: never sets a deny/ask permissionDecision, at or past threshold', () => {
+test('grep-sweep-reminder: never emits a permissionDecision, at or past threshold', () => {
+  // PostToolUse has no permissionDecision mechanism at all — the tool already ran by the
+  // time this hook fires — so "never blocks" means the field is simply never present.
   const { transcript, sessionId } = setup();
   for (let i = 0; i < 12; i += 1) {
     const out = run(bashEvent(sessionId, transcript, 'grep -rn foo src/'));
-    if (out) assert.equal(out.hookSpecificOutput.permissionDecision, 'allow');
+    if (out) assert.equal(out.hookSpecificOutput.permissionDecision, undefined);
   }
 });
 
