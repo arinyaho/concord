@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import url from 'node:url';
+import { NOT_YET_WIRED } from './bundle-exclusions.mjs';
 
 const here = path.dirname(url.fileURLToPath(import.meta.url));           // plugins/concord-codex/bin
 const codexRoot = path.dirname(here);                                     // plugins/concord-codex
@@ -18,7 +19,7 @@ fs.rmSync(engineDir, { recursive: true, force: true });
 fs.mkdirSync(engineDir, { recursive: true });
 
 let n = 0;
-for (const f of fs.readdirSync(coreDir).filter((f) => f.endsWith('.js'))) {
+for (const f of fs.readdirSync(coreDir).filter((f) => f.endsWith('.js') && !NOT_YET_WIRED.has(f))) {
   fs.copyFileSync(path.join(coreDir, f), path.join(engineDir, f));
   n++;
 }

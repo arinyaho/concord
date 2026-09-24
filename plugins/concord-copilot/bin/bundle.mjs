@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { NOT_YET_WIRED } from './bundle-exclusions.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const copilotRoot = path.dirname(here);
@@ -15,7 +16,7 @@ const packagedSkillsDir = path.join(copilotRoot, 'skills');
 fs.rmSync(engineDir, { recursive: true, force: true });
 fs.mkdirSync(engineDir, { recursive: true });
 
-const files = fs.readdirSync(coreDir).filter((file) => file.endsWith('.js'));
+const files = fs.readdirSync(coreDir).filter((file) => file.endsWith('.js') && !NOT_YET_WIRED.has(file));
 for (const file of files) {
   fs.copyFileSync(path.join(coreDir, file), path.join(engineDir, file));
 }

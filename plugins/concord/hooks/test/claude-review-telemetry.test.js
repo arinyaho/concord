@@ -966,11 +966,21 @@ test('a persisted attempt slot with its entire hook missing remains visible but 
 
 test('Claude hook manifest registers tool telemetry and SubagentStop', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'hooks.json'), 'utf8'));
-  for (const hook of ['PreToolUse', 'PostToolUse', 'PostToolUseFailure']) {
-    assert.strictEqual(manifest.hooks[hook].length, 1);
+  const postTelemetryEntry = manifest.hooks.PostToolUse.find((entry) => entry.matcher === 'Agent|Task');
+  assert.ok(postTelemetryEntry, 'PostToolUse must still register the Agent|Task telemetry entry');
+  assert.match(postTelemetryEntry.hooks[0].command, /review-telemetry\.js/);
+  for (const hook of ['PreToolUse', 'PostToolUseFailure']) {
+    assert.strictEqual(manifest.hooks[hook].length, 1, `${hook} must have exactly one entry`);
     assert.strictEqual(manifest.hooks[hook][0].matcher, 'Agent|Task');
     assert.match(manifest.hooks[hook][0].hooks[0].command, /review-telemetry\.js/);
   }
   assert.strictEqual(manifest.hooks.SubagentStop.length, 1);
   assert.match(manifest.hooks.SubagentStop[0].hooks[0].command, /review-telemetry\.js/);
+});
+
+test('Claude hook manifest registers the grep-sweep reminder on Bash PostToolUse without touching the telemetry entry', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'hooks.json'), 'utf8'));
+  const reminderEntry = manifest.hooks.PostToolUse.find((entry) => entry.matcher === 'Bash');
+  assert.ok(reminderEntry, 'PostToolUse must register a Bash-matched entry for the grep-sweep reminder');
+  assert.match(reminderEntry.hooks[0].command, /grep-sweep-reminder\.js/);
 });

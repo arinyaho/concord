@@ -18,6 +18,9 @@
     "PostToolUse": [
       { "matcher": "Agent|Task", "hooks": [
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/review-telemetry.js\"" }
+        ] },
+      { "matcher": "Bash", "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/grep-sweep-reminder.js\"" }
         ] }
     ],
     "PostToolUseFailure": [
