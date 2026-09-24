@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { NOT_YET_WIRED } from './bundle-exclusions.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const copilotRoot = path.dirname(here);
@@ -11,10 +12,6 @@ const adapterDir = path.join(repoRoot, 'plugins/concord/adapters/copilot');
 const engineDir = path.join(copilotRoot, 'engine');
 const sharedSkillsDir = path.join(repoRoot, 'plugins/concord/skills');
 const packagedSkillsDir = path.join(copilotRoot, 'skills');
-
-// Core files with no PreToolUse/Bash-equivalent hook wired up in this plugin yet.
-// Vendoring them would ship dead code. Add back once a consumer exists here.
-export const NOT_YET_WIRED = new Set(['grep-sweep-reminder.js']);
 
 fs.rmSync(engineDir, { recursive: true, force: true });
 fs.mkdirSync(engineDir, { recursive: true });

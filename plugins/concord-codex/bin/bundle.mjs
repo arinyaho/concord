@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import url from 'node:url';
+import { NOT_YET_WIRED } from './bundle-exclusions.mjs';
 
 const here = path.dirname(url.fileURLToPath(import.meta.url));           // plugins/concord-codex/bin
 const codexRoot = path.dirname(here);                                     // plugins/concord-codex
@@ -13,10 +14,6 @@ const repoRoot = path.dirname(path.dirname(codexRoot));                   // rep
 const coreDir = path.join(repoRoot, 'plugins/concord/core');
 const codexAdaptersDir = path.join(repoRoot, 'plugins/concord/adapters/codex');
 const engineDir = path.join(codexRoot, 'engine');
-
-// Core files with no PreToolUse/Bash-equivalent hook wired up in this plugin yet.
-// Vendoring them would ship dead code. Add back once a consumer exists here.
-export const NOT_YET_WIRED = new Set(['grep-sweep-reminder.js']);
 
 fs.rmSync(engineDir, { recursive: true, force: true });
 fs.mkdirSync(engineDir, { recursive: true });

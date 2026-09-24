@@ -9,7 +9,7 @@ const url = require('node:url');
 
 const REPO = path.join(__dirname, '..', '..', '..', '..');
 const COPILOT = path.join(REPO, 'plugins/concord-copilot');
-const BUNDLE = path.join(COPILOT, 'bin/bundle.mjs');
+const BUNDLE_EXCLUSIONS = path.join(COPILOT, 'bin/bundle-exclusions.mjs');
 const pluginInstallE2ETest = process.env.CONCORD_RUN_PLUGIN_INSTALL_E2E === '1' ? test : test.skip;
 
 function read(relativePath) {
@@ -175,7 +175,7 @@ pluginInstallE2ETest('clean Copilot config installs, updates, and removes the pl
 });
 
 test('Copilot engine is byte-identical to shared core and Copilot adapters', async () => {
-  const { NOT_YET_WIRED } = await import(url.pathToFileURL(BUNDLE));
+  const { NOT_YET_WIRED } = await import(url.pathToFileURL(BUNDLE_EXCLUSIONS));
   const core = path.join(REPO, 'plugins/concord/core');
   const adapter = path.join(REPO, 'plugins/concord/adapters/copilot');
   const engine = path.join(COPILOT, 'engine');

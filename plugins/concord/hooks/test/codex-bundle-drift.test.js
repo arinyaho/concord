@@ -13,10 +13,10 @@ const CORE = path.join(REPO, 'plugins/concord/core');
 const CODEX_ADAPTERS = path.join(REPO, 'plugins/concord/adapters/codex');
 const CODEX_STATEDIR = path.join(CODEX_ADAPTERS, 'statedir.js');
 const ENGINE = path.join(REPO, 'plugins/concord-codex/engine');
-const BUNDLE = path.join(REPO, 'plugins/concord-codex/bin/bundle.mjs');
+const BUNDLE_EXCLUSIONS = path.join(REPO, 'plugins/concord-codex/bin/bundle-exclusions.mjs');
 
 test('codex engine is byte-identical to core/*.js (run bin/bundle.mjs if this fails)', async () => {
-  const { NOT_YET_WIRED } = await import(url.pathToFileURL(BUNDLE));
+  const { NOT_YET_WIRED } = await import(url.pathToFileURL(BUNDLE_EXCLUSIONS));
   const coreFiles = fs.readdirSync(CORE).filter((f) => f.endsWith('.js') && !NOT_YET_WIRED.has(f)).sort();
   for (const f of coreFiles) {
     const src = fs.readFileSync(path.join(CORE, f));
@@ -40,7 +40,7 @@ test('codex engine transcript/event adapters are byte-identical to adapters/code
 });
 
 test('codex engine has exactly the expected file set (no stale/missing)', async () => {
-  const { NOT_YET_WIRED } = await import(url.pathToFileURL(BUNDLE));
+  const { NOT_YET_WIRED } = await import(url.pathToFileURL(BUNDLE_EXCLUSIONS));
   const expected = new Set(
     fs.readdirSync(CORE).filter((f) => f.endsWith('.js') && !NOT_YET_WIRED.has(f)).concat('statedir.js', 'transcript.js', 'event.js')
   );
