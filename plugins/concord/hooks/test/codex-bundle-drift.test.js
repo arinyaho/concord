@@ -6,15 +6,18 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
+const url = require('node:url');
 
 const REPO = path.join(__dirname, '..', '..', '..', '..');       // repo root
 const CORE = path.join(REPO, 'plugins/concord/core');
 const CODEX_ADAPTERS = path.join(REPO, 'plugins/concord/adapters/codex');
 const CODEX_STATEDIR = path.join(CODEX_ADAPTERS, 'statedir.js');
 const ENGINE = path.join(REPO, 'plugins/concord-codex/engine');
+const BUNDLE_EXCLUSIONS = path.join(REPO, 'plugins/concord-codex/bin/bundle-exclusions.mjs');
 
-test('codex engine is byte-identical to core/*.js (run bin/bundle.mjs if this fails)', () => {
-  const coreFiles = fs.readdirSync(CORE).filter((f) => f.endsWith('.js')).sort();
+test('codex engine is byte-identical to core/*.js (run bin/bundle.mjs if this fails)', async () => {
+  const { NOT_YET_WIRED } = await import(url.pathToFileURL(BUNDLE_EXCLUSIONS));
+  const coreFiles = fs.readdirSync(CORE).filter((f) => f.endsWith('.js') && !NOT_YET_WIRED.has(f)).sort();
   for (const f of coreFiles) {
     const src = fs.readFileSync(path.join(CORE, f));
     const vendored = fs.readFileSync(path.join(ENGINE, f));
@@ -36,9 +39,10 @@ test('codex engine transcript/event adapters are byte-identical to adapters/code
   }
 });
 
-test('codex engine has exactly the expected file set (no stale/missing)', () => {
+test('codex engine has exactly the expected file set (no stale/missing)', async () => {
+  const { NOT_YET_WIRED } = await import(url.pathToFileURL(BUNDLE_EXCLUSIONS));
   const expected = new Set(
-    fs.readdirSync(CORE).filter((f) => f.endsWith('.js')).concat('statedir.js', 'transcript.js', 'event.js')
+    fs.readdirSync(CORE).filter((f) => f.endsWith('.js') && !NOT_YET_WIRED.has(f)).concat('statedir.js', 'transcript.js', 'event.js')
   );
   const actual = new Set(fs.readdirSync(ENGINE).filter((f) => f.endsWith('.js')));
   assert.deepStrictEqual([...actual].sort(), [...expected].sort());
