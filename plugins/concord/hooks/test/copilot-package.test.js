@@ -5,9 +5,11 @@ const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const url = require('node:url');
 
 const REPO = path.join(__dirname, '..', '..', '..', '..');
 const COPILOT = path.join(REPO, 'plugins/concord-copilot');
+const BUNDLE = path.join(COPILOT, 'bin/bundle.mjs');
 const pluginInstallE2ETest = process.env.CONCORD_RUN_PLUGIN_INSTALL_E2E === '1' ? test : test.skip;
 
 function read(relativePath) {
@@ -172,15 +174,16 @@ pluginInstallE2ETest('clean Copilot config installs, updates, and removes the pl
   assert.ok(!/concord@/i.test(afterUninstall) || /concord@.*\(disabled\)/i.test(afterUninstall));
 });
 
-test('Copilot engine is byte-identical to shared core and Copilot adapters', () => {
+test('Copilot engine is byte-identical to shared core and Copilot adapters', async () => {
+  const { NOT_YET_WIRED } = await import(url.pathToFileURL(BUNDLE));
   const core = path.join(REPO, 'plugins/concord/core');
   const adapter = path.join(REPO, 'plugins/concord/adapters/copilot');
   const engine = path.join(COPILOT, 'engine');
-  const expected = fs.readdirSync(core).filter((file) => file.endsWith('.js')).concat('event.js', 'statedir.js').sort();
+  const expected = fs.readdirSync(core).filter((file) => file.endsWith('.js') && !NOT_YET_WIRED.has(file)).concat('event.js', 'statedir.js').sort();
   const actual = fs.readdirSync(engine).filter((file) => file.endsWith('.js')).sort();
   assert.deepEqual(actual, expected);
 
-  for (const file of fs.readdirSync(core).filter((name) => name.endsWith('.js'))) {
+  for (const file of fs.readdirSync(core).filter((name) => name.endsWith('.js') && !NOT_YET_WIRED.has(name))) {
     assert.ok(fs.readFileSync(path.join(core, file)).equals(fs.readFileSync(path.join(engine, file))), `${file} drifted`);
   }
   for (const file of ['event.js', 'statedir.js']) {

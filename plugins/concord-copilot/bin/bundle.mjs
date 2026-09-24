@@ -12,10 +12,14 @@ const engineDir = path.join(copilotRoot, 'engine');
 const sharedSkillsDir = path.join(repoRoot, 'plugins/concord/skills');
 const packagedSkillsDir = path.join(copilotRoot, 'skills');
 
+// Core files with no PreToolUse/Bash-equivalent hook wired up in this plugin yet.
+// Vendoring them would ship dead code. Add back once a consumer exists here.
+export const NOT_YET_WIRED = new Set(['grep-sweep-reminder.js']);
+
 fs.rmSync(engineDir, { recursive: true, force: true });
 fs.mkdirSync(engineDir, { recursive: true });
 
-const files = fs.readdirSync(coreDir).filter((file) => file.endsWith('.js'));
+const files = fs.readdirSync(coreDir).filter((file) => file.endsWith('.js') && !NOT_YET_WIRED.has(file));
 for (const file of files) {
   fs.copyFileSync(path.join(coreDir, file), path.join(engineDir, file));
 }

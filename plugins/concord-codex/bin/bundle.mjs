@@ -14,11 +14,15 @@ const coreDir = path.join(repoRoot, 'plugins/concord/core');
 const codexAdaptersDir = path.join(repoRoot, 'plugins/concord/adapters/codex');
 const engineDir = path.join(codexRoot, 'engine');
 
+// Core files with no PreToolUse/Bash-equivalent hook wired up in this plugin yet.
+// Vendoring them would ship dead code. Add back once a consumer exists here.
+export const NOT_YET_WIRED = new Set(['grep-sweep-reminder.js']);
+
 fs.rmSync(engineDir, { recursive: true, force: true });
 fs.mkdirSync(engineDir, { recursive: true });
 
 let n = 0;
-for (const f of fs.readdirSync(coreDir).filter((f) => f.endsWith('.js'))) {
+for (const f of fs.readdirSync(coreDir).filter((f) => f.endsWith('.js') && !NOT_YET_WIRED.has(f))) {
   fs.copyFileSync(path.join(coreDir, f), path.join(engineDir, f));
   n++;
 }
