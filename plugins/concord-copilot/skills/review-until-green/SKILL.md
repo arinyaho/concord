@@ -15,6 +15,8 @@ One driver step is unavailable in this harness: do not invoke `telemetry-slot`. 
 
 For a Copilot review role, invoke the native `Concord Reviewer` custom agent in clean context, passing `--reviewer-model` as the subagent model when supplied. For a Copilot fix role, invoke the native `Concord Fixer` custom agent sequentially and pass `--fixer-model` when supplied. Pass only the bounded driver prompt and write returned JSON verbatim to the requested artifact path.
 
+This repo has not verified whether Copilot Agent Host's native agent invocation blocks by default or, like Claude Code's `Agent` tool, defaults to background execution whose completion notification a *nested* delegated caller may not reliably receive (see `ticket-to-pr`'s Delegation section for that failure mode on Claude Code). If you are running as a delegated subagent and a spawned review or fix role appears to hang between rounds with no notification, treat it as this same class of stall and switch to an explicit blocking or polling invocation for the remainder of the run.
+
 For a non-Copilot role, invoke a clean provider CLI process in the repository root and require it to write the requested artifact directly:
 
 - Claude: `claude -p [--model <model>] --output-format json --no-session-persistence --permission-mode acceptEdits --permission-prompts none --add-dir <stateDir> "<prompt>"`

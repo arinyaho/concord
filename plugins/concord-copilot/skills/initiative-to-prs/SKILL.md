@@ -52,6 +52,8 @@ Keep the main agent on orchestration, decisions, state, and concise user briefin
 
 Model assignment is a plan, not an obligation to spawn. Delegate only when isolated context, independent work, or specialist judgment saves time or protects review independence. Keep dependent mutations sequential.
 
+An implementation child spawned here runs `ticket-to-pr`'s stages internally, including its own stage-7 `/review-until-green` invocation — see `ticket-to-pr`'s Delegation section for the blocking-spawn rule that prevents this nested case from stalling between rounds.
+
 ## Completion report
 
 Report the approved ticket set, ticket-to-PR result for each implementation unit, exact PR URLs and heads, checks actually run, tracker and design-document read-backs, blocked or no-change outcomes, and remaining risks. For a multi-repository outcome, name the integration owner, exact artifact versions, outcome-level verification status, and the gate that remains before `READY FOR TEST`. Distinguish PR creation from merge, release, deployment, QA acceptance, and customer availability.
