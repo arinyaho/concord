@@ -633,6 +633,19 @@ function main(resolveFromCwd) {
 
   if (verb === 'round-start') {
     requireRef(ref, 'round-start');
+    // "resume" is a review-until-green wrapper concept (bin/review-until-green.js
+    // parses `resume <ref>` and forwards just `<ref>` to round-start -- see
+    // codex-review-runner.js's `startArgs = ['round-start', ref]`). round-start
+    // itself has no such keyword; resuming an interrupted round is auto-detected
+    // from ledger.phase, and continuing after unpark is an ordinary round-start
+    // call. Passing the wrapper's `resume <ref>` syntax straight to round-start
+    // makes `ref` the literal string "resume" and shifts the real ref into the
+    // base slot, silently creating an unrelated ledger and never touching the
+    // real one. Fail fast instead of letting that surface several steps later
+    // as a confusing `expected phase "gates", got "done"` in plan-fixes.
+    if (ref === 'resume') {
+      throw new Error('review-cli round-start: "resume" is not a valid ref -- round-start auto-detects resume from ledger state; call `round-start <ref>` directly, or use the review-until-green wrapper\'s `resume <ref>` syntax, which forwards correctly');
+    }
     const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
     const slug = targetSlug(ref);
     let ledger = readLedger(stateDir, slug) || emptyLedger({ kind: 'local', ref });

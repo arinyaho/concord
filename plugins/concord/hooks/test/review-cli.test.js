@@ -260,6 +260,44 @@ test('round-start: resume with no base arg falls back to the persisted target.ba
   assert.ok(diffText.trim().length > 0, 'resumed round-start must diff against the persisted base, not an empty `git diff HEAD`');
 });
 
+// round-start has no "resume" keyword -- that syntax belongs to the
+// review-until-green wrapper, which extracts the real ref and never forwards
+// the literal token. Passing the wrapper's `resume <ref>` form straight to
+// round-start must fail fast rather than silently treat "resume" as the ref
+// (creating an unrelated ledger) and the real ref as the base.
+test('round-start: rejects a literal "resume" ref instead of creating a phantom ledger', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  assert.throws(() => run(['round-start', 'resume', 'feat/x'], { env }), /"resume" is not a valid ref/);
+  assert.ok(!fs.existsSync(path.join(dir, `review-${review.targetSlug('resume')}.json`)));
+});
+
+// After unpark, an ordinary round-start <ref> call (no literal "resume") must
+// update phase/head_sha -- the phase/resume state machine itself is correct;
+// only the literal-"resume" misuse above needs guarding.
+test('round-start: after unpark, an ordinary round-start <ref> call updates phase and head_sha', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const baseSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  run(['round-start', 'feat/x', baseSha], { env }); // fresh round 1, base persisted as target.base
+  const slug = review.targetSlug('feat/x');
+  let l = review.readLedger(dir, slug);
+  l = { ...l, status: 'parked', phase: 'done', last_recorded_round: 1, findings: [{ id: 'f1', gate: 'correctness', file: 'a.txt', status: 'parked', park_reason: 'needs-decision' }] };
+  review.writeLedger(dir, slug, l);
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change after park'], { cwd: repo });
+  const realHeadSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+
+  run(['unpark', 'feat/x', 'f1'], { env });
+  run(['round-start', 'feat/x'], { env }); // no base arg -- must fall back to persisted target.base
+
+  const after = review.readLedger(dir, slug);
+  assert.strictEqual(after.phase, 'gates');
+  assert.strictEqual(after.target.head_sha, realHeadSha);
+});
+
 test('review-cli unpark: reopens a parked finding', () => {
   const dir = tmpDir();
   const slug = review.targetSlug('feat/x');
