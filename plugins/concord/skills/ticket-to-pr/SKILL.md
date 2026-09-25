@@ -49,7 +49,7 @@ Unless the user explicitly directs otherwise, keep routine implementation and re
 
 When implementation or review raises a new material architecture or behavioral choice, pause only dependent work and have a deep-capability agent assess the specific options before accepting an implementation direction. The implementer may continue independent work.
 
-For a material cryptography, security, or migration choice, also require a separate deep-capability reviewer with a packet built from source evidence and the proposed decision, excluding the responsible agent's reasoning; reconcile disagreement before dependent work resumes.
+For a material cryptography, security, migration, or public-API choice, also require a separate deep-capability reviewer with a packet built from source evidence and the proposed decision, excluding the responsible agent's reasoning; reconcile disagreement before dependent work resumes. This applies to a standalone ticket even when the ticket already approves the material contract: assess its specific options before implementing it.
 
 If a caller (e.g. `initiative-to-prs`) has already delegated stage 6 implementation to a subagent and that subagent runs stage 7's `/review-until-green` itself, that nested invocation must still converge without needing an external nudge to resume it. On a harness whose subagent primitive defaults to background/async execution, the session driving `review-until-green` must force each reviewer spawn it owns to block synchronously (see `review-until-green`'s own harness-specific driver for how) — an idle nested loop waiting on a notification that never reaches it is the failure mode to avoid.
 
