@@ -1,43 +1,37 @@
 # Model routing
 
-Choose by task shape and failure cost. Use the least expensive model that can reliably close the stage, then escalate only on the conditions below. Codex entries include their callable model IDs; Claude Code entries use runtime aliases. If a runtime changes its catalog, preserve the role and escalation rule rather than guessing an equivalent from price alone.
+Choose a capability class for the work, then resolve an available model in the active runtime. Do not pin a model generation in this skill. At each run, use the runtime's current model catalog and provider guidance to identify the newest suitable model in the required class; confirm that the selected model and reasoning effort are callable before delegation. Do not infer capability from a model name, version number, or price alone. Honor an explicit user model choice unless it cannot meet a required gate.
 
-## Defaults
+| Class | Work |
+|---|---|
+| Fast | Bounded extraction from a known source; no synthesis or product decision |
+| General | Orchestration, evidence reconciliation, settled implementation, routine independent review, and final mutations |
+| Deep | Material architecture or behavioral contract decisions, and implementation or review whose failure is costly to reverse |
 
-| Role | Codex | Claude Code | Purpose |
-|---|---|---|---|
-| orchestrator | Terra (`gpt-5.6-terra`), medium | Sonnet | Maintain state, select stages, enforce checkpoints, summarize handoffs |
-| source extraction | Luna (`gpt-5.6-luna`), low; Terra (`gpt-5.6-terra`), low when synthesis is needed | Haiku | Extract bounded facts from independent, well-defined sources |
-| readiness audit | Terra (`gpt-5.6-terra`), high | Sonnet | Reconcile intent, code, tracker, and observed behavior |
-| contract decision | Astra (`gpt-6-astra`), high, only on the escalation conditions below | Opus, only on the escalation conditions below | Decide a material behavioral contract from compressed evidence |
-| implementation | Terra (`gpt-5.6-terra`), xhigh by default | Sonnet by default | Implement a settled ticket contract and prove red to green |
-| independent review | Fresh Terra (`gpt-5.6-terra`), high or xhigh | Fresh Sonnet | Review premise, behavior, security boundaries, tests, and documentation without implementer context |
-| final mutations | Terra (`gpt-5.6-terra`), high | Sonnet | Apply accepted findings, rerun gates, update links, and open PRs |
+Use a general model with medium effort for orchestration, high effort for readiness and review, and the effort needed to prove implementation red to green. Use a fast model only for narrow extraction. For Claude Code, request the current `haiku`, `sonnet`, or `opus` family alias when it matches the selected class; first check whether a newer available family better fits that class. For Codex and Copilot, select a callable model from the current catalog for the class and pass its actual ID only at invocation time. If the runtime cannot select models, inspect the active model and use it only for roles it can reliably perform.
+
+## Architecture decision gate
+
+Before checkpoint 1, identify decisions about cryptographic format or protocol, security and authorization, identity, data layout or migration, deployment boundaries, public API behavior, and ticket splits that lock in one of those choices. A deep-capability model must examine the compressed evidence and alternatives **before** the decision becomes an approved contract, ticket, design record, or implementation instruction. This gate applies even when sources appear to agree and the parent agent can articulate a plausible answer. Give the deep pass the exact decision, source evidence, counterexamples, reversibility and migration cost, and proposed acceptance checks. Record its conclusion and unresolved assumptions in the handoff. The user still owns product choices.
+
+The active agent may perform that pass when its resolved model is deep-capability. Otherwise use an authorized specialist with clean context or switch the stage to a deep model. If neither is available, leave the decision unresolved and do not pass checkpoint 1 or create dependent tickets. A general model may handle ordinary ticket decomposition after the architecture contract is settled.
+
+Reopen this gate when new evidence or a user decision changes a material assumption during execution. Reconcile the contract and dependent tickets through the existing checkpoint and invalidation rules before continuing. Pass a concise current-decision handoff, including superseded alternatives, rather than the full evolving conversation.
 
 ## Escalation
 
-Use Astra (`gpt-6-astra`) or Opus for a contract decision only when evidence conflicts, accepted sources leave a material ambiguity, or the choice changes multiple tickets, authorization, storage identity, migration, security, or another costly-to-reverse boundary. Do not use a deep model merely because the initiative is important or the source packet is long. Give it the compressed evidence and exact decision, not the raw corpus.
+Use deep capability for implementation or independent review when work spans security, authorization, identity, cryptography, storage migration, or coordinated changes across repositories whose interfaces cannot be tested independently; also escalate after two failures of the same cause or an unstable discriminating red. Mechanical cross-repository work with independent checks can remain general. Semantic reinterpretation during final mutations returns to the user and the architecture decision gate.
 
-Use Sol (`gpt-5.6-sol`) at xhigh for Codex implementation when the accepted ticket requires coordinated code changes in two or more repositories, changes a security, authorization, storage, identity, or migration contract, has an unstable red, or Terra (`gpt-5.6-terra`) has failed twice for the same cause. On Claude Code, use Opus for the same conditions only when Sonnet cannot close the task reliably; cross-repository work alone is not enough when the changes are mechanical and independently testable.
+## Delegation and evidence
 
-Use Sol (`gpt-5.6-sol`) at high for Codex final mutations when accepted findings require coordinated fixes across repositories or reinterpretation of the approved semantic contract. A semantic reinterpretation normally returns to the user instead of being repaired silently. Use Opus under the same rule on Claude Code.
+The maximum delegation depth is two: orchestrator to stage agent to specialist child. A stage agent may create at most two specialist children for independent extraction, repository tracing, or a bounded decision. Workers required internally by composed Concord commands such as `review-until-green` follow those commands' own limits. Work directly for simple searches and sequential mutations. Implementation and independent review are sibling stages with separate context; final mutations remain sequential.
 
-## Delegation bounds
+Record the role, required class, requested and resolved model, provider, effort when exposed, catalog or alias basis, escalation trigger, and any fallback in the stage handoff. Never silently downgrade a required class. An unavailable ordinary role may use another verified model in the same class. A required deep decision has no automatic downgrade.
 
-The maximum delegation depth is two: orchestrator to stage agent to specialist child. A stage agent may create at most two specialist children, and only for independent source extraction, isolated repository tracing, or a bounded specialist question. These are initiative-level optional specialists. Workers required internally by composed Concord commands such as `review-until-green` do not count toward this initiative-level cap; those commands enforce their own orchestration contract. Work directly for simple searches, sequential mutations, single-file edits, and tasks whose intermediate context must remain together.
-
-Implementation and independent review are sibling stages created by the orchestrator, never parent and child. Final mutations remain sequential because they edit shared branch and tracker state.
-
-Use clean context for every child. On Codex, request the model and reasoning effort explicitly when the spawn mechanism supports them. On Claude Code, request the model alias explicitly. Record the requested and resolved model, provider, effort when exposed, escalation trigger, and any fallback in the stage handoff.
-
-Never silently substitute a model. For orchestrator, source extraction, readiness audit, implementation, independent review, or final mutations, an unavailable requested model may fall back to the documented model for the same role in the active runtime when the handoff records the substitution. A required deep contract decision has no automatic downgrade; return the unresolved decision to the user when Astra (`gpt-6-astra`) or Opus is unavailable.
-
-## Stage composition
-
-| Stage | Stage owner | Permitted specialist children |
+| Stage | Owner | Optional specialists |
 |---|---|---|
-| Evidence and contract | readiness audit | At most two children total: up to two source-extraction children for independent corpora when no contract decision is needed, or one source-extraction child plus one contract-decision child when an escalation condition is met |
-| Ticket set | final mutations | None by default; the same agent writes and reads back each tracker or design mutation sequentially |
-| Ticket implementation | implementation | Up to two Terra (`gpt-5.6-terra`) high-effort or Sonnet repository tracers for independent repositories; only the stage owner edits code |
-| Independent review | independent review | Up to two fresh Terra (`gpt-5.6-terra`) high- or xhigh-effort or Sonnet specialists for bounded security, test, or cross-context questions |
-| Final mutations and PR | final mutations | None; fixes, checks, push, tracker links, and PR read-back remain sequential |
+| Evidence and contract | General readiness audit | Up to two source extractors, or one extractor and one deep decision reviewer when the architecture gate applies |
+| Ticket set | General final mutations | None by default |
+| Ticket implementation | General or escalated deep implementation | Up to two general repository tracers; only the owner edits code |
+| Independent review | Fresh general or escalated deep reviewer | Up to two fresh specialists for bounded security, test, or cross-context questions |
+| Final mutations and PR | General final mutations | None |

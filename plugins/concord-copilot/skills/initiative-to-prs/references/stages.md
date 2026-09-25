@@ -19,6 +19,8 @@ Separate these classes in the evidence packet:
 - Tracker or comment claims without independent evidence
 - Material decisions that remain unsettled
 
+Run the architecture decision gate in `model-routing.md` before proposing a contract or ticket set. Record the required model class, resolved model, reviewed decision, and remaining assumptions in this stage's handoff.
+
 Propose the smallest behavioral contract and ticket set supported by the evidence. Each proposed ticket names its outcome, scope, non-goals, affected surface, observable acceptance checks, executable Definition of Done, dependencies, and whether current behavior supplies a discriminating red condition. For a multi-repository outcome, also propose one implementation unit per repository, an integration owner, artifact/version dependencies, and the combined acceptance gate. Do not invent file paths before tracing the caller.
 
 If current behavior already satisfies the approved outcome, propose a no-change closure with its evidence instead of manufacturing tickets or PRs.
