@@ -106,27 +106,18 @@ test('initiative-to-prs routes models by task shape and bounds delegation', () =
   const skill = read('concord', 'SKILL.md');
   const routing = read('concord', 'references/model-routing.md');
 
-  for (const role of [
-    'orchestrator',
-    'source extraction',
-    'readiness audit',
-    'contract decision',
-    'implementation',
-    'independent review',
-    'final mutations',
-  ]) assert.match(routing, new RegExp(role, 'i'));
-
-  for (const model of ['Luna', 'Terra', 'Sol', 'Astra', 'Haiku', 'Sonnet', 'Opus']) {
-    assert.match(routing, new RegExp(model));
+  for (const modelClass of ['Fast', 'General', 'Deep']) {
+    assert.match(routing, new RegExp(`\\| ${modelClass} \\|`));
   }
+  assert.match(routing, /current model catalog.*newest suitable model/is);
+  assert.match(routing, /confirm.*selected model and reasoning effort are callable/is);
+  assert.match(routing, /Do not infer capability from a model name, version number, or price alone/i);
+  assert.match(routing, /before checkpoint 1.*deep-capability model.*before.*approved contract/is);
+  assert.match(routing, /material cryptography, security, or migration decision.*separate deep-capability reviewer/is);
+  assert.match(routing, /Apply this gate throughout execution, including implementation and review/is);
   assert.match(routing, /maximum delegation depth is two/i);
-  assert.match(routing, /initiative-level optional specialists.*composed Concord commands.*do not count/is);
   assert.match(routing, /at most two specialist children/i);
-  assert.match(routing, /at most two children total/i);
-  assert.match(routing, /one source-extraction child plus one contract-decision child/i);
-  assert.match(routing, /Record the requested and resolved model/i);
-  assert.doesNotMatch(routing, /\b(?:FAST|BALANCED)\b/);
-  assert.match(routing, /orchestrator, source extraction, readiness audit, implementation, independent review, or final mutations/i);
+  assert.match(routing, /Record the role, required class, requested and resolved model/i);
   assert.match(skill, /independent review.*omit the implementer's handoff.*approved contract.*source evidence.*reviewed head and base.*verification commands/is);
 });
 
