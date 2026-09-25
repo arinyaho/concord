@@ -16,7 +16,7 @@ Before checkpoint 1, identify decisions about cryptographic format or protocol, 
 
 The active agent may perform that pass when its resolved model is deep-capability. Otherwise use an authorized specialist with clean context or switch the stage to a deep model. If neither is available, leave the decision unresolved and do not pass checkpoint 1 or create dependent tickets. A general model may handle ordinary ticket decomposition after the architecture contract is settled.
 
-Reopen this gate when new evidence or a user decision changes a material assumption during execution. Reconcile the contract and dependent tickets through the existing checkpoint and invalidation rules before continuing. Pass a concise current-decision handoff, including superseded alternatives, rather than the full evolving conversation.
+Apply this gate throughout execution, including implementation and review. When a discussion with the user, a failed check, or code investigation raises a new material choice, pause only the work that depends on that choice. Have a deep-capability agent examine the specific options before accepting an implementation direction, even if the original ticket was approved and no model has failed. The implementer can continue independent work. If the decision stays within the approved contract, record the rationale and continue; if it changes the contract, reconcile affected tickets through the existing checkpoint and invalidation rules before dependent work resumes. Pass the current decision and superseded alternatives, not the full conversation.
 
 ## Escalation
 
