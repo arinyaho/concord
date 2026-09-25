@@ -1,6 +1,6 @@
 # Model routing
 
-Choose by task shape and failure cost. Use the least expensive available Copilot model that can reliably close the stage, then escalate only when evidence conflicts or the decision is costly to reverse. Record the requested and resolved model for every delegated stage.
+Choose by task shape and failure cost. At each run, resolve the newest suitable fast, general, or deep model from the current Copilot catalog and confirm that it is callable; do not pin a model generation or infer capability from its name or price. Record the requested and resolved model for every delegated stage.
 
 ## Roles
 
@@ -13,6 +13,12 @@ Choose by task shape and failure cost. Use the least expensive available Copilot
 | Implementation | General reasoning | Implement a settled contract and prove red to green |
 | Independent review | Fresh general or deep model | Review without implementer context |
 | Final mutations | General reasoning | Apply accepted findings, rerun gates, and open PRs |
+
+## Architecture decision gate
+
+Before checkpoint 1, have a deep-capability model examine compressed evidence, alternatives, counterexamples, reversibility, migration cost, and acceptance checks for material choices about cryptographic format or protocol, security, authorization, identity, data layout, deployment boundaries, public API behavior, or ticket splits that lock in those choices. This applies even without conflicting sources. The active agent may do the pass when its resolved model has deep capability; otherwise use an authorized specialist or switch the stage model. For a material cryptography, security, or migration decision, require a separate deep-capability reviewer even when the active agent is deep-capability. Give it source evidence and the proposed decision without the responsible agent's reasoning, and reconcile substantive disagreement before dependent work continues. If required deep capability or independent review is unavailable, leave the decision unresolved and do not create dependent tickets.
+
+Apply the same gate during implementation and review. If discussion with the user, a failed check, or code investigation raises a new material choice, pause dependent work and use a deep-capability agent to assess it before selecting an implementation direction, even when the ticket was approved and no model has failed. Continue independent work. Record an in-contract decision and continue; if it changes the approved contract, reconcile affected tickets through the existing checkpoint and invalidation rules. Hand off the current decision and superseded alternatives, not the full conversation.
 
 ## Delegation bounds
 
