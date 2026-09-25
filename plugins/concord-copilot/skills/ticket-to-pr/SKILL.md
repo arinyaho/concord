@@ -45,7 +45,11 @@ Stages 1, 3 and 5 have no single owner here — use whatever the repository alre
 
 ## Delegation
 
-Unless the user explicitly directs otherwise, keep implementation and review with the active agent; do not hand either stage to another AI. When the user, selected model, or CLI harness expressly requires subagents, create only the required subagents. A review must be independent of each agent whose change it assesses. Where their models can be selected, prefer Terra or Sonnet over GPT Sol or Claude Opus; choose the reasoning effort appropriate to the work.
+Unless the user explicitly directs otherwise, keep routine implementation and review with the active agent. When the user, selected model, CLI harness, or a composing skill's architecture decision gate expressly requires a specialist, create only the required specialist; a review must be independent of each agent whose change it assesses. Select a current model by required capability and effort.
+
+Before accepting an implementation direction, have a deep-capability agent assess every material architecture or behavioral choice, including a cryptography, security, migration, or public-API contract already specified by a standalone ticket. When implementation or review raises a new material choice, pause only dependent work; the implementer may continue independent work.
+
+For a material cryptography, security, or migration choice or contract, also require a separate deep-capability reviewer with a packet built from source evidence and the proposed decision, excluding the responsible agent's reasoning; reconcile disagreement before dependent work resumes.
 
 If a caller (e.g. `initiative-to-prs`) has already delegated stage 6 implementation to a subagent and that subagent runs stage 7's `/review-until-green` itself, that nested invocation must still converge without needing an external nudge to resume it. On a harness whose subagent primitive defaults to background/async execution, the session driving `review-until-green` must force each reviewer spawn it owns to block synchronously (see `review-until-green`'s own harness-specific driver for how) — an idle nested loop waiting on a notification that never reaches it is the failure mode to avoid.
 
