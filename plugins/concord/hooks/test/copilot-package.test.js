@@ -109,6 +109,7 @@ test('Copilot-specific orchestration uses native clean-context agents and explic
   const review = read('skills/review-until-green/SKILL.md');
   const routing = read('skills/initiative-to-prs/references/model-routing.md');
   assert.match(review, /Concord Reviewer/);
+  assert.match(review, /clean context/i);
   assert.match(routing, /separate deep-capability specialist in clean context/i);
   assert.match(review, /review-cli\.js/);
   assert.match(review, /do not invoke `telemetry-slot`/i);
