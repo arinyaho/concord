@@ -136,6 +136,7 @@ test('initiative-to-prs handoffs carry evidence without copying session history'
   assert.match(handoff, /Decisions/);
   assert.match(handoff, /Exit verdict/);
   assert.match(handoff, /Requested and resolved model/);
+  assert.match(handoff, /second independent Deep reviewer.*same fields.*distinct second-reviewer evidence record/is);
   assert.match(handoff, /active root agent.*not resolved model evidence/i);
 });
 
