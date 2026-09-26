@@ -43,57 +43,66 @@ test('linux: crossPlatformOpts is a no-op passthrough with no args', () => {
   assert.strictEqual(result.shell, undefined);
 });
 
-// quoteArgumentForWindows: known input/output pairs from the documented
-// CommandLineToArgvW quoting rule (see e.g. Microsoft's own C runtime
-// startup docs, and the widely-cited "everyone quotes command line
-// arguments the wrong way" reference algorithm). These are checked as pure
-// string transforms -- verifiable without a live Windows host, unlike
-// cmd.exe's own separate metacharacter parsing (disclosed, not attempted
-// here).
-test('win32: quoteArgumentForWindows leaves a plain argument unquoted', () => {
-  const { quoteArgumentForWindows } = loadWithPlatform('win32');
-  assert.strictEqual(quoteArgumentForWindows('--json'), '--json');
-  assert.strictEqual(quoteArgumentForWindows('abc123'), 'abc123');
-});
+// quoteArgumentForWindows/escapeCommandForWindows reproduce cross-spawn's
+// algorithm (github.com/moxystudio/node-cross-spawn/blob/master/lib/util/escape.js,
+// MIT). Every case here is checked against that reference implementation
+// directly (inlined below, not re-derived from memory), so this is a
+// mechanical-fidelity check to the de facto standard fix, not a
+// self-consistency check against this file's own logic. The %/&/|/^ cases
+// are the exact class of gap a GitHub Codex review on PR #113 caught: the
+// first version of this file only quoted on space/tab/", so a git ref like
+// `foo&whoami` passed through unescaped and cmd.exe would run `whoami` as a
+// second command.
+const crossSpawnMetaCharsRe = /([()[\]%!^"`<>&|;, *?])/g;
+function crossSpawnEscapeArgument(arg, doubleEscapeMetaChars) {
+  let value = `${arg}`;
+  value = value.replace(/(?=(\\+?))\1"/g, '$1$1\\"');
+  value = value.replace(/(?=(\\+?))\1$/, '$1$1');
+  value = `"${value}"`;
+  value = value.replace(crossSpawnMetaCharsRe, '^$1');
+  if (doubleEscapeMetaChars) value = value.replace(crossSpawnMetaCharsRe, '^$1');
+  return value;
+}
 
-test('win32: quoteArgumentForWindows quotes an argument containing a space (the common Windows-path case)', () => {
-  const { quoteArgumentForWindows } = loadWithPlatform('win32');
-  assert.strictEqual(quoteArgumentForWindows('C:\\Users\\Jane Doe\\project'), '"C:\\Users\\Jane Doe\\project"');
-});
+const ESCAPING_CASES = [
+  '--json', 'abc123', '', 'C:\\Users\\Jane Doe\\project', 'he said "hi"',
+  'a\\"b', 'C:\\a b\\', 'foo&whoami', '%NAME%', 'a|b', 'a^b', 'a<b>c', 'a(b)c',
+  '50% done', 'line1\nline2', 'tab\there', 'a;b', 'a,b', 'a`b', 'a[b]c', 'a*b?c',
+];
 
-test('win32: quoteArgumentForWindows escapes an embedded double quote', () => {
-  const { quoteArgumentForWindows } = loadWithPlatform('win32');
-  // literal string:  he said "hi"
-  assert.strictEqual(quoteArgumentForWindows('he said "hi"'), '"he said \\"hi\\""');
-});
+for (const input of ESCAPING_CASES) {
+  test(`win32: quoteArgumentForWindows matches cross-spawn's reference for ${JSON.stringify(input)}`, () => {
+    const { quoteArgumentForWindows } = loadWithPlatform('win32');
+    assert.strictEqual(quoteArgumentForWindows(input), crossSpawnEscapeArgument(input, false));
+  });
+}
 
-test('win32: quoteArgumentForWindows doubles backslashes immediately before a quote', () => {
-  const { quoteArgumentForWindows } = loadWithPlatform('win32');
-  // literal string:  a\"b  (one backslash then a quote then b)
-  assert.strictEqual(quoteArgumentForWindows('a\\"b'), '"a\\\\\\"b"');
-});
-
-test('win32: quoteArgumentForWindows doubles a trailing backslash run so the closing quote is never escaped', () => {
-  const { quoteArgumentForWindows } = loadWithPlatform('win32');
-  // literal string:  C:\path\   (trailing backslash, needs quoting for the space earlier in the string)
-  assert.strictEqual(quoteArgumentForWindows('C:\\a b\\'), '"C:\\a b\\\\"');
-});
-
-test('win32: quoteArgumentForWindows quotes an empty argument as two double quotes', () => {
-  const { quoteArgumentForWindows } = loadWithPlatform('win32');
-  assert.strictEqual(quoteArgumentForWindows(''), '""');
-});
-
-test('win32: crossPlatformArgs quotes every element that needs it, passes through the rest', () => {
+test('win32: crossPlatformArgs applies the escape to every element', () => {
   const { crossPlatformArgs } = loadWithPlatform('win32');
   assert.deepStrictEqual(
-    crossPlatformArgs(['exec', '--cd', 'C:\\Users\\Jane Doe\\repo', '--json', 'plain']),
-    ['exec', '--cd', '"C:\\Users\\Jane Doe\\repo"', '--json', 'plain'],
+    crossPlatformArgs(['exec', 'foo&whoami', 'plain']),
+    ['exec', 'foo&whoami', 'plain'].map((a) => crossSpawnEscapeArgument(a, false)),
   );
 });
 
 test('darwin: crossPlatformArgs is a no-op passthrough', () => {
   const { crossPlatformArgs } = loadWithPlatform('darwin');
-  const args = ['--cd', '/Users/Jane Doe/repo'];
+  const args = ['--cd', '/Users/Jane Doe/repo', 'foo&whoami'];
   assert.deepStrictEqual(crossPlatformArgs(args), args);
+});
+
+test('win32: escapeCommandForWindows escapes metacharacters, no quoting', () => {
+  const { escapeCommandForWindows } = loadWithPlatform('win32');
+  assert.strictEqual(escapeCommandForWindows('codex'), 'codex');
+  assert.strictEqual(escapeCommandForWindows('a&b'), 'a^&b');
+});
+
+test('win32: crossPlatformCommand applies escapeCommandForWindows', () => {
+  const { crossPlatformCommand } = loadWithPlatform('win32');
+  assert.strictEqual(crossPlatformCommand('codex'), 'codex');
+});
+
+test('darwin: crossPlatformCommand is a no-op passthrough', () => {
+  const { crossPlatformCommand } = loadWithPlatform('darwin');
+  assert.strictEqual(crossPlatformCommand('a&b'), 'a&b');
 });
