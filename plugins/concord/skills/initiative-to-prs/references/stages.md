@@ -47,7 +47,7 @@ Present the read-back ticket set, design changes, dependency order, observable a
 
 ## 3. Execute each repository unit
 
-Execute dependency-ready repository units with `ticket-to-pr`. Its stage exits remain authoritative. Keep routine implementation, review, and final mutations with the active agent unless the user, selected model, or CLI harness requires delegation; the architecture decision gate in `model-routing.md` expressly requires a deep-capability specialist when the active agent cannot provide that review.
+Execute dependency-ready repository units with `ticket-to-pr`. Its stage exits remain authoritative. Keep routine implementation, review, and final mutations with the active agent unless the user, selected model, or CLI harness requires delegation; the architecture decision gate in `model-routing.md` requires a separate deep-capability specialist for material decisions.
 
 During implementation and review, watch for a new material architecture or behavioral choice arising from user discussion, test results, or code tracing. Invoke the architecture decision gate before the dependent change is made; an approved ticket does not settle a newly discovered choice. Independent work may continue while that decision is reviewed.
 
