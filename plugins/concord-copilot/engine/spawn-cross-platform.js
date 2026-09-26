@@ -66,10 +66,10 @@ function quoteArgumentForWindows(arg) {
   let value = String(arg);
   // A run of backslashes immediately before a double quote: double it and
   // escape the quote.
-  value = value.replace(/(?=(\\+?))\1"/g, '$1$1\\"');
-  // A run of backslashes at the very end of the string (immediately before
-  // the closing quote this function adds): double it.
-  value = value.replace(/(?=(\\+?))\1$/, '$1$1');
+  value = value.replace(/(?=(\\+?)?)\1"/g, '$1$1\\"');
+  // A run of backslashes (zero or more) at the very end of the string
+  // (immediately before the closing quote this function adds): double it.
+  value = value.replace(/(?=(\\+?)?)\1$/, '$1$1');
   // Every other backslash occurs literally. Quote the whole thing, then
   // escape cmd.exe metacharacters -- including the quotes just added.
   return `"${value}"`.replace(META_CHARS_RE, '^$1');
