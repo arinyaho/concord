@@ -98,6 +98,11 @@ test('Copilot initiative-to-prs package still matches its bundle inputs', () => 
   // initiative-to-prs is intentionally excluded from the "portable skills" byte-identical
   // check above because other files in that skill (e.g. model-routing.md) legitimately
   // diverge per provider. The remaining files are vendored as plain copies.
+  const root = path.join(COPILOT, 'skills/initiative-to-prs');
+  const files = fs.readdirSync(root, { recursive: true })
+    .filter((file) => fs.statSync(path.join(root, file)).isFile())
+    .sort();
+  assert.deepEqual([...SKILL_FILES].sort(), files);
   for (const file of SKILL_FILES.filter((file) => file !== 'references/model-routing.md')) {
     const source = fs.readFileSync(path.join(REPO, 'plugins/concord/skills/initiative-to-prs', file), 'utf8');
     assert.equal(read(path.join('skills/initiative-to-prs', file)), source);
