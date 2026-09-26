@@ -112,6 +112,7 @@ test('initiative-to-prs routes models by task shape and bounds delegation', () =
   assert.match(routing, /before checkpoint 1.*deep-capability model.*before.*approved contract/is);
   assert.match(routing, /separate deep-capability specialist.*clean context/is);
   assert.match(routing, /active root agent cannot satisfy a Deep decision gate/i);
+  assert.doesNotMatch(routing, /active agent may perform that pass/i);
   assert.match(routing, /child invocation or agent identity.*requested and resolved model.*provider and catalog basis.*reasoning effort.*successful completion.*conclusion.*covered decision identities/is);
   assert.match(routing, /material cryptography, security, or migration decision.*second independent deep-capability reviewer/is);
   assert.match(routing, /distinct second-reviewer evidence record.*invocation or agent identity.*requested and resolved model.*provider and catalog basis.*reasoning effort.*successful completion.*conclusion.*covered decision identities/is);
