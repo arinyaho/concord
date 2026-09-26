@@ -49,3 +49,16 @@ test('commandWindows still resolves and runs the same target .js file as command
     assert.ok(handler.commandWindows.includes(targetMatch[1]), `commandWindows does not reference ${targetMatch[1]}: ${handler.commandWindows}`);
   }
 });
+
+// A GitHub Codex review on this exact manifest (PR #113) caught that
+// invoking PowerShell by its bare name lets it be resolved by cwd-before-
+// PATH search order -- the same class of bug as the core spawn helper's,
+// but here it's Codex's own hook dispatcher doing the resolving, not
+// anything this repo's crossPlatformCommand can intercept. The fix is an
+// absolute path to the well-known system PowerShell location instead.
+test('commandWindows invokes PowerShell by an absolute path, not a bare name', () => {
+  const handlers = loadHandlers();
+  for (const handler of handlers) {
+    assert.match(handler.commandWindows, /^[A-Za-z]:\\.*\\powershell\.exe\b/i, `commandWindows must invoke PowerShell by an absolute path, not a bare name resolvable via cwd: ${handler.commandWindows}`);
+  }
+});

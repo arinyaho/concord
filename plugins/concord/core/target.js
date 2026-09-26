@@ -12,7 +12,11 @@ const crypto = require('node:crypto');
 const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
 
 function sh(bin, args, opts = {}) {
-  return execFileSync(crossPlatformCommand(bin), crossPlatformArgs(args, needsDoubleEscape(bin)), crossPlatformOpts({ encoding: 'utf8', maxBuffer: 20 * 1024 * 1024, ...opts }));
+  // opts.cwd is the reviewed repository at every call site in this file --
+  // excluded from PATH resolution so a PATH contaminated by that
+  // repository's own tooling (e.g. an npm/pnpm script prepending its
+  // node_modules/.bin) cannot supply a trusted-looking binary.
+  return execFileSync(crossPlatformCommand(bin, opts.cwd), crossPlatformArgs(args, needsDoubleEscape(bin, opts.cwd)), crossPlatformOpts({ encoding: 'utf8', maxBuffer: 20 * 1024 * 1024, ...opts }));
 }
 
 // Moved verbatim from review-cli.js gitDiff(). base ? range diff : working-tree

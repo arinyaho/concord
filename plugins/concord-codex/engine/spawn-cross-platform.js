@@ -102,6 +102,18 @@ function crossPlatformArgs(args = [], doubleEscapeMetaChars = false) {
   return isWindows ? args.map((a) => quoteArgumentForWindows(a, doubleEscapeMetaChars)) : args;
 }
 
+// A Windows PATH component containing a space is conventionally wrapped in
+// a matching pair of double quotes (e.g. `"C:\Program Files\Git\cmd"`); a
+// GitHub Codex review on this exact code (PR #113) caught that an
+// unstripped pair left `path.join` building a literal, nonexistent path
+// (`"C:\Program Files\Git\cmd"\git.EXE`, quotes and all), so a real,
+// correctly-installed Git or provider was reported missing. Strip exactly
+// one matching leading/trailing quote pair -- not every quote, so a
+// directory name that legitimately contains one is not corrupted.
+function unquotePathEntry(dir) {
+  return dir.length >= 2 && dir[0] === '"' && dir[dir.length - 1] === '"' ? dir.slice(1, -1) : dir;
+}
+
 // Resolve `bin` to an absolute path by searching PATH directories ONLY --
 // deliberately never the current working directory. A GitHub Codex review
 // on this exact code (PR #113) caught a real Windows footgun: with
@@ -117,25 +129,43 @@ function crossPlatformArgs(args = [], doubleEscapeMetaChars = false) {
 // its `which` dependency (this repo has none): walk `PATH`, try each
 // `PATHEXT` extension (Windows' own default list) when `bin` has none.
 //
-// Returns `null`, not the bare name, when nothing on PATH matches -- an
-// earlier version of this function returned the bare name as a fallback,
-// reasoning that "the eventual ENOENT is the honest failure". A follow-up
-// GitHub Codex review caught that this reasoning was wrong: the bare name
-// still goes back into a `shell: true` spawn, so cmd.exe performs its OWN
-// bare-name search (cwd first) on exactly that fallback value, recreating
-// the vulnerability this function exists to close, for the specific case
-// of an uninstalled or misconfigured provider. The caller (crossPlatformCommand)
-// must fail closed on `null`, not spawn anyway.
-function resolveOnPath(bin) {
+// `excludeDir` (pass the repository under review) closes a second,
+// distinct route to the same class of bug that a follow-up GitHub Codex
+// review round caught: PATH itself, not just cwd, can be untrustworthy.
+// When Concord is launched through an npm/pnpm script inside the reviewed
+// repository, that script's own tooling conventionally prepends the
+// repository's `node_modules/.bin` to PATH for the child process -- so a
+// naive PATH-only search would find and return a repository-controlled
+// `git.cmd`/`codex.cmd`/provider shim there and treat it as trusted. Any
+// candidate whose resolved, absolute path falls inside `excludeDir` is
+// skipped, exactly like cwd is never searched at all.
+//
+// Returns `null`, not the bare name, when nothing (uncontrolled) matches
+// on PATH -- an earlier version of this function returned the bare name
+// as a fallback, reasoning that "the eventual ENOENT is the honest
+// failure". A follow-up GitHub Codex review caught that this reasoning
+// was wrong: the bare name still goes back into a `shell: true` spawn, so
+// cmd.exe performs its OWN bare-name search (cwd first) on exactly that
+// fallback value, recreating the vulnerability this function exists to
+// close, for the specific case of an uninstalled or misconfigured
+// provider. The caller (crossPlatformCommand) must fail closed on `null`,
+// not spawn anyway.
+function resolveOnPath(bin, excludeDir) {
   if (/[\\/]/.test(bin)) return bin; // already a path; do not search PATH for it
-  const dirs = String(process.env.PATH || process.env.Path || '').split(path.delimiter).filter(Boolean);
+  const excludeResolved = excludeDir ? path.resolve(String(excludeDir)) : null;
+  const isExcluded = (candidate) => {
+    if (!excludeResolved) return false;
+    const rel = path.relative(excludeResolved, path.resolve(candidate));
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  };
+  const dirs = String(process.env.PATH || process.env.Path || '').split(path.delimiter).filter(Boolean).map(unquotePathEntry);
   const hasExt = /\.[^.\\/]+$/.test(bin);
   const exts = hasExt ? [''] : String(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
   for (const dir of dirs) {
     for (const ext of exts) {
       const candidate = path.join(dir, bin + ext);
       try {
-        if (fs.statSync(candidate).isFile()) return candidate;
+        if (fs.statSync(candidate).isFile() && !isExcluded(candidate)) return candidate;
       } catch {
         // Not present at this candidate -- keep searching.
       }
@@ -157,29 +187,32 @@ function isCmdShim(resolvedPath) {
 }
 
 // Resolve + escape the command for spawn/execFileSync's first argument.
-// Throws on win32 when `bin` cannot be found on PATH at all, rather than
-// falling back to the bare name (see resolveOnPath's doc comment for why
-// that fallback reintroduced the cwd-search vulnerability for exactly the
-// "provider isn't installed" case).
-function crossPlatformCommand(bin) {
+// `excludeDir` should be the repository under review (its cwd at every
+// call site) -- see resolveOnPath's doc comment for why PATH itself, not
+// only cwd, needs that exclusion. Throws on win32 when `bin` cannot be
+// found on (uncontrolled) PATH at all, rather than falling back to the
+// bare name (see resolveOnPath's doc comment for why that fallback
+// reintroduced the cwd-search vulnerability for exactly the "provider
+// isn't installed" case).
+function crossPlatformCommand(bin, excludeDir) {
   if (!isWindows) return bin;
-  const resolved = resolveOnPath(bin);
+  const resolved = resolveOnPath(bin, excludeDir);
   if (resolved === null) {
-    throw new Error(`harness-failure: "${bin}" was not found on PATH; refusing to spawn it unresolved on Windows (cmd.exe would otherwise search the reviewed repository's own directory first)`);
+    throw new Error(`harness-failure: "${bin}" was not found on a trusted PATH entry; refusing to spawn it unresolved on Windows (cmd.exe would otherwise search the reviewed repository's own directory first)`);
   }
   return escapeCommandForWindows(resolved);
 }
 
 // Convenience for callers building the `doubleEscapeMetaChars` argument to
-// crossPlatformArgs: resolves `bin` (again; resolution is a cheap
-// filesystem walk, not a hot path) and reports whether it is a local
-// node_modules/.bin/*.cmd shim. Returns `false` on POSIX and when `bin`
-// cannot be resolved at all (crossPlatformCommand is the one responsible
-// for failing closed on that; this helper only answers the escaping
-// question).
-function needsDoubleEscape(bin) {
+// crossPlatformArgs: resolves `bin` (again, with the same `excludeDir`;
+// resolution is a cheap filesystem walk, not a hot path) and reports
+// whether it is a local node_modules/.bin/*.cmd shim. Returns `false` on
+// POSIX and when `bin` cannot be resolved at all (crossPlatformCommand is
+// the one responsible for failing closed on that; this helper only
+// answers the escaping question).
+function needsDoubleEscape(bin, excludeDir) {
   if (!isWindows) return false;
-  return isCmdShim(resolveOnPath(bin));
+  return isCmdShim(resolveOnPath(bin, excludeDir));
 }
 
 module.exports = {

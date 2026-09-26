@@ -41,7 +41,7 @@ for (const field of ['reviewer', 'fixer']) {
 }
 const positional = args.filter((arg, index) => arg !== '--broad' && arg !== '--gate' && arg !== '--no-broad' && arg !== '--no-dod' && !inferenceArgs.has(index) && !broadPhraseArgs.has(index));
 const resumed = positional[0] === 'resume';
-const ref = (resumed ? positional[1] : positional[0]) || require('node:child_process').execFileSync(crossPlatformCommand('git'), crossPlatformArgs(['branch', '--show-current'], needsDoubleEscape('git')), crossPlatformOpts({ encoding: 'utf8' })).trim();
+const ref = (resumed ? positional[1] : positional[0]) || require('node:child_process').execFileSync(crossPlatformCommand('git', process.cwd()), crossPlatformArgs(['branch', '--show-current'], needsDoubleEscape('git', process.cwd())), crossPlatformOpts({ encoding: 'utf8' })).trim();
 const base = resumed ? positional[2] : positional[1];
 runReviewUntilGreen({ ref, base, broad, noBroad, noDod, ...inference, resume: resumed, repoRoot: process.cwd(), cliPath: path.join(__dirname, 'review-cli.js') })
   .then((result) => process.stdout.write(`${result.handoff || result.message || JSON.stringify(result)}\n`))

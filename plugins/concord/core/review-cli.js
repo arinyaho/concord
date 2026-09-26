@@ -48,7 +48,9 @@ const GATE_PANEL_LENSES = reportLib.PANEL_LENSES;
 // the orchestrator lives here so it can be injected/tested against a real
 // temp repo without touching the caller's own working tree.
 function sh(bin, args, opts = {}) {
-  return execFileSync(crossPlatformCommand(bin), crossPlatformArgs(args, needsDoubleEscape(bin)), crossPlatformOpts({ encoding: 'utf8', maxBuffer: 20 * 1024 * 1024, ...opts }));
+  // opts.cwd is the reviewed repository at every call site in this file --
+  // excluded from PATH resolution for the same reason as target.js's sh().
+  return execFileSync(crossPlatformCommand(bin, opts.cwd), crossPlatformArgs(args, needsDoubleEscape(bin, opts.cwd)), crossPlatformOpts({ encoding: 'utf8', maxBuffer: 20 * 1024 * 1024, ...opts }));
 }
 // gitDiff, the dirty-check (gitDirty), and the HEAD rev-parse (gitHeadSha) moved
 // to core/target.js (the target-acquisition seam). They are re-imported above so

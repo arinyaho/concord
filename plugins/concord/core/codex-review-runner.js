@@ -25,7 +25,7 @@ function codexCliVersion(repoRoot) {
   const searchPath = process.env.PATH || '';
   if (!versionCache || versionCache.searchPath !== searchPath) {
     let value = null;
-    try { value = execFileSync(crossPlatformCommand('codex'), crossPlatformArgs(['--version'], needsDoubleEscape('codex')), crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8', timeout: 5000 })).trim(); } catch {}
+    try { value = execFileSync(crossPlatformCommand('codex', repoRoot), crossPlatformArgs(['--version'], needsDoubleEscape('codex', repoRoot)), crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8', timeout: 5000 })).trim(); } catch {}
     versionCache = { searchPath, value };
   }
   return versionCache.value;
@@ -87,13 +87,13 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
     // path for this value. Scoped to win32 only: the POSIX path (`prompt`
     // as the trailing positional arg) is unaffected by this class of bug
     // and stays exactly as tested.
-    const child = spawn(crossPlatformCommand('codex'), crossPlatformArgs([
+    const child = spawn(crossPlatformCommand('codex', repoRoot), crossPlatformArgs([
       'exec', '--cd', repoRoot, '--sandbox', 'workspace-write', '--add-dir', stateDir,
       ...(model ? ['--model', model] : []),
       ...(effort ? ['--config', `model_reasoning_effort=${JSON.stringify(effort)}`] : []),
       ...(tier ? ['--config', `service_tier=${JSON.stringify(tier)}`] : []),
       '--skip-git-repo-check', '--json', ...(isWindows ? ['-'] : [prompt]),
-    ], needsDoubleEscape('codex')), crossPlatformOpts({ cwd: repoRoot, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'ignore'] }));
+    ], needsDoubleEscape('codex', repoRoot)), crossPlatformOpts({ cwd: repoRoot, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'ignore'] }));
     if (isWindows) {
       // If `codex` exits before consuming stdin (a rejected flag, a
       // startup auth failure, the wrong binary on PATH), writing the
@@ -203,7 +203,7 @@ function providerExec(input) {
   const truncate = (text) => (text.length > OUTPUT_LIMIT ? `${text.slice(0, OUTPUT_LIMIT)}\n...(truncated)` : text);
 
   return new Promise((resolve, reject) => {
-    const child = spawn(crossPlatformCommand(executable), crossPlatformArgs(args, needsDoubleEscape(executable)), crossPlatformOpts({ cwd: repoRoot, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'pipe'] }));
+    const child = spawn(crossPlatformCommand(executable, repoRoot), crossPlatformArgs(args, needsDoubleEscape(executable, repoRoot)), crossPlatformOpts({ cwd: repoRoot, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'pipe'] }));
     if (isWindows) {
       // See codexExec's identical stdin 'error' handling above -- the
       // same EPIPE risk (child exits before consuming the prompt) applies
@@ -242,7 +242,7 @@ function providerExec(input) {
 function resolveDefaultBase(repoRoot, exec = execFileSync) {
   let refs;
   try {
-    refs = exec(crossPlatformCommand('git'), crossPlatformArgs(['for-each-ref', '--format=%(symref)', 'refs/remotes/*/HEAD'], needsDoubleEscape('git')), crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8' }));
+    refs = exec(crossPlatformCommand('git', repoRoot), crossPlatformArgs(['for-each-ref', '--format=%(symref)', 'refs/remotes/*/HEAD'], needsDoubleEscape('git', repoRoot)), crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8' }));
   } catch (error) {
     throw new Error('review-until-green: cannot determine a remote default base; pass an explicit base');
   }

@@ -144,7 +144,7 @@ test('win32: crossPlatformCommand throws rather than falling back to an unresolv
   process.env.PATH = '';
   try {
     const { crossPlatformCommand } = loadWithPlatform('win32');
-    assert.throws(() => crossPlatformCommand('definitely-not-a-real-tool'), /not found on PATH/);
+    assert.throws(() => crossPlatformCommand('definitely-not-a-real-tool'), /not found on a trusted PATH entry/);
   } finally {
     process.env.PATH = originalPath;
   }
@@ -319,4 +319,110 @@ test('win32: crossPlatformArgs threads doubleEscapeMetaChars through to every el
     [quoteArgumentForWindows('foo&whoami', true)],
   );
   assert.notStrictEqual(quoteArgumentForWindows('foo&whoami', true), quoteArgumentForWindows('foo&whoami', false));
+});
+
+// excludeDir: closes a fifth-round GitHub Codex finding (P1) on PR #113.
+// PATH itself, not just cwd, can be contaminated by the repository under
+// review: launching Concord through an npm/pnpm script inside that repo
+// conventionally prepends its own node_modules/.bin to PATH for the child
+// process, so a naive PATH-only search (the fourth round's fix) would
+// still find and trust a repository-controlled git.cmd/codex.cmd there.
+test('win32: resolveOnPath skips a candidate inside excludeDir even though it is on PATH', () => {
+  const os = require('node:os');
+  const fs = require('node:fs');
+  const pathMod = require('node:path');
+  // Simulate: Concord launched via an npm/pnpm script inside the reviewed
+  // repo, which prepended that repo's own node_modules/.bin to PATH ahead
+  // of a legitimate, separate global install.
+  const repoDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'reviewed-repo-'));
+  const repoBinDir = pathMod.join(repoDir, 'node_modules', '.bin');
+  fs.mkdirSync(repoBinDir, { recursive: true });
+  fs.writeFileSync(pathMod.join(repoBinDir, 'git.CMD'), '');
+  const globalBinDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'global-bin-'));
+  const trustedTarget = pathMod.join(globalBinDir, 'git.CMD');
+  fs.writeFileSync(trustedTarget, '');
+  const originalPath = process.env.PATH;
+  const originalPathExt = process.env.PATHEXT;
+  process.env.PATH = [repoBinDir, globalBinDir].join(pathMod.delimiter); // repo-controlled entry listed FIRST
+  process.env.PATHEXT = '.COM;.EXE;.BAT;.CMD';
+  try {
+    const { resolveOnPath } = loadWithPlatform('win32');
+    assert.strictEqual(resolveOnPath('git', repoDir), trustedTarget, 'must skip the repo-controlled PATH entry and resolve to the trusted global one');
+  } finally {
+    process.env.PATH = originalPath;
+    process.env.PATHEXT = originalPathExt;
+    fs.rmSync(repoDir, { recursive: true, force: true });
+    fs.rmSync(globalBinDir, { recursive: true, force: true });
+  }
+});
+
+test('win32: resolveOnPath returns null when the ONLY match is inside excludeDir', () => {
+  const os = require('node:os');
+  const fs = require('node:fs');
+  const pathMod = require('node:path');
+  const repoDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'reviewed-repo-onlymatch-'));
+  const repoBinDir = pathMod.join(repoDir, 'node_modules', '.bin');
+  fs.mkdirSync(repoBinDir, { recursive: true });
+  fs.writeFileSync(pathMod.join(repoBinDir, 'claude.CMD'), '');
+  const originalPath = process.env.PATH;
+  const originalPathExt = process.env.PATHEXT;
+  process.env.PATH = repoBinDir;
+  process.env.PATHEXT = '.COM;.EXE;.BAT;.CMD';
+  try {
+    const { resolveOnPath } = loadWithPlatform('win32');
+    assert.strictEqual(resolveOnPath('claude', repoDir), null, 'an uninstalled provider must not silently resolve to a repo-controlled shim');
+  } finally {
+    process.env.PATH = originalPath;
+    process.env.PATHEXT = originalPathExt;
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('win32: crossPlatformCommand and needsDoubleEscape thread excludeDir through to resolveOnPath', () => {
+  const os = require('node:os');
+  const fs = require('node:fs');
+  const pathMod = require('node:path');
+  const repoDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'reviewed-repo-thread-'));
+  const repoBinDir = pathMod.join(repoDir, 'node_modules', '.bin');
+  fs.mkdirSync(repoBinDir, { recursive: true });
+  fs.writeFileSync(pathMod.join(repoBinDir, 'codex.CMD'), '');
+  const originalPath = process.env.PATH;
+  const originalPathExt = process.env.PATHEXT;
+  process.env.PATH = repoBinDir;
+  process.env.PATHEXT = '.COM;.EXE;.BAT;.CMD';
+  try {
+    const { crossPlatformCommand, needsDoubleEscape } = loadWithPlatform('win32');
+    assert.throws(() => crossPlatformCommand('codex', repoDir), /not found on a trusted PATH entry/);
+    assert.strictEqual(needsDoubleEscape('codex', repoDir), false, 'a resolution that fails closed is not a shim either -- there is nothing to double-escape');
+  } finally {
+    process.env.PATH = originalPath;
+    process.env.PATHEXT = originalPathExt;
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+// unquotePathEntry (via resolveOnPath): a Windows PATH component
+// containing a space is conventionally wrapped in quotes
+// (`"C:\Program Files\Git\cmd"`); a sixth-round GitHub Codex finding (P2)
+// caught that an unstripped pair left path.join building a literal,
+// nonexistent path.
+test('win32: resolveOnPath strips a matching quote pair from a PATH entry before probing it', () => {
+  const os = require('node:os');
+  const fs = require('node:fs');
+  const pathMod = require('node:path');
+  const pathDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'quoted path entry '));
+  const target = pathMod.join(pathDir, 'git.EXE');
+  fs.writeFileSync(target, '');
+  const originalPath = process.env.PATH;
+  const originalPathExt = process.env.PATHEXT;
+  process.env.PATH = `"${pathDir}"`; // quoted, as Windows conventionally represents a spaced entry
+  process.env.PATHEXT = '.COM;.EXE;.BAT;.CMD';
+  try {
+    const { resolveOnPath } = loadWithPlatform('win32');
+    assert.strictEqual(resolveOnPath('git'), target);
+  } finally {
+    process.env.PATH = originalPath;
+    process.env.PATHEXT = originalPathExt;
+    fs.rmSync(pathDir, { recursive: true, force: true });
+  }
 });
