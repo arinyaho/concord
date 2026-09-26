@@ -12,7 +12,7 @@ const { artifactDestinationFromPrompt } = require('./review-artifact');
 const { isValidFindingId } = require('./gate-contract');
 const { PANEL_LENSES } = require('./report');
 const { BLOCKED_CLAUSE, reviewerPrompt } = require('./round-plan');
-const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand } = require('./spawn-cross-platform');
+const { isWindows, crossPlatformOpts, crossPlatformArgs, crossPlatformCommand } = require('./spawn-cross-platform');
 
 const CODEX_VERSION = 'codex-cli 0.154.0';
 const CODEX_USAGE_FIELDS = ['input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens', 'reasoning_output_tokens'];
@@ -77,13 +77,26 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
     const tier = typeof serviceTier === 'string' && serviceTier.trim() ? serviceTier : null;
     const cliVersion = codexCliVersion(repoRoot);
     const startedAt = Date.now();
+    // On Windows, `shell: true` (crossPlatformOpts) routes this through
+    // cmd.exe, whose command-line reader treats an embedded newline as a
+    // command boundary before the argument ever reaches the quoting
+    // crossPlatformArgs applies -- a real risk here, since `prompt` is a
+    // multi-line reviewer prompt (a GitHub Codex review on this exact code,
+    // PR #113, flagged it concretely). `codex exec -` reads the prompt from
+    // stdin instead of argv, sidestepping the whole cmd.exe command-line
+    // path for this value. Scoped to win32 only: the POSIX path (`prompt`
+    // as the trailing positional arg) is unaffected by this class of bug
+    // and stays exactly as tested.
     const child = spawn(crossPlatformCommand('codex'), crossPlatformArgs([
       'exec', '--cd', repoRoot, '--sandbox', 'workspace-write', '--add-dir', stateDir,
       ...(model ? ['--model', model] : []),
       ...(effort ? ['--config', `model_reasoning_effort=${JSON.stringify(effort)}`] : []),
       ...(tier ? ['--config', `service_tier=${JSON.stringify(tier)}`] : []),
-      '--skip-git-repo-check', '--json', prompt,
-    ]), crossPlatformOpts({ cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] }));
+      '--skip-git-repo-check', '--json', ...(isWindows ? ['-'] : [prompt]),
+    ]), crossPlatformOpts({ cwd: repoRoot, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'ignore'] }));
+    if (isWindows) {
+      child.stdin.end(prompt);
+    }
     let pending = '';
     let usage;
     let completionCount = 0;
@@ -151,16 +164,25 @@ function providerExec(input) {
   const invocationId = crypto.randomUUID();
   const startedAt = Date.now();
   const executable = provider;
+  // Same win32-only stdin rerouting as codexExec, for the same reason: a
+  // multi-line prompt on cmd.exe's command line risks a line break being
+  // read as a command boundary. `claude -p` with no trailing prompt
+  // argument reads from stdin (documented). `copilot` without `-p`/
+  // `--prompt` also reads piped stdin (documented), though its stdin path
+  // is less exercised in the wild than `-p`'s (see the open
+  // github/copilot-cli issue requesting a `--prompt-file` flag specifically
+  // because piping is "awkward") -- unverified against a real `copilot`
+  // binary, which this repo does not have; disclosed in the design note.
   const args = provider === 'claude'
     ? [
         '-p',
         ...(requestedModel ? ['--model', requestedModel] : []),
         '--output-format', 'json', '--no-session-persistence',
         '--permission-mode', 'acceptEdits', '--permission-prompts', 'none',
-        '--add-dir', stateDir, prompt,
+        '--add-dir', stateDir, ...(isWindows ? [] : [prompt]),
       ]
     : [
-        '-p', prompt,
+        ...(isWindows ? [] : ['-p', prompt]),
         ...(requestedModel ? ['--model', requestedModel] : []),
         '--silent', '--allow-all-tools', '--allow-all-paths', '--no-ask-user',
         '-C', repoRoot,
@@ -172,7 +194,10 @@ function providerExec(input) {
   const truncate = (text) => (text.length > OUTPUT_LIMIT ? `${text.slice(0, OUTPUT_LIMIT)}\n...(truncated)` : text);
 
   return new Promise((resolve, reject) => {
-    const child = spawn(crossPlatformCommand(executable), crossPlatformArgs(args), crossPlatformOpts({ cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] }));
+    const child = spawn(crossPlatformCommand(executable), crossPlatformArgs(args), crossPlatformOpts({ cwd: repoRoot, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'pipe'] }));
+    if (isWindows) {
+      child.stdin.end(prompt);
+    }
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8');
