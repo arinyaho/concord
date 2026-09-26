@@ -2,7 +2,7 @@
 'use strict';
 const path = require('node:path');
 const { runReviewUntilGreen } = require('../engine/codex-review-runner');
-const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand } = require('../engine/spawn-cross-platform');
+const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('../engine/spawn-cross-platform');
 
 const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
@@ -41,7 +41,7 @@ for (const field of ['reviewer', 'fixer']) {
 }
 const positional = args.filter((arg, index) => arg !== '--broad' && arg !== '--gate' && arg !== '--no-broad' && arg !== '--no-dod' && !inferenceArgs.has(index) && !broadPhraseArgs.has(index));
 const resumed = positional[0] === 'resume';
-const ref = (resumed ? positional[1] : positional[0]) || require('node:child_process').execFileSync(crossPlatformCommand('git'), crossPlatformArgs(['branch', '--show-current']), crossPlatformOpts({ encoding: 'utf8' })).trim();
+const ref = (resumed ? positional[1] : positional[0]) || require('node:child_process').execFileSync(crossPlatformCommand('git'), crossPlatformArgs(['branch', '--show-current'], needsDoubleEscape('git')), crossPlatformOpts({ encoding: 'utf8' })).trim();
 const base = resumed ? positional[2] : positional[1];
 runReviewUntilGreen({ ref, base, broad, noBroad, noDod, ...inference, resume: resumed, repoRoot: process.cwd(), cliPath: path.join(__dirname, 'review-cli.js') })
   .then((result) => process.stdout.write(`${result.handoff || result.message || JSON.stringify(result)}\n`))

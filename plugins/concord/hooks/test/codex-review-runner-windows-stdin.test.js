@@ -15,9 +15,16 @@
 // child_process.spawn is mocked here: no real subprocess exists, and the
 // assertion is purely "what args/stdin did codexExec/providerExec hand to
 // spawn", which is real, spawn-independent code we can safely force
-// win32 for.
+// win32 for. crossPlatformCommand's own PATH resolution is real (not
+// mocked) and now throws if it can't find the binary (a later review
+// round fixed a fallback that reintroduced the cwd-search vulnerability
+// this whole helper exists to close), so each test provides a real, fake
+// PATH entry for the binary under test.
 const { test } = require('node:test');
 const assert = require('node:assert');
+const os = require('node:os');
+const fs = require('node:fs');
+const pathMod = require('node:path');
 const { EventEmitter } = require('node:events');
 const childProcess = require('node:child_process');
 
@@ -37,6 +44,27 @@ function loadRunnerWithPlatform(platform) {
   }
 }
 
+// Puts a fake `<name>.CMD` on a temp, isolated PATH so crossPlatformCommand's
+// real (unmocked) resolveOnPath succeeds, matching spawn-cross-platform.test.js's
+// own convention. Returns the resolved absolute path (escaped the same way
+// crossPlatformCommand would) so assertions can check calls[0].bin against it.
+function withFakeOnPath(name, fn) {
+  const pathDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), `fake-path-${name}-`));
+  const target = pathMod.join(pathDir, `${name}.CMD`);
+  fs.writeFileSync(target, '');
+  const originalPath = process.env.PATH;
+  const originalPathExt = process.env.PATHEXT;
+  process.env.PATH = pathDir;
+  process.env.PATHEXT = '.COM;.EXE;.BAT;.CMD';
+  try {
+    return fn(target); // no cmd.exe metacharacters in a temp dir name, so escaping is a no-op here
+  } finally {
+    process.env.PATH = originalPath;
+    process.env.PATHEXT = originalPathExt;
+    fs.rmSync(pathDir, { recursive: true, force: true });
+  }
+}
+
 // A minimal fake ChildProcess: real EventEmitter (so .once('close'/'error')
 // behave exactly like the real thing), fake stdout/stderr streams (also
 // EventEmitters, since that's all codexExec/providerExec's listeners need),
@@ -48,34 +76,62 @@ function fakeChild() {
   child.stderr = new EventEmitter();
   child.stderr.setEncoding = () => {};
   let stdinContent = '';
-  child.stdin = { end: (data) => { if (data) stdinContent += data; } };
+  child.stdin = new EventEmitter();
+  child.stdin.end = (data) => { if (data) stdinContent += data; };
   Object.defineProperty(child, 'capturedStdin', { get: () => stdinContent });
   return child;
 }
 
 test('win32: codexExec sends the prompt via stdin, not argv, so a multi-line prompt cannot be read as a cmd.exe command boundary', async (t) => {
-  const calls = [];
-  t.mock.method(childProcess, 'execFileSync', () => { throw new Error('no real codex binary in this test'); });
-  t.mock.method(childProcess, 'spawn', (bin, args, opts) => {
-    calls.push({ bin, args, opts });
-    const child = fakeChild();
-    queueMicrotask(() => {
-      child.stdout.emit('data', `${JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } })}\n`);
-      child.emit('close', 0);
+  await withFakeOnPath('codex', async (resolvedCodexPath) => {
+    const calls = [];
+    t.mock.method(childProcess, 'execFileSync', () => { throw new Error('no real codex binary in this test'); });
+    t.mock.method(childProcess, 'spawn', (bin, args, opts) => {
+      calls.push({ bin, args, opts });
+      const child = fakeChild();
+      queueMicrotask(() => {
+        child.stdout.emit('data', `${JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } })}\n`);
+        child.emit('close', 0);
+      });
+      return child;
     });
-    return child;
-  });
-  const { codexExec } = loadRunnerWithPlatform('win32');
-  const multilinePrompt = 'line one\nline two: & whoami\nline three';
-  await codexExec({ role: 'correctness', prompt: multilinePrompt, repoRoot: '/tmp/fake-repo', stateDir: '/tmp/fake-state' });
+    const { codexExec } = loadRunnerWithPlatform('win32');
+    const multilinePrompt = 'line one\nline two: & whoami\nline three';
+    await codexExec({ role: 'correctness', prompt: multilinePrompt, repoRoot: '/tmp/fake-repo', stateDir: '/tmp/fake-state' });
 
-  assert.strictEqual(calls.length, 1);
-  const { args } = calls[0];
-  // crossPlatformArgs quotes/escapes every argument on win32 (^"-^" for a
-  // bare "-"), so check for the quoted form, not the raw literal.
-  assert.ok(!args.some((a) => a.includes('line one')), 'the multi-line prompt must not appear anywhere in argv on win32');
-  assert.ok(args.includes('^"-^"'), 'codex exec must be given the (quoted) stdin sentinel "-" as its prompt argument on win32');
-  assert.strictEqual(calls[0].bin, 'codex');
+    assert.strictEqual(calls.length, 1);
+    const { args } = calls[0];
+    assert.ok(!args.some((a) => a.includes('line one')), 'the multi-line prompt must not appear anywhere in argv on win32');
+    assert.ok(args.includes('^"-^"'), 'codex exec must be given the (quoted) stdin sentinel "-" as its prompt argument on win32');
+    assert.strictEqual(calls[0].bin, resolvedCodexPath, 'codex must be spawned by its resolved absolute PATH entry, not the bare name');
+  });
+});
+
+test('win32: codexExec swallows EPIPE on stdin instead of crashing the process', async (t) => {
+  await withFakeOnPath('codex', async () => {
+    t.mock.method(childProcess, 'execFileSync', () => { throw new Error('no real codex binary in this test'); });
+    let sawStdinErrorListener = false;
+    t.mock.method(childProcess, 'spawn', () => {
+      const child = fakeChild();
+      const originalOn = child.stdin.on.bind(child.stdin);
+      child.stdin.on = (event, listener) => {
+        if (event === 'error') sawStdinErrorListener = true;
+        return originalOn(event, listener);
+      };
+      queueMicrotask(() => {
+        child.stdin.emit('error', Object.assign(new Error('EPIPE'), { code: 'EPIPE' }));
+        child.stdout.emit('data', `${JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } })}\n`);
+        child.emit('close', 0);
+      });
+      return child;
+    });
+    const { codexExec } = loadRunnerWithPlatform('win32');
+    // Assert only that this doesn't throw/reject due to the unhandled
+    // stdin 'error' -- an EventEmitter with no 'error' listener throws
+    // synchronously on emit('error', ...), which this await would surface.
+    await codexExec({ role: 'correctness', prompt: 'line one\nline two', repoRoot: '/tmp/fake-repo', stateDir: '/tmp/fake-state' });
+    assert.strictEqual(sawStdinErrorListener, true, 'codexExec must attach an error listener to child.stdin before writing to it');
+  });
 });
 
 // claude keeps its unconditional `-p` flag (that flag alone means
@@ -85,25 +141,28 @@ test('win32: codexExec sends the prompt via stdin, not argv, so a multi-line pro
 // not just its value.
 for (const [provider, expectDashP] of [['claude', true], ['copilot', false]]) {
   test(`win32: providerExec (${provider}) sends the prompt via stdin, not argv`, async (t) => {
-    const calls = [];
-    t.mock.method(childProcess, 'spawn', (bin, args, opts) => {
-      calls.push({ bin, args, opts });
-      const child = fakeChild();
-      queueMicrotask(() => {
-        child.stdout.emit('data', JSON.stringify({ ok: true }));
-        child.emit('close', 0);
+    await withFakeOnPath(provider, async (resolvedPath) => {
+      const calls = [];
+      t.mock.method(childProcess, 'spawn', (bin, args, opts) => {
+        calls.push({ bin, args, opts });
+        const child = fakeChild();
+        queueMicrotask(() => {
+          child.stdout.emit('data', JSON.stringify({ ok: true }));
+          child.emit('close', 0);
+        });
+        return child;
       });
-      return child;
-    });
-    const { providerExec } = loadRunnerWithPlatform('win32');
-    const multilinePrompt = 'first line\nsecond line: | dir';
-    await providerExec({ provider, role: 'correctness', prompt: multilinePrompt, repoRoot: '/tmp/fake-repo', stateDir: '/tmp/fake-state' });
+      const { providerExec } = loadRunnerWithPlatform('win32');
+      const multilinePrompt = 'first line\nsecond line: | dir';
+      await providerExec({ provider, role: 'correctness', prompt: multilinePrompt, repoRoot: '/tmp/fake-repo', stateDir: '/tmp/fake-state' });
 
-    assert.strictEqual(calls.length, 1);
-    const { args } = calls[0];
-    // crossPlatformArgs quotes/escapes every argument on win32 (^"-p^" for
-    // a bare "-p"), so check for the quoted form, not the raw literal.
-    assert.ok(!args.some((a) => a.includes('first line')), `the multi-line prompt must not appear anywhere in ${provider}'s argv on win32`);
-    assert.strictEqual(args.includes('^"-p^"'), expectDashP, `${provider}'s -p flag presence on win32 should be ${expectDashP}`);
+      assert.strictEqual(calls.length, 1);
+      const { args } = calls[0];
+      // crossPlatformArgs quotes/escapes every argument on win32 (^"-p^" for
+      // a bare "-p"), so check for the quoted form, not the raw literal.
+      assert.ok(!args.some((a) => a.includes('first line')), `the multi-line prompt must not appear anywhere in ${provider}'s argv on win32`);
+      assert.strictEqual(args.includes('^"-p^"'), expectDashP, `${provider}'s -p flag presence on win32 should be ${expectDashP}`);
+      assert.strictEqual(calls[0].bin, resolvedPath, `${provider} must be spawned by its resolved absolute PATH entry, not the bare name`);
+    });
   });
 }

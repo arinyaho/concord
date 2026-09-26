@@ -65,7 +65,13 @@ function crossPlatformOpts(opts = {}) {
 // remains explicitly untested.
 const META_CHARS_RE = /([()[\]%!^"`<>&|;, *?])/g;
 
-function quoteArgumentForWindows(arg) {
+// `doubleEscapeMetaChars`: when the resolved binary is itself a
+// `node_modules/.bin/*.cmd` shim (see CMD_SHIM_RE below), the shim's own
+// `cmd.exe` invocation consumes one escaping pass before re-expanding
+// `%*` to forward the real arguments, so a second pass is needed for the
+// final target to see correctly-escaped arguments -- exactly cross-spawn's
+// own `escapeArgument(arg, doubleEscapeMetaChars)` signature and reasoning.
+function quoteArgumentForWindows(arg, doubleEscapeMetaChars) {
   let value = String(arg);
   // A run of backslashes immediately before a double quote: double it and
   // escape the quote.
@@ -75,7 +81,9 @@ function quoteArgumentForWindows(arg) {
   value = value.replace(/(?=(\\+?)?)\1$/, '$1$1');
   // Every other backslash occurs literally. Quote the whole thing, then
   // escape cmd.exe metacharacters -- including the quotes just added.
-  return `"${value}"`.replace(META_CHARS_RE, '^$1');
+  value = `"${value}"`.replace(META_CHARS_RE, '^$1');
+  if (doubleEscapeMetaChars) value = value.replace(META_CHARS_RE, '^$1');
+  return value;
 }
 
 // The command/binary name goes through the same cmd.exe-metacharacter
@@ -87,9 +95,11 @@ function escapeCommandForWindows(bin) {
 
 // Apply the escaping above to every argument, only on Windows -- POSIX
 // shells and direct (non-shell) exec need no such rewrite, and rewriting
-// there would only add needless, incorrect escaping.
-function crossPlatformArgs(args = []) {
-  return isWindows ? args.map(quoteArgumentForWindows) : args;
+// there would only add needless, incorrect escaping. `doubleEscapeMetaChars`
+// should be the result of `isCmdShim(resolveOnPath(bin))` for the same
+// `bin` this call's command resolved to (see needsDoubleEscape below).
+function crossPlatformArgs(args = [], doubleEscapeMetaChars = false) {
+  return isWindows ? args.map((a) => quoteArgumentForWindows(a, doubleEscapeMetaChars)) : args;
 }
 
 // Resolve `bin` to an absolute path by searching PATH directories ONLY --
@@ -105,9 +115,17 @@ function crossPlatformArgs(args = []) {
 // means cmd.exe performs no bare-name search of its own, so cwd is never
 // consulted for this. Modeled on cross-spawn's `resolveCommand`, without
 // its `which` dependency (this repo has none): walk `PATH`, try each
-// `PATHEXT` extension (Windows' own default list) when `bin` has none, and
-// return the bare name unresolved if nothing on PATH matches -- the
-// eventual ENOENT is the honest failure, not a silent cwd fallback.
+// `PATHEXT` extension (Windows' own default list) when `bin` has none.
+//
+// Returns `null`, not the bare name, when nothing on PATH matches -- an
+// earlier version of this function returned the bare name as a fallback,
+// reasoning that "the eventual ENOENT is the honest failure". A follow-up
+// GitHub Codex review caught that this reasoning was wrong: the bare name
+// still goes back into a `shell: true` spawn, so cmd.exe performs its OWN
+// bare-name search (cwd first) on exactly that fallback value, recreating
+// the vulnerability this function exists to close, for the specific case
+// of an uninstalled or misconfigured provider. The caller (crossPlatformCommand)
+// must fail closed on `null`, not spawn anyway.
 function resolveOnPath(bin) {
   if (/[\\/]/.test(bin)) return bin; // already a path; do not search PATH for it
   const dirs = String(process.env.PATH || process.env.Path || '').split(path.delimiter).filter(Boolean);
@@ -123,11 +141,45 @@ function resolveOnPath(bin) {
       }
     }
   }
-  return bin;
+  return null;
 }
 
+// cross-spawn's own shim-detection: a resolved path shaped like a local
+// npm-bin `.cmd` shim (as opposed to a globally-installed one) needs the
+// double-escape pass above. Exposed separately from crossPlatformCommand
+// so a caller can compute `doubleEscapeMetaChars` for crossPlatformArgs
+// using the exact same resolved path crossPlatformCommand used, rather
+// than guessing from the bare name.
+const CMD_SHIM_RE = /node_modules[\\/]\.bin[\\/][^\\/]+\.cmd$/i;
+
+function isCmdShim(resolvedPath) {
+  return typeof resolvedPath === 'string' && CMD_SHIM_RE.test(resolvedPath);
+}
+
+// Resolve + escape the command for spawn/execFileSync's first argument.
+// Throws on win32 when `bin` cannot be found on PATH at all, rather than
+// falling back to the bare name (see resolveOnPath's doc comment for why
+// that fallback reintroduced the cwd-search vulnerability for exactly the
+// "provider isn't installed" case).
 function crossPlatformCommand(bin) {
-  return isWindows ? escapeCommandForWindows(resolveOnPath(bin)) : bin;
+  if (!isWindows) return bin;
+  const resolved = resolveOnPath(bin);
+  if (resolved === null) {
+    throw new Error(`harness-failure: "${bin}" was not found on PATH; refusing to spawn it unresolved on Windows (cmd.exe would otherwise search the reviewed repository's own directory first)`);
+  }
+  return escapeCommandForWindows(resolved);
+}
+
+// Convenience for callers building the `doubleEscapeMetaChars` argument to
+// crossPlatformArgs: resolves `bin` (again; resolution is a cheap
+// filesystem walk, not a hot path) and reports whether it is a local
+// node_modules/.bin/*.cmd shim. Returns `false` on POSIX and when `bin`
+// cannot be resolved at all (crossPlatformCommand is the one responsible
+// for failing closed on that; this helper only answers the escaping
+// question).
+function needsDoubleEscape(bin) {
+  if (!isWindows) return false;
+  return isCmdShim(resolveOnPath(bin));
 }
 
 module.exports = {
@@ -135,7 +187,9 @@ module.exports = {
   crossPlatformOpts,
   crossPlatformArgs,
   crossPlatformCommand,
+  needsDoubleEscape,
   quoteArgumentForWindows,
   escapeCommandForWindows,
   resolveOnPath,
+  isCmdShim,
 };

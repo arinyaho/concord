@@ -110,9 +110,44 @@ test('win32: escapeCommandForWindows escapes metacharacters, no quoting', () => 
   assert.strictEqual(escapeCommandForWindows('a&b'), 'a^&b');
 });
 
-test('win32: crossPlatformCommand applies escapeCommandForWindows', () => {
-  const { crossPlatformCommand } = loadWithPlatform('win32');
-  assert.strictEqual(crossPlatformCommand('codex'), 'codex');
+test('win32: crossPlatformCommand resolves via PATH, then escapes', () => {
+  const os = require('node:os');
+  const fs = require('node:fs');
+  const pathMod = require('node:path');
+  const pathDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'cross-platform-command-'));
+  const target = pathMod.join(pathDir, 'codex.CMD');
+  fs.writeFileSync(target, '');
+  const originalPath = process.env.PATH;
+  const originalPathExt = process.env.PATHEXT;
+  process.env.PATH = pathDir;
+  process.env.PATHEXT = '.COM;.EXE;.BAT;.CMD';
+  try {
+    const { crossPlatformCommand } = loadWithPlatform('win32');
+    assert.strictEqual(crossPlatformCommand('codex'), target);
+  } finally {
+    process.env.PATH = originalPath;
+    process.env.PATHEXT = originalPathExt;
+    fs.rmSync(pathDir, { recursive: true, force: true });
+  }
+});
+
+// The most severe finding of this whole PR (P1, GitHub Codex review round
+// 3): an earlier version of resolveOnPath fell back to the bare name when
+// nothing was found on PATH, reasoning that "the eventual ENOENT is the
+// honest failure" -- but the bare name still goes back into a shell:true
+// spawn, so cmd.exe performs its OWN cwd-first search on exactly that
+// fallback value for an uninstalled/misconfigured provider, recreating the
+// vulnerability the fix exists to close. crossPlatformCommand must throw,
+// not spawn anyway.
+test('win32: crossPlatformCommand throws rather than falling back to an unresolved bare name', () => {
+  const originalPath = process.env.PATH;
+  process.env.PATH = '';
+  try {
+    const { crossPlatformCommand } = loadWithPlatform('win32');
+    assert.throws(() => crossPlatformCommand('definitely-not-a-real-tool'), /not found on PATH/);
+  } finally {
+    process.env.PATH = originalPath;
+  }
 });
 
 test('darwin: crossPlatformCommand is a no-op passthrough', () => {
@@ -167,7 +202,7 @@ test('win32: resolveOnPath never resolves from the current working directory, on
   process.chdir(cwdDir);
   try {
     const { resolveOnPath } = loadWithPlatform('win32');
-    assert.strictEqual(resolveOnPath('planted'), 'planted', 'a binary present only in cwd must fall through unresolved, never silently found there');
+    assert.strictEqual(resolveOnPath('planted'), null, 'a binary present only in cwd must resolve to null, never be silently found there');
   } finally {
     process.chdir(originalCwd);
     process.env.PATH = originalPath;
@@ -177,12 +212,12 @@ test('win32: resolveOnPath never resolves from the current working directory, on
   }
 });
 
-test('win32: resolveOnPath returns the bare name unresolved when nothing on PATH matches', () => {
+test('win32: resolveOnPath returns null (not the bare name) when nothing on PATH matches', () => {
   const originalPath = process.env.PATH;
   process.env.PATH = '';
   try {
     const { resolveOnPath } = loadWithPlatform('win32');
-    assert.strictEqual(resolveOnPath('definitely-not-a-real-tool'), 'definitely-not-a-real-tool');
+    assert.strictEqual(resolveOnPath('definitely-not-a-real-tool'), null);
   } finally {
     process.env.PATH = originalPath;
   }
@@ -196,4 +231,92 @@ test('win32: resolveOnPath passes through a name that already contains a path se
 test('darwin: crossPlatformCommand does not attempt PATH resolution at all', () => {
   const { crossPlatformCommand } = loadWithPlatform('darwin');
   assert.strictEqual(crossPlatformCommand('codex'), 'codex');
+});
+
+// isCmdShim/needsDoubleEscape/quoteArgumentForWindows(arg, doubleEscapeMetaChars):
+// a fourth GitHub Codex review round on PR #113 pointed out that once
+// resolveOnPath exposes the resolved filename, the earlier "can't detect a
+// node_modules/.bin/*.cmd shim" limitation no longer applies -- cross-spawn's
+// own resolveCommand+isCmdShimRegExp detects exactly this shape and doubles
+// the metacharacter-escape pass, because the shim's own cmd.exe invocation
+// consumes one pass before re-expanding %* to forward the real arguments.
+test('win32: isCmdShim detects a local npm-bin .cmd shim path, not a global install', () => {
+  const { isCmdShim } = loadWithPlatform('win32');
+  assert.strictEqual(isCmdShim('C:\\repo\\node_modules\\.bin\\codex.cmd'), true);
+  assert.strictEqual(isCmdShim('C:\\repo\\node_modules/.bin/codex.cmd'), true);
+  assert.strictEqual(isCmdShim('C:\\Program Files\\nodejs\\codex.cmd'), false);
+  assert.strictEqual(isCmdShim(null), false);
+});
+
+test('win32: needsDoubleEscape resolves the binary and checks the shim pattern', () => {
+  const os = require('node:os');
+  const fs = require('node:fs');
+  const pathMod = require('node:path');
+  const repoDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'needs-double-escape-'));
+  const binDir = pathMod.join(repoDir, 'node_modules', '.bin');
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.writeFileSync(pathMod.join(binDir, 'codex.CMD'), '');
+  const originalPath = process.env.PATH;
+  const originalPathExt = process.env.PATHEXT;
+  process.env.PATH = binDir;
+  process.env.PATHEXT = '.COM;.EXE;.BAT;.CMD';
+  try {
+    const { needsDoubleEscape } = loadWithPlatform('win32');
+    assert.strictEqual(needsDoubleEscape('codex'), true);
+  } finally {
+    process.env.PATH = originalPath;
+    process.env.PATHEXT = originalPathExt;
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('win32: needsDoubleEscape is false for a global (non-shim) install', () => {
+  const os = require('node:os');
+  const fs = require('node:fs');
+  const pathMod = require('node:path');
+  const pathDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'needs-double-escape-global-'));
+  fs.writeFileSync(pathMod.join(pathDir, 'codex.CMD'), '');
+  const originalPath = process.env.PATH;
+  const originalPathExt = process.env.PATHEXT;
+  process.env.PATH = pathDir;
+  process.env.PATHEXT = '.COM;.EXE;.BAT;.CMD';
+  try {
+    const { needsDoubleEscape } = loadWithPlatform('win32');
+    assert.strictEqual(needsDoubleEscape('codex'), false);
+  } finally {
+    process.env.PATH = originalPath;
+    process.env.PATHEXT = originalPathExt;
+    fs.rmSync(pathDir, { recursive: true, force: true });
+  }
+});
+
+test('darwin: needsDoubleEscape is always false', () => {
+  const { needsDoubleEscape } = loadWithPlatform('darwin');
+  assert.strictEqual(needsDoubleEscape('codex'), false);
+});
+
+// quoteArgumentForWindows(arg, doubleEscapeMetaChars): expected outputs
+// hardcoded from cross-spawn's own reference (same discipline as the
+// single-escape cases above -- no duplicated algorithm in this test file).
+const DOUBLE_ESCAPE_CASES = [
+  ['foo&whoami', '^^^"foo^^^&whoami^^^"'],
+  ['plain', '^^^"plain^^^"'],
+  ['he said "hi"', '^^^"he^^^ said^^^ \\^^^"hi\\^^^"^^^"'],
+  ['%NAME%', '^^^"^^^%NAME^^^%^^^"'],
+];
+
+for (const [input, expected] of DOUBLE_ESCAPE_CASES) {
+  test(`win32: quoteArgumentForWindows(doubleEscapeMetaChars=true) matches cross-spawn for ${JSON.stringify(input)}`, () => {
+    const { quoteArgumentForWindows } = loadWithPlatform('win32');
+    assert.strictEqual(quoteArgumentForWindows(input, true), expected);
+  });
+}
+
+test('win32: crossPlatformArgs threads doubleEscapeMetaChars through to every element', () => {
+  const { crossPlatformArgs, quoteArgumentForWindows } = loadWithPlatform('win32');
+  assert.deepStrictEqual(
+    crossPlatformArgs(['foo&whoami'], true),
+    [quoteArgumentForWindows('foo&whoami', true)],
+  );
+  assert.notStrictEqual(quoteArgumentForWindows('foo&whoami', true), quoteArgumentForWindows('foo&whoami', false));
 });
