@@ -64,15 +64,20 @@ test('commandWindows invokes PowerShell by an absolute path, not a bare name', (
 });
 
 // A GitHub Codex review on this exact manifest (PR #113) caught that
-// `Get-Command node` still trusts whatever PATH the session inherited,
+// `Get-Command node` trusts whatever PATH the session inherited,
 // including a repository-controlled node_modules/.bin prepended by an
-// npm/pnpm invocation. Fixed by rejecting a resolved `node` located
-// inside the current directory before falling back to the trusted
-// ProgramFiles location.
-test('commandWindows rejects a node resolved from inside the current directory', () => {
+// npm/pnpm invocation -- and a follow-up round caught that comparing the
+// resolved path against the current directory (an earlier fix attempt)
+// still misses the case where the session's cwd is a SUBDIRECTORY of the
+// repository whose root holds the planted node_modules/.bin: this hook
+// has no reliable way to learn the actual repository root, only its own
+// current directory, so that comparison can never be made safe. Fixed by
+// dropping PATH search for `node` here entirely -- only fixed, trusted
+// install locations are ever consulted.
+test('commandWindows never consults PATH (Get-Command) for node, only fixed trusted locations', () => {
   const handlers = loadHandlers();
   for (const handler of handlers) {
-    assert.match(handler.commandWindows, /\$cwd\s*=\s*\(Get-Location\)\.Path/, `commandWindows must check the resolved node path against the current directory: ${handler.commandWindows}`);
-    assert.match(handler.commandWindows, /StartsWith\(\$cwd\.ToLower\(\)\)/i, `commandWindows must reject a node resolved from inside the current directory: ${handler.commandWindows}`);
+    assert.ok(!/Get-Command\s+node/i.test(handler.commandWindows), `commandWindows must not PATH-search for node at all: ${handler.commandWindows}`);
+    assert.match(handler.commandWindows, /Test-Path\s+\$c/, `commandWindows must probe fixed, trusted node install locations: ${handler.commandWindows}`);
   }
 });
