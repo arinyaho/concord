@@ -9,9 +9,10 @@ const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { crossPlatformOpts } = require('./spawn-cross-platform');
 
 function sh(bin, args, opts = {}) {
-  return execFileSync(bin, args, { encoding: 'utf8', maxBuffer: 20 * 1024 * 1024, ...opts });
+  return execFileSync(bin, args, crossPlatformOpts({ encoding: 'utf8', maxBuffer: 20 * 1024 * 1024, ...opts }));
 }
 
 // Moved verbatim from review-cli.js gitDiff(). base ? range diff : working-tree

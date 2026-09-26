@@ -22,6 +22,7 @@ const {
   resetUnreachable,
 } = require('./review');
 const { acquireTarget, gitDiff, gitHeadSha, gitDirty } = require('./target');
+const { crossPlatformOpts } = require('./spawn-cross-platform');
 
 function resolveStateDir(resolveFromCwd) {
   if (process.env.REVIEW_STATE_DIR) return process.env.REVIEW_STATE_DIR;
@@ -47,7 +48,7 @@ const GATE_PANEL_LENSES = reportLib.PANEL_LENSES;
 // the orchestrator lives here so it can be injected/tested against a real
 // temp repo without touching the caller's own working tree.
 function sh(bin, args, opts = {}) {
-  return execFileSync(bin, args, { encoding: 'utf8', maxBuffer: 20 * 1024 * 1024, ...opts });
+  return execFileSync(bin, args, crossPlatformOpts({ encoding: 'utf8', maxBuffer: 20 * 1024 * 1024, ...opts }));
 }
 // gitDiff, the dirty-check (gitDirty), and the HEAD rev-parse (gitHeadSha) moved
 // to core/target.js (the target-acquisition seam). They are re-imported above so
@@ -157,7 +158,7 @@ function renderDodFailure(dod) {
     out.push('    (no output captured)');
     return out;
   }
-  const all = body.split('\n');
+  const all = body.split(/\r?\n/);
   const TAIL = 12;
   if (all.length > TAIL) out.push(`    ... (${all.length - TAIL} earlier line(s) omitted)`);
   for (const l of all.slice(-TAIL)) out.push(`    ${clip(l)}`);
@@ -324,7 +325,7 @@ function changedGitPaths(diffText) {
   const add = (file) => {
     if (file && file !== '/dev/null' && !paths.includes(file)) paths.push(file);
   };
-  for (const line of String(diffText).split('\n')) {
+  for (const line of String(diffText).split(/\r?\n/)) {
     let match = /^--- a\/(.+?)(?:\t.*)?$/.exec(line);
     if (match) { add(match[1]); continue; }
     match = /^\+\+\+ b\/(.+?)(?:\t.*)?$/.exec(line);

@@ -1,0 +1,44 @@
+'use strict';
+const { test } = require('node:test');
+const assert = require('node:assert');
+const path = require('node:path');
+
+// Load the module fresh under a forced process.platform so both branches are
+// exercised regardless of which OS actually runs this test.
+function loadWithPlatform(platform) {
+  const modPath = path.join(__dirname, '..', '..', 'core', 'spawn-cross-platform.js');
+  delete require.cache[require.resolve(modPath)];
+  const original = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+  try {
+    return require(modPath);
+  } finally {
+    Object.defineProperty(process, 'platform', original);
+    delete require.cache[require.resolve(modPath)];
+  }
+}
+
+test('win32: crossPlatformOpts adds shell:true and preserves other opts', () => {
+  const { crossPlatformOpts, isWindows } = loadWithPlatform('win32');
+  assert.strictEqual(isWindows, true);
+  const result = crossPlatformOpts({ cwd: '/x', encoding: 'utf8' });
+  assert.strictEqual(result.shell, true);
+  assert.strictEqual(result.cwd, '/x');
+  assert.strictEqual(result.encoding, 'utf8');
+});
+
+test('darwin: crossPlatformOpts is a no-op passthrough', () => {
+  const { crossPlatformOpts, isWindows } = loadWithPlatform('darwin');
+  assert.strictEqual(isWindows, false);
+  const opts = { cwd: '/x', encoding: 'utf8' };
+  const result = crossPlatformOpts(opts);
+  assert.strictEqual(result.shell, undefined);
+  assert.deepStrictEqual(result, opts);
+});
+
+test('linux: crossPlatformOpts is a no-op passthrough with no args', () => {
+  const { crossPlatformOpts, isWindows } = loadWithPlatform('linux');
+  assert.strictEqual(isWindows, false);
+  const result = crossPlatformOpts();
+  assert.strictEqual(result.shell, undefined);
+});

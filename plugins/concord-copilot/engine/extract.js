@@ -15,7 +15,7 @@ function extractFacts(entries) {
         // Split on &&/||/;/| and test each segment's leading token against the
         // allowlist, so "cd dir && git commit" is captured but a VAR="...tool..."
         // assignment (tool name only inside the value) is not.
-        const cmd = String(input.command || '').split('\n')[0].trim();
+        const cmd = String(input.command || '').split(/\r?\n/)[0].trim();
         const segments = cmd.split(/&&|\|\||[;|]/).map((s) => s.trim());
         if (cmd && segments.some((s) => MEANINGFUL_BASH_RE.test(s))) {
           facts.push(`ran: ${cmd.length > 120 ? `${cmd.slice(0, 117)}...` : cmd}`);
@@ -32,7 +32,7 @@ function extractFacts(entries) {
 
 // Harvest tagged lines from a text blob into an accumulator.
 function harvestTags(text, acc) {
-  for (const raw of String(text).split('\n')) {
+  for (const raw of String(text).split(/\r?\n/)) {
     const m = raw.trim().match(TAG_RE);
     if (!m) continue;
     const body = m[2].trim();
