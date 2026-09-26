@@ -153,9 +153,9 @@ function unquotePathEntry(dir) {
 function resolveOnPath(bin, excludeDir) {
   if (/[\\/]/.test(bin)) return bin; // already a path; do not search PATH for it
   const excludeResolved = excludeDir ? path.resolve(String(excludeDir)) : null;
-  const isExcluded = (candidate) => {
+  const isExcluded = (absoluteCandidate) => {
     if (!excludeResolved) return false;
-    const rel = path.relative(excludeResolved, path.resolve(candidate));
+    const rel = path.relative(excludeResolved, absoluteCandidate);
     return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
   };
   const dirs = String(process.env.PATH || process.env.Path || '').split(path.delimiter).filter(Boolean).map(unquotePathEntry);
@@ -163,7 +163,15 @@ function resolveOnPath(bin, excludeDir) {
   const exts = hasExt ? [''] : String(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
   for (const dir of dirs) {
     for (const ext of exts) {
-      const candidate = path.join(dir, bin + ext);
+      // Always resolve to an absolute path, even when a PATH entry is
+      // itself relative (unusual but legal): both the exclusion check and
+      // the value ultimately handed to `spawn` must be the SAME path.
+      // A GitHub Codex review on this exact code (PR #113) caught that
+      // returning the unresolved (possibly relative) candidate meant the
+      // executable actually run by a child process whose `cwd` differs
+      // from THIS process' `cwd` was not necessarily the one validated
+      // here.
+      const candidate = path.resolve(path.join(dir, bin + ext));
       try {
         if (fs.statSync(candidate).isFile() && !isExcluded(candidate)) return candidate;
       } catch {

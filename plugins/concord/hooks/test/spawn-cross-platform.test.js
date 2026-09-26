@@ -406,6 +406,45 @@ test('win32: crossPlatformCommand and needsDoubleEscape thread excludeDir throug
 // (`"C:\Program Files\Git\cmd"`); a sixth-round GitHub Codex finding (P2)
 // caught that an unstripped pair left path.join building a literal,
 // nonexistent path.
+// resolveOnPath must always return an ABSOLUTE path, even when a PATH
+// entry is itself relative -- a seventh-round GitHub Codex finding (P1)
+// caught that a relative candidate was probed relative to THIS process'
+// cwd but returned unresolved, so a child process spawned with a
+// different `cwd` (repoRoot) would not necessarily run the file that was
+// actually validated. Exercised with a relative PATH entry and cwd
+// temporarily pointed elsewhere.
+test('win32: resolveOnPath returns an absolute path even from a relative PATH entry', () => {
+  const os = require('node:os');
+  const fs = require('node:fs');
+  const pathMod = require('node:path');
+  const parentDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'relative-path-entry-'));
+  const binDirName = 'bin';
+  fs.mkdirSync(pathMod.join(parentDir, binDirName));
+  const target = pathMod.join(parentDir, binDirName, 'mytool.CMD');
+  fs.writeFileSync(target, '');
+  const originalPath = process.env.PATH;
+  const originalPathExt = process.env.PATHEXT;
+  const originalCwd = process.cwd();
+  process.chdir(parentDir);
+  process.env.PATH = binDirName; // a relative PATH entry, resolved against this process' cwd
+  process.env.PATHEXT = '.COM;.EXE;.BAT;.CMD';
+  try {
+    const { resolveOnPath } = loadWithPlatform('win32');
+    const resolved = resolveOnPath('mytool');
+    // Compare realpaths, not raw strings: on macOS, `os.tmpdir()` and
+    // `process.cwd()` can disagree on `/var` vs. its `/private/var`
+    // symlink target -- a platform quirk of this test environment, not
+    // something resolveOnPath itself needs to normalize.
+    assert.strictEqual(fs.realpathSync(resolved), fs.realpathSync(target));
+    assert.ok(pathMod.isAbsolute(resolved), 'resolveOnPath must never return a relative path');
+  } finally {
+    process.chdir(originalCwd);
+    process.env.PATH = originalPath;
+    process.env.PATHEXT = originalPathExt;
+    fs.rmSync(parentDir, { recursive: true, force: true });
+  }
+});
+
 test('win32: resolveOnPath strips a matching quote pair from a PATH entry before probing it', () => {
   const os = require('node:os');
   const fs = require('node:fs');

@@ -78,7 +78,7 @@ function codexLauncherCommand(script) {
 // PLUGIN_ROOT-then-CLAUDE_PLUGIN_ROOT precedence and fail-soft (exit 0)
 // behavior as the POSIX launcher above.
 function codexLauncherCommandWindows(script) {
-  return `C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $r = $env:PLUGIN_ROOT; if (-not $r) { $r = $env:CLAUDE_PLUGIN_ROOT }; if (-not $r) { exit 0 }; $n = (Get-Command node -ErrorAction SilentlyContinue).Source; if (-not $n) { $c = \\"$env:ProgramFiles\\nodejs\\node.exe\\"; if (Test-Path $c) { $n = $c } }; if (-not $n) { exit 0 }; & $n \\"$r\\hooks\\${script}\\""`;
+  return `C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $r = $env:PLUGIN_ROOT; if (-not $r) { $r = $env:CLAUDE_PLUGIN_ROOT }; if (-not $r) { exit 0 }; $n = (Get-Command node -ErrorAction SilentlyContinue).Source; $cwd = (Get-Location).Path; if ($n -and $n.ToLower().StartsWith($cwd.ToLower())) { $n = $null }; if (-not $n) { $c = \\"$env:ProgramFiles\\nodejs\\node.exe\\"; if (Test-Path $c) { $n = $c } }; if (-not $n) { exit 0 }; & $n \\"$r\\hooks\\${script}\\""`;
 }
 
 test('Codex hook manifest gives every command hook the PATH-independent node-discovery launcher contract', () => {

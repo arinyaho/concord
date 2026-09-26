@@ -62,3 +62,17 @@ test('commandWindows invokes PowerShell by an absolute path, not a bare name', (
     assert.match(handler.commandWindows, /^[A-Za-z]:\\.*\\powershell\.exe\b/i, `commandWindows must invoke PowerShell by an absolute path, not a bare name resolvable via cwd: ${handler.commandWindows}`);
   }
 });
+
+// A GitHub Codex review on this exact manifest (PR #113) caught that
+// `Get-Command node` still trusts whatever PATH the session inherited,
+// including a repository-controlled node_modules/.bin prepended by an
+// npm/pnpm invocation. Fixed by rejecting a resolved `node` located
+// inside the current directory before falling back to the trusted
+// ProgramFiles location.
+test('commandWindows rejects a node resolved from inside the current directory', () => {
+  const handlers = loadHandlers();
+  for (const handler of handlers) {
+    assert.match(handler.commandWindows, /\$cwd\s*=\s*\(Get-Location\)\.Path/, `commandWindows must check the resolved node path against the current directory: ${handler.commandWindows}`);
+    assert.match(handler.commandWindows, /StartsWith\(\$cwd\.ToLower\(\)\)/i, `commandWindows must reject a node resolved from inside the current directory: ${handler.commandWindows}`);
+  }
+});
