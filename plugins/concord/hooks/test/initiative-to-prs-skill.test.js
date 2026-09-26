@@ -3,14 +3,9 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const SKILL_FILES = require('./initiative-to-prs-files.json');
 
 const REPO = path.join(__dirname, '..', '..', '..', '..');
-const SKILL_FILES = [
-  'SKILL.md',
-  'references/stages.md',
-  'references/model-routing.md',
-  'references/handoff-contract.md',
-];
 
 function read(packageName, file) {
   return fs.readFileSync(path.join(REPO, 'plugins', packageName, 'skills', 'initiative-to-prs', file), 'utf8');

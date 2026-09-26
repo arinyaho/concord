@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const url = require('node:url');
+const SKILL_FILES = require('./initiative-to-prs-files.json');
 
 const REPO = path.join(__dirname, '..', '..', '..', '..');
 const COPILOT = path.join(REPO, 'plugins/concord-copilot');
@@ -97,7 +98,7 @@ test('Copilot initiative-to-prs package still matches its bundle inputs', () => 
   // initiative-to-prs is intentionally excluded from the "portable skills" byte-identical
   // check above because other files in that skill (e.g. model-routing.md) legitimately
   // diverge per provider. The remaining files are vendored as plain copies.
-  for (const file of ['SKILL.md', 'references/stages.md', 'references/handoff-contract.md']) {
+  for (const file of SKILL_FILES.filter((file) => file !== 'references/model-routing.md')) {
     const source = fs.readFileSync(path.join(REPO, 'plugins/concord/skills/initiative-to-prs', file), 'utf8');
     assert.equal(read(path.join('skills/initiative-to-prs', file)), source);
   }
