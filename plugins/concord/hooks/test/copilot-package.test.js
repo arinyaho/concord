@@ -93,7 +93,7 @@ test('portable Copilot skills remain byte-identical to the shared source', () =>
   }
 });
 
-test('shared initiative-to-prs files in the Copilot package still match their source', () => {
+test('Copilot initiative-to-prs package still matches its bundle inputs', () => {
   // initiative-to-prs is intentionally excluded from the "portable skills" byte-identical
   // check above because other files in that skill (e.g. model-routing.md) legitimately
   // diverge per provider. The remaining files are vendored as plain copies.
@@ -101,6 +101,7 @@ test('shared initiative-to-prs files in the Copilot package still match their so
     const source = fs.readFileSync(path.join(REPO, 'plugins/concord/skills/initiative-to-prs', file), 'utf8');
     assert.equal(read(path.join('skills/initiative-to-prs', file)), source);
   }
+  assert.equal(read('skills/initiative-to-prs/references/model-routing.md'), read('overrides/initiative-model-routing.md'));
 });
 
 test('Copilot-specific orchestration uses native clean-context agents and explicit degradation', () => {
