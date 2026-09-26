@@ -5,6 +5,7 @@ const childProcess = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const INITIATIVE_TO_PRS_FILES = require('./initiative-to-prs-files.json');
 
 const REPO = path.join(__dirname, '..', '..', '..', '..');
 const CLAUDE_SKILL = path.join(REPO, 'plugins/concord/skills/ticket-writing/SKILL.md');
@@ -13,12 +14,6 @@ const CLAUDE_TICKET_TO_PR = path.join(REPO, 'plugins/concord/skills/ticket-to-pr
 const CODEX_TICKET_TO_PR = path.join(REPO, 'plugins/concord-codex/skills/ticket-to-pr/SKILL.md');
 const CLAUDE_INITIATIVE_TO_PRS = path.join(REPO, 'plugins/concord/skills/initiative-to-prs/SKILL.md');
 const CODEX_INITIATIVE_TO_PRS = path.join(REPO, 'plugins/concord-codex/skills/initiative-to-prs/SKILL.md');
-const INITIATIVE_TO_PRS_FILES = [
-  'SKILL.md',
-  'references/stages.md',
-  'references/model-routing.md',
-  'references/handoff-contract.md',
-];
 const CLAUDE_REVIEW_UNTIL_LGTM = path.join(REPO, 'plugins/concord/skills/review-until-lgtm/SKILL.md');
 const CODEX_REVIEW_UNTIL_LGTM = path.join(REPO, 'plugins/concord-codex/skills/review-until-lgtm/SKILL.md');
 const PROPOSAL_SKILL_FILES = [
@@ -132,7 +127,7 @@ pluginInstallE2ETest('clean Claude and Codex installs discover the same shared s
   const codexTicketToPr = read(path.join(codexInstall.installedPath, 'skills/ticket-to-pr/SKILL.md'));
   const claudeInitiativeToPrs = read(path.join(claudeInstall.installPath, 'skills/initiative-to-prs/SKILL.md'));
   const codexInitiativeToPrs = read(path.join(codexInstall.installedPath, 'skills/initiative-to-prs/SKILL.md'));
-  for (const file of INITIATIVE_TO_PRS_FILES.slice(1)) {
+  for (const file of INITIATIVE_TO_PRS_FILES.filter((file) => file !== 'SKILL.md')) {
     assert.equal(
       read(path.join(claudeInstall.installPath, 'skills/initiative-to-prs', file)),
       read(path.join(codexInstall.installedPath, 'skills/initiative-to-prs', file)),

@@ -3,20 +3,28 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const SKILL_FILES = require('./initiative-to-prs-files.json');
 
 const REPO = path.join(__dirname, '..', '..', '..', '..');
-const SKILL_FILES = [
-  'SKILL.md',
-  'references/stages.md',
-  'references/model-routing.md',
-  'references/handoff-contract.md',
-];
 
 function read(packageName, file) {
   return fs.readFileSync(path.join(REPO, 'plugins', packageName, 'skills', 'initiative-to-prs', file), 'utf8');
 }
 
+test('initiative-to-prs manifest covers every canonical source file', () => {
+  const root = path.join(REPO, 'plugins/concord/skills/initiative-to-prs');
+  const files = fs.readdirSync(root, { recursive: true })
+    .filter((file) => fs.statSync(path.join(root, file)).isFile())
+    .sort();
+  assert.deepEqual(SKILL_FILES.map((file) => path.normalize(file)).sort(), files);
+});
+
 test('Claude and Codex ship the same initiative-to-prs skill', () => {
+  const root = path.join(REPO, 'plugins/concord-codex/skills/initiative-to-prs');
+  const files = fs.readdirSync(root, { recursive: true })
+    .filter((file) => fs.statSync(path.join(root, file)).isFile())
+    .sort();
+  assert.deepEqual(SKILL_FILES.map((file) => path.normalize(file)).sort(), files);
   for (const file of SKILL_FILES) assert.equal(read('concord-codex', file), read('concord', file));
 });
 
@@ -61,6 +69,8 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(skill, /approved tickets and external design records have been written and read back/i);
   assert.match(skill, /repository-backed design records.*assigned ticket and repository unit.*planned branch.*PR disposition/is);
   assert.match(stages, /No tracker or design-document mutation occurs before this checkpoint/i);
+  assert.match(stages, /Write and read back the Stage 1 handoff before presenting this checkpoint/is);
+  assert.match(stages, /missing or unreadable handoff.*unresolved model identity.*incomplete or unsuccessful specialist.*uncovered decision.*missing required independent review blocks checkpoint 1 and Stage 2.*user approval cannot replace/is);
   assert.match(stages, /proposed design-record mutation.*specific approval/i);
   assert.match(stages, /Continue only after the user approves implementation of that exact set/i);
   assert.match(skill, /repository boundary requires a separate implementation unit and PR, not automatically another outcome ticket/i);
@@ -113,8 +123,14 @@ test('initiative-to-prs routes models by task shape and bounds delegation', () =
   assert.match(routing, /confirm.*selected model and reasoning effort are callable/is);
   assert.match(routing, /Do not infer capability from a model name, version number, or price alone/i);
   assert.match(routing, /before checkpoint 1.*deep-capability model.*before.*approved contract/is);
-  assert.match(routing, /material cryptography, security, or migration decision.*separate deep-capability reviewer/is);
+  assert.match(routing, /separate deep-capability specialist.*clean context/is);
+  assert.match(routing, /active root agent cannot satisfy a Deep decision gate/i);
+  assert.doesNotMatch(routing, /active agent may perform that pass/i);
+  assert.match(routing, /child invocation or agent identity.*requested and resolved model.*provider and catalog basis.*reasoning effort.*successful completion.*conclusion.*covered decision identities/is);
+  assert.match(routing, /material cryptography, security, or migration decision.*second independent deep-capability reviewer/is);
+  assert.match(routing, /distinct second-reviewer evidence record.*invocation or agent identity.*requested and resolved model.*provider and catalog basis.*reasoning effort.*successful completion.*conclusion.*covered decision identities/is);
   assert.match(routing, /Apply this gate throughout execution, including implementation and review/is);
+  assert.match(read('concord', 'references/stages.md'), /architecture decision gate.*requires a separate deep-capability specialist for material decisions/is);
   assert.match(routing, /maximum delegation depth is two/i);
   assert.match(routing, /at most two specialist children/i);
   assert.match(routing, /Record the role, required class, requested and resolved model/i);
@@ -129,6 +145,8 @@ test('initiative-to-prs handoffs carry evidence without copying session history'
   assert.match(handoff, /Decisions/);
   assert.match(handoff, /Exit verdict/);
   assert.match(handoff, /Requested and resolved model/);
+  assert.match(handoff, /Requested and resolved model[^\n]*provider and catalog basis[^\n]*reasoning effort[^\n]*separate child invocation or agent identity[^\n]*successful completion[^\n]*conclusion[^\n]*covered decision identities[^\n]*second independent Deep reviewer[^\n]*same fields[^\n]*distinct second-reviewer evidence record/i);
+  assert.match(handoff, /active root agent.*not resolved model evidence/i);
 });
 
 test('initiative-to-prs remains provider-neutral and project-neutral', () => {

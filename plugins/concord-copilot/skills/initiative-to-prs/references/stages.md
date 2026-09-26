@@ -27,6 +27,8 @@ If current behavior already satisfies the approved outcome, propose a no-change 
 
 ### Human checkpoint 1
 
+Write and read back the Stage 1 handoff before presenting this checkpoint. For every required Deep decision, verify that it contains the separate specialist evidence required by `model-routing.md` and covers the exact proposed decision. A missing or unreadable handoff, unresolved model identity, incomplete or unsuccessful specialist, uncovered decision, or missing required independent review blocks checkpoint 1 and Stage 2; user approval cannot replace that evidence.
+
 Present a concise evidence verdict, material decisions with realistic options and consequences, recommended contract, proposed tickets, dependencies, any no-change items, and each proposed design-record mutation. Record the user's exact decisions, ticket-set approval, and specific approval or rejection of every proposed design-record mutation. No tracker or design-document mutation occurs before this checkpoint.
 
 ## 2. Ticket set
@@ -45,7 +47,7 @@ Present the read-back ticket set, design changes, dependency order, observable a
 
 ## 3. Execute each repository unit
 
-Execute dependency-ready repository units with `ticket-to-pr`. Its stage exits remain authoritative. Keep routine implementation, review, and final mutations with the active agent unless the user, selected model, or CLI harness requires delegation; the architecture decision gate in `model-routing.md` expressly requires a deep-capability specialist when the active agent cannot provide that review.
+Execute dependency-ready repository units with `ticket-to-pr`. Its stage exits remain authoritative. Keep routine implementation, review, and final mutations with the active agent unless the user, selected model, or CLI harness requires delegation; the architecture decision gate in `model-routing.md` requires a separate deep-capability specialist for material decisions.
 
 During implementation and review, watch for a new material architecture or behavioral choice arising from user discussion, test results, or code tracing. Invoke the architecture decision gate before the dependent change is made; an approved ticket does not settle a newly discovered choice. Independent work may continue while that decision is reviewed.
 

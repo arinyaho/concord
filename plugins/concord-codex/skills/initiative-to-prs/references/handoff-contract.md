@@ -13,7 +13,7 @@ Persist one compact Markdown handoff per completed stage. The file is the child 
 - Decisions: exact user decisions, accepted contract, rejected alternatives that affect later work, and the authorization envelope
 - Ticket or PR identities and dependency relationships
 - Checks actually run, their exact result, and checks not run with the blocker
-- Requested and resolved model, provider, reasoning effort when exposed, and escalation or fallback reason
+- Requested and resolved model, provider and catalog basis, reasoning effort when exposed, escalation or fallback reason, and for a required Deep decision the separate child invocation or agent identity, successful completion, conclusion, and covered decision identities; when a second independent Deep reviewer is required, preserve the same fields in a distinct second-reviewer evidence record; labels such as `active root agent` are not resolved model evidence
 - Exit verdict, failed exit conditions, blockers, and the only dependency-ready next stage
 
 ## Context discipline

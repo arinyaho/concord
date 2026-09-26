@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const url = require('node:url');
+const SKILL_FILES = require('./initiative-to-prs-files.json');
 
 const REPO = path.join(__dirname, '..', '..', '..', '..');
 const COPILOT = path.join(REPO, 'plugins/concord-copilot');
@@ -93,16 +94,20 @@ test('portable Copilot skills remain byte-identical to the shared source', () =>
   }
 });
 
-test('initiative-to-prs handoff-contract.md (not on the portable list) still matches the shared source', () => {
+test('Copilot initiative-to-prs package still matches its bundle inputs', () => {
   // initiative-to-prs is intentionally excluded from the "portable skills" byte-identical
   // check above because other files in that skill (e.g. model-routing.md) legitimately
-  // diverge per provider. handoff-contract.md itself carries no Copilot-specific content
-  // and is vendored as a plain copy, so guard it here explicitly rather than leaving it
-  // uncovered by any drift test.
-  const source = fs.readFileSync(
-    path.join(REPO, 'plugins/concord/skills/initiative-to-prs/references/handoff-contract.md'), 'utf8'
-  );
-  assert.equal(read('skills/initiative-to-prs/references/handoff-contract.md'), source);
+  // diverge per provider. The remaining files are vendored as plain copies.
+  const root = path.join(COPILOT, 'skills/initiative-to-prs');
+  const files = fs.readdirSync(root, { recursive: true })
+    .filter((file) => fs.statSync(path.join(root, file)).isFile())
+    .sort();
+  assert.deepEqual(SKILL_FILES.map((file) => path.normalize(file)).sort(), files);
+  for (const file of SKILL_FILES.filter((file) => file !== 'references/model-routing.md')) {
+    const source = fs.readFileSync(path.join(REPO, 'plugins/concord/skills/initiative-to-prs', file), 'utf8');
+    assert.equal(read(path.join('skills/initiative-to-prs', file)), source);
+  }
+  assert.equal(read('skills/initiative-to-prs/references/model-routing.md'), read('overrides/initiative-model-routing.md'));
 });
 
 test('Copilot-specific orchestration uses native clean-context agents and explicit degradation', () => {
@@ -110,6 +115,7 @@ test('Copilot-specific orchestration uses native clean-context agents and explic
   const routing = read('skills/initiative-to-prs/references/model-routing.md');
   assert.match(review, /Concord Reviewer/);
   assert.match(review, /clean context/i);
+  assert.match(routing, /separate deep-capability specialist in clean context/i);
   assert.match(review, /review-cli\.js/);
   assert.match(review, /do not invoke `telemetry-slot`/i);
   assert.match(review, /telemetry.*unavailable/i);
@@ -117,6 +123,9 @@ test('Copilot-specific orchestration uses native clean-context agents and explic
   assert.match(review, /--fixer-model/);
   assert.match(review, /native/i);
   assert.match(review, /CLI/i);
+  assert.match(routing, /active root agent cannot satisfy a Deep decision gate/i);
+  assert.doesNotMatch(routing, /active agent may perform that pass/i);
+  assert.match(routing, /distinct second-reviewer evidence record.*invocation or agent identity.*requested and resolved model.*provider and catalog basis.*reasoning effort.*successful completion.*conclusion.*covered decision identities/is);
   assert.doesNotMatch(routing, /Codex|Claude Code/);
 
   for (const agent of ['concord-reviewer.agent.md', 'concord-fixer.agent.md']) {
