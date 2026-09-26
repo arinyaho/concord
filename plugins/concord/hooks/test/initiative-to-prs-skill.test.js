@@ -61,6 +61,8 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(skill, /approved tickets and external design records have been written and read back/i);
   assert.match(skill, /repository-backed design records.*assigned ticket and repository unit.*planned branch.*PR disposition/is);
   assert.match(stages, /No tracker or design-document mutation occurs before this checkpoint/i);
+  assert.match(stages, /Write and read back the Stage 1 handoff before presenting this checkpoint/is);
+  assert.match(stages, /missing or unreadable handoff.*unresolved model identity.*incomplete or unsuccessful specialist.*uncovered decision.*missing required independent review blocks checkpoint 1 and Stage 2.*user approval cannot replace/is);
   assert.match(stages, /proposed design-record mutation.*specific approval/i);
   assert.match(stages, /Continue only after the user approves implementation of that exact set/i);
   assert.match(skill, /repository boundary requires a separate implementation unit and PR, not automatically another outcome ticket/i);
@@ -115,9 +117,11 @@ test('initiative-to-prs routes models by task shape and bounds delegation', () =
   assert.match(routing, /before checkpoint 1.*deep-capability model.*before.*approved contract/is);
   assert.match(routing, /separate deep-capability specialist.*clean context/is);
   assert.match(routing, /active root agent cannot satisfy a Deep decision gate/i);
-  assert.match(routing, /child invocation or agent identity.*requested and resolved model.*successful completion.*covered decision identities/is);
+  assert.match(routing, /child invocation or agent identity.*requested and resolved model.*provider and catalog basis.*reasoning effort.*successful completion.*conclusion.*covered decision identities/is);
   assert.match(routing, /material cryptography, security, or migration decision.*second independent deep-capability reviewer/is);
+  assert.match(routing, /distinct second-reviewer evidence record.*invocation or agent identity.*requested and resolved model.*provider and catalog basis.*reasoning effort.*successful completion.*conclusion.*covered decision identities/is);
   assert.match(routing, /Apply this gate throughout execution, including implementation and review/is);
+  assert.match(read('concord', 'references/stages.md'), /architecture decision gate.*requires a separate deep-capability specialist for material decisions/is);
   assert.match(routing, /maximum delegation depth is two/i);
   assert.match(routing, /at most two specialist children/i);
   assert.match(routing, /Record the role, required class, requested and resolved model/i);

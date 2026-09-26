@@ -93,16 +93,14 @@ test('portable Copilot skills remain byte-identical to the shared source', () =>
   }
 });
 
-test('initiative-to-prs handoff-contract.md (not on the portable list) still matches the shared source', () => {
+test('shared initiative-to-prs files in the Copilot package still match their source', () => {
   // initiative-to-prs is intentionally excluded from the "portable skills" byte-identical
   // check above because other files in that skill (e.g. model-routing.md) legitimately
-  // diverge per provider. handoff-contract.md itself carries no Copilot-specific content
-  // and is vendored as a plain copy, so guard it here explicitly rather than leaving it
-  // uncovered by any drift test.
-  const source = fs.readFileSync(
-    path.join(REPO, 'plugins/concord/skills/initiative-to-prs/references/handoff-contract.md'), 'utf8'
-  );
-  assert.equal(read('skills/initiative-to-prs/references/handoff-contract.md'), source);
+  // diverge per provider. The remaining files are vendored as plain copies.
+  for (const file of ['SKILL.md', 'references/stages.md', 'references/handoff-contract.md']) {
+    const source = fs.readFileSync(path.join(REPO, 'plugins/concord/skills/initiative-to-prs', file), 'utf8');
+    assert.equal(read(path.join('skills/initiative-to-prs', file)), source);
+  }
 });
 
 test('Copilot-specific orchestration uses native clean-context agents and explicit degradation', () => {
@@ -117,6 +115,8 @@ test('Copilot-specific orchestration uses native clean-context agents and explic
   assert.match(review, /--fixer-model/);
   assert.match(review, /native/i);
   assert.match(review, /CLI/i);
+  assert.match(routing, /active root agent cannot satisfy a Deep decision gate/i);
+  assert.match(routing, /distinct second-reviewer evidence record.*requested and resolved model.*successful completion.*covered decision identities/is);
   assert.doesNotMatch(routing, /Codex|Claude Code/);
 
   for (const agent of ['concord-reviewer.agent.md', 'concord-fixer.agent.md']) {
