@@ -113,7 +113,10 @@ test('initiative-to-prs routes models by task shape and bounds delegation', () =
   assert.match(routing, /confirm.*selected model and reasoning effort are callable/is);
   assert.match(routing, /Do not infer capability from a model name, version number, or price alone/i);
   assert.match(routing, /before checkpoint 1.*deep-capability model.*before.*approved contract/is);
-  assert.match(routing, /material cryptography, security, or migration decision.*separate deep-capability reviewer/is);
+  assert.match(routing, /separate deep-capability specialist.*clean context/is);
+  assert.match(routing, /active root agent cannot satisfy a Deep decision gate/i);
+  assert.match(routing, /child invocation or agent identity.*requested and resolved model.*successful completion.*covered decision identities/is);
+  assert.match(routing, /material cryptography, security, or migration decision.*second independent deep-capability reviewer/is);
   assert.match(routing, /Apply this gate throughout execution, including implementation and review/is);
   assert.match(routing, /maximum delegation depth is two/i);
   assert.match(routing, /at most two specialist children/i);
@@ -129,6 +132,7 @@ test('initiative-to-prs handoffs carry evidence without copying session history'
   assert.match(handoff, /Decisions/);
   assert.match(handoff, /Exit verdict/);
   assert.match(handoff, /Requested and resolved model/);
+  assert.match(handoff, /active root agent.*not resolved model evidence/i);
 });
 
 test('initiative-to-prs remains provider-neutral and project-neutral', () => {

@@ -27,6 +27,8 @@ If current behavior already satisfies the approved outcome, propose a no-change 
 
 ### Human checkpoint 1
 
+Write and read back the Stage 1 handoff before presenting this checkpoint. For every required Deep decision, verify that it contains the separate specialist evidence required by `model-routing.md` and covers the exact proposed decision. A missing or unreadable handoff, unresolved model identity, incomplete or unsuccessful specialist, uncovered decision, or missing required independent review blocks checkpoint 1 and Stage 2; user approval cannot replace that evidence.
+
 Present a concise evidence verdict, material decisions with realistic options and consequences, recommended contract, proposed tickets, dependencies, any no-change items, and each proposed design-record mutation. Record the user's exact decisions, ticket-set approval, and specific approval or rejection of every proposed design-record mutation. No tracker or design-document mutation occurs before this checkpoint.
 
 ## 2. Ticket set

@@ -20,4 +20,4 @@ Even a Deep active agent pays for a separate specialist call. The cost buys an o
 
 ## Residual exposure
 
-This package currently has no initiative executor, harness-owned model receipt, pre-tool hook, or tracker-mutation wrapper. The reviewed diff adds only this specification, so it cannot strengthen the skill contract or its packaged tests, and it cannot make checkpoint or external mutation blocking unbypassable at runtime. A hard guarantee requires a harness-owned receipt plus a mandatory transition or mutation interception point; this change does not pretend a Markdown or agent-authored JSON validator can establish model capability.
+This package currently has no initiative executor, harness-owned model receipt, pre-tool hook, or tracker-mutation wrapper. The skill-contract change cannot make checkpoint or external mutation blocking unbypassable at runtime. A hard guarantee requires a harness-owned receipt plus a mandatory transition or mutation interception point; this change does not pretend a Markdown or agent-authored JSON validator can establish model capability.
