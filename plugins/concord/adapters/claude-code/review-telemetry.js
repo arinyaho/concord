@@ -151,7 +151,7 @@ function terminalMessage(content, lastAssistantMessage, lastAssistantMessageHash
 
 function hasUniqueTerminalSnapshot(text, agentId, lastAssistantMessage, lastAssistantMessageHash) {
   const rows = new Map(); let order = 0;
-  for (const line of text.split('\n').filter(Boolean)) {
+  for (const line of text.split(/\r?\n/).filter(Boolean)) {
     let row;
     try { row = JSON.parse(line); } catch { return false; }
     if (row?.type !== 'assistant' || row.agentId !== agentId) continue;
@@ -178,7 +178,7 @@ function artifactPathFromAgentTranscript(event, stateDir) {
   const transcriptPath = resolvedAgentTranscriptPath(event);
   if (!transcriptPath) return null;
   try {
-    const row = JSON.parse(fs.readFileSync(transcriptPath, 'utf8').split('\n').find(Boolean));
+    const row = JSON.parse(fs.readFileSync(transcriptPath, 'utf8').split(/\r?\n/).find(Boolean));
     if (row?.type !== 'user' || row.agentId !== event.agent_id) return null;
     const content = row.message?.content;
     const prompt = typeof content === 'string' ? content
@@ -224,7 +224,7 @@ function subagentRecord(event, pendingTool) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
   }
   if (snapshot === undefined) return { ...partial, transcriptWaitMs: waitMs };
-  const lines = snapshot.split('\n').filter(Boolean);
+  const lines = snapshot.split(/\r?\n/).filter(Boolean);
   const requests = new Map();
   const requestToMessage = new Map();
   const messageToRequest = new Map();

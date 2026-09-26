@@ -12,6 +12,7 @@ const { artifactDestinationFromPrompt } = require('./review-artifact');
 const { isValidFindingId } = require('./gate-contract');
 const { PANEL_LENSES } = require('./report');
 const { BLOCKED_CLAUSE, reviewerPrompt } = require('./round-plan');
+const { isWindows, crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
 
 const CODEX_VERSION = 'codex-cli 0.154.0';
 const CODEX_USAGE_FIELDS = ['input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens', 'reasoning_output_tokens'];
@@ -24,7 +25,7 @@ function codexCliVersion(repoRoot) {
   const searchPath = process.env.PATH || '';
   if (!versionCache || versionCache.searchPath !== searchPath) {
     let value = null;
-    try { value = execFileSync('codex', ['--version'], { cwd: repoRoot, encoding: 'utf8', timeout: 5000 }).trim(); } catch {}
+    try { value = execFileSync(crossPlatformCommand('codex', repoRoot), crossPlatformArgs(['--version'], needsDoubleEscape('codex', repoRoot)), crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8', timeout: 5000 })).trim(); } catch {}
     versionCache = { searchPath, value };
   }
   return versionCache.value;
@@ -76,13 +77,35 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
     const tier = typeof serviceTier === 'string' && serviceTier.trim() ? serviceTier : null;
     const cliVersion = codexCliVersion(repoRoot);
     const startedAt = Date.now();
-    const child = spawn('codex', [
+    // On Windows, `shell: true` (crossPlatformOpts) routes this through
+    // cmd.exe, whose command-line reader treats an embedded newline as a
+    // command boundary before the argument ever reaches the quoting
+    // crossPlatformArgs applies -- a real risk here, since `prompt` is a
+    // multi-line reviewer prompt (a GitHub Codex review on this exact code,
+    // PR #113, flagged it concretely). `codex exec -` reads the prompt from
+    // stdin instead of argv, sidestepping the whole cmd.exe command-line
+    // path for this value. Scoped to win32 only: the POSIX path (`prompt`
+    // as the trailing positional arg) is unaffected by this class of bug
+    // and stays exactly as tested.
+    const child = spawn(crossPlatformCommand('codex', repoRoot), crossPlatformArgs([
       'exec', '--cd', repoRoot, '--sandbox', 'workspace-write', '--add-dir', stateDir,
       ...(model ? ['--model', model] : []),
       ...(effort ? ['--config', `model_reasoning_effort=${JSON.stringify(effort)}`] : []),
       ...(tier ? ['--config', `service_tier=${JSON.stringify(tier)}`] : []),
-      '--skip-git-repo-check', '--json', prompt,
-    ], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] });
+      '--skip-git-repo-check', '--json', ...(isWindows ? ['-'] : [prompt]),
+    ], needsDoubleEscape('codex', repoRoot)), crossPlatformOpts({ cwd: repoRoot, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'ignore'] }));
+    if (isWindows) {
+      // If `codex` exits before consuming stdin (a rejected flag, a
+      // startup auth failure, the wrong binary on PATH), writing the
+      // prompt can raise EPIPE on this stream. Only the ChildProcess itself
+      // has an 'error' listener (below); stdin has none, so Node would
+      // otherwise treat this as an unhandled error and crash the whole
+      // review process instead of returning failed telemetry through the
+      // child's own 'error'/'close' handling (a GitHub Codex review on
+      // this exact code, PR #113, caught it).
+      child.stdin.on('error', () => {});
+      child.stdin.end(prompt);
+    }
     let pending = '';
     let usage;
     let completionCount = 0;
@@ -150,16 +173,25 @@ function providerExec(input) {
   const invocationId = crypto.randomUUID();
   const startedAt = Date.now();
   const executable = provider;
+  // Same win32-only stdin rerouting as codexExec, for the same reason: a
+  // multi-line prompt on cmd.exe's command line risks a line break being
+  // read as a command boundary. `claude -p` with no trailing prompt
+  // argument reads from stdin (documented). `copilot` without `-p`/
+  // `--prompt` also reads piped stdin (documented), though its stdin path
+  // is less exercised in the wild than `-p`'s (see the open
+  // github/copilot-cli issue requesting a `--prompt-file` flag specifically
+  // because piping is "awkward") -- unverified against a real `copilot`
+  // binary, which this repo does not have; disclosed in the design note.
   const args = provider === 'claude'
     ? [
         '-p',
         ...(requestedModel ? ['--model', requestedModel] : []),
         '--output-format', 'json', '--no-session-persistence',
         '--permission-mode', 'acceptEdits', '--permission-prompts', 'none',
-        '--add-dir', stateDir, prompt,
+        '--add-dir', stateDir, ...(isWindows ? [] : [prompt]),
       ]
     : [
-        '-p', prompt,
+        ...(isWindows ? [] : ['-p', prompt]),
         ...(requestedModel ? ['--model', requestedModel] : []),
         '--silent', '--allow-all-tools', '--allow-all-paths', '--no-ask-user',
         '-C', repoRoot,
@@ -171,7 +203,14 @@ function providerExec(input) {
   const truncate = (text) => (text.length > OUTPUT_LIMIT ? `${text.slice(0, OUTPUT_LIMIT)}\n...(truncated)` : text);
 
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(crossPlatformCommand(executable, repoRoot), crossPlatformArgs(args, needsDoubleEscape(executable, repoRoot)), crossPlatformOpts({ cwd: repoRoot, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'pipe'] }));
+    if (isWindows) {
+      // See codexExec's identical stdin 'error' handling above -- the
+      // same EPIPE risk (child exits before consuming the prompt) applies
+      // here.
+      child.stdin.on('error', () => {});
+      child.stdin.end(prompt);
+    }
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8');
@@ -203,7 +242,7 @@ function providerExec(input) {
 function resolveDefaultBase(repoRoot, exec = execFileSync) {
   let refs;
   try {
-    refs = exec('git', ['for-each-ref', '--format=%(symref)', 'refs/remotes/*/HEAD'], { cwd: repoRoot, encoding: 'utf8' });
+    refs = exec(crossPlatformCommand('git', repoRoot), crossPlatformArgs(['for-each-ref', '--format=%(symref)', 'refs/remotes/*/HEAD'], needsDoubleEscape('git', repoRoot)), crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8' }));
   } catch (error) {
     throw new Error('review-until-green: cannot determine a remote default base; pass an explicit base');
   }

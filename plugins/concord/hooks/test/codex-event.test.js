@@ -71,19 +71,29 @@ function codexLauncherCommand(script) {
   return `sh -c 'r="$PLUGIN_ROOT"; [ -n "$r" ] || r="$CLAUDE_PLUGIN_ROOT"; [ -n "$r" ] || exit 0; n="$(command -v node 2>/dev/null)"; [ -n "$n" ] || { for c in "$NVM_BIN/node" "$HOME"/.nvm/versions/node/*/bin/node /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do [ -x "$c" ] && { n="$c"; break; }; done; }; [ -n "$n" ] || exit 0; exec "$n" "$r/hooks/${script}"'`;
 }
 
+// Windows launcher: native Codex hook override (commandWindows, per
+// codex-rs/config/src/hook_config.rs HookHandlerConfig::Command) -- no sh.exe
+// on native Windows, so this resolves PLUGIN_ROOT/CLAUDE_PLUGIN_ROOT and node
+// via PowerShell instead of a POSIX shell, mirroring the same
+// PLUGIN_ROOT-then-CLAUDE_PLUGIN_ROOT precedence and fail-soft (exit 0)
+// behavior as the POSIX launcher above.
+function codexLauncherCommandWindows(script) {
+  return `C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $r = $env:PLUGIN_ROOT; if (-not $r) { $r = $env:CLAUDE_PLUGIN_ROOT }; if (-not $r) { exit 0 }; $n = $null; foreach ($c in @(\\"$env:ProgramFiles\\nodejs\\node.exe\\", \\"\${env:ProgramFiles(x86)}\\nodejs\\node.exe\\")) { if (Test-Path $c) { $n = $c; break } }; if (-not $n) { exit 0 }; & $n \\"$r\\hooks\\${script}\\""`;
+}
+
 test('Codex hook manifest gives every command hook the PATH-independent node-discovery launcher contract', () => {
   const manifest = JSON.parse(fs.readFileSync(CODEX_HOOKS, 'utf8'));
   assert.deepStrictEqual(Object.keys(manifest).sort(), ['description', 'hooks']);
   assert.deepStrictEqual(manifest.hooks, {
     Stop: [
-      { hooks: [{ type: 'command', command: codexLauncherCommand('session-state-writer.js') }] },
+      { hooks: [{ type: 'command', command: codexLauncherCommand('session-state-writer.js'), commandWindows: codexLauncherCommandWindows('session-state-writer.js') }] },
     ],
     SessionStart: [
       {
         matcher: 'startup|resume|compact',
         hooks: [
-          { type: 'command', command: codexLauncherCommand('session-state-injector.js') },
-          { type: 'command', command: codexLauncherCommand('review-injector.js') },
+          { type: 'command', command: codexLauncherCommand('session-state-injector.js'), commandWindows: codexLauncherCommandWindows('session-state-injector.js') },
+          { type: 'command', command: codexLauncherCommand('review-injector.js'), commandWindows: codexLauncherCommandWindows('review-injector.js') },
         ],
       },
     ],
