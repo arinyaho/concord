@@ -12,7 +12,7 @@ const { artifactDestinationFromPrompt } = require('./review-artifact');
 const { isValidFindingId } = require('./gate-contract');
 const { PANEL_LENSES } = require('./report');
 const { BLOCKED_CLAUSE, reviewerPrompt } = require('./round-plan');
-const { crossPlatformOpts } = require('./spawn-cross-platform');
+const { crossPlatformOpts, crossPlatformArgs } = require('./spawn-cross-platform');
 
 const CODEX_VERSION = 'codex-cli 0.154.0';
 const CODEX_USAGE_FIELDS = ['input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens', 'reasoning_output_tokens'];
@@ -25,7 +25,7 @@ function codexCliVersion(repoRoot) {
   const searchPath = process.env.PATH || '';
   if (!versionCache || versionCache.searchPath !== searchPath) {
     let value = null;
-    try { value = execFileSync('codex', ['--version'], crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8', timeout: 5000 })).trim(); } catch {}
+    try { value = execFileSync('codex', crossPlatformArgs(['--version']), crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8', timeout: 5000 })).trim(); } catch {}
     versionCache = { searchPath, value };
   }
   return versionCache.value;
@@ -77,13 +77,13 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
     const tier = typeof serviceTier === 'string' && serviceTier.trim() ? serviceTier : null;
     const cliVersion = codexCliVersion(repoRoot);
     const startedAt = Date.now();
-    const child = spawn('codex', [
+    const child = spawn('codex', crossPlatformArgs([
       'exec', '--cd', repoRoot, '--sandbox', 'workspace-write', '--add-dir', stateDir,
       ...(model ? ['--model', model] : []),
       ...(effort ? ['--config', `model_reasoning_effort=${JSON.stringify(effort)}`] : []),
       ...(tier ? ['--config', `service_tier=${JSON.stringify(tier)}`] : []),
       '--skip-git-repo-check', '--json', prompt,
-    ], crossPlatformOpts({ cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] }));
+    ]), crossPlatformOpts({ cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] }));
     let pending = '';
     let usage;
     let completionCount = 0;
@@ -172,7 +172,7 @@ function providerExec(input) {
   const truncate = (text) => (text.length > OUTPUT_LIMIT ? `${text.slice(0, OUTPUT_LIMIT)}\n...(truncated)` : text);
 
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, crossPlatformOpts({ cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] }));
+    const child = spawn(executable, crossPlatformArgs(args), crossPlatformOpts({ cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] }));
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8');
@@ -204,7 +204,7 @@ function providerExec(input) {
 function resolveDefaultBase(repoRoot, exec = execFileSync) {
   let refs;
   try {
-    refs = exec('git', ['for-each-ref', '--format=%(symref)', 'refs/remotes/*/HEAD'], crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8' }));
+    refs = exec('git', crossPlatformArgs(['for-each-ref', '--format=%(symref)', 'refs/remotes/*/HEAD']), crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8' }));
   } catch (error) {
     throw new Error('review-until-green: cannot determine a remote default base; pass an explicit base');
   }

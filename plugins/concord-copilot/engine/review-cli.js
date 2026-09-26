@@ -22,7 +22,7 @@ const {
   resetUnreachable,
 } = require('./review');
 const { acquireTarget, gitDiff, gitHeadSha, gitDirty } = require('./target');
-const { crossPlatformOpts } = require('./spawn-cross-platform');
+const { crossPlatformOpts, crossPlatformArgs } = require('./spawn-cross-platform');
 
 function resolveStateDir(resolveFromCwd) {
   if (process.env.REVIEW_STATE_DIR) return process.env.REVIEW_STATE_DIR;
@@ -48,7 +48,7 @@ const GATE_PANEL_LENSES = reportLib.PANEL_LENSES;
 // the orchestrator lives here so it can be injected/tested against a real
 // temp repo without touching the caller's own working tree.
 function sh(bin, args, opts = {}) {
-  return execFileSync(bin, args, crossPlatformOpts({ encoding: 'utf8', maxBuffer: 20 * 1024 * 1024, ...opts }));
+  return execFileSync(bin, crossPlatformArgs(args), crossPlatformOpts({ encoding: 'utf8', maxBuffer: 20 * 1024 * 1024, ...opts }));
 }
 // gitDiff, the dirty-check (gitDirty), and the HEAD rev-parse (gitHeadSha) moved
 // to core/target.js (the target-acquisition seam). They are re-imported above so
