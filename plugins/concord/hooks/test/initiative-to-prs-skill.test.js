@@ -20,6 +20,11 @@ test('initiative-to-prs manifest covers every canonical source file', () => {
 });
 
 test('Claude and Codex ship the same initiative-to-prs skill', () => {
+  const root = path.join(REPO, 'plugins/concord-codex/skills/initiative-to-prs');
+  const files = fs.readdirSync(root, { recursive: true })
+    .filter((file) => fs.statSync(path.join(root, file)).isFile())
+    .sort();
+  assert.deepEqual([...SKILL_FILES].sort(), files);
   for (const file of SKILL_FILES) assert.equal(read('concord-codex', file), read('concord', file));
 });
 
