@@ -64,7 +64,14 @@ function gitCommitFix(repoRoot, findingId, summary, files) {
   // companion edit is wiped later by record()'s gitCheckoutTree.
   const fileList = Array.isArray(files) ? files : [files];
   sh('git', ['add', '--', ...fileList], { cwd: repoRoot });
-  sh('git', ['commit', '-m', `fix(review-until-green): ${findingId}\n\n${summary}`], { cwd: repoRoot });
+  // -F - (read the message from stdin) instead of -m '<multi-line message>':
+  // a GitHub Codex review on this exact code (PR #113) caught that on
+  // Windows, crossPlatformOpts' shell:true routes this through cmd.exe, and
+  // cmd.exe reads an embedded newline in the message (this one always has
+  // one, before `summary`) as a command boundary rather than message text.
+  // -F - is portable and equally correct on POSIX, so this isn't gated on
+  // win32 -- it removes the multi-line-argv risk everywhere, not just there.
+  sh('git', ['commit', '-F', '-'], { cwd: repoRoot, input: `fix(review-until-green): ${findingId}\n\n${summary}` });
   return sh('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).trim();
 }
 function gitIsReachable(repoRoot, sha) {

@@ -119,3 +119,81 @@ test('darwin: crossPlatformCommand is a no-op passthrough', () => {
   const { crossPlatformCommand } = loadWithPlatform('darwin');
   assert.strictEqual(crossPlatformCommand('a&b'), 'a&b');
 });
+
+// resolveOnPath: closes the P1 finding from a GitHub Codex review on PR
+// #113 -- with shell:true, cmd.exe's own bare-name resolution searches the
+// child process' cwd before PATH, and every call site behind this helper
+// sets cwd to the repository under review (review-until-green's whole job
+// is reviewing an arbitrary, untrusted checkout). These tests use a real
+// temp directory tree and a real (mocked) PATH/PATHEXT/cwd, not just
+// string assertions, so the "never finds it in cwd" guarantee is checked
+// against actual filesystem behavior.
+test('win32: resolveOnPath finds a binary on PATH, trying each PATHEXT extension', () => {
+  const os = require('node:os');
+  const fs = require('node:fs');
+  const pathMod = require('node:path');
+  const pathDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'resolve-on-path-'));
+  const target = pathMod.join(pathDir, 'mytool.CMD');
+  fs.writeFileSync(target, '');
+  const originalPath = process.env.PATH;
+  const originalPathExt = process.env.PATHEXT;
+  process.env.PATH = pathDir;
+  process.env.PATHEXT = '.COM;.EXE;.BAT;.CMD';
+  try {
+    const { resolveOnPath } = loadWithPlatform('win32');
+    assert.strictEqual(resolveOnPath('mytool'), target);
+  } finally {
+    process.env.PATH = originalPath;
+    process.env.PATHEXT = originalPathExt;
+    fs.rmSync(pathDir, { recursive: true, force: true });
+  }
+});
+
+test('win32: resolveOnPath never resolves from the current working directory, only PATH', () => {
+  const os = require('node:os');
+  const fs = require('node:fs');
+  const pathMod = require('node:path');
+  // Simulate "an untrusted checkout, cwd, contains a planted binary" --
+  // resolveOnPath must not find this, even though a naive PATH-unaware
+  // resolver (or cmd.exe's own default search) would.
+  const cwdDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'untrusted-cwd-'));
+  fs.writeFileSync(pathMod.join(cwdDir, 'planted.CMD'), '');
+  const pathDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'resolve-on-path-empty-'));
+  const originalPath = process.env.PATH;
+  const originalPathExt = process.env.PATHEXT;
+  const originalCwd = process.cwd();
+  process.env.PATH = pathDir; // deliberately does NOT include cwdDir
+  process.env.PATHEXT = '.COM;.EXE;.BAT;.CMD';
+  process.chdir(cwdDir);
+  try {
+    const { resolveOnPath } = loadWithPlatform('win32');
+    assert.strictEqual(resolveOnPath('planted'), 'planted', 'a binary present only in cwd must fall through unresolved, never silently found there');
+  } finally {
+    process.chdir(originalCwd);
+    process.env.PATH = originalPath;
+    process.env.PATHEXT = originalPathExt;
+    fs.rmSync(cwdDir, { recursive: true, force: true });
+    fs.rmSync(pathDir, { recursive: true, force: true });
+  }
+});
+
+test('win32: resolveOnPath returns the bare name unresolved when nothing on PATH matches', () => {
+  const originalPath = process.env.PATH;
+  process.env.PATH = '';
+  try {
+    const { resolveOnPath } = loadWithPlatform('win32');
+    assert.strictEqual(resolveOnPath('definitely-not-a-real-tool'), 'definitely-not-a-real-tool');
+  } finally {
+    process.env.PATH = originalPath;
+  }
+});
+
+test('win32: resolveOnPath passes through a name that already contains a path separator', () => {
+  const { resolveOnPath } = loadWithPlatform('win32');
+  assert.strictEqual(resolveOnPath('C:\\tools\\mytool.exe'), 'C:\\tools\\mytool.exe');
+});
+
+test('darwin: crossPlatformCommand does not attempt PATH resolution at all', () => {
+  const { crossPlatformCommand } = loadWithPlatform('darwin');
+  assert.strictEqual(crossPlatformCommand('codex'), 'codex');
+});

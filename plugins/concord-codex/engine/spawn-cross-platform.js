@@ -1,5 +1,8 @@
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
+
 // On Windows, a globally-installed CLI (codex, claude, copilot, and any
 // npm-shimmed tool) resolves on PATH to a `.cmd`/`.bat` wrapper, not a real
 // executable. child_process.spawn/execFileSync cannot exec a `.cmd` directly
@@ -76,10 +79,8 @@ function quoteArgumentForWindows(arg) {
 }
 
 // The command/binary name goes through the same cmd.exe-metacharacter
-// escape (no quoting -- it is never user- or diff-derived text in this
-// codebase, just a literal binary name like `codex`/`git`/`node`, so this
-// is a defensive completeness measure matching the reference algorithm
-// exactly, not a fix for an active bug).
+// escape (no quoting -- see resolveOnPath below for why a space in a
+// resolved path is a known, accepted limitation shared with cross-spawn).
 function escapeCommandForWindows(bin) {
   return String(bin).replace(META_CHARS_RE, '^$1');
 }
@@ -91,8 +92,42 @@ function crossPlatformArgs(args = []) {
   return isWindows ? args.map(quoteArgumentForWindows) : args;
 }
 
+// Resolve `bin` to an absolute path by searching PATH directories ONLY --
+// deliberately never the current working directory. A GitHub Codex review
+// on this exact code (PR #113) caught a real Windows footgun: with
+// `shell: true`, cmd.exe's own bare-name resolution searches the child
+// process' cwd BEFORE PATH, and every call site behind this helper sets
+// cwd to the repository under review. review-until-green exists to review
+// arbitrary, untrusted checkouts -- one containing a committed `git.cmd`
+// or `codex.cmd` at its root could have that file executed the moment the
+// review starts, before any reviewer or sandbox logic runs at all. Passing
+// spawn/execFileSync an absolute resolved path instead of the bare name
+// means cmd.exe performs no bare-name search of its own, so cwd is never
+// consulted for this. Modeled on cross-spawn's `resolveCommand`, without
+// its `which` dependency (this repo has none): walk `PATH`, try each
+// `PATHEXT` extension (Windows' own default list) when `bin` has none, and
+// return the bare name unresolved if nothing on PATH matches -- the
+// eventual ENOENT is the honest failure, not a silent cwd fallback.
+function resolveOnPath(bin) {
+  if (/[\\/]/.test(bin)) return bin; // already a path; do not search PATH for it
+  const dirs = String(process.env.PATH || process.env.Path || '').split(path.delimiter).filter(Boolean);
+  const hasExt = /\.[^.\\/]+$/.test(bin);
+  const exts = hasExt ? [''] : String(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const candidate = path.join(dir, bin + ext);
+      try {
+        if (fs.statSync(candidate).isFile()) return candidate;
+      } catch {
+        // Not present at this candidate -- keep searching.
+      }
+    }
+  }
+  return bin;
+}
+
 function crossPlatformCommand(bin) {
-  return isWindows ? escapeCommandForWindows(bin) : bin;
+  return isWindows ? escapeCommandForWindows(resolveOnPath(bin)) : bin;
 }
 
 module.exports = {
@@ -102,4 +137,5 @@ module.exports = {
   crossPlatformCommand,
   quoteArgumentForWindows,
   escapeCommandForWindows,
+  resolveOnPath,
 };
