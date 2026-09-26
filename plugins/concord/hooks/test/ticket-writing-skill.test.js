@@ -127,7 +127,7 @@ pluginInstallE2ETest('clean Claude and Codex installs discover the same shared s
   const codexTicketToPr = read(path.join(codexInstall.installedPath, 'skills/ticket-to-pr/SKILL.md'));
   const claudeInitiativeToPrs = read(path.join(claudeInstall.installPath, 'skills/initiative-to-prs/SKILL.md'));
   const codexInitiativeToPrs = read(path.join(codexInstall.installedPath, 'skills/initiative-to-prs/SKILL.md'));
-  for (const file of INITIATIVE_TO_PRS_FILES.slice(1)) {
+  for (const file of INITIATIVE_TO_PRS_FILES.filter((file) => file !== 'SKILL.md')) {
     assert.equal(
       read(path.join(claudeInstall.installPath, 'skills/initiative-to-prs', file)),
       read(path.join(codexInstall.installedPath, 'skills/initiative-to-prs', file)),
