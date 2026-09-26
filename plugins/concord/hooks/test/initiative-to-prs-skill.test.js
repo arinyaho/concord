@@ -16,7 +16,7 @@ test('initiative-to-prs manifest covers every canonical source file', () => {
   const files = fs.readdirSync(root, { recursive: true })
     .filter((file) => fs.statSync(path.join(root, file)).isFile())
     .sort();
-  assert.deepEqual([...SKILL_FILES].sort(), files);
+  assert.deepEqual(SKILL_FILES.map((file) => path.normalize(file)).sort(), files);
 });
 
 test('Claude and Codex ship the same initiative-to-prs skill', () => {
@@ -24,7 +24,7 @@ test('Claude and Codex ship the same initiative-to-prs skill', () => {
   const files = fs.readdirSync(root, { recursive: true })
     .filter((file) => fs.statSync(path.join(root, file)).isFile())
     .sort();
-  assert.deepEqual([...SKILL_FILES].sort(), files);
+  assert.deepEqual(SKILL_FILES.map((file) => path.normalize(file)).sort(), files);
   for (const file of SKILL_FILES) assert.equal(read('concord-codex', file), read('concord', file));
 });
 
