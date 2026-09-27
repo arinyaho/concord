@@ -2,6 +2,10 @@ name: pull-request
 
 on:
   pull_request:
+    paths:
+      - "plugins/**"
+      - "services/agent-team/**"
+      - ".github/workflows/pull-request.yml"
 
 permissions:
   contents: read
@@ -17,7 +21,7 @@ jobs:
         with:
           node-version: 22
 
-      - run: node --test plugins/concord/hooks/test/*.test.js
+      - run: find plugins -path '*/test/*.test.js' -type f -print0 | xargs -0 -r node --test
 
   agent-team-tests:
     runs-on: ubuntu-latest
@@ -31,6 +35,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: services/agent-team/package-lock.json
 
       - run: npm ci
       - run: npm test
