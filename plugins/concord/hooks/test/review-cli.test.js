@@ -98,20 +98,26 @@ test('artifact-normalize retries an invalid id once, then writes a canonical art
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:right', file: 'a.txt', summary: 's' }] });
 });
 
-test('artifact-normalize persists its retry prompt for a later resume', () => {
+test('artifact-normalize persists every pending retry prompt for a later resume', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
-  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  const started = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--broad'], { env, broadDefault: true }));
+  assert.strictEqual(started.gateApplied, true);
+  const n = started.round;
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: [], findings: [] }));
-  const retry = JSON.parse(run(['artifact-normalize', 'feat/x', 'correctness'], { env }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [{ id: 'correctness:wrong', file: 'a.txt', summary: 'wrong namespace' }] }));
+  const correctnessRetry = JSON.parse(run(['artifact-normalize', 'feat/x', 'correctness'], { env }));
+  const gateRetry = JSON.parse(run(['artifact-normalize', 'feat/x', 'gate'], { env }));
   const ledger = JSON.parse(fs.readFileSync(path.join(dir, 'review-feat-x.json'), 'utf8'));
-  assert.deepStrictEqual(ledger.execution.retryArtifact, { role: 'correctness', prompt: retry.prompt });
+  assert.deepStrictEqual(ledger.execution.retryArtifacts, { correctness: correctnessRetry.prompt, gate: gateRetry.prompt });
   fs.unlinkSync(path.join(dir, `round-${n}-correctness.retry`));
+  fs.unlinkSync(path.join(dir, `round-${n}-gate.retry`));
   assert.throws(() => run(['artifact-normalize', 'feat/x', 'correctness'], { env }), /harness-failure/);
-  const resumed = JSON.parse(run(['round-start', 'feat/x'], { env }));
-  assert.deepStrictEqual(resumed.retryArtifact, { role: 'correctness', prompt: retry.prompt });
+  const resumed = JSON.parse(run(['round-start', 'feat/x'], { env, broadDefault: true }));
+  assert.strictEqual(resumed.gateApplied, true);
+  assert.deepStrictEqual(resumed.retryArtifacts, { correctness: correctnessRetry.prompt, gate: gateRetry.prompt });
 });
 
 test('artifact-normalize fails after retry exhaustion', () => {

@@ -261,14 +261,14 @@ test('codexExec marks a CLI version mismatch partial', async () => {
   }
 });
 
-function harness({ targetType = 'git', rounds = 1, malformed = false, retry = false, retryForever = false, correctnessArtifact, gateApplied = false, dodDeferred = false, failingRole, promptDrivenFix = false, retryArtifact, stateDir = temp(), slotIdentity = {} } = {}) {
+function harness({ targetType = 'git', rounds = 1, malformed = false, retry = false, retryForever = false, correctnessArtifact, gateApplied = false, dodDeferred = false, failingRole, promptDrivenFix = false, retryArtifact, retryArtifacts, stateDir = temp(), slotIdentity = {} } = {}) {
   const calls = []; let round = 0; let retried = false;
   const cli = (args) => {
     calls.push(['cli', ...args]);
     const [verb, ref, role] = args;
     if (verb === 'round-start') {
       round++;
-      return { decision: 'work', round, stateDir, targetType, dodPassed: true, dodDeferred, intentApplied: false, gateApplied, retryArtifact };
+      return { decision: 'work', round, stateDir, targetType, dodPassed: true, dodDeferred, intentApplied: false, gateApplied, retryArtifact, retryArtifacts };
     }
     if (verb === 'artifact-normalize') {
       if (correctnessArtifact && role === 'correctness') {
@@ -1388,6 +1388,15 @@ test('runner resumes an artifact retry with its persisted prompt', async () => {
   const correctness = h.calls.filter((call) => call[0] === 'spawn' && call[1] === 'correctness');
   assert.strictEqual(correctness.length, 1);
   assert.match(correctness[0][2], /RESUME ARTIFACT RETRY/);
+});
+
+test('runner resumes every persisted artifact retry prompt', async () => {
+  const h = harness({ gateApplied: true, retryArtifacts: { correctness: 'RESUME CORRECTNESS RETRY', gate: 'RESUME GATE RETRY' } });
+  await runReviewUntilGreen({ ref: 'feature/x', resume: true, repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
+  const correctness = h.calls.find((call) => call[0] === 'spawn' && call[1] === 'correctness');
+  const gate = h.calls.find((call) => call[0] === 'spawn' && call[1] === 'gate');
+  assert.match(correctness[2], /RESUME CORRECTNESS RETRY/);
+  assert.match(gate[2], /RESUME GATE RETRY/);
 });
 
 test('runner fail-closes a malformed reviewer artifact before verify', async () => {

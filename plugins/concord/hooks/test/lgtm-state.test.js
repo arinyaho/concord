@@ -18,6 +18,7 @@ test('Claude and Codex ship durable review-until-lgtm instructions with host-spe
   for (const skill of [claude, codex]) {
     assert.match(skill, /open-window <pr> <head-sha> 900/);
     assert.match(skill, /claim-initial-request/);
+    assert.match(skill, /claim-initial-request.*\{"claimed":true\}/);
     assert.match(skill, /mark-retry-requested/);
     assert.match(skill, /retryClaimedAtMs/);
     assert.match(skill, /review-timeout/);

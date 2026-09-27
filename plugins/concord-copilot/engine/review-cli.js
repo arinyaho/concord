@@ -443,6 +443,18 @@ function deleteRoundArtifacts(stateDir, n, preserve = new Set()) {
   }
 }
 
+function retryArtifactMap(execution) {
+  const retries = { ...(execution && execution.retryArtifacts) };
+  const legacy = execution && execution.retryArtifact;
+  if (legacy && typeof legacy.role === 'string' && typeof legacy.prompt === 'string' && !retries[legacy.role]) retries[legacy.role] = legacy.prompt;
+  return retries;
+}
+
+function firstRetryArtifact(retries) {
+  const [role, prompt] = Object.entries(retries)[0] || [];
+  return role ? { role, prompt } : null;
+}
+
 function main(resolveFromCwd) {
   const [verb, ref, ...rest] = process.argv.slice(2);
   const stateDir = resolveStateDir(resolveFromCwd);
@@ -512,20 +524,24 @@ function main(resolveFromCwd) {
       fs.writeFileSync(p, JSON.stringify(canonical) + '\n');
       if (ledger.execution && ledger.execution.round === n) {
         const completed = Array.from(new Set([...(ledger.execution.completed || []), name]));
-        writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, completed, pending: (ledger.execution.pending || []).filter((role) => role !== name), retryArtifact: ledger.execution.retryArtifact && ledger.execution.retryArtifact.role === name ? null : ledger.execution.retryArtifact } });
+        const retryArtifacts = retryArtifactMap(ledger.execution);
+        delete retryArtifacts[name];
+        writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, completed, pending: (ledger.execution.pending || []).filter((role) => role !== name), retryArtifacts, retryArtifact: firstRetryArtifact(retryArtifacts) } });
       }
       try { fs.unlinkSync(retryPath); } catch (e) { /* no prior retry */ }
       process.stdout.write(JSON.stringify({ status: 'ok', artifact: name }) + '\n');
       return;
     } catch (e) {
       if (e instanceof artifactContract.ArtifactError && e.kind === 'retry') {
-        const alreadyRetried = fs.existsSync(retryPath) || (ledger.execution && ledger.execution.retryArtifact && ledger.execution.retryArtifact.role === name);
+        const retryArtifacts = retryArtifactMap(ledger.execution);
+        const alreadyRetried = fs.existsSync(retryPath) || !!retryArtifacts[name];
         if (!alreadyRetried) {
           const prompt = e.coveragePaths
             ? `Rewrite only round artifact correctness as JSON. The "examined" array MUST contain every changed path exactly as listed: ${e.coveragePaths.map((file) => JSON.stringify(file)).join(', ')}. Do not infer, omit, or rewrite paths; preserve your actual findings and do not add prose or extra top-level fields.`
             : artifactContract.retryPrompt(name, ({ correctness: 'correctness:|docreview:', verify: 'correctness:|docreview:', intent: 'intent:', gate: 'gate:', 'gate-verify': 'gate:' })[name]);
           if (ledger.execution && ledger.execution.round === n) {
-            writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, retryArtifact: { role: name, prompt } } });
+            retryArtifacts[name] = prompt;
+            writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, retryArtifacts, retryArtifact: firstRetryArtifact(retryArtifacts) } });
           }
           fs.writeFileSync(retryPath, '1\n');
           process.stdout.write(JSON.stringify({ status: 'retry', artifact: name, prompt }) + '\n');
@@ -954,12 +970,10 @@ function main(resolveFromCwd) {
     const completedArtifacts = resumed && ledger.execution
       ? resumedCompletedArtifacts.filter((role) => expectedArtifacts.includes(role))
       : [];
-    const retryArtifact = resumed && ledger.execution && ledger.execution.retryArtifact
-      && !completedArtifacts.includes(ledger.execution.retryArtifact.role)
-      && expectedArtifacts.includes(ledger.execution.retryArtifact.role)
-      && typeof ledger.execution.retryArtifact.prompt === 'string'
-      ? ledger.execution.retryArtifact
-      : null;
+    const retryArtifacts = resumed && ledger.execution
+      ? Object.fromEntries(Object.entries(retryArtifactMap(ledger.execution)).filter(([role, prompt]) => !completedArtifacts.includes(role) && expectedArtifacts.includes(role) && typeof prompt === 'string'))
+      : {};
+    const retryArtifact = firstRetryArtifact(retryArtifacts);
     // Sticky for the same reason gateApplied is: once a run has opted out of the
     // executable gate, round 2's round-start must not have to repeat --no-dod
     // (without stickiness a repo that DOES have `dod` commands would run the
@@ -1045,6 +1059,7 @@ function main(resolveFromCwd) {
         diffHash,
         completed: completedArtifacts,
         pending: expectedArtifacts.filter((role) => !completedArtifacts.includes(role)),
+        retryArtifacts,
         retryArtifact,
         failures: resumed && ledger.execution ? (ledger.execution.failures || []) : [],
         failure: null,
@@ -1056,7 +1071,7 @@ function main(resolveFromCwd) {
     // `true` means "nothing blocked the round", not "the gate ran and passed" --
     // a driver that turns it into "DoD already passed; do not rerun tests" would
     // be removing the last real check. dodDeferred is how a caller tells them apart.
-    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, dodDeferred: !!dod.deferred, intentApplied: !!intentCfg, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir, completedArtifacts, retryArtifact }) + '\n');
+    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, dodDeferred: !!dod.deferred, intentApplied: !!intentCfg, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir, completedArtifacts, retryArtifacts, retryArtifact }) + '\n');
     return;
   }
 
