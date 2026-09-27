@@ -341,6 +341,15 @@ test('runner records an artifact-less reviewer exit as a retryable harness failu
   });
 });
 
+test('runner removes signal handlers after both a terminal result and a failure', async () => {
+  const before = Object.fromEntries(['SIGINT', 'SIGTERM', 'SIGHUP'].map((signal) => [signal, process.listenerCount(signal)]));
+  const success = harness();
+  await runReviewUntilGreen({ ref: 'feature/signals-success', repoRoot: '/repo', runCli: success.cli, spawn: success.spawn, handleSignals: true });
+  const failure = harness({ failingRole: 'correctness' });
+  await assert.rejects(runReviewUntilGreen({ ref: 'feature/signals-failure', repoRoot: '/repo', runCli: failure.cli, spawn: failure.spawn, handleSignals: true }));
+  assert.deepStrictEqual(Object.fromEntries(['SIGINT', 'SIGTERM', 'SIGHUP'].map((signal) => [signal, process.listenerCount(signal)])), before);
+});
+
 test('resume launches only the artifact role still pending after an interruption', async () => {
   const stateDir = temp();
   const calls = [];

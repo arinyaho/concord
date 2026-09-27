@@ -523,6 +523,11 @@ function listLedgers(stateDir) {
 // `converging` gets a resume invitation; `parked` is report-only -- resuming a
 // parked run automatically would defeat the point of parking it for a human
 // decision (fix batch: "parked is not terminal if the injector resumes it").
+function reportFailureText(value) {
+  const escaped = String(value).replace(/[\x00-\x1f\x7f]/g, (character) => `\\u${character.codePointAt(0).toString(16).padStart(4, '0')}`);
+  return escaped.length > 240 ? `${escaped.slice(0, 237)}...` : escaped;
+}
+
 function renderReviewReport(ledgers) {
   const lines = [];
   for (const { ledger } of ledgers || []) {
@@ -532,7 +537,7 @@ function renderReviewReport(ledgers) {
     if (ledger.status === 'converging') {
       const ph = (ledger.phase === 'gates' || ledger.phase === 'fixes') ? `, phase ${ledger.phase}` : '';
       const failure = ledger.execution && ledger.execution.failure;
-      const retry = failure ? `; last harness failure: ${failure.role} ${failure.kind} (${failure.message})` : '';
+      const retry = failure ? `; last harness failure: ${reportFailureText(failure.role)} ${reportFailureText(failure.kind)} (${reportFailureText(failure.message)})` : '';
       lines.push(`review-until-green [${ref}]: ${roundInfo}${ph}, ${open} open finding(s) -- converging${retry}; resume with \`/review-until-green resume ${ref}\`.`);
     } else if (ledger.status === 'parked') {
       lines.push(`review-until-green [${ref}]: ${roundInfo}, ${open} open finding(s) -- parked, needs a human decision; see \`review-cli.js show ${ref}\` (unpark a finding with \`review-cli.js unpark ${ref} <findingId>\`).`);
@@ -541,7 +546,7 @@ function renderReviewReport(ledgers) {
     } else if (ledger.status === 'gate-pending') {
       lines.push(`review-until-green [${ref}]: ${roundInfo} -- stopped for advisory broad review finding(s), needs a human decision; re-run \`/review-until-green ${ref}\` (a fresh run re-evaluates broad review) or \`review-cli.js dismiss ${ref} <gateId>\` for a finding you accept as out-of-scope.`);
     } else if (ledger.status === 'gate-panel-pending') {
-      lines.push(`review-until-green [${ref}]: ${roundInfo} -- diff-local clean, holistic broad-review panel pending or interrupted; re-run \`/review-until-green ${ref}\` to run/resume the panel (a fresh round-start resets and restarts it cleanly).`);
+      lines.push(`review-until-green [${ref}]: ${roundInfo} -- diff-local clean, holistic broad-review panel pending or interrupted; re-run \`/review-until-green resume ${ref}\` to run/resume the panel.`);
     }
   }
   return lines.join('\n');

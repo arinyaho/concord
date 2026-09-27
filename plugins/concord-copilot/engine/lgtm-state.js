@@ -5,6 +5,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { crossPlatformCommand, crossPlatformArgs, crossPlatformOpts, needsDoubleEscape } = require('./spawn-cross-platform');
 
+const INITIAL_CLAIM_LEASE_MS = 60 * 1000;
+
 function validate({ pr, headSha }) {
   if (!Number.isSafeInteger(Number(pr)) || Number(pr) < 1) throw new Error('review-lgtm-state: PR number must be a positive integer');
   if (!/^[0-9a-f]{7,64}$/i.test(String(headSha))) throw new Error('review-lgtm-state: head SHA must be 7-64 hexadecimal characters');
@@ -52,6 +54,7 @@ function status(input) {
   const window = readMarker(markerPath({ stateDir, ...key }, 'window'));
   const retryWindow = readMarker(markerPath({ stateDir, ...key }, 'retry-window'));
   const initialClaim = readMarker(markerPath({ stateDir, ...key }, 'initial-claim'));
+  const initialRecovery = readMarker(markerPath({ stateDir, ...key }, 'initial-recovery-claim'));
   const initialRequest = readMarker(markerPath({ stateDir, ...key }, 'initial-request'));
   const retry = readMarker(markerPath({ stateDir, ...key }, 'retry-claim'));
   const retryRequest = readMarker(markerPath({ stateDir, ...key }, 'retry-request'));
@@ -61,7 +64,7 @@ function status(input) {
   if (retryWindow && (retryWindow.pr !== key.pr || retryWindow.headSha !== key.headSha || !Number.isSafeInteger(retryWindow.deadlineMs))) {
     throw new Error('review-lgtm-state: retry window marker does not match its PR head');
   }
-  return { deadlineMs: window ? window.deadlineMs : null, retryDeadlineMs: retryWindow ? retryWindow.deadlineMs : null, initialClaimed: !!initialClaim, initialRequested: !!initialRequest, retryClaimed: !!retry, retryClaimedAtMs: retry && Number.isSafeInteger(retry.claimedAtMs) ? retry.claimedAtMs : null, retryRequested: !!retryRequest };
+  return { deadlineMs: window ? window.deadlineMs : null, retryDeadlineMs: retryWindow ? retryWindow.deadlineMs : null, initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested: !!initialRequest, retryClaimed: !!retry, retryClaimedAtMs: retry && Number.isSafeInteger(retry.claimedAtMs) ? retry.claimedAtMs : null, retryRequested: !!retryRequest };
 }
 
 function claimRequest(input, kind) {
@@ -78,6 +81,15 @@ function markRequest(input, kind) {
 
 function claimInitialRequest(input) { return claimRequest(input, 'initial'); }
 function markInitialRequested(input) { return markRequest(input, 'initial'); }
+
+function recoverInitialRequest(input) {
+  const { stateDir, now = Date.now() } = input;
+  const key = validate(input);
+  const initialClaim = readMarker(markerPath({ stateDir, ...key }, 'initial-claim'));
+  if (!initialClaim || !Number.isSafeInteger(initialClaim.claimedAtMs) || now < initialClaim.claimedAtMs + INITIAL_CLAIM_LEASE_MS) return false;
+  if (readMarker(markerPath({ stateDir, ...key }, 'initial-request'))) return false;
+  return writeExclusive(markerPath({ stateDir, ...key }, 'initial-recovery-claim'), { ...key, kind: 'initial-recovery', claimed: true, claimedAtMs: now });
+}
 
 function openWindow(input, kind = 'window') {
   const { stateDir, now = Date.now(), durationMs } = input;
@@ -108,8 +120,9 @@ function runMain(repoRoot = process.cwd()) {
   else if (verb === 'claim-retry') process.stdout.write(`${JSON.stringify({ claimed: claimRetry({ stateDir, pr, headSha }) })}\n`);
   else if (verb === 'mark-retry-requested') process.stdout.write(`${JSON.stringify({ marked: markRetryRequested({ stateDir, pr, headSha }) })}\n`);
   else if (verb === 'claim-initial-request') process.stdout.write(`${JSON.stringify({ claimed: claimInitialRequest({ stateDir, pr, headSha }) })}\n`);
+  else if (verb === 'recover-initial-request') process.stdout.write(`${JSON.stringify({ claimed: recoverInitialRequest({ stateDir, pr, headSha }) })}\n`);
   else if (verb === 'mark-initial-requested') process.stdout.write(`${JSON.stringify({ marked: markInitialRequested({ stateDir, pr, headSha }) })}\n`);
-  else throw new Error('review-lgtm-state: use status, open-window, open-retry-window, claim-retry, mark-retry-requested, claim-initial-request, or mark-initial-requested');
+  else throw new Error('review-lgtm-state: use status, open-window, open-retry-window, claim-retry, mark-retry-requested, claim-initial-request, recover-initial-request, or mark-initial-requested');
 }
 
-module.exports = { defaultStateDir, markerPath, status, openWindow, openRetryWindow, claimInitialRequest, markInitialRequested, claimRetry, markRetryRequested, runMain };
+module.exports = { defaultStateDir, markerPath, status, openWindow, openRetryWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimRetry, markRetryRequested, INITIAL_CLAIM_LEASE_MS, runMain };

@@ -338,7 +338,9 @@ async function runReviewUntilGreen(options) {
   }
   const rawSpawn = options.spawn || ((input) => providerExec(input));
   const abortController = options.handleSignals ? new AbortController() : null;
-  if (abortController) for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.once(signal, () => abortController.abort(signal));
+  const signalHandlers = abortController ? Object.fromEntries(['SIGINT', 'SIGTERM', 'SIGHUP'].map((signal) => [signal, () => abortController.abort(signal)])) : {};
+  for (const [signal, handler] of Object.entries(signalHandlers)) process.once(signal, handler);
+  try {
   const telemetry = {
     total: { calls: 0, partialCalls: 0, inputTokens: 0, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0 },
     byRole: {},
@@ -595,6 +597,9 @@ async function runReviewUntilGreen(options) {
     }
     if (recorded.decision && recorded.decision.continue) continue;
     return withTelemetry(recorded);
+  }
+  } finally {
+    for (const [signal, handler] of Object.entries(signalHandlers)) process.removeListener(signal, handler);
   }
 }
 
