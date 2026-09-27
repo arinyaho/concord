@@ -5,6 +5,7 @@
 // subprocess and every state transition remains owned by review-cli.
 const { execFileSync, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
+const { openInitiativeRun, reserveLaunch, finishInitiativeRun } = require('./initiative-review-run');
 const fs = require('node:fs');
 const path = require('node:path');
 const { safeIdForFilename } = require('./artifact-name');
@@ -358,6 +359,9 @@ async function invoke(spawn, input) {
 async function runReviewUntilGreen(options) {
   const { ref, base, broad = false, noBroad = false, noDod = false, resume = false, repoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
   if (!ref) throw new Error('review-until-green: missing target ref');
+  const keyedRun = options.initiativeRunKey || options.initiativeStateDir;
+  if (keyedRun && (!options.initiativeRunKey || !options.initiativeStateDir)) throw new Error('review-until-green: --initiative-run-key and --initiative-state-dir must be used together');
+  const initiativeRun = keyedRun ? openInitiativeRun({ stateDir: options.initiativeStateDir, key: options.initiativeRunKey, maxLaunches: options.initiativeMaxLaunches, maxRounds: options.initiativeMaxRounds }) : null;
   const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot));
   let reviewer = options.reviewer || 'codex';
   let fixer = options.fixer || 'codex';
@@ -445,6 +449,7 @@ async function runReviewUntilGreen(options) {
     if ((result?.decision === 'terminal' || result?.decision?.converged === true || result?.decision?.parked === true || result?.decision?.abandoned === true) && telemetryPath) {
       try { fs.unlinkSync(telemetryPath); } catch {}
     }
+    if (initiativeRun && (result?.decision?.converged || result?.decision?.parked || result?.decision?.abandoned || result?.decision?.intentReview || result?.decision?.gatePending)) finishInitiativeRun(initiativeRun);
     return output;
   };
   const cli = (args) => runCli(args);
@@ -570,6 +575,7 @@ async function runReviewUntilGreen(options) {
     const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodPassed: started.dodPassed, dodDeferred: started.dodDeferred, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref) };
     let slotAllocation = Promise.resolve();
     const launch = async (input) => {
+      if (initiativeRun && !reserveLaunch(initiativeRun, { role: input.role, round: currentRound })) throw new Error(`review-until-green: initiative launch budget exhausted or reservation contended before ${input.role}`);
       const artifactPath = artifactDestinationFromPrompt(input.prompt, input.stateDir);
       const isFix = input.role === 'fix';
       const provider = isFix ? fixer : reviewer;
@@ -626,6 +632,7 @@ async function runReviewUntilGreen(options) {
     if (reviewerFailure) throw reviewerFailure.reason;
 
     const planned = await cli(['plan-fixes', ref]);
+    if (planned.reconciliation) return withTelemetry(await cli(['record', ref]));
     await throwIfAborted(true);
     for (const finding of planned.fixes || []) {
       try {

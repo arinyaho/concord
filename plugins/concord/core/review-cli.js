@@ -1420,9 +1420,10 @@ function main(resolveFromCwd) {
       });
       gateOpen = thisRound.concat(carried);
     }
-    const next = { ...ledger, planned: fixes.map((f) => f.id), resolved_absent: resolvedAbsent, intent_parked: intentParked, gate_open: gateOpen, phase: 'fixes' };
+    const reconciliation = intentParked.length > 0 || gateOpen.some((f) => /^gate:(?:design-conformance|ac-coverage):/.test(f.id));
+    const next = { ...ledger, planned: reconciliation ? [] : fixes.map((f) => f.id), resolved_absent: reconciliation ? [] : resolvedAbsent, intent_parked: intentParked, gate_open: gateOpen, phase: 'fixes' };
     writeLedger(stateDir, slug, next);
-    process.stdout.write(JSON.stringify({ fixes }) + '\n');
+    process.stdout.write(JSON.stringify({ fixes: reconciliation ? [] : fixes, reconciliation }) + '\n');
     return;
   }
 
