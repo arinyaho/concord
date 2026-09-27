@@ -122,7 +122,7 @@ test('win32: codexExec sends the prompt via stdin, not argv, so a multi-line pro
     });
     const { codexExec } = loadRunnerWithPlatform('win32');
     const multilinePrompt = 'line one\nline two: & whoami\nline three';
-    await codexExec({ role: 'correctness', prompt: multilinePrompt, repoRoot: '/tmp/fake-repo', stateDir: '/tmp/fake-state' });
+    await codexExec({ role: 'correctness', prompt: multilinePrompt, repoRoot: '/tmp/fake-repo', stateDir: '/tmp/fake-state', codexExecutable: { command: 'codex', version: 'codex-cli 0.154.0' } });
 
     assert.strictEqual(calls.length, 1);
     const { args } = calls[0];
@@ -154,7 +154,7 @@ test('win32: codexExec swallows EPIPE on stdin instead of crashing the process',
     // Assert only that this doesn't throw/reject due to the unhandled
     // stdin 'error' -- an EventEmitter with no 'error' listener throws
     // synchronously on emit('error', ...), which this await would surface.
-    await codexExec({ role: 'correctness', prompt: 'line one\nline two', repoRoot: '/tmp/fake-repo', stateDir: '/tmp/fake-state' });
+    await codexExec({ role: 'correctness', prompt: 'line one\nline two', repoRoot: '/tmp/fake-repo', stateDir: '/tmp/fake-state', codexExecutable: { command: 'codex', version: 'codex-cli 0.154.0' } });
     assert.strictEqual(sawStdinErrorListener, true, 'codexExec must attach an error listener to child.stdin before writing to it');
   });
 });

@@ -3,7 +3,7 @@
 // Codex has no in-session Task primitive. This runner is therefore the sole
 // orchestration authority: every clean-context reviewer is a `codex exec`
 // subprocess and every state transition remains owned by review-cli.
-const { execFileSync, spawn, spawnSync } = require('node:child_process');
+const { execFileSync, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -28,18 +28,22 @@ let codexResolutionCache = null;
 
 function resolveCodexExecutable(repoRoot, options = {}) {
   const env = options.env || process.env;
-  const platform = options.platform || process.platform;
+  const platform = options.platform || (isWindows ? 'win32' : process.platform);
   const override = String(env[CODEX_BIN_ENV] || '').trim();
   const candidates = override
     ? [{ command: override, source: CODEX_BIN_ENV }]
     : [{ command: 'codex', source: 'PATH' }, ...(platform === 'darwin' ? [{ command: MACOS_APP_CODEX, source: 'macOS ChatGPT app' }] : [])];
   const cacheKey = JSON.stringify([repoRoot, platform, env.PATH, override]);
   if (!options.probe && codexResolutionCache?.key === cacheKey) return codexResolutionCache.value;
-  const probe = options.probe || ((command) => spawnSync(
-    crossPlatformCommand(command, repoRoot),
-    crossPlatformArgs(['--version'], needsDoubleEscape(command, repoRoot)),
-    crossPlatformOpts({ cwd: repoRoot, env, encoding: 'utf8', timeout: 5000, windowsHide: true }),
-  ));
+  const probe = options.probe || ((command) => {
+    try {
+      return { status: 0, stdout: execFileSync(
+        crossPlatformCommand(command, repoRoot),
+        crossPlatformArgs(['--version'], needsDoubleEscape(command, repoRoot)),
+        crossPlatformOpts({ cwd: repoRoot, env, encoding: 'utf8', timeout: 5000, windowsHide: true }),
+      ) };
+    } catch (error) { return { error }; }
+  });
   const failures = [];
   for (const candidate of candidates) {
     let result;
