@@ -34,7 +34,10 @@ function resolveCodexExecutable(repoRoot, options = {}) {
     ? [{ command: override, source: CODEX_BIN_ENV }]
     : [{ command: 'codex', source: 'PATH' }, ...(platform === 'darwin' ? [{ command: MACOS_APP_CODEX, source: 'macOS ChatGPT app' }] : [])];
   const cacheKey = JSON.stringify([repoRoot, platform, env.PATH, override]);
-  if (!options.probe && codexResolutionCache?.key === cacheKey) return codexResolutionCache.value;
+  if (!options.probe && codexResolutionCache?.key === cacheKey) {
+    if (codexResolutionCache.error) throw codexResolutionCache.error;
+    return codexResolutionCache.value;
+  }
   const probe = options.probe || ((command) => {
     try {
       return { status: 0, stdout: execFileSync(
@@ -53,9 +56,11 @@ function resolveCodexExecutable(repoRoot, options = {}) {
       if (!options.probe) codexResolutionCache = { key: cacheKey, value };
       return value;
     }
-    failures.push(`${candidate.command}: ${result?.error?.code || `exit ${result?.status ?? 'unknown'}`}`);
+    failures.push(`${candidate.command}: ${result?.error?.code || `exit ${result?.error?.status ?? result?.status ?? 'unknown'}`}`);
   }
-  throw new Error(`harness-failure: no usable Codex executable was found before review started. Checked: ${failures.join('; ')}. Set ${CODEX_BIN_ENV}=/absolute/path/to/codex to select one explicitly.`);
+  const error = new Error(`harness-failure: no usable Codex executable was found before review started. Checked: ${failures.join('; ')}. Set ${CODEX_BIN_ENV}=/absolute/path/to/codex to select one explicitly.`);
+  if (!options.probe) codexResolutionCache = { key: cacheKey, error };
+  throw error;
 }
 
 function terminateProcessTree(child, signal) {
