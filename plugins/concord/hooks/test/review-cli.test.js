@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 const review = require('../../core/review');
+const { safeIdForFilename } = require('../../core/artifact-name');
 const cli = require('../review-cli'); // must be requirable without running main()
 
 const CLI = path.join(__dirname, '..', 'review-cli.js');
@@ -1379,7 +1380,8 @@ test('review-until-green owns provider routing without a separate Codex review s
 });
 
 function writeArtifact(dir, n, name, obj) {
-  fs.writeFileSync(path.join(dir, `round-${n}-${name}.json`), JSON.stringify(obj));
+  const artifactName = name.startsWith('fix-') ? `fix-${safeIdForFilename(name.slice(4))}` : name;
+  fs.writeFileSync(path.join(dir, `round-${n}-${artifactName}.json`), JSON.stringify(obj));
 }
 
 test('plan-fixes: intent finding on a changed file -> ledger.intent_parked with requirement', () => {
