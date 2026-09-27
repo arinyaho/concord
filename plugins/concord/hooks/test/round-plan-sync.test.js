@@ -80,6 +80,6 @@ test('the Copilot-vendored review-driver.md copy embeds GATE_SWEEP_CLAUSE byte-f
 test('manual fix instructions use the same filesystem-safe ID as commit-fix', () => {
   for (const text of [driverText, composedCommandText]) {
     assert.match(text, /fix-<safe-id>\.json/);
-    assert.match(text, /every `:` in the finding ID replaced by `_`/);
+    assert.match(text, /finding id with `:` and other Windows-illegal filename characters replaced by `_`/);
   }
 });

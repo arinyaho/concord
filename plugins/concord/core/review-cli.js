@@ -424,7 +424,7 @@ function requireArtifactAfter(stateDir, n, firstName, secondName) {
 // Deletes any state-dir file for round n (diff, gate artifacts, fix artifacts)
 // so a re-driven round never reads a stale artifact left over from a crashed
 // or superseded attempt.
-function deleteRoundArtifacts(stateDir, n) {
+function deleteRoundArtifacts(stateDir, n, preserve = new Set()) {
   let names = [];
   try {
     names = fs.readdirSync(stateDir);
@@ -433,7 +433,7 @@ function deleteRoundArtifacts(stateDir, n) {
   }
   const prefix = `round-${n}-`;
   for (const nm of names) {
-    if (nm.startsWith(prefix)) {
+    if (nm.startsWith(prefix) && !preserve.has(nm)) {
       try {
         fs.unlinkSync(path.join(stateDir, nm));
       } catch (e) {
@@ -876,9 +876,15 @@ function main(resolveFromCwd) {
     }
     const diffHash = contentHash(diff);
 
+    let resumedCompletedArtifacts = [];
     if (resumed) {
       const preserveArtifacts = ledger.execution && ledger.execution.round === resumeRound && ledger.execution.diffHash === diffHash;
-      if (!preserveArtifacts) deleteRoundArtifacts(stateDir, resumeRound);
+      const completed = preserveArtifacts
+        ? (ledger.execution.completed || []).filter((role) => ['correctness', 'verify', 'intent', 'gate', 'gate-verify'].includes(role))
+        : [];
+      const preserved = new Set(completed.map((role) => `round-${resumeRound}-${role}.json`).filter((name) => fs.existsSync(path.join(stateDir, name))));
+      resumedCompletedArtifacts = completed.filter((role) => preserved.has(`round-${resumeRound}-${role}.json`));
+      deleteRoundArtifacts(stateDir, resumeRound, preserved);
       // Resume re-drives round N at zero budget by pinning round/diff_content_hash
       // directly, bypassing beginRound. This is a real work round: it proceeds to
       // DoD + phase='gates' below, without advancing round or charging budget.
@@ -946,7 +952,7 @@ function main(resolveFromCwd) {
     const gateApplied = gateArmed && (gateRounds.length === 0 || gateRounds.includes(ledger.round));
     const expectedArtifacts = ['correctness', 'verify'].concat(intentCfg ? ['intent'] : [], gateApplied ? ['gate', 'gate-verify'] : []);
     const completedArtifacts = resumed && ledger.execution
-      ? (ledger.execution.completed || []).filter((role) => expectedArtifacts.includes(role))
+      ? resumedCompletedArtifacts.filter((role) => expectedArtifacts.includes(role))
       : [];
     const retryArtifact = resumed && ledger.execution && ledger.execution.retryArtifact
       && !completedArtifacts.includes(ledger.execution.retryArtifact.role)
