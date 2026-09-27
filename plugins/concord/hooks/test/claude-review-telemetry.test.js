@@ -230,8 +230,10 @@ test('recognizes every artifact output directive in the review driver', () => {
     .replaceAll('<n>', '2')
     .replaceAll('<m>', '1')
     .replaceAll('<lens>', 'threat-model')
+    .replaceAll('<safe-finding-id>', 'finding')
     .replaceAll('<finding-id>', 'finding')
     .replaceAll('<vote-index>', '0')
+    .replaceAll('<safe-id>', 'finding')
     .replaceAll('<id>', 'finding');
 
   const records = directives.map((match) => core.recordForEvent(event({

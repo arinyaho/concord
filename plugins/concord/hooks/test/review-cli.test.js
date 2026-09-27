@@ -1367,7 +1367,7 @@ test('manual review drivers allocate telemetry only when the selected adapter ex
   assert.match(command, /only for native Claude roles/i);
   assert.match(driver, /authenticated telemetry/i);
   assert.match(driver, /Do not allocate synthetic slots/i);
-  assert.match(command, /round-<n>-gate-panel-<m>-vote-<finding-id>-<vote-index>\.json/);
+  assert.match(command, /round-<n>-gate-panel-<m>-vote-<safe-finding-id>-<vote-index>\.json/);
 });
 
 test('review-until-green owns provider routing without a separate Codex review skill', () => {
@@ -2670,7 +2670,7 @@ test('telemetry-slot accepts only the done ledger that is actively panel-pending
   const slot = JSON.parse(run(['telemetry-slot', 'feat/x', lensPath, '--engine', 'claude-code'], { env }));
 
   assert.deepStrictEqual(slot, { engine: 'claude-code', provider: 'anthropic', artifactPath: lensPath, attempt: 1, role: 'gate-panel-threat-model', round: n });
-  const votePath = path.join(dir, `round-${n}-gate-panel-${panelRound}-vote-gate:threat-model:x-0.json`);
+  const votePath = path.join(dir, `round-${n}-gate-panel-${panelRound}-vote-gate_threat-model_x-0.json`);
   const voteSlot = JSON.parse(run(['telemetry-slot', 'feat/x', votePath, '--engine', 'claude-code'], { env }));
   assert.strictEqual(voteSlot.role, 'gate-panel-verify');
   const slug = review.targetSlug('feat/x');

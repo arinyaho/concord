@@ -1093,7 +1093,7 @@ test('an adversarial vote that declares blocked fails the round instead of count
       // Every voter obeys the blocked clause: none of them actually attempted
       // the refutation, so the finding must not be silently rejected.
       for (const vote of [0, 1, 2]) {
-        fs.writeFileSync(path.join(stateDir, `round-4-gate-panel-1-vote-gate:ac-coverage:gap-${vote}.json`),
+        fs.writeFileSync(path.join(stateDir, `round-4-gate-panel-1-vote-gate_ac-coverage_gap-${vote}.json`),
           JSON.stringify({ status: 'ok', blocked: ['grep: denied by sandbox'] }));
       }
     }
@@ -1180,7 +1180,7 @@ test('panel lenses and each finding\'s adversarial votes fan out concurrently', 
   for (let i = 0; i < 10 && pendingVotes.length < 3; i++) await new Promise(setImmediate);
   assert.strictEqual(pendingVotes.length, 3);
   for (const resolve of pendingVotes) {
-    fs.writeFileSync(path.join(stateDir, `round-4-gate-panel-1-vote-gate:ac-coverage:gap-${pendingVotes.indexOf(resolve)}.json`), JSON.stringify({ status: 'ok', survives: false }));
+    fs.writeFileSync(path.join(stateDir, `round-4-gate-panel-1-vote-gate_ac-coverage_gap-${pendingVotes.indexOf(resolve)}.json`), JSON.stringify({ status: 'ok', survives: false }));
     resolve({ status: 0 });
   }
   await running;

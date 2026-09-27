@@ -4,7 +4,7 @@
 import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { makeSpawn } from "../src/adapters/spawn_subagent.mjs";
+import { makeSpawn, fixArtifactPath } from "../src/adapters/spawn_subagent.mjs";
 
 const stateDir = mkdtempSync(join(tmpdir(), "contract-"));
 const round = 1;
@@ -37,7 +37,7 @@ let fixArt = null;
 const findingId = reviewArt.findings && reviewArt.findings[0] && reviewArt.findings[0].id;
 if (findingId) {
   await spawn("fix", { stateDir, round, findingId });
-  const fixRaw = readFileSync(join(stateDir, `round-${round}-fix-${findingId}.json`), "utf8");
+  const fixRaw = readFileSync(fixArtifactPath(stateDir, round, findingId), "utf8");
   try { fixArt = JSON.parse(fixRaw); } catch (e) { console.error("FAIL: non-JSON fix artifact:", fixRaw.slice(0, 200)); process.exit(1); }
   fixOk = fixArt.status === "ok" && typeof fixArt.edited === "boolean" && (!fixArt.edited || Array.isArray(fixArt.files));
 }
