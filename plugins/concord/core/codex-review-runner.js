@@ -5,7 +5,7 @@
 // subprocess and every state transition remains owned by review-cli.
 const { execFileSync, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
-const { openInitiativeRun, reserveLaunch, finishInitiativeRun } = require('./initiative-review-run');
+const { openInitiativeRun, reserveLaunch, recordTargetTerminal, finaliseInitiativeRun } = require('./initiative-review-run');
 const fs = require('node:fs');
 const path = require('node:path');
 const { safeIdForFilename } = require('./artifact-name');
@@ -358,10 +358,15 @@ async function invoke(spawn, input) {
 
 async function runReviewUntilGreen(options) {
   const { ref, base, broad = false, noBroad = false, noDod = false, resume = false, repoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
-  if (!ref) throw new Error('review-until-green: missing target ref');
   const keyedRun = options.initiativeRunKey || options.initiativeStateDir;
   if (keyedRun && (!options.initiativeRunKey || !options.initiativeStateDir)) throw new Error('review-until-green: --initiative-run-key and --initiative-state-dir must be used together');
   const initiativeRun = keyedRun ? openInitiativeRun({ stateDir: options.initiativeStateDir, key: options.initiativeRunKey, maxLaunches: options.initiativeMaxLaunches, maxRounds: options.initiativeMaxRounds }) : null;
+  if (options.initiativeFinalise) {
+    if (!initiativeRun) throw new Error('review-until-green: --initiative-finalise requires an initiative run');
+    finaliseInitiativeRun(initiativeRun);
+    return { decision: { finalised: true } };
+  }
+  if (!ref) throw new Error('review-until-green: missing target ref');
   const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot));
   let reviewer = options.reviewer || 'codex';
   let fixer = options.fixer || 'codex';
@@ -381,6 +386,8 @@ async function runReviewUntilGreen(options) {
     invocations: [],
   };
   let currentRound = null;
+  let material = null;
+  let checks = [];
   let telemetryPath = null;
   let telemetryLoaded = false;
   const persistTelemetry = () => {
@@ -449,7 +456,18 @@ async function runReviewUntilGreen(options) {
     if ((result?.decision === 'terminal' || result?.decision?.converged === true || result?.decision?.parked === true || result?.decision?.abandoned === true) && telemetryPath) {
       try { fs.unlinkSync(telemetryPath); } catch {}
     }
-    if (initiativeRun && (result?.decision?.converged || result?.decision?.parked || result?.decision?.abandoned || result?.decision?.intentReview || result?.decision?.gatePending)) finishInitiativeRun(initiativeRun);
+    if (initiativeRun && (result?.decision?.converged || result?.decision?.parked || result?.decision?.abandoned || result?.decision?.intentReview || result?.decision?.gatePending)) {
+      recordTargetTerminal(initiativeRun, {
+        target: ref,
+        reason: material ? 'reconciliation-required' : 'target-terminal',
+        finding: material?.finding || null,
+        stage: material?.stage || null,
+        avoidedLaunches: material?.avoidedLaunches || 0,
+        findings: material?.findings || {},
+        checks: result?.checks || checks,
+        telemetry: (output.telemetry?.invocations || []).map(({ role, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, stage: 'review', revision: { ref, ...(initialBase ? { base: initialBase } : {}) }, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens })),
+      });
+    }
     return output;
   };
   const cli = (args) => runCli(args);
@@ -572,10 +590,11 @@ async function runReviewUntilGreen(options) {
     telemetryLoaded = true;
     if (started.decision !== 'work') return withTelemetry(started);
     currentRound = started.round;
+    checks = [{ name: 'definition-of-done', status: started.dodPassed ? 'passed' : (started.dodDeferred ? 'deferred' : 'unknown') }];
     const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodPassed: started.dodPassed, dodDeferred: started.dodDeferred, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref) };
     let slotAllocation = Promise.resolve();
     const launch = async (input) => {
-      if (initiativeRun && !reserveLaunch(initiativeRun, { role: input.role, round: currentRound })) throw new Error(`review-until-green: initiative launch budget exhausted or reservation contended before ${input.role}`);
+      if (initiativeRun && !reserveLaunch(initiativeRun, { role: input.role, target: ref, revision: { ref, ...(initialBase ? { base: initialBase } : {}) }, round: currentRound })) throw new Error(`review-until-green: initiative launch budget exhausted or reservation contended before ${input.role}`);
       const artifactPath = artifactDestinationFromPrompt(input.prompt, input.stateDir);
       const isFix = input.role === 'fix';
       const provider = isFix ? fixer : reviewer;
@@ -632,7 +651,10 @@ async function runReviewUntilGreen(options) {
     if (reviewerFailure) throw reviewerFailure.reason;
 
     const planned = await cli(['plan-fixes', ref]);
-    if (planned.reconciliation) return withTelemetry(await cli(['record', ref]));
+    if (planned.reconciliation) {
+      material = typeof planned.reconciliation === 'object' ? { ...planned.reconciliation, stage: planned.reconciliation.stage || 'plan-fixes', avoidedLaunches: (planned.fixes || []).length } : { stage: 'plan-fixes', avoidedLaunches: (planned.fixes || []).length };
+      return withTelemetry(await cli(['record', ref]));
+    }
     await throwIfAborted(true);
     for (const finding of planned.fixes || []) {
       try {

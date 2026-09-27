@@ -1420,10 +1420,14 @@ function main(resolveFromCwd) {
       });
       gateOpen = thisRound.concat(carried);
     }
-    const reconciliation = intentParked.length > 0 || gateOpen.some((f) => /^gate:(?:design-conformance|ac-coverage):/.test(f.id));
+    const material = [...intentParked, ...gateOpen.filter((f) => /^gate:(?:design-conformance|ac-coverage):/.test(f.id))];
+    const reconciliation = material.length > 0;
     const next = { ...ledger, planned: reconciliation ? [] : fixes.map((f) => f.id), resolved_absent: reconciliation ? [] : resolvedAbsent, intent_parked: intentParked, gate_open: gateOpen, phase: 'fixes' };
     writeLedger(stateDir, slug, next);
-    process.stdout.write(JSON.stringify({ fixes: reconciliation ? [] : fixes, reconciliation }) + '\n');
+    process.stdout.write(JSON.stringify({ fixes: reconciliation ? [] : fixes, reconciliation: reconciliation && { trigger: 'material-finding', finding: material[0].id, stage: 'plan-fixes', findings: material.reduce((counts, finding) => {
+      const kind = finding.id.startsWith('gate:design-conformance:') ? 'design-conformance' : finding.id.startsWith('gate:ac-coverage:') ? 'ac-coverage' : finding.id.split(':', 1)[0];
+      return { ...counts, [kind]: (counts[kind] || 0) + 1 };
+    }, {}) } }) + '\n');
     return;
   }
 
