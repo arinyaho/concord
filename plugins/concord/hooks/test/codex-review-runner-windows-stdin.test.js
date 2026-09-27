@@ -82,6 +82,31 @@ function fakeChild() {
   return child;
 }
 
+test('win32: abort terminates the cmd wrapper and all descendants with taskkill', async (t) => {
+  await withFakeOnPath('codex', async () => {
+    const taskkillCalls = [];
+    let child;
+    t.mock.method(childProcess, 'execFileSync', (bin, args) => {
+      if (args.some((arg) => String(arg).includes('version'))) return 'codex-cli 0.154.0\n';
+      taskkillCalls.push({ bin, args });
+      return '';
+    });
+    t.mock.method(childProcess, 'spawn', () => {
+      child = fakeChild();
+      child.pid = 4242;
+      child.kill = () => {};
+      return child;
+    });
+    const { codexExec } = loadRunnerWithPlatform('win32');
+    const controller = new AbortController();
+    const pending = codexExec({ role: 'correctness', prompt: 'review', repoRoot: '/tmp/fake-repo', stateDir: '/tmp/fake-state', abortSignal: controller.signal });
+    controller.abort('SIGINT');
+    child.emit('close', null, 'SIGTERM');
+    await pending;
+    assert.deepStrictEqual(taskkillCalls.map(({ args }) => args), [['/pid', '4242', '/t', '/f']]);
+  });
+});
+
 test('win32: codexExec sends the prompt via stdin, not argv, so a multi-line prompt cannot be read as a cmd.exe command boundary', async (t) => {
   await withFakeOnPath('codex', async (resolvedCodexPath) => {
     const calls = [];

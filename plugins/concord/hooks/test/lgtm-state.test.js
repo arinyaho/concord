@@ -4,6 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const CORE_STATE = path.join(__dirname, '..', '..', 'core', 'lgtm-state.js');
 const { execFileSync } = require('node:child_process');
 const lgtmState = require('../../core/lgtm-state');
 
@@ -56,6 +57,20 @@ test('review requests distinguish a durable claim from a request that was sent',
   assert.strictEqual(lgtmState.claimRetry({ ...input, now: 4000 }), true);
   assert.strictEqual(lgtmState.markRetryRequested(input), true);
   assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, retryDeadlineMs: null, initialClaimed: true, initialRequested: true, retryClaimed: true, retryClaimedAtMs: 4000, retryRequested: true });
+});
+
+test('default state directory is shared by linked worktrees and resolves Git outside the checkout', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'lgtm-worktree-'));
+  const linked = `${repo}-linked`;
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  execFileSync('git', ['config', 'user.email', 't@t'], { cwd: repo });
+  execFileSync('git', ['config', 'user.name', 't'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n');
+  execFileSync('git', ['add', 'a.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'init'], { cwd: repo });
+  execFileSync('git', ['worktree', 'add', '-qb', 'linked', linked], { cwd: repo });
+  assert.strictEqual(lgtmState.defaultStateDir(repo), lgtmState.defaultStateDir(linked));
+  assert.match(fs.readFileSync(CORE_STATE, 'utf8'), /crossPlatformCommand\('git', repoRoot\)/);
 });
 
 test('a retry claim records the boundary for retry-activity reconciliation', () => {

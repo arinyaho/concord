@@ -25,6 +25,12 @@ const TERMINATION_GRACE_MS = 5 * 1000;
 let versionCache = null;
 
 function terminateProcessTree(child, signal) {
+  if (isWindows && child.pid) {
+    try {
+      execFileSync(path.join(process.env.SystemRoot || process.env.windir || 'C:\\Windows', 'System32', 'taskkill.exe'), ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore' });
+      return;
+    } catch (_) {}
+  }
   if (!isWindows && child.pid) {
     try { process.kill(-child.pid, signal); return; } catch (_) {}
   }
