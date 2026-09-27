@@ -202,6 +202,27 @@ test('codexExec marks a successful subprocess with no usage event as partial', a
   }
 });
 
+test('codexExec exposes signal and timeout termination separately', async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.154.0\\n');\nelse if (process.argv.includes('signal')) process.kill(process.pid, 'SIGTERM');\nelse setTimeout(() => {}, 1000);\n`);
+  fs.chmodSync(codex, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  try {
+    const signal = await codexExec({ role: 'correctness', prompt: 'signal', repoRoot: binDir, stateDir: binDir });
+    assert.deepStrictEqual({ status: signal.status, signal: signal.signal, timedOut: signal.timedOut }, { status: null, signal: 'SIGTERM', timedOut: false });
+    const timeout = await codexExec({ role: 'correctness', prompt: 'wait', repoRoot: binDir, stateDir: binDir, timeoutMs: 20 });
+    assert.deepStrictEqual({ status: timeout.status, signal: timeout.signal, timedOut: timeout.timedOut }, { status: null, signal: 'SIGTERM', timedOut: true });
+    const controller = new AbortController();
+    const interrupted = codexExec({ role: 'correctness', prompt: 'wait', repoRoot: binDir, stateDir: binDir, abortSignal: controller.signal });
+    setTimeout(() => controller.abort('SIGINT'), 20);
+    assert.strictEqual((await interrupted).interrupted, 'SIGINT');
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
 for (const [name, body] of [
   ['malformed JSONL', `'not json\\n'`],
   ['unknown event', `JSON.stringify({ type: 'future.event' }) + '\\n'`],
@@ -290,6 +311,88 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
   };
   return { stateDir, calls, cli, spawn };
 }
+
+test('runner records an artifact-less reviewer exit as a retryable harness failure', async () => {
+  const h = harness();
+  let failure;
+  const cli = (args) => {
+    if (args[0] === 'artifact-normalize' && args[2] === 'correctness') {
+      throw new Error('harness-failure: missing gate artifact correctness for round 1');
+    }
+    if (args[0] === 'round-failure') {
+      failure = JSON.parse(args[2]);
+      return { status: 'recorded' };
+    }
+    return h.cli(args);
+  };
+  const spawn = ({ role, prompt }) => {
+    if (role === 'correctness') return { status: 0 }; // Process exited but never wrote its artifact.
+    return h.spawn({ role, prompt });
+  };
+
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn }),
+    /missing gate artifact correctness/,
+  );
+  assert.deepStrictEqual(failure, {
+    role: 'correctness',
+    kind: 'artifact-write-failure',
+    message: 'missing gate artifact correctness for round 1',
+  });
+});
+
+test('resume launches only the artifact role still pending after an interruption', async () => {
+  const stateDir = temp();
+  const calls = [];
+  let attempt = 0;
+  const cli = (args) => {
+    const [verb, , role] = args;
+    if (verb === 'round-start') {
+      attempt++;
+      return { decision: 'work', round: 1, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false,
+        completedArtifacts: attempt === 1 ? [] : ['correctness'] };
+    }
+    if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: role, attempt: 1 };
+    if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'round-failure') return { status: 'recorded', retryable: true };
+    if (verb === 'plan-fixes') return { fixes: [] };
+    if (verb === 'record') return { decision: { continue: false, converged: true }, handoff: 'LGTM' };
+    throw new Error(`unexpected CLI ${verb}`);
+  };
+  const spawn = ({ role }) => {
+    calls.push(`${attempt}:${role}`);
+    if (attempt === 1 && role === 'verify') throw new Error('interrupted');
+    return { status: 0 };
+  };
+
+  await assert.rejects(runReviewUntilGreen({ ref: 'feature/resume', repoRoot: '/repo', runCli: cli, spawn }), /interrupted/);
+  await runReviewUntilGreen({ ref: 'feature/resume', resume: true, repoRoot: '/repo', runCli: cli, spawn });
+  assert.deepStrictEqual(calls, ['1:correctness', '1:verify', '2:verify']);
+});
+
+test('a failing parallel reviewer does not let the parent return before its sibling exits', async () => {
+  const stateDir = temp();
+  let siblingFinished = false;
+  const cli = (args) => {
+    if (args[0] === 'round-start') return { decision: 'work', round: 1, stateDir, targetType: 'git', dodPassed: true, intentApplied: true, gateApplied: false };
+    if (args[0] === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
+    if (args[0] === 'round-failure') return { status: 'recorded' };
+    if (args[0] === 'artifact-normalize') return { status: 'ok' };
+    throw new Error(`unexpected CLI ${args[0]}`);
+  };
+  const spawn = async ({ role }) => {
+    if (role === 'intent') {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      siblingFinished = true;
+      return { status: 0 };
+    }
+    if (role === 'correctness') throw new Error('correctness failed');
+    return { status: 0 };
+  };
+
+  await assert.rejects(runReviewUntilGreen({ ref: 'feature/wait', repoRoot: '/repo', runCli: cli, spawn }), /correctness failed/);
+  assert.strictEqual(siblingFinished, true);
+});
 
 test('runner automatically executes a clean round in correctness then verify order and returns terminal handoff', async () => {
   const h = harness();
@@ -906,18 +1009,26 @@ test('fix subprocess writes the prompt-declared artifact consumed by commit-fix'
 
 test('runner fails closed when a required reviewer subprocess is terminated by a signal', async () => {
   const h = harness();
-  const spawn = (input) => input.role === 'correctness' ? { status: null } : h.spawn(input);
+  let failure;
+  const cli = (args) => {
+    if (args[0] === 'round-failure') { failure = JSON.parse(args[2]); return { status: 'recorded' }; }
+    return h.cli(args);
+  };
+  const spawn = (input) => input.role === 'correctness' ? { status: null, signal: 'SIGTERM' } : h.spawn(input);
   await assert.rejects(
-    runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn }),
-    /harness-failure: correctness subprocess exited null/,
+    runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn }),
+    /harness-failure: correctness subprocess ended from SIGTERM/,
   );
+  assert.deepStrictEqual(failure, { role: 'correctness', kind: 'signal', message: 'correctness subprocess ended from SIGTERM', signal: 'SIGTERM' });
   assert.strictEqual(h.calls.some((call) => call[0] === 'spawn' && call[1] === 'verify'), false);
 });
 
-test('gate-verify subprocess failure stays lenient and lets the CLI decide', async () => {
+test('gate-verify subprocess failure is retryable instead of being folded as a clean verdict', async () => {
   const h = harness({ gateApplied: true, failingRole: 'gate-verify' });
-  const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
-  assert.strictEqual(out.handoff, 'LGTM');
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn }),
+    /gate-verify subprocess exited 1/,
+  );
   assert.ok(h.calls.some((call) => call[0] === 'spawn' && call[1] === 'gate-verify'));
 });
 

@@ -510,6 +510,10 @@ function main(resolveFromCwd) {
       }
       fs.writeFileSync(p, JSON.stringify(canonical) + '\n');
       try { fs.unlinkSync(retryPath); } catch (e) { /* no prior retry */ }
+      if (ledger.execution && ledger.execution.round === n) {
+        const completed = Array.from(new Set([...(ledger.execution.completed || []), name]));
+        writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, completed, pending: (ledger.execution.pending || []).filter((role) => role !== name) } });
+      }
       process.stdout.write(JSON.stringify({ status: 'ok', artifact: name }) + '\n');
       return;
     } catch (e) {
@@ -525,6 +529,21 @@ function main(resolveFromCwd) {
       }
       throw new Error(`harness-failure: ${e.message}`);
     }
+  }
+
+  if (verb === 'round-failure') {
+    requireRef(ref, 'round-failure');
+    const slug = targetSlug(ref);
+    const ledger = readLedger(stateDir, slug);
+    if (!ledger || !['gates', 'fixes'].includes(ledger.phase)) throw new Error(`round-failure: no active review work for ref "${ref}" ${stateDirHint(stateDir)}`);
+    let failure;
+    try { failure = JSON.parse(rest[0]); } catch (_) { throw new Error('round-failure: expected one JSON failure record'); }
+    if (!failure || typeof failure.role !== 'string' || typeof failure.kind !== 'string' || typeof failure.message !== 'string') throw new Error('round-failure: failure requires role, kind, and message strings');
+    const execution = ledger.execution || { round: ledger.round, completed: [], pending: [] };
+    const entry = { role: failure.role, kind: failure.kind, message: failure.message, ...(failure.exitCode !== undefined ? { exitCode: failure.exitCode } : {}), ...(failure.signal ? { signal: failure.signal } : {}), at: new Date().toISOString() };
+    writeLedger(stateDir, slug, { ...ledger, execution: { ...execution, failures: [...(execution.failures || []), entry].slice(-5), failure: entry } });
+    process.stdout.write(JSON.stringify({ status: 'recorded', round: ledger.round, retryable: true }) + '\n');
+    return;
   }
 
   if (verb === 'show') {
@@ -817,11 +836,7 @@ function main(resolveFromCwd) {
     // took the file-acquisition branch first and skipped all of it, so a stale
     // edited:true fix artifact could false-signal in record. (finding #3)
     const isGit = !isFileTarget;
-    if (resumed) {
-      if (isGit) gitCheckoutTree(repoRoot); // git-only: keep journaled commits, discard uncommitted
-      deleteRoundArtifacts(stateDir, resumeRound); // both: purge the interrupted round's artifacts
-      ledger = { ...ledger, phase: 'idle', planned: [], resolved_absent: [], intent_parked: [] };
-    }
+    if (resumed && isGit) gitCheckoutTree(repoRoot); // git-only: keep journaled commits, discard uncommitted
 
     // Target acquisition goes through the core/target.js seam. On a FRESH git
     // start acquireTarget runs the dirty-check + HEAD rev-parse + diff (identical
@@ -857,10 +872,12 @@ function main(resolveFromCwd) {
     const diffHash = contentHash(diff);
 
     if (resumed) {
+      const preserveArtifacts = ledger.execution && ledger.execution.round === resumeRound && ledger.execution.diffHash === diffHash;
+      if (!preserveArtifacts) deleteRoundArtifacts(stateDir, resumeRound);
       // Resume re-drives round N at zero budget by pinning round/diff_content_hash
       // directly, bypassing beginRound. This is a real work round: it proceeds to
       // DoD + phase='gates' below, without advancing round or charging budget.
-      ledger = { ...ledger, diff_content_hash: diffHash, round: resumeRound };
+      ledger = { ...ledger, diff_content_hash: diffHash, round: resumeRound, phase: 'idle', planned: [], resolved_absent: [], intent_parked: [], execution: preserveArtifacts ? ledger.execution : null };
     } else {
       deleteRoundArtifacts(stateDir, ledger.round + 1); // stale artifacts for the round about to run
       const { ledger: begun, noOp, terminal } = beginRound(ledger, diffHash, { reReviewOnStableContent: isFileTarget });
@@ -922,6 +939,10 @@ function main(resolveFromCwd) {
     // before plan-fixes runs. Re-deriving from review.config.json there would
     // silently miss a flag-enabled round and discard its findings.
     const gateApplied = gateArmed && (gateRounds.length === 0 || gateRounds.includes(ledger.round));
+    const expectedArtifacts = ['correctness', 'verify'].concat(intentCfg ? ['intent'] : [], gateApplied ? ['gate', 'gate-verify'] : []);
+    const completedArtifacts = resumed && ledger.execution
+      ? (ledger.execution.completed || []).filter((role) => expectedArtifacts.includes(role))
+      : [];
     // Sticky for the same reason gateApplied is: once a run has opted out of the
     // executable gate, round 2's round-start must not have to repeat --no-dod
     // (without stickiness a repo that DOES have `dod` commands would run the
@@ -1002,6 +1023,14 @@ function main(resolveFromCwd) {
       gate_rounds: gateApplied && !gateRounds.includes(ledger.round) ? [...gateRounds, ledger.round] : gateRounds,
       dodDeferred,
       reviewRouting,
+      execution: {
+        round: ledger.round,
+        diffHash,
+        completed: completedArtifacts,
+        pending: expectedArtifacts.filter((role) => !completedArtifacts.includes(role)),
+        failures: resumed && ledger.execution ? (ledger.execution.failures || []) : [],
+        failure: null,
+      },
       target: targetUpdate,
     };
     writeLedger(stateDir, slug, ledger);
@@ -1009,7 +1038,7 @@ function main(resolveFromCwd) {
     // `true` means "nothing blocked the round", not "the gate ran and passed" --
     // a driver that turns it into "DoD already passed; do not rerun tests" would
     // be removing the last real check. dodDeferred is how a caller tells them apart.
-    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, dodDeferred: !!dod.deferred, intentApplied: !!intentCfg, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir }) + '\n');
+    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, dodDeferred: !!dod.deferred, intentApplied: !!intentCfg, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir, completedArtifacts }) + '\n');
     return;
   }
 
@@ -1518,7 +1547,7 @@ function main(resolveFromCwd) {
     return;
   }
 
-  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | telemetry-slot | plan-fixes | commit-fix | record | gate-panel-round-start | gate-panel-round-record | unpark | dismiss | reset | rerun | artifact-normalize)`);
+  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | telemetry-slot | plan-fixes | commit-fix | record | round-failure | gate-panel-round-start | gate-panel-round-record | unpark | dismiss | reset | rerun | artifact-normalize)`);
 }
 
 // Wraps main() with the graceful operator-facing error format. Exported (not

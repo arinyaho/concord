@@ -219,11 +219,13 @@ test('decideTermination: reviewer silence alone (dod NOT passed) is not clean', 
 });
 
 test('decideTermination: budget exhausted -> parked', () => {
-  const d = review.decideTermination(outcome({ budgetSpent: 5, maxRounds: 5 }));
+  const d = review.decideTermination(outcome({ dodPassed: true, openFindingsCount: 20, budgetSpent: 5, maxRounds: 5 }));
   assert.deepStrictEqual(
     { continue: d.continue, converged: d.converged, parked: d.parked, abandoned: d.abandoned },
     { continue: false, converged: false, parked: true, abandoned: false }
   );
+  assert.match(d.reason, /DoD passed but no clean confirmation round occurred/);
+  assert.match(d.reason, /20 open finding/);
 });
 
 test('decideTermination: no progress (zero fixes, same findings) -> parked', () => {

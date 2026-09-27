@@ -197,6 +197,66 @@ test('round-start: fresh start runs DoD, writes diff file, sets phase gates, dec
   assert.ok(fs.existsSync(path.join(dir, `round-${ledger.round}-diff.txt`)));
 });
 
+test('round-start resume preserves normalized artifacts and records an artifact write failure for retry', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const first = JSON.parse(run(['round-start', 'feat/resume-artifact', 'HEAD~1'], { env }));
+  const artifact = path.join(dir, `round-${first.round}-correctness.json`);
+  fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  assert.strictEqual(JSON.parse(run(['artifact-normalize', 'feat/resume-artifact', 'correctness'], { env })).status, 'ok');
+  const failure = { role: 'verify', kind: 'artifact-write-failure', message: 'missing gate artifact verify for round 1' };
+  assert.strictEqual(JSON.parse(run(['round-failure', 'feat/resume-artifact', JSON.stringify(failure)], { env })).retryable, true);
+
+  const resumed = JSON.parse(run(['round-start', 'feat/resume-artifact'], { env }));
+  assert.deepStrictEqual(resumed.completedArtifacts, ['correctness']);
+  assert.ok(fs.existsSync(artifact), 'normalized artifact survives an interrupted resume');
+  const ledger = review.readLedger(dir, review.targetSlug('feat/resume-artifact'));
+  assert.deepStrictEqual(ledger.execution.pending, ['verify']);
+  assert.deepStrictEqual(ledger.execution.failure, null, 'the prior failure is retained in history but cleared for the retry');
+  assert.strictEqual(ledger.execution.failures.at(-1).kind, 'artifact-write-failure');
+});
+
+test('round-start resume preserves only completed gate artifacts', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const first = JSON.parse(run(['round-start', 'feat/resume-gate', 'HEAD~1', '--broad'], { env, broadDefault: true }));
+  const gate = path.join(dir, `round-${first.round}-gate.json`);
+  fs.writeFileSync(gate, JSON.stringify({ status: 'ok', findings: [] }));
+  run(['artifact-normalize', 'feat/resume-gate', 'gate'], { env, broadDefault: true });
+
+  const resumed = JSON.parse(run(['round-start', 'feat/resume-gate'], { env, broadDefault: true }));
+  assert.deepStrictEqual(resumed.completedArtifacts, ['gate']);
+  assert.ok(fs.existsSync(gate));
+  assert.ok(review.readLedger(dir, review.targetSlug('feat/resume-gate')).execution.pending.includes('gate-verify'));
+});
+
+test('record hands off why a green DoD run parked at the round budget', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const ref = 'feat/budget-handoff';
+  const started = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env }));
+  fs.writeFileSync(path.join(dir, `round-${started.round}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [
+    { id: 'correctness:budget', file: 'a.txt', span: 'two', summary: 'Fix the value.' },
+  ] }));
+  fs.writeFileSync(path.join(dir, `round-${started.round}-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
+  run(['plan-fixes', ref], { env });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
+  fs.writeFileSync(path.join(dir, `round-${started.round}-fix-correctness:budget.json`), JSON.stringify({ status: 'ok', edited: true, files: ['a.txt'] }));
+  run(['commit-fix', ref, 'correctness:budget'], { env });
+  const slug = review.targetSlug(ref);
+  const ledger = review.readLedger(dir, slug);
+  review.writeLedger(dir, slug, { ...ledger, budget: { max_rounds: 1, spent: 1 } });
+
+  const out = JSON.parse(run(['record', ref], { env }));
+  assert.match(out.handoff, /termination: round budget exhausted with 0 open finding\(s\); DoD passed but no clean confirmation round occurred/);
+});
+
 test('round-start: refuses a dirty working tree on a fresh start', () => {
   const repo = initRepo();
   const dir = tmpDir();
