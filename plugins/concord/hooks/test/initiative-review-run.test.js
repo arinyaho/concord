@@ -19,6 +19,34 @@ test('keyed runs use a hashed separate ledger and atomically consume launch budg
   assert.strictEqual(ledger.key, undefined);
 });
 
+test('interleaved initializations cannot overwrite a consumed launch reservation', () => {
+  const dir = temp();
+  const originalWrite = fs.writeFileSync;
+  let interleaved = false;
+  let secondReserved = false;
+  fs.writeFileSync = function (file, ...args) {
+    if (!interleaved && String(file).endsWith('.tmp')) {
+      interleaved = true;
+      try {
+        const second = openInitiativeRun({ stateDir: dir, key: 'shared key', maxLaunches: 1, maxRounds: 1 });
+        secondReserved = reserveLaunch(second, { role: 'second', round: 1 });
+      } catch (error) {
+        assert.match(error.message, /initialization was contended/);
+      }
+    }
+    return originalWrite.call(this, file, ...args);
+  };
+  try {
+    const first = openInitiativeRun({ stateDir: dir, key: 'shared key', maxLaunches: 1, maxRounds: 1 });
+    const firstReserved = reserveLaunch(first, { role: 'first', round: 1 });
+    assert.ok(interleaved);
+    assert.strictEqual(firstReserved, true);
+    assert.strictEqual(secondReserved, false);
+  } finally {
+    fs.writeFileSync = originalWrite;
+  }
+});
+
 test('a keyed run cannot be reconfigured or reopened after terminal state', () => {
   const dir = temp();
   const run = openInitiativeRun({ stateDir: dir, key: 'opaque key', maxLaunches: 2, maxRounds: 1 });
