@@ -16,7 +16,7 @@ Enabling the plugin registers its hooks automatically - no `settings.json` editi
 ### Codex
 
 ```
-codex plugin marketplace add arinyaho/concord
+codex plugin marketplace add arinyaho/concord --ref main --sparse .agents/plugins --sparse plugins/concord-codex
 codex plugin add concord@arinyaho-concord
 ```
 
