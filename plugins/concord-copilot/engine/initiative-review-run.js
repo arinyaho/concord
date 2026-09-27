@@ -66,8 +66,23 @@ function recordTargetTerminal(run, { target, reason = 'target-terminal', finding
   });
 }
 
+function publicInitiativeSummary(run) {
+  const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
+  return {
+    targetIds: [...new Set((ledger.targets || []).map((target) => crypto.createHash('sha256').update(JSON.stringify(target)).digest('hex')))],
+    counts: {
+      targets: (ledger.targets || []).length,
+      launches: (ledger.launches || []).length,
+      rounds: (ledger.rounds || []).length,
+      findings: ledger.findings || {},
+      checks: (ledger.checks || []).length,
+      telemetry: (ledger.telemetry || []).length,
+    },
+  };
+}
+
 function finaliseInitiativeRun(run, reason = 'finalised') {
   return Boolean(locked(run, (ledger) => ledger.status === 'active' && { ...ledger, status: 'terminal', terminal: { reason }, reconciliation: ledger.reconciliation || { terminals: [], hint: hint(reason) } }));
 }
 
-module.exports = { runPath, openInitiativeRun, reserveLaunch, recordTargetTerminal, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };
+module.exports = { runPath, openInitiativeRun, reserveLaunch, recordTargetTerminal, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };

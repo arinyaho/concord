@@ -1539,6 +1539,22 @@ test('plan-fixes: intent finding on a changed file -> ledger.intent_parked with 
   assert.strictEqual(ledger.intent_parked[0].requirement, 'retry three times');
 });
 
+test('plan-fixes: no-key runs suppress correctness fixes for reconciliation-required intent findings', () => {
+  const repo = initRepoWithIntent('printf "REQ: retry three times"');
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:fix-me', file: 'a.txt', span: 'two', summary: 'fix it' }] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'intent', { status: 'ok', findings: [{ id: 'intent:retry-count', file: 'a.txt', span: 'two', summary: 'retries once', requirement: 'retry three times' }] });
+  const out = JSON.parse(run(['plan-fixes', 'feat/x'], { env }));
+  assert.deepStrictEqual(out.fixes, []);
+  assert.deepStrictEqual(out.reconciliation.findings, { intent: 1 });
+  assert.deepStrictEqual(review.readLedger(dir, review.targetSlug('feat/x')).planned, []);
+});
+
 test('plan-fixes: intent finding on an UNCHANGED file -> dropped', () => {
   const repo = initRepoWithIntent('printf "REQ"');
   const dir = tmpDir();

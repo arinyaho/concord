@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { openInitiativeRun, reserveLaunch, recordTargetTerminal, finaliseInitiativeRun } = require('../../core/initiative-review-run');
+const { openInitiativeRun, reserveLaunch, recordTargetTerminal, finaliseInitiativeRun, publicInitiativeSummary } = require('../../core/initiative-review-run');
 
 function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'initiative-review-run-')); }
 
@@ -45,4 +45,17 @@ test('keyed runs stay active per target, require absolute state, charge rounds g
   assert.deepStrictEqual(ledger.telemetry, [{ role: 'correctness', elapsedMs: 1, totalTokens: null }]);
   assert.ok(finaliseInitiativeRun(run));
   assert.throws(() => openInitiativeRun({ stateDir: dir, key: 'opaque key', maxLaunches: 4, maxRounds: 2 }), /immutable|terminal/);
+});
+
+test('initiative aggregate output hashes local target revisions and exposes counts only', () => {
+  const dir = temp();
+  const run = openInitiativeRun({ stateDir: dir, key: 'opaque key', maxLaunches: 4, maxRounds: 2 });
+  assert.ok(reserveLaunch(run, { role: 'correctness', target: 'private-ref', revision: { ref: 'private-ref', base: 'private-base', head: 'private-head' }, round: 1 }));
+  recordTargetTerminal(run, { target: 'private-ref', findings: { intent: 1 }, checks: [{ name: 'check', status: 'passed' }] });
+  const summary = publicInitiativeSummary(run);
+  assert.deepStrictEqual(summary, {
+    targetIds: [require('node:crypto').createHash('sha256').update(JSON.stringify({ ref: 'private-ref', base: 'private-base', head: 'private-head' })).digest('hex')],
+    counts: { targets: 1, launches: 1, rounds: 1, findings: { intent: 1 }, checks: 1, telemetry: 0 },
+  });
+  assert.doesNotMatch(JSON.stringify(summary), /private-(?:ref|base|head)/);
 });
