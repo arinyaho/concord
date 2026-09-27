@@ -1309,6 +1309,51 @@ test('an interrupted panel lens waits for every launched sibling before the runn
   assert.match((await running).message, /interrupted panel lens/);
 });
 
+test('an interrupted adversarial vote waits for every sibling before the runner rejects', async () => {
+  const stateDir = temp();
+  const pending = [];
+  let recorded = 0;
+  const cli = (args) => {
+    const [verb] = args;
+    if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
+    if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
+    if (verb === 'plan-fixes') return { fixes: [] };
+    if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
+    if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
+    throw new Error(`unexpected CLI ${verb}`);
+  };
+  const spawn = ({ role, prompt }) => {
+    if (role === 'correctness') fs.writeFileSync(path.join(stateDir, 'round-4-correctness.json'), JSON.stringify({ status: 'ok', examined: [], findings: [] }));
+    if (role === 'verify') fs.writeFileSync(path.join(stateDir, 'round-4-verify.json'), JSON.stringify({ status: 'ok', rejected: [] }));
+    if (role.startsWith('gate-panel-') && role !== 'gate-panel-verify') {
+      const lens = role.slice('gate-panel-'.length);
+      const findings = lens === 'ac-coverage' ? [{ id: 'gate:ac-coverage:gap', file: 'a.js', span: 'x', summary: 's' }] : [];
+      fs.writeFileSync(path.join(stateDir, `round-4-gate-panel-1-${lens}.json`), JSON.stringify({ status: 'ok', findings }));
+    }
+    if (role === 'gate-panel-verify') {
+      if (/-0\.json/.test(prompt)) {
+        const error = new Error('interrupted adversarial vote');
+        error.reviewFailure = { role, kind: 'interrupted', message: error.message };
+        return Promise.reject(error);
+      }
+      return new Promise((resolve) => pending.push(resolve));
+    }
+    return { status: 0 };
+  };
+  let settled = false;
+  const running = runReviewUntilGreen({ ref: 'feature/vote-interrupt', repoRoot: '/repo', runCli: cli, spawn }).then(
+    () => { settled = true; return null; },
+    (error) => { settled = true; return error; },
+  );
+  for (let i = 0; i < 10 && pending.length < 2; i++) await new Promise(setImmediate);
+  assert.strictEqual(pending.length, 2);
+  await new Promise(setImmediate);
+  assert.strictEqual(settled, false, 'the interrupted vote must wait for sibling cleanup');
+  for (const resolve of pending) resolve({ status: 0 });
+  assert.match((await running).message, /interrupted adversarial vote/);
+});
+
 test('panel lenses and each finding\'s adversarial votes fan out concurrently', async () => {
   const stateDir = temp();
   const pendingLenses = [];

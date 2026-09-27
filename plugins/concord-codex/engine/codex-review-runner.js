@@ -464,7 +464,7 @@ async function runReviewUntilGreen(options) {
       const rejected = [];
       for (const finding of candidates) {
         let survives = 0;
-        const votes = await Promise.all([0, 1, 2].map(async (vote) => {
+        const voteResults = await Promise.allSettled([0, 1, 2].map(async (vote) => {
           const verdict = path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-vote-${safeIdForFilename(finding.id)}-${vote}.json`);
           await launch({ role: 'gate-panel-verify', repoRoot, stateDir: context.stateDir,
             prompt: `Try to refute gate finding ${JSON.stringify(finding)}. Default to refuted if uncertain. Write ONLY {"status":"ok","survives":false} to ${verdict}.${BLOCKED_CLAUSE}` });
@@ -482,6 +482,9 @@ async function runReviewUntilGreen(options) {
           }
           return raw ? raw.survives === true : false;
         }));
+        const voteFailure = voteResults.find((result) => result.status === 'rejected');
+        if (voteFailure) throw voteFailure.reason;
+        const votes = voteResults.map((result) => result.value);
         survives = votes.filter(Boolean).length;
         if (survives < 2) rejected.push(finding.id);
       }

@@ -32,6 +32,10 @@ test('Claude and Codex ship durable review-until-lgtm instructions with host-spe
     assert.match(skill, /recover-initial-request/);
     assert.match(skill, /recover-retry-request/);
     assert.match(skill, /matching activity.*open-window/);
+    assert.match(skill, /validates the Concord plugin manifest/);
+    assert.match(skill, /newest installed Concord version/);
+    assert.match(skill, /matching retry-era activity exists.*mark-retry-requested.*open-retry-window/);
+    assert.match(skill, /15-minute lease/);
     assert.doesNotMatch(skill, /q=\[process\.cwd/);
   }
   assert.match(claude, /review-lgtm-state\.js/);
@@ -66,6 +70,7 @@ test('review requests distinguish a durable claim from a request that was sent',
 
 test('an initial request recovery claim waits for the original claimant lease', () => {
   const input = { stateDir: temp(), pr: 116, headSha: '0123456789abcdef0123456789abcdef01234567' };
+  assert.strictEqual(lgtmState.INITIAL_CLAIM_LEASE_MS, 15 * 60 * 1000);
   assert.strictEqual(lgtmState.claimInitialRequest({ ...input, now: 1000 }), true);
   assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS - 1 }), false);
   assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS }), true);

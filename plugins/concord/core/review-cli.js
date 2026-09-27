@@ -904,6 +904,9 @@ function main(resolveFromCwd) {
         const name = `round-${resumeRound}-${role}.json`;
         try { return ledger.execution.artifactHashes && ledger.execution.artifactHashes[role] === contentHash(fs.readFileSync(path.join(stateDir, name), 'utf8')); } catch (_) { return false; }
       }).map((role) => `round-${resumeRound}-${role}.json`));
+      for (const [producer, verifier] of [['correctness', 'verify'], ['gate', 'gate-verify']]) {
+        if (!preserved.has(`round-${resumeRound}-${producer}.json`)) preserved.delete(`round-${resumeRound}-${verifier}.json`);
+      }
       resumedCompletedArtifacts = completed.filter((role) => preserved.has(`round-${resumeRound}-${role}.json`));
       deleteRoundArtifacts(stateDir, resumeRound, preserved);
       // Resume re-drives round N at zero budget by pinning round/diff_content_hash
@@ -1063,6 +1066,7 @@ function main(resolveFromCwd) {
         round: ledger.round,
         diffHash,
         completed: completedArtifacts,
+        artifactHashes: Object.fromEntries(completedArtifacts.map((role) => [role, ledger.execution && ledger.execution.artifactHashes && ledger.execution.artifactHashes[role]]).filter(([, hash]) => typeof hash === 'string')),
         pending: expectedArtifacts.filter((role) => !completedArtifacts.includes(role)),
         retryArtifacts,
         retryArtifact,

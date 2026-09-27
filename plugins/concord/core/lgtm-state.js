@@ -5,7 +5,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { crossPlatformCommand, crossPlatformArgs, crossPlatformOpts, needsDoubleEscape } = require('./spawn-cross-platform');
 
-const INITIAL_CLAIM_LEASE_MS = 60 * 1000;
+// External review requests are bounded by the same 15-minute window as review
+// observation, so a recovery cannot overlap a live request invocation.
+const INITIAL_CLAIM_LEASE_MS = 15 * 60 * 1000;
 
 function validate({ pr, headSha }) {
   if (!Number.isSafeInteger(Number(pr)) || Number(pr) < 1) throw new Error('review-lgtm-state: PR number must be a positive integer');

@@ -1,6 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -238,6 +239,9 @@ test('round-start resume preserves normalized artifacts and records an artifact 
   assert.deepStrictEqual(ledger.execution.pending, ['verify']);
   assert.deepStrictEqual(ledger.execution.failure, null, 'the prior failure is retained in history but cleared for the retry');
   assert.strictEqual(ledger.execution.failures.at(-1).kind, 'artifact-write-failure');
+  assert.match(ledger.execution.artifactHashes.correctness, /^[0-9a-f]{64}$/, 'resume must retain the completed artifact hash');
+  run(['round-failure', 'feat/resume-artifact', JSON.stringify(failure)], { env });
+  assert.deepStrictEqual(JSON.parse(run(['round-start', 'feat/resume-artifact'], { env })).completedArtifacts, ['correctness'], 'a second interruption must preserve the same verified artifact');
 });
 
 test('round-start resume re-drives a normalized artifact changed after completion', () => {
@@ -271,6 +275,30 @@ test('round-start resume preserves only completed gate artifacts', () => {
   assert.deepStrictEqual(resumed.completedArtifacts, ['gate']);
   assert.ok(fs.existsSync(gate));
   assert.ok(review.readLedger(dir, review.targetSlug('feat/resume-gate')).execution.pending.includes('gate-verify'));
+});
+
+test('round-start resume invalidates gate verification when its gate artifact changed', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const first = JSON.parse(run(['round-start', 'feat/resume-gate-pair', 'HEAD~1', '--broad'], { env, broadDefault: true }));
+  const gate = path.join(dir, `round-${first.round}-gate.json`);
+  const verify = path.join(dir, `round-${first.round}-gate-verify.json`);
+  fs.writeFileSync(gate, JSON.stringify({ status: 'ok', findings: [] }));
+  run(['artifact-normalize', 'feat/resume-gate-pair', 'gate'], { env, broadDefault: true });
+  fs.writeFileSync(verify, JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
+  const slug = review.targetSlug('feat/resume-gate-pair');
+  const ledger = review.readLedger(dir, slug);
+  ledger.execution.completed.push('gate-verify');
+  ledger.execution.artifactHashes['gate-verify'] = crypto.createHash('sha256').update(fs.readFileSync(verify, 'utf8')).digest('hex');
+  review.writeLedger(dir, slug, ledger);
+  fs.writeFileSync(gate, JSON.stringify({ status: 'ok', findings: [{ id: 'gate:changed', file: 'a.txt', summary: 'changed' }] }));
+  run(['round-failure', 'feat/resume-gate-pair', JSON.stringify({ role: 'correctness', kind: 'artifact-write-failure', message: 'interrupted' })], { env, broadDefault: true });
+
+  const resumed = JSON.parse(run(['round-start', 'feat/resume-gate-pair'], { env, broadDefault: true }));
+  assert.deepStrictEqual(resumed.completedArtifacts, [], 'a verifier cannot survive a changed producer');
+  assert.ok(!fs.existsSync(verify), 'the stale gate verifier artifact must be re-driven');
 });
 
 test('record hands off why a green DoD run parked at the round budget', () => {
@@ -1456,6 +1484,14 @@ test('review-driver: the intent-detector prompt demands id reuse across rounds',
     const prompt = md.slice(md.indexOf('You are a design-conformance detector'), md.indexOf('If there are no contradictions'));
     assert.match(prompt, /priorIntentIds/, rel.join('/'));
     assert.match(prompt, /REUSE that `id` verbatim/, rel.join('/'));
+  }
+});
+
+test('manual review drivers restore pending retry prompts and skip completed artifacts', () => {
+  for (const rel of [['commands', 'review-until-green.md'], ['core', 'review-driver.md']]) {
+    const md = fs.readFileSync(path.join(__dirname, '..', '..', ...rel), 'utf8');
+    assert.match(md, /skip every role named by `completedArtifacts`/i, rel.join('/'));
+    assert.match(md, /`retryArtifacts`.*persisted corrective prompt/i, rel.join('/'));
   }
 });
 
