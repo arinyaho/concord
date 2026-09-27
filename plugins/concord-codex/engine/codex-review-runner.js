@@ -418,6 +418,15 @@ async function runReviewUntilGreen(options) {
     return output;
   };
   const cli = (args) => runCli(args);
+  const throwIfAborted = async (persist = false) => {
+    if (!abortController || !abortController.signal.aborted) return;
+    const signal = String(abortController.signal.reason || 'signal');
+    const failure = { role: 'runner', kind: 'interrupted', message: `review runner interrupted by ${signal}`, signal };
+    if (persist) try { await cli(['round-failure', ref, JSON.stringify(failure)]); } catch (_) {}
+    const error = new Error(`harness-failure: ${failure.message}`);
+    error.reviewFailure = failure;
+    throw error;
+  };
   // Never resolve a base for resume: round-start restores ledger.target.base.
   // File targets do not have a git base at all.
   const baseResolver = options.resolveDefaultBase || (options.runCli ? null : resolveDefaultBase);
@@ -429,7 +438,7 @@ async function runReviewUntilGreen(options) {
     const lenses = PANEL_LENSES;
     for (;;) {
       const panel = await cli(['gate-panel-round-start', ref]);
-      await Promise.all(lenses.map(async (lens) => {
+      const lensResults = await Promise.allSettled(lenses.map(async (lens) => {
         const artifact = path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-${lens}.json`);
         try {
           await launch({ role: `gate-panel-${lens}`, repoRoot, stateDir: context.stateDir,
@@ -438,6 +447,8 @@ async function runReviewUntilGreen(options) {
           if (error.reviewFailure && ['interrupted', 'timeout', 'signal'].includes(error.reviewFailure.kind)) throw error;
         }
       }));
+      const lensFailure = lensResults.find((result) => result.status === 'rejected');
+      if (lensFailure) throw lensFailure.reason;
       const candidates = [];
       for (const lens of lenses) {
         try {
@@ -481,6 +492,7 @@ async function runReviewUntilGreen(options) {
   };
 
   for (;;) {
+    await throwIfAborted();
     const startArgs = ['round-start', ref];
     if (initialBase) startArgs.push(initialBase);
     if (broad) startArgs.push('--broad');
@@ -495,6 +507,7 @@ async function runReviewUntilGreen(options) {
     if (options.reviewerModel) startArgs.push('--reviewer-model', options.reviewerModel);
     if (options.fixerModel) startArgs.push('--fixer-model', options.fixerModel);
     const started = await cli(startArgs);
+    await throwIfAborted(started.decision === 'work');
     if (started.reviewRouting) {
       reviewer = started.reviewRouting.reviewer || reviewer;
       fixer = started.reviewRouting.fixer || fixer;
@@ -580,6 +593,7 @@ async function runReviewUntilGreen(options) {
     if (reviewerFailure) throw reviewerFailure.reason;
 
     const planned = await cli(['plan-fixes', ref]);
+    await throwIfAborted(true);
     for (const finding of planned.fixes || []) {
       try {
         await launch({ role: 'fix', prompt: reviewerPrompt('fix', { ...context, finding, plannedFindingIds: (planned.fixes || []).map((f) => f.id) }), repoRoot, stateDir: context.stateDir });
@@ -593,8 +607,10 @@ async function runReviewUntilGreen(options) {
     let recorded = await cli(['record', ref]);
     if (recorded.decision && recorded.decision.panelPending) {
       await runPanel(context, launch);
+      await throwIfAborted(true);
       recorded = await cli(['record', ref]);
     }
+    await throwIfAborted(true);
     if (recorded.decision && recorded.decision.continue) continue;
     return withTelemetry(recorded);
   }

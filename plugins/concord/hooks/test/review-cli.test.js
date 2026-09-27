@@ -240,6 +240,23 @@ test('round-start resume preserves normalized artifacts and records an artifact 
   assert.strictEqual(ledger.execution.failures.at(-1).kind, 'artifact-write-failure');
 });
 
+test('round-start resume re-drives a normalized artifact changed after completion', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const first = JSON.parse(run(['round-start', 'feat/resume-tampered', 'HEAD~1'], { env }));
+  const artifact = path.join(dir, `round-${first.round}-correctness.json`);
+  fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  run(['artifact-normalize', 'feat/resume-tampered', 'correctness'], { env });
+  fs.writeFileSync(artifact, JSON.stringify({ status: 'findings', examined: ['a.txt'], findings: [{ id: 'correctness:altered', file: 'a.txt', span: 'two', summary: 'altered after completion' }] }));
+  run(['round-failure', 'feat/resume-tampered', JSON.stringify({ role: 'verify', kind: 'artifact-write-failure', message: 'missing verify' })], { env });
+
+  const resumed = JSON.parse(run(['round-start', 'feat/resume-tampered'], { env }));
+  assert.deepStrictEqual(resumed.completedArtifacts, []);
+  assert.ok(!fs.existsSync(artifact), 'a changed completed artifact must be re-driven');
+});
+
 test('round-start resume preserves only completed gate artifacts', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };

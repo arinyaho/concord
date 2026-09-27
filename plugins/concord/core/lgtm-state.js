@@ -48,13 +48,24 @@ function writeExclusive(file, value) {
   }
 }
 
+function latestRecoveryClaim({ stateDir, pr, headSha }, kind) {
+  // ponytail: crash-only recovery markers are scanned per PR head; prune them on request if a long-lived state directory grows large.
+  const prefix = `pr-${pr}-${headSha}.${kind}-recovery-claim`;
+  let names;
+  try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  return names.filter((name) => name === `${prefix}.json` || name.startsWith(`${prefix}-`))
+    .map((name) => readMarker(path.join(stateDir, name)))
+    .filter((marker) => marker && marker.pr === pr && marker.headSha === headSha && Number.isSafeInteger(marker.claimedAtMs))
+    .sort((a, b) => b.claimedAtMs - a.claimedAtMs)[0] || null;
+}
+
 function status(input) {
   const { stateDir } = input;
   const key = validate(input);
   const window = readMarker(markerPath({ stateDir, ...key }, 'window'));
   const retryWindow = readMarker(markerPath({ stateDir, ...key }, 'retry-window'));
   const initialClaim = readMarker(markerPath({ stateDir, ...key }, 'initial-claim'));
-  const initialRecovery = readMarker(markerPath({ stateDir, ...key }, 'initial-recovery-claim'));
+  const initialRecovery = latestRecoveryClaim({ stateDir, ...key }, 'initial');
   const initialRequest = readMarker(markerPath({ stateDir, ...key }, 'initial-request'));
   const retry = readMarker(markerPath({ stateDir, ...key }, 'retry-claim'));
   const retryRequest = readMarker(markerPath({ stateDir, ...key }, 'retry-request'));
@@ -82,14 +93,19 @@ function markRequest(input, kind) {
 function claimInitialRequest(input) { return claimRequest(input, 'initial'); }
 function markInitialRequested(input) { return markRequest(input, 'initial'); }
 
-function recoverInitialRequest(input) {
+function recoverRequest(input, kind) {
   const { stateDir, now = Date.now() } = input;
   const key = validate(input);
-  const initialClaim = readMarker(markerPath({ stateDir, ...key }, 'initial-claim'));
-  if (!initialClaim || !Number.isSafeInteger(initialClaim.claimedAtMs) || now < initialClaim.claimedAtMs + INITIAL_CLAIM_LEASE_MS) return false;
-  if (readMarker(markerPath({ stateDir, ...key }, 'initial-request'))) return false;
-  return writeExclusive(markerPath({ stateDir, ...key }, 'initial-recovery-claim'), { ...key, kind: 'initial-recovery', claimed: true, claimedAtMs: now });
+  const claim = readMarker(markerPath({ stateDir, ...key }, `${kind}-claim`));
+  const recovery = latestRecoveryClaim({ stateDir, ...key }, kind);
+  const claimedAtMs = Math.max(claim && claim.claimedAtMs, recovery && recovery.claimedAtMs);
+  if (!Number.isSafeInteger(claimedAtMs) || now < claimedAtMs + INITIAL_CLAIM_LEASE_MS) return false;
+  if (readMarker(markerPath({ stateDir, ...key }, `${kind}-request`))) return false;
+  return writeExclusive(markerPath({ stateDir, ...key }, `${kind}-recovery-claim-${claimedAtMs + INITIAL_CLAIM_LEASE_MS}`), { ...key, kind: `${kind}-recovery`, claimed: true, claimedAtMs: now });
 }
+
+function recoverInitialRequest(input) { return recoverRequest(input, 'initial'); }
+function recoverRetryRequest(input) { return recoverRequest(input, 'retry'); }
 
 function openWindow(input, kind = 'window') {
   const { stateDir, now = Date.now(), durationMs } = input;
@@ -121,8 +137,9 @@ function runMain(repoRoot = process.cwd()) {
   else if (verb === 'mark-retry-requested') process.stdout.write(`${JSON.stringify({ marked: markRetryRequested({ stateDir, pr, headSha }) })}\n`);
   else if (verb === 'claim-initial-request') process.stdout.write(`${JSON.stringify({ claimed: claimInitialRequest({ stateDir, pr, headSha }) })}\n`);
   else if (verb === 'recover-initial-request') process.stdout.write(`${JSON.stringify({ claimed: recoverInitialRequest({ stateDir, pr, headSha }) })}\n`);
+  else if (verb === 'recover-retry-request') process.stdout.write(`${JSON.stringify({ claimed: recoverRetryRequest({ stateDir, pr, headSha }) })}\n`);
   else if (verb === 'mark-initial-requested') process.stdout.write(`${JSON.stringify({ marked: markInitialRequested({ stateDir, pr, headSha }) })}\n`);
-  else throw new Error('review-lgtm-state: use status, open-window, open-retry-window, claim-retry, mark-retry-requested, claim-initial-request, recover-initial-request, or mark-initial-requested');
+  else throw new Error('review-lgtm-state: use status, open-window, open-retry-window, claim-retry, recover-retry-request, mark-retry-requested, claim-initial-request, recover-initial-request, or mark-initial-requested');
 }
 
-module.exports = { defaultStateDir, markerPath, status, openWindow, openRetryWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimRetry, markRetryRequested, INITIAL_CLAIM_LEASE_MS, runMain };
+module.exports = { defaultStateDir, markerPath, status, openWindow, openRetryWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimRetry, recoverRetryRequest, markRetryRequested, INITIAL_CLAIM_LEASE_MS, runMain };

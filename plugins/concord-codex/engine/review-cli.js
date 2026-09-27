@@ -521,12 +521,14 @@ function main(resolveFromCwd) {
           throw error;
         }
       }
-      fs.writeFileSync(p, JSON.stringify(canonical) + '\n');
+      const canonicalText = JSON.stringify(canonical) + '\n';
+      fs.writeFileSync(p, canonicalText);
       if (ledger.execution && ledger.execution.round === n) {
         const completed = Array.from(new Set([...(ledger.execution.completed || []), name]));
+        const artifactHashes = { ...(ledger.execution.artifactHashes || {}), [name]: contentHash(canonicalText) };
         const retryArtifacts = retryArtifactMap(ledger.execution);
         delete retryArtifacts[name];
-        writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, completed, pending: (ledger.execution.pending || []).filter((role) => role !== name), retryArtifacts, retryArtifact: firstRetryArtifact(retryArtifacts) } });
+        writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, completed, artifactHashes, pending: (ledger.execution.pending || []).filter((role) => role !== name), retryArtifacts, retryArtifact: firstRetryArtifact(retryArtifacts) } });
       }
       try { fs.unlinkSync(retryPath); } catch (e) { /* no prior retry */ }
       process.stdout.write(JSON.stringify({ status: 'ok', artifact: name }) + '\n');
@@ -898,7 +900,10 @@ function main(resolveFromCwd) {
       const completed = preserveArtifacts
         ? (ledger.execution.completed || []).filter((role) => ['correctness', 'verify', 'intent', 'gate', 'gate-verify'].includes(role))
         : [];
-      const preserved = new Set(completed.map((role) => `round-${resumeRound}-${role}.json`).filter((name) => fs.existsSync(path.join(stateDir, name))));
+      const preserved = new Set(completed.filter((role) => {
+        const name = `round-${resumeRound}-${role}.json`;
+        try { return ledger.execution.artifactHashes && ledger.execution.artifactHashes[role] === contentHash(fs.readFileSync(path.join(stateDir, name), 'utf8')); } catch (_) { return false; }
+      }).map((role) => `round-${resumeRound}-${role}.json`));
       resumedCompletedArtifacts = completed.filter((role) => preserved.has(`round-${resumeRound}-${role}.json`));
       deleteRoundArtifacts(stateDir, resumeRound, preserved);
       // Resume re-drives round N at zero budget by pinning round/diff_content_hash

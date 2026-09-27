@@ -30,7 +30,9 @@ test('Claude and Codex ship durable review-until-lgtm instructions with host-spe
     assert.match(skill, /initialRequested.*deadlineMs/);
     assert.match(skill, /Node-based locator/);
     assert.match(skill, /recover-initial-request/);
+    assert.match(skill, /recover-retry-request/);
     assert.match(skill, /matching activity.*open-window/);
+    assert.doesNotMatch(skill, /q=\[process\.cwd/);
   }
   assert.match(claude, /review-lgtm-state\.js/);
   assert.match(codex, /review-lgtm-state\.js/);
@@ -68,6 +70,16 @@ test('an initial request recovery claim waits for the original claimant lease', 
   assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS - 1 }), false);
   assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS }), true);
   assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS }), false);
+  assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: 1000 + 2 * lgtmState.INITIAL_CLAIM_LEASE_MS }), true);
+});
+
+test('a retry recovery claim waits for and can replace a stale retry claimant', () => {
+  const input = { stateDir: temp(), pr: 116, headSha: '0123456789abcdef0123456789abcdef01234567' };
+  assert.strictEqual(lgtmState.claimRetry({ ...input, now: 1000 }), true);
+  assert.strictEqual(lgtmState.recoverRetryRequest({ ...input, now: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS - 1 }), false);
+  assert.strictEqual(lgtmState.recoverRetryRequest({ ...input, now: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS }), true);
+  assert.strictEqual(lgtmState.recoverRetryRequest({ ...input, now: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS }), false);
+  assert.strictEqual(lgtmState.recoverRetryRequest({ ...input, now: 1000 + 2 * lgtmState.INITIAL_CLAIM_LEASE_MS }), true);
 });
 
 test('default state directory is shared by linked worktrees and resolves Git outside the checkout', () => {

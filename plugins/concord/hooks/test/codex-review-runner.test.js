@@ -350,6 +350,21 @@ test('runner removes signal handlers after both a terminal result and a failure'
   assert.deepStrictEqual(Object.fromEntries(['SIGINT', 'SIGTERM', 'SIGHUP'].map((signal) => [signal, process.listenerCount(signal)])), before);
 });
 
+test('runner persists an interruption delivered between orchestration steps', async () => {
+  const failures = [];
+  const cli = (args) => {
+    if (args[0] === 'round-start') {
+      process.emit('SIGINT');
+      return { decision: 'work', round: 1, stateDir: temp(), targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
+    }
+    if (args[0] === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
+    if (args[0] === 'round-failure') { failures.push(JSON.parse(args[2])); return { status: 'recorded' }; }
+    throw new Error(`unexpected CLI ${args[0]}`);
+  };
+  await assert.rejects(runReviewUntilGreen({ ref: 'feature/orchestration-signal', repoRoot: '/repo', runCli: cli, spawn: () => ({ status: 0 }), handleSignals: true }), /interrupted by SIGINT/);
+  assert.deepStrictEqual(failures, [{ role: 'runner', kind: 'interrupted', message: 'review runner interrupted by SIGINT', signal: 'SIGINT' }]);
+});
+
 test('resume launches only the artifact role still pending after an interruption', async () => {
   const stateDir = temp();
   const calls = [];
@@ -1254,6 +1269,44 @@ test('a failed panel lens is treated as zero findings while the remaining lenses
   const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn });
 
   assert.strictEqual(out.handoff, 'LGTM');
+});
+
+test('an interrupted panel lens waits for every launched sibling before the runner rejects', async () => {
+  const stateDir = temp();
+  const pending = [];
+  let recorded = 0;
+  const cli = (args) => {
+    const [verb] = args;
+    if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
+    if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
+    if (verb === 'plan-fixes') return { fixes: [] };
+    if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
+    if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
+    throw new Error(`unexpected CLI ${verb}`);
+  };
+  const spawn = ({ role }) => {
+    if (role === 'correctness') fs.writeFileSync(path.join(stateDir, 'round-4-correctness.json'), JSON.stringify({ status: 'ok', examined: [], findings: [] }));
+    if (role === 'verify') fs.writeFileSync(path.join(stateDir, 'round-4-verify.json'), JSON.stringify({ status: 'ok', rejected: [] }));
+    if (role === 'gate-panel-ac-coverage') {
+      const error = new Error('interrupted panel lens');
+      error.reviewFailure = { role, kind: 'interrupted', message: 'interrupted panel lens' };
+      return Promise.reject(error);
+    }
+    if (role.startsWith('gate-panel-') && role !== 'gate-panel-verify') return new Promise((resolve) => pending.push(resolve));
+    return { status: 0 };
+  };
+  let settled = false;
+  const running = runReviewUntilGreen({ ref: 'feature/panel-interrupt', repoRoot: '/repo', runCli: cli, spawn }).then(
+    () => { settled = true; return null; },
+    (error) => { settled = true; return error; },
+  );
+  for (let i = 0; i < 10 && pending.length < 4; i++) await new Promise(setImmediate);
+  assert.strictEqual(pending.length, 4);
+  await new Promise(setImmediate);
+  assert.strictEqual(settled, false, 'the interrupted lens must wait for sibling cleanup');
+  for (const resolve of pending) resolve({ status: 0 });
+  assert.match((await running).message, /interrupted panel lens/);
 });
 
 test('panel lenses and each finding\'s adversarial votes fan out concurrently', async () => {
