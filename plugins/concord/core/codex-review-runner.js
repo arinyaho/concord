@@ -540,9 +540,9 @@ async function runReviewUntilGreen(options) {
 
     const runArtifactReviewer = async (role) => {
       if ((started.completedArtifacts || []).includes(role)) return;
-      let retryPrompt;
+      let retryPrompt = started.retryArtifact && started.retryArtifact.role === role ? started.retryArtifact.prompt : undefined;
       try {
-        for (let attempt = 0; attempt < 2; attempt++) {
+        for (let attempt = retryPrompt ? 1 : 0; attempt < 2; attempt++) {
           await launch({ role, prompt: reviewerPrompt(role, { ...context, retryPrompt }), repoRoot, stateDir: context.stateDir });
           const normalized = await cli(['artifact-normalize', ref, role]);
           if (normalized.status === 'ok') return;

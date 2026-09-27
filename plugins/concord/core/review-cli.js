@@ -509,20 +509,24 @@ function main(resolveFromCwd) {
         }
       }
       fs.writeFileSync(p, JSON.stringify(canonical) + '\n');
-      try { fs.unlinkSync(retryPath); } catch (e) { /* no prior retry */ }
       if (ledger.execution && ledger.execution.round === n) {
         const completed = Array.from(new Set([...(ledger.execution.completed || []), name]));
-        writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, completed, pending: (ledger.execution.pending || []).filter((role) => role !== name) } });
+        writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, completed, pending: (ledger.execution.pending || []).filter((role) => role !== name), retryArtifact: ledger.execution.retryArtifact && ledger.execution.retryArtifact.role === name ? null : ledger.execution.retryArtifact } });
       }
+      try { fs.unlinkSync(retryPath); } catch (e) { /* no prior retry */ }
       process.stdout.write(JSON.stringify({ status: 'ok', artifact: name }) + '\n');
       return;
     } catch (e) {
       if (e instanceof artifactContract.ArtifactError && e.kind === 'retry') {
-        if (!fs.existsSync(retryPath)) {
-          fs.writeFileSync(retryPath, '1\n');
+        const alreadyRetried = fs.existsSync(retryPath) || (ledger.execution && ledger.execution.retryArtifact && ledger.execution.retryArtifact.role === name);
+        if (!alreadyRetried) {
           const prompt = e.coveragePaths
             ? `Rewrite only round artifact correctness as JSON. The "examined" array MUST contain every changed path exactly as listed: ${e.coveragePaths.map((file) => JSON.stringify(file)).join(', ')}. Do not infer, omit, or rewrite paths; preserve your actual findings and do not add prose or extra top-level fields.`
             : artifactContract.retryPrompt(name, ({ correctness: 'correctness:|docreview:', verify: 'correctness:|docreview:', intent: 'intent:', gate: 'gate:', 'gate-verify': 'gate:' })[name]);
+          if (ledger.execution && ledger.execution.round === n) {
+            writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, retryArtifact: { role: name, prompt } } });
+          }
+          fs.writeFileSync(retryPath, '1\n');
           process.stdout.write(JSON.stringify({ status: 'retry', artifact: name, prompt }) + '\n');
           return;
         }
@@ -828,7 +832,7 @@ function main(resolveFromCwd) {
     const resumeRound = ledger.round;
 
     // Resume housekeeping is TARGET-AGNOSTIC: an interrupted round leaves stale
-    // round artifacts (and, for a file target, a stale fix-<id>.json that has no
+    // round artifacts (and, for a file target, a stale fix-<safe-id>.json that has no
     // git journal to override it), so BOTH target types must purge them and
     // reset the round's planned/absent/intent arrays before re-driving. Only the
     // git-specific working-tree discard (gitCheckoutTree) is gated on git; a file
@@ -943,6 +947,12 @@ function main(resolveFromCwd) {
     const completedArtifacts = resumed && ledger.execution
       ? (ledger.execution.completed || []).filter((role) => expectedArtifacts.includes(role))
       : [];
+    const retryArtifact = resumed && ledger.execution && ledger.execution.retryArtifact
+      && !completedArtifacts.includes(ledger.execution.retryArtifact.role)
+      && expectedArtifacts.includes(ledger.execution.retryArtifact.role)
+      && typeof ledger.execution.retryArtifact.prompt === 'string'
+      ? ledger.execution.retryArtifact
+      : null;
     // Sticky for the same reason gateApplied is: once a run has opted out of the
     // executable gate, round 2's round-start must not have to repeat --no-dod
     // (without stickiness a repo that DOES have `dod` commands would run the
@@ -1028,6 +1038,7 @@ function main(resolveFromCwd) {
         diffHash,
         completed: completedArtifacts,
         pending: expectedArtifacts.filter((role) => !completedArtifacts.includes(role)),
+        retryArtifact,
         failures: resumed && ledger.execution ? (ledger.execution.failures || []) : [],
         failure: null,
       },
@@ -1038,7 +1049,7 @@ function main(resolveFromCwd) {
     // `true` means "nothing blocked the round", not "the gate ran and passed" --
     // a driver that turns it into "DoD already passed; do not rerun tests" would
     // be removing the last real check. dodDeferred is how a caller tells them apart.
-    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, dodDeferred: !!dod.deferred, intentApplied: !!intentCfg, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir, completedArtifacts }) + '\n');
+    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, dodDeferred: !!dod.deferred, intentApplied: !!intentCfg, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir, completedArtifacts, retryArtifact }) + '\n');
     return;
   }
 
@@ -1065,7 +1076,7 @@ function main(resolveFromCwd) {
     ledger = reviewTelemetry.foldTelemetry(stateDir, ledger, slug);
     if (!ledger || ledger.phase !== 'fixes') throw new Error(`record: expected phase "fixes", got "${ledger && ledger.phase}" ${stateDirHint(stateDir)}`);
 
-    // Per-finding fix artifacts (round-<n>-fix-<id>.json) stay lenient: a
+    // Per-finding fix artifacts (round-<n>-fix-<safe-id>.json) stay lenient: a
     // missing/non-ok fix artifact is a legitimate outcome (the fixer never
     // edited, or crashed) and must PARK that finding needs-decision, not
     // blow up the whole record call. Only the correctness/verify GATE

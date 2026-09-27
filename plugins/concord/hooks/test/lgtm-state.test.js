@@ -19,6 +19,8 @@ test('Claude and Codex ship durable review-until-lgtm instructions with host-spe
     assert.match(skill, /open-window <pr> <head-sha> 900/);
     assert.match(skill, /claim-initial-request/);
     assert.match(skill, /mark-retry-requested/);
+    assert.match(skill, /retryClaimedAtMs/);
+    assert.match(skill, /review-timeout/);
   }
   assert.match(claude, /review-lgtm-state\.js/);
   assert.match(codex, /review-lgtm-state\.js/);
@@ -32,22 +34,28 @@ test('review-until-lgtm persists its monitoring window and permits exactly one r
 
   // Simulates a process/session interruption: a new invocation reconstructs
   // the exact same deadline and cannot restart the bounded wait window.
-  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: 901000, initialClaimed: false, initialRequested: false, retryClaimed: false, retryRequested: false });
+  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: 901000, initialClaimed: false, initialRequested: false, retryClaimed: false, retryClaimedAtMs: null, retryRequested: false });
   assert.deepStrictEqual(lgtmState.openWindow({ ...input, now: 2000, durationMs: 900000 }), { created: false, deadlineMs: 901000 });
-  assert.strictEqual(lgtmState.claimRetry(input), true);
+  assert.strictEqual(lgtmState.claimRetry({ ...input, now: 3000 }), true);
   assert.strictEqual(lgtmState.claimRetry(input), false);
-  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: 901000, initialClaimed: false, initialRequested: false, retryClaimed: true, retryRequested: false });
+  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: 901000, initialClaimed: false, initialRequested: false, retryClaimed: true, retryClaimedAtMs: 3000, retryRequested: false });
 });
 
 test('review requests distinguish a durable claim from a request that was sent', () => {
   const stateDir = temp();
   const input = { stateDir, pr: 116, headSha: '0123456789abcdef0123456789abcdef01234567' };
   assert.strictEqual(lgtmState.claimInitialRequest(input), true);
-  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, initialClaimed: true, initialRequested: false, retryClaimed: false, retryRequested: false });
+  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, initialClaimed: true, initialRequested: false, retryClaimed: false, retryClaimedAtMs: null, retryRequested: false });
   assert.strictEqual(lgtmState.markInitialRequested(input), true);
-  assert.strictEqual(lgtmState.claimRetry(input), true);
+  assert.strictEqual(lgtmState.claimRetry({ ...input, now: 4000 }), true);
   assert.strictEqual(lgtmState.markRetryRequested(input), true);
-  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, initialClaimed: true, initialRequested: true, retryClaimed: true, retryRequested: true });
+  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, initialClaimed: true, initialRequested: true, retryClaimed: true, retryClaimedAtMs: 4000, retryRequested: true });
+});
+
+test('a retry claim records the boundary for retry-activity reconciliation', () => {
+  const input = { stateDir: temp(), pr: 116, headSha: '0123456789abcdef0123456789abcdef01234567' };
+  assert.strictEqual(lgtmState.claimRetry({ ...input, now: 123456 }), true);
+  assert.strictEqual(lgtmState.status(input).retryClaimedAtMs, 123456);
 });
 
 test('review-until-lgtm CLI restores a completed review window after a new process starts', () => {

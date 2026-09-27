@@ -261,14 +261,14 @@ test('codexExec marks a CLI version mismatch partial', async () => {
   }
 });
 
-function harness({ targetType = 'git', rounds = 1, malformed = false, retry = false, retryForever = false, correctnessArtifact, gateApplied = false, dodDeferred = false, failingRole, promptDrivenFix = false, stateDir = temp(), slotIdentity = {} } = {}) {
+function harness({ targetType = 'git', rounds = 1, malformed = false, retry = false, retryForever = false, correctnessArtifact, gateApplied = false, dodDeferred = false, failingRole, promptDrivenFix = false, retryArtifact, stateDir = temp(), slotIdentity = {} } = {}) {
   const calls = []; let round = 0; let retried = false;
   const cli = (args) => {
     calls.push(['cli', ...args]);
     const [verb, ref, role] = args;
     if (verb === 'round-start') {
       round++;
-      return { decision: 'work', round, stateDir, targetType, dodPassed: true, dodDeferred, intentApplied: false, gateApplied };
+      return { decision: 'work', round, stateDir, targetType, dodPassed: true, dodDeferred, intentApplied: false, gateApplied, retryArtifact };
     }
     if (verb === 'artifact-normalize') {
       if (correctnessArtifact && role === 'correctness') {
@@ -1380,6 +1380,14 @@ test('runner appends retry prompt and retries precisely once', async () => {
   const correctness = h.calls.filter((c) => c[0] === 'spawn' && c[1] === 'correctness');
   assert.strictEqual(correctness.length, 2);
   assert.match(correctness[1][2], /REWRITE ARTIFACT/);
+});
+
+test('runner resumes an artifact retry with its persisted prompt', async () => {
+  const h = harness({ retryArtifact: { role: 'correctness', prompt: 'RESUME ARTIFACT RETRY' } });
+  await runReviewUntilGreen({ ref: 'feature/x', resume: true, repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
+  const correctness = h.calls.filter((call) => call[0] === 'spawn' && call[1] === 'correctness');
+  assert.strictEqual(correctness.length, 1);
+  assert.match(correctness[0][2], /RESUME ARTIFACT RETRY/);
 });
 
 test('runner fail-closes a malformed reviewer artifact before verify', async () => {

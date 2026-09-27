@@ -153,6 +153,13 @@ test('Copilot CLI entrypoints run against isolated project state', () => {
   assert.match(projectDirectories[0], /^[a-f0-9]{64}$/);
 });
 
+test('Copilot ships an LGTM state CLI and its skill resolves it from the plugin root', () => {
+  const stateCli = path.join(COPILOT, 'bin/review-lgtm-state.js');
+  assert.ok(fs.existsSync(stateCli));
+  assert.match(read('skills/review-until-lgtm/SKILL.md'), /COPILOT_PLUGIN_ROOT.*bin\/review-lgtm-state\.js/);
+  assert.equal(typeof require(stateCli).status, 'function');
+});
+
 pluginInstallE2ETest('clean Copilot config installs, updates, and removes the plugin', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concord-copilot-install-'));
   const config = path.join(root, 'config');

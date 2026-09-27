@@ -55,13 +55,13 @@ function status(input) {
   if (window && (window.pr !== key.pr || window.headSha !== key.headSha || !Number.isSafeInteger(window.deadlineMs))) {
     throw new Error('review-lgtm-state: window marker does not match its PR head');
   }
-  return { deadlineMs: window ? window.deadlineMs : null, initialClaimed: !!initialClaim, initialRequested: !!initialRequest, retryClaimed: !!retry, retryRequested: !!retryRequest };
+  return { deadlineMs: window ? window.deadlineMs : null, initialClaimed: !!initialClaim, initialRequested: !!initialRequest, retryClaimed: !!retry, retryClaimedAtMs: retry && Number.isSafeInteger(retry.claimedAtMs) ? retry.claimedAtMs : null, retryRequested: !!retryRequest };
 }
 
 function claimRequest(input, kind) {
-  const { stateDir } = input;
+  const { stateDir, now = Date.now() } = input;
   const key = validate(input);
-  return writeExclusive(markerPath({ stateDir, ...key }, `${kind}-claim`), { ...key, kind, claimed: true });
+  return writeExclusive(markerPath({ stateDir, ...key }, `${kind}-claim`), { ...key, kind, claimed: true, claimedAtMs: now });
 }
 
 function markRequest(input, kind) {

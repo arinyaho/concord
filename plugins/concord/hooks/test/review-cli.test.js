@@ -98,6 +98,22 @@ test('artifact-normalize retries an invalid id once, then writes a canonical art
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:right', file: 'a.txt', summary: 's' }] });
 });
 
+test('artifact-normalize persists its retry prompt for a later resume', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: [], findings: [] }));
+  const retry = JSON.parse(run(['artifact-normalize', 'feat/x', 'correctness'], { env }));
+  const ledger = JSON.parse(fs.readFileSync(path.join(dir, 'review-feat-x.json'), 'utf8'));
+  assert.deepStrictEqual(ledger.execution.retryArtifact, { role: 'correctness', prompt: retry.prompt });
+  fs.unlinkSync(path.join(dir, `round-${n}-correctness.retry`));
+  assert.throws(() => run(['artifact-normalize', 'feat/x', 'correctness'], { env }), /harness-failure/);
+  const resumed = JSON.parse(run(['round-start', 'feat/x'], { env }));
+  assert.deepStrictEqual(resumed.retryArtifact, { role: 'correctness', prompt: retry.prompt });
+});
+
 test('artifact-normalize fails after retry exhaustion', () => {
   const repo = initRepo(); const dir = tmpDir(); const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n'); execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
@@ -3729,7 +3745,7 @@ test('record file target: missing fix artifact parks needs-decision', () => {
 
 // finding #3: a RESUMED file target must run the same target-agnostic resume
 // housekeeping git resume does -- purge the interrupted round's artifacts and
-// reset planned[] -- otherwise a stale `round-N-fix-<id>.json {edited:true}`
+// reset planned[] -- otherwise a stale `round-N-fix-<safe-id>.json {edited:true}`
 // left by the interrupted attempt false-signals in record (a file target's ONLY
 // fixed-signal is that artifact -- there is no git journal to override it),
 // letting dryStreak convergence declare clean off stale bookkeeping. This drives
