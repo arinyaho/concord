@@ -15,6 +15,7 @@
 // own tests, not a single blanket guarantee). The JS callers use
 // reviewerPrompt() to generate the prompt they actually send.
 const path = require('node:path');
+const { safeIdForFilename } = require('./artifact-name');
 
 // Order and parallelism, mirrored by review-driver.md steps 2-3 and
 // codex-review-runner.js's `reviewers` array in runReviewUntilGreen:
@@ -49,7 +50,7 @@ const BLOCKED_CLAUSE = ' If you cannot run a tool this task requires (missing, d
 const GATE_SWEEP_CLAUSE = ' If this finding is an instance of a pattern likely to recur elsewhere in the repository (a value, name, or reference that should be mirrored across multiple files), sweep the whole repository for every other file matching that same pattern in this same pass and report each occurrence as its own finding -- do not stop at the first instance and leave the rest for a later round to catch one at a time.';
 
 function reviewerPrompt(role, { stateDir, round, targetType, dodPassed, dodDeferred, finding, retryPrompt, slug, priorIntentIds, plannedFindingIds = [] }) {
-  const artifact = path.join(stateDir, role === 'fix' ? `round-${round}-fix-${finding.id}.json` : `round-${round}-${role}.json`);
+  const artifact = path.join(stateDir, role === 'fix' ? `round-${round}-fix-${safeIdForFilename(finding.id)}.json` : `round-${round}-${role}.json`);
   const retry = `${role === 'fix' ? '' : BLOCKED_CLAUSE}${retryPrompt ? `\n\n${retryPrompt}` : ''}`;
   if (role === 'correctness') {
     const doc = targetType === 'file';

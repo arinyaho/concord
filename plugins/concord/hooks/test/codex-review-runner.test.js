@@ -268,7 +268,7 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
     }
     if (verb === 'plan-fixes') return { fixes: round === 1 ? [{ id: 'correctness:bug', file: 'a.txt', span: 'bad', summary: 'fix it' }] : [] };
     if (verb === 'commit-fix') {
-      if (promptDrivenFix && !fs.existsSync(path.join(stateDir, `round-${round}-fix-${role}.json`))) throw new Error('commit-fix did not receive its declared artifact');
+      if (promptDrivenFix && !fs.existsSync(path.join(stateDir, `round-${round}-fix-${role.replace(":", "_")}.json`))) throw new Error('commit-fix did not receive its declared artifact');
       return { committed: true, sha: 'abc' };
     }
     if (verb === 'record') return round < rounds ? { decision: { continue: true }, handoff: 'continue' } : { decision: { continue: false, converged: true }, handoff: 'LGTM' };
@@ -282,7 +282,7 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
     if (role === 'verify') fs.writeFileSync(path.join(stateDir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
     if (role === 'gate') fs.writeFileSync(path.join(stateDir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
     if (role === 'fix') {
-      const target = promptDrivenFix ? prompt.match(/write ONLY to (.+\.json): either/)?.[1] : path.join(stateDir, `round-${n}-fix-correctness:bug.json`);
+      const target = promptDrivenFix ? prompt.match(/write ONLY to (.+\.json): either/)?.[1] : path.join(stateDir, `round-${n}-fix-correctness_bug.json`);
       if (!target) throw new Error('fix prompt did not name an artifact path');
       fs.writeFileSync(target, JSON.stringify({ status: 'ok', edited: true, files: ['a.txt'] }));
     }
@@ -376,7 +376,7 @@ test('runner reports aggregate and per-role subprocess telemetry', async () => {
     invocations: [
       { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-correctness', role: 'correctness', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.correctness, elapsedMs: 10, artifactPath: path.join(h.stateDir, 'round-1-correctness.json'), attempt: 1 },
       { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-verify', role: 'verify', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.verify, elapsedMs: 20, artifactPath: path.join(h.stateDir, 'round-1-verify.json'), attempt: 1 },
-      { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-fix', role: 'fix', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.fix, elapsedMs: 30, artifactPath: path.join(h.stateDir, 'round-1-fix-correctness:bug.json'), attempt: 1 },
+      { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-fix', role: 'fix', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.fix, elapsedMs: 30, artifactPath: path.join(h.stateDir, 'round-1-fix-correctness_bug.json'), attempt: 1 },
     ],
   });
   assert.strictEqual(out.handoff, 'LGTM');
@@ -711,7 +711,7 @@ test('terminal runner does not invent a missing call from an otherwise empty per
 
 test('fix prompt requires an explicit, span-absent claim for a distinct planned mirror finding', () => {
   const prompt = reviewerPrompt('fix', { stateDir: '/state', round: 7, finding: { id: 'correctness:bug', file: 'src/parser.js', span: 'lines 41-43', summary: 'repair it' }, plannedFindingIds: ['correctness:bug', 'correctness:mirror'] });
-  assert.match(prompt, /\/state\/round-7-fix-correctness:bug\.json/);
+  assert.match(prompt, /\/state\/round-7-fix-correctness_bug\.json/);
   assert.match(prompt, /src\/parser\.js/);
   assert.match(prompt, /lines 41-43/);
   assert.match(prompt, /EVERY file/i);
@@ -1093,7 +1093,7 @@ test('an adversarial vote that declares blocked fails the round instead of count
       // Every voter obeys the blocked clause: none of them actually attempted
       // the refutation, so the finding must not be silently rejected.
       for (const vote of [0, 1, 2]) {
-        fs.writeFileSync(path.join(stateDir, `round-4-gate-panel-1-vote-gate:ac-coverage:gap-${vote}.json`),
+        fs.writeFileSync(path.join(stateDir, `round-4-gate-panel-1-vote-gate_ac-coverage_gap-${vote}.json`),
           JSON.stringify({ status: 'ok', blocked: ['grep: denied by sandbox'] }));
       }
     }
@@ -1180,7 +1180,7 @@ test('panel lenses and each finding\'s adversarial votes fan out concurrently', 
   for (let i = 0; i < 10 && pendingVotes.length < 3; i++) await new Promise(setImmediate);
   assert.strictEqual(pendingVotes.length, 3);
   for (const resolve of pendingVotes) {
-    fs.writeFileSync(path.join(stateDir, `round-4-gate-panel-1-vote-gate:ac-coverage:gap-${pendingVotes.indexOf(resolve)}.json`), JSON.stringify({ status: 'ok', survives: false }));
+    fs.writeFileSync(path.join(stateDir, `round-4-gate-panel-1-vote-gate_ac-coverage_gap-${pendingVotes.indexOf(resolve)}.json`), JSON.stringify({ status: 'ok', survives: false }));
     resolve({ status: 0 });
   }
   await running;

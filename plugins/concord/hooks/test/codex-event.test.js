@@ -39,7 +39,7 @@ function runCodexStopLauncher(options) {
 }
 
 function codexStateDir(codexHome, cwd) {
-  return path.join(codexHome, 'concord', 'projects', fs.realpathSync(cwd).replace(/[/.]/g, '-'), 'state');
+  return path.join(codexHome, 'concord', 'projects', fs.realpathSync(cwd).replace(/[\\/:.]/g, '-'), 'state');
 }
 
 function tempDir(t, prefix) {

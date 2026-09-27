@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const { execFileSync } = require('node:child_process');
 const path = require('node:path');
+const { safeIdForFilename } = require('./artifact-name');
 const dodExec = require('./dod-exec');
 const intentLib = require('./intent');
 const gateLib = require('./gate');
@@ -1083,7 +1084,7 @@ function main(resolveFromCwd) {
     const fixCommits = {};
     const parkReasons = {};
     for (const id of ledger.planned || []) {
-      const fx = readJson(`fix-${id}`);
+      const fx = readJson(`fix-${safeIdForFilename(id)}`);
       const finding = candidates.find((f) => f.id === id);
       const fixedByGit = isGit && finding && journalEntryFor(finding);
       const fixedByReport = !isGit && fx && fx.edited === true;
@@ -1465,7 +1466,7 @@ function main(resolveFromCwd) {
     if (!ledger || ledger.phase !== 'fixes') throw new Error(`commit-fix: expected phase "fixes", got "${ledger && ledger.phase}" ${stateDirHint(stateDir)}`);
     const n = ledger.round;
     if ((ledger.journal || []).some((j) => j.id === id)) { process.stdout.write(JSON.stringify({ committed: false, reason: 'already journaled' }) + '\n'); return; } // idempotent
-    const fx = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-fix-${id}.json`), 'utf8')); } catch (e) { return null; } })();
+    const fx = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-fix-${safeIdForFilename(id)}.json`), 'utf8')); } catch (e) { return null; } })();
     const readRound = (role) => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-${role}.json`), 'utf8')); } catch (e) { return { findings: [] }; } };
     // Both artifacts, for the same reason plan-fixes reads both: a verify-added
     // finding that resolved to `{file: null}` here would fail the file guard

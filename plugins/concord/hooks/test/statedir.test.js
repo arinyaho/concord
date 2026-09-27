@@ -11,7 +11,7 @@ test('resolveStateDirFromCwd: mirrors Claude Code project-dir encoding under CLA
   process.chdir('/tmp');
   try {
     const dir = statedir.resolveStateDirFromCwd();
-    const expectedSlug = process.cwd().replace(/[/.]/g, '-');
+    const expectedSlug = process.cwd().replace(/[\\/:.]/g, '-');
     assert.strictEqual(dir, path.join('/home/x/.claude', 'projects', expectedSlug, 'state'));
   } finally {
     process.chdir(prevCwd);
@@ -35,4 +35,10 @@ test('resolveStateDirFromCwd: falls back to ~/.claude when CLAUDE_CONFIG_DIR uns
 test('resolveStateDirFromTranscript: sibling "state" dir next to the transcript file', () => {
   const dir = statedir.resolveStateDirFromTranscript('/foo/bar/proj/sess123.jsonl');
   assert.strictEqual(dir, path.join('/foo/bar/proj', 'state'));
+});
+
+test('resolveStateDirFromCwd: slug has no path separators or drive colon (Windows cwd)', () => {
+  const dir = statedir.resolveStateDirFromCwd();
+  const slug = path.basename(path.dirname(dir));
+  assert.ok(!/[\\/:.]/.test(slug), slug);
 });

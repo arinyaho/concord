@@ -1,6 +1,12 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { settingSourcesFromEnv } from "../settings_sources.mjs";
 
+// Fix artifact path review-cli reads: the finding id with Windows-illegal filename
+// characters replaced by `_` (mirrors plugins/concord/core/artifact-name.js).
+export function fixArtifactPath(stateDir, round, findingId) {
+  return `${stateDir}/round-${round}-fix-${String(findingId).replace(/[<>:"/\\|?*\x00-\x1f]/g, "_")}.json`;
+}
+
 // Per-kind prompt for a review-cli subagent. Each tells the subagent the EXACT
 // absolute artifact path to write, and the exact JSON schema review-cli reads.
 function promptFor(kind, { stateDir, round, diffPath, findingId }) {
@@ -19,7 +25,7 @@ function promptFor(kind, { stateDir, round, diffPath, findingId }) {
   if (kind === "fix") {
     return `Read the candidate findings at ${art("correctness")}. Apply the minimal correct fix for finding ` +
       `id "${findingId}" by editing the working tree, then write ONLY this JSON to ` +
-      `${stateDir}/round-${round}-fix-${findingId}.json: {"status":"ok","edited":true,"files":["<path>",...]} ` +
+      `${fixArtifactPath(stateDir, round, findingId)}: {"status":"ok","edited":true,"files":["<path>",...]} ` +
       `(list every file you edited; "edited":false if no change was warranted). Do NOT commit.`;
   }
   if (kind === "intent") {
