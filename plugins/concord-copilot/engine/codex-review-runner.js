@@ -457,7 +457,7 @@ async function runReviewUntilGreen(options) {
       try { fs.unlinkSync(telemetryPath); } catch {}
     }
     if (initiativeRun && (result?.decision?.converged || result?.decision?.parked || result?.decision?.abandoned || result?.decision?.intentReview || result?.decision?.gatePending)) {
-      recordTargetTerminal(initiativeRun, {
+      if (!recordTargetTerminal(initiativeRun, {
         target: ref,
         reason: material ? 'reconciliation-required' : 'target-terminal',
         finding: material?.finding || null,
@@ -466,7 +466,7 @@ async function runReviewUntilGreen(options) {
         findings: material?.findings || {},
         checks: result?.checks || checks,
         telemetry: (output.telemetry?.invocations || []).map(({ role, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, stage: 'review', revision: { ref, ...(initialBase ? { base: initialBase } : {}) }, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens })),
-      });
+      })) throw new Error('review-until-green: initiative target terminal recording was contended');
     }
     return output;
   };
