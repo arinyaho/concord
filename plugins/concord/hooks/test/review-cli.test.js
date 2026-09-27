@@ -263,7 +263,7 @@ test('record hands off why a green DoD run parked at the round budget', () => {
   fs.writeFileSync(path.join(dir, `round-${started.round}-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
   run(['plan-fixes', ref], { env });
   fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
-  fs.writeFileSync(path.join(dir, `round-${started.round}-fix-correctness:budget.json`), JSON.stringify({ status: 'ok', edited: true, files: ['a.txt'] }));
+  fs.writeFileSync(path.join(dir, `round-${started.round}-fix-correctness_budget.json`), JSON.stringify({ status: 'ok', edited: true, files: ['a.txt'] }));
   run(['commit-fix', ref, 'correctness:budget'], { env });
   const slug = review.targetSlug(ref);
   const ledger = review.readLedger(dir, slug);
@@ -732,7 +732,7 @@ test('commit-fix: permits a mirror claim when either edited file was deleted', (
     else fs.writeFileSync(path.join(repo, 'a.txt'), 'source fixed\n');
     const primary = deleted === 'a.txt' ? 'correctness:a' : 'correctness:b';
     const counterpart = primary === 'correctness:a' ? 'correctness:b' : 'correctness:a';
-    fs.writeFileSync(path.join(dir, `round-${n}-fix-${primary.replace(':', '_')}.json`), JSON.stringify({
+    fs.writeFileSync(path.join(dir, `round-${n}-fix-${primary.replace(/:/g, '_')}.json`), JSON.stringify({
       status: 'ok', edited: true, files: ['a.txt', 'b.txt'], resolvedFindingIds: [counterpart],
     }));
     assert.strictEqual(JSON.parse(run(['commit-fix', `feat/deleted-${deleted}`, primary], { env })).committed, true);

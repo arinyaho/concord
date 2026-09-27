@@ -48,6 +48,7 @@ function status(input) {
   const { stateDir } = input;
   const key = validate(input);
   const window = readMarker(markerPath({ stateDir, ...key }, 'window'));
+  const retryWindow = readMarker(markerPath({ stateDir, ...key }, 'retry-window'));
   const initialClaim = readMarker(markerPath({ stateDir, ...key }, 'initial-claim'));
   const initialRequest = readMarker(markerPath({ stateDir, ...key }, 'initial-request'));
   const retry = readMarker(markerPath({ stateDir, ...key }, 'retry-claim'));
@@ -55,7 +56,10 @@ function status(input) {
   if (window && (window.pr !== key.pr || window.headSha !== key.headSha || !Number.isSafeInteger(window.deadlineMs))) {
     throw new Error('review-lgtm-state: window marker does not match its PR head');
   }
-  return { deadlineMs: window ? window.deadlineMs : null, initialClaimed: !!initialClaim, initialRequested: !!initialRequest, retryClaimed: !!retry, retryClaimedAtMs: retry && Number.isSafeInteger(retry.claimedAtMs) ? retry.claimedAtMs : null, retryRequested: !!retryRequest };
+  if (retryWindow && (retryWindow.pr !== key.pr || retryWindow.headSha !== key.headSha || !Number.isSafeInteger(retryWindow.deadlineMs))) {
+    throw new Error('review-lgtm-state: retry window marker does not match its PR head');
+  }
+  return { deadlineMs: window ? window.deadlineMs : null, retryDeadlineMs: retryWindow ? retryWindow.deadlineMs : null, initialClaimed: !!initialClaim, initialRequested: !!initialRequest, retryClaimed: !!retry, retryClaimedAtMs: retry && Number.isSafeInteger(retry.claimedAtMs) ? retry.claimedAtMs : null, retryRequested: !!retryRequest };
 }
 
 function claimRequest(input, kind) {
@@ -73,17 +77,19 @@ function markRequest(input, kind) {
 function claimInitialRequest(input) { return claimRequest(input, 'initial'); }
 function markInitialRequested(input) { return markRequest(input, 'initial'); }
 
-function openWindow(input) {
+function openWindow(input, kind = 'window') {
   const { stateDir, now = Date.now(), durationMs } = input;
   const key = validate(input);
   if (!Number.isSafeInteger(durationMs) || durationMs <= 0) throw new Error('review-lgtm-state: duration must be a positive integer in milliseconds');
-  const file = markerPath({ stateDir, ...key }, 'window');
+  const file = markerPath({ stateDir, ...key }, kind);
   const deadlineMs = now + durationMs;
   if (writeExclusive(file, { ...key, deadlineMs })) return { created: true, deadlineMs };
-  const existing = status({ stateDir, ...key });
-  if (existing.deadlineMs === null) throw new Error('review-lgtm-state: window marker disappeared while opening');
+  const existing = readMarker(file);
+  if (!existing || existing.pr !== key.pr || existing.headSha !== key.headSha || !Number.isSafeInteger(existing.deadlineMs)) throw new Error(`review-lgtm-state: ${kind} marker disappeared while opening`);
   return { created: false, deadlineMs: existing.deadlineMs };
 }
+
+function openRetryWindow(input) { return openWindow(input, 'retry-window'); }
 
 function claimRetry(input) {
   return claimRequest(input, 'retry');
@@ -96,11 +102,12 @@ function runMain(repoRoot = process.cwd()) {
   const stateDir = defaultStateDir(repoRoot);
   if (verb === 'status') process.stdout.write(`${JSON.stringify(status({ stateDir, pr, headSha }))}\n`);
   else if (verb === 'open-window') process.stdout.write(`${JSON.stringify(openWindow({ stateDir, pr, headSha, durationMs: Number(seconds) * 1000 }))}\n`);
+  else if (verb === 'open-retry-window') process.stdout.write(`${JSON.stringify(openRetryWindow({ stateDir, pr, headSha, durationMs: Number(seconds) * 1000 }))}\n`);
   else if (verb === 'claim-retry') process.stdout.write(`${JSON.stringify({ claimed: claimRetry({ stateDir, pr, headSha }) })}\n`);
   else if (verb === 'mark-retry-requested') process.stdout.write(`${JSON.stringify({ marked: markRetryRequested({ stateDir, pr, headSha }) })}\n`);
   else if (verb === 'claim-initial-request') process.stdout.write(`${JSON.stringify({ claimed: claimInitialRequest({ stateDir, pr, headSha }) })}\n`);
   else if (verb === 'mark-initial-requested') process.stdout.write(`${JSON.stringify({ marked: markInitialRequested({ stateDir, pr, headSha }) })}\n`);
-  else throw new Error('review-lgtm-state: use status, open-window, claim-retry, mark-retry-requested, claim-initial-request, or mark-initial-requested');
+  else throw new Error('review-lgtm-state: use status, open-window, open-retry-window, claim-retry, mark-retry-requested, claim-initial-request, or mark-initial-requested');
 }
 
-module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, markInitialRequested, claimRetry, markRetryRequested, runMain };
+module.exports = { defaultStateDir, markerPath, status, openWindow, openRetryWindow, claimInitialRequest, markInitialRequested, claimRetry, markRetryRequested, runMain };

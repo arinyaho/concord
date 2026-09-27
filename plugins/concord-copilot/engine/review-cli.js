@@ -200,6 +200,7 @@ function renderHandoff(result) {
   const lines = [];
   lines.push(`review-until-green: target ${ledger.target && ledger.target.ref} -- status: ${ledger.status}`);
   lines.push(`rounds: ${ledger.round}/${ledger.budget.max_rounds} (spent ${ledger.budget.spent})`);
+  if (ledger._lastDecision && ledger._lastDecision.reason) lines.push(`termination: ${ledger._lastDecision.reason}`);
   if (ledger.reviewRouting) {
     const reviewer = `${ledger.reviewRouting.reviewer || 'host-default'}${ledger.reviewRouting.reviewerModel ? ` (${ledger.reviewRouting.reviewerModel})` : ''}`;
     const fixer = `${ledger.reviewRouting.fixer || 'host-default'}${ledger.reviewRouting.fixerModel ? ` (${ledger.reviewRouting.fixerModel})` : ''}`;
