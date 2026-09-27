@@ -9,7 +9,7 @@ const path = require('node:path');
 // REVIEW_STATE_DIR is applied one layer up by core/review-cli.js's resolveStateDir().
 function resolveStateDirFromCwd() {
   const configDir = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
-  const slug = process.cwd().replace(/[/.]/g, '-');
+  const slug = process.cwd().replace(/[\\/:.]/g, '-');
   return path.join(configDir, 'concord', 'projects', slug, 'state');
 }
 

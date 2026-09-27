@@ -11,7 +11,7 @@ test('resolveStateDirFromCwd: ~/.codex-rooted, concord-namespaced, cwd-slug enco
   process.chdir('/tmp');
   try {
     const dir = statedir.resolveStateDirFromCwd();
-    const slug = process.cwd().replace(/[/.]/g, '-');
+    const slug = process.cwd().replace(/[\\/:.]/g, '-');
     assert.strictEqual(dir, path.join('/home/x/.codex', 'concord', 'projects', slug, 'state'));
   } finally {
     process.chdir(prevCwd);

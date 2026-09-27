@@ -215,7 +215,7 @@ test('round-start: resume from phase fixes discards uncommitted edits and re-dri
   l.budget.spent = 1;
   l.planned = ['correctness:x'];
   review.writeLedger(dir, slug, l);
-  fs.writeFileSync(path.join(dir, 'round-1-fix-correctness:x.json'), '{"status":"ok","edited":true}');
+  fs.writeFileSync(path.join(dir, 'round-1-fix-correctness_x.json'), '{"status":"ok","edited":true}');
   fs.writeFileSync(path.join(repo, 'a.txt'), 'uncommitted fix\n'); // dirty from the crashed fix
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   JSON.parse(run(['round-start', 'feat/x'], { env }));
@@ -224,7 +224,7 @@ test('round-start: resume from phase fixes discards uncommitted edits and re-dri
   assert.strictEqual(after.budget.spent, 1); // NOT re-charged
   assert.strictEqual(after.phase, 'gates'); // re-driven
   assert.strictEqual(cli.gitIsDirty(repo), false); // uncommitted discarded
-  assert.ok(!fs.existsSync(path.join(dir, 'round-1-fix-correctness:x.json'))); // stale artifact gone
+  assert.ok(!fs.existsSync(path.join(dir, 'round-1-fix-correctness_x.json'))); // stale artifact gone
 });
 
 // CRITICAL 2 (false-clean via empty resume diff): on `resume <ref>` the
@@ -622,7 +622,7 @@ test('commit-fix + record: an explicit mirrored finding claim resolves the decla
 
   fs.writeFileSync(path.join(repo, 'a.txt'), 'source fixed\n');
   fs.writeFileSync(path.join(repo, 'b.txt'), 'mirror fixed\n');
-  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:a.json`), JSON.stringify({
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_a.json`), JSON.stringify({
     status: 'ok', edited: true, files: ['a.txt', 'b.txt'], resolvedFindingIds: ['correctness:b'],
   }));
   const committed = JSON.parse(run(['commit-fix', 'feat/mirror-claim', 'correctness:a'], { env }));
@@ -655,7 +655,7 @@ test('commit-fix: permits a mirror claim when either edited file was deleted', (
     else fs.writeFileSync(path.join(repo, 'a.txt'), 'source fixed\n');
     const primary = deleted === 'a.txt' ? 'correctness:a' : 'correctness:b';
     const counterpart = primary === 'correctness:a' ? 'correctness:b' : 'correctness:a';
-    fs.writeFileSync(path.join(dir, `round-${n}-fix-${primary}.json`), JSON.stringify({
+    fs.writeFileSync(path.join(dir, `round-${n}-fix-${primary.replace(':', '_')}.json`), JSON.stringify({
       status: 'ok', edited: true, files: ['a.txt', 'b.txt'], resolvedFindingIds: [counterpart],
     }));
     assert.strictEqual(JSON.parse(run(['commit-fix', `feat/deleted-${deleted}`, primary], { env })).committed, true);
@@ -681,7 +681,7 @@ test('record: treats a deleted resolved counterpart as span-absent', () => {
   run(['plan-fixes', 'feat/deleted-counterpart'], { env });
   fs.writeFileSync(path.join(repo, 'a.txt'), 'source fixed\n');
   fs.rmSync(path.join(repo, 'b.txt'));
-  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:a.json`), JSON.stringify({
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_a.json`), JSON.stringify({
     status: 'ok', edited: true, files: ['a.txt', 'b.txt'], resolvedFindingIds: ['correctness:b'],
   }));
   assert.strictEqual(JSON.parse(run(['commit-fix', 'feat/deleted-counterpart', 'correctness:a'], { env })).committed, true);
@@ -707,7 +707,7 @@ test('commit-fix: rejects a mirrored claim when the primary span remains live', 
 
   fs.appendFileSync(path.join(repo, 'a.txt'), 'unrelated dirty change\n');
   fs.writeFileSync(path.join(repo, 'b.txt'), 'mirror fixed\n');
-  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:a.json`), JSON.stringify({
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_a.json`), JSON.stringify({
     status: 'ok', edited: true, files: ['a.txt', 'b.txt'], resolvedFindingIds: ['correctness:b'],
   }));
 
@@ -733,7 +733,7 @@ test('commit-fix: rejects a mirrored claim when the counterpart span was already
 
   fs.writeFileSync(path.join(repo, 'a.txt'), 'source fixed\n');
   fs.appendFileSync(path.join(repo, 'b.txt'), 'unrelated dirty change\n');
-  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:a.json`), JSON.stringify({
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_a.json`), JSON.stringify({
     status: 'ok', edited: true, files: ['a.txt', 'b.txt'], resolvedFindingIds: ['correctness:b'],
   }));
 
@@ -752,7 +752,7 @@ test('commit-fix: rejects an unknown mirrored finding claim before committing', 
     { status: 'ok', rejected: [] });
   run(['plan-fixes', 'feat/mirror-claim-invalid'], { env });
   fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
-  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:a.json`), JSON.stringify({
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_a.json`), JSON.stringify({
     status: 'ok', edited: true, files: ['a.txt'], resolvedFindingIds: ['correctness:unknown'],
   }));
   assert.throws(
@@ -769,7 +769,7 @@ test('commit-fix: commits one fix and journals it', () => {
     { status: 'ok', rejected: [] });
   run(['plan-fixes', 'feat/x'], { env });
   fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
-  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:real.json`), JSON.stringify({ status: 'ok', edited: true }));
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_real.json`), JSON.stringify({ status: 'ok', edited: true }));
   const out = JSON.parse(run(['commit-fix', 'feat/x', 'correctness:real'], { env }));
   assert.strictEqual(out.committed, true);
   assert.match(out.sha, /^[0-9a-f]{7,40}$/);
@@ -789,13 +789,13 @@ test('commit-fix: two findings in the same file get two separate commits', () =>
   const before = Number(execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim());
 
   fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed-one\n');
-  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:one.json`), JSON.stringify({ status: 'ok', edited: true }));
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_one.json`), JSON.stringify({ status: 'ok', edited: true }));
   run(['commit-fix', 'feat/x', 'correctness:one'], { env });
   const afterFirst = Number(execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim());
   assert.strictEqual(afterFirst, before + 1);
 
   fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed-two\n');
-  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:two.json`), JSON.stringify({ status: 'ok', edited: true }));
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_two.json`), JSON.stringify({ status: 'ok', edited: true }));
   run(['commit-fix', 'feat/x', 'correctness:two'], { env });
   const afterSecond = Number(execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim());
   assert.strictEqual(afterSecond, afterFirst + 1);
@@ -813,7 +813,7 @@ test('commit-fix: scopes staging to the finding\'s file -- an unrelated dirty fi
 
   // The actual fix, to file A.
   fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
-  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:real.json`), JSON.stringify({ status: 'ok', edited: true }));
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_real.json`), JSON.stringify({ status: 'ok', edited: true }));
   // Unrelated dirty content in the working tree -- an untracked file, standing
   // in for a stray non-gitignored dir or a crash-recovery leftover.
   fs.writeFileSync(path.join(repo, 'b.txt'), 'unrelated\n');
@@ -852,7 +852,7 @@ test('commit-fix: a fix that declares multiple files (finding.file + companion) 
 
   fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
   fs.writeFileSync(path.join(repo, 'c.txt'), 'companion-edit\n');
-  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:real.json`), JSON.stringify({ status: 'ok', edited: true, files: ['a.txt', 'c.txt'] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_real.json`), JSON.stringify({ status: 'ok', edited: true, files: ['a.txt', 'c.txt'] }));
   // Unrelated dirty content that must still never be swept in.
   fs.writeFileSync(path.join(repo, 'b.txt'), 'unrelated\n');
 
@@ -872,7 +872,7 @@ test('commit-fix: rejects an outside-repository path declared by a fix artifact 
     { status: 'ok', rejected: [] });
   run(['plan-fixes', 'feat/x'], { env });
   fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
-  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:real.json`), JSON.stringify({ status: 'ok', edited: true, files: ['a.txt', '/tmp/not-a-repo-file'] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_real.json`), JSON.stringify({ status: 'ok', edited: true, files: ['a.txt', '/tmp/not-a-repo-file'] }));
 
   assert.throws(
     () => run(['commit-fix', 'feat/x', 'correctness:real'], { env }),
@@ -888,8 +888,8 @@ test('commit-fix: rejects a stateDir artifact even when stateDir is inside the r
     { status: 'ok', rejected: [] });
   run(['plan-fixes', 'feat/x'], { env });
   fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
-  const artifact = `.review-state/round-${n}-fix-correctness:real.json`;
-  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:real.json`), JSON.stringify({ status: 'ok', edited: true, files: ['a.txt', artifact] }));
+  const artifact = `.review-state/round-${n}-fix-correctness_real.json`;
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_real.json`), JSON.stringify({ status: 'ok', edited: true, files: ['a.txt', artifact] }));
 
   assert.throws(
     () => run(['commit-fix', 'feat/x', 'correctness:real'], { env }),
@@ -904,7 +904,7 @@ test('commit-fix: idempotent -- a second call for an already-journaled id commit
     { status: 'ok', rejected: [] });
   run(['plan-fixes', 'feat/x'], { env });
   fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
-  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:real.json`), JSON.stringify({ status: 'ok', edited: true }));
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_real.json`), JSON.stringify({ status: 'ok', edited: true }));
   run(['commit-fix', 'feat/x', 'correctness:real'], { env });
   const shaCount1 = execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
   const out = JSON.parse(run(['commit-fix', 'feat/x', 'correctness:real'], { env }));
@@ -953,7 +953,7 @@ test('record: a journaled fix is reported fixed, and the fix-round never converg
     { status: 'ok', rejected: [] });
   run(['plan-fixes', 'feat/x'], { env });
   fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
-  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:real.json`), JSON.stringify({ status: 'ok', edited: true }));
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_real.json`), JSON.stringify({ status: 'ok', edited: true }));
   run(['commit-fix', 'feat/x', 'correctness:real'], { env }); // driver calls this right after the fix subagent
   const out = JSON.parse(run(['record', 'feat/x'], { env }));
   assert.strictEqual(out.decision.continue, true);     // fix-round never converges
@@ -972,7 +972,7 @@ test('record: idempotent -- a second record for the same round re-prints and doe
     { status: 'ok', rejected: [] });
   run(['plan-fixes', 'feat/x'], { env });
   fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
-  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:real.json`), JSON.stringify({ status: 'ok', edited: true }));
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_real.json`), JSON.stringify({ status: 'ok', edited: true }));
   run(['commit-fix', 'feat/x', 'correctness:real'], { env });
   run(['record', 'feat/x'], { env });
   const shaCount1 = execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
@@ -1132,7 +1132,7 @@ test('record: a fix-committing round that terminates re-runs DoD on the post-com
     { status: 'ok', rejected: [] });
   run(['plan-fixes', 'feat/x'], { env }); // span 'two' still present at this point
   fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
-  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:real.json`), JSON.stringify({ status: 'ok', edited: true }));
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_real.json`), JSON.stringify({ status: 'ok', edited: true }));
   run(['commit-fix', 'feat/x', 'correctness:real'], { env });
   // Force this fix-committing round to be the terminus via round budget exhaustion.
   const slug = review.targetSlug('feat/x');
@@ -2223,7 +2223,7 @@ test('record: a --no-dod round with a committed fix reaches its terminal decisio
   // One finding is genuinely fixed and committed; the other's fixer never wrote
   // an artifact, so it parks -- a terminal decision that still carries a fix.
   fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
-  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:real.json`), JSON.stringify({ status: 'ok', edited: true }));
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_real.json`), JSON.stringify({ status: 'ok', edited: true }));
   run(['commit-fix', 'feat/x', 'correctness:real'], { env });
 
   const out = JSON.parse(run(['record', 'feat/x'], { env }));
@@ -3620,7 +3620,7 @@ test('record file target: fix artifact with edited:true marks finding fixed with
     ]},
     { status: 'ok', rejected: [] }
   );
-  fs.writeFileSync(path.join(dir, `round-${n}-fix-docreview:unsupported-claim.json`), JSON.stringify({ status: 'ok', edited: true, files: ['note.md'] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-docreview_unsupported-claim.json`), JSON.stringify({ status: 'ok', edited: true, files: ['note.md'] }));
   const out = JSON.parse(run(['record', ref], { env }));
   const l = review.readLedger(dir, slug);
   const f = l.findings.find((x) => x.id === 'docreview:unsupported-claim');
@@ -3640,7 +3640,7 @@ test('record file target: fix artifact with edited:false parks needs-decision, n
     ]},
     { status: 'ok', rejected: [] }
   );
-  fs.writeFileSync(path.join(dir, `round-${n}-fix-docreview:unfixed.json`), JSON.stringify({ status: 'ok', edited: false }));
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-docreview_unfixed.json`), JSON.stringify({ status: 'ok', edited: false }));
   run(['record', ref], { env });
   const l = review.readLedger(dir, slug);
   const f = l.findings.find((x) => x.id === 'docreview:unfixed');
@@ -3693,7 +3693,7 @@ test('round-start file target resume: a stale fix artifact from the interrupted 
   let l = review.readLedger(dir, slug);
   l = { ...l, phase: 'fixes', planned: ['docreview:stale'] };
   review.writeLedger(dir, slug, l);
-  const staleFix = path.join(dir, `round-${n}-fix-docreview:stale.json`);
+  const staleFix = path.join(dir, `round-${n}-fix-docreview_stale.json`);
   fs.writeFileSync(staleFix, JSON.stringify({ status: 'ok', edited: true, files: ['note.md'] }));
   assert.ok(fs.existsSync(staleFix), 'precondition: stale fix artifact is present before resume');
 
@@ -3721,7 +3721,7 @@ test('record git target: fixed-signal comes from the journal sha, not the fix ar
   );
   run(['plan-fixes', 'feat/git-record-regression'], { env });
   fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
-  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness:y.json`), JSON.stringify({ status: 'ok', edited: true }));
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_y.json`), JSON.stringify({ status: 'ok', edited: true }));
   run(['commit-fix', 'feat/git-record-regression', 'correctness:y'], { env });
   run(['record', 'feat/git-record-regression'], { env });
   const slug = review.targetSlug('feat/git-record-regression');

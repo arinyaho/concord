@@ -7,6 +7,7 @@ const { execFileSync, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { safeIdForFilename } = require('./artifact-name');
 const { targetSlug } = require('./review');
 const { artifactDestinationFromPrompt } = require('./review-artifact');
 const { isValidFindingId } = require('./gate-contract');
@@ -381,7 +382,7 @@ async function runReviewUntilGreen(options) {
       for (const finding of candidates) {
         let survives = 0;
         const votes = await Promise.all([0, 1, 2].map(async (vote) => {
-          const verdict = path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-vote-${finding.id}-${vote}.json`);
+          const verdict = path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-vote-${safeIdForFilename(finding.id)}-${vote}.json`);
           await launch({ role: 'gate-panel-verify', repoRoot, stateDir: context.stateDir,
             prompt: `Try to refute gate finding ${JSON.stringify(finding)}. Default to refuted if uncertain. Write ONLY {"status":"ok","survives":false} to ${verdict}.${BLOCKED_CLAUSE}` });
           let raw;

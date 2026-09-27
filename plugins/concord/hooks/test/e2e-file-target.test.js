@@ -97,7 +97,7 @@ test('e2e: file target converges in 3 rounds with zero git operations in the fil
   // Simulate the fixer: edit note.md to resolve the issue (remove the unsupported claim).
   fs.writeFileSync(notePath, '# Design Note\nThis approach has been validated by benchmarks in [1].\n');
   // Write the fix artifact.
-  writeArtifact(stateDir, n1, `fix-${findingId}`, { status: 'ok', edited: true, files: ['note.md'] });
+  writeArtifact(stateDir, n1, `fix-${findingId.replace(":", "_")}`, { status: 'ok', edited: true, files: ['note.md'] });
 
   // Step 5: record -- finding must be marked fixed with sentinel, continue=true.
   const rec1 = JSON.parse(run(['record', ref], { env }));
@@ -242,7 +242,7 @@ test('e2e: a file-target run spawns ZERO git processes (PATH-shim git-exec spy)'
   const pf = JSON.parse(run(['plan-fixes', ref], { env }));
   assert.strictEqual(pf.fixes.length, 1);
   fs.writeFileSync(notePath, '# Doc\na claim backed by [1]\n');
-  writeArtifact(stateDir, n, `fix-${pf.fixes[0].id}`, { status: 'ok', edited: true, files: ['note.md'] });
+  writeArtifact(stateDir, n, `fix-${pf.fixes[0].id.replace(":", "_")}`, { status: 'ok', edited: true, files: ['note.md'] });
   run(['record', ref], { env });
 
   // The core assertion: the git shim was NEVER invoked -> the marker is absent
