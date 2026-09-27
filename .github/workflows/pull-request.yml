@@ -1,0 +1,48 @@
+name: pull-request
+
+on:
+  pull_request:
+    paths:
+      - "plugins/**"
+      - "services/agent-team/**"
+      - "scripts/release-version.mjs"
+      - "VERSION"
+      - "README.md"
+      - ".github/plugin/marketplace.json"
+      - ".claude-plugin/marketplace.json"
+      - ".agents/plugins/marketplace.json"
+      - ".github/workflows/pull-request.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  plugin-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: find plugins -path '*/test/*.test.js' -type f -print0 | xargs -0 -r node --test
+
+  agent-team-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: services/agent-team
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: services/agent-team/package-lock.json
+
+      - run: npm ci
+      - run: npm test

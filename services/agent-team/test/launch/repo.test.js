@@ -7,6 +7,12 @@ import { join } from "node:path";
 import { cleanClone, reExport } from "../../src/launch/repo.mjs";
 
 const git = (args, opts = {}) => spawnSync("git", args, { encoding: "utf8", ...opts });
+const commit = (dir, message) => {
+  const result = git(["-C", dir, "commit", "-qm", message], {
+    env: { ...process.env, GIT_AUTHOR_NAME: "s", GIT_AUTHOR_EMAIL: "s@x", GIT_COMMITTER_NAME: "s", GIT_COMMITTER_EMAIL: "s@x" },
+  });
+  assert.equal(result.status, 0, result.stderr);
+};
 
 function seedRepo(runGit = git) {
   const dir = join(mkdtempSync(join(tmpdir(), "at-src-")), "repo");
@@ -80,9 +86,9 @@ test("reExport lands a branch made in the clone back into the source repo", () =
   cleanClone({ srcRepo: src, workDir, base: "main", runGit: git });
   git(["-C", workDir, "switch", "-qc", "feat/x"]);
   writeFileSync(join(workDir, "f.txt"), "hi\n");
-  git(["-C", workDir, "add", "-A"]); git(["-C", workDir, "commit", "-qm", "add f"]);
+  git(["-C", workDir, "add", "-A"]); commit(workDir, "add f");
   reExport({ srcRepo: src, workDir, branch: "feat/x", runGit: git });
-  assert.equal(git(["-C", src, "rev-parse", "feat/x"]).status, 0);
+  assert.equal(git(["-C", src, "rev-parse", "--verify", "refs/heads/feat/x"]).status, 0);
   assert.match(git(["-C", src, "show", "feat/x:f.txt"]).stdout, /hi/);
 });
 
@@ -92,8 +98,8 @@ test("reExport with a wildcard refspec lands the launcher-minted branch back int
   cleanClone({ srcRepo: src, workDir, base: "main", runGit: git });
   git(["-C", workDir, "switch", "-qc", "agent-team/run-7"]);
   writeFileSync(join(workDir, "g.txt"), "hi7\n");
-  git(["-C", workDir, "add", "-A"]); git(["-C", workDir, "commit", "-qm", "add g"]);
+  git(["-C", workDir, "add", "-A"]); commit(workDir, "add g");
   reExport({ srcRepo: src, workDir, branch: "refs/heads/agent-team/*", runGit: git });
-  assert.equal(git(["-C", src, "rev-parse", "agent-team/run-7"]).status, 0);
+  assert.equal(git(["-C", src, "rev-parse", "--verify", "refs/heads/agent-team/run-7"]).status, 0);
   assert.match(git(["-C", src, "show", "agent-team/run-7:g.txt"]).stdout, /hi7/);
 });
