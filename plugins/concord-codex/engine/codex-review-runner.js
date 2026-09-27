@@ -20,7 +20,16 @@ const CODEX_USAGE_FIELDS = ['input_tokens', 'cached_input_tokens', 'cache_write_
 const CODEX_EVENT_TYPES = new Set(['thread.started', 'turn.started', 'turn.completed', 'turn.failed', 'item.started', 'item.updated', 'item.completed', 'error']);
 const CODEX_ITEM_TYPES = new Set(['agent_message', 'reasoning', 'command_execution', 'file_change', 'mcp_tool_call', 'web_search', 'todo_list', 'error', 'collaboration_tool_call', 'collab_agent_tool_call']);
 const PROVIDERS = new Set(['claude', 'codex', 'copilot']);
+const REVIEW_SUBPROCESS_TIMEOUT_MS = 30 * 60 * 1000;
+const TERMINATION_GRACE_MS = 5 * 1000;
 let versionCache = null;
+
+function terminateProcessTree(child, signal) {
+  if (!isWindows && child.pid) {
+    try { process.kill(-child.pid, signal); return; } catch (_) {}
+  }
+  child.kill(signal);
+}
 
 function codexCliVersion(repoRoot) {
   const searchPath = process.env.PATH || '';
@@ -70,7 +79,7 @@ function sameKeys(actual, expected) {
   return actual.length === expected.length && [...actual].sort().every((key, index) => key === [...expected].sort()[index]);
 }
 
-function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoningEffort, serviceTier }) {
+function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoningEffort, serviceTier, timeoutMs, abortSignal }) {
   return new Promise((resolve, reject) => {
     const invocationId = crypto.randomUUID();
     const model = typeof requestedModel === 'string' && requestedModel.trim() ? requestedModel : null;
@@ -94,7 +103,7 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
       ...(effort ? ['--config', `model_reasoning_effort=${JSON.stringify(effort)}`] : []),
       ...(tier ? ['--config', `service_tier=${JSON.stringify(tier)}`] : []),
       '--skip-git-repo-check', '--json', ...(isWindows ? ['-'] : [prompt]),
-    ], needsDoubleEscape('codex', repoRoot)), crossPlatformOpts({ cwd: repoRoot, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'ignore'] }));
+    ], needsDoubleEscape('codex', repoRoot)), crossPlatformOpts({ cwd: repoRoot, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'ignore'], detached: !isWindows }));
     if (isWindows) {
       // If `codex` exits before consuming stdin (a rejected flag, a
       // startup auth failure, the wrong binary on PATH), writing the
@@ -107,6 +116,17 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
       child.stdin.on('error', () => {});
       child.stdin.end(prompt);
     }
+    let timedOut = false;
+    let killTimer = null;
+    const terminate = (signal) => {
+      terminateProcessTree(child, signal);
+      if (signal === 'SIGTERM') killTimer = setTimeout(() => terminateProcessTree(child, 'SIGKILL'), TERMINATION_GRACE_MS);
+    };
+    const effectiveTimeoutMs = Number.isFinite(timeoutMs) ? timeoutMs : REVIEW_SUBPROCESS_TIMEOUT_MS;
+    const timeout = effectiveTimeoutMs > 0 ? setTimeout(() => { timedOut = true; terminate('SIGTERM'); }, effectiveTimeoutMs) : null;
+    const abort = () => terminate('SIGTERM');
+    abortSignal?.addEventListener('abort', abort, { once: true });
+    if (abortSignal?.aborted) abort();
     let pending = '';
     let usage;
     let completionCount = 0;
@@ -141,6 +161,9 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
       for (const line of lines) consume(line);
     });
     child.once('error', (error) => {
+      if (timeout) clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
+      abortSignal?.removeEventListener('abort', abort);
       error.telemetry = {
         status: 'failed', role, engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', cliVersion,
         requestedModel: model, reasoningEffort: effort, serviceTier: tier, resolvedModel: 'unavailable', invocationId,
@@ -148,14 +171,20 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
       };
       reject(error);
     });
-    child.once('close', (status) => {
+    child.once('close', (status, signal) => {
+      if (timeout) clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
+      abortSignal?.removeEventListener('abort', abort);
       consume(pending);
       const normalized = normalizeUsage(usage);
       resolve({
         status, role, engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', cliVersion,
         requestedModel: model, reasoningEffort: effort, serviceTier: tier, resolvedModel: 'unavailable', invocationId, elapsedMs: Date.now() - startedAt,
         ...normalized,
-        usagePartial: normalized.usagePartial || streamPartial || completionCount !== 1 || status !== 0,
+        signal: signal || null,
+        timedOut,
+        interrupted: abortSignal?.aborted ? String(abortSignal.reason || 'signal') : null,
+        usagePartial: normalized.usagePartial || streamPartial || completionCount !== 1 || status !== 0 || !!signal,
         ...(cliVersion !== CODEX_VERSION ? { usageStatus: 'unsupported-cli-version' } : {}),
         evidence: { collaboration: collaborationEvidenceCount, errors: errorEvidenceCount },
       });
@@ -164,7 +193,7 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
 }
 
 function providerExec(input) {
-  const { provider, role, prompt, repoRoot, stateDir } = input;
+  const { provider, role, prompt, repoRoot, stateDir, timeoutMs, abortSignal } = input;
   if (!PROVIDERS.has(provider)) throw new Error(`harness-failure: unsupported provider "${provider}"`);
   if (provider === 'codex') return codexExec(input);
 
@@ -204,7 +233,7 @@ function providerExec(input) {
   const truncate = (text) => (text.length > OUTPUT_LIMIT ? `${text.slice(0, OUTPUT_LIMIT)}\n...(truncated)` : text);
 
   return new Promise((resolve, reject) => {
-    const child = spawn(crossPlatformCommand(executable, repoRoot), crossPlatformArgs(args, needsDoubleEscape(executable, repoRoot)), crossPlatformOpts({ cwd: repoRoot, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'pipe'] }));
+    const child = spawn(crossPlatformCommand(executable, repoRoot), crossPlatformArgs(args, needsDoubleEscape(executable, repoRoot)), crossPlatformOpts({ cwd: repoRoot, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'pipe'], detached: !isWindows }));
     if (isWindows) {
       // See codexExec's identical stdin 'error' handling above -- the
       // same EPIPE risk (child exits before consuming the prompt) applies
@@ -212,6 +241,17 @@ function providerExec(input) {
       child.stdin.on('error', () => {});
       child.stdin.end(prompt);
     }
+    let timedOut = false;
+    let killTimer = null;
+    const terminate = (signal) => {
+      terminateProcessTree(child, signal);
+      if (signal === 'SIGTERM') killTimer = setTimeout(() => terminateProcessTree(child, 'SIGKILL'), TERMINATION_GRACE_MS);
+    };
+    const effectiveTimeoutMs = Number.isFinite(timeoutMs) ? timeoutMs : REVIEW_SUBPROCESS_TIMEOUT_MS;
+    const timeout = effectiveTimeoutMs > 0 ? setTimeout(() => { timedOut = true; terminate('SIGTERM'); }, effectiveTimeoutMs) : null;
+    const abort = () => terminate('SIGTERM');
+    abortSignal?.addEventListener('abort', abort, { once: true });
+    if (abortSignal?.aborted) abort();
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8');
@@ -219,6 +259,9 @@ function providerExec(input) {
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk) => { stderr += chunk; });
     child.once('error', (error) => {
+      if (timeout) clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
+      abortSignal?.removeEventListener('abort', abort);
       error.telemetry = {
         status: 'failed', role, engine: provider, provider: providerName, providerSchema,
         requestedModel, resolvedModel: 'unavailable', invocationId,
@@ -227,12 +270,18 @@ function providerExec(input) {
       };
       reject(error);
     });
-    child.once('close', (status) => resolve({
+    child.once('close', (status, signal) => {
+      if (timeout) clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
+      abortSignal?.removeEventListener('abort', abort);
+      resolve({
       status, role, engine: provider, provider: providerName, providerSchema,
       requestedModel, resolvedModel: 'unavailable', invocationId,
-      elapsedMs: Date.now() - startedAt, usagePartial: true,
+      elapsedMs: Date.now() - startedAt, usagePartial: true, signal: signal || null, timedOut,
+      interrupted: abortSignal?.aborted ? String(abortSignal.reason || 'signal') : null,
       stdout: truncate(stdout), stderr: truncate(stderr),
-    }));
+      });
+    });
   });
 }
 
@@ -256,7 +305,18 @@ function resolveDefaultBase(repoRoot, exec = execFileSync) {
 
 async function invoke(spawn, input) {
   const result = await spawn(input);
-  if (result && result.status !== 0) throw new Error(`harness-failure: ${input.role} subprocess exited ${result.status}`);
+  if (result && (result.interrupted || result.timedOut || result.signal || result.status !== 0)) {
+    const failure = result.interrupted
+      ? { role: input.role, kind: 'interrupted', message: `${input.role} interrupted by parent ${result.interrupted}`, signal: result.interrupted }
+      : result.timedOut
+        ? { role: input.role, kind: 'timeout', message: `${input.role} subprocess timed out` }
+        : result.signal
+          ? { role: input.role, kind: 'signal', message: `${input.role} subprocess ended from ${result.signal}`, signal: result.signal }
+          : { role: input.role, kind: 'subprocess-exit', message: `${input.role} subprocess exited ${result.status}`, exitCode: result.status };
+    const error = new Error(`harness-failure: ${failure.message}`);
+    error.reviewFailure = failure;
+    throw error;
+  }
 }
 
 async function runReviewUntilGreen(options) {
@@ -271,6 +331,8 @@ async function runReviewUntilGreen(options) {
     if (!PROVIDERS.has(provider)) throw new Error(`review-until-green: unsupported provider "${provider}"`);
   }
   const rawSpawn = options.spawn || ((input) => providerExec(input));
+  const abortController = options.handleSignals ? new AbortController() : null;
+  if (abortController) for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.once(signal, () => abortController.abort(signal));
   const telemetry = {
     total: { calls: 0, partialCalls: 0, inputTokens: 0, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0 },
     byRole: {},
@@ -364,7 +426,9 @@ async function runReviewUntilGreen(options) {
         try {
           await launch({ role: `gate-panel-${lens}`, repoRoot, stateDir: context.stateDir,
             prompt: `Review ${path.join(context.stateDir, `round-${context.round}-diff.txt`)} and the repository through the ${lens} lens. You MAY Read/Grep the repository and MUST read ${path.join(context.stateDir, `intent-${context.slug}.md`)} if it exists to assess the design and acceptance criteria. Previously rejected IDs: ${JSON.stringify(panel.rejectedIds || [])} -- do not re-raise one unless you found something the earlier round did not. Every candidate faces three adversarial verifiers that default to REFUTED when uncertain and decide by majority, so a gap you cannot anchor in evidence will not survive: substantiate what you raise rather than raising more. Write ONLY {"status":"ok","findings":[]} to ${artifact}; every ID must use gate:${lens}:<slug>.${BLOCKED_CLAUSE}` });
-        } catch (_) { /* panel lenses are intentionally lenient */ }
+        } catch (error) {
+          if (error.reviewFailure && ['interrupted', 'timeout', 'signal'].includes(error.reviewFailure.kind)) throw error;
+        }
       }));
       const candidates = [];
       for (const lens of lenses) {
@@ -468,18 +532,27 @@ async function runReviewUntilGreen(options) {
         ...(requestedModel ? { requestedModel } : {}),
         ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
         ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
+        ...(options.subprocessTimeoutMs ? { timeoutMs: options.subprocessTimeoutMs } : {}),
+        ...(abortController ? { abortSignal: abortController.signal } : {}),
         ...(telemetrySlot ? { telemetrySlot } : {}),
       });
     };
 
     const runArtifactReviewer = async (role) => {
+      if ((started.completedArtifacts || []).includes(role)) return;
       let retryPrompt;
-      for (let attempt = 0; attempt < 2; attempt++) {
-        await launch({ role, prompt: reviewerPrompt(role, { ...context, retryPrompt }), repoRoot, stateDir: context.stateDir });
-        const normalized = await cli(['artifact-normalize', ref, role]);
-        if (normalized.status === 'ok') return;
-        if (normalized.status !== 'retry' || attempt === 1) throw new Error(`harness-failure: ${role} artifact retry exhausted`);
-        retryPrompt = normalized.prompt;
+      try {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          await launch({ role, prompt: reviewerPrompt(role, { ...context, retryPrompt }), repoRoot, stateDir: context.stateDir });
+          const normalized = await cli(['artifact-normalize', ref, role]);
+          if (normalized.status === 'ok') return;
+          if (normalized.status !== 'retry' || attempt === 1) throw new Error(`harness-failure: ${role} artifact retry exhausted`);
+          retryPrompt = normalized.prompt;
+        }
+      } catch (error) {
+        const failure = error.reviewFailure || { role, kind: /artifact|missing gate artifact/.test(String(error.message)) ? 'artifact-write-failure' : 'harness-error', message: String(error.message).replace(/^harness-failure:\s*/, '') };
+        try { await cli(['round-failure', ref, JSON.stringify(failure)]); } catch (_) {}
+        throw error;
       }
     };
 
@@ -492,22 +565,22 @@ async function runReviewUntilGreen(options) {
     if (started.intentApplied) reviewers.push(runArtifactReviewer('intent'));
     if (started.gateApplied) reviewers.push((async () => {
       await runArtifactReviewer('gate');
-      // gate-verify is intentionally lenient in review-cli: a missing or
-      // malformed advisory verify artifact means zero rejections/new findings,
-      // not a harness failure. Do not route it through artifact-normalize.
-      try {
-        await launch({ role: 'gate-verify', prompt: reviewerPrompt('gate-verify', context), repoRoot, stateDir: context.stateDir });
-      } catch (_) {
-        // Preserve review-cli's legacy gate-verify leniency: a failed advisory
-        // verifier contributes no rejections/new findings, not a harness stop.
-      }
+      await runArtifactReviewer('gate-verify');
     })());
-    await Promise.all(reviewers);
+    const reviewerResults = await Promise.allSettled(reviewers);
+    const reviewerFailure = reviewerResults.find((result) => result.status === 'rejected');
+    if (reviewerFailure) throw reviewerFailure.reason;
 
     const planned = await cli(['plan-fixes', ref]);
     for (const finding of planned.fixes || []) {
-      await launch({ role: 'fix', prompt: reviewerPrompt('fix', { ...context, finding, plannedFindingIds: (planned.fixes || []).map((f) => f.id) }), repoRoot, stateDir: context.stateDir });
-      if (started.targetType !== 'file') await cli(['commit-fix', ref, finding.id]);
+      try {
+        await launch({ role: 'fix', prompt: reviewerPrompt('fix', { ...context, finding, plannedFindingIds: (planned.fixes || []).map((f) => f.id) }), repoRoot, stateDir: context.stateDir });
+        if (started.targetType !== 'file') await cli(['commit-fix', ref, finding.id]);
+      } catch (error) {
+        const failure = error.reviewFailure || { role: 'fix', kind: /artifact|missing gate artifact/.test(String(error.message)) ? 'artifact-write-failure' : 'harness-error', message: String(error.message).replace(/^harness-failure:\s*/, '') };
+        try { await cli(['round-failure', ref, JSON.stringify(failure)]); } catch (_) {}
+        throw error;
+      }
     }
     let recorded = await cli(['record', ref]);
     if (recorded.decision && recorded.decision.panelPending) {

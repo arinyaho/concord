@@ -289,7 +289,7 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
     }
     if (verb === 'plan-fixes') return { fixes: round === 1 ? [{ id: 'correctness:bug', file: 'a.txt', span: 'bad', summary: 'fix it' }] : [] };
     if (verb === 'commit-fix') {
-      if (promptDrivenFix && !fs.existsSync(path.join(stateDir, `round-${round}-fix-${role.replace(":", "_")}.json`))) throw new Error('commit-fix did not receive its declared artifact');
+      if (promptDrivenFix && !fs.existsSync(path.join(stateDir, `round-${round}-fix-${String(role).replace(/:/g, '_')}.json`))) throw new Error('commit-fix did not receive its declared artifact');
       return { committed: true, sha: 'abc' };
     }
     if (verb === 'record') return round < rounds ? { decision: { continue: true }, handoff: 'continue' } : { decision: { continue: false, converged: true }, handoff: 'LGTM' };

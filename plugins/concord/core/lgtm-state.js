@@ -50,7 +50,7 @@ function status(input) {
   const window = readMarker(markerPath({ stateDir, ...key }, 'window'));
   const initialClaim = readMarker(markerPath({ stateDir, ...key }, 'initial-claim'));
   const initialRequest = readMarker(markerPath({ stateDir, ...key }, 'initial-request'));
-  const retry = readMarker(markerPath({ stateDir, ...key }, 'retry'));
+  const retry = readMarker(markerPath({ stateDir, ...key }, 'retry-claim'));
   const retryRequest = readMarker(markerPath({ stateDir, ...key }, 'retry-request'));
   if (window && (window.pr !== key.pr || window.headSha !== key.headSha || !Number.isSafeInteger(window.deadlineMs))) {
     throw new Error('review-lgtm-state: window marker does not match its PR head');

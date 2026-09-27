@@ -3772,6 +3772,23 @@ test('round-start file target resume: a stale fix artifact from the interrupted 
   assert.deepStrictEqual(after.planned, [], 'planned[] must be reset on a file-target resume');
 });
 
+test('round-start resume invalidates completed artifacts after a committed fix changes the diff', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'first change'], { cwd: repo });
+  const started = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  const artifact = path.join(dir, `round-${started.round}-correctness.json`);
+  fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  run(['artifact-normalize', 'feat/x', 'correctness'], { env });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'three\n');
+  execFileSync('git', ['commit', '-aqm', 'fix changes reviewed diff'], { cwd: repo });
+
+  const resumed = JSON.parse(run(['round-start', 'feat/x'], { env }));
+  assert.deepStrictEqual(resumed.completedArtifacts, []);
+  assert.ok(!fs.existsSync(artifact), 'a completed artifact for the old diff must not be reused');
+});
+
 test('record git target: fixed-signal comes from the journal sha, not the fix artifact (regression lock)', () => {
   const repo = initRepo();
   const dir = tmpDir();

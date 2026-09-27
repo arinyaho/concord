@@ -78,6 +78,7 @@ function emptyLedger(target) {
     gate_rounds: [], // rounds the gate pair actually fired in (front pass: just the first)
     gateApplied: false, // per-round: did the pair fire THIS round
     reviewRouting: null,
+    execution: null,
   };
 }
 
@@ -263,7 +264,8 @@ function decideTermination(roundOutcome) {
     };
   }
   if (budgetSpent >= maxRounds) {
-    return { continue: false, converged: false, parked: true, abandoned: false, reason: 'round budget exhausted' };
+    const dodState = dodDeferred ? 'DoD deferred' : dodPassed ? 'DoD passed' : 'DoD failed';
+    return { continue: false, converged: false, parked: true, abandoned: false, reason: `round budget exhausted with ${openFindingsCount} open finding(s); ${dodState} but no clean confirmation round occurred` };
   }
   if (noProgress) {
     return { continue: false, converged: false, parked: true, abandoned: false, reason: 'no progress: zero fixes and findings unchanged' };
@@ -529,7 +531,9 @@ function renderReviewReport(ledgers) {
     const roundInfo = `round ${ledger.round}/${ledger.budget.max_rounds}`;
     if (ledger.status === 'converging') {
       const ph = (ledger.phase === 'gates' || ledger.phase === 'fixes') ? `, phase ${ledger.phase}` : '';
-      lines.push(`review-until-green [${ref}]: ${roundInfo}${ph}, ${open} open finding(s) -- converging; resume with \`/review-until-green resume ${ref}\`.`);
+      const failure = ledger.execution && ledger.execution.failure;
+      const retry = failure ? `; last harness failure: ${failure.role} ${failure.kind} (${failure.message})` : '';
+      lines.push(`review-until-green [${ref}]: ${roundInfo}${ph}, ${open} open finding(s) -- converging${retry}; resume with \`/review-until-green resume ${ref}\`.`);
     } else if (ledger.status === 'parked') {
       lines.push(`review-until-green [${ref}]: ${roundInfo}, ${open} open finding(s) -- parked, needs a human decision; see \`review-cli.js show ${ref}\` (unpark a finding with \`review-cli.js unpark ${ref} <findingId>\`).`);
     } else if (ledger.status === 'intent-review') {
