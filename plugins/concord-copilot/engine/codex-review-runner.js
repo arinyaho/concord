@@ -363,7 +363,7 @@ async function runReviewUntilGreen(options) {
   const initiativeRun = keyedRun ? openInitiativeRun({ stateDir: options.initiativeStateDir, key: options.initiativeRunKey, maxLaunches: options.initiativeMaxLaunches, maxRounds: options.initiativeMaxRounds }) : null;
   if (options.initiativeFinalise) {
     if (!initiativeRun) throw new Error('review-until-green: --initiative-finalise requires an initiative run');
-    finaliseInitiativeRun(initiativeRun);
+    if (!finaliseInitiativeRun(initiativeRun)) throw new Error('review-until-green: initiative run finalisation was contended');
     return { decision: { finalised: true } };
   }
   if (!ref) throw new Error('review-until-green: missing target ref');

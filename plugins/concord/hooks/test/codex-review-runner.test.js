@@ -7,7 +7,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { normalizeArtifact } = require('../../core/artifact-contract');
 const { foldTelemetry } = require('../../core/review-telemetry');
-const { runPath } = require('../../core/initiative-review-run');
+const { runPath, openInitiativeRun } = require('../../core/initiative-review-run');
 
 // The runner owns all sequencing. Its subprocess seam makes this a no-network
 // integration test while exercising the real artifact contract at the boundary.
@@ -33,6 +33,22 @@ test('initiative terminal recording lock contention fails closed', async () => {
     /initiative target terminal recording was contended/,
   );
   assert.strictEqual(JSON.parse(fs.readFileSync(ledgerPath, 'utf8')).reconciliation, null);
+  fs.rmdirSync(`${ledgerPath}.lock`);
+});
+
+test('initiative explicit finalise lock contention fails closed', async () => {
+  const stateDir = temp();
+  const key = 'finalise-lock';
+  const ledgerPath = runPath(stateDir, key);
+  openInitiativeRun({ stateDir, key, maxLaunches: 1, maxRounds: 1 });
+  fs.mkdirSync(`${ledgerPath}.lock`);
+  await assert.rejects(
+    runReviewUntilGreen({
+      initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, initiativeFinalise: true,
+    }),
+    /initiative run finalisation was contended/,
+  );
+  assert.strictEqual(JSON.parse(fs.readFileSync(ledgerPath, 'utf8')).status, 'active');
   fs.rmdirSync(`${ledgerPath}.lock`);
 });
 
