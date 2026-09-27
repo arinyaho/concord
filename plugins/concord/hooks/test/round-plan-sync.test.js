@@ -76,3 +76,10 @@ test('the Copilot-vendored review-driver.md copy embeds GATE_SWEEP_CLAUSE byte-f
     'plugins/concord-copilot/skills/review-until-green/references/review-driver.md gate-review prompt has drifted from round-plan.js GATE_SWEEP_CLAUSE -- re-run node plugins/concord-copilot/bin/bundle.mjs',
   );
 });
+
+test('manual fix instructions use the same filesystem-safe ID as commit-fix', () => {
+  for (const text of [driverText, composedCommandText]) {
+    assert.match(text, /fix-<safe-id>\.json/);
+    assert.match(text, /finding id with `:` and other Windows-illegal filename characters replaced by `_`/);
+  }
+});

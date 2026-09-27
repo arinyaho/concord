@@ -219,11 +219,13 @@ test('decideTermination: reviewer silence alone (dod NOT passed) is not clean', 
 });
 
 test('decideTermination: budget exhausted -> parked', () => {
-  const d = review.decideTermination(outcome({ budgetSpent: 5, maxRounds: 5 }));
+  const d = review.decideTermination(outcome({ dodPassed: true, openFindingsCount: 20, budgetSpent: 5, maxRounds: 5 }));
   assert.deepStrictEqual(
     { continue: d.continue, converged: d.converged, parked: d.parked, abandoned: d.abandoned },
     { continue: false, converged: false, parked: true, abandoned: false }
   );
+  assert.match(d.reason, /DoD passed but no clean confirmation round occurred/);
+  assert.match(d.reason, /20 open finding/);
 });
 
 test('decideTermination: no progress (zero fixes, same findings) -> parked', () => {
@@ -747,6 +749,15 @@ test('renderReviewReport: a converging ledger mid-round shows its phase', () => 
   assert.match(out, /phase fixes/);
 });
 
+test('renderReviewReport: escapes and bounds persisted harness failure text', () => {
+  const ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  ledger.status = 'converging'; ledger.execution = { failure: { role: 'correctness', kind: 'artifact-write-failure', message: `bad\nforged status ${'x'.repeat(500)}` } };
+  const out = review.renderReviewReport([{ slug: 'feat-x', ledger }]);
+  assert.strictEqual(out.split('\n').length, 1);
+  assert.match(out, /bad\\u000aforged status/);
+  assert.ok(out.length < 500, 'injected failure text must be bounded');
+});
+
 test('renderReviewReport: intent-review ledgers surface a design-conformance reminder, not silently omitted', () => {
   const l = review.emptyLedger({ kind: 'local', ref: 'feat/e' });
   l.status = 'intent-review';
@@ -775,6 +786,7 @@ test('renderReviewReport: gate-panel-pending ledgers surface a resume/panel remi
   const out = review.renderReviewReport([{ slug: 'feat-p', ledger: l }]);
   assert.ok(out.includes('feat/p'));
   assert.match(out, /panel pending or interrupted/);
+  assert.match(out, /resume feat\/p/);
 });
 
 test('decideTermination: an open intent finding -> intent-review (blocks clean, before the clean branch)', () => {

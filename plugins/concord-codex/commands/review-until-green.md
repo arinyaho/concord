@@ -21,4 +21,6 @@ Use `file:<path-or-glob>` for the explicit documentation-only profile. It skips 
 
 Return its terminal handoff verbatim. If it exits with `harness-failure`, report that failure without treating the target as clean.
 
+An interrupted Codex subprocess is recorded as a retryable harness failure with its exit, signal, 30-minute timeout, or artifact-write cause. Run `resume <ref>` to continue only artifacts that did not normalize successfully; do not delete the state directory or rerun completed reviewers.
+
 A repo with no `review.config.json` is NOT such a failure: the run proceeds on the review gates alone and the handoff reports `DoD: DEFERRED`. Relay that deferral in your own summary too -- never call such a run verified -- and if the user wants a gate on future runs, point them at `{"dod":["pnpm build"]}` at the repo root (commit it -- an uncommitted config leaves the tree dirty and the next round rejects a dirty tree). Never add `--no-dod` on your own initiative; it is the user's call.

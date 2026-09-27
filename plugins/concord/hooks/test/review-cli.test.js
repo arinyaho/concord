@@ -1,6 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -96,6 +97,28 @@ test('artifact-normalize retries an invalid id once, then writes a canonical art
   fs.writeFileSync(file, JSON.stringify({ status: 'findings', examined: ['a.txt'], findings: [{ id: 'correctness:right', file: 'a.txt', summary: 's' }], extra: true }));
   assert.strictEqual(JSON.parse(run(['artifact-normalize', 'feat/x', 'correctness'], { env })).status, 'ok');
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:right', file: 'a.txt', summary: 's' }] });
+});
+
+test('artifact-normalize persists every pending retry prompt for a later resume', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const started = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--broad'], { env, broadDefault: true }));
+  assert.strictEqual(started.gateApplied, true);
+  const n = started.round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: [], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [{ id: 'correctness:wrong', file: 'a.txt', summary: 'wrong namespace' }] }));
+  const correctnessRetry = JSON.parse(run(['artifact-normalize', 'feat/x', 'correctness'], { env }));
+  const gateRetry = JSON.parse(run(['artifact-normalize', 'feat/x', 'gate'], { env }));
+  const ledger = JSON.parse(fs.readFileSync(path.join(dir, 'review-feat-x.json'), 'utf8'));
+  assert.deepStrictEqual(ledger.execution.retryArtifacts, { correctness: correctnessRetry.prompt, gate: gateRetry.prompt });
+  fs.unlinkSync(path.join(dir, `round-${n}-correctness.retry`));
+  fs.unlinkSync(path.join(dir, `round-${n}-gate.retry`));
+  assert.throws(() => run(['artifact-normalize', 'feat/x', 'correctness'], { env }), /harness-failure/);
+  const resumed = JSON.parse(run(['round-start', 'feat/x'], { env, broadDefault: true }));
+  assert.strictEqual(resumed.gateApplied, true);
+  assert.deepStrictEqual(resumed.retryArtifacts, { correctness: correctnessRetry.prompt, gate: gateRetry.prompt });
 });
 
 test('artifact-normalize fails after retry exhaustion', () => {
@@ -195,6 +218,110 @@ test('round-start: fresh start runs DoD, writes diff file, sets phase gates, dec
   const ledger = review.readLedger(dir, review.targetSlug('feat/x'));
   assert.strictEqual(ledger.phase, 'gates');
   assert.ok(fs.existsSync(path.join(dir, `round-${ledger.round}-diff.txt`)));
+});
+
+test('round-start resume preserves normalized artifacts and records an artifact write failure for retry', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const first = JSON.parse(run(['round-start', 'feat/resume-artifact', 'HEAD~1'], { env }));
+  const artifact = path.join(dir, `round-${first.round}-correctness.json`);
+  fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  assert.strictEqual(JSON.parse(run(['artifact-normalize', 'feat/resume-artifact', 'correctness'], { env })).status, 'ok');
+  const failure = { role: 'verify', kind: 'artifact-write-failure', message: 'missing gate artifact verify for round 1' };
+  assert.strictEqual(JSON.parse(run(['round-failure', 'feat/resume-artifact', JSON.stringify(failure)], { env })).retryable, true);
+
+  const resumed = JSON.parse(run(['round-start', 'feat/resume-artifact'], { env }));
+  assert.deepStrictEqual(resumed.completedArtifacts, ['correctness']);
+  assert.ok(fs.existsSync(artifact), 'normalized artifact survives an interrupted resume');
+  const ledger = review.readLedger(dir, review.targetSlug('feat/resume-artifact'));
+  assert.deepStrictEqual(ledger.execution.pending, ['verify']);
+  assert.deepStrictEqual(ledger.execution.failure, null, 'the prior failure is retained in history but cleared for the retry');
+  assert.strictEqual(ledger.execution.failures.at(-1).kind, 'artifact-write-failure');
+  assert.match(ledger.execution.artifactHashes.correctness, /^[0-9a-f]{64}$/, 'resume must retain the completed artifact hash');
+  run(['round-failure', 'feat/resume-artifact', JSON.stringify(failure)], { env });
+  assert.deepStrictEqual(JSON.parse(run(['round-start', 'feat/resume-artifact'], { env })).completedArtifacts, ['correctness'], 'a second interruption must preserve the same verified artifact');
+});
+
+test('round-start resume re-drives a normalized artifact changed after completion', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const first = JSON.parse(run(['round-start', 'feat/resume-tampered', 'HEAD~1'], { env }));
+  const artifact = path.join(dir, `round-${first.round}-correctness.json`);
+  fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  run(['artifact-normalize', 'feat/resume-tampered', 'correctness'], { env });
+  fs.writeFileSync(artifact, JSON.stringify({ status: 'findings', examined: ['a.txt'], findings: [{ id: 'correctness:altered', file: 'a.txt', span: 'two', summary: 'altered after completion' }] }));
+  run(['round-failure', 'feat/resume-tampered', JSON.stringify({ role: 'verify', kind: 'artifact-write-failure', message: 'missing verify' })], { env });
+
+  const resumed = JSON.parse(run(['round-start', 'feat/resume-tampered'], { env }));
+  assert.deepStrictEqual(resumed.completedArtifacts, []);
+  assert.ok(!fs.existsSync(artifact), 'a changed completed artifact must be re-driven');
+});
+
+test('round-start resume preserves only completed gate artifacts', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const first = JSON.parse(run(['round-start', 'feat/resume-gate', 'HEAD~1', '--broad'], { env, broadDefault: true }));
+  const gate = path.join(dir, `round-${first.round}-gate.json`);
+  fs.writeFileSync(gate, JSON.stringify({ status: 'ok', findings: [] }));
+  run(['artifact-normalize', 'feat/resume-gate', 'gate'], { env, broadDefault: true });
+
+  const resumed = JSON.parse(run(['round-start', 'feat/resume-gate'], { env, broadDefault: true }));
+  assert.deepStrictEqual(resumed.completedArtifacts, ['gate']);
+  assert.ok(fs.existsSync(gate));
+  assert.ok(review.readLedger(dir, review.targetSlug('feat/resume-gate')).execution.pending.includes('gate-verify'));
+});
+
+test('round-start resume invalidates gate verification when its gate artifact changed', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const first = JSON.parse(run(['round-start', 'feat/resume-gate-pair', 'HEAD~1', '--broad'], { env, broadDefault: true }));
+  const gate = path.join(dir, `round-${first.round}-gate.json`);
+  const verify = path.join(dir, `round-${first.round}-gate-verify.json`);
+  fs.writeFileSync(gate, JSON.stringify({ status: 'ok', findings: [] }));
+  run(['artifact-normalize', 'feat/resume-gate-pair', 'gate'], { env, broadDefault: true });
+  fs.writeFileSync(verify, JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
+  const slug = review.targetSlug('feat/resume-gate-pair');
+  const ledger = review.readLedger(dir, slug);
+  ledger.execution.completed.push('gate-verify');
+  ledger.execution.artifactHashes['gate-verify'] = crypto.createHash('sha256').update(fs.readFileSync(verify, 'utf8')).digest('hex');
+  review.writeLedger(dir, slug, ledger);
+  fs.writeFileSync(gate, JSON.stringify({ status: 'ok', findings: [{ id: 'gate:changed', file: 'a.txt', summary: 'changed' }] }));
+  run(['round-failure', 'feat/resume-gate-pair', JSON.stringify({ role: 'correctness', kind: 'artifact-write-failure', message: 'interrupted' })], { env, broadDefault: true });
+
+  const resumed = JSON.parse(run(['round-start', 'feat/resume-gate-pair'], { env, broadDefault: true }));
+  assert.deepStrictEqual(resumed.completedArtifacts, [], 'a verifier cannot survive a changed producer');
+  assert.ok(!fs.existsSync(verify), 'the stale gate verifier artifact must be re-driven');
+});
+
+test('record hands off why a green DoD run parked at the round budget', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const ref = 'feat/budget-handoff';
+  const started = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env }));
+  fs.writeFileSync(path.join(dir, `round-${started.round}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [
+    { id: 'correctness:budget', file: 'a.txt', span: 'two', summary: 'Fix the value.' },
+  ] }));
+  fs.writeFileSync(path.join(dir, `round-${started.round}-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
+  run(['plan-fixes', ref], { env });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
+  fs.writeFileSync(path.join(dir, `round-${started.round}-fix-correctness_budget.json`), JSON.stringify({ status: 'ok', edited: true, files: ['a.txt'] }));
+  run(['commit-fix', ref, 'correctness:budget'], { env });
+  const slug = review.targetSlug(ref);
+  const ledger = review.readLedger(dir, slug);
+  review.writeLedger(dir, slug, { ...ledger, budget: { max_rounds: 1, spent: 1 } });
+
+  const out = JSON.parse(run(['record', ref], { env }));
+  assert.match(out.handoff, /termination: round budget exhausted with 0 open finding\(s\); DoD passed but no clean confirmation round occurred/);
 });
 
 test('round-start: refuses a dirty working tree on a fresh start', () => {
@@ -656,7 +783,7 @@ test('commit-fix: permits a mirror claim when either edited file was deleted', (
     else fs.writeFileSync(path.join(repo, 'a.txt'), 'source fixed\n');
     const primary = deleted === 'a.txt' ? 'correctness:a' : 'correctness:b';
     const counterpart = primary === 'correctness:a' ? 'correctness:b' : 'correctness:a';
-    fs.writeFileSync(path.join(dir, `round-${n}-fix-${primary.replace(':', '_')}.json`), JSON.stringify({
+    fs.writeFileSync(path.join(dir, `round-${n}-fix-${primary.replace(/:/g, '_')}.json`), JSON.stringify({
       status: 'ok', edited: true, files: ['a.txt', 'b.txt'], resolvedFindingIds: [counterpart],
     }));
     assert.strictEqual(JSON.parse(run(['commit-fix', `feat/deleted-${deleted}`, primary], { env })).committed, true);
@@ -1357,6 +1484,14 @@ test('review-driver: the intent-detector prompt demands id reuse across rounds',
     const prompt = md.slice(md.indexOf('You are a design-conformance detector'), md.indexOf('If there are no contradictions'));
     assert.match(prompt, /priorIntentIds/, rel.join('/'));
     assert.match(prompt, /REUSE that `id` verbatim/, rel.join('/'));
+  }
+});
+
+test('manual review drivers restore pending retry prompts and skip completed artifacts', () => {
+  for (const rel of [['commands', 'review-until-green.md'], ['core', 'review-driver.md']]) {
+    const md = fs.readFileSync(path.join(__dirname, '..', '..', ...rel), 'utf8');
+    assert.match(md, /skip every role named by `completedArtifacts`/i, rel.join('/'));
+    assert.match(md, /`retryArtifacts`.*persisted corrective prompt/i, rel.join('/'));
   }
 });
 
@@ -3669,7 +3804,7 @@ test('record file target: missing fix artifact parks needs-decision', () => {
 
 // finding #3: a RESUMED file target must run the same target-agnostic resume
 // housekeeping git resume does -- purge the interrupted round's artifacts and
-// reset planned[] -- otherwise a stale `round-N-fix-<id>.json {edited:true}`
+// reset planned[] -- otherwise a stale `round-N-fix-<safe-id>.json {edited:true}`
 // left by the interrupted attempt false-signals in record (a file target's ONLY
 // fixed-signal is that artifact -- there is no git journal to override it),
 // letting dryStreak convergence declare clean off stale bookkeeping. This drives
@@ -3710,6 +3845,23 @@ test('round-start file target resume: a stale fix artifact from the interrupted 
   assert.ok(!fs.existsSync(staleFix), 'stale fix artifact must be purged on a file-target resume');
   const after = review.readLedger(dir, slug);
   assert.deepStrictEqual(after.planned, [], 'planned[] must be reset on a file-target resume');
+});
+
+test('round-start resume invalidates completed artifacts after a committed fix changes the diff', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'first change'], { cwd: repo });
+  const started = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  const artifact = path.join(dir, `round-${started.round}-correctness.json`);
+  fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  run(['artifact-normalize', 'feat/x', 'correctness'], { env });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'three\n');
+  execFileSync('git', ['commit', '-aqm', 'fix changes reviewed diff'], { cwd: repo });
+
+  const resumed = JSON.parse(run(['round-start', 'feat/x'], { env }));
+  assert.deepStrictEqual(resumed.completedArtifacts, []);
+  assert.ok(!fs.existsSync(artifact), 'a completed artifact for the old diff must not be reused');
 });
 
 test('record git target: fixed-signal comes from the journal sha, not the fix artifact (regression lock)', () => {

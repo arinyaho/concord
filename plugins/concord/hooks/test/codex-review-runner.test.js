@@ -202,6 +202,27 @@ test('codexExec marks a successful subprocess with no usage event as partial', a
   }
 });
 
+test('codexExec exposes signal and timeout termination separately', async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.154.0\\n');\nelse if (process.argv.includes('signal')) process.kill(process.pid, 'SIGTERM');\nelse setTimeout(() => {}, 1000);\n`);
+  fs.chmodSync(codex, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  try {
+    const signal = await codexExec({ role: 'correctness', prompt: 'signal', repoRoot: binDir, stateDir: binDir });
+    assert.deepStrictEqual({ status: signal.status, signal: signal.signal, timedOut: signal.timedOut }, { status: null, signal: 'SIGTERM', timedOut: false });
+    const timeout = await codexExec({ role: 'correctness', prompt: 'wait', repoRoot: binDir, stateDir: binDir, timeoutMs: 20 });
+    assert.deepStrictEqual({ status: timeout.status, signal: timeout.signal, timedOut: timeout.timedOut }, { status: null, signal: 'SIGTERM', timedOut: true });
+    const controller = new AbortController();
+    const interrupted = codexExec({ role: 'correctness', prompt: 'wait', repoRoot: binDir, stateDir: binDir, abortSignal: controller.signal });
+    setTimeout(() => controller.abort('SIGINT'), 20);
+    assert.strictEqual((await interrupted).interrupted, 'SIGINT');
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
 for (const [name, body] of [
   ['malformed JSONL', `'not json\\n'`],
   ['unknown event', `JSON.stringify({ type: 'future.event' }) + '\\n'`],
@@ -240,14 +261,14 @@ test('codexExec marks a CLI version mismatch partial', async () => {
   }
 });
 
-function harness({ targetType = 'git', rounds = 1, malformed = false, retry = false, retryForever = false, correctnessArtifact, gateApplied = false, dodDeferred = false, failingRole, promptDrivenFix = false, stateDir = temp(), slotIdentity = {} } = {}) {
+function harness({ targetType = 'git', rounds = 1, malformed = false, retry = false, retryForever = false, correctnessArtifact, gateApplied = false, dodDeferred = false, failingRole, promptDrivenFix = false, retryArtifact, retryArtifacts, stateDir = temp(), slotIdentity = {} } = {}) {
   const calls = []; let round = 0; let retried = false;
   const cli = (args) => {
     calls.push(['cli', ...args]);
     const [verb, ref, role] = args;
     if (verb === 'round-start') {
       round++;
-      return { decision: 'work', round, stateDir, targetType, dodPassed: true, dodDeferred, intentApplied: false, gateApplied };
+      return { decision: 'work', round, stateDir, targetType, dodPassed: true, dodDeferred, intentApplied: false, gateApplied, retryArtifact, retryArtifacts };
     }
     if (verb === 'artifact-normalize') {
       if (correctnessArtifact && role === 'correctness') {
@@ -268,7 +289,7 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
     }
     if (verb === 'plan-fixes') return { fixes: round === 1 ? [{ id: 'correctness:bug', file: 'a.txt', span: 'bad', summary: 'fix it' }] : [] };
     if (verb === 'commit-fix') {
-      if (promptDrivenFix && !fs.existsSync(path.join(stateDir, `round-${round}-fix-${role.replace(":", "_")}.json`))) throw new Error('commit-fix did not receive its declared artifact');
+      if (promptDrivenFix && !fs.existsSync(path.join(stateDir, `round-${round}-fix-${String(role).replace(/:/g, '_')}.json`))) throw new Error('commit-fix did not receive its declared artifact');
       return { committed: true, sha: 'abc' };
     }
     if (verb === 'record') return round < rounds ? { decision: { continue: true }, handoff: 'continue' } : { decision: { continue: false, converged: true }, handoff: 'LGTM' };
@@ -290,6 +311,112 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
   };
   return { stateDir, calls, cli, spawn };
 }
+
+test('runner records an artifact-less reviewer exit as a retryable harness failure', async () => {
+  const h = harness();
+  let failure;
+  const cli = (args) => {
+    if (args[0] === 'artifact-normalize' && args[2] === 'correctness') {
+      throw new Error('harness-failure: missing gate artifact correctness for round 1');
+    }
+    if (args[0] === 'round-failure') {
+      failure = JSON.parse(args[2]);
+      return { status: 'recorded' };
+    }
+    return h.cli(args);
+  };
+  const spawn = ({ role, prompt }) => {
+    if (role === 'correctness') return { status: 0 }; // Process exited but never wrote its artifact.
+    return h.spawn({ role, prompt });
+  };
+
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn }),
+    /missing gate artifact correctness/,
+  );
+  assert.deepStrictEqual(failure, {
+    role: 'correctness',
+    kind: 'artifact-write-failure',
+    message: 'missing gate artifact correctness for round 1',
+  });
+});
+
+test('runner removes signal handlers after both a terminal result and a failure', async () => {
+  const before = Object.fromEntries(['SIGINT', 'SIGTERM', 'SIGHUP'].map((signal) => [signal, process.listenerCount(signal)]));
+  const success = harness();
+  await runReviewUntilGreen({ ref: 'feature/signals-success', repoRoot: '/repo', runCli: success.cli, spawn: success.spawn, handleSignals: true });
+  const failure = harness({ failingRole: 'correctness' });
+  await assert.rejects(runReviewUntilGreen({ ref: 'feature/signals-failure', repoRoot: '/repo', runCli: failure.cli, spawn: failure.spawn, handleSignals: true }));
+  assert.deepStrictEqual(Object.fromEntries(['SIGINT', 'SIGTERM', 'SIGHUP'].map((signal) => [signal, process.listenerCount(signal)])), before);
+});
+
+test('runner persists an interruption delivered between orchestration steps', async () => {
+  const failures = [];
+  const cli = (args) => {
+    if (args[0] === 'round-start') {
+      process.emit('SIGINT');
+      return { decision: 'work', round: 1, stateDir: temp(), targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
+    }
+    if (args[0] === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
+    if (args[0] === 'round-failure') { failures.push(JSON.parse(args[2])); return { status: 'recorded' }; }
+    throw new Error(`unexpected CLI ${args[0]}`);
+  };
+  await assert.rejects(runReviewUntilGreen({ ref: 'feature/orchestration-signal', repoRoot: '/repo', runCli: cli, spawn: () => ({ status: 0 }), handleSignals: true }), /interrupted by SIGINT/);
+  assert.deepStrictEqual(failures, [{ role: 'runner', kind: 'interrupted', message: 'review runner interrupted by SIGINT', signal: 'SIGINT' }]);
+});
+
+test('resume launches only the artifact role still pending after an interruption', async () => {
+  const stateDir = temp();
+  const calls = [];
+  let attempt = 0;
+  const cli = (args) => {
+    const [verb, , role] = args;
+    if (verb === 'round-start') {
+      attempt++;
+      return { decision: 'work', round: 1, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false,
+        completedArtifacts: attempt === 1 ? [] : ['correctness'] };
+    }
+    if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: role, attempt: 1 };
+    if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'round-failure') return { status: 'recorded', retryable: true };
+    if (verb === 'plan-fixes') return { fixes: [] };
+    if (verb === 'record') return { decision: { continue: false, converged: true }, handoff: 'LGTM' };
+    throw new Error(`unexpected CLI ${verb}`);
+  };
+  const spawn = ({ role }) => {
+    calls.push(`${attempt}:${role}`);
+    if (attempt === 1 && role === 'verify') throw new Error('interrupted');
+    return { status: 0 };
+  };
+
+  await assert.rejects(runReviewUntilGreen({ ref: 'feature/resume', repoRoot: '/repo', runCli: cli, spawn }), /interrupted/);
+  await runReviewUntilGreen({ ref: 'feature/resume', resume: true, repoRoot: '/repo', runCli: cli, spawn });
+  assert.deepStrictEqual(calls, ['1:correctness', '1:verify', '2:verify']);
+});
+
+test('a failing parallel reviewer does not let the parent return before its sibling exits', async () => {
+  const stateDir = temp();
+  let siblingFinished = false;
+  const cli = (args) => {
+    if (args[0] === 'round-start') return { decision: 'work', round: 1, stateDir, targetType: 'git', dodPassed: true, intentApplied: true, gateApplied: false };
+    if (args[0] === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
+    if (args[0] === 'round-failure') return { status: 'recorded' };
+    if (args[0] === 'artifact-normalize') return { status: 'ok' };
+    throw new Error(`unexpected CLI ${args[0]}`);
+  };
+  const spawn = async ({ role }) => {
+    if (role === 'intent') {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      siblingFinished = true;
+      return { status: 0 };
+    }
+    if (role === 'correctness') throw new Error('correctness failed');
+    return { status: 0 };
+  };
+
+  await assert.rejects(runReviewUntilGreen({ ref: 'feature/wait', repoRoot: '/repo', runCli: cli, spawn }), /correctness failed/);
+  assert.strictEqual(siblingFinished, true);
+});
 
 test('runner automatically executes a clean round in correctness then verify order and returns terminal handoff', async () => {
   const h = harness();
@@ -906,18 +1033,26 @@ test('fix subprocess writes the prompt-declared artifact consumed by commit-fix'
 
 test('runner fails closed when a required reviewer subprocess is terminated by a signal', async () => {
   const h = harness();
-  const spawn = (input) => input.role === 'correctness' ? { status: null } : h.spawn(input);
+  let failure;
+  const cli = (args) => {
+    if (args[0] === 'round-failure') { failure = JSON.parse(args[2]); return { status: 'recorded' }; }
+    return h.cli(args);
+  };
+  const spawn = (input) => input.role === 'correctness' ? { status: null, signal: 'SIGTERM' } : h.spawn(input);
   await assert.rejects(
-    runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn }),
-    /harness-failure: correctness subprocess exited null/,
+    runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn }),
+    /harness-failure: correctness subprocess ended from SIGTERM/,
   );
+  assert.deepStrictEqual(failure, { role: 'correctness', kind: 'signal', message: 'correctness subprocess ended from SIGTERM', signal: 'SIGTERM' });
   assert.strictEqual(h.calls.some((call) => call[0] === 'spawn' && call[1] === 'verify'), false);
 });
 
-test('gate-verify subprocess failure stays lenient and lets the CLI decide', async () => {
+test('gate-verify subprocess failure is retryable instead of being folded as a clean verdict', async () => {
   const h = harness({ gateApplied: true, failingRole: 'gate-verify' });
-  const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
-  assert.strictEqual(out.handoff, 'LGTM');
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn }),
+    /gate-verify subprocess exited 1/,
+  );
   assert.ok(h.calls.some((call) => call[0] === 'spawn' && call[1] === 'gate-verify'));
 });
 
@@ -1136,6 +1271,89 @@ test('a failed panel lens is treated as zero findings while the remaining lenses
   assert.strictEqual(out.handoff, 'LGTM');
 });
 
+test('an interrupted panel lens waits for every launched sibling before the runner rejects', async () => {
+  const stateDir = temp();
+  const pending = [];
+  let recorded = 0;
+  const cli = (args) => {
+    const [verb] = args;
+    if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
+    if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
+    if (verb === 'plan-fixes') return { fixes: [] };
+    if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
+    if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
+    throw new Error(`unexpected CLI ${verb}`);
+  };
+  const spawn = ({ role }) => {
+    if (role === 'correctness') fs.writeFileSync(path.join(stateDir, 'round-4-correctness.json'), JSON.stringify({ status: 'ok', examined: [], findings: [] }));
+    if (role === 'verify') fs.writeFileSync(path.join(stateDir, 'round-4-verify.json'), JSON.stringify({ status: 'ok', rejected: [] }));
+    if (role === 'gate-panel-ac-coverage') {
+      const error = new Error('interrupted panel lens');
+      error.reviewFailure = { role, kind: 'interrupted', message: 'interrupted panel lens' };
+      return Promise.reject(error);
+    }
+    if (role.startsWith('gate-panel-') && role !== 'gate-panel-verify') return new Promise((resolve) => pending.push(resolve));
+    return { status: 0 };
+  };
+  let settled = false;
+  const running = runReviewUntilGreen({ ref: 'feature/panel-interrupt', repoRoot: '/repo', runCli: cli, spawn }).then(
+    () => { settled = true; return null; },
+    (error) => { settled = true; return error; },
+  );
+  for (let i = 0; i < 10 && pending.length < 4; i++) await new Promise(setImmediate);
+  assert.strictEqual(pending.length, 4);
+  await new Promise(setImmediate);
+  assert.strictEqual(settled, false, 'the interrupted lens must wait for sibling cleanup');
+  for (const resolve of pending) resolve({ status: 0 });
+  assert.match((await running).message, /interrupted panel lens/);
+});
+
+test('an interrupted adversarial vote waits for every sibling before the runner rejects', async () => {
+  const stateDir = temp();
+  const pending = [];
+  let recorded = 0;
+  const cli = (args) => {
+    const [verb] = args;
+    if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
+    if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
+    if (verb === 'plan-fixes') return { fixes: [] };
+    if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
+    if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
+    throw new Error(`unexpected CLI ${verb}`);
+  };
+  const spawn = ({ role, prompt }) => {
+    if (role === 'correctness') fs.writeFileSync(path.join(stateDir, 'round-4-correctness.json'), JSON.stringify({ status: 'ok', examined: [], findings: [] }));
+    if (role === 'verify') fs.writeFileSync(path.join(stateDir, 'round-4-verify.json'), JSON.stringify({ status: 'ok', rejected: [] }));
+    if (role.startsWith('gate-panel-') && role !== 'gate-panel-verify') {
+      const lens = role.slice('gate-panel-'.length);
+      const findings = lens === 'ac-coverage' ? [{ id: 'gate:ac-coverage:gap', file: 'a.js', span: 'x', summary: 's' }] : [];
+      fs.writeFileSync(path.join(stateDir, `round-4-gate-panel-1-${lens}.json`), JSON.stringify({ status: 'ok', findings }));
+    }
+    if (role === 'gate-panel-verify') {
+      if (/-0\.json/.test(prompt)) {
+        const error = new Error('interrupted adversarial vote');
+        error.reviewFailure = { role, kind: 'interrupted', message: error.message };
+        return Promise.reject(error);
+      }
+      return new Promise((resolve) => pending.push(resolve));
+    }
+    return { status: 0 };
+  };
+  let settled = false;
+  const running = runReviewUntilGreen({ ref: 'feature/vote-interrupt', repoRoot: '/repo', runCli: cli, spawn }).then(
+    () => { settled = true; return null; },
+    (error) => { settled = true; return error; },
+  );
+  for (let i = 0; i < 10 && pending.length < 2; i++) await new Promise(setImmediate);
+  assert.strictEqual(pending.length, 2);
+  await new Promise(setImmediate);
+  assert.strictEqual(settled, false, 'the interrupted vote must wait for sibling cleanup');
+  for (const resolve of pending) resolve({ status: 0 });
+  assert.match((await running).message, /interrupted adversarial vote/);
+});
+
 test('panel lenses and each finding\'s adversarial votes fan out concurrently', async () => {
   const stateDir = temp();
   const pendingLenses = [];
@@ -1269,6 +1487,23 @@ test('runner appends retry prompt and retries precisely once', async () => {
   const correctness = h.calls.filter((c) => c[0] === 'spawn' && c[1] === 'correctness');
   assert.strictEqual(correctness.length, 2);
   assert.match(correctness[1][2], /REWRITE ARTIFACT/);
+});
+
+test('runner resumes an artifact retry with its persisted prompt', async () => {
+  const h = harness({ retryArtifact: { role: 'correctness', prompt: 'RESUME ARTIFACT RETRY' } });
+  await runReviewUntilGreen({ ref: 'feature/x', resume: true, repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
+  const correctness = h.calls.filter((call) => call[0] === 'spawn' && call[1] === 'correctness');
+  assert.strictEqual(correctness.length, 1);
+  assert.match(correctness[0][2], /RESUME ARTIFACT RETRY/);
+});
+
+test('runner resumes every persisted artifact retry prompt', async () => {
+  const h = harness({ gateApplied: true, retryArtifacts: { correctness: 'RESUME CORRECTNESS RETRY', gate: 'RESUME GATE RETRY' } });
+  await runReviewUntilGreen({ ref: 'feature/x', resume: true, repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
+  const correctness = h.calls.find((call) => call[0] === 'spawn' && call[1] === 'correctness');
+  const gate = h.calls.find((call) => call[0] === 'spawn' && call[1] === 'gate');
+  assert.match(correctness[2], /RESUME CORRECTNESS RETRY/);
+  assert.match(gate[2], /RESUME GATE RETRY/);
 });
 
 test('runner fail-closes a malformed reviewer artifact before verify', async () => {
