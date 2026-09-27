@@ -3,7 +3,7 @@
 // Codex has no in-session Task primitive. This runner is therefore the sole
 // orchestration authority: every clean-context reviewer is a `codex exec`
 // subprocess and every state transition remains owned by review-cli.
-const { execFileSync, spawn } = require('node:child_process');
+const { execFileSync, spawn, spawnSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -16,13 +16,43 @@ const { BLOCKED_CLAUSE, reviewerPrompt } = require('./round-plan');
 const { isWindows, crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
 
 const CODEX_VERSION = 'codex-cli 0.154.0';
+const CODEX_BIN_ENV = 'CONCORD_CODEX_BIN';
+const MACOS_APP_CODEX = '/Applications/ChatGPT.app/Contents/Resources/codex';
 const CODEX_USAGE_FIELDS = ['input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens', 'reasoning_output_tokens'];
 const CODEX_EVENT_TYPES = new Set(['thread.started', 'turn.started', 'turn.completed', 'turn.failed', 'item.started', 'item.updated', 'item.completed', 'error']);
 const CODEX_ITEM_TYPES = new Set(['agent_message', 'reasoning', 'command_execution', 'file_change', 'mcp_tool_call', 'web_search', 'todo_list', 'error', 'collaboration_tool_call', 'collab_agent_tool_call']);
 const PROVIDERS = new Set(['claude', 'codex', 'copilot']);
 const REVIEW_SUBPROCESS_TIMEOUT_MS = 30 * 60 * 1000;
 const TERMINATION_GRACE_MS = 5 * 1000;
-let versionCache = null;
+let codexResolutionCache = null;
+
+function resolveCodexExecutable(repoRoot, options = {}) {
+  const env = options.env || process.env;
+  const platform = options.platform || process.platform;
+  const override = String(env[CODEX_BIN_ENV] || '').trim();
+  const candidates = override
+    ? [{ command: override, source: CODEX_BIN_ENV }]
+    : [{ command: 'codex', source: 'PATH' }, ...(platform === 'darwin' ? [{ command: MACOS_APP_CODEX, source: 'macOS ChatGPT app' }] : [])];
+  const cacheKey = JSON.stringify([repoRoot, platform, env.PATH, override]);
+  if (!options.probe && codexResolutionCache?.key === cacheKey) return codexResolutionCache.value;
+  const probe = options.probe || ((command) => spawnSync(
+    crossPlatformCommand(command, repoRoot),
+    crossPlatformArgs(['--version'], needsDoubleEscape(command, repoRoot)),
+    crossPlatformOpts({ cwd: repoRoot, env, encoding: 'utf8', timeout: 5000, windowsHide: true }),
+  ));
+  const failures = [];
+  for (const candidate of candidates) {
+    let result;
+    try { result = probe(candidate.command, repoRoot, env); } catch (error) { result = { error }; }
+    if (result?.status === 0) {
+      const value = { ...candidate, version: String(result.stdout || '').trim() };
+      if (!options.probe) codexResolutionCache = { key: cacheKey, value };
+      return value;
+    }
+    failures.push(`${candidate.command}: ${result?.error?.code || `exit ${result?.status ?? 'unknown'}`}`);
+  }
+  throw new Error(`harness-failure: no usable Codex executable was found before review started. Checked: ${failures.join('; ')}. Set ${CODEX_BIN_ENV}=/absolute/path/to/codex to select one explicitly.`);
+}
 
 function terminateProcessTree(child, signal) {
   if (isWindows && child.pid) {
@@ -35,16 +65,6 @@ function terminateProcessTree(child, signal) {
     try { process.kill(-child.pid, signal); return; } catch (_) {}
   }
   child.kill(signal);
-}
-
-function codexCliVersion(repoRoot) {
-  const searchPath = process.env.PATH || '';
-  if (!versionCache || versionCache.searchPath !== searchPath) {
-    let value = null;
-    try { value = execFileSync(crossPlatformCommand('codex', repoRoot), crossPlatformArgs(['--version'], needsDoubleEscape('codex', repoRoot)), crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8', timeout: 5000 })).trim(); } catch {}
-    versionCache = { searchPath, value };
-  }
-  return versionCache.value;
 }
 
 function jsonCli(cliPath, args, repoRoot) {
@@ -85,13 +105,14 @@ function sameKeys(actual, expected) {
   return actual.length === expected.length && [...actual].sort().every((key, index) => key === [...expected].sort()[index]);
 }
 
-function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoningEffort, serviceTier, timeoutMs, abortSignal }) {
+function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoningEffort, serviceTier, timeoutMs, abortSignal, codexExecutable }) {
   return new Promise((resolve, reject) => {
+    const resolvedCodex = codexExecutable || resolveCodexExecutable(repoRoot);
     const invocationId = crypto.randomUUID();
     const model = typeof requestedModel === 'string' && requestedModel.trim() ? requestedModel : null;
     const effort = typeof reasoningEffort === 'string' && reasoningEffort.trim() ? reasoningEffort : null;
     const tier = typeof serviceTier === 'string' && serviceTier.trim() ? serviceTier : null;
-    const cliVersion = codexCliVersion(repoRoot);
+    const cliVersion = resolvedCodex.version;
     const startedAt = Date.now();
     // On Windows, `shell: true` (crossPlatformOpts) routes this through
     // cmd.exe, whose command-line reader treats an embedded newline as a
@@ -103,13 +124,13 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
     // path for this value. Scoped to win32 only: the POSIX path (`prompt`
     // as the trailing positional arg) is unaffected by this class of bug
     // and stays exactly as tested.
-    const child = spawn(crossPlatformCommand('codex', repoRoot), crossPlatformArgs([
+    const child = spawn(crossPlatformCommand(resolvedCodex.command, repoRoot), crossPlatformArgs([
       'exec', '--cd', repoRoot, '--sandbox', 'workspace-write', '--add-dir', stateDir,
       ...(model ? ['--model', model] : []),
       ...(effort ? ['--config', `model_reasoning_effort=${JSON.stringify(effort)}`] : []),
       ...(tier ? ['--config', `service_tier=${JSON.stringify(tier)}`] : []),
       '--skip-git-repo-check', '--json', ...(isWindows ? ['-'] : [prompt]),
-    ], needsDoubleEscape('codex', repoRoot)), crossPlatformOpts({ cwd: repoRoot, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'ignore'], detached: !isWindows }));
+    ], needsDoubleEscape(resolvedCodex.command, repoRoot)), crossPlatformOpts({ cwd: repoRoot, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'ignore'], detached: !isWindows }));
     if (isWindows) {
       // If `codex` exits before consuming stdin (a rejected flag, a
       // startup auth failure, the wrong binary on PATH), writing the
@@ -622,4 +643,4 @@ async function runReviewUntilGreen(options) {
   }
 }
 
-module.exports = { runReviewUntilGreen, reviewerPrompt, codexExec, providerExec, jsonCli, resolveDefaultBase };
+module.exports = { runReviewUntilGreen, reviewerPrompt, codexExec, providerExec, jsonCli, resolveCodexExecutable, resolveDefaultBase };

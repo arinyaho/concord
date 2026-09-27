@@ -10,10 +10,31 @@ const { foldTelemetry } = require('../../core/review-telemetry');
 
 // The runner owns all sequencing. Its subprocess seam makes this a no-network
 // integration test while exercising the real artifact contract at the boundary.
-const { runReviewUntilGreen, reviewerPrompt, codexExec, providerExec, resolveDefaultBase } = require('../../core/codex-review-runner');
+const { runReviewUntilGreen, reviewerPrompt, codexExec, providerExec, resolveCodexExecutable, resolveDefaultBase } = require('../../core/codex-review-runner');
 const { reviewerPrompt: packagedReviewerPrompt } = require('../../../concord-codex/engine/codex-review-runner');
 
 function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'codex-runner-')); }
+
+test('Codex resolver falls back to the macOS app after a broken PATH command', () => {
+  const calls = [];
+  const resolved = resolveCodexExecutable('/repo', {
+    platform: 'darwin', env: { PATH: '/broken' },
+    probe: (command) => {
+      calls.push(command);
+      return command === 'codex' ? { error: { code: 'ENOENT' } } : { status: 0, stdout: 'codex-cli 0.154.0\n' };
+    },
+  });
+  assert.deepStrictEqual(calls, ['codex', '/Applications/ChatGPT.app/Contents/Resources/codex']);
+  assert.strictEqual(resolved.command, '/Applications/ChatGPT.app/Contents/Resources/codex');
+  assert.strictEqual(resolved.version, 'codex-cli 0.154.0');
+});
+
+test('Codex resolver treats an explicit override as authoritative', () => {
+  assert.throws(() => resolveCodexExecutable('/repo', {
+    platform: 'darwin', env: { CONCORD_CODEX_BIN: '/broken/codex' },
+    probe: () => ({ error: { code: 'ENOENT' } }),
+  }), /no usable Codex executable/);
+});
 
 test('codex-review-runner.js has no hardcoded copy of the panel lens list -- it must import report.js\'s PANEL_LENSES', () => {
   // Guards the third-copy bug: this module used to hardcode the five lens
@@ -591,7 +612,7 @@ test('runner removes persisted telemetry when the review is abandoned', async ()
   assert.strictEqual(fs.existsSync(path.join(h.stateDir, 'telemetry-feature-x.json')), false);
 });
 
-test('runner preserves a rejected Codex spawn as a failed invocation', async () => {
+test('runner preserves a rejected Codex probe as a failed invocation', async () => {
   const h = harness();
   const cli = (args) => args[0] === 'telemetry-slot' ? null : h.cli(args);
   const previousPath = process.env.PATH;
@@ -599,7 +620,7 @@ test('runner preserves a rejected Codex spawn as a failed invocation', async () 
   try {
     await assert.rejects(
       runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli }),
-      { code: 'ENOENT' },
+      /no usable Codex executable/,
     );
   } finally {
     process.env.PATH = previousPath;
