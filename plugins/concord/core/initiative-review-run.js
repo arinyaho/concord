@@ -157,6 +157,7 @@ function terminalTarget(run, target, revision, kinds = ['terminal']) {
   revision = typeof revision === 'function' ? revision(terminal.revision) : revision;
   if (terminal.target !== revision.ref) return false;
   if (same(terminal.revision, revision)) return true;
+  if (terminal.kind === 'escape') return false;
   throw new Error('initiative review terminal target revision changed');
 }
 

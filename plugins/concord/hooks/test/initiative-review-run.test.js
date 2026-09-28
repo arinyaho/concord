@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { openInitiativeRun, reserveLaunch, recordDisposition, consumeDispositionDelivery, finaliseInitiativeRun, publicInitiativeSummary } = require('../../core/initiative-review-run');
+const { openInitiativeRun, reserveLaunch, recordDisposition, consumeDispositionDelivery, finaliseInitiativeRun, publicInitiativeSummary, terminalTarget } = require('../../core/initiative-review-run');
 const RUNTIMES = [
   require('../../core/initiative-review-run'),
   require('../../../concord-codex/engine/initiative-review-run'),
@@ -34,6 +34,12 @@ test('v3 terminal dispositions are normalized and recorded exactly once', () => 
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
   assert.strictEqual(ledger.version, 3);
   assert.deepStrictEqual(ledger.dispositions, [{ target: 'feature/x', revision, kind: 'terminal', reason: 'clean', sequence: 1, packet: { ...packet, outcome: { kind: 'terminal', reason: 'clean' }, ledger: { version: 3, status: 'active' }, budget: { maxLaunches: 1, maxRounds: 1, launches: 0, rounds: 0 }, delivery: { claim: 'feature/x:1', continuation: 'replay', consumed: false } } }]);
+});
+
+test('terminalTarget does not suppress a retry when an escape disposition\'s revision changed', () => {
+  const run = open({ stateDir: temp(), key: 'escape-revision-changed', maxLaunches: 1, maxRounds: 1 });
+  recordDisposition(run, { target: 'feature/x', revision: { ref: 'feature/x', base: 'main', head_sha: 'old-head' }, result: { decision: 'escape' } });
+  assert.strictEqual(terminalTarget(run, 'feature/x', { ref: 'feature/x', base: 'main', head_sha: 'new-head' }, ['terminal', 'escape']), false);
 });
 
 test('a disposition delivery claim is atomically consumed once', () => {
