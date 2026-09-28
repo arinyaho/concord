@@ -150,10 +150,10 @@ function publicInitiativeSummary(run) {
   };
 }
 
-function terminalTarget(run, target, revision) {
+function terminalTarget(run, target, revision, kinds = ['terminal']) {
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
   if (ledger.version !== 3) throw new Error('initiative review run schemaVersion must be 3');
-  const terminal = (ledger.dispositions || []).find((item) => item.target === target && item.kind === 'terminal');
+  const terminal = (ledger.dispositions || []).find((item) => item.target === target && kinds.includes(item.kind));
   if (ledger.status !== 'active' || !terminal) return false;
   if (!terminal.revision?.head_sha) throw new Error('initiative review terminal target has no stored revision');
   if (!target.startsWith('file:') && !terminal.revision.base) throw new Error('initiative review terminal target has no stored base');

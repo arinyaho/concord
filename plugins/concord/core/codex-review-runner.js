@@ -424,9 +424,10 @@ async function runReviewUntilGreen(options) {
         return gitHeadSha(canonicalRepoRoot);
       })();
     return { ref, ...(identityBase ? { base: identityBase } : {}), head_sha };
-  })) {
-    const packet = pendingContinuationPacket(initiativeRun, ref, JSON.parse(fs.readFileSync(initiativeRun.path, 'utf8')).dispositions.find((item) => item.target === ref && item.kind === 'terminal').revision);
-    return { decision: 'terminal', initiative: publicInitiativeSummary(initiativeRun), ...(packet ? { continuationPacket: packet } : {}) };
+  }, ['terminal', 'escape'])) {
+    const disposition = JSON.parse(fs.readFileSync(initiativeRun.path, 'utf8')).dispositions.find((item) => item.target === ref && ['terminal', 'escape'].includes(item.kind));
+    const packet = pendingContinuationPacket(initiativeRun, ref, disposition.revision);
+    return { decision: disposition.kind === 'escape' ? 'escape' : 'terminal', initiative: publicInitiativeSummary(initiativeRun), ...(packet ? { continuationPacket: packet } : {}) };
   }
   for (const provider of [reviewer, fixer]) {
     if (!PROVIDERS.has(provider)) throw new Error(`review-until-green: unsupported provider "${provider}"`);

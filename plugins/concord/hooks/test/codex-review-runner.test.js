@@ -300,6 +300,17 @@ test('initiative runner leaves its terminal delivery claim unconsumed until the 
   assert.strictEqual(replay.continuationPacket.outcome.reason, 'clean');
 });
 
+test('initiative runner replays an unconsumed duplicate escape handoff', async () => {
+  const stateDir = temp();
+  const options = { ref: 'feature/escape-replay', base: 'main', repoRoot: '/repo', initiativeRunKey: 'escape-replay', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1,
+    runCli: ([verb]) => verb === 'round-start' ? { decision: 'escape', base: 'main', head: 'head', stateDir } : undefined };
+  const first = await runReviewUntilGreen(options);
+  const replay = await runReviewUntilGreen({ ...options, targetIdentity: () => 'head', runCli: () => { throw new Error('round-start must not run'); } });
+  assert.strictEqual(replay.decision, 'escape');
+  assert.strictEqual(replay.continuationPacket.delivery.claim, first.continuationPacket.delivery.claim);
+  assert.deepStrictEqual(replay.continuationPacket.outcome, { kind: 'escape', reason: 'escape' });
+});
+
 test('initiative error retains completed DoD, diagnostic, and duplicate retry packet', async () => {
   const stateDir = temp();
   const options = { ref: 'feature/error-retry', base: 'main', repoRoot: '/repo', initiativeRunKey: 'error-retry', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 2,
