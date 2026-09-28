@@ -17,6 +17,7 @@ function write(file, value) {
 
 function locked(run, update) {
   const lock = `${run.path}.lock`;
+  fs.mkdirSync(path.dirname(lock), { recursive: true });
   try { fs.mkdirSync(lock); } catch (error) { if (error.code === 'EEXIST') return false; throw error; }
   try {
     let ledger;
@@ -52,6 +53,7 @@ function reserveLaunch(run, launch) {
   return Boolean(locked(run, (ledger) => {
     if (!ledger || ledger.status !== 'active' || !Number.isInteger(launch.round) || ledger.launches.length >= ledger.budget.maxLaunches) return null;
     const target = launch.target || launch.revision?.ref || 'unknown';
+    if ((ledger.reconciliation?.terminals || []).some((terminal) => terminal.target === target)) return null;
     const round = `${target}\u0000${launch.round}`;
     const rounds = ledger.rounds || [];
     if (!rounds.includes(round) && rounds.length >= ledger.budget.maxRounds) return null;
@@ -64,7 +66,7 @@ function reserveLaunch(run, launch) {
 function recordTargetTerminal(run, { target, reason = 'target-terminal', finding = null, stage = null, avoidedLaunches = 0, findings = {}, checks = [], telemetry = [] }) {
   const safeTelemetry = telemetry.map(({ role, stage: telemetryStage, revision, count, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, ...(telemetryStage ? { stage: telemetryStage } : {}), ...(revision ? { revision } : {}), ...(Number.isInteger(count) ? { count } : {}), elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }));
   return Boolean(locked(run, (ledger) => {
-    if (!ledger) return null;
+    if (!ledger || ledger.status !== 'active' || (ledger.reconciliation?.terminals || []).some((terminal) => terminal.target === target)) return null;
     const terminal = { target, reason };
     const previous = ledger.reconciliation || {};
     return { ...ledger, findings: { ...(ledger.findings || {}), ...Object.fromEntries(Object.entries(findings).map(([kind, count]) => [kind, (ledger.findings?.[kind] || 0) + count])) }, checks: [...(ledger.checks || []), ...checks], telemetry: [...(ledger.telemetry || []), ...safeTelemetry], reconciliation: { terminals: [...(previous.terminals || []), terminal], hint: reason === 'reconciliation-required' ? hint(reason, finding, stage, avoidedLaunches) : (previous.hint || hint(reason, finding, stage, avoidedLaunches)) } };

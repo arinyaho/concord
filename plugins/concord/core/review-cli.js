@@ -919,7 +919,7 @@ function main(resolveFromCwd) {
       ledger = begun;
       if (terminal) {
         writeLedger(stateDir, slug, ledger);
-        process.stdout.write(JSON.stringify({ decision: 'terminal', status: ledger.status, round: ledger.round, stateDir }) + '\n');
+        process.stdout.write(JSON.stringify({ decision: 'terminal', status: ledger.status, round: ledger.round, base: ledger.target?.base, stateDir }) + '\n');
         return;
       }
       if (noOp) {
@@ -1080,7 +1080,7 @@ function main(resolveFromCwd) {
     // `true` means "nothing blocked the round", not "the gate ran and passed" --
     // a driver that turns it into "DoD already passed; do not rerun tests" would
     // be removing the last real check. dodDeferred is how a caller tells them apart.
-    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, dodDeferred: !!dod.deferred, intentApplied: !!intentCfg, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir, completedArtifacts, retryArtifacts, retryArtifact }) + '\n');
+    process.stdout.write(JSON.stringify({ decision: 'work', round: ledger.round, budget: ledger.budget, base: targetUpdate.base, dodPassed: dod.passed, dodDeferred: !!dod.deferred, intentApplied: !!intentCfg, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir, completedArtifacts, retryArtifacts, retryArtifact }) + '\n');
     return;
   }
 
@@ -1422,9 +1422,9 @@ function main(resolveFromCwd) {
     }
     const material = [...intentParked, ...gateOpen.filter((f) => /^gate:(?:design-conformance|ac-coverage):/.test(f.id))];
     const reconciliation = material.length > 0;
-    const next = { ...ledger, planned: reconciliation ? [] : fixes.map((f) => f.id), resolved_absent: reconciliation ? [] : resolvedAbsent, intent_parked: intentParked, gate_open: gateOpen, phase: 'fixes' };
+    const next = { ...ledger, planned: reconciliation ? [] : fixes.map((f) => f.id), resolved_absent: resolvedAbsent, intent_parked: intentParked, gate_open: gateOpen, phase: 'fixes' };
     writeLedger(stateDir, slug, next);
-    process.stdout.write(JSON.stringify({ fixes: reconciliation ? [] : fixes, reconciliation: reconciliation && { trigger: 'material-finding', finding: material[0].id, stage: 'plan-fixes', findings: material.reduce((counts, finding) => {
+    process.stdout.write(JSON.stringify({ fixes: reconciliation ? [] : fixes, avoidedLaunches: reconciliation ? fixes.length : 0, reconciliation: reconciliation && { trigger: 'material-finding', finding: material[0].id, stage: 'plan-fixes', findings: material.reduce((counts, finding) => {
       const kind = finding.id.startsWith('gate:design-conformance:') ? 'design-conformance' : finding.id.startsWith('gate:ac-coverage:') ? 'ac-coverage' : finding.id.split(':', 1)[0];
       return { ...counts, [kind]: (counts[kind] || 0) + 1 };
     }, {}) } }) + '\n');

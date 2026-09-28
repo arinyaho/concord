@@ -5,7 +5,7 @@
 // subprocess and every state transition remains owned by review-cli.
 const { execFileSync, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
-const { openInitiativeRun, reserveLaunch, recordTargetTerminal, finaliseInitiativeRun } = require('./initiative-review-run');
+const { openInitiativeRun, reserveLaunch, recordTargetTerminal, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
 const fs = require('node:fs');
 const path = require('node:path');
 const { safeIdForFilename } = require('./artifact-name');
@@ -364,7 +364,7 @@ async function runReviewUntilGreen(options) {
   if (options.initiativeFinalise) {
     if (!initiativeRun) throw new Error('review-until-green: --initiative-finalise requires an initiative run');
     if (!finaliseInitiativeRun(initiativeRun)) throw new Error('review-until-green: initiative run finalisation was contended');
-    return { decision: { finalised: true } };
+    return { decision: { finalised: true }, initiative: publicInitiativeSummary(initiativeRun) };
   }
   if (!ref) throw new Error('review-until-green: missing target ref');
   const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot));
@@ -456,10 +456,11 @@ async function runReviewUntilGreen(options) {
     if ((result?.decision === 'terminal' || result?.decision?.converged === true || result?.decision?.parked === true || result?.decision?.abandoned === true) && telemetryPath) {
       try { fs.unlinkSync(telemetryPath); } catch {}
     }
-    if (initiativeRun && (result?.decision?.converged || result?.decision?.parked || result?.decision?.abandoned || result?.decision?.intentReview || result?.decision?.gatePending)) {
+    const terminal = result?.decision === 'terminal' || result?.decision?.converged || result?.decision?.parked || result?.decision?.abandoned || result?.decision?.intentReview || result?.decision?.gatePending;
+    if (initiativeRun && terminal) {
       if (!recordTargetTerminal(initiativeRun, {
         target: ref,
-        reason: material ? 'reconciliation-required' : 'target-terminal',
+        reason: material ? 'reconciliation-required' : result?.status || 'target-terminal',
         finding: material?.finding || null,
         stage: material?.stage || null,
         avoidedLaunches: material?.avoidedLaunches || 0,
@@ -483,7 +484,7 @@ async function runReviewUntilGreen(options) {
   // Never resolve a base for resume: round-start restores ledger.target.base.
   // File targets do not have a git base at all.
   const baseResolver = options.resolveDefaultBase || (options.runCli ? null : resolveDefaultBase);
-  const initialBase = resume
+  let initialBase = resume
     ? undefined
     : (base === undefined && !ref.startsWith('file:') && baseResolver ? baseResolver(repoRoot) : base);
 
@@ -563,6 +564,7 @@ async function runReviewUntilGreen(options) {
     if (options.reviewerModel) startArgs.push('--reviewer-model', options.reviewerModel);
     if (options.fixerModel) startArgs.push('--fixer-model', options.fixerModel);
     const started = await cli(startArgs);
+    if (!initialBase && started.base) initialBase = started.base;
     await throwIfAborted(started.decision === 'work');
     if (started.reviewRouting) {
       reviewer = started.reviewRouting.reviewer || reviewer;
@@ -590,7 +592,7 @@ async function runReviewUntilGreen(options) {
     telemetryLoaded = true;
     if (started.decision !== 'work') return withTelemetry(started);
     currentRound = started.round;
-    checks = [{ name: 'definition-of-done', status: started.dodPassed ? 'passed' : (started.dodDeferred ? 'deferred' : 'unknown') }];
+    checks = [{ name: 'definition-of-done', status: started.dodPassed ? 'passed' : (started.dodDeferred ? 'deferred' : 'failed') }];
     const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodPassed: started.dodPassed, dodDeferred: started.dodDeferred, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref) };
     let slotAllocation = Promise.resolve();
     const launch = async (input) => {
@@ -652,8 +654,9 @@ async function runReviewUntilGreen(options) {
 
     const planned = await cli(['plan-fixes', ref]);
     if (planned.reconciliation) {
-      material = typeof planned.reconciliation === 'object' ? { ...planned.reconciliation, stage: planned.reconciliation.stage || 'plan-fixes', avoidedLaunches: (planned.fixes || []).length } : { stage: 'plan-fixes', avoidedLaunches: (planned.fixes || []).length };
-      return withTelemetry(await cli(['record', ref]));
+      material = typeof planned.reconciliation === 'object' ? { ...planned.reconciliation, stage: planned.reconciliation.stage || 'plan-fixes', avoidedLaunches: planned.avoidedLaunches || 0 } : { stage: 'plan-fixes', avoidedLaunches: planned.avoidedLaunches || 0 };
+      const recorded = await cli(['record', ref]);
+      return withTelemetry({ ...recorded, decision: { ...(recorded.decision || {}), continue: false, gatePending: true } });
     }
     await throwIfAborted(true);
     for (const finding of planned.fixes || []) {

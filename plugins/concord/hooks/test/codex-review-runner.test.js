@@ -52,6 +52,42 @@ test('initiative explicit finalise lock contention fails closed', async () => {
   fs.rmdirSync(`${ledgerPath}.lock`);
 });
 
+test('initiative finalisation returns only the safe aggregate', async () => {
+  const stateDir = temp();
+  const result = await runReviewUntilGreen({
+    initiativeRunKey: 'final-summary', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, initiativeFinalise: true,
+  });
+  assert.deepStrictEqual(result, { decision: { finalised: true }, initiative: { targetIds: [], counts: { targets: 0, launches: 0, rounds: 0, findings: {}, checks: 0, telemetry: 0 } } });
+});
+
+test('initiative terminal string decisions are recorded', async () => {
+  const stateDir = temp();
+  await runReviewUntilGreen({
+    ref: 'feature/x', repoRoot: '/repo', initiativeRunKey: 'terminal-string', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1,
+    runCli: ([verb]) => verb === 'round-start' ? { decision: 'terminal', status: 'parked', base: 'main', stateDir, dodPassed: false, dodDeferred: false } : undefined,
+  });
+  const ledger = JSON.parse(fs.readFileSync(runPath(stateDir, 'terminal-string'), 'utf8'));
+  assert.deepStrictEqual(ledger.reconciliation.terminals, [{ target: 'feature/x', reason: 'parked' }]);
+});
+
+test('reconciliation terminates the target and retains its restored base and avoided fixes', async () => {
+  const stateDir = temp();
+  await runReviewUntilGreen({
+    ref: 'feature/x', resume: true, repoRoot: '/repo', initiativeRunKey: 'reconcile', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 1,
+    runCli: ([verb]) => {
+      if (verb === 'round-start') return { decision: 'work', round: 1, base: 'main', stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: false };
+      if (verb === 'artifact-normalize') return { status: 'ok' };
+      if (verb === 'plan-fixes') return { fixes: [], avoidedLaunches: 2, reconciliation: { finding: 'intent:missing', findings: { intent: 1 } } };
+      if (verb === 'record') return { decision: { continue: true } };
+    },
+    spawn: async () => ({ status: 0 }),
+  });
+  const ledger = JSON.parse(fs.readFileSync(runPath(stateDir, 'reconcile'), 'utf8'));
+  assert.deepStrictEqual(ledger.targets, [{ ref: 'feature/x', base: 'main' }]);
+  assert.deepStrictEqual(ledger.reconciliation.hint.avoidedLaunches, 2);
+  assert.deepStrictEqual(ledger.checks, [{ name: 'definition-of-done', status: 'failed' }]);
+});
+
 test('Codex resolver falls back to the macOS app after a broken PATH command', () => {
   const calls = [];
   const resolved = resolveCodexExecutable('/repo', {
@@ -1707,4 +1743,17 @@ test('Codex launcher marks resume so the runner preserves the ledger base', () =
   const options = JSON.parse(fs.readFileSync(capture, 'utf8'));
   assert.strictEqual(options.resume, true);
   assert.strictEqual(options.base, undefined);
+});
+
+test('Codex launcher finalises without resolving a git target', () => {
+  const dir = temp();
+  const capture = path.join(dir, 'options.json');
+  const preload = path.join(dir, 'capture-runner.js');
+  const bin = path.join(__dirname, '..', '..', '..', 'concord-codex', 'bin', 'review-until-green.js');
+  fs.writeFileSync(preload, `
+    const fs = require('node:fs'); const Module = require('node:module'); const load = Module._load;
+    Module._load = function(request, parent, isMain) { if (request === '../engine/codex-review-runner') return { runReviewUntilGreen: async (options) => { fs.writeFileSync(process.env.CAPTURE, JSON.stringify(options)); return { handoff: 'ok' }; } }; return load.apply(this, arguments); };
+  `);
+  execFileSync('node', ['--require', preload, bin, '--initiative-finalise', '--initiative-run-key', 'key', '--initiative-state-dir', dir, '--initiative-max-launches', '1', '--initiative-max-rounds', '1'], { cwd: dir, env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
+  assert.strictEqual(JSON.parse(fs.readFileSync(capture, 'utf8')).ref, undefined);
 });

@@ -1551,6 +1551,7 @@ test('plan-fixes: no-key runs suppress correctness fixes for reconciliation-requ
   writeArtifact(dir, n, 'intent', { status: 'ok', findings: [{ id: 'intent:retry-count', file: 'a.txt', span: 'two', summary: 'retries once', requirement: 'retry three times' }] });
   const out = JSON.parse(run(['plan-fixes', 'feat/x'], { env }));
   assert.deepStrictEqual(out.fixes, []);
+  assert.strictEqual(out.avoidedLaunches, 1);
   assert.deepStrictEqual(out.reconciliation.findings, { intent: 1 });
   assert.deepStrictEqual(review.readLedger(dir, review.targetSlug('feat/x')).planned, []);
 });

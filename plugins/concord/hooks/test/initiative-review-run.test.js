@@ -87,3 +87,13 @@ test('initiative aggregate output hashes local target revisions and exposes coun
   });
   assert.doesNotMatch(JSON.stringify(summary), /private-(?:ref|base|head)/);
 });
+
+test('initiative state directories initialize recursively and terminal targets stay immutable', () => {
+  const dir = path.join(temp(), 'new', 'state');
+  const run = openInitiativeRun({ stateDir: dir, key: 'opaque key', maxLaunches: 4, maxRounds: 2 });
+  assert.ok(reserveLaunch(run, { role: 'correctness', target: 'first-ref', revision: { ref: 'first-ref', base: 'main' }, round: 1 }));
+  assert.ok(recordTargetTerminal(run, { target: 'first-ref' }));
+  assert.strictEqual(reserveLaunch(run, { role: 'fix', target: 'first-ref', revision: { ref: 'first-ref', base: 'main' }, round: 1 }), false);
+  assert.strictEqual(recordTargetTerminal(run, { target: 'first-ref' }), false);
+  assert.ok(reserveLaunch(run, { role: 'correctness', target: 'second-ref', revision: { ref: 'second-ref', base: 'main' }, round: 1 }));
+});
