@@ -116,7 +116,7 @@ test('initiative aggregate output hashes local target revisions and exposes coun
   recordTargetTerminal(run, { target: 'private-ref', findings: { intent: 1 }, checks: [{ name: 'check', status: 'passed' }] });
   const summary = publicInitiativeSummary(run);
   assert.deepStrictEqual(summary, {
-    targetIds: [require('node:crypto').createHash('sha256').update(JSON.stringify({ ref: 'private-ref', base: 'private-base', head: 'private-head' })).digest('hex')],
+    targetIds: [require('node:crypto').createHash('sha256').update(JSON.stringify({ ref: 'private-ref', base: 'private-base', head_sha: 'private-head' })).digest('hex')],
     counts: { targets: 1, launches: 1, rounds: 1, findings: { intent: 1 }, checks: 1, telemetry: 0 },
   });
   assert.doesNotMatch(JSON.stringify(summary), /private-(?:ref|base|head)/);
@@ -130,4 +130,14 @@ test('initiative state directories initialize recursively and terminal targets s
   assert.strictEqual(reserveLaunch(run, { role: 'fix', target: 'first-ref', revision: { ref: 'first-ref', base: 'main' }, round: 1 }), false);
   assert.strictEqual(recordTargetTerminal(run, { target: 'first-ref' }), false);
   assert.ok(reserveLaunch(run, { role: 'correctness', target: 'second-ref', revision: { ref: 'second-ref', base: 'main' }, round: 1 }));
+});
+
+test('initiative state paths are canonicalized through a symlink', () => {
+  const root = temp();
+  const actual = path.join(root, 'actual');
+  const alias = path.join(root, 'alias');
+  fs.mkdirSync(actual);
+  fs.symlinkSync(actual, alias);
+  const run = open({ stateDir: path.join(alias, 'new', 'state'), key: 'canonical', maxLaunches: 1, maxRounds: 1 });
+  assert.strictEqual(run.path, path.join(fs.realpathSync(actual), 'new', 'state', path.basename(run.path)));
 });
