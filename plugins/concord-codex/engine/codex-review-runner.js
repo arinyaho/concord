@@ -527,10 +527,20 @@ async function runReviewUntilGreen(options) {
   };
   const withTelemetry = (result) => {
     const output = { ...result, telemetry: result?.telemetry || telemetry };
-    if ((result?.decision === 'terminal' || result?.decision?.converged === true || result?.decision?.parked === true || result?.decision?.abandoned === true) && telemetryPath) {
+    const genuinelyTerminal = result?.decision === 'terminal' || result?.decision?.converged === true || result?.decision?.parked === true || result?.decision?.abandoned === true;
+    const terminal = genuinelyTerminal || result?.decision === 'escape' || result?.decision?.intentReview || result?.decision?.gatePending;
+    // A genuinely terminal result always clears the local cache -- no more
+    // accumulation is expected. Without an initiative run, a re-runnable
+    // decision (escape/gate-pending/intent-review) has nowhere else its
+    // telemetry is captured, so the cache must survive for the next
+    // invocation to keep accumulating into it. WITH an initiative run,
+    // that telemetry is captured durably in the disposition recorded below
+    // instead, so the local cache becomes redundant and must be cleared --
+    // otherwise a retry reloads it and appends the same invocations into
+    // ledger.telemetry a second time.
+    if ((genuinelyTerminal || (initiativeRun && terminal)) && telemetryPath) {
       try { fs.unlinkSync(telemetryPath); } catch {}
     }
-    const terminal = result?.decision === 'terminal' || result?.decision === 'escape' || result?.decision?.converged || result?.decision?.parked || result?.decision?.abandoned || result?.decision?.intentReview || result?.decision?.gatePending;
     if (initiativeRun && terminal) {
       const reconciliation = result?.reconciliation;
       // Derive escaped from the SAME normalization recordDisposition uses

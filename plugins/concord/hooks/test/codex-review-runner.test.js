@@ -409,6 +409,30 @@ test('a non-material gate-pending record result produces a working, resumable es
   assert.strictEqual(roundStarted, true);
 });
 
+test('a consumed gate-pending retry does not double-count the prior round\'s telemetry', async () => {
+  const stateDir = temp();
+  const options = { ref: 'feature/gp-telemetry', base: 'main', repoRoot: '/repo', initiativeRunKey: 'gp-telemetry', initiativeStateDir: stateDir, initiativeMaxLaunches: 8, initiativeMaxRounds: 4,
+    runCli: ([verb]) => verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false }
+      : verb === 'artifact-normalize' ? { status: 'ok' }
+        : verb === 'plan-fixes' ? { fixes: [] }
+          : { decision: { continue: false, gatePending: true } },
+    spawn: async () => ({ status: 0 }) };
+  await runReviewUntilGreen(options);
+  const ledgerPath = runPath(stateDir, 'gp-telemetry');
+  let ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+  const firstRoundCount = ledger.telemetry.length;
+  assert.ok(firstRoundCount > 0);
+  ledger.dispositions[0].packet.delivery.consumed = true;
+  fs.writeFileSync(ledgerPath, JSON.stringify(ledger));
+  await runReviewUntilGreen({ ...options, targetIdentity: () => 'head' });
+  ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+  // The local telemetry cache must be cleared once an escape/gate-pending
+  // recording is captured durably in the ledger, or the second round
+  // reloads the first round's invocations and records them again on top
+  // of its own -- the second recording must add only its OWN entries.
+  assert.strictEqual(ledger.telemetry.length, firstRoundCount * 2);
+});
+
 test('initiative error retains completed DoD, diagnostic, and duplicate retry packet', async () => {
   const stateDir = temp();
   const options = { ref: 'feature/error-retry', base: 'main', repoRoot: '/repo', initiativeRunKey: 'error-retry', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 2,
