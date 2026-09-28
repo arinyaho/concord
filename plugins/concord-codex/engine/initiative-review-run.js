@@ -65,11 +65,22 @@ function normalizeDisposition(result = {}) {
   if (result instanceof Error) return { kind: 'error', reason: `runner-error:${crypto.createHash('sha256').update(result.message || '').digest('hex').slice(0, 12)}` };
   if (result.decision === 'escape') return { kind: 'escape', reason: 'escape' };
   const decision = result.decision || {};
-  const reason = ['parked', 'abandoned'].includes(result.status) ? result.status
-    : decision.parked ? 'parked' : decision.abandoned ? 'abandoned'
-      : result.reconciliation ? 'reconciliation-required'
-        : result.status || (decision.converged ? 'clean' : decision.intentReview ? 'intent-review' : decision.gatePending ? 'gate-pending' : 'target-terminal');
-  return { kind: 'terminal', reason };
+  if (['parked', 'abandoned'].includes(result.status) || decision.parked || decision.abandoned || result.reconciliation || result.status || decision.converged) {
+    const reason = ['parked', 'abandoned'].includes(result.status) ? result.status
+      : decision.parked ? 'parked' : decision.abandoned ? 'abandoned'
+        : result.reconciliation ? 'reconciliation-required'
+          : result.status || 'clean';
+    return { kind: 'terminal', reason };
+  }
+  // gate-pending and intent-review are round-start's own re-runnable stop
+  // states (a fresh round-start clears the reported findings and resets
+  // status once the human dismisses/resolves them) -- classify them as
+  // 'escape', not 'terminal', so terminalTarget's same-revision replay only
+  // blocks a retry while the packet is unconsumed, instead of permanently
+  // sealing the target the way a genuine terminal disposition does.
+  if (decision.intentReview) return { kind: 'escape', reason: 'intent-review' };
+  if (decision.gatePending) return { kind: 'escape', reason: 'gate-pending' };
+  return { kind: 'terminal', reason: 'target-terminal' };
 }
 
 function openInitiativeRun({ stateDir, key, repository, maxLaunches, maxRounds, allowTerminal = false }) {

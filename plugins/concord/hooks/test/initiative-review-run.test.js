@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { openInitiativeRun, reserveLaunch, recordDisposition, consumeDispositionDelivery, finaliseInitiativeRun, publicInitiativeSummary, terminalTarget } = require('../../core/initiative-review-run');
+const { openInitiativeRun, reserveLaunch, recordDisposition, normalizeDisposition, consumeDispositionDelivery, finaliseInitiativeRun, publicInitiativeSummary, terminalTarget } = require('../../core/initiative-review-run');
 const RUNTIMES = [
   require('../../core/initiative-review-run'),
   require('../../../concord-codex/engine/initiative-review-run'),
@@ -34,6 +34,34 @@ test('v3 terminal dispositions are normalized and recorded exactly once', () => 
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
   assert.strictEqual(ledger.version, 3);
   assert.deepStrictEqual(ledger.dispositions, [{ target: 'feature/x', revision, kind: 'terminal', reason: 'clean', sequence: 1, packet: { ...packet, outcome: { kind: 'terminal', reason: 'clean' }, ledger: { version: 3, status: 'active' }, budget: { maxLaunches: 1, maxRounds: 1, launches: 0, rounds: 0 }, delivery: { claim: 'feature/x:1', continuation: 'replay', consumed: false } } }]);
+});
+
+test('normalizeDisposition classifies gate-pending and intent-review as escape, not terminal', () => {
+  // round-start treats gate-pending/intent-review as its own re-runnable
+  // stop states (a fresh round-start clears them once a human resolves the
+  // finding), so they must not get 'terminal' kind's permanent same-revision
+  // block -- 'escape' only blocks replay while its packet is unconsumed.
+  assert.deepStrictEqual(normalizeDisposition({ decision: { continue: false, gatePending: true } }), { kind: 'escape', reason: 'gate-pending' });
+  assert.deepStrictEqual(normalizeDisposition({ decision: { continue: false, intentReview: true } }), { kind: 'escape', reason: 'intent-review' });
+  // A material finding's reconciliation still takes precedence and stays
+  // genuinely terminal, matching the existing reconciliation tests.
+  assert.deepStrictEqual(normalizeDisposition({ decision: { continue: false, intentReview: true }, reconciliation: { finding: 'intent:missing' } }), { kind: 'terminal', reason: 'reconciliation-required' });
+});
+
+test('a consumed gate-pending disposition lets a target resume at the same revision', () => {
+  const run = open({ stateDir: temp(), key: 'gate-pending-consumed', maxLaunches: 1, maxRounds: 1 });
+  const revision = { ref: 'feature/x', base: 'main', head_sha: 'head' };
+  assert.ok(recordDisposition(run, { target: 'feature/x', revision, result: { decision: { continue: false, gatePending: true } } }));
+  // Unconsumed: still blocks replay, matching escape's own semantics.
+  const beforeConsume = terminalTarget(run, 'feature/x', revision, ['terminal', 'escape']);
+  assert.strictEqual(beforeConsume.kind, 'escape');
+  const ledgerPath = run.path;
+  const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+  ledger.dispositions[0].packet.delivery.consumed = true;
+  fs.writeFileSync(ledgerPath, JSON.stringify(ledger));
+  // Consumed: no longer blocks -- a human dismissed/resolved the finding
+  // and a fresh round-start at the same revision must be allowed to run.
+  assert.strictEqual(terminalTarget(run, 'feature/x', revision, ['terminal', 'escape']), false);
 });
 
 test('terminalTarget does not suppress a retry when an escape disposition\'s revision changed', () => {
