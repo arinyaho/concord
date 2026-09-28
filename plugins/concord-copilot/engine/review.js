@@ -53,6 +53,7 @@ function deleteLedger(stateDir, slug) {
 
 function emptyLedger(target) {
   return {
+    attemptId: crypto.randomUUID(),
     target,
     status: 'converging',
     round: 0,

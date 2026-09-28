@@ -61,6 +61,33 @@ test('a keyed run cannot cross repository identities', () => {
   assert.throws(() => openInitiativeRun({ stateDir: dir, key: 'opaque key', repository: '/other-repo', maxLaunches: 2, maxRounds: 1 }), /different repository/);
 });
 
+test('linked worktrees share a git-common-dir identity while other repositories do not', () => {
+  const root = temp();
+  const linked = temp();
+  const stateDir = temp();
+  fs.writeFileSync(path.join(root, 'tracked'), 'x');
+  require('node:child_process').execFileSync('git', ['init', '-q'], { cwd: root });
+  require('node:child_process').execFileSync('git', ['add', 'tracked'], { cwd: root });
+  require('node:child_process').execFileSync('git', ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'initial'], { cwd: root });
+  require('node:child_process').execFileSync('git', ['worktree', 'add', '-q', linked], { cwd: root });
+  openInitiativeRun({ stateDir, key: 'shared', repository: root, maxLaunches: 2, maxRounds: 1 });
+  assert.doesNotThrow(() => openInitiativeRun({ stateDir, key: 'shared', repository: linked, maxLaunches: 2, maxRounds: 1 }));
+  assert.throws(() => openInitiativeRun({ stateDir, key: 'shared', repository: temp(), maxLaunches: 2, maxRounds: 1 }), /different repository/);
+});
+
+test('new target attempts consume distinct global round slots', () => {
+  const run = open({ stateDir: temp(), key: 'attempts', maxLaunches: 3, maxRounds: 1 });
+  assert.ok(reserveLaunch(run, { role: 'correctness', target: 'feature/x', attemptId: 'first', round: 1 }));
+  assert.strictEqual(reserveLaunch(run, { role: 'correctness', target: 'feature/x', attemptId: 'second', round: 1 }), false);
+});
+
+test('the first reconciliation hint stays attached to the first material target', () => {
+  const run = open({ stateDir: temp(), key: 'hints', maxLaunches: 3, maxRounds: 3 });
+  assert.ok(recordTargetTerminal(run, { target: 'first', reason: 'reconciliation-required', finding: 'intent:first', stage: 'record', avoidedLaunches: 2 }));
+  assert.ok(recordTargetTerminal(run, { target: 'second', reason: 'reconciliation-required', finding: 'intent:second', stage: 'record', avoidedLaunches: 1 }));
+  assert.strictEqual(JSON.parse(fs.readFileSync(run.path, 'utf8')).reconciliation.hint.firstMaterialFinding, 'intent:first');
+});
+
 test('keyed runs stay active per target, require absolute state, charge rounds globally, and persist safe reconciliation evidence', () => {
   const dir = temp();
   assert.throws(() => open({ stateDir: 'relative-state', key: 'opaque key', maxLaunches: 4, maxRounds: 1 }), /absolute/);

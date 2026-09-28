@@ -2896,6 +2896,9 @@ test('record: panel-confirmed material finding terminates through reconciliation
   assert.strictEqual(rec2.decision.gatePending, true);
   assert.strictEqual(rec2.decision.reconciliation, true);
   assert.deepStrictEqual(rec2.reconciliation.findings, { 'design-conformance': 1 });
+  const replay = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.deepStrictEqual(replay.reconciliation, rec2.reconciliation);
+  assert.deepStrictEqual(replay.checks, rec2.checks);
   const finalLedger = review.readLedger(dir, review.targetSlug('feat/x'));
   assert.deepStrictEqual(finalLedger.gate_open.map((f) => f.id), ['gate:design-conformance:sk-exposure']);
 });

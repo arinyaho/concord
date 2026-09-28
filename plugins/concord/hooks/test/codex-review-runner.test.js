@@ -74,6 +74,35 @@ test('initiative state inside a repository must be ignored before its ledger is 
   assert.deepStrictEqual(result.decision, { finalised: true });
 });
 
+test('initiative ignore validation checks the hashed ledger, not a hidden probe', async () => {
+  const repoRoot = temp();
+  const stateDir = path.join(repoRoot, 'state');
+  execFileSync('git', ['init', '-q'], { cwd: repoRoot });
+  fs.writeFileSync(path.join(repoRoot, '.gitignore'), '.*\n');
+  await assert.rejects(
+    runReviewUntilGreen({ initiativeRunKey: 'probe-only', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, initiativeFinalise: true, repoRoot }),
+    /must be ignored/,
+  );
+  fs.writeFileSync(path.join(repoRoot, '.gitignore'), 'state/\n');
+  await runReviewUntilGreen({ initiativeRunKey: 'probe-only', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, initiativeFinalise: true, repoRoot });
+});
+
+test('initiative terminal evidence uses record reconciliation and post-fix DoD checks', async () => {
+  const stateDir = temp();
+  await runReviewUntilGreen({
+    ref: 'feature/x', repoRoot: '/repo', initiativeRunKey: 'final-packet', initiativeStateDir: stateDir, initiativeMaxLaunches: 2, initiativeMaxRounds: 1,
+    runCli: ([verb]) => verb === 'round-start' ? { decision: 'work', ref: 'feature/x', base: 'main', head: 'reviewed-head', attemptId: 'attempt-1', round: 1, stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: false }
+      : verb === 'artifact-normalize' ? { status: 'ok' }
+        : verb === 'plan-fixes' ? { fixes: [] }
+          : { decision: { continue: false, intentReview: true }, reconciliation: { finding: 'intent:missing', stage: 'record', avoidedLaunches: 2, findings: { intent: 1 } }, checks: [{ name: 'definition-of-done', status: 'passed' }] },
+    spawn: async () => ({ status: 0 }),
+  });
+  const ledger = JSON.parse(fs.readFileSync(runPath(stateDir, 'final-packet'), 'utf8'));
+  assert.deepStrictEqual(ledger.targets, [{ ref: 'feature/x', base: 'main', head: 'reviewed-head' }]);
+  assert.deepStrictEqual(ledger.checks, [{ name: 'definition-of-done', status: 'passed' }]);
+  assert.deepStrictEqual(ledger.reconciliation.hint.firstMaterialFinding, 'intent:missing');
+});
+
 test('initiative terminal string decisions are recorded', async () => {
   const stateDir = temp();
   await runReviewUntilGreen({

@@ -3,6 +3,16 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
+function repositoryIdentity(repository) {
+  const root = path.resolve(repository);
+  try {
+    const commonDir = require('node:child_process').execFileSync('git', ['rev-parse', '--git-common-dir'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return fs.realpathSync(path.resolve(root, commonDir));
+  } catch (_) {
+    return root;
+  }
+}
+
 function runPath(stateDir, key) {
   if (!path.isAbsolute(stateDir)) throw new Error('initiative review state directory must be absolute');
   return path.join(stateDir, `initiative-review-${crypto.createHash('sha256').update(key).digest('hex')}.json`);
@@ -35,7 +45,7 @@ function hint(trigger, finding = null, stage = null, avoidedLaunches = 0) {
 function openInitiativeRun({ stateDir, key, repository, maxLaunches, maxRounds }) {
   if (!stateDir || !key || !repository) throw new Error('initiative review requires a run key, repository identity, and canonical state directory');
   if (!Number.isInteger(maxLaunches) || maxLaunches < 1 || !Number.isInteger(maxRounds) || maxRounds < 1) throw new Error('initiative review budgets must be positive integers');
-  const run = { path: runPath(stateDir, key), repository: path.resolve(repository) };
+  const run = { path: runPath(stateDir, key), repository: repositoryIdentity(repository) };
   const initialize = (ledger) => {
     if (!ledger) return { version: 2, repository: run.repository, status: 'active', budget: { maxLaunches, maxRounds }, launches: [], rounds: [], targets: [], findings: {}, checks: [], telemetry: [], terminal: null, reconciliation: null };
     if (ledger.repository !== run.repository || ledger.status === 'terminal' || ledger.budget?.maxLaunches !== maxLaunches || ledger.budget?.maxRounds !== maxRounds) throw new Error('initiative review run has a different repository, is terminal, or has immutable configured budgets');
@@ -54,7 +64,7 @@ function reserveLaunch(run, launch) {
     if (!ledger || ledger.status !== 'active' || !Number.isInteger(launch.round) || ledger.launches.length >= ledger.budget.maxLaunches) return null;
     const target = launch.target || launch.revision?.ref || 'unknown';
     if ((ledger.reconciliation?.terminals || []).some((terminal) => terminal.target === target)) return null;
-    const round = `${target}\u0000${launch.round}`;
+    const round = `${target}\u0000${typeof launch.attemptId === 'string' ? launch.attemptId : 'legacy'}\u0000${launch.round}`;
     const rounds = ledger.rounds || [];
     if (!rounds.includes(round) && rounds.length >= ledger.budget.maxRounds) return null;
     const revision = launch.revision && { ref: launch.revision.ref || target, ...(launch.revision.base ? { base: launch.revision.base } : {}), ...(launch.revision.head ? { head: launch.revision.head } : {}) };
@@ -71,7 +81,10 @@ function recordTargetTerminal(run, { target, revision, reason = 'target-terminal
     const targets = targetRevision && !(ledger.targets || []).some((item) => JSON.stringify(item) === JSON.stringify(targetRevision)) ? [...(ledger.targets || []), targetRevision] : (ledger.targets || []);
     const terminal = { target, reason };
     const previous = ledger.reconciliation || {};
-    return { ...ledger, targets, findings: { ...(ledger.findings || {}), ...Object.fromEntries(Object.entries(findings).map(([kind, count]) => [kind, (ledger.findings?.[kind] || 0) + count])) }, checks: [...(ledger.checks || []), ...checks], telemetry: [...(ledger.telemetry || []), ...safeTelemetry], reconciliation: { terminals: [...(previous.terminals || []), terminal], hint: reason === 'reconciliation-required' ? hint(reason, finding, stage, avoidedLaunches) : (previous.hint || hint(reason, finding, stage, avoidedLaunches)) } };
+    const reconciliationHint = previous.hint && previous.hint.trigger === 'reconciliation-required'
+      ? previous.hint
+      : reason === 'reconciliation-required' ? hint(reason, finding, stage, avoidedLaunches) : previous.hint || hint(reason, finding, stage, avoidedLaunches);
+    return { ...ledger, targets, findings: { ...(ledger.findings || {}), ...Object.fromEntries(Object.entries(findings).map(([kind, count]) => [kind, (ledger.findings?.[kind] || 0) + count])) }, checks: [...(ledger.checks || []), ...checks], telemetry: [...(ledger.telemetry || []), ...safeTelemetry], reconciliation: { terminals: [...(previous.terminals || []), terminal], hint: reconciliationHint } };
   }));
 }
 
@@ -94,4 +107,4 @@ function finaliseInitiativeRun(run, reason = 'finalised') {
   return Boolean(locked(run, (ledger) => ledger?.status === 'active' && { ...ledger, status: 'terminal', terminal: { reason }, reconciliation: ledger.reconciliation || { terminals: [], hint: hint(reason) } }));
 }
 
-module.exports = { runPath, openInitiativeRun, reserveLaunch, recordTargetTerminal, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };
+module.exports = { runPath, repositoryIdentity, openInitiativeRun, reserveLaunch, recordTargetTerminal, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };
