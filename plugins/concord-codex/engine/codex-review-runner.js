@@ -625,7 +625,7 @@ async function runReviewUntilGreen(options) {
     const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodPassed: started.dodPassed, dodDeferred: started.dodDeferred, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref) };
     let slotAllocation = Promise.resolve();
     const launch = async (input) => {
-      if (initiativeRun && !reserveLaunch(initiativeRun, { role: input.role, target: ref, revision, attemptId: started.attemptId || `${revision.ref}\u0000${revision.head || revision.base || 'unknown'}`, round: currentRound })) throw new Error(`review-until-green: initiative launch budget exhausted or reservation contended before ${input.role}`);
+      if (initiativeRun && !reserveLaunch(initiativeRun, { role: input.role, target: ref, revision, attemptId: started.attemptId || `${revision.ref}\u0000${revision.head_sha || revision.base || 'unknown'}`, round: currentRound })) throw new Error(`review-until-green: initiative launch budget exhausted or reservation contended before ${input.role}`);
       const artifactPath = artifactDestinationFromPrompt(input.prompt, input.stateDir);
       const isFix = input.role === 'fix';
       const provider = isFix ? fixer : reviewer;
