@@ -384,11 +384,12 @@ async function runReviewUntilGreen(options) {
     ? undefined
     : (base === undefined && !ref.startsWith('file:') && baseResolver ? baseResolver(repoRoot) : base);
   if (initiativeRun) {
-    if (terminalTarget(initiativeRun, ref, () => {
-      const head_sha = options.targetIdentity ? options.targetIdentity(ref, initialBase, canonicalRepoRoot) : ref.startsWith('file:')
+    if (terminalTarget(initiativeRun, ref, (terminalRevision) => {
+      const identityBase = resume ? terminalRevision.base : initialBase;
+      const head_sha = options.targetIdentity ? options.targetIdentity(ref, identityBase, canonicalRepoRoot) : ref.startsWith('file:')
         ? fileTarget({ files: [ref.slice('file:'.length)] }, canonicalRepoRoot).identity
         : gitHeadSha(canonicalRepoRoot);
-      return { ref, ...(initialBase ? { base: initialBase } : {}), head_sha };
+      return { ref, ...(identityBase ? { base: identityBase } : {}), head_sha };
     })) return { decision: 'terminal', initiative: publicInitiativeSummary(initiativeRun) };
   }
   const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot));

@@ -132,6 +132,27 @@ test('terminal replay requires the recorded base even when head matches', async 
   await assert.rejects(runReviewUntilGreen({ ref: 'feature/x', base: 'release', initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => 'same-head', runCli: () => { throw new Error('round-start must not run'); } }), /revision changed/);
 });
 
+test('resuming a terminal git target binds its recorded base before identity and round-start', async () => {
+  const stateDir = temp();
+  const key = 'resume-terminal-base';
+  const run = openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
+  const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
+  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, reconciliation: { terminals: [{ target: 'feature/x', reason: 'clean', revision: { ref: 'feature/x', base: 'main', head_sha: 'same-head' } }] } }));
+  let identityBase;
+  const result = await runReviewUntilGreen({ ref: 'feature/x', resume: true, initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: (_ref, base) => { identityBase = base; return 'same-head'; }, runCli: () => { throw new Error('round-start must not run'); } });
+  assert.strictEqual(identityBase, 'main');
+  assert.strictEqual(result.decision, 'terminal');
+});
+
+test('terminal git targets without a recorded base fail closed before identity and round-start', async () => {
+  const stateDir = temp();
+  const key = 'legacy-git-terminal';
+  const run = openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
+  const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
+  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, reconciliation: { terminals: [{ target: 'feature/x', reason: 'clean', revision: { ref: 'feature/x', head_sha: 'same-head' } }] } }));
+  await assert.rejects(runReviewUntilGreen({ ref: 'feature/x', resume: true, initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => { throw new Error('identity must not run'); }, runCli: () => { throw new Error('round-start must not run'); } }), /no stored base/);
+});
+
 test('non-Git in-root state supports file and finalise runs', async () => {
   const repoRoot = temp();
   const stateDir = path.join(repoRoot, '.state');

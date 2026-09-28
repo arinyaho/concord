@@ -120,9 +120,10 @@ function terminalTarget(run, target, revision) {
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
   const terminal = (ledger.reconciliation?.terminals || []).find((item) => item.target === target);
   if (ledger.status !== 'active' || !terminal) return false;
-  revision = typeof revision === 'function' ? revision() : revision;
-  if (terminal.target !== revision.ref) return false;
   if (!terminal.revision?.head_sha) throw new Error('initiative review terminal target has no stored revision');
+  if (!target.startsWith('file:') && !terminal.revision.base) throw new Error('initiative review terminal target has no stored base');
+  revision = typeof revision === 'function' ? revision(terminal.revision) : revision;
+  if (terminal.target !== revision.ref) return false;
   if (JSON.stringify(terminal.revision) === JSON.stringify(revision)) return true;
   throw new Error('initiative review terminal target revision changed');
 }
