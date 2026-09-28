@@ -4,7 +4,12 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { openInitiativeRun, reserveLaunch, recordTargetTerminal, finaliseInitiativeRun, publicInitiativeSummary } = require('../../core/initiative-review-run');
+const { openInitiativeRun, reserveLaunch, recordTargetTerminal, recordDisposition, consumeDispositionDelivery, finaliseInitiativeRun, publicInitiativeSummary } = require('../../core/initiative-review-run');
+const RUNTIMES = [
+  require('../../core/initiative-review-run'),
+  require('../../../concord-codex/engine/initiative-review-run'),
+  require('../../../concord-copilot/engine/initiative-review-run'),
+];
 
 function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'initiative-review-run-')); }
 function open(options) { return openInitiativeRun({ repository: '/repo', ...options }); }
@@ -18,6 +23,25 @@ test('keyed runs use a hashed separate ledger and atomically consume launch budg
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
   assert.deepStrictEqual(ledger.launches, [{ role: 'correctness', round: 1 }]);
   assert.strictEqual(ledger.key, undefined);
+});
+
+test('v3 terminal dispositions are normalized and recorded exactly once', () => {
+  const run = open({ stateDir: temp(), key: 'terminal-disposition', maxLaunches: 1, maxRounds: 1 });
+  const revision = { ref: 'feature/x', base: 'main', head_sha: 'head' };
+  const packet = { trigger: 'terminal', exit: { code: 0, signal: null }, dod: { status: 'passed' }, telemetry: { complete: true }, nextAction: 'replay' };
+  assert.ok(recordDisposition(run, { target: 'feature/x', revision, result: { decision: { converged: true } }, packet }));
+  assert.strictEqual(recordDisposition(run, { target: 'feature/x', revision, result: { decision: { converged: true } }, packet }), false);
+  const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
+  assert.strictEqual(ledger.version, 3);
+  assert.deepStrictEqual(ledger.dispositions, [{ target: 'feature/x', revision, kind: 'terminal', reason: 'clean', sequence: 1, packet: { ...packet, ledger: { version: 3, status: 'active' }, budget: { maxLaunches: 1, maxRounds: 1, launches: 0, rounds: 0 }, delivery: { claim: 'feature/x:1', continuation: 'replay', consumed: false } } }]);
+});
+
+test('a disposition delivery claim is atomically consumed once', () => {
+  const run = open({ stateDir: temp(), key: 'delivery-claim', maxLaunches: 1, maxRounds: 1 });
+  recordDisposition(run, { target: 'feature/x', revision: { ref: 'feature/x', head_sha: 'head' }, result: { decision: { converged: true } } });
+  assert.strictEqual(consumeDispositionDelivery(run, 'feature/x:1'), true);
+  assert.strictEqual(consumeDispositionDelivery(run, 'feature/x:1'), false);
+  assert.strictEqual(JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions[0].packet.delivery.consumed, true);
 });
 
 test('interleaved initializations cannot overwrite a consumed launch reservation', () => {
@@ -53,6 +77,23 @@ test('a keyed run cannot be reconfigured or reopened after terminal state', () =
   const run = open({ stateDir: dir, key: 'opaque key', maxLaunches: 2, maxRounds: 1 });
   fs.writeFileSync(run.path, JSON.stringify({ ...JSON.parse(fs.readFileSync(run.path, 'utf8')), status: 'terminal' }));
   assert.throws(() => open({ stateDir: dir, key: 'opaque key', maxLaunches: 3, maxRounds: 1 }), /immutable|terminal/);
+});
+
+test('v2 initiative ledgers fail closed', () => {
+  const dir = temp();
+  const run = open({ stateDir: dir, key: 'legacy-v2', maxLaunches: 1, maxRounds: 1 });
+  fs.writeFileSync(run.path, JSON.stringify({ ...JSON.parse(fs.readFileSync(run.path, 'utf8')), version: 2 }));
+  assert.throws(() => open({ stateDir: dir, key: 'legacy-v2', maxLaunches: 1, maxRounds: 1 }), /schemaVersion must be 3/);
+});
+
+test('Claude, Codex, and Copilot runtimes produce the same disposition packet', () => {
+  const ledgers = RUNTIMES.map((runtime, index) => {
+    const run = runtime.openInitiativeRun({ stateDir: temp(), key: `parity-${index}`, repository: '/repo', maxLaunches: 1, maxRounds: 1 });
+    runtime.recordDisposition(run, { target: 'feature/x', revision: { ref: 'feature/x', base: 'main', head_sha: 'head' }, result: { decision: { converged: true } }, packet: { trigger: 'terminal', exit: { code: 0, signal: null }, dod: { status: 'passed' }, telemetry: { complete: true }, nextAction: 'replay' } });
+    return JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions;
+  });
+  assert.deepStrictEqual(ledgers[1], ledgers[0]);
+  assert.deepStrictEqual(ledgers[2], ledgers[0]);
 });
 
 test('a keyed run cannot cross repository identities', () => {

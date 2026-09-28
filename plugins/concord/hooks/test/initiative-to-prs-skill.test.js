@@ -28,6 +28,12 @@ test('Claude and Codex ship the same initiative-to-prs skill', () => {
   for (const file of SKILL_FILES) assert.equal(read('concord-codex', file), read('concord', file));
 });
 
+test('all provider handoff contracts require a complete substantive reconciliation packet', () => {
+  const canonical = read('concord', 'references/handoff-contract.md');
+  for (const provider of ['concord-codex', 'concord-copilot']) assert.equal(read(provider, 'references/handoff-contract.md'), canonical);
+  assert.match(canonical, /supporting evidence, every realistic option with its consequence, the recommendation and rationale, and the exact decision required/);
+});
+
 test('initiative-to-prs composes the existing ticket contracts and stops at verified PRs', () => {
   const skill = read('concord', 'SKILL.md');
   const stages = read('concord', 'references/stages.md');

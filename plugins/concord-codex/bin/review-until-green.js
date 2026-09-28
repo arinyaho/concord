@@ -57,5 +57,8 @@ const resumed = positional[0] === 'resume';
 const ref = (resumed ? positional[1] : positional[0]) || (inference.initiativeFinalise ? undefined : require('node:child_process').execFileSync(crossPlatformCommand('git', process.cwd()), crossPlatformArgs(['branch', '--show-current'], needsDoubleEscape('git', process.cwd())), crossPlatformOpts({ encoding: 'utf8' })).trim());
 const base = resumed ? positional[2] : positional[1];
 runReviewUntilGreen({ ref, base, broad, noBroad, noDod, ...inference, resume: resumed, handleSignals: true, repoRoot: process.cwd(), cliPath: path.join(__dirname, 'review-cli.js') })
-  .then((result) => process.stdout.write(`${result.handoff || result.message || JSON.stringify(result)}\n`))
-  .catch((error) => { process.stderr.write(`review-until-green: ${error.message}\n`); process.exit(1); });
+  .then((result) => {
+    if (result.continuationPacket) process.stdout.write(`${JSON.stringify(result.continuationPacket)}\n`);
+    else if (!(result.decision === 'terminal' && result.initiative)) process.stdout.write(`${result.handoff || result.message || JSON.stringify(result)}\n`);
+  })
+  .catch((error) => { process.stderr.write(error.continuationPacket ? `${JSON.stringify(error.continuationPacket)}\n` : `review-until-green: ${error.message}\n`); process.exit(1); });

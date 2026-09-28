@@ -95,7 +95,7 @@ test('changed terminal target identity fails before round-start', async () => {
   const key = 'changed-terminal';
   const run = openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, targets: [{ ref: 'file:note.md', head_sha: 'old-bytes' }], reconciliation: { terminals: [{ target: 'file:note.md', reason: 'clean', revision: { ref: 'file:note.md', head_sha: 'old-bytes' } }] } }));
+  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, targets: [{ ref: 'file:note.md', head_sha: 'old-bytes' }], dispositions: [{ target: 'file:note.md', reason: 'clean', kind: 'terminal', revision: { ref: 'file:note.md', head_sha: 'old-bytes' } }] }));
   await assert.rejects(
     runReviewUntilGreen({ ref: 'file:note.md', initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => 'new-bytes', runCli: () => { throw new Error('round-start must not run'); } }),
     /revision changed/,
@@ -107,7 +107,7 @@ test('terminal target preflight does not replay against a historical matching ta
   const key = 'multi-revision-terminal';
   const run = openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, targets: [{ ref: 'file:note.md', head_sha: 'old-bytes' }, { ref: 'file:note.md', head_sha: 'current-bytes' }], reconciliation: { terminals: [{ target: 'file:note.md', reason: 'clean', revision: { ref: 'file:note.md', head_sha: 'old-bytes' } }] } }));
+  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, targets: [{ ref: 'file:note.md', head_sha: 'old-bytes' }, { ref: 'file:note.md', head_sha: 'current-bytes' }], dispositions: [{ target: 'file:note.md', reason: 'clean', kind: 'terminal', revision: { ref: 'file:note.md', head_sha: 'old-bytes' } }] }));
   await assert.rejects(runReviewUntilGreen({ ref: 'file:note.md', initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => 'current-bytes', runCli: () => { throw new Error('round-start must not run'); } }), /revision changed/);
 });
 
@@ -116,7 +116,7 @@ test('legacy terminal file targets without head_sha fail closed before a round',
   const key = 'legacy-file-terminal';
   const run = openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, targets: [{ ref: 'file:note.md' }], reconciliation: { terminals: [{ target: 'file:note.md', reason: 'clean' }] } }));
+  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, targets: [{ ref: 'file:note.md' }], dispositions: [{ target: 'file:note.md', reason: 'clean', kind: 'terminal', revision: { ref: 'file:note.md' } }] }));
   await assert.rejects(
     runReviewUntilGreen({ ref: 'file:note.md', initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => 'new-bytes', runCli: () => { throw new Error('round-start must not run'); } }),
     /no stored revision/,
@@ -128,7 +128,7 @@ test('terminal replay requires the recorded base even when head matches', async 
   const key = 'same-head-different-base';
   const run = openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, reconciliation: { terminals: [{ target: 'feature/x', reason: 'clean', revision: { ref: 'feature/x', base: 'main', head_sha: 'same-head' } }] } }));
+  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, dispositions: [{ target: 'feature/x', reason: 'clean', kind: 'terminal', revision: { ref: 'feature/x', base: 'main', head_sha: 'same-head' } }] }));
   await assert.rejects(runReviewUntilGreen({ ref: 'feature/x', base: 'release', initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => 'same-head', runCli: () => { throw new Error('round-start must not run'); } }), /revision changed/);
 });
 
@@ -137,7 +137,7 @@ test('resuming a terminal git target binds its recorded base before identity and
   const key = 'resume-terminal-base';
   const run = openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, reconciliation: { terminals: [{ target: 'feature/x', reason: 'clean', revision: { ref: 'feature/x', base: 'main', head_sha: 'same-head' } }] } }));
+  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, dispositions: [{ target: 'feature/x', reason: 'clean', kind: 'terminal', revision: { ref: 'feature/x', base: 'main', head_sha: 'same-head' } }] }));
   let identityBase;
   const result = await runReviewUntilGreen({ ref: 'feature/x', resume: true, initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: (_ref, base) => { identityBase = base; return 'same-head'; }, runCli: () => { throw new Error('round-start must not run'); } });
   assert.strictEqual(identityBase, 'main');
@@ -168,7 +168,7 @@ test('terminal git targets without a recorded base fail closed before identity a
   const key = 'legacy-git-terminal';
   const run = openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, reconciliation: { terminals: [{ target: 'feature/x', reason: 'clean', revision: { ref: 'feature/x', head_sha: 'same-head' } }] } }));
+  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, dispositions: [{ target: 'feature/x', reason: 'clean', kind: 'terminal', revision: { ref: 'feature/x', head_sha: 'same-head' } }] }));
   await assert.rejects(runReviewUntilGreen({ ref: 'feature/x', resume: true, initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => { throw new Error('identity must not run'); }, runCli: () => { throw new Error('round-start must not run'); } }), /no stored base/);
 });
 
@@ -233,6 +233,67 @@ test('initiative terminal string decisions are recorded', async () => {
   const ledger = JSON.parse(fs.readFileSync(runPath(stateDir, 'terminal-string'), 'utf8'));
   assert.deepStrictEqual(ledger.reconciliation.terminals, [{ target: 'feature/x', reason: 'parked', revision: { ref: 'feature/x', base: 'main', head_sha: 'head' } }]);
   assert.deepStrictEqual(ledger.targets, [{ ref: 'feature/x', base: 'main', head_sha: 'head' }]);
+});
+
+test('initiative runner records escaped results and thrown errors as durable dispositions', async () => {
+  const stateDir = temp();
+  const escaped = { ref: 'feature/escape', repoRoot: '/repo', initiativeRunKey: 'escaped', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1 };
+  await runReviewUntilGreen({ ...escaped, runCli: ([verb]) => verb === 'round-start' ? { decision: 'escape', base: 'main', head: 'head', stateDir } : undefined });
+  const escapedLedger = JSON.parse(fs.readFileSync(runPath(stateDir, 'escaped'), 'utf8'));
+  assert.deepStrictEqual(escapedLedger.dispositions[0], { target: 'feature/escape', revision: { ref: 'feature/escape', base: 'main', head_sha: 'head' }, kind: 'escape', reason: 'escape', sequence: 1, packet: { trigger: 'escape', exit: { code: 0, signal: null }, dod: { status: 'not-run' }, telemetry: { complete: true }, nextAction: 'resume', ledger: { version: 3, status: 'active' }, budget: { maxLaunches: 1, maxRounds: 1, launches: 0, rounds: 0 }, delivery: { claim: 'feature/escape:1', continuation: 'resume', consumed: true } } });
+
+  const failed = { ref: 'feature/error', repoRoot: '/repo', initiativeRunKey: 'errored', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1 };
+  let error;
+  await assert.rejects(runReviewUntilGreen({ ...failed, runCli: ([verb]) => verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: false } : verb === 'artifact-normalize' ? { status: 'ok' } : undefined, spawn: async () => { throw new Error('subprocess failed'); } }), (caught) => { error = caught; return /subprocess failed/.test(caught.message); });
+  assert.strictEqual(error.continuationPacket.delivery.consumed, true);
+  const errorDisposition = JSON.parse(fs.readFileSync(runPath(stateDir, 'errored'), 'utf8')).dispositions[0];
+  assert.deepStrictEqual(errorDisposition.packet.exit, { code: null, signal: null });
+  assert.deepStrictEqual(errorDisposition.packet.telemetry, { complete: false });
+  assert.strictEqual(errorDisposition.packet.nextAction, 'resume');
+});
+
+test('initiative runner preserves the acquired revision when round-start fails early', async () => {
+  const stateDir = temp();
+  const repoRoot = temp();
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/early-error', repoRoot, initiativeRunKey: 'early-error', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => 'immutable-head', runCli: () => { throw new Error('round-start failed'); } }),
+    /round-start failed/,
+  );
+  const disposition = JSON.parse(fs.readFileSync(runPath(stateDir, 'early-error'), 'utf8')).dispositions[0];
+  assert.deepStrictEqual(disposition.revision, { ref: 'feature/early-error', head_sha: 'immutable-head' });
+  assert.strictEqual(disposition.kind, 'error');
+});
+
+test('initiative runner records an unsupported provider before work starts', async () => {
+  const stateDir = temp();
+  const repoRoot = temp();
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/provider-error', base: 'main', repoRoot, reviewer: 'unsupported', initiativeRunKey: 'provider-error', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => 'immutable-head' }),
+    /unsupported provider/,
+  );
+  const disposition = JSON.parse(fs.readFileSync(runPath(stateDir, 'provider-error'), 'utf8')).dispositions[0];
+  assert.deepStrictEqual(disposition.revision, { ref: 'feature/provider-error', base: 'main', head_sha: 'immutable-head' });
+  assert.strictEqual(disposition.kind, 'error');
+});
+
+test('initiative runner records a default-base resolution failure with its immutable revision', async () => {
+  const stateDir = temp();
+  const repoRoot = temp();
+  execFileSync('git', ['init', '-q'], { cwd: repoRoot });
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/base-error', repoRoot, initiativeRunKey: 'base-error', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => 'immutable-head' }),
+    /cannot determine a remote default base/,
+  );
+  const disposition = JSON.parse(fs.readFileSync(runPath(stateDir, 'base-error'), 'utf8')).dispositions[0];
+  assert.deepStrictEqual(disposition.revision, { ref: 'feature/base-error', head_sha: 'immutable-head' });
+  assert.strictEqual(disposition.kind, 'error');
+});
+
+test('initiative runner consumes its terminal delivery claim before returning the continuation packet', async () => {
+  const stateDir = temp();
+  const result = await runReviewUntilGreen({ ref: 'feature/deliver', base: 'main', repoRoot: '/repo', initiativeRunKey: 'deliver', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, runCli: ([verb]) => verb === 'round-start' ? { decision: 'terminal', status: 'clean', base: 'main', head: 'head', stateDir } : undefined });
+  assert.strictEqual(result.continuationPacket.delivery.consumed, true);
+  assert.strictEqual(JSON.parse(fs.readFileSync(runPath(stateDir, 'deliver'), 'utf8')).dispositions[0].packet.delivery.consumed, true);
 });
 
 test('reconciliation terminates the target and retains its restored base and avoided fixes', async () => {
@@ -321,19 +382,18 @@ test('codex-review-runner.js has no hardcoded copy of the panel lens list -- it 
 test('codexExec starts subprocesses asynchronously so panel work can overlap', async () => {
   const binDir = temp();
   const codex = path.join(binDir, 'codex');
-  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.154.0\\n');\nelse setTimeout(() => process.exit(0), 1000);\n`);
+  const started = path.join(binDir, 'started');
+  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.154.0\\n');\nelse { const fs = require('node:fs'); fs.appendFileSync(${JSON.stringify(started)}, '1'); const wait = setInterval(() => { if (fs.readFileSync(${JSON.stringify(started)}, 'utf8').length === 2) { clearInterval(wait); process.exit(0); } }, 10); }\n`);
   fs.chmodSync(codex, 0o755);
   const previousPath = process.env.PATH;
   process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
   try {
-    const started = Date.now();
-    const first = codexExec({ role: 'panel', prompt: 'first', repoRoot: binDir, stateDir: binDir });
-    const second = codexExec({ role: 'panel', prompt: 'second', repoRoot: binDir, stateDir: binDir });
+    const first = codexExec({ role: 'panel', prompt: 'first', repoRoot: binDir, stateDir: binDir, timeoutMs: 1000 });
+    const second = codexExec({ role: 'panel', prompt: 'second', repoRoot: binDir, stateDir: binDir, timeoutMs: 1000 });
     assert.strictEqual(typeof first?.then, 'function');
-    await Promise.all([first, second]);
-    // The full suite runs files concurrently, so leave scheduler headroom while
-    // keeping this comfortably below the 2s serial execution time.
-    assert.ok(Date.now() - started < 1800, 'subprocesses should overlap rather than run serially');
+    const results = await Promise.all([first, second]);
+    assert.deepStrictEqual(results.map((result) => result.status), [0, 0]);
+    assert.strictEqual(fs.readFileSync(started, 'utf8'), '11');
   } finally {
     process.env.PATH = previousPath;
   }
@@ -1948,4 +2008,22 @@ test('Codex launcher finalises without resolving a git target', () => {
   `);
   execFileSync('node', ['--require', preload, bin, '--initiative-finalise', '--initiative-run-key', 'key', '--initiative-state-dir', dir, '--initiative-max-launches', '1', '--initiative-max-rounds', '1'], { cwd: dir, env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
   assert.strictEqual(JSON.parse(fs.readFileSync(capture, 'utf8')).ref, undefined);
+});
+
+test('Codex launcher emits only a consumed continuation packet and never duplicates it', () => {
+  const dir = temp();
+  const bin = path.join(__dirname, '..', '..', '..', 'concord-codex', 'bin', 'review-until-green.js');
+  const preload = path.join(dir, 'runner.js');
+  fs.writeFileSync(preload, `const Module = require('node:module'); const load = Module._load; Module._load = function(request, parent, isMain) { if (request === '../engine/codex-review-runner') return { runReviewUntilGreen: async () => ({ decision: 'terminal', initiative: {}, handoff: 'legacy', continuationPacket: { delivery: { consumed: true, claim: 'one' } } }) }; return load.apply(this, arguments); };`);
+  assert.strictEqual(execFileSync('node', ['--require', preload, bin, 'feature/x'], { encoding: 'utf8' }), '{"delivery":{"consumed":true,"claim":"one"}}\n');
+  fs.writeFileSync(preload, `const Module = require('node:module'); const load = Module._load; Module._load = function(request, parent, isMain) { if (request === '../engine/codex-review-runner') return { runReviewUntilGreen: async () => ({ decision: 'terminal', initiative: {}, handoff: 'legacy' }) }; return load.apply(this, arguments); };`);
+  assert.strictEqual(execFileSync('node', ['--require', preload, bin, 'feature/x'], { encoding: 'utf8' }), '');
+});
+
+test('Codex launcher emits a consumed error continuation packet before nonzero exit', () => {
+  const dir = temp();
+  const bin = path.join(__dirname, '..', '..', '..', 'concord-codex', 'bin', 'review-until-green.js');
+  const preload = path.join(dir, 'runner.js');
+  fs.writeFileSync(preload, `const Module = require('node:module'); const load = Module._load; Module._load = function(request, parent, isMain) { if (request === '../engine/codex-review-runner') return { runReviewUntilGreen: async () => { const error = new Error('legacy'); error.continuationPacket = { delivery: { consumed: true, claim: 'error' } }; throw error; } }; return load.apply(this, arguments); };`);
+  assert.throws(() => execFileSync('node', ['--require', preload, bin, 'feature/x'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }), (error) => error.status === 1 && error.stderr === '{"delivery":{"consumed":true,"claim":"error"}}\n');
 });

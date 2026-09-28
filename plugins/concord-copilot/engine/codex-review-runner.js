@@ -5,7 +5,7 @@
 // subprocess and every state transition remains owned by review-cli.
 const { execFileSync, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
-const { canonicalPath, runPath, openInitiativeRun, reserveLaunch, recordTargetTerminal, terminalTarget, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
+const { canonicalPath, runPath, openInitiativeRun, reserveLaunch, recordDisposition, consumeDispositionDelivery, terminalTarget, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
 const { gitHeadSha, gitDirty, fileTarget } = require('./target');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -381,41 +381,46 @@ async function runReviewUntilGreen(options) {
   // Never resolve a base for resume: round-start restores ledger.target.base.
   // File targets do not have a git base at all.
   const baseResolver = options.resolveDefaultBase || (options.runCli ? null : resolveDefaultBase);
-  let initialBase = resume
-    ? undefined
-    : (base === undefined && !ref.startsWith('file:') && baseResolver ? baseResolver(repoRoot) : base);
-  if (initiativeRun) {
-    if (terminalTarget(initiativeRun, ref, (terminalRevision) => {
-      const identityBase = resume ? terminalRevision.base : initialBase;
-      const head_sha = options.targetIdentity ? options.targetIdentity(ref, identityBase, canonicalRepoRoot) : ref.startsWith('file:')
-        ? fileTarget({ files: [ref.slice('file:'.length)] }, canonicalRepoRoot).identity
-        : (() => {
-          if (gitDirty(canonicalRepoRoot)) throw new Error('round-start: working tree is dirty; commit or stash before review-until-green');
-          return gitHeadSha(canonicalRepoRoot);
-        })();
-      return { ref, ...(identityBase ? { base: identityBase } : {}), head_sha };
-    })) return { decision: 'terminal', initiative: publicInitiativeSummary(initiativeRun) };
-  }
+  let initialBase = resume ? undefined : base;
   const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot));
   let reviewer = options.reviewer || 'codex';
   let fixer = options.fixer || 'codex';
   let reviewerModel = options.reviewerModel;
   let fixerModel = options.fixerModel;
-  for (const provider of [reviewer, fixer]) {
-    if (!PROVIDERS.has(provider)) throw new Error(`review-until-green: unsupported provider "${provider}"`);
+  let initiativeRevision = { ref, ...(initialBase ? { base: initialBase } : {}) };
+  if (initiativeRun && fs.existsSync(repoRoot)) {
+    try {
+      const head_sha = options.targetIdentity ? options.targetIdentity(ref, initialBase, canonicalRepoRoot) : ref.startsWith('file:')
+        ? fileTarget({ files: [ref.slice('file:'.length)] }, canonicalRepoRoot).identity : gitHeadSha(canonicalRepoRoot);
+      initiativeRevision = { ...initiativeRevision, head_sha };
+    } catch (_) { /* round-start remains the authority when identity cannot be acquired */ }
   }
   const rawSpawn = options.spawn || ((input) => providerExec(input));
   const abortController = options.handleSignals ? new AbortController() : null;
   const signalHandlers = abortController ? Object.fromEntries(['SIGINT', 'SIGTERM', 'SIGHUP'].map((signal) => [signal, () => abortController.abort(signal)])) : {};
   for (const [signal, handler] of Object.entries(signalHandlers)) process.once(signal, handler);
   try {
+  if (!resume && initialBase === undefined && !ref.startsWith('file:') && baseResolver) initialBase = baseResolver(repoRoot);
+  if (initialBase && !initiativeRevision.base) initiativeRevision = { ...initiativeRevision, base: initialBase };
+  if (initiativeRun && terminalTarget(initiativeRun, ref, (terminalRevision) => {
+    const identityBase = resume ? terminalRevision.base : initialBase;
+    const head_sha = options.targetIdentity ? options.targetIdentity(ref, identityBase, canonicalRepoRoot) : ref.startsWith('file:')
+      ? fileTarget({ files: [ref.slice('file:'.length)] }, canonicalRepoRoot).identity
+      : (() => {
+        if (gitDirty(canonicalRepoRoot)) throw new Error('round-start: working tree is dirty; commit or stash before review-until-green');
+        return gitHeadSha(canonicalRepoRoot);
+      })();
+    return { ref, ...(identityBase ? { base: identityBase } : {}), head_sha };
+  })) return { decision: 'terminal', initiative: publicInitiativeSummary(initiativeRun) };
+  for (const provider of [reviewer, fixer]) {
+    if (!PROVIDERS.has(provider)) throw new Error(`review-until-green: unsupported provider "${provider}"`);
+  }
   const telemetry = {
     total: { calls: 0, partialCalls: 0, inputTokens: 0, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0 },
     byRole: {},
     invocations: [],
   };
   let currentRound = null;
-  let initiativeRevision = { ref, ...(initialBase ? { base: initialBase } : {}) };
   let checks = [];
   let telemetryPath = null;
   let telemetryLoaded = false;
@@ -485,17 +490,21 @@ async function runReviewUntilGreen(options) {
     if ((result?.decision === 'terminal' || result?.decision?.converged === true || result?.decision?.parked === true || result?.decision?.abandoned === true) && telemetryPath) {
       try { fs.unlinkSync(telemetryPath); } catch {}
     }
-    const terminal = result?.decision === 'terminal' || result?.decision?.converged || result?.decision?.parked || result?.decision?.abandoned || result?.decision?.intentReview || result?.decision?.gatePending;
+    const terminal = result?.decision === 'terminal' || result?.decision === 'escape' || result?.decision?.converged || result?.decision?.parked || result?.decision?.abandoned || result?.decision?.intentReview || result?.decision?.gatePending;
     if (initiativeRun && terminal) {
-      const decision = result?.decision || {};
       const reconciliation = result?.reconciliation;
-      const targetOutcome = ['parked', 'abandoned'].includes(result?.status) ? result.status : (decision.parked ? 'parked' : decision.abandoned ? 'abandoned' : null);
-      const reason = targetOutcome || (reconciliation ? 'reconciliation-required'
-        : result?.status || (decision.converged ? 'clean' : decision.intentReview ? 'intent-review' : decision.gatePending ? 'gate-pending' : 'target-terminal'));
-      if (!recordTargetTerminal(initiativeRun, {
+      const escaped = result?.decision === 'escape';
+      if (!recordDisposition(initiativeRun, {
         target: ref,
         revision: initiativeRevision,
-        reason,
+        result,
+        packet: {
+          trigger: escaped ? 'escape' : 'terminal',
+          exit: { code: Number.isInteger(result?.exitCode) ? result.exitCode : 0, signal: result?.signal || null },
+          dod: { status: (result?.checks || checks)[0]?.status || 'not-run' },
+          telemetry: { complete: output.telemetry?.total?.partialCalls === 0 },
+          nextAction: escaped ? 'resume' : 'replay',
+        },
         finding: reconciliation?.finding || null,
         stage: reconciliation?.stage || null,
         avoidedLaunches: reconciliation?.avoidedLaunches || 0,
@@ -503,6 +512,9 @@ async function runReviewUntilGreen(options) {
         checks: result?.checks || checks,
         telemetry: (output.telemetry?.invocations || []).map(({ role, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, stage: 'review', revision: initiativeRevision, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens })),
       })) throw new Error('review-until-green: initiative target terminal recording was contended');
+      const entry = JSON.parse(fs.readFileSync(initiativeRun.path, 'utf8')).dispositions.findLast((item) => item.target === ref && JSON.stringify(item.revision) === JSON.stringify(initiativeRevision));
+      if (!entry || !consumeDispositionDelivery(initiativeRun, entry.packet.delivery.claim)) throw new Error('review-until-green: initiative delivery claim was contended');
+      output.continuationPacket = { ...entry.packet, delivery: { ...entry.packet.delivery, consumed: true } };
     }
     return output;
   };
@@ -593,7 +605,8 @@ async function runReviewUntilGreen(options) {
     if (options.fixerModel) startArgs.push('--fixer-model', options.fixerModel);
     const started = await cli(startArgs);
     if (!initialBase && started.base) initialBase = started.base;
-    initiativeRevision = { ref: started.ref || ref, ...(started.base || initialBase ? { base: started.base || initialBase } : {}), ...(started.head || initiativeRevision.head_sha ? { head_sha: started.head || initiativeRevision.head_sha } : {}) };
+    if (initiativeRevision.head_sha && started.head && initiativeRevision.head_sha !== started.head) throw new Error('review-until-green: initiative target revision changed before round-start');
+    initiativeRevision = { ref: started.ref || ref, ...(started.base || initialBase ? { base: started.base || initialBase } : {}), ...(initiativeRevision.head_sha || started.head ? { head_sha: initiativeRevision.head_sha || started.head } : {}) };
     await throwIfAborted(started.decision === 'work');
     if (started.reviewRouting) {
       reviewer = started.reviewRouting.reviewer || reviewer;
@@ -704,6 +717,17 @@ async function runReviewUntilGreen(options) {
     if (recorded.decision && recorded.decision.continue) continue;
     return withTelemetry(recorded);
   }
+  } catch (error) {
+    const failure = error.reviewFailure || {};
+    if (initiativeRun && initiativeRevision.head_sha && !recordDisposition(initiativeRun, { target: ref, revision: initiativeRevision, result: error, packet: { trigger: 'error', exit: { code: Number.isInteger(failure.exitCode) ? failure.exitCode : null, signal: failure.signal || null }, dod: { status: 'not-run' }, telemetry: { complete: false }, nextAction: 'resume' } })) {
+      throw new Error('review-until-green: initiative error disposition recording was contended');
+    }
+    if (initiativeRun && initiativeRevision.head_sha) {
+      const entry = JSON.parse(fs.readFileSync(initiativeRun.path, 'utf8')).dispositions.findLast((item) => item.target === ref && JSON.stringify(item.revision) === JSON.stringify(initiativeRevision));
+      if (!entry || !consumeDispositionDelivery(initiativeRun, entry.packet.delivery.claim)) throw new Error('review-until-green: initiative error delivery claim was contended');
+      error.continuationPacket = { ...entry.packet, delivery: { ...entry.packet.delivery, consumed: true } };
+    }
+    throw error;
   } finally {
     for (const [signal, handler] of Object.entries(signalHandlers)) process.removeListener(signal, handler);
   }
