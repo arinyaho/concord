@@ -59,7 +59,7 @@ test('keyed runs stay active per target, require absolute state, charge rounds g
   assert.throws(() => openInitiativeRun({ stateDir: 'relative-state', key: 'opaque key', maxLaunches: 4, maxRounds: 1 }), /absolute/);
   const run = openInitiativeRun({ stateDir: dir, key: 'opaque key', maxLaunches: 4, maxRounds: 2 });
   assert.ok(reserveLaunch(run, { role: 'correctness', target: 'first-ref', revision: { ref: 'first-ref', base: 'main' }, round: 1 }));
-  recordTargetTerminal(run, { target: 'first-ref', telemetry: [{ role: 'correctness', elapsedMs: 1, totalTokens: null, prompt: 'secret', artifact: 'source' }] });
+  recordTargetTerminal(run, { target: 'first-ref', telemetry: [{ role: 'correctness', round: 1, elapsedMs: 1, totalTokens: null, prompt: 'secret', artifact: 'source' }] });
   assert.ok(reserveLaunch(run, { role: 'correctness', target: 'second-ref', revision: { ref: 'second-ref', base: 'main' }, round: 1 }));
   assert.strictEqual(reserveLaunch(run, { role: 'correctness', target: 'third-ref', revision: { ref: 'third-ref', base: 'main' }, round: 1 }), false);
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
@@ -70,7 +70,7 @@ test('keyed runs stay active per target, require absolute state, charge rounds g
     preflight: ['confirm target revisions', 'confirm checks', 'choose resume, revise, or split'],
     options: ['resume', 'revise', 'split'],
   });
-  assert.deepStrictEqual(ledger.telemetry, [{ role: 'correctness', elapsedMs: 1, totalTokens: null }]);
+  assert.deepStrictEqual(ledger.telemetry, [{ role: 'correctness', round: 1, elapsedMs: 1, totalTokens: null }]);
   assert.ok(finaliseInitiativeRun(run));
   assert.throws(() => openInitiativeRun({ stateDir: dir, key: 'opaque key', maxLaunches: 4, maxRounds: 2 }), /immutable|terminal/);
 });

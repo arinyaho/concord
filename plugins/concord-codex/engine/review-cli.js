@@ -1210,6 +1210,21 @@ function main(resolveFromCwd) {
       panelDone: !!(ledger.gate_panel && ledger.gate_panel.status === 'done'),
     };
     let { ledger: applied, decision } = R.applyRoundOutcome(ledger, outcome);
+    // Material design/AC findings are reconciliation work, never a reason to
+    // launch ordinary fixers or to spend another round. Derive this here from
+    // the persisted state so panel-confirmed findings take the same path.
+    const material = [...(ledger.intent_parked || []), ...gateOpen.filter((f) => /^gate:(?:design-conformance|ac-coverage):/.test(f.id))];
+    const reconciliation = material.length && {
+      trigger: 'material-finding', finding: material[0].id, stage: 'record', avoidedLaunches: ledger.reconciliation?.avoidedLaunches || 0, findings: material.reduce((counts, finding) => {
+        const kind = finding.id.startsWith('gate:design-conformance:') ? 'design-conformance' : finding.id.startsWith('gate:ac-coverage:') ? 'ac-coverage' : finding.id.split(':', 1)[0];
+        return { ...counts, [kind]: (counts[kind] || 0) + 1 };
+      }, {}),
+    };
+    if (reconciliation) {
+      const intentReview = (ledger.intent_parked || []).length > 0;
+      decision = { continue: false, converged: false, parked: false, abandoned: false, ...(intentReview ? { intentReview: true } : { gatePending: true }), reconciliation: true, reason: intentReview ? 'open intent finding(s) require reconciliation' : 'open design/AC GATE finding(s) require reconciliation' };
+      applied = { ...applied, status: intentReview ? 'intent-review' : 'gate-pending' };
+    }
     // Persisted so renderHandoff can tell "the panel is off in this repo" from
     // "the panel is on and still ahead of this run" -- it only receives the
     // ledger, and telling someone to enable a panel they already enabled sends
@@ -1252,7 +1267,7 @@ function main(resolveFromCwd) {
     ledger = { ...ledger, phase: 'done', last_recorded_round: n, _lastDecision: decision };
     writeLedger(stateDir, slug, ledger);
     if (R.TERMINAL_STATUSES.has(ledger.status)) reviewTelemetry.deleteTelemetry(stateDir, ledger.target?.ref || ref, slug);
-    process.stdout.write(JSON.stringify({ decision, handoff: renderHandoff({ ledger }), telemetry: ledger.telemetry || null }) + '\n');
+    process.stdout.write(JSON.stringify({ decision, handoff: renderHandoff({ ledger }), telemetry: ledger.telemetry || null, reconciliation: reconciliation || undefined }) + '\n');
     return;
   }
 
@@ -1422,7 +1437,7 @@ function main(resolveFromCwd) {
     }
     const material = [...intentParked, ...gateOpen.filter((f) => /^gate:(?:design-conformance|ac-coverage):/.test(f.id))];
     const reconciliation = material.length > 0;
-    const next = { ...ledger, planned: reconciliation ? [] : fixes.map((f) => f.id), resolved_absent: resolvedAbsent, intent_parked: intentParked, gate_open: gateOpen, phase: 'fixes' };
+    const next = { ...ledger, planned: reconciliation ? [] : fixes.map((f) => f.id), resolved_absent: resolvedAbsent, intent_parked: intentParked, gate_open: gateOpen, reconciliation: reconciliation ? { avoidedLaunches: fixes.length } : null, phase: 'fixes' };
     writeLedger(stateDir, slug, next);
     process.stdout.write(JSON.stringify({ fixes: reconciliation ? [] : fixes, avoidedLaunches: reconciliation ? fixes.length : 0, reconciliation: reconciliation && { trigger: 'material-finding', finding: material[0].id, stage: 'plan-fixes', findings: material.reduce((counts, finding) => {
       const kind = finding.id.startsWith('gate:design-conformance:') ? 'design-conformance' : finding.id.startsWith('gate:ac-coverage:') ? 'ac-coverage' : finding.id.split(':', 1)[0];

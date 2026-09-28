@@ -386,7 +386,6 @@ async function runReviewUntilGreen(options) {
     invocations: [],
   };
   let currentRound = null;
-  let material = null;
   let checks = [];
   let telemetryPath = null;
   let telemetryLoaded = false;
@@ -458,13 +457,18 @@ async function runReviewUntilGreen(options) {
     }
     const terminal = result?.decision === 'terminal' || result?.decision?.converged || result?.decision?.parked || result?.decision?.abandoned || result?.decision?.intentReview || result?.decision?.gatePending;
     if (initiativeRun && terminal) {
+      const decision = result?.decision || {};
+      const reconciliation = result?.reconciliation;
+      const reason = reconciliation ? 'reconciliation-required'
+        : result?.status || (decision.converged ? 'clean' : decision.parked ? 'parked' : decision.abandoned ? 'abandoned' : decision.intentReview ? 'intent-review' : decision.gatePending ? 'gate-pending' : 'target-terminal');
       if (!recordTargetTerminal(initiativeRun, {
         target: ref,
-        reason: material ? 'reconciliation-required' : result?.status || 'target-terminal',
-        finding: material?.finding || null,
-        stage: material?.stage || null,
-        avoidedLaunches: material?.avoidedLaunches || 0,
-        findings: material?.findings || {},
+        revision: { ref, ...(initialBase ? { base: initialBase } : {}) },
+        reason,
+        finding: reconciliation?.finding || null,
+        stage: reconciliation?.stage || null,
+        avoidedLaunches: reconciliation?.avoidedLaunches || 0,
+        findings: reconciliation?.findings || {},
         checks: result?.checks || checks,
         telemetry: (output.telemetry?.invocations || []).map(({ role, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, stage: 'review', revision: { ref, ...(initialBase ? { base: initialBase } : {}) }, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens })),
       })) throw new Error('review-until-green: initiative target terminal recording was contended');
@@ -592,7 +596,7 @@ async function runReviewUntilGreen(options) {
     telemetryLoaded = true;
     if (started.decision !== 'work') return withTelemetry(started);
     currentRound = started.round;
-    checks = [{ name: 'definition-of-done', status: started.dodPassed ? 'passed' : (started.dodDeferred ? 'deferred' : 'failed') }];
+    checks = [{ name: 'definition-of-done', status: started.dodDeferred ? 'deferred' : (started.dodPassed ? 'passed' : 'failed') }];
     const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodPassed: started.dodPassed, dodDeferred: started.dodDeferred, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref) };
     let slotAllocation = Promise.resolve();
     const launch = async (input) => {
@@ -653,11 +657,6 @@ async function runReviewUntilGreen(options) {
     if (reviewerFailure) throw reviewerFailure.reason;
 
     const planned = await cli(['plan-fixes', ref]);
-    if (planned.reconciliation) {
-      material = typeof planned.reconciliation === 'object' ? { ...planned.reconciliation, stage: planned.reconciliation.stage || 'plan-fixes', avoidedLaunches: planned.avoidedLaunches || 0 } : { stage: 'plan-fixes', avoidedLaunches: planned.avoidedLaunches || 0 };
-      const recorded = await cli(['record', ref]);
-      return withTelemetry({ ...recorded, decision: { ...(recorded.decision || {}), continue: false, gatePending: true } });
-    }
     await throwIfAborted(true);
     for (const finding of planned.fixes || []) {
       try {

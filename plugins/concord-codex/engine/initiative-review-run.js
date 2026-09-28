@@ -63,13 +63,15 @@ function reserveLaunch(run, launch) {
   }));
 }
 
-function recordTargetTerminal(run, { target, reason = 'target-terminal', finding = null, stage = null, avoidedLaunches = 0, findings = {}, checks = [], telemetry = [] }) {
-  const safeTelemetry = telemetry.map(({ role, stage: telemetryStage, revision, count, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, ...(telemetryStage ? { stage: telemetryStage } : {}), ...(revision ? { revision } : {}), ...(Number.isInteger(count) ? { count } : {}), elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }));
+function recordTargetTerminal(run, { target, revision, reason = 'target-terminal', finding = null, stage = null, avoidedLaunches = 0, findings = {}, checks = [], telemetry = [] }) {
+  const safeTelemetry = telemetry.map(({ role, stage: telemetryStage, revision, round, count, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, ...(telemetryStage ? { stage: telemetryStage } : {}), ...(revision ? { revision } : {}), ...(Number.isInteger(round) ? { round } : {}), ...(Number.isInteger(count) ? { count } : {}), elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }));
   return Boolean(locked(run, (ledger) => {
     if (!ledger || ledger.status !== 'active' || (ledger.reconciliation?.terminals || []).some((terminal) => terminal.target === target)) return null;
+    const targetRevision = revision && { ref: revision.ref || target, ...(revision.base ? { base: revision.base } : {}), ...(revision.head ? { head: revision.head } : {}) };
+    const targets = targetRevision && !(ledger.targets || []).some((item) => JSON.stringify(item) === JSON.stringify(targetRevision)) ? [...(ledger.targets || []), targetRevision] : (ledger.targets || []);
     const terminal = { target, reason };
     const previous = ledger.reconciliation || {};
-    return { ...ledger, findings: { ...(ledger.findings || {}), ...Object.fromEntries(Object.entries(findings).map(([kind, count]) => [kind, (ledger.findings?.[kind] || 0) + count])) }, checks: [...(ledger.checks || []), ...checks], telemetry: [...(ledger.telemetry || []), ...safeTelemetry], reconciliation: { terminals: [...(previous.terminals || []), terminal], hint: reason === 'reconciliation-required' ? hint(reason, finding, stage, avoidedLaunches) : (previous.hint || hint(reason, finding, stage, avoidedLaunches)) } };
+    return { ...ledger, targets, findings: { ...(ledger.findings || {}), ...Object.fromEntries(Object.entries(findings).map(([kind, count]) => [kind, (ledger.findings?.[kind] || 0) + count])) }, checks: [...(ledger.checks || []), ...checks], telemetry: [...(ledger.telemetry || []), ...safeTelemetry], reconciliation: { terminals: [...(previous.terminals || []), terminal], hint: reason === 'reconciliation-required' ? hint(reason, finding, stage, avoidedLaunches) : (previous.hint || hint(reason, finding, stage, avoidedLaunches)) } };
   }));
 }
 

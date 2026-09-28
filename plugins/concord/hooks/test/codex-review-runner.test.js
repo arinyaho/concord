@@ -68,6 +68,7 @@ test('initiative terminal string decisions are recorded', async () => {
   });
   const ledger = JSON.parse(fs.readFileSync(runPath(stateDir, 'terminal-string'), 'utf8'));
   assert.deepStrictEqual(ledger.reconciliation.terminals, [{ target: 'feature/x', reason: 'parked' }]);
+  assert.deepStrictEqual(ledger.targets, [{ ref: 'feature/x', base: 'main' }]);
 });
 
 test('reconciliation terminates the target and retains its restored base and avoided fixes', async () => {
@@ -78,7 +79,7 @@ test('reconciliation terminates the target and retains its restored base and avo
       if (verb === 'round-start') return { decision: 'work', round: 1, base: 'main', stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: false };
       if (verb === 'artifact-normalize') return { status: 'ok' };
       if (verb === 'plan-fixes') return { fixes: [], avoidedLaunches: 2, reconciliation: { finding: 'intent:missing', findings: { intent: 1 } } };
-      if (verb === 'record') return { decision: { continue: true } };
+      if (verb === 'record') return { decision: { continue: false, intentReview: true }, reconciliation: { finding: 'intent:missing', stage: 'record', avoidedLaunches: 2, findings: { intent: 1 } } };
     },
     spawn: async () => ({ status: 0 }),
   });
@@ -86,6 +87,21 @@ test('reconciliation terminates the target and retains its restored base and avo
   assert.deepStrictEqual(ledger.targets, [{ ref: 'feature/x', base: 'main' }]);
   assert.deepStrictEqual(ledger.reconciliation.hint.avoidedLaunches, 2);
   assert.deepStrictEqual(ledger.checks, [{ name: 'definition-of-done', status: 'failed' }]);
+});
+
+test('initiative terminal records object decision reason and deferred DoD accurately', async () => {
+  const stateDir = temp();
+  await runReviewUntilGreen({
+    ref: 'feature/x', repoRoot: '/repo', initiativeRunKey: 'deferred-terminal', initiativeStateDir: stateDir, initiativeMaxLaunches: 2, initiativeMaxRounds: 1,
+    runCli: ([verb]) => verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', stateDir, targetType: 'git', dodPassed: true, dodDeferred: true, intentApplied: false, gateApplied: false }
+      : verb === 'artifact-normalize' ? { status: 'ok' }
+        : verb === 'plan-fixes' ? { fixes: [] }
+          : { decision: { continue: false, converged: true } },
+    spawn: async () => ({ status: 0 }),
+  });
+  const ledger = JSON.parse(fs.readFileSync(runPath(stateDir, 'deferred-terminal'), 'utf8'));
+  assert.deepStrictEqual(ledger.reconciliation.terminals, [{ target: 'feature/x', reason: 'clean' }]);
+  assert.deepStrictEqual(ledger.checks, [{ name: 'definition-of-done', status: 'deferred' }]);
 });
 
 test('Codex resolver falls back to the macOS app after a broken PATH command', () => {

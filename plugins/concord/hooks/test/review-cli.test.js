@@ -1553,7 +1553,25 @@ test('plan-fixes: no-key runs suppress correctness fixes for reconciliation-requ
   assert.deepStrictEqual(out.fixes, []);
   assert.strictEqual(out.avoidedLaunches, 1);
   assert.deepStrictEqual(out.reconciliation.findings, { intent: 1 });
-  assert.deepStrictEqual(review.readLedger(dir, review.targetSlug('feat/x')).planned, []);
+  const ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.deepStrictEqual(ledger.planned, []);
+  assert.deepStrictEqual(ledger.reconciliation, { avoidedLaunches: 1 });
+});
+
+test('record: material design gate terminates reconciliation even while the DoD failed', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['false'], gate: {} }));
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'configure failing gate'], { cwd: repo });
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x', { status: 'ok', examined: ['a.txt'], findings: [] }, { status: 'ok', rejected: [] }, { armBroad: true });
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [{ id: 'gate:design-conformance:missing', file: 'a.txt', span: 'one', requirement: 'REQ', summary: 'missing requirement' }] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
+  run(['plan-fixes', 'feat/x'], { env });
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.continue, false);
+  assert.strictEqual(out.decision.gatePending, true);
+  assert.strictEqual(out.decision.reconciliation, true);
+  assert.deepStrictEqual(out.reconciliation.findings, { 'design-conformance': 1 });
 });
 
 test('plan-fixes: intent finding on an UNCHANGED file -> dropped', () => {
@@ -2844,7 +2862,7 @@ test('record: gate.panel enabled but NOT configured (absent gate.panel) -> conve
   assert.strictEqual(rec.decision.panelPending, undefined);
 });
 
-test('record: after gate_panel.status is "done" with a confirmed finding, record merges it into gate_open -> gatePending, not clean', () => {
+test('record: panel-confirmed material finding terminates through reconciliation', () => {
   const repo = initRepo(); const dir = tmpDir();
   fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
   execFileSync('git', ['add', '-A'], { cwd: repo });
@@ -2867,7 +2885,7 @@ test('record: after gate_panel.status is "done" with a confirmed finding, record
     phase: 'fixes', // reverted by gate-panel-round-record when the panel finishes (Task 6)
     gate_panel: {
       status: 'done', round: 2, dryStreak: 2,
-      confirmed: [{ id: 'gate:threat-model:sk-exposure', class: 'threat-model', file: 'a.txt', evidence: '', requirement: '', summary: 'a real gap the panel found' }],
+      confirmed: [{ id: 'gate:design-conformance:sk-exposure', class: 'design-conformance', file: 'a.txt', evidence: '', requirement: '', summary: 'a real gap the panel found' }],
       rejectedIds: [],
     },
   };
@@ -2876,8 +2894,10 @@ test('record: after gate_panel.status is "done" with a confirmed finding, record
   const rec2 = JSON.parse(run(['record', 'feat/x'], { env }));
   assert.strictEqual(rec2.decision.panelPending, undefined);
   assert.strictEqual(rec2.decision.gatePending, true);
+  assert.strictEqual(rec2.decision.reconciliation, true);
+  assert.deepStrictEqual(rec2.reconciliation.findings, { 'design-conformance': 1 });
   const finalLedger = review.readLedger(dir, review.targetSlug('feat/x'));
-  assert.deepStrictEqual(finalLedger.gate_open.map((f) => f.id), ['gate:threat-model:sk-exposure']);
+  assert.deepStrictEqual(finalLedger.gate_open.map((f) => f.id), ['gate:design-conformance:sk-exposure']);
 });
 
 test('renderHandoff: gate-pending surfaces the advisory broad review findings section', () => {
