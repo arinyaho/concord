@@ -341,6 +341,18 @@ function resolveDefaultBase(repoRoot, exec = execFileSync) {
   throw new Error('review-until-green: cannot determine a remote default base; pass an explicit base');
 }
 
+function pendingContinuationPacket(run, target, revision, kind) {
+  const entry = JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions.findLast((item) => item.target === target
+    && JSON.stringify(item.revision) === JSON.stringify(revision)
+    && (!kind || item.kind === kind));
+  return entry?.packet?.delivery?.consumed === false ? entry.packet : null;
+}
+
+function acknowledgeContinuationPacket(options, claim) {
+  if (!options?.initiativeStateDir || !options?.initiativeRunKey || typeof claim !== 'string') return false;
+  return consumeDispositionDelivery({ path: runPath(options.initiativeStateDir, options.initiativeRunKey) }, claim);
+}
+
 async function invoke(spawn, input) {
   const result = await spawn(input);
   if (result && (result.interrupted || result.timedOut || result.signal || result.status !== 0)) {
@@ -398,6 +410,7 @@ async function runReviewUntilGreen(options) {
   const rawSpawn = options.spawn || ((input) => providerExec(input));
   const abortController = options.handleSignals ? new AbortController() : null;
   const signalHandlers = abortController ? Object.fromEntries(['SIGINT', 'SIGTERM', 'SIGHUP'].map((signal) => [signal, () => abortController.abort(signal)])) : {};
+  let checks = [];
   for (const [signal, handler] of Object.entries(signalHandlers)) process.once(signal, handler);
   try {
   if (!resume && initialBase === undefined && !ref.startsWith('file:') && baseResolver) initialBase = baseResolver(repoRoot);
@@ -411,7 +424,10 @@ async function runReviewUntilGreen(options) {
         return gitHeadSha(canonicalRepoRoot);
       })();
     return { ref, ...(identityBase ? { base: identityBase } : {}), head_sha };
-  })) return { decision: 'terminal', initiative: publicInitiativeSummary(initiativeRun) };
+  })) {
+    const packet = pendingContinuationPacket(initiativeRun, ref, JSON.parse(fs.readFileSync(initiativeRun.path, 'utf8')).dispositions.find((item) => item.target === ref && item.kind === 'terminal').revision);
+    return { decision: 'terminal', initiative: publicInitiativeSummary(initiativeRun), ...(packet ? { continuationPacket: packet } : {}) };
+  }
   for (const provider of [reviewer, fixer]) {
     if (!PROVIDERS.has(provider)) throw new Error(`review-until-green: unsupported provider "${provider}"`);
   }
@@ -421,7 +437,6 @@ async function runReviewUntilGreen(options) {
     invocations: [],
   };
   let currentRound = null;
-  let checks = [];
   let telemetryPath = null;
   let telemetryLoaded = false;
   const persistTelemetry = () => {
@@ -504,6 +519,7 @@ async function runReviewUntilGreen(options) {
           dod: { status: (result?.checks || checks)[0]?.status || 'not-run' },
           telemetry: { complete: output.telemetry?.total?.partialCalls === 0 },
           nextAction: escaped ? 'resume' : 'replay',
+          handoff: result?.handoff || result?.message || null,
         },
         finding: reconciliation?.finding || null,
         stage: reconciliation?.stage || null,
@@ -512,9 +528,9 @@ async function runReviewUntilGreen(options) {
         checks: result?.checks || checks,
         telemetry: (output.telemetry?.invocations || []).map(({ role, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, stage: 'review', revision: initiativeRevision, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens })),
       })) throw new Error('review-until-green: initiative target terminal recording was contended');
-      const entry = JSON.parse(fs.readFileSync(initiativeRun.path, 'utf8')).dispositions.findLast((item) => item.target === ref && JSON.stringify(item.revision) === JSON.stringify(initiativeRevision));
-      if (!entry || !consumeDispositionDelivery(initiativeRun, entry.packet.delivery.claim)) throw new Error('review-until-green: initiative delivery claim was contended');
-      output.continuationPacket = { ...entry.packet, delivery: { ...entry.packet.delivery, consumed: true } };
+      const packet = pendingContinuationPacket(initiativeRun, ref, initiativeRevision);
+      if (!packet) throw new Error('review-until-green: initiative delivery claim was contended');
+      output.continuationPacket = packet;
     }
     return output;
   };
@@ -588,6 +604,7 @@ async function runReviewUntilGreen(options) {
     }
   };
 
+  let runnerOwnedRevision = false;
   for (;;) {
     await throwIfAborted();
     const startArgs = ['round-start', ref];
@@ -605,8 +622,9 @@ async function runReviewUntilGreen(options) {
     if (options.fixerModel) startArgs.push('--fixer-model', options.fixerModel);
     const started = await cli(startArgs);
     if (!initialBase && started.base) initialBase = started.base;
-    if (initiativeRevision.head_sha && started.head && initiativeRevision.head_sha !== started.head) throw new Error('review-until-green: initiative target revision changed before round-start');
-    initiativeRevision = { ref: started.ref || ref, ...(started.base || initialBase ? { base: started.base || initialBase } : {}), ...(initiativeRevision.head_sha || started.head ? { head_sha: initiativeRevision.head_sha || started.head } : {}) };
+    if (initiativeRevision.head_sha && started.head && initiativeRevision.head_sha !== started.head && !runnerOwnedRevision) throw new Error('review-until-green: initiative target revision changed before round-start');
+    initiativeRevision = { ref: started.ref || ref, ...(started.base || initialBase ? { base: started.base || initialBase } : {}), ...(started.head || initiativeRevision.head_sha ? { head_sha: started.head || initiativeRevision.head_sha } : {}) };
+    runnerOwnedRevision = false;
     await throwIfAborted(started.decision === 'work');
     if (started.reviewRouting) {
       reviewer = started.reviewRouting.reviewer || reviewer;
@@ -700,7 +718,13 @@ async function runReviewUntilGreen(options) {
     for (const finding of planned.fixes || []) {
       try {
         await launch({ role: 'fix', prompt: reviewerPrompt('fix', { ...context, finding, plannedFindingIds: (planned.fixes || []).map((f) => f.id) }), repoRoot, stateDir: context.stateDir });
-        if (started.targetType !== 'file') await cli(['commit-fix', ref, finding.id]);
+        if (started.targetType !== 'file') {
+          const committed = await cli(['commit-fix', ref, finding.id]);
+          if (committed?.committed) {
+            runnerOwnedRevision = true;
+            if (committed.sha) initiativeRevision = { ...initiativeRevision, head_sha: committed.sha };
+          }
+        }
       } catch (error) {
         const failure = error.reviewFailure || { role: 'fix', kind: /artifact|missing gate artifact/.test(String(error.message)) ? 'artifact-write-failure' : 'harness-error', message: String(error.message).replace(/^harness-failure:\s*/, '') };
         try { await cli(['round-failure', ref, JSON.stringify(failure)]); } catch (_) {}
@@ -719,13 +743,13 @@ async function runReviewUntilGreen(options) {
   }
   } catch (error) {
     const failure = error.reviewFailure || {};
-    if (initiativeRun && initiativeRevision.head_sha && !recordDisposition(initiativeRun, { target: ref, revision: initiativeRevision, result: error, packet: { trigger: 'error', exit: { code: Number.isInteger(failure.exitCode) ? failure.exitCode : null, signal: failure.signal || null }, dod: { status: 'not-run' }, telemetry: { complete: false }, nextAction: 'resume' } })) {
-      throw new Error('review-until-green: initiative error disposition recording was contended');
+    if (initiativeRun && initiativeRevision.head_sha && !recordDisposition(initiativeRun, { target: ref, revision: initiativeRevision, result: error, packet: { trigger: 'error', exit: { code: Number.isInteger(failure.exitCode) ? failure.exitCode : null, signal: failure.signal || null }, dod: { status: checks[0]?.status || 'not-run' }, telemetry: { complete: false }, nextAction: 'resume', error: { message: error.message } }, checks })) {
+      if (!pendingContinuationPacket(initiativeRun, ref, initiativeRevision, 'error')) throw new Error('review-until-green: initiative error disposition recording was contended');
     }
     if (initiativeRun && initiativeRevision.head_sha) {
-      const entry = JSON.parse(fs.readFileSync(initiativeRun.path, 'utf8')).dispositions.findLast((item) => item.target === ref && JSON.stringify(item.revision) === JSON.stringify(initiativeRevision));
-      if (!entry || !consumeDispositionDelivery(initiativeRun, entry.packet.delivery.claim)) throw new Error('review-until-green: initiative error delivery claim was contended');
-      error.continuationPacket = { ...entry.packet, delivery: { ...entry.packet.delivery, consumed: true } };
+      const packet = pendingContinuationPacket(initiativeRun, ref, initiativeRevision, 'error');
+      if (!packet) throw new Error('review-until-green: initiative error delivery claim was contended');
+      error.continuationPacket = packet;
     }
     throw error;
   } finally {
@@ -733,4 +757,4 @@ async function runReviewUntilGreen(options) {
   }
 }
 
-module.exports = { runReviewUntilGreen, reviewerPrompt, codexExec, providerExec, jsonCli, resolveCodexExecutable, resolveDefaultBase };
+module.exports = { runReviewUntilGreen, acknowledgeContinuationPacket, reviewerPrompt, codexExec, providerExec, jsonCli, resolveCodexExecutable, resolveDefaultBase };

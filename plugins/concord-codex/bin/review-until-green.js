@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 const path = require('node:path');
-const { runReviewUntilGreen } = require('../engine/codex-review-runner');
+const { runReviewUntilGreen, acknowledgeContinuationPacket } = require('../engine/codex-review-runner');
 const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('../engine/spawn-cross-platform');
 
 const args = process.argv.slice(2);
@@ -56,9 +56,21 @@ const positional = args.filter((arg, index) => arg !== '--broad' && arg !== '--g
 const resumed = positional[0] === 'resume';
 const ref = (resumed ? positional[1] : positional[0]) || (inference.initiativeFinalise ? undefined : require('node:child_process').execFileSync(crossPlatformCommand('git', process.cwd()), crossPlatformArgs(['branch', '--show-current'], needsDoubleEscape('git', process.cwd())), crossPlatformOpts({ encoding: 'utf8' })).trim());
 const base = resumed ? positional[2] : positional[1];
-runReviewUntilGreen({ ref, base, broad, noBroad, noDod, ...inference, resume: resumed, handleSignals: true, repoRoot: process.cwd(), cliPath: path.join(__dirname, 'review-cli.js') })
-  .then((result) => {
-    if (result.continuationPacket) process.stdout.write(`${JSON.stringify(result.continuationPacket)}\n`);
-    else if (!(result.decision === 'terminal' && result.initiative)) process.stdout.write(`${result.handoff || result.message || JSON.stringify(result)}\n`);
+const runnerOptions = { ref, base, broad, noBroad, noDod, ...inference, resume: resumed, handleSignals: true, repoRoot: process.cwd(), cliPath: path.join(__dirname, 'review-cli.js') };
+const write = (stream, text) => new Promise((resolve, reject) => stream.write(text, (error) => error ? reject(error) : resolve()));
+const deliver = async (stream, packet) => {
+  await write(stream, `${JSON.stringify(packet)}\n`);
+  if (packet.delivery?.consumed === false && !acknowledgeContinuationPacket(runnerOptions, packet.delivery.claim)) throw new Error('review-until-green: initiative delivery acknowledgement was contended');
+};
+runReviewUntilGreen(runnerOptions)
+  .then(async (result) => {
+    if (result.continuationPacket) await deliver(process.stdout, result.continuationPacket);
+    else if (!(result.decision === 'terminal' && result.initiative)) await write(process.stdout, `${result.handoff || result.message || JSON.stringify(result)}\n`);
   })
-  .catch((error) => { process.stderr.write(error.continuationPacket ? `${JSON.stringify(error.continuationPacket)}\n` : `review-until-green: ${error.message}\n`); process.exit(1); });
+  .catch(async (error) => {
+    try {
+      if (error.continuationPacket) await deliver(process.stderr, error.continuationPacket);
+      else await write(process.stderr, `review-until-green: ${error.message}\n`);
+    } catch (deliveryError) { process.stderr.write(`review-until-green: ${deliveryError.message}\n`); }
+    process.exit(1);
+  });

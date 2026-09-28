@@ -240,12 +240,13 @@ test('initiative runner records escaped results and thrown errors as durable dis
   const escaped = { ref: 'feature/escape', repoRoot: '/repo', initiativeRunKey: 'escaped', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1 };
   await runReviewUntilGreen({ ...escaped, runCli: ([verb]) => verb === 'round-start' ? { decision: 'escape', base: 'main', head: 'head', stateDir } : undefined });
   const escapedLedger = JSON.parse(fs.readFileSync(runPath(stateDir, 'escaped'), 'utf8'));
-  assert.deepStrictEqual(escapedLedger.dispositions[0], { target: 'feature/escape', revision: { ref: 'feature/escape', base: 'main', head_sha: 'head' }, kind: 'escape', reason: 'escape', sequence: 1, packet: { trigger: 'escape', exit: { code: 0, signal: null }, dod: { status: 'not-run' }, telemetry: { complete: true }, nextAction: 'resume', ledger: { version: 3, status: 'active' }, budget: { maxLaunches: 1, maxRounds: 1, launches: 0, rounds: 0 }, delivery: { claim: 'feature/escape:1', continuation: 'resume', consumed: true } } });
+  assert.deepStrictEqual(escapedLedger.dispositions[0].packet.outcome, { kind: 'escape', reason: 'escape' });
+  assert.strictEqual(escapedLedger.dispositions[0].packet.delivery.consumed, false);
 
   const failed = { ref: 'feature/error', repoRoot: '/repo', initiativeRunKey: 'errored', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1 };
   let error;
   await assert.rejects(runReviewUntilGreen({ ...failed, runCli: ([verb]) => verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: false } : verb === 'artifact-normalize' ? { status: 'ok' } : undefined, spawn: async () => { throw new Error('subprocess failed'); } }), (caught) => { error = caught; return /subprocess failed/.test(caught.message); });
-  assert.strictEqual(error.continuationPacket.delivery.consumed, true);
+  assert.strictEqual(error.continuationPacket.delivery.consumed, false);
   const errorDisposition = JSON.parse(fs.readFileSync(runPath(stateDir, 'errored'), 'utf8')).dispositions[0];
   assert.deepStrictEqual(errorDisposition.packet.exit, { code: null, signal: null });
   assert.deepStrictEqual(errorDisposition.packet.telemetry, { complete: false });
@@ -289,11 +290,46 @@ test('initiative runner records a default-base resolution failure with its immut
   assert.strictEqual(disposition.kind, 'error');
 });
 
-test('initiative runner consumes its terminal delivery claim before returning the continuation packet', async () => {
+test('initiative runner leaves its terminal delivery claim unconsumed until the launcher acknowledges output', async () => {
   const stateDir = temp();
   const result = await runReviewUntilGreen({ ref: 'feature/deliver', base: 'main', repoRoot: '/repo', initiativeRunKey: 'deliver', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, runCli: ([verb]) => verb === 'round-start' ? { decision: 'terminal', status: 'clean', base: 'main', head: 'head', stateDir } : undefined });
-  assert.strictEqual(result.continuationPacket.delivery.consumed, true);
-  assert.strictEqual(JSON.parse(fs.readFileSync(runPath(stateDir, 'deliver'), 'utf8')).dispositions[0].packet.delivery.consumed, true);
+  assert.strictEqual(result.continuationPacket.delivery.consumed, false);
+  assert.strictEqual(JSON.parse(fs.readFileSync(runPath(stateDir, 'deliver'), 'utf8')).dispositions[0].packet.delivery.consumed, false);
+  const replay = await runReviewUntilGreen({ ref: 'feature/deliver', base: 'main', repoRoot: '/repo', initiativeRunKey: 'deliver', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => 'head', runCli: () => { throw new Error('round-start must not run'); } });
+  assert.strictEqual(replay.continuationPacket.delivery.claim, result.continuationPacket.delivery.claim);
+  assert.strictEqual(replay.continuationPacket.outcome.reason, 'clean');
+});
+
+test('initiative error retains completed DoD, diagnostic, and duplicate retry packet', async () => {
+  const stateDir = temp();
+  const options = { ref: 'feature/error-retry', base: 'main', repoRoot: '/repo', initiativeRunKey: 'error-retry', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 2,
+    runCli: ([verb]) => verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false } : verb === 'artifact-normalize' ? { status: 'ok' } : undefined,
+    spawn: async () => { throw new Error('subprocess failed'); } };
+  let first;
+  await assert.rejects(runReviewUntilGreen(options), (error) => { first = error; return /subprocess failed/.test(error.message); });
+  assert.deepStrictEqual(first.continuationPacket.dod, { status: 'passed' });
+  assert.match(first.continuationPacket.error.message, /subprocess failed/);
+  let second;
+  await assert.rejects(runReviewUntilGreen(options), (error) => { second = error; return /subprocess failed/.test(error.message); });
+  assert.strictEqual(second.continuationPacket.delivery.claim, first.continuationPacket.delivery.claim);
+});
+
+test('initiative accepts a runner-owned fixer revision on the next round', async () => {
+  const stateDir = temp();
+  let round = 0;
+  await runReviewUntilGreen({
+    ref: 'feature/fixed', base: 'main', repoRoot: '/repo', initiativeRunKey: 'fixed-revision', initiativeStateDir: stateDir, initiativeMaxLaunches: 8, initiativeMaxRounds: 2,
+    runCli: ([verb]) => {
+      if (verb === 'round-start') return { decision: 'work', round: ++round, base: 'main', head: round === 1 ? 'before' : 'after', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false };
+      if (verb === 'artifact-normalize') return { status: 'ok' };
+      if (verb === 'plan-fixes') return { fixes: round === 1 ? [{ id: 'correctness:bug', file: 'a.txt', span: 'bad', summary: 'fix it' }] : [] };
+      if (verb === 'commit-fix') return { committed: true, sha: 'after' };
+      if (verb === 'record') return round === 1 ? { decision: { continue: true } } : { decision: { continue: false, converged: true } };
+    },
+    spawn: async () => ({ status: 0 }),
+  });
+  const ledger = JSON.parse(fs.readFileSync(runPath(stateDir, 'fixed-revision'), 'utf8'));
+  assert.deepStrictEqual(ledger.dispositions[0].revision, { ref: 'feature/fixed', base: 'main', head_sha: 'after' });
 });
 
 test('reconciliation terminates the target and retains its restored base and avoided fixes', async () => {
@@ -2010,20 +2046,24 @@ test('Codex launcher finalises without resolving a git target', () => {
   assert.strictEqual(JSON.parse(fs.readFileSync(capture, 'utf8')).ref, undefined);
 });
 
-test('Codex launcher emits only a consumed continuation packet and never duplicates it', () => {
+test('Codex launcher emits then acknowledges an unconsumed continuation packet', () => {
   const dir = temp();
   const bin = path.join(__dirname, '..', '..', '..', 'concord-codex', 'bin', 'review-until-green.js');
   const preload = path.join(dir, 'runner.js');
-  fs.writeFileSync(preload, `const Module = require('node:module'); const load = Module._load; Module._load = function(request, parent, isMain) { if (request === '../engine/codex-review-runner') return { runReviewUntilGreen: async () => ({ decision: 'terminal', initiative: {}, handoff: 'legacy', continuationPacket: { delivery: { consumed: true, claim: 'one' } } }) }; return load.apply(this, arguments); };`);
-  assert.strictEqual(execFileSync('node', ['--require', preload, bin, 'feature/x'], { encoding: 'utf8' }), '{"delivery":{"consumed":true,"claim":"one"}}\n');
+  const capture = path.join(dir, 'ack');
+  fs.writeFileSync(preload, `const fs = require('node:fs'); const Module = require('node:module'); const load = Module._load; Module._load = function(request, parent, isMain) { if (request === '../engine/codex-review-runner') return { runReviewUntilGreen: async () => ({ decision: 'terminal', initiative: {}, handoff: 'legacy', continuationPacket: { delivery: { consumed: false, claim: 'one' } } }), acknowledgeContinuationPacket: async (_options, claim) => fs.writeFileSync(process.env.CAPTURE, claim) }; return load.apply(this, arguments); };`);
+  assert.strictEqual(execFileSync('node', ['--require', preload, bin, 'feature/x'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' }), '{"delivery":{"consumed":false,"claim":"one"}}\n');
+  assert.strictEqual(fs.readFileSync(capture, 'utf8'), 'one');
   fs.writeFileSync(preload, `const Module = require('node:module'); const load = Module._load; Module._load = function(request, parent, isMain) { if (request === '../engine/codex-review-runner') return { runReviewUntilGreen: async () => ({ decision: 'terminal', initiative: {}, handoff: 'legacy' }) }; return load.apply(this, arguments); };`);
   assert.strictEqual(execFileSync('node', ['--require', preload, bin, 'feature/x'], { encoding: 'utf8' }), '');
 });
 
-test('Codex launcher emits a consumed error continuation packet before nonzero exit', () => {
+test('Codex launcher emits then acknowledges an error continuation packet before nonzero exit', () => {
   const dir = temp();
   const bin = path.join(__dirname, '..', '..', '..', 'concord-codex', 'bin', 'review-until-green.js');
   const preload = path.join(dir, 'runner.js');
-  fs.writeFileSync(preload, `const Module = require('node:module'); const load = Module._load; Module._load = function(request, parent, isMain) { if (request === '../engine/codex-review-runner') return { runReviewUntilGreen: async () => { const error = new Error('legacy'); error.continuationPacket = { delivery: { consumed: true, claim: 'error' } }; throw error; } }; return load.apply(this, arguments); };`);
-  assert.throws(() => execFileSync('node', ['--require', preload, bin, 'feature/x'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }), (error) => error.status === 1 && error.stderr === '{"delivery":{"consumed":true,"claim":"error"}}\n');
+  const capture = path.join(dir, 'ack');
+  fs.writeFileSync(preload, `const fs = require('node:fs'); const Module = require('node:module'); const load = Module._load; Module._load = function(request, parent, isMain) { if (request === '../engine/codex-review-runner') return { runReviewUntilGreen: async () => { const error = new Error('legacy'); error.continuationPacket = { delivery: { consumed: false, claim: 'error' } }; throw error; }, acknowledgeContinuationPacket: async (_options, claim) => fs.writeFileSync(process.env.CAPTURE, claim) }; return load.apply(this, arguments); };`);
+  assert.throws(() => execFileSync('node', ['--require', preload, bin, 'feature/x'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }), (error) => error.status === 1 && error.stderr === '{"delivery":{"consumed":false,"claim":"error"}}\n');
+  assert.strictEqual(fs.readFileSync(capture, 'utf8'), 'error');
 });
