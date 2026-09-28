@@ -55,7 +55,14 @@ function hint(trigger, finding = null, stage = null, avoidedLaunches = 0) {
 }
 
 function normalizeDisposition(result = {}) {
-  if (result instanceof Error) return { kind: 'error', reason: 'runner-error' };
+  // The reason is part of recordDisposition's content-dedup key (same
+  // target+revision+kind+reason is treated as a repeat of the same outcome,
+  // not a new disposition). A fixed 'runner-error' reason for every Error
+  // would make two DISTINCT failures at an unchanged revision collide and
+  // silently drop the newer one's detail; hashing the message keeps retries
+  // of the identical failure idempotent while still recording a genuinely
+  // different failure as its own disposition.
+  if (result instanceof Error) return { kind: 'error', reason: `runner-error:${crypto.createHash('sha256').update(result.message || '').digest('hex').slice(0, 12)}` };
   if (result.decision === 'escape') return { kind: 'escape', reason: 'escape' };
   const decision = result.decision || {};
   const reason = ['parked', 'abandoned'].includes(result.status) ? result.status

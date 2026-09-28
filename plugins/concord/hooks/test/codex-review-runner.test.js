@@ -365,6 +365,22 @@ test('initiative replays a consumed duplicate error packet', async () => {
   await assert.rejects(runReviewUntilGreen(options), (error) => error.continuationPacket.delivery.claim === first.continuationPacket.delivery.claim);
 });
 
+test('initiative records a distinct second failure at an unchanged revision instead of masking it as a duplicate', async () => {
+  const stateDir = temp();
+  let call = 0;
+  const options = { ref: 'feature/error-distinct', base: 'main', repoRoot: '/repo', initiativeRunKey: 'error-distinct', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 2,
+    runCli: ([verb]) => verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false } : verb === 'artifact-normalize' ? { status: 'ok' } : undefined,
+    spawn: async () => { call++; throw new Error(call === 1 ? 'first failure' : 'second distinct failure'); } };
+  let first;
+  await assert.rejects(runReviewUntilGreen(options), (error) => { first = error; return /first failure/.test(error.message); });
+  let second;
+  await assert.rejects(runReviewUntilGreen(options), (error) => { second = error; return /second distinct failure/.test(error.message); });
+  assert.notStrictEqual(second.continuationPacket.delivery.claim, first.continuationPacket.delivery.claim);
+  assert.match(second.continuationPacket.error.message, /second distinct failure/);
+  const ledger = JSON.parse(fs.readFileSync(runPath(stateDir, 'error-distinct'), 'utf8'));
+  assert.strictEqual(ledger.dispositions.length, 2);
+});
+
 test('initiative accepts a runner-owned fixer revision on the next round', async () => {
   const stateDir = temp();
   let round = 0;
