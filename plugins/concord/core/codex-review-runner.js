@@ -5,7 +5,7 @@
 // subprocess and every state transition remains owned by review-cli.
 const { execFileSync, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
-const { canonicalPath, runPath, openInitiativeRun, reserveLaunch, recordDisposition, consumeDispositionDelivery, terminalTarget, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
+const { canonicalPath, runPath, openInitiativeRun, reserveLaunch, recordDisposition, normalizeDisposition, consumeDispositionDelivery, terminalTarget, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
 const { gitHeadSha, gitDirty, fileTarget } = require('./target');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -342,10 +342,11 @@ function resolveDefaultBase(repoRoot, exec = execFileSync) {
   throw new Error('review-until-green: cannot determine a remote default base; pass an explicit base');
 }
 
-function pendingContinuationPacket(run, target, revision, kind, includeConsumed = false) {
+function pendingContinuationPacket(run, target, revision, kind, includeConsumed = false, reason) {
   const entry = JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions.findLast((item) => item.target === target
     && same(item.revision, revision)
-    && (!kind || item.kind === kind));
+    && (!kind || item.kind === kind)
+    && (!reason || item.reason === reason));
   return entry?.packet && (includeConsumed || entry.packet.delivery?.consumed === false) ? entry.packet : null;
 }
 
@@ -552,7 +553,14 @@ async function runReviewUntilGreen(options) {
         checks: result?.checks || checks,
         telemetry: (output.telemetry?.invocations || []).map(({ role, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, stage: 'review', revision: initiativeRevision, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens })),
       });
-      const packet = pendingContinuationPacket(initiativeRun, ref, initiativeRevision, escaped ? 'escape' : 'terminal', true);
+      // includeConsumed only for 'terminal': its dedup matches regardless of
+      // consumption, so a consumed match here is a legitimate concurrent
+      // success. 'escape' dedup only matches an UNCONSUMED entry, so a
+      // consumed match here would be a stale, unrelated escape at this
+      // revision -- including it would mask the real failure (e.g. the
+      // ledger was finalised concurrently) behind a wrong, already-settled
+      // packet instead of throwing.
+      const packet = pendingContinuationPacket(initiativeRun, ref, initiativeRevision, escaped ? 'escape' : 'terminal', !escaped);
       if (!packet) throw new Error(recorded ? 'review-until-green: initiative delivery claim was contended' : 'review-until-green: initiative target terminal recording was contended');
       output.continuationPacket = packet;
     }
@@ -766,11 +774,17 @@ async function runReviewUntilGreen(options) {
   } catch (error) {
     if (error.notAReviewFailure) throw error;
     const failure = error.reviewFailure || {};
+    // recordDisposition dedups an 'error' by its reason (a hash of the
+    // message), not just target+revision+kind -- so the fallback lookups
+    // below must filter by that same reason, or a different, more recent
+    // error at this revision could be returned in place of this one's own
+    // (distinct) failure.
+    const errorReason = normalizeDisposition(error).reason;
     if (initiativeRun && initiativeRevision.head_sha && !recordDisposition(initiativeRun, { target: ref, revision: initiativeRevision, result: error, packet: { trigger: 'error', exit: { code: Number.isInteger(failure.exitCode) ? failure.exitCode : null, signal: failure.signal || null }, dod: { status: checks[0]?.status || 'not-run' }, telemetry: { complete: false }, nextAction: 'resume', error: { message: error.message } }, checks })) {
-      if (!pendingContinuationPacket(initiativeRun, ref, initiativeRevision, 'error', true)) throw new Error('review-until-green: initiative error disposition recording was contended');
+      if (!pendingContinuationPacket(initiativeRun, ref, initiativeRevision, 'error', true, errorReason)) throw new Error('review-until-green: initiative error disposition recording was contended');
     }
     if (initiativeRun && initiativeRevision.head_sha) {
-      const packet = pendingContinuationPacket(initiativeRun, ref, initiativeRevision, 'error', true);
+      const packet = pendingContinuationPacket(initiativeRun, ref, initiativeRevision, 'error', true, errorReason);
       if (!packet) throw new Error('review-until-green: initiative error delivery claim was contended');
       error.continuationPacket = packet;
     }
