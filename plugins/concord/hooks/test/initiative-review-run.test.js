@@ -42,6 +42,20 @@ test('terminalTarget does not suppress a retry when an escape disposition\'s rev
   assert.strictEqual(terminalTarget(run, 'feature/x', { ref: 'feature/x', base: 'main', head_sha: 'new-head' }, ['terminal', 'escape']), false);
 });
 
+test('terminalTarget finds an older still-pending escape when the head reverts past a newer one', () => {
+  const run = open({ stateDir: temp(), key: 'escape-revert', maxLaunches: 2, maxRounds: 2 });
+  const olderRevision = { ref: 'feature/x', base: 'main', head_sha: 'older-head' };
+  const newerRevision = { ref: 'feature/x', base: 'main', head_sha: 'newer-head' };
+  assert.ok(recordDisposition(run, { target: 'feature/x', revision: olderRevision, result: { decision: 'escape' } }));
+  assert.ok(recordDisposition(run, { target: 'feature/x', revision: newerRevision, result: { decision: 'escape' } }));
+  // selectDisposition would pick the newer (most-recently-written) entry
+  // first; a query for the reverted-to older revision must still find the
+  // older entry's still-unconsumed packet instead of returning false.
+  const matched = terminalTarget(run, 'feature/x', olderRevision, ['terminal', 'escape']);
+  assert.strictEqual(matched.kind, 'escape');
+  assert.deepStrictEqual(matched.revision, olderRevision);
+});
+
 test('terminalTarget prefers a terminal disposition over a later-appended escape', () => {
   const run = open({ stateDir: temp(), key: 'terminal-then-escape', maxLaunches: 1, maxRounds: 1 });
   const terminalRevision = { ref: 'feature/x', base: 'main', head_sha: 'terminal-head' };

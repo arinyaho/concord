@@ -186,7 +186,15 @@ function terminalTarget(run, target, revision, kinds = ['terminal']) {
     if (terminal.kind === 'escape' && terminal.packet?.delivery?.consumed !== false) return false;
     return terminal;
   }
-  if (terminal.kind === 'escape') return false;
+  if (terminal.kind === 'escape') {
+    // selectDisposition picked the most-recently-written escape, which
+    // doesn't match the queried revision -- but an OLDER, still-pending
+    // escape might (e.g. the working tree reverted to an earlier commit
+    // that already has its own unconsumed escape entry). Prefer replaying
+    // that one over launching a redundant round.
+    const olderMatch = (ledger.dispositions || []).find((item) => item.target === target && kinds.includes(item.kind) && item !== terminal && same(item.revision, revision) && item.packet?.delivery?.consumed === false);
+    return olderMatch || false;
+  }
   throw new Error('initiative review terminal target revision changed');
 }
 
