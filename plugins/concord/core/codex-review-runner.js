@@ -552,7 +552,7 @@ async function runReviewUntilGreen(options) {
         checks: result?.checks || checks,
         telemetry: (output.telemetry?.invocations || []).map(({ role, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, stage: 'review', revision: initiativeRevision, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens })),
       });
-      const packet = pendingContinuationPacket(initiativeRun, ref, initiativeRevision);
+      const packet = pendingContinuationPacket(initiativeRun, ref, initiativeRevision, escaped ? 'escape' : 'terminal');
       if (!packet) throw new Error(recorded ? 'review-until-green: initiative delivery claim was contended' : 'review-until-green: initiative target terminal recording was contended');
       output.continuationPacket = packet;
     }
