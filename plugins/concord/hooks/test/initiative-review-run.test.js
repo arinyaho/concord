@@ -42,6 +42,14 @@ test('terminalTarget does not suppress a retry when an escape disposition\'s rev
   assert.strictEqual(terminalTarget(run, 'feature/x', { ref: 'feature/x', base: 'main', head_sha: 'new-head' }, ['terminal', 'escape']), false);
 });
 
+test('terminalTarget prefers a terminal disposition over a later-appended escape', () => {
+  const run = open({ stateDir: temp(), key: 'terminal-then-escape', maxLaunches: 1, maxRounds: 1 });
+  const terminalRevision = { ref: 'feature/x', base: 'main', head_sha: 'terminal-head' };
+  assert.ok(recordDisposition(run, { target: 'feature/x', revision: terminalRevision, result: { decision: { converged: true } } }));
+  assert.ok(recordDisposition(run, { target: 'feature/x', revision: { ref: 'feature/x', base: 'main', head_sha: 'escape-head' }, result: { decision: 'escape' } }));
+  assert.strictEqual(terminalTarget(run, 'feature/x', terminalRevision, ['terminal', 'escape']), true);
+});
+
 test('a disposition delivery claim is atomically consumed once', () => {
   const run = open({ stateDir: temp(), key: 'delivery-claim', maxLaunches: 1, maxRounds: 1 });
   recordDisposition(run, { target: 'feature/x', revision: { ref: 'feature/x', head_sha: 'head' }, result: { decision: { converged: true } } });

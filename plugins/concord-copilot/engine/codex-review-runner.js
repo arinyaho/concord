@@ -5,7 +5,7 @@
 // subprocess and every state transition remains owned by review-cli.
 const { execFileSync, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
-const { canonicalPath, runPath, openInitiativeRun, reserveLaunch, recordDisposition, consumeDispositionDelivery, terminalTarget, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
+const { canonicalPath, runPath, openInitiativeRun, reserveLaunch, recordDisposition, consumeDispositionDelivery, terminalTarget, selectDisposition, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
 const { gitHeadSha, gitDirty, fileTarget } = require('./target');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -443,7 +443,7 @@ async function runReviewUntilGreen(options) {
       })();
     return { ref, ...(identityBase ? { base: identityBase } : {}), head_sha };
   }, ['terminal', 'escape'])) {
-    const disposition = JSON.parse(fs.readFileSync(initiativeRun.path, 'utf8')).dispositions.findLast((item) => item.target === ref && ['terminal', 'escape'].includes(item.kind));
+    const disposition = selectDisposition(JSON.parse(fs.readFileSync(initiativeRun.path, 'utf8')).dispositions, ref, ['terminal', 'escape']);
     // includeConsumed: a replay against a target whose packet a prior
     // invocation already delivered must still return it -- otherwise this
     // preflight silently produces no continuationPacket, and the launcher's

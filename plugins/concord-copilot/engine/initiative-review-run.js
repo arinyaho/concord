@@ -147,10 +147,20 @@ function publicInitiativeSummary(run) {
   };
 }
 
+// A target has at most one 'terminal' disposition (recordDisposition's dedup
+// guard enforces that), so when kinds includes 'terminal' it must win over any
+// 'escape'/'error' entry regardless of write order -- a terminal disposition
+// is the sole replay/identity authority per docs/design/2026-09-28-terminal-disposition-journal.md.
+// Only when no terminal entry is present does the most-recently-written match apply.
+function selectDisposition(dispositions, target, kinds) {
+  const matches = (dispositions || []).filter((item) => item.target === target && kinds.includes(item.kind));
+  return matches.find((item) => item.kind === 'terminal') || matches[matches.length - 1];
+}
+
 function terminalTarget(run, target, revision, kinds = ['terminal']) {
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
   if (ledger.version !== 3) throw new Error('initiative review run schemaVersion must be 3');
-  const terminal = (ledger.dispositions || []).findLast((item) => item.target === target && kinds.includes(item.kind));
+  const terminal = selectDisposition(ledger.dispositions, target, kinds);
   if (ledger.status !== 'active' || !terminal) return false;
   if (!terminal.revision?.head_sha) throw new Error('initiative review terminal target has no stored revision');
   if (!target.startsWith('file:') && !terminal.revision.base) throw new Error('initiative review terminal target has no stored base');
@@ -165,4 +175,4 @@ function finaliseInitiativeRun(run, reason = 'finalised') {
   return Boolean(locked(run, (ledger) => ledger?.status === 'terminal' ? undefined : (ledger?.status === 'active' && { ...ledger, status: 'terminal', terminal: { reason }, reconciliation: ledger.reconciliation || { terminals: [], hint: hint(reason) } })));
 }
 
-module.exports = { canonicalPath, runPath, repositoryIdentity, openInitiativeRun, reserveLaunch, normalizeDisposition, recordDisposition, consumeDispositionDelivery, terminalTarget, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };
+module.exports = { canonicalPath, runPath, repositoryIdentity, openInitiativeRun, reserveLaunch, normalizeDisposition, recordDisposition, consumeDispositionDelivery, terminalTarget, selectDisposition, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };
