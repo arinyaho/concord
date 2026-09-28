@@ -7,6 +7,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { normalizeArtifact } = require('../../core/artifact-contract');
 const { foldTelemetry } = require('../../core/review-telemetry');
+const { runPath, openInitiativeRun } = require('../../core/initiative-review-run');
 
 // The runner owns all sequencing. Its subprocess seam makes this a no-network
 // integration test while exercising the real artifact contract at the boundary.
@@ -14,6 +15,149 @@ const { runReviewUntilGreen, reviewerPrompt, codexExec, providerExec, resolveCod
 const { reviewerPrompt: packagedReviewerPrompt } = require('../../../concord-codex/engine/codex-review-runner');
 
 function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'codex-runner-')); }
+
+test('initiative terminal recording lock contention fails closed', async () => {
+  const stateDir = temp();
+  const key = 'terminal-lock';
+  const ledgerPath = runPath(stateDir, key);
+  await assert.rejects(
+    runReviewUntilGreen({
+      ref: 'feature/x', repoRoot: '/repo', initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1,
+      runCli: ([verb]) => {
+        if (verb === 'round-start') {
+          fs.mkdirSync(`${ledgerPath}.lock`);
+          return { decision: { converged: true }, stateDir };
+        }
+      },
+    }),
+    /initiative target terminal recording was contended/,
+  );
+  assert.strictEqual(JSON.parse(fs.readFileSync(ledgerPath, 'utf8')).reconciliation, null);
+  fs.rmdirSync(`${ledgerPath}.lock`);
+});
+
+test('initiative explicit finalise lock contention fails closed', async () => {
+  const stateDir = temp();
+  const key = 'finalise-lock';
+  const ledgerPath = runPath(stateDir, key);
+  openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
+  fs.mkdirSync(`${ledgerPath}.lock`);
+  await assert.rejects(
+    runReviewUntilGreen({
+      initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, initiativeFinalise: true,
+    }),
+    /initiative run finalisation was contended/,
+  );
+  assert.strictEqual(JSON.parse(fs.readFileSync(ledgerPath, 'utf8')).status, 'active');
+  fs.rmdirSync(`${ledgerPath}.lock`);
+});
+
+test('initiative finalisation returns only the safe aggregate', async () => {
+  const stateDir = temp();
+  const result = await runReviewUntilGreen({
+    initiativeRunKey: 'final-summary', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, initiativeFinalise: true,
+  });
+  assert.deepStrictEqual(result, { decision: { finalised: true }, initiative: { targetIds: [], counts: { targets: 0, launches: 0, rounds: 0, findings: {}, checks: 0, telemetry: 0 } } });
+});
+
+test('initiative state inside a repository must be ignored before its ledger is created', async () => {
+  const repoRoot = temp();
+  const stateDir = path.join(repoRoot, '.concord-state');
+  execFileSync('git', ['init', '-q'], { cwd: repoRoot });
+  await assert.rejects(
+    runReviewUntilGreen({ initiativeRunKey: 'inside-repo', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, initiativeFinalise: true, repoRoot }),
+    /must be ignored/,
+  );
+  assert.strictEqual(fs.existsSync(stateDir), false);
+  fs.writeFileSync(path.join(repoRoot, '.gitignore'), '.concord-state/\n');
+  const result = await runReviewUntilGreen({ initiativeRunKey: 'inside-repo', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, initiativeFinalise: true, repoRoot });
+  assert.deepStrictEqual(result.decision, { finalised: true });
+});
+
+test('initiative ignore validation checks the hashed ledger, not a hidden probe', async () => {
+  const repoRoot = temp();
+  const stateDir = path.join(repoRoot, 'state');
+  execFileSync('git', ['init', '-q'], { cwd: repoRoot });
+  fs.writeFileSync(path.join(repoRoot, '.gitignore'), '.*\n');
+  await assert.rejects(
+    runReviewUntilGreen({ initiativeRunKey: 'probe-only', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, initiativeFinalise: true, repoRoot }),
+    /must be ignored/,
+  );
+  fs.writeFileSync(path.join(repoRoot, '.gitignore'), 'state/\n');
+  await runReviewUntilGreen({ initiativeRunKey: 'probe-only', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, initiativeFinalise: true, repoRoot });
+});
+
+test('initiative terminal evidence uses record reconciliation and post-fix DoD checks', async () => {
+  const stateDir = temp();
+  await runReviewUntilGreen({
+    ref: 'feature/x', repoRoot: '/repo', initiativeRunKey: 'final-packet', initiativeStateDir: stateDir, initiativeMaxLaunches: 2, initiativeMaxRounds: 1,
+    runCli: ([verb]) => verb === 'round-start' ? { decision: 'work', ref: 'feature/x', base: 'main', head: 'reviewed-head', attemptId: 'attempt-1', round: 1, stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: false }
+      : verb === 'artifact-normalize' ? { status: 'ok' }
+        : verb === 'plan-fixes' ? { fixes: [] }
+          : { decision: { continue: false, intentReview: true }, reconciliation: { finding: 'intent:missing', stage: 'record', avoidedLaunches: 2, findings: { intent: 1 } }, checks: [{ name: 'definition-of-done', status: 'passed' }] },
+    spawn: async () => ({ status: 0 }),
+  });
+  const ledger = JSON.parse(fs.readFileSync(runPath(stateDir, 'final-packet'), 'utf8'));
+  assert.deepStrictEqual(ledger.targets, [{ ref: 'feature/x', base: 'main', head: 'reviewed-head' }]);
+  assert.deepStrictEqual(ledger.checks, [{ name: 'definition-of-done', status: 'passed' }]);
+  assert.deepStrictEqual(ledger.reconciliation.hint.firstMaterialFinding, 'intent:missing');
+});
+
+test('initiative terminal string decisions are recorded', async () => {
+  const stateDir = temp();
+  await runReviewUntilGreen({
+    ref: 'feature/x', repoRoot: '/repo', initiativeRunKey: 'terminal-string', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1,
+    runCli: ([verb]) => verb === 'round-start' ? { decision: 'terminal', status: 'parked', base: 'main', stateDir, dodPassed: false, dodDeferred: false } : undefined,
+  });
+  const ledger = JSON.parse(fs.readFileSync(runPath(stateDir, 'terminal-string'), 'utf8'));
+  assert.deepStrictEqual(ledger.reconciliation.terminals, [{ target: 'feature/x', reason: 'parked' }]);
+  assert.deepStrictEqual(ledger.targets, [{ ref: 'feature/x', base: 'main' }]);
+});
+
+test('reconciliation terminates the target and retains its restored base and avoided fixes', async () => {
+  const stateDir = temp();
+  await runReviewUntilGreen({
+    ref: 'feature/x', resume: true, repoRoot: '/repo', initiativeRunKey: 'reconcile', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 1,
+    runCli: ([verb]) => {
+      if (verb === 'round-start') return { decision: 'work', round: 1, base: 'main', stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: false };
+      if (verb === 'artifact-normalize') return { status: 'ok' };
+      if (verb === 'plan-fixes') return { fixes: [], avoidedLaunches: 2, reconciliation: { finding: 'intent:missing', findings: { intent: 1 } } };
+      if (verb === 'record') return { decision: { continue: false, intentReview: true }, reconciliation: { finding: 'intent:missing', stage: 'record', avoidedLaunches: 2, findings: { intent: 1 } } };
+    },
+    spawn: async () => ({ status: 0 }),
+  });
+  const ledger = JSON.parse(fs.readFileSync(runPath(stateDir, 'reconcile'), 'utf8'));
+  assert.deepStrictEqual(ledger.targets, [{ ref: 'feature/x', base: 'main' }]);
+  assert.deepStrictEqual(ledger.reconciliation.hint.avoidedLaunches, 2);
+  assert.deepStrictEqual(ledger.checks, [{ name: 'definition-of-done', status: 'failed' }]);
+});
+
+test('parked and abandoned target outcomes take precedence over reconciliation metadata', async () => {
+  const stateDir = temp();
+  for (const outcome of ['parked', 'abandoned']) {
+    await runReviewUntilGreen({
+      ref: 'feature/x', repoRoot: '/repo', initiativeRunKey: `${outcome}-over-reconcile`, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1,
+      runCli: ([verb]) => verb === 'round-start' ? { decision: { [outcome]: true }, reconciliation: { finding: 'intent:missing' }, stateDir } : undefined,
+    });
+    const ledger = JSON.parse(fs.readFileSync(runPath(stateDir, `${outcome}-over-reconcile`), 'utf8'));
+    assert.deepStrictEqual(ledger.reconciliation.terminals, [{ target: 'feature/x', reason: outcome }]);
+  }
+});
+
+test('initiative terminal records object decision reason and deferred DoD accurately', async () => {
+  const stateDir = temp();
+  await runReviewUntilGreen({
+    ref: 'feature/x', repoRoot: '/repo', initiativeRunKey: 'deferred-terminal', initiativeStateDir: stateDir, initiativeMaxLaunches: 2, initiativeMaxRounds: 1,
+    runCli: ([verb]) => verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', stateDir, targetType: 'git', dodPassed: true, dodDeferred: true, intentApplied: false, gateApplied: false }
+      : verb === 'artifact-normalize' ? { status: 'ok' }
+        : verb === 'plan-fixes' ? { fixes: [] }
+          : { decision: { continue: false, converged: true } },
+    spawn: async () => ({ status: 0 }),
+  });
+  const ledger = JSON.parse(fs.readFileSync(runPath(stateDir, 'deferred-terminal'), 'utf8'));
+  assert.deepStrictEqual(ledger.reconciliation.terminals, [{ target: 'feature/x', reason: 'clean' }]);
+  assert.deepStrictEqual(ledger.checks, [{ name: 'definition-of-done', status: 'deferred' }]);
+});
 
 test('Codex resolver falls back to the macOS app after a broken PATH command', () => {
   const calls = [];
@@ -1670,4 +1814,17 @@ test('Codex launcher marks resume so the runner preserves the ledger base', () =
   const options = JSON.parse(fs.readFileSync(capture, 'utf8'));
   assert.strictEqual(options.resume, true);
   assert.strictEqual(options.base, undefined);
+});
+
+test('Codex launcher finalises without resolving a git target', () => {
+  const dir = temp();
+  const capture = path.join(dir, 'options.json');
+  const preload = path.join(dir, 'capture-runner.js');
+  const bin = path.join(__dirname, '..', '..', '..', 'concord-codex', 'bin', 'review-until-green.js');
+  fs.writeFileSync(preload, `
+    const fs = require('node:fs'); const Module = require('node:module'); const load = Module._load;
+    Module._load = function(request, parent, isMain) { if (request === '../engine/codex-review-runner') return { runReviewUntilGreen: async (options) => { fs.writeFileSync(process.env.CAPTURE, JSON.stringify(options)); return { handoff: 'ok' }; } }; return load.apply(this, arguments); };
+  `);
+  execFileSync('node', ['--require', preload, bin, '--initiative-finalise', '--initiative-run-key', 'key', '--initiative-state-dir', dir, '--initiative-max-launches', '1', '--initiative-max-rounds', '1'], { cwd: dir, env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
+  assert.strictEqual(JSON.parse(fs.readFileSync(capture, 'utf8')).ref, undefined);
 });

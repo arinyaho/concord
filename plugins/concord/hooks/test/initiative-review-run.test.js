@@ -1,0 +1,133 @@
+'use strict';
+const { test } = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { openInitiativeRun, reserveLaunch, recordTargetTerminal, finaliseInitiativeRun, publicInitiativeSummary } = require('../../core/initiative-review-run');
+
+function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'initiative-review-run-')); }
+function open(options) { return openInitiativeRun({ repository: '/repo', ...options }); }
+
+test('keyed runs use a hashed separate ledger and atomically consume launch budget', () => {
+  const dir = temp();
+  const run = open({ stateDir: dir, key: 'opaque key', maxLaunches: 1, maxRounds: 2 });
+  assert.match(path.basename(run.path), /^initiative-review-[0-9a-f]{64}\.json$/);
+  assert.ok(reserveLaunch(run, { role: 'correctness', round: 1 }));
+  assert.strictEqual(reserveLaunch(run, { role: 'fix', round: 1 }), false);
+  const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
+  assert.deepStrictEqual(ledger.launches, [{ role: 'correctness', round: 1 }]);
+  assert.strictEqual(ledger.key, undefined);
+});
+
+test('interleaved initializations cannot overwrite a consumed launch reservation', () => {
+  const dir = temp();
+  const originalWrite = fs.writeFileSync;
+  let interleaved = false;
+  let secondReserved = false;
+  fs.writeFileSync = function (file, ...args) {
+    if (!interleaved && String(file).endsWith('.tmp')) {
+      interleaved = true;
+      try {
+        const second = open({ stateDir: dir, key: 'shared key', maxLaunches: 1, maxRounds: 1 });
+        secondReserved = reserveLaunch(second, { role: 'second', round: 1 });
+      } catch (error) {
+        assert.match(error.message, /initialization was contended/);
+      }
+    }
+    return originalWrite.call(this, file, ...args);
+  };
+  try {
+    const first = open({ stateDir: dir, key: 'shared key', maxLaunches: 1, maxRounds: 1 });
+    const firstReserved = reserveLaunch(first, { role: 'first', round: 1 });
+    assert.ok(interleaved);
+    assert.strictEqual(firstReserved, true);
+    assert.strictEqual(secondReserved, false);
+  } finally {
+    fs.writeFileSync = originalWrite;
+  }
+});
+
+test('a keyed run cannot be reconfigured or reopened after terminal state', () => {
+  const dir = temp();
+  const run = open({ stateDir: dir, key: 'opaque key', maxLaunches: 2, maxRounds: 1 });
+  fs.writeFileSync(run.path, JSON.stringify({ ...JSON.parse(fs.readFileSync(run.path, 'utf8')), status: 'terminal' }));
+  assert.throws(() => open({ stateDir: dir, key: 'opaque key', maxLaunches: 3, maxRounds: 1 }), /immutable|terminal/);
+});
+
+test('a keyed run cannot cross repository identities', () => {
+  const dir = temp();
+  open({ stateDir: dir, key: 'opaque key', maxLaunches: 2, maxRounds: 1 });
+  assert.throws(() => openInitiativeRun({ stateDir: dir, key: 'opaque key', repository: '/other-repo', maxLaunches: 2, maxRounds: 1 }), /different repository/);
+});
+
+test('linked worktrees share a git-common-dir identity while other repositories do not', () => {
+  const root = temp();
+  const linked = temp();
+  const stateDir = temp();
+  fs.writeFileSync(path.join(root, 'tracked'), 'x');
+  require('node:child_process').execFileSync('git', ['init', '-q'], { cwd: root });
+  require('node:child_process').execFileSync('git', ['add', 'tracked'], { cwd: root });
+  require('node:child_process').execFileSync('git', ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'initial'], { cwd: root });
+  require('node:child_process').execFileSync('git', ['worktree', 'add', '-q', linked], { cwd: root });
+  openInitiativeRun({ stateDir, key: 'shared', repository: root, maxLaunches: 2, maxRounds: 1 });
+  assert.doesNotThrow(() => openInitiativeRun({ stateDir, key: 'shared', repository: linked, maxLaunches: 2, maxRounds: 1 }));
+  assert.throws(() => openInitiativeRun({ stateDir, key: 'shared', repository: temp(), maxLaunches: 2, maxRounds: 1 }), /different repository/);
+});
+
+test('new target attempts consume distinct global round slots', () => {
+  const run = open({ stateDir: temp(), key: 'attempts', maxLaunches: 3, maxRounds: 1 });
+  assert.ok(reserveLaunch(run, { role: 'correctness', target: 'feature/x', attemptId: 'first', round: 1 }));
+  assert.strictEqual(reserveLaunch(run, { role: 'correctness', target: 'feature/x', attemptId: 'second', round: 1 }), false);
+});
+
+test('the first reconciliation hint stays attached to the first material target', () => {
+  const run = open({ stateDir: temp(), key: 'hints', maxLaunches: 3, maxRounds: 3 });
+  assert.ok(recordTargetTerminal(run, { target: 'first', reason: 'reconciliation-required', finding: 'intent:first', stage: 'record', avoidedLaunches: 2 }));
+  assert.ok(recordTargetTerminal(run, { target: 'second', reason: 'reconciliation-required', finding: 'intent:second', stage: 'record', avoidedLaunches: 1 }));
+  assert.strictEqual(JSON.parse(fs.readFileSync(run.path, 'utf8')).reconciliation.hint.firstMaterialFinding, 'intent:first');
+});
+
+test('keyed runs stay active per target, require absolute state, charge rounds globally, and persist safe reconciliation evidence', () => {
+  const dir = temp();
+  assert.throws(() => open({ stateDir: 'relative-state', key: 'opaque key', maxLaunches: 4, maxRounds: 1 }), /absolute/);
+  const run = open({ stateDir: dir, key: 'opaque key', maxLaunches: 4, maxRounds: 2 });
+  assert.ok(reserveLaunch(run, { role: 'correctness', target: 'first-ref', revision: { ref: 'first-ref', base: 'main' }, round: 1 }));
+  recordTargetTerminal(run, { target: 'first-ref', telemetry: [{ role: 'correctness', round: 1, elapsedMs: 1, totalTokens: null, prompt: 'secret', artifact: 'source' }] });
+  assert.ok(reserveLaunch(run, { role: 'correctness', target: 'second-ref', revision: { ref: 'second-ref', base: 'main' }, round: 1 }));
+  assert.strictEqual(reserveLaunch(run, { role: 'correctness', target: 'third-ref', revision: { ref: 'third-ref', base: 'main' }, round: 1 }), false);
+  const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
+  assert.deepStrictEqual(ledger.targets, [{ ref: 'first-ref', base: 'main' }, { ref: 'second-ref', base: 'main' }]);
+  assert.strictEqual(ledger.rounds.length, 2);
+  assert.deepStrictEqual(ledger.reconciliation.hint, {
+    trigger: 'target-terminal', firstMaterialFinding: null, stage: null, avoidedLaunches: 0,
+    preflight: ['confirm target revisions', 'confirm checks', 'choose resume, revise, or split'],
+    options: ['resume', 'revise', 'split'],
+  });
+  assert.deepStrictEqual(ledger.telemetry, [{ role: 'correctness', round: 1, elapsedMs: 1, totalTokens: null }]);
+  assert.ok(finaliseInitiativeRun(run));
+  assert.throws(() => open({ stateDir: dir, key: 'opaque key', maxLaunches: 4, maxRounds: 2 }), /immutable|terminal/);
+});
+
+test('initiative aggregate output hashes local target revisions and exposes counts only', () => {
+  const dir = temp();
+  const run = open({ stateDir: dir, key: 'opaque key', maxLaunches: 4, maxRounds: 2 });
+  assert.ok(reserveLaunch(run, { role: 'correctness', target: 'private-ref', revision: { ref: 'private-ref', base: 'private-base', head: 'private-head' }, round: 1 }));
+  recordTargetTerminal(run, { target: 'private-ref', findings: { intent: 1 }, checks: [{ name: 'check', status: 'passed' }] });
+  const summary = publicInitiativeSummary(run);
+  assert.deepStrictEqual(summary, {
+    targetIds: [require('node:crypto').createHash('sha256').update(JSON.stringify({ ref: 'private-ref', base: 'private-base', head: 'private-head' })).digest('hex')],
+    counts: { targets: 1, launches: 1, rounds: 1, findings: { intent: 1 }, checks: 1, telemetry: 0 },
+  });
+  assert.doesNotMatch(JSON.stringify(summary), /private-(?:ref|base|head)/);
+});
+
+test('initiative state directories initialize recursively and terminal targets stay immutable', () => {
+  const dir = path.join(temp(), 'new', 'state');
+  const run = open({ stateDir: dir, key: 'opaque key', maxLaunches: 4, maxRounds: 2 });
+  assert.ok(reserveLaunch(run, { role: 'correctness', target: 'first-ref', revision: { ref: 'first-ref', base: 'main' }, round: 1 }));
+  assert.ok(recordTargetTerminal(run, { target: 'first-ref' }));
+  assert.strictEqual(reserveLaunch(run, { role: 'fix', target: 'first-ref', revision: { ref: 'first-ref', base: 'main' }, round: 1 }), false);
+  assert.strictEqual(recordTargetTerminal(run, { target: 'first-ref' }), false);
+  assert.ok(reserveLaunch(run, { role: 'correctness', target: 'second-ref', revision: { ref: 'second-ref', base: 'main' }, round: 1 }));
+});
