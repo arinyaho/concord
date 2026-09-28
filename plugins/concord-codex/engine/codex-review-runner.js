@@ -13,6 +13,7 @@ const { safeIdForFilename } = require('./artifact-name');
 const { targetSlug } = require('./review');
 const { artifactDestinationFromPrompt } = require('./review-artifact');
 const { isValidFindingId } = require('./gate-contract');
+const { same } = require('./review-eval');
 const { PANEL_LENSES } = require('./report');
 const { BLOCKED_CLAUSE, reviewerPrompt } = require('./round-plan');
 const { isWindows, crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
@@ -343,7 +344,7 @@ function resolveDefaultBase(repoRoot, exec = execFileSync) {
 
 function pendingContinuationPacket(run, target, revision, kind, includeConsumed = false) {
   const entry = JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions.findLast((item) => item.target === target
-    && JSON.stringify(item.revision) === JSON.stringify(revision)
+    && same(item.revision, revision)
     && (!kind || item.kind === kind));
   return entry?.packet && (includeConsumed || entry.packet.delivery?.consumed === false) ? entry.packet : null;
 }
@@ -399,7 +400,24 @@ async function runReviewUntilGreen(options) {
   let fixer = options.fixer || 'codex';
   let reviewerModel = options.reviewerModel;
   let fixerModel = options.fixerModel;
-  let initiativeRevision = { ref, ...(initialBase ? { base: initialBase } : {}) };
+  let initiativeRevision = { ref };
+  const rawSpawn = options.spawn || ((input) => providerExec(input));
+  const abortController = options.handleSignals ? new AbortController() : null;
+  const signalHandlers = abortController ? Object.fromEntries(['SIGINT', 'SIGTERM', 'SIGHUP'].map((signal) => [signal, () => abortController.abort(signal)])) : {};
+  let checks = [];
+  for (const [signal, handler] of Object.entries(signalHandlers)) process.once(signal, handler);
+  try {
+  // Resolve base before computing identity below -- an identity that factors
+  // base into its hash must see the real default, not undefined, or its
+  // head_sha can disagree with what round-start computes once the real base
+  // is known. A resolution failure is deferred (not thrown yet) so identity
+  // still gets computed and recorded on the error disposition below, exactly
+  // as it did before this ordering existed.
+  let baseResolutionError = null;
+  if (!resume && initialBase === undefined && !ref.startsWith('file:') && baseResolver) {
+    try { initialBase = baseResolver(repoRoot); } catch (error) { baseResolutionError = error; }
+  }
+  if (initialBase) initiativeRevision = { ...initiativeRevision, base: initialBase };
   if (initiativeRun && fs.existsSync(repoRoot)) {
     try {
       const head_sha = options.targetIdentity ? options.targetIdentity(ref, initialBase, canonicalRepoRoot) : ref.startsWith('file:')
@@ -407,26 +425,26 @@ async function runReviewUntilGreen(options) {
       initiativeRevision = { ...initiativeRevision, head_sha };
     } catch (_) { /* round-start remains the authority when identity cannot be acquired */ }
   }
-  const rawSpawn = options.spawn || ((input) => providerExec(input));
-  const abortController = options.handleSignals ? new AbortController() : null;
-  const signalHandlers = abortController ? Object.fromEntries(['SIGINT', 'SIGTERM', 'SIGHUP'].map((signal) => [signal, () => abortController.abort(signal)])) : {};
-  let checks = [];
-  for (const [signal, handler] of Object.entries(signalHandlers)) process.once(signal, handler);
-  try {
-  if (!resume && initialBase === undefined && !ref.startsWith('file:') && baseResolver) initialBase = baseResolver(repoRoot);
-  if (initialBase && !initiativeRevision.base) initiativeRevision = { ...initiativeRevision, base: initialBase };
+  if (baseResolutionError) throw baseResolutionError;
+  // A replay against an already-terminal target (including the dirty-worktree
+  // guard below) is not a review failure and must not be recorded as one by
+  // the catch below -- it is tagged so the catch rethrows it unrecorded.
   if (initiativeRun && terminalTarget(initiativeRun, ref, (terminalRevision) => {
     const identityBase = resume ? terminalRevision.base : initialBase;
     const head_sha = options.targetIdentity ? options.targetIdentity(ref, identityBase, canonicalRepoRoot) : ref.startsWith('file:')
       ? fileTarget({ files: [ref.slice('file:'.length)] }, canonicalRepoRoot).identity
       : (() => {
-        if (gitDirty(canonicalRepoRoot)) throw new Error('round-start: working tree is dirty; commit or stash before review-until-green');
+        if (gitDirty(canonicalRepoRoot)) {
+          const dirtyError = new Error('round-start: working tree is dirty; commit or stash before review-until-green');
+          dirtyError.notAReviewFailure = true;
+          throw dirtyError;
+        }
         return gitHeadSha(canonicalRepoRoot);
       })();
     return { ref, ...(identityBase ? { base: identityBase } : {}), head_sha };
   }, ['terminal', 'escape'])) {
     const disposition = JSON.parse(fs.readFileSync(initiativeRun.path, 'utf8')).dispositions.find((item) => item.target === ref && ['terminal', 'escape'].includes(item.kind));
-    const packet = pendingContinuationPacket(initiativeRun, ref, disposition.revision);
+    const packet = pendingContinuationPacket(initiativeRun, ref, disposition.revision, disposition.kind);
     return { decision: disposition.kind === 'escape' ? 'escape' : 'terminal', initiative: publicInitiativeSummary(initiativeRun), ...(packet ? { continuationPacket: packet } : {}) };
   }
   for (const provider of [reviewer, fixer]) {
@@ -741,6 +759,7 @@ async function runReviewUntilGreen(options) {
     return withTelemetry(recorded);
   }
   } catch (error) {
+    if (error.notAReviewFailure) throw error;
     const failure = error.reviewFailure || {};
     if (initiativeRun && initiativeRevision.head_sha && !recordDisposition(initiativeRun, { target: ref, revision: initiativeRevision, result: error, packet: { trigger: 'error', exit: { code: Number.isInteger(failure.exitCode) ? failure.exitCode : null, signal: failure.signal || null }, dod: { status: checks[0]?.status || 'not-run' }, telemetry: { complete: false }, nextAction: 'resume', error: { message: error.message } }, checks })) {
       if (!pendingContinuationPacket(initiativeRun, ref, initiativeRevision, 'error', true)) throw new Error('review-until-green: initiative error disposition recording was contended');

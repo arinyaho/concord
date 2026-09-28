@@ -59,8 +59,8 @@ const base = resumed ? positional[2] : positional[1];
 const runnerOptions = { ref, base, broad, noBroad, noDod, ...inference, resume: resumed, handleSignals: true, repoRoot: process.cwd(), cliPath: path.join(__dirname, 'review-cli.js') };
 const write = (stream, text) => new Promise((resolve, reject) => stream.write(text, (error) => error ? reject(error) : resolve()));
 const deliver = async (stream, packet) => {
-  await write(stream, `${JSON.stringify(packet)}\n`);
   if (packet.delivery?.consumed === false && !acknowledgeContinuationPacket(runnerOptions, packet.delivery.claim)) throw new Error('review-until-green: initiative delivery acknowledgement was contended');
+  await write(stream, `${JSON.stringify(packet)}\n`);
 };
 runReviewUntilGreen(runnerOptions)
   .then(async (result) => {

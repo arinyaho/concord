@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { openInitiativeRun, reserveLaunch, recordTargetTerminal, recordDisposition, consumeDispositionDelivery, finaliseInitiativeRun, publicInitiativeSummary } = require('../../core/initiative-review-run');
+const { openInitiativeRun, reserveLaunch, recordDisposition, consumeDispositionDelivery, finaliseInitiativeRun, publicInitiativeSummary } = require('../../core/initiative-review-run');
 const RUNTIMES = [
   require('../../core/initiative-review-run'),
   require('../../../concord-codex/engine/initiative-review-run'),
@@ -124,8 +124,8 @@ test('new target attempts consume distinct global round slots', () => {
 
 test('the first reconciliation hint stays attached to the first material target', () => {
   const run = open({ stateDir: temp(), key: 'hints', maxLaunches: 3, maxRounds: 3 });
-  assert.ok(recordTargetTerminal(run, { target: 'first', revision: { ref: 'first', head_sha: 'first-head' }, reason: 'reconciliation-required', finding: 'intent:first', stage: 'record', avoidedLaunches: 2 }));
-  assert.ok(recordTargetTerminal(run, { target: 'second', revision: { ref: 'second', head_sha: 'second-head' }, reason: 'reconciliation-required', finding: 'intent:second', stage: 'record', avoidedLaunches: 1 }));
+  assert.ok(recordDisposition(run, { target: 'first', revision: { ref: 'first', head_sha: 'first-head' }, result: { status: 'reconciliation-required' }, finding: 'intent:first', stage: 'record', avoidedLaunches: 2 }));
+  assert.ok(recordDisposition(run, { target: 'second', revision: { ref: 'second', head_sha: 'second-head' }, result: { status: 'reconciliation-required' }, finding: 'intent:second', stage: 'record', avoidedLaunches: 1 }));
   assert.strictEqual(JSON.parse(fs.readFileSync(run.path, 'utf8')).reconciliation.hint.firstMaterialFinding, 'intent:first');
 });
 
@@ -134,7 +134,7 @@ test('keyed runs stay active per target, require absolute state, charge rounds g
   assert.throws(() => open({ stateDir: 'relative-state', key: 'opaque key', maxLaunches: 4, maxRounds: 1 }), /absolute/);
   const run = open({ stateDir: dir, key: 'opaque key', maxLaunches: 4, maxRounds: 2 });
   assert.ok(reserveLaunch(run, { role: 'correctness', target: 'first-ref', revision: { ref: 'first-ref', base: 'main' }, round: 1 }));
-  recordTargetTerminal(run, { target: 'first-ref', revision: { ref: 'first-ref', base: 'main', head_sha: 'first-head' }, telemetry: [{ role: 'correctness', round: 1, elapsedMs: 1, totalTokens: null, prompt: 'secret', artifact: 'source' }] });
+  recordDisposition(run, { target: 'first-ref', revision: { ref: 'first-ref', base: 'main', head_sha: 'first-head' }, result: { status: 'target-terminal' }, telemetry: [{ role: 'correctness', round: 1, elapsedMs: 1, totalTokens: null, prompt: 'secret', artifact: 'source' }] });
   assert.ok(reserveLaunch(run, { role: 'correctness', target: 'second-ref', revision: { ref: 'second-ref', base: 'main' }, round: 1 }));
   assert.strictEqual(reserveLaunch(run, { role: 'correctness', target: 'third-ref', revision: { ref: 'third-ref', base: 'main' }, round: 1 }), false);
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
@@ -154,7 +154,7 @@ test('initiative aggregate output hashes local target revisions and exposes coun
   const dir = temp();
   const run = open({ stateDir: dir, key: 'opaque key', maxLaunches: 4, maxRounds: 2 });
   assert.ok(reserveLaunch(run, { role: 'correctness', target: 'private-ref', revision: { ref: 'private-ref', base: 'private-base', head: 'private-head' }, round: 1 }));
-  recordTargetTerminal(run, { target: 'private-ref', revision: { ref: 'private-ref', base: 'private-base', head_sha: 'private-head' }, findings: { intent: 1 }, checks: [{ name: 'check', status: 'passed' }] });
+  recordDisposition(run, { target: 'private-ref', revision: { ref: 'private-ref', base: 'private-base', head_sha: 'private-head' }, result: { status: 'target-terminal' }, findings: { intent: 1 }, checks: [{ name: 'check', status: 'passed' }] });
   const summary = publicInitiativeSummary(run);
   assert.deepStrictEqual(summary, {
     targetIds: [require('node:crypto').createHash('sha256').update(JSON.stringify({ ref: 'private-ref', base: 'private-base', head_sha: 'private-head' })).digest('hex')],
@@ -167,9 +167,9 @@ test('initiative state directories initialize recursively and terminal targets s
   const dir = path.join(temp(), 'new', 'state');
   const run = open({ stateDir: dir, key: 'opaque key', maxLaunches: 4, maxRounds: 2 });
   assert.ok(reserveLaunch(run, { role: 'correctness', target: 'first-ref', revision: { ref: 'first-ref', base: 'main' }, round: 1 }));
-  assert.ok(recordTargetTerminal(run, { target: 'first-ref', revision: { ref: 'first-ref', base: 'main', head_sha: 'first-head' } }));
+  assert.ok(recordDisposition(run, { target: 'first-ref', revision: { ref: 'first-ref', base: 'main', head_sha: 'first-head' }, result: { status: 'target-terminal' } }));
   assert.strictEqual(reserveLaunch(run, { role: 'fix', target: 'first-ref', revision: { ref: 'first-ref', base: 'main' }, round: 1 }), false);
-  assert.strictEqual(recordTargetTerminal(run, { target: 'first-ref' }), false);
+  assert.strictEqual(recordDisposition(run, { target: 'first-ref', result: { status: 'target-terminal' } }), false);
   assert.ok(reserveLaunch(run, { role: 'correctness', target: 'second-ref', revision: { ref: 'second-ref', base: 'main' }, round: 1 }));
 });
 

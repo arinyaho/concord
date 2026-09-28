@@ -2,6 +2,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { same } = require('./review-eval');
 
 function canonicalPath(value) {
   const resolved = path.resolve(value);
@@ -55,7 +56,7 @@ function hint(trigger, finding = null, stage = null, avoidedLaunches = 0) {
 
 function normalizeDisposition(result = {}) {
   if (result instanceof Error) return { kind: 'error', reason: 'runner-error' };
-  if (result.decision === 'escape' || result.escape === true) return { kind: 'escape', reason: 'escape' };
+  if (result.decision === 'escape') return { kind: 'escape', reason: 'escape' };
   const decision = result.decision || {};
   const reason = ['parked', 'abandoned'].includes(result.status) ? result.status
     : decision.parked ? 'parked' : decision.abandoned ? 'abandoned'
@@ -91,7 +92,7 @@ function reserveLaunch(run, launch) {
     const rounds = ledger.rounds || [];
     if (!rounds.includes(round) && rounds.length >= ledger.budget.maxRounds) return null;
     const revision = launch.revision && { ref: launch.revision.ref || target, ...(launch.revision.base ? { base: launch.revision.base } : {}), ...((launch.revision.head_sha || launch.revision.head) ? { head_sha: launch.revision.head_sha || launch.revision.head } : {}) };
-    const targets = revision && !(ledger.targets || []).some((item) => JSON.stringify(item) === JSON.stringify(revision)) ? [...(ledger.targets || []), revision] : (ledger.targets || []);
+    const targets = revision && !(ledger.targets || []).some((item) => same(item, revision)) ? [...(ledger.targets || []), revision] : (ledger.targets || []);
     return { ...ledger, rounds: rounds.includes(round) ? rounds : [...rounds, round], targets, launches: [...ledger.launches, { role: launch.role, round: launch.round, ...(target === 'unknown' ? {} : { target }) }] };
   }));
 }
@@ -102,9 +103,9 @@ function recordDisposition(run, { target, revision, result, packet = {}, finding
     if (!ledger || ledger.version !== 3 || ledger.status !== 'active') return null;
     const disposition = normalizeDisposition(result);
     if (disposition.kind === 'terminal' && (ledger.dispositions || []).some((item) => item.target === target && item.kind === 'terminal')) return null;
-    if ((ledger.dispositions || []).some((item) => item.target === target && JSON.stringify(item.revision) === JSON.stringify(revision) && item.kind === disposition.kind && item.reason === disposition.reason)) return null;
+    if ((ledger.dispositions || []).some((item) => item.target === target && same(item.revision, revision) && item.kind === disposition.kind && item.reason === disposition.reason)) return null;
     const targetRevision = revision && { ref: revision.ref || target, ...(revision.base ? { base: revision.base } : {}), ...((revision.head_sha || revision.head) ? { head_sha: revision.head_sha || revision.head } : {}) };
-    const targets = targetRevision && !(ledger.targets || []).some((item) => JSON.stringify(item) === JSON.stringify(targetRevision)) ? [...(ledger.targets || []), targetRevision] : (ledger.targets || []);
+    const targets = targetRevision && !(ledger.targets || []).some((item) => same(item, targetRevision)) ? [...(ledger.targets || []), targetRevision] : (ledger.targets || []);
     const terminalRevision = revision && { ref: revision.ref || target, ...(revision.base ? { base: revision.base } : {}), ...((revision.head_sha || revision.head) ? { head_sha: revision.head_sha || revision.head } : {}) };
     if (!terminalRevision?.head_sha) throw new Error('initiative review terminal target requires a stored revision');
     const sequence = (ledger.dispositions || []).length + 1;
@@ -131,10 +132,6 @@ function consumeDispositionDelivery(run, claim) {
   }));
 }
 
-function recordTargetTerminal(run, { target, revision, reason = 'target-terminal', ...rest }) {
-  return recordDisposition(run, { target, revision, result: { status: reason }, ...rest });
-}
-
 function publicInitiativeSummary(run) {
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
   return {
@@ -159,7 +156,7 @@ function terminalTarget(run, target, revision, kinds = ['terminal']) {
   if (!target.startsWith('file:') && !terminal.revision.base) throw new Error('initiative review terminal target has no stored base');
   revision = typeof revision === 'function' ? revision(terminal.revision) : revision;
   if (terminal.target !== revision.ref) return false;
-  if (JSON.stringify(terminal.revision) === JSON.stringify(revision)) return true;
+  if (same(terminal.revision, revision)) return true;
   throw new Error('initiative review terminal target revision changed');
 }
 
@@ -167,4 +164,4 @@ function finaliseInitiativeRun(run, reason = 'finalised') {
   return Boolean(locked(run, (ledger) => ledger?.status === 'terminal' ? undefined : (ledger?.status === 'active' && { ...ledger, status: 'terminal', terminal: { reason }, reconciliation: ledger.reconciliation || { terminals: [], hint: hint(reason) } })));
 }
 
-module.exports = { canonicalPath, runPath, repositoryIdentity, openInitiativeRun, reserveLaunch, normalizeDisposition, recordDisposition, consumeDispositionDelivery, recordTargetTerminal, terminalTarget, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };
+module.exports = { canonicalPath, runPath, repositoryIdentity, openInitiativeRun, reserveLaunch, normalizeDisposition, recordDisposition, consumeDispositionDelivery, terminalTarget, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };
