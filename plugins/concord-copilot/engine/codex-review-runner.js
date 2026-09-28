@@ -533,7 +533,14 @@ async function runReviewUntilGreen(options) {
     const terminal = result?.decision === 'terminal' || result?.decision === 'escape' || result?.decision?.converged || result?.decision?.parked || result?.decision?.abandoned || result?.decision?.intentReview || result?.decision?.gatePending;
     if (initiativeRun && terminal) {
       const reconciliation = result?.reconciliation;
-      const escaped = result?.decision === 'escape';
+      // Derive escaped from the SAME normalization recordDisposition uses
+      // below to decide the stored kind -- checking only the literal string
+      // 'escape' misses gatePending/intentReview, which normalizeDisposition
+      // also classifies as 'escape': the packet's trigger/nextAction would
+      // then say 'terminal'/'replay' for an entry actually stored as
+      // 'escape', and the post-record lookup (kind 'terminal') would find
+      // nothing and throw a spurious contention error.
+      const escaped = normalizeDisposition(result).kind === 'escape';
       const recorded = recordDisposition(initiativeRun, {
         target: ref,
         revision: initiativeRevision,
