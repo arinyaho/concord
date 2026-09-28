@@ -780,12 +780,23 @@ async function runReviewUntilGreen(options) {
     // error at this revision could be returned in place of this one's own
     // (distinct) failure.
     const errorReason = normalizeDisposition(error).reason;
+    // A failure here (the ledger lock was busy with no retry, or the run
+    // was finalised concurrently) must not replace the real review failure
+    // this catch is handling -- rethrow the ORIGINAL error, with the
+    // recording failure only noted on its message, so the caller still
+    // sees what actually went wrong instead of a generic "contended".
     if (initiativeRun && initiativeRevision.head_sha && !recordDisposition(initiativeRun, { target: ref, revision: initiativeRevision, result: error, packet: { trigger: 'error', exit: { code: Number.isInteger(failure.exitCode) ? failure.exitCode : null, signal: failure.signal || null }, dod: { status: checks[0]?.status || 'not-run' }, telemetry: { complete: false }, nextAction: 'resume', error: { message: error.message } }, checks })) {
-      if (!pendingContinuationPacket(initiativeRun, ref, initiativeRevision, 'error', true, errorReason)) throw new Error('review-until-green: initiative error disposition recording was contended');
+      if (!pendingContinuationPacket(initiativeRun, ref, initiativeRevision, 'error', true, errorReason)) {
+        error.message = `${error.message} (review-until-green: initiative error disposition recording was also contended)`;
+        throw error;
+      }
     }
     if (initiativeRun && initiativeRevision.head_sha) {
       const packet = pendingContinuationPacket(initiativeRun, ref, initiativeRevision, 'error', true, errorReason);
-      if (!packet) throw new Error('review-until-green: initiative error delivery claim was contended');
+      if (!packet) {
+        error.message = `${error.message} (review-until-green: initiative error delivery claim was also contended)`;
+        throw error;
+      }
       error.continuationPacket = packet;
     }
     throw error;
