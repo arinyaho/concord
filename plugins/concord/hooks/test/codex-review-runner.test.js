@@ -40,7 +40,7 @@ test('initiative explicit finalise lock contention fails closed', async () => {
   const stateDir = temp();
   const key = 'finalise-lock';
   const ledgerPath = runPath(stateDir, key);
-  openInitiativeRun({ stateDir, key, maxLaunches: 1, maxRounds: 1 });
+  openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
   fs.mkdirSync(`${ledgerPath}.lock`);
   await assert.rejects(
     runReviewUntilGreen({
@@ -58,6 +58,20 @@ test('initiative finalisation returns only the safe aggregate', async () => {
     initiativeRunKey: 'final-summary', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, initiativeFinalise: true,
   });
   assert.deepStrictEqual(result, { decision: { finalised: true }, initiative: { targetIds: [], counts: { targets: 0, launches: 0, rounds: 0, findings: {}, checks: 0, telemetry: 0 } } });
+});
+
+test('initiative state inside a repository must be ignored before its ledger is created', async () => {
+  const repoRoot = temp();
+  const stateDir = path.join(repoRoot, '.concord-state');
+  execFileSync('git', ['init', '-q'], { cwd: repoRoot });
+  await assert.rejects(
+    runReviewUntilGreen({ initiativeRunKey: 'inside-repo', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, initiativeFinalise: true, repoRoot }),
+    /must be ignored/,
+  );
+  assert.strictEqual(fs.existsSync(stateDir), false);
+  fs.writeFileSync(path.join(repoRoot, '.gitignore'), '.concord-state/\n');
+  const result = await runReviewUntilGreen({ initiativeRunKey: 'inside-repo', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, initiativeFinalise: true, repoRoot });
+  assert.deepStrictEqual(result.decision, { finalised: true });
 });
 
 test('initiative terminal string decisions are recorded', async () => {
@@ -87,6 +101,18 @@ test('reconciliation terminates the target and retains its restored base and avo
   assert.deepStrictEqual(ledger.targets, [{ ref: 'feature/x', base: 'main' }]);
   assert.deepStrictEqual(ledger.reconciliation.hint.avoidedLaunches, 2);
   assert.deepStrictEqual(ledger.checks, [{ name: 'definition-of-done', status: 'failed' }]);
+});
+
+test('parked and abandoned target outcomes take precedence over reconciliation metadata', async () => {
+  const stateDir = temp();
+  for (const outcome of ['parked', 'abandoned']) {
+    await runReviewUntilGreen({
+      ref: 'feature/x', repoRoot: '/repo', initiativeRunKey: `${outcome}-over-reconcile`, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1,
+      runCli: ([verb]) => verb === 'round-start' ? { decision: { [outcome]: true }, reconciliation: { finding: 'intent:missing' }, stateDir } : undefined,
+    });
+    const ledger = JSON.parse(fs.readFileSync(runPath(stateDir, `${outcome}-over-reconcile`), 'utf8'));
+    assert.deepStrictEqual(ledger.reconciliation.terminals, [{ target: 'feature/x', reason: outcome }]);
+  }
 });
 
 test('initiative terminal records object decision reason and deferred DoD accurately', async () => {

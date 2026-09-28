@@ -32,13 +32,13 @@ function hint(trigger, finding = null, stage = null, avoidedLaunches = 0) {
   return { trigger, firstMaterialFinding: finding, stage, avoidedLaunches, preflight: ['confirm target revisions', 'confirm checks', 'choose resume, revise, or split'], options: ['resume', 'revise', 'split'] };
 }
 
-function openInitiativeRun({ stateDir, key, maxLaunches, maxRounds }) {
-  if (!stateDir || !key) throw new Error('initiative review requires both a run key and canonical state directory');
+function openInitiativeRun({ stateDir, key, repository, maxLaunches, maxRounds }) {
+  if (!stateDir || !key || !repository) throw new Error('initiative review requires a run key, repository identity, and canonical state directory');
   if (!Number.isInteger(maxLaunches) || maxLaunches < 1 || !Number.isInteger(maxRounds) || maxRounds < 1) throw new Error('initiative review budgets must be positive integers');
-  const run = { path: runPath(stateDir, key) };
+  const run = { path: runPath(stateDir, key), repository: path.resolve(repository) };
   const initialize = (ledger) => {
-    if (!ledger) return { version: 2, status: 'active', budget: { maxLaunches, maxRounds }, launches: [], rounds: [], targets: [], findings: {}, checks: [], telemetry: [], terminal: null, reconciliation: null };
-    if (ledger.status === 'terminal' || ledger.budget?.maxLaunches !== maxLaunches || ledger.budget?.maxRounds !== maxRounds) throw new Error('initiative review run is terminal or has immutable configured budgets');
+    if (!ledger) return { version: 2, repository: run.repository, status: 'active', budget: { maxLaunches, maxRounds }, launches: [], rounds: [], targets: [], findings: {}, checks: [], telemetry: [], terminal: null, reconciliation: null };
+    if (ledger.repository !== run.repository || ledger.status === 'terminal' || ledger.budget?.maxLaunches !== maxLaunches || ledger.budget?.maxRounds !== maxRounds) throw new Error('initiative review run has a different repository, is terminal, or has immutable configured budgets');
   };
   if (!locked(run, initialize)) {
     let ledger;

@@ -360,7 +360,11 @@ async function runReviewUntilGreen(options) {
   const { ref, base, broad = false, noBroad = false, noDod = false, resume = false, repoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
   const keyedRun = options.initiativeRunKey || options.initiativeStateDir;
   if (keyedRun && (!options.initiativeRunKey || !options.initiativeStateDir)) throw new Error('review-until-green: --initiative-run-key and --initiative-state-dir must be used together');
-  const initiativeRun = keyedRun ? openInitiativeRun({ stateDir: options.initiativeStateDir, key: options.initiativeRunKey, maxLaunches: options.initiativeMaxLaunches, maxRounds: options.initiativeMaxRounds }) : null;
+  const stateRelativeToRepo = keyedRun && path.relative(path.resolve(repoRoot), path.resolve(options.initiativeStateDir));
+  if (keyedRun && !stateRelativeToRepo.startsWith('..') && !path.isAbsolute(stateRelativeToRepo)) {
+    try { execFileSync('git', ['check-ignore', '-q', '--no-index', '--', path.join(stateRelativeToRepo, '.initiative-review-state-probe')], { cwd: repoRoot }); } catch { throw new Error('review-until-green: an initiative state directory inside the repository must be ignored'); }
+  }
+  const initiativeRun = keyedRun ? openInitiativeRun({ stateDir: options.initiativeStateDir, key: options.initiativeRunKey, repository: repoRoot, maxLaunches: options.initiativeMaxLaunches, maxRounds: options.initiativeMaxRounds }) : null;
   if (options.initiativeFinalise) {
     if (!initiativeRun) throw new Error('review-until-green: --initiative-finalise requires an initiative run');
     if (!finaliseInitiativeRun(initiativeRun)) throw new Error('review-until-green: initiative run finalisation was contended');
@@ -459,8 +463,9 @@ async function runReviewUntilGreen(options) {
     if (initiativeRun && terminal) {
       const decision = result?.decision || {};
       const reconciliation = result?.reconciliation;
-      const reason = reconciliation ? 'reconciliation-required'
-        : result?.status || (decision.converged ? 'clean' : decision.parked ? 'parked' : decision.abandoned ? 'abandoned' : decision.intentReview ? 'intent-review' : decision.gatePending ? 'gate-pending' : 'target-terminal');
+      const targetOutcome = ['parked', 'abandoned'].includes(result?.status) ? result.status : (decision.parked ? 'parked' : decision.abandoned ? 'abandoned' : null);
+      const reason = targetOutcome || (reconciliation ? 'reconciliation-required'
+        : result?.status || (decision.converged ? 'clean' : decision.intentReview ? 'intent-review' : decision.gatePending ? 'gate-pending' : 'target-terminal'));
       if (!recordTargetTerminal(initiativeRun, {
         target: ref,
         revision: { ref, ...(initialBase ? { base: initialBase } : {}) },

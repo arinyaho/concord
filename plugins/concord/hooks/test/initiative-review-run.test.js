@@ -7,10 +7,11 @@ const path = require('node:path');
 const { openInitiativeRun, reserveLaunch, recordTargetTerminal, finaliseInitiativeRun, publicInitiativeSummary } = require('../../core/initiative-review-run');
 
 function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'initiative-review-run-')); }
+function open(options) { return openInitiativeRun({ repository: '/repo', ...options }); }
 
 test('keyed runs use a hashed separate ledger and atomically consume launch budget', () => {
   const dir = temp();
-  const run = openInitiativeRun({ stateDir: dir, key: 'opaque key', maxLaunches: 1, maxRounds: 2 });
+  const run = open({ stateDir: dir, key: 'opaque key', maxLaunches: 1, maxRounds: 2 });
   assert.match(path.basename(run.path), /^initiative-review-[0-9a-f]{64}\.json$/);
   assert.ok(reserveLaunch(run, { role: 'correctness', round: 1 }));
   assert.strictEqual(reserveLaunch(run, { role: 'fix', round: 1 }), false);
@@ -28,7 +29,7 @@ test('interleaved initializations cannot overwrite a consumed launch reservation
     if (!interleaved && String(file).endsWith('.tmp')) {
       interleaved = true;
       try {
-        const second = openInitiativeRun({ stateDir: dir, key: 'shared key', maxLaunches: 1, maxRounds: 1 });
+        const second = open({ stateDir: dir, key: 'shared key', maxLaunches: 1, maxRounds: 1 });
         secondReserved = reserveLaunch(second, { role: 'second', round: 1 });
       } catch (error) {
         assert.match(error.message, /initialization was contended/);
@@ -37,7 +38,7 @@ test('interleaved initializations cannot overwrite a consumed launch reservation
     return originalWrite.call(this, file, ...args);
   };
   try {
-    const first = openInitiativeRun({ stateDir: dir, key: 'shared key', maxLaunches: 1, maxRounds: 1 });
+    const first = open({ stateDir: dir, key: 'shared key', maxLaunches: 1, maxRounds: 1 });
     const firstReserved = reserveLaunch(first, { role: 'first', round: 1 });
     assert.ok(interleaved);
     assert.strictEqual(firstReserved, true);
@@ -49,15 +50,21 @@ test('interleaved initializations cannot overwrite a consumed launch reservation
 
 test('a keyed run cannot be reconfigured or reopened after terminal state', () => {
   const dir = temp();
-  const run = openInitiativeRun({ stateDir: dir, key: 'opaque key', maxLaunches: 2, maxRounds: 1 });
+  const run = open({ stateDir: dir, key: 'opaque key', maxLaunches: 2, maxRounds: 1 });
   fs.writeFileSync(run.path, JSON.stringify({ ...JSON.parse(fs.readFileSync(run.path, 'utf8')), status: 'terminal' }));
-  assert.throws(() => openInitiativeRun({ stateDir: dir, key: 'opaque key', maxLaunches: 3, maxRounds: 1 }), /immutable|terminal/);
+  assert.throws(() => open({ stateDir: dir, key: 'opaque key', maxLaunches: 3, maxRounds: 1 }), /immutable|terminal/);
+});
+
+test('a keyed run cannot cross repository identities', () => {
+  const dir = temp();
+  open({ stateDir: dir, key: 'opaque key', maxLaunches: 2, maxRounds: 1 });
+  assert.throws(() => openInitiativeRun({ stateDir: dir, key: 'opaque key', repository: '/other-repo', maxLaunches: 2, maxRounds: 1 }), /different repository/);
 });
 
 test('keyed runs stay active per target, require absolute state, charge rounds globally, and persist safe reconciliation evidence', () => {
   const dir = temp();
-  assert.throws(() => openInitiativeRun({ stateDir: 'relative-state', key: 'opaque key', maxLaunches: 4, maxRounds: 1 }), /absolute/);
-  const run = openInitiativeRun({ stateDir: dir, key: 'opaque key', maxLaunches: 4, maxRounds: 2 });
+  assert.throws(() => open({ stateDir: 'relative-state', key: 'opaque key', maxLaunches: 4, maxRounds: 1 }), /absolute/);
+  const run = open({ stateDir: dir, key: 'opaque key', maxLaunches: 4, maxRounds: 2 });
   assert.ok(reserveLaunch(run, { role: 'correctness', target: 'first-ref', revision: { ref: 'first-ref', base: 'main' }, round: 1 }));
   recordTargetTerminal(run, { target: 'first-ref', telemetry: [{ role: 'correctness', round: 1, elapsedMs: 1, totalTokens: null, prompt: 'secret', artifact: 'source' }] });
   assert.ok(reserveLaunch(run, { role: 'correctness', target: 'second-ref', revision: { ref: 'second-ref', base: 'main' }, round: 1 }));
@@ -72,12 +79,12 @@ test('keyed runs stay active per target, require absolute state, charge rounds g
   });
   assert.deepStrictEqual(ledger.telemetry, [{ role: 'correctness', round: 1, elapsedMs: 1, totalTokens: null }]);
   assert.ok(finaliseInitiativeRun(run));
-  assert.throws(() => openInitiativeRun({ stateDir: dir, key: 'opaque key', maxLaunches: 4, maxRounds: 2 }), /immutable|terminal/);
+  assert.throws(() => open({ stateDir: dir, key: 'opaque key', maxLaunches: 4, maxRounds: 2 }), /immutable|terminal/);
 });
 
 test('initiative aggregate output hashes local target revisions and exposes counts only', () => {
   const dir = temp();
-  const run = openInitiativeRun({ stateDir: dir, key: 'opaque key', maxLaunches: 4, maxRounds: 2 });
+  const run = open({ stateDir: dir, key: 'opaque key', maxLaunches: 4, maxRounds: 2 });
   assert.ok(reserveLaunch(run, { role: 'correctness', target: 'private-ref', revision: { ref: 'private-ref', base: 'private-base', head: 'private-head' }, round: 1 }));
   recordTargetTerminal(run, { target: 'private-ref', findings: { intent: 1 }, checks: [{ name: 'check', status: 'passed' }] });
   const summary = publicInitiativeSummary(run);
@@ -90,7 +97,7 @@ test('initiative aggregate output hashes local target revisions and exposes coun
 
 test('initiative state directories initialize recursively and terminal targets stay immutable', () => {
   const dir = path.join(temp(), 'new', 'state');
-  const run = openInitiativeRun({ stateDir: dir, key: 'opaque key', maxLaunches: 4, maxRounds: 2 });
+  const run = open({ stateDir: dir, key: 'opaque key', maxLaunches: 4, maxRounds: 2 });
   assert.ok(reserveLaunch(run, { role: 'correctness', target: 'first-ref', revision: { ref: 'first-ref', base: 'main' }, round: 1 }));
   assert.ok(recordTargetTerminal(run, { target: 'first-ref' }));
   assert.strictEqual(reserveLaunch(run, { role: 'fix', target: 'first-ref', revision: { ref: 'first-ref', base: 'main' }, round: 1 }), false);
