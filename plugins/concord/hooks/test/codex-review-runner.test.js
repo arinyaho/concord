@@ -378,6 +378,37 @@ test('initiative runner starts a new round after a consumed escape disposition a
   assert.strictEqual(retry.continuationPacket.delivery.consumed, false);
 });
 
+test('a non-material gate-pending record result produces a working, resumable escape packet', async () => {
+  // Unlike the literal string decision:'escape' above, this drives the
+  // runner through record's object-shaped gatePending decision (with no
+  // reconciliation, i.e. no material finding) -- the real production path
+  // normalizeDisposition now classifies as 'escape'. This is the exact
+  // end-to-end path the prior unit-level tests (normalizeDisposition,
+  // recordDisposition, terminalTarget called directly) never exercised,
+  // which is why withTelemetry's stale `escaped` computation went unnoticed.
+  const stateDir = temp();
+  const options = { ref: 'feature/gate-pending', base: 'main', repoRoot: '/repo', initiativeRunKey: 'gate-pending-e2e', initiativeStateDir: stateDir, initiativeMaxLaunches: 8, initiativeMaxRounds: 4,
+    runCli: ([verb]) => verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false }
+      : verb === 'artifact-normalize' ? { status: 'ok' }
+        : verb === 'plan-fixes' ? { fixes: [] }
+          : { decision: { continue: false, gatePending: true } },
+    spawn: async () => ({ status: 0 }) };
+  const result = await runReviewUntilGreen(options);
+  assert.ok(result.continuationPacket, 'gate-pending must produce a continuationPacket, not throw');
+  const ledger = JSON.parse(fs.readFileSync(runPath(stateDir, 'gate-pending-e2e'), 'utf8'));
+  assert.strictEqual(ledger.dispositions.length, 1);
+  assert.strictEqual(ledger.dispositions[0].kind, 'escape');
+  assert.strictEqual(ledger.dispositions[0].reason, 'gate-pending');
+  assert.strictEqual(ledger.dispositions[0].packet.nextAction, 'resume');
+  // Consume it, then confirm a retry at the same revision actually reaches
+  // round-start again instead of replaying the stale packet forever.
+  ledger.dispositions[0].packet.delivery.consumed = true;
+  fs.writeFileSync(runPath(stateDir, 'gate-pending-e2e'), JSON.stringify(ledger));
+  let roundStarted = false;
+  await runReviewUntilGreen({ ...options, targetIdentity: () => 'head', runCli: ([verb]) => { if (verb === 'round-start') roundStarted = true; return options.runCli([verb]); } });
+  assert.strictEqual(roundStarted, true);
+});
+
 test('initiative error retains completed DoD, diagnostic, and duplicate retry packet', async () => {
   const stateDir = temp();
   const options = { ref: 'feature/error-retry', base: 'main', repoRoot: '/repo', initiativeRunKey: 'error-retry', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 2,
