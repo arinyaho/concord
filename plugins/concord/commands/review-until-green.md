@@ -9,6 +9,8 @@ The review CLI lives at `${CLAUDE_PLUGIN_ROOT}/hooks/review-cli.js`. It is the d
 
 Concord IS the reviewer. The findings for every round come from the review subagents YOU spawn against the diff (steps 2-3) -- never from a bot, CI check, or human review posted on the PR. Do NOT `gh pr ready` and wait, do NOT poll or `ScheduleWakeup` for a Codex/Copilot/CI review to land, and do NOT treat any external review as this loop's rounds or gate. If the target happens to be a PR that also gets bot reviews, ignore them here; they are not your input and waiting on them is the failure this loop exists to replace. Once `round-start` says `work`, the very next thing you do is dispatch this round's review subagents in THIS session.
 
+A 30-second foreground wait or empty output is not a terminal result. While an owned driver process is alive, inspect that process and ledger and keep waiting; a non-terminal ledger without a live driver is a stopped driver, so report it rather than waiting indefinitely. Report a terminal result only from a durable terminal disposition or the ledger's bounded no-progress decision. Before declaring a reviewer blocked because its skill cannot be found, resolve the installed skill path recursively to the actual `SKILL.md`; do not assume a flat install layout.
+
 Arguments: `$ARGUMENTS`
 
 Remove the recognized provider/model option-value pairs before determining the target ref: empty -> current branch (`git branch --show-current`); `resume <ref>` -> the ref after `resume`; else the first positional argument. Optional base ref is the second positional token (default the repo's remote main branch, `origin/<main>` -- a local base can be stale (behind its remote), which sweeps unrelated merged changes into the diff).

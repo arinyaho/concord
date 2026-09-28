@@ -5,7 +5,7 @@
 // subprocess and every state transition remains owned by review-cli.
 const { execFileSync, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
-const { canonicalPath, runPath, openInitiativeRun, reserveLaunch, recordTargetTerminal, terminalTarget, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
+const { canonicalPath, runPath, openInitiativeRun, reserveLaunch, recordDisposition, normalizeDisposition, consumeDispositionDelivery, terminalTarget, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
 const { gitHeadSha, gitDirty, fileTarget } = require('./target');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -13,6 +13,7 @@ const { safeIdForFilename } = require('./artifact-name');
 const { targetSlug } = require('./review');
 const { artifactDestinationFromPrompt } = require('./review-artifact');
 const { isValidFindingId } = require('./gate-contract');
+const { same } = require('./review-eval');
 const { PANEL_LENSES } = require('./report');
 const { BLOCKED_CLAUSE, reviewerPrompt } = require('./round-plan');
 const { isWindows, crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
@@ -341,6 +342,19 @@ function resolveDefaultBase(repoRoot, exec = execFileSync) {
   throw new Error('review-until-green: cannot determine a remote default base; pass an explicit base');
 }
 
+function pendingContinuationPacket(run, target, revision, kind, includeConsumed = false, reason) {
+  const entry = JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions.findLast((item) => item.target === target
+    && same(item.revision, revision)
+    && (!kind || item.kind === kind)
+    && (!reason || item.reason === reason));
+  return entry?.packet && (includeConsumed || entry.packet.delivery?.consumed === false) ? entry.packet : null;
+}
+
+function acknowledgeContinuationPacket(options, claim) {
+  if (!options?.initiativeStateDir || !options?.initiativeRunKey || typeof claim !== 'string') return false;
+  return consumeDispositionDelivery({ path: runPath(options.initiativeStateDir, options.initiativeRunKey) }, claim);
+}
+
 async function invoke(spawn, input) {
   const result = await spawn(input);
   if (result && (result.interrupted || result.timedOut || result.signal || result.status !== 0)) {
@@ -381,42 +395,73 @@ async function runReviewUntilGreen(options) {
   // Never resolve a base for resume: round-start restores ledger.target.base.
   // File targets do not have a git base at all.
   const baseResolver = options.resolveDefaultBase || (options.runCli ? null : resolveDefaultBase);
-  let initialBase = resume
-    ? undefined
-    : (base === undefined && !ref.startsWith('file:') && baseResolver ? baseResolver(repoRoot) : base);
-  if (initiativeRun) {
-    if (terminalTarget(initiativeRun, ref, (terminalRevision) => {
-      const identityBase = resume ? terminalRevision.base : initialBase;
-      const head_sha = options.targetIdentity ? options.targetIdentity(ref, identityBase, canonicalRepoRoot) : ref.startsWith('file:')
-        ? fileTarget({ files: [ref.slice('file:'.length)] }, canonicalRepoRoot).identity
-        : (() => {
-          if (gitDirty(canonicalRepoRoot)) throw new Error('round-start: working tree is dirty; commit or stash before review-until-green');
-          return gitHeadSha(canonicalRepoRoot);
-        })();
-      return { ref, ...(identityBase ? { base: identityBase } : {}), head_sha };
-    })) return { decision: 'terminal', initiative: publicInitiativeSummary(initiativeRun) };
-  }
+  let initialBase = resume ? undefined : base;
   const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot));
   let reviewer = options.reviewer || 'codex';
   let fixer = options.fixer || 'codex';
   let reviewerModel = options.reviewerModel;
   let fixerModel = options.fixerModel;
-  for (const provider of [reviewer, fixer]) {
-    if (!PROVIDERS.has(provider)) throw new Error(`review-until-green: unsupported provider "${provider}"`);
-  }
+  let initiativeRevision = { ref };
   const rawSpawn = options.spawn || ((input) => providerExec(input));
   const abortController = options.handleSignals ? new AbortController() : null;
   const signalHandlers = abortController ? Object.fromEntries(['SIGINT', 'SIGTERM', 'SIGHUP'].map((signal) => [signal, () => abortController.abort(signal)])) : {};
+  let checks = [];
   for (const [signal, handler] of Object.entries(signalHandlers)) process.once(signal, handler);
   try {
+  // Resolve base before computing identity below -- an identity that factors
+  // base into its hash must see the real default, not undefined, or its
+  // head_sha can disagree with what round-start computes once the real base
+  // is known. A resolution failure is deferred (not thrown yet) so identity
+  // still gets computed and recorded on the error disposition below, exactly
+  // as it did before this ordering existed.
+  let baseResolutionError = null;
+  if (!resume && initialBase === undefined && !ref.startsWith('file:') && baseResolver) {
+    try { initialBase = baseResolver(repoRoot); } catch (error) { baseResolutionError = error; }
+  }
+  if (initialBase) initiativeRevision = { ...initiativeRevision, base: initialBase };
+  if (initiativeRun && fs.existsSync(repoRoot)) {
+    try {
+      const head_sha = options.targetIdentity ? options.targetIdentity(ref, initialBase, canonicalRepoRoot) : ref.startsWith('file:')
+        ? fileTarget({ files: [ref.slice('file:'.length)] }, canonicalRepoRoot).identity : gitHeadSha(canonicalRepoRoot);
+      initiativeRevision = { ...initiativeRevision, head_sha };
+    } catch (_) { /* round-start remains the authority when identity cannot be acquired */ }
+  }
+  if (baseResolutionError) throw baseResolutionError;
+  // A replay against an already-terminal target (including the dirty-worktree
+  // guard below) is not a review failure and must not be recorded as one by
+  // the catch below -- it is tagged so the catch rethrows it unrecorded.
+  const validated = initiativeRun && terminalTarget(initiativeRun, ref, (terminalRevision) => {
+    const identityBase = resume ? terminalRevision.base : initialBase;
+    const head_sha = options.targetIdentity ? options.targetIdentity(ref, identityBase, canonicalRepoRoot) : ref.startsWith('file:')
+      ? fileTarget({ files: [ref.slice('file:'.length)] }, canonicalRepoRoot).identity
+      : (() => {
+        if (gitDirty(canonicalRepoRoot)) {
+          const dirtyError = new Error('round-start: working tree is dirty; commit or stash before review-until-green');
+          dirtyError.notAReviewFailure = true;
+          throw dirtyError;
+        }
+        return gitHeadSha(canonicalRepoRoot);
+      })();
+    return { ref, ...(identityBase ? { base: identityBase } : {}), head_sha };
+  }, ['terminal', 'escape']);
+  if (validated) {
+    // includeConsumed: a replay against a target whose packet a prior
+    // invocation already delivered must still return it -- otherwise this
+    // preflight silently produces no continuationPacket, and the launcher's
+    // empty-output fallback is suppressed for a terminal decision, leaving
+    // the caller with nothing to read at all.
+    const packet = pendingContinuationPacket(initiativeRun, ref, validated.revision, validated.kind, true);
+    return { decision: validated.kind === 'escape' ? 'escape' : 'terminal', initiative: publicInitiativeSummary(initiativeRun), ...(packet ? { continuationPacket: packet } : {}) };
+  }
+  for (const provider of [reviewer, fixer]) {
+    if (!PROVIDERS.has(provider)) throw new Error(`review-until-green: unsupported provider "${provider}"`);
+  }
   const telemetry = {
     total: { calls: 0, partialCalls: 0, inputTokens: 0, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0 },
     byRole: {},
     invocations: [],
   };
   let currentRound = null;
-  let initiativeRevision = { ref, ...(initialBase ? { base: initialBase } : {}) };
-  let checks = [];
   let telemetryPath = null;
   let telemetryLoaded = false;
   const persistTelemetry = () => {
@@ -482,27 +527,59 @@ async function runReviewUntilGreen(options) {
   };
   const withTelemetry = (result) => {
     const output = { ...result, telemetry: result?.telemetry || telemetry };
-    if ((result?.decision === 'terminal' || result?.decision?.converged === true || result?.decision?.parked === true || result?.decision?.abandoned === true) && telemetryPath) {
+    const genuinelyTerminal = result?.decision === 'terminal' || result?.decision?.converged === true || result?.decision?.parked === true || result?.decision?.abandoned === true;
+    const terminal = genuinelyTerminal || result?.decision === 'escape' || result?.decision?.intentReview || result?.decision?.gatePending;
+    // A genuinely terminal result always clears the local cache -- no more
+    // accumulation is expected. Without an initiative run, a re-runnable
+    // decision (escape/gate-pending/intent-review) has nowhere else its
+    // telemetry is captured, so the cache must survive for the next
+    // invocation to keep accumulating into it. WITH an initiative run,
+    // that telemetry is captured durably in the disposition recorded below
+    // instead, so the local cache becomes redundant and must be cleared --
+    // otherwise a retry reloads it and appends the same invocations into
+    // ledger.telemetry a second time.
+    if ((genuinelyTerminal || (initiativeRun && terminal)) && telemetryPath) {
       try { fs.unlinkSync(telemetryPath); } catch {}
     }
-    const terminal = result?.decision === 'terminal' || result?.decision?.converged || result?.decision?.parked || result?.decision?.abandoned || result?.decision?.intentReview || result?.decision?.gatePending;
     if (initiativeRun && terminal) {
-      const decision = result?.decision || {};
       const reconciliation = result?.reconciliation;
-      const targetOutcome = ['parked', 'abandoned'].includes(result?.status) ? result.status : (decision.parked ? 'parked' : decision.abandoned ? 'abandoned' : null);
-      const reason = targetOutcome || (reconciliation ? 'reconciliation-required'
-        : result?.status || (decision.converged ? 'clean' : decision.intentReview ? 'intent-review' : decision.gatePending ? 'gate-pending' : 'target-terminal'));
-      if (!recordTargetTerminal(initiativeRun, {
+      // Derive escaped from the SAME normalization recordDisposition uses
+      // below to decide the stored kind -- checking only the literal string
+      // 'escape' misses gatePending/intentReview, which normalizeDisposition
+      // also classifies as 'escape': the packet's trigger/nextAction would
+      // then say 'terminal'/'replay' for an entry actually stored as
+      // 'escape', and the post-record lookup (kind 'terminal') would find
+      // nothing and throw a spurious contention error.
+      const escaped = normalizeDisposition(result).kind === 'escape';
+      const recorded = recordDisposition(initiativeRun, {
         target: ref,
         revision: initiativeRevision,
-        reason,
+        result,
+        packet: {
+          trigger: escaped ? 'escape' : 'terminal',
+          exit: { code: Number.isInteger(result?.exitCode) ? result.exitCode : 0, signal: result?.signal || null },
+          dod: { status: (result?.checks || checks)[0]?.status || 'not-run' },
+          telemetry: { complete: output.telemetry?.total?.partialCalls === 0 },
+          nextAction: escaped ? 'resume' : 'replay',
+          handoff: result?.handoff || result?.message || null,
+        },
         finding: reconciliation?.finding || null,
         stage: reconciliation?.stage || null,
         avoidedLaunches: reconciliation?.avoidedLaunches || 0,
         findings: reconciliation?.findings || {},
         checks: result?.checks || checks,
         telemetry: (output.telemetry?.invocations || []).map(({ role, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, stage: 'review', revision: initiativeRevision, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens })),
-      })) throw new Error('review-until-green: initiative target terminal recording was contended');
+      });
+      // includeConsumed only for 'terminal': its dedup matches regardless of
+      // consumption, so a consumed match here is a legitimate concurrent
+      // success. 'escape' dedup only matches an UNCONSUMED entry, so a
+      // consumed match here would be a stale, unrelated escape at this
+      // revision -- including it would mask the real failure (e.g. the
+      // ledger was finalised concurrently) behind a wrong, already-settled
+      // packet instead of throwing.
+      const packet = pendingContinuationPacket(initiativeRun, ref, initiativeRevision, escaped ? 'escape' : 'terminal', !escaped);
+      if (!packet) throw new Error(recorded ? 'review-until-green: initiative delivery claim was contended' : 'review-until-green: initiative target terminal recording was contended');
+      output.continuationPacket = packet;
     }
     return output;
   };
@@ -593,6 +670,7 @@ async function runReviewUntilGreen(options) {
     if (options.fixerModel) startArgs.push('--fixer-model', options.fixerModel);
     const started = await cli(startArgs);
     if (!initialBase && started.base) initialBase = started.base;
+    if (initiativeRevision.head_sha && started.head && initiativeRevision.head_sha !== started.head) throw new Error('review-until-green: initiative target revision changed before round-start');
     initiativeRevision = { ref: started.ref || ref, ...(started.base || initialBase ? { base: started.base || initialBase } : {}), ...(started.head || initiativeRevision.head_sha ? { head_sha: started.head || initiativeRevision.head_sha } : {}) };
     await throwIfAborted(started.decision === 'work');
     if (started.reviewRouting) {
@@ -687,7 +765,13 @@ async function runReviewUntilGreen(options) {
     for (const finding of planned.fixes || []) {
       try {
         await launch({ role: 'fix', prompt: reviewerPrompt('fix', { ...context, finding, plannedFindingIds: (planned.fixes || []).map((f) => f.id) }), repoRoot, stateDir: context.stateDir });
-        if (started.targetType !== 'file') await cli(['commit-fix', ref, finding.id]);
+        if (started.targetType !== 'file') {
+          const committed = await cli(['commit-fix', ref, finding.id]);
+          if (committed?.committed && committed.sha) initiativeRevision = { ...initiativeRevision, head_sha: committed.sha };
+        } else {
+          const head_sha = options.targetIdentity ? options.targetIdentity(ref, initialBase, canonicalRepoRoot) : fileTarget({ files: [ref.slice('file:'.length)] }, canonicalRepoRoot).identity;
+          initiativeRevision = { ...initiativeRevision, head_sha };
+        }
       } catch (error) {
         const failure = error.reviewFailure || { role: 'fix', kind: /artifact|missing gate artifact/.test(String(error.message)) ? 'artifact-write-failure' : 'harness-error', message: String(error.message).replace(/^harness-failure:\s*/, '') };
         try { await cli(['round-failure', ref, JSON.stringify(failure)]); } catch (_) {}
@@ -704,9 +788,38 @@ async function runReviewUntilGreen(options) {
     if (recorded.decision && recorded.decision.continue) continue;
     return withTelemetry(recorded);
   }
+  } catch (error) {
+    if (error.notAReviewFailure) throw error;
+    const failure = error.reviewFailure || {};
+    // recordDisposition dedups an 'error' by its reason (a hash of the
+    // message), not just target+revision+kind -- so the fallback lookups
+    // below must filter by that same reason, or a different, more recent
+    // error at this revision could be returned in place of this one's own
+    // (distinct) failure.
+    const errorReason = normalizeDisposition(error).reason;
+    // A failure here (the ledger lock was busy with no retry, or the run
+    // was finalised concurrently) must not replace the real review failure
+    // this catch is handling -- rethrow the ORIGINAL error, with the
+    // recording failure only noted on its message, so the caller still
+    // sees what actually went wrong instead of a generic "contended".
+    if (initiativeRun && initiativeRevision.head_sha && !recordDisposition(initiativeRun, { target: ref, revision: initiativeRevision, result: error, packet: { trigger: 'error', exit: { code: Number.isInteger(failure.exitCode) ? failure.exitCode : null, signal: failure.signal || null }, dod: { status: checks[0]?.status || 'not-run' }, telemetry: { complete: false }, nextAction: 'resume', error: { message: error.message } }, checks })) {
+      if (!pendingContinuationPacket(initiativeRun, ref, initiativeRevision, 'error', true, errorReason)) {
+        error.message = `${error.message} (review-until-green: initiative error disposition recording was also contended)`;
+        throw error;
+      }
+    }
+    if (initiativeRun && initiativeRevision.head_sha) {
+      const packet = pendingContinuationPacket(initiativeRun, ref, initiativeRevision, 'error', true, errorReason);
+      if (!packet) {
+        error.message = `${error.message} (review-until-green: initiative error delivery claim was also contended)`;
+        throw error;
+      }
+      error.continuationPacket = packet;
+    }
+    throw error;
   } finally {
     for (const [signal, handler] of Object.entries(signalHandlers)) process.removeListener(signal, handler);
   }
 }
 
-module.exports = { runReviewUntilGreen, reviewerPrompt, codexExec, providerExec, jsonCli, resolveCodexExecutable, resolveDefaultBase };
+module.exports = { runReviewUntilGreen, acknowledgeContinuationPacket, reviewerPrompt, codexExec, providerExec, jsonCli, resolveCodexExecutable, resolveDefaultBase };

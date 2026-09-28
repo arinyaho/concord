@@ -38,7 +38,7 @@ There are two mandatory human checkpoints:
 1. After the read-only evidence and contract stage, present the observed reality, material decisions, proposed contract, and proposed ticket set. Continue only with the user's exact decisions and ticket-set approval.
 2. After the approved tickets and external design records have been written and read back, present their URLs, dependency order, acceptance criteria, Definition of Done, and preserved metadata. For repository-backed design records, present the assigned ticket and repository unit, planned branch, and PR disposition; read those records back with that unit's implementation PR. Continue to implementation only when the user approves the read-back ticket set.
 
-After the second checkpoint, proceed through PR creation without routine pauses. Return to the user only when a new material product decision, scope expansion, authorization outside the recorded envelope, irreconcilable review finding, or blocked exit condition appears. Do not ask again for authority already granted.
+After the second checkpoint, proceed through PR creation without routine pauses. Do not ask a redundant binary question for an obvious mechanical or symmetric correction within an already user-approved bounded batch after independent verification. Return to the user for reconciliation when a real scope, contract, safety, provider, or lifecycle tradeoff arises, when independent verification identifies a new substantive batch, or when authorization outside the recorded envelope, an irreconcilable review finding, or a blocked exit condition appears. Do not ask again for authority already granted.
 
 ## Ticket set
 

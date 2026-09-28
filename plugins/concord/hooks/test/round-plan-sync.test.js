@@ -20,6 +20,12 @@ const driverText = fs.readFileSync(path.join(CORE, 'review-driver.md'), 'utf8');
 // live `/review-until-green` slash command actually reads -- not generated
 // by any build step, so it drifts silently unless a test checks it directly.
 const composedCommandText = fs.readFileSync(path.join(__dirname, '..', '..', 'commands', 'review-until-green.md'), 'utf8');
+const REPO = path.join(__dirname, '..', '..', '..', '..');
+const codexCommandText = fs.readFileSync(path.join(REPO, 'plugins/concord-codex/commands/review-until-green.md'), 'utf8');
+const copilotDriverText = fs.readFileSync(
+  path.join(REPO, 'plugins/concord-copilot/skills/review-until-green/references/review-driver.md'),
+  'utf8',
+);
 
 test('GATE_SWEEP_CLAUSE is non-trivial and role-agnostic text', () => {
   assert.equal(typeof GATE_SWEEP_CLAUSE, 'string');
@@ -66,15 +72,19 @@ test('the Copilot-vendored review-driver.md copy embeds GATE_SWEEP_CLAUSE byte-f
   // fs.copyFileSync in plugins/concord-copilot/bin/bundle.mjs with no
   // byte-identity guard of its own -- so it must be checked directly here,
   // the same way core/review-driver.md and commands/review-until-green.md are.
-  const REPO = path.join(__dirname, '..', '..', '..', '..');
-  const copilotDriverText = fs.readFileSync(
-    path.join(REPO, 'plugins/concord-copilot/skills/review-until-green/references/review-driver.md'),
-    'utf8',
-  );
   assert.ok(
     copilotDriverText.includes(GATE_SWEEP_CLAUSE),
     'plugins/concord-copilot/skills/review-until-green/references/review-driver.md gate-review prompt has drifted from round-plan.js GATE_SWEEP_CLAUSE -- re-run node plugins/concord-copilot/bin/bundle.mjs',
   );
+});
+
+test('review instructions do not terminalize foreground silence or a nested skill path', () => {
+  for (const text of [driverText, composedCommandText, codexCommandText, copilotDriverText]) {
+    assert.match(text, /30-second foreground wait or empty output is not a terminal result/);
+    assert.match(text, /non-terminal ledger without a live driver is a stopped driver/);
+    assert.match(text, /durable terminal disposition or the ledger's bounded no-progress decision/);
+    assert.match(text, /resolve the installed skill path recursively to the actual `SKILL\.md`/);
+  }
 });
 
 test('manual fix instructions use the same filesystem-safe ID as commit-fix', () => {

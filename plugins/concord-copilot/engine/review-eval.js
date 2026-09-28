@@ -344,4 +344,4 @@ function compareReviewStage(stage, pr1, previous, candidate) {
   return { pass, finalThresholdApplied: stage === 'pr5', unevaluable, adjacent, final };
 }
 
-module.exports = { compareReviewResults, compareReviewMatrix, compareReviewStage, interval, median };
+module.exports = { compareReviewResults, compareReviewMatrix, compareReviewStage, interval, median, canonical, same };

@@ -28,6 +28,12 @@ test('Claude and Codex ship the same initiative-to-prs skill', () => {
   for (const file of SKILL_FILES) assert.equal(read('concord-codex', file), read('concord', file));
 });
 
+test('all provider handoff contracts require a complete substantive reconciliation packet', () => {
+  const canonical = read('concord', 'references/handoff-contract.md');
+  for (const provider of ['concord-codex', 'concord-copilot']) assert.equal(read(provider, 'references/handoff-contract.md'), canonical);
+  assert.match(canonical, /supporting evidence, every realistic option with its consequence, the recommendation and rationale, and the exact decision required/);
+});
+
 test('initiative-to-prs composes the existing ticket contracts and stops at verified PRs', () => {
   const skill = read('concord', 'SKILL.md');
   const stages = read('concord', 'references/stages.md');
@@ -122,6 +128,8 @@ test('initiative-to-prs routes models by task shape and bounds delegation', () =
   assert.match(routing, /current model catalog.*newest suitable model/is);
   assert.match(routing, /confirm.*selected model and reasoning effort are callable/is);
   assert.match(routing, /Do not infer capability from a model name, version number, or price alone/i);
+  assert.match(routing, /bounded implementation batch.*approved.*contract.*clear.*lowest-cost capable implementation model.*focused self-checks.*without pausing for status/is);
+  assert.match(routing, /higher-cost capability.*architecture or scope decisions.*new P1 or material findings.*fresh independent verification after the batch/is);
   assert.match(routing, /before checkpoint 1.*deep-capability model.*before.*approved contract/is);
   assert.match(routing, /separate deep-capability specialist.*clean context/is);
   assert.match(routing, /active root agent cannot satisfy a Deep decision gate/i);
