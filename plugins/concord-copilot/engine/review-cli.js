@@ -919,7 +919,7 @@ function main(resolveFromCwd) {
       ledger = begun;
       if (terminal) {
         writeLedger(stateDir, slug, ledger);
-        process.stdout.write(JSON.stringify({ decision: 'terminal', status: ledger.status, round: ledger.round, base: ledger.target?.base, stateDir }) + '\n');
+        process.stdout.write(JSON.stringify({ decision: 'terminal', status: ledger.status, round: ledger.round, base: ledger.target?.base, head: ledger.target?.head_sha, stateDir }) + '\n');
         return;
       }
       if (noOp) {
@@ -1050,7 +1050,7 @@ function main(resolveFromCwd) {
     const targetType = isFileTarget ? 'file' : 'git';
     const baseTarget = ledger.target || { kind: 'local', ref };
     const targetUpdate = isFileTarget
-      ? { ...baseTarget, type: 'file', hasDoD: false, spec: fileSpec }
+      ? { ...baseTarget, type: 'file', hasDoD: false, spec: fileSpec, head_sha: headSha }
       : { ...baseTarget, type: 'git', hasDoD: true, spec: { ref, base }, base, head_sha: headSha };
     ledger = {
       ...ledger,

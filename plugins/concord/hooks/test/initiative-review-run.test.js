@@ -83,8 +83,8 @@ test('new target attempts consume distinct global round slots', () => {
 
 test('the first reconciliation hint stays attached to the first material target', () => {
   const run = open({ stateDir: temp(), key: 'hints', maxLaunches: 3, maxRounds: 3 });
-  assert.ok(recordTargetTerminal(run, { target: 'first', reason: 'reconciliation-required', finding: 'intent:first', stage: 'record', avoidedLaunches: 2 }));
-  assert.ok(recordTargetTerminal(run, { target: 'second', reason: 'reconciliation-required', finding: 'intent:second', stage: 'record', avoidedLaunches: 1 }));
+  assert.ok(recordTargetTerminal(run, { target: 'first', revision: { ref: 'first', head_sha: 'first-head' }, reason: 'reconciliation-required', finding: 'intent:first', stage: 'record', avoidedLaunches: 2 }));
+  assert.ok(recordTargetTerminal(run, { target: 'second', revision: { ref: 'second', head_sha: 'second-head' }, reason: 'reconciliation-required', finding: 'intent:second', stage: 'record', avoidedLaunches: 1 }));
   assert.strictEqual(JSON.parse(fs.readFileSync(run.path, 'utf8')).reconciliation.hint.firstMaterialFinding, 'intent:first');
 });
 
@@ -93,11 +93,11 @@ test('keyed runs stay active per target, require absolute state, charge rounds g
   assert.throws(() => open({ stateDir: 'relative-state', key: 'opaque key', maxLaunches: 4, maxRounds: 1 }), /absolute/);
   const run = open({ stateDir: dir, key: 'opaque key', maxLaunches: 4, maxRounds: 2 });
   assert.ok(reserveLaunch(run, { role: 'correctness', target: 'first-ref', revision: { ref: 'first-ref', base: 'main' }, round: 1 }));
-  recordTargetTerminal(run, { target: 'first-ref', telemetry: [{ role: 'correctness', round: 1, elapsedMs: 1, totalTokens: null, prompt: 'secret', artifact: 'source' }] });
+  recordTargetTerminal(run, { target: 'first-ref', revision: { ref: 'first-ref', base: 'main', head_sha: 'first-head' }, telemetry: [{ role: 'correctness', round: 1, elapsedMs: 1, totalTokens: null, prompt: 'secret', artifact: 'source' }] });
   assert.ok(reserveLaunch(run, { role: 'correctness', target: 'second-ref', revision: { ref: 'second-ref', base: 'main' }, round: 1 }));
   assert.strictEqual(reserveLaunch(run, { role: 'correctness', target: 'third-ref', revision: { ref: 'third-ref', base: 'main' }, round: 1 }), false);
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  assert.deepStrictEqual(ledger.targets, [{ ref: 'first-ref', base: 'main' }, { ref: 'second-ref', base: 'main' }]);
+  assert.deepStrictEqual(ledger.targets, [{ ref: 'first-ref', base: 'main' }, { ref: 'first-ref', base: 'main', head_sha: 'first-head' }, { ref: 'second-ref', base: 'main' }]);
   assert.strictEqual(ledger.rounds.length, 2);
   assert.deepStrictEqual(ledger.reconciliation.hint, {
     trigger: 'target-terminal', firstMaterialFinding: null, stage: null, avoidedLaunches: 0,
@@ -113,10 +113,10 @@ test('initiative aggregate output hashes local target revisions and exposes coun
   const dir = temp();
   const run = open({ stateDir: dir, key: 'opaque key', maxLaunches: 4, maxRounds: 2 });
   assert.ok(reserveLaunch(run, { role: 'correctness', target: 'private-ref', revision: { ref: 'private-ref', base: 'private-base', head: 'private-head' }, round: 1 }));
-  recordTargetTerminal(run, { target: 'private-ref', findings: { intent: 1 }, checks: [{ name: 'check', status: 'passed' }] });
+  recordTargetTerminal(run, { target: 'private-ref', revision: { ref: 'private-ref', base: 'private-base', head_sha: 'private-head' }, findings: { intent: 1 }, checks: [{ name: 'check', status: 'passed' }] });
   const summary = publicInitiativeSummary(run);
   assert.deepStrictEqual(summary, {
-    targetIds: [require('node:crypto').createHash('sha256').update(JSON.stringify({ ref: 'private-ref', base: 'private-base', head: 'private-head' })).digest('hex')],
+    targetIds: [require('node:crypto').createHash('sha256').update(JSON.stringify({ ref: 'private-ref', base: 'private-base', head_sha: 'private-head' })).digest('hex')],
     counts: { targets: 1, launches: 1, rounds: 1, findings: { intent: 1 }, checks: 1, telemetry: 0 },
   });
   assert.doesNotMatch(JSON.stringify(summary), /private-(?:ref|base|head)/);
@@ -126,8 +126,18 @@ test('initiative state directories initialize recursively and terminal targets s
   const dir = path.join(temp(), 'new', 'state');
   const run = open({ stateDir: dir, key: 'opaque key', maxLaunches: 4, maxRounds: 2 });
   assert.ok(reserveLaunch(run, { role: 'correctness', target: 'first-ref', revision: { ref: 'first-ref', base: 'main' }, round: 1 }));
-  assert.ok(recordTargetTerminal(run, { target: 'first-ref' }));
+  assert.ok(recordTargetTerminal(run, { target: 'first-ref', revision: { ref: 'first-ref', base: 'main', head_sha: 'first-head' } }));
   assert.strictEqual(reserveLaunch(run, { role: 'fix', target: 'first-ref', revision: { ref: 'first-ref', base: 'main' }, round: 1 }), false);
   assert.strictEqual(recordTargetTerminal(run, { target: 'first-ref' }), false);
   assert.ok(reserveLaunch(run, { role: 'correctness', target: 'second-ref', revision: { ref: 'second-ref', base: 'main' }, round: 1 }));
+});
+
+test('initiative state paths are canonicalized through a symlink', () => {
+  const root = temp();
+  const actual = path.join(root, 'actual');
+  const alias = path.join(root, 'alias');
+  fs.mkdirSync(actual);
+  fs.symlinkSync(actual, alias);
+  const run = open({ stateDir: path.join(alias, 'new', 'state'), key: 'canonical', maxLaunches: 1, maxRounds: 1 });
+  assert.strictEqual(run.path, path.join(fs.realpathSync(actual), 'new', 'state', path.basename(run.path)));
 });

@@ -3,8 +3,19 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
+function canonicalPath(value) {
+  const resolved = path.resolve(value);
+  let ancestor = resolved;
+  const tail = [];
+  while (!fs.existsSync(ancestor)) {
+    tail.unshift(path.basename(ancestor));
+    ancestor = path.dirname(ancestor);
+  }
+  return path.join(fs.realpathSync(ancestor), ...tail);
+}
+
 function repositoryIdentity(repository) {
-  const root = path.resolve(repository);
+  const root = canonicalPath(repository);
   try {
     const commonDir = require('node:child_process').execFileSync('git', ['rev-parse', '--git-common-dir'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
     return fs.realpathSync(path.resolve(root, commonDir));
@@ -15,7 +26,7 @@ function repositoryIdentity(repository) {
 
 function runPath(stateDir, key) {
   if (!path.isAbsolute(stateDir)) throw new Error('initiative review state directory must be absolute');
-  return path.join(stateDir, `initiative-review-${crypto.createHash('sha256').update(key).digest('hex')}.json`);
+  return path.join(canonicalPath(stateDir), `initiative-review-${crypto.createHash('sha256').update(key).digest('hex')}.json`);
 }
 
 function write(file, value) {
@@ -42,13 +53,13 @@ function hint(trigger, finding = null, stage = null, avoidedLaunches = 0) {
   return { trigger, firstMaterialFinding: finding, stage, avoidedLaunches, preflight: ['confirm target revisions', 'confirm checks', 'choose resume, revise, or split'], options: ['resume', 'revise', 'split'] };
 }
 
-function openInitiativeRun({ stateDir, key, repository, maxLaunches, maxRounds }) {
+function openInitiativeRun({ stateDir, key, repository, maxLaunches, maxRounds, allowTerminal = false }) {
   if (!stateDir || !key || !repository) throw new Error('initiative review requires a run key, repository identity, and canonical state directory');
   if (!Number.isInteger(maxLaunches) || maxLaunches < 1 || !Number.isInteger(maxRounds) || maxRounds < 1) throw new Error('initiative review budgets must be positive integers');
   const run = { path: runPath(stateDir, key), repository: repositoryIdentity(repository) };
   const initialize = (ledger) => {
     if (!ledger) return { version: 2, repository: run.repository, status: 'active', budget: { maxLaunches, maxRounds }, launches: [], rounds: [], targets: [], findings: {}, checks: [], telemetry: [], terminal: null, reconciliation: null };
-    if (ledger.repository !== run.repository || ledger.status === 'terminal' || ledger.budget?.maxLaunches !== maxLaunches || ledger.budget?.maxRounds !== maxRounds) throw new Error('initiative review run has a different repository, is terminal, or has immutable configured budgets');
+    if (ledger.repository !== run.repository || (!allowTerminal && ledger.status === 'terminal') || ledger.budget?.maxLaunches !== maxLaunches || ledger.budget?.maxRounds !== maxRounds) throw new Error('initiative review run has a different repository, is terminal, or has immutable configured budgets');
   };
   if (!locked(run, initialize)) {
     let ledger;
@@ -67,7 +78,7 @@ function reserveLaunch(run, launch) {
     const round = `${target}\u0000${typeof launch.attemptId === 'string' ? launch.attemptId : 'legacy'}\u0000${launch.round}`;
     const rounds = ledger.rounds || [];
     if (!rounds.includes(round) && rounds.length >= ledger.budget.maxRounds) return null;
-    const revision = launch.revision && { ref: launch.revision.ref || target, ...(launch.revision.base ? { base: launch.revision.base } : {}), ...(launch.revision.head ? { head: launch.revision.head } : {}) };
+    const revision = launch.revision && { ref: launch.revision.ref || target, ...(launch.revision.base ? { base: launch.revision.base } : {}), ...((launch.revision.head_sha || launch.revision.head) ? { head_sha: launch.revision.head_sha || launch.revision.head } : {}) };
     const targets = revision && !(ledger.targets || []).some((item) => JSON.stringify(item) === JSON.stringify(revision)) ? [...(ledger.targets || []), revision] : (ledger.targets || []);
     return { ...ledger, rounds: rounds.includes(round) ? rounds : [...rounds, round], targets, launches: [...ledger.launches, { role: launch.role, round: launch.round, ...(target === 'unknown' ? {} : { target }) }] };
   }));
@@ -77,9 +88,11 @@ function recordTargetTerminal(run, { target, revision, reason = 'target-terminal
   const safeTelemetry = telemetry.map(({ role, stage: telemetryStage, revision, round, count, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, ...(telemetryStage ? { stage: telemetryStage } : {}), ...(revision ? { revision } : {}), ...(Number.isInteger(round) ? { round } : {}), ...(Number.isInteger(count) ? { count } : {}), elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }));
   return Boolean(locked(run, (ledger) => {
     if (!ledger || ledger.status !== 'active' || (ledger.reconciliation?.terminals || []).some((terminal) => terminal.target === target)) return null;
-    const targetRevision = revision && { ref: revision.ref || target, ...(revision.base ? { base: revision.base } : {}), ...(revision.head ? { head: revision.head } : {}) };
+    const targetRevision = revision && { ref: revision.ref || target, ...(revision.base ? { base: revision.base } : {}), ...((revision.head_sha || revision.head) ? { head_sha: revision.head_sha || revision.head } : {}) };
     const targets = targetRevision && !(ledger.targets || []).some((item) => JSON.stringify(item) === JSON.stringify(targetRevision)) ? [...(ledger.targets || []), targetRevision] : (ledger.targets || []);
-    const terminal = { target, reason };
+    const terminalRevision = revision && { ref: revision.ref || target, ...(revision.base ? { base: revision.base } : {}), ...((revision.head_sha || revision.head) ? { head_sha: revision.head_sha || revision.head } : {}) };
+    if (!terminalRevision?.head_sha) throw new Error('initiative review terminal target requires a stored revision');
+    const terminal = { target, reason, revision: terminalRevision };
     const previous = ledger.reconciliation || {};
     const reconciliationHint = previous.hint && previous.hint.trigger === 'reconciliation-required'
       ? previous.hint
@@ -103,8 +116,20 @@ function publicInitiativeSummary(run) {
   };
 }
 
-function finaliseInitiativeRun(run, reason = 'finalised') {
-  return Boolean(locked(run, (ledger) => ledger?.status === 'active' && { ...ledger, status: 'terminal', terminal: { reason }, reconciliation: ledger.reconciliation || { terminals: [], hint: hint(reason) } }));
+function terminalTarget(run, target, revision) {
+  const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
+  const terminal = (ledger.reconciliation?.terminals || []).find((item) => item.target === target);
+  if (ledger.status !== 'active' || !terminal) return false;
+  if (!terminal.revision?.head_sha) throw new Error('initiative review terminal target has no stored revision');
+  if (!target.startsWith('file:') && !terminal.revision.base) throw new Error('initiative review terminal target has no stored base');
+  revision = typeof revision === 'function' ? revision(terminal.revision) : revision;
+  if (terminal.target !== revision.ref) return false;
+  if (JSON.stringify(terminal.revision) === JSON.stringify(revision)) return true;
+  throw new Error('initiative review terminal target revision changed');
 }
 
-module.exports = { runPath, repositoryIdentity, openInitiativeRun, reserveLaunch, recordTargetTerminal, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };
+function finaliseInitiativeRun(run, reason = 'finalised') {
+  return Boolean(locked(run, (ledger) => ledger?.status === 'terminal' ? undefined : (ledger?.status === 'active' && { ...ledger, status: 'terminal', terminal: { reason }, reconciliation: ledger.reconciliation || { terminals: [], hint: hint(reason) } })));
+}
+
+module.exports = { canonicalPath, runPath, repositoryIdentity, openInitiativeRun, reserveLaunch, recordTargetTerminal, terminalTarget, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };

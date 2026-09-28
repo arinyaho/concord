@@ -3635,6 +3635,7 @@ test('round-start file: file:<path> target produces decision work, targetType fi
   assert.strictEqual(ledger.phase, 'gates');
   assert.strictEqual(ledger.target.type, 'file');
   assert.strictEqual(ledger.target.hasDoD, false);
+  assert.strictEqual(ledger.target.head_sha, out.head);
   // The diff file must contain the file content (not a git diff).
   const diffText = fs.readFileSync(path.join(dir, `round-${ledger.round}-diff.txt`), 'utf8');
   assert.ok(diffText.includes('claim without evidence'), 'diff file must contain the note content');
@@ -3642,6 +3643,19 @@ test('round-start file: file:<path> target produces decision work, targetType fi
   assert.ok(!diffText.includes('diff --git'), 'diff file must not be a git diff');
   // No .git directory must have been created.
   assert.ok(!fs.existsSync(path.join(fileDir, '.git')), 'file target must not create a .git directory');
+});
+
+test('round-start terminal returns the persisted target head_sha', () => {
+  const dir = tmpDir();
+  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-'));
+  fs.writeFileSync(path.join(fileDir, 'note.md'), '# Design\n');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
+  const first = JSON.parse(run(['round-start', 'file:note.md'], { env }));
+  const ledger = review.readLedger(dir, review.targetSlug('file:note.md'));
+  review.writeLedger(dir, review.targetSlug('file:note.md'), { ...ledger, phase: 'done', status: 'clean' });
+  const terminal = JSON.parse(run(['round-start', 'file:note.md'], { env }));
+  assert.strictEqual(terminal.decision, 'terminal');
+  assert.strictEqual(terminal.head, first.head);
 });
 
 // finding #1: `file:<arg>` is the SINGLE file-target surface; <arg> may be a

@@ -5,7 +5,8 @@
 // subprocess and every state transition remains owned by review-cli.
 const { execFileSync, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
-const { runPath, openInitiativeRun, reserveLaunch, recordTargetTerminal, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
+const { canonicalPath, runPath, openInitiativeRun, reserveLaunch, recordTargetTerminal, terminalTarget, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
+const { gitHeadSha, gitDirty, fileTarget } = require('./target');
 const fs = require('node:fs');
 const path = require('node:path');
 const { safeIdForFilename } = require('./artifact-name');
@@ -357,20 +358,44 @@ async function invoke(spawn, input) {
 }
 
 async function runReviewUntilGreen(options) {
-  const { ref, base, broad = false, noBroad = false, noDod = false, resume = false, repoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
+  const { ref, base, broad = false, noBroad = false, noDod = false, resume = false, repoRoot: configuredRepoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
+  const repoRoot = canonicalPath(configuredRepoRoot);
+  const canonicalRepoRoot = repoRoot;
+  const canonicalStateDir = options.initiativeStateDir && canonicalPath(options.initiativeStateDir);
   const keyedRun = options.initiativeRunKey || options.initiativeStateDir;
   if (keyedRun && (!options.initiativeRunKey || !options.initiativeStateDir)) throw new Error('review-until-green: --initiative-run-key and --initiative-state-dir must be used together');
-  const stateRelativeToRepo = keyedRun && path.relative(path.resolve(repoRoot), path.resolve(options.initiativeStateDir));
+  if (keyedRun) runPath(options.initiativeStateDir, options.initiativeRunKey);
+  const stateRelativeToRepo = keyedRun && path.relative(canonicalRepoRoot, canonicalStateDir);
   if (keyedRun && !stateRelativeToRepo.startsWith('..') && !path.isAbsolute(stateRelativeToRepo)) {
-    try { execFileSync('git', ['check-ignore', '-q', '--no-index', '--', path.relative(repoRoot, runPath(options.initiativeStateDir, options.initiativeRunKey))], { cwd: repoRoot }); } catch { throw new Error('review-until-green: an initiative state directory inside the repository must be ignored'); }
+    let worktree = false;
+    try { worktree = execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: canonicalRepoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() === 'true'; } catch {}
+    if (worktree) try { execFileSync('git', ['check-ignore', '-q', '--no-index', '--', path.relative(canonicalRepoRoot, runPath(canonicalStateDir, options.initiativeRunKey))], { cwd: canonicalRepoRoot }); } catch { throw new Error('review-until-green: an initiative state directory inside the repository must be ignored'); }
   }
-  const initiativeRun = keyedRun ? openInitiativeRun({ stateDir: options.initiativeStateDir, key: options.initiativeRunKey, repository: repoRoot, maxLaunches: options.initiativeMaxLaunches, maxRounds: options.initiativeMaxRounds }) : null;
+  const initiativeRun = keyedRun ? openInitiativeRun({ stateDir: canonicalStateDir, key: options.initiativeRunKey, repository: canonicalRepoRoot, maxLaunches: options.initiativeMaxLaunches, maxRounds: options.initiativeMaxRounds, allowTerminal: !!options.initiativeFinalise }) : null;
   if (options.initiativeFinalise) {
     if (!initiativeRun) throw new Error('review-until-green: --initiative-finalise requires an initiative run');
     if (!finaliseInitiativeRun(initiativeRun)) throw new Error('review-until-green: initiative run finalisation was contended');
     return { decision: { finalised: true }, initiative: publicInitiativeSummary(initiativeRun) };
   }
   if (!ref) throw new Error('review-until-green: missing target ref');
+  // Never resolve a base for resume: round-start restores ledger.target.base.
+  // File targets do not have a git base at all.
+  const baseResolver = options.resolveDefaultBase || (options.runCli ? null : resolveDefaultBase);
+  let initialBase = resume
+    ? undefined
+    : (base === undefined && !ref.startsWith('file:') && baseResolver ? baseResolver(repoRoot) : base);
+  if (initiativeRun) {
+    if (terminalTarget(initiativeRun, ref, (terminalRevision) => {
+      const identityBase = resume ? terminalRevision.base : initialBase;
+      const head_sha = options.targetIdentity ? options.targetIdentity(ref, identityBase, canonicalRepoRoot) : ref.startsWith('file:')
+        ? fileTarget({ files: [ref.slice('file:'.length)] }, canonicalRepoRoot).identity
+        : (() => {
+          if (gitDirty(canonicalRepoRoot)) throw new Error('round-start: working tree is dirty; commit or stash before review-until-green');
+          return gitHeadSha(canonicalRepoRoot);
+        })();
+      return { ref, ...(identityBase ? { base: identityBase } : {}), head_sha };
+    })) return { decision: 'terminal', initiative: publicInitiativeSummary(initiativeRun) };
+  }
   const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot));
   let reviewer = options.reviewer || 'codex';
   let fixer = options.fixer || 'codex';
@@ -390,7 +415,7 @@ async function runReviewUntilGreen(options) {
     invocations: [],
   };
   let currentRound = null;
-  let initiativeRevision = { ref };
+  let initiativeRevision = { ref, ...(initialBase ? { base: initialBase } : {}) };
   let checks = [];
   let telemetryPath = null;
   let telemetryLoaded = false;
@@ -491,13 +516,6 @@ async function runReviewUntilGreen(options) {
     error.reviewFailure = failure;
     throw error;
   };
-  // Never resolve a base for resume: round-start restores ledger.target.base.
-  // File targets do not have a git base at all.
-  const baseResolver = options.resolveDefaultBase || (options.runCli ? null : resolveDefaultBase);
-  let initialBase = resume
-    ? undefined
-    : (base === undefined && !ref.startsWith('file:') && baseResolver ? baseResolver(repoRoot) : base);
-
   const runPanel = async (context, launch) => {
     const lenses = PANEL_LENSES;
     for (;;) {
@@ -575,7 +593,7 @@ async function runReviewUntilGreen(options) {
     if (options.fixerModel) startArgs.push('--fixer-model', options.fixerModel);
     const started = await cli(startArgs);
     if (!initialBase && started.base) initialBase = started.base;
-    initiativeRevision = { ref: started.ref || ref, ...(started.base || initialBase ? { base: started.base || initialBase } : {}), ...(started.head ? { head: started.head } : {}) };
+    initiativeRevision = { ref: started.ref || ref, ...(started.base || initialBase ? { base: started.base || initialBase } : {}), ...(started.head || initiativeRevision.head_sha ? { head_sha: started.head || initiativeRevision.head_sha } : {}) };
     await throwIfAborted(started.decision === 'work');
     if (started.reviewRouting) {
       reviewer = started.reviewRouting.reviewer || reviewer;
@@ -608,7 +626,7 @@ async function runReviewUntilGreen(options) {
     const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodPassed: started.dodPassed, dodDeferred: started.dodDeferred, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref) };
     let slotAllocation = Promise.resolve();
     const launch = async (input) => {
-      if (initiativeRun && !reserveLaunch(initiativeRun, { role: input.role, target: ref, revision, attemptId: started.attemptId || `${revision.ref}\u0000${revision.head || revision.base || 'unknown'}`, round: currentRound })) throw new Error(`review-until-green: initiative launch budget exhausted or reservation contended before ${input.role}`);
+      if (initiativeRun && !reserveLaunch(initiativeRun, { role: input.role, target: ref, revision, attemptId: started.attemptId || `${revision.ref}\u0000${revision.head_sha || revision.base || 'unknown'}`, round: currentRound })) throw new Error(`review-until-green: initiative launch budget exhausted or reservation contended before ${input.role}`);
       const artifactPath = artifactDestinationFromPrompt(input.prompt, input.stateDir);
       const isFix = input.role === 'fix';
       const provider = isFix ? fixer : reviewer;
