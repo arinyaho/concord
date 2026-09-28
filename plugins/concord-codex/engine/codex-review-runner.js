@@ -361,9 +361,10 @@ async function runReviewUntilGreen(options) {
   const { ref, base, broad = false, noBroad = false, noDod = false, resume = false, repoRoot: configuredRepoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
   const repoRoot = canonicalPath(configuredRepoRoot);
   const canonicalRepoRoot = repoRoot;
-  const canonicalStateDir = options.initiativeStateDir && canonicalPath(options.initiativeStateDir);
   const keyedRun = options.initiativeRunKey || options.initiativeStateDir;
   if (keyedRun && (!options.initiativeRunKey || !options.initiativeStateDir)) throw new Error('review-until-green: --initiative-run-key and --initiative-state-dir must be used together');
+  if (keyedRun && !path.isAbsolute(options.initiativeStateDir)) throw new Error('review-until-green: --initiative-state-dir must be absolute');
+  const canonicalStateDir = options.initiativeStateDir && canonicalPath(options.initiativeStateDir);
   const stateRelativeToRepo = keyedRun && path.relative(canonicalRepoRoot, canonicalStateDir);
   if (keyedRun && !stateRelativeToRepo.startsWith('..') && !path.isAbsolute(stateRelativeToRepo)) {
     let worktree = false;
