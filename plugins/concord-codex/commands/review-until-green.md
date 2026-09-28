@@ -11,7 +11,7 @@ node "${CLAUDE_PLUGIN_ROOT}/bin/review-until-green.js" $ARGUMENTS
 
 Reviewer and fixer selections are independent. Codex has no native clean-context subagent primitive, so this host invokes the selected provider through its non-interactive CLI. An omitted provider defaults to `codex`; an omitted model uses that provider's configured default. A requested provider or model is never silently replaced.
 
-A 30-second foreground wait or empty output is not a terminal result. While an owned driver process is alive or its durable ledger is non-terminal, inspect that process and ledger and keep waiting; report a terminal result only from a durable terminal disposition or the ledger's bounded no-progress decision. Before declaring a reviewer blocked because its skill cannot be found, resolve the installed skill path recursively to the actual `SKILL.md`; do not assume a flat install layout.
+A 30-second foreground wait or empty output is not a terminal result. While an owned driver process is alive, inspect that process and ledger and keep waiting; a non-terminal ledger without a live driver is a stopped driver, so report it rather than waiting indefinitely. Report a terminal result only from a durable terminal disposition or the ledger's bounded no-progress decision. Before declaring a reviewer blocked because its skill cannot be found, resolve the installed skill path recursively to the actual `SKILL.md`; do not assume a flat install layout.
 
 For ledger operations required by composed workflows, invoke the packaged CLI directly:
 

@@ -314,6 +314,20 @@ test('initiative error retains completed DoD, diagnostic, and duplicate retry pa
   assert.strictEqual(second.continuationPacket.delivery.claim, first.continuationPacket.delivery.claim);
 });
 
+test('initiative replays a consumed duplicate error packet', async () => {
+  const stateDir = temp();
+  const options = { ref: 'feature/error-consumed', base: 'main', repoRoot: '/repo', initiativeRunKey: 'error-consumed', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 2,
+    runCli: ([verb]) => verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false } : verb === 'artifact-normalize' ? { status: 'ok' } : undefined,
+    spawn: async () => { throw new Error('subprocess failed'); } };
+  let first;
+  await assert.rejects(runReviewUntilGreen(options), (error) => { first = error; return /subprocess failed/.test(error.message); });
+  const ledgerPath = runPath(stateDir, 'error-consumed');
+  const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+  ledger.dispositions[0].packet.delivery.consumed = true;
+  fs.writeFileSync(ledgerPath, JSON.stringify(ledger));
+  await assert.rejects(runReviewUntilGreen(options), (error) => error.continuationPacket.delivery.claim === first.continuationPacket.delivery.claim);
+});
+
 test('initiative accepts a runner-owned fixer revision on the next round', async () => {
   const stateDir = temp();
   let round = 0;
@@ -330,6 +344,41 @@ test('initiative accepts a runner-owned fixer revision on the next round', async
   });
   const ledger = JSON.parse(fs.readFileSync(runPath(stateDir, 'fixed-revision'), 'utf8'));
   assert.deepStrictEqual(ledger.dispositions[0].revision, { ref: 'feature/fixed', base: 'main', head_sha: 'after' });
+});
+
+test('initiative rejects a revision that differs from the committed fixer revision', async () => {
+  const stateDir = temp();
+  let round = 0;
+  await assert.rejects(runReviewUntilGreen({
+    ref: 'feature/fixed-drift', base: 'main', repoRoot: '/repo', initiativeRunKey: 'fixed-drift', initiativeStateDir: stateDir, initiativeMaxLaunches: 8, initiativeMaxRounds: 2,
+    runCli: ([verb]) => {
+      if (verb === 'round-start') return { decision: 'work', round: ++round, base: 'main', head: round === 1 ? 'before' : 'other', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false };
+      if (verb === 'artifact-normalize') return { status: 'ok' };
+      if (verb === 'plan-fixes') return { fixes: [{ id: 'correctness:bug', file: 'a.txt', span: 'bad', summary: 'fix it' }] };
+      if (verb === 'commit-fix') return { committed: true, sha: 'after' };
+      if (verb === 'record') return { decision: { continue: true } };
+    },
+    spawn: async () => ({ status: 0 }),
+  }), /initiative target revision changed before round-start/);
+});
+
+test('initiative accepts a file identity produced by its fixer', async () => {
+  const stateDir = temp();
+  const repoRoot = temp();
+  const note = path.join(repoRoot, 'note.md');
+  fs.writeFileSync(note, 'before\n');
+  const identity = () => fs.readFileSync(note, 'utf8');
+  let round = 0;
+  await runReviewUntilGreen({
+    ref: 'file:note.md', repoRoot, initiativeRunKey: 'file-fixed', initiativeStateDir: stateDir, initiativeMaxLaunches: 8, initiativeMaxRounds: 2, targetIdentity: identity,
+    runCli: ([verb]) => {
+      if (verb === 'round-start') return { decision: 'work', round: ++round, head: identity(), stateDir, targetType: 'file', dodPassed: true, dodDeferred: true, intentApplied: false, gateApplied: false };
+      if (verb === 'artifact-normalize') return { status: 'ok' };
+      if (verb === 'plan-fixes') return { fixes: round === 1 ? [{ id: 'docreview:fix', file: 'note.md', span: 'before', summary: 'fix it' }] : [] };
+      if (verb === 'record') return round === 1 ? { decision: { continue: true } } : { decision: { continue: false, converged: true } };
+    },
+    spawn: async ({ role }) => { if (role === 'fix') fs.writeFileSync(note, 'after\n'); return { status: 0 }; },
+  });
 });
 
 test('reconciliation terminates the target and retains its restored base and avoided fixes', async () => {
@@ -1902,7 +1951,7 @@ test('runner fails closed when the retry artifact is still invalid', async () =>
 
 test('runner loops through record continuation and file targets never commit', async () => {
   const h = harness({ rounds: 2, targetType: 'file' });
-  await runReviewUntilGreen({ ref: 'file:note.md', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
+  await runReviewUntilGreen({ ref: 'file:note.md', repoRoot: '/repo', targetIdentity: () => 'file-head', runCli: h.cli, spawn: h.spawn });
   assert.strictEqual(h.calls.filter((c) => c[1] === 'round-start').length, 2);
   assert.strictEqual(h.calls.some((c) => c[1] === 'commit-fix'), false);
 });

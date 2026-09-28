@@ -341,11 +341,11 @@ function resolveDefaultBase(repoRoot, exec = execFileSync) {
   throw new Error('review-until-green: cannot determine a remote default base; pass an explicit base');
 }
 
-function pendingContinuationPacket(run, target, revision, kind) {
+function pendingContinuationPacket(run, target, revision, kind, includeConsumed = false) {
   const entry = JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions.findLast((item) => item.target === target
     && JSON.stringify(item.revision) === JSON.stringify(revision)
     && (!kind || item.kind === kind));
-  return entry?.packet?.delivery?.consumed === false ? entry.packet : null;
+  return entry?.packet && (includeConsumed || entry.packet.delivery?.consumed === false) ? entry.packet : null;
 }
 
 function acknowledgeContinuationPacket(options, claim) {
@@ -604,7 +604,6 @@ async function runReviewUntilGreen(options) {
     }
   };
 
-  let runnerOwnedRevision = false;
   for (;;) {
     await throwIfAborted();
     const startArgs = ['round-start', ref];
@@ -622,9 +621,8 @@ async function runReviewUntilGreen(options) {
     if (options.fixerModel) startArgs.push('--fixer-model', options.fixerModel);
     const started = await cli(startArgs);
     if (!initialBase && started.base) initialBase = started.base;
-    if (initiativeRevision.head_sha && started.head && initiativeRevision.head_sha !== started.head && !runnerOwnedRevision) throw new Error('review-until-green: initiative target revision changed before round-start');
+    if (initiativeRevision.head_sha && started.head && initiativeRevision.head_sha !== started.head) throw new Error('review-until-green: initiative target revision changed before round-start');
     initiativeRevision = { ref: started.ref || ref, ...(started.base || initialBase ? { base: started.base || initialBase } : {}), ...(started.head || initiativeRevision.head_sha ? { head_sha: started.head || initiativeRevision.head_sha } : {}) };
-    runnerOwnedRevision = false;
     await throwIfAborted(started.decision === 'work');
     if (started.reviewRouting) {
       reviewer = started.reviewRouting.reviewer || reviewer;
@@ -720,10 +718,10 @@ async function runReviewUntilGreen(options) {
         await launch({ role: 'fix', prompt: reviewerPrompt('fix', { ...context, finding, plannedFindingIds: (planned.fixes || []).map((f) => f.id) }), repoRoot, stateDir: context.stateDir });
         if (started.targetType !== 'file') {
           const committed = await cli(['commit-fix', ref, finding.id]);
-          if (committed?.committed) {
-            runnerOwnedRevision = true;
-            if (committed.sha) initiativeRevision = { ...initiativeRevision, head_sha: committed.sha };
-          }
+          if (committed?.committed && committed.sha) initiativeRevision = { ...initiativeRevision, head_sha: committed.sha };
+        } else {
+          const head_sha = options.targetIdentity ? options.targetIdentity(ref, initialBase, canonicalRepoRoot) : fileTarget({ files: [ref.slice('file:'.length)] }, canonicalRepoRoot).identity;
+          initiativeRevision = { ...initiativeRevision, head_sha };
         }
       } catch (error) {
         const failure = error.reviewFailure || { role: 'fix', kind: /artifact|missing gate artifact/.test(String(error.message)) ? 'artifact-write-failure' : 'harness-error', message: String(error.message).replace(/^harness-failure:\s*/, '') };
@@ -744,10 +742,10 @@ async function runReviewUntilGreen(options) {
   } catch (error) {
     const failure = error.reviewFailure || {};
     if (initiativeRun && initiativeRevision.head_sha && !recordDisposition(initiativeRun, { target: ref, revision: initiativeRevision, result: error, packet: { trigger: 'error', exit: { code: Number.isInteger(failure.exitCode) ? failure.exitCode : null, signal: failure.signal || null }, dod: { status: checks[0]?.status || 'not-run' }, telemetry: { complete: false }, nextAction: 'resume', error: { message: error.message } }, checks })) {
-      if (!pendingContinuationPacket(initiativeRun, ref, initiativeRevision, 'error')) throw new Error('review-until-green: initiative error disposition recording was contended');
+      if (!pendingContinuationPacket(initiativeRun, ref, initiativeRevision, 'error', true)) throw new Error('review-until-green: initiative error disposition recording was contended');
     }
     if (initiativeRun && initiativeRevision.head_sha) {
-      const packet = pendingContinuationPacket(initiativeRun, ref, initiativeRevision, 'error');
+      const packet = pendingContinuationPacket(initiativeRun, ref, initiativeRevision, 'error', true);
       if (!packet) throw new Error('review-until-green: initiative error delivery claim was contended');
       error.continuationPacket = packet;
     }

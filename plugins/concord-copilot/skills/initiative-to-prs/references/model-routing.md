@@ -2,6 +2,8 @@
 
 Choose by task shape and failure cost. At each run, resolve the newest suitable fast, general, or deep model from the current Copilot catalog and confirm that it is callable; do not pin a model generation or infer capability from its name or price. Record the requested and resolved model for every delegated stage.
 
+After a bounded implementation batch is approved and its contract is clear, use the lowest-cost capable implementation model to complete the batch and its focused self-checks without pausing for status. Reserve higher-cost capability for architecture or scope decisions, new P1 or material findings, and one fresh independent verification after the batch.
+
 ## Roles
 
 | Role | Model class | Purpose |
