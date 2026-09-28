@@ -366,10 +366,9 @@ async function runReviewUntilGreen(options) {
   if (keyedRun && (!options.initiativeRunKey || !options.initiativeStateDir)) throw new Error('review-until-green: --initiative-run-key and --initiative-state-dir must be used together');
   const stateRelativeToRepo = keyedRun && path.relative(canonicalRepoRoot, canonicalStateDir);
   if (keyedRun && !stateRelativeToRepo.startsWith('..') && !path.isAbsolute(stateRelativeToRepo)) {
-    try {
-      if (execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: canonicalRepoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() !== 'true') throw new Error();
-    } catch { throw new Error('review-until-green: an initiative state directory inside the repository requires a Git worktree'); }
-    try { execFileSync('git', ['check-ignore', '-q', '--no-index', '--', path.relative(canonicalRepoRoot, runPath(canonicalStateDir, options.initiativeRunKey))], { cwd: canonicalRepoRoot }); } catch { throw new Error('review-until-green: an initiative state directory inside the repository must be ignored'); }
+    let worktree = false;
+    try { worktree = execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: canonicalRepoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() === 'true'; } catch {}
+    if (worktree) try { execFileSync('git', ['check-ignore', '-q', '--no-index', '--', path.relative(canonicalRepoRoot, runPath(canonicalStateDir, options.initiativeRunKey))], { cwd: canonicalRepoRoot }); } catch { throw new Error('review-until-green: an initiative state directory inside the repository must be ignored'); }
   }
   const initiativeRun = keyedRun ? openInitiativeRun({ stateDir: canonicalStateDir, key: options.initiativeRunKey, repository: canonicalRepoRoot, maxLaunches: options.initiativeMaxLaunches, maxRounds: options.initiativeMaxRounds, allowTerminal: !!options.initiativeFinalise }) : null;
   if (options.initiativeFinalise) {
@@ -378,11 +377,19 @@ async function runReviewUntilGreen(options) {
     return { decision: { finalised: true }, initiative: publicInitiativeSummary(initiativeRun) };
   }
   if (!ref) throw new Error('review-until-green: missing target ref');
+  // Never resolve a base for resume: round-start restores ledger.target.base.
+  // File targets do not have a git base at all.
+  const baseResolver = options.resolveDefaultBase || (options.runCli ? null : resolveDefaultBase);
+  let initialBase = resume
+    ? undefined
+    : (base === undefined && !ref.startsWith('file:') && baseResolver ? baseResolver(repoRoot) : base);
   if (initiativeRun) {
-    const head_sha = () => options.targetIdentity ? options.targetIdentity(ref, base, canonicalRepoRoot) : ref.startsWith('file:')
-      ? fileTarget({ files: [ref.slice('file:'.length)] }, canonicalRepoRoot).identity
-      : gitHeadSha(canonicalRepoRoot);
-    if (terminalTarget(initiativeRun, ref, head_sha)) return { decision: 'terminal', initiative: publicInitiativeSummary(initiativeRun) };
+    if (terminalTarget(initiativeRun, ref, () => {
+      const head_sha = options.targetIdentity ? options.targetIdentity(ref, initialBase, canonicalRepoRoot) : ref.startsWith('file:')
+        ? fileTarget({ files: [ref.slice('file:'.length)] }, canonicalRepoRoot).identity
+        : gitHeadSha(canonicalRepoRoot);
+      return { ref, ...(initialBase ? { base: initialBase } : {}), head_sha };
+    })) return { decision: 'terminal', initiative: publicInitiativeSummary(initiativeRun) };
   }
   const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot));
   let reviewer = options.reviewer || 'codex';
@@ -403,7 +410,7 @@ async function runReviewUntilGreen(options) {
     invocations: [],
   };
   let currentRound = null;
-  let initiativeRevision = { ref };
+  let initiativeRevision = { ref, ...(initialBase ? { base: initialBase } : {}) };
   let checks = [];
   let telemetryPath = null;
   let telemetryLoaded = false;
@@ -504,13 +511,6 @@ async function runReviewUntilGreen(options) {
     error.reviewFailure = failure;
     throw error;
   };
-  // Never resolve a base for resume: round-start restores ledger.target.base.
-  // File targets do not have a git base at all.
-  const baseResolver = options.resolveDefaultBase || (options.runCli ? null : resolveDefaultBase);
-  let initialBase = resume
-    ? undefined
-    : (base === undefined && !ref.startsWith('file:') && baseResolver ? baseResolver(repoRoot) : base);
-
   const runPanel = async (context, launch) => {
     const lenses = PANEL_LENSES;
     for (;;) {
@@ -588,7 +588,7 @@ async function runReviewUntilGreen(options) {
     if (options.fixerModel) startArgs.push('--fixer-model', options.fixerModel);
     const started = await cli(startArgs);
     if (!initialBase && started.base) initialBase = started.base;
-    initiativeRevision = { ref: started.ref || ref, ...(started.base || initialBase ? { base: started.base || initialBase } : {}), ...(started.head ? { head_sha: started.head } : {}) };
+    initiativeRevision = { ref: started.ref || ref, ...(started.base || initialBase ? { base: started.base || initialBase } : {}), ...(started.head || initiativeRevision.head_sha ? { head_sha: started.head || initiativeRevision.head_sha } : {}) };
     await throwIfAborted(started.decision === 'work');
     if (started.reviewRouting) {
       reviewer = started.reviewRouting.reviewer || reviewer;

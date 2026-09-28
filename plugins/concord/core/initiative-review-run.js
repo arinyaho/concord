@@ -90,7 +90,9 @@ function recordTargetTerminal(run, { target, revision, reason = 'target-terminal
     if (!ledger || ledger.status !== 'active' || (ledger.reconciliation?.terminals || []).some((terminal) => terminal.target === target)) return null;
     const targetRevision = revision && { ref: revision.ref || target, ...(revision.base ? { base: revision.base } : {}), ...((revision.head_sha || revision.head) ? { head_sha: revision.head_sha || revision.head } : {}) };
     const targets = targetRevision && !(ledger.targets || []).some((item) => JSON.stringify(item) === JSON.stringify(targetRevision)) ? [...(ledger.targets || []), targetRevision] : (ledger.targets || []);
-    const terminal = { target, reason };
+    const terminalRevision = revision && { ref: revision.ref || target, ...(revision.base ? { base: revision.base } : {}), ...((revision.head_sha || revision.head) ? { head_sha: revision.head_sha || revision.head } : {}) };
+    if (!terminalRevision?.head_sha) throw new Error('initiative review terminal target requires a stored revision');
+    const terminal = { target, reason, revision: terminalRevision };
     const previous = ledger.reconciliation || {};
     const reconciliationHint = previous.hint && previous.hint.trigger === 'reconciliation-required'
       ? previous.hint
@@ -114,14 +116,15 @@ function publicInitiativeSummary(run) {
   };
 }
 
-function terminalTarget(run, target, head_sha) {
+function terminalTarget(run, target, revision) {
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  if (ledger.status !== 'active' || !(ledger.reconciliation?.terminals || []).some((terminal) => terminal.target === target)) return false;
-  const revisions = (ledger.targets || []).filter((item) => item.ref === target);
-  const identity = typeof head_sha === 'function' ? head_sha() : head_sha;
-  if (revisions.some((revision) => revision.head_sha === identity)) return true;
-  if (revisions.some((revision) => !revision.head_sha)) throw new Error('initiative review terminal target has no stored head_sha');
-  throw new Error('initiative review terminal target identity changed');
+  const terminal = (ledger.reconciliation?.terminals || []).find((item) => item.target === target);
+  if (ledger.status !== 'active' || !terminal) return false;
+  revision = typeof revision === 'function' ? revision() : revision;
+  if (terminal.target !== revision.ref) return false;
+  if (!terminal.revision?.head_sha) throw new Error('initiative review terminal target has no stored revision');
+  if (JSON.stringify(terminal.revision) === JSON.stringify(revision)) return true;
+  throw new Error('initiative review terminal target revision changed');
 }
 
 function finaliseInitiativeRun(run, reason = 'finalised') {
