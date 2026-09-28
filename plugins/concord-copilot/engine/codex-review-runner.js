@@ -533,7 +533,7 @@ async function runReviewUntilGreen(options) {
     if (initiativeRun && terminal) {
       const reconciliation = result?.reconciliation;
       const escaped = result?.decision === 'escape';
-      if (!recordDisposition(initiativeRun, {
+      const recorded = recordDisposition(initiativeRun, {
         target: ref,
         revision: initiativeRevision,
         result,
@@ -551,9 +551,9 @@ async function runReviewUntilGreen(options) {
         findings: reconciliation?.findings || {},
         checks: result?.checks || checks,
         telemetry: (output.telemetry?.invocations || []).map(({ role, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, stage: 'review', revision: initiativeRevision, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens })),
-      })) throw new Error('review-until-green: initiative target terminal recording was contended');
+      });
       const packet = pendingContinuationPacket(initiativeRun, ref, initiativeRevision);
-      if (!packet) throw new Error('review-until-green: initiative delivery claim was contended');
+      if (!packet) throw new Error(recorded ? 'review-until-green: initiative delivery claim was contended' : 'review-until-green: initiative target terminal recording was contended');
       output.continuationPacket = packet;
     }
     return output;

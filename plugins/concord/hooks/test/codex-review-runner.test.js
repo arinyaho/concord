@@ -7,7 +7,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { normalizeArtifact } = require('../../core/artifact-contract');
 const { foldTelemetry } = require('../../core/review-telemetry');
-const { runPath, openInitiativeRun } = require('../../core/initiative-review-run');
+const { runPath, openInitiativeRun, recordDisposition } = require('../../core/initiative-review-run');
 
 // The runner owns all sequencing. Its subprocess seam makes this a no-network
 // integration test while exercising the real artifact contract at the boundary.
@@ -251,6 +251,32 @@ test('initiative runner records escaped results and thrown errors as durable dis
   assert.deepStrictEqual(errorDisposition.packet.exit, { code: null, signal: null });
   assert.deepStrictEqual(errorDisposition.packet.telemetry, { complete: false });
   assert.strictEqual(errorDisposition.packet.nextAction, 'resume');
+});
+
+test('initiative terminal recording contended by an already-recorded matching disposition returns its packet instead of throwing', async () => {
+  const stateDir = temp();
+  const key = 'terminal-race';
+  const run = { path: runPath(stateDir, key) }; // ledger is opened by runReviewUntilGreen itself before round-start runs below
+  const result = await runReviewUntilGreen({
+    ref: 'feature/race', repoRoot: '/repo', initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1,
+    runCli: ([verb]) => {
+      if (verb === 'round-start') {
+        // Simulate a concurrent runReviewUntilGreen invocation that converges on the
+        // identical target+revision and wins the recordDisposition race before this
+        // run's own withTelemetry call attempts to record the same terminal outcome.
+        recordDisposition(run, {
+          target: 'feature/race',
+          revision: { ref: 'feature/race', base: 'main', head_sha: 'race-head' },
+          result: { decision: 'terminal', status: 'clean' },
+          packet: { trigger: 'terminal', nextAction: 'replay' },
+        });
+        return { decision: 'terminal', status: 'clean', base: 'main', head: 'race-head', stateDir };
+      }
+    },
+  });
+  assert.strictEqual(result.decision, 'terminal');
+  assert.ok(result.continuationPacket);
+  assert.deepStrictEqual(result.continuationPacket.outcome, { kind: 'terminal', reason: 'clean' });
 });
 
 test('initiative runner preserves the acquired revision when round-start fails early', async () => {
