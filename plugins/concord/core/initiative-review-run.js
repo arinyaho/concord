@@ -110,7 +110,16 @@ function recordDisposition(run, { target, revision, result, packet = {}, finding
     if (!ledger || ledger.version !== 3 || ledger.status !== 'active') return null;
     const disposition = normalizeDisposition(result);
     if (disposition.kind === 'terminal' && (ledger.dispositions || []).some((item) => item.target === target && item.kind === 'terminal')) return null;
-    if ((ledger.dispositions || []).some((item) => item.target === target && same(item.revision, revision) && item.kind === disposition.kind && item.reason === disposition.reason)) return null;
+    // For 'escape', only dedupe against a still-unconsumed match: once a
+    // target's escape is consumed, terminalTarget lets a fresh round start
+    // at the same revision (see terminalTarget's consumed-vs-unconsumed
+    // branch), and a second escape there is a NEW occurrence, not a repeat
+    // of the settled one -- matching it to the stale consumed entry would
+    // silently drop it and hand back a packet already marked delivered.
+    // 'error' keeps matching regardless of consumption: a retry producing
+    // the identical error message is intentionally treated as the same
+    // outcome (see normalizeDisposition's per-message error reason).
+    if ((ledger.dispositions || []).some((item) => item.target === target && same(item.revision, revision) && item.kind === disposition.kind && item.reason === disposition.reason && (disposition.kind !== 'escape' || item.packet?.delivery?.consumed === false))) return null;
     const targetRevision = revision && { ref: revision.ref || target, ...(revision.base ? { base: revision.base } : {}), ...((revision.head_sha || revision.head) ? { head_sha: revision.head_sha || revision.head } : {}) };
     const targets = targetRevision && !(ledger.targets || []).some((item) => same(item, targetRevision)) ? [...(ledger.targets || []), targetRevision] : (ledger.targets || []);
     const terminalRevision = revision && { ref: revision.ref || target, ...(revision.base ? { base: revision.base } : {}), ...((revision.head_sha || revision.head) ? { head_sha: revision.head_sha || revision.head } : {}) };

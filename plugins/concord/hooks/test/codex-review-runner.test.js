@@ -344,12 +344,20 @@ test('initiative runner starts a new round after a consumed escape disposition a
   await runReviewUntilGreen(options);
   const ledgerPath = runPath(stateDir, 'escape-consumed');
   const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+  const firstClaim = ledger.dispositions[0].packet.delivery.claim;
   ledger.dispositions[0].packet.delivery.consumed = true;
   fs.writeFileSync(ledgerPath, JSON.stringify(ledger));
   let roundStarted = false;
   const retry = await runReviewUntilGreen({ ...options, targetIdentity: () => 'head', runCli: ([verb]) => { if (verb === 'round-start') { roundStarted = true; return { decision: 'escape', base: 'main', head: 'head', stateDir }; } return undefined; } });
   assert.strictEqual(roundStarted, true);
   assert.strictEqual(retry.decision, 'escape');
+  // The second escape is a NEW occurrence, not a replay of the first
+  // (consumed) one: it must get its own ledger entry and its own,
+  // not-yet-consumed delivery claim -- otherwise it's silently dropped.
+  const afterRetry = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+  assert.strictEqual(afterRetry.dispositions.length, 2);
+  assert.notStrictEqual(retry.continuationPacket.delivery.claim, firstClaim);
+  assert.strictEqual(retry.continuationPacket.delivery.consumed, false);
 });
 
 test('initiative error retains completed DoD, diagnostic, and duplicate retry packet', async () => {
