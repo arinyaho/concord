@@ -6,7 +6,7 @@
 const { execFileSync, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const { canonicalPath, runPath, openInitiativeRun, reserveLaunch, recordTargetTerminal, terminalTarget, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
-const { gitHeadSha, fileTarget } = require('./target');
+const { gitHeadSha, gitDirty, fileTarget } = require('./target');
 const fs = require('node:fs');
 const path = require('node:path');
 const { safeIdForFilename } = require('./artifact-name');
@@ -388,7 +388,10 @@ async function runReviewUntilGreen(options) {
       const identityBase = resume ? terminalRevision.base : initialBase;
       const head_sha = options.targetIdentity ? options.targetIdentity(ref, identityBase, canonicalRepoRoot) : ref.startsWith('file:')
         ? fileTarget({ files: [ref.slice('file:'.length)] }, canonicalRepoRoot).identity
-        : gitHeadSha(canonicalRepoRoot);
+        : (() => {
+          if (gitDirty(canonicalRepoRoot)) throw new Error('round-start: working tree is dirty; commit or stash before review-until-green');
+          return gitHeadSha(canonicalRepoRoot);
+        })();
       return { ref, ...(identityBase ? { base: identityBase } : {}), head_sha };
     })) return { decision: 'terminal', initiative: publicInitiativeSummary(initiativeRun) };
   }

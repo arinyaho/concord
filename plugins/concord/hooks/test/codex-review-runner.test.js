@@ -144,6 +144,25 @@ test('resuming a terminal git target binds its recorded base before identity and
   assert.strictEqual(result.decision, 'terminal');
 });
 
+test('terminal git target replay rejects a dirty worktree before returning its cached result', async () => {
+  const repoRoot = temp();
+  const stateDir = temp();
+  execFileSync('git', ['init', '-q'], { cwd: repoRoot });
+  execFileSync('git', ['config', 'user.email', 't@t'], { cwd: repoRoot });
+  execFileSync('git', ['config', 'user.name', 't'], { cwd: repoRoot });
+  fs.writeFileSync(path.join(repoRoot, 'note.md'), 'clean\n');
+  execFileSync('git', ['add', 'note.md'], { cwd: repoRoot });
+  execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
+  const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
+  const options = { ref: 'feature/x', base: 'HEAD', repoRoot, initiativeRunKey: 'dirty-terminal', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1 };
+  await runReviewUntilGreen({ ...options, runCli: ([verb]) => verb === 'round-start' ? { decision: 'terminal', status: 'converged', base: 'HEAD', head, stateDir } : undefined });
+  fs.writeFileSync(path.join(repoRoot, 'note.md'), 'dirty\n');
+  await assert.rejects(
+    runReviewUntilGreen({ ...options, runCli: () => { throw new Error('round-start must not run'); } }),
+    /working tree is dirty; commit or stash before review-until-green/,
+  );
+});
+
 test('terminal git targets without a recorded base fail closed before identity and round-start', async () => {
   const stateDir = temp();
   const key = 'legacy-git-terminal';
