@@ -5,7 +5,7 @@
 // subprocess and every state transition remains owned by review-cli.
 const { execFileSync, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
-const { canonicalPath, runPath, openInitiativeRun, reserveLaunch, recordDisposition, consumeDispositionDelivery, terminalTarget, selectDisposition, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
+const { canonicalPath, runPath, openInitiativeRun, reserveLaunch, recordDisposition, consumeDispositionDelivery, terminalTarget, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
 const { gitHeadSha, gitDirty, fileTarget } = require('./target');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -429,7 +429,7 @@ async function runReviewUntilGreen(options) {
   // A replay against an already-terminal target (including the dirty-worktree
   // guard below) is not a review failure and must not be recorded as one by
   // the catch below -- it is tagged so the catch rethrows it unrecorded.
-  if (initiativeRun && terminalTarget(initiativeRun, ref, (terminalRevision) => {
+  const validated = initiativeRun && terminalTarget(initiativeRun, ref, (terminalRevision) => {
     const identityBase = resume ? terminalRevision.base : initialBase;
     const head_sha = options.targetIdentity ? options.targetIdentity(ref, identityBase, canonicalRepoRoot) : ref.startsWith('file:')
       ? fileTarget({ files: [ref.slice('file:'.length)] }, canonicalRepoRoot).identity
@@ -442,15 +442,15 @@ async function runReviewUntilGreen(options) {
         return gitHeadSha(canonicalRepoRoot);
       })();
     return { ref, ...(identityBase ? { base: identityBase } : {}), head_sha };
-  }, ['terminal', 'escape'])) {
-    const disposition = selectDisposition(JSON.parse(fs.readFileSync(initiativeRun.path, 'utf8')).dispositions, ref, ['terminal', 'escape']);
+  }, ['terminal', 'escape']);
+  if (validated) {
     // includeConsumed: a replay against a target whose packet a prior
     // invocation already delivered must still return it -- otherwise this
     // preflight silently produces no continuationPacket, and the launcher's
     // empty-output fallback is suppressed for a terminal decision, leaving
     // the caller with nothing to read at all.
-    const packet = pendingContinuationPacket(initiativeRun, ref, disposition.revision, disposition.kind, true);
-    return { decision: disposition.kind === 'escape' ? 'escape' : 'terminal', initiative: publicInitiativeSummary(initiativeRun), ...(packet ? { continuationPacket: packet } : {}) };
+    const packet = pendingContinuationPacket(initiativeRun, ref, validated.revision, validated.kind, true);
+    return { decision: validated.kind === 'escape' ? 'escape' : 'terminal', initiative: publicInitiativeSummary(initiativeRun), ...(packet ? { continuationPacket: packet } : {}) };
   }
   for (const provider of [reviewer, fixer]) {
     if (!PROVIDERS.has(provider)) throw new Error(`review-until-green: unsupported provider "${provider}"`);

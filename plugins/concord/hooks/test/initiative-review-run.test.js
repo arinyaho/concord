@@ -47,7 +47,9 @@ test('terminalTarget prefers a terminal disposition over a later-appended escape
   const terminalRevision = { ref: 'feature/x', base: 'main', head_sha: 'terminal-head' };
   assert.ok(recordDisposition(run, { target: 'feature/x', revision: terminalRevision, result: { decision: { converged: true } } }));
   assert.ok(recordDisposition(run, { target: 'feature/x', revision: { ref: 'feature/x', base: 'main', head_sha: 'escape-head' }, result: { decision: 'escape' } }));
-  assert.strictEqual(terminalTarget(run, 'feature/x', terminalRevision, ['terminal', 'escape']), true);
+  const matched = terminalTarget(run, 'feature/x', terminalRevision, ['terminal', 'escape']);
+  assert.strictEqual(matched.kind, 'terminal');
+  assert.deepStrictEqual(matched.revision, terminalRevision);
 });
 
 test('a disposition delivery claim is atomically consumed once', () => {

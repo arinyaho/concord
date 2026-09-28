@@ -173,7 +173,7 @@ function terminalTarget(run, target, revision, kinds = ['terminal']) {
   if (!target.startsWith('file:') && !terminal.revision.base) throw new Error('initiative review terminal target has no stored base');
   revision = typeof revision === 'function' ? revision(terminal.revision) : revision;
   if (terminal.target !== revision.ref) return false;
-  if (same(terminal.revision, revision)) return true;
+  if (same(terminal.revision, revision)) return terminal;
   if (terminal.kind === 'escape') return false;
   throw new Error('initiative review terminal target revision changed');
 }
