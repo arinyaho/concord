@@ -443,7 +443,7 @@ async function runReviewUntilGreen(options) {
       })();
     return { ref, ...(identityBase ? { base: identityBase } : {}), head_sha };
   }, ['terminal', 'escape'])) {
-    const disposition = JSON.parse(fs.readFileSync(initiativeRun.path, 'utf8')).dispositions.find((item) => item.target === ref && ['terminal', 'escape'].includes(item.kind));
+    const disposition = JSON.parse(fs.readFileSync(initiativeRun.path, 'utf8')).dispositions.findLast((item) => item.target === ref && ['terminal', 'escape'].includes(item.kind));
     const packet = pendingContinuationPacket(initiativeRun, ref, disposition.revision, disposition.kind);
     return { decision: disposition.kind === 'escape' ? 'escape' : 'terminal', initiative: publicInitiativeSummary(initiativeRun), ...(packet ? { continuationPacket: packet } : {}) };
   }
