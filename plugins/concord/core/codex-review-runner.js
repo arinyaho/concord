@@ -364,6 +364,7 @@ async function runReviewUntilGreen(options) {
   const canonicalStateDir = options.initiativeStateDir && canonicalPath(options.initiativeStateDir);
   const keyedRun = options.initiativeRunKey || options.initiativeStateDir;
   if (keyedRun && (!options.initiativeRunKey || !options.initiativeStateDir)) throw new Error('review-until-green: --initiative-run-key and --initiative-state-dir must be used together');
+  if (keyedRun) runPath(options.initiativeStateDir, options.initiativeRunKey);
   const stateRelativeToRepo = keyedRun && path.relative(canonicalRepoRoot, canonicalStateDir);
   if (keyedRun && !stateRelativeToRepo.startsWith('..') && !path.isAbsolute(stateRelativeToRepo)) {
     let worktree = false;
