@@ -173,13 +173,23 @@ function selectDisposition(dispositions, target, kinds) {
   return matches.find((item) => item.kind === 'terminal') || matches[matches.length - 1];
 }
 
+// terminalTarget's own throws are identity-validation failures on an
+// already-terminal target's replay path, not review-execution failures --
+// tagged so the caller's catch (which records genuine failures as error
+// dispositions) rethrows them unrecorded instead of polluting the ledger.
+function replayIdentityError(message) {
+  const error = new Error(message);
+  error.notAReviewFailure = true;
+  return error;
+}
+
 function terminalTarget(run, target, revision, kinds = ['terminal']) {
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
   if (ledger.version !== 3) throw new Error('initiative review run schemaVersion must be 3');
   const terminal = selectDisposition(ledger.dispositions, target, kinds);
   if (ledger.status !== 'active' || !terminal) return false;
-  if (!terminal.revision?.head_sha) throw new Error('initiative review terminal target has no stored revision');
-  if (!target.startsWith('file:') && !terminal.revision.base) throw new Error('initiative review terminal target has no stored base');
+  if (!terminal.revision?.head_sha) throw replayIdentityError('initiative review terminal target has no stored revision');
+  if (!target.startsWith('file:') && !terminal.revision.base) throw replayIdentityError('initiative review terminal target has no stored base');
   revision = typeof revision === 'function' ? revision(terminal.revision) : revision;
   if (terminal.target !== revision.ref) return false;
   if (same(terminal.revision, revision)) {
@@ -195,7 +205,7 @@ function terminalTarget(run, target, revision, kinds = ['terminal']) {
     const olderMatch = (ledger.dispositions || []).find((item) => item.target === target && kinds.includes(item.kind) && item !== terminal && same(item.revision, revision) && item.packet?.delivery?.consumed === false);
     return olderMatch || false;
   }
-  throw new Error('initiative review terminal target revision changed');
+  throw replayIdentityError('initiative review terminal target revision changed');
 }
 
 function finaliseInitiativeRun(run, reason = 'finalised') {

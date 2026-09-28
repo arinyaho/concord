@@ -102,6 +102,24 @@ test('changed terminal target identity fails before round-start', async () => {
   );
 });
 
+test('a changed-revision replay against an already-terminal target does not pollute the ledger', async () => {
+  const stateDir = temp();
+  const key = 'changed-terminal-no-pollution';
+  const run = openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
+  const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
+  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, targets: [{ ref: 'file:note.md', head_sha: 'old-bytes' }], dispositions: [{ target: 'file:note.md', reason: 'clean', kind: 'terminal', revision: { ref: 'file:note.md', head_sha: 'old-bytes' } }] }));
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'file:note.md', initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => 'new-bytes', runCli: () => { throw new Error('round-start must not run'); } }),
+    /revision changed/,
+  );
+  // terminalTarget's own identity-validation throw is not a review failure
+  // -- it must not get recorded as a spurious error disposition, and the
+  // new (rejected) revision must not get appended to ledger.targets.
+  const after = JSON.parse(fs.readFileSync(run.path, 'utf8'));
+  assert.strictEqual(after.dispositions.length, 1);
+  assert.strictEqual(after.targets.length, 1);
+});
+
 test('terminal target preflight does not replay against a historical matching target', async () => {
   const stateDir = temp();
   const key = 'multi-revision-terminal';
@@ -402,6 +420,25 @@ test('initiative records a distinct second failure at an unchanged revision inst
   assert.match(second.continuationPacket.error.message, /second distinct failure/);
   const ledger = JSON.parse(fs.readFileSync(runPath(stateDir, 'error-distinct'), 'utf8'));
   assert.strictEqual(ledger.dispositions.length, 2);
+});
+
+test('a repeated error at an unchanged revision retrieves its own packet, not a different error\'s', async () => {
+  const stateDir = temp();
+  let call = 0;
+  const options = { ref: 'feature/error-abab', base: 'main', repoRoot: '/repo', initiativeRunKey: 'error-abab', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 2,
+    runCli: ([verb]) => verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false } : verb === 'artifact-normalize' ? { status: 'ok' } : undefined,
+    // A, then a distinct B, then A again -- the dedup guard matches A's
+    // repeat against the FIRST A entry (same reason), but a lookup keyed
+    // only on target+revision+kind (ignoring reason) would findLast to B's
+    // more-recently-written entry instead.
+    spawn: async () => { call++; throw new Error(call === 1 ? 'failure A' : call === 2 ? 'failure B' : 'failure A'); } };
+  let first;
+  await assert.rejects(runReviewUntilGreen(options), (error) => { first = error; return /failure A/.test(error.message); });
+  await assert.rejects(runReviewUntilGreen(options), (error) => /failure B/.test(error.message));
+  const third = await runReviewUntilGreen(options).catch((error) => error);
+  assert.match(third.message, /failure A/);
+  assert.strictEqual(third.continuationPacket.delivery.claim, first.continuationPacket.delivery.claim);
+  assert.match(third.continuationPacket.error.message, /failure A/);
 });
 
 test('initiative accepts a runner-owned fixer revision on the next round', async () => {
