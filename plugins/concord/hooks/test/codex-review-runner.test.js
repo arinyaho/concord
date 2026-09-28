@@ -337,6 +337,21 @@ test('initiative runner replays an unconsumed duplicate escape handoff', async (
   assert.deepStrictEqual(replay.continuationPacket.outcome, { kind: 'escape', reason: 'escape' });
 });
 
+test('initiative runner starts a new round after a consumed escape disposition at the same revision', async () => {
+  const stateDir = temp();
+  const options = { ref: 'feature/escape-consumed', base: 'main', repoRoot: '/repo', initiativeRunKey: 'escape-consumed', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1,
+    runCli: ([verb]) => verb === 'round-start' ? { decision: 'escape', base: 'main', head: 'head', stateDir } : undefined };
+  await runReviewUntilGreen(options);
+  const ledgerPath = runPath(stateDir, 'escape-consumed');
+  const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+  ledger.dispositions[0].packet.delivery.consumed = true;
+  fs.writeFileSync(ledgerPath, JSON.stringify(ledger));
+  let roundStarted = false;
+  const retry = await runReviewUntilGreen({ ...options, targetIdentity: () => 'head', runCli: ([verb]) => { if (verb === 'round-start') { roundStarted = true; return { decision: 'escape', base: 'main', head: 'head', stateDir }; } return undefined; } });
+  assert.strictEqual(roundStarted, true);
+  assert.strictEqual(retry.decision, 'escape');
+});
+
 test('initiative error retains completed DoD, diagnostic, and duplicate retry packet', async () => {
   const stateDir = temp();
   const options = { ref: 'feature/error-retry', base: 'main', repoRoot: '/repo', initiativeRunKey: 'error-retry', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 2,
