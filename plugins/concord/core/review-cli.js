@@ -554,7 +554,7 @@ function runVerb(resolveFromCwd, args, initiative) {
   const [verb, ref, ...rest] = args;
   const stateDir = resolveStateDir(resolveFromCwd);
   // `reserve` opens the run inside the target-ledger lock main() holds so parallel first calls serialize.
-  const run = initiative && verb !== 'reserve' ? openKeyedRun(initiative) : null;
+  const run = initiative && verb !== 'reserve' && verb !== 'show' ? openKeyedRun(initiative) : null;
 
   if (verb === 'reserve') {
     requireRef(ref, 'reserve');
@@ -1405,13 +1405,16 @@ function runVerb(resolveFromCwd, args, initiative) {
       const head_sha = isGit ? gitHeadSha(repoRoot) : ledger.target?.head_sha;
       const revision = { ref: target, ...(ledger.target?.base ? { base: ledger.target.base } : {}), head_sha };
       const escaped = require('./initiative-review-run').normalizeDisposition({ decision, reconciliation }).kind === 'escape';
-      recordDisposition(run, {
+      const recorded = recordDisposition(run, {
         target, revision, result: { decision, reconciliation },
         packet: { trigger: escaped ? 'escape' : 'terminal', exit: { code: 0, signal: null }, dod: { status: finalChecks[0].status === 'passed' ? 'passed' : finalChecks[0].status }, telemetry: { complete: false }, nextAction: escaped ? 'resume' : 'replay', handoff: renderHandoff({ ledger }) },
         finding: reconciliation?.finding || null, stage: reconciliation?.stage || null, avoidedLaunches: reconciliation?.avoidedLaunches || 0, findings: reconciliation?.findings || {}, checks: finalChecks,
       });
-      const recorded = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-      if (!(recorded.dispositions || []).some((d) => d.target === target)) throw new Error('harness-failure: record: initiative target disposition recording was contended; re-run record');
+      // Match by target + revision + kind (as the Codex runner does), and fail without
+      // marking the target ledger done so a re-run of `record` can still record it.
+      const kind = escaped ? 'escape' : 'terminal';
+      const entry = (JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions || []).findLast((d) => d.target === target && JSON.stringify(d.revision) === JSON.stringify(revision) && d.kind === kind);
+      if (!entry || (!recorded && kind === 'escape' && entry.packet?.delivery?.consumed !== false)) throw new Error('harness-failure: record: initiative target disposition recording was contended; re-run record');
     }
     writeLedger(stateDir, slug, ledger);
     if (R.TERMINAL_STATUSES.has(ledger.status)) reviewTelemetry.deleteTelemetry(stateDir, ledger.target?.ref || ref, slug);

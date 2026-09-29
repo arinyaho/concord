@@ -8,7 +8,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync, spawn } = require('node:child_process');
-const { openInitiativeRun, reserveLaunch, publicInitiativeSummary } = require('../../core/initiative-review-run');
+const { openInitiativeRun, reserveLaunch, recordDisposition, publicInitiativeSummary } = require('../../core/initiative-review-run');
 const review = require('../../core/review');
 const { safeIdForFilename } = require('../../core/artifact-name');
 
@@ -275,6 +275,44 @@ for (const provider of Object.keys(PROVIDERS)) {
     assert.ok(r.stderr.includes(lock), r.stderr);
     assert.match(r.stderr, /rmdir/);
     assert.ok(fs.existsSync(lock), 'the lock is never reclaimed automatically');
+  });
+
+  test(`${provider}: keyed record fails when the terminal disposition is contended and a re-run records it (P2)`, () => {
+    const t = setup(provider);
+    const n = t.start();
+    const run = openInitiativeRun({ stateDir: t.initDir, key: 'key-1', repository: t.repo, maxLaunches: 20, maxRounds: 5 });
+    assert.ok(recordDisposition(run, { target: 'feat/x', revision: { ref: 'feat/x', head_sha: 'seed' }, result: { decision: { continue: false, gatePending: true } } }));
+    t.ok(['reserve', 'feat/x', 'correctness']); t.ok(['reserve', 'feat/x', 'verify']);
+    t.write(n, 'correctness', CLEAN);
+    t.write(n, 'verify', { status: 'ok', rejected: [] });
+    t.ok(['plan-fixes', 'feat/x']);
+    const lock = `${t.ledgerFile()}.lock`;
+    fs.mkdirSync(lock);
+    const blocked = t.cli(['record', 'feat/x']);
+    fs.rmdirSync(lock);
+    assert.notStrictEqual(blocked.status, 0, blocked.stdout);
+    assert.match(blocked.stderr, /contended; re-run record/);
+    assert.strictEqual(t.initiative().dispositions.length, 1);
+    assert.notStrictEqual(review.readLedger(t.dir, review.targetSlug('feat/x')).phase, 'done');
+    t.ok(['record', 'feat/x']);
+    assert.ok(t.initiative().dispositions.some((d) => d.target === 'feat/x' && d.kind === 'terminal'));
+  });
+
+  test(`${provider}: keyed show is read-only and never denies a parallel reserve over 30 trials (P3)`, async () => {
+    for (let i = 0; i < 30; i++) {
+      const t = setup(provider);
+      t.start();
+      const initDir = tmp('native-init-ledger-');
+      const keyed = ['--initiative-run-key', 'key-1', '--initiative-state-dir', initDir, '--initiative-max-launches', '20', '--initiative-max-rounds', '5'];
+      const child = (args) => new Promise((resolve) => {
+        const c = spawn('node', [PROVIDERS[provider], ...args, ...keyed], { env: t.env, cwd: t.repo });
+        let out = ''; c.stdout.on('data', (d) => { out += d; }); c.stderr.on('data', (d) => { out += d; }); c.on('close', (code) => resolve({ code, out }));
+      });
+      const [show, reserve] = await Promise.all([child(['show', 'feat/x']), child(['reserve', 'feat/x', 'correctness'])]);
+      assert.strictEqual(show.code, 0, show.out);
+      assert.strictEqual(reserve.code, 0, reserve.out);
+      assert.strictEqual(JSON.parse(reserve.out).status, 'granted', `trial ${i}`);
+    }
   });
 
   test(`${provider}: a contended finalise while failing closed is an error, not a silent active run (P3-a)`, () => {
