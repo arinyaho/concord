@@ -208,6 +208,15 @@ test('a later clean review on a marked head reports needs-reconciliation without
   assert.strictEqual(lgtmState.status(input).reconciliation.batchCount, 1);
 });
 
+test('status.reconciliation.reviews are ordered by recordedAtMs ascending regardless of file-name order', () => {
+  const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
+  // '1111111111' sorts before '9999999999' by file name, but is recorded later.
+  lgtmState.recordReview({ ...input, now: 9000, observation: observation({ reviewId: '1111111111', findings: [inlineFinding({ priority: 'P2', signals: [] })] }) });
+  lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: '9999999999', findings: [inlineFinding({ priority: 'P2', signals: [] })] }) });
+  const packet = lgtmState.status(input).reconciliation;
+  assert.deepStrictEqual(packet.reviews.map((r) => r.id), ['9999999999', '1111111111']);
+});
+
 test('a second distinct reviewId recorded for the head produces requires-architecture-review', () => {
   const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
   lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: '5332811440', findings: [inlineFinding({ priority: 'P2', signals: [] })] }) });
@@ -265,6 +274,32 @@ test('a finding missing the priority key entirely is rejected', () => {
 test('a non-digit reviewId is rejected', () => {
   const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
   assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: 'abc123' }) }));
+});
+
+test('a numeric reviewId is accepted, normalized to a decimal string, and blocks claim-retry afterward', () => {
+  const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
+  const result = lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: 5332811440, findings: [inlineFinding({ priority: 'P1', signals: ['lifecycle'] })] }) });
+  assert.deepStrictEqual(result, { outcome: 'needs-reconciliation', recorded: true, duplicate: false });
+  const packet = lgtmState.status(input).reconciliation;
+  assert.strictEqual(packet.reviews[0].id, '5332811440');
+  assert.deepStrictEqual(lgtmState.claimRetry({ ...input, now: 6000 }), { claimed: false, reason: 'needs-reconciliation' });
+});
+
+test('CLI record-review accepts a JSON number reviewId on stdin and claim-retry then refuses', () => {
+  const stateDir = temp();
+  const env = { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir };
+  const obs = observation({ reviewId: 5332811440, findings: [inlineFinding({ priority: 'P1', signals: ['lifecycle'] })] });
+  const out = JSON.parse(execFileSync('node', [CLI, 'record-review', String(PR_122), HEAD_A], { encoding: 'utf8', env, input: JSON.stringify(obs) }));
+  assert.deepStrictEqual(out, { outcome: 'needs-reconciliation', recorded: true, duplicate: false });
+  const retry = execFileSync('node', [CLI, 'claim-retry', String(PR_122), HEAD_A], { encoding: 'utf8', env });
+  assert.strictEqual(retry, '{"claimed":false,"reason":"needs-reconciliation"}\n');
+});
+
+test('a float, negative, or unsafe-integer reviewId is rejected', () => {
+  const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
+  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: 1.5 }) }));
+  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: -5 }) }));
+  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: Number.MAX_SAFE_INTEGER + 10 }) }));
 });
 
 test('a missing field is rejected', () => {
@@ -364,5 +399,6 @@ test('Claude and Codex review-until-lgtm skills pin the reconciliation extractio
     assert.match(skill, /the batch count/);
     assert.match(skill, /resume, revise, split, and defer choices/);
     assert.match(skill, /a new head \(a new commit\) is required/);
+    assert.match(skill, /if `record-review` exits non-zero or rejects the observation, stop and report it; never claim or request a review for that head afterward/i);
   }
 });

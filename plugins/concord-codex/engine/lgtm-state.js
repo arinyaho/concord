@@ -35,16 +35,26 @@ function validateFinding(finding) {
   return { url: finding.url, priority: finding.priority ?? null, signals: [...finding.signals] };
 }
 
+// GitHub's API returns a review id as a JSON number; the CLI's own hook entry
+// point also passes one through verbatim from stdin JSON. Accept either that
+// number or a decimal-digit string and normalize to the decimal string,
+// since the id becomes part of a file name.
+function normalizeReviewId(reviewId) {
+  if (typeof reviewId === 'string' && /^[0-9]+$/.test(reviewId)) return reviewId;
+  if (typeof reviewId === 'number' && Number.isSafeInteger(reviewId) && reviewId > 0) return String(reviewId);
+  throw new Error('review-lgtm-state: reviewId must be a positive safe integer or decimal digits');
+}
+
 function validateObservation(observation) {
   if (!observation || typeof observation !== 'object') throw new Error('review-lgtm-state: observation must be an object');
   const { reviewId, reviewUrl, commitId, state, lgtm, findings } = observation;
-  if (typeof reviewId !== 'string' || !/^[0-9]+$/.test(reviewId)) throw new Error('review-lgtm-state: reviewId must be decimal digits');
+  const normalizedReviewId = normalizeReviewId(reviewId);
   if (typeof reviewUrl !== 'string' || !reviewUrl) throw new Error('review-lgtm-state: reviewUrl is required');
   if (typeof commitId !== 'string' || !FULL_SHA.test(commitId)) throw new Error('review-lgtm-state: commitId must be a full 40- or 64-character hexadecimal SHA (the review commit_id)');
   if (state !== 'completed' && state !== 'in-progress') throw new Error('review-lgtm-state: state must be completed or in-progress');
   if (typeof lgtm !== 'boolean') throw new Error('review-lgtm-state: lgtm is required and must be a boolean');
   if (!Array.isArray(findings)) throw new Error('review-lgtm-state: findings is required and must be an array');
-  return { reviewId, reviewUrl, commitId: commitId.toLowerCase(), state, lgtm, findings: findings.map(validateFinding) };
+  return { reviewId: normalizedReviewId, reviewUrl, commitId: commitId.toLowerCase(), state, lgtm, findings: findings.map(validateFinding) };
 }
 
 function defaultStateDir(repoRoot = process.cwd()) {
@@ -103,8 +113,14 @@ function reviewRecords({ stateDir, pr, headSha }) {
     .filter((record) => record && record.pr === pr && record.headSha === headSha);
 }
 
+function compareReviewIds(a, b) {
+  if (a.length !== b.length) return a.length - b.length;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 function reconciliationPacket({ stateDir, pr, headSha }) {
-  const records = reviewRecords({ stateDir, pr, headSha });
+  const records = reviewRecords({ stateDir, pr, headSha })
+    .sort((a, b) => a.recordedAtMs - b.recordedAtMs || compareReviewIds(a.reviewId, b.reviewId));
   if (records.length === 0) return null;
   const reviews = records.map((record) => ({ id: record.reviewId, url: record.reviewUrl, findings: record.findings }));
   const findings = records.flatMap((record) => record.findings);

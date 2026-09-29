@@ -12,7 +12,7 @@ A new verb, `record-review <pr> <head-sha>`, reads one normalized observation as
  "findings": [{"url": "<thread or review URL>", "priority": "P1", "signals": ["lifecycle"]}]}
 ```
 
-- `reviewId` is the GitHub review's numeric id and must be decimal digits, because it becomes part of a file name.
+- `reviewId` is the GitHub review's id; it may be a number or a digit string and is normalized to a decimal string, because it becomes part of a file name.
 - `state` is `completed` or `in-progress`. `priority` is `P1`, `P2`, or `null`. `signals` is required on every finding and may be empty; each value belongs to the closed set `lifecycle`, `ledger`, `audit-privacy`, `provider-parity`, `ac-conflict`, `unsupported-test`. A missing field, an unknown signal, or an invalid priority is rejected.
 - `commitId` is the review's `commit_id`. Every state verb, not only `record-review`, requires the head as a full 40- or 64-character SHA (the PR's `headRefOid`), and `record-review` requires the same of `commitId` and compares the two case-insensitively for equality. Markers are keyed by the head string, so accepting abbreviated heads would let one session's claims, windows, and records land under a different key from another's; an abbreviated head is rejected instead of silently bypassing the block or turning every observation into `stale`. Inline comments can report a later `commit_id` than the review that created them, so they are not used for head matching.
 - A finding is an unresolved bot thread (its URL) or a summary-level finding (the review URL).
