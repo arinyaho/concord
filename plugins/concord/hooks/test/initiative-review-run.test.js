@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { openInitiativeRun, reserveLaunch, recordDisposition, normalizeDisposition, consumeDispositionDelivery, finaliseInitiativeRun, publicInitiativeSummary, terminalTarget } = require('../../core/initiative-review-run');
+const { openInitiativeRun, reserveLaunch, reserveLaunchBatch, recordDisposition, normalizeDisposition, consumeDispositionDelivery, finaliseInitiativeRun, publicInitiativeSummary, terminalTarget } = require('../../core/initiative-review-run');
 const RUNTIMES = [
   require('../../core/initiative-review-run'),
   require('../../../concord-codex/engine/initiative-review-run'),
@@ -239,4 +239,17 @@ test('initiative state paths are canonicalized through a symlink', () => {
   fs.symlinkSync(actual, alias);
   const run = open({ stateDir: path.join(alias, 'new', 'state'), key: 'canonical', maxLaunches: 1, maxRounds: 1 });
   assert.strictEqual(run.path, path.join(fs.realpathSync(actual), 'new', 'state', path.basename(run.path)));
+});
+
+test('a launch batch is reserved under one lock and consumes nothing when it does not fit', () => {
+  for (const runtime of RUNTIMES) {
+    const run = open({ stateDir: temp(), key: 'batch', maxLaunches: 6, maxRounds: 1 });
+    assert.ok(runtime.reserveLaunchBatch(run, { role: 'lens', round: 1, target: 't' }, 5));
+    assert.strictEqual(runtime.reserveLaunchBatch(run, { role: 'vote', round: 1, target: 't' }, 3), false);
+    assert.strictEqual(JSON.parse(fs.readFileSync(run.path, 'utf8')).launches.length, 5);
+    fs.mkdirSync(`${run.path}.lock`);
+    assert.strictEqual(runtime.reserveLaunchBatch(run, { role: 'fix', round: 1, target: 't' }, 1), false);
+    fs.rmdirSync(`${run.path}.lock`);
+    assert.strictEqual(JSON.parse(fs.readFileSync(run.path, 'utf8')).launches.length, 5);
+  }
 });
