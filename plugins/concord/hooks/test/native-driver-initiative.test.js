@@ -273,8 +273,26 @@ for (const provider of Object.keys(PROVIDERS)) {
     const r = t.cli(['reserve', 'feat/x', 'correctness']);
     assert.notStrictEqual(r.status, 0);
     assert.ok(r.stderr.includes(lock), r.stderr);
-    assert.match(r.stderr, /rmdir/);
+    assert.match(r.stderr, /rm -r/);
+    assert.match(r.stderr, /owner unknown/);
     assert.ok(fs.existsSync(lock), 'the lock is never reclaimed automatically');
+  });
+
+  test(`${provider}: a killed keyed verb leaves a lock whose error names the dead owner pid (AC1)`, async () => {
+    const t = setup(provider, { config: { dod: ['sleep 3'] } });
+    const child = spawn('node', [PROVIDERS[provider], 'round-start', 'feat/x', 'HEAD~1', '--no-broad', '--initiative-run-key', 'key-1', '--initiative-state-dir', t.initDir, '--initiative-max-launches', '20', '--initiative-max-rounds', '5'], { env: t.env, cwd: t.repo });
+    const lock = `${path.join(t.dir, `review-${review.targetSlug('feat/x')}.json`)}.lock`;
+    for (let i = 0; i < 100 && !fs.existsSync(path.join(lock, 'owner')); i++) await new Promise((r) => setTimeout(r, 50));
+    assert.ok(fs.existsSync(path.join(lock, 'owner')), 'the lock holder records its pid');
+    const closed = new Promise((resolve) => child.on('close', resolve));
+    child.kill('SIGTERM');
+    await closed;
+    assert.ok(fs.existsSync(lock), 'SIGTERM leaves the lock behind');
+    const r = t.cli(['reserve', 'feat/x', 'correctness']);
+    assert.notStrictEqual(r.status, 0);
+    assert.ok(r.stderr.includes(lock), r.stderr);
+    assert.ok(r.stderr.includes(`owner pid ${child.pid} (not running)`), r.stderr);
+    assert.ok(fs.existsSync(lock), 'non-interactive runs never remove the lock');
   });
 
   test(`${provider}: keyed record fails when the terminal disposition is contended and a re-run records it (P2)`, () => {
@@ -356,3 +374,47 @@ test('cross-provider: the reserve verb answers identically (AC6)', () => {
   });
   assert.deepStrictEqual(answers[0], answers[1]);
 });
+
+test('an interactive confirmation removes a stuck target lock; no answer or no leaves it (AC2)', () => {
+  const { withTargetLock } = require('../../core/review-cli');
+  const dir = tmp('native-lock-');
+  const ledgerFile = path.join(dir, 'review-x.json');
+  const lock = `${ledgerFile}.lock`;
+  const stick = () => { fs.mkdirSync(lock, { recursive: true }); fs.writeFileSync(path.join(lock, 'owner'), '999999\n'); };
+  const asked = [];
+  stick();
+  assert.throws(() => withTargetLock(ledgerFile, () => 'ran', { confirm: (q) => { asked.push(q); return false; }, waitMs: 50 }), /target ledger lock is held/);
+  assert.ok(fs.existsSync(lock), 'a no answer leaves the lock');
+  assert.match(asked[0], new RegExp(lock.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(asked[0], /owner pid 999999/);
+  assert.throws(() => withTargetLock(ledgerFile, () => "ran", { confirm: null, waitMs: 50 }), /target ledger lock is held/);
+  assert.ok(fs.existsSync(lock), 'without a confirm function nothing is offered or removed');
+  assert.strictEqual(withTargetLock(ledgerFile, () => 'ran', { confirm: () => true, waitMs: 50 }), 'ran');
+  assert.ok(!fs.existsSync(lock), 'the lock is released after the verb runs');
+});
+
+for (const provider of Object.keys(PROVIDERS)) {
+  test(`${provider}: a contended gate-pending escape after an unconsumed intent-review escape at one head is not reported recorded (AC3)`, () => {
+    const t = setup(provider);
+    const slug = review.targetSlug('feat/x');
+    const n = t.start();
+    t.ok(['reserve', 'feat/x', 'correctness']); t.ok(['reserve', 'feat/x', 'verify']);
+    t.write(n, 'correctness', CLEAN);
+    t.write(n, 'verify', { status: 'ok', rejected: [] });
+    t.ok(['plan-fixes', 'feat/x']);
+    const planned = review.readLedger(t.dir, slug);
+    review.writeLedger(t.dir, slug, { ...planned, gate_open: [{ id: 'gate:cross-context:x', file: 'a.txt', summary: 's', gate: 'cross-context', span: 'two' }] });
+    const run = openInitiativeRun({ stateDir: t.initDir, key: 'key-1', repository: t.repo, maxLaunches: 20, maxRounds: 5 });
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: t.repo, encoding: 'utf8' }).trim();
+    const revision = { ref: 'feat/x', ...(planned.target?.base ? { base: planned.target.base } : {}), head_sha: head };
+    assert.ok(recordDisposition(run, { target: 'feat/x', revision, result: { decision: { continue: false, intentReview: true } } }));
+    fs.mkdirSync(`${t.ledgerFile()}.lock`);
+    const blocked = t.cli(['record', 'feat/x']);
+    fs.rmdirSync(`${t.ledgerFile()}.lock`);
+    assert.notStrictEqual(blocked.status, 0, blocked.stdout);
+    assert.match(blocked.stderr, /contended; re-run record/);
+    assert.notStrictEqual(review.readLedger(t.dir, slug).phase, 'done');
+    t.ok(['record', 'feat/x']);
+    assert.deepStrictEqual(t.initiative().dispositions.filter((d) => d.kind === 'escape').map((d) => d.reason), ['intent-review', 'gate-pending']);
+  });
+}
