@@ -17,15 +17,17 @@ function validate({ pr, headSha }) {
   return { pr: Number(pr), headSha: String(headSha).toLowerCase() };
 }
 
-// Closed set of #124 escalation signals: lifecycle covers worktree, reset,
-// rerun, finalise, and concurrency; ledger covers durable ledger or schema.
+// Closed set of escalation signals an agent may tag on a finding. Any value
+// outside this set, or a value on a finding that omits the field entirely,
+// is rejected rather than defaulted.
 const SIGNALS = new Set(['lifecycle', 'ledger', 'audit-privacy', 'provider-parity', 'ac-conflict', 'unsupported-test']);
 const PRIORITIES = new Set(['P1', 'P2', null]);
 
 function validateFinding(finding) {
   if (!finding || typeof finding !== 'object') throw new Error('review-lgtm-state: finding must be an object');
   if (typeof finding.url !== 'string' || !finding.url) throw new Error('review-lgtm-state: finding url is required');
-  if (!PRIORITIES.has(finding.priority ?? null)) throw new Error('review-lgtm-state: finding priority must be P1, P2, or null');
+  if (!('priority' in finding)) throw new Error('review-lgtm-state: finding priority is required and must be P1, P2, or null');
+  if (!PRIORITIES.has(finding.priority)) throw new Error('review-lgtm-state: finding priority must be P1, P2, or null');
   if (!Array.isArray(finding.signals)) throw new Error('review-lgtm-state: finding signals is required and must be an array');
   for (const signal of finding.signals) {
     if (!SIGNALS.has(signal)) throw new Error(`review-lgtm-state: unknown signal ${JSON.stringify(signal)}`);

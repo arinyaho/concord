@@ -126,7 +126,7 @@ test('review-until-lgtm CLI restores a completed review window after a new proce
   assert.strictEqual(JSON.parse(execFileSync('node', [CLI, 'claim-retry', pr, head], { encoding: 'utf8', env })).claimed, false);
 });
 
-// --- #124 reconciliation: record-review, classification, and claim blocking ---
+// --- Reconciliation: record-review, classification, and claim blocking ---
 // Fixtures modeled on real GitHub Codex bot reviews from PR #122.
 const PR_122 = 122;
 const HEAD_A = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
@@ -256,6 +256,12 @@ test('a bad priority is rejected', () => {
   assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: observation({ findings: [inlineFinding({ priority: 'P3' })] }) }));
 });
 
+test('a finding missing the priority key entirely is rejected', () => {
+  const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
+  const bad = observation({ findings: [{ url: 'https://github.com/arinyaho/concord/pull/122#discussion_r1', signals: [] }] });
+  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: bad }));
+});
+
 test('a non-digit reviewId is rejected', () => {
   const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
   assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: 'abc123' }) }));
@@ -324,6 +330,17 @@ test('CLI record-review reads the observation as JSON on stdin', () => {
   assert.deepStrictEqual(out, { outcome: 'needs-reconciliation', recorded: true, duplicate: false });
 });
 
+test('CLI claim-retry and claim-initial-request refuse a head with a recorded review', () => {
+  const stateDir = temp();
+  const env = { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir };
+  const obs = observation({ findings: [inlineFinding({ priority: 'P1', signals: ['lifecycle'] })] });
+  execFileSync('node', [CLI, 'record-review', String(PR_122), HEAD_A], { encoding: 'utf8', env, input: JSON.stringify(obs) });
+  const retry = execFileSync('node', [CLI, 'claim-retry', String(PR_122), HEAD_A], { encoding: 'utf8', env });
+  assert.strictEqual(retry, '{"claimed":false,"reason":"needs-reconciliation"}\n');
+  const initial = execFileSync('node', [CLI, 'claim-initial-request', String(PR_122), HEAD_A], { encoding: 'utf8', env });
+  assert.strictEqual(initial, '{"claimed":false,"reason":"needs-reconciliation"}\n');
+});
+
 test('Claude and Codex review-until-lgtm skills pin the reconciliation extraction rules', () => {
   const claude = fs.readFileSync(CLAUDE_SKILL, 'utf8');
   const codex = fs.readFileSync(CODEX_SKILL, 'utf8');
@@ -340,5 +357,12 @@ test('Claude and Codex review-until-lgtm skills pin the reconciliation extractio
     assert.match(skill, /requires-architecture-review/);
     assert.match(skill, /needs-reconciliation/);
     assert.match(skill, /does not edit source/);
+    assert.match(skill, /no existing review record for the head/);
+    assert.match(skill, /Defer to `record-review`'s outcome/);
+    assert.match(skill, /each recorded review's id and URL/);
+    assert.match(skill, /each unresolved finding's URL with its P1\/P2 priority/);
+    assert.match(skill, /the batch count/);
+    assert.match(skill, /resume, revise, split, and defer choices/);
+    assert.match(skill, /a new head \(a new commit\) is required/);
   }
 });
