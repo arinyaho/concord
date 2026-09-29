@@ -641,8 +641,8 @@ test('codexExec starts subprocesses asynchronously so panel work can overlap', a
   const previousPath = process.env.PATH;
   process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
   try {
-    const first = codexExec({ role: 'panel', prompt: 'first', repoRoot: binDir, stateDir: binDir, timeoutMs: 1000 });
-    const second = codexExec({ role: 'panel', prompt: 'second', repoRoot: binDir, stateDir: binDir, timeoutMs: 1000 });
+    const first = codexExec({ role: 'panel', prompt: 'first', repoRoot: binDir, stateDir: binDir, timeoutMs: 15000, codexExecutable: { command: codex, version: 'codex-cli 0.154.0' } });
+    const second = codexExec({ role: 'panel', prompt: 'second', repoRoot: binDir, stateDir: binDir, timeoutMs: 15000, codexExecutable: { command: codex, version: 'codex-cli 0.154.0' } });
     assert.strictEqual(typeof first?.then, 'function');
     const results = await Promise.all([first, second]);
     assert.deepStrictEqual(results.map((result) => result.status), [0, 0]);

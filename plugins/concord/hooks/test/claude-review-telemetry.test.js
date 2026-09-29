@@ -350,6 +350,15 @@ test('excludes a streaming placeholder from an otherwise complete transcript tot
   assert.strictEqual(record.outputTokens, 100);
 });
 
+// Starts the 140ms delay only once the writer process is running, so start-up under load cannot outlast the 500ms wait window.
+function spawnDelayedAppend(file, text) {
+  const ready = `${file}.ready`;
+  const writer = spawn(process.execPath, ['-e', 'const fs = require("node:fs"); fs.writeFileSync(process.argv[3], ""); setTimeout(() => fs.appendFileSync(process.argv[1], process.argv[2]), 140)', file, text, ready]);
+  const readyBy = Date.now() + 15000;
+  while (!fs.existsSync(ready) && Date.now() < readyBy) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+  return writer;
+}
+
 test('waits within the bound for a delayed stable terminal transcript append', async () => {
   const { transcript, stateDir } = setup();
   recordActiveTool(transcript, stateDir);
@@ -358,7 +367,7 @@ test('waits within the bound for a delayed stable terminal transcript append', a
   const childTranscript = path.join(directory, 'agent-agent-7.jsonl');
   fs.writeFileSync(childTranscript, '');
   const row = JSON.stringify(assistantRow({ requestId: 'req-late', messageId: 'msg-late', input: 2, create: 0, read: 0, output: 1 })) + '\n';
-  const writer = spawn(process.execPath, ['-e', 'setTimeout(() => require("node:fs").appendFileSync(process.argv[1], process.argv[2]), 140)', childTranscript, row]);
+  const writer = spawnDelayedAppend(childTranscript, row);
 
   const record = core.recordForEvent({
     hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-7', agent_transcript_path: childTranscript,
@@ -377,7 +386,7 @@ test('waits for the transcript row matching SubagentStop last_assistant_message'
     assistantRow({ requestId: 'req-stream', messageId: 'msg-stream', input: 1, create: 0, read: 0, output: 1, content: [{ type: 'text', text: 'draft' }] }),
   ]);
   const finalRow = JSON.stringify(assistantRow({ requestId: 'req-stream', messageId: 'msg-stream', input: 1, create: 0, read: 0, output: 5, content: [{ type: 'text', text: 'final' }] })) + '\n';
-  const writer = spawn(process.execPath, ['-e', 'setTimeout(() => require("node:fs").appendFileSync(process.argv[1], process.argv[2]), 140)', childTranscript, finalRow]);
+  const writer = spawnDelayedAppend(childTranscript, finalRow);
 
   const record = core.recordForEvent({
     hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-7', agent_transcript_path: childTranscript,
