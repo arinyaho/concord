@@ -38,6 +38,16 @@ Classification is `requires-architecture-review` when any finding is P1, when tw
 
 While any review record exists for the head, `claim-initial-request`, `recover-initial-request`, `claim-retry`, and `recover-retry-request` return `{"claimed":false,"reason":"needs-reconciliation"}`. `mark-initial-requested`, `mark-retry-requested`, `open-window`, and `open-retry-window` are not blocked: they record a request that has already been sent, and refusing them would lose that fact. Records are keyed by the full head, so another head of the same PR is unaffected. There is no verb that clears a record, and a later observation on the same head does not clear it either: a later review without findings returns `{outcome:"needs-reconciliation", recorded:false, duplicate:false}` without writing, `status` still carries the packet, and the claim verbs stay blocked. Resuming means observing a new head; a human who disagrees with the findings pushes a new commit, and the skill's stop report says so.
 
+## Green with no review object
+
+A clean Codex outcome creates no pull-request review object: the bot marks the head's row in its summary issue comment `✅ Completed` and, a few seconds later, adds a +1 reaction to the PR itself. Nothing exists for `record-review` to read, so this rule lives in the skill's GitHub observation instructions, not in the CLI: the CLI validates and persists a review observation, and there is no review observation for this case.
+
+Green requires four conditions at one poll: no Codex review has `commit_id` equal to the full head SHA (so a review object has not appeared since the summary comment updated); `status`'s `reconciliation` is null (no reconciliation record for the head); every row of the summary comment is `✅ Completed` with a Commit value that is a prefix of the full head SHA; and a +1 reaction on the PR from the Codex bot login has `created_at` at or after that row's completion time.
+
+The reaction-time check exists because a PR accumulates one +1 per clean review across its lifetime, one per head; without ordering the reaction against the row it replaces, a stale +1 from an earlier head would report a later head green. Comparing `created_at` to the row's completion time ties the reaction to the head it actually closed out.
+
+Residual exposure: GitHub does not document the reaction's lifecycle for this bot, so a future change to when or whether it fires would silently break the check; the scraped summary-comment markup (the HTML comment marker, the row shape, the relative-time attribute) fails closed if the bot changes its rendering, reporting `completed-without-lgtm` rather than a false green; and this path leaves no CLI-recorded state, so a resumed session re-derives it from GitHub on every poll rather than from a durable marker.
+
 ## Why this shape
 
 - The CLI does not call GitHub. Calling GitHub from the CLI would duplicate the agent's authenticated profile handling, require GraphQL for thread resolution and reactions, put the network in tests, and couple the CLI to the bot's markup. A normalized observation keeps every acceptance check a deterministic fixture test.

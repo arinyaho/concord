@@ -40,7 +40,11 @@ function validateFinding(finding) {
 // number or a decimal-digit string and normalize to the decimal string,
 // since the id becomes part of a file name.
 function normalizeReviewId(reviewId) {
-  if (typeof reviewId === 'string' && /^[0-9]+$/.test(reviewId)) return reviewId;
+  if (typeof reviewId === 'string' && /^[0-9]+$/.test(reviewId)) {
+    const canonical = BigInt(reviewId).toString();
+    if (canonical === '0') throw new Error('review-lgtm-state: reviewId must be a positive safe integer or decimal digits');
+    return canonical;
+  }
   if (typeof reviewId === 'number' && Number.isSafeInteger(reviewId) && reviewId > 0) return String(reviewId);
   throw new Error('review-lgtm-state: reviewId must be a positive safe integer or decimal digits');
 }

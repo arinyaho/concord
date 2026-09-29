@@ -12,6 +12,7 @@ function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'lgtm-state-')); 
 const CLI = path.join(__dirname, '..', 'review-lgtm-state.js');
 const CLAUDE_SKILL = path.join(__dirname, '..', '..', 'skills', 'review-until-lgtm', 'SKILL.md');
 const CODEX_SKILL = path.join(__dirname, '..', '..', '..', 'concord-codex', 'skills', 'review-until-lgtm', 'SKILL.md');
+const COPILOT_SKILL = path.join(__dirname, '..', '..', '..', 'concord-copilot', 'skills', 'review-until-lgtm', 'SKILL.md');
 
 test('Claude and Codex ship durable review-until-lgtm instructions with host-specific CLI discovery', () => {
   const claude = fs.readFileSync(CLAUDE_SKILL, 'utf8');
@@ -251,29 +252,29 @@ for (const signal of ['lifecycle', 'ledger', 'audit-privacy', 'provider-parity',
 
 test('an unknown signal is rejected', () => {
   const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
-  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: observation({ findings: [inlineFinding({ signals: ['not-a-real-signal'] })] }) }));
+  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: observation({ findings: [inlineFinding({ signals: ['not-a-real-signal'] })] }) }), /unknown signal/);
 });
 
 test('a missing signals field is rejected', () => {
   const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
   const bad = observation({ findings: [{ url: 'https://github.com/arinyaho/concord/pull/122#discussion_r1', priority: 'P1' }] });
-  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: bad }));
+  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: bad }), /finding signals is required and must be an array/);
 });
 
 test('a bad priority is rejected', () => {
   const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
-  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: observation({ findings: [inlineFinding({ priority: 'P3' })] }) }));
+  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: observation({ findings: [inlineFinding({ priority: 'P3' })] }) }), /finding priority must be P1, P2, or null/);
 });
 
 test('a finding missing the priority key entirely is rejected', () => {
   const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
   const bad = observation({ findings: [{ url: 'https://github.com/arinyaho/concord/pull/122#discussion_r1', signals: [] }] });
-  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: bad }));
+  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: bad }), /finding priority is required and must be P1, P2, or null/);
 });
 
 test('a non-digit reviewId is rejected', () => {
   const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
-  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: 'abc123' }) }));
+  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: 'abc123' }) }), /reviewId must be a positive safe integer or decimal digits/);
 });
 
 test('a numeric reviewId is accepted, normalized to a decimal string, and blocks claim-retry afterward', () => {
@@ -295,18 +296,33 @@ test('CLI record-review accepts a JSON number reviewId on stdin and claim-retry 
   assert.strictEqual(retry, '{"claimed":false,"reason":"needs-reconciliation"}\n');
 });
 
+test('a reviewId string with leading zeros canonicalizes to the same review as its plain digits', () => {
+  const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
+  const first = lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: '05', findings: [inlineFinding({ priority: 'P1', signals: ['lifecycle'] })] }) });
+  assert.strictEqual(first.recorded, true);
+  assert.strictEqual(lgtmState.status(input).reconciliation.reviews[0].id, '5');
+  const replay = lgtmState.recordReview({ ...input, now: 6000, observation: observation({ reviewId: 5, findings: [inlineFinding({ priority: 'P1', signals: ['lifecycle'] })] }) });
+  assert.deepStrictEqual(replay, { outcome: 'needs-reconciliation', recorded: false, duplicate: true });
+});
+
+test('a reviewId of "0" or all zeros is rejected', () => {
+  const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
+  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: '0' }) }), /reviewId must be a positive safe integer or decimal digits/);
+  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: '000' }) }), /reviewId must be a positive safe integer or decimal digits/);
+});
+
 test('a float, negative, or unsafe-integer reviewId is rejected', () => {
   const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
-  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: 1.5 }) }));
-  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: -5 }) }));
-  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: Number.MAX_SAFE_INTEGER + 10 }) }));
+  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: 1.5 }) }), /reviewId must be a positive safe integer or decimal digits/);
+  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: -5 }) }), /reviewId must be a positive safe integer or decimal digits/);
+  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: Number.MAX_SAFE_INTEGER + 10 }) }), /reviewId must be a positive safe integer or decimal digits/);
 });
 
 test('a missing field is rejected', () => {
   const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
   const bad = observation();
   delete bad.commitId;
-  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: bad }));
+  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: bad }), /commitId must be a full 40- or 64-character hexadecimal SHA/);
 });
 
 test('once a head is marked, the four claim/recover verbs report needs-reconciliation while mark-*/open-* verbs still work', () => {
@@ -332,8 +348,8 @@ test('a different head of the same PR is unaffected by another head being marked
 test('an abbreviated head is rejected by a claim verb and by record-review', () => {
   const stateDir = temp();
   const shortHead = HEAD_A.slice(0, 7);
-  assert.throws(() => lgtmState.claimRetry({ stateDir, pr: PR_122, headSha: shortHead, now: 1000 }));
-  assert.throws(() => lgtmState.recordReview({ stateDir, pr: PR_122, headSha: shortHead, now: 1000, observation: observation({ commitId: shortHead, findings: [] }) }));
+  assert.throws(() => lgtmState.claimRetry({ stateDir, pr: PR_122, headSha: shortHead, now: 1000 }), /head SHA must be a full 40- or 64-character hexadecimal SHA \(the PR headRefOid\)/);
+  assert.throws(() => lgtmState.recordReview({ stateDir, pr: PR_122, headSha: shortHead, now: 1000, observation: observation({ commitId: shortHead, findings: [] }) }), /head SHA must be a full 40- or 64-character hexadecimal SHA \(the PR headRefOid\)/);
 });
 
 test('status.reconciliation is null when unmarked and a full packet once marked', () => {
@@ -376,10 +392,11 @@ test('CLI claim-retry and claim-initial-request refuse a head with a recorded re
   assert.strictEqual(initial, '{"claimed":false,"reason":"needs-reconciliation"}\n');
 });
 
-test('Claude and Codex review-until-lgtm skills pin the reconciliation extraction rules', () => {
+test('Claude, Codex, and Copilot review-until-lgtm skills pin the reconciliation extraction rules', () => {
   const claude = fs.readFileSync(CLAUDE_SKILL, 'utf8');
   const codex = fs.readFileSync(CODEX_SKILL, 'utf8');
-  for (const skill of [claude, codex]) {
+  const copilot = fs.readFileSync(COPILOT_SKILL, 'utf8');
+  for (const skill of [claude, codex, copilot]) {
     assert.match(skill, /record-review <pr> <head-sha>/);
     assert.match(skill, /before any retry claim/);
     assert.match(skill, /commit_id/);
@@ -393,12 +410,30 @@ test('Claude and Codex review-until-lgtm skills pin the reconciliation extractio
     assert.match(skill, /needs-reconciliation/);
     assert.match(skill, /does not edit source/);
     assert.match(skill, /no existing review record for the head/);
-    assert.match(skill, /Defer to `record-review`'s outcome/);
+    assert.match(skill, /When a matching Codex review object exists for the head, defer to `record-review`'s outcome/);
     assert.match(skill, /each recorded review's id and URL/);
     assert.match(skill, /each unresolved finding's URL with its P1\/P2 priority/);
     assert.match(skill, /the batch count/);
     assert.match(skill, /resume, revise, split, and defer choices/);
     assert.match(skill, /a new head \(a new commit\) is required/);
     assert.match(skill, /if `record-review` exits non-zero or rejects the observation, stop and report it; never claim or request a review for that head afterward/i);
+  }
+});
+
+test('Claude, Codex, and Copilot review-until-lgtm skills pin the no-review-object green rule', () => {
+  const claude = fs.readFileSync(CLAUDE_SKILL, 'utf8');
+  const codex = fs.readFileSync(CODEX_SKILL, 'utf8');
+  const copilot = fs.readFileSync(COPILOT_SKILL, 'utf8');
+  for (const skill of [claude, codex, copilot]) {
+    assert.match(skill, /no Codex review has `commit_id` equal to the full `headRefOid`/);
+    assert.match(skill, /`reconciliation` is `null`/);
+    assert.match(skill, /every row of the bot-authored summary comment is `✅ Completed` and its Commit is a prefix of the full `headRefOid`/);
+    assert.match(skill, /a \+1 reaction on the PR from the Codex bot login.*created_at.*at or after that row's completion/);
+    assert.match(skill, /A \+1 created before the completion time never counts/);
+    assert.match(skill, /If 1-3 hold but no qualifying \+1 appears by the persisted deadline, report `completed-without-lgtm`/);
+    assert.match(skill, /the reaction lands on the PR, never on the summary comment/);
+    assert.match(skill, /Count only unresolved bot threads created by this matching review as findings/);
+    assert.match(skill, /an unresolved thread left over from an earlier head's review is not a finding for this head's review/);
+    assert.match(skill, /state the reaction's `created_at` and the row's completion time/);
   }
 });
