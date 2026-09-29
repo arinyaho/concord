@@ -1,5 +1,7 @@
 # review-until-lgtm design
 
+Superseded by `docs/design/2026-09-29-review-until-lgtm-reconciliation.md`, which defines the green, `completed-without-lgtm`, and `needs-reconciliation` outcomes and the durable review record.
+
 ## Decision
 
 Add a shared `review-until-lgtm` skill rather than a new review engine. The GitHub Codex reaction and review-thread state live on GitHub, so a skill can inspect the source of truth with the existing GitHub CLI without persisting a second state machine.
