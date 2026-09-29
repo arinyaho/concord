@@ -14,6 +14,8 @@ const repoRoot = path.dirname(path.dirname(codexRoot));                   // rep
 const coreDir = path.join(repoRoot, 'plugins/concord/core');
 const codexAdaptersDir = path.join(repoRoot, 'plugins/concord/adapters/codex');
 const engineDir = path.join(codexRoot, 'engine');
+const sharedSkillsDir = path.join(repoRoot, 'plugins/concord/skills');
+const packagedSkillsDir = path.join(codexRoot, 'skills');
 
 fs.rmSync(engineDir, { recursive: true, force: true });
 fs.mkdirSync(engineDir, { recursive: true });
@@ -27,4 +29,11 @@ for (const f of ['statedir.js', 'transcript.js', 'event.js']) {
   fs.copyFileSync(path.join(codexAdaptersDir, f), path.join(engineDir, f));
   n++;
 }
+
+fs.copyFileSync(
+  path.join(sharedSkillsDir, 'review-until-lgtm', 'SKILL.md'),
+  path.join(packagedSkillsDir, 'review-until-lgtm', 'SKILL.md'),
+);
+n++;
+
 console.log(`bundled ${n} files into engine/`);
