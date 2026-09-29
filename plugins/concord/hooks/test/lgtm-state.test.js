@@ -437,3 +437,14 @@ test('Claude, Codex, and Copilot review-until-lgtm skills pin the no-review-obje
     assert.match(skill, /state the reaction's `created_at` and the row's completion time/);
   }
 });
+
+test('Claude, Codex, and Copilot review-until-lgtm skills pin the review-path fresh-reaction rule and second precision', () => {
+  const claude = fs.readFileSync(CLAUDE_SKILL, 'utf8');
+  const codex = fs.readFileSync(CODEX_SKILL, 'utf8');
+  const copilot = fs.readFileSync(COPILOT_SKILL, 'utf8');
+  for (const skill of [claude, codex, copilot]) {
+    assert.match(skill, /`lgtm` is true only when a \+1 reaction on the PR from the Codex bot login has `created_at` at or after the review's `submitted_at`, comparing both truncated to whole seconds/);
+    assert.match(skill, /truncated to whole seconds so a \+1 in the same second as (submission|completion) counts/);
+    assert.match(skill, /true is green, false is `completed-without-lgtm`/);
+  }
+});
