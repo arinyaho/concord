@@ -101,9 +101,11 @@ function openInitiativeRun({ stateDir, key, repository, maxLaunches, maxRounds, 
   return run;
 }
 
-function reserveLaunch(run, launch) {
+// Reserves `count` launches of one role as a unit under a single lock: either
+// every launch is recorded or none is. reserveLaunch is the count === 1 case.
+function reserveLaunchBatch(run, launch, count = 1) {
   return Boolean(locked(run, (ledger) => {
-    if (!ledger || ledger.status !== 'active' || !Number.isInteger(launch.round) || ledger.launches.length >= ledger.budget.maxLaunches) return null;
+    if (!ledger || ledger.status !== 'active' || !Number.isInteger(launch.round) || !Number.isInteger(count) || count < 1 || ledger.launches.length + count > ledger.budget.maxLaunches) return null;
     const target = launch.target || launch.revision?.ref || 'unknown';
     if ((ledger.dispositions || []).some((disposition) => disposition.target === target && disposition.kind === 'terminal')) return null;
     const round = `${target}\u0000${typeof launch.attemptId === 'string' ? launch.attemptId : 'legacy'}\u0000${launch.round}`;
@@ -111,8 +113,13 @@ function reserveLaunch(run, launch) {
     if (!rounds.includes(round) && rounds.length >= ledger.budget.maxRounds) return null;
     const revision = launch.revision && { ref: launch.revision.ref || target, ...(launch.revision.base ? { base: launch.revision.base } : {}), ...((launch.revision.head_sha || launch.revision.head) ? { head_sha: launch.revision.head_sha || launch.revision.head } : {}) };
     const targets = revision && !(ledger.targets || []).some((item) => same(item, revision)) ? [...(ledger.targets || []), revision] : (ledger.targets || []);
-    return { ...ledger, rounds: rounds.includes(round) ? rounds : [...rounds, round], targets, launches: [...ledger.launches, { role: launch.role, round: launch.round, ...(target === 'unknown' ? {} : { target }) }] };
+    const entry = { role: launch.role, round: launch.round, ...(target === 'unknown' ? {} : { target }) };
+    return { ...ledger, rounds: rounds.includes(round) ? rounds : [...rounds, round], targets, launches: [...ledger.launches, ...Array.from({ length: count }, () => ({ ...entry }))] };
   }));
+}
+
+function reserveLaunch(run, launch) {
+  return reserveLaunchBatch(run, launch, 1);
 }
 
 function recordDisposition(run, { target, revision, result, packet = {}, finding = null, stage = null, avoidedLaunches = 0, findings = {}, checks = [], telemetry = [] }) {
@@ -223,4 +230,4 @@ function finaliseInitiativeRun(run, reason = 'finalised') {
   return Boolean(locked(run, (ledger) => ledger?.status === 'terminal' ? undefined : (ledger?.status === 'active' && { ...ledger, status: 'terminal', terminal: { reason }, reconciliation: ledger.reconciliation || { terminals: [], hint: hint(reason) } })));
 }
 
-module.exports = { canonicalPath, runPath, repositoryIdentity, openInitiativeRun, reserveLaunch, normalizeDisposition, recordDisposition, consumeDispositionDelivery, terminalTarget, selectDisposition, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };
+module.exports = { canonicalPath, runPath, repositoryIdentity, openInitiativeRun, reserveLaunch, reserveLaunchBatch, normalizeDisposition, recordDisposition, consumeDispositionDelivery, terminalTarget, selectDisposition, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };

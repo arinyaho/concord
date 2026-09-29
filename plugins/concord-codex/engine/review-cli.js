@@ -14,6 +14,7 @@ const reviewTelemetry = require('./review-telemetry');
 const {
   targetSlug,
   readLedger,
+  ledgerPath,
   writeLedger,
   deleteLedger,
   emptyLedger,
@@ -22,6 +23,8 @@ const {
   unparkFinding,
   resetUnreachable,
 } = require('./review');
+const crypto = require('node:crypto');
+const { canonicalPath, openInitiativeRun, reserveLaunchBatch, recordDisposition, finaliseInitiativeRun } = require('./initiative-review-run');
 const { acquireTarget, gitDiff, gitHeadSha, gitDirty } = require('./target');
 const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
 
@@ -455,9 +458,130 @@ function firstRetryArtifact(retries) {
   return role ? { role, prompt } : null;
 }
 
+// Keyed initiative runs (native Claude/Copilot drivers). The host model spawns
+// reviewers, so the CLI cannot stop a launch: it reserves launches up front
+// (`reserve`) and refuses to accept evidence from an unreserved launch.
+const INITIATIVE_FLAGS = [['--initiative-run-key', 'key'], ['--initiative-state-dir', 'stateDir'], ['--initiative-max-launches', 'maxLaunches'], ['--initiative-max-rounds', 'maxRounds']];
+const RESERVE_ROLES = ['correctness', 'verify', 'intent', 'gate-review', 'gate-verify', 'fix', 'lens', 'vote'];
+const ARTIFACT_RESERVE_ROLE = { correctness: 'correctness', verify: 'verify', intent: 'intent', gate: 'gate-review', 'gate-verify': 'gate-verify' };
+
+function extractInitiative(argv) {
+  const args = argv.slice();
+  const found = {};
+  for (const [flag, field] of INITIATIVE_FLAGS) {
+    const i = args.indexOf(flag);
+    if (i === -1) continue;
+    found[field] = args[i + 1];
+    args.splice(i, 2);
+  }
+  if (Object.keys(found).length === 0) return { args, initiative: null };
+  if (!found.key || !found.stateDir || !/^[1-9]\d*$/.test(found.maxLaunches || '') || !/^[1-9]\d*$/.test(found.maxRounds || '')) {
+    throw new Error('review-cli: --initiative-run-key, --initiative-state-dir, --initiative-max-launches and --initiative-max-rounds must be used together, with positive integer budgets');
+  }
+  if (!path.isAbsolute(found.stateDir)) throw new Error('review-cli: --initiative-state-dir must be absolute');
+  return { args, initiative: found };
+}
+
+function openKeyedRun(initiative) {
+  const stateDir = canonicalPath(initiative.stateDir);
+  return openInitiativeRun({ stateDir, key: initiative.key, repository: canonicalPath(process.env.REVIEW_REPO_ROOT || process.cwd()), maxLaunches: Number(initiative.maxLaunches), maxRounds: Number(initiative.maxRounds), allowTerminal: true });
+}
+
+function reservedCount(ledger, role, round, panel) {
+  return (ledger.initiative_reservations || []).filter((r) => r.role === role && r.round === round && (panel === undefined || r.panel === panel)).reduce((sum, r) => sum + r.count, 0);
+}
+
+// Rejects evidence lacking a matching reservation and fails the keyed run
+// closed. `needs` is [{ role, present, panel? }]: how many artifacts of that
+// role exist on disk for the active round.
+const launchKey = (role, round, panel) => `${role}|${round}|${panel || ''}`;
+function launchedBefore(ledger, role, round, panel) {
+  return ledger.initiative_launched?.[launchKey(role, round, panel)] || 0;
+}
+function withSupersededLaunch(ledger, role, round, panel) {
+  const key = launchKey(role, round, panel);
+  return { ...ledger, initiative_launched: { ...ledger.initiative_launched, [key]: launchedBefore(ledger, role, round, panel) + 1 } };
+}
+
+// Exclusive lock on the target ledger (same mkdir style as the initiative
+// ledger lock) with bounded retry, so parallel `reserve` calls serialize.
+function withTargetLock(ledgerFile, fn) {
+  const lock = `${ledgerFile}.lock`;
+  const deadline = Date.now() + 10000;
+  fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
+  for (;;) {
+    try { fs.mkdirSync(lock); break; } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      if (Date.now() > deadline) throw new Error(`target ledger lock is held: ${lock}; if no review-cli process is running, remove it with: rmdir "${lock}"`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+  }
+  try { return fn(); } finally { fs.rmdirSync(lock); }
+}
+
+function requireReservations(run, ledger, needs, what) {
+  if (!run) return;
+  const fail = (message) => {
+    if (!finaliseInitiativeRun(run, 'unreserved-evidence')) throw new Error(`harness-failure: ${what}: ${message}; could not finalise the keyed initiative run (lock contended), it is still active`);
+    throw new Error(`harness-failure: ${what}: ${message}; the keyed initiative run is failed closed`);
+  };
+  if (JSON.parse(fs.readFileSync(run.path, 'utf8')).status !== 'active') throw new Error(`harness-failure: ${what}: the keyed initiative run is not active`);
+  for (const { role, present: files, panel } of needs) {
+    // A superseded attempt (retry, failed launch) overwrote the same artifact
+    // path but consumed a launch, so it counts against the reservation too.
+    const present = files > 0 ? files + launchedBefore(ledger, role, ledger.round, panel) : 0;
+    if (present > reservedCount(ledger, role, ledger.round, panel)) fail(`evidence for "${role}" has no matching launch reservation for round ${ledger.round}`);
+  }
+}
+
+function roundFiles(stateDir, n, pattern) {
+  try { return fs.readdirSync(stateDir).filter((f) => pattern.test(f)).length; } catch (e) { return 0; }
+}
+
+function gatesNeeds(stateDir, n) {
+  return Object.entries(ARTIFACT_RESERVE_ROLE).map(([name, role]) => ({ role, present: fs.existsSync(path.join(stateDir, `round-${n}-${name}.json`)) ? 1 : 0 }));
+}
+
+// Under a keyed run every verb read-modify-writes the target ledger inside one
+// target-ledger lock, so parallel verbs never lose an update. `show` only reads.
 function main(resolveFromCwd) {
-  const [verb, ref, ...rest] = process.argv.slice(2);
+  const { args, initiative } = extractInitiative(process.argv.slice(2));
+  if (!initiative || !args[1] || args[0] === 'show') return runVerb(resolveFromCwd, args, initiative);
+  return withTargetLock(ledgerPath(resolveStateDir(resolveFromCwd), targetSlug(args[1])), () => runVerb(resolveFromCwd, args, initiative));
+}
+
+function runVerb(resolveFromCwd, args, initiative) {
+  const [verb, ref, ...rest] = args;
   const stateDir = resolveStateDir(resolveFromCwd);
+  // `reserve` opens the run inside the target-ledger lock main() holds so parallel first calls serialize.
+  const run = initiative && verb !== 'reserve' && verb !== 'show' ? openKeyedRun(initiative) : null;
+
+  if (verb === 'reserve') {
+    requireRef(ref, 'reserve');
+    const role = rest[0];
+    if (!RESERVE_ROLES.includes(role)) throw new Error(`reserve: role must be one of ${RESERVE_ROLES.join(' | ')}`);
+    const flag = rest.indexOf('--count');
+    const count = flag === -1 ? (role === 'lens' ? GATE_PANEL_LENSES.length : 1) : Number(rest[flag + 1]);
+    const valid = Number.isInteger(count) && count >= 1 && (role === 'lens' ? count === GATE_PANEL_LENSES.length : role === 'vote' ? count % 3 === 0 : role === 'fix' || count === 1);
+    if (!valid) throw new Error(`reserve: invalid --count ${count} for role "${role}" (lens: exactly ${GATE_PANEL_LENSES.length}; vote: a multiple of 3; fix: any positive count; others: 1)`);
+    if (!initiative) { process.stdout.write(`${JSON.stringify({ status: 'granted', keyed: false, role, count })}\n`); return; }
+    const slug = targetSlug(ref);
+    const result = (() => {
+      const run = openKeyedRun(initiative);
+      const ledger = readLedger(stateDir, slug);
+      const panelPending = ledger?.phase === 'done' && ledger.status === 'gate-panel-pending';
+      if (!ledger || (!['gates', 'fixes'].includes(ledger.phase) && !panelPending)) throw new Error(`reserve: no active review work for ref "${ref}" ${stateDirHint(stateDir)}`);
+      const target = ledger.target?.ref || ref;
+      const revision = { ref: target, ...(ledger.target?.base ? { base: ledger.target.base } : {}), ...(ledger.target?.head_sha ? { head_sha: ledger.target.head_sha } : {}) };
+      if (!reserveLaunchBatch(run, { role, round: ledger.round, target, revision, attemptId: ledger.attemptId }, count)) return { status: 'denied', role, count, round: ledger.round };
+      const token = crypto.randomBytes(16).toString('hex');
+      const panel = role === 'lens' || role === 'vote' ? (ledger.gate_panel?.round || 0) + 1 : undefined;
+      writeLedger(stateDir, slug, { ...ledger, initiative_reservations: [...(ledger.initiative_reservations || []), { token, role, round: ledger.round, ...(panel ? { panel } : {}), count }] });
+      return { status: 'granted', role, count, round: ledger.round, token };
+    })();
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return;
+  }
 
   if (verb === 'telemetry-slot') {
     requireRef(ref, 'telemetry-slot');
@@ -546,6 +670,8 @@ function main(resolveFromCwd) {
             writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, retryArtifacts, retryArtifact: firstRetryArtifact(retryArtifacts) } });
           }
           fs.writeFileSync(retryPath, '1\n');
+          // A retry is a new launch: it must be reserved again before its evidence is accepted.
+          if (run && ARTIFACT_RESERVE_ROLE[name]) writeLedger(stateDir, slug, withSupersededLaunch(readLedger(stateDir, slug), ARTIFACT_RESERVE_ROLE[name], n));
           process.stdout.write(JSON.stringify({ status: 'retry', artifact: name, prompt }) + '\n');
           return;
         }
@@ -564,7 +690,8 @@ function main(resolveFromCwd) {
     if (!failure || typeof failure.role !== 'string' || typeof failure.kind !== 'string' || typeof failure.message !== 'string') throw new Error('round-failure: failure requires role, kind, and message strings');
     const execution = ledger.execution || { round: ledger.round, completed: [], pending: [] };
     const entry = { role: failure.role, kind: failure.kind, message: failure.message, ...(failure.exitCode !== undefined ? { exitCode: failure.exitCode } : {}), ...(failure.signal ? { signal: failure.signal } : {}), at: new Date().toISOString() };
-    writeLedger(stateDir, slug, { ...ledger, execution: { ...execution, failures: [...(execution.failures || []), entry].slice(-5), failure: entry } });
+    const failed = { ...ledger, execution: { ...execution, failures: [...(execution.failures || []), entry].slice(-5), failure: entry } };
+    writeLedger(stateDir, slug, run && ARTIFACT_RESERVE_ROLE[failure.role] ? withSupersededLaunch(failed, ARTIFACT_RESERVE_ROLE[failure.role], ledger.round) : failed);
     process.stdout.write(JSON.stringify({ status: 'recorded', round: ledger.round, retryable: true }) + '\n');
     return;
   }
@@ -605,6 +732,10 @@ function main(resolveFromCwd) {
     if (gp.status === 'done') throw new Error('harness-failure: gate-panel-round-record: the panel already finished this convergence attempt');
     const n = ledger.round;
     const m = (gp.round || 0) + 1;
+    requireReservations(run, ledger, [
+      { role: 'lens', present: GATE_PANEL_LENSES.filter((lens) => fs.existsSync(path.join(stateDir, `round-${n}-gate-panel-${m}-${lens}.json`))).length, panel: m },
+      { role: 'vote', present: roundFiles(stateDir, n, new RegExp(`^round-${n}-gate-panel-${m}-vote-.*\\.json$`)), panel: m },
+    ], 'gate-panel-round-record');
 
     // Each lens is read leniently (missing/malformed -> zero findings this
     // round) -- a single flaky lens subagent must not blow up a
@@ -1106,6 +1237,7 @@ function main(resolveFromCwd) {
     }
     ledger = reviewTelemetry.foldTelemetry(stateDir, ledger, slug);
     if (!ledger || ledger.phase !== 'fixes') throw new Error(`record: expected phase "fixes", got "${ledger && ledger.phase}" ${stateDirHint(stateDir)}`);
+    requireReservations(run, ledger, [...gatesNeeds(stateDir, n), { role: 'fix', present: roundFiles(stateDir, n, new RegExp(`^round-${n}-fix-.*\\.json$`)) }], 'record');
 
     // Per-finding fix artifacts (round-<n>-fix-<safe-id>.json) stay lenient: a
     // missing/non-ok fix artifact is a legitimate outcome (the fixer never
@@ -1266,6 +1398,24 @@ function main(resolveFromCwd) {
     if (isGit) gitCheckoutTree(repoRoot);
     const finalChecks = [{ name: 'definition-of-done', status: ledger.dod?.deferred ? 'deferred' : ledger.dod?.passed ? 'passed' : 'failed' }];
     ledger = { ...ledger, phase: 'done', last_recorded_round: n, _lastDecision: decision, reconciliationPacket: reconciliation || null, finalChecks };
+    if (run && !decision.continue && !decision.panelPending) {
+      // Same disposition path, packet shape, and privacy contract as the Codex
+      // runner: raw ref/SHA stay in the local ledger; no artifact path is stored.
+      const target = ledger.target?.ref || ref;
+      const head_sha = isGit ? gitHeadSha(repoRoot) : ledger.target?.head_sha;
+      const revision = { ref: target, ...(ledger.target?.base ? { base: ledger.target.base } : {}), head_sha };
+      const escaped = require('./initiative-review-run').normalizeDisposition({ decision, reconciliation }).kind === 'escape';
+      const recorded = recordDisposition(run, {
+        target, revision, result: { decision, reconciliation },
+        packet: { trigger: escaped ? 'escape' : 'terminal', exit: { code: 0, signal: null }, dod: { status: finalChecks[0].status === 'passed' ? 'passed' : finalChecks[0].status }, telemetry: { complete: false }, nextAction: escaped ? 'resume' : 'replay', handoff: renderHandoff({ ledger }) },
+        finding: reconciliation?.finding || null, stage: reconciliation?.stage || null, avoidedLaunches: reconciliation?.avoidedLaunches || 0, findings: reconciliation?.findings || {}, checks: finalChecks,
+      });
+      // Match by target + revision + kind (as the Codex runner does), and fail without
+      // marking the target ledger done so a re-run of `record` can still record it.
+      const kind = escaped ? 'escape' : 'terminal';
+      const entry = (JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions || []).findLast((d) => d.target === target && JSON.stringify(d.revision) === JSON.stringify(revision) && d.kind === kind);
+      if (!entry || (!recorded && kind === 'escape' && entry.packet?.delivery?.consumed !== false)) throw new Error('harness-failure: record: initiative target disposition recording was contended; re-run record');
+    }
     writeLedger(stateDir, slug, ledger);
     if (R.TERMINAL_STATUSES.has(ledger.status)) reviewTelemetry.deleteTelemetry(stateDir, ledger.target?.ref || ref, slug);
     process.stdout.write(JSON.stringify({ decision, handoff: renderHandoff({ ledger }), telemetry: ledger.telemetry || null, reconciliation: ledger.reconciliationPacket || undefined, checks: finalChecks }) + '\n');
@@ -1286,6 +1436,7 @@ function main(resolveFromCwd) {
     // discard that round's gate-review/gate-verify findings.
     const gateApplied = !!ledger.gateApplied;
     const n = ledger.round;
+    requireReservations(run, ledger, gatesNeeds(stateDir, n), 'plan-fixes');
     requireArtifactAfter(stateDir, n, 'correctness', 'verify');
     const cJson = readArtifact(stateDir, n, 'correctness');
     const vJson = readArtifact(stateDir, n, 'verify');
@@ -1558,6 +1709,9 @@ function main(resolveFromCwd) {
     if (!ledger || ledger.phase !== 'fixes') throw new Error(`commit-fix: expected phase "fixes", got "${ledger && ledger.phase}" ${stateDirHint(stateDir)}`);
     const n = ledger.round;
     if ((ledger.journal || []).some((j) => j.id === id)) { process.stdout.write(JSON.stringify({ committed: false, reason: 'already journaled' }) + '\n'); return; } // idempotent
+    if (run) {
+      requireReservations(run, ledger, [{ role: 'fix', present: 1 + (ledger.initiative_fix_used?.[n] || 0) }], 'commit-fix');
+    }
     const fx = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-fix-${safeIdForFilename(id)}.json`), 'utf8')); } catch (e) { return null; } })();
     const readRound = (role) => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-${role}.json`), 'utf8')); } catch (e) { return { findings: [] }; } };
     // Both artifacts, for the same reason plan-fixes reads both: a verify-added
@@ -1602,6 +1756,7 @@ function main(resolveFromCwd) {
     if (fx && fx.status === 'ok' && fx.edited === true && finding.file && files.some((f) => gitIsDirtyForFile(repoRoot, f))) {
       const sha = gitCommitFix(repoRoot, id, finding.summary, files);
       ledger = { ...ledger, journal: [...(ledger.journal || []), { id, sha, file: finding.file, files, span: finding.span, resolutions }] };
+      if (run) ledger = { ...ledger, initiative_fix_used: { ...ledger.initiative_fix_used, [n]: (ledger.initiative_fix_used?.[n] || 0) + 1 } };
       writeLedger(stateDir, slug, ledger);
       process.stdout.write(JSON.stringify({ committed: true, sha }) + '\n');
     } else {
@@ -1610,7 +1765,7 @@ function main(resolveFromCwd) {
     return;
   }
 
-  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | telemetry-slot | plan-fixes | commit-fix | record | round-failure | gate-panel-round-start | gate-panel-round-record | unpark | dismiss | reset | rerun | artifact-normalize)`);
+  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | telemetry-slot | plan-fixes | commit-fix | record | round-failure | gate-panel-round-start | gate-panel-round-record | unpark | dismiss | reset | rerun | artifact-normalize | reserve)`);
 }
 
 // Wraps main() with the graceful operator-facing error format. Exported (not
