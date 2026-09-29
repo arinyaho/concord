@@ -505,18 +505,50 @@ function withSupersededLaunch(ledger, role, round, panel) {
 
 // Exclusive lock on the target ledger (same mkdir style as the initiative
 // ledger lock) with bounded retry, so parallel `reserve` calls serialize.
-function withTargetLock(ledgerFile, fn) {
+// The holder writes its pid into the lock directory. It is shown when the lock
+// cannot be taken, never used to decide anything. A stuck lock is never
+// reclaimed automatically: on an interactive terminal the operator may confirm
+// its removal, otherwise the error names the one command that clears it.
+function lockOwner(lock) {
+  let pid;
+  try { pid = Number.parseInt(fs.readFileSync(path.join(lock, 'owner'), 'utf8'), 10); } catch (e) { return 'owner unknown'; }
+  if (!Number.isInteger(pid) || pid < 1) return 'owner unknown';
+  let alive = true;
+  try { process.kill(pid, 0); } catch (e) { alive = e.code === 'EPERM'; }
+  return `owner pid ${pid} (${alive ? 'still running' : 'not running'})`;
+}
+
+function promptRemoveLock(question) {
+  if (!process.stdin.isTTY || !process.stderr.isTTY) return null;
+  process.stderr.write(`${question} [y/N] `);
+  const buffer = Buffer.alloc(64);
+  let read = 0;
+  try { read = fs.readSync(0, buffer, 0, buffer.length, null); } catch (e) { return false; }
+  return /^y(es)?$/i.test(buffer.toString('utf8', 0, read).trim());
+}
+
+function withTargetLock(ledgerFile, fn, { confirm = promptRemoveLock, waitMs = 10000 } = {}) {
   const lock = `${ledgerFile}.lock`;
-  const deadline = Date.now() + 10000;
+  const deadline = Date.now() + waitMs;
   fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
+  let offered = false;
   for (;;) {
     try { fs.mkdirSync(lock); break; } catch (e) {
       if (e.code !== 'EEXIST') throw e;
-      if (Date.now() > deadline) throw new Error(`target ledger lock is held: ${lock}; if no review-cli process is running, remove it with: rmdir "${lock}"`);
+      if (Date.now() > deadline) {
+        const held = `target ledger lock is held: ${lock} (${lockOwner(lock)})`;
+        if (!offered && confirm && confirm(`${held}. Remove it and continue?`)) {
+          offered = true;
+          fs.rmSync(lock, { recursive: true, force: true });
+          continue;
+        }
+        throw new Error(`${held}; if no review-cli process is running, remove it with: rm -r "${lock}"`);
+      }
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
     }
   }
-  try { return fn(); } finally { fs.rmdirSync(lock); }
+  try { fs.writeFileSync(path.join(lock, 'owner'), `${process.pid}\n`); } catch (e) { /* informational only */ }
+  try { return fn(); } finally { fs.rmSync(lock, { recursive: true, force: true }); }
 }
 
 function requireReservations(run, ledger, needs, what) {
@@ -1404,16 +1436,17 @@ function runVerb(resolveFromCwd, args, initiative) {
       const target = ledger.target?.ref || ref;
       const head_sha = isGit ? gitHeadSha(repoRoot) : ledger.target?.head_sha;
       const revision = { ref: target, ...(ledger.target?.base ? { base: ledger.target.base } : {}), head_sha };
-      const escaped = require('./initiative-review-run').normalizeDisposition({ decision, reconciliation }).kind === 'escape';
+      const disposition = require('./initiative-review-run').normalizeDisposition({ decision, reconciliation });
+      const escaped = disposition.kind === 'escape';
       const recorded = recordDisposition(run, {
         target, revision, result: { decision, reconciliation },
         packet: { trigger: escaped ? 'escape' : 'terminal', exit: { code: 0, signal: null }, dod: { status: finalChecks[0].status === 'passed' ? 'passed' : finalChecks[0].status }, telemetry: { complete: false }, nextAction: escaped ? 'resume' : 'replay', handoff: renderHandoff({ ledger }) },
         finding: reconciliation?.finding || null, stage: reconciliation?.stage || null, avoidedLaunches: reconciliation?.avoidedLaunches || 0, findings: reconciliation?.findings || {}, checks: finalChecks,
       });
-      // Match by target + revision + kind (as the Codex runner does), and fail without
+      // Match by target + revision + kind, and reason for an escape (as the Codex runner does), and fail without
       // marking the target ledger done so a re-run of `record` can still record it.
       const kind = escaped ? 'escape' : 'terminal';
-      const entry = (JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions || []).findLast((d) => d.target === target && JSON.stringify(d.revision) === JSON.stringify(revision) && d.kind === kind);
+      const entry = (JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions || []).findLast((d) => d.target === target && JSON.stringify(d.revision) === JSON.stringify(revision) && d.kind === kind && (!escaped || d.reason === disposition.reason));
       if (!entry || (!recorded && kind === 'escape' && entry.packet?.delivery?.consumed !== false)) throw new Error('harness-failure: record: initiative target disposition recording was contended; re-run record');
     }
     writeLedger(stateDir, slug, ledger);
@@ -1782,4 +1815,4 @@ function runMain(resolveFromCwd) {
   }
 }
 
-module.exports = { gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitCheckoutTree, runDod, changedGitPaths, main, runMain };
+module.exports = { gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitCheckoutTree, runDod, changedGitPaths, main, runMain, withTargetLock };
