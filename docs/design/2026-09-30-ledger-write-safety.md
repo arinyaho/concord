@@ -27,6 +27,6 @@ Applying the same rule to the charter and other durable files was rejected: it w
 ## Trade-offs and residual exposure
 
 - A corrupt review ledger now blocks its ref until a human runs `reset` or `rerun`. This is deliberate: the alternative silently discards budget and findings.
-- `reset` on an unreadable ledger cannot know how many rounds it held, so it does not sweep that run's round artifacts. A later run overwrites them by name.
+- `reset` on an unreadable ledger cannot know how many rounds it held, so it does not sweep that run's round artifacts. The next `round-start` clears the artifacts of the round it is about to run before reading any, and leftovers from later round numbers are never read.
 - Retry is bounded, so a rename blocked longer than the backoff window still fails the write. The caller sees the error and the previous file is intact.
 - Retry and backoff behavior is verified only with injected rename failures. It is not verified on Windows.
