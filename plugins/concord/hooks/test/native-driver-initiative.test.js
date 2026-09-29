@@ -7,7 +7,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync, spawnSync } = require('node:child_process');
+const { execFileSync, spawnSync, spawn } = require('node:child_process');
 const { openInitiativeRun, reserveLaunch, publicInitiativeSummary } = require('../../core/initiative-review-run');
 const review = require('../../core/review');
 const { safeIdForFilename } = require('../../core/artifact-name');
@@ -185,6 +185,66 @@ for (const provider of Object.keys(PROVIDERS)) {
     assert.ok(!summary.includes('feat/x') && !summary.includes(disposition.revision.head_sha));
     assert.match(JSON.parse(summary).targetIds[0], /^[0-9a-f]{64}$/);
     assert.strictEqual(JSON.parse(summary).counts.launches, 2);
+  });
+
+  test(`${provider}: a retried launch needs a fresh reservation (P2-1)`, () => {
+    for (const reserveAgain of [false, true]) {
+      const t = setup(provider);
+      const n = t.start();
+      t.ok(['reserve', 'feat/x', 'correctness']); t.ok(['reserve', 'feat/x', 'verify']);
+      t.write(n, 'correctness', { status: 'ok', examined: [], findings: [] });
+      assert.strictEqual(t.ok(['artifact-normalize', 'feat/x', 'correctness']).status, 'retry');
+      if (reserveAgain) assert.strictEqual(t.ok(['reserve', 'feat/x', 'correctness']).status, 'granted');
+      t.write(n, 'correctness', CLEAN);
+      assert.strictEqual(t.ok(['artifact-normalize', 'feat/x', 'correctness']).status, 'ok');
+      t.write(n, 'verify', { status: 'ok', rejected: [] });
+      const r = t.cli(['plan-fixes', 'feat/x']);
+      if (reserveAgain) assert.strictEqual(r.status, 0, r.stderr);
+      else {
+        assert.notStrictEqual(r.status, 0, 'retry accepted on one reservation');
+        assert.match(r.stderr, /harness-failure: .*reservation/);
+        assert.strictEqual(t.initiative().status, 'terminal');
+      }
+    }
+  });
+
+  test(`${provider}: parallel reserve calls serialize: budget consumed equals tokens kept (P2-2)`, async () => {
+    const t = setup(provider, { maxLaunches: 5 });
+    t.start();
+    const args = [PROVIDERS[provider], 'reserve', 'feat/x', 'correctness', '--initiative-run-key', 'key-1', '--initiative-state-dir', t.initDir, '--initiative-max-launches', '5', '--initiative-max-rounds', '5'];
+    const child = () => new Promise((resolve) => {
+      const c = spawn('node', args, { env: t.env, cwd: t.repo });
+      let out = ''; c.stdout.on('data', (d) => { out += d; }); c.stderr.on('data', (d) => { out += d; }); c.on('close', () => resolve(out));
+    });
+    const outs = (await Promise.all(Array.from({ length: 5 }, child))).map((o) => { try { return JSON.parse(o); } catch (_) { throw new Error(o); } });
+    assert.deepStrictEqual(outs.map((o) => o.status), Array(5).fill('granted'));
+    assert.strictEqual(t.initiative().launches.length, 5);
+    assert.strictEqual(review.readLedger(t.dir, review.targetSlug('feat/x')).initiative_reservations.length, 5);
+    assert.ok(review.readLedger(t.dir, review.targetSlug('feat/x')).initiative_reservations.every((r) => !('used' in r)));
+    assert.strictEqual(t.ok(['reserve', 'feat/x', 'verify']).status, 'denied');
+    assert.strictEqual(t.initiative().launches.length, 5);
+  });
+
+  test(`${provider}: a contended finalise while failing closed is an error, not a silent active run (P3-a)`, () => {
+    const t = setup(provider);
+    const n = t.start();
+    t.write(n, 'correctness', CLEAN);
+    t.write(n, 'verify', { status: 'ok', rejected: [] });
+    openInitiativeRun({ stateDir: t.initDir, key: 'key-1', repository: t.repo, maxLaunches: 20, maxRounds: 5 });
+    fs.mkdirSync(`${t.ledgerFile()}.lock`);
+    const r = t.cli(['plan-fixes', 'feat/x']);
+    fs.rmdirSync(`${t.ledgerFile()}.lock`);
+    assert.notStrictEqual(r.status, 0);
+    assert.match(r.stderr, /finalis\w* .*contended|contended .*finalis/);
+    assert.strictEqual(t.initiative().status, 'active');
+  });
+
+  test(`${provider}: initiative budgets without a key are an error (P3-b)`, () => {
+    const t = setup(provider);
+    t.start();
+    const r = spawnSync('node', [PROVIDERS[provider], 'reserve', 'feat/x', 'correctness', '--initiative-max-launches', '3'], { encoding: 'utf8', env: t.env, cwd: t.repo });
+    assert.notStrictEqual(r.status, 0);
+    assert.match(r.stderr, /must be used together/);
   });
 
   test(`${provider}: run key and state dir must be given together; no key keeps reserve a no-op (AC1)`, () => {

@@ -14,6 +14,7 @@ const reviewTelemetry = require('./review-telemetry');
 const {
   targetSlug,
   readLedger,
+  ledgerPath,
   writeLedger,
   deleteLedger,
   emptyLedger,
@@ -473,8 +474,11 @@ function extractInitiative(argv) {
     found[field] = args[i + 1];
     args.splice(i, 2);
   }
-  if (!found.key && !found.stateDir) return { args, initiative: null };
-  if (!found.key || !found.stateDir) throw new Error('review-cli: --initiative-run-key and --initiative-state-dir must be used together');
+  if (Object.keys(found).length === 0) return { args, initiative: null };
+  if (!found.key || !found.stateDir || !/^[1-9]\d*$/.test(found.maxLaunches || '') || !/^[1-9]\d*$/.test(found.maxRounds || '')) {
+    throw new Error('review-cli: --initiative-run-key, --initiative-state-dir, --initiative-max-launches and --initiative-max-rounds must be used together, with positive integer budgets');
+  }
+  if (!path.isAbsolute(found.stateDir)) throw new Error('review-cli: --initiative-state-dir must be absolute');
   return { args, initiative: found };
 }
 
@@ -490,14 +494,41 @@ function reservedCount(ledger, role, round, panel) {
 // Rejects evidence lacking a matching reservation and fails the keyed run
 // closed. `needs` is [{ role, present, panel? }]: how many artifacts of that
 // role exist on disk for the active round.
+const launchKey = (role, round, panel) => `${role}|${round}|${panel || ''}`;
+function launchedBefore(ledger, role, round, panel) {
+  return ledger.initiative_launched?.[launchKey(role, round, panel)] || 0;
+}
+function withSupersededLaunch(ledger, role, round, panel) {
+  const key = launchKey(role, round, panel);
+  return { ...ledger, initiative_launched: { ...ledger.initiative_launched, [key]: launchedBefore(ledger, role, round, panel) + 1 } };
+}
+
+// Exclusive lock on the target ledger (same mkdir style as the initiative
+// ledger lock) with bounded retry, so parallel `reserve` calls serialize.
+function withTargetLock(ledgerFile, fn) {
+  const lock = `${ledgerFile}.lock`;
+  const deadline = Date.now() + 10000;
+  for (;;) {
+    try { fs.mkdirSync(lock); break; } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      if (Date.now() > deadline) throw new Error('reserve: target ledger lock is held; retry');
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+  }
+  try { return fn(); } finally { fs.rmdirSync(lock); }
+}
+
 function requireReservations(run, ledger, needs, what) {
   if (!run) return;
   const fail = (message) => {
-    finaliseInitiativeRun(run, 'unreserved-evidence');
+    if (!finaliseInitiativeRun(run, 'unreserved-evidence')) throw new Error(`harness-failure: ${what}: ${message}; could not finalise the keyed initiative run (lock contended), it is still active`);
     throw new Error(`harness-failure: ${what}: ${message}; the keyed initiative run is failed closed`);
   };
   if (JSON.parse(fs.readFileSync(run.path, 'utf8')).status !== 'active') throw new Error(`harness-failure: ${what}: the keyed initiative run is not active`);
-  for (const { role, present, panel } of needs) {
+  for (const { role, present: files, panel } of needs) {
+    // A superseded attempt (retry, failed launch) overwrote the same artifact
+    // path but consumed a launch, so it counts against the reservation too.
+    const present = files > 0 ? files + launchedBefore(ledger, role, ledger.round, panel) : 0;
     if (present > reservedCount(ledger, role, ledger.round, panel)) fail(`evidence for "${role}" has no matching launch reservation for round ${ledger.round}`);
   }
 }
@@ -514,7 +545,8 @@ function main(resolveFromCwd) {
   const { args, initiative } = extractInitiative(process.argv.slice(2));
   const [verb, ref, ...rest] = args;
   const stateDir = resolveStateDir(resolveFromCwd);
-  const run = initiative && openKeyedRun(initiative);
+  // `reserve` opens the run inside its target-ledger lock so parallel first calls serialize.
+  const run = initiative && verb !== 'reserve' ? openKeyedRun(initiative) : null;
 
   if (verb === 'reserve') {
     requireRef(ref, 'reserve');
@@ -524,19 +556,22 @@ function main(resolveFromCwd) {
     const count = flag === -1 ? (role === 'lens' ? GATE_PANEL_LENSES.length : 1) : Number(rest[flag + 1]);
     const valid = Number.isInteger(count) && count >= 1 && (role === 'lens' ? count === GATE_PANEL_LENSES.length : role === 'vote' ? count % 3 === 0 : role === 'fix' || count === 1);
     if (!valid) throw new Error(`reserve: invalid --count ${count} for role "${role}" (lens: exactly ${GATE_PANEL_LENSES.length}; vote: a multiple of 3; fix: any positive count; others: 1)`);
-    if (!run) { process.stdout.write(`${JSON.stringify({ status: 'granted', keyed: false, role, count })}\n`); return; }
+    if (!initiative) { process.stdout.write(`${JSON.stringify({ status: 'granted', keyed: false, role, count })}\n`); return; }
     const slug = targetSlug(ref);
-    const ledger = readLedger(stateDir, slug);
-    const panelPending = ledger?.phase === 'done' && ledger.status === 'gate-panel-pending';
-    if (!ledger || (!['gates', 'fixes'].includes(ledger.phase) && !panelPending)) throw new Error(`reserve: no active review work for ref "${ref}" ${stateDirHint(stateDir)}`);
-    const target = ledger.target?.ref || ref;
-    const revision = { ref: target, ...(ledger.target?.base ? { base: ledger.target.base } : {}), ...(ledger.target?.head_sha ? { head_sha: ledger.target.head_sha } : {}) };
-    const granted = reserveLaunchBatch(run, { role, round: ledger.round, target, revision, attemptId: ledger.attemptId }, count);
-    if (!granted) { process.stdout.write(`${JSON.stringify({ status: 'denied', role, count, round: ledger.round })}\n`); return; }
-    const token = crypto.randomBytes(16).toString('hex');
-    const panel = role === 'lens' || role === 'vote' ? (ledger.gate_panel?.round || 0) + 1 : undefined;
-    writeLedger(stateDir, slug, { ...ledger, initiative_reservations: [...(ledger.initiative_reservations || []), { token, role, round: ledger.round, ...(panel ? { panel } : {}), count, used: 0 }] });
-    process.stdout.write(`${JSON.stringify({ status: 'granted', role, count, round: ledger.round, token })}\n`);
+    const result = withTargetLock(ledgerPath(stateDir, slug), () => {
+      const run = openKeyedRun(initiative);
+      const ledger = readLedger(stateDir, slug);
+      const panelPending = ledger?.phase === 'done' && ledger.status === 'gate-panel-pending';
+      if (!ledger || (!['gates', 'fixes'].includes(ledger.phase) && !panelPending)) throw new Error(`reserve: no active review work for ref "${ref}" ${stateDirHint(stateDir)}`);
+      const target = ledger.target?.ref || ref;
+      const revision = { ref: target, ...(ledger.target?.base ? { base: ledger.target.base } : {}), ...(ledger.target?.head_sha ? { head_sha: ledger.target.head_sha } : {}) };
+      if (!reserveLaunchBatch(run, { role, round: ledger.round, target, revision, attemptId: ledger.attemptId }, count)) return { status: 'denied', role, count, round: ledger.round };
+      const token = crypto.randomBytes(16).toString('hex');
+      const panel = role === 'lens' || role === 'vote' ? (ledger.gate_panel?.round || 0) + 1 : undefined;
+      writeLedger(stateDir, slug, { ...ledger, initiative_reservations: [...(ledger.initiative_reservations || []), { token, role, round: ledger.round, ...(panel ? { panel } : {}), count }] });
+      return { status: 'granted', role, count, round: ledger.round, token };
+    });
+    process.stdout.write(`${JSON.stringify(result)}\n`);
     return;
   }
 
@@ -627,6 +662,8 @@ function main(resolveFromCwd) {
             writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, retryArtifacts, retryArtifact: firstRetryArtifact(retryArtifacts) } });
           }
           fs.writeFileSync(retryPath, '1\n');
+          // A retry is a new launch: it must be reserved again before its evidence is accepted.
+          if (run && ARTIFACT_RESERVE_ROLE[name]) writeLedger(stateDir, slug, withSupersededLaunch(readLedger(stateDir, slug), ARTIFACT_RESERVE_ROLE[name], n));
           process.stdout.write(JSON.stringify({ status: 'retry', artifact: name, prompt }) + '\n');
           return;
         }
@@ -645,7 +682,8 @@ function main(resolveFromCwd) {
     if (!failure || typeof failure.role !== 'string' || typeof failure.kind !== 'string' || typeof failure.message !== 'string') throw new Error('round-failure: failure requires role, kind, and message strings');
     const execution = ledger.execution || { round: ledger.round, completed: [], pending: [] };
     const entry = { role: failure.role, kind: failure.kind, message: failure.message, ...(failure.exitCode !== undefined ? { exitCode: failure.exitCode } : {}), ...(failure.signal ? { signal: failure.signal } : {}), at: new Date().toISOString() };
-    writeLedger(stateDir, slug, { ...ledger, execution: { ...execution, failures: [...(execution.failures || []), entry].slice(-5), failure: entry } });
+    const failed = { ...ledger, execution: { ...execution, failures: [...(execution.failures || []), entry].slice(-5), failure: entry } };
+    writeLedger(stateDir, slug, run && ARTIFACT_RESERVE_ROLE[failure.role] ? withSupersededLaunch(failed, ARTIFACT_RESERVE_ROLE[failure.role], ledger.round) : failed);
     process.stdout.write(JSON.stringify({ status: 'recorded', round: ledger.round, retryable: true }) + '\n');
     return;
   }
