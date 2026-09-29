@@ -31,7 +31,11 @@ function readLedger(stateDir, slug) {
 
 function writeLedger(stateDir, slug, ledger) {
   fs.mkdirSync(stateDir, { recursive: true });
-  fs.writeFileSync(ledgerPath(stateDir, slug), JSON.stringify(ledger));
+  // Temp file + rename so a concurrent reader never sees partial JSON.
+  const file = ledgerPath(stateDir, slug);
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(ledger));
+  fs.renameSync(tmp, file);
 }
 
 // Removes the durable ledger for a ref so the next round-start begins a fresh

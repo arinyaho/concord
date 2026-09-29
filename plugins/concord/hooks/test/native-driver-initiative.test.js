@@ -225,6 +225,58 @@ for (const provider of Object.keys(PROVIDERS)) {
     assert.strictEqual(t.initiative().launches.length, 5);
   });
 
+  test(`${provider}: parallel reserve and telemetry-slot never lose a write over 20 trials (P2)`, async () => {
+    const t = setup(provider, { maxLaunches: 100 });
+    const n = t.start();
+    const keyed = ['--initiative-run-key', 'key-1', '--initiative-state-dir', t.initDir, '--initiative-max-launches', '100', '--initiative-max-rounds', '5'];
+    const child = (args) => new Promise((resolve) => {
+      const c = spawn('node', [PROVIDERS[provider], ...args, ...keyed], { env: t.env, cwd: t.repo });
+      let out = ''; c.stdout.on('data', (d) => { out += d; }); c.stderr.on('data', (d) => { out += d; }); c.on('close', (code) => resolve({ code, out }));
+    });
+    const slotArgs = ['telemetry-slot', 'feat/x', path.join(t.dir, `round-${n}-correctness.json`), '--engine', 'claude-code'];
+    const slug = review.targetSlug('feat/x');
+    for (let i = 0; i < 20; i++) {
+      const results = await Promise.all([child(['reserve', 'feat/x', 'correctness']), child(slotArgs), child(['reserve', 'feat/x', 'verify']), child(slotArgs)]);
+      for (const r of results) assert.strictEqual(r.code, 0, r.out);
+      const ledger = review.readLedger(t.dir, slug);
+      assert.ok(ledger, `trial ${i}: ledger unreadable`);
+      assert.strictEqual(ledger.initiative_reservations.length, 2 * (i + 1), `trial ${i}: lost reservation`);
+      assert.strictEqual(ledger.telemetrySlots.length, 2 * (i + 1), `trial ${i}: lost telemetry slot`);
+    }
+    assert.strictEqual(t.initiative().launches.length, 40);
+  });
+
+  test(`${provider}: commit-fix rerun after a thrown failure is not charged twice (P3)`, () => {
+    const t = setup(provider);
+    const n = t.start();
+    t.ok(['reserve', 'feat/x', 'correctness']); t.ok(['reserve', 'feat/x', 'verify']);
+    t.write(n, 'correctness', { ...CLEAN, findings: [finding] });
+    t.write(n, 'verify', { status: 'ok', rejected: [] });
+    t.ok(['plan-fixes', 'feat/x']);
+    t.ok(['reserve', 'feat/x', 'fix', '--count', '1']);
+    fs.writeFileSync(path.join(t.repo, 'a.txt'), 'three\n');
+    t.write(n, 'fix-correctness:bug', { status: 'ok', edited: true, files: ['a.txt'], resolvedFindingIds: 'not-an-array' });
+    const failed = t.cli(['commit-fix', 'feat/x', 'correctness:bug']);
+    assert.notStrictEqual(failed.status, 0);
+    assert.strictEqual(t.initiative().status, 'active');
+    t.write(n, 'fix-correctness:bug', { status: 'ok', edited: true, files: ['a.txt'] });
+    const committed = t.ok(['commit-fix', 'feat/x', 'correctness:bug']);
+    assert.strictEqual(committed.committed, true, JSON.stringify(committed));
+    assert.strictEqual(review.readLedger(t.dir, review.targetSlug('feat/x')).initiative_fix_used[n], 1);
+  });
+
+  test(`${provider}: a stuck target-ledger lock error names the lock path and how to clear it (P3)`, () => {
+    const t = setup(provider);
+    t.start();
+    const lock = `${path.join(t.dir, `review-${review.targetSlug('feat/x')}.json`)}.lock`;
+    fs.mkdirSync(lock);
+    const r = t.cli(['reserve', 'feat/x', 'correctness']);
+    assert.notStrictEqual(r.status, 0);
+    assert.ok(r.stderr.includes(lock), r.stderr);
+    assert.match(r.stderr, /rmdir/);
+    assert.ok(fs.existsSync(lock), 'the lock is never reclaimed automatically');
+  });
+
   test(`${provider}: a contended finalise while failing closed is an error, not a silent active run (P3-a)`, () => {
     const t = setup(provider);
     const n = t.start();

@@ -508,10 +508,11 @@ function withSupersededLaunch(ledger, role, round, panel) {
 function withTargetLock(ledgerFile, fn) {
   const lock = `${ledgerFile}.lock`;
   const deadline = Date.now() + 10000;
+  fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
   for (;;) {
     try { fs.mkdirSync(lock); break; } catch (e) {
       if (e.code !== 'EEXIST') throw e;
-      if (Date.now() > deadline) throw new Error('reserve: target ledger lock is held; retry');
+      if (Date.now() > deadline) throw new Error(`target ledger lock is held: ${lock}; if no review-cli process is running, remove it with: rmdir "${lock}"`);
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
     }
   }
@@ -541,11 +542,18 @@ function gatesNeeds(stateDir, n) {
   return Object.entries(ARTIFACT_RESERVE_ROLE).map(([name, role]) => ({ role, present: fs.existsSync(path.join(stateDir, `round-${n}-${name}.json`)) ? 1 : 0 }));
 }
 
+// Under a keyed run every verb read-modify-writes the target ledger inside one
+// target-ledger lock, so parallel verbs never lose an update. `show` only reads.
 function main(resolveFromCwd) {
   const { args, initiative } = extractInitiative(process.argv.slice(2));
+  if (!initiative || !args[1] || args[0] === 'show') return runVerb(resolveFromCwd, args, initiative);
+  return withTargetLock(ledgerPath(resolveStateDir(resolveFromCwd), targetSlug(args[1])), () => runVerb(resolveFromCwd, args, initiative));
+}
+
+function runVerb(resolveFromCwd, args, initiative) {
   const [verb, ref, ...rest] = args;
   const stateDir = resolveStateDir(resolveFromCwd);
-  // `reserve` opens the run inside its target-ledger lock so parallel first calls serialize.
+  // `reserve` opens the run inside the target-ledger lock main() holds so parallel first calls serialize.
   const run = initiative && verb !== 'reserve' ? openKeyedRun(initiative) : null;
 
   if (verb === 'reserve') {
@@ -558,7 +566,7 @@ function main(resolveFromCwd) {
     if (!valid) throw new Error(`reserve: invalid --count ${count} for role "${role}" (lens: exactly ${GATE_PANEL_LENSES.length}; vote: a multiple of 3; fix: any positive count; others: 1)`);
     if (!initiative) { process.stdout.write(`${JSON.stringify({ status: 'granted', keyed: false, role, count })}\n`); return; }
     const slug = targetSlug(ref);
-    const result = withTargetLock(ledgerPath(stateDir, slug), () => {
+    const result = (() => {
       const run = openKeyedRun(initiative);
       const ledger = readLedger(stateDir, slug);
       const panelPending = ledger?.phase === 'done' && ledger.status === 'gate-panel-pending';
@@ -570,7 +578,7 @@ function main(resolveFromCwd) {
       const panel = role === 'lens' || role === 'vote' ? (ledger.gate_panel?.round || 0) + 1 : undefined;
       writeLedger(stateDir, slug, { ...ledger, initiative_reservations: [...(ledger.initiative_reservations || []), { token, role, round: ledger.round, ...(panel ? { panel } : {}), count }] });
       return { status: 'granted', role, count, round: ledger.round, token };
-    });
+    })();
     process.stdout.write(`${JSON.stringify(result)}\n`);
     return;
   }
@@ -1700,8 +1708,6 @@ function main(resolveFromCwd) {
     if ((ledger.journal || []).some((j) => j.id === id)) { process.stdout.write(JSON.stringify({ committed: false, reason: 'already journaled' }) + '\n'); return; } // idempotent
     if (run) {
       requireReservations(run, ledger, [{ role: 'fix', present: 1 + (ledger.initiative_fix_used?.[n] || 0) }], 'commit-fix');
-      ledger = { ...ledger, initiative_fix_used: { ...ledger.initiative_fix_used, [n]: (ledger.initiative_fix_used?.[n] || 0) + 1 } };
-      writeLedger(stateDir, slug, ledger);
     }
     const fx = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-fix-${safeIdForFilename(id)}.json`), 'utf8')); } catch (e) { return null; } })();
     const readRound = (role) => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-${role}.json`), 'utf8')); } catch (e) { return { findings: [] }; } };
@@ -1747,6 +1753,7 @@ function main(resolveFromCwd) {
     if (fx && fx.status === 'ok' && fx.edited === true && finding.file && files.some((f) => gitIsDirtyForFile(repoRoot, f))) {
       const sha = gitCommitFix(repoRoot, id, finding.summary, files);
       ledger = { ...ledger, journal: [...(ledger.journal || []), { id, sha, file: finding.file, files, span: finding.span, resolutions }] };
+      if (run) ledger = { ...ledger, initiative_fix_used: { ...ledger.initiative_fix_used, [n]: (ledger.initiative_fix_used?.[n] || 0) + 1 } };
       writeLedger(stateDir, slug, ledger);
       process.stdout.write(JSON.stringify({ committed: true, sha }) + '\n');
     } else {
