@@ -12,19 +12,23 @@ A new verb, `record-review <pr> <head-sha>`, reads one normalized observation as
  "findings": [{"url": "<thread or review URL>", "priority": "P1", "signals": ["lifecycle"]}]}
 ```
 
+- `reviewId` is the GitHub review's numeric id and must be decimal digits, because it becomes part of a file name.
 - `state` is `completed` or `in-progress`. `priority` is `P1`, `P2`, or `null`. `signals` is required on every finding and may be empty; each value belongs to the closed set `lifecycle`, `ledger`, `audit-privacy`, `provider-parity`, `ac-conflict`, `unsupported-test`. A missing field, an unknown signal, or an invalid priority is rejected.
-- `commitId` is the review's `commit_id`. Inline comments can report a later `commit_id` than the review that created them, so they are not used for head matching.
+- `commitId` is the review's `commit_id`. `record-review` requires `<head-sha>` and `commitId` to be full 40- or 64-character SHAs and compares them case-insensitively for equality, so an abbreviated head cannot silently turn every observation into `stale`. Inline comments can report a later `commit_id` than the review that created them, so they are not used for head matching.
 - A finding is an unresolved bot thread (its URL) or a summary-level finding (the review URL).
 
-The verb returns one outcome and writes only for the substantive case:
+The verb returns one outcome and writes only for the substantive case. Rows are checked top to bottom and the first match wins, so a stale or in-progress observation never writes a record whatever its findings:
 
 | Observation | Outcome | Record written |
 |---|---|---|
 | `commitId` differs from the head | `stale` | no |
 | `state` is `in-progress` | `in-progress` | no |
-| completed, no findings, `lgtm` true | `green` | no |
-| completed, no findings, `lgtm` false | `completed-without-findings` | no |
 | completed, at least one finding (LGTM or not) | `needs-reconciliation` | yes |
+| completed, no findings, a review record already exists for the head | `needs-reconciliation` | no |
+| completed, no findings, `lgtm` true | `green` | no |
+| completed, no findings, `lgtm` false | `completed-without-lgtm` | no |
+
+This narrows the skill's existing outcomes: `green` and `completed-without-lgtm` now also require that the review has no summary-level finding and that no review record exists for the head.
 
 A substantive review is stored as `pr-<n>-<head>.review-<reviewId>.json` with `{pr, headSha, reviewId, reviewUrl, recordedAtMs, findings}`, written with the existing exclusive-create pattern. Recording the same review id again returns `{outcome:"needs-reconciliation", recorded:false, duplicate:true}` and leaves the first record unchanged.
 
@@ -32,18 +36,19 @@ A substantive review is stored as `pr-<n>-<head>.review-<reviewId>.json` with `{
 
 Classification is `requires-architecture-review` when any finding is P1, when two or more distinct review ids are recorded for the head, or when any finding carries a signal. Otherwise it is `light-implementation-eligible`.
 
-While any review record exists for the head, `claim-initial-request`, `recover-initial-request`, `claim-retry`, and `recover-retry-request` return `{"claimed":false,"reason":"needs-reconciliation"}`. `mark-*-requested` and `open-*-window` are not blocked: they record a request that has already been sent, and refusing them would lose that fact. Records are keyed by head, so another head of the same PR is unaffected. There is no verb that clears a record; resuming means observing a new head.
+While any review record exists for the head, `claim-initial-request`, `recover-initial-request`, `claim-retry`, and `recover-retry-request` return `{"claimed":false,"reason":"needs-reconciliation"}`. These four verbs and `status` still accept an abbreviated head, so they treat a review record as matching when the given head is a prefix of the record's full head; an abbreviated head therefore cannot bypass the block or hide the packet. `mark-initial-requested`, `mark-retry-requested`, `open-window`, and `open-retry-window` are not blocked: they record a request that has already been sent, and refusing them would lose that fact. Records are keyed by the full head, so another head of the same PR is unaffected. There is no verb that clears a record, and a later observation on the same head does not clear it either: a later review without findings returns `needs-reconciliation` without writing, `status` still carries the packet, and the claim verbs stay blocked. Resuming means observing a new head.
 
 ## Why this shape
 
 - The CLI does not call GitHub. Calling GitHub from the CLI would duplicate the agent's authenticated profile handling, require GraphQL for thread resolution and reactions, put the network in tests, and couple the CLI to the bot's markup. A normalized observation keeps every acceptance check a deterministic fixture test.
-- The agent tags signals from a closed set. Keyword matching over bot text fails silently on new phrasing, and running both would create two authorities with no rule for disagreement. The cost is that an agent can under-tag; the second-batch rule and the human reading the packet bound that.
+- The agent tags signals from a closed set. Keyword matching over bot text fails silently on new phrasing, and running both would create two authorities with no rule for disagreement. The cost is that an agent can under-tag. For a single batch, only the human reading the packet catches that; the second-batch rule catches it only when another substantive review lands on the same head.
 - One record per review id, instead of one mutable record per head, makes a resumed session's replay a no-op and makes the second batch a new file rather than a rewrite.
-- A claim leased before the record exists may still send its request, because a sent request cannot be recalled. Its review becomes a further batch and escalates. A lock around record and claim would add complexity to prevent an outcome that is already safe.
-- A same-head unblock verb would bypass the stop this record exists to create. A human who disagrees with the bot can re-request a review on GitHub; the skill never does.
+- A claim leased before the record exists may still send its request, because a sent request cannot be recalled. If its review has findings, it becomes a further batch and escalates; if not, it writes nothing, and the existing record still blocks further requests on that head. A lock around record and claim would add complexity to prevent an outcome that is already safe.
+- A same-head unblock verb would bypass the stop this record exists to create. A human who disagrees with the bot ends the loop or pushes a new head; a review re-requested on the same head cannot clear the record, and the skill never sends a new request after it reads the record.
 
 ## Residual exposure
 
+- The CLI trusts the findings the agent reports. If the agent misreads a thread as resolved or misses a summary-level finding, `record-review` returns `green` or `completed-without-lgtm` and nothing stops the loop; the skill instructions define the extraction rules, but the CLI cannot check them against GitHub.
 - The block holds only if the agent calls `record-review` before claiming a retry; the skill instructions require it, but the CLI cannot observe GitHub to enforce it.
-- Escalation counts batches per head. A PR that receives one signal-free P2 batch on each of several successive heads stays `light-implementation-eligible` per head. Cross-head escalation is tracked in issue #133.
-- The classification depends on the Codex bot's P1/P2 badges; a format change degrades priorities to `null` rather than failing.
+- Escalation counts batches per head. A PR that receives one signal-free P2 batch on each of several successive heads stays `light-implementation-eligible` per head. Cross-head escalation is outside this design.
+- The classification depends on the Codex bot's P1/P2 badges. If the badge format changes, the agent records a real P1 as `null`; with no signals, that batch is classified `light-implementation-eligible` without any warning.
