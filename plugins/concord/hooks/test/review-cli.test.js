@@ -4082,20 +4082,29 @@ test('no-DoD target parks when the round budget is spent and round-start never o
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
   let last;
-  for (let i = 1; i <= 5; i++) {
+  const slug = review.targetSlug('file:note.md');
+  let max = Infinity;
+  for (let i = 1; i <= max; i++) {
     fs.writeFileSync(path.join(fileDir, 'note.md'), `# note\nedit ${i}\n`);
     last = noFixRound('file:note.md', env, dir, [], i);
     assert.strictEqual(last.rs.round, i);
+    if (i === 1) max = review.readLedger(dir, slug).budget.max_rounds;
   }
   assert.strictEqual(last.out.decision.parked, true);
   assert.strictEqual(last.out.decision.continue, false);
   assert.match(last.out.decision.reason, /round budget exhausted/);
   const again = JSON.parse(run(['round-start', 'file:note.md'], { env }));
   assert.strictEqual(again.decision, 'terminal');
-  assert.strictEqual(review.readLedger(dir, review.targetSlug('file:note.md')).round, 5);
+  const ledger = review.readLedger(dir, slug);
+  assert.strictEqual(ledger.round, max);
+  // The parking round is uncharged.
+  assert.strictEqual(ledger.budget.spent, max - 1);
 });
 
-test('git target: a round that plans no fixes is terminal and is not charged to budget.spent', () => {
+// Covers only the converging path (spent stays 0). The git arm of applyRoundOutcome's
+// uncounted budgetSpent is guarded by review.test.js 'a final budgeted fix round still
+// gets its confirmation round' (spent = max_rounds - 1).
+test('git target: a converging round with no planned fixes is terminal and leaves budget.spent at 0', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
