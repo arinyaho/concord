@@ -1443,7 +1443,9 @@ function runVerb(resolveFromCwd, args, initiative) {
       // Same disposition path, packet shape, and privacy contract as the Codex
       // runner: raw ref/SHA stay in the local ledger; no artifact path is stored.
       const target = ledger.target?.ref || ref;
-      const head_sha = isGit ? gitHeadSha(repoRoot) : ledger.target?.head_sha;
+      // The pair reserve opened and the reviewers saw: the head stored at round-start, not the live head,
+      // which a commit landing mid-round (or a fix) may have moved.
+      const head_sha = ledger.target?.head_sha || (isGit ? gitHeadSha(repoRoot) : undefined);
       const revision = { ref: target, ...(ledger.target?.base ? { base: resolveBaseCommit(repoRoot, ledger.target.base) } : {}), head_sha };
       const disposition = require('./initiative-review-run').normalizeDisposition({ decision, reconciliation });
       const escaped = disposition.kind === 'escape';

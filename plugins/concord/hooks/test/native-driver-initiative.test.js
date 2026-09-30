@@ -479,6 +479,24 @@ for (const provider of Object.keys(PROVIDERS)) {
     assert.strictEqual(new Set(targets.map((x) => x.head_sha)).size, 1);
   });
 
+  test(`${provider}: record writes the terminal on the head reserve opened, so a later head is not refused target-terminal`, () => {
+    const t = setup(provider, { maxLaunches: 6 });
+    const n = t.start();
+    const head = () => execFileSync('git', ['rev-parse', 'HEAD'], { cwd: t.repo, encoding: 'utf8' }).trim();
+    const h1 = head();
+    for (const role of ['correctness', 'verify']) assert.strictEqual(t.ok(['reserve', 'feat/x', role]).status, 'granted');
+    t.write(n, 'correctness', CLEAN);
+    t.write(n, 'verify', { status: 'ok', rejected: [] });
+    fs.writeFileSync(path.join(t.repo, 'a.txt'), 'three\n');
+    execFileSync('git', ['commit', '-aqm', 'a commit lands mid-round'], { cwd: t.repo });
+    t.ok(['plan-fixes', 'feat/x']);
+    assert.strictEqual(t.ok(['record', 'feat/x']).decision.converged, true);
+    assert.deepStrictEqual(t.initiative().dispositions.map((d) => d.revision.head_sha), [h1]);
+    t.ok(['rerun', 'feat/x']);
+    t.start();
+    assert.strictEqual(t.ok(['reserve', 'feat/x', 'correctness']).status, 'granted');
+  });
+
   test(`${provider}: record stores the resolved base commit in the disposition revision`, () => {
     const t = setup(provider, { config: { dod: ['true'], intent: { command: 'printf "REQ: retry three times"' } } });
     const n = t.start();
