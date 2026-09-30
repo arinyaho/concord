@@ -26,7 +26,9 @@ function ledgerPath(stateDir, slug) {
 function readLedger(stateDir, slug) {
   const file = ledgerPath(stateDir, slug);
   try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
+    const ledger = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (ledger === null || typeof ledger !== 'object' || Array.isArray(ledger)) throw new Error('ledger is not a JSON object');
+    return ledger;
   } catch (e) {
     if (e && e.code === 'ENOENT') return null;
     throw new Error(`unreadable review ledger ${path.basename(file)}: ${e && e.message}; run \`review-cli.js reset <ref>\` to replace it`);

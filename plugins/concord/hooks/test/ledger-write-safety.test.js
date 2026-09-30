@@ -82,6 +82,14 @@ test('readLedger returns null only for a missing file and throws on unreadable c
   assert.throws(() => review.readLedger(dir, 'bad'), /review-bad\.json/);
 });
 
+test('readLedger throws on valid JSON that is not an object', () => {
+  const dir = tmp();
+  for (const body of ['null', '[]', '0', '"x"']) {
+    fs.writeFileSync(review.ledgerPath(dir, 'nonobj'), body);
+    assert.throws(() => review.readLedger(dir, 'nonobj'), /unreadable review ledger/, body);
+  }
+});
+
 function repoWithCommit() {
   const repo = tmp();
   execFileSync('git', ['init', '-q'], { cwd: repo });
