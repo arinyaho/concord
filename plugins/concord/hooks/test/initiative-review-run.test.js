@@ -32,7 +32,7 @@ test('v4 terminal dispositions are normalized and recorded exactly once', () => 
   assert.ok(recordDisposition(run, { target: 'feature/x', revision, result: { decision: { converged: true } }, packet }));
   assert.strictEqual(recordDisposition(run, { target: 'feature/x', revision, result: { decision: { converged: true } }, packet }), false);
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  assert.strictEqual(ledger.version, 3);
+  assert.strictEqual(ledger.version, 4);
   assert.deepStrictEqual(ledger.dispositions, [{ target: 'feature/x', revision, kind: 'terminal', reason: 'clean', sequence: 1, packet: { ...packet, outcome: { kind: 'terminal', reason: 'clean' }, ledger: { version: 4, status: 'active' }, budget: { maxLaunches: 1, maxRounds: 1, launches: 0, rounds: 0 }, delivery: { claim: 'feature/x:1', continuation: 'replay', consumed: false } } }]);
 });
 
