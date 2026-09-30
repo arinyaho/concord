@@ -1732,6 +1732,30 @@ test('renderHandoff: a FAILED DoD surfaces the failing command, exit code, and o
   assert.match(out.handoff, /\n {4}OUTPUT_NEEDLE/);
 });
 
+function dodHandoff(dodCmd) {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: [dodCmd] }));
+  execFileSync('git', ['commit', '-aqm', 'set dod'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  return JSON.parse(run(['record', 'feat/x'], { env })).handoff;
+}
+
+test('renderDodFailure: exit 78 is labeled a DoD environment error, not a test failure', () => {
+  const handoff = dodHandoff('exit 78');
+  assert.match(handoff, /DoD: FAILED\n {2}\$ exit 78 {2}\(exit 78\)\n {2}DoD environment\/setup error \(exit 78\): the gate could not be prepared; this is not a test failure of the reviewed change\./);
+});
+
+test('renderDodFailure: a normal failure carries no environment label', () => {
+  assert.doesNotMatch(dodHandoff('exit 3'), /environment/i);
+});
+
 test('e2e: intent contradiction -> intent-review; fix code + re-run -> clean', () => {
   const repo = initRepoWithIntent('printf "REQ: the retry count must be three"');
   const dir = tmpDir();
