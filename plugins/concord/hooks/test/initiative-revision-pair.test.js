@@ -5,6 +5,7 @@ const assert = require('node:assert');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
+const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 const { openInitiativeRun, reserveLaunch, recordDisposition, publicInitiativeSummary, terminalTarget, denialReason } = require('../../core/initiative-review-run');
 const { runReviewUntilGreen } = require('../../core/codex-review-runner');
@@ -144,4 +145,82 @@ test('terminalTarget skips a headless or baseless legacy candidate instead of th
   fs.writeFileSync(run.path, JSON.stringify(ledger));
   assert.strictEqual(terminalTarget(run, 'feature/x', rev('h1', 'main')).revision.head_sha, 'h1');
   assert.strictEqual(terminalTarget(run, 'feature/x', rev('h2', 'main')), false);
+});
+
+test('terminalTarget prefers the terminal of a pair that also holds an unconsumed escape, in either order', () => {
+  const run = open({ stateDir: temp(), key: 'terminal-and-escape', maxLaunches: 4, maxRounds: 3 });
+  const kinds = ['terminal', 'escape'];
+  assert.ok(terminal(run, rev('h1')));
+  assert.ok(recordDisposition(run, { target: 'feature/x', revision: rev('h1'), result: { decision: 'escape' } }));
+  assert.ok(recordDisposition(run, { target: 'feature/x', revision: rev('h2'), result: { decision: 'escape' } }));
+  assert.ok(terminal(run, rev('h2')));
+  assert.strictEqual(read(run).dispositions.filter((d) => d.revision.head_sha === 'h1').length, 2);
+  assert.strictEqual(terminalTarget(run, 'feature/x', rev('h1'), kinds).kind, 'terminal');
+  assert.strictEqual(terminalTarget(run, 'feature/x', rev('h2'), kinds).kind, 'terminal');
+});
+
+test('a parked run still works on pairs it already opened and refuses only new pairs', () => {
+  const run = open({ stateDir: temp(), key: 'parked-open-pair', maxLaunches: 8, maxRounds: 4 });
+  assert.ok(reserveLaunch(run, launchAt(rev('h1'), 'a1')));
+  assert.ok(terminal(run, rev('h0'), { status: 'reconciliation-required' }));
+  assert.ok(reserveLaunch(run, { ...launchAt(rev('h1'), 'a1'), role: 'verify' }));
+  assert.strictEqual(denialReason(run, launchAt(rev('h1'), 'a1')), null);
+  assert.strictEqual(reserveLaunch(run, launchAt(rev('h2'), 'a2')), false);
+  assert.strictEqual(denialReason(run, launchAt(rev('h2'), 'a2')), 'reconciliation-required');
+  assert.strictEqual(read(run).launches.length, 2);
+});
+
+test('AC3 runner: a parked run refuses an unopened pair before round-start runs', async () => {
+  const stateDir = temp();
+  const repoRoot = fs.realpathSync(temp());
+  const run = open({ stateDir, key: 'r-preflight', repository: repoRoot, maxLaunches: 4, maxRounds: 3 });
+  assert.ok(terminal(run, rev('h1'), { status: 'reconciliation-required' }));
+  const calls = [];
+  const result = await runReviewUntilGreen({ ref: 'feature/x', base: 'main', repoRoot, initiativeRunKey: 'r-preflight', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 3, targetIdentity: () => 'h2',
+    runCli: ([verb]) => { calls.push(verb); return {}; }, spawn: async () => ({ status: 0 }) });
+  assert.strictEqual(result.decision, 'reconciliation-required');
+  assert.deepStrictEqual(calls, []);
+});
+
+const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+function repoWithCommits() {
+  const repo = fs.realpathSync(temp());
+  git(repo, 'init', '-q', '-b', 'trunk');
+  git(repo, 'config', 'user.email', 't@t');
+  git(repo, 'config', 'user.name', 't');
+  for (const name of ['a', 'b']) { fs.writeFileSync(path.join(repo, `${name}.txt`), name); git(repo, 'add', '.'); git(repo, 'commit', '-qm', name); }
+  return repo;
+}
+
+test('a base that moves under the same name is a different pair', async () => {
+  const repo = repoWithCommits();
+  const stateDir = temp();
+  const head = git(repo, 'rev-parse', 'HEAD');
+  git(repo, 'branch', 'moving', 'HEAD~1');
+  const options = { ref: 'feature/x', base: 'moving', repoRoot: repo, initiativeRunKey: 'moved-base', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 3 };
+  const cliCalls = [];
+  const runCli = ([verb]) => { cliCalls.push(verb); return { decision: 'terminal', status: 'converged', base: 'moving', head, stateDir }; };
+  await runReviewUntilGreen({ ...options, runCli });
+  assert.strictEqual(cliCalls.length, 1);
+  const replayed = await runReviewUntilGreen({ ...options, runCli: () => { throw new Error('round-start must not run'); } });
+  assert.strictEqual(replayed.decision, 'terminal');
+  git(repo, 'branch', '-f', 'moving', 'HEAD');
+  await runReviewUntilGreen({ ...options, runCli });
+  assert.strictEqual(cliCalls.length, 2);
+  const stored = JSON.parse(fs.readFileSync(openInitiativeRun({ stateDir, key: 'moved-base', repository: repo, maxLaunches: 4, maxRounds: 3 }).path, 'utf8')).dispositions;
+  assert.deepStrictEqual(stored.map((d) => d.revision.base), [git(repo, 'rev-parse', 'HEAD~1'), head]);
+});
+
+test('AC5: two worktrees of one repository resolve to one run ledger', () => {
+  const repo = repoWithCommits();
+  const second = path.join(fs.realpathSync(temp()), 'second');
+  git(repo, 'worktree', 'add', '-q', '--detach', second);
+  const stateDir = temp();
+  const first = openInitiativeRun({ stateDir, key: 'two-worktrees', repository: repo, maxLaunches: 4, maxRounds: 3 });
+  const other = openInitiativeRun({ stateDir, key: 'two-worktrees', repository: second, maxLaunches: 4, maxRounds: 3 });
+  assert.strictEqual(first.repository, other.repository);
+  assert.strictEqual(first.path, other.path);
+  assert.ok(terminal(first, rev('h1')));
+  assert.strictEqual(reserveLaunch(other, launchAt(rev('h1'))), false);
+  assert.throws(() => openInitiativeRun({ stateDir, key: 'two-worktrees', repository: repoWithCommits(), maxLaunches: 4, maxRounds: 3 }), /different repository/);
 });

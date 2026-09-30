@@ -112,13 +112,36 @@ function samePair(recorded, revision) {
   return !revision?.head_sha || (recorded?.head_sha === revision.head_sha && (recorded?.base || null) === (revision.base || null));
 }
 
+// A run parked for reconciliation opens no new revision pair; pairs it already
+// holds keep working.
+function parkedRefusal(ledger, target, revision) {
+  return ledger.reconciliation?.hint?.trigger === 'reconciliation-required' && !(ledger.targets || []).some((item) => same(item, revision || { ref: target }));
+}
+
+// Runner preflight: whether an active run parked for reconciliation refuses this
+// revision pair, before any review work starts.
+function pairRefusal(run, target, revision) {
+  let ledger;
+  try { ledger = JSON.parse(fs.readFileSync(run.path, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  return ledger?.status === 'active' && parkedRefusal(ledger, target, revision) ? 'reconciliation-required' : null;
+}
+
+// The immutable commit a base name points at right now. A base that does not
+// resolve is kept as given; round-start rejects it.
+function resolveBaseCommit(repoRoot, base) {
+  try {
+    return require('node:child_process').execFileSync('git', ['rev-parse', '--verify', '--quiet', `${base}^{commit}`], { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || base;
+  } catch (_) {
+    return base;
+  }
+}
+
 // Why the run cannot take this launch, or null when it can.
 function launchRefusal(ledger, launch, count) {
   if (!ledger || ledger.status !== 'active' || !Number.isInteger(launch.round) || !Number.isInteger(count) || count < 1) return 'inactive';
   const target = launch.target || launch.revision?.ref || 'unknown';
   const revision = launchRevision(launch, target);
-  // A run parked for reconciliation opens no new revision pair.
-  if (ledger.reconciliation?.hint?.trigger === 'reconciliation-required' && !(ledger.targets || []).some((item) => same(item, revision || { ref: target }))) return 'reconciliation-required';
+  if (parkedRefusal(ledger, target, revision)) return 'reconciliation-required';
   if ((ledger.dispositions || []).some((disposition) => disposition.target === target && disposition.kind === 'terminal' && samePair(disposition.revision, revision))) return 'target-terminal';
   if (ledger.launches.length + count > ledger.budget.maxLaunches) return 'budget-exhausted';
   const round = `${target}\u0000${typeof launch.attemptId === 'string' ? launch.attemptId : 'legacy'}\u0000${launch.round}`;
@@ -169,9 +192,8 @@ function recordDisposition(run, { target, revision, result, packet = {}, finding
     // the identical error message is intentionally treated as the same
     // outcome (see normalizeDisposition's per-message error reason).
     if ((ledger.dispositions || []).some((item) => item.target === target && same(item.revision, revision) && item.kind === disposition.kind && item.reason === disposition.reason && (disposition.kind !== 'escape' || item.packet?.delivery?.consumed === false))) return null;
-    const targetRevision = revision && { ref: revision.ref || target, ...(revision.base ? { base: revision.base } : {}), ...((revision.head_sha || revision.head) ? { head_sha: revision.head_sha || revision.head } : {}) };
-    const targets = targetRevision && !(ledger.targets || []).some((item) => same(item, targetRevision)) ? [...(ledger.targets || []), targetRevision] : (ledger.targets || []);
-    const terminalRevision = revision && { ref: revision.ref || target, ...(revision.base ? { base: revision.base } : {}), ...((revision.head_sha || revision.head) ? { head_sha: revision.head_sha || revision.head } : {}) };
+    const terminalRevision = launchRevision({ revision }, target);
+    const targets = terminalRevision && !(ledger.targets || []).some((item) => same(item, terminalRevision)) ? [...(ledger.targets || []), terminalRevision] : (ledger.targets || []);
     if (!terminalRevision?.head_sha) throw new Error('initiative review terminal target requires a stored revision');
     const sequence = (ledger.dispositions || []).length + 1;
     const continuation = packet.nextAction || (disposition.kind === 'terminal' ? 'replay' : 'resume');
@@ -242,4 +264,4 @@ function finaliseInitiativeRun(run, reason = 'finalised') {
   return Boolean(locked(run, (ledger) => ledger?.status === 'terminal' ? undefined : (ledger?.status === 'active' && { ...ledger, status: 'terminal', terminal: { reason }, reconciliation: ledger.reconciliation || { terminals: [], hint: hint(reason) } })));
 }
 
-module.exports = { canonicalPath, runPath, repositoryIdentity, openInitiativeRun, reserveLaunch, reserveLaunchBatch, denialReason, normalizeDisposition, recordDisposition, consumeDispositionDelivery, terminalTarget, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };
+module.exports = { canonicalPath, runPath, repositoryIdentity, openInitiativeRun, reserveLaunch, reserveLaunchBatch, denialReason, pairRefusal, resolveBaseCommit, normalizeDisposition, recordDisposition, consumeDispositionDelivery, terminalTarget, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };

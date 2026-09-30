@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 const { normalizeArtifact } = require('../../core/artifact-contract');
 const { foldTelemetry } = require('../../core/review-telemetry');
 const { runPath, openInitiativeRun, recordDisposition } = require('../../core/initiative-review-run');
@@ -126,12 +126,13 @@ test('a different base with the same head is a new target', async () => {
 test('resuming a terminal git target binds the review ledger base before identity and round-start', async () => {
   const stateDir = temp();
   const key = 'resume-terminal-base';
+  const headCommit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   const run = openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, dispositions: [{ target: 'feature/x', reason: 'clean', kind: 'terminal', revision: { ref: 'feature/x', base: 'main', head_sha: 'same-head' } }] }));
+  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, dispositions: [{ target: 'feature/x', reason: 'clean', kind: 'terminal', revision: { ref: 'feature/x', base: headCommit, head_sha: 'same-head' } }] }));
   let identityBase;
-  const result = await runReviewUntilGreen({ ref: 'feature/x', resume: true, initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: (_ref, base) => { identityBase = base; return 'same-head'; }, runCli: ([verb]) => { if (verb === 'show') return { target: { base: 'main' } }; throw new Error('round-start must not run'); } });
-  assert.strictEqual(identityBase, 'main');
+  const result = await runReviewUntilGreen({ ref: 'feature/x', resume: true, initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: (_ref, base) => { identityBase = base; return 'same-head'; }, runCli: ([verb]) => { if (verb === 'show') return { target: { base: 'HEAD' } }; throw new Error('round-start must not run'); } });
+  assert.strictEqual(identityBase, 'HEAD');
   assert.strictEqual(result.decision, 'terminal');
 });
 
@@ -2152,6 +2153,29 @@ test('Codex launcher --help exits without invoking the runner', () => {
   assert.match(output, /^Usage: review-until-green/m);
   assert.match(output, /resume <ref>/);
   assert.strictEqual(fs.existsSync(capture), false);
+});
+
+test('Codex launcher prints a blocked or reconciliation-required result and exits non-zero, and exits zero for a handoff', () => {
+  const dir = temp();
+  const preload = path.join(dir, 'result-runner.js');
+  const bin = path.join(__dirname, '..', '..', '..', 'concord-codex', 'bin', 'review-until-green.js');
+  fs.writeFileSync(preload, `
+    const Module = require('node:module');
+    const load = Module._load;
+    Module._load = function(request, parent, isMain) {
+      if (request === '../engine/codex-review-runner') return { runReviewUntilGreen: async () => JSON.parse(process.env.RESULT) };
+      return load.apply(this, arguments);
+    };
+  `);
+  const launch = (result) => spawnSync('node', ['--require', preload, bin, 'feature/x'], { env: { ...process.env, RESULT: JSON.stringify(result) }, encoding: 'utf8' });
+  for (const result of [{ decision: 'blocked', reason: 'budget-exhausted' }, { decision: 'reconciliation-required', reason: 'reconciliation-required' }]) {
+    const outcome = launch(result);
+    assert.strictEqual(outcome.status, 1);
+    assert.deepStrictEqual(JSON.parse(outcome.stdout), result);
+  }
+  const handoff = launch({ handoff: 'ok' });
+  assert.strictEqual(handoff.status, 0);
+  assert.strictEqual(handoff.stdout, 'ok\n');
 });
 
 test('Codex launcher recognizes documented broad-review phrases without consuming them as target arguments', () => {

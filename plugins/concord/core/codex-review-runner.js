@@ -5,7 +5,7 @@
 // subprocess and every state transition remains owned by review-cli.
 const { execFileSync, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
-const { canonicalPath, runPath, openInitiativeRun, reserveLaunch, denialReason, recordDisposition, normalizeDisposition, consumeDispositionDelivery, terminalTarget, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
+const { canonicalPath, runPath, openInitiativeRun, reserveLaunch, denialReason, pairRefusal, resolveBaseCommit, recordDisposition, normalizeDisposition, consumeDispositionDelivery, terminalTarget, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
 const { gitHeadSha, gitDirty, fileTarget } = require('./target');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -397,6 +397,9 @@ async function runReviewUntilGreen(options) {
   // File targets do not have a git base at all.
   const baseResolver = options.resolveDefaultBase || (options.runCli ? null : resolveDefaultBase);
   let initialBase = resume ? undefined : base;
+  // Pair identity uses the commit a base name points at, so a base that moved
+  // under the same name is a different pair. round-start keeps the name.
+  const baseIdentity = (name) => (name && !ref.startsWith('file:') ? resolveBaseCommit(repoRoot, name) : name);
   const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot));
   let reviewer = options.reviewer || 'codex';
   let fixer = options.fixer || 'codex';
@@ -430,7 +433,7 @@ async function runReviewUntilGreen(options) {
       throw missing;
     }
   }
-  if (initialBase) initiativeRevision = { ...initiativeRevision, base: initialBase };
+  if (initialBase) initiativeRevision = { ...initiativeRevision, base: baseIdentity(initialBase) };
   if (initiativeRun && fs.existsSync(repoRoot)) {
     try {
       const head_sha = options.targetIdentity ? options.targetIdentity(ref, initialBase, canonicalRepoRoot) : ref.startsWith('file:')
@@ -455,7 +458,7 @@ async function runReviewUntilGreen(options) {
         }
         return gitHeadSha(canonicalRepoRoot);
       })();
-    return terminalTarget(initiativeRun, ref, { ref, ...(initialBase ? { base: initialBase } : {}), head_sha }, ['terminal', 'escape']);
+    return terminalTarget(initiativeRun, ref, { ref, ...(initialBase ? { base: baseIdentity(initialBase) } : {}), head_sha }, ['terminal', 'escape']);
   })();
   if (validated) {
     // includeConsumed: a replay against a target whose packet a prior
@@ -465,6 +468,12 @@ async function runReviewUntilGreen(options) {
     // the caller with nothing to read at all.
     const packet = pendingContinuationPacket(initiativeRun, ref, validated.revision, validated.kind, true);
     return { decision: validated.kind === 'escape' ? 'escape' : 'terminal', initiative: publicInitiativeSummary(initiativeRun), ...(packet ? { continuationPacket: packet } : {}) };
+  }
+  // A run parked for reconciliation refuses a pair it has not opened: stop
+  // before round-start runs the DoD or moves the per-ref ledger.
+  if (initiativeRun && initiativeRevision.head_sha) {
+    const refusal = pairRefusal(initiativeRun, ref, initiativeRevision);
+    if (refusal) return { decision: refusal, reason: refusal, initiative: publicInitiativeSummary(initiativeRun) };
   }
   for (const provider of [reviewer, fixer]) {
     if (!PROVIDERS.has(provider)) throw new Error(`review-until-green: unsupported provider "${provider}"`);
@@ -682,7 +691,7 @@ async function runReviewUntilGreen(options) {
     const started = await cli(startArgs);
     if (!initialBase && started.base) initialBase = started.base;
     if (initiativeRevision.head_sha && started.head && initiativeRevision.head_sha !== started.head) throw new Error('review-until-green: initiative target revision changed before round-start');
-    initiativeRevision = { ref: started.ref || ref, ...(started.base || initialBase ? { base: started.base || initialBase } : {}), ...(started.head || initiativeRevision.head_sha ? { head_sha: started.head || initiativeRevision.head_sha } : {}) };
+    initiativeRevision = { ref: started.ref || ref, ...(started.base || initialBase ? { base: baseIdentity(started.base || initialBase) } : {}), ...(started.head || initiativeRevision.head_sha ? { head_sha: started.head || initiativeRevision.head_sha } : {}) };
     await throwIfAborted(started.decision === 'work');
     if (started.reviewRouting) {
       reviewer = started.reviewRouting.reviewer || reviewer;

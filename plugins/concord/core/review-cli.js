@@ -25,7 +25,7 @@ const {
   resetUnreachable,
 } = require('./review');
 const crypto = require('node:crypto');
-const { canonicalPath, openInitiativeRun, reserveLaunchBatch, denialReason, recordDisposition, finaliseInitiativeRun } = require('./initiative-review-run');
+const { canonicalPath, openInitiativeRun, reserveLaunchBatch, denialReason, recordDisposition, finaliseInitiativeRun, resolveBaseCommit } = require('./initiative-review-run');
 const { acquireTarget, gitDiff, gitHeadSha, gitDirty } = require('./target');
 const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
 
@@ -605,7 +605,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       const panelPending = ledger?.phase === 'done' && ledger.status === 'gate-panel-pending';
       if (!ledger || (!['gates', 'fixes'].includes(ledger.phase) && !panelPending)) throw new Error(`reserve: no active review work for ref "${ref}" ${stateDirHint(stateDir)}`);
       const target = ledger.target?.ref || ref;
-      const revision = { ref: target, ...(ledger.target?.base ? { base: ledger.target.base } : {}), ...(ledger.target?.head_sha ? { head_sha: ledger.target.head_sha } : {}) };
+      const revision = { ref: target, ...(ledger.target?.base ? { base: resolveBaseCommit(process.env.REVIEW_REPO_ROOT || process.cwd(), ledger.target.base) } : {}), ...(ledger.target?.head_sha ? { head_sha: ledger.target.head_sha } : {}) };
       const launch = { role, round: ledger.round, target, revision, attemptId: ledger.attemptId };
       if (!reserveLaunchBatch(run, launch, count)) {
         const reason = denialReason(run, launch, count);
@@ -1438,7 +1438,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       // runner: raw ref/SHA stay in the local ledger; no artifact path is stored.
       const target = ledger.target?.ref || ref;
       const head_sha = isGit ? gitHeadSha(repoRoot) : ledger.target?.head_sha;
-      const revision = { ref: target, ...(ledger.target?.base ? { base: ledger.target.base } : {}), head_sha };
+      const revision = { ref: target, ...(ledger.target?.base ? { base: resolveBaseCommit(repoRoot, ledger.target.base) } : {}), head_sha };
       const disposition = require('./initiative-review-run').normalizeDisposition({ decision, reconciliation });
       const escaped = disposition.kind === 'escape';
       const recorded = recordDisposition(run, {
