@@ -125,3 +125,19 @@ test('AC1 runner: a terminal ref opens a new target on a new head instead of thr
   assert.ok(calls.includes('round-start'));
   assert.deepStrictEqual(read(run).dispositions.map((d) => [d.kind, d.revision.head_sha]), [['terminal', 'h1'], ['terminal', 'h2']]);
 });
+
+// Resume derives the base from the stored pair, so with several terminal pairs the matching one must be found, not the oldest.
+const resumeAt = (head) => (stored) => ({ ref: 'feature/x', base: stored.base, head_sha: head });
+
+test('resume: with two terminal pairs the matching pair is found, the older pair still refuses, a headless old pair does not throw', () => {
+  const run = open({ stateDir: temp(), key: 'resume', maxLaunches: 4, maxRounds: 3 });
+  assert.ok(terminal(run, rev('h1', 'main')));
+  assert.ok(terminal(run, rev('h2', 'release')));
+  assert.strictEqual(terminalTarget(run, 'feature/x', resumeAt('h2')).revision.base, 'release');
+  assert.strictEqual(terminalTarget(run, 'feature/x', resumeAt('h1')).revision.base, 'main');
+  assert.strictEqual(terminalTarget(run, 'feature/x', resumeAt('h3')), false);
+  const ledger = read(run);
+  ledger.dispositions.unshift({ ...ledger.dispositions[0], revision: { ref: 'feature/x' } });
+  fs.writeFileSync(run.path, JSON.stringify(ledger));
+  assert.strictEqual(terminalTarget(run, 'feature/x', resumeAt('h2')).revision.head_sha, 'h2');
+});
