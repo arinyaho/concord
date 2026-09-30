@@ -424,7 +424,7 @@ async function runReviewUntilGreen(options) {
   // match circular. Without a recorded base the pair cannot be identified.
   if (resume && initiativeRun && !ref.startsWith('file:')) {
     initialBase = runCli(['show', ref])?.target?.base;
-    if (!initialBase) {
+    if (!initialBase && hasDisposition(initiativeRun, ref, ['terminal', 'escape'])) {
       const missing = new Error('review-until-green: resume has no recorded base in the review ledger');
       missing.notAReviewFailure = true;
       throw missing;

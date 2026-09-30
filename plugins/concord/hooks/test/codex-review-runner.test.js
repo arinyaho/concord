@@ -157,8 +157,17 @@ test('terminal git target replay rejects a dirty worktree before returning its c
 test('resuming a git target with no base in the review ledger fails closed before identity and round-start', async () => {
   const stateDir = temp();
   const key = 'resume-no-base';
-  openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
+  const run = openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
+  const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
+  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, dispositions: [{ target: 'feature/x', reason: 'clean', kind: 'terminal', revision: { ref: 'feature/x', base: 'main', head_sha: 'same-head' } }] }));
   await assert.rejects(runReviewUntilGreen({ ref: 'feature/x', resume: true, initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => { throw new Error('identity must not run'); }, runCli: ([verb]) => { if (verb === 'show') return {}; throw new Error('round-start must not run'); } }), /no recorded base/);
+});
+
+test('resuming a git target with no base in the review ledger and no disposition reaches round-start', async () => {
+  const stateDir = temp();
+  const key = 'resume-no-base-no-disposition';
+  openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
+  await assert.rejects(runReviewUntilGreen({ ref: 'feature/x', resume: true, initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => 'head', runCli: ([verb]) => { if (verb === 'show') return {}; throw new Error('round-start reached'); } }), /round-start reached/);
 });
 
 test('resume does not replay a terminal on the same head with another base', async () => {
