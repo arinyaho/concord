@@ -212,55 +212,34 @@ function publicInitiativeSummary(run) {
   };
 }
 
-// A target has at most one 'terminal' disposition per revision pair
-// (recordDisposition's dedup guard enforces that), so it can hold several. The
-// first terminal wins over any 'escape'/'error' entry regardless of write order;
-// only when no terminal entry is present does the most-recently-written match
-// apply. Callers that need the pair matching a revision use terminalTarget.
-function selectDisposition(dispositions, target, kinds) {
-  const matches = (dispositions || []).filter((item) => item.target === target && kinds.includes(item.kind));
-  return matches.find((item) => item.kind === 'terminal') || matches[matches.length - 1];
+function dispositionCandidates(run, target, kinds) {
+  const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
+  if (ledger.version !== 3) throw new Error('initiative review run schemaVersion must be 3');
+  if (ledger.status !== 'active') return [];
+  return (ledger.dispositions || []).filter((item) => item.target === target && kinds.includes(item.kind));
 }
 
-// terminalTarget's own throws are identity-validation failures on an
-// already-terminal target's replay path, not review-execution failures --
-// tagged so the caller's catch (which records genuine failures as error
-// dispositions) rethrows them unrecorded instead of polluting the ledger.
-function replayIdentityError(message) {
-  const error = new Error(message);
-  error.notAReviewFailure = true;
-  return error;
+// Whether the active run holds any disposition of these kinds for the target,
+// whatever its revision. Lets a caller skip identity work when nothing can match.
+function hasDisposition(run, target, kinds = ['terminal']) {
+  return dispositionCandidates(run, target, kinds).length > 0;
 }
 
 function terminalTarget(run, target, revision, kinds = ['terminal']) {
-  const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  if (ledger.version !== 3) throw new Error('initiative review run schemaVersion must be 3');
-  const candidates = (ledger.dispositions || []).filter((item) => item.target === target && kinds.includes(item.kind));
-  if (ledger.status !== 'active' || !candidates.length) return false;
   // Identity is the revision pair: a disposition on another head or base is a
-  // different target and never blocks this one. A resolver derives the current
-  // revision from each stored pair (resume takes the base from it), so every
-  // candidate is resolved and compared on its own. A candidate with no stored
-  // head or base cannot match; it throws only when no other candidate matches.
-  let invalid = null;
-  const matches = [];
-  for (const item of candidates) {
-    if (!item.revision?.head_sha) { invalid = invalid || replayIdentityError('initiative review terminal target has no stored revision'); continue; }
-    if (!target.startsWith('file:') && !item.revision.base) { invalid = invalid || replayIdentityError('initiative review terminal target has no stored base'); continue; }
-    const current = typeof revision === 'function' ? revision(item.revision) : revision;
-    if (item.target === current.ref && same(item.revision, current)) matches.push(item);
-  }
+  // different target and never blocks this one. A candidate with no stored head
+  // (or, for a git ref, no stored base) cannot match and is skipped.
+  const matches = dispositionCandidates(run, target, kinds).filter((item) => item.revision?.head_sha
+    && (target.startsWith('file:') || item.revision.base)
+    && item.target === revision.ref && same(item.revision, revision));
   // A terminal disposition replays whatever its delivery state; an escape
   // replays only while its packet is unconsumed, so a consumed one lets a fresh
   // round start at the same revision.
-  const found = matches.find((item) => item.kind === 'terminal') || matches.reverse().find((item) => item.packet?.delivery?.consumed === false);
-  if (found) return found;
-  if (invalid) throw invalid;
-  return false;
+  return matches.find((item) => item.kind === 'terminal') || matches.reverse().find((item) => item.packet?.delivery?.consumed === false) || false;
 }
 
 function finaliseInitiativeRun(run, reason = 'finalised') {
   return Boolean(locked(run, (ledger) => ledger?.status === 'terminal' ? undefined : (ledger?.status === 'active' && { ...ledger, status: 'terminal', terminal: { reason }, reconciliation: ledger.reconciliation || { terminals: [], hint: hint(reason) } })));
 }
 
-module.exports = { canonicalPath, runPath, repositoryIdentity, openInitiativeRun, reserveLaunch, reserveLaunchBatch, denialReason, normalizeDisposition, recordDisposition, consumeDispositionDelivery, terminalTarget, selectDisposition, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };
+module.exports = { canonicalPath, runPath, repositoryIdentity, openInitiativeRun, reserveLaunch, reserveLaunchBatch, denialReason, normalizeDisposition, recordDisposition, consumeDispositionDelivery, terminalTarget, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };

@@ -76,9 +76,8 @@ test('terminalTarget finds an older still-pending escape when the head reverts p
   const newerRevision = { ref: 'feature/x', base: 'main', head_sha: 'newer-head' };
   assert.ok(recordDisposition(run, { target: 'feature/x', revision: olderRevision, result: { decision: 'escape' } }));
   assert.ok(recordDisposition(run, { target: 'feature/x', revision: newerRevision, result: { decision: 'escape' } }));
-  // selectDisposition would pick the newer (most-recently-written) entry
-  // first; a query for the reverted-to older revision must still find the
-  // older entry's still-unconsumed packet instead of returning false.
+  // A query for the reverted-to older revision must find the older entry's
+  // still-unconsumed packet, not the most-recently-written one.
   const matched = terminalTarget(run, 'feature/x', olderRevision, ['terminal', 'escape']);
   assert.strictEqual(matched.kind, 'escape');
   assert.deepStrictEqual(matched.revision, olderRevision);

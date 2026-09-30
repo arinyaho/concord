@@ -5,7 +5,7 @@
 // subprocess and every state transition remains owned by review-cli.
 const { execFileSync, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
-const { canonicalPath, runPath, openInitiativeRun, reserveLaunch, denialReason, recordDisposition, normalizeDisposition, consumeDispositionDelivery, terminalTarget, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
+const { canonicalPath, runPath, openInitiativeRun, reserveLaunch, denialReason, recordDisposition, normalizeDisposition, consumeDispositionDelivery, terminalTarget, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
 const { gitHeadSha, gitDirty, fileTarget } = require('./target');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -419,6 +419,17 @@ async function runReviewUntilGreen(options) {
   if (!resume && initialBase === undefined && !ref.startsWith('file:') && baseResolver) {
     try { initialBase = baseResolver(repoRoot); } catch (error) { baseResolutionError = error; }
   }
+  // A resumed run's base is the per-ref review ledger's recorded base, never a
+  // base read back from an initiative disposition: that would make the replay
+  // match circular. Without a recorded base the pair cannot be identified.
+  if (resume && initiativeRun && !ref.startsWith('file:')) {
+    initialBase = runCli(['show', ref])?.target?.base;
+    if (!initialBase) {
+      const missing = new Error('review-until-green: resume has no recorded base in the review ledger');
+      missing.notAReviewFailure = true;
+      throw missing;
+    }
+  }
   if (initialBase) initiativeRevision = { ...initiativeRevision, base: initialBase };
   if (initiativeRun && fs.existsSync(repoRoot)) {
     try {
@@ -431,9 +442,10 @@ async function runReviewUntilGreen(options) {
   // A replay against an already-terminal target (including the dirty-worktree
   // guard below) is not a review failure and must not be recorded as one by
   // the catch below -- it is tagged so the catch rethrows it unrecorded.
-  const validated = initiativeRun && terminalTarget(initiativeRun, ref, (terminalRevision) => {
-    const identityBase = resume ? terminalRevision.base : initialBase;
-    const head_sha = options.targetIdentity ? options.targetIdentity(ref, identityBase, canonicalRepoRoot) : ref.startsWith('file:')
+  const validated = initiativeRun && (() => {
+    // Skip the identity work when no disposition can match this ref.
+    if (!hasDisposition(initiativeRun, ref, ['terminal', 'escape'])) return false;
+    const head_sha = options.targetIdentity ? options.targetIdentity(ref, initialBase, canonicalRepoRoot) : ref.startsWith('file:')
       ? fileTarget({ files: [ref.slice('file:'.length)] }, canonicalRepoRoot).identity
       : (() => {
         if (gitDirty(canonicalRepoRoot)) {
@@ -443,8 +455,8 @@ async function runReviewUntilGreen(options) {
         }
         return gitHeadSha(canonicalRepoRoot);
       })();
-    return { ref, ...(identityBase ? { base: identityBase } : {}), head_sha };
-  }, ['terminal', 'escape']);
+    return terminalTarget(initiativeRun, ref, { ref, ...(initialBase ? { base: initialBase } : {}), head_sha }, ['terminal', 'escape']);
+  })();
   if (validated) {
     // includeConsumed: a replay against a target whose packet a prior
     // invocation already delivered must still return it -- otherwise this

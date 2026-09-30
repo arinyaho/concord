@@ -102,7 +102,7 @@ test('a changed target head opens a new target and reaches round-start', async (
   );
 });
 
-test('legacy terminal file targets without head_sha fail closed before a round', async () => {
+test('a legacy terminal file target without head_sha does not match and reaches round-start', async () => {
   const stateDir = temp();
   const key = 'legacy-file-terminal';
   const run = openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
@@ -110,7 +110,7 @@ test('legacy terminal file targets without head_sha fail closed before a round',
   fs.writeFileSync(run.path, JSON.stringify({ ...ledger, targets: [{ ref: 'file:note.md' }], dispositions: [{ target: 'file:note.md', reason: 'clean', kind: 'terminal', revision: { ref: 'file:note.md' } }] }));
   await assert.rejects(
     runReviewUntilGreen({ ref: 'file:note.md', initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => 'new-bytes', runCli: () => { throw new Error('round-start must not run'); } }),
-    /no stored revision/,
+    /round-start must not run/,
   );
 });
 
@@ -123,14 +123,14 @@ test('a different base with the same head is a new target', async () => {
   await assert.rejects(runReviewUntilGreen({ ref: 'feature/x', base: 'release', initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => 'same-head', runCli: () => { throw new Error('round-start reached'); } }), /round-start reached/);
 });
 
-test('resuming a terminal git target binds its recorded base before identity and round-start', async () => {
+test('resuming a terminal git target binds the review ledger base before identity and round-start', async () => {
   const stateDir = temp();
   const key = 'resume-terminal-base';
   const run = openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
   fs.writeFileSync(run.path, JSON.stringify({ ...ledger, dispositions: [{ target: 'feature/x', reason: 'clean', kind: 'terminal', revision: { ref: 'feature/x', base: 'main', head_sha: 'same-head' } }] }));
   let identityBase;
-  const result = await runReviewUntilGreen({ ref: 'feature/x', resume: true, initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: (_ref, base) => { identityBase = base; return 'same-head'; }, runCli: () => { throw new Error('round-start must not run'); } });
+  const result = await runReviewUntilGreen({ ref: 'feature/x', resume: true, initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: (_ref, base) => { identityBase = base; return 'same-head'; }, runCli: ([verb]) => { if (verb === 'show') return { target: { base: 'main' } }; throw new Error('round-start must not run'); } });
   assert.strictEqual(identityBase, 'main');
   assert.strictEqual(result.decision, 'terminal');
 });
@@ -154,13 +154,20 @@ test('terminal git target replay rejects a dirty worktree before returning its c
   );
 });
 
-test('terminal git targets without a recorded base fail closed before identity and round-start', async () => {
+test('resuming a git target with no base in the review ledger fails closed before identity and round-start', async () => {
   const stateDir = temp();
-  const key = 'legacy-git-terminal';
+  const key = 'resume-no-base';
+  openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
+  await assert.rejects(runReviewUntilGreen({ ref: 'feature/x', resume: true, initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => { throw new Error('identity must not run'); }, runCli: ([verb]) => { if (verb === 'show') return {}; throw new Error('round-start must not run'); } }), /no recorded base/);
+});
+
+test('resume does not replay a terminal on the same head with another base', async () => {
+  const stateDir = temp();
+  const key = 'resume-same-head-other-base';
   const run = openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, dispositions: [{ target: 'feature/x', reason: 'clean', kind: 'terminal', revision: { ref: 'feature/x', head_sha: 'same-head' } }] }));
-  await assert.rejects(runReviewUntilGreen({ ref: 'feature/x', resume: true, initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => { throw new Error('identity must not run'); }, runCli: () => { throw new Error('round-start must not run'); } }), /no stored base/);
+  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, dispositions: [{ target: 'feature/x', reason: 'clean', kind: 'terminal', revision: { ref: 'feature/x', base: 'main', head_sha: 'same-head' } }] }));
+  await assert.rejects(runReviewUntilGreen({ ref: 'feature/x', resume: true, initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => 'same-head', runCli: ([verb]) => { if (verb === 'show') return { target: { base: 'release' } }; throw new Error('round-start reached'); } }), /round-start reached/);
 });
 
 test('non-Git in-root state supports file and finalise runs', async () => {
@@ -527,6 +534,7 @@ test('reconciliation terminates the target and retains its restored base and avo
   await runReviewUntilGreen({
     ref: 'feature/x', resume: true, repoRoot: '/repo', initiativeRunKey: 'reconcile', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 1,
     runCli: ([verb]) => {
+      if (verb === 'show') return { target: { base: 'main' } };
       if (verb === 'round-start') return { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: false };
       if (verb === 'artifact-normalize') return { status: 'ok' };
       if (verb === 'plan-fixes') return { fixes: [], avoidedLaunches: 2, reconciliation: { finding: 'intent:missing', findings: { intent: 1 } } };
