@@ -4059,3 +4059,92 @@ test('reset and rerun delete telemetry by the ledger target ref when called with
   run(['rerun', slug, '--engine', 'codex'], { env });
   assert.strictEqual(fs.existsSync(telemetryFile), false);
 });
+
+// ---- round budget enforcement ----
+
+// Drives one round whose only finding is rejected by the verifier: nothing is
+// fixed, nothing stays open, and the finding still counts as new for the
+// dry-round streak. Returns the round-start and record output.
+function noFixRound(ref, env, dir, extra, i) {
+  const rs = JSON.parse(run(['round-start', ref, ...extra], { env }));
+  if (rs.decision !== 'work') return { rs };
+  const file = ref.startsWith('file:') ? ref.slice(5) : 'a.txt';
+  const span = ref.startsWith('file:') ? undefined : 'two';
+  const id = `correctness:f${i}`;
+  writeArtifact(dir, rs.round, 'correctness', { status: 'ok', examined: [file], findings: [{ id, gate: 'correctness', file, span, summary: `finding ${i}` }] });
+  writeArtifact(dir, rs.round, 'verify', { status: 'ok', rejected: [{ id, reason: `re-read ${file}: the claim does not hold` }] });
+  run(['plan-fixes', ref], { env });
+  return { rs, out: JSON.parse(run(['record', ref], { env })) };
+}
+
+test('no-DoD target parks when the round budget is spent and round-start never opens a round past it', () => {
+  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-budget-'));
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
+  let last;
+  const slug = review.targetSlug('file:note.md');
+  let max = Infinity;
+  for (let i = 1; i <= max; i++) {
+    fs.writeFileSync(path.join(fileDir, 'note.md'), `# note\nedit ${i}\n`);
+    last = noFixRound('file:note.md', env, dir, [], i);
+    assert.strictEqual(last.rs.round, i);
+    if (i === 1) max = review.readLedger(dir, slug).budget.max_rounds;
+  }
+  assert.strictEqual(last.out.decision.parked, true);
+  assert.strictEqual(last.out.decision.continue, false);
+  assert.match(last.out.decision.reason, /round budget exhausted/);
+  const again = JSON.parse(run(['round-start', 'file:note.md'], { env }));
+  assert.strictEqual(again.decision, 'terminal');
+  const ledger = review.readLedger(dir, slug);
+  assert.strictEqual(ledger.round, max);
+  // The parking round is uncharged.
+  assert.strictEqual(ledger.budget.spent, max - 1);
+});
+
+test('git target: no-fix rounds that continue are charged one unit each and a terminal round is not charged', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['false'] }));
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'config'], { cwd: repo });
+  const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const ref = 'feat/no-fix-budget';
+  const slug = review.targetSlug(ref);
+  const spent = () => review.readLedger(dir, slug).budget.spent;
+  // A round that ends with the open set changed but no fix applied continues, so it
+  // is charged. The set changes because the reviewer re-reports a previously open
+  // finding and the verifier rejects it.
+  const seededRound = (id) => {
+    // round-start is a no-op while the diff is unchanged since the previous round.
+    fs.writeFileSync(path.join(repo, 'a.txt'), `two ${id}\n`);
+    execFileSync('git', ['commit', '-aqm', `round ${id}`], { cwd: repo });
+    const rs = JSON.parse(run(['round-start', ref, base], { env }));
+    assert.strictEqual(rs.decision, 'work');
+    const ledger = review.readLedger(dir, slug);
+    ledger.findings.push({ id, gate: 'correctness', file: 'a.txt', summary: id, status: 'open' });
+    review.writeLedger(dir, slug, ledger);
+    writeArtifact(dir, rs.round, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [{ id, gate: 'correctness', file: 'a.txt', span: 'two', summary: id }] });
+    writeArtifact(dir, rs.round, 'verify', { status: 'ok', rejected: [{ id, reason: 're-read a.txt: the claim does not hold' }], findings: [] });
+    run(['plan-fixes', ref], { env });
+    return JSON.parse(run(['record', ref], { env })).decision;
+  };
+  const d1 = seededRound('correctness:one');
+  assert.strictEqual(d1.continue, true);
+  assert.strictEqual(spent(), 1, 'a continuing round that applied no fix is charged');
+  const d2 = seededRound('correctness:two');
+  assert.strictEqual(d2.continue, true);
+  assert.strictEqual(spent(), 2);
+  // A round that ends waiting on a human (an unfixed finding is parked as needs-decision) is not charged.
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two three\n');
+  execFileSync('git', ['commit', '-aqm', 'round three'], { cwd: repo });
+  const rs3 = JSON.parse(run(['round-start', ref, base], { env }));
+  writeArtifact(dir, rs3.round, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:three', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'three' }] });
+  writeArtifact(dir, rs3.round, 'verify', { status: 'ok', rejected: [], findings: [] });
+  run(['plan-fixes', ref], { env });
+  const d3 = JSON.parse(run(['record', ref], { env })).decision;
+  assert.strictEqual(d3.parked, true);
+  assert.strictEqual(d3.continue, false);
+  assert.strictEqual(spent(), 2, 'a round that ends waiting on a human is not charged');
+});
