@@ -13,14 +13,19 @@ function fixture({ modules }) {
   fs.mkdirSync(pkg, { recursive: true });
   fs.writeFileSync(path.join(pkg, 'package-lock.json'), '{}');
   if (modules) {
+    // npm writes node_modules/.package-lock.json only after a successful install.
     fs.mkdirSync(path.join(pkg, 'node_modules'));
-    const t = new Date(Date.now() + (modules === 'stale' ? -60000 : 60000));
-    fs.utimesSync(path.join(pkg, 'node_modules'), t, t);
+    if (modules !== 'nohidden') {
+      const hidden = path.join(pkg, 'node_modules', '.package-lock.json');
+      fs.writeFileSync(hidden, '{}');
+      const t = new Date(Date.now() + (modules === 'stale' ? -60000 : 60000));
+      fs.utimesSync(hidden, t, t);
+    }
   }
   return root;
 }
 
-async function runDod(root, results) {
+async function runDod(root, results, platform) {
   const { main } = await import(path.join(REPO, 'scripts/dod.mjs'));
   const calls = [];
   const logs = [];
@@ -28,7 +33,7 @@ async function runDod(root, results) {
     calls.push({ cmd, args, opts });
     return results[cmd] || { status: 0, stdout: '', stderr: '' };
   };
-  const code = main({ root, run, env: { PATH: 'x' }, log: (s) => logs.push(s) });
+  const code = main({ root, run, env: { PATH: 'x' }, platform, log: (s) => logs.push(s) });
   return { code, calls, logs };
 }
 
@@ -47,6 +52,27 @@ test('dod: install runs when node_modules is missing, then tests run with the e2
   assert.deepStrictEqual(r.calls[1].args, ['--test']);
   assert.strictEqual(r.calls[1].opts.cwd, root);
   assert.strictEqual(r.calls[1].opts.env.CONCORD_RUN_PLUGIN_INSTALL_E2E, '1');
+});
+
+test('dod: install runs when node_modules exists without the hidden lockfile (interrupted install)', async () => {
+  const r = await runDod(fixture({ modules: 'nohidden' }), {});
+  assert.deepStrictEqual(r.calls.map((c) => c.cmd), ['npm', 'node']);
+});
+
+test('dod: npm runs through a shell on win32 only', async () => {
+  const win = await runDod(fixture({ modules: false }), {}, 'win32');
+  assert.strictEqual(win.calls[0].opts.shell, true);
+  const posix = await runDod(fixture({ modules: false }), {}, 'linux');
+  assert.notStrictEqual(posix.calls[0].opts.shell, true);
+});
+
+test('dod: a long npm error keeps the closing sentence short and intact', async () => {
+  const long = 'x'.repeat(500);
+  const r = await runDod(fixture({ modules: false }), { npm: { status: null, stdout: '', stderr: '', error: new Error(long) } });
+  const last = r.logs.join('\n').split('\n').pop();
+  assert.ok(last.length < 200, `last line is ${last.length} chars`);
+  assert.match(last, /This is not an implementation failure\.$/);
+  assert.ok(r.logs.join('\n').indexOf('xxx') < r.logs.join('\n').indexOf(last));
 });
 
 test('dod: install runs when node_modules is older than the lockfile', async () => {

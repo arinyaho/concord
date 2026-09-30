@@ -25,22 +25,27 @@ function mtimeMs(p) {
   }
 }
 
+// npm writes node_modules/.package-lock.json only after a successful install, so
+// a failed or interrupted `npm ci` (which leaves a fresh node_modules directory)
+// is not mistaken for an up-to-date one.
 function needsInstall(pkgDir) {
-  const modules = mtimeMs(path.join(pkgDir, 'node_modules'));
-  if (modules === null) return true;
-  return modules < mtimeMs(path.join(pkgDir, 'package-lock.json'));
+  const installed = mtimeMs(path.join(pkgDir, 'node_modules', '.package-lock.json'));
+  if (installed === null) return true;
+  return installed < mtimeMs(path.join(pkgDir, 'package-lock.json'));
 }
 
-export function main({ root, run = defaultRun, env = process.env, log = (s) => process.stderr.write(`${s}\n`) } = {}) {
+export function main({ root, run = defaultRun, env = process.env, platform = process.platform, log = (s) => process.stderr.write(`${s}\n`) } = {}) {
   const pkgDir = path.join(root, AGENT_TEAM);
   if (needsInstall(pkgDir)) {
-    const install = run('npm', ['ci', '--no-audit', '--no-fund'], { cwd: pkgDir, env });
+    // npm is npm.cmd on Windows, which spawn only resolves through a shell.
+    const install = run('npm', ['ci', '--no-audit', '--no-fund'], { cwd: pkgDir, env, shell: platform === 'win32' });
     if (install.status !== 0) {
-      const out = `${install.stdout}${install.stderr}${install.error ? `${install.error.message}\n` : ''}`.replace(/\s+$/, '');
+      const out = `${install.stdout}${install.stderr}`.replace(/\s+$/, '');
       if (out) log(out.split(/\r?\n/).slice(-TAIL_LINES).join('\n'));
-      const why = install.error ? install.error.message : `npm ci exited ${install.status}`;
-      // Last line on purpose: the review handoff shows only the tail of the output.
-      log(`DoD environment error: dependency install in ${AGENT_TEAM} failed (${why}). This is not an implementation failure.`);
+      const why = install.error ? install.error.message : `exit ${install.status}`;
+      log(`npm ci: ${why.length > 120 ? `${why.slice(0, 120)}...` : why}`);
+      // Short and last on purpose: the review handoff clips lines and shows only the tail.
+      log(`DoD environment error: npm ci failed in ${AGENT_TEAM}. This is not an implementation failure.`);
       return EX_CONFIG;
     }
   }
