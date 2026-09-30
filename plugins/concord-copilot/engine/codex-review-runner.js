@@ -623,7 +623,7 @@ async function runReviewUntilGreen(options) {
           await launch({ role: `gate-panel-${lens}`, repoRoot, stateDir: context.stateDir,
             prompt: `Review ${path.join(context.stateDir, `round-${context.round}-diff.txt`)} and the repository through the ${lens} lens. You MAY Read/Grep the repository and MUST read ${path.join(context.stateDir, `intent-${context.slug}.md`)} if it exists to assess the design and acceptance criteria. Previously rejected IDs: ${JSON.stringify(panel.rejectedIds || [])} -- do not re-raise one unless you found something the earlier round did not. Every candidate faces three adversarial verifiers that default to REFUTED when uncertain and decide by majority, so a gap you cannot anchor in evidence will not survive: substantiate what you raise rather than raising more. Write ONLY {"status":"ok","findings":[]} to ${artifact}; every ID must use gate:${lens}:<slug>.${BLOCKED_CLAUSE}` });
         } catch (error) {
-          if (error.reviewFailure && ['interrupted', 'timeout', 'signal'].includes(error.reviewFailure.kind)) throw error;
+          if (error.initiativeBlocked || (error.reviewFailure && ['interrupted', 'timeout', 'signal'].includes(error.reviewFailure.kind))) throw error;
         }
       }));
       const lensFailure = lensResults.find((result) => result.status === 'rejected');

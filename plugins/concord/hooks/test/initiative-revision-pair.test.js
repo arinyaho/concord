@@ -237,3 +237,17 @@ test('a version 3 ledger with a name base is rejected by terminalTarget, reserve
   await assert.rejects(runReviewUntilGreen({ ref: 'feature/x', base: 'main', repoRoot, initiativeRunKey: 'v3', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 3, targetIdentity: () => 'h1',
     runCli: () => ({}), spawn: async () => ({ status: 0 }) }), /schemaVersion must be 4/);
 });
+
+test('runner: a panel lens launch denied for budget is a blocked outcome, not a clean panel', async () => {
+  const stateDir = temp();
+  const run = open({ stateDir, key: 'r-panel', maxLaunches: 2, maxRounds: 3 });
+  let recorded = 0;
+  const result = await runReviewUntilGreen({ ref: 'feature/x', base: 'main', repoRoot: '/repo', initiativeRunKey: 'r-panel', initiativeStateDir: stateDir, initiativeMaxLaunches: 2, initiativeMaxRounds: 3, targetIdentity: () => 'h2',
+    runCli: ([verb]) => verb === 'round-start' ? work : verb === 'artifact-normalize' ? { status: 'ok' } : verb === 'plan-fixes' ? { fixes: [] }
+      : verb === 'record' ? (recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false, converged: true }, handoff: 'LGTM' })
+      : verb === 'gate-panel-round-start' ? { round: 1, rejectedIds: [] } : verb === 'gate-panel-round-record' ? { status: 'done' } : {},
+    spawn: async () => ({ status: 0 }) });
+  assert.strictEqual(result.decision, 'blocked');
+  assert.strictEqual(result.reason, 'budget-exhausted');
+  assert.strictEqual(read(run).launches.length, 2);
+});
