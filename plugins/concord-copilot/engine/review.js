@@ -448,7 +448,11 @@ function applyRoundOutcome(ledger, outcome) {
     openFindingsCount,
     specDoubtScope: outcome.specDoubtScope || 'none',
     noProgress,
-    budgetSpent: ledger.budget.spent,
+    // ledger.budget.spent is charged after this decision. A no-DoD target has no
+    // confirmation round, so the round being decided counts: the last budgeted round
+    // must not continue into another. A git target's final fix round is deliberately
+    // let through to one confirmation round, so it keeps the uncounted value.
+    budgetSpent: hasDoD ? ledger.budget.spent : ledger.budget.spent + 1,
     maxRounds: ledger.budget.max_rounds,
     fixedCount: (outcome.fixedIds || []).length, // COUNT, not the in-scope Set named fixedIds
     parkedCount: (outcome.parkedIds || []).length, // COUNT, not the in-scope Set named parkedIds
