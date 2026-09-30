@@ -251,3 +251,14 @@ test('runner: a panel lens launch denied for budget is a blocked outcome, not a 
   assert.strictEqual(result.reason, 'budget-exhausted');
   assert.strictEqual(read(run).launches.length, 2);
 });
+
+test('runner: a reviewer launch denied for budget is blocked and never recorded as a round failure', async () => {
+  const stateDir = temp();
+  const verbs = [];
+  const result = await runReviewUntilGreen({ ref: 'feature/x', base: 'main', repoRoot: '/repo', initiativeRunKey: 'r-blocked', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 3, targetIdentity: () => 'h2',
+    runCli: ([verb]) => { verbs.push(verb); return verb === 'round-start' ? work : verb === 'artifact-normalize' ? { status: 'ok' } : {}; },
+    spawn: async () => ({ status: 0 }) });
+  assert.strictEqual(result.decision, 'blocked');
+  assert.strictEqual(result.reason, 'budget-exhausted');
+  assert.ok(!verbs.includes('round-failure'));
+});

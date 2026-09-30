@@ -767,7 +767,7 @@ async function runReviewUntilGreen(options) {
         }
       } catch (error) {
         const failure = error.reviewFailure || { role, kind: /artifact|missing gate artifact/.test(String(error.message)) ? 'artifact-write-failure' : 'harness-error', message: String(error.message).replace(/^harness-failure:\s*/, '') };
-        try { await cli(['round-failure', ref, JSON.stringify(failure)]); } catch (_) {}
+        if (!error.initiativeBlocked) try { await cli(['round-failure', ref, JSON.stringify(failure)]); } catch (_) {}
         throw error;
       }
     };
@@ -801,7 +801,7 @@ async function runReviewUntilGreen(options) {
         }
       } catch (error) {
         const failure = error.reviewFailure || { role: 'fix', kind: /artifact|missing gate artifact/.test(String(error.message)) ? 'artifact-write-failure' : 'harness-error', message: String(error.message).replace(/^harness-failure:\s*/, '') };
-        try { await cli(['round-failure', ref, JSON.stringify(failure)]); } catch (_) {}
+        if (!error.initiativeBlocked) try { await cli(['round-failure', ref, JSON.stringify(failure)]); } catch (_) {}
         throw error;
       }
     }
