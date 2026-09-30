@@ -4059,3 +4059,53 @@ test('reset and rerun delete telemetry by the ledger target ref when called with
   run(['rerun', slug, '--engine', 'codex'], { env });
   assert.strictEqual(fs.existsSync(telemetryFile), false);
 });
+
+// ---- round budget enforcement ----
+
+// Drives one round whose only finding is rejected by the verifier: nothing is
+// fixed, nothing stays open, and the finding still counts as new for the
+// dry-round streak. Returns the round-start and record output.
+function noFixRound(ref, env, dir, extra, i) {
+  const rs = JSON.parse(run(['round-start', ref, ...extra], { env }));
+  if (rs.decision !== 'work') return { rs };
+  const file = ref.startsWith('file:') ? ref.slice(5) : 'a.txt';
+  const span = ref.startsWith('file:') ? undefined : 'two';
+  const id = `correctness:f${i}`;
+  writeArtifact(dir, rs.round, 'correctness', { status: 'ok', examined: [file], findings: [{ id, gate: 'correctness', file, span, summary: `finding ${i}` }] });
+  writeArtifact(dir, rs.round, 'verify', { status: 'ok', rejected: [{ id, reason: `re-read ${file}: the claim does not hold` }] });
+  run(['plan-fixes', ref], { env });
+  return { rs, out: JSON.parse(run(['record', ref], { env })) };
+}
+
+test('no-DoD target parks when the round budget is spent and round-start never opens a round past it', () => {
+  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-budget-'));
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
+  let last;
+  for (let i = 1; i <= 5; i++) {
+    fs.writeFileSync(path.join(fileDir, 'note.md'), `# note\nedit ${i}\n`);
+    last = noFixRound('file:note.md', env, dir, [], i);
+    assert.strictEqual(last.rs.round, i);
+  }
+  assert.strictEqual(last.out.decision.parked, true);
+  assert.strictEqual(last.out.decision.continue, false);
+  assert.match(last.out.decision.reason, /round budget exhausted/);
+  const again = JSON.parse(run(['round-start', 'file:note.md'], { env }));
+  assert.strictEqual(again.decision, 'terminal');
+  assert.strictEqual(review.readLedger(dir, review.targetSlug('file:note.md')).round, 5);
+});
+
+test('git target: a round that plans no fixes is terminal and is not charged to budget.spent', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const { out } = noFixRound('feat/x', env, dir, [base, '--no-broad'], 1);
+  // With no fix the round is the clean confirmation round (or a park): terminal either
+  // way, and only a round that continues consumes budget.
+  assert.strictEqual(out.decision.converged, true);
+  const l = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.strictEqual(l.budget.spent, 0);
+  assert.strictEqual(l.round, 1);
+});
