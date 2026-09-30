@@ -10,6 +10,8 @@ Under one initiative run key, a target is identified by its revision pair: the r
 - A refusal has one of five causes, in this order: `inactive` (the run is no longer active, the ledger is missing, or the round or count is invalid; native `reserve` reports it as a `reason`), `reconciliation-required`, `target-terminal`, `budget-exhausted` (launch budget or round budget), or lock contention. Native `reserve` answers `reconciliation-required` as its status, and `denied` with a `reason` for the others (no `reason` for contention). The Codex runner returns `{ decision: 'reconciliation-required' }` or `{ decision: 'blocked', reason: 'budget-exhausted' }` for `reconciliation-required` and `budget-exhausted`, without recording an error disposition; contention and a terminal pair stay errors, as they signal a defect or a race and not a decision.
 - The per-ref target ledger is unchanged. It stays terminal until `rerun <ref>`, which re-arms it and archives the finished run. A re-verification is therefore `rerun <ref>` followed by a normal keyed review of the new head. Default no-key behaviour, `reset`, and `rerun` are not affected.
 
+- On resume the runner does not take the base from a stored disposition, which would make the pair check compare a pair with itself. The base comes from the per-ref review ledger (`target.base`), the authority the resumed review already uses. A git ref whose ledger records no base fails closed before any identity work. A stored disposition with no head, or no base for a git ref, cannot match any revision and is skipped, so it never blocks a new pair.
+
 ## Rationale
 
 Keying the run ledger by pair keeps the terminal refusal a plain equality check and keeps budget accounting global per key, so many revisions can consume the budget quickly, which is the bound the budget exists to enforce. The cost is weaker same-ref traceability across revisions: the run ledger records the ref on every target and disposition, and an audit view can group by it.
@@ -26,4 +28,5 @@ Rejected:
 - A launch whose revision carries no head cannot be told apart from a recorded pair, so it matches every pair of its ref and stays refused after any terminal disposition, and it counts as an unopened pair while the run is parked. This fails closed.
 - While the run is parked, a fix commit in a still-running target changes its head and so also opens a new pair, which is refused. The target stops and the run is reconciled by a human.
 - A blocked outcome is not recorded in the run ledger, so a repeated attempt is refused again with the same outcome instead of adding records.
+- A budget block in the middle of a round leaves reservations partly consumed and nothing to resume within the same key; recovery starts under a new run key.
 - A reviewer spawned outside the review driver is not charged and its output is not accepted as review evidence. The ledger bounds cost, not honesty.
