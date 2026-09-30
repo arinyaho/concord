@@ -166,6 +166,12 @@ function renderDodFailure(dod) {
   const failing = ((dod && dod.results) || []).find((r) => r && !r.passed);
   if (!failing) return out; // pre-`results` ledger, or nothing to show
   out.push(`  $ ${failing.cmd}  (exit ${failing.exitCode})`);
+  // Exit 78 (EX_CONFIG) is the DoD-routine convention for "the environment could
+  // not be prepared" (e.g. dependency install failed); label it so it is not read
+  // as a test failure of the reviewed change. Text only -- the gate still failed.
+  if (failing.exitCode === 78) {
+    out.push('  DoD environment/setup error (exit 78): the gate could not be prepared; this is not a test failure of the reviewed change.');
+  }
   const clip = (l) => (l.length > 200 ? l.slice(0, 200) + '...' : l);
   const body = String(failing.output == null ? '' : failing.output).replace(/\s+$/, '');
   if (!body) {
