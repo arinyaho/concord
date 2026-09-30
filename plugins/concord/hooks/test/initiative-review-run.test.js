@@ -25,7 +25,7 @@ test('keyed runs use a hashed separate ledger and atomically consume launch budg
   assert.strictEqual(ledger.key, undefined);
 });
 
-test('v3 terminal dispositions are normalized and recorded exactly once', () => {
+test('v4 terminal dispositions are normalized and recorded exactly once', () => {
   const run = open({ stateDir: temp(), key: 'terminal-disposition', maxLaunches: 1, maxRounds: 1 });
   const revision = { ref: 'feature/x', base: 'main', head_sha: 'head' };
   const packet = { trigger: 'terminal', exit: { code: 0, signal: null }, dod: { status: 'passed' }, telemetry: { complete: true }, nextAction: 'replay' };
@@ -33,7 +33,7 @@ test('v3 terminal dispositions are normalized and recorded exactly once', () => 
   assert.strictEqual(recordDisposition(run, { target: 'feature/x', revision, result: { decision: { converged: true } }, packet }), false);
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
   assert.strictEqual(ledger.version, 3);
-  assert.deepStrictEqual(ledger.dispositions, [{ target: 'feature/x', revision, kind: 'terminal', reason: 'clean', sequence: 1, packet: { ...packet, outcome: { kind: 'terminal', reason: 'clean' }, ledger: { version: 3, status: 'active' }, budget: { maxLaunches: 1, maxRounds: 1, launches: 0, rounds: 0 }, delivery: { claim: 'feature/x:1', continuation: 'replay', consumed: false } } }]);
+  assert.deepStrictEqual(ledger.dispositions, [{ target: 'feature/x', revision, kind: 'terminal', reason: 'clean', sequence: 1, packet: { ...packet, outcome: { kind: 'terminal', reason: 'clean' }, ledger: { version: 4, status: 'active' }, budget: { maxLaunches: 1, maxRounds: 1, launches: 0, rounds: 0 }, delivery: { claim: 'feature/x:1', continuation: 'replay', consumed: false } } }]);
 });
 
 test('normalizeDisposition classifies gate-pending and intent-review as escape, not terminal', () => {
@@ -140,7 +140,7 @@ test('v2 initiative ledgers fail closed', () => {
   const dir = temp();
   const run = open({ stateDir: dir, key: 'legacy-v2', maxLaunches: 1, maxRounds: 1 });
   fs.writeFileSync(run.path, JSON.stringify({ ...JSON.parse(fs.readFileSync(run.path, 'utf8')), version: 2 }));
-  assert.throws(() => open({ stateDir: dir, key: 'legacy-v2', maxLaunches: 1, maxRounds: 1 }), /schemaVersion must be 3/);
+  assert.throws(() => open({ stateDir: dir, key: 'legacy-v2', maxLaunches: 1, maxRounds: 1 }), /schemaVersion must be 4/);
 });
 
 test('Claude, Codex, and Copilot runtimes produce the same disposition packet', () => {

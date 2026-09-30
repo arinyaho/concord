@@ -224,3 +224,16 @@ test('AC5: two worktrees of one repository resolve to one run ledger', () => {
   assert.strictEqual(reserveLaunch(other, launchAt(rev('h1'))), false);
   assert.throws(() => openInitiativeRun({ stateDir, key: 'two-worktrees', repository: repoWithCommits(), maxLaunches: 4, maxRounds: 3 }), /different repository/);
 });
+
+test('a version 3 ledger with a name base is rejected by terminalTarget, reserve and the runner', async () => {
+  const stateDir = temp();
+  const repoRoot = fs.realpathSync(temp());
+  const run = open({ stateDir, key: 'v3', repository: repoRoot, maxLaunches: 4, maxRounds: 3 });
+  assert.ok(terminal(run, rev('h1', 'main')));
+  fs.writeFileSync(run.path, JSON.stringify({ ...read(run), version: 3 }));
+  assert.throws(() => terminalTarget(run, 'feature/x', rev('h1', 'main'), ['terminal']), /schemaVersion must be 4/);
+  assert.throws(() => reserveLaunch(run, launchAt(rev('h2', 'main'))), /schemaVersion must be 4/);
+  assert.strictEqual(fs.existsSync(`${run.path}.lock`), false);
+  await assert.rejects(runReviewUntilGreen({ ref: 'feature/x', base: 'main', repoRoot, initiativeRunKey: 'v3', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 3, targetIdentity: () => 'h1',
+    runCli: () => ({}), spawn: async () => ({ status: 0 }) }), /schemaVersion must be 4/);
+});

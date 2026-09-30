@@ -87,8 +87,8 @@ function openInitiativeRun({ stateDir, key, repository, maxLaunches, maxRounds, 
   if (!Number.isInteger(maxLaunches) || maxLaunches < 1 || !Number.isInteger(maxRounds) || maxRounds < 1) throw new Error('initiative review budgets must be positive integers');
   const run = { path: runPath(stateDir, key), repository: repositoryIdentity(repository) };
   const initialize = (ledger) => {
-    if (!ledger) return { version: 3, repository: run.repository, status: 'active', budget: { maxLaunches, maxRounds }, launches: [], rounds: [], targets: [], findings: {}, checks: [], telemetry: [], terminal: null, dispositions: [], reconciliation: null };
-    if (ledger.version !== 3) throw new Error('initiative review run schemaVersion must be 3');
+    if (!ledger) return { version: 4, repository: run.repository, status: 'active', budget: { maxLaunches, maxRounds }, launches: [], rounds: [], targets: [], findings: {}, checks: [], telemetry: [], terminal: null, dispositions: [], reconciliation: null };
+    if (ledger.version !== 4) throw new Error('initiative review run schemaVersion must be 4');
     if (ledger.repository !== run.repository || (!allowTerminal && ledger.status === 'terminal') || ledger.budget?.maxLaunches !== maxLaunches || ledger.budget?.maxRounds !== maxRounds) throw new Error('initiative review run has a different repository, is terminal, or has immutable configured budgets');
   };
   if (!locked(run, initialize)) {
@@ -127,7 +127,7 @@ function pairRefusal(run, target, revision) {
 }
 
 // The immutable commit a base name points at right now. A base that does not
-// resolve is kept as given; round-start rejects it.
+// resolve is kept as given.
 function resolveBaseCommit(repoRoot, base) {
   try {
     return require('node:child_process').execFileSync('git', ['rev-parse', '--verify', '--quiet', `${base}^{commit}`], { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || base;
@@ -153,6 +153,7 @@ function launchRefusal(ledger, launch, count) {
 // every launch is recorded or none is. reserveLaunch is the count === 1 case.
 function reserveLaunchBatch(run, launch, count = 1) {
   return Boolean(locked(run, (ledger) => {
+    if (ledger && ledger.version !== 4) throw new Error('initiative review run schemaVersion must be 4');
     if (launchRefusal(ledger, launch, count)) return null;
     const target = launch.target || launch.revision?.ref || 'unknown';
     const round = `${target}\u0000${typeof launch.attemptId === 'string' ? launch.attemptId : 'legacy'}\u0000${launch.round}`;
@@ -179,7 +180,7 @@ function reserveLaunch(run, launch) {
 function recordDisposition(run, { target, revision, result, packet = {}, finding = null, stage = null, avoidedLaunches = 0, findings = {}, checks = [], telemetry = [] }) {
   const safeTelemetry = telemetry.map(({ role, stage: telemetryStage, revision, round, count, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, ...(telemetryStage ? { stage: telemetryStage } : {}), ...(revision ? { revision } : {}), ...(Number.isInteger(round) ? { round } : {}), ...(Number.isInteger(count) ? { count } : {}), elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }));
   return Boolean(locked(run, (ledger) => {
-    if (!ledger || ledger.version !== 3 || ledger.status !== 'active') return null;
+    if (!ledger || ledger.version !== 4 || ledger.status !== 'active') return null;
     const disposition = normalizeDisposition(result);
     if (disposition.kind === 'terminal' && (ledger.dispositions || []).some((item) => item.target === target && item.kind === 'terminal' && samePair(item.revision, launchRevision({ revision }, target) || { head_sha: null }))) return null;
     // For 'escape', only dedupe against a still-unconsumed match: once a
@@ -210,7 +211,7 @@ function recordDisposition(run, { target, revision, result, packet = {}, finding
 
 function consumeDispositionDelivery(run, claim) {
   return Boolean(locked(run, (ledger) => {
-    if (!ledger || ledger.version !== 3) return null;
+    if (!ledger || ledger.version !== 4) return null;
     const index = (ledger.dispositions || []).findIndex((item) => item.packet?.delivery?.claim === claim && item.packet.delivery.consumed === false);
     if (index === -1) return null;
     const dispositions = ledger.dispositions.slice();
@@ -236,7 +237,7 @@ function publicInitiativeSummary(run) {
 
 function dispositionCandidates(run, target, kinds) {
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  if (ledger.version !== 3) throw new Error('initiative review run schemaVersion must be 3');
+  if (ledger.version !== 4) throw new Error('initiative review run schemaVersion must be 4');
   if (ledger.status !== 'active') return [];
   return (ledger.dispositions || []).filter((item) => item.target === target && kinds.includes(item.kind));
 }
