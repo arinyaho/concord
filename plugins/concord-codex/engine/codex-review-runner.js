@@ -10,6 +10,7 @@ const { gitHeadSha, gitDirty, fileTarget } = require('./target');
 const fs = require('node:fs');
 const path = require('node:path');
 const { safeIdForFilename } = require('./artifact-name');
+const { writeFileAtomic } = require('./atomic-write');
 const { targetSlug } = require('./review');
 const { artifactDestinationFromPrompt } = require('./review-artifact');
 const { isValidFindingId } = require('./gate-contract');
@@ -466,9 +467,7 @@ async function runReviewUntilGreen(options) {
   let telemetryLoaded = false;
   const persistTelemetry = () => {
     if (!telemetryPath) return;
-    const temporary = `${telemetryPath}.${process.pid}.tmp`;
-    fs.writeFileSync(temporary, `${JSON.stringify(telemetry)}\n`);
-    fs.renameSync(temporary, telemetryPath);
+    writeFileAtomic(telemetryPath, `${JSON.stringify(telemetry)}\n`);
   };
   const record = (input, result) => {
     const usage = result && result.usage || {};
