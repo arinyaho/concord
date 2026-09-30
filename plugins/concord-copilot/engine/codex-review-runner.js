@@ -5,7 +5,7 @@
 // subprocess and every state transition remains owned by review-cli.
 const { execFileSync, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
-const { canonicalPath, runPath, openInitiativeRun, reserveLaunch, recordDisposition, normalizeDisposition, consumeDispositionDelivery, terminalTarget, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
+const { canonicalPath, runPath, openInitiativeRun, reserveLaunch, denialReason, recordDisposition, normalizeDisposition, consumeDispositionDelivery, terminalTarget, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
 const { gitHeadSha, gitDirty, fileTarget } = require('./target');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -703,7 +703,14 @@ async function runReviewUntilGreen(options) {
     const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodPassed: started.dodPassed, dodDeferred: started.dodDeferred, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref) };
     let slotAllocation = Promise.resolve();
     const launch = async (input) => {
-      if (initiativeRun && !reserveLaunch(initiativeRun, { role: input.role, target: ref, revision, attemptId: started.attemptId || `${revision.ref}\u0000${revision.head_sha || revision.base || 'unknown'}`, round: currentRound })) throw new Error(`review-until-green: initiative launch budget exhausted or reservation contended before ${input.role}`);
+      const reservation = { role: input.role, target: ref, revision, attemptId: started.attemptId || `${revision.ref}\u0000${revision.head_sha || revision.base || 'unknown'}`, round: currentRound };
+      if (initiativeRun && !reserveLaunch(initiativeRun, reservation)) {
+        const reason = denialReason(initiativeRun, reservation);
+        const denied = new Error(`review-until-green: initiative launch ${reason || 'reservation contended'} before ${input.role}`);
+        // A run out of budget or parked for reconciliation is a blocked outcome, not a review failure.
+        if (reason === 'budget-exhausted' || reason === 'reconciliation-required') denied.initiativeBlocked = reason;
+        throw denied;
+      }
       const artifactPath = artifactDestinationFromPrompt(input.prompt, input.stateDir);
       const isFix = input.role === 'fix';
       const provider = isFix ? fixer : reviewer;
@@ -789,6 +796,7 @@ async function runReviewUntilGreen(options) {
   }
   } catch (error) {
     if (error.notAReviewFailure) throw error;
+    if (error.initiativeBlocked) return { decision: error.initiativeBlocked === 'budget-exhausted' ? 'blocked' : error.initiativeBlocked, reason: error.initiativeBlocked, initiative: publicInitiativeSummary(initiativeRun) };
     const failure = error.reviewFailure || {};
     // recordDisposition dedups an 'error' by its reason (a hash of the
     // message), not just target+revision+kind -- so the fallback lookups

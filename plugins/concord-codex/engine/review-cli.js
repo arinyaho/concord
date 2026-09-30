@@ -25,7 +25,7 @@ const {
   resetUnreachable,
 } = require('./review');
 const crypto = require('node:crypto');
-const { canonicalPath, openInitiativeRun, reserveLaunchBatch, recordDisposition, finaliseInitiativeRun } = require('./initiative-review-run');
+const { canonicalPath, openInitiativeRun, reserveLaunchBatch, denialReason, recordDisposition, finaliseInitiativeRun } = require('./initiative-review-run');
 const { acquireTarget, gitDiff, gitHeadSha, gitDirty } = require('./target');
 const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
 
@@ -606,7 +606,11 @@ function runVerb(resolveFromCwd, args, initiative) {
       if (!ledger || (!['gates', 'fixes'].includes(ledger.phase) && !panelPending)) throw new Error(`reserve: no active review work for ref "${ref}" ${stateDirHint(stateDir)}`);
       const target = ledger.target?.ref || ref;
       const revision = { ref: target, ...(ledger.target?.base ? { base: ledger.target.base } : {}), ...(ledger.target?.head_sha ? { head_sha: ledger.target.head_sha } : {}) };
-      if (!reserveLaunchBatch(run, { role, round: ledger.round, target, revision, attemptId: ledger.attemptId }, count)) return { status: 'denied', role, count, round: ledger.round };
+      const launch = { role, round: ledger.round, target, revision, attemptId: ledger.attemptId };
+      if (!reserveLaunchBatch(run, launch, count)) {
+        const reason = denialReason(run, launch, count);
+        return reason === 'reconciliation-required' ? { status: reason, role, count, round: ledger.round } : { status: 'denied', role, count, round: ledger.round, ...(reason ? { reason } : {}) };
+      }
       const token = crypto.randomBytes(16).toString('hex');
       const panel = role === 'lens' || role === 'vote' ? (ledger.gate_panel?.round || 0) + 1 : undefined;
       writeLedger(stateDir, slug, { ...ledger, initiative_reservations: [...(ledger.initiative_reservations || []), { token, role, round: ledger.round, ...(panel ? { panel } : {}), count }] });

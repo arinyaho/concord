@@ -90,43 +90,16 @@ test('terminal file targets retain their content identity and preflight without 
   assert.deepStrictEqual(replay.initiative.counts.targets, 1);
 });
 
-test('changed terminal target identity fails before round-start', async () => {
+test('a changed target head opens a new target and reaches round-start', async () => {
   const stateDir = temp();
   const key = 'changed-terminal';
   const run = openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
   fs.writeFileSync(run.path, JSON.stringify({ ...ledger, targets: [{ ref: 'file:note.md', head_sha: 'old-bytes' }], dispositions: [{ target: 'file:note.md', reason: 'clean', kind: 'terminal', revision: { ref: 'file:note.md', head_sha: 'old-bytes' } }] }));
   await assert.rejects(
-    runReviewUntilGreen({ ref: 'file:note.md', initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => 'new-bytes', runCli: () => { throw new Error('round-start must not run'); } }),
-    /revision changed/,
+    runReviewUntilGreen({ ref: 'file:note.md', initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => 'new-bytes', runCli: () => { throw new Error('round-start reached'); } }),
+    /round-start reached/,
   );
-});
-
-test('a changed-revision replay against an already-terminal target does not pollute the ledger', async () => {
-  const stateDir = temp();
-  const key = 'changed-terminal-no-pollution';
-  const run = openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
-  const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, targets: [{ ref: 'file:note.md', head_sha: 'old-bytes' }], dispositions: [{ target: 'file:note.md', reason: 'clean', kind: 'terminal', revision: { ref: 'file:note.md', head_sha: 'old-bytes' } }] }));
-  await assert.rejects(
-    runReviewUntilGreen({ ref: 'file:note.md', initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => 'new-bytes', runCli: () => { throw new Error('round-start must not run'); } }),
-    /revision changed/,
-  );
-  // terminalTarget's own identity-validation throw is not a review failure
-  // -- it must not get recorded as a spurious error disposition, and the
-  // new (rejected) revision must not get appended to ledger.targets.
-  const after = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  assert.strictEqual(after.dispositions.length, 1);
-  assert.strictEqual(after.targets.length, 1);
-});
-
-test('terminal target preflight does not replay against a historical matching target', async () => {
-  const stateDir = temp();
-  const key = 'multi-revision-terminal';
-  const run = openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
-  const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, targets: [{ ref: 'file:note.md', head_sha: 'old-bytes' }, { ref: 'file:note.md', head_sha: 'current-bytes' }], dispositions: [{ target: 'file:note.md', reason: 'clean', kind: 'terminal', revision: { ref: 'file:note.md', head_sha: 'old-bytes' } }] }));
-  await assert.rejects(runReviewUntilGreen({ ref: 'file:note.md', initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => 'current-bytes', runCli: () => { throw new Error('round-start must not run'); } }), /revision changed/);
 });
 
 test('legacy terminal file targets without head_sha fail closed before a round', async () => {
@@ -141,13 +114,13 @@ test('legacy terminal file targets without head_sha fail closed before a round',
   );
 });
 
-test('terminal replay requires the recorded base even when head matches', async () => {
+test('a different base with the same head is a new target', async () => {
   const stateDir = temp();
   const key = 'same-head-different-base';
   const run = openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
   fs.writeFileSync(run.path, JSON.stringify({ ...ledger, dispositions: [{ target: 'feature/x', reason: 'clean', kind: 'terminal', revision: { ref: 'feature/x', base: 'main', head_sha: 'same-head' } }] }));
-  await assert.rejects(runReviewUntilGreen({ ref: 'feature/x', base: 'release', initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => 'same-head', runCli: () => { throw new Error('round-start must not run'); } }), /revision changed/);
+  await assert.rejects(runReviewUntilGreen({ ref: 'feature/x', base: 'release', initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => 'same-head', runCli: () => { throw new Error('round-start reached'); } }), /round-start reached/);
 });
 
 test('resuming a terminal git target binds its recorded base before identity and round-start', async () => {
