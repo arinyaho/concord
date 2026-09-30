@@ -461,4 +461,34 @@ for (const provider of Object.keys(PROVIDERS)) {
     assert.strictEqual(denied.status, 'denied');
     assert.strictEqual(denied.reason, 'budget-exhausted');
   });
+
+  test(`${provider}: reserve stores the resolved base commit, so a base name that moves makes a different pair`, () => {
+    const t = setup(provider, { maxLaunches: 5 });
+    t.start(); // the per-ref ledger keeps the base name HEAD~1
+    const rev = () => execFileSync('git', ['rev-parse', 'HEAD~1'], { cwd: t.repo, encoding: 'utf8' }).trim();
+    const first = rev();
+    assert.strictEqual(t.ok(['reserve', 'feat/x', 'correctness']).status, 'granted');
+    fs.writeFileSync(path.join(t.repo, 'b.txt'), 'x\n');
+    execFileSync('git', ['add', '-A'], { cwd: t.repo });
+    execFileSync('git', ['commit', '-qm', 'move the base name'], { cwd: t.repo });
+    const second = rev();
+    assert.notStrictEqual(first, second);
+    assert.strictEqual(t.ok(['reserve', 'feat/x', 'verify']).status, 'granted');
+    const targets = t.initiative().targets;
+    assert.deepStrictEqual(targets.map((x) => x.base), [first, second]);
+    assert.strictEqual(new Set(targets.map((x) => x.head_sha)).size, 1);
+  });
+
+  test(`${provider}: record stores the resolved base commit in the disposition revision`, () => {
+    const t = setup(provider, { config: { dod: ['true'], intent: { command: 'printf "REQ: retry three times"' } } });
+    const n = t.start();
+    for (const role of ['correctness', 'verify', 'intent']) assert.strictEqual(t.ok(['reserve', 'feat/x', role]).status, 'granted');
+    t.write(n, 'correctness', { ...CLEAN, findings: [finding] });
+    t.write(n, 'verify', { status: 'ok', rejected: [] });
+    t.write(n, 'intent', { status: 'ok', findings: [{ id: 'intent:retry', file: 'a.txt', span: 'two', summary: 's', requirement: 'retry three times' }] });
+    t.ok(['plan-fixes', 'feat/x']);
+    t.ok(['record', 'feat/x']);
+    const base = execFileSync('git', ['rev-parse', 'HEAD~1'], { cwd: t.repo, encoding: 'utf8' }).trim();
+    assert.strictEqual(t.initiative().dispositions[0].revision.base, base);
+  });
 }

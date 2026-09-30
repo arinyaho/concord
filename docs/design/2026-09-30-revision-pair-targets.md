@@ -1,6 +1,6 @@
 # Revision-pair targets under an initiative run key
 
-Under one initiative run key, a target is identified by its revision pair: the ref, the base, and the head (`head_sha`, which is a content identity for a file target). For a repository ref the stored base is the commit the base name resolves to when the pair is built, never the name: a base that moves under the same name, such as a remote default branch that advances, is a different pair even when the head is unchanged. A base that does not resolve is stored as given, and `round-start` rejects it. The per-ref review ledger keeps the base name. A terminal disposition belongs to one revision pair. The same ref on a new head or a new base is a new target under the same run key, so a fix pass or base drift can be re-verified without opening a new run key and without leaving the shared budget.
+Under one initiative run key, a target is identified by its revision pair: the ref, the base, and the head (`head_sha`, which is a content identity for a file target). For a repository ref the stored base is the commit the base name resolves to when the pair is built, never the name: a base that moves under the same name, such as a remote default branch that advances, is a different pair even when the head is unchanged. The initiative run ledger schema version is 4, which is the version that stores resolved commit bases; a ledger of any older version is rejected and never upgraded. A base that does not resolve is stored as given. The per-ref review ledger keeps the base name. A terminal disposition belongs to one revision pair. The same ref on a new head or a new base is a new target under the same run key, so a fix pass or base drift can be re-verified without opening a new run key and without leaving the shared budget.
 
 ## Behaviour
 
@@ -23,6 +23,10 @@ Rejected:
 - Reporting exhaustion as an error disposition. An error disposition reads as a defect and is replayed as a resumable failure, while an exhausted budget is a decision for a human.
 
 ## Residual exposure
+
+- The base is resolved on every call, not once per run. A base name that moves in the middle of a review splits that review across two pairs, and each pair is charged to the budget. This fails closed.
+- A base that does not resolve is stored as the name, and it is not rejected at resolution. On a parked run the `reconciliation-required` answer comes before `round-start`, so the bad base is reported only after a human resolves the park. Rejecting an unresolvable base at resolution would need every caller to supply a real repository, so it is not done.
+- The runner preflight needs a readable head identity. When the head cannot be read, the preflight is skipped and the refusal comes at the launch reservation, after the DoD has run.
 
 - A launch whose revision carries no head cannot be told apart from a recorded pair, so it matches every pair of its ref and stays refused after any terminal disposition, and it counts as an unopened pair while the run is parked. This fails closed.
 - While the run is parked, a fix commit in a still-running target changes its head and so also opens a new pair, which is refused. The target stops and the run is reconciled by a human.
