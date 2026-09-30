@@ -3,6 +3,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { same } = require('./review-eval');
+const { writeFileAtomic } = require('./atomic-write');
 
 function canonicalPath(value) {
   const resolved = path.resolve(value);
@@ -32,9 +33,7 @@ function runPath(stateDir, key) {
 
 function write(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temporary = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(temporary, `${JSON.stringify(value)}\n`, { mode: 0o600 });
-  fs.renameSync(temporary, file);
+  writeFileAtomic(file, `${JSON.stringify(value)}\n`, { mode: 0o600 });
 }
 
 function locked(run, update) {

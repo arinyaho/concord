@@ -56,12 +56,12 @@ test('ledger: readLedger returns null when absent; writeLedger + readLedger roun
   assert.ok(path.basename(review.ledgerPath(dir, slug)).startsWith('review-'));
 });
 
-test('ledger: readLedger returns null on corrupt JSON rather than throwing', () => {
+test('ledger: readLedger throws on corrupt JSON instead of reporting no ledger', () => {
   const dir = tmpStateDir();
   const slug = 'broken';
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(review.ledgerPath(dir, slug), '{not json');
-  assert.strictEqual(review.readLedger(dir, slug), null);
+  assert.throws(() => review.readLedger(dir, slug), /review-broken\.json/);
 });
 
 test('emptyLedger: sane defaults, status converging, every field present', () => {

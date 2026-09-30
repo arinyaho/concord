@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 const { safeIdForFilename } = require('./artifact-name');
+const { writeFileAtomic } = require('./atomic-write');
 const dodExec = require('./dod-exec');
 const intentLib = require('./intent');
 const gateLib = require('./gate');
@@ -1154,9 +1155,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       const intentPath = path.join(stateDir, `intent-${slug}.md`);
       if (!ledger.intentHash) {
         const { text, sha, bytes } = intentLib.fetchIntent({ command: intentCfg.command, cwd: repoRoot, ref, base });
-        const tmp = intentPath + '.tmp';
-        fs.writeFileSync(tmp, text);
-        fs.renameSync(tmp, intentPath); // atomic: never leave a partial file a later step trusts
+        writeFileAtomic(intentPath, text); // atomic: never leave a partial file a later step trusts
         ledger = { ...ledger, intentHash: sha, intentBytes: bytes };
       } else {
         let cached;
@@ -1674,7 +1673,8 @@ function runVerb(resolveFromCwd, args, initiative) {
   if (verb === 'reset') {
     requireRef(ref, 'reset');
     const slug = targetSlug(ref);
-    const prior = readLedger(stateDir, slug);
+    let prior;
+    try { prior = readLedger(stateDir, slug); } catch (e) { prior = { unreadable: true, status: 'unreadable', round: 0 }; }
     if (!prior) {
       process.stdout.write(`review-cli reset: no ledger for ref "${ref}"; nothing to reset.\n`);
       return;
@@ -1704,7 +1704,14 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (engineFlag >= 0 && !rest[engineFlag + 1]) throw new Error('review-cli rerun: --engine needs a name (e.g. --engine codex)');
     const engine = engineFlag >= 0 ? rest[engineFlag + 1] : null;
     const slug = targetSlug(ref);
-    const stored = readLedger(stateDir, slug);
+    let stored;
+    try { stored = readLedger(stateDir, slug); } catch (e) {
+      // Nothing readable to archive: replace the ledger with a fresh run (gate_dismissed is lost with it).
+      reviewTelemetry.deleteTelemetry(stateDir, ref, slug);
+      writeLedger(stateDir, slug, { ...emptyLedger({ kind: 'local', ref }), engine });
+      process.stdout.write(JSON.stringify({ status: 'ok', run: 1, engine, archived: null }) + '\n');
+      return;
+    }
     const prior = reviewTelemetry.foldTelemetry(stateDir, stored, slug);
     if (!prior) throw new Error(`review-cli rerun: no ledger for ref "${ref}" ${stateDirHint(stateDir)} -- there is no run to re-run; just start a normal run.`);
     const runs = (prior.runs || []).concat([{

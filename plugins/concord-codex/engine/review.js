@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { REVIEW_MAX_ROUNDS_DEFAULT, REVIEW_PARK_BUDGET_DEFAULT } = require('./config');
 const { emptyGatePanel } = require('./gate-panel');
+const { writeFileAtomic } = require('./atomic-write');
 
 // Pure, unit-testable core for review-until-green. No LLM calls, no process
 // spawning, no network -- the "CLI enforces, the agent drives" model: this module
@@ -18,24 +19,23 @@ function ledgerPath(stateDir, slug) {
   return path.join(stateDir, `review-${slug}.json`);
 }
 
-// Returns the parsed ledger, or null if absent or corrupt (mirrors charter.js's
-// readNorthStar: a missing/broken durable file degrades to "nothing yet", it
-// never throws and blocks the caller).
+// Returns the parsed ledger, or null only when the file is missing. Any other
+// read or parse error throws: a present-but-unreadable ledger must not start a
+// fresh run and silently drop its budget and parked findings. Review ledgers
+// only; the charter read policy (charter.js) still degrades to "nothing yet".
 function readLedger(stateDir, slug) {
+  const file = ledgerPath(stateDir, slug);
   try {
-    return JSON.parse(fs.readFileSync(ledgerPath(stateDir, slug), 'utf8'));
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch (e) {
-    return null;
+    if (e && e.code === 'ENOENT') return null;
+    throw new Error(`unreadable review ledger ${path.basename(file)}: ${e && e.message}; run \`review-cli.js reset <ref>\` to replace it`);
   }
 }
 
 function writeLedger(stateDir, slug, ledger) {
   fs.mkdirSync(stateDir, { recursive: true });
-  // Temp file + rename so a concurrent reader never sees partial JSON.
-  const file = ledgerPath(stateDir, slug);
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(ledger));
-  fs.renameSync(tmp, file);
+  writeFileAtomic(ledgerPath(stateDir, slug), JSON.stringify(ledger));
 }
 
 // Removes the durable ledger for a ref so the next round-start begins a fresh
@@ -517,8 +517,12 @@ function listLedgers(stateDir) {
     if (/^review-(?:agent-)?telemetry-[0-9a-f]{64}\.json$/.test(n)) continue;
     const m = /^review-(.+)\.json$/.exec(n);
     if (!m) continue;
-    const ledger = readLedger(stateDir, m[1]);
-    if (ledger) out.push({ slug: m[1], ledger });
+    try {
+      const ledger = readLedger(stateDir, m[1]);
+      if (ledger) out.push({ slug: m[1], ledger });
+    } catch (e) {
+      out.push({ slug: m[1], unreadable: n });
+    }
   }
   return out;
 }
@@ -535,7 +539,11 @@ function reportFailureText(value) {
 
 function renderReviewReport(ledgers) {
   const lines = [];
-  for (const { ledger } of ledgers || []) {
+  for (const { ledger, unreadable } of ledgers || []) {
+    if (unreadable) {
+      lines.push(`review-until-green: unreadable ledger ${reportFailureText(unreadable)} -- it is not resumed; inspect it, then \`review-cli.js reset <ref>\` replaces it.`);
+      continue;
+    }
     const ref = ledger.target && ledger.target.ref;
     const open = (ledger.findings || []).filter((f) => f.status === 'open').length;
     const roundInfo = `round ${ledger.round}/${ledger.budget.max_rounds}`;
