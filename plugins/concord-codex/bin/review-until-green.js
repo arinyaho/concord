@@ -74,6 +74,8 @@ runReviewUntilGreen(runnerOptions)
   .then(async (result) => {
     if (result.continuationPacket) await deliver(process.stdout, result.continuationPacket);
     else if (!(result.decision === 'terminal' && result.initiative)) await write(process.stdout, `${result.handoff || result.message || JSON.stringify(result)}\n`);
+    // A blocked initiative run is a stop for a human, not a verified review: signal it in the exit status.
+    if (result.decision === 'blocked' || result.decision === 'reconciliation-required') process.exitCode = 1;
   })
   .catch(async (error) => {
     try {
