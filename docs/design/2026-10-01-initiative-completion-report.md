@@ -17,11 +17,11 @@ The version does not change because the fields are additive and a reader that do
 
 ## Telemetry in the ledger
 
-The ledger already has a `telemetry` list that `recordDisposition` appends to. Three properties govern what native telemetry the ledger carries:
+The ledger already has a `telemetry` list that `recordDisposition` appends to with every disposition it records, and that stays. Three properties govern what native telemetry the ledger carries:
 
 - The native `record` verb folds the hook-collected usage for the target, as the other native verbs already do, and forwards each invocation (role, round, elapsed time and token counts) to `recordDisposition`, exactly as the Codex runner does. Native Claude and Copilot runs therefore carry per-role token data.
-- `recordDisposition` appends telemetry only with a terminal disposition. The per-target telemetry cache is cleared only once the target is terminal, so every later disposition for the same target re-reads the cumulative cache. Appending on an escape or error disposition would count the same invocations again at the terminal record.
-- Telemetry of a target that never records a terminal disposition, because it only escapes or errors, is in neither the ledger nor the report. A null or partial usage value is skipped when summing, so a token total is a lower bound, and the per-role `launches` versus `calls` expose the gap.
+- The per-target telemetry cache is cleared by what was recorded, not by the target's status: the native `record` verb clears it after it records any disposition (terminal, escape, gate-pending, intent-review), as the Codex runner does. A target status is the wrong trigger because the disposition kind and the status can disagree: any decision that neither continues nor converges is recorded as a terminal disposition, yet the target status may not be terminal. Clearing on the disposition guarantees that each invocation is appended once, however many dispositions the target records.
+- Telemetry of a target that records no disposition at all, because the run stopped before a `record`, is in neither the ledger nor the report. A null or partial usage value is skipped when summing, so a token total is a lower bound, and the per-role `launches` versus `calls` expose the gap.
 
 Token data is per review role. The orchestrating session's own tokens, per-stage orchestrator tokens and a split between active and waiting time have no measurable source and are not reported.
 
@@ -39,7 +39,7 @@ Token data is per review role. The orchestrating session's own tokens, per-stage
 
 ### Crash safety
 
-`finaliseInitiativeRun` writes the terminal status under the run lock and then renders. When the run is already terminal the status write is a no-op, but the render still runs. A crash after the ledger write and before rendering therefore leaves a terminal ledger with no report, and calling finalise again, through the review CLI `finalise` verb or the Codex `--initiative-finalise` flag, produces the run's own `report.json` and `report.md`, which are written before the index step. Nothing was held only in memory. The index step still throws on every re-run while a ledger that fails to parse, or a malformed terminal version 5 ledger, remains in the state directory, so the index is not rebuilt until that ledger is repaired or removed (see Residual exposure). A render failure after a successful status write throws an error that says the run is terminal, names the underlying cause (including the offending ledger file when the index scan failed), and says finalise is re-run after the cause is resolved; it does not report the run as active.
+`finaliseInitiativeRun` writes the terminal status under the run lock and then renders. When the run is already terminal the status write is a no-op, but the render still runs. A crash after the ledger write and before rendering therefore leaves a terminal ledger with no report, and calling finalise again, through the review CLI `finalise` verb or the Codex `--initiative-finalise` flag, produces the run's own `report.json` and `report.md`, which are written before the index step. Nothing was held only in memory. The index step still throws on every re-run while a ledger that fails to parse, or a malformed terminal version 5 ledger, remains in the state directory, so the index is not rebuilt until that ledger is repaired or removed (see Residual exposure). A render failure after a successful status write throws an error that says the run is terminal, names the underlying cause (including the offending ledger file when the index scan failed), and says finalise is re-run after the cause is resolved; it does not report the run as active. The one caller that finalises while failing closed on a harness error, the native reservation check that finalises a run on unreserved evidence, keeps its own harness-failure error: if the render or the index scan throws there, that error is not replaced by the render error, so the failure that closed the run is the one reported.
 
 ### The index is derived
 
@@ -56,9 +56,9 @@ One projection builds the entry in `report.json` and the index line, and `report
 - `mode` and `escalation` (the trigger, or `null`). `mode` is `base` or `lite`, and the escalation trigger is one of `public-api`, `schema`, `security`, `cross-package`, or `migration`; the review run validates both against these fixed enumerations.
 - `outcome`: `status` and a `reason` that is one of the reasons the core itself writes; any other value is `other`.
 - `targets`: the count and the SHA-256 identifiers of each revision pair, as `publicInitiativeSummary` already computes them.
-- `counts`: launches, rounds, and launches by role.
+- `counts`: launches, rounds, and launches by role. A role is supplied by the caller of `reserve`, so launches-by-role keys are bounded the same way as token roles: a key matching `[a-z-]{1,32}` is shown as written and any other becomes `other`.
 - `findings`: counts by class, where a class is a value matching `[a-z-]{1,32}`; any other key is `other`.
-- `checks`: total and counts by status.
+- `checks`: total and counts by status. Status keys are bounded the same way: a key matching `[a-z-]{1,32}` is shown as written and any other becomes `other`.
 - `tokens`: totals and per-role launches, calls, elapsed milliseconds and token counts, roles bounded the same way as finding classes.
 - `elapsed`: `wallClockMs`, the difference between `terminal.at` and `openedAt` (`null` when either is missing), and `reviewerMs`, the sum of reviewer elapsed times from telemetry.
 - `openedAt` and `finalisedAt`.
@@ -82,7 +82,7 @@ The ledger holds the repository path, raw refs, SHAs, handoff text and error mes
 
 - A run that never finalises has no report and no index line. The only record of it is its ledger.
 - Native token data depends on the telemetry hook having recorded the invocations. A missing record shows as fewer calls than launches for a role, which the per-role `launches` and `calls` make visible instead of hiding.
-- Telemetry of a target that never records a terminal disposition is absent from the ledger and report, and null or partial usage is skipped when summing, so token totals are lower bounds. Per-role `launches` versus `calls` show the gap.
+- Telemetry of a target that records no disposition is absent from the ledger and report, and null or partial usage is skipped when summing, so token totals are lower bounds. Per-role `launches` versus `calls` show the gap.
 - `reviewerMs` is a lower bound for the same reason as the token totals.
 - A ledger written before timestamps existed has `null` elapsed time.
 - Finding classes and roles are bounded by pattern, not by a closed list. A reviewer-chosen class that matches the pattern is shown as written, which exposes only values matching `[a-z-]{1,32}`; values outside the pattern become `other`.

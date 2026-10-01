@@ -36,6 +36,9 @@ function write(file, value) {
   writeFileAtomic(file, `${JSON.stringify(value)}\n`, { mode: 0o600 });
 }
 
+// Code-generated stamp for ledger writes; never taken from a caller or a reviewer.
+const now = () => new Date().toISOString();
+
 const ESCALATION_TRIGGERS = ['public-api', 'schema', 'security', 'cross-package', 'migration'];
 const MODES = ['base', 'lite'];
 const { lockOwner, pidRunning, reclaimStaleLock } = require('./run-lock');
@@ -110,7 +113,7 @@ function openInitiativeRun({ stateDir, key, repository, maxLaunches, maxRounds, 
   if (!Number.isInteger(maxLaunches) || maxLaunches < 1 || !Number.isInteger(maxRounds) || maxRounds < 1) throw new Error('initiative review budgets must be positive integers');
   const run = { path: runPath(stateDir, key), repository: repositoryIdentity(repository) };
   const initialize = (ledger) => {
-    if (!ledger) return { version: 5, mode, repository: run.repository, status: 'active', budget: { maxLaunches, maxRounds }, launches: [], rounds: [], targets: [], findings: {}, checks: [], telemetry: [], terminal: null, dispositions: [], reconciliation: null };
+    if (!ledger) return { version: 5, mode, openedAt: now(), repository: run.repository, status: 'active', budget: { maxLaunches, maxRounds }, launches: [], rounds: [], targets: [], findings: {}, checks: [], telemetry: [], terminal: null, dispositions: [], reconciliation: null };
     assertVersion(ledger);
     if (ledger.repository !== run.repository || (!allowTerminal && ledger.status === 'terminal') || ledger.budget?.maxLaunches !== maxLaunches || ledger.budget?.maxRounds !== maxRounds) throw new Error('initiative review run has a different repository, is terminal, or has immutable configured budgets');
   };
@@ -201,7 +204,7 @@ function reserveLaunchBatch(run, launch, count = 1) {
     const rounds = ledger.rounds || [];
     const revision = launchRevision(launch, target);
     const targets = revision && !(ledger.targets || []).some((item) => same(item, revision)) ? [...(ledger.targets || []), revision] : (ledger.targets || []);
-    const entry = { role: launch.role, round: launch.round, ...(target === 'unknown' ? {} : { target }) };
+    const entry = { role: launch.role, round: launch.round, ...(target === 'unknown' ? {} : { target }), at: now() };
     return { ...ledger, rounds: rounds.includes(round) ? rounds : [...rounds, round], targets, launches: [...ledger.launches, ...Array.from({ length: count }, () => ({ ...entry }))] };
   }));
 }
@@ -240,7 +243,7 @@ function recordDisposition(run, { target, revision, result, packet = {}, finding
     const sequence = (ledger.dispositions || []).length + 1;
     const continuation = packet.nextAction || (disposition.kind === 'terminal' ? 'replay' : 'resume');
     const durablePacket = { ...packet, outcome: { kind: disposition.kind, reason: disposition.reason }, ledger: { version: ledger.version, status: ledger.status }, budget: { maxLaunches: ledger.budget.maxLaunches, maxRounds: ledger.budget.maxRounds, launches: ledger.launches.length, rounds: ledger.rounds.length }, delivery: { claim: `${target}:${sequence}`, continuation, consumed: false } };
-    const entry = { target, revision: terminalRevision, ...disposition, sequence, packet: durablePacket };
+    const entry = { target, revision: terminalRevision, ...disposition, sequence, at: now(), packet: durablePacket };
     const previous = ledger.reconciliation || {};
     const reconciliationHint = previous.hint && previous.hint.trigger === 'reconciliation-required'
       ? previous.hint
@@ -302,8 +305,16 @@ function terminalTarget(run, target, revision, kinds = ['terminal']) {
   return matches.find((item) => item.kind === 'terminal') || matches.reverse().find((item) => item.packet?.delivery?.consumed === false) || false;
 }
 
+// Writes the terminal status, then renders the run's reports, also when the run is
+// already terminal so a crash between the two is repaired by calling finalise again.
+// Returns false on lock contention or when the run is not active.
 function finaliseInitiativeRun(run, reason = 'finalised') {
-  return Boolean(locked(run, (ledger) => ledger?.status === 'terminal' ? undefined : (ledger?.status === 'active' && { ...ledger, status: 'terminal', terminal: { reason }, reconciliation: ledger.reconciliation || { terminals: [], hint: hint(reason) } })));
+  const done = Boolean(locked(run, (ledger) => ledger?.status === 'terminal' ? undefined : (ledger?.status === 'active' && { ...ledger, status: 'terminal', terminal: { reason, at: now() }, reconciliation: ledger.reconciliation || { terminals: [], hint: hint(reason) } })));
+  if (!done) return false;
+  try { require('./initiative-report').renderInitiativeReports(run); } catch (error) {
+    throw new Error(`initiative report: the run is terminal but its report was not rendered (${error.message}); resolve the cause and run finalise again`);
+  }
+  return true;
 }
 
-module.exports = { lockDiagnosis, escalateInitiativeRun, canonicalPath, runPath, repositoryIdentity, openInitiativeRun, reserveLaunch, reserveLaunchBatch, denialReason, pairRefusal, resolveBaseCommit, normalizeDisposition, recordDisposition, consumeDispositionDelivery, terminalTarget, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };
+module.exports = { MODES, ESCALATION_TRIGGERS, lockDiagnosis, escalateInitiativeRun, canonicalPath, runPath, repositoryIdentity, openInitiativeRun, reserveLaunch, reserveLaunchBatch, denialReason, pairRefusal, resolveBaseCommit, normalizeDisposition, recordDisposition, consumeDispositionDelivery, terminalTarget, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };

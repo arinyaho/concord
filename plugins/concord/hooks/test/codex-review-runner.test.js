@@ -60,6 +60,15 @@ test('initiative finalisation returns only the safe aggregate', async () => {
   assert.deepStrictEqual(result, { decision: { finalised: true }, initiative: { targetIds: [], counts: { targets: 0, launches: 0, rounds: 0, findings: {}, checks: 0, telemetry: 0 } } });
 });
 
+test('initiative finalisation renders the completion report and index', async () => {
+  const stateDir = temp();
+  await runReviewUntilGreen({ initiativeRunKey: 'final-report', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, initiativeFinalise: true });
+  const runId = require('node:crypto').createHash('sha256').update('final-report').digest('hex');
+  const dir = path.dirname(fs.realpathSync(runPath(stateDir, 'final-report')));
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(dir, `initiative-report-${runId}`, 'report.json'), 'utf8')).runId, runId);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'initiative-reports.jsonl'), 'utf8').trim().split('\n').length, 1);
+});
+
 test('matching initiative finalisation replays the same safe aggregate', async () => {
   const stateDir = temp();
   const options = { initiativeRunKey: 'final-replay', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, initiativeFinalise: true };

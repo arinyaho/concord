@@ -36,6 +36,9 @@ const readIndex = (stateDir) => fs.readFileSync(indexFile(stateDir), 'utf8').tri
 
 const usage = (role, round, totalTokens, elapsedMs) => ({ role, stage: 'review', round, elapsedMs, inputTokens: totalTokens - 10, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, outputTokens: 10, totalTokens });
 
+// Reopens a run handle for an existing key (finalise is called again on a terminal run).
+const openedRun = (lib, stateDir, key) => lib.openInitiativeRun({ repository: '/repo', stateDir, key, maxLaunches: 6, maxRounds: 3, allowTerminal: true });
+
 // One finalised run with two reserved launches, one terminal disposition carrying
 // findings, a check and per-role telemetry.
 function finalisedRun(lib, { stateDir, key, mode = 'base', repository = '/repo', ref = 'feat/x', head = 'a'.repeat(40), base = 'b'.repeat(40), handoff = 'handoff', findings = { correctness: 2, 'design-conformance': 1 } }) {
@@ -115,7 +118,7 @@ for (const [name, lib] of RUNTIMES) {
   test(`${name}: an unreadable or partial terminal ledger fails closed and renders nothing (constraint)`, () => {
     const stateDir = tmp('report-bad-');
     const run = finalisedRun(lib, { stateDir, key: 'bad' });
-    fs.rmSync(reportDir(stateDir, 'bad'), { recursive: true });
+    fs.rmSync(reportDir(stateDir, 'bad'), { recursive: true, force: true });
     const { launches, ...partial } = readLedger(run);
     writeLedger(run, partial);
     assert.throws(() => lib.finaliseInitiativeRun(run), /initiative report/);
@@ -124,17 +127,44 @@ for (const [name, lib] of RUNTIMES) {
     assert.ok(!fs.existsSync(path.join(reportDir(stateDir, 'bad'), 'report.json')));
   });
 
+  test(`${name}: a malformed terminal v5 ledger of another run fails the index rebuild; non-v5 and active ledgers are skipped (decision 2)`, () => {
+    const stateDir = tmp('report-index-bad-');
+    const other = (key, body) => fs.writeFileSync(path.join(fs.realpathSync(stateDir), `initiative-review-${sha(key)}.json`), typeof body === 'string' ? body : `${JSON.stringify(body)}\n`);
+    finalisedRun(lib, { stateDir, key: 'mine' });
+    other('old', { version: 4, status: 'terminal' });
+    other('open', { version: 5, status: 'active', launches: [] });
+    assert.ok(lib.finaliseInitiativeRun(openedRun(lib, stateDir, 'mine')));
+    assert.deepStrictEqual(readIndex(stateDir).map((entry) => entry.runId), [sha('mine')]);
+    other('broken', { version: 5, status: 'terminal' });
+    assert.throws(() => lib.finaliseInitiativeRun(openedRun(lib, stateDir, 'mine')), /initiative report.*terminal/s);
+    assert.deepStrictEqual(readIndex(stateDir).map((entry) => entry.runId), [sha('mine')]); // index left as it was
+    other('broken', '{"version":5,"status":"term');
+    assert.throws(() => lib.finaliseInitiativeRun(openedRun(lib, stateDir, 'mine')), /initiative report/);
+  });
+
+  test(`${name}: launches-by-role and check-status keys outside the pattern become other (bounded keys)`, () => {
+    const stateDir = tmp('report-bound-');
+    const run = lib.openInitiativeRun({ repository: '/repo', stateDir, key: 'bound', maxLaunches: 4, maxRounds: 2 });
+    const revision = { ref: 'feat/x', base: 'b'.repeat(40), head_sha: 'a'.repeat(40) };
+    assert.ok(lib.reserveLaunch(run, { role: 'SENTINEL-ROLE', round: 1, target: 'feat/x', revision }));
+    assert.ok(lib.recordDisposition(run, { target: 'feat/x', revision, result: { decision: { converged: true } }, packet: { trigger: 'terminal', nextAction: 'replay' }, checks: [{ name: 'x', status: 'SENTINEL-STATUS' }] }));
+    assert.ok(lib.finaliseInitiativeRun(run));
+    const report = readJson(path.join(reportDir(stateDir, 'bound'), 'report.json'));
+    assert.deepStrictEqual(report.counts.byRole, { other: 1 });
+    assert.deepStrictEqual(report.checks.byStatus, { other: 1 });
+  });
+
   test(`${name}: index entries carry only allowlisted fields and no sentinel leaks into any emitted file (AC4)`, () => {
     const root = tmp('report-leak-');
     const stateDir = path.join(root, 'state');
     const repository = path.join(root, 'SENTINEL-REPO-PATH');
     fs.mkdirSync(repository);
-    const sentinels = ['SENTINEL-REPO-PATH', 'SENTINEL-RAW-REF', 'c'.repeat(40), 'd'.repeat(40), 'SENTINEL-HANDOFF-TEXT', 'SENTINEL-ERROR-MESSAGE'];
+    const sentinels = ['SENTINEL-CLASS', 'SENTINEL-REPO-PATH', 'SENTINEL-RAW-REF', 'c'.repeat(40), 'd'.repeat(40), 'SENTINEL-HANDOFF-TEXT', 'SENTINEL-ERROR-MESSAGE'];
     const run = lib.openInitiativeRun({ repository, stateDir, key: 'leak', maxLaunches: 6, maxRounds: 3 });
     const revision = { ref: 'SENTINEL-RAW-REF', base: 'c'.repeat(40), head_sha: 'd'.repeat(40) };
     assert.ok(lib.reserveLaunch(run, { role: 'correctness', round: 1, target: 'SENTINEL-RAW-REF', revision }));
     assert.ok(lib.recordDisposition(run, { target: 'SENTINEL-RAW-REF', revision, result: new Error('SENTINEL-ERROR-MESSAGE'), packet: { trigger: 'error', nextAction: 'resume', error: { message: 'SENTINEL-ERROR-MESSAGE' } } }));
-    assert.ok(lib.recordDisposition(run, { target: 'SENTINEL-RAW-REF', revision, result: { decision: { converged: true } }, packet: { trigger: 'terminal', nextAction: 'replay', handoff: 'SENTINEL-HANDOFF-TEXT' }, findings: { correctness: 1 }, checks: [{ name: 'definition-of-done', status: 'passed' }] }));
+    assert.ok(lib.recordDisposition(run, { target: 'SENTINEL-RAW-REF', revision, result: { decision: { converged: true } }, packet: { trigger: 'terminal', nextAction: 'replay', handoff: 'SENTINEL-HANDOFF-TEXT' }, findings: { correctness: 1, 'SENTINEL-CLASS': 1 }, checks: [{ name: 'definition-of-done', status: 'passed' }], telemetry: [{ ...usage('SENTINEL-CLASS', 1, 100, 500), revision }, { ...usage('correctness', 1, 200, 500), revision }] }));
     assert.ok(lib.finaliseInitiativeRun(run));
     const emitted = [path.join(reportDir(stateDir, 'leak'), 'report.json'), path.join(reportDir(stateDir, 'leak'), 'report.md'), indexFile(stateDir)];
     for (const file of emitted) {
@@ -143,6 +173,8 @@ for (const [name, lib] of RUNTIMES) {
       assert.ok(!text.includes(root), `${path.basename(file)} leaked a path`);
     }
     const [entry] = readIndex(stateDir);
+    assert.deepStrictEqual(entry.findings, { correctness: 1, other: 1 });
+    assert.deepStrictEqual(Object.keys(entry.tokens.byRole).sort(), ['correctness', 'other']);
     assert.deepStrictEqual(Object.keys(entry).sort(), ['checks', 'counts', 'elapsed', 'escalation', 'finalisedAt', 'findings', 'mode', 'openedAt', 'outcome', 'runId', 'schema', 'targets', 'tokens']);
   });
 

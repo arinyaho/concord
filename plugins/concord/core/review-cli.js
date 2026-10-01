@@ -579,7 +579,10 @@ function withTargetLock(ledgerFile, fn, { confirm = promptRemoveLock, waitMs = 1
 function requireReservations(run, ledger, needs, what) {
   if (!run) return;
   const fail = (message) => {
-    if (!finaliseInitiativeRun(run, 'unreserved-evidence')) throw new Error(`harness-failure: ${what}: ${message}; could not finalise the keyed initiative run (lock contended), it is still active`);
+    // The harness-failure error wins: a render or index failure while finalising must not replace it.
+    let finalised = false;
+    try { finalised = finaliseInitiativeRun(run, 'unreserved-evidence'); } catch (renderError) { finalised = true; }
+    if (!finalised) throw new Error(`harness-failure: ${what}: ${message}; could not finalise the keyed initiative run (lock contended), it is still active`);
     throw new Error(`harness-failure: ${what}: ${message}; the keyed initiative run is failed closed`);
   };
   if (JSON.parse(fs.readFileSync(run.path, 'utf8')).status !== 'active') throw new Error(`harness-failure: ${what}: the keyed initiative run is not active`);
@@ -1315,7 +1318,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // since the first successful record already flips phase to 'done' -- a
     // guard-first ordering would throw on replay instead of reaching this branch.
     if (ledger && ledger.phase === 'done' && ledger.last_recorded_round === n) {
-      if (R.TERMINAL_STATUSES.has(ledger.status)) reviewTelemetry.deleteTelemetry(stateDir, ledger.target?.ref || ref, slug);
+      if (R.TERMINAL_STATUSES.has(ledger.status) || (run && ledger._lastDecision && !ledger._lastDecision.continue && !ledger._lastDecision.panelPending)) reviewTelemetry.deleteTelemetry(stateDir, ledger.target?.ref || ref, slug);
       process.stdout.write(
         JSON.stringify({ decision: ledger._lastDecision || { continue: false }, handoff: renderHandoff({ ledger }), telemetry: ledger.telemetry || null, reconciliation: ledger.reconciliationPacket || undefined, checks: ledger.finalChecks || undefined }) + '\n'
       );
@@ -1495,19 +1498,28 @@ function runVerb(resolveFromCwd, args, initiative) {
       const revision = { ref: target, ...(ledger.target?.base ? { base: resolveBaseCommit(repoRoot, ledger.target.base) } : {}), head_sha };
       const disposition = require('./initiative-review-run').normalizeDisposition({ decision, reconciliation });
       const escaped = disposition.kind === 'escape';
+      // Forward each invocation once: the folded entries are cumulative in the target ledger, so the keys already
+      // forwarded by an earlier disposition of this target are skipped.
+      const forwarded = new Set(ledger.telemetryForwarded || []);
+      const telemetryKey = (item) => item.invocationId || `${item.status}:${item.artifactPath || `${item.role}:${item.round}`}`;
+      const pending = (ledger.telemetry?.entries || []).filter((item) => !forwarded.has(telemetryKey(item)));
       const recorded = recordDisposition(run, {
         target, revision, result: { decision, reconciliation },
         packet: { trigger: escaped ? 'escape' : 'terminal', exit: { code: 0, signal: null }, dod: { status: finalChecks[0].status === 'passed' ? 'passed' : finalChecks[0].status }, telemetry: { complete: false }, nextAction: escaped ? 'resume' : 'replay', handoff: renderHandoff({ ledger }) },
         finding: reconciliation?.finding || null, stage: reconciliation?.stage || null, avoidedLaunches: reconciliation?.avoidedLaunches || 0, findings: reconciliation?.findings || {}, checks: finalChecks,
+        telemetry: pending.map(({ role, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, stage: 'review', revision, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens })),
       });
       // Match by target + revision + kind, and reason for an escape (as the Codex runner does), and fail without
       // marking the target ledger done so a re-run of `record` can still record it.
       const kind = escaped ? 'escape' : 'terminal';
       entry = (JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions || []).findLast((d) => d.target === target && JSON.stringify(d.revision) === JSON.stringify(revision) && d.kind === kind && (!escaped || d.reason === disposition.reason));
       if (!entry || (!recorded && kind === 'escape' && entry.packet?.delivery?.consumed !== false)) throw new Error('harness-failure: record: initiative target disposition recording was contended; re-run record');
+      ledger = { ...ledger, telemetryForwarded: [...forwarded, ...pending.map(telemetryKey)] };
     }
     writeLedger(stateDir, slug, ledger);
-    if (R.TERMINAL_STATUSES.has(ledger.status)) reviewTelemetry.deleteTelemetry(stateDir, ledger.target?.ref || ref, slug);
+    // The cache is cleared by what was recorded, as the Codex runner does: any disposition now holds the
+    // telemetry durably, so a later disposition must not re-read it. Without a run only a terminal status clears it.
+    if (entry || R.TERMINAL_STATUSES.has(ledger.status)) reviewTelemetry.deleteTelemetry(stateDir, ledger.target?.ref || ref, slug);
     process.stdout.write(JSON.stringify({ decision, handoff: renderHandoff({ ledger }), telemetry: ledger.telemetry || null, reconciliation: ledger.reconciliationPacket || undefined, checks: finalChecks, initiative: entry?.packet?.delivery?.claim ? { claim: entry.packet.delivery.claim } : undefined }) + '\n');
     return;
   }
