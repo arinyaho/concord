@@ -85,6 +85,8 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(stages, /not `READY FOR TEST` until the exact combined artifacts are deployed.*runnable QA hand-off/is);
   assert.match(stages, /file-target review.*before planning or implementation begins/i);
   assert.match(stages, /Write the design.*Commit.*initial design note.*file-target review.*commit.*accepted review fixes.*before planning/is);
+  assert.match(stages, /Write the design.*lite eligibility and escalation rules.*Commit the initial design note.*file-target review/is);
+  assert.doesNotMatch(stages, /Before dependent implementation, apply the lite eligibility/i);
   assert.match(stages, /synthetic.*teardown.*read-back.*authorization.*retain.*named owner/is);
   assert.match(stages, /contract review supplements rather than replaces `review-until-green`/i);
   assert.match(stages, /apply the fix.*one fresh independent review.*one bounded fix pass followed by one fresh verification, not a loop.*human reconciliation/is);
