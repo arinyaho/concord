@@ -64,7 +64,7 @@ function locked(run, update) {
     const next = update(ledger);
     if (next) write(run.path, next);
     return next === undefined ? true : next || false;
-  } finally { fs.rmSync(lock, { recursive: true, force: true }); }
+  } finally { if (lockOwner(lock) === process.pid) fs.rmSync(lock, { recursive: true, force: true }); }
 }
 
 function assertVersion(ledger) {

@@ -1,7 +1,6 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const crypto = require('node:crypto');
 
 // Stale-lock recovery for mkdir-style lock directories that hold an `owner` pid file.
 const STALE_OWNERLESS_MS = 60 * 1000;
@@ -23,13 +22,22 @@ function lockIsStale(lock) {
   try { return Date.now() - fs.statSync(lock).mtimeMs > STALE_OWNERLESS_MS; } catch (_) { return false; }
 }
 
-// Removes a stale lock by renaming it first, so one contender wins, then deleting it.
+// Removes a stale lock. Contenders serialise on a `<lock>.reclaim` guard directory, and the
+// staleness check runs while holding it, so a lock another contender took after the check
+// can never be removed: a lock is only ever created when absent, and only the guard holder
+// removes one. ponytail: a reclaimer that dies holding the guard leaves it until it is older
+// than STALE_OWNERLESS_MS; that expiry is the one remaining unserialised removal.
 function reclaimStaleLock(lock) {
-  if (!lockIsStale(lock)) return false;
-  const aside = `${lock}.stale-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
-  try { fs.renameSync(lock, aside); } catch (_) { return false; }
-  fs.rmSync(aside, { recursive: true, force: true });
-  return true;
+  const guard = `${lock}.reclaim`;
+  try { fs.mkdirSync(guard); } catch (error) {
+    if (error.code === 'EEXIST') { try { if (Date.now() - fs.statSync(guard).mtimeMs > STALE_OWNERLESS_MS) fs.rmSync(guard, { recursive: true, force: true }); } catch (_) {} }
+    return false;
+  }
+  try {
+    if (!lockIsStale(lock)) return false;
+    fs.rmSync(lock, { recursive: true, force: true });
+    return true;
+  } finally { fs.rmSync(guard, { recursive: true, force: true }); }
 }
 
 module.exports = { lockOwner, pidRunning, lockIsStale, reclaimStaleLock };

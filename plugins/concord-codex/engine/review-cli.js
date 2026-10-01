@@ -913,6 +913,8 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (ref === 'resume') {
       throw new Error('review-cli round-start: "resume" is not a valid ref -- round-start auto-detects resume from ledger state; call `round-start <ref>` directly, or use the review-until-green wrapper\'s `resume <ref>` syntax, which forwards correctly');
     }
+    // Rejected before any state is written: the intent-review and gate-pending resets below delete the cached intent.
+    if (run && runMode(run) === 'lite' && rest.some((a) => ['--broad', '--gate', '--no-broad'].includes(a))) throw new Error('review-cli round-start: a lite initiative run takes no --broad, --gate or --no-broad; lite always runs the one design-conformance gate (escalate to base before the first launch for the full gate pair)');
     const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
     const slug = targetSlug(ref);
     let ledger = readLedger(stateDir, slug) || emptyLedger({ kind: 'local', ref });
@@ -1009,7 +1011,6 @@ function runVerb(resolveFromCwd, args, initiative) {
     const NO_BROAD_FLAGS = new Set(['--no-broad']);
     const noBroadFlagPassed = rest.some((a) => NO_BROAD_FLAGS.has(a));
     const lite = !!run && runMode(run) === 'lite';
-    if (lite && (broadFlagPassed || noBroadFlagPassed)) throw new Error('review-cli round-start: a lite initiative run takes no --broad, --gate or --no-broad; lite always runs the one design-conformance gate (escalate to base before the first launch for the full gate pair)');
     // Executable-DoD opt-out (--no-dod): the same deferral `"dod": null` in
     // review.config.json declares, asked for per-run instead. It exists for a
     // repo that HAS a config with real `dod` commands but wants the executable
