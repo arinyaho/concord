@@ -198,6 +198,7 @@ test('initiative-to-prs documents lite eligibility and escalation before depende
   assert.match(skill, /Record the trigger and the exclusion.*handoff/is);
   assert.match(skill, /Escalation is refused after the first launch and never reverses.*new base run key.*`rerun` each ref/is);
   assert.match(skill, /never downgrade a base run to lite/i);
+  assert.match(skill, /After `escalate`, replace the mode and budgets recorded in `state\.md` with base and the base budgets.*every later call/is);
 });
 
 test('initiative-to-prs parks dependent work on a confirmed contract finding and forbids unplanned reviewers', () => {
