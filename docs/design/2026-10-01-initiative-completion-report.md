@@ -1,6 +1,6 @@
 # Initiative completion report
 
-Finalising a keyed initiative run renders a completion report from its run ledger, and a project-level index lists every finalised run so base and lite executions can be compared without reading a ledger or a transcript. The ledger stays the only source of truth: reports and the index are derived from the run ledgers and can be regenerated from any complete terminal ledger.
+Finalising a keyed initiative run renders a completion report from its run ledger, and a project-level index lists every finalised run so base and lite executions can be compared without reading a ledger or a transcript. The ledger stays the only source of truth: reports and the index are derived from the run ledgers. Each run's report is regenerated from that run's complete terminal ledger, and the index is rebuilt from all ledgers present in the state directory, a rebuild that fails closed when any ledger is unparseable or a terminal ledger is malformed (see Residual exposure).
 
 ## Ledger additions
 
@@ -39,11 +39,11 @@ Token data is per review role. The orchestrating session's own tokens, per-stage
 
 ### Crash safety
 
-`finaliseInitiativeRun` writes the terminal status under the run lock and then renders. When the run is already terminal the status write is a no-op, but the render still runs. A crash after the ledger write and before rendering therefore leaves a terminal ledger with no report, and calling finalise again, through the review CLI `finalise` verb or the Codex `--initiative-finalise` flag, produces the reports. Nothing was held only in memory. A render failure after a successful status write throws an error that says the run is terminal and finalise must be re-run; it does not report the run as active.
+`finaliseInitiativeRun` writes the terminal status under the run lock and then renders. When the run is already terminal the status write is a no-op, but the render still runs. A crash after the ledger write and before rendering therefore leaves a terminal ledger with no report, and calling finalise again, through the review CLI `finalise` verb or the Codex `--initiative-finalise` flag, produces the run's own `report.json` and `report.md`, which are written before the index step. Nothing was held only in memory. The index step still throws on every re-run while a ledger that fails to parse, or a malformed terminal version 5 ledger, remains in the state directory, so the index is not rebuilt until that ledger is repaired or removed (see Residual exposure). A render failure after a successful status write throws an error that says the run is terminal and finalise must be re-run; it does not report the run as active.
 
 ### The index is derived
 
-The index is rebuilt on every render by scanning the initiative state directory for run ledgers and keeping the terminal ones, sorted by `finalisedAt` then run id. An entry with a null `finalisedAt` (a terminal ledger written before timestamps existed) sorts before every entry that has one, and entries with equal `finalisedAt` values, including several null ones, are ordered by run id, so the index order is deterministic. There is no append path, so the index cannot diverge from the ledgers, and a crash cannot lose a line that a later render would not restore. The cost is that a run that never reaches a terminal status never appears: abandoned runs are excluded from the index and have no report, because a report exists only for a finalised run. The rendered `report.md` of a finalised run carries fixed explanatory text stating that runs which never finalise are excluded from the index and from reports; this is not an allowlisted data field.
+The index is rebuilt on every render by scanning the initiative state directory for run ledgers and keeping the terminal ones, sorted by `finalisedAt` then run id. An entry with a null `finalisedAt` (a terminal ledger written before timestamps existed) sorts before every entry that has one, and entries with equal `finalisedAt` values, including several null ones, are ordered by run id, so the index order is deterministic. There is no append path: the index is a function of the ledgers present at its last successful rebuild, so it can lag behind the ledgers until the next render, and a crash cannot lose a line that a later successful render would not restore. The cost is that a run that never reaches a terminal status never appears: abandoned runs are excluded from the index and have no report, because a report exists only for a finalised run. The rendered `report.md` of a finalised run carries fixed explanatory text stating that runs which never finalise are excluded from the index and from reports and that waiting time is not measured; this text is not an allowlisted data field.
 
 The scan runs under an exclusive `mkdir` lock beside the index, with the same stale-owner recovery as the run lock, so two runs finalising at once do not overwrite each other's index. A scan that finds a ledger that fails to parse or a malformed terminal version 5 ledger throws and the index is left as it was. A ledger of another schema version is skipped, because the core rejects it for every purpose and a retired ledger left in the directory must not block every later finalise. Active ledgers are skipped.
 
@@ -53,7 +53,7 @@ One projection builds the entry in `report.json` and the index line, and `report
 
 - `schema`: the report schema number.
 - `runId`: the hashed run key.
-- `mode` and `escalation` (the trigger, or `null`).
+- `mode` and `escalation` (the trigger, or `null`). `mode` is `base` or `lite`, and the escalation trigger is one of `public-api`, `schema`, `security`, `cross-package`, or `migration`; the review run validates both against these fixed enumerations.
 - `outcome`: `status` and a `reason` that is one of the reasons the core itself writes; any other value is `other`.
 - `targets`: the count and the SHA-256 identifiers of each revision pair, as `publicInitiativeSummary` already computes them.
 - `counts`: launches, rounds, and launches by role.
@@ -67,7 +67,7 @@ The ledger holds the repository path, raw refs, SHAs, handoff text and error mes
 
 ## Elapsed time and waiting
 
-`wallClockMs` is elapsed time from stamped timestamps: from opening the run to finalising it. It includes everything between those two writes, including time the run spent waiting for a person, a CI job or another ticket. `wallClockMs` is the difference of two wall-clock stamps, not a monotonic-clock measurement, so a clock adjustment between the writes shifts it. `reviewerMs` is reviewer process time as the telemetry measured it. It is a lower bound, because it skips missing or partial telemetry, including that of targets that only escape or error. It is also a sum over reviewers, so it can exceed `wallClockMs` when reviewers run in parallel. The report does not split the first into active and waiting time, because no source records when a run waited, and it states that waiting time is not measured.
+`wallClockMs` is elapsed time from stamped timestamps: from opening the run to finalising it. It includes everything between those two writes, including time the run spent waiting for a person, a CI job or another ticket. `wallClockMs` is the difference of two wall-clock stamps, not a monotonic-clock measurement, so a clock adjustment between the writes shifts it. `reviewerMs` is reviewer process time as the telemetry measured it. It is a lower bound, because it skips missing or partial telemetry, including that of targets that only escape or error. It is also a sum over reviewers, so it can exceed `wallClockMs` when reviewers run in parallel. The report does not split the first into active and waiting time, because no source records when a run waited, and `report.md` carries fixed text stating that waiting time is not measured; `report.json` and the index carry no such statement.
 
 ## Rejected alternatives
 
