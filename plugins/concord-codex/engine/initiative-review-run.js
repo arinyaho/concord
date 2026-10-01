@@ -58,7 +58,7 @@ function locked(run, update) {
     try { fs.mkdirSync(lock); } catch (retry) { if (retry.code === 'EEXIST') return false; throw retry; }
   }
   try {
-    fs.writeFileSync(path.join(lock, 'owner'), `${process.pid}\n`);
+    try { fs.writeFileSync(path.join(lock, 'owner'), `${process.pid}\n`); } catch (error) { fs.rmSync(lock, { recursive: true, force: true }); throw error; } // no owner recorded yet, so the release below would skip it
     let ledger;
     try { ledger = JSON.parse(fs.readFileSync(run.path, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     const next = update(ledger);

@@ -399,6 +399,20 @@ test('a run lock that changed owner during the update is not deleted by the prev
   assert.ok(fs.existsSync(lock), 'the lock now belongs to another holder and must remain');
 });
 
+for (const [name, runtime] of RUNTIMES) {
+  test(`${name}: a lock whose owner file could not be written is released, never leaked (correctness:run-lock-owner-write-failure-leaks-lock)`, () => {
+    const run = runtime.openInitiativeRun({ repository: '/repo', stateDir: tmp('lock-'), key: 'k', maxLaunches: 2, maxRounds: 2 });
+    const lock = `${run.path}.lock`;
+    const realWrite = fs.writeFileSync;
+    fs.writeFileSync = function (file, ...rest) {
+      if (String(file) === path.join(lock, 'owner')) throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+      return realWrite.call(this, file, ...rest);
+    };
+    try { assert.throws(() => runtime.reserveLaunch(run, { role: 'correctness', round: 1 }), /ENOSPC/); } finally { fs.writeFileSync = realWrite; }
+    assert.ok(!fs.existsSync(lock), 'the lock this process created must not outlive the failed owner write');
+  });
+}
+
 for (const cliName of Object.keys(CLIS)) {
   test(`${cliName}: a rejected lite flag deletes no cached intent from an intent-review ledger (gate:design-conformance:lite-reject-before-state-write)`, () => {
     const t = setup(cliName, { mode: 'lite' });

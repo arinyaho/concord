@@ -655,7 +655,8 @@ function runVerb(resolveFromCwd, args, initiative) {
       const launch = { role, round: ledger.round, target, revision, attemptId: ledger.attemptId };
       if (!reserveLaunchBatch(run, launch, count)) {
         const reason = denialReason(run, launch, count);
-        return reason === 'reconciliation-required' ? { status: reason, role, count, round: ledger.round } : { status: 'denied', role, count, round: ledger.round, ...(reason ? { reason } : {}) };
+        const diagnosis = reason ? null : lockDiagnosis(run);
+        return reason === 'reconciliation-required' ? { status: reason, role, count, round: ledger.round } : { status: 'denied', role, count, round: ledger.round, ...(reason ? { reason } : {}), ...(diagnosis ? { lockDiagnosis: diagnosis } : {}) };
       }
       const token = crypto.randomBytes(16).toString('hex');
       const panel = role === 'lens' || role === 'vote' ? (ledger.gate_panel?.round || 0) + 1 : undefined;
