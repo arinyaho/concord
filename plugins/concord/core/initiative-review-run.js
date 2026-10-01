@@ -87,8 +87,8 @@ function openInitiativeRun({ stateDir, key, repository, maxLaunches, maxRounds, 
   if (!Number.isInteger(maxLaunches) || maxLaunches < 1 || !Number.isInteger(maxRounds) || maxRounds < 1) throw new Error('initiative review budgets must be positive integers');
   const run = { path: runPath(stateDir, key), repository: repositoryIdentity(repository) };
   const initialize = (ledger) => {
-    if (!ledger) return { version: 3, repository: run.repository, status: 'active', budget: { maxLaunches, maxRounds }, launches: [], rounds: [], targets: [], findings: {}, checks: [], telemetry: [], terminal: null, dispositions: [], reconciliation: null };
-    if (ledger.version !== 3) throw new Error('initiative review run schemaVersion must be 3');
+    if (!ledger) return { version: 4, repository: run.repository, status: 'active', budget: { maxLaunches, maxRounds }, launches: [], rounds: [], targets: [], findings: {}, checks: [], telemetry: [], terminal: null, dispositions: [], reconciliation: null };
+    if (ledger.version !== 4) throw new Error('initiative review run schemaVersion must be 4');
     if (ledger.repository !== run.repository || (!allowTerminal && ledger.status === 'terminal') || ledger.budget?.maxLaunches !== maxLaunches || ledger.budget?.maxRounds !== maxRounds) throw new Error('initiative review run has a different repository, is terminal, or has immutable configured budgets');
   };
   if (!locked(run, initialize)) {
@@ -100,21 +100,77 @@ function openInitiativeRun({ stateDir, key, repository, maxLaunches, maxRounds, 
   return run;
 }
 
+function launchRevision(launch, target) {
+  const revision = launch.revision;
+  return revision && { ref: revision.ref || target, ...(revision.base ? { base: revision.base } : {}), ...((revision.head_sha || revision.head) ? { head_sha: revision.head_sha || revision.head } : {}) };
+}
+
+// A target is identified by its revision pair (ref, base, head). A revision
+// with no head cannot be told apart from a recorded pair, so it matches every
+// pair of its ref and stays refused after any terminal disposition.
+function samePair(recorded, revision) {
+  return !revision?.head_sha || (recorded?.head_sha === revision.head_sha && (recorded?.base || null) === (revision.base || null));
+}
+
+// A run parked for reconciliation opens no new revision pair; pairs it already
+// holds keep working.
+function parkedRefusal(ledger, target, revision) {
+  return ledger.reconciliation?.hint?.trigger === 'reconciliation-required' && !(ledger.targets || []).some((item) => same(item, revision || { ref: target }));
+}
+
+// Runner preflight: whether an active run parked for reconciliation refuses this
+// revision pair, before any review work starts.
+function pairRefusal(run, target, revision) {
+  let ledger;
+  try { ledger = JSON.parse(fs.readFileSync(run.path, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  return ledger?.status === 'active' && parkedRefusal(ledger, target, revision) ? 'reconciliation-required' : null;
+}
+
+// The immutable commit a base name points at right now. A base that does not
+// resolve is kept as given.
+function resolveBaseCommit(repoRoot, base) {
+  try {
+    return require('node:child_process').execFileSync('git', ['rev-parse', '--verify', '--quiet', `${base}^{commit}`], { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || base;
+  } catch (_) {
+    return base;
+  }
+}
+
+// Why the run cannot take this launch, or null when it can.
+function launchRefusal(ledger, launch, count) {
+  if (!ledger || ledger.status !== 'active' || !Number.isInteger(launch.round) || !Number.isInteger(count) || count < 1) return 'inactive';
+  const target = launch.target || launch.revision?.ref || 'unknown';
+  const revision = launchRevision(launch, target);
+  if (parkedRefusal(ledger, target, revision)) return 'reconciliation-required';
+  if ((ledger.dispositions || []).some((disposition) => disposition.target === target && disposition.kind === 'terminal' && samePair(disposition.revision, revision))) return 'target-terminal';
+  if (ledger.launches.length + count > ledger.budget.maxLaunches) return 'budget-exhausted';
+  const round = `${target}\u0000${typeof launch.attemptId === 'string' ? launch.attemptId : 'legacy'}\u0000${launch.round}`;
+  if (!(ledger.rounds || []).includes(round) && (ledger.rounds || []).length >= ledger.budget.maxRounds) return 'budget-exhausted';
+  return null;
+}
+
 // Reserves `count` launches of one role as a unit under a single lock: either
 // every launch is recorded or none is. reserveLaunch is the count === 1 case.
 function reserveLaunchBatch(run, launch, count = 1) {
   return Boolean(locked(run, (ledger) => {
-    if (!ledger || ledger.status !== 'active' || !Number.isInteger(launch.round) || !Number.isInteger(count) || count < 1 || ledger.launches.length + count > ledger.budget.maxLaunches) return null;
+    if (ledger && ledger.version !== 4) throw new Error('initiative review run schemaVersion must be 4');
+    if (launchRefusal(ledger, launch, count)) return null;
     const target = launch.target || launch.revision?.ref || 'unknown';
-    if ((ledger.dispositions || []).some((disposition) => disposition.target === target && disposition.kind === 'terminal')) return null;
     const round = `${target}\u0000${typeof launch.attemptId === 'string' ? launch.attemptId : 'legacy'}\u0000${launch.round}`;
     const rounds = ledger.rounds || [];
-    if (!rounds.includes(round) && rounds.length >= ledger.budget.maxRounds) return null;
-    const revision = launch.revision && { ref: launch.revision.ref || target, ...(launch.revision.base ? { base: launch.revision.base } : {}), ...((launch.revision.head_sha || launch.revision.head) ? { head_sha: launch.revision.head_sha || launch.revision.head } : {}) };
+    const revision = launchRevision(launch, target);
     const targets = revision && !(ledger.targets || []).some((item) => same(item, revision)) ? [...(ledger.targets || []), revision] : (ledger.targets || []);
     const entry = { role: launch.role, round: launch.round, ...(target === 'unknown' ? {} : { target }) };
     return { ...ledger, rounds: rounds.includes(round) ? rounds : [...rounds, round], targets, launches: [...ledger.launches, ...Array.from({ length: count }, () => ({ ...entry }))] };
   }));
+}
+
+// Names the refusal after reserveLaunchBatch returned false. Returns null when
+// the launch would now be accepted, which means the refusal was lock contention.
+function denialReason(run, launch, count = 1) {
+  let ledger;
+  try { ledger = JSON.parse(fs.readFileSync(run.path, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  return launchRefusal(ledger, launch, count);
 }
 
 function reserveLaunch(run, launch) {
@@ -124,9 +180,9 @@ function reserveLaunch(run, launch) {
 function recordDisposition(run, { target, revision, result, packet = {}, finding = null, stage = null, avoidedLaunches = 0, findings = {}, checks = [], telemetry = [] }) {
   const safeTelemetry = telemetry.map(({ role, stage: telemetryStage, revision, round, count, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, ...(telemetryStage ? { stage: telemetryStage } : {}), ...(revision ? { revision } : {}), ...(Number.isInteger(round) ? { round } : {}), ...(Number.isInteger(count) ? { count } : {}), elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }));
   return Boolean(locked(run, (ledger) => {
-    if (!ledger || ledger.version !== 3 || ledger.status !== 'active') return null;
+    if (!ledger || ledger.version !== 4 || ledger.status !== 'active') return null;
     const disposition = normalizeDisposition(result);
-    if (disposition.kind === 'terminal' && (ledger.dispositions || []).some((item) => item.target === target && item.kind === 'terminal')) return null;
+    if (disposition.kind === 'terminal' && (ledger.dispositions || []).some((item) => item.target === target && item.kind === 'terminal' && samePair(item.revision, launchRevision({ revision }, target) || { head_sha: null }))) return null;
     // For 'escape', only dedupe against a still-unconsumed match: once a
     // target's escape is consumed, terminalTarget lets a fresh round start
     // at the same revision (see terminalTarget's consumed-vs-unconsumed
@@ -137,9 +193,8 @@ function recordDisposition(run, { target, revision, result, packet = {}, finding
     // the identical error message is intentionally treated as the same
     // outcome (see normalizeDisposition's per-message error reason).
     if ((ledger.dispositions || []).some((item) => item.target === target && same(item.revision, revision) && item.kind === disposition.kind && item.reason === disposition.reason && (disposition.kind !== 'escape' || item.packet?.delivery?.consumed === false))) return null;
-    const targetRevision = revision && { ref: revision.ref || target, ...(revision.base ? { base: revision.base } : {}), ...((revision.head_sha || revision.head) ? { head_sha: revision.head_sha || revision.head } : {}) };
-    const targets = targetRevision && !(ledger.targets || []).some((item) => same(item, targetRevision)) ? [...(ledger.targets || []), targetRevision] : (ledger.targets || []);
-    const terminalRevision = revision && { ref: revision.ref || target, ...(revision.base ? { base: revision.base } : {}), ...((revision.head_sha || revision.head) ? { head_sha: revision.head_sha || revision.head } : {}) };
+    const terminalRevision = launchRevision({ revision }, target);
+    const targets = terminalRevision && !(ledger.targets || []).some((item) => same(item, terminalRevision)) ? [...(ledger.targets || []), terminalRevision] : (ledger.targets || []);
     if (!terminalRevision?.head_sha) throw new Error('initiative review terminal target requires a stored revision');
     const sequence = (ledger.dispositions || []).length + 1;
     const continuation = packet.nextAction || (disposition.kind === 'terminal' ? 'replay' : 'resume');
@@ -156,7 +211,7 @@ function recordDisposition(run, { target, revision, result, packet = {}, finding
 
 function consumeDispositionDelivery(run, claim) {
   return Boolean(locked(run, (ledger) => {
-    if (!ledger || ledger.version !== 3) return null;
+    if (!ledger || ledger.version !== 4) return null;
     const index = (ledger.dispositions || []).findIndex((item) => item.packet?.delivery?.claim === claim && item.packet.delivery.consumed === false);
     if (index === -1) return null;
     const dispositions = ledger.dispositions.slice();
@@ -180,53 +235,34 @@ function publicInitiativeSummary(run) {
   };
 }
 
-// A target has at most one 'terminal' disposition (recordDisposition's dedup
-// guard enforces that), so when kinds includes 'terminal' it must win over any
-// 'escape'/'error' entry regardless of write order -- a terminal disposition
-// is the sole replay/identity authority per docs/design/2026-09-28-terminal-disposition-journal.md.
-// Only when no terminal entry is present does the most-recently-written match apply.
-function selectDisposition(dispositions, target, kinds) {
-  const matches = (dispositions || []).filter((item) => item.target === target && kinds.includes(item.kind));
-  return matches.find((item) => item.kind === 'terminal') || matches[matches.length - 1];
+function dispositionCandidates(run, target, kinds) {
+  const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
+  if (ledger.version !== 4) throw new Error('initiative review run schemaVersion must be 4');
+  if (ledger.status !== 'active') return [];
+  return (ledger.dispositions || []).filter((item) => item.target === target && kinds.includes(item.kind));
 }
 
-// terminalTarget's own throws are identity-validation failures on an
-// already-terminal target's replay path, not review-execution failures --
-// tagged so the caller's catch (which records genuine failures as error
-// dispositions) rethrows them unrecorded instead of polluting the ledger.
-function replayIdentityError(message) {
-  const error = new Error(message);
-  error.notAReviewFailure = true;
-  return error;
+// Whether the active run holds any disposition of these kinds for the target,
+// whatever its revision. Lets a caller skip identity work when nothing can match.
+function hasDisposition(run, target, kinds = ['terminal']) {
+  return dispositionCandidates(run, target, kinds).length > 0;
 }
 
 function terminalTarget(run, target, revision, kinds = ['terminal']) {
-  const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  if (ledger.version !== 3) throw new Error('initiative review run schemaVersion must be 3');
-  const terminal = selectDisposition(ledger.dispositions, target, kinds);
-  if (ledger.status !== 'active' || !terminal) return false;
-  if (!terminal.revision?.head_sha) throw replayIdentityError('initiative review terminal target has no stored revision');
-  if (!target.startsWith('file:') && !terminal.revision.base) throw replayIdentityError('initiative review terminal target has no stored base');
-  revision = typeof revision === 'function' ? revision(terminal.revision) : revision;
-  if (terminal.target !== revision.ref) return false;
-  if (same(terminal.revision, revision)) {
-    if (terminal.kind === 'escape' && terminal.packet?.delivery?.consumed !== false) return false;
-    return terminal;
-  }
-  if (terminal.kind === 'escape') {
-    // selectDisposition picked the most-recently-written escape, which
-    // doesn't match the queried revision -- but an OLDER, still-pending
-    // escape might (e.g. the working tree reverted to an earlier commit
-    // that already has its own unconsumed escape entry). Prefer replaying
-    // that one over launching a redundant round.
-    const olderMatch = (ledger.dispositions || []).find((item) => item.target === target && kinds.includes(item.kind) && item !== terminal && same(item.revision, revision) && item.packet?.delivery?.consumed === false);
-    return olderMatch || false;
-  }
-  throw replayIdentityError('initiative review terminal target revision changed');
+  // Identity is the revision pair: a disposition on another head or base is a
+  // different target and never blocks this one. A candidate with no stored head
+  // (or, for a git ref, no stored base) cannot match and is skipped.
+  const matches = dispositionCandidates(run, target, kinds).filter((item) => item.revision?.head_sha
+    && (target.startsWith('file:') || item.revision.base)
+    && item.target === revision.ref && same(item.revision, revision));
+  // A terminal disposition replays whatever its delivery state; an escape
+  // replays only while its packet is unconsumed, so a consumed one lets a fresh
+  // round start at the same revision.
+  return matches.find((item) => item.kind === 'terminal') || matches.reverse().find((item) => item.packet?.delivery?.consumed === false) || false;
 }
 
 function finaliseInitiativeRun(run, reason = 'finalised') {
   return Boolean(locked(run, (ledger) => ledger?.status === 'terminal' ? undefined : (ledger?.status === 'active' && { ...ledger, status: 'terminal', terminal: { reason }, reconciliation: ledger.reconciliation || { terminals: [], hint: hint(reason) } })));
 }
 
-module.exports = { canonicalPath, runPath, repositoryIdentity, openInitiativeRun, reserveLaunch, reserveLaunchBatch, normalizeDisposition, recordDisposition, consumeDispositionDelivery, terminalTarget, selectDisposition, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };
+module.exports = { canonicalPath, runPath, repositoryIdentity, openInitiativeRun, reserveLaunch, reserveLaunchBatch, denialReason, pairRefusal, resolveBaseCommit, normalizeDisposition, recordDisposition, consumeDispositionDelivery, terminalTarget, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };

@@ -418,3 +418,95 @@ for (const provider of Object.keys(PROVIDERS)) {
     assert.deepStrictEqual(t.initiative().dispositions.filter((d) => d.kind === 'escape').map((d) => d.reason), ['intent-review', 'gate-pending']);
   });
 }
+
+for (const provider of Object.keys(PROVIDERS)) {
+  // Seeds a terminal disposition for the current revision pair of feat/x, then moves the branch to a new head
+  // and re-arms the per-ref target ledger with `rerun`, as a re-verification after a fix pass does.
+  const reverifyOnNewHead = (t, maxLaunches, result) => {
+    const target = review.readLedger(t.dir, review.targetSlug('feat/x')).target;
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: t.repo, encoding: 'utf8' }).trim();
+    const run = openInitiativeRun({ stateDir: t.initDir, key: 'key-1', repository: t.repo, maxLaunches, maxRounds: 5 });
+    assert.ok(recordDisposition(run, { target: 'feat/x', revision: { ref: 'feat/x', ...(target?.base ? { base: target.base } : {}), head_sha: head }, result }));
+    fs.writeFileSync(path.join(t.repo, 'a.txt'), 'three\n');
+    execFileSync('git', ['commit', '-aqm', 'fix'], { cwd: t.repo });
+    t.ok(['rerun', 'feat/x']);
+    t.start();
+  };
+
+  test(`${provider}: a new head of a terminal ref reserves from the same budget (revision pair, AC1)`, () => {
+    const t = setup(provider, { maxLaunches: 3 });
+    t.start();
+    assert.strictEqual(t.ok(['reserve', 'feat/x', 'correctness']).status, 'granted');
+    reverifyOnNewHead(t, 3, { decision: { converged: true } });
+    assert.strictEqual(t.ok(['reserve', 'feat/x', 'correctness']).status, 'granted');
+    assert.strictEqual(t.initiative().launches.length, 2);
+    assert.strictEqual(new Set(t.initiative().targets.map((x) => x.head_sha).filter(Boolean)).size, 2);
+  });
+
+  test(`${provider}: a new head after reconciliation-required returns reconciliation-required and reserves nothing (AC3)`, () => {
+    const t = setup(provider, { maxLaunches: 3 });
+    t.start();
+    assert.strictEqual(t.ok(['reserve', 'feat/x', 'correctness']).status, 'granted');
+    reverifyOnNewHead(t, 3, { status: 'reconciliation-required' });
+    assert.strictEqual(t.ok(['reserve', 'feat/x', 'correctness']).status, 'reconciliation-required');
+    assert.strictEqual(t.initiative().launches.length, 1);
+  });
+
+  test(`${provider}: a new head with an exhausted budget is denied as budget-exhausted (AC4)`, () => {
+    const t = setup(provider, { maxLaunches: 1 });
+    t.start();
+    assert.strictEqual(t.ok(['reserve', 'feat/x', 'correctness']).status, 'granted');
+    reverifyOnNewHead(t, 1, { decision: { converged: true } });
+    const denied = t.ok(['reserve', 'feat/x', 'correctness']);
+    assert.strictEqual(denied.status, 'denied');
+    assert.strictEqual(denied.reason, 'budget-exhausted');
+  });
+
+  test(`${provider}: reserve stores the resolved base commit, so a base name that moves makes a different pair`, () => {
+    const t = setup(provider, { maxLaunches: 5 });
+    t.start(); // the per-ref ledger keeps the base name HEAD~1
+    const rev = () => execFileSync('git', ['rev-parse', 'HEAD~1'], { cwd: t.repo, encoding: 'utf8' }).trim();
+    const first = rev();
+    assert.strictEqual(t.ok(['reserve', 'feat/x', 'correctness']).status, 'granted');
+    fs.writeFileSync(path.join(t.repo, 'b.txt'), 'x\n');
+    execFileSync('git', ['add', '-A'], { cwd: t.repo });
+    execFileSync('git', ['commit', '-qm', 'move the base name'], { cwd: t.repo });
+    const second = rev();
+    assert.notStrictEqual(first, second);
+    assert.strictEqual(t.ok(['reserve', 'feat/x', 'verify']).status, 'granted');
+    const targets = t.initiative().targets;
+    assert.deepStrictEqual(targets.map((x) => x.base), [first, second]);
+    assert.strictEqual(new Set(targets.map((x) => x.head_sha)).size, 1);
+  });
+
+  test(`${provider}: record writes the terminal on the head reserve opened, so a later head is not refused target-terminal`, () => {
+    const t = setup(provider, { maxLaunches: 6 });
+    const n = t.start();
+    const head = () => execFileSync('git', ['rev-parse', 'HEAD'], { cwd: t.repo, encoding: 'utf8' }).trim();
+    const h1 = head();
+    for (const role of ['correctness', 'verify']) assert.strictEqual(t.ok(['reserve', 'feat/x', role]).status, 'granted');
+    t.write(n, 'correctness', CLEAN);
+    t.write(n, 'verify', { status: 'ok', rejected: [] });
+    fs.writeFileSync(path.join(t.repo, 'a.txt'), 'three\n');
+    execFileSync('git', ['commit', '-aqm', 'a commit lands mid-round'], { cwd: t.repo });
+    t.ok(['plan-fixes', 'feat/x']);
+    assert.strictEqual(t.ok(['record', 'feat/x']).decision.converged, true);
+    assert.deepStrictEqual(t.initiative().dispositions.map((d) => d.revision.head_sha), [h1]);
+    t.ok(['rerun', 'feat/x']);
+    t.start();
+    assert.strictEqual(t.ok(['reserve', 'feat/x', 'correctness']).status, 'granted');
+  });
+
+  test(`${provider}: record stores the resolved base commit in the disposition revision`, () => {
+    const t = setup(provider, { config: { dod: ['true'], intent: { command: 'printf "REQ: retry three times"' } } });
+    const n = t.start();
+    for (const role of ['correctness', 'verify', 'intent']) assert.strictEqual(t.ok(['reserve', 'feat/x', role]).status, 'granted');
+    t.write(n, 'correctness', { ...CLEAN, findings: [finding] });
+    t.write(n, 'verify', { status: 'ok', rejected: [] });
+    t.write(n, 'intent', { status: 'ok', findings: [{ id: 'intent:retry', file: 'a.txt', span: 'two', summary: 's', requirement: 'retry three times' }] });
+    t.ok(['plan-fixes', 'feat/x']);
+    t.ok(['record', 'feat/x']);
+    const base = execFileSync('git', ['rev-parse', 'HEAD~1'], { cwd: t.repo, encoding: 'utf8' }).trim();
+    assert.strictEqual(t.initiative().dispositions[0].revision.base, base);
+  });
+}

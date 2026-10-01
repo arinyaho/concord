@@ -87,7 +87,9 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(stages, /Write the design.*Commit.*initial design note.*file-target review.*commit.*accepted review fixes.*before planning/is);
   assert.match(stages, /synthetic.*teardown.*read-back.*authorization.*retain.*named owner/is);
   assert.match(stages, /contract review supplements rather than replaces `review-until-green`/i);
-  assert.match(stages, /apply the fix.*fresh independent review.*repeat until clean/is);
+  assert.match(stages, /apply the fix.*one fresh independent review.*one bounded fix pass followed by one fresh verification, not a loop.*human reconciliation/is);
+  assert.doesNotMatch(`${skill}\n${stages}`, /repeat until clean/i);
+  assert.match(stages, /new revision pair.*same run budget/is);
   assert.match(stages, /commit.*accepted (?:fix|change).*re-arm.*review-until-green/is);
   assert.match(stages, /rerun <ref>.*runtime-specific packaged review CLI path/is);
   assert.doesNotMatch(`${skill}\n${stages}`, /`review-cli\.js /);
