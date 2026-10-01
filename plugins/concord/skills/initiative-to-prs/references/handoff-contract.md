@@ -12,6 +12,7 @@ Persist one compact Markdown handoff per completed stage. The file is the child 
 - Claims separated into observed, code-proven, intent-only, tracker-only, unresolved, and refuted
 - Decisions: exact user decisions, accepted contract, rejected alternatives that affect later work, and the authorization envelope
 - A substantive reconciliation packet: supporting evidence, every realistic option with its consequence, the recommendation and rationale, and the exact decision required
+- Delivery mode (`base` or `lite`), review run key, budgets, and any lite-to-base escalation trigger with the exclusion that caused it
 - Ticket or PR identities and dependency relationships
 - Checks actually run, their exact result, and checks not run with the blocker
 - Requested and resolved model, provider and catalog basis, reasoning effort when exposed, escalation or fallback reason, and for a required Deep decision the separate child invocation or agent identity, successful completion, conclusion, and covered decision identities; when a second independent Deep reviewer is required, preserve the same fields in a distinct second-reviewer evidence record; labels such as `active root agent` are not resolved model evidence

@@ -25,7 +25,7 @@ const {
   resetUnreachable,
 } = require('./review');
 const crypto = require('node:crypto');
-const { canonicalPath, openInitiativeRun, reserveLaunchBatch, denialReason, recordDisposition, finaliseInitiativeRun, resolveBaseCommit } = require('./initiative-review-run');
+const { canonicalPath, openInitiativeRun, reserveLaunchBatch, denialReason, recordDisposition, finaliseInitiativeRun, consumeDispositionDelivery, escalateInitiativeRun, lockDiagnosis, resolveBaseCommit } = require('./initiative-review-run');
 const { acquireTarget, gitDiff, gitHeadSha, gitDirty } = require('./target');
 const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
 
@@ -469,6 +469,8 @@ function firstRetryArtifact(retries) {
 // reviewers, so the CLI cannot stop a launch: it reserves launches up front
 // (`reserve`) and refuses to accept evidence from an unreserved launch.
 const INITIATIVE_FLAGS = [['--initiative-run-key', 'key'], ['--initiative-state-dir', 'stateDir'], ['--initiative-max-launches', 'maxLaunches'], ['--initiative-max-rounds', 'maxRounds']];
+const MODE_FLAG = '--initiative-mode';
+const RUN_VERBS = new Set(['finalise', 'consume', 'escalate']);
 const RESERVE_ROLES = ['correctness', 'verify', 'intent', 'gate-review', 'gate-verify', 'fix', 'lens', 'vote'];
 const ARTIFACT_RESERVE_ROLE = { correctness: 'correctness', verify: 'verify', intent: 'intent', gate: 'gate-review', 'gate-verify': 'gate-verify' };
 
@@ -481,7 +483,16 @@ function extractInitiative(argv) {
     found[field] = args[i + 1];
     args.splice(i, 2);
   }
-  if (Object.keys(found).length === 0) return { args, initiative: null };
+  const modeAt = args.indexOf(MODE_FLAG);
+  if (modeAt !== -1) {
+    found.mode = args[modeAt + 1];
+    args.splice(modeAt, 2);
+    if (!['base', 'lite'].includes(found.mode)) throw new Error('review-cli: --initiative-mode must be base or lite');
+  }
+  if (Object.keys(found).filter((field) => field !== 'mode').length === 0) {
+    if (found.mode) throw new Error('review-cli: --initiative-mode needs the initiative run flags');
+    return { args, initiative: null };
+  }
   if (!found.key || !found.stateDir || !/^[1-9]\d*$/.test(found.maxLaunches || '') || !/^[1-9]\d*$/.test(found.maxRounds || '')) {
     throw new Error('review-cli: --initiative-run-key, --initiative-state-dir, --initiative-max-launches and --initiative-max-rounds must be used together, with positive integer budgets');
   }
@@ -491,7 +502,14 @@ function extractInitiative(argv) {
 
 function openKeyedRun(initiative) {
   const stateDir = canonicalPath(initiative.stateDir);
-  return openInitiativeRun({ stateDir, key: initiative.key, repository: canonicalPath(process.env.REVIEW_REPO_ROOT || process.cwd()), maxLaunches: Number(initiative.maxLaunches), maxRounds: Number(initiative.maxRounds), allowTerminal: true });
+  const run = openInitiativeRun({ stateDir, key: initiative.key, repository: canonicalPath(process.env.REVIEW_REPO_ROOT || process.cwd()), maxLaunches: Number(initiative.maxLaunches), maxRounds: Number(initiative.maxRounds), allowTerminal: true, mode: initiative.mode || 'base' });
+  const mode = runMode(run);
+  if (initiative.mode && initiative.mode !== mode) throw new Error(`review-cli: --initiative-mode ${initiative.mode} disagrees with the run ledger: run mode is ${mode}`);
+  return run;
+}
+
+function runMode(run) {
+  return JSON.parse(fs.readFileSync(run.path, 'utf8')).mode;
 }
 
 function reservedCount(ledger, role, round, panel) {
@@ -585,14 +603,36 @@ function gatesNeeds(stateDir, n) {
 // target-ledger lock, so parallel verbs never lose an update. `show` only reads.
 function main(resolveFromCwd) {
   const { args, initiative } = extractInitiative(process.argv.slice(2));
-  if (!initiative || !args[1] || args[0] === 'show') return runVerb(resolveFromCwd, args, initiative);
+  if (!initiative || !args[1] || args[0] === 'show' || RUN_VERBS.has(args[0])) return runVerb(resolveFromCwd, args, initiative);
   return withTargetLock(ledgerPath(resolveStateDir(resolveFromCwd), targetSlug(args[1])), () => runVerb(resolveFromCwd, args, initiative));
+}
+
+// Run-level verbs act on the initiative run, not on a target ledger, so they take no target lock.
+function runLevelVerb(verb, arg, initiative) {
+  if (!initiative) throw new Error(`review-cli ${verb}: requires the initiative run flags (--initiative-run-key, --initiative-state-dir, --initiative-max-launches, --initiative-max-rounds)`);
+  const stateDir = canonicalPath(initiative.stateDir);
+  const repository = canonicalPath(process.env.REVIEW_REPO_ROOT || process.cwd());
+  if (verb === 'escalate') {
+    escalateInitiativeRun({ stateDir, key: initiative.key, repository, trigger: arg, maxLaunches: Number(initiative.maxLaunches), maxRounds: Number(initiative.maxRounds) });
+    process.stdout.write(`${JSON.stringify({ status: 'escalated', mode: 'base', trigger: arg })}\n`);
+    return;
+  }
+  const run = openKeyedRun(initiative);
+  if (verb === 'finalise') {
+    if (!finaliseInitiativeRun(run, 'finalised')) throw new Error(lockDiagnosis(run) || 'review-cli finalise: initiative run is contended; retry');
+    process.stdout.write(`${JSON.stringify({ status: 'finalised' })}\n`);
+    return;
+  }
+  if (!arg) throw new Error('review-cli consume: requires a delivery claim');
+  if (!consumeDispositionDelivery(run, arg)) throw new Error('review-cli consume: no unconsumed delivery for this claim in the initiative run');
+  process.stdout.write(`${JSON.stringify({ status: 'consumed' })}\n`);
 }
 
 function runVerb(resolveFromCwd, args, initiative) {
   const [verb, ref, ...rest] = args;
   const stateDir = resolveStateDir(resolveFromCwd);
   // `reserve` opens the run inside the target-ledger lock main() holds so parallel first calls serialize.
+  if (RUN_VERBS.has(verb)) return runLevelVerb(verb, ref, initiative);
   const run = initiative && verb !== 'reserve' && verb !== 'show' ? openKeyedRun(initiative) : null;
 
   if (verb === 'reserve') {
@@ -615,7 +655,8 @@ function runVerb(resolveFromCwd, args, initiative) {
       const launch = { role, round: ledger.round, target, revision, attemptId: ledger.attemptId };
       if (!reserveLaunchBatch(run, launch, count)) {
         const reason = denialReason(run, launch, count);
-        return reason === 'reconciliation-required' ? { status: reason, role, count, round: ledger.round } : { status: 'denied', role, count, round: ledger.round, ...(reason ? { reason } : {}) };
+        const diagnosis = reason ? null : lockDiagnosis(run);
+        return reason === 'reconciliation-required' ? { status: reason, role, count, round: ledger.round } : { status: 'denied', role, count, round: ledger.round, ...(reason ? { reason } : {}), ...(diagnosis ? { lockDiagnosis: diagnosis } : {}) };
       }
       const token = crypto.randomBytes(16).toString('hex');
       const panel = role === 'lens' || role === 'vote' ? (ledger.gate_panel?.round || 0) + 1 : undefined;
@@ -873,6 +914,8 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (ref === 'resume') {
       throw new Error('review-cli round-start: "resume" is not a valid ref -- round-start auto-detects resume from ledger state; call `round-start <ref>` directly, or use the review-until-green wrapper\'s `resume <ref>` syntax, which forwards correctly');
     }
+    // Rejected before any state is written: the intent-review and gate-pending resets below delete the cached intent.
+    if (run && runMode(run) === 'lite' && rest.some((a) => ['--broad', '--gate', '--no-broad'].includes(a))) throw new Error('review-cli round-start: a lite initiative run takes no --broad, --gate or --no-broad; lite always runs the one design-conformance gate (escalate to base before the first launch for the full gate pair)');
     const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
     const slug = targetSlug(ref);
     let ledger = readLedger(stateDir, slug) || emptyLedger({ kind: 'local', ref });
@@ -968,6 +1011,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     const broadFlagPassed = rest.some((a) => BROAD_FLAGS.has(a));
     const NO_BROAD_FLAGS = new Set(['--no-broad']);
     const noBroadFlagPassed = rest.some((a) => NO_BROAD_FLAGS.has(a));
+    const lite = !!run && runMode(run) === 'lite';
     // Executable-DoD opt-out (--no-dod): the same deferral `"dod": null` in
     // review.config.json declares, asked for per-run instead. It exists for a
     // repo that HAS a config with real `dod` commands but wants the executable
@@ -1123,7 +1167,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // plan-fixes would drop that round's gate findings on the floor.
     // A ledger written before gateArmed existed has no boolean here and falls
     // through to the target-type default, which is what it ran under.
-    const gateArmed = broadFlagPassed ? true
+    const gateArmed = lite ? true : broadFlagPassed ? true
       : noBroadFlagPassed ? false
       : typeof ledger.gateArmed === 'boolean' ? ledger.gateArmed
       : !isFileTarget;
@@ -1148,7 +1192,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // before plan-fixes runs. Re-deriving from review.config.json there would
     // silently miss a flag-enabled round and discard its findings.
     const gateApplied = gateArmed && (gateRounds.length === 0 || gateRounds.includes(ledger.round));
-    const expectedArtifacts = ['correctness', 'verify'].concat(intentCfg ? ['intent'] : [], gateApplied ? ['gate', 'gate-verify'] : []);
+    const expectedArtifacts = ['correctness', 'verify'].concat(intentCfg ? ['intent'] : [], gateApplied ? (lite ? ['gate'] : ['gate', 'gate-verify']) : []);
     const completedArtifacts = resumed && ledger.execution
       ? resumedCompletedArtifacts.filter((role) => expectedArtifacts.includes(role))
       : [];
@@ -1231,6 +1275,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       gateArmed,
       gateDisarmedBy,
       gateApplied,
+      gateMode: lite ? 'design-conformance' : 'pair',
       gate_rounds: gateApplied && !gateRounds.includes(ledger.round) ? [...gateRounds, ledger.round] : gateRounds,
       dodDeferred,
       reviewRouting,
@@ -1252,7 +1297,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // `true` means "nothing blocked the round", not "the gate ran and passed" --
     // a driver that turns it into "DoD already passed; do not rerun tests" would
     // be removing the last real check. dodDeferred is how a caller tells them apart.
-    process.stdout.write(JSON.stringify({ decision: 'work', ref: targetUpdate.ref, base: targetUpdate.base, head: targetUpdate.head_sha, attemptId: ledger.attemptId, round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, dodDeferred: !!dod.deferred, intentApplied: !!intentCfg, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir, completedArtifacts, retryArtifacts, retryArtifact }) + '\n');
+    process.stdout.write(JSON.stringify({ decision: 'work', mode: run ? runMode(run) : undefined, gateMode: lite ? 'design-conformance' : 'pair', ref: targetUpdate.ref, base: targetUpdate.base, head: targetUpdate.head_sha, attemptId: ledger.attemptId, round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, dodDeferred: !!dod.deferred, intentApplied: !!intentCfg, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir, completedArtifacts, retryArtifacts, retryArtifact }) + '\n');
     return;
   }
 
@@ -1379,7 +1424,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       // that says nothing about the panel, whose lenses read the review text and
       // the intent doc and worked for file targets before this change. Only the
       // user's explicit opt-out declines the panel.
-      panelConfigured: !!(gateCfg && gateCfg.panel) && ledger.gateDisarmedBy !== '--no-broad',
+      panelConfigured: !!(gateCfg && gateCfg.panel) && ledger.gateDisarmedBy !== '--no-broad' && ledger.gateMode !== 'design-conformance',
       panelDone: !!(ledger.gate_panel && ledger.gate_panel.status === 'done'),
     };
     let { ledger: applied, decision } = R.applyRoundOutcome(ledger, outcome);
@@ -1439,6 +1484,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (isGit) gitCheckoutTree(repoRoot);
     const finalChecks = [{ name: 'definition-of-done', status: ledger.dod?.deferred ? 'deferred' : ledger.dod?.passed ? 'passed' : 'failed' }];
     ledger = { ...ledger, phase: 'done', last_recorded_round: n, _lastDecision: decision, reconciliationPacket: reconciliation || null, finalChecks };
+    let entry;
     if (run && !decision.continue && !decision.panelPending) {
       // Same disposition path, packet shape, and privacy contract as the Codex
       // runner: raw ref/SHA stay in the local ledger; no artifact path is stored.
@@ -1457,12 +1503,12 @@ function runVerb(resolveFromCwd, args, initiative) {
       // Match by target + revision + kind, and reason for an escape (as the Codex runner does), and fail without
       // marking the target ledger done so a re-run of `record` can still record it.
       const kind = escaped ? 'escape' : 'terminal';
-      const entry = (JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions || []).findLast((d) => d.target === target && JSON.stringify(d.revision) === JSON.stringify(revision) && d.kind === kind && (!escaped || d.reason === disposition.reason));
+      entry = (JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions || []).findLast((d) => d.target === target && JSON.stringify(d.revision) === JSON.stringify(revision) && d.kind === kind && (!escaped || d.reason === disposition.reason));
       if (!entry || (!recorded && kind === 'escape' && entry.packet?.delivery?.consumed !== false)) throw new Error('harness-failure: record: initiative target disposition recording was contended; re-run record');
     }
     writeLedger(stateDir, slug, ledger);
     if (R.TERMINAL_STATUSES.has(ledger.status)) reviewTelemetry.deleteTelemetry(stateDir, ledger.target?.ref || ref, slug);
-    process.stdout.write(JSON.stringify({ decision, handoff: renderHandoff({ ledger }), telemetry: ledger.telemetry || null, reconciliation: ledger.reconciliationPacket || undefined, checks: finalChecks }) + '\n');
+    process.stdout.write(JSON.stringify({ decision, handoff: renderHandoff({ ledger }), telemetry: ledger.telemetry || null, reconciliation: ledger.reconciliationPacket || undefined, checks: finalChecks, initiative: entry?.packet?.delivery?.claim ? { claim: entry.packet.delivery.claim } : undefined }) + '\n');
     return;
   }
 
@@ -1588,6 +1634,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       catch (e) { throw new Error(`harness-failure: gate artifact invalid: ${e.message}`); }
       for (const f of gFindings) {
         if (!f.id.startsWith('gate:')) throw new Error(`harness-failure: non-gate id "${f.id}" in the gate artifact`);
+        if (ledger.gateMode === 'design-conformance' && !f.id.startsWith('gate:design-conformance:')) throw new Error(`harness-failure: lite gate accepts only gate:design-conformance findings, got "${f.id}"`);
       }
       // gate-verify itself stays lenient (missing/malformed artifact -> the
       // legacy shape { rejected: [] }, and a shape-invalid findings entry ->
@@ -1817,7 +1864,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     return;
   }
 
-  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | telemetry-slot | plan-fixes | commit-fix | record | round-failure | gate-panel-round-start | gate-panel-round-record | unpark | dismiss | reset | rerun | artifact-normalize | reserve)`);
+  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | telemetry-slot | plan-fixes | commit-fix | record | round-failure | gate-panel-round-start | gate-panel-round-record | unpark | dismiss | reset | rerun | artifact-normalize | reserve | finalise | consume | escalate)`);
 }
 
 // Wraps main() with the graceful operator-facing error format. Exported (not

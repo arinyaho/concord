@@ -1,6 +1,6 @@
 # Native driver initiative budgets
 
-The native Claude and Copilot review drivers enforce the same keyed initiative ledger as the Codex runner: one durable launch budget, one round budget, terminal target dispositions, and the `reconciliation-required` handoff, all for one repository and one run key. The review CLI accepts the run key, the canonical initiative state directory, and the immutable budgets (`--initiative-run-key`, `--initiative-state-dir`, `--initiative-max-launches`, `--initiative-max-rounds`), which must be supplied together and are validated and opened by the same code the Codex runner uses. With none of them, behaviour is unchanged.
+The native Claude and Copilot review drivers enforce the same keyed initiative ledger as the Codex runner: one durable launch budget, one round budget, terminal target dispositions, and the `reconciliation-required` handoff, all for one repository and one run key. The review CLI accepts the run key, the canonical initiative state directory, and the immutable budgets (`--initiative-run-key`, `--initiative-state-dir`, `--initiative-max-launches`, `--initiative-max-rounds`), which must be supplied together and are validated and opened by the same code the Codex runner uses. With none of them, behaviour is unchanged. The run mode (`--initiative-mode`), and the `finalise`, `consume` and `escalate` verbs, are described in the delivery modes design.
 
 ## Decision: enforce at evidence acceptance, not at launch
 

@@ -85,6 +85,8 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(stages, /not `READY FOR TEST` until the exact combined artifacts are deployed.*runnable QA hand-off/is);
   assert.match(stages, /file-target review.*before planning or implementation begins/i);
   assert.match(stages, /Write the design.*Commit.*initial design note.*file-target review.*commit.*accepted review fixes.*before planning/is);
+  assert.match(stages, /Write the design.*lite eligibility and escalation rules.*Commit the initial design note.*file-target review/is);
+  assert.doesNotMatch(stages, /Before dependent implementation, apply the lite eligibility/i);
   assert.match(stages, /synthetic.*teardown.*read-back.*authorization.*retain.*named owner/is);
   assert.match(stages, /contract review supplements rather than replaces `review-until-green`/i);
   assert.match(stages, /apply the fix.*one fresh independent review.*one bounded fix pass followed by one fresh verification, not a loop.*human reconciliation/is);
@@ -172,5 +174,50 @@ test('initiative-to-prs remains provider-neutral and project-neutral', () => {
 
   for (const contents of files) {
     for (const pattern of forbidden) assert.doesNotMatch(contents, pattern);
+  }
+});
+
+test('initiative-to-prs passes the run key on every review call and records the delivery mode', () => {
+  const skill = read('concord', 'SKILL.md');
+  const stages = read('concord', 'references/stages.md');
+  const handoff = read('concord', 'references/handoff-contract.md');
+
+  assert.match(skill, /Pass the run key to EVERY `review-until-green` call.*file-target note reviews and diff reviews.*--initiative-run-key.*--initiative-state-dir.*--initiative-max-launches.*--initiative-max-rounds.*--initiative-mode <base\|lite>/is);
+  assert.match(skill, /A review call without the run key is outside the plan/i);
+  assert.match(skill, /`base` is the default.*`lite` runs only when the user explicitly asks.*never select it automatically/is);
+  assert.match(skill, /recorded in `state\.md` and in the keyed run ledger, and the completion report names it/i);
+  assert.match(skill, /`state\.md` there with the run key, delivery mode, review budgets, any escalation trigger/i);
+  assert.match(skill, /Report the delivery mode \(and the escalation trigger when the run escalated\)/i);
+  assert.match(handoff, /Delivery mode \(`base` or `lite`\), review run key, budgets, and any lite-to-base escalation trigger/i);
+  assert.match(stages, /initiative run options as `ticket-to-pr`'s required diff-local gate/i);
+});
+
+test('initiative-to-prs documents lite eligibility and escalation before dependent implementation', () => {
+  const skill = read('concord', 'SKILL.md');
+
+  assert.match(skill, /one repository and one independently testable outcome.*settled contract.*no public API or deployment-boundary change.*no security, authorization, identity, or cryptography change.*no data migration.*no legal, regulatory, or external-data-rights decision.*no cross-repository integration/is);
+  assert.match(skill, /exclusion condition is escalated to base before that implementation.*`escalate <trigger>`.*`public-api`.*`schema`.*`security`.*`cross-package`.*`migration`/is);
+  assert.match(skill, /Record the trigger and the exclusion.*handoff/is);
+  assert.match(skill, /Escalation is refused after the first launch and never reverses.*new base run key.*`rerun` each ref/is);
+  assert.match(skill, /never downgrade a base run to lite/i);
+  assert.match(skill, /After `escalate`, replace the mode and budgets recorded in `state\.md` with base and the base budgets.*every later call/is);
+});
+
+test('initiative-to-prs parks dependent work on a confirmed contract finding and forbids unplanned reviewers', () => {
+  const skill = read('concord', 'SKILL.md');
+  const stages = read('concord', 'references/stages.md');
+
+  assert.match(skill, /confirmed contract or architecture finding parks dependent work for reconciliation.*launch no further fixer.*return to the user/is);
+  assert.match(stages, /confirmed contract or architecture finding parks every dependent unit and fix for reconciliation instead of entering a fix pass/i);
+  assert.match(skill, /Never launch a reviewer outside the plan, and never launch one under a new task name/i);
+  assert.match(skill, /host can still spawn agents.*cannot prevent.*kept from producing accepted evidence.*unreserved evidence is rejected.*fails closed/is);
+  assert.match(skill, /acknowledge each delivered disposition with `consume <claim>` and end the run with `finalise`/i);
+  assert.doesNotMatch(`${skill}\n${stages}`, /repeat until clean/i);
+  assert.match(stages, /one bounded fix pass followed by one fresh verification, not a loop/i);
+});
+
+test('all provider copies of the initiative-to-prs skill, stages and handoff contract match the canonical source', () => {
+  for (const provider of ['concord-codex', 'concord-copilot']) {
+    for (const file of ['SKILL.md', 'references/stages.md', 'references/handoff-contract.md']) assert.equal(read(provider, file), read('concord', file), `${provider}/${file}`);
   }
 });

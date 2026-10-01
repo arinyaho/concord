@@ -87,7 +87,7 @@ The plugins come from a diagnosis of recurring session dysfunction:
 - Manual cross-session review<->fix ping-pong that ends on a weak "looks good" gate -> the `concord` plugin (`/review-until-green` review-and-fix loop).
 - Tickets that leave the next agent guessing about product intent, design constraints, or proof -> the shared `ticket-writing` skill.
 - Multi-stage ticket work that skips reproducible red/green evidence or opens a PR with unfinished gates -> the shared `ticket-to-pr` skill.
-- Initiatives that need evidence, product decisions, an implementation-ready ticket set, model-routed execution, and verified PRs -> the shared `initiative-to-prs` skill.
+- Initiatives that need evidence, product decisions, an implementation-ready ticket set, model-routed execution, and verified PRs -> the shared `initiative-to-prs` skill (`base` delivery mode by default, opt-in `lite` for local, settled-contract changes).
 - Proposal decks that lose requirement traceability, editability, visual consistency, or export safety -> the shared `proposal-package-authoring` skill.
 
 Design notes and implementation plans for each fix are kept in Notion, not in this repo.

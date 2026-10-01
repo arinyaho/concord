@@ -97,6 +97,22 @@ for (const provider of Object.keys(PROVIDERS)) {
     assert.strictEqual(review.readLedger(t.dir, review.targetSlug('feat/x')).initiative_reservations, undefined);
   });
 
+  test(`${provider}: a lock-contended reserve denial names the lock, its owner pid and how to remove it`, () => {
+    const t = setup(provider);
+    t.start();
+    openInitiativeRun({ stateDir: t.initDir, key: 'key-1', repository: t.repo, maxLaunches: 20, maxRounds: 5 });
+    const lock = `${t.ledgerFile()}.lock`;
+    fs.mkdirSync(lock);
+    fs.writeFileSync(path.join(lock, 'owner'), `${process.pid}\n`);
+    const r = t.ok(['reserve', 'feat/x', 'correctness']);
+    const real = path.join(fs.realpathSync(path.dirname(lock)), path.basename(lock)); // the CLI reports the canonical path
+    fs.rmSync(lock, { recursive: true, force: true });
+    assert.strictEqual(r.status, 'denied');
+    assert.ok(String(r.lockDiagnosis).includes(real), JSON.stringify(r));
+    assert.match(r.lockDiagnosis, new RegExp(`owner pid ${process.pid} \\(still running\\)`));
+    assert.ok(r.lockDiagnosis.includes(`rm -r "${real}"`), r.lockDiagnosis);
+  });
+
   test(`${provider}: unreserved evidence is rejected and fails the keyed run closed (AC3)`, () => {
     const t = setup(provider);
     const n = t.start();
