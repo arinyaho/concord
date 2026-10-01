@@ -8,17 +8,17 @@ The run ledger is schema version 5 and carries `mode` (`base` or `lite`) and, af
 
 `mode` is not part of the budget-equality check performed when a run is reopened. Reopening is keyed on the budgets alone and the ledger's stored mode is authoritative, so a driver that restarts without a flag cannot silently change a run's mode. A caller that passes a mode that disagrees with the ledger is refused.
 
-Budgets are sized by the caller for the mode. The core enforces the stored budgets, not a mode-specific cap: lite uses fewer launches per round because it launches fewer reviewers, and the caller opens the run with a budget that reflects that.
+The caller supplies the budgets, both at open and at escalation. The core enforces the stored budgets and applies no mode-specific cap: lite uses fewer launches per round because it launches fewer reviewers, and the caller opens the run with a budget that reflects that. `escalate` takes the base-sized budgets from the caller and replaces the stored ones. Because reopen compares against the stored budgets, a reopen after escalation must present the escalated budgets.
 
 ## Lite gate
 
 In a keyed `round-start`, the review CLI reads the run's mode. In `lite` it launches `correctness`, `verify`, and a single `gate` reviewer whose prompt asks only for `gate:design-conformance:<slug>` findings and states that ac-coverage, cross-context and silent-gap findings are not reported. There is no `gate-verify` reviewer and no gate panel, and the round's expected artifact set excludes `gate-verify`. `plan-fixes` rejects any lite gate finding whose class is not design-conformance. `round-start` in a lite run rejects `--broad`, `--no-broad` and `--gate`, because each would change the reviewer set the mode defines. The rejection happens before any state is written.
 
-The Codex runner opens the run itself and passes the run key, canonical state directory, budgets and mode to every `round-start` it invokes, so both distributions read the same mode from the same ledger. The Claude and Copilot drivers pass them explicitly. A prompt that differs only in its class list is the only per-mode text difference, so the prompt text is built by one function with a `gateMode` option and the drivers do not carry their own copies.
+The Codex runner opens the run itself and passes the run key, canonical state directory, budgets and mode to every `round-start` it invokes, so both distributions read the same mode from the same ledger. The Claude and Copilot drivers pass them explicitly. The lite gate prompt differs from the base gate prompt in its class list and in its statement of which classes are not reported, so the prompt text is built by one function with a `gateMode` option and the drivers do not carry their own copies.
 
 ## Escalation
 
-A lite run escalates to base when a reviewer or the implementer finds that the change is not locally scoped. `escalate <ref> <trigger>` records the trigger and resizes the budget to the base size. The trigger is one of a fixed set: `public-api`, `schema`, `security`, `cross-package`, `migration`, `reviewer-finding`. Escalation is one-way and is refused after the first launch, because a run that already spent launches under the lite reviewer set would otherwise mix two gate regimes inside one budget. After the first launch the only way to a base review is a new run key.
+A lite run escalates to base when the caller determines, before the first launch and from eligibility known up front, that the change is not locally scoped. `escalate <ref> <trigger>` records the trigger and replaces the stored budgets with the base-sized budgets the caller supplies. The trigger is one of a fixed set: `public-api`, `schema`, `security`, `cross-package`, `migration`. Escalation is one-way and is refused after the first launch, because a run that already spent launches under the lite reviewer set would otherwise mix two gate regimes inside one budget. When a lite review that has already launched surfaces non-local scope, the run is not escalated in place: the dependent work parks and a new run key starts in base mode.
 
 ## Native driver verbs
 
