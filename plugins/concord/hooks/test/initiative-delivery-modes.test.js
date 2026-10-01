@@ -120,6 +120,14 @@ test('a run lock held by a live process is not recovered and is diagnosable (AC7
   assert.ok(fs.existsSync(`${run.path}.lock`));
 });
 
+test('the printed removal command quotes a lock path that contains a space (correctness:lock-diagnosis-rm-command-unquoted-path)', () => {
+  const stateDir = path.join(tmp('lock-'), 'Application Support');
+  fs.mkdirSync(stateDir);
+  const run = open({ stateDir, key: 'k', maxLaunches: 2, maxRounds: 2 });
+  plantLock(run, process.pid);
+  assert.ok(lockDiagnosis(run).endsWith(`rm -r "${run.path}.lock"`), lockDiagnosis(run));
+});
+
 test('an ownerless run lock is recovered only once it is old (AC7)', () => {
   const run = open({ stateDir: tmp('lock-'), key: 'k', maxLaunches: 2, maxRounds: 2 });
   plantLock(run);

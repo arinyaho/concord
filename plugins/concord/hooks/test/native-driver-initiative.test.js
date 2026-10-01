@@ -110,7 +110,7 @@ for (const provider of Object.keys(PROVIDERS)) {
     assert.strictEqual(r.status, 'denied');
     assert.ok(String(r.lockDiagnosis).includes(real), JSON.stringify(r));
     assert.match(r.lockDiagnosis, new RegExp(`owner pid ${process.pid} \\(still running\\)`));
-    assert.ok(r.lockDiagnosis.includes(`rm -r ${real}`), r.lockDiagnosis);
+    assert.ok(r.lockDiagnosis.includes(`rm -r "${real}"`), r.lockDiagnosis);
   });
 
   test(`${provider}: unreserved evidence is rejected and fails the keyed run closed (AC3)`, () => {

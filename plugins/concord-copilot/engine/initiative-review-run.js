@@ -46,7 +46,7 @@ function lockDiagnosis(run) {
   if (!fs.existsSync(lock)) return null;
   const pid = lockOwner(lock);
   const owner = pid ? `owner pid ${pid} (${pidRunning(pid) ? 'still running' : 'not running'})` : 'owner unknown';
-  return `initiative run lock ${lock} is held, ${owner}; if no review is running, remove it with: rm -r ${lock}`;
+  return `initiative run lock ${lock} is held, ${owner}; if no review is running, remove it with: rm -r "${lock}"`;
 }
 
 function locked(run, update) {
