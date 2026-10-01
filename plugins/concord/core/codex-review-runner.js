@@ -5,7 +5,7 @@
 // subprocess and every state transition remains owned by review-cli.
 const { execFileSync, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
-const { canonicalPath, runPath, openInitiativeRun, reserveLaunch, denialReason, pairRefusal, resolveBaseCommit, recordDisposition, normalizeDisposition, consumeDispositionDelivery, terminalTarget, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
+const { canonicalPath, runPath, openInitiativeRun, reserveLaunch, denialReason, pairRefusal, resolveBaseCommit, recordDisposition, normalizeDisposition, consumeDispositionDelivery, terminalTarget, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun, lockDiagnosis } = require('./initiative-review-run');
 const { gitHeadSha, gitDirty, fileTarget } = require('./target');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -386,7 +386,7 @@ async function runReviewUntilGreen(options) {
     try { worktree = execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: canonicalRepoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() === 'true'; } catch {}
     if (worktree) try { execFileSync('git', ['check-ignore', '-q', '--no-index', '--', path.relative(canonicalRepoRoot, runPath(canonicalStateDir, options.initiativeRunKey))], { cwd: canonicalRepoRoot }); } catch { throw new Error('review-until-green: an initiative state directory inside the repository must be ignored'); }
   }
-  const initiativeRun = keyedRun ? openInitiativeRun({ stateDir: canonicalStateDir, key: options.initiativeRunKey, repository: canonicalRepoRoot, maxLaunches: options.initiativeMaxLaunches, maxRounds: options.initiativeMaxRounds, allowTerminal: !!options.initiativeFinalise }) : null;
+  const initiativeRun = keyedRun ? openInitiativeRun({ stateDir: canonicalStateDir, key: options.initiativeRunKey, repository: canonicalRepoRoot, maxLaunches: options.initiativeMaxLaunches, maxRounds: options.initiativeMaxRounds, allowTerminal: !!options.initiativeFinalise, mode: options.initiativeMode }) : null;
   if (options.initiativeFinalise) {
     if (!initiativeRun) throw new Error('review-until-green: --initiative-finalise requires an initiative run');
     if (!finaliseInitiativeRun(initiativeRun)) throw new Error('review-until-green: initiative run finalisation was contended');
@@ -680,6 +680,8 @@ async function runReviewUntilGreen(options) {
     if (broad) startArgs.push('--broad');
     if (noBroad) startArgs.push('--no-broad'); // broad review is on by default; this is the opt-out
     if (noDod) startArgs.push('--no-dod');
+    // The keyed run is the mode authority: round-start reads the run's mode and rejects a flag that disagrees.
+    if (initiativeRun) startArgs.push('--initiative-run-key', options.initiativeRunKey, '--initiative-state-dir', canonicalStateDir, '--initiative-max-launches', String(options.initiativeMaxLaunches), '--initiative-max-rounds', String(options.initiativeMaxRounds), ...(options.initiativeMode ? ['--initiative-mode', options.initiativeMode] : []));
     // On resume, an unpassed reviewer/fixer must NOT be resent as the 'codex'
     // default -- round-start rejects a request that conflicts with the
     // ledger's persisted routing. Omit it and let round-start fall back to
@@ -721,13 +723,13 @@ async function runReviewUntilGreen(options) {
     currentRound = started.round;
     const revision = initiativeRevision;
     checks = [{ name: 'definition-of-done', status: started.dodDeferred ? 'deferred' : (started.dodPassed ? 'passed' : 'failed') }];
-    const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodPassed: started.dodPassed, dodDeferred: started.dodDeferred, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref) };
+    const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodPassed: started.dodPassed, dodDeferred: started.dodDeferred, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref), gateMode: started.gateMode };
     let slotAllocation = Promise.resolve();
     const launch = async (input) => {
       const reservation = { role: input.role, target: ref, revision, attemptId: started.attemptId || `${revision.ref}\u0000${revision.head_sha || revision.base || 'unknown'}`, round: currentRound };
       if (initiativeRun && !reserveLaunch(initiativeRun, reservation)) {
         const reason = denialReason(initiativeRun, reservation);
-        const denied = new Error(`review-until-green: initiative launch ${reason || 'reservation contended'} before ${input.role}`);
+        const denied = new Error(`review-until-green: initiative launch ${reason || (lockDiagnosis(initiativeRun) || 'reservation contended')} before ${input.role}`);
         // A run out of budget or parked for reconciliation is a blocked outcome, not a review failure.
         if (reason === 'budget-exhausted' || reason === 'reconciliation-required') denied.initiativeBlocked = reason;
         throw denied;
@@ -781,7 +783,7 @@ async function runReviewUntilGreen(options) {
     if (started.intentApplied) reviewers.push(runArtifactReviewer('intent'));
     if (started.gateApplied) reviewers.push((async () => {
       await runArtifactReviewer('gate');
-      await runArtifactReviewer('gate-verify');
+      if (started.gateMode !== 'design-conformance') await runArtifactReviewer('gate-verify');
     })());
     const reviewerResults = await Promise.allSettled(reviewers);
     const reviewerFailure = reviewerResults.find((result) => result.status === 'rejected');

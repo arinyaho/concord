@@ -93,3 +93,12 @@ test('manual fix instructions use the same filesystem-safe ID as commit-fix', ()
     assert.match(text, /finding id with `:` and other Windows-illegal filename characters replaced by `_`/);
   }
 });
+
+test('every review driver artifact embeds the lite design-conformance gate prompt that round-plan.js builds', () => {
+  const prompt = reviewerPrompt('gate', { stateDir: '<stateDir>', round: '<n>', slug: '<slug>', gateMode: 'design-conformance', targetType: 'git', dodPassed: true }).replaceAll('\\', '/');
+  const shared = prompt.slice(0, prompt.indexOf(' Write ONLY'));
+  assert.match(shared, /design-conformance gaps only/);
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-until-green.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
+    assert.ok(text.includes(shared), `${name} lite gate prompt has drifted from round-plan.js`);
+  }
+});

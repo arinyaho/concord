@@ -36,17 +36,39 @@ function write(file, value) {
   writeFileAtomic(file, `${JSON.stringify(value)}\n`, { mode: 0o600 });
 }
 
+const ESCALATION_TRIGGERS = ['public-api', 'schema', 'security', 'cross-package', 'migration'];
+const MODES = ['base', 'lite'];
+const { lockOwner, pidRunning, reclaimStaleLock } = require('./run-lock');
+
+// Why the run lock is held, or null when it is not. Names the lock and how to clear it.
+function lockDiagnosis(run) {
+  const lock = `${run.path}.lock`;
+  if (!fs.existsSync(lock)) return null;
+  const pid = lockOwner(lock);
+  const owner = pid ? `owner pid ${pid} (${pidRunning(pid) ? 'still running' : 'not running'})` : 'owner unknown';
+  return `initiative run lock ${lock} is held, ${owner}; if no review is running, remove it with: rm -r ${lock}`;
+}
+
 function locked(run, update) {
   const lock = `${run.path}.lock`;
   fs.mkdirSync(path.dirname(lock), { recursive: true });
-  try { fs.mkdirSync(lock); } catch (error) { if (error.code === 'EEXIST') return false; throw error; }
+  try { fs.mkdirSync(lock); } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    if (!reclaimStaleLock(lock)) return false;
+    try { fs.mkdirSync(lock); } catch (retry) { if (retry.code === 'EEXIST') return false; throw retry; }
+  }
   try {
+    fs.writeFileSync(path.join(lock, 'owner'), `${process.pid}\n`);
     let ledger;
     try { ledger = JSON.parse(fs.readFileSync(run.path, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     const next = update(ledger);
     if (next) write(run.path, next);
     return next === undefined ? true : next || false;
-  } finally { fs.rmdirSync(lock); }
+  } finally { fs.rmSync(lock, { recursive: true, force: true }); }
+}
+
+function assertVersion(ledger) {
+  if (ledger.version !== 5) throw new Error('initiative review run schemaVersion must be 5: this ledger predates delivery modes and is not migrated; start a new run key, `rerun` each ref, and remap the skill\'s source index to the new key');
 }
 
 function hint(trigger, finding = null, stage = null, avoidedLaunches = 0) {
@@ -82,13 +104,14 @@ function normalizeDisposition(result = {}) {
   return { kind: 'terminal', reason: 'target-terminal' };
 }
 
-function openInitiativeRun({ stateDir, key, repository, maxLaunches, maxRounds, allowTerminal = false }) {
+function openInitiativeRun({ stateDir, key, repository, maxLaunches, maxRounds, allowTerminal = false, mode = 'base' }) {
+  if (!MODES.includes(mode)) throw new Error('initiative review mode must be base or lite');
   if (!stateDir || !key || !repository) throw new Error('initiative review requires a run key, repository identity, and canonical state directory');
   if (!Number.isInteger(maxLaunches) || maxLaunches < 1 || !Number.isInteger(maxRounds) || maxRounds < 1) throw new Error('initiative review budgets must be positive integers');
   const run = { path: runPath(stateDir, key), repository: repositoryIdentity(repository) };
   const initialize = (ledger) => {
-    if (!ledger) return { version: 4, repository: run.repository, status: 'active', budget: { maxLaunches, maxRounds }, launches: [], rounds: [], targets: [], findings: {}, checks: [], telemetry: [], terminal: null, dispositions: [], reconciliation: null };
-    if (ledger.version !== 4) throw new Error('initiative review run schemaVersion must be 4');
+    if (!ledger) return { version: 5, mode, repository: run.repository, status: 'active', budget: { maxLaunches, maxRounds }, launches: [], rounds: [], targets: [], findings: {}, checks: [], telemetry: [], terminal: null, dispositions: [], reconciliation: null };
+    assertVersion(ledger);
     if (ledger.repository !== run.repository || (!allowTerminal && ledger.status === 'terminal') || ledger.budget?.maxLaunches !== maxLaunches || ledger.budget?.maxRounds !== maxRounds) throw new Error('initiative review run has a different repository, is terminal, or has immutable configured budgets');
   };
   if (!locked(run, initialize)) {
@@ -97,6 +120,24 @@ function openInitiativeRun({ stateDir, key, repository, maxLaunches, maxRounds, 
     if (!ledger) throw new Error('initiative review run initialization was contended');
     initialize(ledger);
   }
+  return run;
+}
+
+// Escalates a lite run to base. Allowed only before the first launch, so one run
+// never mixes two reviewer sets under one budget. The caller supplies the base budgets.
+function escalateInitiativeRun({ stateDir, key, repository, trigger, maxLaunches, maxRounds }) {
+  if (!ESCALATION_TRIGGERS.includes(trigger)) throw new Error(`initiative escalation trigger must be one of ${ESCALATION_TRIGGERS.join(', ')}`);
+  if (!Number.isInteger(maxLaunches) || maxLaunches < 1 || !Number.isInteger(maxRounds) || maxRounds < 1) throw new Error('initiative review budgets must be positive integers');
+  const run = { path: runPath(stateDir, key), repository: repositoryIdentity(repository) };
+  const done = locked(run, (ledger) => {
+    if (!ledger) throw new Error('no initiative review run for this key');
+    assertVersion(ledger);
+    if (ledger.repository !== run.repository || ledger.status !== 'active') throw new Error('initiative review run has a different repository or is terminal');
+    if (ledger.mode !== 'lite') throw new Error('initiative review run is not a lite run');
+    if ((ledger.launches || []).length) throw new Error('initiative escalation is refused after the first launch; start a new run key in base mode');
+    return { ...ledger, mode: 'base', escalation: { from: 'lite', to: 'base', trigger }, budget: { maxLaunches, maxRounds } };
+  });
+  if (!done) throw new Error(lockDiagnosis(run) || 'initiative review run escalation was contended');
   return run;
 }
 
@@ -153,7 +194,7 @@ function launchRefusal(ledger, launch, count) {
 // every launch is recorded or none is. reserveLaunch is the count === 1 case.
 function reserveLaunchBatch(run, launch, count = 1) {
   return Boolean(locked(run, (ledger) => {
-    if (ledger && ledger.version !== 4) throw new Error('initiative review run schemaVersion must be 4');
+    if (ledger) assertVersion(ledger);
     if (launchRefusal(ledger, launch, count)) return null;
     const target = launch.target || launch.revision?.ref || 'unknown';
     const round = `${target}\u0000${typeof launch.attemptId === 'string' ? launch.attemptId : 'legacy'}\u0000${launch.round}`;
@@ -180,7 +221,7 @@ function reserveLaunch(run, launch) {
 function recordDisposition(run, { target, revision, result, packet = {}, finding = null, stage = null, avoidedLaunches = 0, findings = {}, checks = [], telemetry = [] }) {
   const safeTelemetry = telemetry.map(({ role, stage: telemetryStage, revision, round, count, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, ...(telemetryStage ? { stage: telemetryStage } : {}), ...(revision ? { revision } : {}), ...(Number.isInteger(round) ? { round } : {}), ...(Number.isInteger(count) ? { count } : {}), elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }));
   return Boolean(locked(run, (ledger) => {
-    if (!ledger || ledger.version !== 4 || ledger.status !== 'active') return null;
+    if (!ledger || ledger.version !== 5 || ledger.status !== 'active') return null;
     const disposition = normalizeDisposition(result);
     if (disposition.kind === 'terminal' && (ledger.dispositions || []).some((item) => item.target === target && item.kind === 'terminal' && samePair(item.revision, launchRevision({ revision }, target) || { head_sha: null }))) return null;
     // For 'escape', only dedupe against a still-unconsumed match: once a
@@ -211,7 +252,7 @@ function recordDisposition(run, { target, revision, result, packet = {}, finding
 
 function consumeDispositionDelivery(run, claim) {
   return Boolean(locked(run, (ledger) => {
-    if (!ledger || ledger.version !== 4) return null;
+    if (!ledger || ledger.version !== 5) return null;
     const index = (ledger.dispositions || []).findIndex((item) => item.packet?.delivery?.claim === claim && item.packet.delivery.consumed === false);
     if (index === -1) return null;
     const dispositions = ledger.dispositions.slice();
@@ -237,7 +278,7 @@ function publicInitiativeSummary(run) {
 
 function dispositionCandidates(run, target, kinds) {
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  if (ledger.version !== 4) throw new Error('initiative review run schemaVersion must be 4');
+  assertVersion(ledger);
   if (ledger.status !== 'active') return [];
   return (ledger.dispositions || []).filter((item) => item.target === target && kinds.includes(item.kind));
 }
@@ -265,4 +306,4 @@ function finaliseInitiativeRun(run, reason = 'finalised') {
   return Boolean(locked(run, (ledger) => ledger?.status === 'terminal' ? undefined : (ledger?.status === 'active' && { ...ledger, status: 'terminal', terminal: { reason }, reconciliation: ledger.reconciliation || { terminals: [], hint: hint(reason) } })));
 }
 
-module.exports = { canonicalPath, runPath, repositoryIdentity, openInitiativeRun, reserveLaunch, reserveLaunchBatch, denialReason, pairRefusal, resolveBaseCommit, normalizeDisposition, recordDisposition, consumeDispositionDelivery, terminalTarget, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };
+module.exports = { lockDiagnosis, escalateInitiativeRun, canonicalPath, runPath, repositoryIdentity, openInitiativeRun, reserveLaunch, reserveLaunchBatch, denialReason, pairRefusal, resolveBaseCommit, normalizeDisposition, recordDisposition, consumeDispositionDelivery, terminalTarget, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };
