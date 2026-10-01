@@ -6,7 +6,7 @@ An initiative run has a delivery mode, `base` or `lite`, stored in its run ledge
 
 The run ledger is schema version 5 and carries `mode` (`base` or `lite`) and, after an escalation, `escalation: { from, to, trigger }`. Version 4 and older ledgers are rejected, not upgraded. The error tells the operator to start a new run key, `rerun` each ref, and remap the initiative skill's source index to the new key. There is no migration path, so a replay never infers a mode the ledger does not state.
 
-`mode` is not part of the budget-equality check performed when a run is reopened. Reopening is keyed on the budgets alone and the ledger's stored mode is authoritative, so a driver that restarts without a flag cannot silently change a run's mode. A caller that passes a mode that disagrees with the ledger is refused.
+The budget-equality check performed when a run is reopened ignores the mode. The ledger's stored mode is authoritative, and the core reopen never changes it, so a driver that restarts without a flag cannot silently change a run's mode. The review CLI refuses an `--initiative-mode` flag that disagrees with the stored mode.
 
 The caller supplies the budgets, both at open and at escalation. The core enforces the stored budgets and applies no mode-specific cap: lite uses fewer launches per round because it launches fewer reviewers, and the caller opens the run with a budget that reflects that. `escalate` takes the base-sized budgets from the caller and replaces the stored ones. Because reopen compares against the stored budgets, a reopen after escalation must present the escalated budgets.
 
@@ -32,7 +32,7 @@ These are run-level verbs. They require a run key and do not take the per-target
 
 ## Run lock recovery
 
-The run ledger lock is an exclusive `mkdir`. The holder records its pid in the lock directory. A contender that finds the lock held by a dead pid removes it and retries once. The contender re-reads the owner pid immediately before removal, then renames the lock directory to a unique name, which is atomic so exactly one contender wins, and deletes the renamed directory. An ownerless lock is treated as stale only when it is older than a fixed age, because a holder that has just created the directory has not yet written its pid. A lock held by a live process is never taken. When the lock cannot be acquired, the denial includes a diagnosis naming the lock path, the owner pid and whether it is running, and the command that removes the lock by hand. Only the run lock recovers: the target-ledger lock keeps its existing behavior of never being reclaimed automatically.
+The run ledger lock is an exclusive `mkdir`. The holder records its pid in the lock directory. A contender that finds the lock held by a dead pid removes it and retries once. The contender re-reads the owner pid immediately before removal, then renames the lock directory to a unique name, which is atomic so exactly one contender wins, and deletes the renamed directory. An ownerless lock is treated as stale only when it is older than a fixed age, because a holder that has just created the directory has not yet written its pid. A lock whose owner pid is running on this machine is never taken. When the lock cannot be acquired, the denial includes a diagnosis naming the lock path, the owner pid and whether it is running, and the command that removes the lock by hand. Only the run lock recovers: the target-ledger lock keeps its existing behavior of never being reclaimed automatically.
 
 ## Initiative delivery skill
 
