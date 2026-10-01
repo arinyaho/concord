@@ -365,3 +365,51 @@ for (const cliName of Object.keys(CLIS)) {
     }
   });
 }
+
+// ---- review fixes: lock reclaim exclusion, lock ownership on release, lite rejection ordering ----
+
+test('two contenders cannot both reclaim the same stale run lock (correctness:stale-lock-reclaim-toctou)', () => {
+  const { reclaimStaleLock } = require('../../core/run-lock');
+  const lock = path.join(tmp('reclaim-'), 'run.lock');
+  fs.mkdirSync(lock);
+  fs.writeFileSync(path.join(lock, 'owner'), '999999\n');
+  const realRead = fs.readFileSync;
+  let second = null;
+  let armed = true;
+  fs.readFileSync = function (file, ...rest) {
+    const value = realRead.call(this, file, ...rest);
+    if (armed && String(file) === path.join(lock, 'owner')) { armed = false; second = reclaimStaleLock(lock); }
+    return value;
+  };
+  let first;
+  try { first = reclaimStaleLock(lock); } finally { fs.readFileSync = realRead; }
+  assert.strictEqual(first, true);
+  assert.strictEqual(second, false, 'a concurrent contender must not also reclaim the lock');
+});
+
+test('a run lock that changed owner during the update is not deleted by the previous holder (correctness:stale-lock-reclaim-toctou)', () => {
+  const run = open({ stateDir: tmp('lock-'), key: 'k', maxLaunches: 2, maxRounds: 2 });
+  const lock = `${run.path}.lock`;
+  const realRead = fs.readFileSync;
+  fs.readFileSync = function (file, ...rest) {
+    if (String(file) === run.path) fs.writeFileSync(path.join(lock, 'owner'), `${process.pid + 1}\n`);
+    return realRead.call(this, file, ...rest);
+  };
+  try { reserveLaunch(run, { role: 'correctness', round: 1 }); } finally { fs.readFileSync = realRead; }
+  assert.ok(fs.existsSync(lock), 'the lock now belongs to another holder and must remain');
+});
+
+for (const cliName of Object.keys(CLIS)) {
+  test(`${cliName}: a rejected lite flag deletes no cached intent from an intent-review ledger (gate:design-conformance:lite-reject-before-state-write)`, () => {
+    const t = setup(cliName, { mode: 'lite' });
+    const slug = review.targetSlug('feat/x');
+    review.writeLedger(t.stateDir, slug, { ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), status: 'intent-review', intentHash: 'h', intentBytes: 3 });
+    const intent = path.join(t.stateDir, `intent-${slug}.md`);
+    fs.writeFileSync(intent, 'req');
+    const r = t.cli(['round-start', 'feat/x', 'HEAD~1', '--broad']);
+    assert.notStrictEqual(r.status, 0);
+    assert.match(r.stderr, /lite/);
+    assert.ok(fs.existsSync(intent), 'cached intent must survive a rejected round-start');
+    assert.strictEqual(review.readLedger(t.stateDir, slug).status, 'intent-review');
+  });
+}
