@@ -17,11 +17,22 @@ const LISTS = ['launches', 'rounds', 'targets', 'dispositions', 'checks', 'telem
 const USAGE = ['elapsedMs', 'inputTokens', 'cacheWriteInputTokens', 'cachedInputTokens', 'reasoningOutputTokens', 'outputTokens', 'totalTokens'];
 const INDEX_LOCK_WAIT_MS = 10000;
 
+// Launch roles (reserve) and telemetry roles (artifact names) differ for the broad-review roles, so both are
+// mapped onto one vocabulary and a role's launches and calls land on the same key.
+const LAUNCH_ROLE = { 'gate-review': 'gate', lens: 'gate-panel', vote: 'gate-panel-verify' };
+const launchRole = (role) => LAUNCH_ROLE[role] ?? role;
+const telemetryRole = (role) => (typeof role === 'string' && /^gate-panel-(?!verify$)/.test(role) ? 'gate-panel' : role);
 const bound = (value) => (typeof value === 'string' && BOUNDED.test(value) ? value : 'other');
 const count = (value) => (Number.isInteger(value) && value > 0 ? value : 0);
 const number = (value) => (Number.isFinite(value) && value >= 0 ? value : 0);
 const time = (value) => (typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : null);
 const sha = (value) => crypto.createHash('sha256').update(value).digest('hex');
+
+// A negative difference (a clock stepped back between the two stamps) is unmeasured, not a value.
+function wallClock(openedAt, finalisedAt) {
+  const ms = openedAt && finalisedAt ? Date.parse(finalisedAt) - Date.parse(openedAt) : null;
+  return ms !== null && ms >= 0 ? ms : null;
+}
 
 function bump(map, key, by = 1) {
   map[key] = (map[key] || 0) + by;
@@ -31,7 +42,7 @@ function bump(map, key, by = 1) {
 // report.json, report.md and every index line are built from this value.
 function project(ledger, runId) {
   const byRole = {};
-  for (const launch of ledger.launches) bump(byRole, bound(launch?.role));
+  for (const launch of ledger.launches) bump(byRole, bound(launchRole(launch?.role)));
   const findings = {};
   for (const [kind, n] of Object.entries(ledger.findings || {})) if (count(n)) bump(findings, bound(kind), n);
   const byStatus = {};
@@ -41,7 +52,8 @@ function project(ledger, runId) {
   const total = tokenRole();
   for (const [role, n] of Object.entries(byRole)) { roles[role] = tokenRole(); roles[role].launches = n; total.launches += n; }
   for (const entry of ledger.telemetry) {
-    const role = roles[bound(entry?.role)] || (roles[bound(entry?.role)] = tokenRole());
+    const key = bound(telemetryRole(entry?.role));
+    const role = roles[key] || (roles[key] = tokenRole());
     const calls = count(entry?.count) || 1;
     for (const target of [role, total]) {
       target.calls += calls;
@@ -61,7 +73,7 @@ function project(ledger, runId) {
     findings,
     checks: { total: ledger.checks.length, byStatus },
     tokens: { total, byRole: roles },
-    elapsed: { wallClockMs: openedAt && finalisedAt ? Date.parse(finalisedAt) - Date.parse(openedAt) : null, reviewerMs: total.elapsedMs },
+    elapsed: { wallClockMs: wallClock(openedAt, finalisedAt), reviewerMs: total.elapsedMs },
     openedAt,
     finalisedAt,
   };
@@ -125,7 +137,7 @@ function withIndexLock(file, fn) {
   try {
     try { fs.writeFileSync(path.join(lock, 'owner'), `${process.pid}\n`); } catch (_) { /* informational only */ }
     return fn();
-  } finally { if (lockOwner(lock) === process.pid) fs.rmSync(lock, { recursive: true, force: true }); }
+  } finally { if ([process.pid, null].includes(lockOwner(lock))) fs.rmSync(lock, { recursive: true, force: true }); }
 }
 
 // Terminal version 5 ledgers in the directory, projected. An unparseable file or a

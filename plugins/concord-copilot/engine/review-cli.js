@@ -581,7 +581,11 @@ function requireReservations(run, ledger, needs, what) {
   const fail = (message) => {
     // The harness-failure error wins: a render or index failure while finalising must not replace it.
     let finalised = false;
-    try { finalised = finaliseInitiativeRun(run, 'unreserved-evidence'); } catch (renderError) { finalised = true; }
+    try { finalised = finaliseInitiativeRun(run, 'unreserved-evidence'); } catch (renderError) {
+      // Only a render failure after the run went terminal is swallowed; a lock or ledger error leaves the run active.
+      if (!String(renderError?.message).startsWith('initiative report:')) throw renderError;
+      finalised = true;
+    }
     if (!finalised) throw new Error(`harness-failure: ${what}: ${message}; could not finalise the keyed initiative run (lock contended), it is still active`);
     throw new Error(`harness-failure: ${what}: ${message}; the keyed initiative run is failed closed`);
   };
@@ -1488,6 +1492,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     const finalChecks = [{ name: 'definition-of-done', status: ledger.dod?.deferred ? 'deferred' : ledger.dod?.passed ? 'passed' : 'failed' }];
     ledger = { ...ledger, phase: 'done', last_recorded_round: n, _lastDecision: decision, reconciliationPacket: reconciliation || null, finalChecks };
     let entry;
+    let recordedNow = false;
     if (run && !decision.continue && !decision.panelPending) {
       // Same disposition path, packet shape, and privacy contract as the Codex
       // runner: raw ref/SHA stay in the local ledger; no artifact path is stored.
@@ -1514,12 +1519,14 @@ function runVerb(resolveFromCwd, args, initiative) {
       const kind = escaped ? 'escape' : 'terminal';
       entry = (JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions || []).findLast((d) => d.target === target && JSON.stringify(d.revision) === JSON.stringify(revision) && d.kind === kind && (!escaped || d.reason === disposition.reason));
       if (!entry || (!recorded && kind === 'escape' && entry.packet?.delivery?.consumed !== false)) throw new Error('harness-failure: record: initiative target disposition recording was contended; re-run record');
-      ledger = { ...ledger, telemetryForwarded: [...forwarded, ...pending.map(telemetryKey)] };
+      // A duplicate disposition recorded nothing, so its telemetry stays pending and the cache stays.
+      recordedNow = recorded;
+      if (recorded) ledger = { ...ledger, telemetryForwarded: [...forwarded, ...pending.map(telemetryKey)] };
     }
     writeLedger(stateDir, slug, ledger);
     // The cache is cleared by what was recorded, as the Codex runner does: any disposition now holds the
     // telemetry durably, so a later disposition must not re-read it. Without a run only a terminal status clears it.
-    if (entry || R.TERMINAL_STATUSES.has(ledger.status)) reviewTelemetry.deleteTelemetry(stateDir, ledger.target?.ref || ref, slug);
+    if (recordedNow || R.TERMINAL_STATUSES.has(ledger.status)) reviewTelemetry.deleteTelemetry(stateDir, ledger.target?.ref || ref, slug);
     process.stdout.write(JSON.stringify({ decision, handoff: renderHandoff({ ledger }), telemetry: ledger.telemetry || null, reconciliation: ledger.reconciliationPacket || undefined, checks: finalChecks, initiative: entry?.packet?.delivery?.claim ? { claim: entry.packet.delivery.claim } : undefined }) + '\n');
     return;
   }

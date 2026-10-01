@@ -101,6 +101,42 @@ for (const [name, lib] of RUNTIMES) {
     assert.strictEqual(report.elapsed.reviewerMs, 7000);
   });
 
+  test(`${name}: a negative wall-clock difference is unmeasured, not a negative value`, () => {
+    const stateDir = tmp('report-negative-');
+    const run = finalisedRun(lib, { stateDir, key: 'negative' });
+    writeLedger(run, { ...readLedger(run), openedAt: '2026-10-01T00:01:30.000Z', terminal: { ...readLedger(run).terminal, at: '2026-10-01T00:00:00.000Z' } });
+    assert.ok(lib.finaliseInitiativeRun(run));
+    assert.strictEqual(readJson(path.join(reportDir(stateDir, 'negative'), 'report.json')).elapsed.wallClockMs, null);
+  });
+
+  test(`${name}: the index lock is released when its owner file cannot be written`, () => {
+    const stateDir = tmp('report-lockowner-');
+    const real = fs.writeFileSync;
+    fs.writeFileSync = (file, ...rest) => {
+      if (String(file).endsWith(`initiative-reports.jsonl.lock${path.sep}owner`)) throw new Error('disk full');
+      return real(file, ...rest);
+    };
+    try { finalisedRun(lib, { stateDir, key: 'lockowner' }); } finally { fs.writeFileSync = real; }
+    assert.ok(!fs.existsSync(`${indexFile(stateDir)}.lock`));
+    assert.strictEqual(readIndex(stateDir).length, 1);
+  });
+
+  test(`${name}: launches and calls of one role share a key in the telemetry role vocabulary`, () => {
+    const stateDir = tmp('report-roles-');
+    const run = lib.openInitiativeRun({ repository: '/repo', stateDir, key: 'roles', maxLaunches: 20, maxRounds: 2 });
+    const revision = { ref: 'feat/x', base: 'b'.repeat(40), head_sha: 'a'.repeat(40) };
+    for (const role of ['gate-review', 'lens', 'vote']) assert.ok(lib.reserveLaunch(run, { role, round: 1, target: 'feat/x', revision }));
+    assert.ok(lib.recordDisposition(run, {
+      target: 'feat/x', revision, result: { decision: { converged: true } }, packet: { trigger: 'terminal', nextAction: 'replay' },
+      telemetry: [usage('gate', 1, 100, 10), usage('gate-panel-security', 1, 200, 10), usage('gate-panel-verify', 1, 300, 10)],
+    }));
+    assert.ok(lib.finaliseInitiativeRun(run));
+    const report = readJson(path.join(reportDir(stateDir, 'roles'), 'report.json'));
+    assert.deepStrictEqual(report.counts.byRole, { gate: 1, 'gate-panel': 1, 'gate-panel-verify': 1 });
+    assert.deepStrictEqual(Object.keys(report.tokens.byRole).sort(), ['gate', 'gate-panel', 'gate-panel-verify']);
+    assert.strictEqual(report.tokens.byRole['gate-panel'].totalTokens, 200);
+  });
+
   test(`${name}: a crash after the ledger write and before rendering loses nothing; re-running regenerates the same reports (AC2)`, () => {
     const stateDir = tmp('report-crash-');
     const run = finalisedRun(lib, { stateDir, key: 'crash' });
@@ -219,7 +255,7 @@ function nativeSetup(cliName) {
     return JSON.parse(r.stdout);
   };
   const write = (n, name, obj) => fs.writeFileSync(path.join(dir, `round-${n}-${name.replace(/^fix-(.*)$/, (_, id) => `fix-${safeIdForFilename(id)}`)}.json`), JSON.stringify(obj));
-  return { dir, initDir, ok, write };
+  return { dir, initDir, repo, ok, write };
 }
 
 for (const cliName of Object.keys(CLIS)) {
@@ -240,5 +276,56 @@ for (const cliName of Object.keys(CLIS)) {
     assert.strictEqual(report.tokens.byRole.verify.totalTokens, 300);
     assert.strictEqual(report.tokens.byRole.correctness.launches, 1);
     assert.strictEqual(report.tokens.total.totalTokens, 1000);
+  });
+}
+
+for (const cliName of Object.keys(CLIS)) {
+  test(`${cliName}: a lock or ledger error while failing closed on unreserved evidence is not reported as a failed-closed run`, () => {
+    const t = nativeSetup(cliName);
+    const n = t.ok(['round-start', 'feat/x', 'HEAD~1', '--no-broad'], { key: false }).round;
+    t.write(n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+    fs.chmodSync(t.initDir, 0o500); // the run lock cannot be created
+    try {
+      const r = spawnSync('node', [CLIS[cliName], 'plan-fixes', 'feat/x', '--initiative-run-key', 'native-key', '--initiative-state-dir', t.initDir, '--initiative-max-launches', '20', '--initiative-max-rounds', '5'], { encoding: 'utf8', env: { ...process.env, REVIEW_STATE_DIR: t.dir, REVIEW_REPO_ROOT: t.repo }, cwd: t.repo });
+      assert.notStrictEqual(r.status, 0);
+      assert.match(r.stderr, /EACCES/);
+      assert.doesNotMatch(r.stderr, /failed closed/);
+    } finally { fs.chmodSync(t.initDir, 0o700); }
+  });
+}
+
+for (const cliName of Object.keys(CLIS)) {
+  test(`${cliName}: telemetry is forwarded once across two dispositions of one target, and a replayed record clears the cache`, () => {
+    const t = nativeSetup(cliName);
+    const slug = review.targetSlug('feat/x');
+    const cache = path.join(t.dir, `telemetry-${slug}.json`);
+    const n = t.ok(['round-start', 'feat/x', 'HEAD~1', '--no-broad'], { key: false }).round;
+    for (const role of ['correctness', 'verify']) assert.strictEqual(t.ok(['reserve', 'feat/x', role]).status, 'granted');
+    t.write(n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+    t.write(n, 'verify', { status: 'ok', rejected: [] });
+    const invocation = (role, totalTokens, id) => ({ engine: 'claude', provider: 'anthropic', role, round: n, invocationId: id, status: 'completed', usagePartial: false, artifactPath: path.join(t.dir, `round-${n}-${role}.json`), elapsedMs: 1000, inputTokens: totalTokens - 10, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, outputTokens: 10, totalTokens });
+    fs.writeFileSync(cache, JSON.stringify({ invocations: [invocation('correctness', 700, 'inv-1'), invocation('verify', 300, 'inv-2')] }));
+    t.ok(['plan-fixes', 'feat/x']);
+    const planned = review.readLedger(t.dir, slug);
+    review.writeLedger(t.dir, slug, { ...planned, gate_open: [{ id: 'gate:cross-context:x', file: 'a.txt', summary: 's', gate: 'cross-context', span: 'two' }] });
+    t.ok(['record', 'feat/x']); // first disposition: a gate-pending escape carrying inv-1 and inv-2
+    assert.ok(!fs.existsSync(cache), 'a recorded disposition clears the cache');
+    const afterEscape = review.readLedger(t.dir, slug);
+    assert.strictEqual(afterEscape.telemetryForwarded.length, 2);
+    // Re-arm the same round as if the finding were resolved, keeping the forwarded keys, then add one more invocation.
+    review.writeLedger(t.dir, slug, { ...planned, telemetry: afterEscape.telemetry, telemetryForwarded: afterEscape.telemetryForwarded });
+    fs.writeFileSync(cache, JSON.stringify({ invocations: [invocation('correctness', 700, 'inv-1'), invocation('verify', 300, 'inv-2'), invocation('correctness', 50, 'inv-3')] }));
+    t.ok(['record', 'feat/x']); // second disposition: a terminal carrying only inv-3
+    assert.ok(!fs.existsSync(cache));
+    const ledgerFile = path.join(t.initDir, fs.readdirSync(t.initDir).find((f) => /^initiative-review-[0-9a-f]{64}\.json$/.test(f)));
+    const dispositions = readJson(ledgerFile).dispositions;
+    assert.deepStrictEqual(dispositions.map((d) => d.kind), ['escape', 'terminal']);
+    assert.strictEqual(readJson(ledgerFile).telemetry.length, 3, 'inv-1 and inv-2 are forwarded once, inv-3 once');
+    assert.strictEqual(t.ok(['finalise'])['status'], 'finalised');
+    assert.strictEqual(readJson(path.join(reportDir(t.initDir, 'native-key'), 'report.json')).tokens.total.totalTokens, 1050);
+    // A record replayed on the terminal target must still clear a cache that hooks refilled in the meantime.
+    fs.writeFileSync(cache, JSON.stringify({ invocations: [invocation('correctness', 5, 'inv-4')] }));
+    t.ok(['record', 'feat/x']);
+    assert.ok(!fs.existsSync(cache), 'the replay branch clears the cache');
   });
 }
