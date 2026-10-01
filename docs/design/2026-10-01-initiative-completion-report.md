@@ -1,6 +1,6 @@
 # Initiative completion report
 
-Finalising a keyed initiative run renders a completion report from its run ledger, and a project-level index lists every finalised run so base and lite executions can be compared without reading a ledger or a transcript. The ledger stays the only source of truth: reports and the index are derived from it and can be regenerated at any time.
+Finalising a keyed initiative run renders a completion report from its run ledger, and a project-level index lists every finalised run so base and lite executions can be compared without reading a ledger or a transcript. The ledger stays the only source of truth: reports and the index are derived from the run ledgers and can be regenerated from any complete terminal ledger.
 
 ## Ledger additions
 
@@ -17,10 +17,11 @@ The version does not change because the fields are additive and a reader that do
 
 ## Telemetry in the ledger
 
-The ledger already has a `telemetry` list that `recordDisposition` appends to. Two changes make it complete:
+The ledger already has a `telemetry` list that `recordDisposition` appends to. Three properties govern what native telemetry the ledger carries:
 
 - The native `record` verb folds the hook-collected usage for the target, as the other native verbs already do, and forwards each invocation (role, round, elapsed time and token counts) to `recordDisposition`, exactly as the Codex runner does. Native Claude and Copilot runs therefore carry per-role token data.
 - `recordDisposition` appends telemetry only with a terminal disposition. The per-target telemetry cache is cleared only once the target is terminal, so every later disposition for the same target re-reads the cumulative cache. Appending on an escape or error disposition would count the same invocations again at the terminal record.
+- Telemetry of a target that never records a terminal disposition, because it only escapes or errors, is in neither the ledger nor the report. A null or partial usage value is skipped when summing, so a token total is a lower bound, and the per-role `launches` versus `calls` expose the gap.
 
 Token data is per review role. The orchestrating session's own tokens, per-stage orchestrator tokens and a split between active and waiting time have no measurable source and are not reported.
 
@@ -34,7 +35,7 @@ Token data is per review role. The orchestrating session's own tokens, per-stage
 
 `<run id>` is the SHA-256 of the run key, the same hash that names the ledger file. The initiative state directory is the project-scoped directory the caller already passes with the run key, so reports sit with the ledgers they come from and need no new location contract.
 
-Rendering is a pure function of the ledger. The report contains no render time, so rendering the same ledger twice produces identical bytes. It refuses any ledger that is not a complete terminal version 5 ledger: an unparseable file, a different version, a status other than terminal, or a missing list (`launches`, `rounds`, `targets`, `dispositions`, `checks`, `telemetry`) throws and writes nothing. Files are written with the existing atomic write helper, the report first and the index last.
+`report.json` and `report.md` are a pure function of that run's ledger. They contain no render time, so rendering the same ledger twice produces identical bytes for both. The index (`initiative-reports.jsonl`) is derived from all ledgers present in the state directory, so its content depends on them and not on this run's ledger alone. Rendering refuses any ledger that is not a complete terminal version 5 ledger: an unparseable file, a different version, a status other than terminal, or a missing list (`launches`, `rounds`, `targets`, `dispositions`, `checks`, `telemetry`) throws and writes nothing. Files are written with the existing atomic write helper, the report first and the index last.
 
 ### Crash safety
 
@@ -42,13 +43,13 @@ Rendering is a pure function of the ledger. The report contains no render time, 
 
 ### The index is derived
 
-The index is rebuilt on every render by scanning the initiative state directory for run ledgers and keeping the terminal ones, sorted by `finalisedAt` then run id. There is no append path, so the index cannot diverge from the ledgers, and a crash cannot lose a line that a later render would not restore. The cost is that a run that never reaches a terminal status never appears: abandoned runs are excluded, and every report says so.
+The index is rebuilt on every render by scanning the initiative state directory for run ledgers and keeping the terminal ones, sorted by `finalisedAt` then run id. An entry with a null `finalisedAt` (a terminal ledger written before timestamps existed) sorts before every entry that has one, and entries with equal `finalisedAt` values, including several null ones, are ordered by run id, so the index order is deterministic. There is no append path, so the index cannot diverge from the ledgers, and a crash cannot lose a line that a later render would not restore. The cost is that a run that never reaches a terminal status never appears: abandoned runs are excluded from the index and have no report, because a report exists only for a finalised run. The rendered `report.md` of a finalised run carries fixed explanatory text stating that runs which never finalise are excluded from the index and from reports; this is not an allowlisted data field.
 
 The scan runs under an exclusive `mkdir` lock beside the index, with the same stale-owner recovery as the run lock, so two runs finalising at once do not overwrite each other's index. A scan that finds a ledger that fails to parse or a malformed terminal version 5 ledger throws and the index is left as it was. A ledger of another schema version is skipped, because the core rejects it for every purpose and a retired ledger left in the directory must not block every later finalise. Active ledgers are skipped.
 
 ## Allowlist
 
-One projection builds the entry in `report.json`, the index line and the text of `report.md`, so the three cannot disagree and a single test covers all of them. The projection reads named fields from the ledger and copies nothing else. It contains:
+One projection builds the entry in `report.json` and the index line, and `report.md` renders every data value from that same projection plus fixed explanatory text that carries no ledger data, so the data in the three cannot disagree and one sentinel test over all three emitted files covers them. The projection reads named fields from the ledger and copies nothing else. It contains:
 
 - `schema`: the report schema number.
 - `runId`: the hashed run key.
@@ -56,17 +57,17 @@ One projection builds the entry in `report.json`, the index line and the text of
 - `outcome`: `status` and a `reason` that is one of the reasons the core itself writes; any other value is `other`.
 - `targets`: the count and the SHA-256 identifiers of each revision pair, as `publicInitiativeSummary` already computes them.
 - `counts`: launches, rounds, and launches by role.
-- `findings`: counts by class, where a class is a lower-case gate name of up to 32 characters; any other key is `other`.
+- `findings`: counts by class, where a class is a value matching `[a-z-]{1,32}`; any other key is `other`.
 - `checks`: total and counts by status.
 - `tokens`: totals and per-role launches, calls, elapsed milliseconds and token counts, roles bounded the same way as finding classes.
 - `elapsed`: `wallClockMs`, the difference between `terminal.at` and `openedAt` (`null` when either is missing), and `reviewerMs`, the sum of reviewer elapsed times from telemetry.
 - `openedAt` and `finalisedAt`.
 
-The ledger holds the repository path, raw refs, SHAs, handoff text and error messages. None is on the allowlist, so none can reach an output. A field added to the ledger later is excluded until someone adds it to the projection. This is the same rule `publicInitiativeSummary` applies to its aggregate.
+The ledger holds the repository path, raw refs, SHAs, handoff text and error messages. None is on the allowlist, so none can reach an output. A field added to the ledger later is excluded until someone adds it to the projection. The projection extends the aggregate that `publicInitiativeSummary` already returns (hashed target identifiers and counts) with named fields and bounded keys. Unlike that summary, the report bounds finding classes and roles.
 
 ## Elapsed time and waiting
 
-`wallClockMs` is elapsed time from stamped timestamps: from opening the run to finalising it. It includes everything between those two writes, including time the run spent waiting for a person, a CI job or another ticket. `reviewerMs` is reviewer process time as the telemetry measured it. The report does not split the first into active and waiting time, because no source records when a run waited, and it states that waiting time is not measured.
+`wallClockMs` is elapsed time from stamped timestamps: from opening the run to finalising it. It includes everything between those two writes, including time the run spent waiting for a person, a CI job or another ticket. `wallClockMs` is the difference of two wall-clock stamps, not a monotonic-clock measurement, so a clock adjustment between the writes shifts it. `reviewerMs` is reviewer process time as the telemetry measured it. It is a lower bound, because it skips missing or partial telemetry, including that of targets that only escape or error. It is also a sum over reviewers, so it can exceed `wallClockMs` when reviewers run in parallel. The report does not split the first into active and waiting time, because no source records when a run waited, and it states that waiting time is not measured.
 
 ## Rejected alternatives
 
@@ -81,7 +82,9 @@ The ledger holds the repository path, raw refs, SHAs, handoff text and error mes
 
 - A run that never finalises has no report and no index line. The only record of it is its ledger.
 - Native token data depends on the telemetry hook having recorded the invocations. A missing record shows as fewer calls than launches for a role, which the per-role `launches` and `calls` make visible instead of hiding.
+- Telemetry of a target that never records a terminal disposition is absent from the ledger and report, and null or partial usage is skipped when summing, so token totals are lower bounds. Per-role `launches` versus `calls` show the gap.
+- `reviewerMs` is a lower bound for the same reason as the token totals.
 - A ledger written before timestamps existed has `null` elapsed time.
-- Finding classes and roles are bounded by pattern, not by a closed list. A reviewer-chosen class that matches the pattern is shown as written, which exposes at most a short lower-case word.
+- Finding classes and roles are bounded by pattern, not by a closed list. A reviewer-chosen class that matches the pattern is shown as written, which exposes only values matching `[a-z-]{1,32}`; values outside the pattern become `other`.
 - Stale-lock recovery on the index lock is by pid and meaningful only on one machine, as for the run lock.
-- Under a shared state directory, an unreadable terminal ledger blocks index rebuilds for every run in that directory until it is removed or repaired.
+- Under a shared state directory, a ledger that fails to parse, or a malformed terminal version 5 ledger, blocks index rebuilds for every run in that state directory until it is removed or repaired.
