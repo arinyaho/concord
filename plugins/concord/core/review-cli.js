@@ -721,12 +721,14 @@ function main(resolveFromCwd) {
     }
     if (args[0] === 'reset' && initiative) throw new Error('review-cli reset: cannot discard an initiative target; use rerun with the same initiative run flags to retain history and spent budget');
     finishRerunCleanup(stateDir, slug, prior);
-    const result = runVerb(resolveFromCwd, args, initiative);
+    // Reservation binding is published only by the validated charge path;
+    // a normal denial must leave a standalone target unbound.
+    if (args[0] === 'reserve') return runVerb(resolveFromCwd, args, initiative);
+    runVerb(resolveFromCwd, args, initiative);
     if (initiative) {
       const ledger = readLedger(stateDir, slug);
       if (ledger) persistLedger(stateDir, slug, { ...ledger, initiative_binding: { key: initiative.key, stateDir: canonicalPath(initiative.stateDir) } });
     }
-    return result;
   };
   // Serialize even initially unbound calls: otherwise an older unkeyed write
   // can erase a first binding that a keyed call just persisted.
@@ -789,7 +791,13 @@ function runVerb(resolveFromCwd, args, initiative) {
       const target = ledger.target?.ref || ref;
       const revision = { ref: target, ...(ledger.target?.base ? { base: resolveBaseCommit(process.env.REVIEW_REPO_ROOT || process.cwd(), ledger.target.base) } : {}), ...(ledger.target?.head_sha ? { head_sha: ledger.target.head_sha } : {}) };
       const launch = { role, round: ledger.round, target, revision, attemptId: ledger.attemptId };
-      if (!reserveLaunchBatch(run, launch, count)) {
+      if (!reserveLaunchBatch(run, launch, count, () => {
+        // Called under the run lock only after phase and budget validation.
+        // Publish identity before charging so interruption cannot free the target.
+        if (ledger.initiative_binding) return;
+        writeLedger(stateDir, slug, ledger);
+        return () => persistLedger(stateDir, slug, ledger);
+      })) {
         const reason = denialReason(run, launch, count);
         const diagnosis = reason ? null : lockDiagnosis(run);
         return reason === 'reconciliation-required' ? { status: reason, role, count, round: ledger.round } : { status: 'denied', role, count, round: ledger.round, ...(reason ? { reason } : {}), ...(diagnosis ? { lockDiagnosis: diagnosis } : {}) };

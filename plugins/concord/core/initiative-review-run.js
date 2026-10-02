@@ -52,7 +52,7 @@ function lockDiagnosis(run) {
   return `initiative run lock ${lock} is held, ${owner}; if no review is running, remove it with: rm -r "${lock}"`;
 }
 
-function locked(run, update) {
+function locked(run, update, beforeWrite) {
   const lock = `${run.path}.lock`;
   fs.mkdirSync(path.dirname(lock), { recursive: true });
   try { fs.mkdirSync(lock); } catch (error) {
@@ -65,7 +65,18 @@ function locked(run, update) {
     let ledger;
     try { ledger = JSON.parse(fs.readFileSync(run.path, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     const next = update(ledger);
-    if (next) write(run.path, next);
+    if (next) {
+      const before = beforeWrite && fs.readFileSync(run.path, 'utf8');
+      const rollback = beforeWrite && beforeWrite();
+      try { write(run.path, next); } catch (error) {
+        // Only undo preparation when the original run proves no charge landed.
+        // Unreadable or changed run state must retain the fail-closed binding.
+        let unchanged = false;
+        try { unchanged = beforeWrite && fs.readFileSync(run.path, 'utf8') === before; } catch (_) {}
+        if (unchanged && rollback) rollback();
+        throw error;
+      }
+    }
     return next === undefined ? true : next || false;
   } finally { if (lockOwner(lock) === process.pid) fs.rmSync(lock, { recursive: true, force: true }); }
 }
@@ -195,7 +206,7 @@ function launchRefusal(ledger, launch, count) {
 
 // Reserves `count` launches of one role as a unit under a single lock: either
 // every launch is recorded or none is. reserveLaunch is the count === 1 case.
-function reserveLaunchBatch(run, launch, count = 1) {
+function reserveLaunchBatch(run, launch, count = 1, beforeCharge) {
   return Boolean(locked(run, (ledger) => {
     if (ledger) assertVersion(ledger);
     if (launchRefusal(ledger, launch, count)) return null;
@@ -206,7 +217,7 @@ function reserveLaunchBatch(run, launch, count = 1) {
     const targets = revision && !(ledger.targets || []).some((item) => same(item, revision)) ? [...(ledger.targets || []), revision] : (ledger.targets || []);
     const entry = { role: launch.role, round: launch.round, ...(target === 'unknown' ? {} : { target }), at: now() };
     return { ...ledger, rounds: rounds.includes(round) ? rounds : [...rounds, round], targets, launches: [...ledger.launches, ...Array.from({ length: count }, () => ({ ...entry }))] };
-  }));
+  }, beforeCharge));
 }
 
 // Names the refusal after reserveLaunchBatch returned false. Returns null when
