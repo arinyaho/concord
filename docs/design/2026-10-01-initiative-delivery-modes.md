@@ -18,7 +18,7 @@ The Codex runner opens the run itself and passes the run key, canonical state di
 
 ## Escalation
 
-A lite run escalates to base when the caller determines, before the first launch and from eligibility known up front, that the change is not locally scoped. `escalate <trigger>` records the trigger and replaces the stored budgets with the base-sized budgets the caller supplies. The trigger is one of a fixed set: `public-api`, `schema`, `security`, `cross-package`, `migration`. Escalation is one-way and is refused after the first launch, because a run that already spent launches under the lite reviewer set would otherwise mix two gate regimes inside one budget. When a lite review that has already launched surfaces non-local scope, the run is not escalated in place: the dependent work parks and a new run key starts in base mode.
+A lite run escalates to base when the caller determines, before the first launch and from eligibility known up front, that the change is not locally scoped. `escalate <trigger>` records the trigger and replaces the stored budgets with the base-sized budgets the caller supplies. The trigger is one of a fixed set, one per lite eligibility exclusion the skill states: `public-api` (public API or deployment-boundary change), `security` (security, authorization, identity, or cryptography), `migration` (data migration), `legal` (legal, regulatory, or external-data-rights decision), `cross-repository` (more than one repository, or cross-repository integration), `multi-outcome` (more than one independently testable outcome), `unsettled-contract` (the contract is not yet settled), plus `schema` and `cross-package` for narrower scope creep the exclusion list does not name on its own. Escalation is one-way and is refused after the first launch, because a run that already spent launches under the lite reviewer set would otherwise mix two gate regimes inside one budget. When a lite review that has already launched surfaces non-local scope, the run is not escalated in place: the dependent work parks and a new run key starts in base mode.
 
 ## Native driver verbs
 
@@ -36,7 +36,7 @@ The run ledger lock is an exclusive `mkdir`. The holder records its pid in the l
 
 ## Initiative delivery skill
 
-The `initiative-to-prs` skill passes a run key to every review call, persists the mode in its state and final report, and replaces the unbounded stage repeat loop with one bounded fix pass and one fresh verification of the revision pair that pass produced. A confirmed contract or architecture finding parks the dependent work instead of continuing past it. The skill documents when lite is eligible (local, reversible, no public contract, schema, migration, security or cross-package change) and requires escalation to base before any dependent implementation when a trigger applies, with the trigger recorded in the handoff.
+The `initiative-to-prs` skill passes a run key to every review call, persists the mode in its state and final report, and replaces the unbounded stage repeat loop with one bounded fix pass and one fresh verification of the revision pair that pass produced. A confirmed contract or architecture finding parks the dependent work instead of continuing past it. The skill documents when lite is eligible (one repository, one independently testable outcome, a settled contract, no public API or deployment-boundary change, no security, authorization, identity, or cryptography change, no data migration, no legal, regulatory, or external-data-rights decision, no cross-repository integration) and requires escalation to base before any dependent implementation when a trigger applies, with the trigger recorded in the handoff.
 
 The skill forbids launching reviewers outside the plan under new task names. A host can still spawn an agent the plan did not name, and no code can prevent that. What the keyed run guarantees is that such an agent cannot produce accepted evidence: acceptance requires a matching reservation.
 
@@ -50,7 +50,7 @@ The skill forbids launching reviewers outside the plan under new task names. A h
 ## Residual exposure
 
 - Lite reduces coverage on purpose. A cross-context or silent-gap defect in a lite run is not reported by the gate, so eligibility is a human judgment that the skill states but code cannot check.
-- The trigger set is fixed text; a reason outside it is refused, so a new class of trigger needs a code change. A legal, regulatory or external-data-rights exclusion has no trigger of its own: the skill escalates it under `security` and names the actual exclusion in the handoff.
+- The trigger set is fixed text; a reason outside it is refused, so a new class of trigger needs a code change.
 - A host can launch reviewers the plan does not name. Their output is not accepted, but their cost is not prevented.
 - Stale-lock recovery by pid is only meaningful on one machine. A lock created by a process on another host sharing the state directory looks dead locally and could be reclaimed.
 - The pid check races pid reuse: a dead holder whose pid was reassigned to an unrelated live process is treated as live, and the operator must remove the lock by hand using the printed command.

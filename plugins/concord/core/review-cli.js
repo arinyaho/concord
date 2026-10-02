@@ -820,6 +820,15 @@ function runVerb(resolveFromCwd, args, initiative) {
       const ledger = readLedger(stateDir, slug);
       const panelPending = ledger?.phase === 'done' && ledger.status === 'gate-panel-pending';
       if (!ledger || (!['gates', 'fixes'].includes(ledger.phase) && !panelPending)) throw new Error(`reserve: no active review work for ref "${ref}" ${stateDirHint(stateDir)}`);
+      // plan-fixes already parked this round for reconciliation (a confirmed
+      // contract/architecture finding emptied `planned`) -- a `fix` launch
+      // would have nothing legitimate to fix and must not be granted or
+      // charged. The run-level reconciliation refusal in launchRefusal only
+      // engages after `record` folds this into the initiative run, which is
+      // too late to stop a `fix` reservation made between plan-fixes and
+      // record. Check the target ledger directly, same reason/shape as the
+      // run-level denial above.
+      if (role === 'fix' && ledger.reconciliation) return { status: 'reconciliation-required', role, count, round: ledger.round };
       const target = ledger.target?.ref || ref;
       const revision = { ref: target, ...(ledger.target?.base ? { base: resolveBaseCommit(process.env.REVIEW_REPO_ROOT || process.cwd(), ledger.target.base) } : {}), ...(ledger.target?.head_sha ? { head_sha: ledger.target.head_sha } : {}) };
       const launch = { role, round: ledger.round, target, revision, attemptId: ledger.attemptId };
@@ -2005,6 +2014,12 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (!ledger || ledger.phase !== 'fixes') throw new Error(`commit-fix: expected phase "fixes", got "${ledger && ledger.phase}" ${stateDirHint(stateDir)}`);
     const n = ledger.round;
     if ((ledger.journal || []).some((j) => j.id === id)) { process.stdout.write(JSON.stringify({ committed: false, reason: 'already journaled' }) + '\n'); return; } // idempotent
+    // plan-fixes is the single source of truth for which ids this round may
+    // fix (empty when the round parked for reconciliation): a finding id
+    // outside `planned` must never reach a commit, keyed or not -- the
+    // companion-id check below already trusts `planned` this way, this just
+    // applies the same rule to the primary id.
+    if (!(ledger.planned || []).includes(id)) throw new Error(`harness-failure: commit-fix: finding id "${id}" is not in this round's planned fixes`);
     if (run) {
       requireReservations(run, ledger, [{ role: 'fix', present: 1 + (ledger.initiative_fix_used?.[n] || 0) }], 'commit-fix');
     }

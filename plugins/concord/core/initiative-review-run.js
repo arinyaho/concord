@@ -39,7 +39,18 @@ function write(file, value) {
 // Code-generated stamp for ledger writes; never taken from a caller or a reviewer.
 const now = () => new Date().toISOString();
 
-const ESCALATION_TRIGGERS = ['public-api', 'schema', 'security', 'cross-package', 'migration'];
+// One trigger per SKILL.md lite-exclusion condition (see "Lite is eligible
+// only when..."): public-api covers both the public-API and the
+// deployment-boundary exclusion; cross-repository covers both the
+// single-repository and the no-cross-repository-integration exclusions;
+// multi-outcome and unsettled-contract cover the single-outcome and
+// settled-contract exclusions; legal covers the legal/regulatory/
+// external-data-rights exclusion, split out from security rather than folded
+// into it. schema and cross-package predate that one-to-one mapping and are
+// kept for narrower scope creep (an in-flight schema change, or cross-package
+// coordination within one repository) that the exclusion list does not name
+// on its own.
+const ESCALATION_TRIGGERS = ['public-api', 'schema', 'security', 'cross-package', 'migration', 'multi-outcome', 'unsettled-contract', 'cross-repository', 'legal'];
 const MODES = ['base', 'lite'];
 const { lockOwner, pidRunning, reclaimStaleLock } = require('./run-lock');
 
