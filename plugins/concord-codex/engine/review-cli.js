@@ -657,6 +657,32 @@ function archiveReviewRun(stateDir, slug, prior) {
   return { manifestPath, sha256: digest(manifestBytes) };
 }
 
+// The fresh ledger publishes this archive pointer before cleanup begins. Its
+// manifest remains the exact cleanup list even if a crash removes a tool record
+// before the associated untagged agent record. Only authorized mutations under
+// the target lock finish cleanup; show renders the fresh ledger without folding
+// files from the archived run while this transition is pending.
+function finishRerunCleanup(stateDir, slug, ledger) {
+  if (!ledger?.rerun_cleanup) return;
+  const pointer = ledger.rerun_cleanup;
+  const bytes = fs.readFileSync(pointer.manifestPath);
+  const digest = value => crypto.createHash('sha256').update(value).digest('hex');
+  if (digest(bytes) !== pointer.sha256) throw new Error('review-cli rerun: cleanup archive manifest changed');
+  const manifest = JSON.parse(bytes);
+  for (const entry of manifest.artifacts) {
+    if (path.basename(entry.originalPath) === `intent-${slug}.md`) continue;
+    if (digest(fs.readFileSync(entry.path)) !== entry.sha256) throw new Error('review-cli rerun: cleanup archived evidence changed');
+    try {
+      if (digest(fs.readFileSync(entry.originalPath)) !== entry.sha256) throw new Error('review-cli rerun: cleanup source evidence changed');
+      fs.unlinkSync(entry.originalPath);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+  const { rerun_cleanup, ...clean } = ledger;
+  persistLedger(stateDir, slug, clean);
+}
+
 function roundFiles(stateDir, n, pattern) {
   try { return fs.readdirSync(stateDir).filter((f) => pattern.test(f)).length; } catch (e) { return 0; }
 }
@@ -689,6 +715,7 @@ function main(resolveFromCwd) {
       throw new Error('review-cli: different initiative binding; retain the original run flags, or after reconciliation use a separate target review state directory');
     }
     if (args[0] === 'reset' && initiative) throw new Error('review-cli reset: cannot discard an initiative target; use rerun with the same initiative run flags to retain history and spent budget');
+    finishRerunCleanup(stateDir, slug, prior);
     const result = runVerb(resolveFromCwd, args, initiative);
     if (initiative) {
       const ledger = readLedger(stateDir, slug);
@@ -887,7 +914,8 @@ function runVerb(resolveFromCwd, args, initiative) {
   if (verb === 'show') {
     requireRef(ref, 'show');
     const slug = targetSlug(ref);
-    const ledger = reviewTelemetry.foldTelemetry(stateDir, readLedger(stateDir, slug), slug) || emptyLedger({ kind: 'local', ref });
+    const stored = readLedger(stateDir, slug);
+    const ledger = (stored?.rerun_cleanup ? stored : reviewTelemetry.foldTelemetry(stateDir, stored, slug)) || emptyLedger({ kind: 'local', ref });
     process.stdout.write(JSON.stringify(ledger) + '\n');
     return;
   }
@@ -1918,9 +1946,8 @@ function runVerb(resolveFromCwd, args, initiative) {
     };
     // Binding and archive pointer must be in the first durable fresh ledger,
     // including when interruption prevents main() from doing its final write.
-    writeLedger(stateDir, slug, fresh);
-    for (let n = 1; n <= (prior.round || 0); n++) deleteRoundArtifacts(stateDir, n);
-    reviewTelemetry.deleteTelemetry(stateDir, prior.target?.ref || ref, slug);
+    writeLedger(stateDir, slug, { ...fresh, rerun_cleanup: archive });
+    finishRerunCleanup(stateDir, slug, readLedger(stateDir, slug));
     process.stdout.write(JSON.stringify({ status: 'ok', run: runs.length + 1, engine, archived: runs[runs.length - 1] }) + '\n');
     return;
   }

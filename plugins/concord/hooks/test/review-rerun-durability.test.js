@@ -54,7 +54,75 @@ function validateArchive(t, pointer) {
   assert.equal(fs.statSync(path.dirname(pointer.manifestPath)).mode & 0o777, 0o700);
   return manifest;
 }
+function addPriorTelemetry(t) {
+  const tool = { kind: 'tool-use', engine: 'claude-code', provider: 'anthropic', targetRef: 'feat/rerun',
+    role: 'correctness', round: 1, artifactPath: path.join(t.dir, 'round-1-correctness.json'),
+    attempt: 1, invocationId: 'old-native-invocation', agentId: 'old-agent', parentTranscriptPath: 'old-session',
+    startedAtMs: 1, status: 'completed', elapsedMs: 10, hookUsagePartial: true, providerUsage: {} };
+  const records = {
+    [`review-telemetry-${'a'.repeat(64)}.json`]: tool,
+    [`review-agent-telemetry-${'b'.repeat(64)}.json`]: { kind: 'agent-usage', engine: 'claude-code', provider: 'anthropic',
+      agentId: tool.agentId, parentTranscriptPath: tool.parentTranscriptPath, stoppedAtMs: 11, totalTokens: 17, providerUsage: {} },
+    [`telemetry-${t.slug}.json`]: { invocations: [{ engine: 'codex', provider: 'openai', role: 'verify', round: 1,
+      invocationId: 'old-runner-invocation', attempt: 1, artifactPath: path.join(t.dir, 'round-1-verify.json'), totalTokens: 23 }] },
+  };
+  for (const [name, record] of Object.entries(records)) {
+    fs.writeFileSync(path.join(t.dir, name), JSON.stringify(record));
+    t.artifacts.set(name, fs.readFileSync(path.join(t.dir, name)));
+  }
+  return Object.keys(records);
+}
 for (const provider of Object.keys(providers)) {
+  for (const resume of ['show', 'round-start']) {
+    test(`${provider}: interrupted rerun excludes archived telemetry and round artifacts on ${resume}`, () => {
+      const t = fixture(provider), telemetryNames = addPriorTelemetry(t);
+      const out = t.call(['rerun', 'feat/rerun'], { preload: t.preload('after') });
+      assert.equal(out.status, 72);
+      const fresh = review.readLedger(t.dir, t.slug), manifest = validateArchive(t, fresh.runs[0].archive);
+      const archived = JSON.parse(fs.readFileSync(manifest.ledger.path));
+      assert.equal(archived.telemetry.calls, 2); assert.equal(archived.telemetry.totalTokens, 40);
+      fs.rmSync(`${review.ledgerPath(t.dir, t.slug)}.lock`, { recursive: true, force: true });
+      const published = fs.readFileSync(review.ledgerPath(t.dir, t.slug));
+      const readonly = t.call(['show', 'feat/rerun'], { key: false });
+      assert.equal(readonly.status, 0, readonly.stderr);
+      assert.equal(JSON.parse(readonly.stdout).telemetry?.calls || 0, 0);
+      assert.deepEqual(fs.readFileSync(review.ledgerPath(t.dir, t.slug)), published, 'show must remain read-only');
+      for (const [name, bytes] of t.artifacts) assert.deepEqual(fs.readFileSync(path.join(t.dir, name)), bytes);
+      const denied = t.call(['round-start', 'feat/rerun', 'HEAD~1', '--no-broad'], { key: false });
+      assert.equal(denied.status, 1); assert.match(denied.stderr, /complete initiative run flags/);
+      assert.deepEqual(fs.readFileSync(review.ledgerPath(t.dir, t.slug)), published);
+      for (const [name, bytes] of t.artifacts) assert.deepEqual(fs.readFileSync(path.join(t.dir, name)), bytes);
+      if (resume === 'round-start') t.ok(['round-start', 'feat/rerun', 'HEAD~1', '--no-broad']);
+      const shown = t.ok(['show', 'feat/rerun']);
+      assert.equal(shown.telemetry?.calls || 0, 0, 'archived invocations must not become active again');
+      assert.equal(shown.round, resume === 'show' ? 0 : 1);
+      if (resume === 'show') t.ok(['round-start', 'feat/rerun', 'HEAD~1', '--no-broad']);
+      for (const name of [...telemetryNames, 'round-1-correctness.json', 'round-1-gate.json', 'round-1-provider-output.log']) {
+        assert.equal(fs.existsSync(path.join(t.dir, name)), false, `stale evidence survived recovery: ${name}`);
+      }
+      assert.deepEqual(fs.readFileSync(runPath(t.initDir, 'durability')), t.initiativeBytes);
+      assert.deepEqual(fs.readFileSync(t.otherPath), t.otherBytes);
+      assert.equal(review.readLedger(t.dir, t.slug).rerun_cleanup, undefined);
+      fs.writeFileSync(path.join(t.dir, `telemetry-${t.slug}.json`), JSON.stringify({ invocations: [{
+        engine: 'codex', provider: 'openai', role: 'correctness', round: 1, invocationId: 'new-run-invocation',
+        artifactPath: path.join(t.dir, 'round-1-correctness.json'), attempt: 1, totalTokens: 5,
+      }] }));
+      const current = t.ok(['show', 'feat/rerun']);
+      assert.equal(current.telemetry.calls, 1); assert.equal(current.telemetry.totalTokens, 5);
+      assert.equal(current.telemetry.entries[0].invocationId, 'new-run-invocation');
+    });
+  }
+  test(`${provider}: rerun cleanup resumes after deleting a tool without losing its untagged agent archive`, () => {
+    const t = fixture(provider), telemetryNames = addPriorTelemetry(t), preload = path.join(tmp(), 'cleanup-fault.cjs');
+    fs.writeFileSync(preload, "const fs=require('node:fs'),unlink=fs.unlinkSync;fs.unlinkSync=function(file){const result=unlink.apply(this,arguments);if(/review-telemetry-[a-f0-9]{64}\\.json$/.test(file))process.exit(73);return result;};");
+    const out = t.call(['rerun', 'feat/rerun'], { preload }); assert.equal(out.status, 73);
+    const fresh = review.readLedger(t.dir, t.slug); validateArchive(t, fresh.runs[0].archive);
+    fs.rmSync(`${review.ledgerPath(t.dir, t.slug)}.lock`, { recursive: true, force: true });
+    const shown = t.ok(['show', 'feat/rerun']); assert.equal(shown.telemetry?.calls || 0, 0);
+    t.ok(['round-start', 'feat/rerun', 'HEAD~1', '--no-broad']);
+    for (const name of telemetryNames) assert.equal(fs.existsSync(path.join(t.dir, name)), false, `cleanup missed ${name}`);
+    assert.deepEqual(fs.readFileSync(runPath(t.initDir, 'durability')), t.initiativeBytes);
+  });
   test(`${provider}: the first keyed round-start write remains bound across a crash before dispatch returns`, () => {
     const t = fixture(provider), ref = 'feat/first', slug = review.targetSlug(ref);
     const out = t.call(['round-start', ref, 'HEAD~1', '--no-broad'], { preload: t.preload('first') });
