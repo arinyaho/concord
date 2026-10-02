@@ -4086,16 +4086,15 @@ test('reset and rerun delete telemetry by the ledger target ref when called with
 
 // ---- round budget enforcement ----
 
-// Drives one round whose only finding survives verification and is fixed, so it
-// counts as new and the dry-round streak never advances. Returns the
-// round-start and record output.
+// Drives one round of a `file:<path>` target whose only finding survives
+// verification and is fixed, so it counts as new and the dry-round streak never
+// advances. Returns the round-start and record output.
 function newFindingRound(ref, env, dir, extra, i) {
   const rs = JSON.parse(run(['round-start', ref, ...extra], { env }));
   if (rs.decision !== 'work') return { rs };
-  const file = ref.startsWith('file:') ? ref.slice(5) : 'a.txt';
-  const span = ref.startsWith('file:') ? undefined : 'two';
+  const file = ref.slice('file:'.length);
   const id = `correctness:f${i}`;
-  writeArtifact(dir, rs.round, 'correctness', { status: 'ok', examined: [file], findings: [{ id, gate: 'correctness', file, span, summary: `finding ${i}` }] });
+  writeArtifact(dir, rs.round, 'correctness', { status: 'ok', examined: [file], findings: [{ id, gate: 'correctness', file, summary: `finding ${i}` }] });
   writeArtifact(dir, rs.round, 'verify', { status: 'ok', rejected: [], findings: [] });
   run(['plan-fixes', ref], { env });
   writeArtifact(dir, rs.round, `fix-${id}`, { status: 'ok', edited: true, files: [file] });
