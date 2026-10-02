@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { emptyLedger } = require('../../core/review');
+const { openInitiativeRun, runPath } = require('../../core/initiative-review-run');
 const plugins = path.resolve(__dirname, '../../..');
 const providers = { claude: path.join(plugins, 'concord/hooks/review-cli.js'), copilot: path.join(plugins, 'concord-copilot/bin/review-cli.js') };
 function setup(t, provider) {
@@ -13,7 +14,12 @@ function setup(t, provider) {
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const store = path.join(root, 'feedback');
   const ledgerPath = path.join(root, 'target.json');
-  const ledger = { ...emptyLedger('feat/test'), status: 'clean', findings: [{ id: 'correctness:race', status: 'fixed', fix_commit: 'abc123', file: 'state.js', summary: 'Concurrent writes lose the budget' }] };
+  const initiativeDir = path.join(root, 'initiative');
+  const bind = (runKey, repository = root, stateDir = initiativeDir) => {
+    openInitiativeRun({ stateDir, key: runKey, repository, maxLaunches: 20, maxRounds: 5 });
+    return { key: runKey, stateDir };
+  };
+  const ledger = { ...emptyLedger('feat/test'), initiative_binding: bind('run-a'), status: 'clean', findings: [{ id: 'correctness:race', status: 'fixed', fix_commit: 'abc123', file: 'state.js', summary: 'Concurrent writes lose the budget' }] };
   fs.writeFileSync(ledgerPath, JSON.stringify(ledger));
   const evidencePath = path.join(root, 'proof.md');
   fs.writeFileSync(evidencePath, 'Observed race, accepted fix and regression result.');
@@ -23,7 +29,7 @@ function setup(t, provider) {
   const call = (verb, value, cwd = root) => {
     if (value?.runKey && value.runKey !== 'run-a' && value.ledgerPath === ledgerPath) {
       const otherLedger = path.join(root, `target-${require('node:crypto').createHash('sha256').update(value.runKey).digest('hex')}.json`);
-      if (!fs.existsSync(otherLedger)) fs.writeFileSync(otherLedger, JSON.stringify({ ...JSON.parse(fs.readFileSync(ledgerPath)), attemptId: `${ledger.attemptId}-${value.runKey}` }));
+      if (!fs.existsSync(otherLedger)) fs.writeFileSync(otherLedger, JSON.stringify({ ...JSON.parse(fs.readFileSync(ledgerPath)), attemptId: `${ledger.attemptId}-${value.runKey}`, initiative_binding: bind(value.runKey) }));
       value = { ...value, ledgerPath: otherLedger };
     }
     const args = [providers[provider], 'feedback', verb, store];
@@ -32,8 +38,14 @@ function setup(t, provider) {
   };
   const ok = (verb, value) => { const result = call(verb, value); assert.equal(result.status, 0, result.stderr); return JSON.parse(result.stdout); };
   const record = (value = packet) => ok('record', value);
-  const promote = () => { const first = record(); record({ ...packet, runKey: 'run-b' }); ok('decide', { id: first.id, decision: 'accept', reviewedBy: 'independent-reviewer', reason: 'Repeated confirmed evidence supports prevention.', evidencePath }); return first.id; };
-  return { root, store, ledgerPath, ledger, evidencePath, packet, call, ok, record, promote };
+  const promote = () => {
+    const first = record(); record({ ...packet, runKey: 'run-b' });
+    const decisionPath = path.join(root, 'decision.md');
+    fs.writeFileSync(decisionPath, 'Independent review of both confirmed resolutions supports the proposed lesson.');
+    ok('decide', { id: first.id, decision: 'accept', reviewedBy: 'independent-reviewer', reason: 'Repeated confirmed evidence supports prevention.', evidencePath: decisionPath });
+    return first.id;
+  };
+  return { root, store, ledgerPath, ledger, initiativeDir, bind, evidencePath, packet, call, ok, record, promote };
 }
 for (const provider of Object.keys(providers)) {
   test(`${provider}: feedback is opt-in storage and does not create review state`, (t) => {
@@ -66,7 +78,7 @@ for (const provider of Object.keys(providers)) {
   test(`${provider}: relabelling one review attempt as two runs cannot promote a rule`, (t) => {
     const s = setup(t, provider); const first = s.record();
     const copied = path.join(s.root, 'copied-ledger.json');
-    fs.copyFileSync(s.ledgerPath, copied);
+    fs.writeFileSync(copied, JSON.stringify({ ...s.ledger, initiative_binding: s.bind('run-b') }));
     s.record({ ...s.packet, runKey: 'run-b', ledgerPath: copied });
     const result = s.call('decide', { id: first.id, decision: 'accept', reviewedBy: 'reviewer', reason: 'Attempt', evidencePath: s.evidencePath });
     assert.notEqual(result.status, 0);
@@ -90,6 +102,97 @@ for (const provider of Object.keys(providers)) {
     fs.writeFileSync(file, JSON.stringify(value));
     assert.notEqual(s.call('select', { stage: 'design', tags: ['state'] }).status, 0);
   });
+  for (const artifact of ['ledger', 'evidence', 'decision']) {
+    for (const mutation of ['deleted', 'modified']) {
+      test(`${provider}: accepted reuse fails visibly when ${artifact} snapshot is ${mutation}`, (t) => {
+        const s = setup(t, provider); s.promote();
+        const stored = JSON.parse(fs.readFileSync(path.join(s.store, 'review-feedback.json')));
+        const lesson = stored.lessons[0];
+        const reference = artifact === 'decision' ? lesson.decisions.at(-1).evidence : lesson.occurrences[0][artifact];
+        if (mutation === 'deleted') fs.unlinkSync(reference.path);
+        else fs.appendFileSync(reference.path, '\nChanged immutable evidence.');
+        const before = fs.readFileSync(path.join(s.store, 'review-feedback.json'), 'utf8');
+        const result = s.call('select', { stage: 'design', tags: ['state'] });
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /feedback:/);
+        assert.equal(fs.readFileSync(path.join(s.store, 'review-feedback.json'), 'utf8'), before);
+      });
+    }
+  }
+  for (const status of ['killed', 'open']) {
+    test(`${provider}: accepted reuse blocks same-attempt ${status} contradictions`, (t) => {
+      const s = setup(t, provider); s.promote();
+      fs.writeFileSync(s.ledgerPath, JSON.stringify({ ...s.ledger, findings: s.ledger.findings.map(f => ({ ...f, status })) }));
+      assert.notEqual(s.call('select', { stage: 'design', tags: ['state'] }).status, 0);
+    });
+  }
+  for (const mutation of ['deleted-proof', 'killed', 'open']) {
+    for (const decision of ['retire', 'reject']) {
+      test(`${provider}: explicit ${decision} reconciles accepted ${mutation} evidence`, (t) => {
+        const s = setup(t, provider); const id = s.promote();
+        if (mutation === 'deleted-proof') {
+          const stored = JSON.parse(fs.readFileSync(path.join(s.store, 'review-feedback.json')));
+          fs.unlinkSync(stored.lessons[0].occurrences[0].evidence.path);
+        } else {
+          fs.writeFileSync(s.ledgerPath, JSON.stringify({ ...s.ledger, findings: s.ledger.findings.map(f => ({ ...f, status: mutation })) }));
+        }
+        assert.notEqual(s.call('select', { stage: 'design', tags: ['state'] }).status, 0);
+        const reconciliationPath = path.join(s.root, 'reconciliation.md');
+        fs.writeFileSync(reconciliationPath, 'Reviewed the invalid evidence and explicitly disabled this lesson.');
+        assert.equal(s.ok('decide', { id, decision, reviewedBy: 'reviewer', reason: 'Reconcile invalid accepted evidence', evidencePath: reconciliationPath }).status, decision === 'retire' ? 'retired' : 'rejected');
+        assert.deepEqual(s.ok('select', { stage: 'design', tags: ['state'] }).lessons, []);
+      });
+    }
+  }
+  test(`${provider}: retirement cannot bypass another accepted lesson's invalid evidence`, (t) => {
+    const s = setup(t, provider); const id = s.promote();
+    const secondPacket = { ...s.packet, pattern: 'second-lesson' };
+    const second = s.record(secondPacket); s.record({ ...secondPacket, runKey: 'run-b' });
+    s.ok('decide', { id: second.id, decision: 'accept', reviewedBy: 'reviewer', reason: 'Verified second lesson', evidencePath: s.evidencePath });
+    const storePath = path.join(s.store, 'review-feedback.json');
+    const stored = JSON.parse(fs.readFileSync(storePath));
+    fs.unlinkSync(stored.lessons.find(l => l.id === second.id).decisions.at(-1).evidence.path);
+    const reconciliationPath = path.join(s.root, 'reconciliation.md');
+    fs.writeFileSync(reconciliationPath, 'Explicit retirement of only the named first lesson.');
+    const before = fs.readFileSync(storePath, 'utf8');
+    assert.notEqual(s.call('decide', { id, decision: 'retire', reviewedBy: 'reviewer', reason: 'Disable first lesson', evidencePath: reconciliationPath }).status, 0);
+    assert.equal(fs.readFileSync(storePath, 'utf8'), before);
+  });
+  test(`${provider}: accepted reuse preserves original proof across telemetry updates and a new attempt`, (t) => {
+    const s = setup(t, provider); const id = s.promote();
+    fs.writeFileSync(s.ledgerPath, JSON.stringify({ ...s.ledger, telemetry: [{ calls: 20 }] }));
+    assert.equal(s.ok('select', { stage: 'design', tags: ['state'] }).lessons[0].id, id);
+    fs.writeFileSync(s.ledgerPath, JSON.stringify({ ...s.ledger, attemptId: 'later-native-attempt', findings: s.ledger.findings.map(f => ({ ...f, status: 'killed' })) }));
+    assert.equal(s.ok('select', { stage: 'design', tags: ['state'] }).lessons[0].id, id);
+  });
+  for (const verb of ['record', 'observe']) {
+    for (const provenance of ['foreign', 'unbound', 'missing']) {
+      test(`${provider}: ${verb} rejects ${provenance} native repository provenance without changing review budgets`, (t) => {
+        const s = setup(t, provider); const id = s.promote();
+        const other = path.join(s.root, 'other-repository'); fs.mkdirSync(other);
+        const foreignDir = path.join(s.root, 'foreign-initiative');
+        const foreignBinding = s.bind('foreign-run', other, foreignDir);
+        const foreignFile = runPath(foreignDir, 'foreign-run');
+        const foreignBefore = fs.readFileSync(foreignFile, 'utf8');
+        const localFile = runPath(s.initiativeDir, 'run-a');
+        const localBefore = fs.readFileSync(localFile, 'utf8');
+        const binding = provenance === 'foreign' ? foreignBinding : provenance === 'missing' ? { key: 'foreign-run', stateDir: path.join(s.root, 'missing-run') } : undefined;
+        const inputLedger = path.join(s.root, 'input-ledger.json');
+        fs.writeFileSync(inputLedger, JSON.stringify({ ...s.ledger, initiative_binding: binding }));
+        const targetBefore = fs.readFileSync(inputLedger, 'utf8');
+        const packet = verb === 'record' ? { ...s.packet, pattern: 'foreign-pattern', runKey: 'foreign-run', ledgerPath: inputLedger }
+          : { runKey: 'foreign-run', unit: 'ticket-foreign', ledgerPath: inputLedger, evidencePath: s.evidencePath, outcomes: [{ id, outcome: 'recurred', findingId: s.packet.findingId }] };
+        const storeBefore = fs.readFileSync(path.join(s.store, 'review-feedback.json'), 'utf8');
+        const result = s.call(verb, packet);
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /feedback:/);
+        assert.equal(fs.readFileSync(path.join(s.store, 'review-feedback.json'), 'utf8'), storeBefore);
+        assert.equal(fs.readFileSync(foreignFile, 'utf8'), foreignBefore);
+        assert.equal(fs.readFileSync(localFile, 'utf8'), localBefore);
+        assert.equal(fs.readFileSync(inputLedger, 'utf8'), targetBefore);
+      });
+    }
+  }
   test(`${provider}: explicit later rejection of the same finding blocks promotion`, (t) => {
     const s = setup(t, provider); const c = s.record(); s.record({ ...s.packet, runKey: 'run-b' });
     fs.writeFileSync(s.ledgerPath, JSON.stringify({ ...s.ledger, findings: s.ledger.findings.map(f => ({ ...f, status: 'killed' })) }));

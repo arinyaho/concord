@@ -4,7 +4,7 @@
 
 **Goal:** Carry evidence-backed review lessons into future initiative contracts, tickets and designs with bounded context and explicit validation.
 
-**Architecture:** A separate repository-bound feedback store reached through `review-cli feedback <record|decide|select|observe|report> <absolute-store-dir> [absolute-packet.json]`. Feedback operations never open or mutate initiative or target ledgers and never launch a reviewer. Agents interpret root causes; the engine validates provenance, eligibility, decisions and bounded selection. All claims of cause, earlier preventability and review effectiveness remain attributed judgments, not automated causal inference.
+**Architecture:** A separate repository-bound feedback store reached through `review-cli feedback <record|decide|select|observe|report> <absolute-store-dir> [absolute-packet.json]`. Feedback operations never initialize or mutate initiative or target ledgers and never launch a reviewer. Agents interpret root causes; the engine validates provenance, eligibility, decisions and bounded selection. All claims of cause, earlier preventability and review effectiveness remain attributed judgments, not automated causal inference.
 
 **Tech stack:** Shared Node.js engine, native provider wrappers, node:test, packaged workflow instructions.
 
@@ -27,3 +27,5 @@
 Actual cross-session adoption and fewer design escapes need subsequent native-session observations; automated tests prove storage and selection behavior only.
 
 Feedback preserves private immutable receipts of the selected finding, original ledger identity/hash, attempt, status and fix commit, plus curated confirmation/decision evidence capped at 16KB per file. Receipts omit the full ledger and transcript. Normal later ledger telemetry updates or reruns do not invalidate past support. Acceptance validates the saved hashes and checks still-available same-attempt origins for explicit contradictions; a later killed or reopened finding blocks promotion. Reusing the same event with changed evidence requires explicit reconciliation and a revised pattern. Accepted stores revalidate their distinct-run/attempt support on load. Originals are provenance pointers, not immutable files. Archival must retain these evidence files alongside the store.
+
+Evidence collection and recurrence observation require a native target binding whose version-5 initiative ledger proves the same repository identity. The feedback engine reads this provenance without initializing or mutating the run. Unbound targets and legacy receipts without repository proof fail visibly; selection of an absent store stays empty and read-only. Accepted reuse verifies support and latest decision snapshots and same-attempt contradictions. Explicit retirement can disable invalid proof without enabling its reuse.

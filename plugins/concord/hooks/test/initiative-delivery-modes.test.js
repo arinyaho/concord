@@ -168,7 +168,7 @@ async function drive({ mode, started, key = 'runner-key', maxLaunches = 20, maxR
     runCli: (args) => {
       cliCalls.push(args);
       const verb = args[0];
-      return verb === 'round-start' ? started : verb === 'artifact-normalize' ? { status: 'ok' } : verb === 'plan-fixes' ? { fixes: [] }
+      return verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? started : verb === 'artifact-normalize' ? { status: 'ok' } : verb === 'plan-fixes' ? { fixes: [] }
         : verb === 'record' ? { decision: { continue: false, converged: true }, handoff: 'LGTM' } : {};
     },
     spawn: async (input) => { prompts.push(input); return { status: 0 }; },

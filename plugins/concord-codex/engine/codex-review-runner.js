@@ -5,13 +5,14 @@
 // subprocess and every state transition remains owned by review-cli.
 const { execFileSync, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
-const { canonicalPath, runPath, openInitiativeRun, reserveLaunch, denialReason, pairRefusal, resolveBaseCommit, recordDisposition, normalizeDisposition, consumeDispositionDelivery, terminalTarget, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun, lockDiagnosis } = require('./initiative-review-run');
+const { canonicalPath, runPath, openInitiativeRun, pairRefusal, resolveBaseCommit, recordDisposition, normalizeDisposition, consumeDispositionDelivery, terminalTarget, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
 const { gitHeadSha, gitDirty, fileTarget } = require('./target');
 const fs = require('node:fs');
 const path = require('node:path');
 const { safeIdForFilename } = require('./artifact-name');
 const { writeFileAtomic } = require('./atomic-write');
-const { targetSlug } = require('./review');
+const { targetSlug, ledgerPath } = require('./review');
+const { SESSION_MODES, THRESHOLDS } = require('./session-handoff');
 const { artifactDestinationFromPrompt } = require('./review-artifact');
 const { isValidFindingId } = require('./gate-contract');
 const { same } = require('./review-eval');
@@ -401,6 +402,18 @@ async function runReviewUntilGreen(options) {
   // under the same name is a different pair. round-start keeps the name.
   const baseIdentity = (name) => (name && !ref.startsWith('file:') ? resolveBaseCommit(repoRoot, name) : name);
   const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot));
+  const initiativeFlags = initiativeRun ? ['--initiative-run-key', options.initiativeRunKey, '--initiative-state-dir', canonicalStateDir, '--initiative-max-launches', String(options.initiativeMaxLaunches), '--initiative-max-rounds', String(options.initiativeMaxRounds), ...(options.initiativeMode ? ['--initiative-mode', options.initiativeMode] : [])] : [];
+  const sessionMode = options.sessionHandoff || 'suggest';
+  if (!SESSION_MODES.includes(sessionMode)) throw new Error('review-until-green: --session-handoff must be off, suggest, or stop-at-checkpoint');
+  const observed = { toolCalls: 0, noProgressCalls: 0 };
+  const invocation = () => { observed.toolCalls++; observed.noProgressCalls++; };
+  const progress = () => { observed.noProgressCalls = 0; };
+  const cli = async (args) => {
+    invocation();
+    const result = await runCli([...args, ...initiativeFlags]);
+    if ((args[0] === 'artifact-normalize' && result?.status === 'ok') || (args[0] === 'commit-fix' && result?.committed) || args[0] === 'gate-panel-round-record') progress();
+    return result;
+  };
   let reviewer = options.reviewer || 'codex';
   let fixer = options.fixer || 'codex';
   let reviewerModel = options.reviewerModel;
@@ -426,7 +439,7 @@ async function runReviewUntilGreen(options) {
   // base read back from an initiative disposition: that would make the replay
   // match circular. Without a recorded base the pair cannot be identified.
   if (resume && initiativeRun && !ref.startsWith('file:')) {
-    initialBase = runCli(['show', ref])?.target?.base;
+    initialBase = (await cli(['show', ref]))?.target?.base;
     if (!initialBase && hasDisposition(initiativeRun, ref, ['terminal', 'escape'])) {
       const missing = new Error('review-until-green: resume has no recorded base in the review ledger');
       missing.notAReviewFailure = true;
@@ -537,6 +550,7 @@ async function runReviewUntilGreen(options) {
       engine: provider, provider: providerName, providerSchema, invocationId: crypto.randomUUID(),
     };
     try {
+      invocation();
       const result = await rawSpawn(input);
       record(input, { ...identity, ...result });
       return result;
@@ -561,7 +575,11 @@ async function runReviewUntilGreen(options) {
     if ((genuinelyTerminal || (initiativeRun && terminal)) && telemetryPath) {
       try { fs.unlinkSync(telemetryPath); } catch {}
     }
-    if (initiativeRun && terminal) {
+    if (initiativeRun && terminal && result?.initiative?.claim) {
+      const packet = JSON.parse(fs.readFileSync(initiativeRun.path, 'utf8')).dispositions.findLast(item => item.packet?.delivery?.claim === result.initiative.claim)?.packet;
+      if (!packet) throw new Error('review-until-green: initiative CLI delivery claim was not found');
+      output.continuationPacket = packet;
+    } else if (initiativeRun && terminal) {
       const reconciliation = result?.reconciliation;
       // Derive escaped from the SAME normalization recordDisposition uses
       // below to decide the stored kind -- checking only the literal string
@@ -603,7 +621,6 @@ async function runReviewUntilGreen(options) {
     }
     return output;
   };
-  const cli = (args) => runCli(args);
   const throwIfAborted = async (persist = false) => {
     if (!abortController || !abortController.signal.aborted) return;
     const signal = String(abortController.signal.reason || 'signal');
@@ -613,14 +630,15 @@ async function runReviewUntilGreen(options) {
     error.reviewFailure = failure;
     throw error;
   };
-  const runPanel = async (context, launch) => {
+  const runPanel = async (context, launch, reserve) => {
     const lenses = PANEL_LENSES;
     for (;;) {
       const panel = await cli(['gate-panel-round-start', ref]);
+      await reserve('lens', lenses.length);
       const lensResults = await Promise.allSettled(lenses.map(async (lens) => {
         const artifact = path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-${lens}.json`);
         try {
-          await launch({ role: `gate-panel-${lens}`, repoRoot, stateDir: context.stateDir,
+          await launch({ preReserved: true, role: `gate-panel-${lens}`, repoRoot, stateDir: context.stateDir,
             prompt: `Review ${path.join(context.stateDir, `round-${context.round}-diff.txt`)} and the repository through the ${lens} lens. You MAY Read/Grep the repository and MUST read ${path.join(context.stateDir, `intent-${context.slug}.md`)} if it exists to assess the design and acceptance criteria. Previously rejected IDs: ${JSON.stringify(panel.rejectedIds || [])} -- do not re-raise one unless you found something the earlier round did not. Every candidate faces three adversarial verifiers that default to REFUTED when uncertain and decide by majority, so a gap you cannot anchor in evidence will not survive: substantiate what you raise rather than raising more. Write ONLY {"status":"ok","findings":[]} to ${artifact}; every ID must use gate:${lens}:<slug>.${BLOCKED_CLAUSE}` });
         } catch (error) {
           if (error.initiativeBlocked || (error.reviewFailure && ['interrupted', 'timeout', 'signal'].includes(error.reviewFailure.kind))) throw error;
@@ -642,10 +660,11 @@ async function runReviewUntilGreen(options) {
       }
       const rejected = [];
       for (const finding of candidates) {
+        await reserve('vote', 3);
         let survives = 0;
         const voteResults = await Promise.allSettled([0, 1, 2].map(async (vote) => {
           const verdict = path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-vote-${safeIdForFilename(finding.id)}-${vote}.json`);
-          await launch({ role: 'gate-panel-verify', repoRoot, stateDir: context.stateDir,
+          await launch({ preReserved: true, role: 'gate-panel-verify', repoRoot, stateDir: context.stateDir,
             prompt: `Try to refute gate finding ${JSON.stringify(finding)}. Default to refuted if uncertain. Write ONLY {"status":"ok","survives":false} to ${verdict}.${BLOCKED_CLAUSE}` });
           let raw;
           // Missing/unparseable verdict stays lenient (counts as refuted), but a
@@ -673,6 +692,51 @@ async function runReviewUntilGreen(options) {
     }
   };
 
+  let latestSessionHandoff = null;
+  const checkpoint = async (started, result) => {
+    if (!initiativeRun || sessionMode === 'off') return null;
+    const inputTokens = options.getInputContextTokens ? await options.getInputContextTokens() : null;
+    const observations = { inputTokens: inputTokens ?? null, ...observed };
+    const triggers = Object.keys(THRESHOLDS).filter(key => observations[key] !== null && observations[key] >= THRESHOLDS[key]);
+    const markerPath = path.join(started.stateDir, `session-suggestions-${targetSlug(ref)}.json`);
+    const previous = fs.existsSync(markerPath) ? JSON.parse(fs.readFileSync(markerPath, 'utf8')) : [];
+    if (!triggers.length) {
+      if (previous.length) writeFileAtomic(markerPath, '[]\n', { mode: 0o600 });
+      return null;
+    }
+    if (sessionMode === 'suggest' && triggers.every(trigger => previous.includes(trigger))) return null;
+    const targetPath = ledgerPath(started.stateDir, targetSlug(ref));
+    const target = fs.existsSync(targetPath) ? JSON.parse(fs.readFileSync(targetPath, 'utf8')) : {};
+    const run = JSON.parse(fs.readFileSync(initiativeRun.path, 'utf8'));
+    const sourcePaths = [path.join(repoRoot, 'AGENTS.md'), path.join(repoRoot, 'review.config.json'), path.join(started.stateDir, `intent-${targetSlug(ref)}.md`), ...(options.authoritativeSources || [])];
+    const authoritativeSources = [...new Set(sourcePaths)].filter(source => fs.existsSync(source)).map(source => ({ path: canonicalPath(source), sha256: crypto.createHash('sha256').update(fs.readFileSync(source)).digest('hex') }));
+    const nextArgs = result.decision?.continue ? ['round-start', ref, ...(initialBase ? [initialBase] : []), ...(broad ? ['--broad'] : []), ...(noBroad ? ['--no-broad'] : []), ...(noDod ? ['--no-dod'] : [])] : ['show', ref];
+    const nextStep = { executable: process.execPath, cliPath: path.resolve(cliPath), args: [...nextArgs, ...initiativeFlags] };
+    const completedArtifacts = fs.readdirSync(started.stateDir).filter(name => new RegExp(`^round-${started.round}-.*\\.json$`).test(name)).map(name => {
+      const artifactPath = path.join(started.stateDir, name);
+      return { path: artifactPath, sha256: crypto.createHash('sha256').update(fs.readFileSync(artifactPath)).digest('hex') };
+    });
+    const stem = path.join(started.stateDir, `session-review-${targetSlug(ref)}`);
+    const statePath = `${stem}-state.json`, handoffPath = `${stem}-handoff.json`, packetPath = `${stem}-packet.json`;
+    const decision = typeof result.decision === 'string' ? result.decision : Object.fromEntries(['continue', 'converged', 'parked', 'abandoned', 'intentReview', 'gatePending', 'panelPending', 'reason'].filter(key => Object.hasOwn(result.decision || {}, key)).map(key => [key, result.decision[key]]));
+    const summary = { schema: 1, scope: 'review', ref, revision: initiativeRevision, round: started.round, decision,
+      authoritativeSources, initiative: { key: options.initiativeRunKey, stateDir: canonicalStateDir, mode: run.mode, status: run.status, budget: { maxLaunches: run.budget.maxLaunches, maxRounds: run.budget.maxRounds, usedLaunches: run.launches.length, usedRounds: run.rounds.length } },
+      targetStatePath: targetPath, initiativePath: initiativeRun.path, options: { broad, noBroad, noDod, reviewer, fixer, reviewerModel: reviewerModel || null, fixerModel: fixerModel || null, reasoningEffort: options.reasoningEffort || null, serviceTier: options.serviceTier || null, sessionHandoff: sessionMode },
+      initiativeFlags, reservations: (target.initiative_reservations || []).map(({ role, round, panel, count, token }) => ({ role, round, ...(panel ? { panel } : {}), count, token })), completedArtifacts, nextStep };
+    writeFileAtomic(statePath, `${JSON.stringify(summary)}\n`, { mode: 0o600 });
+    writeFileAtomic(handoffPath, `${JSON.stringify({ schema: 1, nextStep, decision, resume: 'Read the latest target and initiative ledgers, validate authoritative sources and artifact hashes, skip completed roles, preserve reservations and budget. Terminal or human gate decisions remain in force.' })}\n`, { mode: 0o600 });
+    writeFileAtomic(packetPath, `${JSON.stringify({ scope: 'review', boundary: 'round-complete', liveWorkers: [], observations, statePath, handoffPath, nextAction: result.decision?.continue ? 'Resume the existing review ledger with the recorded round-start command; skip completed artifacts and reserve only new workers.' : 'Inspect the recorded decision and live ledger; preserve terminal and human gate dispositions. No new review round is authorized by this checkpoint.' })}\n`, { mode: 0o600 });
+    const handoff = await cli(['session-checkpoint', packetPath, '--session-handoff', sessionMode]);
+    if (!['suggest', 'stop'].includes(handoff.action)) return null;
+    const output = { ...handoff, prompt: fs.readFileSync(handoff.promptPath, 'utf8') };
+    latestSessionHandoff = output;
+    if (sessionMode === 'suggest') {
+      if (options.onSessionHandoff) await options.onSessionHandoff(output);
+      writeFileAtomic(markerPath, `${JSON.stringify(triggers)}\n`, { mode: 0o600 });
+    }
+    return output;
+  };
+
   for (;;) {
     await throwIfAborted();
     const startArgs = ['round-start', ref];
@@ -681,7 +745,6 @@ async function runReviewUntilGreen(options) {
     if (noBroad) startArgs.push('--no-broad'); // broad review is on by default; this is the opt-out
     if (noDod) startArgs.push('--no-dod');
     // The keyed run is the mode authority: round-start reads the run's mode and rejects a flag that disagrees.
-    if (initiativeRun) startArgs.push('--initiative-run-key', options.initiativeRunKey, '--initiative-state-dir', canonicalStateDir, '--initiative-max-launches', String(options.initiativeMaxLaunches), '--initiative-max-rounds', String(options.initiativeMaxRounds), ...(options.initiativeMode ? ['--initiative-mode', options.initiativeMode] : []));
     // On resume, an unpassed reviewer/fixer must NOT be resent as the 'codex'
     // default -- round-start rejects a request that conflicts with the
     // ledger's persisted routing. Omit it and let round-start fall back to
@@ -721,19 +784,21 @@ async function runReviewUntilGreen(options) {
     telemetryLoaded = true;
     if (started.decision !== 'work') return withTelemetry(started);
     currentRound = started.round;
-    const revision = initiativeRevision;
     checks = [{ name: 'definition-of-done', status: started.dodDeferred ? 'deferred' : (started.dodPassed ? 'passed' : 'failed') }];
     const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodPassed: started.dodPassed, dodDeferred: started.dodDeferred, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref), gateMode: started.gateMode };
     let slotAllocation = Promise.resolve();
-    const launch = async (input) => {
-      const reservation = { role: input.role, target: ref, revision, attemptId: started.attemptId || `${revision.ref}\u0000${revision.head_sha || revision.base || 'unknown'}`, round: currentRound };
-      if (initiativeRun && !reserveLaunch(initiativeRun, reservation)) {
-        const reason = denialReason(initiativeRun, reservation);
-        const denied = new Error(`review-until-green: initiative launch ${reason || (lockDiagnosis(initiativeRun) || 'reservation contended')} before ${input.role}`);
-        // A run out of budget or parked for reconciliation is a blocked outcome, not a review failure.
+    const reserve = async (role, count = 1) => {
+      if (!initiativeRun) return;
+      const reservation = await cli(['reserve', ref, role, '--count', String(count)]);
+      if (reservation?.status !== 'granted') {
+        const reason = reservation?.status === 'reconciliation-required' ? reservation.status : reservation?.reason;
+        const denied = new Error(`review-until-green: initiative launch ${reason || reservation?.lockDiagnosis || 'reservation contended'} before ${role}`);
         if (reason === 'budget-exhausted' || reason === 'reconciliation-required') denied.initiativeBlocked = reason;
         throw denied;
       }
+    };
+    const launch = async (input) => {
+      if (!input.preReserved) await reserve(input.role === 'gate' ? 'gate-review' : input.role);
       const artifactPath = artifactDestinationFromPrompt(input.prompt, input.stateDir);
       const isFix = input.role === 'fix';
       const provider = isFix ? fixer : reviewer;
@@ -809,13 +874,15 @@ async function runReviewUntilGreen(options) {
     }
     let recorded = await cli(['record', ref]);
     if (recorded.decision && recorded.decision.panelPending) {
-      await runPanel(context, launch);
+      await runPanel(context, launch, reserve);
       await throwIfAborted(true);
       recorded = await cli(['record', ref]);
     }
     await throwIfAborted(true);
+    const sessionHandoff = await checkpoint(started, recorded);
+    if (sessionHandoff?.action === 'stop' && recorded.decision?.continue) return { ...withTelemetry(recorded), decision: 'session-handoff', reviewDecision: recorded.decision, sessionHandoff };
     if (recorded.decision && recorded.decision.continue) continue;
-    return withTelemetry(recorded);
+    return withTelemetry({ ...recorded, ...(latestSessionHandoff ? { sessionHandoff: latestSessionHandoff } : {}) });
   }
   } catch (error) {
     if (error.notAReviewFailure) throw error;

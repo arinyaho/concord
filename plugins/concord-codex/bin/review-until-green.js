@@ -6,7 +6,7 @@ const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleE
 
 const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
-  process.stdout.write('Usage: review-until-green [<branch> [<base>] | file:<path-or-glob> | resume <ref>] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--reasoning-effort <effort>] [--service-tier <tier>] [--initiative-run-key <key> --initiative-state-dir <absolute-dir> --initiative-max-launches <n> --initiative-max-rounds <n> [--initiative-mode <base|lite>] [--initiative-finalise]] [--broad|--no-broad] [--no-dod]\n');
+  process.stdout.write('Usage: review-until-green [<branch> [<base>] | file:<path-or-glob> | resume <ref>] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--reasoning-effort <effort>] [--service-tier <tier>] [--initiative-run-key <key> --initiative-state-dir <absolute-dir> --initiative-max-launches <n> --initiative-max-rounds <n> [--initiative-mode <base|lite>] [--initiative-finalise]] [--session-handoff <off|suggest|stop-at-checkpoint>] [--broad|--no-broad] [--no-dod]\n');
   process.exit(0);
 }
 const broadPhraseArgs = new Set();
@@ -26,13 +26,17 @@ const noDod = args.includes('--no-dod');
 const inference = {};
 const inferenceArgs = new Set();
 if (args.includes('--initiative-finalise')) { inference.initiativeFinalise = true; inferenceArgs.add(args.indexOf('--initiative-finalise')); }
-for (const [flag, field] of [['--reviewer', 'reviewer'], ['--reviewer-model', 'reviewerModel'], ['--fixer', 'fixer'], ['--fixer-model', 'fixerModel'], ['--reasoning-effort', 'reasoningEffort'], ['--service-tier', 'serviceTier'], ['--initiative-run-key', 'initiativeRunKey'], ['--initiative-state-dir', 'initiativeStateDir'], ['--initiative-max-launches', 'initiativeMaxLaunches'], ['--initiative-max-rounds', 'initiativeMaxRounds'], ['--initiative-mode', 'initiativeMode']]) {
+for (const [flag, field] of [['--session-handoff', 'sessionHandoff'], ['--reviewer', 'reviewer'], ['--reviewer-model', 'reviewerModel'], ['--fixer', 'fixer'], ['--fixer-model', 'fixerModel'], ['--reasoning-effort', 'reasoningEffort'], ['--service-tier', 'serviceTier'], ['--initiative-run-key', 'initiativeRunKey'], ['--initiative-state-dir', 'initiativeStateDir'], ['--initiative-max-launches', 'initiativeMaxLaunches'], ['--initiative-max-rounds', 'initiativeMaxRounds'], ['--initiative-mode', 'initiativeMode']]) {
   const index = args.indexOf(flag); const value = index === -1 ? undefined : args[index + 1];
   if (index !== -1 && (!value || !value.trim() || value.startsWith('--') || args.indexOf(flag, index + 1) !== -1)) {
     process.stderr.write(`review-until-green: ${flag} requires exactly one value\n`);
     process.exit(1);
   }
   if (index !== -1) { inference[field] = value; inferenceArgs.add(index); inferenceArgs.add(index + 1); }
+}
+if (inference.sessionHandoff && !['off', 'suggest', 'stop-at-checkpoint'].includes(inference.sessionHandoff)) {
+  process.stderr.write('review-until-green: --session-handoff must be off, suggest, or stop-at-checkpoint\n');
+  process.exit(1);
 }
 if (inference.initiativeRunKey || inference.initiativeStateDir || inference.initiativeMaxLaunches || inference.initiativeMaxRounds || inference.initiativeMode) {
   if (!inference.initiativeRunKey || !inference.initiativeStateDir || !/^\d+$/.test(inference.initiativeMaxLaunches || '') || !/^\d+$/.test(inference.initiativeMaxRounds || '')) {
@@ -70,10 +74,17 @@ const deliver = async (stream, packet) => {
     process.stderr.write('review-until-green: initiative delivery acknowledgement was contended; the ledger will redeliver this packet on the next invocation\n');
   }
 };
+const deliveredSessionHandoffs = new Set();
+runnerOptions.onSessionHandoff = async (handoff) => {
+  if (deliveredSessionHandoffs.has(handoff.promptPath)) return;
+  await write(process.stdout, `${JSON.stringify({ sessionHandoff: handoff })}\n`);
+  deliveredSessionHandoffs.add(handoff.promptPath);
+};
 runReviewUntilGreen(runnerOptions)
   .then(async (result) => {
     if (result.continuationPacket) await deliver(process.stdout, result.continuationPacket);
     else if (!(result.decision === 'terminal' && result.initiative)) await write(process.stdout, `${result.handoff || result.message || JSON.stringify(result)}\n`);
+    if (result.sessionHandoff) await runnerOptions.onSessionHandoff(result.sessionHandoff);
     // A blocked initiative run is a stop for a human, not a verified review: signal it in the exit status.
     if (result.decision === 'blocked' || result.decision === 'reconciliation-required') process.exitCode = 1;
   })

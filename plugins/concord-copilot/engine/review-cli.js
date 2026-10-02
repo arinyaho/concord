@@ -1360,9 +1360,21 @@ function runVerb(resolveFromCwd, args, initiative) {
     // since the first successful record already flips phase to 'done' -- a
     // guard-first ordering would throw on replay instead of reaching this branch.
     if (ledger && ledger.phase === 'done' && ledger.last_recorded_round === n) {
+      let initiativeClaim;
+      if (run && !ledger._lastDecision?.continue && !ledger._lastDecision?.panelPending) {
+        const disposition = require('./initiative-review-run').normalizeDisposition({ decision: ledger._lastDecision || { continue: false }, reconciliation: ledger.reconciliationPacket });
+        const target = ledger.target?.ref || ref;
+        // Use the reviewed head and durable claim, never the post-fix live head.
+        // Legacy done ledgers can recover only an unambiguous original entry.
+        const entries = (JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions || []).filter(d =>
+          d.target === target && d.revision?.head_sha === ledger.target?.head_sha && d.kind === disposition.kind && d.reason === disposition.reason
+          && (!ledger._lastInitiativeClaim || d.packet?.delivery?.claim === ledger._lastInitiativeClaim));
+        if (entries.length !== 1 || !entries[0].packet?.delivery?.claim) throw new Error('harness-failure: record: original initiative claim is missing or ambiguous; reconcile the existing ledgers');
+        initiativeClaim = entries[0].packet.delivery.claim;
+      }
       if (R.TERMINAL_STATUSES.has(ledger.status) || (run && ledger._lastDecision && !ledger._lastDecision.continue && !ledger._lastDecision.panelPending)) reviewTelemetry.deleteTelemetry(stateDir, ledger.target?.ref || ref, slug);
       process.stdout.write(
-        JSON.stringify({ decision: ledger._lastDecision || { continue: false }, handoff: renderHandoff({ ledger }), telemetry: ledger.telemetry || null, reconciliation: ledger.reconciliationPacket || undefined, checks: ledger.finalChecks || undefined }) + '\n'
+        JSON.stringify({ decision: ledger._lastDecision || { continue: false }, handoff: renderHandoff({ ledger }), telemetry: ledger.telemetry || null, reconciliation: ledger.reconciliationPacket || undefined, checks: ledger.finalChecks || undefined, initiative: initiativeClaim ? { claim: initiativeClaim } : undefined }) + '\n'
       );
       return;
     }
@@ -1528,7 +1540,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // File targets have no working tree to discard.
     if (isGit) gitCheckoutTree(repoRoot);
     const finalChecks = [{ name: 'definition-of-done', status: ledger.dod?.deferred ? 'deferred' : ledger.dod?.passed ? 'passed' : 'failed' }];
-    ledger = { ...ledger, phase: 'done', last_recorded_round: n, _lastDecision: decision, reconciliationPacket: reconciliation || null, finalChecks };
+    ledger = { ...ledger, phase: 'done', last_recorded_round: n, _lastDecision: decision, reconciliationPacket: reconciliation || null, finalChecks, ...(run ? { _lastInitiativeClaim: null } : {}) };
     let entry;
     let recordedNow = false;
     if (run && !decision.continue && !decision.panelPending) {
@@ -1559,6 +1571,8 @@ function runVerb(resolveFromCwd, args, initiative) {
       if (!entry || (!recorded && kind === 'escape' && entry.packet?.delivery?.consumed !== false)) throw new Error('harness-failure: record: initiative target disposition recording was contended; re-run record');
       // A duplicate disposition recorded nothing, so its telemetry stays pending and the cache stays.
       recordedNow = recorded;
+      if (!entry.packet?.delivery?.claim) throw new Error('harness-failure: record: original initiative claim is missing; reconcile the existing ledgers');
+      ledger = { ...ledger, _lastInitiativeClaim: entry.packet.delivery.claim };
       if (recorded) ledger = { ...ledger, telemetryForwarded: [...forwarded, ...pending.map(telemetryKey)] };
     }
     writeLedger(stateDir, slug, ledger);
