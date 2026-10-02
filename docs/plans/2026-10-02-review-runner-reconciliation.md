@@ -59,3 +59,9 @@ An interrupted rerun's pending cleanup must not delete files before validating t
 ## Validation limits
 
 Native tests cover deterministic decisions and durable state. Actual host efficiency, adoption of lessons and token savings need subsequent session observations. A stopped checkpoint is not a clean or terminal review verdict.
+
+## Eighth review and cost boundary
+
+The eighth run committed the shared rerun-argument parser before pending cleanup, preserving evidence when `--engine` has no value. Both generated providers and 26 durability regressions passed; Node 22 plugin CI passed 1,488 tests with three skips. Round-two executable DoD passed 1,782 tests with one skip. The retained ledger-safety design guidance is aligned with original-state restoration and binding/budget reconciliation.
+
+After the user reported excessive token consumption, additional review launches and full reruns stopped. The final correctness worker drained with partial coverage; normalization requested a retry, so its empty findings are not an accepted clean verdict. The durable pause receipt records the unchanged review head, artifacts and exact next step. Final correctness verification and the mandatory broad panel remain incomplete. Per-run round limits did not bound the aggregate cost of repeated full reruns; future orchestration needs an explicit aggregate stopping boundary.
