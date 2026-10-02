@@ -40,6 +40,10 @@ The preserved fourth run at head `792082607341d0fedbdf0706e6cb3683e8852b7c` veri
 
 Bind proposal identity, wording and applicability to immutable reviewed snapshots so edits cannot reuse the old acceptance proof. Verify those snapshots on reuse, preserving explicit disabling for damaged evidence. Observation retries with unchanged outcomes and curated evidence must retain their original receipt after unrelated ledger telemetry changes, just as duplicate finding records do.
 
+## Fifth-run evidence reconciliation
+
+The fifth run at head `0c563c6f59c24afe2830cf916268aeaf9b0b46b1` passed its ordinary review pairs, then its panel was rejected because one adversarial verifier declared a failed measurement. Preserve that failed evidence; it is neither a clean verdict nor an accepted panel finding. Two other independent executable probes reproduced associated-agent telemetry loss: cleanup selects some untagged agent receipts by their tool-record association, while the archive selected only explicit target fields. Archive the same complete target-associated telemetry set used by cleanup before deleting it, retaining unrelated receipts. Re-review with functioning independent measurements; do not replace the blocked verdict with an assumed result.
+
 ## Validation limits
 
 Native tests cover deterministic decisions and durable state. Actual host efficiency, adoption of lessons and token savings need subsequent session observations. A stopped checkpoint is not a clean or terminal review verdict.

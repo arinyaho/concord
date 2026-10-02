@@ -85,6 +85,33 @@ for (const provider of Object.keys(providers)) {
     assert.equal(denied.status, 1); assert.match(denied.stderr, /complete initiative run flags/);
     assert.deepEqual(fs.readFileSync(runPath(t.initDir, 'durability')), recorded);
   });
+  test(`${provider}: rerun archives an untagged native agent observation associated with a target tool`, () => {
+    const t = fixture(provider), adapter = require('../../adapters/claude-code/review-telemetry');
+    const parentTranscriptPath = path.join(t.dir, 'session.jsonl');
+    const tool = { kind: 'tool-use', engine: 'claude-code', provider: 'anthropic', providerSchema: 'claude-post-tool-use-v1',
+      targetRef: 'feat/rerun', role: 'correctness', round: 1, artifactPath: path.join(t.dir, 'round-1-correctness.json'),
+      attempt: 1, invocationId: 'tool-for-archive', agentId: 'agent-for-archive', parentTranscriptPath,
+      startedAtMs: 1, status: 'completed', elapsedMs: null, hookUsagePartial: true, providerUsage: {} };
+    const targetTool = `review-telemetry-${'a'.repeat(64)}.json`, targetAgent = `review-agent-telemetry-${'b'.repeat(64)}.json`;
+    fs.writeFileSync(path.join(t.dir, targetTool), JSON.stringify(tool));
+    const agent = adapter.recordForEvent({ hook_event_name: 'SubagentStop', agent_id: tool.agentId, transcript_path: parentTranscriptPath }, t.dir);
+    assert.equal(agent.kind, 'agent-usage'); assert.equal(agent.targetRef, undefined); assert.equal(agent.pendingTargetRef, undefined);
+    fs.writeFileSync(path.join(t.dir, targetAgent), JSON.stringify(agent));
+    for (const name of [targetTool, targetAgent]) t.artifacts.set(name, fs.readFileSync(path.join(t.dir, name)));
+    const untouched = new Map([
+      [`review-telemetry-${'c'.repeat(64)}.json`, JSON.stringify({ ...tool, targetRef: 'feat/other', invocationId: 'foreign-tool', parentTranscriptPath: path.join(t.dir, 'foreign.jsonl') })],
+      [`review-agent-telemetry-${'d'.repeat(64)}.json`, JSON.stringify({ ...agent, parentTranscriptPath: path.join(t.dir, 'foreign.jsonl') })],
+      [`review-telemetry-${'e'.repeat(64)}.json`, '{malformed tool'],
+      [`review-agent-telemetry-${'f'.repeat(64)}.json`, '{malformed agent'],
+    ]);
+    for (const [name, bytes] of untouched) fs.writeFileSync(path.join(t.dir, name), bytes);
+    const out = t.ok(['rerun', 'feat/rerun']), manifest = validateArchive(t, out.archived.archive);
+    for (const name of [targetTool, targetAgent]) assert.equal(fs.existsSync(path.join(t.dir, name)), false, `cleanup omitted ${name}`);
+    for (const [name, bytes] of untouched) {
+      assert.equal(fs.readFileSync(path.join(t.dir, name), 'utf8'), bytes);
+      assert.equal(manifest.artifacts.some(item => path.basename(item.originalPath) === name), false, `unrelated or malformed telemetry archived: ${name}`);
+    }
+  });
   test(`${provider}: rerun archives full prior findings and artifacts before replacing the active ledger`, () => {
     const t = fixture(provider), out = t.ok(['rerun', 'feat/rerun']);
     const fresh = review.readLedger(t.dir, t.slug); validateArchive(t, fresh.runs[0].archive);

@@ -605,13 +605,11 @@ function requireReservations(run, ledger, needs, what) {
 function archiveReviewRun(stateDir, slug, prior) {
   const root = path.resolve(stateDir);
   const targetRef = prior.target?.ref;
+  const telemetryFiles = new Set(reviewTelemetry.listTelemetryFiles(root, targetRef, slug));
   const names = fs.readdirSync(root).filter(name => {
     const round = /^round-(\d+)-/.exec(name);
     if (round && Number(round[1]) <= (prior.round || 0)) return true;
-    if (name === `intent-${slug}.md` || name === `telemetry-${slug}.json`) return true;
-    if (/^review-(?:agent-)?telemetry-[0-9a-f]{64}\.json$/.test(name)) {
-      try { const entry = JSON.parse(fs.readFileSync(path.join(root, name), 'utf8')); return entry.targetRef === targetRef || entry.pendingTargetRef === targetRef; } catch {}
-    }
+    if (name === `intent-${slug}.md` || telemetryFiles.has(path.join(root, name))) return true;
     return false;
   }).sort();
   const files = names.map(name => {
