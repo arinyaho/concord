@@ -44,6 +44,12 @@ Bind proposal identity, wording and applicability to immutable reviewed snapshot
 
 The fifth run at head `0c563c6f59c24afe2830cf916268aeaf9b0b46b1` passed its ordinary review pairs, then its panel was rejected because one adversarial verifier declared a failed measurement. Preserve that failed evidence; it is neither a clean verdict nor an accepted panel finding. Two other independent executable probes reproduced associated-agent telemetry loss: cleanup selects some untagged agent receipts by their tool-record association, while the archive selected only explicit target fields. Archive the same complete target-associated telemetry set used by cleanup before deleting it, retaining unrelated receipts. Re-review with functioning independent measurements; do not replace the blocked verdict with an assumed result.
 
+## Sixth-run implementation and measurement reconciliation
+
+The sixth run used actual CLI-planned sequential fixes for observation receipt validation, resumable interrupted-rerun cleanup, refusal of unverifiable legacy reservation-only bindings, and original binding publication before the first launch charge. Four attributed code commits preserve those confirmed fixes and their provider mirrors. Pending cleanup is completed only by authorized mutations under the target lock; read-only show excludes stale telemetry without modifying evidence. A launch refused before charging keeps the previous standalone identity; a charged or interrupted accepted attempt cannot become unkeyed.
+
+The last round's actual DoD failed an older fixture that kills the first target write and assumes that charge has already happened. With the corrected ordering that write publishes identity before charging: update the fixture to require no new charge, unchanged budget bytes, denied unkeyed mutation and exactly one charge when the original flags resume. Keep the separate real post-charge SIGKILL regression. The round then stopped on a reviewer module-resolution measurement failure, not a clean verdict. Preserve both failures and perform a fresh review with functioning native measurement fixtures.
+
 ## Validation limits
 
 Native tests cover deterministic decisions and durable state. Actual host efficiency, adoption of lessons and token savings need subsequent session observations. A stopped checkpoint is not a clean or terminal review verdict.

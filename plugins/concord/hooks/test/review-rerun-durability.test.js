@@ -136,7 +136,7 @@ for (const provider of Object.keys(providers)) {
     assert.deepEqual(fs.readFileSync(runPath(t.initDir, 'durability')), recordedBudget);
     assert.deepEqual(fs.readFileSync(review.ledgerPath(t.dir, t.slug)), t.original);
   });
-  test(`${provider}: a first keyed reserve publishes its binding before a crash and charges its launch once`, () => {
+  test(`${provider}: a first keyed reserve interrupted before charging stays bound and charges exactly once on resume`, () => {
     const t = fixture(provider), ref = 'feat/reserve-first', slug = review.targetSlug(ref);
     const start = t.call(['round-start', ref, 'HEAD~1', '--no-broad'], { key: false });
     assert.equal(start.status, 0, start.stderr);
@@ -145,13 +145,28 @@ for (const provider of Object.keys(providers)) {
     assert.equal(out.status, 72);
     const ledger = review.readLedger(t.dir, slug);
     assert.deepEqual(ledger.initiative_binding, { key: 'durability', stateDir: fs.realpathSync(t.initDir) });
-    assert.equal(ledger.initiative_reservations.length, 1);
+    assert.deepEqual(ledger.initiative_reservations || [], []);
     const recorded = fs.readFileSync(runPath(t.initDir, 'durability'));
-    assert.equal(JSON.parse(recorded).launches.length, 2);
+    assert.deepEqual(recorded, t.initiativeBytes, 'publishing the binding must precede the launch charge');
+    const launchesBefore = JSON.parse(recorded).launches;
+    assert.equal(launchesBefore.length, 1);
+    const boundBytes = fs.readFileSync(review.ledgerPath(t.dir, slug));
     fs.rmSync(`${review.ledgerPath(t.dir, slug)}.lock`, { recursive: true, force: true });
-    const denied = t.call(['reserve', ref, 'verify'], { key: false });
-    assert.equal(denied.status, 1); assert.match(denied.stderr, /complete initiative run flags/);
-    assert.deepEqual(fs.readFileSync(runPath(t.initDir, 'durability')), recorded);
+    for (const args of [['reserve', ref, 'verify'], ['reset', ref]]) {
+      const denied = t.call(args, { key: false });
+      assert.equal(denied.status, 1); assert.match(denied.stderr, /complete initiative run flags/);
+      assert.deepEqual(fs.readFileSync(runPath(t.initDir, 'durability')), recorded);
+      assert.deepEqual(fs.readFileSync(review.ledgerPath(t.dir, slug)), boundBytes);
+    }
+    const resumed = t.ok(['reserve', ref, 'correctness']);
+    assert.equal(resumed.status, 'granted'); assert.equal(resumed.count, 1);
+    const reservations = review.readLedger(t.dir, slug).initiative_reservations;
+    assert.equal(reservations.length, 1); assert.equal(reservations[0].token, resumed.token);
+    assert.equal(reservations[0].role, 'correctness'); assert.equal(reservations[0].count, 1);
+    const launchesAfter = JSON.parse(fs.readFileSync(runPath(t.initDir, 'durability'))).launches;
+    assert.equal(launchesAfter.length, launchesBefore.length + 1);
+    assert.deepEqual(launchesAfter.slice(0, launchesBefore.length), launchesBefore);
+    assert.equal(launchesAfter.at(-1).target, ref); assert.equal(launchesAfter.at(-1).role, 'correctness');
   });
   test(`${provider}: rerun archives an untagged native agent observation associated with a target tool`, () => {
     const t = fixture(provider), adapter = require('../../adapters/claude-code/review-telemetry');
