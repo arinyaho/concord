@@ -31,3 +31,13 @@ Applying the same rule to the charter and other durable files was rejected: it w
 - Retry is bounded, so a rename blocked longer than the backoff window still fails the write. The caller sees the error and the previous file is intact.
 - The helper does not `fsync`. It guarantees readers see the old or the new file, not that a write survives a crash or power loss, which can also leave a stray temporary file.
 - Retry and backoff behavior is verified only with injected rename failures. It is not verified on Windows.
+
+## Manual recovery without a backup
+
+An operator who independently knows that the target was standalone may stop all workers using it and move the unreadable ledger and its related round artifacts and telemetry into a private quarantine outside the active state directory. Start a fresh standalone review only after accepting that previous rounds, findings and review history cannot be recovered. Retain the quarantined files for investigation. If the binding is unknown or the target belongs to an initiative, preserve its original state and reconcile its identity and spent budget; moving files must not bypass initiative limits.
+
+## Target serialization and archive retention
+
+Every target mutation, including standalone operations, holds the target lock. DoD execution can keep it held longer than the 10-second contention wait. Callers serialize operations on the same target and wait for the owner to finish; never remove a live owner's lock merely because the wait expired.
+
+Rerun archives retain full diff, ledger and role evidence under `review-archives/<slug>/<id>`. There is no automatic garbage collection: active `rerun_cleanup`, run-history pointers and feedback proofs depend on those files and hashes. Monitor disk usage for long initiatives. After retiring the target and initiative, an operator may move the whole associated state store to private offline storage. Delete it only after its dependent history and feedback records have also been retired and loss of recovery/audit evidence is accepted. Do not selectively delete referenced archives or treat a new context as permission to discard them.

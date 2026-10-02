@@ -30,3 +30,9 @@
 Automated tests cover evaluation, durable artifacts, CLI decisions and budget preservation. Actual native session termination and token savings require a host session measurement; no process termination is inferred from a JSON decision.
 
 Suggested continuations preserve private immutable copies of state and handoff alongside their original paths. Resume verifies snapshot hashes, then reads the latest originals and live ledger to skip steps completed after the suggestion. Ordinary execution progress does not require source-drift reconciliation; changed authoritative requirements or authorization still do. The prompt preserves the selected session handoff policy.
+
+## Review feedback corrections
+
+Checkpoint creation and delivery run after the CLI records the round. Their failures are returned as `sessionHandoff: { action: "failed", mode, error }`, preserving the recorded review result and continuation claim without adding an initiative error disposition. A suggestion failure permits the review loop to continue. A failed stop checkpoint preserves the continuing review decision and stops before any next round; it does not claim that a valid continuation snapshot was saved.
+
+The native launcher returns exit code 1 for a continuing `session-handoff` decision or a failed `stop-at-checkpoint` handoff, while still outputting the review result and handoff failure. A successful checkpoint attached to an already terminal review preserves the review's existing exit behavior. Source snapshots retain the source file extension, so native runner JSON state/handoff files are saved as `.json`; Markdown sources remain `.md`.

@@ -83,7 +83,7 @@ function createSessionHandoff({ packetPath, mode = 'suggest', initiative, reposi
     };
     const directory = path.join(checkpoint.run.stateDir, `session-handoff-${digest(JSON.stringify(checkpoint))}`);
     for (const [name, original] of Object.entries({ state, handoff })) {
-      checkpoint.sources[name] = { path: path.join(directory, `${name}.md`), originalPath: original.path, sha256: original.sha256 };
+      checkpoint.sources[name] = { path: path.join(directory, `${name}${path.extname(original.path) || '.txt'}`), originalPath: original.path, sha256: original.sha256 };
     }
     const json = `${JSON.stringify(checkpoint, null, 2)}\n`;
     const prompt = continuationPrompt(checkpoint);

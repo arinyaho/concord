@@ -56,6 +56,7 @@ for (const provider of Object.keys(providers)) {
     assert.equal(checkpoint.budget.usedLaunches, 1);
     assert.equal(checkpoint.budget.maxLaunches, 2);
     assert.equal(checkpoint.transcript, undefined);
+    assert.equal(path.extname(checkpoint.sources.state.path), '.md');
     assert.equal(fs.readFileSync(s.run.path, 'utf8'), before);
     if (process.platform !== 'win32') assert.equal(fs.statSync(result.promptPath).mode & 0o777, 0o600);
   });
@@ -124,5 +125,20 @@ for (const provider of Object.keys(providers)) {
     assert.equal(fs.readFileSync(s.run.path, 'utf8'), before);
     assert.equal(reserveLaunch(s.run, { role: 'fix', round: 1, target: 'feat/x' }), false);
     assert.match(fs.readFileSync(result.promptPath, 'utf8'), /exhausted|exhaustion/);
+  });
+}
+
+for (const provider of Object.keys(providers)) {
+  test(`${provider}: JSON source snapshots retain their JSON extension and exact content`, (t) => {
+    const s = setup(t, provider);
+    const statePath = path.join(s.root, 'state.json'), handoffPath = path.join(s.root, 'handoff.json');
+    fs.writeFileSync(statePath, JSON.stringify({ scope: 'review' }));
+    fs.writeFileSync(handoffPath, JSON.stringify({ nextStep: 'show' }));
+    const result = s.ok({ ...s.packet, statePath, handoffPath });
+    const checkpoint = JSON.parse(fs.readFileSync(result.checkpointPath, 'utf8'));
+    for (const name of ['state', 'handoff']) {
+      assert.equal(path.extname(checkpoint.sources[name].path), '.json');
+      assert.equal(fs.readFileSync(checkpoint.sources[name].path, 'utf8'), fs.readFileSync(checkpoint.sources[name].originalPath, 'utf8'));
+    }
   });
 }

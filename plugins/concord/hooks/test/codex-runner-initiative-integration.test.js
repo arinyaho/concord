@@ -276,3 +276,52 @@ test('fresh contexts each suggest once while resuming the same durable review bu
   assert.equal(f.workers.filter(role => role === 'fix').length, 1);
   assert.equal(f.workers.filter(role => role === 'correctness').length, 2);
 });
+
+for (const mode of ['suggest', 'stop-at-checkpoint']) {
+  for (const failure of ['cli', 'read', 'write', 'prompt']) {
+    test(`${mode}: ${failure} checkpoint failure preserves recorded clean result and sole disposition`, async () => {
+      const f = fixture(), original = f.options.runCli;
+      const result = await runReviewUntilGreen({ ...f.options, sessionHandoff: mode, getInputContextTokens: () => 128000, runCli: args => {
+        if (args[0] === 'session-checkpoint' && failure === 'cli') throw new Error('checkpoint CLI failed');
+        const out = original(args);
+        if (args[0] === 'record' && failure === 'read') fs.writeFileSync(review.ledgerPath(f.stateDir, review.targetSlug(f.options.ref)), '{');
+        if (args[0] === 'record' && failure === 'write') fs.mkdirSync(path.join(f.stateDir, `session-review-${review.targetSlug(f.options.ref)}-state.json`));
+        if (args[0] === 'session-checkpoint' && failure === 'prompt') fs.unlinkSync(out.promptPath);
+        return out;
+      } });
+      assert.equal(result.decision.converged, true);
+      assert.ok(result.sessionHandoff.error);
+      assert.equal(result.sessionHandoff.mode, mode);
+      assert.equal(f.ledger().dispositions.length, 1);
+      assert.equal(result.continuationPacket.delivery.claim, f.ledger().dispositions[0].packet.delivery.claim);
+      assert.deepEqual(f.workers, ['correctness', 'verify']);
+    });
+  }
+}
+test('suggest callback failure preserves the recorded review result', async () => {
+  const f = fixture();
+  const result = await runReviewUntilGreen({ ...f.options, getInputContextTokens: () => 128000, onSessionHandoff: () => { throw new Error('handoff output failed'); } });
+  assert.equal(result.decision.converged, true);
+  assert.match(result.sessionHandoff.error, /handoff output failed/);
+  assert.equal(f.ledger().dispositions.length, 1);
+});
+test('failed stop checkpoint preserves a continuing decision and launches no next round', async () => {
+  const f = fixture(), original = f.options.runCli;
+  const result = await runReviewUntilGreen({ ...f.options, spawn: fixingWorker(f), sessionHandoff: 'stop-at-checkpoint', getInputContextTokens: () => 128000, runCli: args => {
+    if (args[0] === 'session-checkpoint') throw new Error('checkpoint failed');
+    return original(args);
+  } });
+  assert.equal(result.decision, 'session-handoff');
+  assert.equal(result.reviewDecision.continue, true);
+  assert.match(result.sessionHandoff.error, /checkpoint failed/);
+  assert.equal(f.ledger().rounds.length, 1);
+  assert.equal(f.ledger().dispositions.length, 0);
+});
+test('native launcher signals an incomplete session handoff with exit code 1', () => {
+  const dir = tmp(), preload = path.join(dir, 'preload.cjs');
+  fs.writeFileSync(preload, `const Module=require('node:module'),load=Module._load;Module._load=function(request){if(request==='../engine/codex-review-runner')return{runReviewUntilGreen:async()=>({decision:'session-handoff',reviewDecision:{continue:true},sessionHandoff:{action:'stop',promptPath:'/private/resume.md',prompt:'CONTINUE'}})};return load.apply(this,arguments);};`);
+  const out = spawnSync('node', ['--require', preload, path.resolve(__dirname, '../../../concord-codex/bin/review-until-green.js'), 'branch'], { encoding: 'utf8' });
+  assert.equal(out.status, 1, out.stderr);
+  assert.match(out.stdout, /session-handoff/);
+  assert.match(out.stdout, /CONTINUE/);
+});

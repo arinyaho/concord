@@ -31,7 +31,7 @@ function readLedger(stateDir, slug) {
     return ledger;
   } catch (e) {
     if (e && e.code === 'ENOENT') return null;
-    throw new Error(`unreadable review ledger ${path.basename(file)}: ${e && e.message}; preserve this file and restore the original ledger, then reconcile its identity and initiative binding before any mutation`);
+    throw new Error(`unreadable review ledger ${path.basename(file)}: ${e && e.message}; preserve this file and restore the original ledger, then reconcile its identity and initiative binding before any mutation. If no backup exists and an operator independently confirms this was standalone, stop its workers and manually move this file and related evidence aside before starting a fresh review; prior history is not recovered. Never use this to bypass initiative budgets`);
   }
 }
 

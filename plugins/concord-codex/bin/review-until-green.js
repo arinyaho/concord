@@ -85,8 +85,8 @@ runReviewUntilGreen(runnerOptions)
     if (result.continuationPacket) await deliver(process.stdout, result.continuationPacket);
     else if (!(result.decision === 'terminal' && result.initiative)) await write(process.stdout, `${result.handoff || result.message || JSON.stringify(result)}\n`);
     if (result.sessionHandoff) await runnerOptions.onSessionHandoff(result.sessionHandoff);
-    // A blocked initiative run is a stop for a human, not a verified review: signal it in the exit status.
-    if (result.decision === 'blocked' || result.decision === 'reconciliation-required') process.exitCode = 1;
+    // Signal blocked reviews and stopped/failed handoffs to callers inspecting only exit status.
+    if (result.decision === 'blocked' || result.decision === 'reconciliation-required' || result.decision === 'session-handoff' || (result.sessionHandoff?.mode === 'stop-at-checkpoint' && result.sessionHandoff.error)) process.exitCode = 1;
   })
   .catch(async (error) => {
     try {

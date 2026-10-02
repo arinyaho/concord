@@ -875,8 +875,13 @@ async function runReviewUntilGreen(options) {
       recorded = await cli(['record', ref]);
     }
     await throwIfAborted(true);
-    const sessionHandoff = await checkpoint(started, recorded);
-    if (sessionHandoff?.action === 'stop' && recorded.decision?.continue) return { ...withTelemetry(recorded), decision: 'session-handoff', reviewDecision: recorded.decision, sessionHandoff };
+    // The review disposition is already durable. Checkpoint failures belong to
+    // the handoff, not the review, and must never add a second error disposition.
+    let sessionHandoff;
+    try { sessionHandoff = await checkpoint(started, recorded); } catch (error) {
+      sessionHandoff = latestSessionHandoff = { action: 'failed', mode: sessionMode, error: String(error.message || error) };
+    }
+    if ((sessionHandoff?.action === 'stop' || (sessionMode === 'stop-at-checkpoint' && sessionHandoff?.error)) && recorded.decision?.continue) return { ...withTelemetry(recorded), decision: 'session-handoff', reviewDecision: recorded.decision, sessionHandoff };
     if (recorded.decision && recorded.decision.continue) continue;
     return withTelemetry({ ...recorded, ...(latestSessionHandoff ? { sessionHandoff: latestSessionHandoff } : {}) });
   }
