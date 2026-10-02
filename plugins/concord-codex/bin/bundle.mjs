@@ -2,7 +2,7 @@
 // Regenerate plugins/concord-codex/engine/ from the shared source so the Codex
 // plugin is self-contained (codex plugin install copies only this plugin dir;
 // it does not follow symlinks or include sibling plugins). Run after editing
-// core/ or the codex statedir adapter. The drift-guard test enforces sync.
+// core/, the codex adapters, or a shared skill. The drift-guard test enforces sync.
 import fs from 'node:fs';
 import path from 'node:path';
 import url from 'node:url';
@@ -30,10 +30,10 @@ for (const f of ['statedir.js', 'transcript.js', 'event.js']) {
   n++;
 }
 
-fs.copyFileSync(
-  path.join(sharedSkillsDir, 'review-until-lgtm', 'SKILL.md'),
-  path.join(packagedSkillsDir, 'review-until-lgtm', 'SKILL.md'),
-);
-n++;
+for (const skill of ['ticket-writing', 'ticket-to-pr', 'proposal-package-authoring', 'review-until-lgtm', 'initiative-to-prs']) {
+  fs.rmSync(path.join(packagedSkillsDir, skill), { recursive: true, force: true });
+  fs.cpSync(path.join(sharedSkillsDir, skill), path.join(packagedSkillsDir, skill), { recursive: true });
+  n++;
+}
 
 console.log(`bundled ${n} files into engine/`);

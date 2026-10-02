@@ -12,6 +12,8 @@ Use a general model with medium effort for orchestration, high effort for readin
 
 After a bounded implementation batch is approved and its contract is clear, use the lowest-cost capable implementation model to complete the batch and its focused self-checks without pausing for status. Reserve higher-cost capability for architecture or scope decisions, new P1 or material findings, and one fresh independent verification after the batch.
 
+Give that implementation model only scoped tasks of easy or medium difficulty. It implements and tests each one, and hands back any task that proves harder than its scope suggested instead of pushing through; the orchestrator keeps that task or escalates it. Choose the lowest-cost setting by measurement: lower reasoning effort before changing class, move one class at a time, and keep a cheaper setting only when it matches the current one on the same tasks.
+
 ## Architecture decision gate
 
 Before checkpoint 1, identify decisions about cryptographic format or protocol, security and authorization, identity, data layout or migration, deployment boundaries, public API behavior, and ticket splits that lock in one of those choices. A deep-capability model must examine the compressed evidence and alternatives **before** the decision becomes an approved contract, ticket, design record, or implementation instruction. This gate applies even when sources appear to agree and the parent agent can articulate a plausible answer. Give the deep pass the exact decision, source evidence, counterexamples, reversibility and migration cost, and proposed acceptance checks. Record its conclusion and unresolved assumptions in the handoff. The user still owns product choices.
@@ -22,7 +24,7 @@ Apply this gate throughout execution, including implementation and review. When 
 
 ## Escalation
 
-Use deep capability for implementation or independent review when work spans security, authorization, identity, cryptography, storage migration, or coordinated changes across repositories whose interfaces cannot be tested independently; also escalate after two failures of the same cause or an unstable discriminating red. Mechanical cross-repository work with independent checks can remain general. Semantic reinterpretation during final mutations returns to the user and the architecture decision gate.
+Use deep capability for implementation or independent review when work spans security, authorization, identity, cryptography, storage migration, or coordinated changes across repositories whose interfaces cannot be tested independently; also escalate after two failures of the same cause, an unstable discriminating red, or an implementer handing a task back as harder than its scope suggested. Mechanical cross-repository work with independent checks can remain general. Semantic reinterpretation during final mutations returns to the user and the architecture decision gate.
 
 ## Delegation and evidence
 
