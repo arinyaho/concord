@@ -470,7 +470,7 @@ function firstRetryArtifact(retries) {
 // (`reserve`) and refuses to accept evidence from an unreserved launch.
 const INITIATIVE_FLAGS = [['--initiative-run-key', 'key'], ['--initiative-state-dir', 'stateDir'], ['--initiative-max-launches', 'maxLaunches'], ['--initiative-max-rounds', 'maxRounds']];
 const MODE_FLAG = '--initiative-mode';
-const RUN_VERBS = new Set(['finalise', 'consume', 'escalate']);
+const RUN_VERBS = new Set(['finalise', 'consume', 'escalate', 'session-checkpoint']);
 const RESERVE_ROLES = ['correctness', 'verify', 'intent', 'gate-review', 'gate-verify', 'fix', 'lens', 'vote'];
 const ARTIFACT_RESERVE_ROLE = { correctness: 'correctness', verify: 'verify', intent: 'intent', gate: 'gate-review', 'gate-verify': 'gate-verify' };
 
@@ -641,8 +641,14 @@ function main(resolveFromCwd) {
 }
 
 // Run-level verbs act on the initiative run, not on a target ledger, so they take no target lock.
-function runLevelVerb(verb, arg, initiative) {
+function runLevelVerb(verb, arg, initiative, rest = []) {
   if (!initiative) throw new Error(`review-cli ${verb}: requires the initiative run flags (--initiative-run-key, --initiative-state-dir, --initiative-max-launches, --initiative-max-rounds)`);
+  if (verb === 'session-checkpoint') {
+    if (rest.length && (rest.length !== 2 || rest[0] !== '--session-handoff')) throw new Error('session handoff: use session-checkpoint <absolute-packet.json> [--session-handoff <off|suggest|stop-at-checkpoint>]');
+    const result = require('./session-handoff').createSessionHandoff({ packetPath: arg, mode: rest.length ? rest[1] : 'suggest', initiative, repository: process.env.REVIEW_REPO_ROOT || process.cwd() });
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return;
+  }
   const stateDir = canonicalPath(initiative.stateDir);
   const repository = canonicalPath(process.env.REVIEW_REPO_ROOT || process.cwd());
   if (verb === 'escalate') {
@@ -665,7 +671,7 @@ function runVerb(resolveFromCwd, args, initiative) {
   const [verb, ref, ...rest] = args;
   const stateDir = resolveStateDir(resolveFromCwd);
   // `reserve` opens the run inside the target-ledger lock main() holds so parallel first calls serialize.
-  if (RUN_VERBS.has(verb)) return runLevelVerb(verb, ref, initiative);
+  if (RUN_VERBS.has(verb)) return runLevelVerb(verb, ref, initiative, rest);
   const run = initiative && verb !== 'reserve' && verb !== 'show' ? openKeyedRun(initiative) : null;
 
   if (verb === 'reserve') {

@@ -59,3 +59,30 @@ Losing worktree state is the harness's; redoing the investigation without checki
 A handoff is complete only when its evidence supports the exit verdict and its named output artifacts can be read back. `PASS`, `NO PR NEEDED`, and `BLOCKED` are distinct. A tool call without a verified side effect is not success. Missing or truncated evidence remains a blocker, not an invitation to infer completion.
 
 Keep handoffs concise: prefer an evidence table and exact identifiers over narrative chronology. Preserve long raw evidence in its source system or a separate artifact and reference it by stable identity.
+
+
+## Efficiency checkpoint protocol
+
+Persist the session handoff policy (`off`, default `suggest`, or `stop-at-checkpoint`) in state and handoff. Before a triggered checkpoint, finish the current stage, batch or round and drain every owned child. Save distinct nonempty state and handoff text files in durable storage. Include the exact next CLI verb and options, head/base or file identity, target ledger directory, source versions, completed role artifacts, existing reservations, dispositions, blockers and original authorization. Do not duplicate raw logs or implementation reasoning.
+
+Write an absolute JSON packet path with this bounded shape (use real absolute paths):
+
+```json
+{
+  "scope": "review",
+  "boundary": "round-complete",
+  "liveWorkers": [],
+  "statePath": "/project-state/run/state.md",
+  "handoffPath": "/project-state/run/handoff.md",
+  "nextAction": "Read the recorded decision and continue its exact next CLI step",
+  "observations": {"inputTokens": null, "toolCalls": 50, "noProgressCalls": 0}
+}
+```
+
+`scope` is `orchestrator`, `implementation` or `review`; `boundary` is `stage-complete`, `batch-complete` or `round-complete`. Counts are caller-reported nonnegative integers, or null when unmeasured. `nextAction` is at most 1,000 characters; unknown packet fields are not copied into the prompt. Call `node "<review-cli>" session-checkpoint <absolute-packet.json> --session-handoff <policy>` with all original initiative options. This verb reads the existing initiative ledger without opening, reserving, re-arming or finalising it. Pass `--session-handoff` only to this verb, never to ordinary review mutations. It requires an existing keyed run; before that run exists, persist the same source-based handoff and offer a manual continuation without claiming a CLI checkpoint.
+
+Apply its JSON decision: `continue` proceeds; `defer` finishes a safe boundary and drains owned workers before retrying; `suggest` offers the generated `promptPath` and `checkpointPath` once per distinct trigger in this context and continues; `stop` reads both artifacts back, presents the prompt and paths, then returns without starting another batch or round. A CLI error is a failed handoff: report it and preserve state rather than claiming a resumable checkpoint. The CLI produces a decision, not host process termination.
+
+On resume, verify the recorded source hashes and current authoritative versions, approved scope, authorization, revisions, live ledger status and remaining budgets. Preserve terminal or reconciliation decisions. Inspect existing worker artifacts and reservations before continuing the exact next step; do not relaunch completed work or invent a new run key. Return to normal reconciliation on source drift or exhaustion.
+
+Suggested continuations preserve private immutable copies of state and handoff alongside their original paths. Resume verifies snapshot hashes, then reads the latest originals and live ledger to skip steps completed after the suggestion. Ordinary execution progress does not require source-drift reconciliation; changed authoritative requirements or authorization still do. The prompt preserves the selected session handoff policy.
