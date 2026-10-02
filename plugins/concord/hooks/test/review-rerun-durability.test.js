@@ -84,6 +84,14 @@ const snapshot = directory => fs.readdirSync(directory, { recursive: true }).sor
   .filter(name => fs.statSync(path.join(directory, name)).isFile())
   .map(name => [name, fs.readFileSync(path.join(directory, name))]);
 for (const provider of Object.keys(providers)) {
+  test(`${provider}: interrupted rerun rejects a missing engine before cleanup`, () => {
+    const t = fixture(provider); addPriorTelemetry(t); interruptRerun(t);
+    const stateBefore = snapshot(t.dir), budgetBefore = snapshot(t.initDir);
+    const denied = t.call(['rerun', 'feat/rerun', '--engine']);
+    assert.equal(denied.status, 1); assert.match(denied.stderr, /rerun: --engine needs a name/);
+    assert.deepEqual(snapshot(t.dir), stateBefore, 'invalid rerun must preserve pending evidence and cleanup marker');
+    assert.deepEqual(snapshot(t.initDir), budgetBefore, 'invalid rerun must preserve initiative state');
+  });
   test(`${provider}: interrupted rerun rejects changed initiative options before any cleanup`, () => {
     const t = fixture(provider); addPriorTelemetry(t);
     interruptRerun(t);

@@ -489,6 +489,12 @@ function reserveOptions(rest) {
   return { role, count };
 }
 
+function rerunOptions(rest) {
+  const engineFlag = rest.indexOf('--engine');
+  if (engineFlag >= 0 && !rest[engineFlag + 1]) throw new Error('review-cli rerun: --engine needs a name (e.g. --engine codex)');
+  return { engine: engineFlag >= 0 ? rest[engineFlag + 1] : null };
+}
+
 function requireRoundStartMode(run, rest) {
   if (run && runMode(run) === 'lite' && rest.some((a) => ['--broad', '--gate', '--no-broad'].includes(a))) throw new Error('review-cli round-start: a lite initiative run takes no --broad, --gate or --no-broad; lite always runs the one design-conformance gate (escalate to base before the first launch for the full gate pair)');
 }
@@ -744,6 +750,7 @@ function main(resolveFromCwd) {
       // mismatches before deleting any evidence or clearing the pending marker.
       if (!CLI_VERBS.includes(args[0])) throw unknownVerb(args[0]);
       if (args[0] === 'reserve') reserveOptions(args.slice(2));
+      if (args[0] === 'rerun') rerunOptions(args.slice(2));
       const run = initiative && openKeyedRun(initiative);
       if (args[0] === 'round-start') requireRoundStartMode(run, args.slice(2));
     }
@@ -1951,9 +1958,7 @@ function runVerb(resolveFromCwd, args, initiative) {
   // same as it does across a gate-pending re-run.
   if (verb === 'rerun') {
     requireRef(ref, 'rerun');
-    const engineFlag = rest.indexOf('--engine');
-    if (engineFlag >= 0 && !rest[engineFlag + 1]) throw new Error('review-cli rerun: --engine needs a name (e.g. --engine codex)');
-    const engine = engineFlag >= 0 ? rest[engineFlag + 1] : null;
+    const { engine } = rerunOptions(rest);
     const slug = targetSlug(ref);
     const stored = readLedger(stateDir, slug);
     const prior = reviewTelemetry.foldTelemetry(stateDir, stored, slug);
