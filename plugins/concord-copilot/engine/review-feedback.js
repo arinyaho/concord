@@ -162,11 +162,18 @@ function load(file, repository, validateProofs = true) {
   }
   if (store.lessons.length > 1000 || store.observations.length > 10000 || new Set(store.lessons.map(l => l.id)).size !== store.lessons.length) fail('store limits or lesson identity are invalid');
   for (const entry of store.observations) {
-    if (!entry || !Array.isArray(entry.outcomes) || !entry.outcomes.length || entry.outcomes.length > 3) fail('malformed outcome');
+    if (!entry || !entry.ledger || !entry.evidence || !Array.isArray(entry.outcomes) || !entry.outcomes.length || entry.outcomes.length > 3) fail('malformed outcome');
     text(entry.runKey, 'runKey', 200); text(entry.unit, 'unit', 200);
+    const ledger = validateProofs ? readLedgerReceipt(entry.ledger, repository) : null;
+    if (validateProofs) {
+      if (ledger.initiative_binding?.key !== entry.runKey) fail('observation receipt provenance disagrees');
+      if (readFile(entry.evidence.path, 16384).reference.sha256 !== entry.evidence.sha256) fail('observation evidence changed; reconcile the measurement');
+    }
     for (const o of entry.outcomes) {
       if (!store.lessons.some(l => l.id === o?.id)) fail('unknown outcome lesson');
       member(o.outcome, ['recurred', 'not-observed', 'unmeasured'], 'outcome');
+      if (ledger && o.outcome === 'not-observed' && ledger.status !== 'clean') fail('not-observed needs a completed clean review');
+      if (ledger && o.outcome === 'recurred' && finding(ledger, text(o.findingId, 'findingId', 200)).status === 'killed') fail('killed findings do not establish recurrence');
     }
   }
   return store;

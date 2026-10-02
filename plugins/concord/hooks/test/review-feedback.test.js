@@ -360,6 +360,57 @@ for (const provider of Object.keys(providers)) {
       assert.equal(s.ok('report').outcomes.applied, 1);
     });
   }
+  for (const outcome of ['recurred', 'not-observed']) for (const receipt of ['ledger', 'evidence']) for (const mutation of ['deleted', 'modified']) {
+    test(`${provider}: report rejects ${mutation} observation-only ${receipt} for ${outcome}`, t => {
+      const s = setup(t, provider); const id = s.promote();
+      const evidencePath = path.join(s.root, 'observation.md');
+      fs.writeFileSync(evidencePath, 'Independent later review measurement.');
+      s.ok('observe', { runKey: 'run-c', unit: 'ticket-receipt', ledgerPath: s.ledgerPath, evidencePath,
+        outcomes: [{ id, outcome, ...(outcome === 'recurred' ? { findingId: s.packet.findingId } : {}) }] });
+      const storeFile = path.join(s.store, 'review-feedback.json');
+      const before = fs.readFileSync(storeFile, 'utf8');
+      const stored = JSON.parse(before); const observation = stored.observations[0];
+      assert.equal(stored.lessons[0].occurrences.some(o => o[receipt].path === observation[receipt].path), false);
+      assert.equal(s.ok('report').outcomes.applied, 1);
+      if (mutation === 'deleted') fs.unlinkSync(observation[receipt].path);
+      else if (receipt === 'ledger') {
+        const saved = JSON.parse(fs.readFileSync(observation.ledger.path));
+        fs.writeFileSync(observation.ledger.path, JSON.stringify({ ...saved, status: 'parked' }));
+      } else fs.writeFileSync(observation.evidence.path, 'Changed measurement evidence.');
+      const result = s.call('report');
+      assert.notEqual(result.status, 0, 'unsupported measurement must not be reported');
+      assert.match(result.stderr, /feedback:/);
+      assert.equal(fs.readFileSync(storeFile, 'utf8'), before);
+    });
+  }
+  for (const mutation of ['run-key', 'origin', 'repository', 'incomplete-review', 'missing-finding', 'killed-finding']) {
+    test(`${provider}: report rejects observation receipt with inconsistent ${mutation}`, t => {
+      const s = setup(t, provider); const id = s.promote();
+      const outcome = mutation === 'incomplete-review' ? 'not-observed' : 'recurred';
+      s.ok('observe', { runKey: 'run-c', unit: 'ticket-provenance', ledgerPath: s.ledgerPath, evidencePath: s.evidencePath,
+        outcomes: [{ id, outcome, ...(outcome === 'recurred' ? { findingId: s.packet.findingId } : {}) }] });
+      const storeFile = path.join(s.store, 'review-feedback.json');
+      const stored = JSON.parse(fs.readFileSync(storeFile)); const observation = stored.observations[0];
+      if (mutation === 'run-key') observation.runKey = 'different-run';
+      else if (mutation === 'origin') observation.ledger.originalSha256 = '0'.repeat(64);
+      else {
+        const saved = JSON.parse(fs.readFileSync(observation.ledger.path));
+        if (mutation === 'repository') saved.repository = 'different-repository';
+        else if (mutation === 'incomplete-review') saved.status = 'parked';
+        else if (mutation === 'missing-finding') saved.findings = [];
+        else saved.findings[0].status = 'killed';
+        const bytes = Buffer.from(JSON.stringify(saved));
+        fs.writeFileSync(observation.ledger.path, bytes);
+        observation.ledger.sha256 = require('node:crypto').createHash('sha256').update(bytes).digest('hex');
+      }
+      fs.writeFileSync(storeFile, JSON.stringify(stored));
+      const before = fs.readFileSync(storeFile, 'utf8');
+      const result = s.call('report');
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /feedback:/);
+      assert.equal(fs.readFileSync(storeFile, 'utf8'), before);
+    });
+  }
   for (const mutation of ['proof', 'outcome', 'ledger-status', 'recurrence-status', 'recurrence-commit']) {
     test(`${provider}: observation retry rejects changed ${mutation} while retaining the original receipt`, t => {
       const s = setup(t, provider); const id = s.promote();
