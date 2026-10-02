@@ -121,6 +121,49 @@ for (const [name, lib] of RUNTIMES) {
     assert.strictEqual(readIndex(stateDir).length, 1);
   });
 
+  // The index lock is an mkdir lock beside the index with the run lock's stale-owner recovery.
+  const holdIndexLock = (stateDir, owner) => {
+    const lock = `${indexFile(stateDir)}.lock`;
+    fs.mkdirSync(lock);
+    if (owner !== null) fs.writeFileSync(path.join(lock, 'owner'), `${owner}\n`);
+    return lock;
+  };
+
+  test(`${name}: a live-held index lock makes finalise wait, then proceed once the holder releases it`, () => {
+    const stateDir = tmp('report-lockheld-');
+    const lock = holdIndexLock(stateDir, process.pid);
+    const realWait = Atomics.wait;
+    let waits = 0;
+    Atomics.wait = (...args) => { waits += 1; if (waits === 2) fs.rmSync(lock, { recursive: true, force: true }); return realWait(...args); };
+    try { finalisedRun(lib, { stateDir, key: 'lockheld' }); } finally { Atomics.wait = realWait; }
+    assert.ok(waits >= 2, 'finalise waited while the lock was held');
+    assert.ok(!fs.existsSync(lock));
+    assert.strictEqual(readIndex(stateDir).length, 1);
+  });
+
+  test(`${name}: an index lock whose owner is not running is reclaimed`, () => {
+    const stateDir = tmp('report-lockstale-');
+    const lock = holdIndexLock(stateDir, 2 ** 22 + 12345); // above the default pid range: no such process
+    finalisedRun(lib, { stateDir, key: 'lockstale' });
+    assert.ok(!fs.existsSync(lock));
+    assert.strictEqual(readIndex(stateDir).length, 1);
+  });
+
+  test(`${name}: an index lock held past the wait limit fails the render naming the lock and its owner, and the held lock is left alone`, () => {
+    const stateDir = tmp('report-locktimeout-');
+    const lock = holdIndexLock(stateDir, process.pid);
+    const realNow = Date.now;
+    const realWait = Atomics.wait;
+    let clock = realNow();
+    Date.now = () => { clock += 6000; return clock; };
+    Atomics.wait = () => 'timed-out';
+    try {
+      assert.throws(() => finalisedRun(lib, { stateDir, key: 'locktimeout' }), new RegExp(`index lock .*initiative-reports\\.jsonl\\.lock is held \\(owner pid ${process.pid}\\)`));
+    } finally { Date.now = realNow; Atomics.wait = realWait; }
+    assert.ok(fs.existsSync(lock), 'a lock this process does not hold is not removed');
+    assert.ok(!fs.existsSync(indexFile(stateDir)), 'no index was written');
+  });
+
   test(`${name}: launches and calls of one role share a key in the telemetry role vocabulary`, () => {
     const stateDir = tmp('report-roles-');
     const run = lib.openInitiativeRun({ repository: '/repo', stateDir, key: 'roles', maxLaunches: 20, maxRounds: 2 });
