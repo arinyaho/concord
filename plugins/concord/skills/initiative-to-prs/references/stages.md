@@ -47,7 +47,7 @@ Present the read-back ticket set, design changes, dependency order, observable a
 
 ## 3. Execute each repository unit
 
-Execute dependency-ready repository units with `ticket-to-pr`. Its stage exits remain authoritative. Keep routine implementation, review, and final mutations with the active agent unless the user, selected model, or CLI harness requires delegation; the architecture decision gate in `model-routing.md` requires a separate deep-capability specialist for material decisions.
+Execute dependency-ready repository units with `ticket-to-pr`. Its stage exits remain authoritative. Keep routine sequential mutations with the active agent, and delegate implementation only when isolated context or specialist work justifies it. At both the design-note and diff-review boundaries, the implementer returns an execution packet and a fresh driver runs the review gate without the implementer's history. A delegated implementer never drives its own review loop. The architecture decision gate in `model-routing.md` requires a separate deep-capability specialist for material decisions. A boundary handoff does not pass or skip a ticket stage; the orchestrator advances only after reading back the required review verdict and revision pair.
 
 During implementation and review, watch for a new material architecture or behavioral choice arising from user discussion, test results, or code tracing. Invoke the architecture decision gate before the dependent change is made; an approved ticket does not settle a newly discovered choice. Independent work may continue while that decision is reviewed.
 

@@ -198,7 +198,8 @@ test('initiative-to-prs documents lite eligibility and escalation before depende
   assert.match(skill, /one repository and one independently testable outcome.*settled contract.*no public API or deployment-boundary change.*no security, authorization, identity, or cryptography change.*no data migration.*no legal, regulatory, or external-data-rights decision.*no cross-repository integration/is);
   assert.match(skill, /exclusion condition is escalated to base before that implementation.*`escalate <trigger>`.*`public-api`.*`schema`.*`security`.*`cross-package`.*`migration`/is);
   assert.match(skill, /Record the trigger and the exclusion.*handoff/is);
-  assert.match(skill, /Escalation is refused after the first launch and never reverses.*new base run key.*`rerun` each ref/is);
+  assert.match(skill, /Escalation is refused after the first launch and never reverses.*after reconciliation.*new base run key.*separate target review state directory.*retain the old target ledger/is);
+  assert.match(skill, /start each ref normally when no ledger exists; use `rerun` only when.*matching binding/is);
   assert.match(skill, /never downgrade a base run to lite/i);
   assert.match(skill, /After `escalate`, replace the mode and budgets recorded in `state\.md` with base and the base budgets.*every later call/is);
 });

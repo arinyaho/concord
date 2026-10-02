@@ -51,7 +51,7 @@ Before accepting an implementation direction, have a deep-capability agent asses
 
 For a material cryptography, security, or migration choice or contract, also require a separate deep-capability reviewer with a packet built from source evidence and the proposed decision, excluding the responsible agent's reasoning; reconcile disagreement before dependent work resumes.
 
-If a caller (e.g. `initiative-to-prs`) has already delegated stage 6 implementation to a subagent and that subagent runs stage 7's `/review-until-green` itself, that nested invocation must still converge without needing an external nudge to resume it. On a harness whose subagent primitive defaults to background/async execution, the session driving `review-until-green` must force each reviewer spawn it owns to block synchronously (see `review-until-green`'s own harness-specific driver for how) — an idle nested loop waiting on a notification that never reaches it is the failure mode to avoid.
+When composed by `initiative-to-prs`, return an execution handoff before stage 4 and stage 7. A delegated implementer returns `AWAITING_REVIEW` and exits; a fresh review driver runs the gate with the same initiative options. Resume implementation only after the design-note review passes, and complete stages 8 and 9 only after the diff review passes. A handoff is not a passing review. For standalone `ticket-to-pr`, the active agent may still drive its review. A delegated review driver must force blocking reviewer spawns on harnesses with async defaults, following `review-until-green`'s harness-specific driver; this preserves progress without passing implementation history into review orchestration.
 
 ## Stage 2 is the one that gets skipped
 

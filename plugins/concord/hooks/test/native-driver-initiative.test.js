@@ -46,12 +46,66 @@ function setup(provider, { config, maxLaunches = 20, maxRounds = 5 } = {}) {
   const ledgerFile = () => path.join(initDir, fs.readdirSync(initDir).find((f) => /^initiative-review-.*\.json$/.test(f)));
   const initiative = () => JSON.parse(fs.readFileSync(ledgerFile(), 'utf8'));
   const write = (n, name, obj) => fs.writeFileSync(path.join(dir, `round-${n}-${name.replace(/^fix-(.*)$/, (_, id) => `fix-${safeIdForFilename(id)}`)}.json`), JSON.stringify(obj));
-  const start = () => { const r = cli(['round-start', 'feat/x', 'HEAD~1', '--no-broad'], { key: false }); assert.strictEqual(r.status, 0, r.stderr); return r.json().round; };
-  return { repo, dir, initDir, env, cli, ok, initiative, write, start, ledgerFile };
+  const start = () => { const bound = !!review.readLedger(dir, review.targetSlug('feat/x'))?.initiative_binding; const r = cli(['round-start', 'feat/x', 'HEAD~1', '--no-broad'], { key: bound }); assert.strictEqual(r.status, 0, r.stderr); return r.json().round; };
+  return { repo, dir, initDir, env, keyed, cli, ok, initiative, write, start, ledgerFile };
 }
 
 const CLEAN = { status: 'ok', examined: ['a.txt'], findings: [] };
 const finding = { id: 'correctness:bug', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' };
+
+for (const provider of Object.keys(PROVIDERS)) {
+  test(`${provider}: bound initiative rejects omitted flags without changing either ledger`, () => {
+    const t = setup(provider);
+    t.start();
+    t.ok(['reserve', 'feat/x', 'correctness']);
+    const targetBefore = fs.readFileSync(review.ledgerPath(t.dir, review.targetSlug('feat/x')), 'utf8');
+    const runBefore = t.initiative();
+    for (const args of [['reserve', 'feat/x', 'verify'], ['reset', 'feat/x'], ['rerun', 'feat/x'], ['record', 'feat/x'], ['round-start', 'feat/x', 'HEAD~1']]) {
+      const result = t.cli(args, { key: false });
+      assert.notStrictEqual(result.status, 0, `${args[0]} escaped the initiative budget`);
+      assert.match(result.stderr, /initiative.*flags/i);
+      assert.strictEqual(fs.readFileSync(review.ledgerPath(t.dir, review.targetSlug('feat/x')), 'utf8'), targetBefore);
+      assert.deepStrictEqual(t.initiative(), runBefore);
+    }
+    assert.strictEqual(t.cli(['show', 'feat/x'], { key: false }).status, 0);
+  });
+
+  test(`${provider}: keyed reset cannot discard history or restore budget`, () => {
+    const t = setup(provider, { maxLaunches: 1 });
+    t.start();
+    t.ok(['reserve', 'feat/x', 'correctness']);
+    const before = t.initiative();
+    const result = t.cli(['reset', 'feat/x']);
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.stderr, /reset.*initiative.*rerun/i);
+    assert.ok(review.readLedger(t.dir, review.targetSlug('feat/x')));
+    assert.deepStrictEqual(t.initiative(), before);
+    t.ok(['rerun', 'feat/x']);
+    assert.ok(review.readLedger(t.dir, review.targetSlug('feat/x')).initiative_binding);
+    t.start();
+    assert.strictEqual(t.ok(['reserve', 'feat/x', 'verify']).reason, 'budget-exhausted');
+  });
+
+  test(`${provider}: changing the initiative binding cannot restore exhausted budget`, () => {
+    const t = setup(provider, { maxLaunches: 1 });
+    t.start();
+    t.ok(['reserve', 'feat/x', 'correctness']);
+    const before = t.initiative();
+    const targetBefore = review.readLedger(t.dir, review.targetSlug('feat/x'));
+    const anotherDir = tmp('native-other-init-');
+    for (const [flag, value] of [['--initiative-run-key', 'key-2'], ['--initiative-state-dir', anotherDir]]) {
+      const options = [...t.keyed];
+      options[options.indexOf(flag) + 1] = value;
+      const result = spawnSync('node', [PROVIDERS[provider], 'rerun', 'feat/x', ...options], { encoding: 'utf8', env: t.env, cwd: t.repo });
+      assert.notStrictEqual(result.status, 0, `${flag} restored the budget`);
+      assert.match(result.stderr, /different initiative binding/);
+      assert.deepStrictEqual(t.initiative(), before);
+      assert.deepStrictEqual(review.readLedger(t.dir, review.targetSlug('feat/x')), targetBefore);
+    }
+    assert.deepStrictEqual(fs.readdirSync(anotherDir), []);
+    assert.strictEqual(fs.readdirSync(t.initDir).filter((f) => f.endsWith('.json')).length, 1);
+  });
+}
 
 for (const provider of Object.keys(PROVIDERS)) {
   test(`${provider}: one budget is shared between a Codex-runner-opened ledger and native reservations (AC1)`, () => {

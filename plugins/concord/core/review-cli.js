@@ -606,12 +606,38 @@ function gatesNeeds(stateDir, n) {
   return Object.entries(ARTIFACT_RESERVE_ROLE).map(([name, role]) => ({ role, present: fs.existsSync(path.join(stateDir, `round-${n}-${name}.json`)) ? 1 : 0 }));
 }
 
-// Under a keyed run every verb read-modify-writes the target ledger inside one
-// target-ledger lock, so parallel verbs never lose an update. `show` only reads.
+// Every mutating target verb takes the same lock, including an unkeyed call
+// racing the target's first initiative binding. `show` only reads.
 function main(resolveFromCwd) {
   const { args, initiative } = extractInitiative(process.argv.slice(2));
-  if (!initiative || !args[1] || args[0] === 'show' || RUN_VERBS.has(args[0])) return runVerb(resolveFromCwd, args, initiative);
-  return withTargetLock(ledgerPath(resolveStateDir(resolveFromCwd), targetSlug(args[1])), () => runVerb(resolveFromCwd, args, initiative));
+  if (!args[1] || args[0] === 'show' || RUN_VERBS.has(args[0])) return runVerb(resolveFromCwd, args, initiative);
+  const stateDir = resolveStateDir(resolveFromCwd);
+  const slug = targetSlug(args[1]);
+  const readPrior = () => {
+    try { return readLedger(stateDir, slug); } catch (error) {
+      // Preserve the standalone escape hatch for an unreadable ledger.
+      if (!initiative && ['reset', 'rerun'].includes(args[0])) return null;
+      throw error;
+    }
+  };
+  const isBound = (ledger) => !!ledger?.initiative_binding || !!ledger?.initiative_reservations?.length;
+  const dispatch = () => {
+    const prior = readPrior();
+    if (!initiative && isBound(prior)) throw new Error('review-cli: this target belongs to an initiative; every mutating verb requires the complete initiative run flags');
+    if (initiative && prior?.initiative_binding && (prior.initiative_binding.key !== initiative.key || prior.initiative_binding.stateDir !== canonicalPath(initiative.stateDir))) {
+      throw new Error('review-cli: different initiative binding; retain the original run flags, or after reconciliation use a separate target review state directory');
+    }
+    if (args[0] === 'reset' && initiative) throw new Error('review-cli reset: cannot discard an initiative target; use rerun with the same initiative run flags to retain history and spent budget');
+    const result = runVerb(resolveFromCwd, args, initiative);
+    if (initiative) {
+      const ledger = readLedger(stateDir, slug);
+      if (ledger) writeLedger(stateDir, slug, { ...ledger, initiative_binding: { key: initiative.key, stateDir: canonicalPath(initiative.stateDir) } });
+    }
+    return result;
+  };
+  // Serialize even initially unbound calls: otherwise an older unkeyed write
+  // can erase a first binding that a keyed call just persisted.
+  return withTargetLock(ledgerPath(stateDir, slug), dispatch);
 }
 
 // Run-level verbs act on the initiative run, not on a target ledger, so they take no target lock.
@@ -1107,7 +1133,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       headSha = gitHeadSha(repoRoot); // no dirty-check on resume
       diff = gitDiff(repoRoot, base);
     } else {
-      const target = acquireTarget({ ref, base }, repoRoot); // throws the same dirty-tree error
+      const target = acquireTarget({ ref, base, reviewLock: `${ledgerPath(stateDir, slug)}.lock` }, repoRoot); // ignore only our own untracked lock
       acquiredTarget = target;
       headSha = target.identity;
       diff = target.reviewText;
@@ -1240,7 +1266,7 @@ function runVerb(resolveFromCwd, args, initiative) {
           throw new Error(`harness-failure: intent drift-check fetch failed (the cached intent is intact; this is a fetch failure, not a changed source): ${why}`);
         }
         if (fresh.sha !== ledger.intentHash) {
-          throw new Error(`harness-failure: intent source changed since this run began (run has ${ledger.intentHash.slice(0, 12)}, source now ${fresh.sha.slice(0, 12)}); this run keeps reviewing against the intent it started with -- reset to adopt the new one: review-cli.js reset ${ref}`);
+          throw new Error(`harness-failure: intent source changed since this run began (run has ${ledger.intentHash.slice(0, 12)}, source now ${fresh.sha.slice(0, 12)}); this run keeps reviewing against the intent it started with -- reconcile the changed source before adopting it, then run review-cli.js rerun ${ref} with the original initiative flags when bound`);
         }
       }
     }

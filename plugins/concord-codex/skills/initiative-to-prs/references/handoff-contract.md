@@ -33,6 +33,12 @@ The orchestrator passes a child only:
 
 The child may read current artifacts needed to verify drift or execute its stage. It must not repeat the broad initiative audit unless the handoff is missing, stale, or contradicted by current evidence.
 
+## Review boundary execution packet
+
+Before design-note or diff review, persist: the approved contract and authoritative evidence references; project root, branch, exact head and resolved base (or committed design-note path and content identity); red/green commands, results and artifact paths; outstanding gates; authorization; target review state directory; resolved review CLI path, provider/model selections and all initiative options including the same run key, budgets and mode. Record the next stage as `AWAITING_REVIEW`, not `PASS` for an unfinished ticket. Do not include implementation reasoning, exploratory logs or the conversation. The orchestrator reconstructs independent review evidence from the approved sources and verifies the revisions itself.
+
+A driver replacement also records the exact next CLI verb and arguments, completed role artifacts and their identities, existing reservations, and any still-live worker identity. Continue that step from the existing ledger; consume completed artifacts instead of relaunching reviewers. Keep every prior launch charged to the same run budget. Replacing context is not a new review run or permission to increase the budget.
+
 ## Read-once discipline
 
 A stage that reads the same source document, ticket, or code file more than once inside its own execution is spending tokens on content it already has. The moment a document is read, note its path or URL, its identity, and the excerpt or conclusion the stage actually needs, in that stage's own running plan or scratchpad — not left to working memory that a later tool call pushes out. Before issuing another Read for a path already noted this stage, consult the note first; re-read only when the note is stale, missing the needed detail, or the source may have changed since it was recorded. This is the single-agent counterpart to the handoff above: the handoff stops a child from re-auditing the parent's work, and this stops the same agent from re-fetching its own.
