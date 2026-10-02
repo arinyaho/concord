@@ -69,7 +69,7 @@ for (const provider of Object.keys(providers)) {
     fs.writeFileSync(s.packet.handoffPath, 'Review finished; proceed to the next approved stage.');
     fs.writeFileSync(s.packet.statePath, 'Current execution has advanced.');
     assert.equal(fs.readFileSync(checkpoint.sources.handoff.path, 'utf8'), prior);
-    assert.equal(checkpoint.sources.handoff.originalPath, s.packet.handoffPath);
+    assert.equal(checkpoint.sources.handoff.originalPath, fs.realpathSync(s.packet.handoffPath));
     assert.equal(require('node:crypto').createHash('sha256').update(fs.readFileSync(checkpoint.sources.handoff.path)).digest('hex'), checkpoint.sources.handoff.sha256);
     const prompt = fs.readFileSync(result.promptPath, 'utf8');
     assert.match(prompt, /Ordinary subsequent execution progress is not authoritative source drift/);

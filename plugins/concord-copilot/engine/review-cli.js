@@ -6,6 +6,7 @@ const path = require('node:path');
 const { safeIdForFilename } = require('./artifact-name');
 const { writeFileAtomic, publishDirectoryAtomic } = require('./atomic-write');
 const dodExec = require('./dod-exec');
+const { lockOwner: targetOwnerPid, pidRunning } = require('./run-lock');
 const intentLib = require('./intent');
 const gateLib = require('./gate');
 const gatePanelLib = require('./gate-panel');
@@ -556,9 +557,9 @@ function withSupersededLaunch(ledger, role, round, panel) {
 // Exclusive lock on the target ledger (same mkdir style as the initiative
 // ledger lock) with bounded retry, so parallel `reserve` calls serialize.
 // The holder writes its pid into the lock directory. It is shown when the lock
-// cannot be taken, never used to decide anything. A stuck lock is never
-// reclaimed automatically: on an interactive terminal the operator may confirm
-// its removal, otherwise the error names the one command that clears it.
+// cannot be taken. A live owner is never offered for removal. A stuck lock
+// is not reclaimed automatically: an operator may confirm removal only when
+// no live owner is established, otherwise the caller waits for the owner.
 function lockOwner(lock) {
   let pid;
   try { pid = Number.parseInt(fs.readFileSync(path.join(lock, 'owner'), 'utf8'), 10); } catch (e) { return 'owner unknown'; }
@@ -587,6 +588,8 @@ function withTargetLock(ledgerFile, fn, { confirm = promptRemoveLock, waitMs = 1
       if (e.code !== 'EEXIST') throw e;
       if (Date.now() > deadline) {
         const held = `target ledger lock is held: ${lock} (${lockOwner(lock)})`;
+        const ownerPid = targetOwnerPid(lock);
+        if (ownerPid && pidRunning(ownerPid)) throw new Error(`${held}; wait for the owner to finish and retry; do not remove a live lock`);
         if (!offered && confirm && confirm(`${held}. Remove it and continue?`)) {
           offered = true;
           fs.rmSync(lock, { recursive: true, force: true });

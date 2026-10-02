@@ -325,3 +325,12 @@ test('native launcher signals an incomplete session handoff with exit code 1', (
   assert.match(out.stdout, /session-handoff/);
   assert.match(out.stdout, /CONTINUE/);
 });
+
+test('native launcher keeps exit 0 for a clean review with a failed stop checkpoint', () => {
+  const dir = tmp(), preload = path.join(dir, 'preload.cjs');
+  fs.writeFileSync(preload, `const Module=require('node:module'),load=Module._load;Module._load=function(request){if(request==='../engine/codex-review-runner')return{runReviewUntilGreen:async()=>({decision:{continue:false,converged:true},sessionHandoff:{action:'failed',mode:'stop-at-checkpoint',error:'checkpoint failed'}})};return load.apply(this,arguments);};`);
+  const out = spawnSync('node', ['--require', preload, path.resolve(__dirname, '../../../concord-codex/bin/review-until-green.js'), 'branch'], { encoding: 'utf8' });
+  assert.equal(out.status, 0, out.stderr);
+  assert.match(out.stdout, /converged/);
+  assert.match(out.stdout, /checkpoint failed/);
+});
