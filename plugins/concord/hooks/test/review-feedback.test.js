@@ -100,6 +100,75 @@ for (const provider of Object.keys(providers)) {
       assert.equal(fs.readFileSync(storeFile, 'utf8'), before);
     });
   }
+  const proposalChanges = { pattern: 'changed-pattern', category: 'requirements', stage: 'ticket', tags: ['state', 'changed-tag'],
+    rule: 'A different unreviewed prevention rule.', rationale: 'A different unreviewed rationale.', earlierAvailable: false, preventable: false };
+  for (const accepted of [false, true]) for (const [field, value] of Object.entries(proposalChanges)) {
+    test(`${provider}: ${accepted ? 'accepted' : 'candidate'} proposal ${field} cannot change under the original receipt`, t => {
+      const s = setup(t, provider); accepted ? s.promote() : s.record();
+      const storeFile = path.join(s.store, 'review-feedback.json');
+      const stored = JSON.parse(fs.readFileSync(storeFile)); stored.lessons[0][field] = value;
+      fs.writeFileSync(storeFile, JSON.stringify(stored));
+      const before = fs.readFileSync(storeFile, 'utf8');
+      const result = s.call('select', { stage: value === 'ticket' ? 'ticket' : 'design', tags: ['state'] });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /feedback:/);
+      assert.equal(fs.readFileSync(storeFile, 'utf8'), before);
+      s.ok('decide', { id: stored.lessons[0].id, decision: 'retire', reviewedBy: 'reviewer', reason: 'Disable altered proposal', evidencePath: s.evidencePath });
+      assert.deepEqual(s.ok('select', { stage: 'design', tags: ['state'] }).lessons, []);
+    });
+  }
+  for (const accepted of [false, true]) {
+    test(`${provider}: ${accepted ? 'accepted' : 'candidate'} proposal edit cannot be hidden by recomputing its mutable ID`, t => {
+      const s = setup(t, provider); accepted ? s.promote() : s.record();
+      const storeFile = path.join(s.store, 'review-feedback.json');
+      const stored = JSON.parse(fs.readFileSync(storeFile)); const lesson = stored.lessons[0];
+      lesson.pattern = 'rehash-edited-pattern';
+      lesson.id = require('node:crypto').createHash('sha256').update(JSON.stringify([lesson.pattern, lesson.category, lesson.stage, lesson.tags])).digest('hex');
+      fs.writeFileSync(storeFile, JSON.stringify(stored));
+      assert.notEqual(s.call('select', { stage: 'design', tags: ['state'] }).status, 0);
+    });
+  }
+  for (const artifact of ['proposal', 'approval']) for (const mutation of ['deleted', 'modified', 'missing-reference']) {
+    test(`${provider}: ${artifact} immutable receipt ${mutation} fails reuse and remains explicitly retireable`, t => {
+      const s = setup(t, provider); const id = s.promote();
+      const storeFile = path.join(s.store, 'review-feedback.json');
+      const stored = JSON.parse(fs.readFileSync(storeFile));
+      const holder = artifact === 'proposal' ? stored.lessons[0] : stored.lessons[0].decisions.at(-1);
+      const key = artifact === 'proposal' ? 'proposalEvidence' : 'approval';
+      const reference = holder[key];
+      assert.ok(reference, 'native creation and approval must save proposal receipts');
+      if (mutation === 'deleted') fs.unlinkSync(reference.path);
+      else if (mutation === 'modified') fs.appendFileSync(reference.path, '\nChanged receipt.');
+      else { delete holder[key]; fs.writeFileSync(storeFile, JSON.stringify(stored)); }
+      assert.notEqual(s.call('select', { stage: 'design', tags: ['state'] }).status, 0);
+      const evidencePath = path.join(s.root, 'proposal-retirement.md');
+      fs.writeFileSync(evidencePath, 'Disable the lesson whose immutable proposal proof is invalid.');
+      assert.equal(s.ok('decide', { id, decision: 'retire', reviewedBy: 'reviewer', reason: 'Disable invalid proposal receipt', evidencePath }).status, 'retired');
+      assert.deepEqual(s.ok('select', { stage: 'design', tags: ['state'] }).lessons, []);
+    });
+  }
+  test(`${provider}: tampered accepted proposal can retire while intact lessons remain reusable`, t => {
+    const s = setup(t, provider); const id = s.promote();
+    const secondPacket = { ...s.packet, pattern: 'intact-lesson' };
+    const second = s.record(secondPacket); s.record({ ...secondPacket, runKey: 'run-b' });
+    s.ok('decide', { id: second.id, decision: 'accept', reviewedBy: 'reviewer', reason: 'Approve intact lesson', evidencePath: s.evidencePath });
+    const storeFile = path.join(s.store, 'review-feedback.json');
+    const stored = JSON.parse(fs.readFileSync(storeFile)); stored.lessons.find(l => l.id === id).rule = 'Silently changed approved rule.';
+    fs.writeFileSync(storeFile, JSON.stringify(stored));
+    assert.notEqual(s.call('select', { stage: 'design', tags: ['state'] }).status, 0);
+    s.ok('decide', { id, decision: 'retire', reviewedBy: 'reviewer', reason: 'Disable altered proposal', evidencePath: s.evidencePath });
+    assert.deepEqual(s.ok('select', { stage: 'design', tags: ['state'] }).lessons.map(l => l.id), [second.id]);
+    assert.notEqual(s.call('decide', { id, decision: 'accept', reviewedBy: 'reviewer', reason: 'Cannot restore altered proposal silently', evidencePath: s.evidencePath }).status, 0);
+  });
+  test(`${provider}: acceptance replay after telemetry changes retains one immutable approval`, t => {
+    const s = setup(t, provider); const id = s.promote();
+    const storeFile = path.join(s.store, 'review-feedback.json');
+    const before = fs.readFileSync(storeFile, 'utf8'); const files = fs.readdirSync(s.store).sort();
+    fs.writeFileSync(s.ledgerPath, JSON.stringify({ ...s.ledger, telemetry: [{ calls: 30 }] }));
+    s.ok('decide', { id, decision: 'accept', reviewedBy: 'independent-reviewer', reason: 'Repeated confirmed evidence supports prevention.', evidencePath: path.join(s.root, 'decision.md') });
+    assert.equal(fs.readFileSync(storeFile, 'utf8'), before);
+    assert.deepEqual(fs.readdirSync(s.store).sort(), files);
+  });
   test(`${provider}: relabelling one review attempt as two runs cannot promote a rule`, (t) => {
     const s = setup(t, provider); const first = s.record();
     const copied = path.join(s.root, 'copied-ledger.json');
@@ -274,6 +343,43 @@ for (const provider of Object.keys(providers)) {
     assert.notEqual(s.call('record', { ...s.packet, rule: 'x'.repeat(501), pattern: 'too-long' }).status, 0);
     assert.notEqual(s.call('record', { ...s.packet, evidencePath: path.join(s.root, 'missing') }).status, 0);
   });
+  for (const outcome of ['recurred', 'not-observed', 'unmeasured']) {
+    test(`${provider}: unchanged ${outcome} observation retry survives unrelated telemetry`, t => {
+      const s = setup(t, provider); const id = s.promote();
+      const packet = { runKey: 'run-c', unit: 'ticket-telemetry', ledgerPath: s.ledgerPath, evidencePath: s.evidencePath,
+        outcomes: [{ id, outcome, ...(outcome === 'recurred' ? { findingId: s.packet.findingId } : {}) }] };
+      s.ok('observe', packet);
+      const storeFile = path.join(s.store, 'review-feedback.json');
+      const before = fs.readFileSync(storeFile, 'utf8'); const files = fs.readdirSync(s.store).sort();
+      const observation = JSON.parse(before).observations[0];
+      const source = JSON.parse(fs.readFileSync(observation.ledger.originalPath));
+      fs.writeFileSync(observation.ledger.originalPath, JSON.stringify({ ...source, telemetry: [{ calls: 40 }] }));
+      assert.equal(s.ok('observe', packet).duplicate, true);
+      assert.equal(fs.readFileSync(storeFile, 'utf8'), before);
+      assert.deepEqual(fs.readdirSync(s.store).sort(), files);
+      assert.equal(s.ok('report').outcomes.applied, 1);
+    });
+  }
+  for (const mutation of ['proof', 'outcome', 'ledger-status', 'recurrence-status', 'recurrence-commit']) {
+    test(`${provider}: observation retry rejects changed ${mutation} while retaining the original receipt`, t => {
+      const s = setup(t, provider); const id = s.promote();
+      const packet = { runKey: 'run-c', unit: 'ticket-negative', ledgerPath: s.ledgerPath, evidencePath: s.evidencePath,
+        outcomes: [{ id, outcome: 'recurred', findingId: s.packet.findingId }] };
+      s.ok('observe', packet);
+      const storeFile = path.join(s.store, 'review-feedback.json');
+      const before = fs.readFileSync(storeFile, 'utf8');
+      const observation = JSON.parse(before).observations[0];
+      const source = JSON.parse(fs.readFileSync(observation.ledger.originalPath));
+      let retry = packet;
+      if (mutation === 'proof') fs.writeFileSync(s.evidencePath, 'Different observation evidence.');
+      else if (mutation === 'outcome') retry = { ...packet, outcomes: [{ id, outcome: 'not-observed' }] };
+      else if (mutation === 'ledger-status') source.status = 'parked';
+      else source.findings[0] = { ...source.findings[0], ...(mutation === 'recurrence-status' ? { status: 'open' } : { fix_commit: 'changed-commit' }) };
+      fs.writeFileSync(observation.ledger.originalPath, JSON.stringify(source));
+      assert.notEqual(s.call('observe', retry).status, 0);
+      assert.equal(fs.readFileSync(storeFile, 'utf8'), before);
+    });
+  }
   test(`${provider}: outcomes count reported recurrence separately from round count and missing measurements`, (t) => {
     const s = setup(t, provider); const id = s.promote();
     const observation = { runKey: 'run-c', unit: 'ticket-1', ledgerPath: s.ledgerPath, evidencePath: s.evidencePath, outcomes: [{ id, outcome: 'recurred', findingId: 'correctness:race' }] };

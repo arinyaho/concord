@@ -10,6 +10,7 @@ const { lockOwner, reclaimStaleLock } = require('./run-lock');
 const CATEGORIES = ['requirements', 'design', 'implementation', 'verification', 'review-noise', 'environment'];
 const ELIGIBLE = CATEGORIES.slice(0, 4);
 const STAGES = ['contract', 'ticket', 'design'];
+const PROPOSAL_FIELDS = ['pattern', 'category', 'stage', 'tags', 'rule', 'rationale', 'earlierAvailable', 'preventable'];
 const digest = value => crypto.createHash('sha256').update(value).digest('hex');
 const fail = message => { throw new Error(`feedback: ${message}`); };
 const text = (value, label, max = 500) => {
@@ -59,11 +60,25 @@ function snapshot(directory, bytes, original, extension) {
     if (digest(fs.readFileSync(file)) !== sha256) fail('immutable evidence snapshot was modified');
   } else writeFileAtomic(file, bytes, { mode: 0o600 });
   if (digest(fs.readFileSync(file)) !== sha256) fail('evidence snapshot read-back failed');
-  return { path: file, sha256, originalPath: original.path, originalSha256: original.sha256 };
+  return { path: file, sha256, ...(original ? { originalPath: original.path, originalSha256: original.sha256 } : {}) };
 }
 function proofSnapshot(directory, file) {
   const proof = readFile(file, 16384);
   return snapshot(directory, proof.bytes, proof.reference, 'md');
+}
+const proposalValue = lesson => Object.fromEntries(PROPOSAL_FIELDS.map(field => [field, lesson[field]]));
+const proposalIdentity = proposal => digest(JSON.stringify([proposal.pattern, proposal.category, proposal.stage, proposal.tags]));
+const proposalReceipt = (lesson, repository) => ({ repository, id: lesson.id, proposal: proposalValue(lesson) });
+const approvalReceipt = (lesson, decision, repository) => ({ ...proposalReceipt(lesson, repository), proposalEvidence: lesson.proposalEvidence,
+  reviewedBy: decision.reviewedBy, reason: decision.reason, evidence: decision.evidence });
+function readSnapshot(reference, label) {
+  if (!reference) fail(`${label} receipt is missing; explicitly disable and reconcile before reuse`);
+  const saved = readFile(reference.path, 16384);
+  if (saved.reference.sha256 !== reference.sha256) fail(`${label} receipt changed; explicitly disable and reconcile before reuse`);
+  return JSON.parse(saved.bytes);
+}
+function validateProposal(lesson, repository) {
+  if (proposalIdentity(lesson) !== lesson.id || JSON.stringify(readSnapshot(lesson.proposalEvidence, 'proposal')) !== JSON.stringify(proposalReceipt(lesson, repository))) fail('proposal changed; explicitly disable and reconcile before reuse');
 }
 function findingReceipt(f) {
   return { id: text(f.id, 'finding id', 200), status: f.status || 'open',
@@ -87,12 +102,16 @@ function assertUncontradicted(occurrence, repository) {
   if (current && (current.status === 'killed' || (occurrence.confirmed && !confirmed(current)))) fail('support is contradicted by the live review evidence');
 }
 
+function readLedgerReceipt(reference, repository) {
+  const saved = target(reference.path);
+  if (saved.reference.sha256 !== reference.sha256 || saved.ledger.repository !== repository
+    || saved.ledger.originLedger?.path !== reference.originalPath || saved.ledger.originLedger?.sha256 !== reference.originalSha256) fail('support receipt provenance disagrees');
+  return saved.ledger;
+}
 function readOccurrence(occurrence, repository) {
-  const { ledger, reference } = target(occurrence.ledger.path);
-  if (reference.sha256 !== occurrence.ledger.sha256 || readFile(occurrence.evidence.path, 16384).reference.sha256 !== occurrence.evidence.sha256) fail('support evidence changed; reconcile the candidate');
-  if (ledger.attemptId !== occurrence.attemptId || ledger.initiative_binding?.key !== occurrence.runKey
-    || ledger.repository !== repository || ledger.originLedger?.path !== occurrence.ledger.originalPath
-    || ledger.originLedger?.sha256 !== occurrence.ledger.originalSha256) fail('support receipt provenance disagrees');
+  const ledger = readLedgerReceipt(occurrence.ledger, repository);
+  if (readFile(occurrence.evidence.path, 16384).reference.sha256 !== occurrence.evidence.sha256) fail('support evidence changed; reconcile the candidate');
+  if (ledger.attemptId !== occurrence.attemptId || ledger.initiative_binding?.key !== occurrence.runKey) fail('support receipt provenance disagrees');
   const f = finding(ledger, occurrence.findingId);
   if (confirmed(f) !== occurrence.confirmed || f.status !== occurrence.findingStatus) fail('support is contradicted by the saved review evidence');
   return { ledger, finding: f };
@@ -109,6 +128,8 @@ function validateAccepted(lesson, repository) {
   validateSupport(lesson, repository);
   const evidence = lesson.decisions.at(-1).evidence;
   if (readFile(evidence.path, 16384).reference.sha256 !== evidence.sha256) fail('accepted decision evidence changed; reconcile the lesson');
+  const decision = lesson.decisions.at(-1);
+  if (JSON.stringify(readSnapshot(decision.approval, 'approval')) !== JSON.stringify(approvalReceipt(lesson, decision, repository))) fail('approved proposal changed; explicitly disable and reconcile before reuse');
 }
 
 function load(file, repository, validateProofs = true) {
@@ -124,16 +145,19 @@ function load(file, repository, validateProofs = true) {
     text(lesson.pattern, 'pattern', 64);
     if (typeof lesson.earlierAvailable !== 'boolean' || typeof lesson.preventable !== 'boolean' || lesson.occurrences.length > 100 || lesson.decisions.length > 100) fail('malformed prevention judgments or history');
     const ref = value => { if (!value || typeof value.path !== 'string' || !path.isAbsolute(value.path) || !/^[a-f0-9]{64}$/.test(value.sha256)) fail('malformed evidence reference'); };
+    if (lesson.proposalEvidence !== undefined) ref(lesson.proposalEvidence);
     for (const o of lesson.occurrences) {
       if (!o || typeof o.confirmed !== 'boolean') fail('malformed occurrence');
       text(o.runKey, 'runKey', 200); text(o.attemptId, 'attemptId', 200); text(o.findingId, 'findingId', 200); ref(o.ledger); ref(o.evidence);
     }
     for (const d of lesson.decisions) {
       member(d?.decision, ['accept', 'reject', 'retire'], 'decision'); text(d.reviewedBy, 'reviewedBy', 200); text(d.reason, 'reason'); ref(d.evidence);
+      if (d.approval !== undefined) ref(d.approval);
     }
-    if (lesson.status === 'accepted') {
+    if (validateProofs && ['candidate', 'accepted'].includes(lesson.status)) validateProposal(lesson, repository);
+    if (validateProofs && lesson.status === 'accepted') {
       if (lesson.decisions.at(-1)?.decision !== 'accept' || !ELIGIBLE.includes(lesson.category) || !lesson.earlierAvailable || !lesson.preventable || !supported(lesson)) fail('malformed accepted lesson');
-      if (validateProofs) validateAccepted(lesson, repository);
+      validateAccepted(lesson, repository);
     }
   }
   if (store.lessons.length > 1000 || store.observations.length > 10000 || new Set(store.lessons.map(l => l.id)).size !== store.lessons.length) fail('store limits or lesson identity are invalid');
@@ -171,7 +195,7 @@ function record(store, packet, directory) {
   assertRepository(ledger, runKey, store.repository);
   const f = finding(ledger, findingId);
   const attemptId = text(ledger.attemptId, 'attemptId', 200);
-  const id = digest(JSON.stringify([proposal.pattern, proposal.category, proposal.stage, proposal.tags]));
+  const id = proposalIdentity(proposal);
   let lesson = store.lessons.find(l => l.id === id);
   if (lesson && Object.entries(proposal).some(([key, value]) => JSON.stringify(lesson[key]) !== JSON.stringify(value))) fail('existing proposal differs; use a new pattern for a revised rule');
   const proof = readFile(packet.evidencePath, 16384);
@@ -186,6 +210,7 @@ function record(store, packet, directory) {
     if (!lesson) {
       if (store.lessons.length >= 1000) fail('lesson limit reached; archive explicitly');
       lesson = { id, ...proposal, status: 'candidate', judgmentSource: 'caller-reported', occurrences: [], decisions: [] };
+      lesson.proposalEvidence = snapshot(directory, Buffer.from(`${JSON.stringify(proposalReceipt(lesson, store.repository))}\n`), null, 'json');
       store.lessons.push(lesson);
     }
     if (lesson.occurrences.length >= 100) fail('occurrence limit reached');
@@ -201,9 +226,11 @@ function decide(store, packet, directory) {
   const decision = member(packet.decision, ['accept', 'reject', 'retire'], 'decision');
   const attribution = { decision, reviewedBy: text(packet.reviewedBy, 'reviewedBy', 200), reason: text(packet.reason, 'reason'), evidence: proofSnapshot(directory, packet.evidencePath) };
   if (decision === 'accept') {
+    validateProposal(lesson, store.repository);
     if (!ELIGIBLE.includes(lesson.category) || !lesson.earlierAvailable || !lesson.preventable) fail('lesson is ineligible for preventive reuse');
     if (!supported(lesson)) fail('acceptance needs confirmed support from two different runs and review attempts');
     validateSupport(lesson, store.repository);
+    attribution.approval = snapshot(directory, Buffer.from(`${JSON.stringify(approvalReceipt(lesson, attribution, store.repository))}\n`), null, 'json');
   }
   const status = { accept: 'accepted', reject: 'rejected', retire: 'retired' }[decision];
   if (lesson.status !== status || JSON.stringify(lesson.decisions.at(-1)) !== JSON.stringify(attribution)) {
@@ -226,7 +253,7 @@ function observe(store, packet, directory) {
   const runKey = text(packet.runKey, 'runKey', 200); const unit = text(packet.unit, 'unit', 200);
   const { ledger, reference } = target(packet.ledgerPath);
   assertRepository(ledger, runKey, store.repository);
-  const evidence = proofSnapshot(directory, packet.evidencePath);
+  const proof = readFile(packet.evidencePath, 16384);
   if (!Array.isArray(packet.outcomes) || !packet.outcomes.length || packet.outcomes.length > 3) fail('record 1 to 3 applied lesson outcomes');
   const outcomes = packet.outcomes.map(o => {
     const lesson = store.lessons.find(l => l.id === o.id);
@@ -240,11 +267,20 @@ function observe(store, packet, directory) {
     return { id: o.id, outcome, ...(outcome === 'recurred' ? { findingId: o.findingId } : {}) };
   }).sort((a, b) => a.id.localeCompare(b.id));
   if (new Set(outcomes.map(o => o.id)).size !== outcomes.length) fail('duplicate lesson outcome');
-  const receipt = ledgerSnapshot(directory, ledger, reference, outcomes.filter(o => o.outcome === 'recurred').map(o => finding(ledger, o.findingId)), store.repository);
-  const entry = { runKey, unit, outcomes, ledger: receipt, evidence, observationSource: 'caller-reported' };
+  const recurrenceFindings = outcomes.filter(o => o.outcome === 'recurred').map(o => finding(ledger, o.findingId));
   const prior = store.observations.find(o => o.runKey === runKey && o.unit === unit);
-  if (prior && JSON.stringify(prior) !== JSON.stringify(entry)) fail('existing outcome differs; reconcile instead of silently replacing it');
-  if (!prior) { if (store.observations.length >= 10000) fail('observation limit reached'); store.observations.push(entry); }
+  if (prior) {
+    const saved = readLedgerReceipt(prior.ledger, store.repository);
+    if (reference.path !== prior.ledger.originalPath || saved.attemptId !== ledger.attemptId || saved.status !== ledger.status
+      || saved.initiative_binding?.key !== runKey || canonicalPath(saved.initiative_binding.stateDir) !== canonicalPath(ledger.initiative_binding.stateDir)
+      || readFile(prior.evidence.path, 16384).reference.sha256 !== prior.evidence.sha256 || proof.reference.sha256 !== prior.evidence.sha256
+      || JSON.stringify(prior.outcomes) !== JSON.stringify(outcomes) || JSON.stringify(saved.findings) !== JSON.stringify(recurrenceFindings.map(findingReceipt))) fail('existing outcome differs; reconcile instead of silently replacing it');
+    // Keep the original observation receipt despite unrelated ledger telemetry.
+  } else {
+    if (store.observations.length >= 10000) fail('observation limit reached');
+    store.observations.push({ runKey, unit, outcomes, ledger: ledgerSnapshot(directory, ledger, reference, recurrenceFindings, store.repository),
+      evidence: snapshot(directory, proof.bytes, proof.reference, 'md'), observationSource: 'caller-reported' });
+  }
   return { recorded: outcomes.length, duplicate: !!prior };
 }
 function report(store) {

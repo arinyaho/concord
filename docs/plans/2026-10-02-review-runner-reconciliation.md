@@ -34,6 +34,12 @@ These are implementation corrections, with native regressions and both generated
 
 The preserved third run at head `5029b884412a83858dca28980fd018e97b134549` verified remaining instruction and feedback edge cases. The detailed panel instructions must put the single round-wide reservation before the per-candidate voter loop. Duplicate feedback with unchanged curated evidence and causal finding identity must retain its original immutable receipt after unrelated ledger telemetry changes. Explicit rejection or retirement must remain usable when several accepted lessons share damaged evidence; structural and repository validation still applies, and acceptance and reuse continue to reject any remaining invalid proof.
 
+## Fourth-run reconciliation
+
+The preserved fourth run at head `792082607341d0fedbdf0706e6cb3683e8852b7c` verified further durability and feedback edge cases. Every intermediate rerun ledger write must preserve the original initiative binding. Before replacing the active ledger or deleting round artifacts, save and verify a private archive of the full prior ledger and actual evidence files; retain its path and hashes in run history while keeping the next review blind. Existing compact history alone does not preserve evidence lost by earlier reruns; retain separately saved original receipts without manufacturing missing artifacts.
+
+Bind proposal identity, wording and applicability to immutable reviewed snapshots so edits cannot reuse the old acceptance proof. Verify those snapshots on reuse, preserving explicit disabling for damaged evidence. Observation retries with unchanged outcomes and curated evidence must retain their original receipt after unrelated ledger telemetry changes, just as duplicate finding records do.
+
 ## Validation limits
 
 Native tests cover deterministic decisions and durable state. Actual host efficiency, adoption of lessons and token savings need subsequent session observations. A stopped checkpoint is not a clean or terminal review verdict.

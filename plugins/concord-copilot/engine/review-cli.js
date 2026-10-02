@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 const { safeIdForFilename } = require('./artifact-name');
-const { writeFileAtomic } = require('./atomic-write');
+const { writeFileAtomic, publishDirectoryAtomic } = require('./atomic-write');
 const dodExec = require('./dod-exec');
 const intentLib = require('./intent');
 const gateLib = require('./gate');
@@ -16,7 +16,7 @@ const {
   targetSlug,
   readLedger,
   ledgerPath,
-  writeLedger,
+  writeLedger: persistLedger,
   deleteLedger,
   emptyLedger,
   contentHash,
@@ -598,6 +598,67 @@ function requireReservations(run, ledger, needs, what) {
   }
 }
 
+
+// Publish an immutable private evidence archive before rerun replaces or
+// removes anything. A failed publication leaves the active run intact; retries
+// verify and reuse the same content-addressed archive without overwriting it.
+function archiveReviewRun(stateDir, slug, prior) {
+  const root = path.resolve(stateDir);
+  const targetRef = prior.target?.ref;
+  const names = fs.readdirSync(root).filter(name => {
+    const round = /^round-(\d+)-/.exec(name);
+    if (round && Number(round[1]) <= (prior.round || 0)) return true;
+    if (name === `intent-${slug}.md` || name === `telemetry-${slug}.json`) return true;
+    if (/^review-(?:agent-)?telemetry-[0-9a-f]{64}\.json$/.test(name)) {
+      try { const entry = JSON.parse(fs.readFileSync(path.join(root, name), 'utf8')); return entry.targetRef === targetRef || entry.pendingTargetRef === targetRef; } catch {}
+    }
+    return false;
+  }).sort();
+  const files = names.map(name => {
+    const originalPath = path.join(root, name);
+    if (!fs.lstatSync(originalPath).isFile()) throw new Error(`review-cli rerun: archive source is not a regular file: ${name}`);
+    const bytes = fs.readFileSync(originalPath);
+    return { name, originalPath, bytes, sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+  });
+  const ledgerBytes = Buffer.from(JSON.stringify(prior));
+  const storedPath = ledgerPath(root, slug), storedBytes = fs.readFileSync(storedPath);
+  const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+  const id = digest(JSON.stringify({ ledger: digest(ledgerBytes), storedLedger: digest(storedBytes), files: files.map(({ name, sha256 }) => ({ name, sha256 })) }));
+  const directory = path.join(root, 'review-archives', slug, id);
+  const manifest = {
+    schema: 1, targetRef, run: (prior.runs || []).length + 1,
+    ledger: { path: path.join(directory, 'ledger.json'), originalPath: storedPath, sha256: digest(ledgerBytes) },
+    storedLedger: { path: path.join(directory, 'stored-ledger.json'), originalPath: storedPath, sha256: digest(storedBytes) },
+    artifacts: files.map(({ name, originalPath, sha256 }) => ({ path: path.join(directory, name), originalPath, sha256 })),
+  };
+  const manifestBytes = `${JSON.stringify(manifest, null, 2)}\n`;
+  const manifestPath = path.join(directory, 'manifest.json');
+  const verify = () => {
+    if (fs.readFileSync(manifestPath, 'utf8') !== manifestBytes) throw new Error('review-cli rerun: archived manifest read-back failed');
+    for (const entry of [manifest.ledger, manifest.storedLedger, ...manifest.artifacts]) {
+      if (digest(fs.readFileSync(entry.path)) !== entry.sha256) throw new Error('review-cli rerun: archived evidence read-back failed');
+    }
+  };
+  if (fs.existsSync(directory)) verify();
+  else {
+    fs.mkdirSync(path.dirname(directory), { recursive: true, mode: 0o700 });
+    const staging = `${directory}.${crypto.randomUUID()}.tmp`;
+    fs.mkdirSync(staging, { mode: 0o700 });
+    try {
+      for (const [name, bytes] of [['ledger.json', ledgerBytes], ['stored-ledger.json', storedBytes], ...files.map(file => [file.name, file.bytes]), ['manifest.json', manifestBytes]]) {
+        const destination = path.join(staging, name);
+        writeFileAtomic(destination, bytes, { mode: 0o600 });
+        if (digest(fs.readFileSync(destination)) !== digest(bytes)) throw new Error('review-cli rerun: staged archive read-back failed');
+      }
+      for (const file of files) if (digest(fs.readFileSync(file.originalPath)) !== file.sha256) throw new Error('review-cli rerun: source evidence changed during archival');
+      if (digest(fs.readFileSync(storedPath)) !== digest(storedBytes)) throw new Error('review-cli rerun: source ledger changed during archival');
+      publishDirectoryAtomic(staging, directory);
+      verify();
+    } finally { fs.rmSync(staging, { recursive: true, force: true }); }
+  }
+  return { manifestPath, sha256: digest(manifestBytes) };
+}
+
 function roundFiles(stateDir, n, pattern) {
   try { return fs.readdirSync(stateDir).filter((f) => pattern.test(f)).length; } catch (e) { return 0; }
 }
@@ -633,7 +694,7 @@ function main(resolveFromCwd) {
     const result = runVerb(resolveFromCwd, args, initiative);
     if (initiative) {
       const ledger = readLedger(stateDir, slug);
-      if (ledger) writeLedger(stateDir, slug, { ...ledger, initiative_binding: { key: initiative.key, stateDir: canonicalPath(initiative.stateDir) } });
+      if (ledger) persistLedger(stateDir, slug, { ...ledger, initiative_binding: { key: initiative.key, stateDir: canonicalPath(initiative.stateDir) } });
     }
     return result;
   };
@@ -670,6 +731,10 @@ function runLevelVerb(verb, arg, initiative, rest = []) {
 }
 
 function runVerb(resolveFromCwd, args, initiative) {
+  // Every intermediate publication is already bound, including the first
+  // keyed operation and writes whose caller never reaches main's return path.
+  const binding = initiative && { key: initiative.key, stateDir: canonicalPath(initiative.stateDir) };
+  const writeLedger = (directory, slug, ledger) => persistLedger(directory, slug, binding ? { ...ledger, initiative_binding: binding } : ledger);
   const [verb, ref, ...rest] = args;
   const stateDir = resolveStateDir(resolveFromCwd);
   // `reserve` opens the run inside the target-ledger lock main() holds so parallel first calls serialize.
@@ -1832,6 +1897,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     const stored = readLedger(stateDir, slug);
     const prior = reviewTelemetry.foldTelemetry(stateDir, stored, slug);
     if (!prior) throw new Error(`review-cli rerun: no ledger for ref "${ref}" ${stateDirHint(stateDir)} -- there is no run to re-run; just start a normal run.`);
+    const archive = archiveReviewRun(stateDir, slug, prior);
     const runs = (prior.runs || []).concat([{
       run: (prior.runs || []).length + 1,
       engine: prior.engine || null,
@@ -1843,16 +1909,20 @@ function runVerb(resolveFromCwd, args, initiative) {
       killed: prior.killed_digest || [],
       gate_open: (prior.gate_open || []).map((f) => f.id),
       telemetry: prior.telemetry || null,
+      archive,
     }]);
     const fresh = {
       ...emptyLedger(prior.target || { kind: 'local', ref }),
       runs,
       engine,
       gate_dismissed: prior.gate_dismissed || [],
+      ...(prior.initiative_binding || initiative ? { initiative_binding: prior.initiative_binding || { key: initiative.key, stateDir: canonicalPath(initiative.stateDir) } } : {}),
     };
+    // Binding and archive pointer must be in the first durable fresh ledger,
+    // including when interruption prevents main() from doing its final write.
+    writeLedger(stateDir, slug, fresh);
     for (let n = 1; n <= (prior.round || 0); n++) deleteRoundArtifacts(stateDir, n);
     reviewTelemetry.deleteTelemetry(stateDir, prior.target?.ref || ref, slug);
-    writeLedger(stateDir, slug, fresh);
     process.stdout.write(JSON.stringify({ status: 'ok', run: runs.length + 1, engine, archived: runs[runs.length - 1] }) + '\n');
     return;
   }
