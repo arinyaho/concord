@@ -21,7 +21,8 @@ test('keyed runs use a hashed separate ledger and atomically consume launch budg
   assert.ok(reserveLaunch(run, { role: 'correctness', round: 1 }));
   assert.strictEqual(reserveLaunch(run, { role: 'fix', round: 1 }), false);
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  assert.deepStrictEqual(ledger.launches, [{ role: 'correctness', round: 1 }]);
+  assert.deepStrictEqual(ledger.launches.map(({ at, ...launch }) => launch), [{ role: 'correctness', round: 1 }]);
+  assert.match(ledger.launches[0].at, /^\d{4}-\d\d-\d\dT/);
   assert.strictEqual(ledger.key, undefined);
 });
 
@@ -33,7 +34,7 @@ test('v5 terminal dispositions are normalized and recorded exactly once', () => 
   assert.strictEqual(recordDisposition(run, { target: 'feature/x', revision, result: { decision: { converged: true } }, packet }), false);
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
   assert.strictEqual(ledger.version, 5);
-  assert.deepStrictEqual(ledger.dispositions, [{ target: 'feature/x', revision, kind: 'terminal', reason: 'clean', sequence: 1, packet: { ...packet, outcome: { kind: 'terminal', reason: 'clean' }, ledger: { version: 5, status: 'active' }, budget: { maxLaunches: 1, maxRounds: 1, launches: 0, rounds: 0 }, delivery: { claim: 'feature/x:1', continuation: 'replay', consumed: false } } }]);
+  assert.deepStrictEqual(ledger.dispositions.map(({ at, ...disposition }) => disposition), [{ target: 'feature/x', revision, kind: 'terminal', reason: 'clean', sequence: 1, packet: { ...packet, outcome: { kind: 'terminal', reason: 'clean' }, ledger: { version: 5, status: 'active' }, budget: { maxLaunches: 1, maxRounds: 1, launches: 0, rounds: 0 }, delivery: { claim: 'feature/x:1', continuation: 'replay', consumed: false } } }]);
 });
 
 test('normalizeDisposition classifies gate-pending and intent-review as escape, not terminal', () => {
@@ -147,7 +148,7 @@ test('Claude, Codex, and Copilot runtimes produce the same disposition packet', 
   const ledgers = RUNTIMES.map((runtime, index) => {
     const run = runtime.openInitiativeRun({ stateDir: temp(), key: `parity-${index}`, repository: '/repo', maxLaunches: 1, maxRounds: 1 });
     runtime.recordDisposition(run, { target: 'feature/x', revision: { ref: 'feature/x', base: 'main', head_sha: 'head' }, result: { decision: { converged: true } }, packet: { trigger: 'terminal', exit: { code: 0, signal: null }, dod: { status: 'passed' }, telemetry: { complete: true }, nextAction: 'replay' } });
-    return JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions;
+    return JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions.map(({ at, ...disposition }) => disposition);
   });
   assert.deepStrictEqual(ledgers[1], ledgers[0]);
   assert.deepStrictEqual(ledgers[2], ledgers[0]);
