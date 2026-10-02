@@ -79,6 +79,15 @@ for (const [name, lib] of RUNTIMES) {
     assert.throws(() => lib.escalateInitiativeRun({ stateDir: dir, key: 'k', repository: '/repo', trigger: 'security', maxLaunches: 20, maxRounds: 5 }), /not a lite run/);
   });
 
+  test(`${name}: a new AC2 exclusion trigger (legal) is accepted by escalate (AC2)`, () => {
+    const dir = tmp('mode-');
+    const run = lib.openInitiativeRun({ repository: '/repo', stateDir: dir, key: 'k', maxLaunches: 4, maxRounds: 2, mode: 'lite' });
+    assert.ok(lib.escalateInitiativeRun({ stateDir: dir, key: 'k', repository: '/repo', trigger: 'legal', maxLaunches: 20, maxRounds: 5 }));
+    const ledger = read(run);
+    assert.strictEqual(ledger.mode, 'base');
+    assert.deepStrictEqual(ledger.escalation, { from: 'lite', to: 'base', trigger: 'legal' });
+  });
+
   test(`${name}: escalation after the first launch, with an unknown trigger, or on a missing run is refused (AC2)`, () => {
     const dir = tmp('mode-');
     const run = lib.openInitiativeRun({ repository: '/repo', stateDir: dir, key: 'k', maxLaunches: 4, maxRounds: 2, mode: 'lite' });
@@ -302,9 +311,48 @@ for (const cliName of Object.keys(CLIS)) {
     assert.ok(!t.initiative().launches.some((l) => l.role === 'fix'));
   });
 
+  test(`${cliName}: a round parked for reconciliation grants no fix reservation and commits no fix (AC5)`, () => {
+    const t = setup(cliName, { mode: 'lite' });
+    const n = t.ok(['round-start', 'feat/x', 'HEAD~1']).round;
+    for (const role of ['correctness', 'verify', 'gate-review']) assert.strictEqual(t.ok(['reserve', 'feat/x', role]).status, 'granted');
+    // A correctness finding alongside the design-conformance gate finding:
+    // plan-fixes parks the WHOLE round for reconciliation (planned: []),
+    // even though the correctness finding on its own would have been
+    // ordinarily fixable.
+    t.write(n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:1', file: 'a.txt', span: 'two', summary: 'bug' }] });
+    t.write(n, 'verify', { status: 'ok', rejected: [] });
+    t.write(n, 'gate', { status: 'ok', findings: [{ id: 'gate:design-conformance:x', file: 'a.txt', span: 'two', summary: 's' }] });
+    const planned = t.ok(['plan-fixes', 'feat/x']);
+    assert.deepStrictEqual(planned.fixes, []);
+    assert.strictEqual(planned.reconciliation.trigger, 'material-finding');
+    const launchesBefore = t.initiative().launches.length;
+    const reserved = t.ok(['reserve', 'feat/x', 'fix']);
+    assert.strictEqual(reserved.status, 'reconciliation-required');
+    assert.strictEqual(t.initiative().launches.length, launchesBefore, 'a reconciliation-required reserve must not be charged');
+    t.write(n, 'fix-correctness:1', { status: 'ok', edited: true, files: ['a.txt'] });
+    const committed = t.cli(['commit-fix', 'feat/x', 'correctness:1']);
+    assert.notStrictEqual(committed.status, 0);
+    assert.match(committed.stderr, /not in this round's planned fixes/);
+    assert.deepStrictEqual(review.readLedger(t.stateDir, review.targetSlug('feat/x')).journal || [], []);
+  });
+
+  test(`${cliName}: commit-fix of an id outside this round's planned fixes is refused in a normal run (AC5)`, () => {
+    const t = setup(cliName);
+    const n = t.ok(['round-start', 'feat/x', 'HEAD~1', '--no-broad']).round;
+    for (const role of ['correctness', 'verify']) assert.strictEqual(t.ok(['reserve', 'feat/x', role]).status, 'granted');
+    t.write(n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+    t.write(n, 'verify', { status: 'ok', rejected: [] });
+    const planned = t.ok(['plan-fixes', 'feat/x']);
+    assert.deepStrictEqual(planned.fixes, []);
+    const committed = t.cli(['commit-fix', 'feat/x', 'correctness:never-planned']);
+    assert.notStrictEqual(committed.status, 0);
+    assert.match(committed.stderr, /not in this round's planned fixes/);
+  });
+
   test(`${cliName}: lite does not run the broad panel even when the repository enables it (AC8)`, () => {
     const t = setup(cliName, { mode: 'lite', config: { dod: ['true'], gate: { panel: true } } });
-    const n = t.ok(['round-start', 'feat/x', 'HEAD~1']).round;
+    const started = t.ok(['round-start', 'feat/x', 'HEAD~1']);
+    const n = started.round;
     for (const role of ['correctness', 'verify', 'gate-review']) t.ok(['reserve', 'feat/x', role]);
     t.write(n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
     t.write(n, 'verify', { status: 'ok', rejected: [] });
@@ -313,6 +361,14 @@ for (const cliName of Object.keys(CLIS)) {
     const out = t.ok(['record', 'feat/x']);
     assert.ok(!out.decision.panelPending, JSON.stringify(out.decision));
     assert.strictEqual(out.decision.converged, true, JSON.stringify(out.decision));
+    // AC8: a lite run that skips the broad panel still retains red-to-green
+    // evidence -- the exact review revision pair and a passed DoD check --
+    // in the initiative run's disposition, not just the target ledger.
+    const resolvedBase = execFileSync('git', ['rev-parse', 'HEAD~1'], { cwd: t.repo, encoding: 'utf8' }).trim();
+    const disposition = t.initiative().dispositions[0];
+    assert.strictEqual(disposition.revision.head_sha, started.head);
+    assert.strictEqual(disposition.revision.base, resolvedBase);
+    assert.strictEqual(disposition.packet.dod.status, 'passed');
   });
 
   test(`${cliName}: escalate records the trigger before the first launch and is refused after it (AC2)`, () => {
