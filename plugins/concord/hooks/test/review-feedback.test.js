@@ -75,6 +75,31 @@ for (const provider of Object.keys(providers)) {
     s.ok('decide', { ...decision, decision: 'retire' });
     assert.deepEqual(s.ok('select', { stage: 'design', tags: ['state'] }).lessons, []);
   });
+  for (const accepted of [false, true]) {
+    test(`${provider}: duplicate ${accepted ? 'accepted' : 'candidate'} occurrence preserves original proof after telemetry changes`, t => {
+      const s = setup(t, provider); const id = accepted ? s.promote() : s.record().id;
+      const storeFile = path.join(s.store, 'review-feedback.json');
+      const storeBefore = fs.readFileSync(storeFile, 'utf8');
+      const evidenceFiles = fs.readdirSync(s.store).sort();
+      const initiativeBefore = fs.readFileSync(runPath(s.initiativeDir, 'run-a'), 'utf8');
+      fs.writeFileSync(s.ledgerPath, JSON.stringify({ ...s.ledger, telemetry: [{ invocationId: 'unrelated-progress', calls: 20 }] }));
+      assert.equal(s.record().id, id);
+      assert.equal(fs.readFileSync(storeFile, 'utf8'), storeBefore);
+      assert.deepEqual(fs.readdirSync(s.store).sort(), evidenceFiles);
+      assert.equal(fs.readFileSync(runPath(s.initiativeDir, 'run-a'), 'utf8'), initiativeBefore);
+    });
+  }
+  for (const mutation of ['proof', 'status', 'fix-commit']) {
+    test(`${provider}: duplicate occurrence rejects changed ${mutation} without replacing original proof`, t => {
+      const s = setup(t, provider); s.record();
+      const storeFile = path.join(s.store, 'review-feedback.json');
+      const before = fs.readFileSync(storeFile, 'utf8');
+      if (mutation === 'proof') fs.writeFileSync(s.evidencePath, 'A different causal claim needs explicit reconciliation.');
+      else fs.writeFileSync(s.ledgerPath, JSON.stringify({ ...s.ledger, findings: s.ledger.findings.map(f => ({ ...f, ...(mutation === 'status' ? { status: 'open' } : { fix_commit: 'different-fix' }) })) }));
+      assert.notEqual(s.call('record', s.packet).status, 0);
+      assert.equal(fs.readFileSync(storeFile, 'utf8'), before);
+    });
+  }
   test(`${provider}: relabelling one review attempt as two runs cannot promote a rule`, (t) => {
     const s = setup(t, provider); const first = s.record();
     const copied = path.join(s.root, 'copied-ledger.json');
@@ -144,20 +169,39 @@ for (const provider of Object.keys(providers)) {
       });
     }
   }
-  test(`${provider}: retirement cannot bypass another accepted lesson's invalid evidence`, (t) => {
-    const s = setup(t, provider); const id = s.promote();
-    const secondPacket = { ...s.packet, pattern: 'second-lesson' };
-    const second = s.record(secondPacket); s.record({ ...secondPacket, runKey: 'run-b' });
-    s.ok('decide', { id: second.id, decision: 'accept', reviewedBy: 'reviewer', reason: 'Verified second lesson', evidencePath: s.evidencePath });
-    const storePath = path.join(s.store, 'review-feedback.json');
-    const stored = JSON.parse(fs.readFileSync(storePath));
-    fs.unlinkSync(stored.lessons.find(l => l.id === second.id).decisions.at(-1).evidence.path);
-    const reconciliationPath = path.join(s.root, 'reconciliation.md');
-    fs.writeFileSync(reconciliationPath, 'Explicit retirement of only the named first lesson.');
-    const before = fs.readFileSync(storePath, 'utf8');
-    assert.notEqual(s.call('decide', { id, decision: 'retire', reviewedBy: 'reviewer', reason: 'Disable first lesson', evidencePath: reconciliationPath }).status, 0);
-    assert.equal(fs.readFileSync(storePath, 'utf8'), before);
-  });
+  for (const decision of ['retire', 'reject']) {
+    test(`${provider}: sequential ${decision} disables shared invalid proof while all reuse remains blocked`, t => {
+      const s = setup(t, provider); const id = s.promote();
+      const secondPacket = { ...s.packet, pattern: 'second-lesson' };
+      const second = s.record(secondPacket); s.record({ ...secondPacket, runKey: 'run-b' });
+      s.ok('decide', { id: second.id, decision: 'accept', reviewedBy: 'reviewer', reason: 'Verified second lesson', evidencePath: s.evidencePath });
+      const storeFile = path.join(s.store, 'review-feedback.json');
+      const stored = JSON.parse(fs.readFileSync(storeFile));
+      const shared = stored.lessons[0].occurrences[0].evidence.path;
+      assert.equal(stored.lessons[1].occurrences[0].evidence.path, shared);
+      fs.unlinkSync(shared);
+      const reconciliationPath = path.join(s.root, 'reconciliation.md');
+      fs.writeFileSync(reconciliationPath, 'Explicitly disable lessons sharing invalid support without enabling reuse.');
+      const disable = lessonId => s.ok('decide', { id: lessonId, decision, reviewedBy: 'reviewer', reason: 'Disable invalid proof', evidencePath: reconciliationPath });
+      const checkBlocked = () => {
+        const before = fs.readFileSync(storeFile, 'utf8');
+        for (const [verb, packet] of [
+          ['select', { stage: 'design', tags: ['state'] }], ['report', undefined],
+          ['decide', { id: second.id, decision: 'accept', reviewedBy: 'reviewer', reason: 'Attempt reuse', evidencePath: reconciliationPath }],
+          ['record', { ...s.packet, pattern: 'third-lesson' }],
+          ['observe', { runKey: 'run-c', unit: 'ticket', ledgerPath: s.ledgerPath, evidencePath: reconciliationPath, outcomes: [{ id: second.id, outcome: 'not-observed' }] }],
+        ]) assert.notEqual(s.call(verb, packet).status, 0, `${verb} must reject invalid accepted proof`);
+        assert.equal(fs.readFileSync(storeFile, 'utf8'), before);
+      };
+      checkBlocked();
+      assert.equal(disable(id).status, decision === 'retire' ? 'retired' : 'rejected');
+      checkBlocked();
+      assert.equal(disable(second.id).status, decision === 'retire' ? 'retired' : 'rejected');
+      assert.deepEqual(s.ok('select', { stage: 'design', tags: ['state'] }).lessons, []);
+      assert.equal(s.ok('report').statuses[decision === 'retire' ? 'retired' : 'rejected'], 2);
+      assert.notEqual(s.call('decide', { id: second.id, decision: 'accept', reviewedBy: 'reviewer', reason: 'Attempt reacceptance', evidencePath: reconciliationPath }).status, 0);
+    });
+  }
   test(`${provider}: accepted reuse preserves original proof across telemetry updates and a new attempt`, (t) => {
     const s = setup(t, provider); const id = s.promote();
     fs.writeFileSync(s.ledgerPath, JSON.stringify({ ...s.ledger, telemetry: [{ calls: 20 }] }));

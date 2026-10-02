@@ -30,6 +30,10 @@ The preserved second run at head `641b3459d0022845b448b409d1aec154d0995290` inde
 
 These are implementation corrections, with native regressions and both generated providers required before another preserved review run.
 
+## Third-run reconciliation
+
+The preserved third run at head `5029b884412a83858dca28980fd018e97b134549` verified remaining instruction and feedback edge cases. The detailed panel instructions must put the single round-wide reservation before the per-candidate voter loop. Duplicate feedback with unchanged curated evidence and causal finding identity must retain its original immutable receipt after unrelated ledger telemetry changes. Explicit rejection or retirement must remain usable when several accepted lessons share damaged evidence; structural and repository validation still applies, and acceptance and reuse continue to reject any remaining invalid proof.
+
 ## Validation limits
 
 Native tests cover deterministic decisions and durable state. Actual host efficiency, adoption of lessons and token savings need subsequent session observations. A stopped checkpoint is not a clean or terminal review verdict.
