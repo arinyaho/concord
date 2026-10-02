@@ -429,10 +429,11 @@ function applyRoundOutcome(ledger, outcome) {
   const noProgress = fixedIds.size === 0 && sameOpenSet;
 
   // The count of genuinely NEW findings this round -- a survivor that was not
-  // already open going in and is not a reopen. This is the SINGLE definition of
+  // already open going in, is not a reopen, and was not killed by verification
+  // in this same round. This is the SINGLE definition of
   // "new" (also fed to the history entry below); the dry-round streak consumes
   // it, it is never recomputed with a second definition.
-  const newCount = survivors.filter((f) => !priorOpenIds.has(f.id) && !f.reopened).length;
+  const newCount = survivors.filter((f) => !priorOpenIds.has(f.id) && !f.reopened && !killedIds.has(f.id)).length;
   // Dry-streak: consecutive zero-new rounds. Advances on a zero-new round,
   // resets to 0 on any new finding. Only decideTermination's no-DoD branch reads
   // it; a git target ignores it, so maintaining it here is inert for git runs.

@@ -941,6 +941,56 @@ test('applyRoundOutcome: two consecutive zero-new rounds converge a no-DoD targe
   assert.strictEqual(r.ledger.status, 'clean');
 });
 
+const killedCand = (id) => ({ id, gate: 'correctness', file: 'n.md', span: 's-' + id, summary: id, status: 'confirmed' });
+
+test('applyRoundOutcome: a round whose candidates were all killed records new 0 and advances dryStreak', () => {
+  let ledger = review.emptyLedger({ kind: 'local', ref: 'file:n.md', type: 'file', hasDoD: false });
+  ledger = review.beginRound(ledger, 'h1').ledger;
+  ledger = review.applyRoundOutcome(ledger, {
+    findings: [killedCand('docreview:a'), killedCand('docreview:b')],
+    fixedIds: [], parkedIds: [], killedIds: ['docreview:a', 'docreview:b'],
+  }).ledger;
+  assert.strictEqual(ledger.history[ledger.history.length - 1].new, 0);
+  assert.strictEqual(ledger.dryStreak, 1);
+});
+
+test('applyRoundOutcome: a no-DoD target converges clean after two all-killed rounds', () => {
+  let ledger = review.emptyLedger({ kind: 'local', ref: 'file:n.md', type: 'file', hasDoD: false });
+  let r;
+  for (const [h, ids] of [['h1', ['docreview:a', 'docreview:b']], ['h2', ['docreview:c']]]) {
+    ledger = review.beginRound(ledger, h).ledger;
+    r = review.applyRoundOutcome(ledger, { findings: ids.map(killedCand), fixedIds: [], parkedIds: [], killedIds: ids });
+    ledger = r.ledger;
+  }
+  assert.strictEqual(r.ledger.dryStreak, 2);
+  assert.strictEqual(r.decision.converged, true);
+  assert.strictEqual(r.ledger.status, 'clean');
+});
+
+test('applyRoundOutcome: a surviving new finding alongside a killed one still counts as new and resets dryStreak', () => {
+  let ledger = review.emptyLedger({ kind: 'local', ref: 'file:n.md', type: 'file', hasDoD: false });
+  ledger = review.beginRound(ledger, 'h1').ledger;
+  ledger = review.applyRoundOutcome(ledger, { findings: [], fixedIds: [], parkedIds: [], killedIds: [] }).ledger;
+  assert.strictEqual(ledger.dryStreak, 1);
+  ledger = review.beginRound(ledger, 'h2').ledger;
+  ledger = review.applyRoundOutcome(ledger, {
+    findings: [killedCand('docreview:a'), killedCand('docreview:b')],
+    fixedIds: [], parkedIds: [], killedIds: ['docreview:a'],
+  }).ledger;
+  assert.strictEqual(ledger.history[ledger.history.length - 1].new, 1);
+  assert.strictEqual(ledger.dryStreak, 0);
+});
+
+test('applyRoundOutcome: a finding open in a prior round is not new even when this round fixes it', () => {
+  let ledger = review.emptyLedger({ kind: 'local', ref: 'file:n.md', type: 'file', hasDoD: false });
+  ledger = review.beginRound(ledger, 'h1').ledger;
+  ledger = review.applyRoundOutcome(ledger, { findings: [killedCand('docreview:a')], fixedIds: [], parkedIds: [], killedIds: [] }).ledger;
+  assert.strictEqual(ledger.history[0].new, 1);
+  ledger = review.beginRound(ledger, 'h2').ledger;
+  ledger = review.applyRoundOutcome(ledger, { findings: [killedCand('docreview:a')], fixedIds: ['docreview:a'], parkedIds: [], killedIds: [] }).ledger;
+  assert.strictEqual(ledger.history[1].new, 0);
+});
+
 test('applyRoundOutcome: git target (target.hasDoD true) never sets a truthy dryStreak path -- git convergence rules apply', () => {
   // A git target with a zero-new, zero-fix, DoD-passed round converges via the
   // git clause; the presence of a dryStreak counter must not change that.
