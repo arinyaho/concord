@@ -610,6 +610,12 @@ function gatesNeeds(stateDir, n) {
 // racing the target's first initiative binding. `show` only reads.
 function main(resolveFromCwd) {
   const { args, initiative } = extractInitiative(process.argv.slice(2));
+  if (args[0] === 'feedback') {
+    if (initiative) throw new Error('feedback: use the project store without initiative mutation flags');
+    const result = require('./review-feedback').runFeedback(args.slice(1), process.env.REVIEW_REPO_ROOT || process.cwd());
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return;
+  }
   if (!args[1] || args[0] === 'show' || RUN_VERBS.has(args[0])) return runVerb(resolveFromCwd, args, initiative);
   const stateDir = resolveStateDir(resolveFromCwd);
   const slug = targetSlug(args[1]);

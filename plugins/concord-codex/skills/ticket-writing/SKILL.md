@@ -19,6 +19,12 @@ Before writing:
 
 For an authorized tracker mutation, use the available authenticated provider integration. If none exists for the resolved destination, stop and report the missing access; never invent a provider, account, or project. Discover supported fields and statuses before writing. Leave optional metadata unset unless the user or an authoritative project source supplies it; never invent an assignee, priority, estimate, due date, label, or workflow state.
 
+## Apply project review lessons
+
+When the initiative packet provides accepted `ticket` lessons, check their bounded rules against the authoritative requirements and current behavior. Otherwise, if the project instructions or durable project index identify a repository-bound `feedbackStateDir` and the native Concord review CLI, select `ticket` lessons using 1 to 10 applicability tags derived from the traced work: `node "<review-cli>" feedback select <absolute-feedback-dir> <absolute-packet.json>`, where the packet is `{"stage":"ticket","tags":["applicable-surface"]}`. Selection is read-only and returns at most three accepted rules. An absent store returns no lessons; report malformed/unavailable feedback without claiming a successful lookup. Do not invent a store path, scan accumulated history or launch extra reviewers for this step.
+
+Use lessons as evidence-backed prompts for missing constraints or acceptance checks. Preserve the approved outcome and authorization; a lesson does not settle a material product decision. Record selected IDs, their concrete application or their reason for inapplicability in the execution handoff. Do not paste the historical review transcript into the tracker or introduce irrelevant requirements merely to satisfy a remembered rule.
+
 ## Write this contract
 
 Use provider-native fields and formatting while preserving these semantics:
