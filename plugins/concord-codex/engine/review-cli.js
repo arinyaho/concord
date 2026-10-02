@@ -711,8 +711,13 @@ function main(resolveFromCwd) {
   const dispatch = () => {
     const prior = readPrior();
     if (!initiative && isBound(prior)) throw new Error('review-cli: this target belongs to an initiative; every mutating verb requires the complete initiative run flags');
-    if (initiative && prior?.initiative_binding && (prior.initiative_binding.key !== initiative.key || prior.initiative_binding.stateDir !== canonicalPath(initiative.stateDir))) {
-      throw new Error('review-cli: different initiative binding; retain the original run flags, or after reconciliation use a separate target review state directory');
+    if (initiative && isBound(prior)) {
+      // Legacy reservation tokens contain no run key or state directory, so
+      // supplied flags cannot establish their original budget's identity.
+      if (!prior.initiative_binding) throw new Error('review-cli: legacy initiative reservations have no binding; preserve the original ledgers and reconcile their identity and spent budget before restoring the original binding');
+      if (prior.initiative_binding.key !== initiative.key || prior.initiative_binding.stateDir !== canonicalPath(initiative.stateDir)) {
+        throw new Error('review-cli: different initiative binding; retain the original run flags, or after reconciliation use a separate target review state directory');
+      }
     }
     if (args[0] === 'reset' && initiative) throw new Error('review-cli reset: cannot discard an initiative target; use rerun with the same initiative run flags to retain history and spent budget');
     finishRerunCleanup(stateDir, slug, prior);

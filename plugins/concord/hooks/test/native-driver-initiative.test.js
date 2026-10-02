@@ -105,6 +105,39 @@ for (const provider of Object.keys(PROVIDERS)) {
     assert.deepStrictEqual(fs.readdirSync(anotherDir), []);
     assert.strictEqual(fs.readdirSync(t.initDir).filter((f) => f.endsWith('.json')).length, 1);
   });
+
+  test(`${provider}: legacy reservations without a binding cannot adopt an initiative identity`, () => {
+    const t = setup(provider, { maxLaunches: 1 });
+    t.start();
+    t.ok(['reserve', 'feat/x', 'correctness']);
+    const targetFile = review.ledgerPath(t.dir, review.targetSlug('feat/x'));
+    const legacy = review.readLedger(t.dir, review.targetSlug('feat/x'));
+    delete legacy.initiative_binding;
+    fs.writeFileSync(targetFile, JSON.stringify(legacy));
+    const targetBefore = fs.readFileSync(targetFile, 'utf8');
+    const runBefore = fs.readFileSync(t.ledgerFile(), 'utf8');
+    const anotherDir = tmp('native-legacy-other-init-');
+    const identities = [t.keyed, ...[['--initiative-run-key', 'key-2'], ['--initiative-state-dir', anotherDir]].map(([flag, value]) => {
+      const options = [...t.keyed];
+      options[options.indexOf(flag) + 1] = value;
+      return options;
+    })];
+    for (const options of identities) {
+      for (const args of [['reserve', 'feat/x', 'verify'], ['rerun', 'feat/x'], ['round-start', 'feat/x', 'HEAD~1', '--no-broad']]) {
+        const result = spawnSync('node', [PROVIDERS[provider], ...args, ...options], { encoding: 'utf8', env: t.env, cwd: t.repo });
+        assert.notStrictEqual(result.status, 0, `${args[0]} adopted an unproven legacy identity`);
+        assert.match(result.stderr, /legacy.*binding.*reconcil/i);
+        assert.strictEqual(fs.readFileSync(targetFile, 'utf8'), targetBefore);
+        assert.strictEqual(fs.readFileSync(t.ledgerFile(), 'utf8'), runBefore);
+      }
+    }
+    assert.deepStrictEqual(fs.readdirSync(anotherDir), []);
+    assert.strictEqual(fs.readdirSync(t.initDir).filter((f) => f.endsWith('.json')).length, 1);
+    assert.strictEqual(t.cli(['show', 'feat/x'], { key: false }).status, 0);
+    assert.strictEqual(t.cli(['show', 'feat/x']).status, 0);
+    assert.strictEqual(fs.readFileSync(targetFile, 'utf8'), targetBefore);
+    assert.strictEqual(fs.readFileSync(t.ledgerFile(), 'utf8'), runBefore);
+  });
 }
 
 for (const provider of Object.keys(PROVIDERS)) {
