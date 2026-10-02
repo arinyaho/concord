@@ -31,7 +31,7 @@ function readLedger(stateDir, slug) {
     return ledger;
   } catch (e) {
     if (e && e.code === 'ENOENT') return null;
-    throw new Error(`unreadable review ledger ${path.basename(file)}: ${e && e.message}; run \`review-cli.js reset <ref>\` to replace it`);
+    throw new Error(`unreadable review ledger ${path.basename(file)}: ${e && e.message}; preserve this file and restore the original ledger, then reconcile its identity and initiative binding before any mutation. If no backup exists and an operator independently confirms this was standalone, stop its workers and manually move this file and related evidence aside before starting a fresh review; prior history is not recovered. Never use this to bypass initiative budgets`);
   }
 }
 
@@ -548,7 +548,7 @@ function renderReviewReport(ledgers) {
   const lines = [];
   for (const { ledger, unreadable } of ledgers || []) {
     if (unreadable) {
-      lines.push(`review-until-green: unreadable ledger ${reportFailureText(unreadable)} -- it is not resumed; inspect it, then \`review-cli.js reset <ref>\` replaces it.`);
+      lines.push(`review-until-green: unreadable ledger ${reportFailureText(unreadable)} -- it is not resumed; preserve its bytes and restore the original ledger, then reconcile its identity and initiative binding before any mutation.`);
       continue;
     }
     const ref = ledger.target && ledger.target.ref;

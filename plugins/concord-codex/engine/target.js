@@ -31,9 +31,16 @@ function gitHeadSha(repoRoot) {
   return sh('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).trim();
 }
 
-// Moved verbatim from review-cli.js gitIsDirty() -- the working-tree dirty check.
-function gitDirty(repoRoot) {
-  return sh('git', ['status', '--porcelain'], { cwd: repoRoot }).trim().length > 0;
+// The CLI may hold its own lock inside the repository. Ignore only untracked
+// files in that exact lock directory, never tracked changes or other state.
+function gitDirty(repoRoot, reviewLock = null) {
+  const relative = reviewLock && path.relative(path.resolve(repoRoot), path.resolve(reviewLock));
+  if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    return sh('git', ['status', '--porcelain'], { cwd: repoRoot }).trim().length > 0;
+  }
+  const prefix = `${relative.split(path.sep).join('/')}/`;
+  const status = sh('git', ['status', '--porcelain', '--untracked-files=all', '-z'], { cwd: repoRoot });
+  return status.split('\0').filter(Boolean).some((entry) => !entry.startsWith('?? ') || !entry.slice(3).startsWith(prefix));
 }
 
 // Acquire a git target: the same dirty-check + identity + diff review-cli.js
@@ -45,7 +52,7 @@ function gitDirty(repoRoot) {
 // base. The two are input-independent, so their relative order is a true
 // no-op -- head_sha, diff, and the ledger end identical either way.
 function gitTarget(spec, repoRoot) {
-  if (gitDirty(repoRoot)) throw new Error('round-start: working tree is dirty; commit or stash before review-until-green');
+  if (gitDirty(repoRoot, spec.reviewLock)) throw new Error('round-start: working tree is dirty; commit or stash before review-until-green');
   const identity = gitHeadSha(repoRoot);
   const reviewText = gitDiff(repoRoot, spec.base);
   return { type: 'git', reviewText, identity, hasDoD: true };

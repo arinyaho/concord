@@ -229,7 +229,7 @@ test('initiative terminal evidence uses record reconciliation and post-fix DoD c
   const stateDir = temp();
   await runReviewUntilGreen({
     ref: 'feature/x', repoRoot: '/repo', initiativeRunKey: 'final-packet', initiativeStateDir: stateDir, initiativeMaxLaunches: 2, initiativeMaxRounds: 1,
-    runCli: ([verb]) => verb === 'round-start' ? { decision: 'work', ref: 'feature/x', base: 'main', head: 'reviewed-head', attemptId: 'attempt-1', round: 1, stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: false }
+    runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'work', ref: 'feature/x', base: 'main', head: 'reviewed-head', attemptId: 'attempt-1', round: 1, stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: false }
       : verb === 'artifact-normalize' ? { status: 'ok' }
         : verb === 'plan-fixes' ? { fixes: [] }
           : { decision: { continue: false, intentReview: true }, reconciliation: { finding: 'intent:missing', stage: 'record', avoidedLaunches: 2, findings: { intent: 1 } }, checks: [{ name: 'definition-of-done', status: 'passed' }] },
@@ -255,14 +255,14 @@ test('initiative terminal string decisions are recorded', async () => {
 test('initiative runner records escaped results and thrown errors as durable dispositions', async () => {
   const stateDir = temp();
   const escaped = { ref: 'feature/escape', repoRoot: '/repo', initiativeRunKey: 'escaped', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1 };
-  await runReviewUntilGreen({ ...escaped, runCli: ([verb]) => verb === 'round-start' ? { decision: 'escape', base: 'main', head: 'head', stateDir } : undefined });
+  await runReviewUntilGreen({ ...escaped, runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'escape', base: 'main', head: 'head', stateDir } : undefined });
   const escapedLedger = JSON.parse(fs.readFileSync(runPath(stateDir, 'escaped'), 'utf8'));
   assert.deepStrictEqual(escapedLedger.dispositions[0].packet.outcome, { kind: 'escape', reason: 'escape' });
   assert.strictEqual(escapedLedger.dispositions[0].packet.delivery.consumed, false);
 
   const failed = { ref: 'feature/error', repoRoot: '/repo', initiativeRunKey: 'errored', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1 };
   let error;
-  await assert.rejects(runReviewUntilGreen({ ...failed, runCli: ([verb]) => verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: false } : verb === 'artifact-normalize' ? { status: 'ok' } : undefined, spawn: async () => { throw new Error('subprocess failed'); } }), (caught) => { error = caught; return /subprocess failed/.test(caught.message); });
+  await assert.rejects(runReviewUntilGreen({ ...failed, runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: false } : verb === 'artifact-normalize' ? { status: 'ok' } : undefined, spawn: async () => { throw new Error('subprocess failed'); } }), (caught) => { error = caught; return /subprocess failed/.test(caught.message); });
   assert.strictEqual(error.continuationPacket.delivery.consumed, false);
   const errorDisposition = JSON.parse(fs.readFileSync(runPath(stateDir, 'errored'), 'utf8')).dispositions[0];
   assert.deepStrictEqual(errorDisposition.packet.exit, { code: null, signal: null });
@@ -387,7 +387,7 @@ test('a non-material gate-pending record result produces a working, resumable es
   // which is why withTelemetry's stale `escaped` computation went unnoticed.
   const stateDir = temp();
   const options = { ref: 'feature/gate-pending', base: 'main', repoRoot: '/repo', initiativeRunKey: 'gate-pending-e2e', initiativeStateDir: stateDir, initiativeMaxLaunches: 8, initiativeMaxRounds: 4,
-    runCli: ([verb]) => verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false }
+    runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false }
       : verb === 'artifact-normalize' ? { status: 'ok' }
         : verb === 'plan-fixes' ? { fixes: [] }
           : { decision: { continue: false, gatePending: true } },
@@ -404,14 +404,15 @@ test('a non-material gate-pending record result produces a working, resumable es
   ledger.dispositions[0].packet.delivery.consumed = true;
   fs.writeFileSync(runPath(stateDir, 'gate-pending-e2e'), JSON.stringify(ledger));
   let roundStarted = false;
-  await runReviewUntilGreen({ ...options, targetIdentity: () => 'head', runCli: ([verb]) => { if (verb === 'round-start') roundStarted = true; return options.runCli([verb]); } });
+  await runReviewUntilGreen({ ...options, targetIdentity: () => 'head', runCli: ([verb]) => {
+      if (verb === 'reserve') return { status: 'granted' }; if (verb === 'round-start') roundStarted = true; return options.runCli([verb]); } });
   assert.strictEqual(roundStarted, true);
 });
 
 test('a consumed gate-pending retry does not double-count the prior round\'s telemetry', async () => {
   const stateDir = temp();
   const options = { ref: 'feature/gp-telemetry', base: 'main', repoRoot: '/repo', initiativeRunKey: 'gp-telemetry', initiativeStateDir: stateDir, initiativeMaxLaunches: 8, initiativeMaxRounds: 4,
-    runCli: ([verb]) => verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false }
+    runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false }
       : verb === 'artifact-normalize' ? { status: 'ok' }
         : verb === 'plan-fixes' ? { fixes: [] }
           : { decision: { continue: false, gatePending: true } },
@@ -435,7 +436,7 @@ test('a consumed gate-pending retry does not double-count the prior round\'s tel
 test('initiative error retains completed DoD, diagnostic, and duplicate retry packet', async () => {
   const stateDir = temp();
   const options = { ref: 'feature/error-retry', base: 'main', repoRoot: '/repo', initiativeRunKey: 'error-retry', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 2,
-    runCli: ([verb]) => verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false } : verb === 'artifact-normalize' ? { status: 'ok' } : undefined,
+    runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false } : verb === 'artifact-normalize' ? { status: 'ok' } : undefined,
     spawn: async () => { throw new Error('subprocess failed'); } };
   let first;
   await assert.rejects(runReviewUntilGreen(options), (error) => { first = error; return /subprocess failed/.test(error.message); });
@@ -449,7 +450,7 @@ test('initiative error retains completed DoD, diagnostic, and duplicate retry pa
 test('initiative replays a consumed duplicate error packet', async () => {
   const stateDir = temp();
   const options = { ref: 'feature/error-consumed', base: 'main', repoRoot: '/repo', initiativeRunKey: 'error-consumed', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 2,
-    runCli: ([verb]) => verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false } : verb === 'artifact-normalize' ? { status: 'ok' } : undefined,
+    runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false } : verb === 'artifact-normalize' ? { status: 'ok' } : undefined,
     spawn: async () => { throw new Error('subprocess failed'); } };
   let first;
   await assert.rejects(runReviewUntilGreen(options), (error) => { first = error; return /subprocess failed/.test(error.message); });
@@ -464,7 +465,7 @@ test('initiative records a distinct second failure at an unchanged revision inst
   const stateDir = temp();
   let call = 0;
   const options = { ref: 'feature/error-distinct', base: 'main', repoRoot: '/repo', initiativeRunKey: 'error-distinct', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 2,
-    runCli: ([verb]) => verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false } : verb === 'artifact-normalize' ? { status: 'ok' } : undefined,
+    runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false } : verb === 'artifact-normalize' ? { status: 'ok' } : undefined,
     spawn: async () => { call++; throw new Error(call === 1 ? 'first failure' : 'second distinct failure'); } };
   let first;
   await assert.rejects(runReviewUntilGreen(options), (error) => { first = error; return /first failure/.test(error.message); });
@@ -480,7 +481,7 @@ test('a repeated error at an unchanged revision retrieves its own packet, not a 
   const stateDir = temp();
   let call = 0;
   const options = { ref: 'feature/error-abab', base: 'main', repoRoot: '/repo', initiativeRunKey: 'error-abab', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 2,
-    runCli: ([verb]) => verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false } : verb === 'artifact-normalize' ? { status: 'ok' } : undefined,
+    runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false } : verb === 'artifact-normalize' ? { status: 'ok' } : undefined,
     // A, then a distinct B, then A again -- the dedup guard matches A's
     // repeat against the FIRST A entry (same reason), but a lookup keyed
     // only on target+revision+kind (ignoring reason) would findLast to B's
@@ -501,6 +502,7 @@ test('initiative accepts a runner-owned fixer revision on the next round', async
   await runReviewUntilGreen({
     ref: 'feature/fixed', base: 'main', repoRoot: '/repo', initiativeRunKey: 'fixed-revision', initiativeStateDir: stateDir, initiativeMaxLaunches: 8, initiativeMaxRounds: 2,
     runCli: ([verb]) => {
+      if (verb === 'reserve') return { status: 'granted' };
       if (verb === 'round-start') return { decision: 'work', round: ++round, base: 'main', head: round === 1 ? 'before' : 'after', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false };
       if (verb === 'artifact-normalize') return { status: 'ok' };
       if (verb === 'plan-fixes') return { fixes: round === 1 ? [{ id: 'correctness:bug', file: 'a.txt', span: 'bad', summary: 'fix it' }] : [] };
@@ -519,6 +521,7 @@ test('initiative rejects a revision that differs from the committed fixer revisi
   await assert.rejects(runReviewUntilGreen({
     ref: 'feature/fixed-drift', base: 'main', repoRoot: '/repo', initiativeRunKey: 'fixed-drift', initiativeStateDir: stateDir, initiativeMaxLaunches: 8, initiativeMaxRounds: 2,
     runCli: ([verb]) => {
+      if (verb === 'reserve') return { status: 'granted' };
       if (verb === 'round-start') return { decision: 'work', round: ++round, base: 'main', head: round === 1 ? 'before' : 'other', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false };
       if (verb === 'artifact-normalize') return { status: 'ok' };
       if (verb === 'plan-fixes') return { fixes: [{ id: 'correctness:bug', file: 'a.txt', span: 'bad', summary: 'fix it' }] };
@@ -539,6 +542,7 @@ test('initiative accepts a file identity produced by its fixer', async () => {
   await runReviewUntilGreen({
     ref: 'file:note.md', repoRoot, initiativeRunKey: 'file-fixed', initiativeStateDir: stateDir, initiativeMaxLaunches: 8, initiativeMaxRounds: 2, targetIdentity: identity,
     runCli: ([verb]) => {
+      if (verb === 'reserve') return { status: 'granted' };
       if (verb === 'round-start') return { decision: 'work', round: ++round, head: identity(), stateDir, targetType: 'file', dodPassed: true, dodDeferred: true, intentApplied: false, gateApplied: false };
       if (verb === 'artifact-normalize') return { status: 'ok' };
       if (verb === 'plan-fixes') return { fixes: round === 1 ? [{ id: 'docreview:fix', file: 'note.md', span: 'before', summary: 'fix it' }] : [] };
@@ -553,6 +557,7 @@ test('reconciliation terminates the target and retains its restored base and avo
   await runReviewUntilGreen({
     ref: 'feature/x', resume: true, repoRoot: '/repo', initiativeRunKey: 'reconcile', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 1,
     runCli: ([verb]) => {
+      if (verb === 'reserve') return { status: 'granted' };
       if (verb === 'show') return { target: { base: 'main' } };
       if (verb === 'round-start') return { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: false };
       if (verb === 'artifact-normalize') return { status: 'ok' };
@@ -583,7 +588,7 @@ test('initiative terminal records object decision reason and deferred DoD accura
   const stateDir = temp();
   await runReviewUntilGreen({
     ref: 'feature/x', repoRoot: '/repo', initiativeRunKey: 'deferred-terminal', initiativeStateDir: stateDir, initiativeMaxLaunches: 2, initiativeMaxRounds: 1,
-    runCli: ([verb]) => verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: true, intentApplied: false, gateApplied: false }
+    runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: true, intentApplied: false, gateApplied: false }
       : verb === 'artifact-normalize' ? { status: 'ok' }
         : verb === 'plan-fixes' ? { fixes: [] }
           : { decision: { continue: false, converged: true } },

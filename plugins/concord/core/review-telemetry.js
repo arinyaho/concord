@@ -188,35 +188,45 @@ function foldTelemetry(stateDir, ledger, slug) {
   return entries.length ? { ...ledger, telemetry: aggregate(entries) } : ledger;
 }
 
-function deleteTelemetry(stateDir, targetRef, targetSlug) {
+// One read-only selection rule for both durable archival and cleanup. Agent
+// observations can be untagged; their tool's agent/transcript association is
+// the target identity in that case. Malformed records remain for inspection.
+function listTelemetryFiles(stateDir, targetRef, targetSlug) {
+  const files = [];
   if (typeof targetSlug === 'string' && targetSlug) {
-    try { fs.unlinkSync(path.join(stateDir, `telemetry-${targetSlug}.json`)); } catch {}
+    const cache = path.resolve(stateDir, `telemetry-${targetSlug}.json`);
+    if (fs.existsSync(cache)) files.push(cache);
   }
   let names;
-  try { names = fs.readdirSync(stateDir); } catch { return; }
+  try { names = fs.readdirSync(stateDir); } catch { return files; }
   const usedAgentAssociations = new Set();
   for (const name of names) {
     if (!/^review-telemetry-[0-9a-f]{64}\.json$/.test(name)) continue;
-    const file = path.join(stateDir, name);
+    const file = path.resolve(stateDir, name);
     try {
       const entry = JSON.parse(fs.readFileSync(file, 'utf8'));
       if (entry.targetRef === targetRef) {
         const association = agentAssociation(entry);
         if (association) usedAgentAssociations.add(association);
-        fs.unlinkSync(file);
+        files.push(file);
       }
-    } catch {
-      // Leave unrelated or malformed artifacts for operator inspection.
-    }
+    } catch {}
   }
-  for (const name of fs.readdirSync(stateDir)) {
+  for (const name of names) {
     if (!/^review-agent-telemetry-[0-9a-f]{64}\.json$/.test(name)) continue;
-    const file = path.join(stateDir, name);
+    const file = path.resolve(stateDir, name);
     try {
       const entry = JSON.parse(fs.readFileSync(file, 'utf8'));
-      if (entry.pendingTargetRef === targetRef || usedAgentAssociations.has(agentAssociation(entry))) fs.unlinkSync(file);
+      if (entry.pendingTargetRef === targetRef || usedAgentAssociations.has(agentAssociation(entry))) files.push(file);
     } catch {}
+  }
+  return files;
+}
+
+function deleteTelemetry(stateDir, targetRef, targetSlug) {
+  for (const file of listTelemetryFiles(stateDir, targetRef, targetSlug)) {
+    try { fs.unlinkSync(file); } catch {}
   }
 }
 
-module.exports = { foldTelemetry, deleteTelemetry, roleFromArtifactSuffix };
+module.exports = { foldTelemetry, deleteTelemetry, listTelemetryFiles, roleFromArtifactSuffix };

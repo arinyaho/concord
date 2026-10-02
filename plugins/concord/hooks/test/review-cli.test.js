@@ -1374,7 +1374,7 @@ test('round-start: intent source unchanged -> re-fetches once to compare, round 
   assert.strictEqual(fs.readFileSync(path.join(dir, `intent-${slug}.md`), 'utf8'), 'REQ: retry three times');
 });
 
-test('round-start: intent source changed mid-run -> stops and says to reset, cache untouched', () => {
+test('round-start: intent source changed mid-run -> requires reconciliation and rerun, cache untouched', () => {
   const src = intentSource('REQ: retry three times');
   const repo = initRepoWithIntent(src.command);
   const dir = tmpDir();
@@ -1386,7 +1386,7 @@ test('round-start: intent source changed mid-run -> stops and says to reset, cac
   const r = runCapture(['round-start', 'feat/x', 'HEAD~1'], { env });
   assert.notStrictEqual(r.status, 0);
   assert.match(r.stderr, /intent source changed since this run began/);
-  assert.match(r.stderr, /reset/);
+  assert.match(r.stderr, /reconcile the changed source.*rerun feat\/x.*original initiative flags/);
   const slug = review.targetSlug('feat/x');
   // neither silently stale-and-quiet nor silently adopted: the artifact is the original
   assert.strictEqual(fs.readFileSync(path.join(dir, `intent-${slug}.md`), 'utf8'), 'REQ: retry three times');
@@ -4192,4 +4192,15 @@ test('git target: no-fix rounds that continue are charged one unit each and a te
   assert.strictEqual(d3.parked, true);
   assert.strictEqual(d3.continue, false);
   assert.strictEqual(spent(), 2, 'a round that ends waiting on a human is not charged');
+});
+
+test('target lock never offers to remove a live owner after its wait expires', () => {
+  const dir = tmpDir(), file = path.join(dir, 'review.json'), lock = `${file}.lock`;
+  fs.mkdirSync(lock); fs.writeFileSync(path.join(lock, 'owner'), `${process.pid}\n`);
+  let offered = 0, entered = false;
+  try {
+    assert.throws(() => cli.withTargetLock(file, () => { entered = true; }, { waitMs: -1, confirm: () => { offered++; return true; } }), /still running/);
+    assert.equal(offered, 0); assert.equal(entered, false);
+    assert.equal(fs.readFileSync(path.join(lock, 'owner'), 'utf8'), `${process.pid}\n`);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

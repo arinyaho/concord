@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const { execFileSync } = require('node:child_process');
 const path = require('node:path');
-const { openInitiativeRun, reserveLaunch, recordDisposition, publicInitiativeSummary, terminalTarget, denialReason } = require('../../core/initiative-review-run');
+const { openInitiativeRun, reserveLaunch, reserveLaunchBatch, recordDisposition, publicInitiativeSummary, terminalTarget, denialReason } = require('../../core/initiative-review-run');
 const { runReviewUntilGreen } = require('../../core/codex-review-runner');
 
 const temp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'revision-pair-'));
@@ -86,11 +86,22 @@ test('AC6: aggregate output for revision pairs carries hashed identifiers and co
 });
 
 const work = { decision: 'work', round: 1, base: 'main', head: 'h2', stateDir: temp(), targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false };
+// Model the target CLI's reserve response while retaining the real initiative
+// budget and pair checks; the runner no longer reserves directly.
+function targetReserve(run, args) {
+  const role = args[2], count = Number(args[args.indexOf('--count') + 1]);
+  const launch = { role, target: 'feature/x', revision: rev(work.head), round: work.round, attemptId: 'runner-attempt' };
+  if (reserveLaunchBatch(run, launch, count)) return { status: 'granted', role, count };
+  const reason = denialReason(run, launch, count);
+  return reason === 'reconciliation-required' ? { status: reason, role, count } : { status: 'denied', role, count, reason };
+}
+
 async function runnerAt(key, stateDir, maxLaunches) {
   const spawned = [];
   const calls = [];
+  const run = open({ stateDir, key, maxLaunches, maxRounds: 3 });
   const result = await runReviewUntilGreen({ ref: 'feature/x', base: 'main', repoRoot: '/repo', initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: maxLaunches, initiativeMaxRounds: 3, targetIdentity: () => 'h2',
-    runCli: ([verb]) => { calls.push(verb); return verb === 'round-start' ? work : verb === 'artifact-normalize' ? { status: 'ok' } : verb === 'plan-fixes' ? { fixes: [] } : verb === 'record' ? { decision: { continue: false, converged: true } } : {}; },
+    runCli: (args) => { const [verb] = args; calls.push(verb); return verb === 'reserve' ? targetReserve(run, args) : verb === 'round-start' ? work : verb === 'artifact-normalize' ? { status: 'ok' } : verb === 'plan-fixes' ? { fixes: [] } : verb === 'record' ? { decision: { continue: false, converged: true } } : {}; },
     spawn: async (input) => { spawned.push(input.role); return { status: 0 }; } });
   return { result, spawned, calls };
 }
@@ -243,9 +254,9 @@ test('runner: a panel lens launch denied for budget is a blocked outcome, not a 
   const run = open({ stateDir, key: 'r-panel', maxLaunches: 2, maxRounds: 3 });
   let recorded = 0;
   const result = await runReviewUntilGreen({ ref: 'feature/x', base: 'main', repoRoot: '/repo', initiativeRunKey: 'r-panel', initiativeStateDir: stateDir, initiativeMaxLaunches: 2, initiativeMaxRounds: 3, targetIdentity: () => 'h2',
-    runCli: ([verb]) => verb === 'round-start' ? work : verb === 'artifact-normalize' ? { status: 'ok' } : verb === 'plan-fixes' ? { fixes: [] }
-      : verb === 'record' ? (recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false, converged: true }, handoff: 'LGTM' })
-      : verb === 'gate-panel-round-start' ? { round: 1, rejectedIds: [] } : verb === 'gate-panel-round-record' ? { status: 'done' } : {},
+    runCli: (args) => args[0] === 'reserve' ? targetReserve(run, args) : args[0] === 'round-start' ? work : args[0] === 'artifact-normalize' ? { status: 'ok' } : args[0] === 'plan-fixes' ? { fixes: [] }
+      : args[0] === 'record' ? (recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false, converged: true }, handoff: 'LGTM' })
+      : args[0] === 'gate-panel-round-start' ? { round: 1, rejectedIds: [] } : args[0] === 'gate-panel-round-record' ? { status: 'done' } : {},
     spawn: async () => ({ status: 0 }) });
   assert.strictEqual(result.decision, 'blocked');
   assert.strictEqual(result.reason, 'budget-exhausted');
@@ -255,8 +266,9 @@ test('runner: a panel lens launch denied for budget is a blocked outcome, not a 
 test('runner: a reviewer launch denied for budget is blocked and never recorded as a round failure', async () => {
   const stateDir = temp();
   const verbs = [];
+  const run = open({ stateDir, key: 'r-blocked', maxLaunches: 1, maxRounds: 3 });
   const result = await runReviewUntilGreen({ ref: 'feature/x', base: 'main', repoRoot: '/repo', initiativeRunKey: 'r-blocked', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 3, targetIdentity: () => 'h2',
-    runCli: ([verb]) => { verbs.push(verb); return verb === 'round-start' ? work : verb === 'artifact-normalize' ? { status: 'ok' } : {}; },
+    runCli: (args) => { const [verb] = args; verbs.push(verb); return verb === 'reserve' ? targetReserve(run, args) : verb === 'round-start' ? work : verb === 'artifact-normalize' ? { status: 'ok' } : {}; },
     spawn: async () => ({ status: 0 }) });
   assert.strictEqual(result.decision, 'blocked');
   assert.strictEqual(result.reason, 'budget-exhausted');

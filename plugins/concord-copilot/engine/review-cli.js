@@ -4,8 +4,9 @@ const fs = require('node:fs');
 const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 const { safeIdForFilename } = require('./artifact-name');
-const { writeFileAtomic } = require('./atomic-write');
+const { writeFileAtomic, publishDirectoryAtomic } = require('./atomic-write');
 const dodExec = require('./dod-exec');
+const { lockOwner: targetOwnerPid, pidRunning } = require('./run-lock');
 const intentLib = require('./intent');
 const gateLib = require('./gate');
 const gatePanelLib = require('./gate-panel');
@@ -16,7 +17,7 @@ const {
   targetSlug,
   readLedger,
   ledgerPath,
-  writeLedger,
+  writeLedger: persistLedger,
   deleteLedger,
   emptyLedger,
   contentHash,
@@ -470,9 +471,34 @@ function firstRetryArtifact(retries) {
 // (`reserve`) and refuses to accept evidence from an unreserved launch.
 const INITIATIVE_FLAGS = [['--initiative-run-key', 'key'], ['--initiative-state-dir', 'stateDir'], ['--initiative-max-launches', 'maxLaunches'], ['--initiative-max-rounds', 'maxRounds']];
 const MODE_FLAG = '--initiative-mode';
-const RUN_VERBS = new Set(['finalise', 'consume', 'escalate']);
+const RUN_VERBS = new Set(['finalise', 'consume', 'escalate', 'session-checkpoint']);
+const CLI_VERBS = ['show', 'round-start', 'telemetry-slot', 'plan-fixes', 'commit-fix', 'record', 'round-failure', 'gate-panel-round-start', 'gate-panel-round-record', 'unpark', 'dismiss', 'reset', 'rerun', 'artifact-normalize', 'reserve', 'finalise', 'consume', 'escalate', 'session-checkpoint', 'feedback'];
 const RESERVE_ROLES = ['correctness', 'verify', 'intent', 'gate-review', 'gate-verify', 'fix', 'lens', 'vote'];
 const ARTIFACT_RESERVE_ROLE = { correctness: 'correctness', verify: 'verify', intent: 'intent', gate: 'gate-review', 'gate-verify': 'gate-verify' };
+
+function unknownVerb(verb) {
+  return new Error(`review-cli: unknown verb "${verb}" (expected ${CLI_VERBS.join(' | ')})`);
+}
+
+function reserveOptions(rest) {
+  const role = rest[0];
+  if (!RESERVE_ROLES.includes(role)) throw new Error(`reserve: role must be one of ${RESERVE_ROLES.join(' | ')}`);
+  const flag = rest.indexOf('--count');
+  const count = flag === -1 ? (role === 'lens' ? GATE_PANEL_LENSES.length : 1) : Number(rest[flag + 1]);
+  const valid = Number.isInteger(count) && count >= 1 && (role === 'lens' ? count === GATE_PANEL_LENSES.length : role === 'vote' ? count % 3 === 0 : role === 'fix' || count === 1);
+  if (!valid) throw new Error(`reserve: invalid --count ${count} for role "${role}" (lens: exactly ${GATE_PANEL_LENSES.length}; vote: a multiple of 3; fix: any positive count; others: 1)`);
+  return { role, count };
+}
+
+function rerunOptions(rest) {
+  const engineFlag = rest.indexOf('--engine');
+  if (engineFlag >= 0 && !rest[engineFlag + 1]) throw new Error('review-cli rerun: --engine needs a name (e.g. --engine codex)');
+  return { engine: engineFlag >= 0 ? rest[engineFlag + 1] : null };
+}
+
+function requireRoundStartMode(run, rest) {
+  if (run && runMode(run) === 'lite' && rest.some((a) => ['--broad', '--gate', '--no-broad'].includes(a))) throw new Error('review-cli round-start: a lite initiative run takes no --broad, --gate or --no-broad; lite always runs the one design-conformance gate (escalate to base before the first launch for the full gate pair)');
+}
 
 function extractInitiative(argv) {
   const args = argv.slice();
@@ -531,9 +557,9 @@ function withSupersededLaunch(ledger, role, round, panel) {
 // Exclusive lock on the target ledger (same mkdir style as the initiative
 // ledger lock) with bounded retry, so parallel `reserve` calls serialize.
 // The holder writes its pid into the lock directory. It is shown when the lock
-// cannot be taken, never used to decide anything. A stuck lock is never
-// reclaimed automatically: on an interactive terminal the operator may confirm
-// its removal, otherwise the error names the one command that clears it.
+// cannot be taken. A live owner is never offered for removal. A stuck lock
+// is not reclaimed automatically: an operator may confirm removal only when
+// no live owner is established, otherwise the caller waits for the owner.
 function lockOwner(lock) {
   let pid;
   try { pid = Number.parseInt(fs.readFileSync(path.join(lock, 'owner'), 'utf8'), 10); } catch (e) { return 'owner unknown'; }
@@ -562,6 +588,8 @@ function withTargetLock(ledgerFile, fn, { confirm = promptRemoveLock, waitMs = 1
       if (e.code !== 'EEXIST') throw e;
       if (Date.now() > deadline) {
         const held = `target ledger lock is held: ${lock} (${lockOwner(lock)})`;
+        const ownerPid = targetOwnerPid(lock);
+        if (ownerPid && pidRunning(ownerPid)) throw new Error(`${held}; wait for the owner to finish and retry; do not remove a live lock`);
         if (!offered && confirm && confirm(`${held}. Remove it and continue?`)) {
           offered = true;
           fs.rmSync(lock, { recursive: true, force: true });
@@ -598,6 +626,91 @@ function requireReservations(run, ledger, needs, what) {
   }
 }
 
+
+// Publish an immutable private evidence archive before rerun replaces or
+// removes anything. A failed publication leaves the active run intact; retries
+// verify and reuse the same content-addressed archive without overwriting it.
+function archiveReviewRun(stateDir, slug, prior) {
+  const root = path.resolve(stateDir);
+  const targetRef = prior.target?.ref;
+  const telemetryFiles = new Set(reviewTelemetry.listTelemetryFiles(root, targetRef, slug));
+  const names = fs.readdirSync(root).filter(name => {
+    const round = /^round-(\d+)-/.exec(name);
+    if (round && Number(round[1]) <= (prior.round || 0)) return true;
+    if (name === `intent-${slug}.md` || telemetryFiles.has(path.join(root, name))) return true;
+    return false;
+  }).sort();
+  const files = names.map(name => {
+    const originalPath = path.join(root, name);
+    if (!fs.lstatSync(originalPath).isFile()) throw new Error(`review-cli rerun: archive source is not a regular file: ${name}`);
+    const bytes = fs.readFileSync(originalPath);
+    return { name, originalPath, bytes, sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+  });
+  const ledgerBytes = Buffer.from(JSON.stringify(prior));
+  const storedPath = ledgerPath(root, slug), storedBytes = fs.readFileSync(storedPath);
+  const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+  const id = digest(JSON.stringify({ ledger: digest(ledgerBytes), storedLedger: digest(storedBytes), files: files.map(({ name, sha256 }) => ({ name, sha256 })) }));
+  const directory = path.join(root, 'review-archives', slug, id);
+  const manifest = {
+    schema: 1, targetRef, run: (prior.runs || []).length + 1,
+    ledger: { path: path.join(directory, 'ledger.json'), originalPath: storedPath, sha256: digest(ledgerBytes) },
+    storedLedger: { path: path.join(directory, 'stored-ledger.json'), originalPath: storedPath, sha256: digest(storedBytes) },
+    artifacts: files.map(({ name, originalPath, sha256 }) => ({ path: path.join(directory, name), originalPath, sha256 })),
+  };
+  const manifestBytes = `${JSON.stringify(manifest, null, 2)}\n`;
+  const manifestPath = path.join(directory, 'manifest.json');
+  const verify = () => {
+    if (fs.readFileSync(manifestPath, 'utf8') !== manifestBytes) throw new Error('review-cli rerun: archived manifest read-back failed');
+    for (const entry of [manifest.ledger, manifest.storedLedger, ...manifest.artifacts]) {
+      if (digest(fs.readFileSync(entry.path)) !== entry.sha256) throw new Error('review-cli rerun: archived evidence read-back failed');
+    }
+  };
+  if (fs.existsSync(directory)) verify();
+  else {
+    fs.mkdirSync(path.dirname(directory), { recursive: true, mode: 0o700 });
+    const staging = `${directory}.${crypto.randomUUID()}.tmp`;
+    fs.mkdirSync(staging, { mode: 0o700 });
+    try {
+      for (const [name, bytes] of [['ledger.json', ledgerBytes], ['stored-ledger.json', storedBytes], ...files.map(file => [file.name, file.bytes]), ['manifest.json', manifestBytes]]) {
+        const destination = path.join(staging, name);
+        writeFileAtomic(destination, bytes, { mode: 0o600 });
+        if (digest(fs.readFileSync(destination)) !== digest(bytes)) throw new Error('review-cli rerun: staged archive read-back failed');
+      }
+      for (const file of files) if (digest(fs.readFileSync(file.originalPath)) !== file.sha256) throw new Error('review-cli rerun: source evidence changed during archival');
+      if (digest(fs.readFileSync(storedPath)) !== digest(storedBytes)) throw new Error('review-cli rerun: source ledger changed during archival');
+      publishDirectoryAtomic(staging, directory);
+      verify();
+    } finally { fs.rmSync(staging, { recursive: true, force: true }); }
+  }
+  return { manifestPath, sha256: digest(manifestBytes) };
+}
+
+// The fresh ledger publishes this archive pointer before cleanup begins. Its
+// manifest remains the exact cleanup list even if a crash removes a tool record
+// before the associated untagged agent record. Only authorized mutations under
+// the target lock finish cleanup; show renders the fresh ledger without folding
+// files from the archived run while this transition is pending.
+function finishRerunCleanup(stateDir, slug, ledger) {
+  if (!ledger?.rerun_cleanup) return;
+  const pointer = ledger.rerun_cleanup;
+  const bytes = fs.readFileSync(pointer.manifestPath);
+  const digest = value => crypto.createHash('sha256').update(value).digest('hex');
+  if (digest(bytes) !== pointer.sha256) throw new Error('review-cli rerun: cleanup archive manifest changed');
+  const manifest = JSON.parse(bytes);
+  for (const entry of manifest.artifacts) {
+    if (path.basename(entry.originalPath) === `intent-${slug}.md`) continue;
+    if (digest(fs.readFileSync(entry.path)) !== entry.sha256) throw new Error('review-cli rerun: cleanup archived evidence changed');
+    try {
+      if (digest(fs.readFileSync(entry.originalPath)) !== entry.sha256) throw new Error('review-cli rerun: cleanup source evidence changed');
+      fs.unlinkSync(entry.originalPath);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+  const { rerun_cleanup, ...clean } = ledger;
+  persistLedger(stateDir, slug, clean);
+}
+
 function roundFiles(stateDir, n, pattern) {
   try { return fs.readdirSync(stateDir).filter((f) => pattern.test(f)).length; } catch (e) { return 0; }
 }
@@ -606,17 +719,68 @@ function gatesNeeds(stateDir, n) {
   return Object.entries(ARTIFACT_RESERVE_ROLE).map(([name, role]) => ({ role, present: fs.existsSync(path.join(stateDir, `round-${n}-${name}.json`)) ? 1 : 0 }));
 }
 
-// Under a keyed run every verb read-modify-writes the target ledger inside one
-// target-ledger lock, so parallel verbs never lose an update. `show` only reads.
+// Every mutating target verb takes the same lock, including an unkeyed call
+// racing the target's first initiative binding. `show` only reads.
 function main(resolveFromCwd) {
   const { args, initiative } = extractInitiative(process.argv.slice(2));
-  if (!initiative || !args[1] || args[0] === 'show' || RUN_VERBS.has(args[0])) return runVerb(resolveFromCwd, args, initiative);
-  return withTargetLock(ledgerPath(resolveStateDir(resolveFromCwd), targetSlug(args[1])), () => runVerb(resolveFromCwd, args, initiative));
+  if (args[0] === 'feedback') {
+    if (initiative) throw new Error('feedback: use the project store without initiative mutation flags');
+    const result = require('./review-feedback').runFeedback(args.slice(1), process.env.REVIEW_REPO_ROOT || process.cwd());
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return;
+  }
+  if (!args[1] || args[0] === 'show' || RUN_VERBS.has(args[0])) return runVerb(resolveFromCwd, args, initiative);
+  const stateDir = resolveStateDir(resolveFromCwd);
+  const slug = targetSlug(args[1]);
+  // Unreadable state cannot prove a standalone identity or an absent binding.
+  // Preserve the original bytes until its ledger and binding are restored.
+  const readPrior = () => readLedger(stateDir, slug);
+  const isBound = (ledger) => !!ledger?.initiative_binding || !!ledger?.initiative_reservations?.length;
+  const dispatch = () => {
+    const prior = readPrior();
+    if (!initiative && isBound(prior)) throw new Error('review-cli: this target belongs to an initiative; every mutating verb requires the complete initiative run flags');
+    if (initiative && isBound(prior)) {
+      // Legacy reservation tokens contain no run key or state directory, so
+      // supplied flags cannot establish their original budget's identity.
+      if (!prior.initiative_binding) throw new Error('review-cli: legacy initiative reservations have no binding; preserve the original ledgers and reconcile their identity and spent budget before restoring the original binding');
+      if (prior.initiative_binding.key !== initiative.key || prior.initiative_binding.stateDir !== canonicalPath(initiative.stateDir)) {
+        throw new Error('review-cli: different initiative binding; retain the original run flags, or after reconciliation use a separate target review state directory');
+      }
+    }
+    if (args[0] === 'reset' && initiative) throw new Error('review-cli reset: cannot discard an initiative target; use rerun with the same initiative run flags to retain history and spent budget');
+    if (prior?.rerun_cleanup) {
+      // Cleanup is a mutation: reject invalid calls and immutable run option
+      // mismatches before deleting any evidence or clearing the pending marker.
+      if (!CLI_VERBS.includes(args[0])) throw unknownVerb(args[0]);
+      if (args[0] === 'reserve') reserveOptions(args.slice(2));
+      if (args[0] === 'rerun') rerunOptions(args.slice(2));
+      const run = initiative && openKeyedRun(initiative);
+      if (args[0] === 'round-start') requireRoundStartMode(run, args.slice(2));
+    }
+    finishRerunCleanup(stateDir, slug, prior);
+    // Reservation binding is published only by the validated charge path;
+    // a normal denial must leave a standalone target unbound.
+    if (args[0] === 'reserve') return runVerb(resolveFromCwd, args, initiative);
+    runVerb(resolveFromCwd, args, initiative);
+    if (initiative) {
+      const ledger = readLedger(stateDir, slug);
+      if (ledger) persistLedger(stateDir, slug, { ...ledger, initiative_binding: { key: initiative.key, stateDir: canonicalPath(initiative.stateDir) } });
+    }
+  };
+  // Serialize even initially unbound calls: otherwise an older unkeyed write
+  // can erase a first binding that a keyed call just persisted.
+  return withTargetLock(ledgerPath(stateDir, slug), dispatch);
 }
 
 // Run-level verbs act on the initiative run, not on a target ledger, so they take no target lock.
-function runLevelVerb(verb, arg, initiative) {
+function runLevelVerb(verb, arg, initiative, rest = []) {
   if (!initiative) throw new Error(`review-cli ${verb}: requires the initiative run flags (--initiative-run-key, --initiative-state-dir, --initiative-max-launches, --initiative-max-rounds)`);
+  if (verb === 'session-checkpoint') {
+    if (rest.length && (rest.length !== 2 || rest[0] !== '--session-handoff')) throw new Error('session handoff: use session-checkpoint <absolute-packet.json> [--session-handoff <off|suggest|stop-at-checkpoint>]');
+    const result = require('./session-handoff').createSessionHandoff({ packetPath: arg, mode: rest.length ? rest[1] : 'suggest', initiative, repository: process.env.REVIEW_REPO_ROOT || process.cwd() });
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return;
+  }
   const stateDir = canonicalPath(initiative.stateDir);
   const repository = canonicalPath(process.env.REVIEW_REPO_ROOT || process.cwd());
   if (verb === 'escalate') {
@@ -636,20 +800,19 @@ function runLevelVerb(verb, arg, initiative) {
 }
 
 function runVerb(resolveFromCwd, args, initiative) {
+  // Every intermediate publication is already bound, including the first
+  // keyed operation and writes whose caller never reaches main's return path.
+  const binding = initiative && { key: initiative.key, stateDir: canonicalPath(initiative.stateDir) };
+  const writeLedger = (directory, slug, ledger) => persistLedger(directory, slug, binding ? { ...ledger, initiative_binding: binding } : ledger);
   const [verb, ref, ...rest] = args;
   const stateDir = resolveStateDir(resolveFromCwd);
   // `reserve` opens the run inside the target-ledger lock main() holds so parallel first calls serialize.
-  if (RUN_VERBS.has(verb)) return runLevelVerb(verb, ref, initiative);
+  if (RUN_VERBS.has(verb)) return runLevelVerb(verb, ref, initiative, rest);
   const run = initiative && verb !== 'reserve' && verb !== 'show' ? openKeyedRun(initiative) : null;
 
   if (verb === 'reserve') {
     requireRef(ref, 'reserve');
-    const role = rest[0];
-    if (!RESERVE_ROLES.includes(role)) throw new Error(`reserve: role must be one of ${RESERVE_ROLES.join(' | ')}`);
-    const flag = rest.indexOf('--count');
-    const count = flag === -1 ? (role === 'lens' ? GATE_PANEL_LENSES.length : 1) : Number(rest[flag + 1]);
-    const valid = Number.isInteger(count) && count >= 1 && (role === 'lens' ? count === GATE_PANEL_LENSES.length : role === 'vote' ? count % 3 === 0 : role === 'fix' || count === 1);
-    if (!valid) throw new Error(`reserve: invalid --count ${count} for role "${role}" (lens: exactly ${GATE_PANEL_LENSES.length}; vote: a multiple of 3; fix: any positive count; others: 1)`);
+    const { role, count } = reserveOptions(rest);
     if (!initiative) { process.stdout.write(`${JSON.stringify({ status: 'granted', keyed: false, role, count })}\n`); return; }
     const slug = targetSlug(ref);
     const result = (() => {
@@ -660,7 +823,13 @@ function runVerb(resolveFromCwd, args, initiative) {
       const target = ledger.target?.ref || ref;
       const revision = { ref: target, ...(ledger.target?.base ? { base: resolveBaseCommit(process.env.REVIEW_REPO_ROOT || process.cwd(), ledger.target.base) } : {}), ...(ledger.target?.head_sha ? { head_sha: ledger.target.head_sha } : {}) };
       const launch = { role, round: ledger.round, target, revision, attemptId: ledger.attemptId };
-      if (!reserveLaunchBatch(run, launch, count)) {
+      if (!reserveLaunchBatch(run, launch, count, () => {
+        // Called under the run lock only after phase and budget validation.
+        // Publish identity before charging so interruption cannot free the target.
+        if (ledger.initiative_binding) return;
+        writeLedger(stateDir, slug, ledger);
+        return () => persistLedger(stateDir, slug, ledger);
+      })) {
         const reason = denialReason(run, launch, count);
         const diagnosis = reason ? null : lockDiagnosis(run);
         return reason === 'reconciliation-required' ? { status: reason, role, count, round: ledger.round } : { status: 'denied', role, count, round: ledger.round, ...(reason ? { reason } : {}), ...(diagnosis ? { lockDiagnosis: diagnosis } : {}) };
@@ -790,7 +959,8 @@ function runVerb(resolveFromCwd, args, initiative) {
   if (verb === 'show') {
     requireRef(ref, 'show');
     const slug = targetSlug(ref);
-    const ledger = reviewTelemetry.foldTelemetry(stateDir, readLedger(stateDir, slug), slug) || emptyLedger({ kind: 'local', ref });
+    const stored = readLedger(stateDir, slug);
+    const ledger = (stored?.rerun_cleanup ? stored : reviewTelemetry.foldTelemetry(stateDir, stored, slug)) || emptyLedger({ kind: 'local', ref });
     process.stdout.write(JSON.stringify(ledger) + '\n');
     return;
   }
@@ -922,7 +1092,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       throw new Error('review-cli round-start: "resume" is not a valid ref -- round-start auto-detects resume from ledger state; call `round-start <ref>` directly, or use the review-until-green wrapper\'s `resume <ref>` syntax, which forwards correctly');
     }
     // Rejected before any state is written: the intent-review and gate-pending resets below delete the cached intent.
-    if (run && runMode(run) === 'lite' && rest.some((a) => ['--broad', '--gate', '--no-broad'].includes(a))) throw new Error('review-cli round-start: a lite initiative run takes no --broad, --gate or --no-broad; lite always runs the one design-conformance gate (escalate to base before the first launch for the full gate pair)');
+    requireRoundStartMode(run, rest);
     const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
     const slug = targetSlug(ref);
     let ledger = readLedger(stateDir, slug) || emptyLedger({ kind: 'local', ref });
@@ -954,7 +1124,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (ledger.reviewRouting) {
       for (const [field, value] of Object.entries(requestedRouting)) {
         if (ledger.reviewRouting[field] !== value) {
-          throw new Error('review-cli round-start: routing differs from the active run; reset or rerun before changing provider or model');
+          throw new Error(run ? 'review-cli round-start: routing differs from the active run; for this initiative target, rerun with the original initiative flags before changing provider or model, retaining history and spent budget' : 'review-cli round-start: routing differs from the active run; for this standalone target, reset or rerun before changing provider or model');
         }
       }
     }
@@ -1107,7 +1277,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       headSha = gitHeadSha(repoRoot); // no dirty-check on resume
       diff = gitDiff(repoRoot, base);
     } else {
-      const target = acquireTarget({ ref, base }, repoRoot); // throws the same dirty-tree error
+      const target = acquireTarget({ ref, base, reviewLock: `${ledgerPath(stateDir, slug)}.lock` }, repoRoot); // ignore only our own untracked lock
       acquiredTarget = target;
       headSha = target.identity;
       diff = target.reviewText;
@@ -1240,7 +1410,7 @@ function runVerb(resolveFromCwd, args, initiative) {
           throw new Error(`harness-failure: intent drift-check fetch failed (the cached intent is intact; this is a fetch failure, not a changed source): ${why}`);
         }
         if (fresh.sha !== ledger.intentHash) {
-          throw new Error(`harness-failure: intent source changed since this run began (run has ${ledger.intentHash.slice(0, 12)}, source now ${fresh.sha.slice(0, 12)}); this run keeps reviewing against the intent it started with -- reset to adopt the new one: review-cli.js reset ${ref}`);
+          throw new Error(`harness-failure: intent source changed since this run began (run has ${ledger.intentHash.slice(0, 12)}, source now ${fresh.sha.slice(0, 12)}); this run keeps reviewing against the intent it started with -- reconcile the changed source before adopting it, then run review-cli.js rerun ${ref} with the original initiative flags when bound`);
         }
       }
     }
@@ -1322,9 +1492,21 @@ function runVerb(resolveFromCwd, args, initiative) {
     // since the first successful record already flips phase to 'done' -- a
     // guard-first ordering would throw on replay instead of reaching this branch.
     if (ledger && ledger.phase === 'done' && ledger.last_recorded_round === n) {
+      let initiativeClaim;
+      if (run && !ledger._lastDecision?.continue && !ledger._lastDecision?.panelPending) {
+        const disposition = require('./initiative-review-run').normalizeDisposition({ decision: ledger._lastDecision || { continue: false }, reconciliation: ledger.reconciliationPacket });
+        const target = ledger.target?.ref || ref;
+        // Use the reviewed head and durable claim, never the post-fix live head.
+        // Legacy done ledgers can recover only an unambiguous original entry.
+        const entries = (JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions || []).filter(d =>
+          d.target === target && d.revision?.head_sha === ledger.target?.head_sha && d.kind === disposition.kind && d.reason === disposition.reason
+          && (!ledger._lastInitiativeClaim || d.packet?.delivery?.claim === ledger._lastInitiativeClaim));
+        if (entries.length !== 1 || !entries[0].packet?.delivery?.claim) throw new Error('harness-failure: record: original initiative claim is missing or ambiguous; reconcile the existing ledgers');
+        initiativeClaim = entries[0].packet.delivery.claim;
+      }
       if (R.TERMINAL_STATUSES.has(ledger.status) || (run && ledger._lastDecision && !ledger._lastDecision.continue && !ledger._lastDecision.panelPending)) reviewTelemetry.deleteTelemetry(stateDir, ledger.target?.ref || ref, slug);
       process.stdout.write(
-        JSON.stringify({ decision: ledger._lastDecision || { continue: false }, handoff: renderHandoff({ ledger }), telemetry: ledger.telemetry || null, reconciliation: ledger.reconciliationPacket || undefined, checks: ledger.finalChecks || undefined }) + '\n'
+        JSON.stringify({ decision: ledger._lastDecision || { continue: false }, handoff: renderHandoff({ ledger }), telemetry: ledger.telemetry || null, reconciliation: ledger.reconciliationPacket || undefined, checks: ledger.finalChecks || undefined, initiative: initiativeClaim ? { claim: initiativeClaim } : undefined }) + '\n'
       );
       return;
     }
@@ -1490,7 +1672,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // File targets have no working tree to discard.
     if (isGit) gitCheckoutTree(repoRoot);
     const finalChecks = [{ name: 'definition-of-done', status: ledger.dod?.deferred ? 'deferred' : ledger.dod?.passed ? 'passed' : 'failed' }];
-    ledger = { ...ledger, phase: 'done', last_recorded_round: n, _lastDecision: decision, reconciliationPacket: reconciliation || null, finalChecks };
+    ledger = { ...ledger, phase: 'done', last_recorded_round: n, _lastDecision: decision, reconciliationPacket: reconciliation || null, finalChecks, ...(run ? { _lastInitiativeClaim: null } : {}) };
     let entry;
     let recordedNow = false;
     if (run && !decision.continue && !decision.panelPending) {
@@ -1521,6 +1703,8 @@ function runVerb(resolveFromCwd, args, initiative) {
       if (!entry || (!recorded && kind === 'escape' && entry.packet?.delivery?.consumed !== false)) throw new Error('harness-failure: record: initiative target disposition recording was contended; re-run record');
       // A duplicate disposition recorded nothing, so its telemetry stays pending and the cache stays.
       recordedNow = recorded;
+      if (!entry.packet?.delivery?.claim) throw new Error('harness-failure: record: original initiative claim is missing; reconcile the existing ledgers');
+      ledger = { ...ledger, _lastInitiativeClaim: entry.packet.delivery.claim };
       if (recorded) ledger = { ...ledger, telemetryForwarded: [...forwarded, ...pending.map(telemetryKey)] };
     }
     writeLedger(stateDir, slug, ledger);
@@ -1742,7 +1926,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     return;
   }
 
-  // Discards the ledger for a ref so the next round-start begins a fresh run.
+  // Discards a readable standalone ledger so round-start begins a fresh run.
   // The escape hatch for a ledger latched into a finding-less terminal state: a
   // no-progress or budget-exhausted park has zero parked findings, so `unpark`
   // has no target -- without `reset` the only recourse was deleting the state
@@ -1751,8 +1935,7 @@ function runVerb(resolveFromCwd, args, initiative) {
   if (verb === 'reset') {
     requireRef(ref, 'reset');
     const slug = targetSlug(ref);
-    let prior;
-    try { prior = readLedger(stateDir, slug); } catch (e) { prior = { unreadable: true, status: 'unreadable', round: 0 }; }
+    const prior = readLedger(stateDir, slug);
     if (!prior) {
       process.stdout.write(`review-cli reset: no ledger for ref "${ref}"; nothing to reset.\n`);
       return;
@@ -1778,20 +1961,12 @@ function runVerb(resolveFromCwd, args, initiative) {
   // same as it does across a gate-pending re-run.
   if (verb === 'rerun') {
     requireRef(ref, 'rerun');
-    const engineFlag = rest.indexOf('--engine');
-    if (engineFlag >= 0 && !rest[engineFlag + 1]) throw new Error('review-cli rerun: --engine needs a name (e.g. --engine codex)');
-    const engine = engineFlag >= 0 ? rest[engineFlag + 1] : null;
+    const { engine } = rerunOptions(rest);
     const slug = targetSlug(ref);
-    let stored;
-    try { stored = readLedger(stateDir, slug); } catch (e) {
-      // Nothing readable to archive: replace the ledger with a fresh run (gate_dismissed is lost with it).
-      reviewTelemetry.deleteTelemetry(stateDir, ref, slug);
-      writeLedger(stateDir, slug, { ...emptyLedger({ kind: 'local', ref }), engine });
-      process.stdout.write(JSON.stringify({ status: 'ok', run: 1, engine, archived: null }) + '\n');
-      return;
-    }
+    const stored = readLedger(stateDir, slug);
     const prior = reviewTelemetry.foldTelemetry(stateDir, stored, slug);
     if (!prior) throw new Error(`review-cli rerun: no ledger for ref "${ref}" ${stateDirHint(stateDir)} -- there is no run to re-run; just start a normal run.`);
+    const archive = archiveReviewRun(stateDir, slug, prior);
     const runs = (prior.runs || []).concat([{
       run: (prior.runs || []).length + 1,
       engine: prior.engine || null,
@@ -1803,16 +1978,19 @@ function runVerb(resolveFromCwd, args, initiative) {
       killed: prior.killed_digest || [],
       gate_open: (prior.gate_open || []).map((f) => f.id),
       telemetry: prior.telemetry || null,
+      archive,
     }]);
     const fresh = {
       ...emptyLedger(prior.target || { kind: 'local', ref }),
       runs,
       engine,
       gate_dismissed: prior.gate_dismissed || [],
+      ...(prior.initiative_binding || initiative ? { initiative_binding: prior.initiative_binding || { key: initiative.key, stateDir: canonicalPath(initiative.stateDir) } } : {}),
     };
-    for (let n = 1; n <= (prior.round || 0); n++) deleteRoundArtifacts(stateDir, n);
-    reviewTelemetry.deleteTelemetry(stateDir, prior.target?.ref || ref, slug);
-    writeLedger(stateDir, slug, fresh);
+    // Binding and archive pointer must be in the first durable fresh ledger,
+    // including when interruption prevents main() from doing its final write.
+    writeLedger(stateDir, slug, { ...fresh, rerun_cleanup: archive });
+    finishRerunCleanup(stateDir, slug, readLedger(stateDir, slug));
     process.stdout.write(JSON.stringify({ status: 'ok', run: runs.length + 1, engine, archived: runs[runs.length - 1] }) + '\n');
     return;
   }
@@ -1883,7 +2061,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     return;
   }
 
-  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | telemetry-slot | plan-fixes | commit-fix | record | round-failure | gate-panel-round-start | gate-panel-round-record | unpark | dismiss | reset | rerun | artifact-normalize | reserve | finalise | consume | escalate)`);
+  throw unknownVerb(verb);
 }
 
 // Wraps main() with the graceful operator-facing error format. Exported (not

@@ -7,6 +7,22 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { acquireTarget } = require('../../core/target');
 
+test('acquireTarget ignores only its own untracked review lock, keeping other dirty files visible', (t) => {
+  const { dir } = makeGitRepo();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const lock = path.join(dir, '.review-state', 'review-head.json.lock');
+  fs.mkdirSync(lock, { recursive: true });
+  fs.writeFileSync(path.join(lock, 'owner'), String(process.pid));
+  const spec = { ref: 'HEAD', base: 'HEAD~1', reviewLock: lock };
+  assert.strictEqual(acquireTarget(spec, dir).type, 'git');
+  const sibling = path.join(dir, '.review-state', 'unrelated.txt');
+  fs.writeFileSync(sibling, 'must remain visible');
+  assert.throws(() => acquireTarget(spec, dir), /working tree is dirty/);
+  fs.rmSync(sibling);
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'tracked change');
+  assert.throws(() => acquireTarget(spec, dir), /working tree is dirty/);
+});
+
 // Non-git temp directory helper: a plain temp dir with NO git init. Used to
 // verify the file target performs zero git operations.
 function mkdtempNonGit() {
