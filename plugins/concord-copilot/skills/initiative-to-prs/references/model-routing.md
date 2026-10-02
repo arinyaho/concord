@@ -4,6 +4,8 @@ Choose by task shape and failure cost. At each run, resolve the newest suitable 
 
 After a bounded implementation batch is approved and its contract is clear, use the lowest-cost capable implementation model to complete the batch and its focused self-checks without pausing for status. Reserve higher-cost capability for architecture or scope decisions, new P1 or material findings, and one fresh independent verification after the batch.
 
+Give that implementation model only scoped tasks of easy or medium difficulty. It implements and tests each one, and hands back any task that proves harder than its scope suggested instead of pushing through; the orchestrator keeps that task or escalates it to deep capability. Choose the lowest-cost setting by measurement: lower reasoning effort before changing class, move one class at a time, and keep a cheaper setting only when it matches the current one on the same tasks.
+
 ## Roles
 
 | Role | Model class | Purpose |
