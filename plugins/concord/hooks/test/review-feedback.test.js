@@ -5,8 +5,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { emptyLedger } = require('../../core/review');
-const { openInitiativeRun, runPath } = require('../../core/initiative-review-run');
+const { emptyLedger } = require(path.resolve(__dirname, '../../core/review'));
+const { openInitiativeRun, runPath } = require(path.resolve(__dirname, '../../core/initiative-review-run'));
 const plugins = path.resolve(__dirname, '../../..');
 const providers = { claude: path.join(plugins, 'concord/hooks/review-cli.js'), copilot: path.join(plugins, 'concord-copilot/bin/review-cli.js') };
 function setup(t, provider) {
@@ -220,6 +220,31 @@ for (const provider of Object.keys(providers)) {
       assert.notEqual(s.call('select', { stage: 'design', tags: ['state'] }).status, 0);
     });
   }
+  test(`${provider}: changed same-attempt fix commit blocks accepted reuse and remains retireable`, t => {
+    const s = setup(t, provider); const id = s.promote();
+    fs.writeFileSync(s.ledgerPath, JSON.stringify({ ...s.ledger, findings: s.ledger.findings.map(f => ({ ...f, fix_commit: 'later-different-fix' })) }));
+    const storeFile = path.join(s.store, 'review-feedback.json'); const before = fs.readFileSync(storeFile, 'utf8');
+    for (const [verb, packet] of [['select', { stage: 'design', tags: ['state'] }], ['report', undefined],
+      ['decide', { id, decision: 'accept', reviewedBy: 'reviewer', reason: 'Attempt unchanged acceptance', evidencePath: s.evidencePath }]]) {
+      const result = s.call(verb, packet); assert.notEqual(result.status, 0); assert.match(result.stderr, /feedback:/);
+    }
+    assert.equal(fs.readFileSync(storeFile, 'utf8'), before);
+    assert.equal(s.ok('decide', { id, decision: 'retire', reviewedBy: 'reviewer', reason: 'Reconcile changed intervention evidence', evidencePath: s.evidencePath }).status, 'retired');
+    assert.deepEqual(s.ok('select', { stage: 'design', tags: ['state'] }).lessons, []);
+  });
+  test(`${provider}: changed same-attempt fix commit blocks promotion with two independent supports`, t => {
+    const s = setup(t, provider); const first = s.record(); s.record({ ...s.packet, runKey: 'run-b' });
+    fs.writeFileSync(s.ledgerPath, JSON.stringify({ ...s.ledger, findings: s.ledger.findings.map(f => ({ ...f, fix_commit: 'later-different-fix' })) }));
+    const result = s.call('decide', { id: first.id, decision: 'accept', reviewedBy: 'reviewer', reason: 'Attempt promotion', evidencePath: s.evidencePath });
+    assert.notEqual(result.status, 0); assert.match(result.stderr, /feedback:/);
+  });
+  test(`${provider}: archived support origins preserve immutable accepted proof`, t => {
+    const s = setup(t, provider); const id = s.promote();
+    fs.renameSync(s.ledgerPath, path.join(s.root, 'archived-target.json'));
+    assert.equal(s.ok('select', { stage: 'design', tags: ['state'] }).lessons[0].id, id);
+    assert.equal(s.ok('report').statuses.accepted, 1);
+    assert.equal(fs.existsSync(s.ledgerPath), false);
+  });
   for (const mutation of ['deleted-proof', 'killed', 'open']) {
     for (const decision of ['retire', 'reject']) {
       test(`${provider}: explicit ${decision} reconciles accepted ${mutation} evidence`, (t) => {
@@ -342,6 +367,82 @@ for (const provider of Object.keys(providers)) {
     assert.notEqual(s.call('record', { ...s.packet, findingId: 'correctness:invented' }).status, 0);
     assert.notEqual(s.call('record', { ...s.packet, rule: 'x'.repeat(501), pattern: 'too-long' }).status, 0);
     assert.notEqual(s.call('record', { ...s.packet, evidencePath: path.join(s.root, 'missing') }).status, 0);
+  });
+  test(`${provider}: native panel-pending state supports fixed feedback and unmeasured outcomes without budget mutation`, t => {
+    const s = setup(t, provider);
+    fs.writeFileSync(s.ledgerPath, JSON.stringify({ ...s.ledger, status: 'gate-panel-pending' }));
+    const targetBefore = fs.readFileSync(s.ledgerPath, 'utf8');
+    const initiativeFile = runPath(s.initiativeDir, 'run-a'); const initiativeBefore = fs.readFileSync(initiativeFile, 'utf8');
+    const id = s.promote();
+    const observation = { runKey: 'run-c', unit: 'pending-panel', ledgerPath: s.ledgerPath, evidencePath: s.evidencePath, outcomes: [{ id, outcome: 'unmeasured' }] };
+    assert.equal(s.ok('observe', observation).recorded, 1);
+    assert.equal(s.ok('report').outcomes.unmeasured, 1);
+    assert.equal(fs.readFileSync(s.ledgerPath, 'utf8'), targetBefore);
+    assert.equal(fs.readFileSync(initiativeFile, 'utf8'), initiativeBefore);
+    const before = fs.readFileSync(path.join(s.store, 'review-feedback.json'), 'utf8');
+    assert.notEqual(s.call('observe', { ...observation, unit: 'incomplete-absence', outcomes: [{ id, outcome: 'not-observed' }] }).status, 0);
+    assert.equal(fs.readFileSync(path.join(s.store, 'review-feedback.json'), 'utf8'), before);
+  });
+  for (const status of ['made-up-pending', 'finalized']) {
+    test(`${provider}: unknown target state ${status} cannot become feedback evidence`, t => {
+      const s = setup(t, provider); fs.writeFileSync(s.ledgerPath, JSON.stringify({ ...s.ledger, status }));
+      const before = fs.readFileSync(s.ledgerPath, 'utf8');
+      assert.notEqual(s.call('record', s.packet).status, 0);
+      assert.equal(fs.readFileSync(s.ledgerPath, 'utf8'), before);
+    });
+  }
+  for (const mutation of ['killed', 'missing-finding', 'reopened-review', 'foreign-repository', 'changed-run-key']) {
+    test(`${provider}: contradictory live observation ${mutation} blocks normal feedback until original evidence is reconciled`, t => {
+      const s = setup(t, provider); const id = s.promote(); const outcome = mutation === 'reopened-review' ? 'not-observed' : 'recurred';
+      const packet = { runKey: 'run-c', unit: 'live-contradiction', ledgerPath: s.ledgerPath, evidencePath: s.evidencePath,
+        outcomes: [{ id, outcome, ...(outcome === 'recurred' ? { findingId: s.packet.findingId } : {}) }] };
+      s.ok('observe', packet);
+      const storeFile = path.join(s.store, 'review-feedback.json'); const before = fs.readFileSync(storeFile, 'utf8');
+      const origin = JSON.parse(before).observations[0].ledger.originalPath;
+      const original = fs.readFileSync(origin, 'utf8'); const ledger = JSON.parse(original);
+      if (mutation === 'killed') ledger.findings[0].status = 'killed';
+      else if (mutation === 'missing-finding') ledger.findings = [];
+      else if (mutation === 'reopened-review') ledger.status = 'converging';
+      else if (mutation === 'changed-run-key') ledger.initiative_binding.key = 'unrelated-run';
+      else {
+        const other = path.join(s.root, 'foreign-repository'); fs.mkdirSync(other);
+        ledger.initiative_binding = s.bind('run-c', other, path.join(s.root, 'foreign-initiative'));
+      }
+      fs.writeFileSync(origin, JSON.stringify(ledger));
+      for (const [verb, value] of [['report', undefined], ['select', { stage: 'design', tags: ['state'] }], ['record', { ...s.packet, pattern: 'new-lesson' }],
+        ['observe', packet], ['decide', { id, decision: 'accept', reviewedBy: 'reviewer', reason: 'Attempt unaffected acceptance', evidencePath: s.evidencePath }]]) {
+        const result = s.call(verb, value); assert.notEqual(result.status, 0, `${verb} must reject contradictory observation proof`); assert.match(result.stderr, /feedback:/);
+      }
+      assert.equal(fs.readFileSync(storeFile, 'utf8'), before);
+      fs.writeFileSync(origin, original); // explicit restoration of the original native review evidence
+      assert.equal(s.ok('report').outcomes.applied, 1);
+    });
+  }
+  for (const outcome of ['recurred', 'not-observed', 'unmeasured']) for (const recovery of ['rerun', 'archive']) {
+    test(`${provider}: observation ${outcome} retains past proof after origin ${recovery}`, t => {
+      const s = setup(t, provider); const id = s.promote();
+      s.ok('observe', { runKey: 'run-c', unit: 'historical-observation', ledgerPath: s.ledgerPath, evidencePath: s.evidencePath,
+        outcomes: [{ id, outcome, ...(outcome === 'recurred' ? { findingId: s.packet.findingId } : {}) }] });
+      const storeFile = path.join(s.store, 'review-feedback.json'); const before = fs.readFileSync(storeFile, 'utf8');
+      const origin = JSON.parse(before).observations[0].ledger.originalPath;
+      if (recovery === 'archive') fs.renameSync(origin, path.join(s.root, 'archived-observation.json'));
+      else {
+        const current = JSON.parse(fs.readFileSync(origin));
+        fs.writeFileSync(origin, JSON.stringify({ ...current, attemptId: 'later-native-review-attempt', status: 'converging', findings: current.findings.map(f => ({ ...f, status: 'killed' })) }));
+      }
+      assert.equal(s.ok('report').outcomes.applied, 1);
+      assert.equal(s.ok('select', { stage: 'design', tags: ['state'] }).lessons[0].id, id);
+      assert.equal(fs.readFileSync(storeFile, 'utf8'), before);
+    });
+  }
+  test(`${provider}: a later legitimate fix does not invalidate an actual recurrence`, t => {
+    const s = setup(t, provider); const id = s.promote();
+    const origin = path.join(s.root, 'open-recurrence.json');
+    const ledger = { ...s.ledger, attemptId: 'independent-observation-attempt', initiative_binding: s.bind('run-c'), status: 'converging', findings: s.ledger.findings.map(f => ({ ...f, status: 'open', fix_commit: null })) };
+    fs.writeFileSync(origin, JSON.stringify(ledger));
+    s.ok('observe', { runKey: 'run-c', unit: 'eventual-fix', ledgerPath: origin, evidencePath: s.evidencePath, outcomes: [{ id, outcome: 'recurred', findingId: s.packet.findingId }] });
+    fs.writeFileSync(origin, JSON.stringify({ ...ledger, status: 'clean', findings: ledger.findings.map(f => ({ ...f, status: 'fixed', fix_commit: 'actual-later-fix' })) }));
+    assert.equal(s.ok('report').outcomes.recurred, 1);
   });
   for (const outcome of ['recurred', 'not-observed', 'unmeasured']) {
     test(`${provider}: unchanged ${outcome} observation retry survives unrelated telemetry`, t => {

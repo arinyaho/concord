@@ -7,6 +7,8 @@ const crypto = require('node:crypto');
 const { writeFileAtomic } = require('./atomic-write');
 const { repositoryIdentity, canonicalPath, runPath } = require('./initiative-review-run');
 const { lockOwner, reclaimStaleLock } = require('./run-lock');
+const { TERMINAL_STATUSES } = require('./review');
+const TARGET_STATUSES = new Set([...TERMINAL_STATUSES, 'converging', 'intent-review', 'gate-pending', 'gate-panel-pending']);
 const CATEGORIES = ['requirements', 'design', 'implementation', 'verification', 'review-noise', 'environment'];
 const ELIGIBLE = CATEGORIES.slice(0, 4);
 const STAGES = ['contract', 'ticket', 'design'];
@@ -33,7 +35,7 @@ function readFile(file, max = 2 * 1024 * 1024) {
 function target(file) {
   const { bytes, reference } = readFile(file);
   const ledger = JSON.parse(bytes);
-  if (!ledger || !Array.isArray(ledger.findings) || typeof ledger.attemptId !== 'string' || !ledger.attemptId || !['clean', 'parked', 'abandoned', 'converging', 'intent-review', 'gate-pending'].includes(ledger.status)) fail('expected a native target ledger');
+  if (!ledger || !Array.isArray(ledger.findings) || typeof ledger.attemptId !== 'string' || !ledger.attemptId || !TARGET_STATUSES.has(ledger.status)) fail('expected a native target ledger');
   return { ledger, reference };
 }
 function assertRepository(ledger, runKey, repository) {
@@ -92,14 +94,19 @@ function ledgerSnapshot(directory, ledger, original, findings, repository) {
     findings: findings.map(findingReceipt) };
   return snapshot(directory, Buffer.from(`${JSON.stringify(receipt)}\n`), original, 'json');
 }
-function assertUncontradicted(occurrence, repository) {
-  const origin = occurrence.ledger.originalPath;
-  if (!origin || !fs.existsSync(origin)) return;
+function liveOrigin(reference, attemptId, runKey, repository) {
+  const origin = reference.originalPath;
+  if (!origin || !fs.existsSync(origin)) return null;
   const { ledger } = target(origin);
-  if (ledger.attemptId !== occurrence.attemptId) return; // a normal rerun keeps its old receipt valid
-  assertRepository(ledger, occurrence.runKey, repository);
-  const current = [...ledger.findings, ...(ledger.gate_open || []), ...(ledger.intent_parked || [])].find(f => f?.id === occurrence.findingId);
-  if (current && (current.status === 'killed' || (occurrence.confirmed && !confirmed(current)))) fail('support is contradicted by the live review evidence');
+  if (ledger.attemptId !== attemptId) return null; // a normal rerun keeps its old receipt valid
+  assertRepository(ledger, runKey, repository);
+  return ledger;
+}
+function assertUncontradicted(occurrence, repository, savedFinding) {
+  const ledger = liveOrigin(occurrence.ledger, occurrence.attemptId, occurrence.runKey, repository);
+  if (!ledger) return;
+  const current = finding(ledger, occurrence.findingId);
+  if (current.status === 'killed' || (occurrence.confirmed && (!confirmed(current) || current.fix_commit !== savedFinding.fix_commit))) fail('support is contradicted by the live review evidence');
 }
 
 function readLedgerReceipt(reference, repository) {
@@ -120,7 +127,7 @@ function validateSupport(lesson, repository) {
   for (const occurrence of lesson.occurrences) {
     const saved = readOccurrence(occurrence, repository);
     if (saved.finding.status === 'killed') fail('support is contradicted by the saved review evidence');
-    assertUncontradicted(occurrence, repository);
+    assertUncontradicted(occurrence, repository, saved.finding);
   }
   if (!supported(lesson)) fail('acceptance needs confirmed support from two different runs and review attempts');
 }
@@ -165,15 +172,19 @@ function load(file, repository, validateProofs = true) {
     if (!entry || !entry.ledger || !entry.evidence || !Array.isArray(entry.outcomes) || !entry.outcomes.length || entry.outcomes.length > 3) fail('malformed outcome');
     text(entry.runKey, 'runKey', 200); text(entry.unit, 'unit', 200);
     const ledger = validateProofs ? readLedgerReceipt(entry.ledger, repository) : null;
+    let current = null;
     if (validateProofs) {
       if (ledger.initiative_binding?.key !== entry.runKey) fail('observation receipt provenance disagrees');
       if (readFile(entry.evidence.path, 16384).reference.sha256 !== entry.evidence.sha256) fail('observation evidence changed; reconcile the measurement');
+      current = liveOrigin(entry.ledger, ledger.attemptId, entry.runKey, repository);
     }
     for (const o of entry.outcomes) {
       if (!store.lessons.some(l => l.id === o?.id)) fail('unknown outcome lesson');
       member(o.outcome, ['recurred', 'not-observed', 'unmeasured'], 'outcome');
       if (ledger && o.outcome === 'not-observed' && ledger.status !== 'clean') fail('not-observed needs a completed clean review');
       if (ledger && o.outcome === 'recurred' && finding(ledger, text(o.findingId, 'findingId', 200)).status === 'killed') fail('killed findings do not establish recurrence');
+      if (current && ((o.outcome === 'not-observed' && current.status !== 'clean')
+        || (o.outcome === 'recurred' && finding(current, o.findingId).status === 'killed'))) fail('observation is contradicted by the live review evidence; reconcile the measurement');
     }
   }
   return store;

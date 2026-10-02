@@ -471,8 +471,27 @@ function firstRetryArtifact(retries) {
 const INITIATIVE_FLAGS = [['--initiative-run-key', 'key'], ['--initiative-state-dir', 'stateDir'], ['--initiative-max-launches', 'maxLaunches'], ['--initiative-max-rounds', 'maxRounds']];
 const MODE_FLAG = '--initiative-mode';
 const RUN_VERBS = new Set(['finalise', 'consume', 'escalate', 'session-checkpoint']);
+const CLI_VERBS = ['show', 'round-start', 'telemetry-slot', 'plan-fixes', 'commit-fix', 'record', 'round-failure', 'gate-panel-round-start', 'gate-panel-round-record', 'unpark', 'dismiss', 'reset', 'rerun', 'artifact-normalize', 'reserve', 'finalise', 'consume', 'escalate'];
 const RESERVE_ROLES = ['correctness', 'verify', 'intent', 'gate-review', 'gate-verify', 'fix', 'lens', 'vote'];
 const ARTIFACT_RESERVE_ROLE = { correctness: 'correctness', verify: 'verify', intent: 'intent', gate: 'gate-review', 'gate-verify': 'gate-verify' };
+
+function unknownVerb(verb) {
+  return new Error(`review-cli: unknown verb "${verb}" (expected ${CLI_VERBS.join(' | ')})`);
+}
+
+function reserveOptions(rest) {
+  const role = rest[0];
+  if (!RESERVE_ROLES.includes(role)) throw new Error(`reserve: role must be one of ${RESERVE_ROLES.join(' | ')}`);
+  const flag = rest.indexOf('--count');
+  const count = flag === -1 ? (role === 'lens' ? GATE_PANEL_LENSES.length : 1) : Number(rest[flag + 1]);
+  const valid = Number.isInteger(count) && count >= 1 && (role === 'lens' ? count === GATE_PANEL_LENSES.length : role === 'vote' ? count % 3 === 0 : role === 'fix' || count === 1);
+  if (!valid) throw new Error(`reserve: invalid --count ${count} for role "${role}" (lens: exactly ${GATE_PANEL_LENSES.length}; vote: a multiple of 3; fix: any positive count; others: 1)`);
+  return { role, count };
+}
+
+function requireRoundStartMode(run, rest) {
+  if (run && runMode(run) === 'lite' && rest.some((a) => ['--broad', '--gate', '--no-broad'].includes(a))) throw new Error('review-cli round-start: a lite initiative run takes no --broad, --gate or --no-broad; lite always runs the one design-conformance gate (escalate to base before the first launch for the full gate pair)');
+}
 
 function extractInitiative(argv) {
   const args = argv.slice();
@@ -720,6 +739,14 @@ function main(resolveFromCwd) {
       }
     }
     if (args[0] === 'reset' && initiative) throw new Error('review-cli reset: cannot discard an initiative target; use rerun with the same initiative run flags to retain history and spent budget');
+    if (prior?.rerun_cleanup) {
+      // Cleanup is a mutation: reject invalid calls and immutable run option
+      // mismatches before deleting any evidence or clearing the pending marker.
+      if (!CLI_VERBS.includes(args[0])) throw unknownVerb(args[0]);
+      if (args[0] === 'reserve') reserveOptions(args.slice(2));
+      const run = initiative && openKeyedRun(initiative);
+      if (args[0] === 'round-start') requireRoundStartMode(run, args.slice(2));
+    }
     finishRerunCleanup(stateDir, slug, prior);
     // Reservation binding is published only by the validated charge path;
     // a normal denial must leave a standalone target unbound.
@@ -775,12 +802,7 @@ function runVerb(resolveFromCwd, args, initiative) {
 
   if (verb === 'reserve') {
     requireRef(ref, 'reserve');
-    const role = rest[0];
-    if (!RESERVE_ROLES.includes(role)) throw new Error(`reserve: role must be one of ${RESERVE_ROLES.join(' | ')}`);
-    const flag = rest.indexOf('--count');
-    const count = flag === -1 ? (role === 'lens' ? GATE_PANEL_LENSES.length : 1) : Number(rest[flag + 1]);
-    const valid = Number.isInteger(count) && count >= 1 && (role === 'lens' ? count === GATE_PANEL_LENSES.length : role === 'vote' ? count % 3 === 0 : role === 'fix' || count === 1);
-    if (!valid) throw new Error(`reserve: invalid --count ${count} for role "${role}" (lens: exactly ${GATE_PANEL_LENSES.length}; vote: a multiple of 3; fix: any positive count; others: 1)`);
+    const { role, count } = reserveOptions(rest);
     if (!initiative) { process.stdout.write(`${JSON.stringify({ status: 'granted', keyed: false, role, count })}\n`); return; }
     const slug = targetSlug(ref);
     const result = (() => {
@@ -1060,7 +1082,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       throw new Error('review-cli round-start: "resume" is not a valid ref -- round-start auto-detects resume from ledger state; call `round-start <ref>` directly, or use the review-until-green wrapper\'s `resume <ref>` syntax, which forwards correctly');
     }
     // Rejected before any state is written: the intent-review and gate-pending resets below delete the cached intent.
-    if (run && runMode(run) === 'lite' && rest.some((a) => ['--broad', '--gate', '--no-broad'].includes(a))) throw new Error('review-cli round-start: a lite initiative run takes no --broad, --gate or --no-broad; lite always runs the one design-conformance gate (escalate to base before the first launch for the full gate pair)');
+    requireRoundStartMode(run, rest);
     const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
     const slug = targetSlug(ref);
     let ledger = readLedger(stateDir, slug) || emptyLedger({ kind: 'local', ref });
@@ -2031,7 +2053,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     return;
   }
 
-  throw new Error(`review-cli: unknown verb "${verb}" (expected show | round-start | telemetry-slot | plan-fixes | commit-fix | record | round-failure | gate-panel-round-start | gate-panel-round-record | unpark | dismiss | reset | rerun | artifact-normalize | reserve | finalise | consume | escalate)`);
+  throw unknownVerb(verb);
 }
 
 // Wraps main() with the graceful operator-facing error format. Exported (not

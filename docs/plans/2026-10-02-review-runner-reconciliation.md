@@ -50,6 +50,12 @@ The sixth run used actual CLI-planned sequential fixes for observation receipt v
 
 The last round's actual DoD failed an older fixture that kills the first target write and assumes that charge has already happened. With the corrected ordering that write publishes identity before charging: update the fixture to require no new charge, unchanged budget bytes, denied unkeyed mutation and exactly one charge when the original flags resume. Keep the separate real post-charge SIGKILL regression. The round then stopped on a reviewer module-resolution measurement failure, not a clean verdict. Preserve both failures and perform a fresh review with functioning native measurement fixtures.
 
+## Seventh-run reconciliation
+
+The seventh run at head `e55896e` independently verified same-attempt feedback contradictions: accepted support cannot reuse its saved approval after the origin fix commit changes, and a reported recurrence cannot remain valid after the origin finding is killed. Validate still-available same-attempt origins on reuse while retaining historical immutable receipts after normal reruns, archival and unrelated telemetry changes. Valid native panel-pending ledgers remain readable for fixed-finding evidence and unmeasured outcomes; not-observed still requires a clean review.
+
+An interrupted rerun's pending cleanup must not delete files before validating the original initiative budgets, mode and repository. Invalid original initiative options and the existing command, reservation and lite-policy preconditions leave the pending state and evidence unchanged; authorized resume performs the same bounded cleanup without charging another launch. These complete existing evidence and resume contracts without new budget or product policy.
+
 ## Validation limits
 
 Native tests cover deterministic decisions and durable state. Actual host efficiency, adoption of lessons and token savings need subsequent session observations. A stopped checkpoint is not a clean or terminal review verdict.

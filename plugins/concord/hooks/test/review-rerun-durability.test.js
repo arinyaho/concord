@@ -11,16 +11,16 @@ const { runPath } = require('../../core/initiative-review-run');
 const providers = { canonical: path.resolve(__dirname, '../../hooks/review-cli.js'), copilot: path.resolve(__dirname, '../../../concord-copilot/bin/review-cli.js') };
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'rerun-durable-'));
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
-function fixture(provider) {
+function fixture(provider, mode = 'base') {
   const repo = tmp(), dir = tmp(), initDir = tmp(), slug = review.targetSlug('feat/rerun');
   const git = (...args) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' });
   git('init', '-q'); git('config', 'user.email', 'test@example.com'); git('config', 'user.name', 'test');
   fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n'); fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'] }));
   git('add', '.'); git('commit', '-qm', 'base'); fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n'); git('commit', '-aqm', 'change');
-  const keyed = ['--initiative-run-key', 'durability', '--initiative-state-dir', initDir, '--initiative-max-launches', '20', '--initiative-max-rounds', '5'];
-  const call = (args, { key = true, preload } = {}) => spawnSync('node', [...(preload ? ['--require', preload] : []), providers[provider], ...args, ...(key ? keyed : [])], { cwd: repo, encoding: 'utf8', env: { ...process.env, REVIEW_REPO_ROOT: repo, REVIEW_STATE_DIR: dir } });
+  const keyed = ['--initiative-run-key', 'durability', '--initiative-state-dir', initDir, '--initiative-max-launches', '20', '--initiative-max-rounds', '5', ...(mode === 'lite' ? ['--initiative-mode', 'lite'] : [])];
+  const call = (args, { key = true, preload, flags = keyed, repository = repo } = {}) => spawnSync('node', [...(preload ? ['--require', preload] : []), providers[provider], ...args, ...(key ? flags : [])], { cwd: repo, encoding: 'utf8', env: { ...process.env, REVIEW_REPO_ROOT: repository, REVIEW_STATE_DIR: dir } });
   const ok = args => { const out = call(args); assert.equal(out.status, 0, out.stderr); return JSON.parse(out.stdout); };
-  ok(['round-start', 'feat/rerun', 'HEAD~1', '--no-broad']); ok(['reserve', 'feat/rerun', 'correctness']);
+  ok(['round-start', 'feat/rerun', 'HEAD~1', ...(mode === 'base' ? ['--no-broad'] : [])]); ok(['reserve', 'feat/rerun', 'correctness']);
   const ledger = review.readLedger(dir, slug);
   const finding = { id: 'gate:cross-context:anchor', file: 'a.txt', span: 'two', requirement: 'Original approved requirement anchor', summary: 'Original evidence' };
   review.writeLedger(dir, slug, { ...ledger, gate_open: [finding], journal: [{ id: 'correctness:old', sha: 'original-commit' }] });
@@ -37,7 +37,7 @@ function fixture(provider) {
     fs.writeFileSync(file, `const Module=require('node:module'),load=Module._load;Module._load=function(request,parent){const resolved=Module._resolveFilename(request,parent);const value=load.apply(this,arguments);if(resolved.endsWith('/review.js'))return{...value,writeLedger:(dir,slug,ledger)=>{if((${JSON.stringify(mode)}==='first'&&ledger.phase==='gates')||(ledger.round===0&&ledger.runs?.length&&${JSON.stringify(mode)}!=='archive')){${['after', 'first'].includes(mode) ? 'value.writeLedger(dir,slug,ledger);process.exit(72);' : "throw new Error('controlled fresh-ledger write failure');"}}return value.writeLedger(dir,slug,ledger);}};if(resolved.endsWith('/atomic-write.js')&&${JSON.stringify(mode)}==='archive')return{...value,writeFileAtomic:(file,...args)=>{if(file.includes('review-archives')&&file.endsWith('manifest.json'))throw new Error('controlled archive write failure');return value.writeFileAtomic(file,...args);}};return value;};`);
     return file;
   };
-  return { dir, slug, call, ok, original, artifacts, initiativeBytes, initDir, preload, otherPath: review.ledgerPath(dir, otherSlug), otherBytes: fs.readFileSync(review.ledgerPath(dir, otherSlug)) };
+  return { dir, slug, call, ok, original, artifacts, initiativeBytes, initDir, keyed, preload, otherPath: review.ledgerPath(dir, otherSlug), otherBytes: fs.readFileSync(review.ledgerPath(dir, otherSlug)) };
 }
 function validateArchive(t, pointer) {
   assert.ok(pointer?.manifestPath, 'fresh run retains a durable archive pointer');
@@ -72,7 +72,75 @@ function addPriorTelemetry(t) {
   }
   return Object.keys(records);
 }
+function interruptRerun(t) {
+  const preload = path.join(tmp(), 'interrupt-rerun.cjs');
+  fs.writeFileSync(preload, "const Module=require('node:module'),load=Module._load;Module._load=function(request,parent){const resolved=Module._resolveFilename(request,parent),value=load.apply(this,arguments);if(resolved.endsWith('/review.js'))return{...value,writeLedger:(dir,slug,ledger)=>{value.writeLedger(dir,slug,ledger);if(ledger.rerun_cleanup&&ledger.round===0)process.kill(process.pid,'SIGKILL');}};return value;};");
+  const interrupted = t.call(['rerun', 'feat/rerun'], { preload });
+  assert.equal(interrupted.signal, 'SIGKILL', interrupted.stderr);
+  const pending = review.readLedger(t.dir, t.slug); validateArchive(t, pending.rerun_cleanup);
+  fs.rmSync(`${review.ledgerPath(t.dir, t.slug)}.lock`, { recursive: true, force: true });
+}
+const snapshot = directory => fs.readdirSync(directory, { recursive: true }).sort()
+  .filter(name => fs.statSync(path.join(directory, name)).isFile())
+  .map(name => [name, fs.readFileSync(path.join(directory, name))]);
 for (const provider of Object.keys(providers)) {
+  test(`${provider}: interrupted rerun rejects changed initiative options before any cleanup`, () => {
+    const t = fixture(provider); addPriorTelemetry(t);
+    interruptRerun(t);
+    const stateBefore = snapshot(t.dir), budgetBefore = snapshot(t.initDir);
+    const readonly = t.call(['show', 'feat/rerun'], { key: false });
+    assert.equal(readonly.status, 0, readonly.stderr);
+    assert.deepEqual(snapshot(t.dir), stateBefore); assert.deepEqual(snapshot(t.initDir), budgetBefore);
+    for (const [flag, value, message] of [
+      ['--initiative-max-launches', '21', /immutable configured budgets/],
+      ['--initiative-max-rounds', '6', /immutable configured budgets/],
+      ['--initiative-mode', 'lite', /disagrees with the run ledger/],
+      ['--initiative-run-key', 'foreign-run', /different initiative binding/],
+      ['--initiative-state-dir', tmp(), /different initiative binding/],
+    ]) {
+      const flags = [...t.keyed], index = flags.indexOf(flag);
+      if (index === -1) flags.push(flag, value); else flags[index + 1] = value;
+      const denied = t.call(['round-start', 'feat/rerun', 'HEAD~1', '--no-broad'], { flags });
+      assert.equal(denied.status, 1); assert.match(denied.stderr, message);
+      assert.deepEqual(snapshot(t.dir), stateBefore, `${flag} changed pending evidence`);
+      assert.deepEqual(snapshot(t.initDir), budgetBefore, `${flag} changed the initiative state`);
+      if (flag === '--initiative-state-dir') assert.deepEqual(fs.readdirSync(value), []);
+    }
+    const foreignRepository = t.call(['round-start', 'feat/rerun', 'HEAD~1', '--no-broad'], { repository: tmp() });
+    assert.equal(foreignRepository.status, 1); assert.match(foreignRepository.stderr, /different repository/);
+    assert.deepEqual(snapshot(t.dir), stateBefore); assert.deepEqual(snapshot(t.initDir), budgetBefore);
+    const partial = t.call(['round-start', 'feat/rerun', 'HEAD~1', '--no-broad'], { flags: t.keyed.slice(0, -2) });
+    assert.equal(partial.status, 1); assert.match(partial.stderr, /must be used together/);
+    assert.deepEqual(snapshot(t.dir), stateBefore); assert.deepEqual(snapshot(t.initDir), budgetBefore);
+    for (const [args, message] of [
+      [['unknown-verb', 'feat/rerun'], /unknown verb "unknown-verb"/],
+      [['reserve', 'feat/rerun', 'unknown-role'], /reserve: role must be one of/],
+      [['reserve', 'feat/rerun', 'vote', '--count', '4'], /reserve: invalid --count 4/],
+    ]) {
+      const denied = t.call(args);
+      assert.equal(denied.status, 1); assert.match(denied.stderr, message);
+      assert.deepEqual(snapshot(t.dir), stateBefore); assert.deepEqual(snapshot(t.initDir), budgetBefore);
+    }
+    t.ok(['round-start', 'feat/rerun', 'HEAD~1', '--no-broad']);
+    const resumed = review.readLedger(t.dir, t.slug);
+    assert.equal(resumed.rerun_cleanup, undefined); assert.equal(resumed.round, 1);
+    assert.deepEqual(fs.readFileSync(runPath(t.initDir, 'durability')), t.initiativeBytes);
+    for (const [name] of t.artifacts) if (!name.startsWith('intent-') && name !== 'round-1-diff.txt') assert.equal(fs.existsSync(path.join(t.dir, name)), false);
+    assert.deepEqual(fs.readFileSync(t.otherPath), t.otherBytes);
+    validateArchive(t, resumed.runs[0].archive);
+  });
+  test(`${provider}: interrupted lite rerun rejects conflicting round policy before cleanup`, () => {
+    const t = fixture(provider, 'lite'); addPriorTelemetry(t); interruptRerun(t);
+    const stateBefore = snapshot(t.dir), budgetBefore = snapshot(t.initDir);
+    for (const flag of ['--broad', '--gate', '--no-broad']) {
+      const denied = t.call(['round-start', 'feat/rerun', 'HEAD~1', flag]);
+      assert.equal(denied.status, 1); assert.match(denied.stderr, /a lite initiative run takes no/);
+      assert.deepEqual(snapshot(t.dir), stateBefore); assert.deepEqual(snapshot(t.initDir), budgetBefore);
+    }
+    t.ok(['round-start', 'feat/rerun', 'HEAD~1']);
+    assert.equal(review.readLedger(t.dir, t.slug).rerun_cleanup, undefined);
+    assert.deepEqual(snapshot(t.initDir), budgetBefore);
+  });
   for (const resume of ['show', 'round-start']) {
     test(`${provider}: interrupted rerun excludes archived telemetry and round artifacts on ${resume}`, () => {
       const t = fixture(provider), telemetryNames = addPriorTelemetry(t);
