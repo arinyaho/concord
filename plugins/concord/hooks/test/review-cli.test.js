@@ -4086,20 +4086,41 @@ test('reset and rerun delete telemetry by the ledger target ref when called with
 
 // ---- round budget enforcement ----
 
-// Drives one round whose only finding is rejected by the verifier: nothing is
-// fixed, nothing stays open, and the finding still counts as new for the
-// dry-round streak. Returns the round-start and record output.
-function noFixRound(ref, env, dir, extra, i) {
+// Drives one round of a `file:<path>` target whose only finding survives
+// verification and is fixed, so it counts as new and the dry-round streak never
+// advances. Returns the round-start and record output.
+function newFindingRound(ref, env, dir, extra, i) {
   const rs = JSON.parse(run(['round-start', ref, ...extra], { env }));
   if (rs.decision !== 'work') return { rs };
-  const file = ref.startsWith('file:') ? ref.slice(5) : 'a.txt';
-  const span = ref.startsWith('file:') ? undefined : 'two';
+  const file = ref.slice('file:'.length);
   const id = `correctness:f${i}`;
-  writeArtifact(dir, rs.round, 'correctness', { status: 'ok', examined: [file], findings: [{ id, gate: 'correctness', file, span, summary: `finding ${i}` }] });
-  writeArtifact(dir, rs.round, 'verify', { status: 'ok', rejected: [{ id, reason: `re-read ${file}: the claim does not hold` }] });
+  writeArtifact(dir, rs.round, 'correctness', { status: 'ok', examined: [file], findings: [{ id, gate: 'correctness', file, summary: `finding ${i}` }] });
+  writeArtifact(dir, rs.round, 'verify', { status: 'ok', rejected: [], findings: [] });
   run(['plan-fixes', ref], { env });
+  writeArtifact(dir, rs.round, `fix-${id}`, { status: 'ok', edited: true, files: [file] });
   return { rs, out: JSON.parse(run(['record', ref], { env })) };
 }
+
+test('no-DoD target converges clean after two rounds in which verification rejects every candidate', () => {
+  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-allkilled-'));
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
+  let last;
+  for (let i = 1; i <= 2; i++) {
+    fs.writeFileSync(path.join(fileDir, 'note.md'), `# note\nedit ${i}\n`);
+    const rs = JSON.parse(run(['round-start', 'file:note.md'], { env }));
+    assert.strictEqual(rs.decision, 'work');
+    const id = `docreview:f${i}`;
+    writeArtifact(dir, rs.round, 'correctness', { status: 'ok', examined: ['note.md'], findings: [{ id, gate: 'correctness', file: 'note.md', summary: `finding ${i}` }] });
+    writeArtifact(dir, rs.round, 'verify', { status: 'ok', rejected: [{ id, reason: 'read note.md: the claim does not hold' }], findings: [] });
+    run(['plan-fixes', 'file:note.md'], { env });
+    last = JSON.parse(run(['record', 'file:note.md'], { env }));
+  }
+  assert.strictEqual(last.decision.converged, true);
+  const ledger = review.readLedger(dir, review.targetSlug('file:note.md'));
+  assert.strictEqual(ledger.status, 'clean');
+  assert.deepStrictEqual(ledger.history.map((h) => h.new), [0, 0]);
+});
 
 test('no-DoD target parks when the round budget is spent and round-start never opens a round past it', () => {
   const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-budget-'));
@@ -4110,7 +4131,7 @@ test('no-DoD target parks when the round budget is spent and round-start never o
   let max = Infinity;
   for (let i = 1; i <= max; i++) {
     fs.writeFileSync(path.join(fileDir, 'note.md'), `# note\nedit ${i}\n`);
-    last = noFixRound('file:note.md', env, dir, [], i);
+    last = newFindingRound('file:note.md', env, dir, [], i);
     assert.strictEqual(last.rs.round, i);
     if (i === 1) max = review.readLedger(dir, slug).budget.max_rounds;
   }
