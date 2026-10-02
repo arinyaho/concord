@@ -6,7 +6,7 @@ The budget bounds charged (continuing) rounds, not every round. A round that wai
 
 ## Charging
 
-`budget.max_rounds` is the number of rounds a run may work. `budget.spent` counts the rounds that were recorded with a `continue` decision: `record` charges one unit after it decides that another round should follow. A round whose decision is terminal (clean, parked, abandoned, or waiting on a human) is never charged, and `round-start` does not charge either. A run that ends in its first round therefore reports `spent: 0`, for example when that round is clean or parked. A round that plans no fixes but still decides `continue`, because progress was made or findings remain, is charged one unit like any other continuing round.
+`budget.max_rounds` bounds the continuing (charged) rounds of a run; rounds that wait on a human are not charged, and a git target may open one round past it. `budget.spent` counts the rounds that were recorded with a `continue` decision: `record` charges one unit after it decides that another round should follow. A round whose decision is terminal (clean, parked, abandoned, or waiting on a human) is never charged, and `round-start` does not charge either. A run that ends in its first round therefore reports `spent: 0`, for example when that round is clean or parked. A round that plans no fixes but still decides `continue`, because progress was made or findings remain, is charged one unit like any other continuing round.
 
 ## Termination check
 
