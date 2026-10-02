@@ -995,3 +995,67 @@ test('Claude hook manifest registers the grep-sweep reminder on Bash PostToolUse
   assert.ok(reminderEntry, 'PostToolUse must register a Bash-matched entry for the grep-sweep reminder');
   assert.match(reminderEntry.hooks[0].command, /grep-sweep-reminder\.js/);
 });
+
+// ---- atomic replace of an existing telemetry record (started -> completed) ----
+
+const tmpFiles = (dir) => fs.readdirSync(dir).filter((f) => f.endsWith('.tmp'));
+
+// Fails the first `failures` renames with `code`; Infinity fails every rename.
+function withRenameFailing(code, failures, fn) {
+  const real = fs.renameSync;
+  let n = 0;
+  fs.renameSync = (from, to) => {
+    if (failures === Infinity || n++ < failures) throw Object.assign(new Error(`${code}: injected`), { code });
+    return real(from, to);
+  };
+  try { return fn(); } finally { fs.renameSync = real; }
+}
+
+// The started -> completed path is the only one of the three sites that
+// routes through a real rename in this test harness (the first write for a
+// given invocation always lands via the exclusive link, never a rename): a
+// PreToolUse record creates the file, and the matching PostToolUse record
+// hits EEXIST and replaces it in place via writeFileAtomic.
+function recordStartedThenCompleted(transcript, stateDir, prompt) {
+  core.writeRecord(stateDir, core.recordForEvent(event({ transcript, hook: 'PreToolUse', prompt }), stateDir));
+  return () => core.writeRecord(stateDir, core.recordForEvent(event({ transcript, prompt, response: successfulResponse() }), stateDir));
+}
+
+test('writeRecord retries a transient rename failure replacing a started record and leaves no .tmp', () => {
+  const { transcript, stateDir } = setup();
+  const prompt = `Write ONLY to ${path.join(stateDir, 'round-2-correctness.json')}`;
+  const completeIt = recordStartedThenCompleted(transcript, stateDir, prompt);
+
+  const ok = withRenameFailing('EPERM', 2, completeIt);
+
+  assert.strictEqual(ok, true);
+  assert.deepStrictEqual(tmpFiles(stateDir), []);
+  const [file] = fs.readdirSync(stateDir).filter((f) => /^review-telemetry-/.test(f));
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(stateDir, file), 'utf8')).status, 'completed');
+});
+
+test('writeRecord degrades without throwing when the replace rename always fails, and leaves no .tmp', () => {
+  const { transcript, stateDir } = setup();
+  const prompt = `Write ONLY to ${path.join(stateDir, 'round-2-correctness.json')}`;
+  const completeIt = recordStartedThenCompleted(transcript, stateDir, prompt);
+
+  const ok = withRenameFailing('EPERM', Infinity, completeIt);
+
+  assert.strictEqual(ok, false, 'telemetry degrades (reports failure) rather than throwing and breaking the hook');
+  assert.deepStrictEqual(tmpFiles(stateDir), []);
+  const [file] = fs.readdirSync(stateDir).filter((f) => /^review-telemetry-/.test(f));
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(stateDir, file), 'utf8')).status, 'started', 'the stale started record is left in place, not corrupted');
+});
+
+// ---- activeLedger: an unreadable ledger must not break a hook ----
+
+test('an unrelated unreadable ledger file in the state dir is skipped, not thrown', () => {
+  const { transcript, stateDir } = setup();
+  // Mid-write/corrupt sibling ledger alongside the real one `setup()` wrote.
+  fs.writeFileSync(path.join(stateDir, 'review-feat-bad.json'), '{"trunc');
+  const prompt = `Write ONLY to ${path.join(stateDir, 'round-2-correctness.json')}`;
+  assert.doesNotThrow(() => {
+    const record = core.recordForEvent(event({ transcript, prompt, response: successfulResponse() }), stateDir);
+    assert.ok(record, 'the valid ledger is still matched despite the corrupt sibling');
+  });
+});

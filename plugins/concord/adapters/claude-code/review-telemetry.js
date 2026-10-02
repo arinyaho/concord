@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { artifactDestinationFromPrompt } = require('../../core/review-artifact');
 const { roleFromArtifactSuffix } = require('../../core/review-telemetry');
+const { writeFileAtomic } = require('../../core/atomic-write');
 
 const ACTIVE_STATUSES = new Set(['converging', 'gate-panel-pending', 'intent-review']);
 const TRANSCRIPT_VERSION = '2.1.268';
@@ -25,7 +26,13 @@ function activeLedger(stateDir, round, artifactPath) {
       const doingReviewWork = ledger.phase === 'gates' || ledger.phase === 'fixes' || ledger.status === 'gate-panel-pending';
       if ((round === undefined || ledger.round === round) && ACTIVE_STATUSES.has(ledger.status) && doingReviewWork && typeof ledger.target?.ref === 'string') matches.push(ledger);
     } catch {
-      // Ignore unrelated or incomplete state files.
+      // Deliberate degrade, not an oversight: this is telemetry attribution, not
+      // the review ledger itself (core/review.js's own readLedger is the strict
+      // reader and throws on a present-but-unreadable ledger). A ledger that is
+      // mid-write, truncated, or simply unrelated JSON in the same state dir
+      // must not make a SubagentStop/tool hook throw -- losing one attribution
+      // record is an acceptable cost, breaking the hook is not. Skip it and keep
+      // scanning the rest.
     }
   }
   if (round === undefined) return matches[0] || null;
@@ -331,7 +338,6 @@ function settlePendingAgentRecords(stateDir, tool) {
   for (const name of names) {
     if (!/^review-agent-telemetry-[0-9a-f]{64}\.json$/.test(name)) continue;
     const file = path.join(stateDir, name);
-    let temporary;
     try {
       const pending = JSON.parse(fs.readFileSync(file, 'utf8'));
       if (pending.pendingInvocationId !== tool.invocationId) continue;
@@ -346,12 +352,12 @@ function settlePendingAgentRecords(stateDir, tool) {
         agent_transcript_path: pending.agentTranscriptPath,
         last_assistant_message_hash: pending.lastAssistantMessageHash,
       });
-      temporary = `${file}.${process.pid}-${crypto.randomBytes(6).toString('hex')}.tmp`;
-      fs.writeFileSync(temporary, JSON.stringify({ ...parsed, observationId: pending.observationId }), { flag: 'wx', mode: 0o600 });
-      fs.renameSync(temporary, file);
+      // writeFileAtomic owns its own temp file (name + cleanup on failure/retry),
+      // so settling this record in place never leaves a stray .tmp behind.
+      writeFileAtomic(file, JSON.stringify({ ...parsed, observationId: pending.observationId }), { mode: 0o600 });
     } catch {
       // Preserve malformed evidence for operator inspection.
-    } finally { if (temporary) try { fs.unlinkSync(temporary); } catch {} }
+    }
   }
 }
 
@@ -378,14 +384,15 @@ function writeRecord(stateDir, record) {
         const replacement = existing.status === 'started' && nonnegativeInteger(existing.startedAtMs) !== null
           ? { ...record, startedAtMs: existing.startedAtMs }
           : record;
-        fs.writeFileSync(temporary, JSON.stringify(existing.duplicateEvidence ? { ...replacement, duplicateEvidence: true, usagePartial: true } : replacement));
-        fs.renameSync(temporary, destination);
+        // writeFileAtomic replaces `destination` in place via its own temp file +
+        // retrying rename, so a transient rename failure (EPERM/EACCES/EBUSY) is
+        // retried instead of silently dropping the overwrite, and no .tmp survives.
+        writeFileAtomic(destination, JSON.stringify(existing.duplicateEvidence ? { ...replacement, duplicateEvidence: true, usagePartial: true } : replacement));
         settlePendingAgentRecords(stateDir, activeTool || record);
         return true;
       }
       if (record.kind === 'tool-use') {
-        fs.writeFileSync(temporary, JSON.stringify({ ...existing, duplicateEvidence: true, usagePartial: true }));
-        fs.renameSync(temporary, destination);
+        writeFileAtomic(destination, JSON.stringify({ ...existing, duplicateEvidence: true, usagePartial: true }));
         settlePendingAgentRecords(stateDir, activeTool || record);
       }
     } catch {
