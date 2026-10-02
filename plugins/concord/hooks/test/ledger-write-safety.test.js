@@ -119,21 +119,17 @@ test('round-start on a present but unreadable ledger fails and does not start a 
   assert.strictEqual(ok.status, 0, ok.stderr);
 });
 
-test('reset and rerun replace an unreadable ledger with a valid state', () => {
+test('reset and rerun preserve an unreadable ledger with unknown binding', () => {
   const dir = tmp();
   const env = { ...process.env, REVIEW_STATE_DIR: dir };
-  const slug = review.targetSlug('feat/x');
-  const file = review.ledgerPath(dir, slug);
+  const file = review.ledgerPath(dir, review.targetSlug('feat/x'));
   fs.writeFileSync(file, '{"trunc');
-  const out = execFileSync('node', [CLI, 'reset', 'feat/x'], { encoding: 'utf8', env });
-  assert.match(out, /reset ref "feat\/x"/);
-  assert.strictEqual(review.readLedger(dir, slug), null);
-
-  fs.writeFileSync(file, '{"trunc');
-  execFileSync('node', [CLI, 'rerun', 'feat/x'], { encoding: 'utf8', env });
-  const l = review.readLedger(dir, slug);
-  assert.strictEqual(l.status, 'converging');
-  assert.strictEqual(l.round, 0);
+  for (const verb of ['reset', 'rerun']) {
+    const result = spawnSync('node', [CLI, verb, 'feat/x'], { encoding: 'utf8', env });
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.stderr, /unreadable review ledger/);
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), '{"trunc', 'unknown binding and history must be preserved');
+  }
 });
 
 test('SessionStart lists the valid ledger and names the corrupt one without throwing', () => {

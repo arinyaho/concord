@@ -47,7 +47,7 @@ for (const [name, lib] of RUNTIMES) {
     assert.throws(() => lib.openInitiativeRun({ repository: '/repo', stateDir: dir, key: 'other', maxLaunches: 4, maxRounds: 2, mode: 'turbo' }), /mode must be base or lite/);
   });
 
-  test(`${name}: a v4 ledger is rejected with the new-run-key instruction (AC4)`, () => {
+  test(`${name}: a v4 ledger is rejected with preserved-state reconciliation instructions (AC4)`, () => {
     const dir = tmp('mode-');
     const run = lib.openInitiativeRun({ repository: '/repo', stateDir: dir, key: 'k', maxLaunches: 4, maxRounds: 2 });
     const { mode, ...v4 } = read(run);
@@ -56,7 +56,7 @@ for (const [name, lib] of RUNTIMES) {
       () => lib.openInitiativeRun({ repository: '/repo', stateDir: dir, key: 'k', maxLaunches: 4, maxRounds: 2 }),
       () => lib.reserveLaunch(run, { role: 'correctness', round: 1 }),
       () => lib.terminalTarget(run, 'feature/x', { ref: 'feature/x', base: 'b', head_sha: 'h' }, ['terminal']),
-    ]) assert.throws(attempt, (error) => /schemaVersion must be 5/.test(error.message) && /new run key/.test(error.message) && /rerun/.test(error.message) && /source index/.test(error.message));
+    ]) assert.throws(attempt, (error) => /schemaVersion must be 5/.test(error.message) && /preserve the original initiative and target ledgers/.test(error.message) && /reconcile their history and spent budgets/.test(error.message) && /new run key in a separate target review state directory/.test(error.message) && /source index/.test(error.message));
   });
 
   test(`${name}: reopening is keyed on budgets only; the ledger mode is authoritative (AC4)`, () => {

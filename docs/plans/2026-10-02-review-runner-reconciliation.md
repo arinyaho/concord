@@ -24,6 +24,12 @@ Resolve these by implementing the existing approved contracts. Do not relax evid
 6. Run relevant regression suites and the full repository DoD. Commit the reconciled implementation, re-arm the same durable review target with `rerun`, and perform a fresh deterministic review including the required broad panel when its preconditions are met. Retain the original gate-pending findings and artifacts in history.
 7. Before pushing, run applicable GitHub Actions commands on Node 22 and update the existing PR's description and validation evidence. Do not merge.
 
+## Second-run reconciliation
+
+The preserved second run at head `641b3459d0022845b448b409d1aec154d0995290` independently verified further instances of the same approved contracts. Reserve all panel votes as one round-wide `3 × candidates` batch before launching any voter. Keep suggestion suppression within the current driver context so a new context can receive its own suggestion. An unreadable target cannot prove that it was standalone: reject destructive reset/rerun until its original identity and binding are restored, preserving its bytes and history. Recovery and escalation messages must state reconciliation and retained old state before any separate base-mode run, never offer a new key to bypass spent budgets.
+
+These are implementation corrections, with native regressions and both generated providers required before another preserved review run.
+
 ## Validation limits
 
 Native tests cover deterministic decisions and durable state. Actual host efficiency, adoption of lessons and token savings need subsequent session observations. A stopped checkpoint is not a clean or terminal review verdict.

@@ -619,13 +619,9 @@ function main(resolveFromCwd) {
   if (!args[1] || args[0] === 'show' || RUN_VERBS.has(args[0])) return runVerb(resolveFromCwd, args, initiative);
   const stateDir = resolveStateDir(resolveFromCwd);
   const slug = targetSlug(args[1]);
-  const readPrior = () => {
-    try { return readLedger(stateDir, slug); } catch (error) {
-      // Preserve the standalone escape hatch for an unreadable ledger.
-      if (!initiative && ['reset', 'rerun'].includes(args[0])) return null;
-      throw error;
-    }
-  };
+  // Unreadable state cannot prove a standalone identity or an absent binding.
+  // Preserve the original bytes until its ledger and binding are restored.
+  const readPrior = () => readLedger(stateDir, slug);
   const isBound = (ledger) => !!ledger?.initiative_binding || !!ledger?.initiative_reservations?.length;
   const dispatch = () => {
     const prior = readPrior();
@@ -992,7 +988,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (ledger.reviewRouting) {
       for (const [field, value] of Object.entries(requestedRouting)) {
         if (ledger.reviewRouting[field] !== value) {
-          throw new Error('review-cli round-start: routing differs from the active run; reset or rerun before changing provider or model');
+          throw new Error(run ? 'review-cli round-start: routing differs from the active run; for this initiative target, rerun with the original initiative flags before changing provider or model, retaining history and spent budget' : 'review-cli round-start: routing differs from the active run; for this standalone target, reset or rerun before changing provider or model');
         }
       }
     }
@@ -1794,7 +1790,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     return;
   }
 
-  // Discards the ledger for a ref so the next round-start begins a fresh run.
+  // Discards a readable standalone ledger so round-start begins a fresh run.
   // The escape hatch for a ledger latched into a finding-less terminal state: a
   // no-progress or budget-exhausted park has zero parked findings, so `unpark`
   // has no target -- without `reset` the only recourse was deleting the state
@@ -1803,8 +1799,7 @@ function runVerb(resolveFromCwd, args, initiative) {
   if (verb === 'reset') {
     requireRef(ref, 'reset');
     const slug = targetSlug(ref);
-    let prior;
-    try { prior = readLedger(stateDir, slug); } catch (e) { prior = { unreadable: true, status: 'unreadable', round: 0 }; }
+    const prior = readLedger(stateDir, slug);
     if (!prior) {
       process.stdout.write(`review-cli reset: no ledger for ref "${ref}"; nothing to reset.\n`);
       return;
@@ -1834,14 +1829,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (engineFlag >= 0 && !rest[engineFlag + 1]) throw new Error('review-cli rerun: --engine needs a name (e.g. --engine codex)');
     const engine = engineFlag >= 0 ? rest[engineFlag + 1] : null;
     const slug = targetSlug(ref);
-    let stored;
-    try { stored = readLedger(stateDir, slug); } catch (e) {
-      // Nothing readable to archive: replace the ledger with a fresh run (gate_dismissed is lost with it).
-      reviewTelemetry.deleteTelemetry(stateDir, ref, slug);
-      writeLedger(stateDir, slug, { ...emptyLedger({ kind: 'local', ref }), engine });
-      process.stdout.write(JSON.stringify({ status: 'ok', run: 1, engine, archived: null }) + '\n');
-      return;
-    }
+    const stored = readLedger(stateDir, slug);
     const prior = reviewTelemetry.foldTelemetry(stateDir, stored, slug);
     if (!prior) throw new Error(`review-cli rerun: no ledger for ref "${ref}" ${stateDirHint(stateDir)} -- there is no run to re-run; just start a normal run.`);
     const runs = (prior.runs || []).concat([{

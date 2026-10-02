@@ -659,8 +659,8 @@ async function runReviewUntilGreen(options) {
         } catch (_) { /* panel lenses are intentionally lenient */ }
       }
       const rejected = [];
+      if (candidates.length) await reserve('vote', 3 * candidates.length);
       for (const finding of candidates) {
-        await reserve('vote', 3);
         let survives = 0;
         const voteResults = await Promise.allSettled([0, 1, 2].map(async (vote) => {
           const verdict = path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-vote-${safeIdForFilename(finding.id)}-${vote}.json`);
@@ -693,18 +693,14 @@ async function runReviewUntilGreen(options) {
   };
 
   let latestSessionHandoff = null;
+  const suggestedTriggers = new Set();
   const checkpoint = async (started, result) => {
     if (!initiativeRun || sessionMode === 'off') return null;
     const inputTokens = options.getInputContextTokens ? await options.getInputContextTokens() : null;
     const observations = { inputTokens: inputTokens ?? null, ...observed };
     const triggers = Object.keys(THRESHOLDS).filter(key => observations[key] !== null && observations[key] >= THRESHOLDS[key]);
-    const markerPath = path.join(started.stateDir, `session-suggestions-${targetSlug(ref)}.json`);
-    const previous = fs.existsSync(markerPath) ? JSON.parse(fs.readFileSync(markerPath, 'utf8')) : [];
-    if (!triggers.length) {
-      if (previous.length) writeFileAtomic(markerPath, '[]\n', { mode: 0o600 });
-      return null;
-    }
-    if (sessionMode === 'suggest' && triggers.every(trigger => previous.includes(trigger))) return null;
+    if (!triggers.length) return null;
+    if (sessionMode === 'suggest' && triggers.every(trigger => suggestedTriggers.has(trigger))) return null;
     const targetPath = ledgerPath(started.stateDir, targetSlug(ref));
     const target = fs.existsSync(targetPath) ? JSON.parse(fs.readFileSync(targetPath, 'utf8')) : {};
     const run = JSON.parse(fs.readFileSync(initiativeRun.path, 'utf8'));
@@ -732,7 +728,7 @@ async function runReviewUntilGreen(options) {
     latestSessionHandoff = output;
     if (sessionMode === 'suggest') {
       if (options.onSessionHandoff) await options.onSessionHandoff(output);
-      writeFileAtomic(markerPath, `${JSON.stringify(triggers)}\n`, { mode: 0o600 });
+      for (const trigger of triggers) suggestedTriggers.add(trigger);
     }
     return output;
   };

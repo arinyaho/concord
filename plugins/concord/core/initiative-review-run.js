@@ -71,7 +71,7 @@ function locked(run, update) {
 }
 
 function assertVersion(ledger) {
-  if (ledger.version !== 5) throw new Error('initiative review run schemaVersion must be 5: this ledger predates delivery modes and is not migrated; start a new run key, `rerun` each ref, and remap the skill\'s source index to the new key');
+  if (ledger.version !== 5) throw new Error('initiative review run schemaVersion must be 5: this ledger predates delivery modes and is not migrated; preserve the original initiative and target ledgers, reconcile their history and spent budgets, then start a new run key in a separate target review state directory and remap the skill\'s source index to that key');
 }
 
 function hint(trigger, finding = null, stage = null, avoidedLaunches = 0) {
@@ -137,7 +137,7 @@ function escalateInitiativeRun({ stateDir, key, repository, trigger, maxLaunches
     assertVersion(ledger);
     if (ledger.repository !== run.repository || ledger.status !== 'active') throw new Error('initiative review run has a different repository or is terminal');
     if (ledger.mode !== 'lite') throw new Error('initiative review run is not a lite run');
-    if ((ledger.launches || []).length) throw new Error('initiative escalation is refused after the first launch; start a new run key in base mode');
+    if ((ledger.launches || []).length) throw new Error('initiative escalation is refused after the first launch; preserve the original initiative and target ledgers and reconcile the lite contract and spent budgets; only after reconciliation start a new run key in base mode in a separate target review state directory, retaining the old target ledger as evidence');
     return { ...ledger, mode: 'base', escalation: { from: 'lite', to: 'base', trigger }, budget: { maxLaunches, maxRounds } };
   });
   if (!done) throw new Error(lockDiagnosis(run) || 'initiative review run escalation was contended');

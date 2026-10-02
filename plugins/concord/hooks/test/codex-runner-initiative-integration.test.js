@@ -228,18 +228,51 @@ test('stop checkpoints attach to the original gate-pending decision without conv
   assert.equal(result.continuationPacket.delivery.claim, f.ledger().dispositions[0].packet.delivery.claim);
   assert.equal(f.workers.some(role => role.startsWith('gate-panel-')), false);
 });
-test('successful panel votes reserve each candidate as one three-worker batch without double charging', async () => {
+test('successful panel votes reserve all candidates as one six-worker batch without double charging', async () => {
   const f = fixture({ panel: true });
   const result = await runReviewUntilGreen({ ...f.options, spawn: async input => {
     f.workers.push(input.role);
     const artifact = destination(input.prompt, f.stateDir);
-    const findings = input.role === 'gate-panel-ac-coverage' && artifact.includes('-gate-panel-1-') ? [{ ...bug, id: 'gate:ac-coverage:two', requirement: 'two' }] : [];
+    const findings = input.role === 'gate-panel-ac-coverage' && artifact.includes('-gate-panel-1-') ? [{ ...bug, id: 'gate:ac-coverage:two', requirement: 'two' }, { ...bug, id: 'gate:ac-coverage:other', requirement: 'other' }] : [];
     fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', examined: ['a.txt'], rejected: [], findings, survives: false })); return { status: 0 };
   } });
   assert.equal(result.decision.converged, true);
-  assert.equal(f.workers.filter(role => role === 'gate-panel-verify').length, 3);
-  assert.equal(f.ledger().launches.length, 17);
+  assert.equal(f.workers.filter(role => role === 'gate-panel-verify').length, 6);
+  assert.equal(f.ledger().launches.length, 20);
   const reservations = review.readLedger(f.stateDir, review.targetSlug(f.options.ref)).initiative_reservations;
   assert.equal(reservations.filter(r => r.role === 'vote').length, 1);
-  assert.equal(reservations.find(r => r.role === 'vote').count, 3);
+  assert.equal(reservations.find(r => r.role === 'vote').count, 6);
+});
+test('two-candidate vote batch denial consumes no vote budget and launches zero voters', async () => {
+  const f = fixture({ panel: true, maxLaunches: 12 });
+  const result = await runReviewUntilGreen({ ...f.options, spawn: async input => {
+    f.workers.push(input.role);
+    const artifact = destination(input.prompt, f.stateDir);
+    const findings = input.role === 'gate-panel-ac-coverage' ? [
+      { ...bug, id: 'gate:ac-coverage:first', requirement: 'first' },
+      { ...bug, id: 'gate:ac-coverage:second', requirement: 'second' },
+    ] : [];
+    fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', examined: ['a.txt'], rejected: [], findings, survives: false })); return { status: 0 };
+  } });
+  assert.equal(result.decision, 'blocked');
+  assert.equal(f.workers.filter(role => role === 'gate-panel-verify').length, 0);
+  assert.equal(f.ledger().launches.length, 9);
+  const votes = f.calls.filter(args => args[0] === 'reserve' && args[2] === 'vote');
+  assert.equal(votes.length, 1); assert.equal(votes[0][votes[0].indexOf('--count') + 1], '6');
+});
+test('fresh contexts each suggest once while resuming the same durable review budget', async () => {
+  const f = fixture(), first = [], second = [];
+  const worker = fixingWorker(f);
+  await assert.rejects(runReviewUntilGreen({ ...f.options, getInputContextTokens: () => 128000, onSessionHandoff: h => first.push(h), spawn: input => {
+    if (input.role === 'verify' && input.prompt.includes('round-2-verify.json')) { f.workers.push('verify-failed'); throw new Error('replace context after round-one suggestion'); }
+    return worker(input);
+  } }), /replace context/);
+  const before = f.ledger(); assert.equal(first.length, 1);
+  assert.equal(before.launches.length, 5); assert.equal(before.rounds.length, 2);
+  const result = await runReviewUntilGreen({ ...f.options, base: undefined, resume: true, getInputContextTokens: () => 128000, onSessionHandoff: h => second.push(h), spawn: worker });
+  assert.equal(second.length, 1); assert.equal(result.sessionHandoff.promptPath, second[0].promptPath);
+  assert.equal(f.ledger().launches.length, 6); assert.equal(f.ledger().rounds.length, 2);
+  assert.deepEqual(f.ledger().budget, before.budget);
+  assert.equal(f.workers.filter(role => role === 'fix').length, 1);
+  assert.equal(f.workers.filter(role => role === 'correctness').length, 2);
 });
