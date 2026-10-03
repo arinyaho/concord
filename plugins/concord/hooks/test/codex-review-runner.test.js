@@ -1035,6 +1035,59 @@ test('a failing parallel reviewer does not let the parent return before its sibl
   assert.strictEqual(siblingFinished, true);
 });
 
+test('a failing pooled broad finder waits for its paired finder before returning', async () => {
+  const stateDir = temp();
+  let gateFinished = false;
+  const cli = (args) => {
+    if (args[0] === 'round-start') return { decision: 'work', round: 1, stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: true, gateMode: 'pair' };
+    if (args[0] === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
+    if (args[0] === 'round-failure') return { status: 'recorded' };
+    if (args[0] === 'artifact-normalize') return { status: 'ok' };
+    throw new Error(`unexpected CLI ${args[0]}`);
+  };
+  const spawn = async ({ role }) => {
+    if (role === 'correctness') throw new Error('correctness failed');
+    if (role === 'gate') {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      gateFinished = true;
+    }
+    return { status: 0 };
+  };
+
+  await assert.rejects(runReviewUntilGreen({ ref: 'feature/pooled-wait', repoRoot: '/repo', runCli: cli, spawn }), /correctness failed/);
+  assert.strictEqual(gateFinished, true);
+});
+
+test('grouped fix resolutions skip later fixer launches for resolved findings', async () => {
+  const stateDir = temp();
+  const fixSpawns = [];
+  const commits = [];
+  const fixes = [
+    { id: 'correctness:a', file: 'a.txt', span: 'bad a', summary: 'fix both' },
+    { id: 'correctness:b', file: 'b.txt', span: 'bad b', summary: 'same root cause' },
+  ];
+  const cli = (args) => {
+    if (args[0] === 'round-start') return { decision: 'work', round: 1, stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: false };
+    if (args[0] === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
+    if (args[0] === 'artifact-normalize') return { status: 'ok' };
+    if (args[0] === 'plan-fixes') return { fixes };
+    if (args[0] === 'commit-fix') {
+      commits.push(args[2]);
+      return { committed: true, sha: 'fixed', resolvedFindingIds: ['correctness:b'] };
+    }
+    if (args[0] === 'record') return { decision: { continue: false, converged: true }, handoff: 'LGTM' };
+    throw new Error(`unexpected CLI ${args[0]}`);
+  };
+  const spawn = async ({ role, prompt }) => {
+    if (role === 'fix') fixSpawns.push(prompt);
+    return { status: 0 };
+  };
+
+  await runReviewUntilGreen({ ref: 'feature/grouped', repoRoot: '/repo', runCli: cli, spawn });
+  assert.strictEqual(fixSpawns.length, 1);
+  assert.deepStrictEqual(commits, ['correctness:a']);
+});
+
 test('runner automatically executes a clean round in correctness then verify order and returns terminal handoff', async () => {
   const h = harness();
   const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });

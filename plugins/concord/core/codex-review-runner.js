@@ -838,8 +838,13 @@ async function runReviewUntilGreen(options) {
     const reviewers = [];
     if (started.intentApplied) reviewers.push(runArtifactReviewer('intent'));
     if (started.gateApplied && started.gateMode !== 'design-conformance') reviewers.push((async () => {
-      await Promise.all([runArtifactReviewer('correctness'), runArtifactReviewer('gate')]);
-      await Promise.all([runArtifactReviewer('verify'), runArtifactReviewer('gate-verify')]);
+      const runPool = async (roles) => {
+        const results = await Promise.allSettled(roles.map(runArtifactReviewer));
+        const failure = results.find((result) => result.status === 'rejected');
+        if (failure) throw failure.reason;
+      };
+      await runPool(['correctness', 'gate']);
+      await runPool(['verify', 'gate-verify']);
     })());
     else {
       reviewers.push((async () => {
@@ -854,12 +859,15 @@ async function runReviewUntilGreen(options) {
 
     const planned = await cli(['plan-fixes', ref]);
     await throwIfAborted(true);
+    const groupedResolutions = new Set();
     for (const finding of planned.fixes || []) {
+      if (groupedResolutions.has(finding.id)) continue;
       try {
         await launch({ role: 'fix', prompt: reviewerPrompt('fix', { ...context, finding, plannedFindings: planned.fixes || [] }), repoRoot, stateDir: context.stateDir });
         if (started.targetType !== 'file') {
           const committed = await cli(['commit-fix', ref, finding.id]);
           if (committed?.committed && committed.sha) initiativeRevision = { ...initiativeRevision, head_sha: committed.sha };
+          for (const id of committed?.resolvedFindingIds || []) groupedResolutions.add(id);
         } else {
           const head_sha = options.targetIdentity ? options.targetIdentity(ref, initialBase, canonicalRepoRoot) : fileTarget({ files: [ref.slice('file:'.length)] }, canonicalRepoRoot).identity;
           initiativeRevision = { ...initiativeRevision, head_sha };

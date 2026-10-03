@@ -2925,6 +2925,29 @@ test('rerun reuses a completed front pass and reviews only the changed diff', ()
   assert.strictEqual(JSON.parse(run(['record', ref], { env })).decision.converged, true);
 });
 
+test('rerun invalidates broad reuse when intent is newly configured', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/new-intent';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+
+  const n = JSON.parse(run(['round-start', ref, base], { env, broadDefault: true })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'gate', { status: 'ok', findings: [] });
+  writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', ref], { env });
+  assert.strictEqual(JSON.parse(run(['record', ref], { env })).decision.converged, true);
+
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], intent: { command: 'printf "REQ: preserve compatibility"' } }));
+  execFileSync('git', ['commit', '-aqm', 'add intent'], { cwd: repo });
+  run(['rerun', ref], { env });
+  const next = JSON.parse(run(['round-start', ref], { env, broadDefault: true }));
+  assert.strictEqual(next.intentApplied, true);
+  assert.strictEqual(next.gateApplied, true, 'new intent must invalidate the prior front pass');
+});
+
 
 
 test('renderHandoff: --no-broad is reported, never left to read as "broad review found nothing"', () => {
@@ -3918,7 +3941,7 @@ test('no-DoD target parks when the round budget is spent and round-start never o
   assert.strictEqual(ledger.budget.spent, max - 1);
 });
 
-test('git target: a failed final DoD stops without charging another review round', () => {
+test('git target: repeated failed final DoD attempts consume and stop at the round budget', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['false'] }));
@@ -3928,14 +3951,18 @@ test('git target: a failed final DoD stops without charging another review round
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
   const ref = 'feat/final-dod-budget';
   const slug = review.targetSlug(ref);
-  const started = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env }));
-  writeArtifact(dir, started.round, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
-  writeArtifact(dir, started.round, 'verify', { status: 'ok', rejected: [], findings: [] });
-  run(['plan-fixes', ref], { env });
-  const decision = JSON.parse(run(['record', ref], { env })).decision;
-  assert.strictEqual(decision.dodFailed, true);
-  assert.strictEqual(decision.continue, false);
-  assert.strictEqual(review.readLedger(dir, slug).budget.spent, 0);
+  const max = review.readLedger(dir, slug)?.budget.max_rounds || require('../../core/config').REVIEW_MAX_ROUNDS_DEFAULT;
+  for (let attempt = 1; attempt <= max; attempt++) {
+    const started = JSON.parse(run(['round-start', ref, attempt === 1 ? 'HEAD~1' : undefined].filter(Boolean), { env }));
+    writeArtifact(dir, started.round, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+    writeArtifact(dir, started.round, 'verify', { status: 'ok', rejected: [], findings: [] });
+    run(['plan-fixes', ref], { env });
+    const decision = JSON.parse(run(['record', ref], { env })).decision;
+    if (attempt < max) assert.strictEqual(decision.dodFailed, true);
+    else assert.strictEqual(decision.parked, true);
+    assert.strictEqual(review.readLedger(dir, slug).budget.spent, attempt);
+  }
+  assert.strictEqual(JSON.parse(run(['round-start', ref], { env })).decision, 'terminal');
 });
 
 test('target lock never offers to remove a live owner after its wait expires', () => {

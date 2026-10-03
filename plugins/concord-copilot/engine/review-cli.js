@@ -1495,7 +1495,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // A ledger written before gateArmed existed has no boolean here and falls
     // through to the target-type default, which is what it ran under.
     const broadReuse = ledger.broad_reuse;
-    const reuseFrontPass = !!broadReuse && !broadFlagPassed && !noBroadFlagPassed && !isFileTarget && !broadReuse.intentHash
+    const reuseFrontPass = !!broadReuse && !broadFlagPassed && !noBroadFlagPassed && !isFileTarget && !intentCfg && !broadReuse.intentHash
       && broadReuse.base_sha === baseSha
       && gitIsReachable(repoRoot, broadReuse.head_sha);
     const gateArmed = lite ? true : broadFlagPassed ? true
@@ -1829,7 +1829,14 @@ function runVerb(resolveFromCwd, args, initiative) {
       decision = { ...decision, continue: false, converged: false, parked: true, intentReview: false, gatePending: false };
       ledger = { ...ledger, status: 'parked' };
     }
-    if (decision.continue) ledger = { ...ledger, budget: { ...ledger.budget, spent: ledger.budget.spent + 1 } };
+    if (decision.continue || decision.dodFailed) {
+      const spent = ledger.budget.spent + 1;
+      ledger = { ...ledger, budget: { ...ledger.budget, spent } };
+      if (decision.dodFailed && spent >= ledger.budget.max_rounds) {
+        decision = { ...decision, dodFailed: false, parked: true, reason: 'round budget exhausted after repeated final DoD failures' };
+        ledger = { ...ledger, status: 'parked' };
+      }
+    }
     // Git only: clean any leftover uncommitted edit from a rejected/parked fixer.
     // File targets have no working tree to discard.
     if (isGit) gitCheckoutTree(repoRoot);
@@ -2235,7 +2242,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       ledger = { ...ledger, journal: [...(ledger.journal || []), { id, sha, file: finding.file, files, span: finding.span, resolutions }] };
       if (run) ledger = { ...ledger, initiative_fix_used: { ...ledger.initiative_fix_used, [n]: (ledger.initiative_fix_used?.[n] || 0) + 1 } };
       writeLedger(stateDir, slug, ledger);
-      process.stdout.write(JSON.stringify({ committed: true, sha }) + '\n');
+      process.stdout.write(JSON.stringify({ committed: true, sha, resolvedFindingIds: resolutions.map((resolution) => resolution.id) }) + '\n');
     } else {
       process.stdout.write(JSON.stringify({ committed: false, reason: 'no edit or file unchanged' }) + '\n');
     }
