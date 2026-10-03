@@ -75,6 +75,30 @@ test('all four write sites route through the shared atomic-write helper', () => 
   }
 });
 
+// Broader sweep: no core/ or adapters/ file outside atomic-write.js itself may
+// call fs.renameSync directly -- every durable-state write goes through the
+// shared retrying helper (writeFileAtomic/publishDirectoryAtomic), so a
+// transient EPERM/EACCES/EBUSY is retried instead of silently corrupting or
+// losing state, and no write site reinvents its own (untested) retry loop.
+function jsFilesRecursive(dir) {
+  const out = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...jsFilesRecursive(full));
+    else if (entry.isFile() && entry.name.endsWith('.js')) out.push(full);
+  }
+  return out;
+}
+
+test('no core/ or adapters/ file outside atomic-write.js calls fs.renameSync directly', () => {
+  const ADAPTERS = path.join(CORE, '..', 'adapters');
+  const files = [...jsFilesRecursive(CORE), ...jsFilesRecursive(ADAPTERS)].filter((f) => path.basename(f) !== 'atomic-write.js');
+  for (const f of files) {
+    const src = fs.readFileSync(f, 'utf8');
+    assert.ok(!/fs\.renameSync\(/.test(src), `${path.relative(path.join(CORE, '..'), f)} must not rename directly -- route through atomic-write.js`);
+  }
+});
+
 test('readLedger returns null only for a missing file and throws on unreadable content', () => {
   const dir = tmp();
   assert.strictEqual(review.readLedger(dir, 'nope'), null);

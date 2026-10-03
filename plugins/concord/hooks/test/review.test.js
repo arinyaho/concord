@@ -234,6 +234,30 @@ test('decideTermination: no progress (zero fixes, same findings) -> parked', () 
   assert.strictEqual(d.continue, false);
 });
 
+test('decideTermination: no-progress park with a failing DoD names it, with command and exit code', () => {
+  const d = review.decideTermination(
+    outcome({ noProgress: true, dodPassed: false, dodDeferred: false, dodCommand: 'npm test', dodExitCode: 1, budgetSpent: 2, maxRounds: 5 })
+  );
+  assert.strictEqual(d.parked, true);
+  assert.match(d.reason, /DoD failed/);
+  assert.match(d.reason, /npm test/);
+  assert.match(d.reason, /exit 1/);
+});
+
+test('decideTermination: no-progress park with DoD passed keeps the original reason exactly', () => {
+  const d = review.decideTermination(outcome({ noProgress: true, dodPassed: true, budgetSpent: 2, maxRounds: 5 }));
+  assert.strictEqual(d.parked, true);
+  assert.strictEqual(d.reason, 'no progress: zero fixes and findings unchanged');
+});
+
+test('decideTermination: no-progress park with DoD deferred keeps the original reason exactly', () => {
+  const d = review.decideTermination(
+    outcome({ noProgress: true, dodPassed: true, dodDeferred: true, budgetSpent: 2, maxRounds: 5 })
+  );
+  assert.strictEqual(d.parked, true);
+  assert.strictEqual(d.reason, 'no progress: zero fixes and findings unchanged');
+});
+
 test('decideTermination: whole-diff spec-doubt -> abandoned, takes priority over everything else', () => {
   const d = review.decideTermination(outcome({ specDoubtScope: 'whole-diff', dodPassed: true, openFindingsCount: 0 }));
   assert.deepStrictEqual(

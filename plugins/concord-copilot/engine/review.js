@@ -204,7 +204,7 @@ function dedupeAgainstSeen(findings, seen) {
 // Oscillation detection (a finding toggling fixed -> reopened -> fixed) is
 // deliberately out of scope for this shell (deferred per the plan).
 function decideTermination(roundOutcome) {
-  const { dodPassed, dodDeferred = false, openFindingsCount, specDoubtScope, noProgress, budgetSpent, maxRounds, fixedCount = 0, parkedCount = 0, intentReviewCount = 0, gateOpenCount = 0, panelConfigured = false, panelDone = false, hasDoD = true, dryStreak = 0 } = roundOutcome;
+  const { dodPassed, dodDeferred = false, dodCommand, dodExitCode, openFindingsCount, specDoubtScope, noProgress, budgetSpent, maxRounds, fixedCount = 0, parkedCount = 0, intentReviewCount = 0, gateOpenCount = 0, panelConfigured = false, panelDone = false, hasDoD = true, dryStreak = 0 } = roundOutcome;
 
   if (specDoubtScope === 'whole-diff') {
     return { continue: false, converged: false, parked: false, abandoned: true, reason: 'spec-doubt invalidates the whole diff' };
@@ -275,6 +275,17 @@ function decideTermination(roundOutcome) {
     return { continue: false, converged: false, parked: true, abandoned: false, reason: `round budget exhausted with ${openFindingsCount} open finding(s); ${dodState} but no clean confirmation round occurred` };
   }
   if (noProgress) {
+    // A no-progress park caused by a DoD that keeps failing should say so --
+    // "zero fixes and findings unchanged" alone reads like the reviewer gave up,
+    // when the actual blocker is a gate command the fix rounds never cleared.
+    // Deferred/passed DoD keeps the original reason unchanged: this is the
+    // DoD-exec module's own command/exit code (dodExec.runDodExec's `results`),
+    // threaded through by the caller -- never fabricated here.
+    if (!dodPassed && !dodDeferred) {
+      const cmdPart = dodCommand ? `: ${dodCommand}` : '';
+      const exitPart = dodCommand && dodExitCode !== undefined ? ` (exit ${dodExitCode})` : '';
+      return { continue: false, converged: false, parked: true, abandoned: false, reason: `no progress: zero fixes and findings unchanged; DoD failed${cmdPart}${exitPart}` };
+    }
     return { continue: false, converged: false, parked: true, abandoned: false, reason: 'no progress: zero fixes and findings unchanged' };
   }
   return { continue: true, converged: false, parked: false, abandoned: false, reason: 'round produced progress or findings remain' };
@@ -443,9 +454,17 @@ function applyRoundOutcome(ledger, outcome) {
   // explicitly set hasDoD:false (the file target) takes the dry-round branch.
   const hasDoD = ledger.target ? ledger.target.hasDoD !== false : true;
 
+  // The failing command/exit code for the no-progress reason, straight from
+  // runDodExec's own `results` on the ledger (set by review-cli's `record`
+  // before calling in here) -- the first non-passing entry, same lookup
+  // renderDodFailure uses for the handoff text.
+  const dodFailure = !outcome.dodPassed && !outcome.dodDeferred ? ((ledger.dod && ledger.dod.results) || []).find((r) => r && !r.passed) : null;
+
   const decision = decideTermination({
     dodPassed: !!outcome.dodPassed,
     dodDeferred: !!outcome.dodDeferred,
+    dodCommand: dodFailure && dodFailure.cmd,
+    dodExitCode: dodFailure && dodFailure.exitCode,
     openFindingsCount,
     specDoubtScope: outcome.specDoubtScope || 'none',
     noProgress,

@@ -458,6 +458,8 @@ test('review-cli reset: re-arms a finding-less parked ledger so round-start star
   run(['plan-fixes', 'feat/x'], { env });
   const rec = JSON.parse(run(['record', 'feat/x'], { env }));
   assert.strictEqual(rec.decision.parked, true);
+  assert.match(rec.decision.reason, /DoD failed/);
+  assert.match(rec.decision.reason, /false/); // the configured DoD command, review.config.json's "dod": ["false"]
   assert.strictEqual(review.readLedger(dir, slug).status, 'parked');
   assert.strictEqual((review.readLedger(dir, slug).findings || []).length, 0); // nothing to unpark
 
