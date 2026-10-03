@@ -2103,7 +2103,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       return;
     }
     if (prior.status === 'clean' || (prior.runs || []).length) {
-      throw new Error('review-cli reset: cannot discard a completed run or cumulative run history; preserve the ledger and split scope or reconcile the remaining verification');
+      throw new Error('review-cli reset: cannot discard cumulative run history; cannot discard a completed run; preserve the ledger and split scope or reconcile the remaining verification');
     }
     deleteLedger(stateDir, slug);
     reviewTelemetry.deleteTelemetry(stateDir, prior.target?.ref || ref, slug);

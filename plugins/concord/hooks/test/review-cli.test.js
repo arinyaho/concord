@@ -3842,14 +3842,15 @@ test('reset and rerun delete telemetry by the ledger target ref when called with
   const dir = tmpDir(); const slug = 'feat-x';
   const env = { ...process.env, REVIEW_STATE_DIR: dir };
   const telemetryFile = path.join(dir, `review-telemetry-${'a'.repeat(64)}.json`);
-  const ledger = { ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), status: 'clean' };
+  const resetLedger = { ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), status: 'parked' };
+  const rerunLedger = { ...resetLedger, status: 'clean' };
 
-  review.writeLedger(dir, slug, ledger);
+  review.writeLedger(dir, slug, resetLedger);
   fs.writeFileSync(telemetryFile, JSON.stringify({ targetRef: 'feat/x' }));
   run(['reset', slug], { env });
   assert.strictEqual(fs.existsSync(telemetryFile), false);
 
-  review.writeLedger(dir, slug, ledger);
+  review.writeLedger(dir, slug, rerunLedger);
   fs.writeFileSync(telemetryFile, JSON.stringify({ targetRef: 'feat/x' }));
   run(['rerun', slug, '--engine', 'codex'], { env });
   assert.strictEqual(fs.existsSync(telemetryFile), false);
