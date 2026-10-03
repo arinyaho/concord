@@ -383,7 +383,7 @@ for (const provider of Object.keys(PROVIDERS)) {
   });
 
   test(`${provider}: a killed keyed verb leaves a lock whose error names the dead owner pid (AC1)`, async () => {
-    const t = setup(provider, { config: { dod: ['sleep 3'] } });
+    const t = setup(provider, { config: { dod: ['true'], intent: { command: 'sleep 3; printf REQ' } } });
     const child = spawn('node', [PROVIDERS[provider], 'round-start', 'feat/x', 'HEAD~1', '--no-broad', '--initiative-run-key', 'key-1', '--initiative-state-dir', t.initDir, '--initiative-max-launches', '20', '--initiative-max-rounds', '5'], { env: t.env, cwd: t.repo });
     const lock = `${path.join(t.dir, `review-${review.targetSlug('feat/x')}.json`)}.lock`;
     for (let i = 0; i < 100 && !fs.existsSync(path.join(lock, 'owner')); i++) await new Promise((r) => setTimeout(r, 50));
