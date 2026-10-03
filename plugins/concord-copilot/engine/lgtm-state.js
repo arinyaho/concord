@@ -77,33 +77,35 @@ function markerPath({ stateDir, pr, headSha }, kind) {
   return path.join(stateDir, `pr-${key.pr}-${key.headSha}.${kind}.json`);
 }
 
-function requestBudget({ stateDir, pr }) {
+function requestUsage({ stateDir, pr }) {
   let names;
   try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') names = []; else throw error; }
   const keyPrefix = `pr-${Number(pr)}`;
-  const requests = new Set();
+  const slots = [];
+  const slotIdentities = new Set();
+  const legacyIdentities = new Set();
   for (const name of names) {
     if (name.startsWith(`${keyPrefix}.request-slot-`) && name.endsWith('.json')) {
       const marker = readMarker(path.join(stateDir, name));
-      requests.add(marker && FULL_SHA.test(marker.headSha) && ['initial', 'retry'].includes(marker.kind) ? `${marker.headSha.toLowerCase()}:${marker.kind}` : `slot:${name}`);
+      slots.push(name);
+      if (marker && FULL_SHA.test(marker.headSha) && ['initial', 'retry'].includes(marker.kind)) slotIdentities.add(`${marker.headSha.toLowerCase()}:${marker.kind}`);
       continue;
     }
     const match = name.match(new RegExp(`^${keyPrefix}-([0-9a-f]{40}|[0-9a-f]{64})\\.(initial|retry)-request\\.json$`, 'i'));
-    if (match) requests.add(`${match[1].toLowerCase()}:${match[2].toLowerCase()}`);
+    if (match) legacyIdentities.add(`${match[1].toLowerCase()}:${match[2].toLowerCase()}`);
   }
-  const spent = requests.size;
+  const legacyOnly = [...legacyIdentities].filter((identity) => !slotIdentities.has(identity)).length;
+  return { spent: slots.length + legacyOnly, slotCapacity: MAX_REQUESTS_PER_PR - legacyOnly };
+}
+
+function requestBudget(input) {
+  const { spent } = requestUsage(input);
   return { max: MAX_REQUESTS_PER_PR, spent, remaining: Math.max(0, MAX_REQUESTS_PER_PR - spent) };
 }
 
 function reserveRequestSlot({ stateDir, pr, headSha }, kind, now) {
-  let names;
-  try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') names = []; else throw error; }
-  const slotIdentities = new Set(names.filter((name) => name.startsWith(`pr-${pr}.request-slot-`) && name.endsWith('.json')).map((name) => {
-    const marker = readMarker(path.join(stateDir, name));
-    return marker && FULL_SHA.test(marker.headSha) && ['initial', 'retry'].includes(marker.kind) ? `${marker.headSha.toLowerCase()}:${marker.kind}` : `slot:${name}`;
-  }));
-  const legacyOnly = requestBudget({ stateDir, pr }).spent - slotIdentities.size;
-  for (let slot = 1; slot <= MAX_REQUESTS_PER_PR - legacyOnly; slot += 1) {
+  const { slotCapacity } = requestUsage({ stateDir, pr });
+  for (let slot = 1; slot <= slotCapacity; slot += 1) {
     const file = path.join(stateDir, `pr-${pr}.request-slot-${slot}.json`);
     if (writeExclusive(file, { pr, headSha, kind, claimedAtMs: now })) return slot;
   }
@@ -130,7 +132,7 @@ function fixRoundForHead({ stateDir, pr, headSha }) {
   try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
   for (const name of names.filter((name) => name.startsWith(`pr-${pr}.fix-round-slot-`) && name.endsWith('.json'))) {
     const marker = readMarker(path.join(stateDir, name));
-    if (marker && marker.pr === pr && marker.headSha === headSha) return marker;
+    if (marker && marker.pr === pr && marker.headSha === headSha) return { ...marker, round: Number(name.match(/slot-(\d+)\.json$/)[1]) };
   }
   return null;
 }
@@ -188,7 +190,7 @@ function reconciliationPacket({ stateDir, pr, headSha }) {
   const records = reviewRecords({ stateDir, pr, headSha })
     .sort((a, b) => a.recordedAtMs - b.recordedAtMs || compareReviewIds(a.reviewId, b.reviewId));
   if (records.length === 0) return null;
-  const reviews = records.map((record) => ({ id: record.reviewId, reviewer: record.reviewer, url: record.reviewUrl, findings: record.findings }));
+  const reviews = records.map((record) => ({ id: record.reviewId, reviewer: record.reviewer || 'legacy/unknown', url: record.reviewUrl, findings: record.findings }));
   const findings = records.flatMap((record) => record.findings);
   const p1Count = findings.filter((finding) => finding.priority === 'P1').length;
   const p2Count = findings.filter((finding) => finding.priority === 'P2').length;
@@ -233,7 +235,19 @@ function claimFixRound(input) {
   const { stateDir, now = Date.now() } = input;
   const key = validate(input);
   if (reviewRecords({ stateDir, ...key }).length === 0) return { claimed: false, reason: 'no-findings' };
-  if (fixRoundForHead({ stateDir, ...key })) return { claimed: false, reason: 'already-claimed', budget: fixBudget({ stateDir, pr: key.pr }) };
+  const slot = fixRoundForHead({ stateDir, ...key });
+  if (slot) {
+    const recovery = latestRecoveryClaim({ stateDir, ...key }, 'fix-round-resume');
+    const claimedAtMs = Math.max(...[slot, recovery].map((marker) => marker && marker.claimedAtMs).filter(Number.isSafeInteger));
+    if (!Number.isSafeInteger(claimedAtMs)) throw new Error('review-lgtm-state: fix-round slot has no valid timestamp');
+    const eligibleAtMs = claimedAtMs + INITIAL_CLAIM_LEASE_MS;
+    if (now < eligibleAtMs) return { claimed: false, reason: 'claim-in-progress', eligibleAtMs };
+    if (!writeExclusive(markerPath({ stateDir, ...key }, `fix-round-resume-recovery-claim-${eligibleAtMs}`), { ...key, claimedAtMs: now })) {
+      const activeRecovery = latestRecoveryClaim({ stateDir, ...key }, 'fix-round-resume');
+      return { claimed: false, reason: 'claim-in-progress', eligibleAtMs: activeRecovery.claimedAtMs + INITIAL_CLAIM_LEASE_MS };
+    }
+    return { claimed: true, resumed: true, round: slot.round, budget: fixBudget({ stateDir, pr: key.pr }) };
+  }
   const claimFile = markerPath({ stateDir, ...key }, 'fix-round-claim');
   const claimed = writeExclusive(claimFile, { ...key, claimedAtMs: now });
   if (!claimed) {
@@ -257,6 +271,8 @@ function claimRequest(input, kind) {
   const { stateDir, now = Date.now() } = input;
   const key = validate(input);
   if (reviewRecords({ stateDir, ...key }).length > 0) return { claimed: false, reason: 'needs-reconciliation' };
+  const budget = requestBudget({ stateDir, pr: key.pr });
+  if (budget.remaining === 0) return { claimed: false, reason: 'request-budget-exhausted', budget };
   if (kind === 'initial') {
     const observedFile = markerPath({ stateDir, ...key }, 'observed');
     if (!readMarker(observedFile)) writeExclusive(observedFile, { ...key, observedAtMs: now, eligibleAtMs: now + AUTO_REVIEW_GRACE_MS });
@@ -287,16 +303,12 @@ function recoverRequest(input, kind) {
   const claimedAtMs = Math.max(...[claim, recovery].map((marker) => marker && marker.claimedAtMs).filter(Number.isSafeInteger));
   if (!Number.isSafeInteger(claimedAtMs) || now < claimedAtMs + INITIAL_CLAIM_LEASE_MS) return false;
   if (readMarker(markerPath({ stateDir, ...key }, `${kind}-request`))) return false;
-  const slot = (() => {
-    let names;
-    try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
-    return names.filter((name) => name.startsWith(`pr-${key.pr}.request-slot-`)).map((name) => readMarker(path.join(stateDir, name)))
-      .find((marker) => marker && marker.headSha === key.headSha && marker.kind === kind);
-  })();
-  if (!slot && !reserveRequestSlot({ stateDir, ...key }, kind, now)) {
-    return { claimed: false, reason: 'request-budget-exhausted', budget: requestBudget({ stateDir, pr: key.pr }) };
-  }
-  return writeExclusive(markerPath({ stateDir, ...key }, `${kind}-recovery-claim-${claimedAtMs + INITIAL_CLAIM_LEASE_MS}`), { ...key, kind: `${kind}-recovery`, claimed: true, claimedAtMs: now });
+  const budget = requestBudget({ stateDir, pr: key.pr });
+  if (budget.remaining === 0) return { claimed: false, reason: 'request-budget-exhausted', budget };
+  const recoveryFile = markerPath({ stateDir, ...key }, `${kind}-recovery-claim-${claimedAtMs + INITIAL_CLAIM_LEASE_MS}`);
+  if (!writeExclusive(recoveryFile, { ...key, kind: `${kind}-recovery`, claimed: true, claimedAtMs: now })) return false;
+  if (reserveRequestSlot({ stateDir, ...key }, kind, now)) return true;
+  return { claimed: false, reason: 'request-budget-exhausted', budget: requestBudget({ stateDir, pr: key.pr }) };
 }
 
 function recoverInitialRequest(input) { return recoverRequest(input, 'initial'); }

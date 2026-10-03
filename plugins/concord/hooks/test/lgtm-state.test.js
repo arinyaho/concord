@@ -85,6 +85,26 @@ test('legacy sent-request markers count toward the PR-wide request budget withou
   });
 });
 
+test('request-budget exhaustion remains visible after the failed claim is resumed', () => {
+  const stateDir = temp();
+  const heads = ['1', '2', '3', '4'].map((digit) => digit.repeat(40));
+  for (const [index, headSha] of heads.slice(0, 3).entries()) {
+    lgtmState.claimInitialRequest({ stateDir, pr: 159, headSha, now: 1000 + index });
+    assert.strictEqual(lgtmState.claimInitialRequest({ stateDir, pr: 159, headSha, now: 121000 + index }), true);
+  }
+  const input = { stateDir, pr: 159, headSha: heads[3] };
+  assert.deepStrictEqual(lgtmState.claimInitialRequest({ ...input, now: 1000 }), {
+    claimed: false,
+    reason: 'request-budget-exhausted',
+    budget: { max: 3, spent: 3, remaining: 0 },
+  });
+  assert.deepStrictEqual(lgtmState.claimInitialRequest({ ...input, now: 2000 }), {
+    claimed: false,
+    reason: 'request-budget-exhausted',
+    budget: { max: 3, spent: 3, remaining: 0 },
+  });
+});
+
 test('review requests distinguish a durable claim from a request that was sent', () => {
   const stateDir = temp();
   const input = { stateDir, pr: 116, headSha: '0123456789abcdef0123456789abcdef01234567' };
@@ -105,6 +125,20 @@ test('an initial request recovery claim waits for the original claimant lease', 
   assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: claimedAtMs + lgtmState.INITIAL_CLAIM_LEASE_MS }), true);
   assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: claimedAtMs + lgtmState.INITIAL_CLAIM_LEASE_MS }), false);
   assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: claimedAtMs + 2 * lgtmState.INITIAL_CLAIM_LEASE_MS }), true);
+});
+
+test('each recovered provider request consumes another PR-wide request slot', () => {
+  const input = { stateDir: temp(), pr: 116, headSha: '0123456789abcdef0123456789abcdef01234567' };
+  lgtmState.claimInitialRequest({ ...input, now: 1000 });
+  const claimedAtMs = 1000 + lgtmState.AUTO_REVIEW_GRACE_MS;
+  assert.strictEqual(lgtmState.claimInitialRequest({ ...input, now: claimedAtMs }), true);
+  assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: claimedAtMs + lgtmState.INITIAL_CLAIM_LEASE_MS }), true);
+  assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: claimedAtMs + 2 * lgtmState.INITIAL_CLAIM_LEASE_MS }), true);
+  assert.deepStrictEqual(lgtmState.recoverInitialRequest({ ...input, now: claimedAtMs + 3 * lgtmState.INITIAL_CLAIM_LEASE_MS }), {
+    claimed: false,
+    reason: 'request-budget-exhausted',
+    budget: { max: 3, spent: 3, remaining: 0 },
+  });
 });
 
 test('an initial request cannot be recovered without an original claim', () => {
@@ -172,6 +206,28 @@ test('an abandoned fix-round claim becomes recoverable after its lease', () => {
   });
 });
 
+test('a reserved fix-round slot becomes resumable after its lease', () => {
+  const stateDir = temp();
+  const input = { stateDir, pr: PR_122, headSha: HEAD_A };
+  lgtmState.recordReview({ ...input, now: 500, observation: observation() });
+  assert.deepStrictEqual(lgtmState.claimFixRound({ ...input, now: 1000 }), {
+    claimed: true,
+    round: 1,
+    budget: { max: 3, spent: 1, remaining: 2 },
+  });
+  assert.deepStrictEqual(lgtmState.claimFixRound({ ...input, now: 2000 }), {
+    claimed: false,
+    reason: 'claim-in-progress',
+    eligibleAtMs: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS,
+  });
+  assert.deepStrictEqual(lgtmState.claimFixRound({ ...input, now: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS }), {
+    claimed: true,
+    resumed: true,
+    round: 1,
+    budget: { max: 3, spent: 1, remaining: 2 },
+  });
+});
+
 test('review records preserve provider identity in one head batch', () => {
   const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
   lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: '1', reviewer: 'chatgpt-codex-connector[bot]' }) });
@@ -180,6 +236,12 @@ test('review records preserve provider identity in one head batch', () => {
     { id: '1', reviewer: 'chatgpt-codex-connector[bot]' },
     { id: '2', reviewer: 'copilot-pull-request-reviewer[bot]' },
   ]);
+});
+
+test('legacy review records expose unknown provider provenance', () => {
+  const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
+  fs.writeFileSync(lgtmState.markerPath(input, 'review-1'), `${JSON.stringify({ pr: PR_122, headSha: HEAD_A, reviewId: '1', reviewUrl: 'https://github.com/arinyaho/concord/pull/122#pullrequestreview-1', recordedAtMs: 5000, findings: [inlineFinding()] })}\n`);
+  assert.strictEqual(lgtmState.status(input).reconciliation.reviews[0].reviewer, 'legacy/unknown');
 });
 
 test('batch fixes share a cumulative three-round budget across PR heads', () => {
@@ -483,6 +545,7 @@ test('Claude, Codex, and Copilot review-until-lgtm skills pin bounded batch fixe
     assert.match(skill, /three fix-and-push rounds are a PR-wide hard cap, not a quality guarantee/);
     assert.match(skill, /one commit and one push/);
     assert.match(skill, /`initialRequested` is true but `deadlineMs` is absent.*open-window/is);
+    assert.match(skill, /APPROVED.*COMMENTED.*CHANGES_REQUESTED.*DISMISSED.*`completed`/is);
     assert.match(skill, /propose a single follow-up issue/);
     assert.match(skill, /do not create it without user authorization/);
     assert.match(skill, /Never request a second full review on the same head solely to obtain a missing reaction/);
