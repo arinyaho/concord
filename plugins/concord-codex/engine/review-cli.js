@@ -1498,6 +1498,13 @@ function runVerb(resolveFromCwd, args, initiative) {
     const reuseFrontPass = !!broadReuse && !broadFlagPassed && !noBroadFlagPassed && !isFileTarget && !intentCfg && !broadReuse.intentHash
       && broadReuse.base_sha === baseSha
       && gitIsReachable(repoRoot, broadReuse.head_sha);
+    const reusedGateOpen = reuseFrontPass ? gateLib.carryForwardGateFindings({
+      priorGateOpen: broadReuse.gate_open || [],
+      thisRoundIds: [],
+      verifyRejectedIds: [],
+      dismissedIds: ledger.gate_dismissed || [],
+      changedFiles: changedGitPaths(gitDiff(repoRoot, broadReuse.head_sha)),
+    }) : ledger.gate_open;
     const gateArmed = lite ? true : broadFlagPassed ? true
       : noBroadFlagPassed ? false
       : reuseFrontPass ? false
@@ -1607,6 +1614,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       gateArmed,
       gateDisarmedBy,
       broad_reuse: reuseFrontPass ? broadReuse : null,
+      gate_open: reusedGateOpen,
       gateApplied,
       gateMode: lite ? 'design-conformance' : 'pair',
       gate_rounds: gateApplied && !gateRounds.includes(ledger.round) ? [...gateRounds, ledger.round] : gateRounds,
@@ -2167,7 +2175,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       engine,
       gate_dismissed: prior.gate_dismissed || [],
       ...(completedFrontPass && !prior.intentHash && prior.target?.base_sha && prior.target?.head_sha ? {
-        broad_reuse: { run: runs.length, base_sha: prior.target.base_sha, head_sha: prior.target.head_sha, intentHash: null },
+        broad_reuse: { run: runs.length, base_sha: prior.target.base_sha, head_sha: prior.target.head_sha, intentHash: null, gate_open: prior.gate_open || [] },
       } : {}),
       ...(prior.initiative_binding || initiative ? { initiative_binding: prior.initiative_binding || { key: initiative.key, stateDir: canonicalPath(initiative.stateDir) } } : {}),
     };

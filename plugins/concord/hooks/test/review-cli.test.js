@@ -2925,6 +2925,36 @@ test('rerun reuses a completed front pass and reviews only the changed diff', ()
   assert.strictEqual(JSON.parse(run(['record', ref], { env })).decision.converged, true);
 });
 
+test('rerun carries unresolved broad findings on unchanged files', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/carry-broad';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+
+  const n = JSON.parse(run(['round-start', ref, base], { env, broadDefault: true })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'gate', { status: 'ok', findings: [
+    { id: 'gate:cross-context:unchanged', file: 'unchanged.js', span: 'old invariant', summary: 'a real unresolved gap', requirement: 'r' },
+  ] });
+  writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', ref], { env });
+  assert.strictEqual(JSON.parse(run(['record', ref], { env })).decision.gatePending, true);
+
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'three\n');
+  execFileSync('git', ['commit', '-aqm', 'unrelated fix'], { cwd: repo });
+  run(['rerun', ref], { env });
+  const next = JSON.parse(run(['round-start', ref], { env, broadDefault: true }));
+  assert.strictEqual(next.gateApplied, false, 'the completed front pass is still reused');
+  writeArtifact(dir, next.round, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, next.round, 'verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', ref], { env });
+  const recorded = JSON.parse(run(['record', ref], { env }));
+  assert.strictEqual(recorded.decision.gatePending, true, 'an unchanged unresolved broad finding must still block clean');
+  assert.deepStrictEqual(review.readLedger(dir, review.targetSlug(ref)).gate_open.map((finding) => finding.id), ['gate:cross-context:unchanged']);
+});
+
 test('rerun does not reuse an interrupted front pass', () => {
   const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/interrupted-broad';
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
