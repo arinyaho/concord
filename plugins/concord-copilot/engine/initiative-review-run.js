@@ -301,11 +301,15 @@ function publicInitiativeSummary(run) {
   };
 }
 
+function dispositionsFromLedger(ledger, target, kinds) {
+  return (ledger.dispositions || []).filter((item) => item.target === target && kinds.includes(item.kind));
+}
+
 function dispositionCandidates(run, target, kinds) {
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
   assertVersion(ledger);
   if (ledger.status !== 'active') return [];
-  return (ledger.dispositions || []).filter((item) => item.target === target && kinds.includes(item.kind));
+  return dispositionsFromLedger(ledger, target, kinds);
 }
 
 // Whether the active run holds any disposition of these kinds for the target,
@@ -314,17 +318,30 @@ function hasDisposition(run, target, kinds = ['terminal']) {
   return dispositionCandidates(run, target, kinds).length > 0;
 }
 
-function terminalTarget(run, target, revision, kinds = ['terminal']) {
-  // Identity is the revision pair: a disposition on another head or base is a
-  // different target and never blocks this one. A candidate with no stored head
-  // (or, for a git ref, no stored base) cannot match and is skipped.
-  const matches = dispositionCandidates(run, target, kinds).filter((item) => item.revision?.head_sha
+// Identity is the revision pair: a disposition on another head or base is a
+// different target and never blocks this one. A candidate with no stored head
+// (or, for a git ref, no stored base) cannot match and is skipped.
+function matchingDisposition(candidates, target, revision) {
+  const matches = candidates.filter((item) => item.revision?.head_sha
     && (target.startsWith('file:') || item.revision.base)
     && item.target === revision.ref && same(item.revision, revision));
   // A terminal disposition replays whatever its delivery state; an escape
   // replays only while its packet is unconsumed, so a consumed one lets a fresh
   // round start at the same revision.
   return matches.find((item) => item.kind === 'terminal') || matches.reverse().find((item) => item.packet?.delivery?.consumed === false) || false;
+}
+
+function terminalTarget(run, target, revision, kinds = ['terminal']) {
+  return matchingDisposition(dispositionCandidates(run, target, kinds), target, revision);
+}
+
+// Same lookup as terminalTarget, but against an already-loaded ledger object
+// and without the active-run gate dispositionCandidates applies: a retry that
+// lands after the run was finalised (e.g. by a reconciliation step) between
+// recording a disposition and a caller's own follow-up write must still find
+// that disposition, not see an empty run.
+function terminalDispositionInLedger(ledger, target, revision, kinds = ['terminal']) {
+  return matchingDisposition(dispositionsFromLedger(ledger, target, kinds), target, revision);
 }
 
 // Writes the terminal status, then renders the run's reports, also when the run is
@@ -339,4 +356,4 @@ function finaliseInitiativeRun(run, reason = 'finalised') {
   return true;
 }
 
-module.exports = { MODES, ESCALATION_TRIGGERS, lockDiagnosis, escalateInitiativeRun, canonicalPath, runPath, repositoryIdentity, openInitiativeRun, reserveLaunch, reserveLaunchBatch, denialReason, pairRefusal, resolveBaseCommit, normalizeDisposition, recordDisposition, consumeDispositionDelivery, terminalTarget, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };
+module.exports = { MODES, ESCALATION_TRIGGERS, lockDiagnosis, escalateInitiativeRun, canonicalPath, runPath, repositoryIdentity, openInitiativeRun, reserveLaunch, reserveLaunchBatch, denialReason, pairRefusal, resolveBaseCommit, normalizeDisposition, recordDisposition, consumeDispositionDelivery, terminalTarget, terminalDispositionInLedger, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };

@@ -887,7 +887,33 @@ async function runReviewUntilGreen(options) {
   }
   } catch (error) {
     if (error.notAReviewFailure) throw error;
-    if (error.initiativeBlocked) return { decision: error.initiativeBlocked === 'budget-exhausted' ? 'blocked' : error.initiativeBlocked, reason: error.initiativeBlocked, initiative: publicInitiativeSummary(initiativeRun) };
+    if (error.initiativeBlocked) {
+      // carry is a human/reconciliation step: this runner stops at `blocked`
+      // and names the exact command rather than picking a new key itself.
+      // The command must be safe to paste into any shell from any directory:
+      // quote every value (a state dir or repo root can contain a space), `cd`
+      // into the repo this run used, and restate REVIEW_REPO_ROOT and (when the
+      // original invocation had one) REVIEW_STATE_DIR -- both of which a bare
+      // `node ... carry` run from an arbitrary cwd would otherwise resolve
+      // differently than the blocked run did.
+      const posixQuote = (value) => `'${String(value).replace(/'/g, "'\\''")}'`;
+      const oldRunMode = initiativeRun ? JSON.parse(fs.readFileSync(initiativeRun.path, 'utf8')).mode : 'base';
+      const carryCommand = error.initiativeBlocked === 'budget-exhausted'
+        ? [
+            `cd ${posixQuote(repoRoot)} &&`,
+            `REVIEW_REPO_ROOT=${posixQuote(repoRoot)}`,
+            ...(process.env.REVIEW_STATE_DIR ? [`REVIEW_STATE_DIR=${posixQuote(process.env.REVIEW_STATE_DIR)}`] : []),
+            `node ${posixQuote(cliPath)} carry ${posixQuote(ref)}`,
+            `--from-run-key ${posixQuote(options.initiativeRunKey)}`,
+            '--initiative-run-key <new-run-key>',
+            `--initiative-state-dir ${posixQuote(canonicalStateDir)}`,
+            `--initiative-max-launches ${options.initiativeMaxLaunches}`,
+            `--initiative-max-rounds ${options.initiativeMaxRounds}`,
+            `--initiative-mode ${oldRunMode}`,
+          ].join(' ')
+        : null;
+      return { decision: error.initiativeBlocked === 'budget-exhausted' ? 'blocked' : error.initiativeBlocked, reason: error.initiativeBlocked, initiative: publicInitiativeSummary(initiativeRun), ...(carryCommand ? { carryCommand } : {}) };
+    }
     const failure = error.reviewFailure || {};
     // recordDisposition dedups an 'error' by its reason (a hash of the
     // message), not just target+revision+kind -- so the fallback lookups

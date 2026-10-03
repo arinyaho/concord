@@ -1516,6 +1516,25 @@ test('review-until-green owns provider routing without a separate Codex review s
   assert.match(md, /--fixer <claude\|codex\|copilot>/);
 });
 
+test('driver prose names carry for budget-exhausted recovery, never a run-key change', () => {
+  for (const rel of [['commands', 'review-until-green.md'], ['core', 'review-driver.md']]) {
+    const md = fs.readFileSync(path.join(__dirname, '..', '..', ...rel), 'utf8');
+    assert.match(md, /carry <ref> --from-run-key <old-key>/, rel.join('/'));
+    assert.match(md, /never (?:increase budgets|change the run key yourself)/i, rel.join('/'));
+    assert.doesNotMatch(md, /never change the run key, increase budgets/i, rel.join('/'));
+  }
+});
+
+test('the initiative skill and handoff contract name carry for a genuine budget block, never to refresh context', () => {
+  const root = path.join(__dirname, '..', '..', 'skills', 'initiative-to-prs');
+  const skill = fs.readFileSync(path.join(root, 'SKILL.md'), 'utf8');
+  const handoff = fs.readFileSync(path.join(root, 'references', 'handoff-contract.md'), 'utf8');
+  assert.match(skill, /carry <ref> --from-run-key <old-key>/);
+  assert.match(skill, /never use `carry` to refresh context/i);
+  assert.match(handoff, /`carry` the blocked target/);
+  assert.match(handoff, /never as a substitute for resuming the existing key/);
+});
+
 function writeArtifact(dir, n, name, obj) {
   const artifactName = name.startsWith('fix-') ? `fix-${safeIdForFilename(name.slice(4))}` : name;
   fs.writeFileSync(path.join(dir, `round-${n}-${artifactName}.json`), JSON.stringify(obj));

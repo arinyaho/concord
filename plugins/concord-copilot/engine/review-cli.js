@@ -26,7 +26,7 @@ const {
   resetUnreachable,
 } = require('./review');
 const crypto = require('node:crypto');
-const { canonicalPath, openInitiativeRun, reserveLaunchBatch, denialReason, recordDisposition, finaliseInitiativeRun, consumeDispositionDelivery, escalateInitiativeRun, lockDiagnosis, resolveBaseCommit } = require('./initiative-review-run');
+const { canonicalPath, openInitiativeRun, reserveLaunchBatch, denialReason, recordDisposition, finaliseInitiativeRun, consumeDispositionDelivery, escalateInitiativeRun, lockDiagnosis, resolveBaseCommit, repositoryIdentity, runPath, terminalDispositionInLedger } = require('./initiative-review-run');
 const { acquireTarget, gitDiff, gitHeadSha, gitDirty } = require('./target');
 const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
 
@@ -472,7 +472,7 @@ function firstRetryArtifact(retries) {
 const INITIATIVE_FLAGS = [['--initiative-run-key', 'key'], ['--initiative-state-dir', 'stateDir'], ['--initiative-max-launches', 'maxLaunches'], ['--initiative-max-rounds', 'maxRounds']];
 const MODE_FLAG = '--initiative-mode';
 const RUN_VERBS = new Set(['finalise', 'consume', 'escalate', 'session-checkpoint']);
-const CLI_VERBS = ['show', 'round-start', 'telemetry-slot', 'plan-fixes', 'commit-fix', 'record', 'round-failure', 'gate-panel-round-start', 'gate-panel-round-record', 'unpark', 'dismiss', 'reset', 'rerun', 'artifact-normalize', 'reserve', 'finalise', 'consume', 'escalate', 'session-checkpoint', 'feedback'];
+const CLI_VERBS = ['show', 'round-start', 'telemetry-slot', 'plan-fixes', 'commit-fix', 'record', 'round-failure', 'gate-panel-round-start', 'gate-panel-round-record', 'unpark', 'dismiss', 'reset', 'rerun', 'artifact-normalize', 'reserve', 'carry', 'finalise', 'consume', 'escalate', 'session-checkpoint', 'feedback'];
 const RESERVE_ROLES = ['correctness', 'verify', 'intent', 'gate-review', 'gate-verify', 'fix', 'lens', 'vote'];
 const ARTIFACT_RESERVE_ROLE = { correctness: 'correctness', verify: 'verify', intent: 'intent', gate: 'gate-review', 'gate-verify': 'gate-verify' };
 
@@ -494,6 +494,12 @@ function rerunOptions(rest) {
   const engineFlag = rest.indexOf('--engine');
   if (engineFlag >= 0 && !rest[engineFlag + 1]) throw new Error('review-cli rerun: --engine needs a name (e.g. --engine codex)');
   return { engine: engineFlag >= 0 ? rest[engineFlag + 1] : null };
+}
+
+function carryOptions(rest) {
+  const flag = rest.indexOf('--from-run-key');
+  if (flag === -1 || !rest[flag + 1]) throw new Error('review-cli carry: requires --from-run-key <oldKey>');
+  return { fromRunKey: rest[flag + 1] };
 }
 
 function requireRoundStartMode(run, rest) {
@@ -719,6 +725,104 @@ function gatesNeeds(stateDir, n) {
   return Object.entries(ARTIFACT_RESERVE_ROLE).map(([name, role]) => ({ role, present: fs.existsSync(path.join(stateDir, `round-${n}-${name}.json`)) ? 1 : 0 }));
 }
 
+// Moves a target whose shared budget was blocked mid-round (`initiative_blocked`,
+// written by `reserve`'s budget-exhausted denial) onto a new run key, under the
+// target lock. Human/reconciliation step only: the round's completed artifacts
+// are reused, the new key is charged only for launches it makes itself, and the
+// old run keeps the round's history as a terminal `carried` disposition. See
+// docs/design/2026-10-03-carry-budget-blocked-target.md.
+function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey, repoRoot, writeLedger }) {
+  const fail = (message) => { throw new Error(`review-cli carry: ${message}`); };
+  if (fromRunKey === initiative.key) fail('--from-run-key must differ from --initiative-run-key');
+  const newStateDir = canonicalPath(initiative.stateDir);
+
+  // Step 1: the target itself.
+  const ledger = readLedger(stateDir, slug);
+  if (!ledger) fail(`no review ledger for ref "${ref}" ${stateDirHint(stateDir)}`);
+  if (!ledger.initiative_binding) fail('the target is unbound, or has legacy initiative reservations with no binding; carry requires an existing binding to --from-run-key');
+  if (ledger.initiative_binding.key !== fromRunKey || ledger.initiative_binding.stateDir !== newStateDir) fail('the target is not bound to --from-run-key under this initiative state directory');
+  const panelPending = ledger.phase === 'done' && ledger.status === 'gate-panel-pending';
+  if (!['gates', 'fixes'].includes(ledger.phase) && !panelPending) fail(`the target is not in an active review phase (phase "${ledger.phase}")`);
+  if (ledger.reconciliation) fail('the target is parked for reconciliation');
+  const marker = ledger.initiative_blocked;
+  if (!marker) fail('no budget-exhausted marker for this target; nothing to carry');
+  if (marker.key !== fromRunKey || marker.stateDir !== newStateDir) fail('the budget-exhausted marker does not name --from-run-key');
+  if (marker.round !== ledger.round || marker.attemptId !== ledger.attemptId) fail('the budget-exhausted marker is for a different round or attempt');
+  const isFileTarget = ledger.target?.type === 'file';
+  const revision = { ref: ledger.target?.ref || ref, ...(ledger.target?.base ? { base: resolveBaseCommit(repoRoot, ledger.target.base) } : {}), ...(ledger.target?.head_sha ? { head_sha: ledger.target.head_sha } : {}) };
+  if (!marker.revision?.head_sha || marker.revision.head_sha !== revision.head_sha || (marker.revision.base || null) !== (revision.base || null)) fail('the budget-exhausted marker is for a different revision pair');
+  const liveHead = isFileTarget ? acquireTarget(ledger.target.spec, repoRoot).identity : gitHeadSha(repoRoot);
+  if (liveHead !== ledger.target?.head_sha) fail('the live HEAD has moved since the budget-exhausted round; this is no longer the blocked revision pair');
+
+  const oldRun = { path: runPath(newStateDir, fromRunKey) };
+  let oldLedger;
+  try { oldLedger = JSON.parse(fs.readFileSync(oldRun.path, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (!oldLedger) fail('no initiative run for --from-run-key');
+
+  // Step 2: the new run must be ready to take this pair. The mode check runs
+  // BEFORE openKeyedRun: that call creates the new run's ledger file on first
+  // use (defaulting mode to 'base' when the caller omitted --initiative-mode),
+  // so checking afterward can permanently create the wrong-mode ledger before
+  // ever reporting the mismatch, leaving the key unusable.
+  if ((initiative.mode || 'base') !== oldLedger.mode) fail('the new run mode differs from the old run; carry never changes mode');
+  const newRun = openKeyedRun(initiative);
+  // The readiness probe must cover the whole blocked batch (the marker's own
+  // role and count), not a single generic launch: a new run without room for
+  // the batch must be refused here, not discovered later at requireReservations.
+  const readinessCheck = { role: marker.role, round: ledger.round, target: revision.ref, revision, attemptId: ledger.attemptId };
+  const newRefusal = denialReason(newRun, readinessCheck, marker.count);
+  if (newRefusal) fail(`the new run refuses this pair (${newRefusal})`);
+
+  // Step 3: the old run -- active, same repository, genuinely blocked here,
+  // its round's evidence reserved, then a terminal `carried` disposition.
+  // A prior crash between recording that disposition and step 4's target-ledger
+  // write is resumed here instead of refused: the same carry retried finds its
+  // own disposition and proceeds; a DIFFERENT new key is refused.
+  const carriedToSameTarget = (entry) => entry?.reason === 'carried' && entry.packet?.carriedTo?.key === initiative.key && entry.packet?.carriedTo?.stateDir === newStateDir;
+  // Checked against the already-loaded ledger, not terminalTarget: terminalTarget
+  // only looks at an active run, but a reconciliation step can finalise the old
+  // run between recording this very disposition and this carry's own step 4 --
+  // the retry must still find its own disposition even though the run is no
+  // longer active.
+  const existingTerminal = terminalDispositionInLedger(oldLedger, revision.ref, revision, ['terminal']);
+  if (existingTerminal && !carriedToSameTarget(existingTerminal)) {
+    fail(existingTerminal.reason === 'carried' ? 'this target was already carried to a different run key' : `the old run already holds a terminal disposition ("${existingTerminal.reason}") for this pair`);
+  }
+  if (!existingTerminal) {
+    if (oldLedger.status !== 'active') fail('the old run is not active');
+    if (oldLedger.repository !== repositoryIdentity(repoRoot)) fail('the old run is for a different repository');
+    const oldReason = denialReason(oldRun, { role: marker.role, round: marker.round, attemptId: marker.attemptId, target: revision.ref, revision }, marker.count);
+    if (oldReason !== 'budget-exhausted') fail(`the old run's blocked batch is no longer budget-exhausted (${oldReason || 'it would now be accepted'})`);
+    const carryNeeds = [...gatesNeeds(stateDir, ledger.round), { role: 'fix', present: roundFiles(stateDir, ledger.round, new RegExp(`^round-${ledger.round}-fix-.*\\.json$`)) }];
+    if (panelPending) {
+      // Same lens/vote coverage gate-panel-round-record applies to the pending
+      // panel round -- carry must fail the old run closed on unreserved panel
+      // evidence exactly like recording that round would.
+      const gp = ledger.gate_panel || gatePanelLib.emptyGatePanel();
+      const m = (gp.round || 0) + 1;
+      carryNeeds.push(
+        { role: 'lens', present: GATE_PANEL_LENSES.filter((lens) => fs.existsSync(path.join(stateDir, `round-${ledger.round}-gate-panel-${m}-${lens}.json`))).length, panel: m },
+        { role: 'vote', present: roundFiles(stateDir, ledger.round, new RegExp(`^round-${ledger.round}-gate-panel-${m}-vote-.*\\.json$`)), panel: m },
+      );
+    }
+    requireReservations(oldRun, ledger, carryNeeds, 'carry');
+    const carried = recordDisposition(oldRun, { target: revision.ref, revision, result: { status: 'carried' }, packet: { nextAction: 'carried', carriedTo: { key: initiative.key, stateDir: newStateDir } } });
+    if (!carried) {
+      let retryLedger;
+      try { retryLedger = JSON.parse(fs.readFileSync(oldRun.path, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      const retryMatch = retryLedger && terminalDispositionInLedger(retryLedger, revision.ref, revision, ['terminal']);
+      if (!carriedToSameTarget(retryMatch)) fail(lockDiagnosis(oldRun) || 'the old run disposition write was contended; retry');
+    }
+  }
+
+  // Step 4: one atomic target-ledger write -- bind to the new key, append
+  // provenance, drop the marker. Reservations, launched and fix-used counts
+  // stay as they are: only later launches are reserved under the new key.
+  const { initiative_blocked: _marker, ...withoutMarker } = ledger;
+  writeLedger(stateDir, slug, { ...withoutMarker, initiative_carries: [...(ledger.initiative_carries || []), { from: fromRunKey, to: initiative.key, stateDir: newStateDir, round: ledger.round, at: new Date().toISOString() }] });
+  return { status: 'carried', from: fromRunKey, to: initiative.key, round: ledger.round };
+}
+
 // Every mutating target verb takes the same lock, including an unkeyed call
 // racing the target's first initiative binding. `show` only reads.
 function main(resolveFromCwd) {
@@ -739,12 +843,28 @@ function main(resolveFromCwd) {
   const dispatch = () => {
     const prior = readPrior();
     if (!initiative && isBound(prior)) throw new Error('review-cli: this target belongs to an initiative; every mutating verb requires the complete initiative run flags');
-    if (initiative && isBound(prior)) {
+    // carry's whole point is binding the target to a DIFFERENT key than its
+    // current one -- the generic same-binding check would refuse every real
+    // call. carryBudgetBlockedTarget does its own, narrower identity checks
+    // against the supplied --from-run-key instead.
+    if (initiative && isBound(prior) && args[0] !== 'carry') {
       // Legacy reservation tokens contain no run key or state directory, so
       // supplied flags cannot establish their original budget's identity.
       if (!prior.initiative_binding) throw new Error('review-cli: legacy initiative reservations have no binding; preserve the original ledgers and reconcile their identity and spent budget before restoring the original binding');
       if (prior.initiative_binding.key !== initiative.key || prior.initiative_binding.stateDir !== canonicalPath(initiative.stateDir)) {
         throw new Error('review-cli: different initiative binding; retain the original run flags, or after reconciliation use a separate target review state directory');
+      }
+    }
+    if (args[0] === 'carry' && !initiative) throw new Error('review-cli carry: requires the new key\'s initiative run flags (--initiative-run-key, --initiative-state-dir, --initiative-max-launches, --initiative-max-rounds)');
+    // A wrong --from-run-key or state dir must be refused HERE, before any
+    // rerun_cleanup side effect below (openKeyedRun creating the new run,
+    // finishRerunCleanup deleting archived evidence) runs. carryBudgetBlockedTarget
+    // repeats this exact check, but only after rerun_cleanup already happened.
+    if (args[0] === 'carry') {
+      const { fromRunKey } = carryOptions(args.slice(2));
+      if (!prior?.initiative_binding) throw new Error('review-cli carry: the target is unbound, or has legacy initiative reservations with no binding; carry requires an existing binding to --from-run-key');
+      if (prior.initiative_binding.key !== fromRunKey || prior.initiative_binding.stateDir !== canonicalPath(initiative.stateDir)) {
+        throw new Error('review-cli carry: the target is not bound to --from-run-key under this initiative state directory');
       }
     }
     if (args[0] === 'reset' && initiative) throw new Error('review-cli reset: cannot discard an initiative target; use rerun with the same initiative run flags to retain history and spent budget');
@@ -760,7 +880,10 @@ function main(resolveFromCwd) {
     finishRerunCleanup(stateDir, slug, prior);
     // Reservation binding is published only by the validated charge path;
     // a normal denial must leave a standalone target unbound.
-    if (args[0] === 'reserve') return runVerb(resolveFromCwd, args, initiative);
+    // carry already performs its own single atomic target-ledger write
+    // (bind + provenance + drop the marker); the generic rebind below would
+    // be a redundant second write.
+    if (args[0] === 'reserve' || args[0] === 'carry') return runVerb(resolveFromCwd, args, initiative);
     runVerb(resolveFromCwd, args, initiative);
     if (initiative) {
       const ledger = readLedger(stateDir, slug);
@@ -806,9 +929,11 @@ function runVerb(resolveFromCwd, args, initiative) {
   const writeLedger = (directory, slug, ledger) => persistLedger(directory, slug, binding ? { ...ledger, initiative_binding: binding } : ledger);
   const [verb, ref, ...rest] = args;
   const stateDir = resolveStateDir(resolveFromCwd);
-  // `reserve` opens the run inside the target-ledger lock main() holds so parallel first calls serialize.
+  // `reserve` and `carry` open their run(s) themselves, inside the target-ledger
+  // lock main() holds, so parallel first calls (and the old-then-new run order
+  // carry needs) serialize correctly.
   if (RUN_VERBS.has(verb)) return runLevelVerb(verb, ref, initiative, rest);
-  const run = initiative && verb !== 'reserve' && verb !== 'show' ? openKeyedRun(initiative) : null;
+  const run = initiative && verb !== 'reserve' && verb !== 'carry' && verb !== 'show' ? openKeyedRun(initiative) : null;
 
   if (verb === 'reserve') {
     requireRef(ref, 'reserve');
@@ -841,6 +966,14 @@ function runVerb(resolveFromCwd, args, initiative) {
       })) {
         const reason = denialReason(run, launch, count);
         const diagnosis = reason ? null : lockDiagnosis(run);
+        // A bound target blocked on budget-exhausted stays recoverable: persist
+        // the marker `carry` checks against so a human can move it to a new run
+        // key without losing the round's completed artifacts. An unbound target
+        // (ledger.initiative_binding unset -- this is its first reservation
+        // attempt) stays unbound: there is nothing yet to carry.
+        if (reason === 'budget-exhausted' && ledger.initiative_binding) {
+          writeLedger(stateDir, slug, { ...ledger, initiative_blocked: { key: initiative.key, stateDir: canonicalPath(initiative.stateDir), round: ledger.round, attemptId: ledger.attemptId, role, count, revision } });
+        }
         return reason === 'reconciliation-required' ? { status: reason, role, count, round: ledger.round } : { status: 'denied', role, count, round: ledger.round, ...(reason ? { reason } : {}), ...(diagnosis ? { lockDiagnosis: diagnosis } : {}) };
       }
       const token = crypto.randomBytes(16).toString('hex');
@@ -848,6 +981,16 @@ function runVerb(resolveFromCwd, args, initiative) {
       writeLedger(stateDir, slug, { ...ledger, initiative_reservations: [...(ledger.initiative_reservations || []), { token, role, round: ledger.round, ...(panel ? { panel } : {}), count }] });
       return { status: 'granted', role, count, round: ledger.round, token };
     })();
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return;
+  }
+
+  if (verb === 'carry') {
+    requireRef(ref, 'carry');
+    if (!initiative) throw new Error('review-cli carry: requires the new key\'s initiative run flags (--initiative-run-key, --initiative-state-dir, --initiative-max-launches, --initiative-max-rounds)');
+    const { fromRunKey } = carryOptions(rest);
+    const slug = targetSlug(ref);
+    const result = carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey, repoRoot: process.env.REVIEW_REPO_ROOT || process.cwd(), writeLedger });
     process.stdout.write(`${JSON.stringify(result)}\n`);
     return;
   }
