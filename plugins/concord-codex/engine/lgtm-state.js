@@ -8,6 +8,9 @@ const { crossPlatformCommand, crossPlatformArgs, crossPlatformOpts, needsDoubleE
 // External review requests are bounded by the same 15-minute window as review
 // observation, so a recovery cannot overlap a live request invocation.
 const INITIAL_CLAIM_LEASE_MS = 15 * 60 * 1000;
+const AUTO_REVIEW_GRACE_MS = 2 * 60 * 1000;
+const MAX_REQUESTS_PER_PR = 3;
+const MAX_FIX_ROUNDS_PER_PR = 3;
 
 const FULL_SHA = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/i;
 
@@ -51,14 +54,15 @@ function normalizeReviewId(reviewId) {
 
 function validateObservation(observation) {
   if (!observation || typeof observation !== 'object') throw new Error('review-lgtm-state: observation must be an object');
-  const { reviewId, reviewUrl, commitId, state, lgtm, findings } = observation;
+  const { reviewId, reviewer, reviewUrl, commitId, state, lgtm, findings } = observation;
   const normalizedReviewId = normalizeReviewId(reviewId);
+  if (typeof reviewer !== 'string' || !reviewer.trim()) throw new Error('review-lgtm-state: reviewer is required');
   if (typeof reviewUrl !== 'string' || !reviewUrl) throw new Error('review-lgtm-state: reviewUrl is required');
   if (typeof commitId !== 'string' || !FULL_SHA.test(commitId)) throw new Error('review-lgtm-state: commitId must be a full 40- or 64-character hexadecimal SHA (the review commit_id)');
   if (state !== 'completed' && state !== 'in-progress') throw new Error('review-lgtm-state: state must be completed or in-progress');
   if (typeof lgtm !== 'boolean') throw new Error('review-lgtm-state: lgtm is required and must be a boolean');
   if (!Array.isArray(findings)) throw new Error('review-lgtm-state: findings is required and must be an array');
-  return { reviewId: normalizedReviewId, reviewUrl, commitId: commitId.toLowerCase(), state, lgtm, findings: findings.map(validateFinding) };
+  return { reviewId: normalizedReviewId, reviewer: reviewer.trim(), reviewUrl, commitId: commitId.toLowerCase(), state, lgtm, findings: findings.map(validateFinding) };
 }
 
 function defaultStateDir(repoRoot = process.cwd()) {
@@ -71,6 +75,36 @@ function defaultStateDir(repoRoot = process.cwd()) {
 function markerPath({ stateDir, pr, headSha }, kind) {
   const key = validate({ pr, headSha });
   return path.join(stateDir, `pr-${key.pr}-${key.headSha}.${kind}.json`);
+}
+
+function requestBudget({ stateDir, pr }) {
+  let names;
+  try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') names = []; else throw error; }
+  const spent = names.filter((name) => name.startsWith(`pr-${Number(pr)}.request-slot-`) && name.endsWith('.json')).length;
+  return { max: MAX_REQUESTS_PER_PR, spent, remaining: Math.max(0, MAX_REQUESTS_PER_PR - spent) };
+}
+
+function reserveRequestSlot({ stateDir, pr, headSha }, kind, now) {
+  for (let slot = 1; slot <= MAX_REQUESTS_PER_PR; slot += 1) {
+    const file = path.join(stateDir, `pr-${pr}.request-slot-${slot}.json`);
+    if (writeExclusive(file, { pr, headSha, kind, claimedAtMs: now })) return slot;
+  }
+  return null;
+}
+
+function fixBudget({ stateDir, pr }) {
+  let names;
+  try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') names = []; else throw error; }
+  const spent = names.filter((name) => name.startsWith(`pr-${Number(pr)}.fix-round-slot-`) && name.endsWith('.json')).length;
+  return { max: MAX_FIX_ROUNDS_PER_PR, spent, remaining: Math.max(0, MAX_FIX_ROUNDS_PER_PR - spent) };
+}
+
+function reserveFixRound({ stateDir, pr, headSha }, now) {
+  for (let round = 1; round <= MAX_FIX_ROUNDS_PER_PR; round += 1) {
+    const file = path.join(stateDir, `pr-${pr}.fix-round-slot-${round}.json`);
+    if (writeExclusive(file, { pr, headSha, claimedAtMs: now })) return round;
+  }
+  return null;
 }
 
 function readMarker(file) {
@@ -126,13 +160,13 @@ function reconciliationPacket({ stateDir, pr, headSha }) {
   const records = reviewRecords({ stateDir, pr, headSha })
     .sort((a, b) => a.recordedAtMs - b.recordedAtMs || compareReviewIds(a.reviewId, b.reviewId));
   if (records.length === 0) return null;
-  const reviews = records.map((record) => ({ id: record.reviewId, url: record.reviewUrl, findings: record.findings }));
+  const reviews = records.map((record) => ({ id: record.reviewId, reviewer: record.reviewer, url: record.reviewUrl, findings: record.findings }));
   const findings = records.flatMap((record) => record.findings);
   const p1Count = findings.filter((finding) => finding.priority === 'P1').length;
   const p2Count = findings.filter((finding) => finding.priority === 'P2').length;
   const signals = [...new Set(findings.flatMap((finding) => finding.signals))].sort();
   const classification = (p1Count > 0 || records.length >= 2 || signals.length > 0) ? 'requires-architecture-review' : 'light-implementation-eligible';
-  return { pr, headSha, reviews, batchCount: records.length, p1Count, p2Count, signals, classification, retryEligible: false, choices: ['resume', 'revise', 'split', 'defer'], requires: 'human decision or new head' };
+  return { pr, headSha, reviews, batchCount: records.length, p1Count, p2Count, signals, classification, choices: ['resume', 'revise', 'split', 'defer'], requires: 'human decision or new head' };
 }
 
 function recordReview(input) {
@@ -144,7 +178,7 @@ function recordReview(input) {
   if (observation.findings.length > 0) {
     const file = markerPath({ stateDir, ...key }, `review-${observation.reviewId}`);
     if (readMarker(file)) return { outcome: 'needs-reconciliation', recorded: false, duplicate: true };
-    const written = writeExclusive(file, { pr: key.pr, headSha: key.headSha, reviewId: observation.reviewId, reviewUrl: observation.reviewUrl, recordedAtMs: now, findings: observation.findings });
+    const written = writeExclusive(file, { pr: key.pr, headSha: key.headSha, reviewId: observation.reviewId, reviewer: observation.reviewer, reviewUrl: observation.reviewUrl, recordedAtMs: now, findings: observation.findings });
     if (!written) return { outcome: 'needs-reconciliation', recorded: false, duplicate: true };
     return { outcome: 'needs-reconciliation', recorded: true, duplicate: false };
   }
@@ -157,26 +191,40 @@ function status(input) {
   const { stateDir } = input;
   const key = validate(input);
   const window = readMarker(markerPath({ stateDir, ...key }, 'window'));
-  const retryWindow = readMarker(markerPath({ stateDir, ...key }, 'retry-window'));
   const initialClaim = readMarker(markerPath({ stateDir, ...key }, 'initial-claim'));
   const initialRecovery = latestRecoveryClaim({ stateDir, ...key }, 'initial');
   const initialRequest = readMarker(markerPath({ stateDir, ...key }, 'initial-request'));
-  const retry = readMarker(markerPath({ stateDir, ...key }, 'retry-claim'));
-  const retryRequest = readMarker(markerPath({ stateDir, ...key }, 'retry-request'));
+  const observed = readMarker(markerPath({ stateDir, ...key }, 'observed'));
   if (window && (window.pr !== key.pr || window.headSha !== key.headSha || !Number.isSafeInteger(window.deadlineMs))) {
     throw new Error('review-lgtm-state: window marker does not match its PR head');
   }
-  if (retryWindow && (retryWindow.pr !== key.pr || retryWindow.headSha !== key.headSha || !Number.isSafeInteger(retryWindow.deadlineMs))) {
-    throw new Error('review-lgtm-state: retry window marker does not match its PR head');
-  }
-  return { deadlineMs: window ? window.deadlineMs : null, retryDeadlineMs: retryWindow ? retryWindow.deadlineMs : null, initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested: !!initialRequest, retryClaimed: !!retry, retryClaimedAtMs: retry && Number.isSafeInteger(retry.claimedAtMs) ? retry.claimedAtMs : null, retryRequested: !!retryRequest, reconciliation: reconciliationPacket({ stateDir, ...key }) };
+  return { deadlineMs: window ? window.deadlineMs : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested: !!initialRequest, reconciliation: reconciliationPacket({ stateDir, ...key }) };
+}
+
+function claimFixRound(input) {
+  const { stateDir, now = Date.now() } = input;
+  const key = validate(input);
+  if (reviewRecords({ stateDir, ...key }).length === 0) return { claimed: false, reason: 'no-findings' };
+  if (!writeExclusive(markerPath({ stateDir, ...key }, 'fix-round-claim'), { ...key, claimedAtMs: now })) return { claimed: false, reason: 'already-claimed', budget: fixBudget({ stateDir, pr: key.pr }) };
+  const round = reserveFixRound({ stateDir, ...key }, now);
+  if (!round) return { claimed: false, reason: 'fix-round-budget-exhausted', budget: fixBudget({ stateDir, pr: key.pr }) };
+  return { claimed: true, round, budget: fixBudget({ stateDir, pr: key.pr }) };
 }
 
 function claimRequest(input, kind) {
   const { stateDir, now = Date.now() } = input;
   const key = validate(input);
   if (reviewRecords({ stateDir, ...key }).length > 0) return { claimed: false, reason: 'needs-reconciliation' };
-  return writeExclusive(markerPath({ stateDir, ...key }, `${kind}-claim`), { ...key, kind, claimed: true, claimedAtMs: now });
+  if (kind === 'initial') {
+    const observedFile = markerPath({ stateDir, ...key }, 'observed');
+    if (!readMarker(observedFile)) writeExclusive(observedFile, { ...key, observedAtMs: now, eligibleAtMs: now + AUTO_REVIEW_GRACE_MS });
+    const observed = readMarker(observedFile);
+    if (now < observed.eligibleAtMs) return { claimed: false, reason: 'auto-review-grace', eligibleAtMs: observed.eligibleAtMs };
+  }
+  const claimed = writeExclusive(markerPath({ stateDir, ...key }, `${kind}-claim`), { ...key, kind, claimed: true, claimedAtMs: now });
+  if (!claimed) return false;
+  if (reserveRequestSlot({ stateDir, ...key }, kind, now)) return true;
+  return { claimed: false, reason: 'request-budget-exhausted', budget: requestBudget({ stateDir, pr: key.pr }) };
 }
 
 function markRequest(input, kind) {
@@ -197,11 +245,19 @@ function recoverRequest(input, kind) {
   const claimedAtMs = Math.max(claim && claim.claimedAtMs, recovery && recovery.claimedAtMs);
   if (!Number.isSafeInteger(claimedAtMs) || now < claimedAtMs + INITIAL_CLAIM_LEASE_MS) return false;
   if (readMarker(markerPath({ stateDir, ...key }, `${kind}-request`))) return false;
+  const slot = (() => {
+    let names;
+    try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+    return names.filter((name) => name.startsWith(`pr-${key.pr}.request-slot-`)).map((name) => readMarker(path.join(stateDir, name)))
+      .find((marker) => marker && marker.headSha === key.headSha && marker.kind === kind);
+  })();
+  if (!slot && !reserveRequestSlot({ stateDir, ...key }, kind, now)) {
+    return { claimed: false, reason: 'request-budget-exhausted', budget: requestBudget({ stateDir, pr: key.pr }) };
+  }
   return writeExclusive(markerPath({ stateDir, ...key }, `${kind}-recovery-claim-${claimedAtMs + INITIAL_CLAIM_LEASE_MS}`), { ...key, kind: `${kind}-recovery`, claimed: true, claimedAtMs: now });
 }
 
 function recoverInitialRequest(input) { return recoverRequest(input, 'initial'); }
-function recoverRetryRequest(input) { return recoverRequest(input, 'retry'); }
 
 function openWindow(input, kind = 'window') {
   const { stateDir, now = Date.now(), durationMs } = input;
@@ -215,14 +271,6 @@ function openWindow(input, kind = 'window') {
   return { created: false, deadlineMs: existing.deadlineMs };
 }
 
-function openRetryWindow(input) { return openWindow(input, 'retry-window'); }
-
-function claimRetry(input) {
-  return claimRequest(input, 'retry');
-}
-
-function markRetryRequested(input) { return markRequest(input, 'retry'); }
-
 function claimResult(result) {
   return typeof result === 'object' ? result : { claimed: result };
 }
@@ -232,15 +280,12 @@ function runMain(repoRoot = process.cwd()) {
   const stateDir = defaultStateDir(repoRoot);
   if (verb === 'status') process.stdout.write(`${JSON.stringify(status({ stateDir, pr, headSha }))}\n`);
   else if (verb === 'open-window') process.stdout.write(`${JSON.stringify(openWindow({ stateDir, pr, headSha, durationMs: Number(seconds) * 1000 }))}\n`);
-  else if (verb === 'open-retry-window') process.stdout.write(`${JSON.stringify(openRetryWindow({ stateDir, pr, headSha, durationMs: Number(seconds) * 1000 }))}\n`);
-  else if (verb === 'claim-retry') process.stdout.write(`${JSON.stringify(claimResult(claimRetry({ stateDir, pr, headSha })))}\n`);
-  else if (verb === 'mark-retry-requested') process.stdout.write(`${JSON.stringify({ marked: markRetryRequested({ stateDir, pr, headSha }) })}\n`);
   else if (verb === 'claim-initial-request') process.stdout.write(`${JSON.stringify(claimResult(claimInitialRequest({ stateDir, pr, headSha })))}\n`);
   else if (verb === 'recover-initial-request') process.stdout.write(`${JSON.stringify(claimResult(recoverInitialRequest({ stateDir, pr, headSha })))}\n`);
-  else if (verb === 'recover-retry-request') process.stdout.write(`${JSON.stringify(claimResult(recoverRetryRequest({ stateDir, pr, headSha })))}\n`);
   else if (verb === 'mark-initial-requested') process.stdout.write(`${JSON.stringify({ marked: markInitialRequested({ stateDir, pr, headSha }) })}\n`);
+  else if (verb === 'claim-fix-round') process.stdout.write(`${JSON.stringify(claimFixRound({ stateDir, pr, headSha }))}\n`);
   else if (verb === 'record-review') process.stdout.write(`${JSON.stringify(recordReview({ stateDir, pr, headSha, observation: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
-  else throw new Error('review-lgtm-state: use status, open-window, open-retry-window, claim-retry, recover-retry-request, mark-retry-requested, claim-initial-request, recover-initial-request, mark-initial-requested, or record-review');
+  else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, or record-review');
 }
 
-module.exports = { defaultStateDir, markerPath, status, openWindow, openRetryWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimRetry, recoverRetryRequest, markRetryRequested, recordReview, INITIAL_CLAIM_LEASE_MS, runMain };
+module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, recordReview, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, runMain };

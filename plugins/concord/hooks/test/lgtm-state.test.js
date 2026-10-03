@@ -14,36 +14,23 @@ const CLAUDE_SKILL = path.join(__dirname, '..', '..', 'skills', 'review-until-lg
 const CODEX_SKILL = path.join(__dirname, '..', '..', '..', 'concord-codex', 'skills', 'review-until-lgtm', 'SKILL.md');
 const COPILOT_SKILL = path.join(__dirname, '..', '..', '..', 'concord-copilot', 'skills', 'review-until-lgtm', 'SKILL.md');
 
-test('Claude and Codex ship durable review-until-lgtm instructions with host-specific CLI discovery', () => {
+test('Claude and Codex ship review-until-lgtm with host-specific CLI discovery', () => {
   const claude = fs.readFileSync(CLAUDE_SKILL, 'utf8');
   const codex = fs.readFileSync(CODEX_SKILL, 'utf8');
   for (const skill of [claude, codex]) {
-    assert.match(skill, /open-window <pr> <head-sha> 900/);
-    assert.match(skill, /claim-initial-request/);
-    assert.match(skill, /claim-initial-request.*\{"claimed":true\}/);
-    assert.match(skill, /mark-retry-requested/);
-    assert.match(skill, /retryClaimedAtMs/);
-    assert.match(skill, /review-timeout/);
-    assert.match(skill, /open-retry-window/);
     assert.match(skill, /node .*STATE_CLI/);
     assert.match(skill, /PowerShell/);
     assert.match(skill, /cmd\.exe/);
-    assert.match(skill, /initialRequested.*deadlineMs/);
     assert.match(skill, /Node-based locator/);
-    assert.match(skill, /recover-initial-request/);
-    assert.match(skill, /recover-retry-request/);
-    assert.match(skill, /matching activity.*open-window/);
     assert.match(skill, /validates the Concord plugin manifest/);
     assert.match(skill, /newest installed Concord version/);
-    assert.match(skill, /matching retry-era activity exists.*mark-retry-requested.*open-retry-window/);
-    assert.match(skill, /15-minute lease/);
     assert.doesNotMatch(skill, /q=\[process\.cwd/);
   }
   assert.match(claude, /review-lgtm-state\.js/);
   assert.match(codex, /review-lgtm-state\.js/);
 });
 
-test('review-until-lgtm persists its monitoring window and permits exactly one retry per PR head', () => {
+test('review-until-lgtm persists its monitoring window and request budget', () => {
   const stateDir = temp();
   const input = { stateDir, pr: 116, headSha: '0123456789abcdef0123456789abcdef01234567' };
   const first = lgtmState.openWindow({ ...input, now: 1000, durationMs: 900000 });
@@ -51,41 +38,56 @@ test('review-until-lgtm persists its monitoring window and permits exactly one r
 
   // Simulates a process/session interruption: a new invocation reconstructs
   // the exact same deadline and cannot restart the bounded wait window.
-  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: 901000, retryDeadlineMs: null, initialClaimed: false, initialClaimedAtMs: null, initialRecoveryClaimed: false, initialRequested: false, retryClaimed: false, retryClaimedAtMs: null, retryRequested: false, reconciliation: null });
+  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: 901000, requestEligibleAtMs: null, requestBudget: { max: 3, spent: 0, remaining: 3 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, initialClaimed: false, initialClaimedAtMs: null, initialRecoveryClaimed: false, initialRequested: false, reconciliation: null });
   assert.deepStrictEqual(lgtmState.openWindow({ ...input, now: 2000, durationMs: 900000 }), { created: false, deadlineMs: 901000 });
-  assert.strictEqual(lgtmState.claimRetry({ ...input, now: 3000 }), true);
-  assert.strictEqual(lgtmState.claimRetry(input), false);
-  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: 901000, retryDeadlineMs: null, initialClaimed: false, initialClaimedAtMs: null, initialRecoveryClaimed: false, initialRequested: false, retryClaimed: true, retryClaimedAtMs: 3000, retryRequested: false, reconciliation: null });
+});
+
+test('an initial request waits for automatic review activity before it can be claimed', () => {
+  const input = { stateDir: temp(), pr: 159, headSha: '1111111111111111111111111111111111111111' };
+  assert.deepStrictEqual(lgtmState.claimInitialRequest({ ...input, now: 1000 }), {
+    claimed: false,
+    reason: 'auto-review-grace',
+    eligibleAtMs: 121000,
+  });
+  assert.deepStrictEqual(lgtmState.claimInitialRequest({ ...input, now: 120999 }), {
+    claimed: false,
+    reason: 'auto-review-grace',
+    eligibleAtMs: 121000,
+  });
+  assert.strictEqual(lgtmState.claimInitialRequest({ ...input, now: 121000 }), true);
+});
+
+test('manual review requests share a cumulative three-request budget across PR heads', () => {
+  const stateDir = temp();
+  const heads = ['1', '2', '3', '4'].map((digit) => digit.repeat(40));
+  for (const [index, headSha] of heads.entries()) {
+    lgtmState.claimInitialRequest({ stateDir, pr: 159, headSha, now: 1000 + index });
+    const result = lgtmState.claimInitialRequest({ stateDir, pr: 159, headSha, now: 121000 + index });
+    if (index < 3) assert.strictEqual(result, true);
+    else assert.deepStrictEqual(result, { claimed: false, reason: 'request-budget-exhausted', budget: { max: 3, spent: 3, remaining: 0 } });
+  }
 });
 
 test('review requests distinguish a durable claim from a request that was sent', () => {
   const stateDir = temp();
   const input = { stateDir, pr: 116, headSha: '0123456789abcdef0123456789abcdef01234567' };
-  assert.strictEqual(lgtmState.claimInitialRequest({ ...input, now: 2000 }), true);
-  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, retryDeadlineMs: null, initialClaimed: true, initialClaimedAtMs: 2000, initialRecoveryClaimed: false, initialRequested: false, retryClaimed: false, retryClaimedAtMs: null, retryRequested: false, reconciliation: null });
+  lgtmState.claimInitialRequest({ ...input, now: 2000 });
+  assert.strictEqual(lgtmState.claimInitialRequest({ ...input, now: 122000 }), true);
+  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, requestEligibleAtMs: 122000, requestBudget: { max: 3, spent: 1, remaining: 2 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, initialClaimed: true, initialClaimedAtMs: 122000, initialRecoveryClaimed: false, initialRequested: false, reconciliation: null });
   assert.strictEqual(lgtmState.markInitialRequested(input), true);
-  assert.strictEqual(lgtmState.claimRetry({ ...input, now: 4000 }), true);
-  assert.strictEqual(lgtmState.markRetryRequested(input), true);
-  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, retryDeadlineMs: null, initialClaimed: true, initialClaimedAtMs: 2000, initialRecoveryClaimed: false, initialRequested: true, retryClaimed: true, retryClaimedAtMs: 4000, retryRequested: true, reconciliation: null });
+  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, requestEligibleAtMs: 122000, requestBudget: { max: 3, spent: 1, remaining: 2 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, initialClaimed: true, initialClaimedAtMs: 122000, initialRecoveryClaimed: false, initialRequested: true, reconciliation: null });
 });
 
 test('an initial request recovery claim waits for the original claimant lease', () => {
   const input = { stateDir: temp(), pr: 116, headSha: '0123456789abcdef0123456789abcdef01234567' };
   assert.strictEqual(lgtmState.INITIAL_CLAIM_LEASE_MS, 15 * 60 * 1000);
-  assert.strictEqual(lgtmState.claimInitialRequest({ ...input, now: 1000 }), true);
-  assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS - 1 }), false);
-  assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS }), true);
-  assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS }), false);
-  assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: 1000 + 2 * lgtmState.INITIAL_CLAIM_LEASE_MS }), true);
-});
-
-test('a retry recovery claim waits for and can replace a stale retry claimant', () => {
-  const input = { stateDir: temp(), pr: 116, headSha: '0123456789abcdef0123456789abcdef01234567' };
-  assert.strictEqual(lgtmState.claimRetry({ ...input, now: 1000 }), true);
-  assert.strictEqual(lgtmState.recoverRetryRequest({ ...input, now: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS - 1 }), false);
-  assert.strictEqual(lgtmState.recoverRetryRequest({ ...input, now: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS }), true);
-  assert.strictEqual(lgtmState.recoverRetryRequest({ ...input, now: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS }), false);
-  assert.strictEqual(lgtmState.recoverRetryRequest({ ...input, now: 1000 + 2 * lgtmState.INITIAL_CLAIM_LEASE_MS }), true);
+  lgtmState.claimInitialRequest({ ...input, now: 1000 });
+  const claimedAtMs = 1000 + lgtmState.AUTO_REVIEW_GRACE_MS;
+  assert.strictEqual(lgtmState.claimInitialRequest({ ...input, now: claimedAtMs }), true);
+  assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: claimedAtMs + lgtmState.INITIAL_CLAIM_LEASE_MS - 1 }), false);
+  assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: claimedAtMs + lgtmState.INITIAL_CLAIM_LEASE_MS }), true);
+  assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: claimedAtMs + lgtmState.INITIAL_CLAIM_LEASE_MS }), false);
+  assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: claimedAtMs + 2 * lgtmState.INITIAL_CLAIM_LEASE_MS }), true);
 });
 
 test('default state directory is shared by linked worktrees and resolves Git outside the checkout', () => {
@@ -102,19 +104,6 @@ test('default state directory is shared by linked worktrees and resolves Git out
   assert.match(fs.readFileSync(CORE_STATE, 'utf8'), /crossPlatformCommand\('git', repoRoot\)/);
 });
 
-test('a retry claim records the boundary for retry-activity reconciliation', () => {
-  const input = { stateDir: temp(), pr: 116, headSha: '0123456789abcdef0123456789abcdef01234567' };
-  assert.strictEqual(lgtmState.claimRetry({ ...input, now: 123456 }), true);
-  assert.strictEqual(lgtmState.status(input).retryClaimedAtMs, 123456);
-});
-
-test('a retry request receives its own durable monitoring deadline', () => {
-  const input = { stateDir: temp(), pr: 116, headSha: '0123456789abcdef0123456789abcdef01234567' };
-  assert.deepStrictEqual(lgtmState.openWindow({ ...input, now: 1000, durationMs: 900000 }), { created: true, deadlineMs: 901000 });
-  assert.deepStrictEqual(lgtmState.openRetryWindow({ ...input, now: 1000000, durationMs: 900000 }), { created: true, deadlineMs: 1900000 });
-  assert.strictEqual(lgtmState.status(input).retryDeadlineMs, 1900000);
-});
-
 test('review-until-lgtm CLI restores a completed review window after a new process starts', () => {
   const stateDir = temp();
   const pr = '116';
@@ -123,8 +112,6 @@ test('review-until-lgtm CLI restores a completed review window after a new proce
   const open = JSON.parse(execFileSync('node', [CLI, 'open-window', pr, head, '900'], { encoding: 'utf8', env }));
   const resumed = JSON.parse(execFileSync('node', [CLI, 'status', pr, head], { encoding: 'utf8', env }));
   assert.strictEqual(resumed.deadlineMs, open.deadlineMs);
-  assert.strictEqual(JSON.parse(execFileSync('node', [CLI, 'claim-retry', pr, head], { encoding: 'utf8', env })).claimed, true);
-  assert.strictEqual(JSON.parse(execFileSync('node', [CLI, 'claim-retry', pr, head], { encoding: 'utf8', env })).claimed, false);
 });
 
 // --- Reconciliation: record-review, classification, and claim blocking ---
@@ -141,9 +128,30 @@ function summaryFinding({ priority = 'P2', signals = [], reviewId = '5332811440'
   return { url: `https://github.com/arinyaho/concord/pull/122#pullrequestreview-${reviewId}`, priority, signals };
 }
 
-function observation({ reviewId = '5332811440', commitId = HEAD_A, state = 'completed', lgtm = false, findings = [inlineFinding()] } = {}) {
-  return { reviewId, reviewUrl: `https://github.com/arinyaho/concord/pull/122#pullrequestreview-${reviewId}`, commitId, state, lgtm, findings };
+function observation({ reviewId = '5332811440', reviewer = 'chatgpt-codex-connector[bot]', commitId = HEAD_A, state = 'completed', lgtm = false, findings = [inlineFinding()] } = {}) {
+  return { reviewId, reviewer, reviewUrl: `https://github.com/arinyaho/concord/pull/122#pullrequestreview-${reviewId}`, commitId, state, lgtm, findings };
 }
+
+test('review records preserve provider identity in one head batch', () => {
+  const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
+  lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: '1', reviewer: 'chatgpt-codex-connector[bot]' }) });
+  lgtmState.recordReview({ ...input, now: 6000, observation: observation({ reviewId: '2', reviewer: 'copilot-pull-request-reviewer[bot]' }) });
+  assert.deepStrictEqual(lgtmState.status(input).reconciliation.reviews.map(({ id, reviewer }) => ({ id, reviewer })), [
+    { id: '1', reviewer: 'chatgpt-codex-connector[bot]' },
+    { id: '2', reviewer: 'copilot-pull-request-reviewer[bot]' },
+  ]);
+});
+
+test('batch fixes share a cumulative three-round budget across PR heads', () => {
+  const stateDir = temp();
+  const heads = ['1', '2', '3', '4'].map((digit) => digit.repeat(40));
+  for (const [index, headSha] of heads.entries()) {
+    lgtmState.recordReview({ stateDir, pr: 159, headSha, now: 1000 + index, observation: observation({ reviewId: String(index + 1), commitId: headSha }) });
+    const result = lgtmState.claimFixRound({ stateDir, pr: 159, headSha, now: 2000 + index });
+    if (index < 3) assert.deepStrictEqual(result, { claimed: true, round: index + 1, budget: { max: 3, spent: index + 1, remaining: 2 - index } });
+    else assert.deepStrictEqual(result, { claimed: false, reason: 'fix-round-budget-exhausted', budget: { max: 3, spent: 3, remaining: 0 } });
+  }
+});
 
 test('record-review persists an inline finding as needs-reconciliation', () => {
   const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
@@ -277,23 +285,23 @@ test('a non-digit reviewId is rejected', () => {
   assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: 'abc123' }) }), /reviewId must be a positive safe integer or decimal digits/);
 });
 
-test('a numeric reviewId is accepted, normalized to a decimal string, and blocks claim-retry afterward', () => {
+test('a numeric reviewId is accepted, normalized to a decimal string, and blocks another review request', () => {
   const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
   const result = lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: 5332811440, findings: [inlineFinding({ priority: 'P1', signals: ['lifecycle'] })] }) });
   assert.deepStrictEqual(result, { outcome: 'needs-reconciliation', recorded: true, duplicate: false });
   const packet = lgtmState.status(input).reconciliation;
   assert.strictEqual(packet.reviews[0].id, '5332811440');
-  assert.deepStrictEqual(lgtmState.claimRetry({ ...input, now: 6000 }), { claimed: false, reason: 'needs-reconciliation' });
+  assert.deepStrictEqual(lgtmState.claimInitialRequest({ ...input, now: 6000 }), { claimed: false, reason: 'needs-reconciliation' });
 });
 
-test('CLI record-review accepts a JSON number reviewId on stdin and claim-retry then refuses', () => {
+test('CLI record-review accepts a JSON number reviewId on stdin and another request then refuses', () => {
   const stateDir = temp();
   const env = { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir };
   const obs = observation({ reviewId: 5332811440, findings: [inlineFinding({ priority: 'P1', signals: ['lifecycle'] })] });
   const out = JSON.parse(execFileSync('node', [CLI, 'record-review', String(PR_122), HEAD_A], { encoding: 'utf8', env, input: JSON.stringify(obs) }));
   assert.deepStrictEqual(out, { outcome: 'needs-reconciliation', recorded: true, duplicate: false });
-  const retry = execFileSync('node', [CLI, 'claim-retry', String(PR_122), HEAD_A], { encoding: 'utf8', env });
-  assert.strictEqual(retry, '{"claimed":false,"reason":"needs-reconciliation"}\n');
+  const claim = execFileSync('node', [CLI, 'claim-initial-request', String(PR_122), HEAD_A], { encoding: 'utf8', env });
+  assert.strictEqual(claim, '{"claimed":false,"reason":"needs-reconciliation"}\n');
 });
 
 test('a reviewId string with leading zeros canonicalizes to the same review as its plain digits', () => {
@@ -325,30 +333,34 @@ test('a missing field is rejected', () => {
   assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: bad }), /commitId must be a full 40- or 64-character hexadecimal SHA/);
 });
 
-test('once a head is marked, the four claim/recover verbs report needs-reconciliation while mark-*/open-* verbs still work', () => {
+test('a missing reviewer is rejected', () => {
+  const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
+  const bad = observation();
+  delete bad.reviewer;
+  assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: bad }), /reviewer is required/);
+});
+
+test('once a head is marked, request claim and recovery report needs-reconciliation while sent state remains writable', () => {
   const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
   lgtmState.recordReview({ ...input, now: 5000, observation: observation({ findings: [inlineFinding()] }) });
   assert.deepStrictEqual(lgtmState.claimInitialRequest({ ...input, now: 6000 }), { claimed: false, reason: 'needs-reconciliation' });
   assert.deepStrictEqual(lgtmState.recoverInitialRequest({ ...input, now: 6000 }), { claimed: false, reason: 'needs-reconciliation' });
-  assert.deepStrictEqual(lgtmState.claimRetry({ ...input, now: 6000 }), { claimed: false, reason: 'needs-reconciliation' });
-  assert.deepStrictEqual(lgtmState.recoverRetryRequest({ ...input, now: 6000 }), { claimed: false, reason: 'needs-reconciliation' });
   assert.strictEqual(lgtmState.markInitialRequested(input), true);
   assert.deepStrictEqual(lgtmState.openWindow({ ...input, now: 6000, durationMs: 900000 }), { created: true, deadlineMs: 906000 });
-  assert.strictEqual(lgtmState.markRetryRequested(input), true);
-  assert.deepStrictEqual(lgtmState.openRetryWindow({ ...input, now: 6000, durationMs: 900000 }), { created: true, deadlineMs: 906000 });
 });
 
 test('a different head of the same PR is unaffected by another head being marked', () => {
   const stateDir = temp();
   lgtmState.recordReview({ stateDir, pr: PR_122, headSha: HEAD_A, now: 5000, observation: observation({ findings: [inlineFinding()] }) });
-  assert.strictEqual(lgtmState.claimInitialRequest({ stateDir, pr: PR_122, headSha: HEAD_B, now: 6000 }), true);
+  lgtmState.claimInitialRequest({ stateDir, pr: PR_122, headSha: HEAD_B, now: 6000 });
+  assert.strictEqual(lgtmState.claimInitialRequest({ stateDir, pr: PR_122, headSha: HEAD_B, now: 6000 + lgtmState.AUTO_REVIEW_GRACE_MS }), true);
   assert.strictEqual(lgtmState.status({ stateDir, pr: PR_122, headSha: HEAD_B }).reconciliation, null);
 });
 
 test('an abbreviated head is rejected by a claim verb and by record-review', () => {
   const stateDir = temp();
   const shortHead = HEAD_A.slice(0, 7);
-  assert.throws(() => lgtmState.claimRetry({ stateDir, pr: PR_122, headSha: shortHead, now: 1000 }), /head SHA must be a full 40- or 64-character hexadecimal SHA \(the PR headRefOid\)/);
+  assert.throws(() => lgtmState.claimInitialRequest({ stateDir, pr: PR_122, headSha: shortHead, now: 1000 }), /head SHA must be a full 40- or 64-character hexadecimal SHA \(the PR headRefOid\)/);
   assert.throws(() => lgtmState.recordReview({ stateDir, pr: PR_122, headSha: shortHead, now: 1000, observation: observation({ commitId: shortHead, findings: [] }) }), /head SHA must be a full 40- or 64-character hexadecimal SHA \(the PR headRefOid\)/);
 });
 
@@ -361,13 +373,12 @@ test('status.reconciliation is null when unmarked and a full packet once marked'
   assert.deepStrictEqual(packet, {
     pr: PR_122,
     headSha: HEAD_A,
-    reviews: [{ id: '5332811440', url: obs.reviewUrl, findings: [{ url: obs.findings[0].url, priority: 'P1', signals: ['lifecycle'] }] }],
+    reviews: [{ id: '5332811440', reviewer: obs.reviewer, url: obs.reviewUrl, findings: [{ url: obs.findings[0].url, priority: 'P1', signals: ['lifecycle'] }] }],
     batchCount: 1,
     p1Count: 1,
     p2Count: 0,
     signals: ['lifecycle'],
     classification: 'requires-architecture-review',
-    retryEligible: false,
     choices: ['resume', 'revise', 'split', 'defer'],
     requires: 'human decision or new head',
   });
@@ -381,13 +392,11 @@ test('CLI record-review reads the observation as JSON on stdin', () => {
   assert.deepStrictEqual(out, { outcome: 'needs-reconciliation', recorded: true, duplicate: false });
 });
 
-test('CLI claim-retry and claim-initial-request refuse a head with a recorded review', () => {
+test('CLI claim-initial-request refuses a head with a recorded review', () => {
   const stateDir = temp();
   const env = { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir };
   const obs = observation({ findings: [inlineFinding({ priority: 'P1', signals: ['lifecycle'] })] });
   execFileSync('node', [CLI, 'record-review', String(PR_122), HEAD_A], { encoding: 'utf8', env, input: JSON.stringify(obs) });
-  const retry = execFileSync('node', [CLI, 'claim-retry', String(PR_122), HEAD_A], { encoding: 'utf8', env });
-  assert.strictEqual(retry, '{"claimed":false,"reason":"needs-reconciliation"}\n');
   const initial = execFileSync('node', [CLI, 'claim-initial-request', String(PR_122), HEAD_A], { encoding: 'utf8', env });
   assert.strictEqual(initial, '{"claimed":false,"reason":"needs-reconciliation"}\n');
 });
@@ -398,25 +407,13 @@ test('Claude, Codex, and Copilot review-until-lgtm skills pin the reconciliation
   const copilot = fs.readFileSync(COPILOT_SKILL, 'utf8');
   for (const skill of [claude, codex, copilot]) {
     assert.match(skill, /record-review <pr> <head-sha>/);
-    assert.match(skill, /before any retry claim/);
-    assert.match(skill, /commit_id/);
+    assert.match(skill, /reviewId.*reviewer.*reviewUrl.*commitId.*state.*lgtm/);
     assert.match(skill, /headRefOid/);
     assert.match(skill, /P1/);
     assert.match(skill, /P2/);
-    assert.match(skill, /badge/);
-    assert.match(skill, /unresolved bot thread/);
-    assert.match(skill, /light-implementation-eligible/);
-    assert.match(skill, /requires-architecture-review/);
     assert.match(skill, /needs-reconciliation/);
-    assert.match(skill, /does not edit source/);
-    assert.match(skill, /no existing review record for the head/);
-    assert.match(skill, /When a matching Codex review object exists for the head, defer to `record-review`'s outcome/);
-    assert.match(skill, /each recorded review's id and URL/);
-    assert.match(skill, /each unresolved finding's URL with its P1\/P2 priority/);
-    assert.match(skill, /the batch count/);
-    assert.match(skill, /resume, revise, split, and defer choices/);
-    assert.match(skill, /a new head \(a new commit\) is required/);
-    assert.match(skill, /if `record-review` exits non-zero or rejects the observation, stop and report it; never claim or request a review for that head afterward/i);
+    assert.match(skill, /Record every review in the collection batch/);
+    assert.match(skill, /unresolved finding.*takes precedence.*LGTM/i);
   }
 });
 
@@ -425,26 +422,28 @@ test('Claude, Codex, and Copilot review-until-lgtm skills pin the no-review-obje
   const codex = fs.readFileSync(CODEX_SKILL, 'utf8');
   const copilot = fs.readFileSync(COPILOT_SKILL, 'utf8');
   for (const skill of [claude, codex, copilot]) {
-    assert.match(skill, /no Codex review has `commit_id` equal to the full `headRefOid`/);
-    assert.match(skill, /`reconciliation` is `null`/);
-    assert.match(skill, /every row of the bot-authored summary comment is `✅ Completed` and its Commit is a prefix of the full `headRefOid`/);
-    assert.match(skill, /a \+1 reaction on the PR from the Codex bot login.*created_at.*at or after that row's completion/);
-    assert.match(skill, /A \+1 created before the completion time never counts/);
-    assert.match(skill, /If 1-3 hold but no qualifying \+1 appears by the persisted deadline, report `completed-without-lgtm`/);
-    assert.match(skill, /the reaction lands on the PR, never on the summary comment/);
-    assert.match(skill, /Count only unresolved bot threads created by this matching review as findings/);
-    assert.match(skill, /an unresolved thread left over from an earlier head's review is not a finding for this head's review/);
-    assert.match(skill, /state the reaction's `created_at` and the row's completion time/);
+    assert.match(skill, /Codex's clean no-review-object path/);
+    assert.match(skill, /no Codex review object for the full `headRefOid`/);
+    assert.match(skill, /`status\.reconciliation === null`/);
+    assert.match(skill, /`✅ Completed` summary row whose commit is a prefix of that head/);
+    assert.match(skill, /chatgpt-codex-connector\[bot\].*\+1 reaction.*created at or after the row's completion time/);
+    assert.match(skill, /stale reaction never counts/i);
   }
 });
 
-test('Claude, Codex, and Copilot review-until-lgtm skills pin the review-path fresh-reaction rule and second precision', () => {
+test('Claude, Codex, and Copilot review-until-lgtm skills pin bounded batch fixes', () => {
   const claude = fs.readFileSync(CLAUDE_SKILL, 'utf8');
   const codex = fs.readFileSync(CODEX_SKILL, 'utf8');
   const copilot = fs.readFileSync(COPILOT_SKILL, 'utf8');
   for (const skill of [claude, codex, copilot]) {
-    assert.match(skill, /`lgtm` is true only when a \+1 reaction on the PR from the Codex bot login has `created_at` at or after the review's `submitted_at`, comparing both truncated to whole seconds/);
-    assert.match(skill, /truncated to whole seconds so a \+1 in the same second as (submission|completion) counts/);
-    assert.match(skill, /true is green, false is `completed-without-lgtm`/);
+    assert.match(skill, /Codex, Copilot, or another explicitly configured reviewer/);
+    assert.match(skill, /Do not start fixing when the first review arrives/);
+    assert.match(skill, /complete collected set.*one clean-context verifier/);
+    assert.match(skill, /one implementation plan for all accepted in-scope findings/);
+    assert.match(skill, /three fix-and-push rounds are a PR-wide hard cap, not a quality guarantee/);
+    assert.match(skill, /one commit and one push/);
+    assert.match(skill, /propose a single follow-up issue/);
+    assert.match(skill, /do not create it without user authorization/);
+    assert.match(skill, /Never request a second full review on the same head solely to obtain a missing reaction/);
   }
 });
