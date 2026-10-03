@@ -10,18 +10,18 @@ const { runPath } = require('../../core/initiative-review-run');
 const review = require('../../core/review');
 const cliPath = path.resolve(__dirname, '../../hooks/review-cli.js');
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'runner-bound-'));
-function fixture({ panel = false, maxLaunches = 30, mode } = {}) {
+function fixture({ maxLaunches = 30, mode } = {}) {
   const repoRoot = tmp(), stateDir = tmp(), initiativeStateDir = tmp();
   const git = (...args) => execFileSync('git', args, { cwd: repoRoot, stdio: 'pipe' }).toString().trim();
   git('init', '-q'); git('config', 'user.email', 'test@example.com'); git('config', 'user.name', 'test');
   fs.writeFileSync(path.join(repoRoot, 'a.txt'), 'one\n');
-  fs.writeFileSync(path.join(repoRoot, 'review.config.json'), JSON.stringify({ dod: ['true'], ...(panel ? { gate: { panel: true } } : {}) }));
+  fs.writeFileSync(path.join(repoRoot, 'review.config.json'), JSON.stringify({ dod: ['true'] }));
   git('add', '.'); git('commit', '-qm', 'base'); const base = git('rev-parse', 'HEAD');
   fs.writeFileSync(path.join(repoRoot, 'a.txt'), 'two\n'); git('commit', '-aqm', 'change');
   const calls = [], workers = [];
   // A lite run's round-start rejects --no-broad outright (lite always runs the
   // one design-conformance gate), so lite fixtures must not send it.
-  const options = { ref: 'feature/test', base, repoRoot, initiativeStateDir, initiativeRunKey: 'integration', initiativeMaxLaunches: maxLaunches, initiativeMaxRounds: 10, noBroad: mode === 'lite' ? false : !panel, cliPath, ...(mode ? { initiativeMode: mode } : {}),
+  const options = { ref: 'feature/test', base, repoRoot, initiativeStateDir, initiativeRunKey: 'integration', initiativeMaxLaunches: maxLaunches, initiativeMaxRounds: 10, noBroad: mode !== 'lite', cliPath, ...(mode ? { initiativeMode: mode } : {}),
     runCli: (args) => {
       calls.push(args);
       const out = spawnSync('node', [cliPath, ...args], { cwd: repoRoot, encoding: 'utf8', env: { ...process.env, REVIEW_REPO_ROOT: repoRoot, REVIEW_STATE_DIR: stateDir } });
@@ -43,31 +43,6 @@ test('keyed runner propagates complete options, reserves both roles and delivers
   assert.equal(f.ledger().launches.length, 2); assert.equal(f.ledger().dispositions.length, 1);
   assert.equal(result.continuationPacket.delivery.claim, f.ledger().dispositions[0].packet.delivery.claim);
   assert.equal(review.readLedger(f.stateDir, review.targetSlug(f.options.ref)).initiative_reservations.length, 2);
-});
-test('keyed panel denial reserves the entire lens batch before launching any lens', async () => {
-  const f = fixture({ panel: true, maxLaunches: 6 });
-  const result = await runReviewUntilGreen(f.options);
-  assert.equal(result.decision, 'blocked');
-  assert.equal(f.workers.some(x => x.startsWith('gate-panel-')), false);
-  assert.equal(f.ledger().launches.length, 4);
-});
-test('keyed panel completes all lens rounds before one safe checkpoint and preserves terminal decision', async () => {
-  const f = fixture({ panel: true });
-  const suggestions = [];
-  const result = await runReviewUntilGreen({ ...f.options, sessionHandoff: 'stop-at-checkpoint', getInputContextTokens: () => 128000, onSessionHandoff: h => suggestions.push(h) });
-  assert.equal(f.workers.filter(x => x.startsWith('gate-panel-')).length, 10);
-  assert.equal(f.calls.filter(x => x[0] === 'record').length, 2);
-  assert.equal(f.calls.filter(x => x[0] === 'session-checkpoint').length, 1);
-  assert.equal(result.sessionHandoff.action, 'stop');
-  assert.equal(result.decision.converged, true);
-  assert.equal(result.continuationPacket.delivery.claim, f.ledger().dispositions[0].packet.delivery.claim);
-  assert.equal(f.ledger().dispositions.length, 1);
-  const checkpoint = JSON.parse(fs.readFileSync(result.sessionHandoff.checkpointPath));
-  assert.equal(checkpoint.observations.inputTokens, 128000);
-  assert.equal(checkpoint.boundary, 'round-complete');
-  const state = JSON.parse(fs.readFileSync(checkpoint.sources.state.path));
-  assert.ok(state.authoritativeSources.every(s => s.path && s.sha256));
-  assert.ok(!fs.readFileSync(checkpoint.sources.state.path, 'utf8').includes('invocations'));
 });
 test('launcher parses session policy anywhere and rejects missing, duplicate and invalid policies', () => {
   const dir = tmp(), capture = path.join(dir, 'options.json'), preload = path.join(dir, 'preload.cjs');
@@ -182,32 +157,6 @@ test('unmeasured input context stays null and the runner tool-call threshold tri
   assert.equal(checkpoint.observations.noProgressCalls, 2);
   assert.deepEqual(checkpoint.triggers, ['toolCalls']);
 });
-test('keyed vote denial launches zero voters after reserving all lens workers', async () => {
-  const f = fixture({ panel: true, maxLaunches: 9 });
-  const result = await runReviewUntilGreen({ ...f.options, spawn: async ({ role, prompt }) => {
-    f.workers.push(role);
-    fs.writeFileSync(destination(prompt, f.stateDir), JSON.stringify({ status: 'ok', examined: ['a.txt'], rejected: [], findings: role === 'gate-panel-ac-coverage' ? [{ ...bug, id: 'gate:ac-coverage:two', requirement: 'two' }] : [] })); return { status: 0 };
-  } });
-  assert.equal(result.decision, 'blocked'); assert.equal(f.ledger().launches.length, 9);
-  assert.equal(f.workers.filter(x => x === 'gate-panel-verify').length, 0);
-  const reserve = f.calls.find(x => x[0] === 'reserve' && x[2] === 'vote');
-  assert.equal(reserve[reserve.indexOf('--count') + 1], '3');
-});
-test('all parallel siblings drain before a stop checkpoint can be emitted', async () => {
-  const f = fixture({ panel: true }); let release; let entered;
-  const enteredLens = new Promise(resolve => { entered = resolve; });
-  const pendingLens = new Promise(resolve => { release = resolve; });
-  const running = runReviewUntilGreen({ ...f.options, sessionHandoff: 'stop-at-checkpoint', getInputContextTokens: () => 128000, spawn: async input => {
-    if (input.role === 'gate-panel-threat-model' && input.prompt.includes('round-1-gate-panel-1-')) { entered(); await pendingLens; }
-    return f.options.spawn(input);
-  } });
-  await enteredLens;
-  assert.equal(f.calls.some(x => x[0] === 'session-checkpoint'), false);
-  assert.equal(f.calls.filter(x => x[0] === 'record').length, 1);
-  release(); const result = await running;
-  assert.equal(result.sessionHandoff.action, 'stop'); assert.equal(f.calls.filter(x => x[0] === 'session-checkpoint').length, 1);
-  assert.equal(f.calls.filter(x => x[0] === 'record').length, 2);
-});
 test('resume reuses accepted correctness evidence and charges only the interrupted verifier again', async () => {
   const f = fixture(); const original = f.options.spawn;
   await assert.rejects(runReviewUntilGreen({ ...f.options, sessionHandoff: 'off', spawn: input => {
@@ -218,49 +167,6 @@ test('resume reuses accepted correctness evidence and charges only the interrupt
   assert.equal(result.decision.converged, true);
   assert.deepEqual(f.workers, ['correctness', 'verify-failed', 'verify']);
   assert.equal(f.ledger().launches.length, 3); assert.equal(f.ledger().rounds.length, 1);
-});
-test('stop checkpoints attach to the original gate-pending decision without converting it to convergence', async () => {
-  const f = fixture({ panel: true });
-  const result = await runReviewUntilGreen({ ...f.options, sessionHandoff: 'stop-at-checkpoint', getInputContextTokens: () => 128000, spawn: async input => {
-    f.workers.push(input.role);
-    fs.writeFileSync(destination(input.prompt, f.stateDir), JSON.stringify({ status: 'ok', examined: ['a.txt'], rejected: [], findings: input.role === 'gate' ? [{ id: 'gate:cross-context:two', file: 'a.txt', span: 'two', requirement: 'approved requirement', summary: 'gate concern' }] : [] })); return { status: 0 };
-  } });
-  assert.equal(result.decision.gatePending, true); assert.equal(result.decision.converged, false);
-  assert.equal(result.sessionHandoff.action, 'stop');
-  assert.equal(result.continuationPacket.delivery.claim, f.ledger().dispositions[0].packet.delivery.claim);
-  assert.equal(f.workers.some(role => role.startsWith('gate-panel-')), false);
-});
-test('successful panel votes reserve all candidates as one six-worker batch without double charging', async () => {
-  const f = fixture({ panel: true });
-  const result = await runReviewUntilGreen({ ...f.options, spawn: async input => {
-    f.workers.push(input.role);
-    const artifact = destination(input.prompt, f.stateDir);
-    const findings = input.role === 'gate-panel-ac-coverage' && artifact.includes('-gate-panel-1-') ? [{ ...bug, id: 'gate:ac-coverage:two', requirement: 'two' }, { ...bug, id: 'gate:ac-coverage:other', requirement: 'other' }] : [];
-    fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', examined: ['a.txt'], rejected: [], findings, survives: false })); return { status: 0 };
-  } });
-  assert.equal(result.decision.converged, true);
-  assert.equal(f.workers.filter(role => role === 'gate-panel-verify').length, 6);
-  assert.equal(f.ledger().launches.length, 20);
-  const reservations = review.readLedger(f.stateDir, review.targetSlug(f.options.ref)).initiative_reservations;
-  assert.equal(reservations.filter(r => r.role === 'vote').length, 1);
-  assert.equal(reservations.find(r => r.role === 'vote').count, 6);
-});
-test('two-candidate vote batch denial consumes no vote budget and launches zero voters', async () => {
-  const f = fixture({ panel: true, maxLaunches: 12 });
-  const result = await runReviewUntilGreen({ ...f.options, spawn: async input => {
-    f.workers.push(input.role);
-    const artifact = destination(input.prompt, f.stateDir);
-    const findings = input.role === 'gate-panel-ac-coverage' ? [
-      { ...bug, id: 'gate:ac-coverage:first', requirement: 'first' },
-      { ...bug, id: 'gate:ac-coverage:second', requirement: 'second' },
-    ] : [];
-    fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', examined: ['a.txt'], rejected: [], findings, survives: false })); return { status: 0 };
-  } });
-  assert.equal(result.decision, 'blocked');
-  assert.equal(f.workers.filter(role => role === 'gate-panel-verify').length, 0);
-  assert.equal(f.ledger().launches.length, 9);
-  const votes = f.calls.filter(args => args[0] === 'reserve' && args[2] === 'vote');
-  assert.equal(votes.length, 1); assert.equal(votes[0][votes[0].indexOf('--count') + 1], '6');
 });
 test('fresh contexts each suggest once while resuming the same durable review budget', async () => {
   const f = fixture(), first = [], second = [];

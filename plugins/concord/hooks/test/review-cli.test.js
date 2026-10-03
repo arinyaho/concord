@@ -1507,7 +1507,7 @@ test('review-and-fix owns provider routing without a separate Codex review skill
 });
 
 test('driver prose names carry for budget-exhausted recovery, never a run-key change', () => {
-  for (const rel of [['commands', 'review-until-green.md'], ['core', 'review-driver.md']]) {
+  for (const rel of [['commands', 'review-and-fix.md'], ['core', 'review-driver.md']]) {
     const md = fs.readFileSync(path.join(__dirname, '..', '..', ...rel), 'utf8');
     assert.match(md, /carry <ref> --from-run-key <old-key>/, rel.join('/'));
     assert.match(md, /never (?:increase budgets|change the run key yourself)/i, rel.join('/'));
