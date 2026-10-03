@@ -261,6 +261,22 @@ test('final DoD runs against committed files after discarding reviewer edits', (
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(repo, 'review.config.json'), 'utf8')), { dod: ['false'] });
 });
 
+test('final DoD cannot pass by modifying the reviewed tree', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['printf dod-mutated > a.txt'] }));
+  execFileSync('git', ['commit', '-aqm', 'mutable dod'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const started = JSON.parse(run(['round-start', 'feat/mutable-dod', 'HEAD~1'], { env }));
+  writeArtifact(dir, started.round, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, started.round, 'verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/mutable-dod'], { env });
+
+  assert.throws(() => run(['record', 'feat/mutable-dod'], { env }), /harness-failure.*final DoD modified/);
+  assert.strictEqual(fs.readFileSync(path.join(repo, 'a.txt'), 'utf8'), 'two\n');
+});
+
 test('round-start resume preserves normalized artifacts and records an artifact write failure for retry', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
@@ -3040,6 +3056,29 @@ test('rerun reuses a completed front pass and reviews only the changed diff', ()
   assert.strictEqual(JSON.parse(run(['record', ref], { env })).decision.converged, true);
 });
 
+test('same-head rerun reuses the front pass without discarding the original diff', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/same-head';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+
+  const n = JSON.parse(run(['round-start', ref, base], { env, broadDefault: true })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'gate', { status: 'ok', findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', ref], { env });
+  assert.strictEqual(JSON.parse(run(['record', ref], { env })).decision.converged, true);
+
+  run(['rerun', ref], { env });
+  const next = JSON.parse(run(['round-start', ref], { env, broadDefault: true }));
+  assert.strictEqual(next.gateApplied, false, 'the completed front pass remains reusable at the same head');
+  const reviewed = fs.readFileSync(path.join(dir, `round-${next.round}-diff.txt`), 'utf8');
+  assert.match(reviewed, /-one/);
+  assert.match(reviewed, /\+two/);
+});
+
 test('rerun carries unresolved broad findings on unchanged files', () => {
   const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/carry-broad';
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
@@ -3094,8 +3133,8 @@ test('rerun invalidates broad reuse when intent is newly configured', () => {
 
   const n = JSON.parse(run(['round-start', ref, base], { env, broadDefault: true })).round;
   writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
-  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
   writeArtifact(dir, n, 'gate', { status: 'ok', findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
   writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
   run(['plan-fixes', ref], { env });
   assert.strictEqual(JSON.parse(run(['record', ref], { env })).decision.converged, true);

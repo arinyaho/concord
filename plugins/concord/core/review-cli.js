@@ -1453,7 +1453,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       && broadReuse.base_sha === baseSha
       && gitIsReachable(repoRoot, broadReuse.head_sha);
     const retryDiffBase = !isFileTarget && ledger.retry_diff_base && gitIsReachable(repoRoot, ledger.retry_diff_base) ? ledger.retry_diff_base : null;
-    if (retryDiffBase || reuseFrontPass) diff = gitDiff(repoRoot, retryDiffBase || broadReuse.head_sha);
+    if (retryDiffBase || (reuseFrontPass && broadReuse.head_sha !== headSha)) diff = gitDiff(repoRoot, retryDiffBase || broadReuse.head_sha);
     const diffHash = contentHash(diff);
 
     let resumedCompletedArtifacts = [];
@@ -1820,6 +1820,10 @@ function runVerb(resolveFromCwd, args, initiative) {
       gitCheckoutTree(repoRoot);
       if (gitIsDirty(repoRoot)) throw new Error('harness-failure: review work left untracked files in the repository; final DoD was not run against an uncommitted worktree');
       const finalDod = runDod(repoRoot);
+      if (gitIsDirty(repoRoot)) {
+        gitCheckoutTree(repoRoot);
+        throw new Error('harness-failure: final DoD modified the repository; its result does not apply to committed HEAD');
+      }
       applied = { ...applied, dod: finalDod };
       if (!finalDod.deferred && !finalDod.passed) {
         decision = { continue: false, converged: false, parked: false, abandoned: false, dodFailed: true, reason: 'final DoD failed after review convergence; fix the failure, then review the changed diff before retrying DoD' };
