@@ -1333,7 +1333,8 @@ function runVerb(resolveFromCwd, args, initiative) {
     // A final DoD failure is re-runnable after the caller fixes it. Preserve the
     // completed broad pass: the next round reviews only the changed diff, then
     // attempts the final DoD again if review converges.
-    if (ledger.status === 'dod-failed') {
+    const retryingDod = ledger.status === 'dod-failed';
+    if (retryingDod) {
       ledger = { ...ledger, status: 'converging', diff_content_hash: null };
     }
 
@@ -1378,6 +1379,9 @@ function runVerb(resolveFromCwd, args, initiative) {
     // For file targets base is irrelevant; this line is harmless (undefined).
     const base = positional[0] || (ledger.target && ledger.target.base);
     const baseSha = !isFileTarget && base ? sh('git', ['rev-parse', base], { cwd: repoRoot }).trim() : null;
+    if (retryingDod && ledger.target?.base_sha !== baseSha) {
+      ledger = { ...ledger, retry_diff_base: null, broad_reuse: null, gate_open: [], gate_rounds: [], gate_reviewed_head_sha: null };
+    }
 
     // Warn if `base` is a local branch behind its upstream. Diffing against a stale
     // local base sweeps in everything merged upstream since the branch point -> a
@@ -1452,7 +1456,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     const reuseFrontPass = !!broadReuse && !broadFlagPassed && !noBroadFlagPassed && !isFileTarget && !intentCfg && !broadReuse.intentHash
       && broadReuse.base_sha === baseSha
       && gitIsReachable(repoRoot, broadReuse.head_sha);
-    const retryDiffBase = !isFileTarget && ledger.retry_diff_base && gitIsReachable(repoRoot, ledger.retry_diff_base) ? ledger.retry_diff_base : null;
+    const retryDiffBase = !isFileTarget && ledger.target?.base_sha === baseSha && ledger.retry_diff_base && gitIsReachable(repoRoot, ledger.retry_diff_base) ? ledger.retry_diff_base : null;
     if (retryDiffBase || (reuseFrontPass && broadReuse.head_sha !== headSha)) diff = gitDiff(repoRoot, retryDiffBase || broadReuse.head_sha);
     const diffHash = contentHash(diff);
 
@@ -1637,6 +1641,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       gateApplied,
       gateMode: lite ? 'design-conformance' : 'pair',
       gate_rounds: gateApplied && !gateRounds.includes(ledger.round) ? [...gateRounds, ledger.round] : gateRounds,
+      gate_reviewed_head_sha: gateApplied && isGit ? headSha : ledger.gate_reviewed_head_sha,
       dodDeferred,
       reviewRouting,
       execution: {
@@ -2205,8 +2210,8 @@ function runVerb(resolveFromCwd, args, initiative) {
       run_budget: { max_runs: maxRuns },
       engine,
       gate_dismissed: prior.gate_dismissed || [],
-      ...(completedFrontPass && !prior.intentHash && prior.target?.base_sha && prior.target?.head_sha ? {
-        broad_reuse: { run: runs.length, base_sha: prior.target.base_sha, head_sha: prior.target.head_sha, intentHash: null, gate_open: prior.gate_open || [] },
+      ...(completedFrontPass && !prior.intentHash && prior.target?.base_sha && prior.gate_reviewed_head_sha ? {
+        broad_reuse: { run: runs.length, base_sha: prior.target.base_sha, head_sha: prior.gate_reviewed_head_sha, intentHash: null, gate_open: prior.gate_open || [] },
       } : {}),
       ...(prior.initiative_binding || initiative ? { initiative_binding: prior.initiative_binding || { key: initiative.key, stateDir: canonicalPath(initiative.stateDir) } } : {}),
     };

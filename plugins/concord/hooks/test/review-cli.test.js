@@ -306,6 +306,35 @@ test('final DoD ignores its untracked state directory inside the repository', ()
   assert.strictEqual(JSON.parse(run(['record', 'feat/in-repo-state'], { env })).decision.converged, true);
 });
 
+test('DoD retry invalidates its delta and broad evidence when the base moves', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/dod-base-drift';
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['false'] }));
+  execFileSync('git', ['commit', '-aqm', 'failing dod'], { cwd: repo });
+  execFileSync('git', ['branch', 'review-base'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'base.txt'), 'base-two\n');
+  execFileSync('git', ['add', 'base.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'advance base'], { cwd: repo });
+  const advancedBase = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+
+  const first = JSON.parse(run(['round-start', ref, 'review-base'], { env, broadDefault: true }));
+  writeArtifact(dir, first.round, 'correctness', { status: 'ok', examined: ['a.txt', 'base.txt'], findings: [] });
+  writeArtifact(dir, first.round, 'gate', { status: 'ok', findings: [] });
+  writeArtifact(dir, first.round, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, first.round, 'gate-verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', ref], { env });
+  assert.strictEqual(JSON.parse(run(['record', ref], { env })).decision.dodFailed, true);
+
+  execFileSync('git', ['branch', '-f', 'review-base', advancedBase], { cwd: repo });
+  const retried = JSON.parse(run(['round-start', ref], { env, broadDefault: true }));
+  assert.strictEqual(retried.gateApplied, true, 'base drift must re-arm broad review');
+  const reviewed = fs.readFileSync(path.join(dir, `round-${retried.round}-diff.txt`), 'utf8');
+  assert.match(reviewed, /-one/);
+  assert.match(reviewed, /\+two/);
+});
+
 test('round-start resume preserves normalized artifacts and records an artifact write failure for retry', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
@@ -3104,6 +3133,40 @@ test('same-head rerun reuses the front pass without discarding the original diff
   const reviewed = fs.readFileSync(path.join(dir, `round-${next.round}-diff.txt`), 'utf8');
   assert.match(reviewed, /-one/);
   assert.match(reviewed, /\+two/);
+});
+
+test('rerun scopes reused broad evidence from the head the broad pass inspected', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/broad-fix-head';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+
+  const first = JSON.parse(run(['round-start', ref, base], { env, broadDefault: true }));
+  writeArtifact(dir, first.round, 'correctness', { status: 'findings', examined: ['a.txt'], findings: [
+    { id: 'correctness:fix-after-broad', file: 'a.txt', span: 'two', summary: 'fix after broad review' },
+  ] });
+  writeArtifact(dir, first.round, 'gate', { status: 'ok', findings: [] });
+  writeArtifact(dir, first.round, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, first.round, 'gate-verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', ref], { env });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two-fixed\n');
+  writeArtifact(dir, first.round, 'fix-correctness:fix-after-broad', { status: 'ok', edited: true, files: ['a.txt'] });
+  assert.strictEqual(JSON.parse(run(['commit-fix', ref, 'correctness:fix-after-broad'], { env })).committed, true);
+  assert.strictEqual(JSON.parse(run(['record', ref], { env })).decision.continue, true);
+
+  const confirmation = JSON.parse(run(['round-start', ref], { env, broadDefault: true }));
+  writeArtifact(dir, confirmation.round, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, confirmation.round, 'verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', ref], { env });
+  assert.strictEqual(JSON.parse(run(['record', ref], { env })).decision.converged, true);
+
+  run(['rerun', ref], { env });
+  const rerun = JSON.parse(run(['round-start', ref], { env, broadDefault: true }));
+  assert.strictEqual(rerun.gateApplied, false, 'the completed broad pass remains reusable');
+  const reviewed = fs.readFileSync(path.join(dir, `round-${rerun.round}-diff.txt`), 'utf8');
+  assert.match(reviewed, /-two/);
+  assert.match(reviewed, /\+two-fixed/);
 });
 
 test('rerun carries unresolved broad findings on unchanged files', () => {
