@@ -80,12 +80,30 @@ function markerPath({ stateDir, pr, headSha }, kind) {
 function requestBudget({ stateDir, pr }) {
   let names;
   try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') names = []; else throw error; }
-  const spent = names.filter((name) => name.startsWith(`pr-${Number(pr)}.request-slot-`) && name.endsWith('.json')).length;
+  const keyPrefix = `pr-${Number(pr)}`;
+  const requests = new Set();
+  for (const name of names) {
+    if (name.startsWith(`${keyPrefix}.request-slot-`) && name.endsWith('.json')) {
+      const marker = readMarker(path.join(stateDir, name));
+      requests.add(marker && FULL_SHA.test(marker.headSha) && ['initial', 'retry'].includes(marker.kind) ? `${marker.headSha.toLowerCase()}:${marker.kind}` : `slot:${name}`);
+      continue;
+    }
+    const match = name.match(new RegExp(`^${keyPrefix}-([0-9a-f]{40}|[0-9a-f]{64})\\.(initial|retry)-request\\.json$`, 'i'));
+    if (match) requests.add(`${match[1].toLowerCase()}:${match[2].toLowerCase()}`);
+  }
+  const spent = requests.size;
   return { max: MAX_REQUESTS_PER_PR, spent, remaining: Math.max(0, MAX_REQUESTS_PER_PR - spent) };
 }
 
 function reserveRequestSlot({ stateDir, pr, headSha }, kind, now) {
-  for (let slot = 1; slot <= MAX_REQUESTS_PER_PR; slot += 1) {
+  let names;
+  try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') names = []; else throw error; }
+  const slotIdentities = new Set(names.filter((name) => name.startsWith(`pr-${pr}.request-slot-`) && name.endsWith('.json')).map((name) => {
+    const marker = readMarker(path.join(stateDir, name));
+    return marker && FULL_SHA.test(marker.headSha) && ['initial', 'retry'].includes(marker.kind) ? `${marker.headSha.toLowerCase()}:${marker.kind}` : `slot:${name}`;
+  }));
+  const legacyOnly = requestBudget({ stateDir, pr }).spent - slotIdentities.size;
+  for (let slot = 1; slot <= MAX_REQUESTS_PER_PR - legacyOnly; slot += 1) {
     const file = path.join(stateDir, `pr-${pr}.request-slot-${slot}.json`);
     if (writeExclusive(file, { pr, headSha, kind, claimedAtMs: now })) return slot;
   }
@@ -103,6 +121,16 @@ function reserveFixRound({ stateDir, pr, headSha }, now) {
   for (let round = 1; round <= MAX_FIX_ROUNDS_PER_PR; round += 1) {
     const file = path.join(stateDir, `pr-${pr}.fix-round-slot-${round}.json`);
     if (writeExclusive(file, { pr, headSha, claimedAtMs: now })) return round;
+  }
+  return null;
+}
+
+function fixRoundForHead({ stateDir, pr, headSha }) {
+  let names;
+  try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  for (const name of names.filter((name) => name.startsWith(`pr-${pr}.fix-round-slot-`) && name.endsWith('.json'))) {
+    const marker = readMarker(path.join(stateDir, name));
+    if (marker && marker.pr === pr && marker.headSha === headSha) return marker;
   }
   return null;
 }
@@ -205,7 +233,21 @@ function claimFixRound(input) {
   const { stateDir, now = Date.now() } = input;
   const key = validate(input);
   if (reviewRecords({ stateDir, ...key }).length === 0) return { claimed: false, reason: 'no-findings' };
-  if (!writeExclusive(markerPath({ stateDir, ...key }, 'fix-round-claim'), { ...key, claimedAtMs: now })) return { claimed: false, reason: 'already-claimed', budget: fixBudget({ stateDir, pr: key.pr }) };
+  if (fixRoundForHead({ stateDir, ...key })) return { claimed: false, reason: 'already-claimed', budget: fixBudget({ stateDir, pr: key.pr }) };
+  const claimFile = markerPath({ stateDir, ...key }, 'fix-round-claim');
+  const claimed = writeExclusive(claimFile, { ...key, claimedAtMs: now });
+  if (!claimed) {
+    const claim = readMarker(claimFile);
+    const recovery = latestRecoveryClaim({ stateDir, ...key }, 'fix-round');
+    const claimedAtMs = Math.max(...[claim, recovery].map((marker) => marker && marker.claimedAtMs).filter(Number.isSafeInteger));
+    if (!Number.isSafeInteger(claimedAtMs)) throw new Error('review-lgtm-state: fix-round claim has no valid timestamp');
+    const eligibleAtMs = claimedAtMs + INITIAL_CLAIM_LEASE_MS;
+    if (now < eligibleAtMs) return { claimed: false, reason: 'claim-in-progress', eligibleAtMs };
+    if (!writeExclusive(markerPath({ stateDir, ...key }, `fix-round-recovery-claim-${eligibleAtMs}`), { ...key, claimedAtMs: now })) {
+      const activeRecovery = latestRecoveryClaim({ stateDir, ...key }, 'fix-round');
+      return { claimed: false, reason: 'claim-in-progress', eligibleAtMs: activeRecovery.claimedAtMs + INITIAL_CLAIM_LEASE_MS };
+    }
+  }
   const round = reserveFixRound({ stateDir, ...key }, now);
   if (!round) return { claimed: false, reason: 'fix-round-budget-exhausted', budget: fixBudget({ stateDir, pr: key.pr }) };
   return { claimed: true, round, budget: fixBudget({ stateDir, pr: key.pr }) };
@@ -242,7 +284,7 @@ function recoverRequest(input, kind) {
   if (reviewRecords({ stateDir, ...key }).length > 0) return { claimed: false, reason: 'needs-reconciliation' };
   const claim = readMarker(markerPath({ stateDir, ...key }, `${kind}-claim`));
   const recovery = latestRecoveryClaim({ stateDir, ...key }, kind);
-  const claimedAtMs = Math.max(claim && claim.claimedAtMs, recovery && recovery.claimedAtMs);
+  const claimedAtMs = Math.max(...[claim, recovery].map((marker) => marker && marker.claimedAtMs).filter(Number.isSafeInteger));
   if (!Number.isSafeInteger(claimedAtMs) || now < claimedAtMs + INITIAL_CLAIM_LEASE_MS) return false;
   if (readMarker(markerPath({ stateDir, ...key }, `${kind}-request`))) return false;
   const slot = (() => {

@@ -68,6 +68,23 @@ test('manual review requests share a cumulative three-request budget across PR h
   }
 });
 
+test('legacy sent-request markers count toward the PR-wide request budget without double-counting slots', () => {
+  const stateDir = temp();
+  const heads = ['1', '2', '3', '4'].map((digit) => digit.repeat(40));
+  lgtmState.markInitialRequested({ stateDir, pr: 159, headSha: heads[0] });
+  lgtmState.claimInitialRequest({ stateDir, pr: 159, headSha: heads[0], now: 1000 });
+  assert.strictEqual(lgtmState.claimInitialRequest({ stateDir, pr: 159, headSha: heads[0], now: 121000 }), true);
+  lgtmState.markInitialRequested({ stateDir, pr: 159, headSha: heads[1] });
+  fs.writeFileSync(lgtmState.markerPath({ stateDir, pr: 159, headSha: heads[2] }, 'retry-request'), `${JSON.stringify({ pr: 159, headSha: heads[2], kind: 'retry', requested: true })}\n`);
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: 159, headSha: heads[3] }).requestBudget, { max: 3, spent: 3, remaining: 0 });
+  lgtmState.claimInitialRequest({ stateDir, pr: 159, headSha: heads[3], now: 1000 });
+  assert.deepStrictEqual(lgtmState.claimInitialRequest({ stateDir, pr: 159, headSha: heads[3], now: 121000 }), {
+    claimed: false,
+    reason: 'request-budget-exhausted',
+    budget: { max: 3, spent: 3, remaining: 0 },
+  });
+});
+
 test('review requests distinguish a durable claim from a request that was sent', () => {
   const stateDir = temp();
   const input = { stateDir, pr: 116, headSha: '0123456789abcdef0123456789abcdef01234567' };
@@ -88,6 +105,12 @@ test('an initial request recovery claim waits for the original claimant lease', 
   assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: claimedAtMs + lgtmState.INITIAL_CLAIM_LEASE_MS }), true);
   assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: claimedAtMs + lgtmState.INITIAL_CLAIM_LEASE_MS }), false);
   assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: claimedAtMs + 2 * lgtmState.INITIAL_CLAIM_LEASE_MS }), true);
+});
+
+test('an initial request cannot be recovered without an original claim', () => {
+  const input = { stateDir: temp(), pr: 116, headSha: '0123456789abcdef0123456789abcdef01234567' };
+  assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: Date.now() }), false);
+  assert.deepStrictEqual(lgtmState.status(input).requestBudget, { max: 3, spent: 0, remaining: 3 });
 });
 
 test('default state directory is shared by linked worktrees and resolves Git outside the checkout', () => {
@@ -131,6 +154,23 @@ function summaryFinding({ priority = 'P2', signals = [], reviewId = '5332811440'
 function observation({ reviewId = '5332811440', reviewer = 'chatgpt-codex-connector[bot]', commitId = HEAD_A, state = 'completed', lgtm = false, findings = [inlineFinding()] } = {}) {
   return { reviewId, reviewer, reviewUrl: `https://github.com/arinyaho/concord/pull/122#pullrequestreview-${reviewId}`, commitId, state, lgtm, findings };
 }
+
+test('an abandoned fix-round claim becomes recoverable after its lease', () => {
+  const stateDir = temp();
+  const input = { stateDir, pr: PR_122, headSha: HEAD_A };
+  lgtmState.recordReview({ ...input, now: 500, observation: observation() });
+  fs.writeFileSync(lgtmState.markerPath(input, 'fix-round-claim'), `${JSON.stringify({ pr: PR_122, headSha: HEAD_A, claimedAtMs: 1000 })}\n`);
+  assert.deepStrictEqual(lgtmState.claimFixRound({ ...input, now: 2000 }), {
+    claimed: false,
+    reason: 'claim-in-progress',
+    eligibleAtMs: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS,
+  });
+  assert.deepStrictEqual(lgtmState.claimFixRound({ ...input, now: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS }), {
+    claimed: true,
+    round: 1,
+    budget: { max: 3, spent: 1, remaining: 2 },
+  });
+});
 
 test('review records preserve provider identity in one head batch', () => {
   const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
@@ -442,6 +482,7 @@ test('Claude, Codex, and Copilot review-until-lgtm skills pin bounded batch fixe
     assert.match(skill, /one implementation plan for all accepted in-scope findings/);
     assert.match(skill, /three fix-and-push rounds are a PR-wide hard cap, not a quality guarantee/);
     assert.match(skill, /one commit and one push/);
+    assert.match(skill, /`initialRequested` is true but `deadlineMs` is absent.*open-window/is);
     assert.match(skill, /propose a single follow-up issue/);
     assert.match(skill, /do not create it without user authorization/);
     assert.match(skill, /Never request a second full review on the same head solely to obtain a missing reaction/);
