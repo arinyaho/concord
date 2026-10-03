@@ -887,13 +887,10 @@ function main(resolveFromCwd) {
       if (prior.initiative_binding.key !== fromRunKey || prior.initiative_binding.stateDir !== canonicalPath(initiative.stateDir)) {
         throw new Error('review-cli carry: the target is not bound to --from-run-key under this initiative state directory');
       }
-      // Also refused HERE, before the rerun_cleanup block below can open the
-      // new key's run (and so create its ledger) on its way to a mode
-      // mismatch that carryBudgetBlockedTarget would otherwise report only
-      // after the new key's ledger already exists.
-      let oldLedgerForMode;
-      try { oldLedgerForMode = JSON.parse(fs.readFileSync(runPath(canonicalPath(initiative.stateDir), fromRunKey), 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-      if (oldLedgerForMode && (initiative.mode || 'base') !== oldLedgerForMode.mode) throw new Error('review-cli carry: the new run mode differs from the old run; carry never changes mode');
+      // A pending rerun cleanup means the target was rerun, so its fresh ledger
+      // holds no budget-exhausted marker and carry cannot succeed. Refuse before
+      // the cleanup below deletes evidence or any destination run is touched.
+      if (prior.rerun_cleanup) throw new Error('review-cli carry: the target has an interrupted rerun pending cleanup; complete it with the original run flags first, there is no blocked round to carry');
     }
     if (args[0] === 'reset' && initiative) throw new Error('review-cli reset: cannot discard an initiative target; use rerun with the same initiative run flags to retain history and spent budget');
     if (prior?.rerun_cleanup) {
@@ -902,10 +899,7 @@ function main(resolveFromCwd) {
       if (!CLI_VERBS.includes(args[0])) throw unknownVerb(args[0]);
       if (args[0] === 'reserve') reserveOptions(args.slice(2));
       if (args[0] === 'rerun') rerunOptions(args.slice(2));
-      // Skip for carry: opening the new key's run here (before carry's own
-      // mode and readiness checks run) would create that key's ledger as a
-      // side effect of a call that may still be refused.
-      const run = initiative && args[0] !== 'carry' && openKeyedRun(initiative);
+      const run = initiative && openKeyedRun(initiative);
       if (args[0] === 'round-start') requireRoundStartMode(run, args.slice(2));
     }
     finishRerunCleanup(stateDir, slug, prior);
