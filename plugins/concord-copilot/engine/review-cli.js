@@ -2145,6 +2145,8 @@ function runVerb(resolveFromCwd, args, initiative) {
       throw new Error(`review-cli rerun: cumulative run budget exhausted (${completedAndActiveRuns}/${maxRuns} full runs); ledger and evidence are unchanged. Inspect show ${ref}, preserve unresolved findings, and split scope or reconcile the remaining verification before any additional independent review`);
     }
     const archive = archiveReviewRun(stateDir, slug, prior);
+    const recordedRounds = new Set((prior.history || []).map((entry) => entry.round));
+    const completedFrontPass = (prior.gate_rounds || []).some((round) => recordedRounds.has(round));
     const runs = (prior.runs || []).concat([{
       run: (prior.runs || []).length + 1,
       engine: prior.engine || null,
@@ -2164,7 +2166,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       run_budget: { max_runs: maxRuns },
       engine,
       gate_dismissed: prior.gate_dismissed || [],
-      ...((prior.gate_rounds || []).length && !prior.intentHash && prior.target?.base_sha && prior.target?.head_sha ? {
+      ...(completedFrontPass && !prior.intentHash && prior.target?.base_sha && prior.target?.head_sha ? {
         broad_reuse: { run: runs.length, base_sha: prior.target.base_sha, head_sha: prior.target.head_sha, intentHash: null },
       } : {}),
       ...(prior.initiative_binding || initiative ? { initiative_binding: prior.initiative_binding || { key: initiative.key, stateDir: canonicalPath(initiative.stateDir) } } : {}),

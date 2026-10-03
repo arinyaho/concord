@@ -2925,6 +2925,21 @@ test('rerun reuses a completed front pass and reviews only the changed diff', ()
   assert.strictEqual(JSON.parse(run(['record', ref], { env })).decision.converged, true);
 });
 
+test('rerun does not reuse an interrupted front pass', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/interrupted-broad';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+
+  const started = JSON.parse(run(['round-start', ref, base], { env, broadDefault: true }));
+  assert.strictEqual(started.gateApplied, true);
+  run(['rerun', ref], { env });
+
+  const restarted = JSON.parse(run(['round-start', ref], { env, broadDefault: true }));
+  assert.strictEqual(restarted.gateApplied, true, 'a gate launch without a recorded round is not reusable evidence');
+});
+
 test('rerun invalidates broad reuse when intent is newly configured', () => {
   const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/new-intent';
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };

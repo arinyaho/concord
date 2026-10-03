@@ -102,3 +102,21 @@ test('every review driver artifact embeds the lite design-conformance gate promp
     assert.ok(text.includes(shared), `${name} lite gate prompt has drifted from round-plan.js`);
   }
 });
+
+test('lite correctness verification does not depend on the concurrently running design-conformance gate', () => {
+  const lite = reviewerPrompt('verify', {
+    stateDir: '/state', round: 1, targetType: 'git', gateMode: 'design-conformance', gateApplied: true,
+  });
+  const base = reviewerPrompt('verify', {
+    stateDir: '/state', round: 1, targetType: 'git', gateMode: 'pair', gateApplied: true,
+  });
+
+  assert.doesNotMatch(lite, /round-1-gate\.json/);
+  assert.match(base, /round-1-gate\.json/);
+});
+
+test('the composed Claude command preserves pending final DoD semantics', () => {
+  assert.match(composedCommandText, /`dodPending:true` means the configured DoD is reserved for the final clean boundary/);
+  assert.match(composedCommandText, /If `round-start` reported `dodPending:true`, tell it the configured DoD will run once after review convergence/);
+  assert.doesNotMatch(composedCommandText, /If `dodPassed` is `false`, tell it DoD failed this round/);
+});
