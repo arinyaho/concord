@@ -85,6 +85,31 @@ test('legacy sent-request markers count toward the PR-wide request budget withou
   });
 });
 
+test('a legacy orphan request claim conservatively consumes one request attempt', () => {
+  const input = { stateDir: temp(), pr: 159, headSha: '1'.repeat(40) };
+  fs.writeFileSync(lgtmState.markerPath(input, 'initial-claim'), `${JSON.stringify({ pr: 159, headSha: input.headSha, kind: 'initial', claimedAtMs: 1000 })}\n`);
+  assert.deepStrictEqual(lgtmState.status(input).requestBudget, { max: 3, spent: 1, remaining: 2 });
+  assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS }), true);
+  assert.deepStrictEqual(lgtmState.status(input).requestBudget, { max: 3, spent: 2, remaining: 1 });
+  assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, now: 1000 + 2 * lgtmState.INITIAL_CLAIM_LEASE_MS }), true);
+  assert.deepStrictEqual(lgtmState.status(input).requestBudget, { max: 3, spent: 3, remaining: 0 });
+  assert.deepStrictEqual(lgtmState.recoverInitialRequest({ ...input, now: 1000 + 3 * lgtmState.INITIAL_CLAIM_LEASE_MS }), {
+    claimed: false,
+    reason: 'request-budget-exhausted',
+    budget: { max: 3, spent: 3, remaining: 0 },
+  });
+});
+
+test('manual request claims are independent per provider on one head', () => {
+  const input = { stateDir: temp(), pr: 159, headSha: '1'.repeat(40) };
+  assert.strictEqual(lgtmState.claimInitialRequest({ ...input, provider: 'codex', now: 1000 }).claimed, false);
+  assert.strictEqual(lgtmState.claimInitialRequest({ ...input, provider: 'codex', now: 121000 }), true);
+  assert.strictEqual(lgtmState.markInitialRequested({ ...input, provider: 'codex' }), true);
+  assert.strictEqual(lgtmState.claimInitialRequest({ ...input, provider: 'copilot', now: 121001 }), true);
+  assert.strictEqual(lgtmState.markInitialRequested({ ...input, provider: 'copilot' }), true);
+  assert.deepStrictEqual(lgtmState.status(input).requestBudget, { max: 3, spent: 2, remaining: 1 });
+});
+
 test('request-budget exhaustion remains visible after the failed claim is resumed', () => {
   const stateDir = temp();
   const heads = ['1', '2', '3', '4'].map((digit) => digit.repeat(40));
@@ -194,13 +219,14 @@ test('an abandoned fix-round claim becomes recoverable after its lease', () => {
   const input = { stateDir, pr: PR_122, headSha: HEAD_A };
   lgtmState.recordReview({ ...input, now: 500, observation: observation() });
   fs.writeFileSync(lgtmState.markerPath(input, 'fix-round-claim'), `${JSON.stringify({ pr: PR_122, headSha: HEAD_A, claimedAtMs: 1000 })}\n`);
-  assert.deepStrictEqual(lgtmState.claimFixRound({ ...input, now: 2000 }), {
+  assert.deepStrictEqual(lgtmState.claimFixRound({ ...input, now: 900000 }), {
     claimed: false,
     reason: 'claim-in-progress',
     eligibleAtMs: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS,
   });
-  assert.deepStrictEqual(lgtmState.claimFixRound({ ...input, now: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS }), {
+  assert.deepStrictEqual(lgtmState.claimFixRound({ ...input, now: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS, owner: 'worker-a' }), {
     claimed: true,
+    owner: 'worker-a',
     round: 1,
     budget: { max: 3, spent: 1, remaining: 2 },
   });
@@ -210,19 +236,25 @@ test('a reserved fix-round slot becomes resumable after its lease', () => {
   const stateDir = temp();
   const input = { stateDir, pr: PR_122, headSha: HEAD_A };
   lgtmState.recordReview({ ...input, now: 500, observation: observation() });
-  assert.deepStrictEqual(lgtmState.claimFixRound({ ...input, now: 1000 }), {
+  assert.deepStrictEqual(lgtmState.claimFixRound({ ...input, now: 1000, owner: 'worker-a' }), {
     claimed: true,
+    owner: 'worker-a',
     round: 1,
     budget: { max: 3, spent: 1, remaining: 2 },
+  });
+  assert.deepStrictEqual(lgtmState.renewFixRound({ ...input, now: 800000, owner: 'worker-a' }), {
+    renewed: true,
+    eligibleAtMs: 800000 + lgtmState.INITIAL_CLAIM_LEASE_MS,
   });
   assert.deepStrictEqual(lgtmState.claimFixRound({ ...input, now: 2000 }), {
     claimed: false,
     reason: 'claim-in-progress',
-    eligibleAtMs: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS,
+    eligibleAtMs: 800000 + lgtmState.INITIAL_CLAIM_LEASE_MS,
   });
-  assert.deepStrictEqual(lgtmState.claimFixRound({ ...input, now: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS }), {
+  assert.deepStrictEqual(lgtmState.claimFixRound({ ...input, now: 800000 + lgtmState.INITIAL_CLAIM_LEASE_MS, owner: 'worker-b' }), {
     claimed: true,
     resumed: true,
+    owner: 'worker-b',
     round: 1,
     budget: { max: 3, spent: 1, remaining: 2 },
   });
@@ -249,9 +281,24 @@ test('batch fixes share a cumulative three-round budget across PR heads', () => 
   const heads = ['1', '2', '3', '4'].map((digit) => digit.repeat(40));
   for (const [index, headSha] of heads.entries()) {
     lgtmState.recordReview({ stateDir, pr: 159, headSha, now: 1000 + index, observation: observation({ reviewId: String(index + 1), commitId: headSha }) });
-    const result = lgtmState.claimFixRound({ stateDir, pr: 159, headSha, now: 2000 + index });
-    if (index < 3) assert.deepStrictEqual(result, { claimed: true, round: index + 1, budget: { max: 3, spent: index + 1, remaining: 2 - index } });
+    const result = lgtmState.claimFixRound({ stateDir, pr: 159, headSha, now: 2000 + index, owner: `worker-${index}` });
+    if (index < 3) assert.deepStrictEqual(result, { claimed: true, owner: `worker-${index}`, round: index + 1, budget: { max: 3, spent: index + 1, remaining: 2 - index } });
     else assert.deepStrictEqual(result, { claimed: false, reason: 'fix-round-budget-exhausted', budget: { max: 3, spent: 3, remaining: 0 } });
+  }
+});
+
+test('fix-budget exhaustion remains terminal after session replacement', () => {
+  const stateDir = temp();
+  const heads = ['1', '2', '3', '4'].map((digit) => digit.repeat(40));
+  for (const [index, headSha] of heads.entries()) {
+    lgtmState.recordReview({ stateDir, pr: 159, headSha, now: 1000 + index, observation: observation({ reviewId: String(index + 1), commitId: headSha }) });
+    const result = lgtmState.claimFixRound({ stateDir, pr: 159, headSha, now: 2000 + index, owner: `worker-${index}` });
+    if (index === 3) {
+      assert.deepStrictEqual(result, { claimed: false, reason: 'fix-round-budget-exhausted', budget: { max: 3, spent: 3, remaining: 0 } });
+      assert.deepStrictEqual(lgtmState.claimFixRound({ stateDir, pr: 159, headSha, now: 3000 + index, owner: `replacement-${index}` }), result);
+      assert.deepStrictEqual(lgtmState.status({ stateDir, pr: 159, headSha }).reconciliation.action, 'human-reconciliation');
+      assert.strictEqual(lgtmState.status({ stateDir, pr: 159, headSha }).reconciliation.humanRequired, true);
+    }
   }
 });
 
@@ -481,8 +528,9 @@ test('status.reconciliation is null when unmarked and a full packet once marked'
     p2Count: 0,
     signals: ['lifecycle'],
     classification: 'requires-architecture-review',
-    choices: ['resume', 'revise', 'split', 'defer'],
-    requires: 'human decision or new head',
+    action: 'verify-and-fix',
+    humanRequired: false,
+    requires: 'verify the batch and claim a fix round',
   });
 });
 
@@ -546,6 +594,8 @@ test('Claude, Codex, and Copilot review-until-lgtm skills pin bounded batch fixe
     assert.match(skill, /one commit and one push/);
     assert.match(skill, /`initialRequested` is true but `deadlineMs` is absent.*open-window/is);
     assert.match(skill, /APPROVED.*COMMENTED.*CHANGES_REQUESTED.*DISMISSED.*`completed`/is);
+    assert.match(skill, /provider-id/);
+    assert.match(skill, /renew-fix-round.*every 10 minutes.*before.*push/is);
     assert.match(skill, /propose a single follow-up issue/);
     assert.match(skill, /do not create it without user authorization/);
     assert.match(skill, /Never request a second full review on the same head solely to obtain a missing reaction/);
