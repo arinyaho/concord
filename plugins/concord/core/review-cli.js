@@ -1818,9 +1818,11 @@ function runVerb(resolveFromCwd, args, initiative) {
     }
     if (isGit && decision.converged && !ledger.dodDeferred) {
       gitCheckoutTree(repoRoot);
-      if (gitIsDirty(repoRoot)) throw new Error('harness-failure: review work left untracked files in the repository; final DoD was not run against an uncommitted worktree');
+      if (gitIsDirty(repoRoot, stateDir)) throw new Error('harness-failure: review work left untracked files in the repository; final DoD was not run against an uncommitted worktree');
+      const finalDodHead = gitHeadSha(repoRoot);
       const finalDod = runDod(repoRoot);
-      if (gitIsDirty(repoRoot)) {
+      if (gitHeadSha(repoRoot) !== finalDodHead) throw new Error('harness-failure: final DoD moved HEAD; its result does not apply to the reviewed revision');
+      if (gitIsDirty(repoRoot, stateDir)) {
         gitCheckoutTree(repoRoot);
         throw new Error('harness-failure: final DoD modified the repository; its result does not apply to committed HEAD');
       }

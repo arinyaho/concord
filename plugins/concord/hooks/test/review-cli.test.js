@@ -277,6 +277,35 @@ test('final DoD cannot pass by modifying the reviewed tree', () => {
   assert.strictEqual(fs.readFileSync(path.join(repo, 'a.txt'), 'utf8'), 'two\n');
 });
 
+test('final DoD cannot pass by moving HEAD', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['printf dod-commit > a.txt && git add a.txt && git commit -qm dod-mutation'] }));
+  execFileSync('git', ['commit', '-aqm', 'committing dod'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const started = JSON.parse(run(['round-start', 'feat/head-moving-dod', 'HEAD~1'], { env }));
+  writeArtifact(dir, started.round, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, started.round, 'verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/head-moving-dod'], { env });
+
+  assert.throws(() => run(['record', 'feat/head-moving-dod'], { env }), /harness-failure.*final DoD moved HEAD/);
+});
+
+test('final DoD ignores its untracked state directory inside the repository', () => {
+  const repo = initRepo(); const dir = path.join(repo, '.review-state');
+  fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const started = JSON.parse(run(['round-start', 'feat/in-repo-state', 'HEAD~1'], { env }));
+  writeArtifact(dir, started.round, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, started.round, 'verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/in-repo-state'], { env });
+
+  assert.strictEqual(JSON.parse(run(['record', 'feat/in-repo-state'], { env })).decision.converged, true);
+});
+
 test('round-start resume preserves normalized artifacts and records an artifact write failure for retry', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
