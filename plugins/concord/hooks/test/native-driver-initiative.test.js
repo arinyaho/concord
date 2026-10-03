@@ -804,6 +804,7 @@ for (const provider of Object.keys(PROVIDERS)) {
         },
         toFlags: (t) => carryFlags(t, 'key-2', { maxLaunches: 1 }),
         pattern: /new run refuses this pair \(budget-exhausted\)/,
+        preCreatesNewRun: true,
       },
       {
         name: 'unbound target',
@@ -825,10 +826,19 @@ for (const provider of Object.keys(PROVIDERS)) {
     ];
     for (const scenario of scenarios) {
       const t = scenario.build();
-      const toFlags = scenario.toFlags ? scenario.toFlags(t) : carryFlags(t, scenario.toKey || 'key-2');
-      const result = carry(t, scenario.fromKey || 'key-1', toFlags);
+      const toKey = scenario.toKey || 'key-2';
+      const fromKey = scenario.fromKey || 'key-1';
+      const toFlags = scenario.toFlags ? scenario.toFlags(t) : carryFlags(t, toKey);
+      const result = carry(t, fromKey, toFlags);
       assert.notStrictEqual(result.status, 0, `${scenario.name}: carry should have been refused`);
       assert.match(result.stderr, scenario.pattern, `${scenario.name}: ${result.stderr}`);
+      // A refused carry must never leave behind a spare ledger for the new
+      // key it never actually used (the P3 fix): skip only where the
+      // scenario itself pre-created that key's run, or where toKey IS
+      // fromKey (that run obviously exists already).
+      if (!scenario.preCreatesNewRun && toKey !== fromKey) {
+        assert.strictEqual(fs.existsSync(runPath(t.initDir, toKey)), false, `${scenario.name}: refused carry created the new key's run ledger`);
+      }
     }
   });
 
@@ -925,6 +935,40 @@ for (const provider of Object.keys(PROVIDERS)) {
     assert.match(result.stderr, /not bound to --from-run-key/);
     assert.strictEqual(fs.existsSync(runPath(t.initDir, 'key-2')), false, 'openKeyedRun ran for the new key before carry refused');
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).rerun_cleanup, poisoned, 'cleanup ran despite the wrong --from-run-key');
+  });
+
+  test(`${provider}: a carry under rerun_cleanup that omits --initiative-mode against a lite old run is refused before the new key's ledger is created (fix)`, () => {
+    // Regression for a P3 fix: when rerun_cleanup is pending, main() used to
+    // open the new key's run (defaulting its mode to 'base') before carry's
+    // own mode check ever ran, poisoning the new key's ledger as 'base' even
+    // though the old run is 'lite'. The mode check must run, and the new
+    // key's run must stay unopened, before any rerun_cleanup side effect.
+    const t = setup(provider, { maxLaunches: 1 });
+    const liteKeyed = ['--initiative-run-key', 'key-1', '--initiative-state-dir', t.initDir, '--initiative-max-launches', '1', '--initiative-max-rounds', '5', '--initiative-mode', 'lite'];
+    const run = (args) => spawnSync('node', [PROVIDERS[provider], ...args, ...liteKeyed], { encoding: 'utf8', env: t.env, cwd: t.repo });
+    assert.strictEqual(run(['round-start', 'feat/x', 'HEAD~1']).status, 0);
+    const reserved = run(['reserve', 'feat/x', 'correctness']);
+    assert.strictEqual(reserved.status, 0, reserved.stderr);
+    assert.strictEqual(JSON.parse(reserved.stdout).status, 'granted');
+    const n = review.readLedger(t.dir, review.targetSlug('feat/x')).round;
+    t.write(n, 'correctness', CLEAN);
+    const denied = run(['reserve', 'feat/x', 'verify']);
+    assert.strictEqual(JSON.parse(denied.stdout).status, 'denied');
+    assert.strictEqual(JSON.parse(denied.stdout).reason, 'budget-exhausted');
+
+    const file = review.ledgerPath(t.dir, review.targetSlug('feat/x'));
+    const ledger = JSON.parse(fs.readFileSync(file, 'utf8'));
+    // A deliberately bogus rerun_cleanup pointer, same as P3-4: if cleanup ran
+    // before the mode mismatch is reported, reading this nonexistent manifest
+    // throws, masking the real refusal.
+    const poisoned = { manifestPath: path.join(t.dir, 'does-not-exist-manifest.json'), sha256: '0'.repeat(64) };
+    fs.writeFileSync(file, JSON.stringify({ ...ledger, rerun_cleanup: poisoned }));
+
+    const result = carry(t, 'key-1', carryFlags(t, 'key-2')); // no --initiative-mode: defaults to base, but the old run is lite
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.stderr, /mode differs/);
+    assert.strictEqual(fs.existsSync(runPath(t.initDir, 'key-2')), false, "the new key's run ledger was created despite the mode mismatch under rerun_cleanup");
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).rerun_cleanup, poisoned, 'cleanup ran despite the mode mismatch');
   });
 
   test(`${provider}: a gate-panel-pending carry with an unreserved panel artifact fails the old run closed (P3-5)`, () => {
@@ -1032,5 +1076,71 @@ for (const provider of Object.keys(PROVIDERS)) {
     assert.notStrictEqual(result.status, 0);
     assert.match(result.stderr, /new run refuses this pair \(target-terminal\)/);
     assert.strictEqual(review.readLedger(t.dir, review.targetSlug('feat/x')).initiative_binding.key, 'key-1');
+  });
+
+  test(`${provider}: the old run finalising concurrently, between carry's reservation check and its disposition write, is reported as "not active", not contention (fix)`, { timeout: 15000 }, async (t2) => {
+    // Regression: recordDisposition returns false both on genuine lock
+    // contention and when its own fresh read finds the run no longer active.
+    // carryBudgetBlockedTarget used to report the first message ("contended;
+    // retry") for both, so a reconciler retrying after a concurrent finalise
+    // kept hitting "not active" instead. Pause carry right after its own
+    // requireReservations check (which reads the old run and finds it active)
+    // and before recordDisposition's own fresh read, finalise the old run in
+    // that window, then let carry proceed.
+    const t = blockedSetup(provider);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'carry-finalise-race-'));
+    const hook = path.join(root, 'pause-read.cjs');
+    const paused = path.join(root, 'paused');
+    const release = path.join(root, 'release');
+    t2.after(() => { try { fs.writeFileSync(release, 'release'); } catch (_) { /* already released */ } fs.rmSync(root, { recursive: true, force: true }); });
+    // requireReservations' own active check is the 4th read of the old run's
+    // ledger file in the carry process (after main()'s mode check, the initial load and
+    // the old-run budget-exhausted re-check); pausing right after it lets
+    // recordDisposition's own read, inside its lock, see a status this hook
+    // just flipped to terminal.
+    fs.writeFileSync(hook, `
+'use strict';
+const fs = require('node:fs');
+const read = fs.readFileSync;
+let count = 0, paused = false;
+fs.readFileSync = function(file, ...args) {
+  const result = read.call(this, file, ...args);
+  if (!paused && process.env.RACE_PAUSE_PATH && file === process.env.RACE_PAUSE_PATH) {
+    count += 1;
+    if (count === Number(process.env.RACE_PAUSE_AFTER_READ)) {
+      paused = true;
+      fs.writeFileSync(process.env.RACE_PAUSED, 'paused');
+      const deadline = Date.now() + 5000;
+      while (!fs.existsSync(process.env.RACE_RELEASE)) {
+        if (Date.now() > deadline) throw new Error('race test: release timed out');
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      }
+    }
+  }
+  return result;
+};
+`);
+    const oldRunPath = runPath(t.initDir, 'key-1');
+    const child = spawn(process.execPath, ['--require', hook, PROVIDERS[provider], 'carry', 'feat/x', '--from-run-key', 'key-1', ...carryFlags(t, 'key-2')], {
+      cwd: t.repo,
+      env: { ...t.env, RACE_PAUSE_PATH: oldRunPath, RACE_PAUSE_AFTER_READ: '4', RACE_PAUSED: paused, RACE_RELEASE: release },
+    });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    const done = new Promise((resolve) => child.on('close', (status) => resolve(status)));
+    const deadline = Date.now() + 5000;
+    while (!fs.existsSync(paused)) {
+      assert.ok(Date.now() < deadline, 'timed out waiting for carry to pause before its disposition write');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const finalised = spawnSync('node', [PROVIDERS[provider], 'finalise', ...t.keyed], { encoding: 'utf8', env: t.env, cwd: t.repo });
+    assert.strictEqual(finalised.status, 0, finalised.stderr);
+    assert.strictEqual(ledgerForKey(t, 'key-1').status, 'terminal');
+    fs.writeFileSync(release, 'release');
+    const status = await done;
+    assert.notStrictEqual(status, 0, stdout);
+    assert.match(stderr, /the old run is not active/, stderr);
+    assert.doesNotMatch(stderr, /contended/);
   });
 }

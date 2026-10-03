@@ -759,22 +759,19 @@ function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey,
   try { oldLedger = JSON.parse(fs.readFileSync(oldRun.path, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (!oldLedger) fail('no initiative run for --from-run-key');
 
-  // Step 2: the new run must be ready to take this pair. The mode check runs
-  // BEFORE openKeyedRun: that call creates the new run's ledger file on first
-  // use (defaulting mode to 'base' when the caller omitted --initiative-mode),
-  // so checking afterward can permanently create the wrong-mode ledger before
-  // ever reporting the mismatch, leaving the key unusable.
+  // Step 2: the mode check only -- it needs no new-run object, so it runs
+  // before anything that would open the new run's ledger file (defaulting
+  // mode to 'base' when the caller omitted --initiative-mode); checking
+  // afterward can permanently create the wrong-mode ledger before ever
+  // reporting the mismatch, leaving the key unusable.
   if ((initiative.mode || 'base') !== oldLedger.mode) fail('the new run mode differs from the old run; carry never changes mode');
-  const newRun = openKeyedRun(initiative);
-  // The readiness probe must cover the whole blocked batch (the marker's own
-  // role and count), not a single generic launch: a new run without room for
-  // the batch must be refused here, not discovered later at requireReservations.
-  const readinessCheck = { role: marker.role, round: ledger.round, target: revision.ref, revision, attemptId: ledger.attemptId };
-  const newRefusal = denialReason(newRun, readinessCheck, marker.count);
-  if (newRefusal) fail(`the new run refuses this pair (${newRefusal})`);
 
-  // Step 3: the old run -- active, same repository, genuinely blocked here,
-  // its round's evidence reserved, then a terminal `carried` disposition.
+  // Step 3: every old-run check that needs no new-run object runs first --
+  // active, same repository, genuinely blocked here, its round's evidence
+  // reservable -- so a refused carry never opens (and so never leaves behind)
+  // the new key's run ledger. Only the new-run readiness probe below needs
+  // that ledger open; it runs as late as the remaining steps allow, still
+  // before requireReservations/recordDisposition touch the old run for real.
   // A prior crash between recording that disposition and step 4's target-ledger
   // write is resumed here instead of refused: the same carry retried finds its
   // own disposition and proceeds; a DIFFERENT new key is refused.
@@ -788,6 +785,20 @@ function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey,
   if (existingTerminal && !carriedToSameTarget(existingTerminal)) {
     fail(existingTerminal.reason === 'carried' ? 'this target was already carried to a different run key' : `the old run already holds a terminal disposition ("${existingTerminal.reason}") for this pair`);
   }
+  // The new run must be ready to take this pair. The readiness probe must
+  // cover the whole blocked batch (the marker's own role and count), not a
+  // single generic launch: a new run without room for the batch must be
+  // refused here, not discovered later at requireReservations. Opening it
+  // (openKeyedRun creates the new key's ledger on first use) is unavoidable
+  // for this probe, so it runs last among the checks that gate carrying --
+  // right before requireReservations/recordDisposition touch the old run for
+  // real -- on both the fresh-attempt and resumed-retry paths.
+  const checkNewRunReady = () => {
+    const newRun = openKeyedRun(initiative);
+    const readinessCheck = { role: marker.role, round: ledger.round, target: revision.ref, revision, attemptId: ledger.attemptId };
+    const newRefusal = denialReason(newRun, readinessCheck, marker.count);
+    if (newRefusal) fail(`the new run refuses this pair (${newRefusal})`);
+  };
   if (!existingTerminal) {
     if (oldLedger.status !== 'active') fail('the old run is not active');
     if (oldLedger.repository !== repositoryIdentity(repoRoot)) fail('the old run is for a different repository');
@@ -805,14 +816,24 @@ function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey,
         { role: 'vote', present: roundFiles(stateDir, ledger.round, new RegExp(`^round-${ledger.round}-gate-panel-${m}-vote-.*\\.json$`)), panel: m },
       );
     }
+
+    checkNewRunReady();
     requireReservations(oldRun, ledger, carryNeeds, 'carry');
     const carried = recordDisposition(oldRun, { target: revision.ref, revision, result: { status: 'carried' }, packet: { nextAction: 'carried', carriedTo: { key: initiative.key, stateDir: newStateDir } } });
     if (!carried) {
       let retryLedger;
       try { retryLedger = JSON.parse(fs.readFileSync(oldRun.path, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
       const retryMatch = retryLedger && terminalDispositionInLedger(retryLedger, revision.ref, revision, ['terminal']);
-      if (!carriedToSameTarget(retryMatch)) fail(lockDiagnosis(oldRun) || 'the old run disposition write was contended; retry');
+      if (!carriedToSameTarget(retryMatch)) {
+        if (retryLedger && retryLedger.status !== 'active') fail('the old run is not active');
+        fail(lockDiagnosis(oldRun) || 'the old run disposition write was contended; retry');
+      }
     }
+  } else {
+    // existingTerminal && carriedToSameTarget: resuming a crash-interrupted
+    // retry. The new run must still exist and be ready, same as the first
+    // attempt, before step 4 repeats the target-ledger write.
+    checkNewRunReady();
   }
 
   // Step 4: one atomic target-ledger write -- bind to the new key, append
@@ -866,6 +887,13 @@ function main(resolveFromCwd) {
       if (prior.initiative_binding.key !== fromRunKey || prior.initiative_binding.stateDir !== canonicalPath(initiative.stateDir)) {
         throw new Error('review-cli carry: the target is not bound to --from-run-key under this initiative state directory');
       }
+      // Also refused HERE, before the rerun_cleanup block below can open the
+      // new key's run (and so create its ledger) on its way to a mode
+      // mismatch that carryBudgetBlockedTarget would otherwise report only
+      // after the new key's ledger already exists.
+      let oldLedgerForMode;
+      try { oldLedgerForMode = JSON.parse(fs.readFileSync(runPath(canonicalPath(initiative.stateDir), fromRunKey), 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      if (oldLedgerForMode && (initiative.mode || 'base') !== oldLedgerForMode.mode) throw new Error('review-cli carry: the new run mode differs from the old run; carry never changes mode');
     }
     if (args[0] === 'reset' && initiative) throw new Error('review-cli reset: cannot discard an initiative target; use rerun with the same initiative run flags to retain history and spent budget');
     if (prior?.rerun_cleanup) {
@@ -874,7 +902,10 @@ function main(resolveFromCwd) {
       if (!CLI_VERBS.includes(args[0])) throw unknownVerb(args[0]);
       if (args[0] === 'reserve') reserveOptions(args.slice(2));
       if (args[0] === 'rerun') rerunOptions(args.slice(2));
-      const run = initiative && openKeyedRun(initiative);
+      // Skip for carry: opening the new key's run here (before carry's own
+      // mode and readiness checks run) would create that key's ledger as a
+      // side effect of a call that may still be refused.
+      const run = initiative && args[0] !== 'carry' && openKeyedRun(initiative);
       if (args[0] === 'round-start') requireRoundStartMode(run, args.slice(2));
     }
     finishRerunCleanup(stateDir, slug, prior);
