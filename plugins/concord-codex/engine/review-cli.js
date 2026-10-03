@@ -26,7 +26,7 @@ const {
   resetUnreachable,
 } = require('./review');
 const crypto = require('node:crypto');
-const { canonicalPath, openInitiativeRun, reserveLaunchBatch, denialReason, recordDisposition, finaliseInitiativeRun, consumeDispositionDelivery, escalateInitiativeRun, lockDiagnosis, resolveBaseCommit, repositoryIdentity, runPath, terminalTarget } = require('./initiative-review-run');
+const { canonicalPath, openInitiativeRun, reserveLaunchBatch, denialReason, recordDisposition, finaliseInitiativeRun, consumeDispositionDelivery, escalateInitiativeRun, lockDiagnosis, resolveBaseCommit, repositoryIdentity, runPath, terminalDispositionInLedger } = require('./initiative-review-run');
 const { acquireTarget, gitDiff, gitHeadSha, gitDirty } = require('./target');
 const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
 
@@ -759,11 +759,18 @@ function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey,
   try { oldLedger = JSON.parse(fs.readFileSync(oldRun.path, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (!oldLedger) fail('no initiative run for --from-run-key');
 
-  // Step 2: the new run must be ready to take this pair.
+  // Step 2: the new run must be ready to take this pair. The mode check runs
+  // BEFORE openKeyedRun: that call creates the new run's ledger file on first
+  // use (defaulting mode to 'base' when the caller omitted --initiative-mode),
+  // so checking afterward can permanently create the wrong-mode ledger before
+  // ever reporting the mismatch, leaving the key unusable.
+  if ((initiative.mode || 'base') !== oldLedger.mode) fail('the new run mode differs from the old run; carry never changes mode');
   const newRun = openKeyedRun(initiative);
-  if (runMode(newRun) !== oldLedger.mode) fail('the new run mode differs from the old run; carry never changes mode');
-  const readinessCheck = { role: 'carry', round: ledger.round, target: revision.ref, revision, attemptId: ledger.attemptId };
-  const newRefusal = denialReason(newRun, readinessCheck, 1);
+  // The readiness probe must cover the whole blocked batch (the marker's own
+  // role and count), not a single generic launch: a new run without room for
+  // the batch must be refused here, not discovered later at requireReservations.
+  const readinessCheck = { role: marker.role, round: ledger.round, target: revision.ref, revision, attemptId: ledger.attemptId };
+  const newRefusal = denialReason(newRun, readinessCheck, marker.count);
   if (newRefusal) fail(`the new run refuses this pair (${newRefusal})`);
 
   // Step 3: the old run -- active, same repository, genuinely blocked here,
@@ -771,8 +778,13 @@ function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey,
   // A prior crash between recording that disposition and step 4's target-ledger
   // write is resumed here instead of refused: the same carry retried finds its
   // own disposition and proceeds; a DIFFERENT new key is refused.
-  const existingTerminal = terminalTarget(oldRun, revision.ref, revision, ['terminal']);
   const carriedToSameTarget = (entry) => entry?.reason === 'carried' && entry.packet?.carriedTo?.key === initiative.key && entry.packet?.carriedTo?.stateDir === newStateDir;
+  // Checked against the already-loaded ledger, not terminalTarget: terminalTarget
+  // only looks at an active run, but a reconciliation step can finalise the old
+  // run between recording this very disposition and this carry's own step 4 --
+  // the retry must still find its own disposition even though the run is no
+  // longer active.
+  const existingTerminal = terminalDispositionInLedger(oldLedger, revision.ref, revision, ['terminal']);
   if (existingTerminal && !carriedToSameTarget(existingTerminal)) {
     fail(existingTerminal.reason === 'carried' ? 'this target was already carried to a different run key' : `the old run already holds a terminal disposition ("${existingTerminal.reason}") for this pair`);
   }
@@ -781,9 +793,26 @@ function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey,
     if (oldLedger.repository !== repositoryIdentity(repoRoot)) fail('the old run is for a different repository');
     const oldReason = denialReason(oldRun, { role: marker.role, round: marker.round, attemptId: marker.attemptId, target: revision.ref, revision }, marker.count);
     if (oldReason !== 'budget-exhausted') fail(`the old run's blocked batch is no longer budget-exhausted (${oldReason || 'it would now be accepted'})`);
-    requireReservations(oldRun, ledger, [...gatesNeeds(stateDir, ledger.round), { role: 'fix', present: roundFiles(stateDir, ledger.round, new RegExp(`^round-${ledger.round}-fix-.*\\.json$`)) }], 'carry');
+    const carryNeeds = [...gatesNeeds(stateDir, ledger.round), { role: 'fix', present: roundFiles(stateDir, ledger.round, new RegExp(`^round-${ledger.round}-fix-.*\\.json$`)) }];
+    if (panelPending) {
+      // Same lens/vote coverage gate-panel-round-record applies to the pending
+      // panel round -- carry must fail the old run closed on unreserved panel
+      // evidence exactly like recording that round would.
+      const gp = ledger.gate_panel || gatePanelLib.emptyGatePanel();
+      const m = (gp.round || 0) + 1;
+      carryNeeds.push(
+        { role: 'lens', present: GATE_PANEL_LENSES.filter((lens) => fs.existsSync(path.join(stateDir, `round-${ledger.round}-gate-panel-${m}-${lens}.json`))).length, panel: m },
+        { role: 'vote', present: roundFiles(stateDir, ledger.round, new RegExp(`^round-${ledger.round}-gate-panel-${m}-vote-.*\\.json$`)), panel: m },
+      );
+    }
+    requireReservations(oldRun, ledger, carryNeeds, 'carry');
     const carried = recordDisposition(oldRun, { target: revision.ref, revision, result: { status: 'carried' }, packet: { nextAction: 'carried', carriedTo: { key: initiative.key, stateDir: newStateDir } } });
-    if (!carried && !carriedToSameTarget(terminalTarget(oldRun, revision.ref, revision, ['terminal']))) fail(lockDiagnosis(oldRun) || 'the old run disposition write was contended; retry');
+    if (!carried) {
+      let retryLedger;
+      try { retryLedger = JSON.parse(fs.readFileSync(oldRun.path, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      const retryMatch = retryLedger && terminalDispositionInLedger(retryLedger, revision.ref, revision, ['terminal']);
+      if (!carriedToSameTarget(retryMatch)) fail(lockDiagnosis(oldRun) || 'the old run disposition write was contended; retry');
+    }
   }
 
   // Step 4: one atomic target-ledger write -- bind to the new key, append
@@ -827,6 +856,17 @@ function main(resolveFromCwd) {
       }
     }
     if (args[0] === 'carry' && !initiative) throw new Error('review-cli carry: requires the new key\'s initiative run flags (--initiative-run-key, --initiative-state-dir, --initiative-max-launches, --initiative-max-rounds)');
+    // A wrong --from-run-key or state dir must be refused HERE, before any
+    // rerun_cleanup side effect below (openKeyedRun creating the new run,
+    // finishRerunCleanup deleting archived evidence) runs. carryBudgetBlockedTarget
+    // repeats this exact check, but only after rerun_cleanup already happened.
+    if (args[0] === 'carry') {
+      const { fromRunKey } = carryOptions(args.slice(2));
+      if (!prior?.initiative_binding) throw new Error('review-cli carry: the target is unbound, or has legacy initiative reservations with no binding; carry requires an existing binding to --from-run-key');
+      if (prior.initiative_binding.key !== fromRunKey || prior.initiative_binding.stateDir !== canonicalPath(initiative.stateDir)) {
+        throw new Error('review-cli carry: the target is not bound to --from-run-key under this initiative state directory');
+      }
+    }
     if (args[0] === 'reset' && initiative) throw new Error('review-cli reset: cannot discard an initiative target; use rerun with the same initiative run flags to retain history and spent budget');
     if (prior?.rerun_cleanup) {
       // Cleanup is a mutation: reject invalid calls and immutable run option

@@ -11,6 +11,7 @@ const { execFileSync, spawnSync, spawn } = require('node:child_process');
 const { openInitiativeRun, reserveLaunch, recordDisposition, publicInitiativeSummary, runPath, canonicalPath } = require('../../core/initiative-review-run');
 const review = require('../../core/review');
 const { safeIdForFilename } = require('../../core/artifact-name');
+const { PANEL_LENSES } = require('../../core/report');
 
 const PLUGINS = path.join(__dirname, '..', '..', '..');
 const PROVIDERS = {
@@ -722,6 +723,17 @@ for (const provider of Object.keys(PROVIDERS)) {
         pattern: /different round or attempt/,
       },
       {
+        name: 'marker from another attempt',
+        build: () => {
+          const t = blockedSetup(provider);
+          const file = review.ledgerPath(t.dir, review.targetSlug('feat/x'));
+          const ledger = JSON.parse(fs.readFileSync(file, 'utf8'));
+          fs.writeFileSync(file, JSON.stringify({ ...ledger, initiative_blocked: { ...ledger.initiative_blocked, attemptId: `${ledger.initiative_blocked.attemptId}-other` } }));
+          return t;
+        },
+        pattern: /different round or attempt/,
+      },
+      {
         name: 'wrong --from-run-key',
         build: () => blockedSetup(provider),
         fromKey: 'key-9',
@@ -867,5 +879,158 @@ for (const provider of Object.keys(PROVIDERS)) {
     assert.match(result.stderr, /harness-failure.*carry/);
     assert.strictEqual(ledgerForKey(t, 'key-1').status, 'terminal', 'the old run was not failed closed');
     assert.strictEqual(review.readLedger(t.dir, review.targetSlug('feat/x')).initiative_binding.key, 'key-1', 'the target was carried despite unreserved evidence');
+  });
+
+  test(`${provider}: a mismatched-mode carry is refused before any ledger for the new key is created (P2-1)`, () => {
+    const t = blockedSetup(provider);
+    const toFlags = [...carryFlags(t, 'key-2'), '--initiative-mode', 'lite'];
+    const result = carry(t, 'key-1', toFlags);
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.stderr, /mode differs/);
+    assert.strictEqual(fs.existsSync(runPath(t.initDir, 'key-2')), false, 'the new run ledger was created despite the mode mismatch');
+  });
+
+  test(`${provider}: a new run without room for the whole blocked batch is refused, not just room for one launch (P3-3)`, () => {
+    const t = setup(provider, { maxLaunches: 1 });
+    t.start();
+    assert.strictEqual(t.ok(['reserve', 'feat/x', 'correctness']).status, 'granted');
+    t.write(review.readLedger(t.dir, review.targetSlug('feat/x')).round, 'correctness', CLEAN);
+    const denied = t.ok(['reserve', 'feat/x', 'fix', '--count', '2']);
+    assert.strictEqual(denied.status, 'denied');
+    assert.strictEqual(denied.reason, 'budget-exhausted');
+    const marker = review.readLedger(t.dir, review.targetSlug('feat/x')).initiative_blocked;
+    assert.strictEqual(marker.role, 'fix');
+    assert.strictEqual(marker.count, 2);
+
+    // A new run with room for only ONE launch would pass a count-1 readiness
+    // probe but has no room for the blocked batch (2) -- it must be refused.
+    const toFlags = carryFlags(t, 'key-2', { maxLaunches: 1 });
+    const result = carry(t, 'key-1', toFlags);
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.stderr, /new run refuses this pair \(budget-exhausted\)/);
+    assert.strictEqual(review.readLedger(t.dir, review.targetSlug('feat/x')).initiative_binding.key, 'key-1', 'the target was carried despite the new run having no room for the batch');
+  });
+
+  test(`${provider}: a wrong --from-run-key with rerun_cleanup pending is refused before cleanup runs (P3-4)`, () => {
+    const t = blockedSetup(provider);
+    const file = review.ledgerPath(t.dir, review.targetSlug('feat/x'));
+    const ledger = JSON.parse(fs.readFileSync(file, 'utf8'));
+    // A deliberately bogus rerun_cleanup pointer: if the binding check does not
+    // run before finishRerunCleanup, reading this nonexistent manifest throws,
+    // masking the real carry refusal, and cleanup (deleting evidence) proceeds.
+    const poisoned = { manifestPath: path.join(t.dir, 'does-not-exist-manifest.json'), sha256: '0'.repeat(64) };
+    fs.writeFileSync(file, JSON.stringify({ ...ledger, rerun_cleanup: poisoned }));
+    const result = carry(t, 'key-9', carryFlags(t, 'key-2'));
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.stderr, /not bound to --from-run-key/);
+    assert.strictEqual(fs.existsSync(runPath(t.initDir, 'key-2')), false, 'openKeyedRun ran for the new key before carry refused');
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).rerun_cleanup, poisoned, 'cleanup ran despite the wrong --from-run-key');
+  });
+
+  test(`${provider}: a gate-panel-pending carry with an unreserved panel artifact fails the old run closed (P3-5)`, () => {
+    const t = blockedSetup(provider);
+    const file = review.ledgerPath(t.dir, review.targetSlug('feat/x'));
+    const ledger = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const n = ledger.round;
+    fs.writeFileSync(file, JSON.stringify({ ...ledger, phase: 'done', status: 'gate-panel-pending', gate_panel: { round: 0 } }));
+    // An unreserved lens artifact for the pending panel round (m = 1): no
+    // 'lens' reservation was ever made for this target.
+    t.write(n, `gate-panel-1-${PANEL_LENSES[0]}`, { status: 'ok', findings: [] });
+    const result = carry(t, 'key-1', carryFlags(t, 'key-2'));
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.stderr, /harness-failure.*carry/);
+    assert.strictEqual(ledgerForKey(t, 'key-1').status, 'terminal', 'the old run was not failed closed');
+    assert.strictEqual(review.readLedger(t.dir, review.targetSlug('feat/x')).initiative_binding.key, 'key-1', 'the target was carried despite unreserved panel evidence');
+  });
+
+  test(`${provider}: carry succeeds from the gate-panel-pending phase when no panel evidence is unreserved (test gap)`, () => {
+    const t = blockedSetup(provider);
+    const file = review.ledgerPath(t.dir, review.targetSlug('feat/x'));
+    const ledger = JSON.parse(fs.readFileSync(file, 'utf8'));
+    fs.writeFileSync(file, JSON.stringify({ ...ledger, phase: 'done', status: 'gate-panel-pending', gate_panel: { round: 0 } }));
+    const result = carry(t, 'key-1', carryFlags(t, 'key-2'));
+    assert.strictEqual(result.status, 0, result.stderr);
+    assert.strictEqual(JSON.parse(result.stdout).status, 'carried');
+  });
+
+  test(`${provider}: carry succeeds from the fixes phase (test gap)`, () => {
+    const t = setup(provider, { maxLaunches: 2 });
+    const n = t.start();
+    assert.strictEqual(t.ok(['reserve', 'feat/x', 'correctness']).status, 'granted');
+    assert.strictEqual(t.ok(['reserve', 'feat/x', 'verify']).status, 'granted');
+    t.write(n, 'correctness', { ...CLEAN, findings: [finding] });
+    t.write(n, 'verify', { status: 'ok', rejected: [] });
+    assert.strictEqual(t.ok(['plan-fixes', 'feat/x']).fixes.length, 1);
+    const denied = t.ok(['reserve', 'feat/x', 'fix', '--count', '1']);
+    assert.strictEqual(denied.status, 'denied');
+    assert.strictEqual(denied.reason, 'budget-exhausted');
+    assert.strictEqual(review.readLedger(t.dir, review.targetSlug('feat/x')).phase, 'fixes');
+
+    const result = carry(t, 'key-1', carryFlags(t, 'key-2'));
+    assert.strictEqual(result.status, 0, result.stderr);
+    assert.strictEqual(JSON.parse(result.stdout).status, 'carried');
+    assert.strictEqual(review.readLedger(t.dir, review.targetSlug('feat/x')).initiative_binding.key, 'key-2');
+  });
+
+  test(`${provider}: a crash after the old-run disposition is written, then a DIFFERENT key, is refused (AC5 test gap)`, () => {
+    const t = blockedSetup(provider);
+    const ledger = review.readLedger(t.dir, review.targetSlug('feat/x'));
+    const newStateDir = canonicalPath(t.initDir);
+    const oldRun = { path: runPath(t.initDir, 'key-1') };
+    assert.ok(recordDisposition(oldRun, {
+      target: 'feat/x',
+      revision: { ref: 'feat/x', base: execFileSync('git', ['rev-parse', ledger.target.base], { cwd: t.repo, encoding: 'utf8' }).trim(), head_sha: ledger.target.head_sha },
+      result: { status: 'carried' },
+      packet: { nextAction: 'carried', carriedTo: { key: 'key-2', stateDir: newStateDir } },
+    }));
+    const different = carry(t, 'key-1', carryFlags(t, 'key-3'));
+    assert.notStrictEqual(different.status, 0);
+    assert.match(different.stderr, /already carried to a different run key/);
+    assert.strictEqual(review.readLedger(t.dir, review.targetSlug('feat/x')).initiative_binding.key, 'key-1', 'the crash window let a different key through');
+  });
+
+  test(`${provider}: a crash retry still resumes after the old run was finalised in between; a different key stays refused (P3-2)`, () => {
+    const t = blockedSetup(provider);
+    const ledger = review.readLedger(t.dir, review.targetSlug('feat/x'));
+    const newStateDir = canonicalPath(t.initDir);
+    const oldRun = { path: runPath(t.initDir, 'key-1') };
+    assert.ok(recordDisposition(oldRun, {
+      target: 'feat/x',
+      revision: { ref: 'feat/x', base: execFileSync('git', ['rev-parse', ledger.target.base], { cwd: t.repo, encoding: 'utf8' }).trim(), head_sha: ledger.target.head_sha },
+      result: { status: 'carried' },
+      packet: { nextAction: 'carried', carriedTo: { key: 'key-2', stateDir: newStateDir } },
+    }));
+    // A reconciliation step finalises the old run before the crashed carry retries.
+    const finalised = spawnSync('node', [PROVIDERS[provider], 'finalise', ...t.keyed], { encoding: 'utf8', env: t.env, cwd: t.repo });
+    assert.strictEqual(finalised.status, 0, finalised.stderr);
+    assert.strictEqual(ledgerForKey(t, 'key-1').status, 'terminal');
+
+    const retried = carry(t, 'key-1', carryFlags(t, 'key-2'));
+    assert.strictEqual(retried.status, 0, retried.stderr);
+    assert.strictEqual(JSON.parse(retried.stdout).status, 'carried');
+    assert.strictEqual(review.readLedger(t.dir, review.targetSlug('feat/x')).initiative_binding.key, 'key-2');
+  });
+
+  test(`${provider}: a new run parked for reconciliation on an unopened pair refuses the carry (test gap)`, () => {
+    const t = blockedSetup(provider);
+    const run2 = openInitiativeRun({ stateDir: t.initDir, key: 'key-2', repository: t.repo, maxLaunches: 5, maxRounds: 5 });
+    const ledger2 = JSON.parse(fs.readFileSync(run2.path, 'utf8'));
+    fs.writeFileSync(run2.path, JSON.stringify({ ...ledger2, reconciliation: { terminals: [], hint: { trigger: 'reconciliation-required' } } }));
+    const result = carry(t, 'key-1', carryFlags(t, 'key-2'));
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.stderr, /new run refuses this pair \(reconciliation-required\)/);
+    assert.strictEqual(review.readLedger(t.dir, review.targetSlug('feat/x')).initiative_binding.key, 'key-1');
+  });
+
+  test(`${provider}: a new run already terminal for this pair refuses the carry (test gap)`, () => {
+    const t = blockedSetup(provider);
+    const ledger = review.readLedger(t.dir, review.targetSlug('feat/x'));
+    const run2 = openInitiativeRun({ stateDir: t.initDir, key: 'key-2', repository: t.repo, maxLaunches: 5, maxRounds: 5 });
+    const revision = { ref: 'feat/x', base: execFileSync('git', ['rev-parse', ledger.target.base], { cwd: t.repo, encoding: 'utf8' }).trim(), head_sha: ledger.target.head_sha };
+    assert.ok(recordDisposition(run2, { target: 'feat/x', revision, result: { status: 'clean' } }));
+    const result = carry(t, 'key-1', carryFlags(t, 'key-2'));
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.stderr, /new run refuses this pair \(target-terminal\)/);
+    assert.strictEqual(review.readLedger(t.dir, review.targetSlug('feat/x')).initiative_binding.key, 'key-1');
   });
 }

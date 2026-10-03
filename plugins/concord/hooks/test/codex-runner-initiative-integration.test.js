@@ -10,7 +10,7 @@ const { runPath } = require('../../core/initiative-review-run');
 const review = require('../../core/review');
 const cliPath = path.resolve(__dirname, '../../hooks/review-cli.js');
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'runner-bound-'));
-function fixture({ panel = false, maxLaunches = 30 } = {}) {
+function fixture({ panel = false, maxLaunches = 30, mode } = {}) {
   const repoRoot = tmp(), stateDir = tmp(), initiativeStateDir = tmp();
   const git = (...args) => execFileSync('git', args, { cwd: repoRoot, stdio: 'pipe' }).toString().trim();
   git('init', '-q'); git('config', 'user.email', 'test@example.com'); git('config', 'user.name', 'test');
@@ -19,7 +19,9 @@ function fixture({ panel = false, maxLaunches = 30 } = {}) {
   git('add', '.'); git('commit', '-qm', 'base'); const base = git('rev-parse', 'HEAD');
   fs.writeFileSync(path.join(repoRoot, 'a.txt'), 'two\n'); git('commit', '-aqm', 'change');
   const calls = [], workers = [];
-  const options = { ref: 'feature/test', base, repoRoot, initiativeStateDir, initiativeRunKey: 'integration', initiativeMaxLaunches: maxLaunches, initiativeMaxRounds: 10, noBroad: !panel,
+  // A lite run's round-start rejects --no-broad outright (lite always runs the
+  // one design-conformance gate), so lite fixtures must not send it.
+  const options = { ref: 'feature/test', base, repoRoot, initiativeStateDir, initiativeRunKey: 'integration', initiativeMaxLaunches: maxLaunches, initiativeMaxRounds: 10, noBroad: mode === 'lite' ? false : !panel, cliPath, ...(mode ? { initiativeMode: mode } : {}),
     runCli: (args) => {
       calls.push(args);
       const out = spawnSync('node', [cliPath, ...args], { cwd: repoRoot, encoding: 'utf8', env: { ...process.env, REVIEW_REPO_ROOT: repoRoot, REVIEW_STATE_DIR: stateDir } });
@@ -332,7 +334,11 @@ test('a budget-exhausted block names the carry command, and after a CLI carry th
   assert.equal(blocked.decision, 'blocked');
   assert.equal(blocked.reason, 'budget-exhausted');
   assert.deepEqual(f.workers, ['correctness']);
-  assert.match(blocked.carryCommand, /carry feature\/test --from-run-key integration --initiative-run-key <new-run-key>/);
+  // Safe to paste into any shell from any directory: quoted values, a `cd` into
+  // the repo this run used, and REVIEW_REPO_ROOT restated so a bare `node`
+  // invocation from elsewhere resolves the same repo and state dir the blocked
+  // run did. Carries the old run's own mode (base here) explicitly.
+  assert.match(blocked.carryCommand, /^cd '.*' && REVIEW_REPO_ROOT='.*'(?: REVIEW_STATE_DIR='.*')? node '.*' carry 'feature\/test' --from-run-key 'integration' --initiative-run-key <new-run-key> --initiative-state-dir '.*' --initiative-max-launches \d+ --initiative-max-rounds \d+ --initiative-mode base$/);
   assert.equal(f.ledger().launches.length, 1);
 
   const carried = spawnSync('node', [cliPath, 'carry', f.options.ref, '--from-run-key', 'integration',
@@ -358,6 +364,34 @@ test('a budget-exhausted block names the carry command, and after a CLI carry th
   assert.equal(oldKeyRetry.continuationPacket.nextAction, 'carried');
   assert.equal(oldKeyRetry.continuationPacket.carriedTo.key, 'integration-2');
   assert.equal(f.ledger().launches.length, 1, 'retrying under the old key charged it again');
+});
+
+test('a lite run\'s budget-exhausted block names --initiative-mode lite, and pasting the carry command (with a new key) carries successfully (P2-1)', async () => {
+  const f = fixture({ maxLaunches: 1, mode: 'lite' });
+  // The printed command restates REVIEW_STATE_DIR only when the runner's own
+  // process has one -- set it here so the pasted command resolves the SAME
+  // target-ledger directory this fixture's runCli uses, then restore it.
+  const previousStateDir = process.env.REVIEW_STATE_DIR;
+  process.env.REVIEW_STATE_DIR = f.stateDir;
+  try {
+    const blocked = await runReviewUntilGreen(f.options);
+    assert.equal(blocked.decision, 'blocked');
+    assert.equal(blocked.reason, 'budget-exhausted');
+    assert.match(blocked.carryCommand, /--initiative-mode lite$/);
+    assert.equal(f.ledger().mode, 'lite');
+
+    // Paste the printed command verbatim (substituting the new key) into a
+    // shell: without --initiative-mode lite carried through, openKeyedRun
+    // would default the new ledger to 'base' before carry's own mode check
+    // ever ran, permanently binding the new key to the wrong mode.
+    const command = blocked.carryCommand.replace('<new-run-key>', 'integration-2');
+    const pasted = execFileSync('/bin/sh', ['-c', command], { encoding: 'utf8' });
+    assert.equal(JSON.parse(pasted).status, 'carried');
+    const newLedger = JSON.parse(fs.readFileSync(runPath(f.options.initiativeStateDir, 'integration-2')));
+    assert.equal(newLedger.mode, 'lite');
+  } finally {
+    if (previousStateDir === undefined) delete process.env.REVIEW_STATE_DIR; else process.env.REVIEW_STATE_DIR = previousStateDir;
+  }
 });
 
 test('native launcher keeps exit 0 for a clean review with a failed stop checkpoint', () => {

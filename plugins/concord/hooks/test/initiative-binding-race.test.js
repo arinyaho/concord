@@ -52,7 +52,12 @@ async function waitForFile(file) {
 }
 
 for (const [provider, entry] of Object.entries(providers)) {
-  test(`${provider}: concurrent carries from the same blocked target -- exactly one succeeds (AC4)`, { timeout: 15000 }, async (t) => {
+  // Unlike the sibling race test below, the loser here has no pause/release
+  // coordination: it genuinely waits out withTargetLock's own (10s) lock-wait
+  // window before refusing. Under full-suite load that wait plus two real node
+  // process spawns can approach the sibling test's 15s cap on an otherwise
+  // passing run, so this one gets more headroom.
+  test(`${provider}: concurrent carries from the same blocked target -- exactly one succeeds (AC4)`, { timeout: 30000 }, async (t) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'carry-race-'));
     const repo = path.join(root, 'repo');
     const state = path.join(root, 'state');
