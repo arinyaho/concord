@@ -1437,6 +1437,12 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (!isFileTarget && ledger.target && ledger.target.head_sha && !gitIsReachable(repoRoot, ledger.target.head_sha)) {
       ledger = resetUnreachable(ledger);
     }
+    const intentCfg = intentLib.loadIntentConfig(repoRoot);
+    const broadReuse = ledger.broad_reuse;
+    const reuseFrontPass = !!broadReuse && !broadFlagPassed && !noBroadFlagPassed && !isFileTarget && !intentCfg && !broadReuse.intentHash
+      && broadReuse.base_sha === baseSha
+      && gitIsReachable(repoRoot, broadReuse.head_sha);
+    if (reuseFrontPass) diff = gitDiff(repoRoot, broadReuse.head_sha);
     const diffHash = contentHash(diff);
 
     let resumedCompletedArtifacts = [];
@@ -1477,7 +1483,6 @@ function runVerb(resolveFromCwd, args, initiative) {
     fs.mkdirSync(stateDir, { recursive: true });
     fs.writeFileSync(path.join(stateDir, `round-${ledger.round}-diff.txt`), diff);
 
-    const intentCfg = intentLib.loadIntentConfig(repoRoot);
     // ARMED (does this run do broad review at all) vs FIRED (does the gate pair
     // run THIS round) are two different questions -- keep them apart.
     //
@@ -1494,10 +1499,6 @@ function runVerb(resolveFromCwd, args, initiative) {
     // plan-fixes would drop that round's gate findings on the floor.
     // A ledger written before gateArmed existed has no boolean here and falls
     // through to the target-type default, which is what it ran under.
-    const broadReuse = ledger.broad_reuse;
-    const reuseFrontPass = !!broadReuse && !broadFlagPassed && !noBroadFlagPassed && !isFileTarget && !intentCfg && !broadReuse.intentHash
-      && broadReuse.base_sha === baseSha
-      && gitIsReachable(repoRoot, broadReuse.head_sha);
     const reusedGateOpen = reuseFrontPass ? gateLib.carryForwardGateFindings({
       priorGateOpen: broadReuse.gate_open || [],
       thisRoundIds: [],
@@ -1834,7 +1835,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       // or gate-pending decision would still print "resolve and re-run"
       // guidance for that stale state while the ledger status is truthfully
       // "parked" (which refuses to resume until `unpark`).
-      decision = { ...decision, continue: false, converged: false, parked: true, intentReview: false, gatePending: false };
+      decision = { ...decision, continue: false, converged: false, parked: true, dodFailed: false, intentReview: false, gatePending: false };
       ledger = { ...ledger, status: 'parked' };
     }
     const retryDisposition = decision.dodFailed || decision.gatePending || decision.intentReview;

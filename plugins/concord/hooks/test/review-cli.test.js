@@ -494,6 +494,30 @@ test('a failed final DoD preserves the ledger and re-enters with diff-only revie
   assert.strictEqual(restarted.gateApplied, false, 'the completed broad pass remains valid');
 });
 
+test('park-budget override clears a simultaneous final DoD retry without charging a round', () => {
+  const { REVIEW_PARK_BUDGET_DEFAULT } = require('../../core/config');
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['false'] }));
+  execFileSync('git', ['commit', '-aqm', 'failing dod'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  const slug = review.targetSlug('feat/x');
+  const ledger = review.readLedger(dir, slug);
+  review.writeLedger(dir, slug, { ...ledger, findings: Array.from({ length: REVIEW_PARK_BUDGET_DEFAULT }, (_, i) => ({
+    id: `correctness:old-${i}`, gate: 'correctness', file: 'a.txt', span: '', summary: 'x', status: 'parked', park_reason: { kind: 'needs-decision', text: 'prior' },
+  })) });
+
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.parked, true);
+  assert.ok(!out.decision.dodFailed);
+  assert.strictEqual(review.readLedger(dir, slug).budget.spent, 0);
+});
+
 test('review-cli reset: no ledger for the ref -> reports nothing to reset, exits 0', () => {
   const dir = tmpDir();
   const out = run(['reset', 'feat/nope'], { env: { ...process.env, REVIEW_STATE_DIR: dir } });
@@ -2957,6 +2981,10 @@ test('rerun reuses a completed front pass and reviews only the changed diff', ()
   run(['rerun', ref], { env });
   const next = JSON.parse(run(['round-start', ref], { env, broadDefault: true }));
   assert.strictEqual(next.gateApplied, false, 'the completed front pass remains valid for the descendant head');
+  const incremental = fs.readFileSync(path.join(dir, `round-${next.round}-diff.txt`), 'utf8');
+  assert.match(incremental, /-two/);
+  assert.match(incremental, /\+three/);
+  assert.doesNotMatch(incremental, /-one/);
 
   writeArtifact(dir, next.round, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
   writeArtifact(dir, next.round, 'verify', { status: 'ok', rejected: [] });

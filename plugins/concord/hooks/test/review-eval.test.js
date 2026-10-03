@@ -316,13 +316,18 @@ test('scenario classifications, terminal enums, mappings, and probe results are 
   for (const side of [baseline, candidate]) {
     const scenario = side.engines.codex.scenarios.seeded;
     scenario.nonDefects.push('seeded::correctness:seeded-bug');
+    scenario.allowedTerminalOutcomes.push('dod-failed');
     scenario.allowedTerminalOutcomes.push('typo-terminal');
     scenario.probesByFinding['seeded::extra'] = ['probe:seeded::correctness:seeded-bug'];
     const run = side.engines.codex.runs.find((item) => item.scenarioId === 'seeded' && item.repetition === 0);
     run.expectedProbeResults.extra = true;
+    side.engines.codex.runs.find((item) => item.scenarioId === 'seeded' && item.repetition === 1).terminal = 'dod-failed';
   }
   const report = compareReviewMatrix(baseline, candidate).engines.codex;
   assert.ok(report.unevaluable.includes('scenario finding classifications overlap: seeded:seeded::correctness:seeded-bug'));
+  assert.ok(!report.unevaluable.includes('scenario terminal is invalid: seeded:dod-failed'));
+  assert.ok(!report.unevaluable.includes('baseline terminal outcome invalid: seeded#1'));
+  assert.ok(!report.unevaluable.includes('candidate terminal outcome invalid: seeded#1'));
   assert.ok(report.unevaluable.includes('scenario terminal is invalid: seeded:typo-terminal'));
   assert.ok(report.unevaluable.includes('scenario probesByFinding has unknown identity: seeded:seeded::extra'));
   assert.ok(report.unevaluable.includes('baseline probe results mismatch: seeded#0'));
