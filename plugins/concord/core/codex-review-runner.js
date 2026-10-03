@@ -780,8 +780,8 @@ async function runReviewUntilGreen(options) {
     telemetryLoaded = true;
     if (started.decision !== 'work') return withTelemetry(started);
     currentRound = started.round;
-    checks = [{ name: 'definition-of-done', status: started.dodDeferred ? 'deferred' : (started.dodPassed ? 'passed' : 'failed') }];
-    const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodPassed: started.dodPassed, dodDeferred: started.dodDeferred, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref), gateMode: started.gateMode };
+    checks = [{ name: 'definition-of-done', status: started.dodPending ? 'pending' : started.dodDeferred ? 'deferred' : (started.dodPassed ? 'passed' : 'failed') }];
+    const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodDeferred: started.dodDeferred, dodPending: started.dodPending, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref), gateMode: started.gateMode, gateApplied: started.gateApplied };
     let slotAllocation = Promise.resolve();
     const reserve = async (role, count = 1) => {
       if (!initiativeRun) return;
@@ -835,17 +835,19 @@ async function runReviewUntilGreen(options) {
       }
     };
 
-    const reviewers = [
-      (async () => {
+    const reviewers = [];
+    if (started.intentApplied) reviewers.push(runArtifactReviewer('intent'));
+    if (started.gateApplied && started.gateMode !== 'design-conformance') reviewers.push((async () => {
+      await Promise.all([runArtifactReviewer('correctness'), runArtifactReviewer('gate')]);
+      await Promise.all([runArtifactReviewer('verify'), runArtifactReviewer('gate-verify')]);
+    })());
+    else {
+      reviewers.push((async () => {
         await runArtifactReviewer('correctness');
         await runArtifactReviewer('verify');
-      })(),
-    ];
-    if (started.intentApplied) reviewers.push(runArtifactReviewer('intent'));
-    if (started.gateApplied) reviewers.push((async () => {
-      await runArtifactReviewer('gate');
-      if (started.gateMode !== 'design-conformance') await runArtifactReviewer('gate-verify');
-    })());
+      })());
+      if (started.gateApplied) reviewers.push(runArtifactReviewer('gate'));
+    }
     const reviewerResults = await Promise.allSettled(reviewers);
     const reviewerFailure = reviewerResults.find((result) => result.status === 'rejected');
     if (reviewerFailure) throw reviewerFailure.reason;
@@ -854,7 +856,7 @@ async function runReviewUntilGreen(options) {
     await throwIfAborted(true);
     for (const finding of planned.fixes || []) {
       try {
-        await launch({ role: 'fix', prompt: reviewerPrompt('fix', { ...context, finding, plannedFindingIds: (planned.fixes || []).map((f) => f.id) }), repoRoot, stateDir: context.stateDir });
+        await launch({ role: 'fix', prompt: reviewerPrompt('fix', { ...context, finding, plannedFindings: planned.fixes || [] }), repoRoot, stateDir: context.stateDir });
         if (started.targetType !== 'file') {
           const committed = await cli(['commit-fix', ref, finding.id]);
           if (committed?.committed && committed.sha) initiativeRevision = { ...initiativeRevision, head_sha: committed.sha };
@@ -869,6 +871,8 @@ async function runReviewUntilGreen(options) {
       }
     }
     let recorded = await cli(['record', ref]);
+    // Compatibility for an older/external CLI. This repository's CLI no
+    // longer emits panelPending, so normal review never enters this loop.
     if (recorded.decision && recorded.decision.panelPending) {
       await runPanel(context, launch, reserve);
       await throwIfAborted(true);

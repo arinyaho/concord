@@ -185,7 +185,7 @@ for (const provider of Object.keys(providers)) {
     assert.equal(s.ok('decide', { id: c.id, decision: 'accept', reviewedBy: 'reviewer', reason: 'Review original resolution snapshots', evidencePath: s.evidencePath }).status, 'accepted');
     const stored = JSON.parse(fs.readFileSync(path.join(s.store, 'review-feedback.json'), 'utf8'));
     const occurrence = stored.lessons[0].occurrences[0];
-    assert.equal(occurrence.ledger.originalPath, s.ledgerPath);
+    assert.equal(occurrence.ledger.originalPath, fs.realpathSync(s.ledgerPath));
     assert.notEqual(occurrence.ledger.path, s.ledgerPath);
     assert.equal(fs.readFileSync(occurrence.evidence.path, 'utf8'), 'Observed race, accepted fix and regression result.');
   });

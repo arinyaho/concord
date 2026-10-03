@@ -1,0 +1,6 @@
+interface:
+  display_name: "Deep Review"
+  short_description: "One bounded, multi-agent holistic code review"
+  default_prompt: "Use $deep-review to run one bounded holistic review of this change."
+policy:
+  allow_implicit_invocation: false

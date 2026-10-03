@@ -204,7 +204,7 @@ test('review-cli show: prints an empty/fresh ledger summary for an unknown ref',
   assert.strictEqual(parsed.round, 0);
 });
 
-test('round-start: fresh start runs DoD, writes diff file, sets phase gates, decision work', () => {
+test('round-start: fresh start defers DoD, writes diff file, sets phase gates, decision work', () => {
   const repo = initRepo();
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
@@ -213,11 +213,34 @@ test('round-start: fresh start runs DoD, writes diff file, sets phase gates, dec
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
   const out = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
   assert.strictEqual(out.decision, 'work');
-  assert.strictEqual(out.dodPassed, true);
+  assert.strictEqual(out.dodPassed, false);
+  assert.strictEqual(out.dodPending, true);
   assert.strictEqual(out.stateDir, dir); // driver needs this to build <stateDir>/round-N-*.json paths
   const ledger = review.readLedger(dir, review.targetSlug('feat/x'));
   assert.strictEqual(ledger.phase, 'gates');
   assert.ok(fs.existsSync(path.join(dir, `round-${ledger.round}-diff.txt`)));
+});
+
+test('DoD runs once after review convergence, not at round start', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const counter = path.join(tmpDir(), 'dod-runs');
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: [`printf x >> ${counter}`] }));
+  execFileSync('git', ['commit', '-aqm', 'count dod'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+
+  const started = JSON.parse(run(['round-start', 'feat/final-dod', 'HEAD~1'], { env }));
+  assert.strictEqual(fs.existsSync(counter), false, 'round-start must not execute the project DoD');
+  fs.writeFileSync(path.join(dir, `round-${started.round}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${started.round}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  run(['plan-fixes', 'feat/final-dod'], { env });
+
+  const recorded = JSON.parse(run(['record', 'feat/final-dod'], { env }));
+  assert.strictEqual(recorded.decision.converged, true);
+  assert.strictEqual(fs.readFileSync(counter, 'utf8'), 'x', 'final DoD must execute exactly once');
+  assert.match(recorded.handoff, /DoD: passed/);
 });
 
 test('round-start resume preserves normalized artifacts and records an artifact write failure for retry', () => {
@@ -301,8 +324,11 @@ test('round-start resume invalidates gate verification when its gate artifact ch
   assert.ok(!fs.existsSync(verify), 'the stale gate verifier artifact must be re-driven');
 });
 
-test('record hands off why a green DoD run parked at the round budget', () => {
+test('record does not run final DoD when a fix round exhausts the review budget', () => {
   const repo = initRepo(); const dir = tmpDir();
+  const counter = path.join(tmpDir(), 'dod-runs');
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: [`printf x >> ${counter}`] }));
+  execFileSync('git', ['commit', '-aqm', 'count dod'], { cwd: repo });
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
@@ -321,7 +347,9 @@ test('record hands off why a green DoD run parked at the round budget', () => {
   review.writeLedger(dir, slug, { ...ledger, budget: { max_rounds: 1, spent: 1 } });
 
   const out = JSON.parse(run(['record', ref], { env }));
-  assert.match(out.handoff, /termination: round budget exhausted with 0 open finding\(s\); DoD passed but no clean confirmation round occurred/);
+  assert.match(out.handoff, /termination: round budget exhausted with 0 open finding\(s\); DoD deferred but no clean confirmation round occurred/);
+  assert.match(out.handoff, /DoD: pending \(runs once after review convergence\)/);
+  assert.strictEqual(fs.existsSync(counter), false);
 });
 
 test('round-start: refuses a dirty working tree on a fresh start', () => {
@@ -441,13 +469,12 @@ test('review-cli unpark: reopens a parked finding', () => {
   assert.strictEqual(after.status, 'converging');
 });
 
-test('review-cli reset: re-arms a finding-less parked ledger so round-start starts fresh', () => {
+test('a failed final DoD preserves the ledger and re-enters with diff-only review after a fix', () => {
   const repo = initRepo();
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   const slug = review.targetSlug('feat/x');
-  // Drive a no-progress park: the DoD keeps failing and the review finds nothing
-  // to fix -> parked with ZERO findings, so `unpark` has no target.
+  // Review converges first; only then does the configured DoD fail.
   fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['false'] }));
   execFileSync('git', ['commit', '-aqm', 'failing dod'], { cwd: repo });
   fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
@@ -457,26 +484,14 @@ test('review-cli reset: re-arms a finding-less parked ledger so round-start star
   fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   run(['plan-fixes', 'feat/x'], { env });
   const rec = JSON.parse(run(['record', 'feat/x'], { env }));
-  assert.strictEqual(rec.decision.parked, true);
-  assert.match(rec.decision.reason, /DoD failed/);
-  assert.match(rec.decision.reason, /false/); // the configured DoD command, review.config.json's "dod": ["false"]
-  assert.strictEqual(review.readLedger(dir, slug).status, 'parked');
-  assert.strictEqual((review.readLedger(dir, slug).findings || []).length, 0); // nothing to unpark
+  assert.strictEqual(rec.decision.dodFailed, true);
+  assert.strictEqual(review.readLedger(dir, slug).status, 'dod-failed');
 
-  // Parked is terminal: a fresh round-start refuses to re-drive.
-  assert.strictEqual(JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).decision, 'terminal');
-
-  // reset discards the ledger and sweeps the discarded run's round artifacts.
-  const codexTelemetry = path.join(dir, `telemetry-${slug}.json`);
-  fs.writeFileSync(codexTelemetry, '{}');
-  const out = run(['reset', 'feat/x'], { env });
-  assert.match(out, /reset ref "feat\/x" \(was "parked"\)/);
-  assert.strictEqual(review.readLedger(dir, slug), null);
-  assert.ok(!fs.existsSync(path.join(dir, `round-${n}-correctness.json`)), 'stale round artifact must be swept');
-  assert.ok(!fs.existsSync(codexTelemetry), 'stale Codex telemetry must be swept');
-
-  // Now round-start begins a genuinely fresh run.
-  assert.strictEqual(JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).decision, 'work');
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'] }));
+  execFileSync('git', ['commit', '-aqm', 'fix dod'], { cwd: repo });
+  const restarted = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.strictEqual(restarted.decision, 'work');
+  assert.strictEqual(restarted.gateApplied, false, 'the completed broad pass remains valid');
 });
 
 test('review-cli reset: no ledger for the ref -> reports nothing to reset, exits 0', () => {
@@ -1251,30 +1266,6 @@ test('journal-proven absent-span finding is stamped fixed with the real commit s
 
 // --- end phantom-fix regression lock ---
 
-test('record: a fix-committing round that terminates re-runs DoD on the post-commit tree', () => {
-  const repo = initRepo(); const dir = tmpDir();
-  // Make the DoD command observe tree state instead of always passing.
-  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['grep -q fixed a.txt'] }));
-  execFileSync('git', ['add', '-A'], { cwd: repo });
-  execFileSync('git', ['commit', '-qm', 'dod checks tree state'], { cwd: repo });
-  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
-    { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' }] },
-    { status: 'ok', rejected: [] });
-  run(['plan-fixes', 'feat/x'], { env }); // span 'two' still present at this point
-  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
-  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_real.json`), JSON.stringify({ status: 'ok', edited: true }));
-  run(['commit-fix', 'feat/x', 'correctness:real'], { env });
-  // Force this fix-committing round to be the terminus via round budget exhaustion.
-  const slug = review.targetSlug('feat/x');
-  let ledger = review.readLedger(dir, slug);
-  ledger = { ...ledger, budget: { ...ledger.budget, max_rounds: 1, spent: 1 } };
-  review.writeLedger(dir, slug, ledger);
-  const out = JSON.parse(run(['record', 'feat/x'], { env }));
-  const after = review.readLedger(dir, slug);
-  assert.strictEqual(after.dod.passed, true); // re-ran against the post-commit tree, where a.txt now contains "fixed"
-  assert.match(out.handoff, /DoD: passed/); // the final re-run DoD state must be surfaced in the handoff text
-});
-
 function initRepoWithIntent(intentCmd) {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-intent-'));
   execFileSync('git', ['init', '-q'], { cwd: repo });
@@ -1481,7 +1472,7 @@ test('round-start: reports the prior round\'s open intent ids so the detector re
 
 test('review-driver: the intent-detector prompt demands id reuse across rounds', () => {
   // The composed command file is what a run actually consumes; the core source is its input.
-  for (const rel of [['commands', 'review-until-green.md'], ['core', 'review-driver.md']]) {
+  for (const rel of [['commands', 'review-and-fix.md'], ['core', 'review-driver.md']]) {
     const md = fs.readFileSync(path.join(__dirname, '..', '..', ...rel), 'utf8');
     const prompt = md.slice(md.indexOf('You are a design-conformance detector'), md.indexOf('If there are no contradictions'));
     assert.match(prompt, /priorIntentIds/, rel.join('/'));
@@ -1490,7 +1481,7 @@ test('review-driver: the intent-detector prompt demands id reuse across rounds',
 });
 
 test('manual review drivers restore pending retry prompts and skip completed artifacts', () => {
-  for (const rel of [['commands', 'review-until-green.md'], ['core', 'review-driver.md']]) {
+  for (const rel of [['commands', 'review-and-fix.md'], ['core', 'review-driver.md']]) {
     const md = fs.readFileSync(path.join(__dirname, '..', '..', ...rel), 'utf8');
     assert.match(md, /skip every role named by `completedArtifacts`/i, rel.join('/'));
     assert.match(md, /`retryArtifacts`.*persisted corrective prompt/i, rel.join('/'));
@@ -1498,19 +1489,18 @@ test('manual review drivers restore pending retry prompts and skip completed art
 });
 
 test('manual review drivers allocate telemetry only when the selected adapter exposes it', () => {
-  const command = fs.readFileSync(path.join(__dirname, '..', '..', 'commands', 'review-until-green.md'), 'utf8');
+  const command = fs.readFileSync(path.join(__dirname, '..', '..', 'commands', 'review-and-fix.md'), 'utf8');
   const driver = fs.readFileSync(path.join(__dirname, '..', '..', 'core', 'review-driver.md'), 'utf8');
   assert.match(command, /telemetry-slot <ref> <exact-output-artifact-path>/);
   assert.match(command, /--engine claude-code/);
   assert.match(command, /only for native Claude roles/i);
   assert.match(driver, /authenticated telemetry/i);
   assert.match(driver, /Do not allocate synthetic slots/i);
-  assert.match(command, /round-<n>-gate-panel-<m>-vote-<safe-finding-id>-<vote-index>\.json/);
 });
 
-test('review-until-green owns provider routing without a separate Codex review skill', () => {
+test('review-and-fix owns provider routing without a separate Codex review skill', () => {
   const root = path.join(__dirname, '..', '..');
-  const md = fs.readFileSync(path.join(root, 'commands', 'review-until-green.md'), 'utf8');
+  const md = fs.readFileSync(path.join(root, 'commands', 'review-and-fix.md'), 'utf8');
   assert.strictEqual(fs.existsSync(path.join(root, 'skills', 'concord-codex-review')), false);
   assert.match(md, /--reviewer <claude\|codex\|copilot>/);
   assert.match(md, /--fixer <claude\|codex\|copilot>/);
@@ -2095,22 +2085,6 @@ test('round-start: --no-broad disarms the front pass, and the opt-out is sticky'
   assert.deepStrictEqual(review.readLedger(dir, review.targetSlug('feat/x')).gate_rounds, []);
 });
 
-test('record: --no-broad also opts out of the holistic panel -- the opt-out run never pays broad review\'s expensive half', () => {
-  const repo = initRepo();
-  const dir = tmpDir();
-  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
-  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
-  execFileSync('git', ['commit', '-aqm', 'enable panel'], { cwd: repo });
-  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
-  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
-  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--no-broad'], { env })).round;
-  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
-  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
-  run(['plan-fixes', 'feat/x'], { env });
-  const out = JSON.parse(run(['record', 'feat/x'], { env }));
-  assert.ok(!out.decision.panelPending, 'a --no-broad run must not be sent into the panel');
-  assert.strictEqual(out.decision.converged, true);
-});
 
 test('round-start file: a file target is broad-disarmed by default, and --broad still forces the sweep', () => {
   const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-broad-')); // NOT a git repo
@@ -2145,32 +2119,8 @@ test('renderHandoff file: a disarmed file target does not blame --no-broad for a
   assert.match(out.handoff, /not applicable to a file target/);
 });
 
-test('record file: a configured gate.panel still runs for a file target -- the pair is disarmed, the panel is not', () => {
-  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-panel-'));
-  const dir = tmpDir();
-  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
-  fs.writeFileSync(path.join(fileDir, 'note.md'), '# note\n\nsome prose.\n');
-  fs.writeFileSync(path.join(fileDir, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
-  // A file target converges on a dry streak of clean rounds, so drive rounds
-  // until the CLI stops asking for another one.
-  let out;
-  for (let i = 0; i < 5; i++) {
-    const rs = JSON.parse(run(['round-start', 'file:note.md'], { env, broadDefault: true }));
-    if (rs.decision !== 'work') break;
-    assert.strictEqual(rs.gateApplied, false); // the pair's prompt is git-diff-shaped
-    writeArtifact(dir, rs.round, 'correctness', { status: 'ok', examined: ['note.md'], findings: [] });
-    writeArtifact(dir, rs.round, 'verify', { status: 'ok', rejected: [] });
-    run(['plan-fixes', 'file:note.md'], { env });
-    out = JSON.parse(run(['record', 'file:note.md'], { env }));
-    if (!out.decision.continue) break;
-  }
-  // ...but the panel's lenses read the review text and the intent doc, which a
-  // file target has. Disarming the pair by default must not silently drop a
-  // half this repo explicitly configured.
-  assert.strictEqual(out.decision.panelPending, true);
-});
 
-test('renderHandoff: --no-broad in a panel-enabled repo says the panel was skipped, not nothing at all', () => {
+test('renderHandoff: legacy panel config does not appear in a --no-broad handoff', () => {
   const repo = initRepo();
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
@@ -2184,7 +2134,7 @@ test('renderHandoff: --no-broad in a panel-enabled repo says the panel was skipp
   run(['plan-fixes', 'feat/x'], { env });
   const out = JSON.parse(run(['record', 'feat/x'], { env }));
   assert.strictEqual(out.decision.converged, true);
-  assert.match(out.handoff, /Broad-review panel: skipped \(--no-broad\); this repo has it enabled/);
+  assert.doesNotMatch(out.handoff, /panel/i);
 });
 
 test('round-start: --broad re-arms a ledger that opted out earlier', () => {
@@ -2421,9 +2371,8 @@ test('renderHandoff: a --no-dod deferral names the flag, and does not claim a ga
 });
 
 test('record: a --no-dod round with a committed fix reaches its terminal decision without re-running the DoD', () => {
-  // record re-runs the DoD after a terminal round that landed fixes, so the
-  // very last step of an otherwise successful --no-dod run used to throw
-  // "harness-failure: no review.config.json" and lose the whole handoff.
+  // A terminal needs-decision stop must preserve the explicit deferral even
+  // when one fix committed; only review convergence may trigger final DoD.
   const repo = initRepoWithoutDodConfig();
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
@@ -2852,7 +2801,7 @@ test('record: diff-local clean with an open gate finding -> gate-pending, not cl
   assert.strictEqual(review.readLedger(dir, review.targetSlug('feat/x')).status, 'gate-pending');
 });
 
-test('record: gate.panel enabled and diff-local + lightweight-gate clean -> panelPending, not converged', () => {
+test('record: legacy gate.panel config does not arm an automatic final panel', () => {
   const repo = initRepo(); const dir = tmpDir();
   fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
   execFileSync('git', ['add', '-A'], { cwd: repo });
@@ -2865,36 +2814,10 @@ test('record: gate.panel enabled and diff-local + lightweight-gate clean -> pane
   const planOut = JSON.parse(run(['plan-fixes', 'feat/x'], { env }));
   assert.deepStrictEqual(planOut.fixes, []);
   const rec = JSON.parse(run(['record', 'feat/x'], { env }));
-  assert.strictEqual(rec.decision.panelPending, true);
-  assert.strictEqual(rec.decision.converged, false);
+  assert.strictEqual(rec.decision.panelPending, undefined);
+  assert.strictEqual(rec.decision.converged, true);
 });
 
-test('telemetry-slot accepts only the done ledger that is actively panel-pending', () => {
-  const repo = initRepo(); const dir = tmpDir();
-  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
-  execFileSync('git', ['add', '-A'], { cwd: repo });
-  execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
-  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
-    { status: 'ok', examined: ['a.txt'], findings: [] },
-    { status: 'ok', rejected: [] }, { armBroad: true });
-  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
-  run(['plan-fixes', 'feat/x'], { env });
-  assert.strictEqual(JSON.parse(run(['record', 'feat/x'], { env })).decision.panelPending, true);
-  const panelRound = JSON.parse(run(['gate-panel-round-start', 'feat/x'], { env })).round;
-  const lensPath = path.join(dir, `round-${n}-gate-panel-${panelRound}-threat-model.json`);
-
-  const slot = JSON.parse(run(['telemetry-slot', 'feat/x', lensPath, '--engine', 'claude-code'], { env }));
-
-  assert.deepStrictEqual(slot, { engine: 'claude-code', provider: 'anthropic', artifactPath: lensPath, attempt: 1, role: 'gate-panel-threat-model', round: n });
-  const votePath = path.join(dir, `round-${n}-gate-panel-${panelRound}-vote-gate_threat-model_x-0.json`);
-  const voteSlot = JSON.parse(run(['telemetry-slot', 'feat/x', votePath, '--engine', 'claude-code'], { env }));
-  assert.strictEqual(voteSlot.role, 'gate-panel-verify');
-  const slug = review.targetSlug('feat/x');
-  const ledger = review.readLedger(dir, slug);
-  review.writeLedger(dir, slug, { ...ledger, status: 'clean' });
-  assert.throws(() => run(['telemetry-slot', 'feat/x', path.join(dir, `round-${n}-gate-panel-${panelRound}-verify.json`), '--engine', 'claude-code'], { env }), /no active review work/);
-});
 
 test('record: gate.panel enabled but NOT configured (absent gate.panel) -> converges clean as before (no behavior change)', () => {
   const repo = initRepo(); const dir = tmpDir();
@@ -2907,46 +2830,6 @@ test('record: gate.panel enabled but NOT configured (absent gate.panel) -> conve
   assert.strictEqual(rec.decision.panelPending, undefined);
 });
 
-test('record: panel-confirmed material finding terminates through reconciliation', () => {
-  const repo = initRepo(); const dir = tmpDir();
-  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
-  execFileSync('git', ['add', '-A'], { cwd: repo });
-  execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
-  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
-    { status: 'ok', examined: ['a.txt'], findings: [] },
-    { status: 'ok', rejected: [] }, { armBroad: true });
-  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
-  run(['plan-fixes', 'feat/x'], { env });
-  const rec1 = JSON.parse(run(['record', 'feat/x'], { env })); // -> panelPending, phase flips to 'done'
-  assert.strictEqual(rec1.decision.panelPending, true);
-
-  // Simulate the panel having already converged with one confirmed finding
-  // (Task 6 covers actually driving this state via the CLI verbs) --
-  // directly seed the ledger state record() is contracted to read.
-  let ledger = review.readLedger(dir, review.targetSlug('feat/x'));
-  ledger = {
-    ...ledger,
-    phase: 'fixes', // reverted by gate-panel-round-record when the panel finishes (Task 6)
-    gate_panel: {
-      status: 'done', round: 2, dryStreak: 2,
-      confirmed: [{ id: 'gate:design-conformance:sk-exposure', class: 'design-conformance', file: 'a.txt', evidence: '', requirement: '', summary: 'a real gap the panel found' }],
-      rejectedIds: [],
-    },
-  };
-  review.writeLedger(dir, review.targetSlug('feat/x'), ledger);
-
-  const rec2 = JSON.parse(run(['record', 'feat/x'], { env }));
-  assert.strictEqual(rec2.decision.panelPending, undefined);
-  assert.strictEqual(rec2.decision.gatePending, true);
-  assert.strictEqual(rec2.decision.reconciliation, true);
-  assert.deepStrictEqual(rec2.reconciliation.findings, { 'design-conformance': 1 });
-  const replay = JSON.parse(run(['record', 'feat/x'], { env }));
-  assert.deepStrictEqual(replay.reconciliation, rec2.reconciliation);
-  assert.deepStrictEqual(replay.checks, rec2.checks);
-  const finalLedger = review.readLedger(dir, review.targetSlug('feat/x'));
-  assert.deepStrictEqual(finalLedger.gate_open.map((f) => f.id), ['gate:design-conformance:sk-exposure']);
-});
 
 test('renderHandoff: gate-pending surfaces the advisory broad review findings section', () => {
   const repo = initRepo();
@@ -3000,47 +2883,36 @@ test('round-start: a gate-pending re-run re-arms the front pass, it does not era
   assert.deepStrictEqual(review.readLedger(dir, slug).gate_rounds, [rerun.round]);
 });
 
-test('renderHandoff: names which half of broad review ran -- front pass round, panel not run', () => {
-  const repo = initRepo();
-  const dir = tmpDir();
+test('rerun reuses a completed front pass and reviews only the changed diff', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/broad-once';
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
   fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
-  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true })).round;
-  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
-  run(['plan-fixes', 'feat/x'], { env });
-  const out = JSON.parse(run(['record', 'feat/x'], { env }));
-  assert.match(out.handoff, /Broad review \(front pass\): round 1/);
-  // The panel is the other half (defects this run's own fixes introduced). This
-  // repo has no gate.panel, so "clean" must not read as "both halves swept".
-  assert.match(out.handoff, /Broad-review panel: did not run/);
-});
 
-test('renderHandoff: a gate-pending stop in a panel-enabled repo says the panel is deferred, not "enable the panel"', () => {
-  const repo = initRepo();
-  const dir = tmpDir();
-  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
-  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
-  execFileSync('git', ['commit', '-aqm', 'enable panel'], { cwd: repo });
-  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
-  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
-  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true })).round;
+  const n = JSON.parse(run(['round-start', ref, base], { env, broadDefault: true })).round;
   writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
   writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
   writeArtifact(dir, n, 'gate', { status: 'ok', findings: [
-    { id: 'gate:silent-gap:x', file: 'a.txt', span: '', summary: 'a real gap', requirement: 'r' },
+    { id: 'gate:cross-context:x', file: 'a.txt', span: 'two', summary: 'a real gap', requirement: 'r' },
   ] });
   writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
-  run(['plan-fixes', 'feat/x'], { env });
-  const out = JSON.parse(run(['record', 'feat/x'], { env }));
-  assert.strictEqual(out.decision.gatePending, true);
-  // An open broad finding outranks panelPending, so the panel is still ahead of
-  // the NEXT convergence attempt -- telling this user to enable it is a no-op.
-  assert.doesNotMatch(out.handoff, /enable/);
-  assert.match(out.handoff, /Broad-review panel: not run on this attempt/);
+  run(['plan-fixes', ref], { env });
+  assert.strictEqual(JSON.parse(run(['record', ref], { env })).decision.gatePending, true);
+
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'three\n');
+  execFileSync('git', ['commit', '-aqm', 'fix broad finding'], { cwd: repo });
+  run(['rerun', ref], { env });
+  const next = JSON.parse(run(['round-start', ref], { env, broadDefault: true }));
+  assert.strictEqual(next.gateApplied, false, 'the completed front pass remains valid for the descendant head');
+
+  writeArtifact(dir, next.round, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, next.round, 'verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', ref], { env });
+  assert.strictEqual(JSON.parse(run(['record', ref], { env })).decision.converged, true);
 });
+
+
 
 test('renderHandoff: --no-broad is reported, never left to read as "broad review found nothing"', () => {
   const repo = initRepo();
@@ -3494,137 +3366,7 @@ test('gate-panel-round-record: two consecutive dry rounds -> status "done" and l
   assert.strictEqual(ledger.gate_panel.status, 'done');
 });
 
-test('e2e: gate.panel enabled -- full cycle: record signals panelPending, 3 panel rounds converge (1 confirmed then 2 dry), final record merges into gate_open', () => {
-  const repo = initRepo(); const dir = tmpDir();
-  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
-  execFileSync('git', ['add', '-A'], { cwd: repo });
-  execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
-  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
-    { status: 'ok', examined: ['a.txt'], findings: [] },
-    { status: 'ok', rejected: [] }, { armBroad: true });
-  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
 
-  const planOut = JSON.parse(run(['plan-fixes', 'feat/x'], { env }));
-  assert.deepStrictEqual(planOut.fixes, []); // nothing to fix -- would otherwise go clean
-
-  const rec1 = JSON.parse(run(['record', 'feat/x'], { env }));
-  assert.strictEqual(rec1.decision.panelPending, true);
-
-  // Panel round 1: the threat-model lens raises a real finding, verify lets it survive.
-  const start1 = JSON.parse(run(['gate-panel-round-start', 'feat/x'], { env }));
-  assert.strictEqual(start1.round, 1);
-  assert.deepStrictEqual(start1.rejectedIds, []);
-  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-threat-model.json`),
-    JSON.stringify({ status: 'ok', findings: [{ id: 'gate:threat-model:sk-exposure', file: 'a.txt', span: '', requirement: '', summary: 'a real gap' }] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
-  const round1 = JSON.parse(run(['gate-panel-round-record', 'feat/x'], { env }));
-  assert.strictEqual(round1.status, 'running'); // real progress -- dryStreak reset to 0
-
-  // Panel round 2: nothing new -- 1st dry round. rejectedIds carries forward from round 1 (empty here).
-  const start2 = JSON.parse(run(['gate-panel-round-start', 'feat/x'], { env }));
-  assert.strictEqual(start2.round, 2);
-  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-2-threat-model.json`), JSON.stringify({ status: 'ok', findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-2-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
-  const round2 = JSON.parse(run(['gate-panel-round-record', 'feat/x'], { env }));
-  assert.strictEqual(round2.status, 'running'); // 1 dry round so far -- needs 2 consecutive
-
-  // Panel round 3: still nothing -- 2nd consecutive dry round -> done.
-  const start3 = JSON.parse(run(['gate-panel-round-start', 'feat/x'], { env }));
-  assert.strictEqual(start3.round, 3);
-  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-3-threat-model.json`), JSON.stringify({ status: 'ok', findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-3-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
-  const round3 = JSON.parse(run(['gate-panel-round-record', 'feat/x'], { env }));
-  assert.strictEqual(round3.status, 'done');
-
-  // record again -- panel is done, its confirmed finding merges into gate_open -> gate-pending, not clean.
-  const rec2 = JSON.parse(run(['record', 'feat/x'], { env }));
-  assert.strictEqual(rec2.decision.panelPending, undefined);
-  assert.strictEqual(rec2.decision.gatePending, true);
-  assert.match(rec2.handoff, /Broad-review panel: 3 round\(s\), 1 confirmed/); // positive path: line present when panel done
-  const finalLedger = review.readLedger(dir, review.targetSlug('feat/x'));
-  assert.deepStrictEqual(finalLedger.gate_open.map((f) => f.id), ['gate:threat-model:sk-exposure']);
-  assert.strictEqual(finalLedger.status, 'gate-pending');
-});
-
-test('e2e: gate_panel resets on a second convergence attempt -- round-start re-arm makes the panel re-run, and a fixed finding does not resurface', () => {
-  const repo = initRepo(); const dir = tmpDir();
-  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
-  execFileSync('git', ['add', '-A'], { cwd: repo });
-  execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
-
-  // --- Attempt 1: correctness clean, lightweight gate clean, panel confirms one finding
-  // over 3 rounds (1 real, then 2 dry) -- same shape as the existing full-cycle e2e test.
-  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
-    { status: 'ok', examined: ['a.txt'], findings: [] },
-    { status: 'ok', rejected: [] }, { armBroad: true });
-  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
-  run(['plan-fixes', 'feat/x'], { env });
-  const rec1 = JSON.parse(run(['record', 'feat/x'], { env }));
-  assert.strictEqual(rec1.decision.panelPending, true);
-
-  run(['gate-panel-round-start', 'feat/x'], { env }); // round 1
-  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-threat-model.json`),
-    JSON.stringify({ status: 'ok', findings: [{ id: 'gate:threat-model:sk-exposure', file: 'a.txt', span: '', requirement: '', summary: 'a real gap' }] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
-  const round1 = JSON.parse(run(['gate-panel-round-record', 'feat/x'], { env }));
-  assert.strictEqual(round1.newlyConfirmedCount, 1);
-
-  run(['gate-panel-round-start', 'feat/x'], { env }); // round 2 -- 1st dry round
-  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-2-threat-model.json`), JSON.stringify({ status: 'ok', findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-2-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
-  run(['gate-panel-round-record', 'feat/x'], { env });
-
-  run(['gate-panel-round-start', 'feat/x'], { env }); // round 3 -- 2nd consecutive dry round -> done
-  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-3-threat-model.json`), JSON.stringify({ status: 'ok', findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-3-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
-  const round3 = JSON.parse(run(['gate-panel-round-record', 'feat/x'], { env }));
-  assert.strictEqual(round3.status, 'done');
-
-  const rec2 = JSON.parse(run(['record', 'feat/x'], { env }));
-  assert.strictEqual(rec2.decision.gatePending, true);
-  let ledger = review.readLedger(dir, review.targetSlug('feat/x'));
-  assert.deepStrictEqual(ledger.gate_open.map((f) => f.id), ['gate:threat-model:sk-exposure']);
-  assert.strictEqual(ledger.gate_panel.status, 'done');
-
-  // --- Human fixes the underlying issue and re-runs: round-start (resume form, no base
-  // token) re-arms the gate-pending stop state. Before the fix, gate_panel.status stayed
-  // 'done' forever here -- this asserts it is reset so the panel re-runs.
-  run(['round-start', 'feat/x'], { env, broadDefault: true });
-  ledger = review.readLedger(dir, review.targetSlug('feat/x'));
-  assert.strictEqual(ledger.status, 'converging');
-  assert.strictEqual(ledger.gate_panel.status, 'idle');
-  assert.deepStrictEqual(ledger.gate_panel.confirmed, []);
-  assert.deepStrictEqual(ledger.gate_open, []);
-  const n2 = ledger.round;
-  assert.notStrictEqual(n2, n);
-
-  // --- Attempt 2: correctness clean again, lightweight gate clean again -- simulating the
-  // fix worked and nothing else was found. The panel must run again (not be skipped because
-  // gate_panel was 'done' from attempt 1), and this time no lens raises anything.
-  fs.writeFileSync(path.join(dir, `round-${n2}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n2}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n2}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n2}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
-  run(['plan-fixes', 'feat/x'], { env });
-  const rec3 = JSON.parse(run(['record', 'feat/x'], { env }));
-  assert.strictEqual(rec3.decision.panelPending, true); // re-runs -- not skipped as already-done
-
-  run(['gate-panel-round-start', 'feat/x'], { env }); // panel round 1 of attempt 2 -- no lens files -> 1st dry round
-  const p1 = JSON.parse(run(['gate-panel-round-record', 'feat/x'], { env }));
-  assert.strictEqual(p1.status, 'running');
-  run(['gate-panel-round-start', 'feat/x'], { env }); // panel round 2 of attempt 2 -- 2nd consecutive dry round -> done
-  const p2 = JSON.parse(run(['gate-panel-round-record', 'feat/x'], { env }));
-  assert.strictEqual(p2.status, 'done');
-
-  const rec4 = JSON.parse(run(['record', 'feat/x'], { env }));
-  assert.strictEqual(rec4.decision.converged, true);
-  assert.strictEqual(rec4.decision.gatePending, undefined);
-  const finalLedger = review.readLedger(dir, review.targetSlug('feat/x'));
-  assert.strictEqual(finalLedger.status, 'clean');
-  assert.deepStrictEqual(finalLedger.gate_open, []); // the stale confirmed finding did not resurface
-});
 
 test('review-cli: unknown verb error message lists the two new gate-panel verbs', () => {
   const repo = initRepo(); const dir = tmpDir();
@@ -3635,37 +3377,6 @@ test('review-cli: unknown verb error message lists the two new gate-panel verbs'
   assert.match(stderr, /gate-panel-round-record/);
 });
 
-test('renderHandoff (via record): reports GATE panel round count and confirmed count once the panel is done', () => {
-  const repo = initRepo(); const dir = tmpDir();
-  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: { panel: true } }));
-  execFileSync('git', ['add', '-A'], { cwd: repo });
-  execFileSync('git', ['commit', '-qm', 'add config'], { cwd: repo });
-  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
-    { status: 'ok', examined: ['a.txt'], findings: [] },
-    { status: 'ok', rejected: [] }, { armBroad: true });
-  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
-  run(['plan-fixes', 'feat/x'], { env });
-  const rec0 = JSON.parse(run(['record', 'feat/x'], { env })); // -> panelPending, panel not done yet
-  assert.doesNotMatch(rec0.handoff, /Broad-review panel:/); // negative path: line absent when panel not done
-
-  let ledger = review.readLedger(dir, review.targetSlug('feat/x'));
-  ledger = {
-    ...ledger,
-    phase: 'fixes',
-    gate_panel: {
-      status: 'done', round: 3, dryStreak: 2,
-      confirmed: [{ id: 'gate:threat-model:sk-exposure', class: 'threat-model', file: 'a.txt', evidence: '', requirement: '', summary: 's' }],
-      rejectedIds: [],
-    },
-  };
-  review.writeLedger(dir, review.targetSlug('feat/x'), ledger);
-
-  const rec = JSON.parse(run(['record', 'feat/x'], { env }));
-  assert.match(rec.handoff, /Broad-review panel: 3 round\(s\), 1 confirmed/);
-});
-
-// ---- file target round-start tests (Task 2) ----
 
 test('round-start file: file:<path> target produces decision work, targetType file, writes file content as diff', () => {
   const dir = tmpDir();
@@ -4066,6 +3777,32 @@ test('rerun without a prior ledger says so instead of silently starting one', ()
   assert.match(r.stderr, /no ledger for ref "feat\/nope"/);
 });
 
+test('rerun stops at the cumulative run budget without changing the ledger', () => {
+  const { REVIEW_MAX_RUNS_DEFAULT } = require('../../core/config');
+  const dir = tmpDir(); const ref = 'feat/bounded-reruns'; const slug = review.targetSlug(ref);
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  review.writeLedger(dir, slug, { ...review.emptyLedger({ kind: 'local', ref }), status: 'clean', phase: 'done' });
+
+  for (let runNumber = 2; runNumber <= REVIEW_MAX_RUNS_DEFAULT; runNumber += 1) {
+    assert.strictEqual(JSON.parse(run(['rerun', ref], { env })).run, runNumber);
+    const ledger = review.readLedger(dir, slug);
+    review.writeLedger(dir, slug, { ...ledger, status: 'clean', phase: 'done' });
+  }
+
+  const before = fs.readFileSync(review.ledgerPath(dir, slug));
+  const evidenceBefore = fs.readdirSync(dir, { recursive: true }).sort();
+  const denied = runCapture(['rerun', ref], { env });
+  assert.notStrictEqual(denied.status, 0);
+  assert.match(denied.stderr, new RegExp(`cumulative run budget exhausted.*${REVIEW_MAX_RUNS_DEFAULT}`));
+  assert.deepStrictEqual(fs.readFileSync(review.ledgerPath(dir, slug)), before);
+  assert.deepStrictEqual(fs.readdirSync(dir, { recursive: true }).sort(), evidenceBefore);
+
+  const reset = runCapture(['reset', ref], { env });
+  assert.notStrictEqual(reset.status, 0);
+  assert.match(reset.stderr, /cannot discard cumulative run history/);
+  assert.deepStrictEqual(fs.readFileSync(review.ledgerPath(dir, slug)), before);
+});
+
 test('rerun archives persisted Codex runner telemetry before deleting its file', () => {
   const dir = tmpDir(); const slug = review.targetSlug('feat/codex-run');
   const env = { ...process.env, REVIEW_STATE_DIR: dir };
@@ -4167,52 +3904,24 @@ test('no-DoD target parks when the round budget is spent and round-start never o
   assert.strictEqual(ledger.budget.spent, max - 1);
 });
 
-test('git target: no-fix rounds that continue are charged one unit each and a terminal round is not charged', () => {
+test('git target: a failed final DoD stops without charging another review round', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['false'] }));
   execFileSync('git', ['add', '-A'], { cwd: repo });
   execFileSync('git', ['commit', '-qm', 'config'], { cwd: repo });
-  const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
   fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
-  const ref = 'feat/no-fix-budget';
+  const ref = 'feat/final-dod-budget';
   const slug = review.targetSlug(ref);
-  const spent = () => review.readLedger(dir, slug).budget.spent;
-  // A round that ends with the open set changed but no fix applied continues, so it
-  // is charged. The set changes because the reviewer re-reports a previously open
-  // finding and the verifier rejects it.
-  const seededRound = (id) => {
-    // round-start is a no-op while the diff is unchanged since the previous round.
-    fs.writeFileSync(path.join(repo, 'a.txt'), `two ${id}\n`);
-    execFileSync('git', ['commit', '-aqm', `round ${id}`], { cwd: repo });
-    const rs = JSON.parse(run(['round-start', ref, base], { env }));
-    assert.strictEqual(rs.decision, 'work');
-    const ledger = review.readLedger(dir, slug);
-    ledger.findings.push({ id, gate: 'correctness', file: 'a.txt', summary: id, status: 'open' });
-    review.writeLedger(dir, slug, ledger);
-    writeArtifact(dir, rs.round, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [{ id, gate: 'correctness', file: 'a.txt', span: 'two', summary: id }] });
-    writeArtifact(dir, rs.round, 'verify', { status: 'ok', rejected: [{ id, reason: 're-read a.txt: the claim does not hold' }], findings: [] });
-    run(['plan-fixes', ref], { env });
-    return JSON.parse(run(['record', ref], { env })).decision;
-  };
-  const d1 = seededRound('correctness:one');
-  assert.strictEqual(d1.continue, true);
-  assert.strictEqual(spent(), 1, 'a continuing round that applied no fix is charged');
-  const d2 = seededRound('correctness:two');
-  assert.strictEqual(d2.continue, true);
-  assert.strictEqual(spent(), 2);
-  // A round that ends waiting on a human (an unfixed finding is parked as needs-decision) is not charged.
-  fs.writeFileSync(path.join(repo, 'a.txt'), 'two three\n');
-  execFileSync('git', ['commit', '-aqm', 'round three'], { cwd: repo });
-  const rs3 = JSON.parse(run(['round-start', ref, base], { env }));
-  writeArtifact(dir, rs3.round, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:three', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'three' }] });
-  writeArtifact(dir, rs3.round, 'verify', { status: 'ok', rejected: [], findings: [] });
+  const started = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env }));
+  writeArtifact(dir, started.round, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, started.round, 'verify', { status: 'ok', rejected: [], findings: [] });
   run(['plan-fixes', ref], { env });
-  const d3 = JSON.parse(run(['record', ref], { env })).decision;
-  assert.strictEqual(d3.parked, true);
-  assert.strictEqual(d3.continue, false);
-  assert.strictEqual(spent(), 2, 'a round that ends waiting on a human is not charged');
+  const decision = JSON.parse(run(['record', ref], { env })).decision;
+  assert.strictEqual(decision.dodFailed, true);
+  assert.strictEqual(decision.continue, false);
+  assert.strictEqual(review.readLedger(dir, slug).budget.spent, 0);
 });
 
 test('target lock never offers to remove a live owner after its wait expires', () => {

@@ -30,7 +30,7 @@ for (const f of ['statedir.js', 'transcript.js', 'event.js']) {
   n++;
 }
 
-for (const skill of ['ticket-writing', 'ticket-to-pr', 'proposal-package-authoring', 'review-until-lgtm', 'initiative-to-prs']) {
+for (const skill of ['ticket-writing', 'ticket-to-pr', 'proposal-package-authoring', 'review-until-lgtm', 'initiative-to-prs', 'deep-review']) {
   fs.rmSync(path.join(packagedSkillsDir, skill), { recursive: true, force: true });
   fs.cpSync(path.join(sharedSkillsDir, skill), path.join(packagedSkillsDir, skill), { recursive: true });
   n++;

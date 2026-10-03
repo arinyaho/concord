@@ -22,7 +22,7 @@ codex plugin add concord@arinyaho-concord
 
 Run those commands in a shell, then start or restart Codex. Use `initiative-to-prs`, `ticket-writing`, `ticket-to-pr`, `proposal-package-authoring`, and `review-until-lgtm` in a Codex conversation; they are skills, not shell commands.
 
-The Codex plugin ships the session-state checkpoint, `/charter`, `/review-until-green`, `review-until-lgtm`, provider-neutral `initiative-to-prs`, `ticket-writing`, `ticket-to-pr`, and `proposal-package-authoring`. Reviewers and fixers run as `codex exec` subprocesses.
+The Codex plugin ships the session-state checkpoint, `/charter`, `/review-and-fix`, `review-until-lgtm`, provider-neutral `initiative-to-prs`, `ticket-writing`, `ticket-to-pr`, and `proposal-package-authoring`. `/review-until-green` remains a compatibility alias. Reviewers and fixers run as `codex exec` subprocesses.
 
 ### GitHub Copilot
 
@@ -31,7 +31,7 @@ copilot plugin marketplace add arinyaho/concord
 copilot plugin install concord@arinyaho-concord
 ```
 
-Restart VS Code after installation. The Copilot package provides charter persistence, native clean-context reviewer and fixer agents, `review-until-green`, `review-until-lgtm`, `initiative-to-prs`, `ticket-writing`, `ticket-to-pr`, and `proposal-package-authoring`.
+Restart VS Code after installation. The Copilot package provides charter persistence, native clean-context reviewer and fixer agents, `review-and-fix`, `review-until-lgtm`, `initiative-to-prs`, `ticket-writing`, `ticket-to-pr`, and `proposal-package-authoring`. `review-until-green` remains a compatibility alias.
 
 VS Code Preview hooks are required for automatic charter injection and `/charter set` persistence. An organization policy can disable hooks; in that degraded mode the packaged skills and agents remain discoverable, but charter hook behavior is unavailable and must not be treated as persisted. Copilot's transcript format is not a stable hook API, so automatic transcript-derived checkpoints are unavailable.
 
@@ -70,11 +70,11 @@ Back up `CONCORD_COPILOT_HOME` or `~/.copilot/concord` first when persistent Con
 
 ## Plugins
 
-- `concord` (Claude Code) - a per-session state checkpoint, cross-session task charter, `review-until-green`, `review-until-lgtm`, `initiative-to-prs`, `ticket-to-pr`, `ticket-writing`, `proposal-package-authoring`, and `delegate-verbose-work`.
-- `concord` (Codex) - the same `review-until-green`, `review-until-lgtm`, `initiative-to-prs`, `ticket-to-pr`, `ticket-writing`, and `proposal-package-authoring` workflows packaged natively for Codex and backed by the vendor-neutral core.
+- `concord` (Claude Code) - a per-session state checkpoint, cross-session task charter, `review-and-fix`, `review-until-lgtm`, `initiative-to-prs`, `ticket-to-pr`, `ticket-writing`, `proposal-package-authoring`, and `delegate-verbose-work`.
+- `concord` (Codex) - the same `review-and-fix`, `review-until-lgtm`, `initiative-to-prs`, `ticket-to-pr`, `ticket-writing`, and `proposal-package-authoring` workflows packaged natively for Codex and backed by the vendor-neutral core.
 - `concord` (GitHub Copilot) - explicit project charter persistence and the shared workflow set. It deliberately omits transcript-derived checkpoints and uses only documented hook fields.
 
-`review-until-green` accepts independent `--reviewer`, `--reviewer-model`, `--fixer`, and `--fixer-model` selections. Each role may use `claude`, `codex`, or `copilot`; the active host uses its native clean-context subagent when available and otherwise invokes the selected provider's CLI. Requested models are never silently replaced.
+`review-and-fix` accepts independent `--reviewer`, `--reviewer-model`, `--fixer`, and `--fixer-model` selections. Each role may use `claude`, `codex`, or `copilot`; the active host uses its native clean-context subagent when available and otherwise invokes the selected provider's CLI. Requested models are never silently replaced.
 
 ## Track map
 
@@ -84,7 +84,7 @@ The plugins come from a diagnosis of recurring session dysfunction:
 - Memory / ledger / doc churn + self-transcript re-reads -> the `concord` plugin (session-state checkpoint).
 - Monster resumed sessions (session hygiene).
 - Edit round-trip waste (edit-before-read, string-not-found).
-- Manual cross-session review<->fix ping-pong that ends on a weak "looks good" gate -> the `concord` plugin (`/review-until-green` review-and-fix loop).
+- Manual cross-session review<->fix ping-pong that ends on a weak "looks good" gate -> the `concord` plugin (`/review-and-fix`).
 - Tickets that leave the next agent guessing about product intent, design constraints, or proof -> the shared `ticket-writing` skill.
 - Multi-stage ticket work that skips reproducible red/green evidence or opens a PR with unfinished gates -> the shared `ticket-to-pr` skill.
 - Initiatives that need evidence, product decisions, an implementation-ready ticket set, model-routed execution, and verified PRs -> the shared `initiative-to-prs` skill (`base` delivery mode by default, opt-in `lite` for local, settled-contract changes).

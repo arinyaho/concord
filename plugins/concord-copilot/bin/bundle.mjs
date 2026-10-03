@@ -24,7 +24,7 @@ for (const file of ['event.js', 'statedir.js']) {
   fs.copyFileSync(path.join(adapterDir, file), path.join(engineDir, file));
 }
 
-for (const skill of ['ticket-writing', 'ticket-to-pr', 'proposal-package-authoring', 'review-until-lgtm']) {
+for (const skill of ['ticket-writing', 'ticket-to-pr', 'proposal-package-authoring', 'review-until-lgtm', 'deep-review']) {
   fs.rmSync(path.join(packagedSkillsDir, skill), { recursive: true, force: true });
   fs.cpSync(path.join(sharedSkillsDir, skill), path.join(packagedSkillsDir, skill), { recursive: true });
 }
@@ -37,7 +37,7 @@ fs.copyFileSync(
   path.join(initiativeDir, 'references/model-routing.md'),
 );
 
-fs.mkdirSync(path.join(copilotRoot, 'skills/review-until-green/references'), { recursive: true });
-fs.copyFileSync(path.join(repoRoot, 'plugins/concord/core/review-driver.md'), path.join(copilotRoot, 'skills/review-until-green/references/review-driver.md'));
+fs.mkdirSync(path.join(copilotRoot, 'skills/review-and-fix/references'), { recursive: true });
+fs.copyFileSync(path.join(repoRoot, 'plugins/concord/core/review-driver.md'), path.join(copilotRoot, 'skills/review-and-fix/references/review-driver.md'));
 
 process.stdout.write(`bundled ${files.length + 2} files into engine/\n`);

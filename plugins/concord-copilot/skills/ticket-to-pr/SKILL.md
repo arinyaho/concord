@@ -24,10 +24,10 @@ Record a discriminating outcome-level red against the unchanged combined system 
 | 1 | The work has agreed acceptance criteria and a definition of done, and any approved in-progress transition is applied | Every criterion names an observation, not an intention. The DoD says which gates are executable and which are deferred. The board reflects that work began only when the user approved that transition; a supplied Notion ticket is verified at `In progress`, `In review`, or `Done` |
 | 2 | Discriminating red | For a single-repository ticket, the claimed breakage or absent feature reproduces at the outcome level against unchanged code. For a repository unit under a multi-repository ticket, its contract check fails against the unchanged unit and the shared outcome-level red has been recorded |
 | 3 | Design note, committed where the next reader finds it | The decision, the trade-off it costs, and the residual exposure are all written down |
-| 4 | Review the design note | `/review-until-green file:<path>` |
+| 4 | Review the design note | `/review-and-fix file:<path>` |
 | 5 | Plan | Each task ends in something runnable and independently rejectable |
 | 6 | Implement | Red test first, verified red for the right reason, and executing where CI will execute it |
-| 7 | Review the diff | `/review-until-green <branch>` |
+| 7 | Review the diff | `/review-and-fix <branch>` |
 | 8 | Discriminating green | The same check passes against the changed unit and records the exact dependencies used. The combined outcome check remains a separate ticket gate for multi-repository work |
 | 9 | One PR per unit | Design, docs and code in the same repository PR; the repository's PR template followed; every document contradicted by the change corrected in it; the exact PR URL is read back from the tracker when that mutation is authorized |
 
@@ -41,7 +41,7 @@ When the input work item is a Notion ticket, the `ticket-to-pr` request authoriz
 
 After the PR URL exists, an eligible PR URL field is an editable URL field explicitly for the PR. For a single-PR ticket, when exactly one eligible PR URL field is empty or already has the same URL, write it; otherwise append an idempotent labelled `PR:` link to the ticket body, only when absent. For a multi-repository outcome, append or update the PR link in its repository implementation record without overwriting another unit's URL. Read the ticket back to verify the exact PR URL before changing the status. Preserve `In review` or `Done`; for a single-PR ticket, otherwise use the same status property to transition only from `In progress` to `In review`, then verify URL and status in the readback. For a multi-repository outcome, preserve its status until every required unit PR has been read back; only then may an approved `In review` transition occur. If any update or verification fails, report the failure; do not claim the stage completed. Do not move the ticket to Done.
 
-Stages 1, 3 and 5 have no single owner here — use whatever the repository already provides (a tracker, a `docs/` convention, a planning skill). Stages 4 and 7 are Concord's `review-until-green`. Stages 2 and 8 are described below, because they are the ones that get skipped.
+Stages 1, 3 and 5 have no single owner here — use whatever the repository already provides (a tracker, a `docs/` convention, a planning skill). Stages 4 and 7 are Concord's `review-and-fix`. Stages 2 and 8 are described below, because they are the ones that get skipped.
 
 ## Delegation
 
@@ -51,7 +51,7 @@ Before accepting an implementation direction, have a deep-capability agent asses
 
 For a material cryptography, security, or migration choice or contract, also require a separate deep-capability reviewer with a packet built from source evidence and the proposed decision, excluding the responsible agent's reasoning; reconcile disagreement before dependent work resumes.
 
-When composed by `initiative-to-prs`, return an execution handoff before stage 4 and stage 7. A delegated implementer returns `AWAITING_REVIEW` and exits; a fresh review driver runs the gate with the same initiative options. Resume implementation only after the design-note review passes, and complete stages 8 and 9 only after the diff review passes. A handoff is not a passing review. For standalone `ticket-to-pr`, the active agent may still drive its review. A delegated review driver must force blocking reviewer spawns on harnesses with async defaults, following `review-until-green`'s harness-specific driver; this preserves progress without passing implementation history into review orchestration.
+When composed by `initiative-to-prs`, return an execution handoff before stage 4 and stage 7. A delegated implementer returns `AWAITING_REVIEW` and exits; a fresh review driver runs the gate with the same initiative options. Resume implementation only after the design-note review passes, and complete stages 8 and 9 only after the diff review passes. A handoff is not a passing review. For standalone `ticket-to-pr`, the active agent may still drive its review. A delegated review driver must force blocking reviewer spawns on harnesses with async defaults, following `review-and-fix`'s harness-specific driver; this preserves progress without passing implementation history into review orchestration.
 
 ## Stage 2 is the one that gets skipped
 
@@ -124,4 +124,4 @@ If the repository tracks known gaps or limitations, check both directions. Does 
 
 ## Notes
 
-`review-until-green` reports its DoD as DEFERRED when the repository has no `review.config.json`; relay that rather than calling the run verified. Never merge — stage 9 ends at the PR URL.
+`review-and-fix` reports its DoD as DEFERRED when the repository has no `review.config.json`; relay that rather than calling the run verified. Never merge — stage 9 ends at the PR URL.

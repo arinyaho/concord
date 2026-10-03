@@ -1441,7 +1441,10 @@ test('terminal runner does not invent a missing call from an otherwise empty per
 });
 
 test('fix prompt requires an explicit, span-absent claim for a distinct planned mirror finding', () => {
-  const prompt = reviewerPrompt('fix', { stateDir: '/state', round: 7, finding: { id: 'correctness:bug', file: 'src/parser.js', span: 'lines 41-43', summary: 'repair it' }, plannedFindingIds: ['correctness:bug', 'correctness:mirror'] });
+  const prompt = reviewerPrompt('fix', { stateDir: '/state', round: 7, finding: { id: 'correctness:bug', file: 'src/parser.js', span: 'lines 41-43', summary: 'repair it' }, plannedFindings: [
+    { id: 'correctness:bug', file: 'src/parser.js', span: 'lines 41-43', summary: 'repair it' },
+    { id: 'correctness:mirror', file: 'src/mirror.js', span: 'line 8', summary: 'same root cause' },
+  ] });
   assert.match(prompt, /\/state\/round-7-fix-correctness_bug\.json/);
   assert.match(prompt, /src\/parser\.js/);
   assert.match(prompt, /lines 41-43/);
@@ -1456,7 +1459,7 @@ test('fix prompt requires an explicit, span-absent claim for a distinct planned 
 });
 
 test('file-target fix prompt omits git-only mirror claims', () => {
-  const prompt = reviewerPrompt('fix', { stateDir: '/state', round: 7, targetType: 'file', finding: { id: 'correctness:bug', file: 'note.md', span: 'bad', summary: 'fix it' }, plannedFindingIds: ['correctness:bug', 'correctness:mirror'] });
+  const prompt = reviewerPrompt('fix', { stateDir: '/state', round: 7, targetType: 'file', finding: { id: 'correctness:bug', file: 'note.md', span: 'bad', summary: 'fix it' }, plannedFindings: [{ id: 'correctness:mirror', file: 'note.md', span: 'also bad', summary: 'same root cause' }] });
   assert.doesNotMatch(prompt, /resolvedFindingIds|mirror finding|correctness:mirror/);
   assert.match(prompt, /\{"status":"ok","edited":true,"files":\["<every edited path>"\]\}\./);
 });
@@ -1477,11 +1480,11 @@ test('correctness prompt never claims the DoD passed when the gate was deferred'
   assert.match(prompt, /single run of the repo's own already-configured build\/test command/i);
 });
 
-test('correctness prompt keeps the real pass and real failure wordings when the gate actually ran', () => {
-  const passed = reviewerPrompt('correctness', { stateDir: '/state', round: 7, targetType: 'git', dodPassed: true, dodDeferred: false });
-  assert.match(passed, /DoD already passed; do not rerun tests\./);
-  const failed = reviewerPrompt('correctness', { stateDir: '/state', round: 7, targetType: 'git', dodPassed: false, dodDeferred: false });
-  assert.match(failed, /DoD already failed; do not root-cause it\./);
+test('correctness prompt reserves a pending DoD for the final clean boundary', () => {
+  const prompt = reviewerPrompt('correctness', { stateDir: '/state', round: 7, targetType: 'git', dodPassed: false, dodDeferred: false, dodPending: true });
+  assert.match(prompt, /run once after review convergence/i);
+  assert.match(prompt, /do not run the build or test suite/i);
+  assert.doesNotMatch(prompt, /DoD already failed/i);
 });
 
 test('runner passes --no-dod to round-start and threads the deferral into the correctness prompt', async () => {
@@ -1660,7 +1663,7 @@ test('gate-verify subprocess failure is retryable instead of being folded as a c
   assert.ok(h.calls.some((call) => call[0] === 'spawn' && call[1] === 'gate-verify'));
 });
 
-test('intent and gate review chains fan out alongside the correctness-to-verify chain', async () => {
+test('base broad pools both finder artifacts before launching both verifiers', async () => {
   const stateDir = temp();
   const pending = new Map();
   const calls = [];
@@ -1690,12 +1693,12 @@ test('intent and gate review chains fan out alongside the correctness-to-verify 
 
   const running = runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn });
   await new Promise(setImmediate);
-  assert.deepStrictEqual(calls, ['correctness', 'intent', 'gate']);
+  assert.deepStrictEqual(new Set(calls), new Set(['correctness', 'intent', 'gate']));
   complete('correctness');
   complete('intent');
   complete('gate');
   await new Promise(setImmediate);
-  assert.deepStrictEqual(calls, ['correctness', 'intent', 'gate', 'verify', 'gate-verify']);
+  assert.deepStrictEqual(new Set(calls), new Set(['correctness', 'intent', 'gate', 'verify', 'gate-verify']));
   complete('verify');
   complete('gate-verify');
   await running;
@@ -1718,6 +1721,8 @@ test('intent and gate prompts preserve their full role contracts', () => {
   assert.match(verify, /Reject false positives/i);
   assert.match(verify, /new.*gate:/i);
   assert.match(verify, /rejected/);
+  assert.match(reviewerPrompt('verify', { ...base, gateApplied: true }), /round-2-gate\.json/);
+  assert.match(reviewerPrompt('gate-verify', { ...base, gateApplied: true }), /round-2-correctness\.json/);
 });
 
 test('panel lens prompts identify the reviewed diff and require the intent source', async () => {
@@ -2146,11 +2151,11 @@ test('runner routes review and fix roles to independent providers and models', a
   assert.ok(routed.filter(({ role }) => role !== 'fix').every(({ provider }) => provider === 'claude'));
 });
 
-test('Codex launcher --help exits without invoking the runner', () => {
+test('Codex review-and-fix launcher and compatibility alias --help exit without invoking the runner', () => {
   const dir = temp();
   const capture = path.join(dir, 'options.json');
   const preload = path.join(dir, 'capture-runner.js');
-  const bin = path.join(__dirname, '..', '..', '..', 'concord-codex', 'bin', 'review-until-green.js');
+  const binDir = path.join(__dirname, '..', '..', '..', 'concord-codex', 'bin');
   fs.writeFileSync(preload, `
     const fs = require('node:fs');
     const Module = require('node:module');
@@ -2163,9 +2168,11 @@ test('Codex launcher --help exits without invoking the runner', () => {
       return load.apply(this, arguments);
     };
   `);
-  const output = execFileSync('node', ['--require', preload, bin, '--help'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
-  assert.match(output, /^Usage: review-until-green/m);
-  assert.match(output, /resume <ref>/);
+  for (const name of ['review-and-fix.js', 'review-until-green.js']) {
+    const output = execFileSync('node', ['--require', preload, path.join(binDir, name), '--help'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
+    assert.match(output, /^Usage: review-and-fix/m);
+    assert.match(output, /resume <ref>/);
+  }
   assert.strictEqual(fs.existsSync(capture), false);
 });
 
