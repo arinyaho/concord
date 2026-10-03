@@ -136,7 +136,7 @@ function validateFixFiles(repoRoot, stateDir, files) {
   }
 }
 function gitCheckoutTree(repoRoot) {
-  sh('git', ['checkout', '--', '.'], { cwd: repoRoot });
+  sh('git', ['checkout', 'HEAD', '--', '.'], { cwd: repoRoot });
 }
 function runDod(repoRoot) {
   const cfg = dodExec.loadDodConfig(repoRoot);
@@ -419,6 +419,16 @@ function requireArtifactAfter(stateDir, n, firstName, secondName) {
   const secondStat = statArtifact(secondName, secondPath);
   if (secondStat.mtimeMs < firstStat.mtimeMs) {
     throw new Error(`harness-failure: round-${n}-${secondName}.json predates round-${n}-${firstName}.json -- it was spawned before ${firstName} finished writing (see review-until-green.md step 3: correctness and verify must run sequentially, never in parallel)`);
+  }
+}
+
+function requireVerifierOrder(stateDir, n, gateApplied, gateMode) {
+  requireArtifactAfter(stateDir, n, 'correctness', 'verify');
+  if (!gateApplied || gateMode === 'design-conformance') return;
+  requireArtifactAfter(stateDir, n, 'gate', 'verify');
+  if (fs.existsSync(path.join(stateDir, `round-${n}-gate-verify.json`))) {
+    requireArtifactAfter(stateDir, n, 'correctness', 'gate-verify');
+    requireArtifactAfter(stateDir, n, 'gate', 'gate-verify');
   }
 }
 
@@ -1442,7 +1452,8 @@ function runVerb(resolveFromCwd, args, initiative) {
     const reuseFrontPass = !!broadReuse && !broadFlagPassed && !noBroadFlagPassed && !isFileTarget && !intentCfg && !broadReuse.intentHash
       && broadReuse.base_sha === baseSha
       && gitIsReachable(repoRoot, broadReuse.head_sha);
-    if (reuseFrontPass) diff = gitDiff(repoRoot, broadReuse.head_sha);
+    const retryDiffBase = !isFileTarget && ledger.retry_diff_base && gitIsReachable(repoRoot, ledger.retry_diff_base) ? ledger.retry_diff_base : null;
+    if (retryDiffBase || reuseFrontPass) diff = gitDiff(repoRoot, retryDiffBase || broadReuse.head_sha);
     const diffHash = contentHash(diff);
 
     let resumedCompletedArtifacts = [];
@@ -1455,8 +1466,15 @@ function runVerb(resolveFromCwd, args, initiative) {
         const name = `round-${resumeRound}-${role}.json`;
         try { return ledger.execution.artifactHashes && ledger.execution.artifactHashes[role] === contentHash(fs.readFileSync(path.join(stateDir, name), 'utf8')); } catch (_) { return false; }
       }).map((role) => `round-${resumeRound}-${role}.json`));
-      for (const [producer, verifier] of [['correctness', 'verify'], ['gate', 'gate-verify']]) {
-        if (!preserved.has(`round-${resumeRound}-${producer}.json`)) preserved.delete(`round-${resumeRound}-${verifier}.json`);
+      if (ledger.gateApplied && ledger.gateMode !== 'design-conformance') {
+        if (['correctness', 'gate'].some((role) => !preserved.has(`round-${resumeRound}-${role}.json`))) {
+          preserved.delete(`round-${resumeRound}-verify.json`);
+          preserved.delete(`round-${resumeRound}-gate-verify.json`);
+        }
+      } else {
+        for (const [producer, verifier] of [['correctness', 'verify'], ['gate', 'gate-verify']]) {
+          if (!preserved.has(`round-${resumeRound}-${producer}.json`)) preserved.delete(`round-${resumeRound}-${verifier}.json`);
+        }
       }
       resumedCompletedArtifacts = completed.filter((role) => preserved.has(`round-${resumeRound}-${role}.json`));
       deleteRoundArtifacts(stateDir, resumeRound, preserved);
@@ -1799,11 +1817,13 @@ function runVerb(resolveFromCwd, args, initiative) {
       applied = { ...applied, status: intentReview ? 'intent-review' : 'gate-pending' };
     }
     if (isGit && decision.converged && !ledger.dodDeferred) {
+      gitCheckoutTree(repoRoot);
+      if (gitIsDirty(repoRoot)) throw new Error('harness-failure: review work left untracked files in the repository; final DoD was not run against an uncommitted worktree');
       const finalDod = runDod(repoRoot);
       applied = { ...applied, dod: finalDod };
       if (!finalDod.deferred && !finalDod.passed) {
         decision = { continue: false, converged: false, parked: false, abandoned: false, dodFailed: true, reason: 'final DoD failed after review convergence; fix the failure, then review the changed diff before retrying DoD' };
-        applied = { ...applied, status: 'dod-failed' };
+        applied = { ...applied, status: 'dod-failed', retry_diff_base: gitHeadSha(repoRoot) };
       } else {
         decision = {
           ...decision,
@@ -1912,7 +1932,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     const gateApplied = !!ledger.gateApplied;
     const n = ledger.round;
     requireReservations(run, ledger, gatesNeeds(stateDir, n), 'plan-fixes');
-    requireArtifactAfter(stateDir, n, 'correctness', 'verify');
+    requireVerifierOrder(stateDir, n, ledger.gateApplied, ledger.gateMode);
     const cJson = readArtifact(stateDir, n, 'correctness');
     const vJson = readArtifact(stateDir, n, 'verify');
     const candidates = roundCandidates(gc, cJson, vJson);

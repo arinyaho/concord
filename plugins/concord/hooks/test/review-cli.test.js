@@ -243,6 +243,24 @@ test('DoD runs once after review convergence, not at round start', () => {
   assert.match(recorded.handoff, /DoD: passed/);
 });
 
+test('final DoD runs against committed files after discarding reviewer edits', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['false'] }));
+  execFileSync('git', ['commit', '-aqm', 'failing dod'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const started = JSON.parse(run(['round-start', 'feat/dirty-dod', 'HEAD~1'], { env }));
+  writeArtifact(dir, started.round, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, started.round, 'verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/dirty-dod'], { env });
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'] }));
+
+  const recorded = JSON.parse(run(['record', 'feat/dirty-dod'], { env }));
+  assert.strictEqual(recorded.decision.dodFailed, true);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(repo, 'review.config.json'), 'utf8')), { dod: ['false'] });
+});
+
 test('round-start resume preserves normalized artifacts and records an artifact write failure for retry', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
@@ -306,10 +324,16 @@ test('round-start resume invalidates gate verification when its gate artifact ch
   fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
   const first = JSON.parse(run(['round-start', 'feat/resume-gate-pair', 'HEAD~1', '--broad'], { env, broadDefault: true }));
+  const correctness = path.join(dir, `round-${first.round}-correctness.json`);
   const gate = path.join(dir, `round-${first.round}-gate.json`);
+  const correctnessVerify = path.join(dir, `round-${first.round}-verify.json`);
   const verify = path.join(dir, `round-${first.round}-gate-verify.json`);
+  fs.writeFileSync(correctness, JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  run(['artifact-normalize', 'feat/resume-gate-pair', 'correctness'], { env, broadDefault: true });
   fs.writeFileSync(gate, JSON.stringify({ status: 'ok', findings: [] }));
   run(['artifact-normalize', 'feat/resume-gate-pair', 'gate'], { env, broadDefault: true });
+  fs.writeFileSync(correctnessVerify, JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
+  run(['artifact-normalize', 'feat/resume-gate-pair', 'verify'], { env, broadDefault: true });
   fs.writeFileSync(verify, JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
   const slug = review.targetSlug('feat/resume-gate-pair');
   const ledger = review.readLedger(dir, slug);
@@ -320,7 +344,8 @@ test('round-start resume invalidates gate verification when its gate artifact ch
   run(['round-failure', 'feat/resume-gate-pair', JSON.stringify({ role: 'correctness', kind: 'artifact-write-failure', message: 'interrupted' })], { env, broadDefault: true });
 
   const resumed = JSON.parse(run(['round-start', 'feat/resume-gate-pair'], { env, broadDefault: true }));
-  assert.deepStrictEqual(resumed.completedArtifacts, [], 'a verifier cannot survive a changed producer');
+  assert.deepStrictEqual(resumed.completedArtifacts, ['correctness'], 'neither pooled verifier can survive a changed finder');
+  assert.ok(!fs.existsSync(correctnessVerify), 'the stale correctness verifier artifact must be re-driven');
   assert.ok(!fs.existsSync(verify), 'the stale gate verifier artifact must be re-driven');
 });
 
@@ -477,9 +502,10 @@ test('a failed final DoD preserves the ledger and re-enters with diff-only revie
   // Review converges first; only then does the configured DoD fail.
   fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['false'] }));
   execFileSync('git', ['commit', '-aqm', 'failing dod'], { cwd: repo });
+  const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
   fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
-  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
+  const n = JSON.parse(run(['round-start', 'feat/x', base], { env })).round;
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   run(['plan-fixes', 'feat/x'], { env });
@@ -489,9 +515,13 @@ test('a failed final DoD preserves the ledger and re-enters with diff-only revie
 
   fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'] }));
   execFileSync('git', ['commit', '-aqm', 'fix dod'], { cwd: repo });
-  const restarted = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  const restarted = JSON.parse(run(['round-start', 'feat/x'], { env }));
   assert.strictEqual(restarted.decision, 'work');
   assert.strictEqual(restarted.gateApplied, false, 'the completed broad pass remains valid');
+  const retryDiff = fs.readFileSync(path.join(dir, `round-${restarted.round}-diff.txt`), 'utf8');
+  assert.match(retryDiff, /-.*false/);
+  assert.match(retryDiff, /\+.*true/);
+  assert.doesNotMatch(retryDiff, /-one/);
 });
 
 test('park-budget override clears a simultaneous final DoD retry without charging a round', () => {
@@ -584,10 +614,12 @@ function seedGatesRound(repo, dir, ref, correctness, verify, { armBroad = false 
   const n = review.readLedger(dir, review.targetSlug(ref)).round;
   if (armBroad) {
     fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
-    fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   }
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify(correctness));
   fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify(verify));
+  if (armBroad) {
+    fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  }
   return { env, n };
 }
 
@@ -680,6 +712,21 @@ test('plan-fixes: a verify artifact older than its correctness artifact is a har
   const past = new Date(Date.now() - 60000);
   fs.utimesSync(vPath, past, past); // verify's file predates correctness's -- simulates a parallel spawn racing an empty file
   assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure.*predates/);
+});
+
+test('plan-fixes: a pooled verify artifact older than gate is a harness-failure', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/pooled-order',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] }, { armBroad: true });
+  const correctnessPath = path.join(dir, `round-${n}-correctness.json`);
+  const verifyPath = path.join(dir, `round-${n}-verify.json`);
+  const gatePath = path.join(dir, `round-${n}-gate.json`);
+  const now = new Date(); const past = new Date(now.getTime() - 5000); const middle = new Date(now.getTime() - 2500);
+  fs.utimesSync(correctnessPath, past, past);
+  fs.utimesSync(verifyPath, middle, middle);
+  fs.utimesSync(gatePath, now, now);
+  assert.throws(() => run(['plan-fixes', 'feat/pooled-order'], { env, broadDefault: true }), /round-\d+-verify\.json predates round-\d+-gate\.json/);
 });
 
 test('plan-fixes: a changed file never examined is a harness-failure (coverage)', () => {
@@ -1625,6 +1672,7 @@ test('record: material design gate terminates reconciliation even while the DoD 
   execFileSync('git', ['commit', '-qm', 'configure failing gate'], { cwd: repo });
   const { env, n } = seedGatesRound(repo, dir, 'feat/x', { status: 'ok', examined: ['a.txt'], findings: [] }, { status: 'ok', rejected: [] }, { armBroad: true });
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [{ id: 'gate:design-conformance:missing', file: 'a.txt', span: 'one', requirement: 'REQ', summary: 'missing requirement' }] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
   run(['plan-fixes', 'feat/x'], { env });
   const out = JSON.parse(run(['record', 'feat/x'], { env }));
@@ -2839,10 +2887,10 @@ test('record: diff-local clean with an open gate finding -> gate-pending, not cl
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
   const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true })).round;
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [
     { id: 'gate:cross-context:sibling', file: 'other.js', span: 'x', summary: 'unchanged sibling reopens invariant' },
   ] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   run(['plan-fixes', 'feat/x'], { env });
   const out = JSON.parse(run(['record', 'feat/x'], { env }));
@@ -2917,10 +2965,10 @@ test('renderHandoff: gate-pending surfaces the advisory broad review findings se
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
   const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true })).round;
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [
     { id: 'gate:silent-gap:missing-check', file: 'verify.js', span: 'if (!target) return;', summary: 'design requires a target-exists check' },
   ] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   run(['plan-fixes', 'feat/x'], { env });
   const out = JSON.parse(run(['record', 'feat/x'], { env }));
@@ -2941,10 +2989,10 @@ test('round-start: a gate-pending re-run re-arms the front pass, it does not era
   // Round 1: the front pass raises a broad finding -> gate-pending.
   const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true })).round;
   writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
-  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
   writeArtifact(dir, n, 'gate', { status: 'ok', findings: [
     { id: 'gate:cross-context:x', file: 'unchanged.js', span: '', summary: 'a real gap', requirement: 'r' },
   ] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
   writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
   run(['plan-fixes', 'feat/x'], { env });
   assert.strictEqual(JSON.parse(run(['record', 'feat/x'], { env })).decision.gatePending, true);
@@ -2968,10 +3016,10 @@ test('rerun reuses a completed front pass and reviews only the changed diff', ()
 
   const n = JSON.parse(run(['round-start', ref, base], { env, broadDefault: true })).round;
   writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
-  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
   writeArtifact(dir, n, 'gate', { status: 'ok', findings: [
     { id: 'gate:cross-context:x', file: 'a.txt', span: 'two', summary: 'a real gap', requirement: 'r' },
   ] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
   writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
   run(['plan-fixes', ref], { env });
   assert.strictEqual(JSON.parse(run(['record', ref], { env })).decision.gatePending, true);
@@ -3093,10 +3141,10 @@ test('record: park-budget override on a gate-pending round clears gatePending, l
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
   const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true })).round;
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [
     { id: 'gate:cross-context:sibling', file: 'other.js', span: 'x', summary: 'unchanged sibling reopens invariant' },
   ] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   run(['plan-fixes', 'feat/x'], { env });
 
