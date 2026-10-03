@@ -48,6 +48,11 @@ function setup(t, provider) {
   return { root, store, ledgerPath, ledger, initiativeDir, bind, evidencePath, packet, call, ok, record, promote };
 }
 for (const provider of Object.keys(providers)) {
+  test(`${provider}: feedback accepts a native dod-failed recovery ledger`, (t) => {
+    const s = setup(t, provider);
+    fs.writeFileSync(s.ledgerPath, JSON.stringify({ ...s.ledger, status: 'dod-failed' }));
+    assert.equal(s.record().status, 'candidate');
+  });
   test(`${provider}: feedback is opt-in storage and does not create review state`, (t) => {
     const s = setup(t, provider);
     assert.deepEqual(s.ok('select', { stage: 'design', tags: ['state'] }).lessons, []);

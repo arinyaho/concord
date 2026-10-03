@@ -1837,11 +1837,15 @@ function runVerb(resolveFromCwd, args, initiative) {
       decision = { ...decision, continue: false, converged: false, parked: true, intentReview: false, gatePending: false };
       ledger = { ...ledger, status: 'parked' };
     }
-    if (decision.continue || decision.dodFailed) {
+    const retryDisposition = decision.dodFailed || decision.gatePending || decision.intentReview;
+    if (decision.continue || retryDisposition) {
       const spent = ledger.budget.spent + 1;
       ledger = { ...ledger, budget: { ...ledger.budget, spent } };
-      if (decision.dodFailed && spent >= ledger.budget.max_rounds) {
-        decision = { ...decision, dodFailed: false, parked: true, reason: 'round budget exhausted after repeated final DoD failures' };
+      if (retryDisposition && spent >= ledger.budget.max_rounds) {
+        const reason = decision.dodFailed
+          ? 'round budget exhausted after repeated final DoD failures'
+          : 'round budget exhausted after repeated reconciliation stops';
+        decision = { ...decision, dodFailed: false, gatePending: false, intentReview: false, parked: true, reason };
         ledger = { ...ledger, status: 'parked' };
       }
     }
@@ -2117,7 +2121,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       process.stdout.write(`review-cli reset: no ledger for ref "${ref}"; nothing to reset.\n`);
       return;
     }
-    if (prior.status === 'clean' || (prior.runs || []).length) {
+    if (prior.status === 'clean' || (prior.last_recorded_round !== null && prior.last_recorded_round !== undefined) || (prior.runs || []).length) {
       throw new Error('review-cli reset: cannot discard cumulative run history; cannot discard a completed run; preserve the ledger and split scope or reconcile the remaining verification');
     }
     deleteLedger(stateDir, slug);

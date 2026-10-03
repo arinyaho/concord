@@ -511,6 +511,20 @@ test('review-cli reset: a completed initial run cannot erase the cumulative budg
   assert.deepStrictEqual(fs.readFileSync(review.ledgerPath(dir, slug)), before);
 });
 
+test('review-cli reset preserves every recorded resumable disposition', () => {
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  for (const status of ['dod-failed', 'gate-pending', 'intent-review', 'parked']) {
+    const ref = `feat/${status}`; const slug = review.targetSlug(ref);
+    review.writeLedger(dir, slug, { ...review.emptyLedger({ kind: 'local', ref }), status, phase: 'done', round: 1, last_recorded_round: 1 });
+    const before = fs.readFileSync(review.ledgerPath(dir, slug));
+    const reset = runCapture(['reset', ref], { env });
+    assert.notStrictEqual(reset.status, 0, status);
+    assert.match(reset.stderr, /cannot discard a completed run/, status);
+    assert.deepStrictEqual(fs.readFileSync(review.ledgerPath(dir, slug)), before, status);
+  }
+});
+
 test('review-cli: missing ref argument exits non-zero with a message on stderr', () => {
   const dir = tmpDir();
   assert.throws(() => run(['show'], { env: { ...process.env, REVIEW_STATE_DIR: dir } }));
@@ -1676,6 +1690,7 @@ test('record: an intent finding terminates intent-review and the handoff shows i
   assert.match(out.handoff, /intent:retry-count/);
   const ledger = review.readLedger(dir, review.targetSlug('feat/x'));
   assert.strictEqual(ledger.status, 'intent-review');
+  assert.strictEqual(ledger.budget.spent, 1);
 });
 
 test('record: park-budget override on an intent-review round clears intentReview, leaving only parked', () => {
@@ -2811,7 +2826,31 @@ test('record: diff-local clean with an open gate finding -> gate-pending, not cl
   assert.strictEqual(out.decision.converged, false);
   const ledger = review.readLedger(dir, review.targetSlug('feat/x'));
   assert.strictEqual(ledger.status, 'gate-pending');
+  assert.strictEqual(ledger.budget.spent, 1);
   assert.deepStrictEqual(ledger.finalChecks, [{ name: 'definition-of-done', status: 'not-run' }]);
+});
+
+test('record: a reconciliation retry at the round limit parks instead of allowing another full review', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true })).round;
+  const slug = review.targetSlug('feat/x');
+  const started = review.readLedger(dir, slug);
+  review.writeLedger(dir, slug, { ...started, budget: { ...started.budget, max_rounds: 1 } });
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'gate', { status: 'ok', findings: [
+    { id: 'gate:cross-context:limit', file: 'other.js', span: 'x', summary: 'still unresolved' },
+  ] });
+  writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  const out = JSON.parse(run(['record', 'feat/x'], { env }));
+  assert.strictEqual(out.decision.parked, true);
+  assert.strictEqual(out.decision.gatePending, false);
+  assert.match(out.decision.reason, /round budget exhausted/);
+  assert.strictEqual(review.readLedger(dir, slug).status, 'parked');
 });
 
 test('record: legacy gate.panel config does not arm an automatic final panel', () => {
