@@ -2,7 +2,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { REVIEW_MAX_ROUNDS_DEFAULT, REVIEW_PARK_BUDGET_DEFAULT } = require('./config');
+const { REVIEW_MAX_ROUNDS_DEFAULT, REVIEW_MAX_RUNS_DEFAULT, REVIEW_PARK_BUDGET_DEFAULT } = require('./config');
 const { emptyGatePanel } = require('./gate-panel');
 const { writeFileAtomic } = require('./atomic-write');
 
@@ -64,6 +64,7 @@ function emptyLedger(target) {
     status: 'converging',
     round: 0,
     budget: { max_rounds: REVIEW_MAX_ROUNDS_DEFAULT, spent: 0 },
+    run_budget: { max_runs: REVIEW_MAX_RUNS_DEFAULT },
     diff_content_hash: null,
     gates: {},
     findings: [],
@@ -567,7 +568,7 @@ function renderReviewReport(ledgers) {
   const lines = [];
   for (const { ledger, unreadable } of ledgers || []) {
     if (unreadable) {
-      lines.push(`review-until-green: unreadable ledger ${reportFailureText(unreadable)} -- it is not resumed; preserve its bytes and restore the original ledger, then reconcile its identity and initiative binding before any mutation.`);
+      lines.push(`review-and-fix: unreadable ledger ${reportFailureText(unreadable)} -- it is not resumed; preserve its bytes and restore the original ledger, then reconcile its identity and initiative binding before any mutation.`);
       continue;
     }
     const ref = ledger.target && ledger.target.ref;
@@ -577,15 +578,17 @@ function renderReviewReport(ledgers) {
       const ph = (ledger.phase === 'gates' || ledger.phase === 'fixes') ? `, phase ${ledger.phase}` : '';
       const failure = ledger.execution && ledger.execution.failure;
       const retry = failure ? `; last harness failure: ${reportFailureText(failure.role)} ${reportFailureText(failure.kind)} (${reportFailureText(failure.message)})` : '';
-      lines.push(`review-until-green [${ref}]: ${roundInfo}${ph}, ${open} open finding(s) -- converging${retry}; resume with \`/review-until-green resume ${ref}\`.`);
+      lines.push(`review-and-fix [${ref}]: ${roundInfo}${ph}, ${open} open finding(s) -- converging${retry}; resume with \`/review-and-fix resume ${ref}\`.`);
     } else if (ledger.status === 'parked') {
-      lines.push(`review-until-green [${ref}]: ${roundInfo}, ${open} open finding(s) -- parked, needs a human decision; see \`review-cli.js show ${ref}\` (unpark a finding with \`review-cli.js unpark ${ref} <findingId>\`).`);
+      lines.push(`review-and-fix [${ref}]: ${roundInfo}, ${open} open finding(s) -- parked, needs a human decision; see \`review-cli.js show ${ref}\` (unpark a finding with \`review-cli.js unpark ${ref} <findingId>\`).`);
     } else if (ledger.status === 'intent-review') {
-      lines.push(`review-until-green [${ref}]: ${roundInfo} -- stopped for a design-conformance (intent) finding, needs a human decision; re-run \`/review-until-green ${ref}\` after fixing the code or the design source (a fixed contradiction converges, an unfixed one re-fetches the intent).`);
+      lines.push(`review-and-fix [${ref}]: ${roundInfo} -- stopped for a design-conformance (intent) finding, needs a human decision; re-run \`/review-and-fix ${ref}\` after fixing the code or the design source (a fixed contradiction converges, an unfixed one re-fetches the intent).`);
     } else if (ledger.status === 'gate-pending') {
-      lines.push(`review-until-green [${ref}]: ${roundInfo} -- stopped for advisory broad review finding(s), needs a human decision; re-run \`/review-until-green ${ref}\` (a fresh run re-evaluates broad review) or \`review-cli.js dismiss ${ref} <gateId>\` for a finding you accept as out-of-scope.`);
+      lines.push(`review-and-fix [${ref}]: ${roundInfo} -- stopped for advisory broad review finding(s), needs a human decision; re-run \`/review-and-fix ${ref}\` (a fresh run re-evaluates broad review) or \`review-cli.js dismiss ${ref} <gateId>\` for a finding you accept as out-of-scope.`);
+    } else if (ledger.status === 'dod-failed') {
+      lines.push(`review-and-fix [${ref}]: ${roundInfo} -- final DoD failed; fix the failure, then re-run \`/review-and-fix ${ref}\` to review the changed diff before retrying DoD.`);
     } else if (ledger.status === 'gate-panel-pending') {
-      lines.push(`review-until-green [${ref}]: ${roundInfo} -- diff-local clean, holistic broad-review panel pending or interrupted; re-run \`/review-until-green resume ${ref}\` to run/resume the panel.`);
+      lines.push(`review-and-fix [${ref}]: ${roundInfo} -- diff-local clean, holistic broad-review panel pending or interrupted; re-run \`/review-and-fix resume ${ref}\` to run/resume the panel.`);
     }
   }
   return lines.join('\n');

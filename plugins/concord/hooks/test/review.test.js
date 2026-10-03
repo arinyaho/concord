@@ -803,6 +803,16 @@ test('renderReviewReport: gate-pending ledgers surface an advisory broad review 
   assert.match(out, /dismiss feat\/g/);
 });
 
+test('renderReviewReport: dod-failed ledgers surface the fix-and-rerun recovery command', () => {
+  const l = review.emptyLedger({ kind: 'local', ref: 'feat/dod' });
+  l.status = 'dod-failed';
+  l.round = 2;
+  const out = review.renderReviewReport([{ slug: 'feat-dod', ledger: l }]);
+  assert.ok(out.includes('feat/dod'));
+  assert.match(out, /DoD failed/i);
+  assert.match(out, /review-and-fix feat\/dod/);
+});
+
 test('renderReviewReport: gate-panel-pending ledgers surface a resume/panel reminder, not silently omitted', () => {
   const l = review.emptyLedger({ kind: 'local', ref: 'feat/p' });
   l.status = 'gate-panel-pending';

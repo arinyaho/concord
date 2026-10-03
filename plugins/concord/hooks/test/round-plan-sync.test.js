@@ -15,15 +15,15 @@ const path = require('node:path');
 const CORE = path.join(__dirname, '..', '..', 'core');
 const { GATE_SWEEP_CLAUSE, reviewerPrompt } = require(path.join(CORE, 'round-plan'));
 const driverText = fs.readFileSync(path.join(CORE, 'review-driver.md'), 'utf8');
-// plugins/concord/commands/review-until-green.md is a hand-composed copy of
+// plugins/concord/commands/review-and-fix.md is a hand-composed copy of
 // review-driver.md (composed with the Claude Code spawn-include) that the
-// live `/review-until-green` slash command actually reads -- not generated
+// live `/review-and-fix` slash command actually reads -- not generated
 // by any build step, so it drifts silently unless a test checks it directly.
-const composedCommandText = fs.readFileSync(path.join(__dirname, '..', '..', 'commands', 'review-until-green.md'), 'utf8');
+const composedCommandText = fs.readFileSync(path.join(__dirname, '..', '..', 'commands', 'review-and-fix.md'), 'utf8');
 const REPO = path.join(__dirname, '..', '..', '..', '..');
-const codexCommandText = fs.readFileSync(path.join(REPO, 'plugins/concord-codex/commands/review-until-green.md'), 'utf8');
+const codexCommandText = fs.readFileSync(path.join(REPO, 'plugins/concord-codex/commands/review-and-fix.md'), 'utf8');
 const copilotDriverText = fs.readFileSync(
-  path.join(REPO, 'plugins/concord-copilot/skills/review-until-green/references/review-driver.md'),
+  path.join(REPO, 'plugins/concord-copilot/skills/review-and-fix/references/review-driver.md'),
   'utf8',
 );
 
@@ -39,10 +39,10 @@ test('review-driver.md embeds GATE_SWEEP_CLAUSE byte-for-byte in the gate-review
   );
 });
 
-test('composed commands/review-until-green.md embeds GATE_SWEEP_CLAUSE byte-for-byte in the gate-review prompt', () => {
+test('composed commands/review-and-fix.md embeds GATE_SWEEP_CLAUSE byte-for-byte in the gate-review prompt', () => {
   assert.ok(
     composedCommandText.includes(GATE_SWEEP_CLAUSE),
-    'commands/review-until-green.md gate-review prompt has drifted from round-plan.js GATE_SWEEP_CLAUSE -- recompose it from review-driver.md',
+    'commands/review-and-fix.md gate-review prompt has drifted from round-plan.js GATE_SWEEP_CLAUSE -- recompose it from review-driver.md',
   );
 });
 
@@ -71,10 +71,10 @@ test('the Copilot-vendored review-driver.md copy embeds GATE_SWEEP_CLAUSE byte-f
   // already covers its vendored copies), this file is produced by a plain
   // fs.copyFileSync in plugins/concord-copilot/bin/bundle.mjs with no
   // byte-identity guard of its own -- so it must be checked directly here,
-  // the same way core/review-driver.md and commands/review-until-green.md are.
+  // the same way core/review-driver.md and commands/review-and-fix.md are.
   assert.ok(
     copilotDriverText.includes(GATE_SWEEP_CLAUSE),
-    'plugins/concord-copilot/skills/review-until-green/references/review-driver.md gate-review prompt has drifted from round-plan.js GATE_SWEEP_CLAUSE -- re-run node plugins/concord-copilot/bin/bundle.mjs',
+    'plugins/concord-copilot/skills/review-and-fix/references/review-driver.md gate-review prompt has drifted from round-plan.js GATE_SWEEP_CLAUSE -- re-run node plugins/concord-copilot/bin/bundle.mjs',
   );
 });
 
@@ -98,7 +98,33 @@ test('every review driver artifact embeds the lite design-conformance gate promp
   const prompt = reviewerPrompt('gate', { stateDir: '<stateDir>', round: '<n>', slug: '<slug>', gateMode: 'design-conformance', targetType: 'git', dodPassed: true }).replaceAll('\\', '/');
   const shared = prompt.slice(0, prompt.indexOf(' Write ONLY'));
   assert.match(shared, /design-conformance gaps only/);
-  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-until-green.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
     assert.ok(text.includes(shared), `${name} lite gate prompt has drifted from round-plan.js`);
+  }
+});
+
+test('lite correctness verification does not depend on the concurrently running design-conformance gate', () => {
+  const lite = reviewerPrompt('verify', {
+    stateDir: '/state', round: 1, targetType: 'git', gateMode: 'design-conformance', gateApplied: true,
+  });
+  const base = reviewerPrompt('verify', {
+    stateDir: '/state', round: 1, targetType: 'git', gateMode: 'pair', gateApplied: true,
+  });
+
+  assert.doesNotMatch(lite, /round-1-gate\.json/);
+  assert.match(base, /round-1-gate\.json/);
+});
+
+test('the composed Claude command preserves pending final DoD semantics', () => {
+  assert.match(composedCommandText, /`dodPending:true` means the configured DoD is reserved for the final clean boundary/);
+  assert.match(composedCommandText, /If `round-start` reported `dodPending:true`, tell it the configured DoD will run once after review convergence/);
+  assert.doesNotMatch(composedCommandText, /If `dodPassed` is `false`, tell it DoD failed this round/);
+});
+
+test('manual drivers reserve only unresolved grouped fixes', () => {
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
+    assert.match(text, /skip it if its id is in `resolvedFindingIds` returned by an earlier `commit-fix`/, name);
+    assert.match(text, /Reserve one `fix` launch immediately before spawning each remaining fixer/, name);
+    assert.doesNotMatch(text, /fix --count <number of fixes>/, name);
   }
 });

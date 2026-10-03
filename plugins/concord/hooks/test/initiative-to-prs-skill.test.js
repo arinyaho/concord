@@ -37,15 +37,15 @@ test('all provider handoff contracts require a complete substantive reconciliati
 test('initiative-to-prs composes the existing ticket contracts and stops at verified PRs', () => {
   const skill = read('concord', 'SKILL.md');
   const stages = read('concord', 'references/stages.md');
-  const codexReviewCommand = fs.readFileSync(path.join(REPO, 'plugins', 'concord-codex', 'commands', 'review-until-green.md'), 'utf8');
+  const codexReviewCommand = fs.readFileSync(path.join(REPO, 'plugins', 'concord-codex', 'commands', 'review-and-fix.md'), 'utf8');
 
   assert.match(skill, /^---\nname: initiative-to-prs\ndescription: /);
   assert.match(skill, /ticket-writing/);
   assert.match(skill, /ticket-to-pr/);
   assert.match(skill, /branch from the prerequisite PR head/i);
   assert.match(skill, /target the downstream PR at the prerequisite branch/i);
-  assert.match(skill, /review-until-green <downstream-branch> <fetched-prerequisite-head-sha>/i);
-  assert.doesNotMatch(skill, /review-until-green <downstream-branch> <prerequisite-branch>/i);
+  assert.match(skill, /review-and-fix <downstream-branch> <fetched-prerequisite-head-sha>/i);
+  assert.doesNotMatch(skill, /review-and-fix <downstream-branch> <prerequisite-branch>/i);
   assert.match(skill, /verified stacked PR is a completion disposition/i);
   assert.match(skill, /ordinary.*fetch.*base.*immutable fetched commit SHA/is);
   assert.doesNotMatch(skill, /remote-tracking ref or an immutable fetched SHA/i);
@@ -88,11 +88,11 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(stages, /Write the design.*lite eligibility and escalation rules.*Commit the initial design note.*file-target review/is);
   assert.doesNotMatch(stages, /Before dependent implementation, apply the lite eligibility/i);
   assert.match(stages, /synthetic.*teardown.*read-back.*authorization.*retain.*named owner/is);
-  assert.match(stages, /contract review supplements rather than replaces `review-until-green`/i);
+  assert.match(stages, /contract review supplements rather than replaces `review-and-fix`/i);
   assert.match(stages, /apply the fix.*one fresh independent review.*one bounded fix pass followed by one fresh verification, not a loop.*human reconciliation/is);
   assert.doesNotMatch(`${skill}\n${stages}`, /repeat until clean/i);
   assert.match(stages, /new revision pair.*same run budget/is);
-  assert.match(stages, /commit.*accepted (?:fix|change).*re-arm.*review-until-green/is);
+  assert.match(stages, /commit.*accepted (?:fix|change).*re-arm.*review-and-fix/is);
   assert.match(stages, /rerun <ref>.*runtime-specific packaged review CLI path/is);
   assert.doesNotMatch(`${skill}\n${stages}`, /`review-cli\.js /);
   assert.match(stages, /invalidate.*ticket.*downstream handoffs.*ticket set.*checkpoint 2/is);
@@ -182,7 +182,7 @@ test('initiative-to-prs passes the run key on every review call and records the 
   const stages = read('concord', 'references/stages.md');
   const handoff = read('concord', 'references/handoff-contract.md');
 
-  assert.match(skill, /Pass the run key to EVERY `review-until-green` call.*file-target note reviews and diff reviews.*--initiative-run-key.*--initiative-state-dir.*--initiative-max-launches.*--initiative-max-rounds.*--initiative-mode <base\|lite>/is);
+  assert.match(skill, /Pass the run key to EVERY `review-and-fix` call.*file-target note reviews and diff reviews.*--initiative-run-key.*--initiative-state-dir.*--initiative-max-launches.*--initiative-max-rounds.*--initiative-mode <base\|lite>/is);
   assert.match(skill, /A review call without the run key is outside the plan/i);
   assert.match(skill, /`base` is the default.*`lite` runs only when the user explicitly asks.*never select it automatically/is);
   assert.match(skill, /recorded in `state\.md` and in the keyed run ledger, and the completion report names it/i);

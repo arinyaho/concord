@@ -48,6 +48,11 @@ function setup(t, provider) {
   return { root, store, ledgerPath, ledger, initiativeDir, bind, evidencePath, packet, call, ok, record, promote };
 }
 for (const provider of Object.keys(providers)) {
+  test(`${provider}: feedback accepts a native dod-failed recovery ledger`, (t) => {
+    const s = setup(t, provider);
+    fs.writeFileSync(s.ledgerPath, JSON.stringify({ ...s.ledger, status: 'dod-failed' }));
+    assert.equal(s.record().status, 'candidate');
+  });
   test(`${provider}: feedback is opt-in storage and does not create review state`, (t) => {
     const s = setup(t, provider);
     assert.deepEqual(s.ok('select', { stage: 'design', tags: ['state'] }).lessons, []);
@@ -185,7 +190,7 @@ for (const provider of Object.keys(providers)) {
     assert.equal(s.ok('decide', { id: c.id, decision: 'accept', reviewedBy: 'reviewer', reason: 'Review original resolution snapshots', evidencePath: s.evidencePath }).status, 'accepted');
     const stored = JSON.parse(fs.readFileSync(path.join(s.store, 'review-feedback.json'), 'utf8'));
     const occurrence = stored.lessons[0].occurrences[0];
-    assert.equal(occurrence.ledger.originalPath, s.ledgerPath);
+    assert.equal(occurrence.ledger.originalPath, fs.realpathSync(s.ledgerPath));
     assert.notEqual(occurrence.ledger.path, s.ledgerPath);
     assert.equal(fs.readFileSync(occurrence.evidence.path, 'utf8'), 'Observed race, accepted fix and regression result.');
   });

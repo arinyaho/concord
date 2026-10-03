@@ -61,8 +61,10 @@ test('README documents the Copilot lifecycle and degraded mode', () => {
 test('Copilot package exposes the approved workflow set', () => {
   const expected = [
     'charter',
+    'deep-review',
     'initiative-to-prs',
     'proposal-package-authoring',
+    'review-and-fix',
     'review-until-green',
     'review-until-lgtm',
     'ticket-to-pr',
@@ -111,7 +113,8 @@ test('Copilot initiative-to-prs package still matches its bundle inputs', () => 
 });
 
 test('Copilot-specific orchestration uses native clean-context agents and explicit degradation', () => {
-  const review = read('skills/review-until-green/SKILL.md');
+  const review = read('skills/review-and-fix/SKILL.md');
+  const alias = read('skills/review-until-green/SKILL.md');
   const routing = read('skills/initiative-to-prs/references/model-routing.md');
   assert.match(review, /Concord Reviewer/);
   assert.match(review, /clean context/i);
@@ -123,6 +126,7 @@ test('Copilot-specific orchestration uses native clean-context agents and explic
   assert.match(review, /--fixer-model/);
   assert.match(review, /native/i);
   assert.match(review, /CLI/i);
+  assert.match(alias, /review-and-fix/);
   assert.match(routing, /active root agent cannot satisfy a Deep decision gate/i);
   assert.doesNotMatch(routing, /active agent may perform that pass/i);
   assert.match(routing, /bounded implementation batch.*approved.*contract.*clear.*lowest-cost capable implementation model.*focused self-checks.*without pausing for status/is);

@@ -28,7 +28,7 @@ Use deep capability for implementation or independent review when work spans sec
 
 ## Delegation and evidence
 
-The maximum delegation depth is two: orchestrator to stage agent to specialist child. A stage agent may create at most two specialist children for independent extraction, repository tracing, or a bounded decision. Workers required internally by composed Concord commands such as `review-until-green` follow those commands' own limits. Work directly for simple searches and sequential mutations. Implementation and independent review are sibling stages with separate context; final mutations remain sequential.
+The maximum delegation depth is two: orchestrator to stage agent to specialist child. A stage agent may create at most two specialist children for independent extraction, repository tracing, or a bounded decision. Workers required internally by composed Concord commands such as `review-and-fix` follow those commands' own limits. Work directly for simple searches and sequential mutations. Implementation and independent review are sibling stages with separate context; final mutations remain sequential.
 
 Record the role, required class, requested and resolved model, provider, effort when exposed, catalog or alias basis, escalation trigger, and any fallback in the stage handoff. Never silently downgrade a required class. An unavailable ordinary role may use another verified model in the same class. A required deep decision has no automatic downgrade.
 

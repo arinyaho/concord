@@ -126,6 +126,7 @@ function normalizeDisposition(result = {}) {
   // sealing the target the way a genuine terminal disposition does.
   if (decision.intentReview) return { kind: 'escape', reason: 'intent-review' };
   if (decision.gatePending) return { kind: 'escape', reason: 'gate-pending' };
+  if (decision.dodFailed) return { kind: 'escape', reason: 'dod-failed' };
   return { kind: 'terminal', reason: 'target-terminal' };
 }
 

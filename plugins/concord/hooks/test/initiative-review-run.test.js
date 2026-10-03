@@ -37,13 +37,14 @@ test('v5 terminal dispositions are normalized and recorded exactly once', () => 
   assert.deepStrictEqual(ledger.dispositions.map(({ at, ...disposition }) => disposition), [{ target: 'feature/x', revision, kind: 'terminal', reason: 'clean', sequence: 1, packet: { ...packet, outcome: { kind: 'terminal', reason: 'clean' }, ledger: { version: 5, status: 'active' }, budget: { maxLaunches: 1, maxRounds: 1, launches: 0, rounds: 0 }, delivery: { claim: 'feature/x:1', continuation: 'replay', consumed: false } } }]);
 });
 
-test('normalizeDisposition classifies gate-pending and intent-review as escape, not terminal', () => {
+test('normalizeDisposition classifies resumable review stops as escape, not terminal', () => {
   // round-start treats gate-pending/intent-review as its own re-runnable
   // stop states (a fresh round-start clears them once a human resolves the
   // finding), so they must not get 'terminal' kind's permanent same-revision
   // block -- 'escape' only blocks replay while its packet is unconsumed.
   assert.deepStrictEqual(normalizeDisposition({ decision: { continue: false, gatePending: true } }), { kind: 'escape', reason: 'gate-pending' });
   assert.deepStrictEqual(normalizeDisposition({ decision: { continue: false, intentReview: true } }), { kind: 'escape', reason: 'intent-review' });
+  assert.deepStrictEqual(normalizeDisposition({ decision: { continue: false, dodFailed: true } }), { kind: 'escape', reason: 'dod-failed' });
   // A material finding's reconciliation still takes precedence and stays
   // genuinely terminal, matching the existing reconciliation tests.
   assert.deepStrictEqual(normalizeDisposition({ decision: { continue: false, intentReview: true }, reconciliation: { finding: 'intent:missing' } }), { kind: 'terminal', reason: 'reconciliation-required' });

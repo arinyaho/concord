@@ -13,6 +13,7 @@ const gatePanelLib = require('./gate-panel');
 const artifactContract = require('./artifact-contract');
 const reportLib = require('./report');
 const reviewTelemetry = require('./review-telemetry');
+const { REVIEW_MAX_RUNS_DEFAULT } = require('./config');
 const {
   targetSlug,
   readLedger,
@@ -135,7 +136,7 @@ function validateFixFiles(repoRoot, stateDir, files) {
   }
 }
 function gitCheckoutTree(repoRoot) {
-  sh('git', ['checkout', '--', '.'], { cwd: repoRoot });
+  sh('git', ['checkout', 'HEAD', '--', '.'], { cwd: repoRoot });
 }
 function runDod(repoRoot) {
   const cfg = dodExec.loadDodConfig(repoRoot);
@@ -145,9 +146,16 @@ function runDod(repoRoot) {
   return dodExec.runDodExec({ cwd: repoRoot, commands: cfg.dod, execFn: dodExec.defaultExecFn });
 }
 
+function pendingDod(repoRoot) {
+  const cfg = dodExec.loadDodConfig(repoRoot);
+  if (cfg.deferred) return { passed: true, deferred: true, deferredBy: cfg.deferredBy, results: [] };
+  return { passed: true, deferred: true, deferredBy: 'pending-final', results: [] };
+}
+
 const DOD_DEFERRAL_LINES = {
   '--no-dod': 'DoD: DEFERRED (--no-dod: no executable gate ran this run)',
   'no-config': `DoD: DEFERRED (no ${dodExec.CONFIG_FILENAME}: reviewed without an executable gate -- add {"dod":["<your test command>"]} to gate future runs)`,
+  'pending-final': 'DoD: pending (runs once after review convergence)',
 };
 
 // Terminal handoff (design §8): rounds, killed/fixed/parked counts, a per-fix
@@ -201,16 +209,12 @@ function roundCandidates(gc, cJson, vJson) {
   return Array.from(byId.values());
 }
 
-// Statuses where the panel question is settled for good: the run concluded and
-// the panel either ran or never will. Anything else (converging mid-run,
-// gate-panel-pending, intent-review) still has the panel ahead of it.
-const PANEL_SETTLED_STATUSES = new Set(['clean', 'gate-pending', 'parked', 'abandoned']);
-
 function renderHandoff(result) {
   const { ledger, aborted } = result;
   const lines = [];
   lines.push(`review-until-green: target ${ledger.target && ledger.target.ref} -- status: ${ledger.status}`);
   lines.push(`rounds: ${ledger.round}/${ledger.budget.max_rounds} (spent ${ledger.budget.spent})`);
+  lines.push(`full runs: ${(ledger.runs || []).length + 1}/${ledger.run_budget?.max_runs ?? REVIEW_MAX_RUNS_DEFAULT}`);
   if (ledger._lastDecision && ledger._lastDecision.reason) lines.push(`termination: ${ledger._lastDecision.reason}`);
   if (ledger.reviewRouting) {
     const reviewer = `${ledger.reviewRouting.reviewer || 'host-default'}${ledger.reviewRouting.reviewerModel ? ` (${ledger.reviewRouting.reviewerModel})` : ''}`;
@@ -279,26 +283,12 @@ function renderHandoff(result) {
     // reader looking for an opt-out that is not in their invocation.
     lines.push(ledger.gateDisarmedBy === 'file-target'
       ? 'Broad review (front pass): not applicable to a file target (pass --broad to sweep the tree against it)'
-      : 'Broad review (front pass): skipped (--no-broad)');
+      : ledger.gateDisarmedBy === 'prior-front-pass'
+        ? `Broad review (front pass): reused from prior run #${ledger.broad_reuse.run}; this run reviews the changed diff`
+        : 'Broad review (front pass): skipped (--no-broad)');
   }
   if (ledger.gate_panel && ledger.gate_panel.status === 'done' && ledger.gate_panel.round > 0) {
-    lines.push(`Broad-review panel: ${ledger.gate_panel.round} round(s), ${(ledger.gate_panel.confirmed || []).length} confirmed`);
-  } else if (ledger.gateDisarmedBy === '--no-broad' && ledger.gate_panel_configured) {
-    // The opt-out declined a half this repo has configured -- say so, rather
-    // than letting the absent line read as "there was no panel to run".
-    lines.push('Broad-review panel: skipped (--no-broad); this repo has it enabled');
-  } else if (gateRounds.length && PANEL_SETTLED_STATUSES.has(ledger.status)) {
-    // Only at a conclusion, and only when the panel genuinely never ran: a
-    // gate-panel-pending run has the panel still ahead of it (the status line
-    // already says so), and a mid-run round has not reached the question yet.
-    // parked and abandoned count -- the run is over and the panel never ran, so
-    // the missing half is exactly as unswept as it is on a clean conclusion.
-    // gate-pending is the exception when the panel IS configured: gateOpenCount
-    // takes priority over panelPending, so the panel is deferred to the next
-    // convergence attempt, not skipped.
-    lines.push(ledger.gate_panel_configured
-      ? 'Broad-review panel: not run on this attempt -- it runs once the diff-local loop converges with no open broad findings'
-      : 'Broad-review panel: did not run -- defects this run\'s own fixes introduced were not swept; the panel is that half ({"gate":{"panel":true}} in review.config.json)');
+    lines.push(`Legacy panel evidence: ${ledger.gate_panel.round} round(s), ${(ledger.gate_panel.confirmed || []).length} confirmed`);
   }
   const gateOpen = ledger.gate_open || [];
   if (gateOpen.length) {
@@ -429,6 +419,16 @@ function requireArtifactAfter(stateDir, n, firstName, secondName) {
   const secondStat = statArtifact(secondName, secondPath);
   if (secondStat.mtimeMs < firstStat.mtimeMs) {
     throw new Error(`harness-failure: round-${n}-${secondName}.json predates round-${n}-${firstName}.json -- it was spawned before ${firstName} finished writing (see review-until-green.md step 3: correctness and verify must run sequentially, never in parallel)`);
+  }
+}
+
+function requireVerifierOrder(stateDir, n, gateApplied, gateMode) {
+  requireArtifactAfter(stateDir, n, 'correctness', 'verify');
+  if (!gateApplied || gateMode === 'design-conformance') return;
+  requireArtifactAfter(stateDir, n, 'gate', 'verify');
+  if (fs.existsSync(path.join(stateDir, `round-${n}-gate-verify.json`))) {
+    requireArtifactAfter(stateDir, n, 'correctness', 'gate-verify');
+    requireArtifactAfter(stateDir, n, 'gate', 'gate-verify');
   }
 }
 
@@ -1355,6 +1355,14 @@ function runVerb(resolveFromCwd, args, initiative) {
       ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_panel: gatePanelLib.emptyGatePanel() };
     }
 
+    // A final DoD failure is re-runnable after the caller fixes it. Preserve the
+    // completed broad pass: the next round reviews only the changed diff, then
+    // attempts the final DoD again if review converges.
+    const retryingDod = ledger.status === 'dod-failed';
+    if (retryingDod) {
+      ledger = { ...ledger, status: 'converging', diff_content_hash: null };
+    }
+
     // Broad review is ARMED BY DEFAULT; these flags are the per-invocation
     // overrides. --broad/--gate re-arm a ledger that opted out; --no-broad opts
     // out. Both live among round-start's trailing arguments, order-independent
@@ -1395,6 +1403,10 @@ function runVerb(resolveFromCwd, args, initiative) {
     // real branch would silently review nothing and converge clean.
     // For file targets base is irrelevant; this line is harmless (undefined).
     const base = positional[0] || (ledger.target && ledger.target.base);
+    const baseSha = !isFileTarget && base ? sh('git', ['rev-parse', base], { cwd: repoRoot }).trim() : null;
+    if (retryingDod && ledger.target?.base_sha !== baseSha) {
+      ledger = { ...ledger, retry_diff_base: null, broad_reuse: null, gate_open: [], gate_rounds: [], gate_reviewed_head_sha: null };
+    }
 
     // Warn if `base` is a local branch behind its upstream. Diffing against a stale
     // local base sweeps in everything merged upstream since the branch point -> a
@@ -1464,6 +1476,13 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (!isFileTarget && ledger.target && ledger.target.head_sha && !gitIsReachable(repoRoot, ledger.target.head_sha)) {
       ledger = resetUnreachable(ledger);
     }
+    const intentCfg = intentLib.loadIntentConfig(repoRoot);
+    const broadReuse = ledger.broad_reuse;
+    const reuseFrontPass = !!broadReuse && !broadFlagPassed && !noBroadFlagPassed && !isFileTarget && !intentCfg && !broadReuse.intentHash
+      && broadReuse.base_sha === baseSha
+      && gitIsReachable(repoRoot, broadReuse.head_sha);
+    const retryDiffBase = !isFileTarget && ledger.target?.base_sha === baseSha && ledger.retry_diff_base && gitIsReachable(repoRoot, ledger.retry_diff_base) ? ledger.retry_diff_base : null;
+    if (retryDiffBase || (reuseFrontPass && broadReuse.head_sha !== headSha)) diff = gitDiff(repoRoot, retryDiffBase || broadReuse.head_sha);
     const diffHash = contentHash(diff);
 
     let resumedCompletedArtifacts = [];
@@ -1476,8 +1495,15 @@ function runVerb(resolveFromCwd, args, initiative) {
         const name = `round-${resumeRound}-${role}.json`;
         try { return ledger.execution.artifactHashes && ledger.execution.artifactHashes[role] === contentHash(fs.readFileSync(path.join(stateDir, name), 'utf8')); } catch (_) { return false; }
       }).map((role) => `round-${resumeRound}-${role}.json`));
-      for (const [producer, verifier] of [['correctness', 'verify'], ['gate', 'gate-verify']]) {
-        if (!preserved.has(`round-${resumeRound}-${producer}.json`)) preserved.delete(`round-${resumeRound}-${verifier}.json`);
+      if (ledger.gateApplied && ledger.gateMode !== 'design-conformance') {
+        if (['correctness', 'gate'].some((role) => !preserved.has(`round-${resumeRound}-${role}.json`))) {
+          preserved.delete(`round-${resumeRound}-verify.json`);
+          preserved.delete(`round-${resumeRound}-gate-verify.json`);
+        }
+      } else {
+        for (const [producer, verifier] of [['correctness', 'verify'], ['gate', 'gate-verify']]) {
+          if (!preserved.has(`round-${resumeRound}-${producer}.json`)) preserved.delete(`round-${resumeRound}-${verifier}.json`);
+        }
       }
       resumedCompletedArtifacts = completed.filter((role) => preserved.has(`round-${resumeRound}-${role}.json`));
       deleteRoundArtifacts(stateDir, resumeRound, preserved);
@@ -1504,7 +1530,6 @@ function runVerb(resolveFromCwd, args, initiative) {
     fs.mkdirSync(stateDir, { recursive: true });
     fs.writeFileSync(path.join(stateDir, `round-${ledger.round}-diff.txt`), diff);
 
-    const intentCfg = intentLib.loadIntentConfig(repoRoot);
     // ARMED (does this run do broad review at all) vs FIRED (does the gate pair
     // run THIS round) are two different questions -- keep them apart.
     //
@@ -1521,11 +1546,19 @@ function runVerb(resolveFromCwd, args, initiative) {
     // plan-fixes would drop that round's gate findings on the floor.
     // A ledger written before gateArmed existed has no boolean here and falls
     // through to the target-type default, which is what it ran under.
+    const reusedGateOpen = reuseFrontPass ? gateLib.carryForwardGateFindings({
+      priorGateOpen: broadReuse.gate_open || [],
+      thisRoundIds: [],
+      verifyRejectedIds: [],
+      dismissedIds: ledger.gate_dismissed || [],
+      changedFiles: changedGitPaths(gitDiff(repoRoot, broadReuse.head_sha)),
+    }) : ledger.gate_open;
     const gateArmed = lite ? true : broadFlagPassed ? true
       : noBroadFlagPassed ? false
+      : reuseFrontPass ? false
       : typeof ledger.gateArmed === 'boolean' ? ledger.gateArmed
       : !isFileTarget;
-    const gateDisarmedBy = gateArmed ? null : (noBroadFlagPassed ? '--no-broad' : isFileTarget ? 'file-target' : ledger.gateDisarmedBy || '--no-broad');
+    const gateDisarmedBy = gateArmed ? null : (noBroadFlagPassed ? '--no-broad' : reuseFrontPass ? 'prior-front-pass' : isFileTarget ? 'file-target' : ledger.gateDisarmedBy || '--no-broad');
     // Fired only on the FIRST armed round. The pair reads the whole repository,
     // and the defects it is built for -- cross-context violations, design
     // conformance, latent gaps -- live in a tree that does not change round to
@@ -1607,7 +1640,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       ? { passed: true, deferred: true, results: [] }
       : dodDeferred
         ? { passed: true, deferred: true, deferredBy: '--no-dod', results: [] }
-        : runDod(repoRoot);
+        : pendingDod(repoRoot);
     // An absent config no longer blocks the run, but it must not pass quietly
     // either: warn every round, and the handoff repeats it at the end.
     if (dod.deferredBy === 'no-config') {
@@ -1621,16 +1654,19 @@ function runVerb(resolveFromCwd, args, initiative) {
     const baseTarget = ledger.target || { kind: 'local', ref };
     const targetUpdate = isFileTarget
       ? { ...baseTarget, type: 'file', hasDoD: false, spec: fileSpec, head_sha: headSha }
-      : { ...baseTarget, type: 'git', hasDoD: true, spec: { ref, base }, base, head_sha: headSha };
+      : { ...baseTarget, type: 'git', hasDoD: true, spec: { ref, base }, base, base_sha: baseSha, head_sha: headSha };
     ledger = {
       ...ledger,
       dod,
       phase: 'gates',
       gateArmed,
       gateDisarmedBy,
+      broad_reuse: reuseFrontPass ? broadReuse : null,
+      gate_open: reusedGateOpen,
       gateApplied,
       gateMode: lite ? 'design-conformance' : 'pair',
       gate_rounds: gateApplied && !gateRounds.includes(ledger.round) ? [...gateRounds, ledger.round] : gateRounds,
+      gate_reviewed_head_sha: gateApplied && isGit ? headSha : ledger.gate_reviewed_head_sha,
       dodDeferred,
       reviewRouting,
       execution: {
@@ -1647,11 +1683,10 @@ function runVerb(resolveFromCwd, args, initiative) {
       target: targetUpdate,
     };
     writeLedger(stateDir, slug, ledger);
-    // dodPassed keeps its shape for existing callers, but under a deferral its
-    // `true` means "nothing blocked the round", not "the gate ran and passed" --
-    // a driver that turns it into "DoD already passed; do not rerun tests" would
-    // be removing the last real check. dodDeferred is how a caller tells them apart.
-    process.stdout.write(JSON.stringify({ decision: 'work', mode: run ? runMode(run) : undefined, gateMode: lite ? 'design-conformance' : 'pair', ref: targetUpdate.ref, base: targetUpdate.base, head: targetUpdate.head_sha, attemptId: ledger.attemptId, round: ledger.round, budget: ledger.budget, dodPassed: dod.passed, dodDeferred: !!dod.deferred, intentApplied: !!intentCfg, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir, completedArtifacts, retryArtifacts, retryArtifact }) + '\n');
+    // The three fields are mutually descriptive: pending is the normal configured
+    // gate waiting for convergence, deferred means no gate will run, and passed is
+    // retained for file/no-op compatibility. Callers must not infer one from another.
+    process.stdout.write(JSON.stringify({ decision: 'work', mode: run ? runMode(run) : undefined, gateMode: lite ? 'design-conformance' : 'pair', ref: targetUpdate.ref, base: targetUpdate.base, head: targetUpdate.head_sha, attemptId: ledger.attemptId, round: ledger.round, budget: ledger.budget, dodPassed: dod.deferredBy === 'pending-final' ? false : dod.passed, dodDeferred: !!dod.deferred && dod.deferredBy !== 'pending-final', dodPending: dod.deferredBy === 'pending-final', intentApplied: !!intentCfg, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir, completedArtifacts, retryArtifacts, retryArtifact }) + '\n');
     return;
   }
 
@@ -1790,7 +1825,9 @@ function runVerb(resolveFromCwd, args, initiative) {
       // that says nothing about the panel, whose lenses read the review text and
       // the intent doc and worked for file targets before this change. Only the
       // user's explicit opt-out declines the panel.
-      panelConfigured: !!(gateCfg && gateCfg.panel) && ledger.gateDisarmedBy !== '--no-broad' && ledger.gateMode !== 'design-conformance',
+      // Legacy panel evidence remains readable, but it is no longer a release
+      // gate. The bounded, explicit replacement is the deep-review skill.
+      panelConfigured: false,
       panelDone: !!(ledger.gate_panel && ledger.gate_panel.status === 'done'),
     };
     let { ledger: applied, decision } = R.applyRoundOutcome(ledger, outcome);
@@ -1809,11 +1846,34 @@ function runVerb(resolveFromCwd, args, initiative) {
       decision = { continue: false, converged: false, parked: false, abandoned: false, ...(intentReview ? { intentReview: true } : { gatePending: true }), reconciliation: true, reason: intentReview ? 'open intent finding(s) require reconciliation' : 'open design/AC GATE finding(s) require reconciliation' };
       applied = { ...applied, status: intentReview ? 'intent-review' : 'gate-pending' };
     }
+    if (isGit && decision.converged && !ledger.dodDeferred) {
+      gitCheckoutTree(repoRoot);
+      if (gitIsDirty(repoRoot, stateDir)) throw new Error('harness-failure: review work left untracked files in the repository; final DoD was not run against an uncommitted worktree');
+      const finalDodHead = gitHeadSha(repoRoot);
+      const finalDod = runDod(repoRoot);
+      if (gitHeadSha(repoRoot) !== finalDodHead) throw new Error('harness-failure: final DoD moved HEAD; its result does not apply to the reviewed revision');
+      if (gitIsDirty(repoRoot, stateDir)) {
+        gitCheckoutTree(repoRoot);
+        throw new Error('harness-failure: final DoD modified the repository; its result does not apply to committed HEAD');
+      }
+      applied = { ...applied, dod: finalDod };
+      if (!finalDod.deferred && !finalDod.passed) {
+        decision = { continue: false, converged: false, parked: false, abandoned: false, dodFailed: true, reason: 'final DoD failed after review convergence; fix the failure, then review the changed diff before retrying DoD' };
+        applied = { ...applied, status: 'dod-failed', retry_diff_base: gitHeadSha(repoRoot) };
+      } else {
+        decision = {
+          ...decision,
+          reason: finalDod.deferred
+            ? 'DoD-exec deferred (no executable gate ran), zero open findings, and no fixes this round (stable)'
+            : 'final DoD ran and passed after review convergence',
+        };
+      }
+    }
     // Persisted so renderHandoff can tell "the panel is off in this repo" from
     // "the panel is on and still ahead of this run" -- it only receives the
     // ledger, and telling someone to enable a panel they already enabled sends
     // them editing a config that is already correct.
-    ledger = { ...applied, gate_panel_configured: !!(gateCfg && gateCfg.panel) };
+    ledger = { ...applied, gate_panel_configured: false };
     // Deduped by id: a re-driven round (resume) records the same kills again.
     const priorKilled = new Set((ledger.killed_digest || []).map((k) => k.id));
     ledger = {
@@ -1831,24 +1891,25 @@ function runVerb(resolveFromCwd, args, initiative) {
       // or gate-pending decision would still print "resolve and re-run"
       // guidance for that stale state while the ledger status is truthfully
       // "parked" (which refuses to resume until `unpark`).
-      decision = { ...decision, continue: false, converged: false, parked: true, intentReview: false, gatePending: false };
+      decision = { ...decision, continue: false, converged: false, parked: true, dodFailed: false, intentReview: false, gatePending: false };
       ledger = { ...ledger, status: 'parked' };
     }
-    if (decision.continue) ledger = { ...ledger, budget: { ...ledger.budget, spent: ledger.budget.spent + 1 } };
-    if (isGit && !ledger.dodDeferred && !decision.continue && fixedIds.length > 0) {
-      // Git: fixes already landed via commit-fix -- re-run DoD against the post-commit
-      // tree so the handoff reports the true final state, not the pre-fix round-start snapshot.
-      // File targets skip this: there is no DoD, and no git tree to re-check.
-      // An explicitly opted-out run (--no-dod) skips it too: there is no gate to
-      // re-run. A no-config run still re-enters runDod on purpose -- a config added
-      // during the run takes effect, and if there is still none it simply re-reports
-      // the same deferral.
-      ledger = { ...ledger, dod: runDod(repoRoot) };
+    const retryDisposition = decision.dodFailed || decision.gatePending || decision.intentReview;
+    if (decision.continue || retryDisposition) {
+      const spent = ledger.budget.spent + 1;
+      ledger = { ...ledger, budget: { ...ledger.budget, spent } };
+      if (retryDisposition && spent >= ledger.budget.max_rounds) {
+        const reason = decision.dodFailed
+          ? 'round budget exhausted after repeated final DoD failures'
+          : 'round budget exhausted after repeated reconciliation stops';
+        decision = { ...decision, dodFailed: false, gatePending: false, intentReview: false, parked: true, reason };
+        ledger = { ...ledger, status: 'parked' };
+      }
     }
     // Git only: clean any leftover uncommitted edit from a rejected/parked fixer.
     // File targets have no working tree to discard.
     if (isGit) gitCheckoutTree(repoRoot);
-    const finalChecks = [{ name: 'definition-of-done', status: ledger.dod?.deferred ? 'deferred' : ledger.dod?.passed ? 'passed' : 'failed' }];
+    const finalChecks = [{ name: 'definition-of-done', status: ledger.dod?.deferredBy === 'pending-final' ? 'not-run' : ledger.dod?.deferred ? 'deferred' : ledger.dod?.passed ? 'passed' : 'failed' }];
     ledger = { ...ledger, phase: 'done', last_recorded_round: n, _lastDecision: decision, reconciliationPacket: reconciliation || null, finalChecks, ...(run ? { _lastInitiativeClaim: null } : {}) };
     let entry;
     let recordedNow = false;
@@ -1907,7 +1968,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     const gateApplied = !!ledger.gateApplied;
     const n = ledger.round;
     requireReservations(run, ledger, gatesNeeds(stateDir, n), 'plan-fixes');
-    requireArtifactAfter(stateDir, n, 'correctness', 'verify');
+    requireVerifierOrder(stateDir, n, ledger.gateApplied, ledger.gateMode);
     const cJson = readArtifact(stateDir, n, 'correctness');
     const vJson = readArtifact(stateDir, n, 'verify');
     const candidates = roundCandidates(gc, cJson, vJson);
@@ -2117,6 +2178,9 @@ function runVerb(resolveFromCwd, args, initiative) {
       process.stdout.write(`review-cli reset: no ledger for ref "${ref}"; nothing to reset.\n`);
       return;
     }
+    if (prior.status === 'clean' || (prior.last_recorded_round !== null && prior.last_recorded_round !== undefined) || (prior.runs || []).length) {
+      throw new Error('review-cli reset: cannot discard cumulative run history; cannot discard a completed run; preserve the ledger and split scope or reconcile the remaining verification');
+    }
     deleteLedger(stateDir, slug);
     reviewTelemetry.deleteTelemetry(stateDir, prior.target?.ref || ref, slug);
     for (let n = 1; n <= (prior.round || 0); n++) deleteRoundArtifacts(stateDir, n);
@@ -2143,7 +2207,15 @@ function runVerb(resolveFromCwd, args, initiative) {
     const stored = readLedger(stateDir, slug);
     const prior = reviewTelemetry.foldTelemetry(stateDir, stored, slug);
     if (!prior) throw new Error(`review-cli rerun: no ledger for ref "${ref}" ${stateDirHint(stateDir)} -- there is no run to re-run; just start a normal run.`);
+    const maxRuns = prior.run_budget?.max_runs ?? REVIEW_MAX_RUNS_DEFAULT;
+    const completedAndActiveRuns = (prior.runs || []).length + 1;
+    if (!Number.isInteger(maxRuns) || maxRuns < 1) throw new Error('review-cli rerun: invalid cumulative run budget; preserve the ledger and reconcile it before mutation');
+    if (completedAndActiveRuns >= maxRuns) {
+      throw new Error(`review-cli rerun: cumulative run budget exhausted (${completedAndActiveRuns}/${maxRuns} full runs); ledger and evidence are unchanged. Inspect show ${ref}, preserve unresolved findings, and split scope or reconcile the remaining verification before any additional independent review`);
+    }
     const archive = archiveReviewRun(stateDir, slug, prior);
+    const recordedRounds = new Set((prior.history || []).map((entry) => entry.round));
+    const completedFrontPass = (prior.gate_rounds || []).some((round) => recordedRounds.has(round));
     const runs = (prior.runs || []).concat([{
       run: (prior.runs || []).length + 1,
       engine: prior.engine || null,
@@ -2160,8 +2232,12 @@ function runVerb(resolveFromCwd, args, initiative) {
     const fresh = {
       ...emptyLedger(prior.target || { kind: 'local', ref }),
       runs,
+      run_budget: { max_runs: maxRuns },
       engine,
       gate_dismissed: prior.gate_dismissed || [],
+      ...(completedFrontPass && !prior.intentHash && prior.target?.base_sha && prior.gate_reviewed_head_sha ? {
+        broad_reuse: { run: runs.length, base_sha: prior.target.base_sha, head_sha: prior.gate_reviewed_head_sha, intentHash: null, gate_open: prior.gate_open || [] },
+      } : {}),
       ...(prior.initiative_binding || initiative ? { initiative_binding: prior.initiative_binding || { key: initiative.key, stateDir: canonicalPath(initiative.stateDir) } } : {}),
     };
     // Binding and archive pointer must be in the first durable fresh ledger,
@@ -2237,7 +2313,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       ledger = { ...ledger, journal: [...(ledger.journal || []), { id, sha, file: finding.file, files, span: finding.span, resolutions }] };
       if (run) ledger = { ...ledger, initiative_fix_used: { ...ledger.initiative_fix_used, [n]: (ledger.initiative_fix_used?.[n] || 0) + 1 } };
       writeLedger(stateDir, slug, ledger);
-      process.stdout.write(JSON.stringify({ committed: true, sha }) + '\n');
+      process.stdout.write(JSON.stringify({ committed: true, sha, resolvedFindingIds: resolutions.map((resolution) => resolution.id) }) + '\n');
     } else {
       process.stdout.write(JSON.stringify({ committed: false, reason: 'no edit or file unchanged' }) + '\n');
     }

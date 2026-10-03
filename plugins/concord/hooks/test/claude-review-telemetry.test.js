@@ -250,9 +250,6 @@ test('recognizes every artifact output directive in the review driver', () => {
     'round-2-gate.json',
     'round-2-gate-verify.json',
     'round-2-fix-finding.json',
-    'round-2-gate-panel-1-threat-model.json',
-    'round-2-gate-panel-1-vote-finding-0.json',
-    'round-2-gate-panel-1-verify.json',
   ]);
 });
 
