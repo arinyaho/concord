@@ -785,15 +785,15 @@ function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey,
   if (existingTerminal && !carriedToSameTarget(existingTerminal)) {
     fail(existingTerminal.reason === 'carried' ? 'this target was already carried to a different run key' : `the old run already holds a terminal disposition ("${existingTerminal.reason}") for this pair`);
   }
-  // The new run must be ready to take this pair. The readiness probe must
-  // cover the whole blocked batch (the marker's own role and count), not a
-  // single generic launch: a new run without room for the batch must be
-  // refused here, not discovered later at requireReservations. Opening it
-  // (openKeyedRun creates the new key's ledger on first use) is unavoidable
-  // for this probe, so it runs last among the checks that gate carrying --
-  // right before requireReservations/recordDisposition touch the old run for
-  // real -- on both the fresh-attempt and resumed-retry paths.
+  // The new run must be ready to take this pair, for the whole blocked batch
+  // (the marker's own role and count), not a single generic launch. A key with
+  // no ledger yet is probed against its would-be budget without creating the
+  // file, so no refusal leaves a new-key ledger behind; an existing ledger is
+  // opened (which validates its immutable options) and probed as `reserve`
+  // would. Runs after the old run's reservations are validated, on both the
+  // fresh-attempt and resumed-retry paths.
   const checkNewRunReady = () => {
+    if (!fs.existsSync(runPath(newStateDir, initiative.key)) && marker.count > Number(initiative.maxLaunches)) fail('the new run refuses this pair (budget-exhausted)');
     const newRun = openKeyedRun(initiative);
     const readinessCheck = { role: marker.role, round: ledger.round, target: revision.ref, revision, attemptId: ledger.attemptId };
     const newRefusal = denialReason(newRun, readinessCheck, marker.count);
@@ -817,8 +817,8 @@ function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey,
       );
     }
 
-    checkNewRunReady();
     requireReservations(oldRun, ledger, carryNeeds, 'carry');
+    checkNewRunReady();
     const carried = recordDisposition(oldRun, { target: revision.ref, revision, result: { status: 'carried' }, packet: { nextAction: 'carried', carriedTo: { key: initiative.key, stateDir: newStateDir } } });
     if (!carried) {
       let retryLedger;

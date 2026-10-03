@@ -889,6 +889,7 @@ for (const provider of Object.keys(PROVIDERS)) {
     assert.match(result.stderr, /harness-failure.*carry/);
     assert.strictEqual(ledgerForKey(t, 'key-1').status, 'terminal', 'the old run was not failed closed');
     assert.strictEqual(review.readLedger(t.dir, review.targetSlug('feat/x')).initiative_binding.key, 'key-1', 'the target was carried despite unreserved evidence');
+    assert.strictEqual(fs.existsSync(runPath(t.initDir, 'key-2')), false, "the new key's run ledger was created before the old run's reservations were validated");
   });
 
   test(`${provider}: a mismatched-mode carry is refused before any ledger for the new key is created (P2-1)`, () => {
@@ -919,6 +920,7 @@ for (const provider of Object.keys(PROVIDERS)) {
     assert.notStrictEqual(result.status, 0);
     assert.match(result.stderr, /new run refuses this pair \(budget-exhausted\)/);
     assert.strictEqual(review.readLedger(t.dir, review.targetSlug('feat/x')).initiative_binding.key, 'key-1', 'the target was carried despite the new run having no room for the batch');
+    assert.strictEqual(fs.existsSync(runPath(t.initDir, 'key-2')), false, "a fresh new key too small for the blocked batch was created before carry refused it");
   });
 
   test(`${provider}: a wrong --from-run-key with rerun_cleanup pending is refused before cleanup runs (P3-4)`, () => {
