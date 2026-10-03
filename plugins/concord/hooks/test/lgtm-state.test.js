@@ -100,6 +100,13 @@ test('a legacy orphan request claim conservatively consumes one request attempt'
   });
 });
 
+test('legacy recovery claims each consume a possible request attempt', () => {
+  const input = { stateDir: temp(), pr: 159, headSha: '1'.repeat(40) };
+  fs.writeFileSync(lgtmState.markerPath(input, 'initial-claim'), `${JSON.stringify({ pr: 159, headSha: input.headSha, kind: 'initial', claimedAtMs: 1000 })}\n`);
+  fs.writeFileSync(lgtmState.markerPath(input, 'initial-recovery-claim-901000'), `${JSON.stringify({ pr: 159, headSha: input.headSha, kind: 'initial-recovery', claimedAtMs: 901000 })}\n`);
+  assert.deepStrictEqual(lgtmState.status(input).requestBudget, { max: 3, spent: 2, remaining: 1 });
+});
+
 test('manual request claims are independent per provider on one head', () => {
   const input = { stateDir: temp(), pr: 159, headSha: '1'.repeat(40) };
   assert.strictEqual(lgtmState.claimInitialRequest({ ...input, provider: 'codex', now: 1000 }).claimed, false);
@@ -194,6 +201,13 @@ test('review-until-lgtm CLI restores a completed review window after a new proce
   const open = JSON.parse(execFileSync('node', [CLI, 'open-window', pr, head, '900'], { encoding: 'utf8', env }));
   const resumed = JSON.parse(execFileSync('node', [CLI, 'status', pr, head], { encoding: 'utf8', env }));
   assert.strictEqual(resumed.deadlineMs, open.deadlineMs);
+});
+
+test('an active legacy retry window remains the collection deadline after upgrade', () => {
+  const input = { stateDir: temp(), pr: 116, headSha: 'abcdef0123456789abcdef0123456789abcdef01' };
+  lgtmState.openWindow({ ...input, now: 1000, durationMs: 1000 });
+  lgtmState.openWindow({ ...input, now: 3000, durationMs: 900000 }, 'retry-window');
+  assert.strictEqual(lgtmState.status(input).deadlineMs, 903000);
 });
 
 // --- Reconciliation: record-review, classification, and claim blocking ---
@@ -364,6 +378,20 @@ test('a later clean review on a marked head reports needs-reconciliation without
   const clean = lgtmState.recordReview({ ...input, now: 6000, observation: observation({ reviewId: '5332945959', lgtm: true, findings: [] }) });
   assert.deepStrictEqual(clean, { outcome: 'needs-reconciliation', recorded: false, duplicate: false });
   assert.strictEqual(lgtmState.status(input).reconciliation.batchCount, 1);
+});
+
+test('a fully rejected review batch is durably disposed without an empty fix commit', () => {
+  const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
+  const rejectedObservation = observation({ reviewId: '1', findings: [inlineFinding()] });
+  lgtmState.recordReview({ ...input, now: 5000, observation: rejectedObservation });
+  assert.deepStrictEqual(lgtmState.rejectReviewBatch({ ...input, now: 6000, reviewIds: ['1'], reason: 'Verifier reproduced no defect.' }), {
+    rejected: true,
+    reviewIds: ['1'],
+  });
+  assert.strictEqual(lgtmState.status(input).reconciliation, null);
+  assert.deepStrictEqual(lgtmState.recordReview({ ...input, now: 6500, observation: rejectedObservation }), { outcome: 'rejected', recorded: false, duplicate: true });
+  assert.deepStrictEqual(lgtmState.claimFixRound({ ...input, now: 7000 }), { claimed: false, reason: 'no-findings' });
+  assert.deepStrictEqual(lgtmState.recordReview({ ...input, now: 8000, observation: observation({ reviewId: '2', lgtm: true, findings: [] }) }), { outcome: 'green', recorded: false });
 });
 
 test('status.reconciliation.reviews are ordered by recordedAtMs ascending regardless of file-name order', () => {
@@ -596,6 +624,7 @@ test('Claude, Codex, and Copilot review-until-lgtm skills pin bounded batch fixe
     assert.match(skill, /APPROVED.*COMMENTED.*CHANGES_REQUESTED.*DISMISSED.*`completed`/is);
     assert.match(skill, /provider-id/);
     assert.match(skill, /renew-fix-round.*every 10 minutes.*before.*push/is);
+    assert.match(skill, /reject-review-batch.*every finding.*false positive/is);
     assert.match(skill, /propose a single follow-up issue/);
     assert.match(skill, /do not create it without user authorization/);
     assert.match(skill, /Never request a second full review on the same head solely to obtain a missing reaction/);

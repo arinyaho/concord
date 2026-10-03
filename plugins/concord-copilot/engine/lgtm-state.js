@@ -91,28 +91,47 @@ function markerPath({ stateDir, pr, headSha }, kind) {
   return path.join(stateDir, `pr-${key.pr}-${key.headSha}.${kind}.json`);
 }
 
-function requestUsage({ stateDir, pr, coveredIdentity = null }) {
+function requestUsage({ stateDir, pr, coveredIdentity = null, coveredRecoveryIdentity = null }) {
   let names;
   try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') names = []; else throw error; }
   const keyPrefix = `pr-${Number(pr)}`;
   const slots = [];
-  const slotIdentities = new Set();
-  const attemptIdentities = new Set();
+  const attempts = new Map();
+  const attempt = (identity) => {
+    if (!attempts.has(identity)) attempts.set(identity, { base: false, recoveries: 0, originalSlots: 0, recoverySlots: 0, legacySlots: 0 });
+    return attempts.get(identity);
+  };
   for (const name of names) {
     if (name.startsWith(`${keyPrefix}.request-slot-`) && name.endsWith('.json')) {
       const marker = readMarker(path.join(stateDir, name));
       slots.push(name);
       const identity = marker && requestIdentity(marker);
-      if (identity && marker.coversClaim !== false) slotIdentities.add(identity);
+      if (identity) {
+        if (marker.coversClaim === true) attempt(identity).originalSlots += 1;
+        else if (marker.coversClaim === false) attempt(identity).recoverySlots += 1;
+        else attempt(identity).legacySlots += 1;
+      }
       continue;
     }
-    const match = name.match(new RegExp(`^${keyPrefix}-([0-9a-f]{40}|[0-9a-f]{64})\\.(initial|retry)(?:-[0-9a-f]{16})?-(?:claim|request)\\.json$`, 'i'));
-    if (match) {
+    const base = name.match(new RegExp(`^${keyPrefix}-([0-9a-f]{40}|[0-9a-f]{64})\\.(initial|retry)(?:-[0-9a-f]{16})?-(?:claim|request)\\.json$`, 'i'));
+    const recovery = name.match(new RegExp(`^${keyPrefix}-([0-9a-f]{40}|[0-9a-f]{64})\\.(initial|retry)(?:-[0-9a-f]{16})?-recovery-claim(?:-.*)?\\.json$`, 'i'));
+    if (base || recovery) {
       const marker = readMarker(path.join(stateDir, name));
-      attemptIdentities.add(`${match[1].toLowerCase()}:${match[2].toLowerCase()}:${marker && marker.provider || ''}`);
+      const match = base || recovery;
+      const entry = attempt(`${match[1].toLowerCase()}:${match[2].toLowerCase()}:${marker && marker.provider || ''}`);
+      if (base) entry.base = true;
+      else entry.recoveries += 1;
     }
   }
-  const orphanAttempts = [...attemptIdentities].filter((identity) => identity !== coveredIdentity && !slotIdentities.has(identity)).length;
+  let orphanAttempts = 0;
+  for (const [identity, entry] of attempts) {
+    let legacySlots = entry.legacySlots;
+    const uncoveredBase = entry.base && identity !== coveredIdentity && entry.originalSlots === 0;
+    if (uncoveredBase && legacySlots > 0) legacySlots -= 1;
+    else if (uncoveredBase) orphanAttempts += 1;
+    const recoveries = entry.recoveries - (identity === coveredRecoveryIdentity ? 1 : 0);
+    orphanAttempts += Math.max(0, recoveries - entry.recoverySlots - legacySlots);
+  }
   return { spent: slots.length + orphanAttempts, slotCapacity: MAX_REQUESTS_PER_PR - orphanAttempts };
 }
 
@@ -122,8 +141,8 @@ function requestBudget(input) {
 }
 
 function reserveRequestSlot({ stateDir, pr, headSha }, kind, now, provider = null, coverClaim = false) {
-  const coveredIdentity = coverClaim ? requestIdentity({ headSha, kind, provider }) : null;
-  const { slotCapacity } = requestUsage({ stateDir, pr, coveredIdentity });
+  const identity = requestIdentity({ headSha, kind, provider });
+  const { slotCapacity } = requestUsage({ stateDir, pr, coveredIdentity: coverClaim ? identity : null, coveredRecoveryIdentity: coverClaim ? null : identity });
   for (let slot = 1; slot <= slotCapacity; slot += 1) {
     const file = path.join(stateDir, `pr-${pr}.request-slot-${slot}.json`);
     if (writeExclusive(file, { pr, headSha, kind, provider, coversClaim: coverClaim, claimedAtMs: now })) return slot;
@@ -211,13 +230,26 @@ function reviewRecords({ stateDir, pr, headSha }) {
     .filter((record) => record && record.pr === pr && record.headSha === headSha);
 }
 
+function rejectedReviewIds({ stateDir, pr, headSha }) {
+  const prefix = `pr-${pr}-${headSha}.disposition-`;
+  let names;
+  try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') return new Set(); throw error; }
+  return new Set(names.filter((name) => name.startsWith(prefix) && name.endsWith('.json'))
+    .flatMap((name) => readMarker(path.join(stateDir, name))?.reviewIds || []));
+}
+
+function activeReviewRecords(input) {
+  const rejected = rejectedReviewIds(input);
+  return reviewRecords(input).filter((record) => !rejected.has(record.reviewId));
+}
+
 function compareReviewIds(a, b) {
   if (a.length !== b.length) return a.length - b.length;
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
 function reconciliationPacket({ stateDir, pr, headSha }) {
-  const records = reviewRecords({ stateDir, pr, headSha })
+  const records = activeReviewRecords({ stateDir, pr, headSha })
     .sort((a, b) => a.recordedAtMs - b.recordedAtMs || compareReviewIds(a.reviewId, b.reviewId));
   if (records.length === 0) return null;
   const reviews = records.map((record) => ({ id: record.reviewId, reviewer: record.reviewer || 'legacy/unknown', url: record.reviewUrl, findings: record.findings }));
@@ -241,28 +273,50 @@ function recordReview(input) {
   if (observation.state === 'in-progress') return { outcome: 'in-progress', recorded: false };
   if (observation.findings.length > 0) {
     const file = markerPath({ stateDir, ...key }, `review-${observation.reviewId}`);
-    if (readMarker(file)) return { outcome: 'needs-reconciliation', recorded: false, duplicate: true };
+    if (readMarker(file)) {
+      const outcome = rejectedReviewIds({ stateDir, ...key }).has(observation.reviewId) ? 'rejected' : 'needs-reconciliation';
+      return { outcome, recorded: false, duplicate: true };
+    }
     const written = writeExclusive(file, { pr: key.pr, headSha: key.headSha, reviewId: observation.reviewId, reviewer: observation.reviewer, reviewUrl: observation.reviewUrl, recordedAtMs: now, findings: observation.findings });
     if (!written) return { outcome: 'needs-reconciliation', recorded: false, duplicate: true };
     return { outcome: 'needs-reconciliation', recorded: true, duplicate: false };
   }
-  if (reviewRecords({ stateDir, ...key }).length > 0) return { outcome: 'needs-reconciliation', recorded: false, duplicate: false };
+  if (activeReviewRecords({ stateDir, ...key }).length > 0) return { outcome: 'needs-reconciliation', recorded: false, duplicate: false };
   if (observation.lgtm) return { outcome: 'green', recorded: false };
   return { outcome: 'completed-without-lgtm', recorded: false };
+}
+
+function rejectReviewBatch(input) {
+  const { stateDir, now = Date.now(), reason } = input;
+  const key = validate(input);
+  if (!Array.isArray(input.reviewIds) || input.reviewIds.length === 0) throw new Error('review-lgtm-state: reject-review-batch requires reviewIds');
+  if (typeof reason !== 'string' || !reason.trim() || reason.length > 2000) throw new Error('review-lgtm-state: rejection reason must be a non-empty string of at most 2000 characters');
+  const reviewIds = [...new Set(input.reviewIds.map(normalizeReviewId))].sort(compareReviewIds);
+  const activeIds = activeReviewRecords({ stateDir, ...key }).map((record) => record.reviewId).sort(compareReviewIds);
+  if (reviewIds.length !== activeIds.length || reviewIds.some((id, index) => id !== activeIds[index])) {
+    throw new Error('review-lgtm-state: rejected reviewIds must exactly match the active review batch');
+  }
+  const digest = crypto.createHash('sha256').update(reviewIds.join(',')).digest('hex').slice(0, 16);
+  writeExclusive(markerPath({ stateDir, ...key }, `disposition-${digest}`), { ...key, reviewIds, reason: reason.trim(), rejectedAtMs: now });
+  return { rejected: true, reviewIds };
 }
 
 function status(input) {
   const { stateDir } = input;
   const key = validate(input);
   const window = readMarker(markerPath({ stateDir, ...key }, 'window'));
+  const retryWindow = readMarker(markerPath({ stateDir, ...key }, 'retry-window'));
   const initialClaim = readMarker(markerPath({ stateDir, ...key }, 'initial-claim'));
   const initialRecovery = latestRecoveryClaim({ stateDir, ...key }, 'initial');
   const initialRequest = readMarker(markerPath({ stateDir, ...key }, 'initial-request'));
   const observed = readMarker(markerPath({ stateDir, ...key }, 'observed'));
-  if (window && (window.pr !== key.pr || window.headSha !== key.headSha || !Number.isSafeInteger(window.deadlineMs))) {
-    throw new Error('review-lgtm-state: window marker does not match its PR head');
+  for (const [kind, marker] of [['window', window], ['retry-window', retryWindow]]) {
+    if (marker && (marker.pr !== key.pr || marker.headSha !== key.headSha || !Number.isSafeInteger(marker.deadlineMs))) {
+      throw new Error(`review-lgtm-state: ${kind} marker does not match its PR head`);
+    }
   }
-  return { deadlineMs: window ? window.deadlineMs : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested: !!initialRequest, reconciliation: reconciliationPacket({ stateDir, ...key }) };
+  const deadlines = [window, retryWindow].filter(Boolean).map((marker) => marker.deadlineMs);
+  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested: !!initialRequest, reconciliation: reconciliationPacket({ stateDir, ...key }) };
 }
 
 function claimFixRound(input) {
@@ -270,7 +324,7 @@ function claimFixRound(input) {
   const key = validate(input);
   const owner = input.owner || crypto.randomUUID();
   if (typeof owner !== 'string' || !owner || owner.length > 200) throw new Error('review-lgtm-state: fix-round owner must be a non-empty string of at most 200 characters');
-  if (reviewRecords({ stateDir, ...key }).length === 0) return { claimed: false, reason: 'no-findings' };
+  if (activeReviewRecords({ stateDir, ...key }).length === 0) return { claimed: false, reason: 'no-findings' };
   const slot = fixRoundForHead({ stateDir, ...key });
   if (slot) {
     const ownership = latestFixOwnership({ stateDir, ...key }, slot);
@@ -321,7 +375,7 @@ function claimRequest(input, kind) {
   const key = validate(input);
   const provider = normalizeProvider(input.provider);
   const markerKind = requestMarkerKind(kind, provider);
-  if (reviewRecords({ stateDir, ...key }).length > 0) return { claimed: false, reason: 'needs-reconciliation' };
+  if (activeReviewRecords({ stateDir, ...key }).length > 0) return { claimed: false, reason: 'needs-reconciliation' };
   const budget = requestBudget({ stateDir, pr: key.pr });
   if (budget.remaining === 0) return { claimed: false, reason: 'request-budget-exhausted', budget };
   if (kind === 'initial') {
@@ -351,7 +405,7 @@ function recoverRequest(input, kind) {
   const key = validate(input);
   const provider = normalizeProvider(input.provider);
   const markerKind = requestMarkerKind(kind, provider);
-  if (reviewRecords({ stateDir, ...key }).length > 0) return { claimed: false, reason: 'needs-reconciliation' };
+  if (activeReviewRecords({ stateDir, ...key }).length > 0) return { claimed: false, reason: 'needs-reconciliation' };
   const claim = readMarker(markerPath({ stateDir, ...key }, `${markerKind}-claim`));
   const recovery = latestRecoveryClaim({ stateDir, ...key }, markerKind);
   const claimedAtMs = Math.max(...[claim, recovery].map((marker) => marker && marker.claimedAtMs).filter(Number.isSafeInteger));
@@ -394,7 +448,8 @@ function runMain(repoRoot = process.cwd()) {
   else if (verb === 'claim-fix-round') process.stdout.write(`${JSON.stringify(claimFixRound({ stateDir, pr, headSha }))}\n`);
   else if (verb === 'renew-fix-round') process.stdout.write(`${JSON.stringify(renewFixRound({ stateDir, pr, headSha, owner: argument }))}\n`);
   else if (verb === 'record-review') process.stdout.write(`${JSON.stringify(recordReview({ stateDir, pr, headSha, observation: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
-  else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, or record-review');
+  else if (verb === 'reject-review-batch') process.stdout.write(`${JSON.stringify(rejectReviewBatch({ stateDir, pr, headSha, ...JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
+  else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, record-review, or reject-review-batch');
 }
 
-module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, recordReview, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, runMain };
+module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, recordReview, rejectReviewBatch, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, runMain };
