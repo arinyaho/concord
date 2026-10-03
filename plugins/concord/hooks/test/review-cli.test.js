@@ -3049,10 +3049,10 @@ test('rerun carries unresolved broad findings on unchanged files', () => {
 
   const n = JSON.parse(run(['round-start', ref, base], { env, broadDefault: true })).round;
   writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
-  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
   writeArtifact(dir, n, 'gate', { status: 'ok', findings: [
     { id: 'gate:cross-context:unchanged', file: 'unchanged.js', span: 'old invariant', summary: 'a real unresolved gap', requirement: 'r' },
   ] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
   writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
   run(['plan-fixes', ref], { env });
   assert.strictEqual(JSON.parse(run(['record', ref], { env })).decision.gatePending, true);
