@@ -10,7 +10,7 @@ const { openInitiativeRun, runPath } = require(path.resolve(__dirname, '../../co
 const plugins = path.resolve(__dirname, '../../..');
 const providers = { claude: path.join(plugins, 'concord/hooks/review-cli.js'), copilot: path.join(plugins, 'concord-copilot/bin/review-cli.js') };
 function setup(t, provider) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'review-feedback-'));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'review-feedback-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const store = path.join(root, 'feedback');
   const ledgerPath = path.join(root, 'target.json');
