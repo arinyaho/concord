@@ -120,3 +120,11 @@ test('the composed Claude command preserves pending final DoD semantics', () => 
   assert.match(composedCommandText, /If `round-start` reported `dodPending:true`, tell it the configured DoD will run once after review convergence/);
   assert.doesNotMatch(composedCommandText, /If `dodPassed` is `false`, tell it DoD failed this round/);
 });
+
+test('manual drivers reserve only unresolved grouped fixes', () => {
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
+    assert.match(text, /skip it if its id is in `resolvedFindingIds` returned by an earlier `commit-fix`/, name);
+    assert.match(text, /Reserve one `fix` launch immediately before spawning each remaining fixer/, name);
+    assert.doesNotMatch(text, /fix --count <number of fixes>/, name);
+  }
+});
