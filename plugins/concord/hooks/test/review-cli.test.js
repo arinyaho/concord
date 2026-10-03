@@ -2787,10 +2787,10 @@ test('plan-fixes: a verify finding sharing an id with a gate-review finding does
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
   const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true })).round;
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [
     { id: 'gate:cross-context:dup', file: 'a.txt', span: 'gate-review-span', summary: 'gate-review summary', requirement: 'r1' },
   ] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [
     { id: 'gate:cross-context:dup', file: 'a.txt', span: 'verify-span', summary: 'verify summary', requirement: 'r2' },
   ] }));
@@ -2978,8 +2978,6 @@ test('record: legacy gate.panel config does not arm an automatic final panel', (
   const { env, n } = seedGatesRound(repo, dir, 'feat/x',
     { status: 'ok', examined: ['a.txt'], findings: [] },
     { status: 'ok', rejected: [] }, { armBroad: true });
-  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
   const planOut = JSON.parse(run(['plan-fixes', 'feat/x'], { env }));
   assert.deepStrictEqual(planOut.fixes, []);
   const rec = JSON.parse(run(['record', 'feat/x'], { env }));
@@ -3264,10 +3262,10 @@ test('e2e: a round with no gate verdict does not erase a standing finding on an 
   writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [
     { id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'fix me' },
   ] });
-  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
   writeArtifact(dir, n, 'gate', { status: 'ok', findings: [
     { id: 'gate:cross-context:g', file: 'unchanged.txt', span: '', summary: 'a real design gap', requirement: 'r' },
   ] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
   writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
   run(['plan-fixes', 'feat/x'], { env });
 
