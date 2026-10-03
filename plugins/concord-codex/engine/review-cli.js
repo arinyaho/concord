@@ -1833,7 +1833,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // Git only: clean any leftover uncommitted edit from a rejected/parked fixer.
     // File targets have no working tree to discard.
     if (isGit) gitCheckoutTree(repoRoot);
-    const finalChecks = [{ name: 'definition-of-done', status: ledger.dod?.deferred ? 'deferred' : ledger.dod?.passed ? 'passed' : 'failed' }];
+    const finalChecks = [{ name: 'definition-of-done', status: ledger.dod?.deferredBy === 'pending-final' ? 'not-run' : ledger.dod?.deferred ? 'deferred' : ledger.dod?.passed ? 'passed' : 'failed' }];
     ledger = { ...ledger, phase: 'done', last_recorded_round: n, _lastDecision: decision, reconciliationPacket: reconciliation || null, finalChecks, ...(run ? { _lastInitiativeClaim: null } : {}) };
     let entry;
     let recordedNow = false;
@@ -2102,8 +2102,8 @@ function runVerb(resolveFromCwd, args, initiative) {
       process.stdout.write(`review-cli reset: no ledger for ref "${ref}"; nothing to reset.\n`);
       return;
     }
-    if ((prior.runs || []).length) {
-      throw new Error('review-cli reset: cannot discard cumulative run history; preserve the ledger and split scope or reconcile the remaining verification');
+    if (prior.status === 'clean' || (prior.runs || []).length) {
+      throw new Error('review-cli reset: cannot discard a completed run or cumulative run history; preserve the ledger and split scope or reconcile the remaining verification');
     }
     deleteLedger(stateDir, slug);
     reviewTelemetry.deleteTelemetry(stateDir, prior.target?.ref || ref, slug);

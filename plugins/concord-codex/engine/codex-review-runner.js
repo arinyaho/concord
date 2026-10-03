@@ -562,7 +562,7 @@ async function runReviewUntilGreen(options) {
   const withTelemetry = (result) => {
     const output = { ...result, telemetry: result?.telemetry || telemetry };
     const genuinelyTerminal = result?.decision === 'terminal' || result?.decision?.converged === true || result?.decision?.parked === true || result?.decision?.abandoned === true;
-    const terminal = genuinelyTerminal || result?.decision === 'escape' || result?.decision?.intentReview || result?.decision?.gatePending;
+    const terminal = genuinelyTerminal || result?.decision === 'escape' || result?.decision?.intentReview || result?.decision?.gatePending || result?.decision?.dodFailed;
     // A genuinely terminal result always clears the local cache -- no more
     // accumulation is expected. Without an initiative run, a re-runnable
     // decision (escape/gate-pending/intent-review) has nowhere else its

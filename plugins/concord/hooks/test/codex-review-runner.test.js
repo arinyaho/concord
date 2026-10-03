@@ -409,6 +409,19 @@ test('a non-material gate-pending record result produces a working, resumable es
   assert.strictEqual(roundStarted, true);
 });
 
+test('a final DoD failure produces a working, resumable escape packet', async () => {
+  const stateDir = temp();
+  const options = { ref: 'feature/dod-failed', base: 'main', repoRoot: '/repo', initiativeRunKey: 'dod-failed-e2e', initiativeStateDir: stateDir, initiativeMaxLaunches: 8, initiativeMaxRounds: 4,
+    runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: false }
+      : verb === 'artifact-normalize' ? { status: 'ok' }
+        : verb === 'plan-fixes' ? { fixes: [] }
+          : { decision: { continue: false, dodFailed: true } },
+    spawn: async () => ({ status: 0 }) };
+  const result = await runReviewUntilGreen(options);
+  assert.deepStrictEqual(result.continuationPacket.outcome, { kind: 'escape', reason: 'dod-failed' });
+  assert.strictEqual(result.continuationPacket.nextAction, 'resume');
+});
+
 test('a consumed gate-pending retry does not double-count the prior round\'s telemetry', async () => {
   const stateDir = temp();
   const options = { ref: 'feature/gp-telemetry', base: 'main', repoRoot: '/repo', initiativeRunKey: 'gp-telemetry', initiativeStateDir: stateDir, initiativeMaxLaunches: 8, initiativeMaxRounds: 4,

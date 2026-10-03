@@ -500,6 +500,17 @@ test('review-cli reset: no ledger for the ref -> reports nothing to reset, exits
   assert.match(out, /nothing to reset/);
 });
 
+test('review-cli reset: a completed initial run cannot erase the cumulative budget', () => {
+  const dir = tmpDir(); const ref = 'feat/clean'; const slug = review.targetSlug(ref);
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  review.writeLedger(dir, slug, { ...review.emptyLedger({ kind: 'local', ref }), status: 'clean', phase: 'done' });
+  const before = fs.readFileSync(review.ledgerPath(dir, slug));
+  const reset = runCapture(['reset', ref], { env });
+  assert.notStrictEqual(reset.status, 0);
+  assert.match(reset.stderr, /cannot discard a completed run/);
+  assert.deepStrictEqual(fs.readFileSync(review.ledgerPath(dir, slug)), before);
+});
+
 test('review-cli: missing ref argument exits non-zero with a message on stderr', () => {
   const dir = tmpDir();
   assert.throws(() => run(['show'], { env: { ...process.env, REVIEW_STATE_DIR: dir } }));
@@ -2798,7 +2809,9 @@ test('record: diff-local clean with an open gate finding -> gate-pending, not cl
   const out = JSON.parse(run(['record', 'feat/x'], { env }));
   assert.strictEqual(out.decision.gatePending, true);
   assert.strictEqual(out.decision.converged, false);
-  assert.strictEqual(review.readLedger(dir, review.targetSlug('feat/x')).status, 'gate-pending');
+  const ledger = review.readLedger(dir, review.targetSlug('feat/x'));
+  assert.strictEqual(ledger.status, 'gate-pending');
+  assert.deepStrictEqual(ledger.finalChecks, [{ name: 'definition-of-done', status: 'not-run' }]);
 });
 
 test('record: legacy gate.panel config does not arm an automatic final panel', () => {
