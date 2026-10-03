@@ -887,7 +887,14 @@ async function runReviewUntilGreen(options) {
   }
   } catch (error) {
     if (error.notAReviewFailure) throw error;
-    if (error.initiativeBlocked) return { decision: error.initiativeBlocked === 'budget-exhausted' ? 'blocked' : error.initiativeBlocked, reason: error.initiativeBlocked, initiative: publicInitiativeSummary(initiativeRun) };
+    if (error.initiativeBlocked) {
+      // carry is a human/reconciliation step: this runner stops at `blocked`
+      // and names the exact command rather than picking a new key itself.
+      const carryCommand = error.initiativeBlocked === 'budget-exhausted'
+        ? `node "${cliPath}" carry ${ref} --from-run-key ${options.initiativeRunKey} --initiative-run-key <new-run-key> --initiative-state-dir ${canonicalStateDir} --initiative-max-launches ${options.initiativeMaxLaunches} --initiative-max-rounds ${options.initiativeMaxRounds}`
+        : null;
+      return { decision: error.initiativeBlocked === 'budget-exhausted' ? 'blocked' : error.initiativeBlocked, reason: error.initiativeBlocked, initiative: publicInitiativeSummary(initiativeRun), ...(carryCommand ? { carryCommand } : {}) };
+    }
     const failure = error.reviewFailure || {};
     // recordDisposition dedups an 'error' by its reason (a hash of the
     // message), not just target+revision+kind -- so the fallback lookups

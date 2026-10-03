@@ -52,6 +52,50 @@ async function waitForFile(file) {
 }
 
 for (const [provider, entry] of Object.entries(providers)) {
+  test(`${provider}: concurrent carries from the same blocked target -- exactly one succeeds (AC4)`, { timeout: 15000 }, async (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'carry-race-'));
+    const repo = path.join(root, 'repo');
+    const state = path.join(root, 'state');
+    const runs = path.join(root, 'runs');
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    fs.mkdirSync(repo);
+    const git = (...args) => execFileSync('git', args, { cwd: repo, stdio: 'ignore' });
+    git('init', '-q');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n');
+    git('add', 'a.txt');
+    git('commit', '-qm', 'initial');
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+    git('commit', '-qam', 'change');
+    const env = { ...process.env, REVIEW_STATE_DIR: state, REVIEW_REPO_ROOT: repo };
+    const run = (args) => execFileSync('node', [entry, ...args], { cwd: repo, env, encoding: 'utf8' });
+    const keyed = (key, maxLaunches = 1) => ['--initiative-run-key', key, '--initiative-state-dir', runs, '--initiative-max-launches', String(maxLaunches), '--initiative-max-rounds', '5'];
+    run(['round-start', 'feat/x', 'HEAD~1', '--no-broad']); // unbound: unkeyed first call
+    run(['reserve', 'feat/x', 'correctness', ...keyed('key-1', 1)]); // establishes the binding, exhausts the budget
+    const denied = JSON.parse(run(['reserve', 'feat/x', 'verify', ...keyed('key-1', 1)]));
+    assert.equal(denied.status, 'denied');
+    assert.equal(denied.reason, 'budget-exhausted');
+    const spawnOne = (toKey) => {
+      const child = spawn(process.execPath, [entry, 'carry', 'feat/x', '--from-run-key', 'key-1', ...keyed(toKey, 10)], { cwd: repo, env });
+      let stdout = '', stderr = '';
+      child.stdout.on('data', (d) => { stdout += d; });
+      child.stderr.on('data', (d) => { stderr += d; });
+      return new Promise((resolve) => child.on('close', (status) => resolve({ status, stdout, stderr })));
+    };
+    const [toB, toC] = await Promise.all([spawnOne('key-2'), spawnOne('key-3')]);
+    const results = [toB, toC];
+    const succeeded = results.filter((r) => r.status === 0);
+    const refused = results.filter((r) => r.status !== 0);
+    assert.equal(succeeded.length, 1, 'exactly one concurrent carry should succeed');
+    assert.equal(refused.length, 1);
+    assert.match(refused[0].stderr, /not bound to --from-run-key/);
+    const ledger = review.readLedger(state, review.targetSlug('feat/x'));
+    const winner = JSON.parse(succeeded[0].stdout).to;
+    assert.equal(ledger.initiative_binding.key, winner);
+    assert.equal(ledger.initiative_carries.length, 1);
+  });
+
   test(`${provider}: first initiative binding survives an overlapping unkeyed mutation`, { timeout: 15000 }, async (t) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'initiative-binding-race-'));
     const repo = path.join(root, 'repo');

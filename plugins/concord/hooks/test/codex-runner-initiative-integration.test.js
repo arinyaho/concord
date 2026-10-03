@@ -326,6 +326,40 @@ test('native launcher signals an incomplete session handoff with exit code 1', (
   assert.match(out.stdout, /CONTINUE/);
 });
 
+test('a budget-exhausted block names the carry command, and after a CLI carry the runner resumes under the new key without relaunching correctness (AC7)', async () => {
+  const f = fixture({ maxLaunches: 1 });
+  const blocked = await runReviewUntilGreen(f.options);
+  assert.equal(blocked.decision, 'blocked');
+  assert.equal(blocked.reason, 'budget-exhausted');
+  assert.deepEqual(f.workers, ['correctness']);
+  assert.match(blocked.carryCommand, /carry feature\/test --from-run-key integration --initiative-run-key <new-run-key>/);
+  assert.equal(f.ledger().launches.length, 1);
+
+  const carried = spawnSync('node', [cliPath, 'carry', f.options.ref, '--from-run-key', 'integration',
+    '--initiative-run-key', 'integration-2', '--initiative-state-dir', f.options.initiativeStateDir,
+    '--initiative-max-launches', '10', '--initiative-max-rounds', '10'],
+    { cwd: f.options.repoRoot, encoding: 'utf8', env: { ...process.env, REVIEW_REPO_ROOT: f.options.repoRoot, REVIEW_STATE_DIR: f.stateDir } });
+  assert.equal(carried.status, 0, carried.stderr);
+  assert.equal(JSON.parse(carried.stdout).status, 'carried');
+
+  const carriedOptions = { ...f.options, initiativeRunKey: 'integration-2', initiativeMaxLaunches: 10, initiativeMaxRounds: 10, base: undefined, resume: true, sessionHandoff: 'off' };
+  const resumed = await runReviewUntilGreen(carriedOptions);
+  assert.equal(resumed.decision.converged, true);
+  // Correctness was not relaunched: round-start under the new key reused the
+  // hash-verified artifact, and only verify's reservation and launch happened.
+  assert.deepEqual(f.workers, ['correctness', 'verify']);
+  assert.equal(f.ledger().launches.length, 1, "A's launches changed");
+  const newLedger = JSON.parse(fs.readFileSync(runPath(f.options.initiativeStateDir, 'integration-2')));
+  assert.equal(newLedger.launches.length, 1, 'B was charged for more than its own launch');
+
+  // An old-key invocation now returns terminal with nextAction: carried.
+  const oldKeyRetry = await runReviewUntilGreen({ ...f.options, base: undefined, resume: true, sessionHandoff: 'off' });
+  assert.equal(oldKeyRetry.decision, 'terminal');
+  assert.equal(oldKeyRetry.continuationPacket.nextAction, 'carried');
+  assert.equal(oldKeyRetry.continuationPacket.carriedTo.key, 'integration-2');
+  assert.equal(f.ledger().launches.length, 1, 'retrying under the old key charged it again');
+});
+
 test('native launcher keeps exit 0 for a clean review with a failed stop checkpoint', () => {
   const dir = tmp(), preload = path.join(dir, 'preload.cjs');
   fs.writeFileSync(preload, `const Module=require('node:module'),load=Module._load;Module._load=function(request){if(request==='../engine/codex-review-runner')return{runReviewUntilGreen:async()=>({decision:{continue:false,converged:true},sessionHandoff:{action:'failed',mode:'stop-at-checkpoint',error:'checkpoint failed'}})};return load.apply(this,arguments);};`);

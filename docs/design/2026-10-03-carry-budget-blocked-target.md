@@ -1,0 +1,42 @@
+# Carrying a budget-blocked target to a new run key
+
+A shared initiative budget can run out in the middle of a round: for example after the correctness launch reserves and lands, but before verify's reservation is granted. The target stays bound to the exhausted key with reservations partly consumed, phase `gates` or `fixes`, and nowhere to go within that key. `carry` is the explicit, human-authorized step that moves such a target onto a new run key without losing the round's completed artifacts, after reconciliation has decided the new key's identity and budgets.
+
+## The verb
+
+`review-cli carry <ref> --from-run-key <old-key>`, with the new key's full initiative options (`--initiative-run-key`, `--initiative-state-dir`, `--initiative-max-launches`, `--initiative-max-rounds`, and `--initiative-mode` if the run is lite), runs under the target lock, like every other mutating target verb. It takes no other input: the round, attempt, role, count and revision it acts on all come from the target ledger's own recovery marker, not from the caller.
+
+## How the marker is written
+
+`reserve`'s existing denial path writes the marker. On a `budget-exhausted` denial against a target that is already bound (`initiative_binding` is set — this is not its first reservation), the CLI persists `initiative_blocked: { key, stateDir, round, attemptId, role, count, revision }` on the target ledger, naming the exhausted key and the exact batch that was refused. An unbound target's first reservation attempt still writes nothing on denial: there is no binding yet to recover, and the target is free to retry under a corrected key or budget before anything is committed to it. The marker is advisory, not a lock: it is consumed, not required, and a stale marker (wrong round or attempt) simply refuses `carry` rather than corrupting anything.
+
+## Checks, in order
+
+1. **The target.** It is bound to `--from-run-key` under the given state directory (an unbound target, or one with legacy reservations and no binding, is refused outright: there is no proven identity to carry from). It is in an active review phase (`gates`, `fixes`, or a pending gate panel) and not parked for reconciliation. Its `initiative_blocked` marker names this exact round and attempt. Live HEAD still equals the ledger's stored head, so the pair has not moved since the block.
+2. **The new run.** Opened with the caller's budgets, like any keyed call. Its mode must equal the old run's mode — `carry` never changes mode. A readiness check (the same refusal logic `reserve` uses, at count 1) must find it active, not parked, not already terminal for this pair, and under budget.
+3. **The old run.** Must be active, in the same repository, and the marker's exact batch must still deny as `budget-exhausted` — if it would now be accepted, or denies for a different reason, there is nothing to carry. `requireReservations` must find the round's evidence on disk fully covered by what the old key already reserved; if it is not, the old run is finalised and failed closed, and the carry aborts, exactly like a `record` that finds uncovered evidence. Only then does the old run get a terminal disposition, with reason `carried` and `packet.carriedTo: { key, stateDir }` naming the new run. No run-ledger schema change: this reuses the existing disposition shape, the way `escape` and `terminal` already do, just with a reason the schema has not needed before.
+4. **The target ledger, atomically.** One write binds the target to the new key, appends `{ from, to, stateDir, round, at }` to `initiative_carries`, and drops `initiative_blocked`. Reservations, the per-role launched counter and the fix-used counter are untouched: they still name the old key's spend for this round, and only launches made after this point are reserved against the new key.
+
+A crash between step 3's disposition and step 4's write is resumed, not refused: retrying the identical `carry` finds its own `carried` disposition already on the old run (matched by the new key and state directory it names) and proceeds straight to step 4. A `carry` to a *different* new key after that crash is refused, the same as any second carry: the old run already holds a terminal disposition for the pair.
+
+## Invariants
+
+- Lock order never changes: the target lock is taken first (by `main`, before any run is touched), then at most one run lock at a time — the new run is opened and released, then the old run's disposition is written and released. The two run locks are never held together.
+- A target carries at most once. A terminal disposition on the old run (reason `carried` or otherwise) refuses every later launch and every later terminal record for that pair, the same mechanism that already refuses a second `record` on a finished pair.
+- The new run charges only for what it does itself. It opens with zero launches and zero rounds; nothing is copied from the old run's spend.
+- Completed artifacts survive. `round-start`'s existing resume path reuses any artifact whose content hash still matches what the ledger recorded, regardless of which run key is now bound — carry changes the binding, not the per-ref ledger's round state or its artifacts.
+
+## Rationale: carry, not restart
+
+The alternative to carrying is to treat the blocked round as spent and start the new key from a fresh round on the same head. That throws away real, already-accepted review work (a correctness pass that already ran and was accepted) to recover from a budgeting accident, not a review failure. It also means the new key pays twice for anything the old key already did. `carry` keeps the per-ref review ledger as the single source of truth for what happened to this revision pair, and only changes which initiative budget future launches draw from.
+
+## Rejected alternatives
+
+- **An error disposition for the block.** `budget-exhausted` is not a defect: nothing malfunctioned, a human simply under-budgeted. An error disposition reads as a crash and invites an automatic retry; this is a decision for a human, the same reasoning that keeps `reconciliation-required` and `budget-exhausted` out of the error path everywhere else in the initiative design.
+- **Letting the operator supply the role and count being carried.** The blocked batch is already known exactly — it is the one `reserve` just denied — and taking it from the caller would let a mistyped role or count silently carry the wrong thing, or carry a batch that was never actually blocked. The marker is the one place this information is recorded, and `carry` reads it rather than re-deriving or re-accepting it.
+- **A new run-ledger field for cross-run provenance.** Recording "this run continues that one" as a new concept would mean a schema bump, which every ledger reader would have to learn. Reusing the disposition shape with a `carried` reason needs no new field: the old run's disposition array already is the place terminal outcomes for a pair live.
+
+## Residual exposure
+
+- The old key's reservations for the carried round stay in the old run's ledger; the new run never sees them. For as long as the target ledger still names that round, its reservation and launched-count bookkeeping remains whatever the old key paid — `requireReservations` at `carry` time bounds this to what was actually reserved there, but it means evidence acceptance for the carried round is still measured against the old key's spend, not the new key's, until the round itself completes.
+- The new run's own report (`finalise`'s `report.json`/`report.md`) does not show the carried-in round at all: by design the new run records no carried-in provenance, so its aggregate counts cover only launches made after the carry. Reconstructing the full history of a carried target means reading both runs' reports, keyed by the `initiative_carries` entry on the target ledger.
