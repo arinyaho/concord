@@ -2714,12 +2714,12 @@ test('plan-fixes: folds gate + gate-verify artifacts into gate_open, honoring di
   const slug = review.targetSlug('feat/x');
   let l = review.readLedger(dir, slug); l = { ...l, gate_dismissed: ['gate:ac-coverage:dismissed-one'] }; review.writeLedger(dir, slug, l);
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [
     { id: 'gate:cross-context:keep', file: 'other.js', span: 'x', summary: 'unchanged sibling issue' },
     { id: 'gate:silent-gap:reject', file: 'a.txt', span: '', summary: 'fp', requirement: 'r' },
     { id: 'gate:ac-coverage:dismissed-one', file: 'a.txt', span: '', summary: 'accepted', requirement: 'r' },
   ] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: ['gate:silent-gap:reject'] }));
   const out = JSON.parse(run(['plan-fixes', 'feat/x'], { env }));
   assert.deepStrictEqual(out.fixes, []); // gate findings NEVER become fixes
@@ -2757,10 +2757,10 @@ test('plan-fixes: a --broad-enabled round folds gate findings into gate_open exa
   const rsOut = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--broad'], { env }));
   const n = rsOut.round;
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [
     { id: 'gate:cross-context:flagged', file: 'other.js', span: 'x', summary: 'unchanged sibling issue' },
   ] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   run(['plan-fixes', 'feat/x'], { env });
   const after = review.readLedger(dir, review.targetSlug('feat/x'));
@@ -2778,8 +2778,8 @@ test('plan-fixes: a gate-verify artifact that DECLARES blocked is a harness-fail
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
   const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true })).round;
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [], blocked: ['grep: denied by sandbox'] }));
   assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure[\s\S]*could not run/);
 });
@@ -2794,9 +2794,9 @@ test('plan-fixes: a gate-verify-added finding (distrust-green) merges into gate_
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
   const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true })).round;
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   // gate-review found nothing this round, but gate-verify's different lens caught a gap.
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [
     { id: 'gate:cross-context:verify-found', file: 'other.js', span: 'x', summary: 'gate-verify caught a gap the first pass missed', requirement: 'r' },
   ] }));
@@ -2842,8 +2842,8 @@ test('plan-fixes: a verify-added finding that verify also rejects (in its own "r
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
   const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true })).round;
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: ['gate:cross-context:self-reject'], findings: [
     { id: 'gate:cross-context:self-reject', file: 'other.js', span: 'x', summary: 'flagged then immediately retracted', requirement: 'r' },
   ] }));
@@ -2862,8 +2862,8 @@ test('plan-fixes: a non-gate id in the gate-verify findings is a harness-failure
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
   const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true })).round;
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [
     { id: 'correctness:not-a-gate-id', file: 'a.txt', span: 'x', summary: 'wrong namespace' },
   ] }));
@@ -2880,8 +2880,8 @@ test('plan-fixes: a missing gate-verify "findings" field defaults to empty (leni
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
   const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true })).round;
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   // legacy-shaped gate-verify artifact, no "findings" key at all.
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   const out = JSON.parse(run(['plan-fixes', 'feat/x'], { env }));
@@ -2900,10 +2900,10 @@ test('plan-fixes: a non-gate id in the gate artifact is a harness-failure', () =
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
   const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true })).round;
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [
     { id: 'correctness:not-a-gate-id', file: 'a.txt', span: 'x', summary: 'wrong namespace' },
   ] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure/);
 });
@@ -2918,10 +2918,10 @@ test('plan-fixes: a shape-invalid gate artifact finding (missing "file") throws 
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
   const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true })).round;
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [
     { id: 'gate:cross-context:x', summary: 's' },
   ] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure/);
 });
@@ -2936,10 +2936,10 @@ test('plan-fixes: a shape-invalid gate-VERIFY artifact finding (missing "file") 
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
   const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true })).round;
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [
     { id: 'gate:cross-context:valid', file: 'other.js', span: 'x', summary: 'valid gate-review finding' },
   ] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
   // gate-verify artifact is valid JSON, but its findings entry is shape-broken (missing "file").
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [
     { id: 'gate:silent-gap:x', summary: 's' },
@@ -2986,10 +2986,10 @@ test('record: a reconciliation retry at the round limit parks instead of allowin
   const started = review.readLedger(dir, slug);
   review.writeLedger(dir, slug, { ...started, budget: { ...started.budget, max_rounds: 1 } });
   writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
-  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
   writeArtifact(dir, n, 'gate', { status: 'ok', findings: [
     { id: 'gate:cross-context:limit', file: 'other.js', span: 'x', summary: 'still unresolved' },
   ] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
   writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
   run(['plan-fixes', 'feat/x'], { env });
   const out = JSON.parse(run(['record', 'feat/x'], { env }));
@@ -3386,10 +3386,10 @@ test('e2e: a carried finding whose file DID change since base is dropped when th
   writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [
     { id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'fix me' },
   ] });
-  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
   writeArtifact(dir, n, 'gate', { status: 'ok', findings: [
     { id: 'gate:cross-context:g2', file: 'a.txt', span: '', summary: 'a gap on the changed file', requirement: 'r' },
   ] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
   writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
   run(['plan-fixes', 'feat/x'], { env });
 
@@ -3416,8 +3416,8 @@ test('e2e: a carried finding whose file DID change since base is dropped when th
   review.writeLedger(dir, slug, { ...review.readLedger(dir, slug), gate_rounds: [] });
   n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~2'], { env, broadDefault: true })).round;
   writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
-  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
   writeArtifact(dir, n, 'gate', { status: 'ok', findings: [] }); // silent this round
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
   writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
   run(['plan-fixes', 'feat/x'], { env });
   out = JSON.parse(run(['record', 'feat/x'], { env }));
