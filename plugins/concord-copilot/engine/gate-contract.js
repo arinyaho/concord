@@ -59,7 +59,7 @@ function parseVerifyVerdict(rawText, candidateFindings) {
     .map((entry) => (typeof entry === 'string' ? entry : entry && entry.id))
     .filter((id) => typeof id === 'string');
   const validIds = new Set((candidateFindings || []).map((f) => f.id));
-  return { rejectedIds: rejected.filter((id) => validIds.has(id)) };
+  return { rejectedIds: [...new Set(rejected.filter((id) => validIds.has(id)))] };
 }
 
 const PARK_KINDS = new Set(['needs-decision', 'harness-failure']);
