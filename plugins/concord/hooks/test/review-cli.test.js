@@ -4236,6 +4236,30 @@ test('no-DoD target changed after round-start cannot converge from stale clean e
   assert.strictEqual(out.decision.continue, true);
 });
 
+test('no-DoD target rechecks identity when every reported candidate was previously killed', () => {
+  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-suppressed-race-'));
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
+  fs.writeFileSync(path.join(fileDir, 'note.md'), '# reviewed\n');
+  const ref = 'file:note.md';
+  const slug = review.targetSlug(ref);
+  const rs = JSON.parse(run(['round-start', ref], { env }));
+  const finding = { id: 'docreview:already-killed', gate: 'correctness', file: 'note.md', span: 'reviewed', summary: 'old false positive' };
+  const ledger = review.readLedger(dir, slug);
+  review.writeLedger(dir, slug, {
+    ...ledger,
+    findings: [{ ...finding, status: 'killed' }],
+    seen: [{ id: finding.id, hash: review.seenHash(finding), status: 'killed' }],
+  });
+  writeArtifact(dir, rs.round, 'correctness', { status: 'ok', examined: ['note.md'], findings: [finding] });
+  writeArtifact(dir, rs.round, 'verify', { status: 'ok', rejected: [], findings: [] });
+  assert.deepStrictEqual(JSON.parse(run(['plan-fixes', ref], { env })).fixes, []);
+  fs.writeFileSync(path.join(fileDir, 'note.md'), '# changed after review\n');
+  const out = JSON.parse(run(['record', ref], { env }));
+  assert.strictEqual(out.decision.converged, false);
+  assert.strictEqual(out.decision.continue, true);
+});
+
 test('no-DoD target parks when the round budget is spent and round-start never opens a round past it', () => {
   const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-budget-'));
   const dir = tmpDir();

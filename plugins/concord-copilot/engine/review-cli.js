@@ -1811,9 +1811,11 @@ function runVerb(resolveFromCwd, args, initiative) {
       }
     }
     // Re-read a file target only when this round could otherwise converge.
-    // Fixed, parked, and still-open rounds cannot consume clean evidence, and
-    // may use synthetic fixtures with no live file.
-    const targetUnchanged = isGit || fixedIds.length > 0 || parkedIds.length > 0 || candidates.length !== killedIds.length
+    // Determine open work after seen-finding suppression; raw candidate counts
+    // cannot distinguish a previously killed re-report from a live finding.
+    const concludedIds = new Set([...fixedIds, ...parkedIds, ...killedIds]);
+    const hasOpenCandidate = R.dedupeAgainstSeen(candidates, ledger.seen).some((f) => !concludedIds.has(f.id));
+    const targetUnchanged = isGit || fixedIds.length > 0 || parkedIds.length > 0 || hasOpenCandidate
       || acquireTarget(ledger.target.spec, repoRoot).identity === ledger.target.head_sha;
     const outcome = {
       dodPassed: !!(ledger.dod && ledger.dod.passed), dodDeferred: !!(ledger.dod && ledger.dod.deferred), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons,
