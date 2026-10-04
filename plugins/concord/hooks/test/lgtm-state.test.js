@@ -147,6 +147,19 @@ test('review requests distinguish a durable claim from a request that was sent',
   assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, requestEligibleAtMs: 122000, requestBudget: { max: 3, spent: 1, remaining: 2 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, initialClaimed: true, initialClaimedAtMs: 122000, initialRecoveryClaimed: false, initialRequested: true, reconciliation: null });
 });
 
+test('status exposes a provider-specific sent request so resume can open its window', () => {
+  const input = { stateDir: temp(), pr: 116, headSha: '0123456789abcdef0123456789abcdef01234567', provider: 'codex' };
+  lgtmState.claimInitialRequest({ ...input, now: 1000 });
+  assert.strictEqual(lgtmState.claimInitialRequest({ ...input, now: 121000 }), true);
+  assert.strictEqual(lgtmState.status(input).initialClaimed, true);
+  assert.strictEqual(lgtmState.status(input).initialClaimedAtMs, 121000);
+  assert.strictEqual(lgtmState.markInitialRequested(input), true);
+  assert.strictEqual(lgtmState.status(input).initialRequested, true);
+  assert.strictEqual(lgtmState.claimInitialRequest({ ...input, provider: 'copilot', now: 121001 }), true);
+  assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, provider: 'copilot', now: 121001 + lgtmState.INITIAL_CLAIM_LEASE_MS }), true);
+  assert.strictEqual(lgtmState.status(input).initialRecoveryClaimed, true);
+});
+
 test('an initial request recovery claim waits for the original claimant lease', () => {
   const input = { stateDir: temp(), pr: 116, headSha: '0123456789abcdef0123456789abcdef01234567' };
   assert.strictEqual(lgtmState.INITIAL_CLAIM_LEASE_MS, 15 * 60 * 1000);
@@ -244,6 +257,29 @@ test('an abandoned fix-round claim becomes recoverable after its lease', () => {
     round: 1,
     budget: { max: 3, spent: 1, remaining: 2 },
   });
+});
+
+test('a resumed original claimant cannot reserve a second slot after recovery wins', () => {
+  const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
+  lgtmState.recordReview({ ...input, now: 500, observation: observation() });
+  const linkSync = fs.linkSync;
+  let recovered;
+  fs.linkSync = (source, destination) => {
+    linkSync(source, destination);
+    if (destination.endsWith('.fix-round-claim.json')) {
+      recovered = lgtmState.claimFixRound({ ...input, now: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS, owner: 'replacement' });
+    }
+  };
+  let original;
+  try {
+    original = lgtmState.claimFixRound({ ...input, now: 1000, owner: 'original' });
+  } finally {
+    fs.linkSync = linkSync;
+  }
+  assert.strictEqual(recovered.claimed, true);
+  assert.strictEqual(recovered.owner, 'replacement');
+  assert.deepStrictEqual(original, { claimed: false, reason: 'claim-in-progress', eligibleAtMs: 1000 + 2 * lgtmState.INITIAL_CLAIM_LEASE_MS });
+  assert.deepStrictEqual(lgtmState.status(input).fixBudget, { max: 3, spent: 1, remaining: 2 });
 });
 
 test('a reserved fix-round slot becomes resumable after its lease', () => {
@@ -462,23 +498,23 @@ test('a non-digit reviewId is rejected', () => {
   assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: 'abc123' }) }), /reviewId must be a positive safe integer or decimal digits/);
 });
 
-test('a numeric reviewId is accepted, normalized to a decimal string, and blocks another review request', () => {
+test('a numeric reviewId is normalized while provider collection remains available', () => {
   const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
   const result = lgtmState.recordReview({ ...input, now: 5000, observation: observation({ reviewId: 5332811440, findings: [inlineFinding({ priority: 'P1', signals: ['lifecycle'] })] }) });
   assert.deepStrictEqual(result, { outcome: 'needs-reconciliation', recorded: true, duplicate: false });
   const packet = lgtmState.status(input).reconciliation;
   assert.strictEqual(packet.reviews[0].id, '5332811440');
-  assert.deepStrictEqual(lgtmState.claimInitialRequest({ ...input, now: 6000 }), { claimed: false, reason: 'needs-reconciliation' });
+  assert.deepStrictEqual(lgtmState.claimInitialRequest({ ...input, now: 6000 }), { claimed: false, reason: 'auto-review-grace', eligibleAtMs: 126000 });
 });
 
-test('CLI record-review accepts a JSON number reviewId on stdin and another request then refuses', () => {
+test('CLI record-review accepts a JSON number reviewId and keeps provider collection available', () => {
   const stateDir = temp();
   const env = { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir };
   const obs = observation({ reviewId: 5332811440, findings: [inlineFinding({ priority: 'P1', signals: ['lifecycle'] })] });
   const out = JSON.parse(execFileSync('node', [CLI, 'record-review', String(PR_122), HEAD_A], { encoding: 'utf8', env, input: JSON.stringify(obs) }));
   assert.deepStrictEqual(out, { outcome: 'needs-reconciliation', recorded: true, duplicate: false });
   const claim = execFileSync('node', [CLI, 'claim-initial-request', String(PR_122), HEAD_A], { encoding: 'utf8', env });
-  assert.strictEqual(claim, '{"claimed":false,"reason":"needs-reconciliation"}\n');
+  assert.strictEqual(JSON.parse(claim).reason, 'auto-review-grace');
 });
 
 test('a reviewId string with leading zeros canonicalizes to the same review as its plain digits', () => {
@@ -517,13 +553,14 @@ test('a missing reviewer is rejected', () => {
   assert.throws(() => lgtmState.recordReview({ ...input, now: 5000, observation: bad }), /reviewer is required/);
 });
 
-test('once a head is marked, request claim and recovery report needs-reconciliation while sent state remains writable', () => {
+test('recorded findings do not block bounded requests needed to complete the provider batch', () => {
   const input = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
+  lgtmState.claimInitialRequest({ ...input, provider: 'copilot', now: 1000 });
+  assert.strictEqual(lgtmState.claimInitialRequest({ ...input, provider: 'copilot', now: 121000 }), true);
   lgtmState.recordReview({ ...input, now: 5000, observation: observation({ findings: [inlineFinding()] }) });
-  assert.deepStrictEqual(lgtmState.claimInitialRequest({ ...input, now: 6000 }), { claimed: false, reason: 'needs-reconciliation' });
-  assert.deepStrictEqual(lgtmState.recoverInitialRequest({ ...input, now: 6000 }), { claimed: false, reason: 'needs-reconciliation' });
-  assert.strictEqual(lgtmState.markInitialRequested(input), true);
-  assert.deepStrictEqual(lgtmState.openWindow({ ...input, now: 6000, durationMs: 900000 }), { created: true, deadlineMs: 906000 });
+  assert.strictEqual(lgtmState.claimInitialRequest({ ...input, provider: 'codex', now: 122000 }), true);
+  assert.strictEqual(lgtmState.recoverInitialRequest({ ...input, provider: 'copilot', now: 121000 + lgtmState.INITIAL_CLAIM_LEASE_MS }), true);
+  assert.deepStrictEqual(lgtmState.status(input).requestBudget, { max: 3, spent: 3, remaining: 0 });
 });
 
 test('a different head of the same PR is unaffected by another head being marked', () => {
@@ -570,13 +607,13 @@ test('CLI record-review reads the observation as JSON on stdin', () => {
   assert.deepStrictEqual(out, { outcome: 'needs-reconciliation', recorded: true, duplicate: false });
 });
 
-test('CLI claim-initial-request refuses a head with a recorded review', () => {
+test('CLI claim-initial-request keeps a recorded head available for provider collection', () => {
   const stateDir = temp();
   const env = { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir };
   const obs = observation({ findings: [inlineFinding({ priority: 'P1', signals: ['lifecycle'] })] });
   execFileSync('node', [CLI, 'record-review', String(PR_122), HEAD_A], { encoding: 'utf8', env, input: JSON.stringify(obs) });
   const initial = execFileSync('node', [CLI, 'claim-initial-request', String(PR_122), HEAD_A], { encoding: 'utf8', env });
-  assert.strictEqual(initial, '{"claimed":false,"reason":"needs-reconciliation"}\n');
+  assert.strictEqual(JSON.parse(initial).reason, 'auto-review-grace');
 });
 
 test('Claude, Codex, and Copilot review-until-lgtm skills pin the reconciliation extraction rules', () => {

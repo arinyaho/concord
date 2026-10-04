@@ -220,6 +220,16 @@ function latestRecoveryClaim({ stateDir, pr, headSha }, kind) {
     .sort((a, b) => b.claimedAtMs - a.claimedAtMs)[0] || null;
 }
 
+function requestMarkers({ stateDir, pr, headSha }, kind, stage) {
+  const prefix = `pr-${pr}-${headSha}.${kind}`;
+  let names;
+  try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+  const pattern = new RegExp(`^${prefix}(?:-[0-9a-f]{16})?-${stage}(?:-.*)?\\.json$`, 'i');
+  return names.filter((name) => pattern.test(name))
+    .map((name) => readMarker(path.join(stateDir, name)))
+    .filter((marker) => marker && marker.pr === pr && marker.headSha === headSha);
+}
+
 // ponytail: linear directory scan per read; fine at this marker-directory scale, switch to an index file if a PR head accumulates many reviews.
 function reviewRecords({ stateDir, pr, headSha }) {
   const prefix = `pr-${pr}-${headSha}.review-`;
@@ -306,9 +316,9 @@ function status(input) {
   const key = validate(input);
   const window = readMarker(markerPath({ stateDir, ...key }, 'window'));
   const retryWindow = readMarker(markerPath({ stateDir, ...key }, 'retry-window'));
-  const initialClaim = readMarker(markerPath({ stateDir, ...key }, 'initial-claim'));
-  const initialRecovery = latestRecoveryClaim({ stateDir, ...key }, 'initial');
-  const initialRequest = readMarker(markerPath({ stateDir, ...key }, 'initial-request'));
+  const initialClaim = requestMarkers({ stateDir, ...key }, 'initial', 'claim').sort((a, b) => (b.claimedAtMs || 0) - (a.claimedAtMs || 0))[0] || null;
+  const initialRecovery = requestMarkers({ stateDir, ...key }, 'initial', 'recovery-claim')[0] || null;
+  const initialRequested = requestMarkers({ stateDir, ...key }, 'initial', 'request').length > 0;
   const observed = readMarker(markerPath({ stateDir, ...key }, 'observed'));
   for (const [kind, marker] of [['window', window], ['retry-window', retryWindow]]) {
     if (marker && (marker.pr !== key.pr || marker.headSha !== key.headSha || !Number.isSafeInteger(marker.deadlineMs))) {
@@ -316,7 +326,19 @@ function status(input) {
     }
   }
   const deadlines = [window, retryWindow].filter(Boolean).map((marker) => marker.deadlineMs);
-  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested: !!initialRequest, reconciliation: reconciliationPacket({ stateDir, ...key }) };
+  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested, reconciliation: reconciliationPacket({ stateDir, ...key }) };
+}
+
+function claimExistingFixRound({ stateDir, ...key }, now, owner) {
+  const slot = fixRoundForHead({ stateDir, ...key });
+  if (!slot) return null;
+  const ownership = latestFixOwnership({ stateDir, ...key }, slot);
+  const eligibleAtMs = ownership.claimedAtMs + INITIAL_CLAIM_LEASE_MS;
+  if (now < eligibleAtMs) return { claimed: false, reason: 'claim-in-progress', eligibleAtMs };
+  if (!writeExclusive(markerPath({ stateDir, ...key }, `fix-round-owner-${eligibleAtMs}`), { ...key, owner, claimedAtMs: now })) return { claimed: false, reason: 'claim-in-progress', eligibleAtMs };
+  const active = latestFixOwnership({ stateDir, ...key }, slot);
+  if (active.owner !== owner) return { claimed: false, reason: 'claim-in-progress', eligibleAtMs: active.claimedAtMs + INITIAL_CLAIM_LEASE_MS };
+  return { claimed: true, resumed: true, owner, round: slot.round, budget: fixBudget({ stateDir, pr: key.pr }) };
 }
 
 function claimFixRound(input) {
@@ -325,16 +347,8 @@ function claimFixRound(input) {
   const owner = input.owner || crypto.randomUUID();
   if (typeof owner !== 'string' || !owner || owner.length > 200) throw new Error('review-lgtm-state: fix-round owner must be a non-empty string of at most 200 characters');
   if (activeReviewRecords({ stateDir, ...key }).length === 0) return { claimed: false, reason: 'no-findings' };
-  const slot = fixRoundForHead({ stateDir, ...key });
-  if (slot) {
-    const ownership = latestFixOwnership({ stateDir, ...key }, slot);
-    const eligibleAtMs = ownership.claimedAtMs + INITIAL_CLAIM_LEASE_MS;
-    if (now < eligibleAtMs) return { claimed: false, reason: 'claim-in-progress', eligibleAtMs };
-    if (!writeExclusive(markerPath({ stateDir, ...key }, `fix-round-owner-${eligibleAtMs}`), { ...key, owner, claimedAtMs: now })) return { claimed: false, reason: 'claim-in-progress', eligibleAtMs };
-    const active = latestFixOwnership({ stateDir, ...key }, slot);
-    if (active.owner !== owner) return { claimed: false, reason: 'claim-in-progress', eligibleAtMs: active.claimedAtMs + INITIAL_CLAIM_LEASE_MS };
-    return { claimed: true, resumed: true, owner, round: slot.round, budget: fixBudget({ stateDir, pr: key.pr }) };
-  }
+  const existing = claimExistingFixRound({ stateDir, ...key }, now, owner);
+  if (existing) return existing;
   const budget = fixBudget({ stateDir, pr: key.pr });
   if (budget.remaining === 0) return { claimed: false, reason: 'fix-round-budget-exhausted', budget };
   const claimFile = markerPath({ stateDir, ...key }, 'fix-round-claim');
@@ -351,6 +365,8 @@ function claimFixRound(input) {
       return { claimed: false, reason: 'claim-in-progress', eligibleAtMs: activeRecovery.claimedAtMs + INITIAL_CLAIM_LEASE_MS };
     }
   }
+  const recovered = claimExistingFixRound({ stateDir, ...key }, now, owner);
+  if (recovered) return recovered;
   const round = reserveFixRound({ stateDir, ...key }, now, owner);
   if (!round) return { claimed: false, reason: 'fix-round-budget-exhausted', budget: fixBudget({ stateDir, pr: key.pr }) };
   return { claimed: true, owner, round, budget: fixBudget({ stateDir, pr: key.pr }) };
@@ -375,7 +391,6 @@ function claimRequest(input, kind) {
   const key = validate(input);
   const provider = normalizeProvider(input.provider);
   const markerKind = requestMarkerKind(kind, provider);
-  if (activeReviewRecords({ stateDir, ...key }).length > 0) return { claimed: false, reason: 'needs-reconciliation' };
   const budget = requestBudget({ stateDir, pr: key.pr });
   if (budget.remaining === 0) return { claimed: false, reason: 'request-budget-exhausted', budget };
   if (kind === 'initial') {
@@ -405,7 +420,6 @@ function recoverRequest(input, kind) {
   const key = validate(input);
   const provider = normalizeProvider(input.provider);
   const markerKind = requestMarkerKind(kind, provider);
-  if (activeReviewRecords({ stateDir, ...key }).length > 0) return { claimed: false, reason: 'needs-reconciliation' };
   const claim = readMarker(markerPath({ stateDir, ...key }, `${markerKind}-claim`));
   const recovery = latestRecoveryClaim({ stateDir, ...key }, markerKind);
   const claimedAtMs = Math.max(...[claim, recovery].map((marker) => marker && marker.claimedAtMs).filter(Number.isSafeInteger));
