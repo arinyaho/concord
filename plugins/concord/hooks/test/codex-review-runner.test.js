@@ -739,7 +739,7 @@ test('codexExec parses documented turn.completed usage without retaining agent o
 });
 
 for (const [provider, executable, expectedArgs] of [
-  ['claude', 'claude', ['-p', '--model', 'review-model', '--add-dir']],
+  ['claude', 'claude', ['-p', '--model', 'review-model']],
   ['copilot', 'copilot', ['-p', '--model', 'review-model', '--allow-all-tools', '--allow-all-paths', '--no-ask-user']],
 ]) test(`providerExec invokes ${provider} non-interactively with the requested model`, async () => {
   const binDir = temp();
@@ -760,6 +760,29 @@ for (const [provider, executable, expectedArgs] of [
     assert.strictEqual(result.engine, provider);
     assert.strictEqual(result.requestedModel, 'review-model');
     assert.strictEqual(result.usagePartial, true);
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
+// `claude --add-dir <directories...>` is variadic: a separate directory argument followed by the
+// positional prompt makes claude swallow the prompt as a second directory.
+test('providerExec passes claude --add-dir as one argument so the prompt stays positional', async () => {
+  const binDir = temp();
+  const claude = path.join(binDir, 'claude');
+  const capture = path.join(binDir, 'args.json');
+  fs.writeFileSync(claude, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(capture)}, JSON.stringify(process.argv.slice(2)));\n`);
+  fs.chmodSync(claude, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  try {
+    await providerExec({
+      provider: 'claude', role: 'correctness', prompt: 'review prompt', repoRoot: binDir,
+      stateDir: binDir, requestedModel: 'review-model',
+    });
+    const argv = JSON.parse(fs.readFileSync(capture, 'utf8'));
+    assert.deepStrictEqual(argv.slice(-2), [`--add-dir=${binDir}`, 'review prompt']);
+    assert.ok(!argv.includes('--add-dir'));
   } finally {
     process.env.PATH = previousPath;
   }
