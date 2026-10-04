@@ -283,6 +283,19 @@ test('an abandoned fix-round claim fails closed for human reconciliation', () =>
   assert.deepStrictEqual(lgtmState.claimFixRound({ ...input, now: 900000 }), expected);
   assert.deepStrictEqual(lgtmState.claimFixRound({ ...input, now: 1000 + lgtmState.INITIAL_CLAIM_LEASE_MS, owner: 'worker-a' }), expected);
   assert.deepStrictEqual(lgtmState.status(input).fixBudget, { max: 3, spent: 0, remaining: 3 });
+  assert.deepStrictEqual(lgtmState.status(input).reconciliation, {
+    pr: PR_122,
+    headSha: HEAD_A,
+    reviews: [{ id: '5332811440', reviewer: 'chatgpt-codex-connector[bot]', url: 'https://github.com/arinyaho/concord/pull/122#pullrequestreview-5332811440', findings: [inlineFinding()] }],
+    batchCount: 1,
+    p1Count: 1,
+    p2Count: 0,
+    signals: [],
+    classification: 'requires-architecture-review',
+    action: 'human-reconciliation',
+    humanRequired: true,
+    requires: 'human decision: abandoned fix-round claim',
+  });
 });
 
 test('a concurrent fix claimant receives busy without consuming another slot', () => {
@@ -450,6 +463,37 @@ test('a fully rejected review batch is durably disposed without an empty fix com
   assert.deepStrictEqual(lgtmState.recordReview({ ...input, now: 6500, observation: rejectedObservation }), { outcome: 'rejected', recorded: false, duplicate: true });
   assert.deepStrictEqual(lgtmState.claimFixRound({ ...input, now: 7000 }), { claimed: false, reason: 'no-findings' });
   assert.deepStrictEqual(lgtmState.recordReview({ ...input, now: 8000, observation: observation({ reviewId: '2', lgtm: true, findings: [] }) }), { outcome: 'green', recorded: false });
+});
+
+test('batch rejection and fix-round claims are one serialized transition', () => {
+  const rejecting = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
+  lgtmState.recordReview({ ...rejecting, now: 5000, observation: observation({ reviewId: '1' }) });
+  const linkSync = fs.linkSync;
+  let contender;
+  fs.linkSync = (source, destination) => {
+    if (destination.includes('.disposition-')) contender = lgtmState.claimFixRound({ ...rejecting, now: 6001, owner: 'worker-a' });
+    linkSync(source, destination);
+  };
+  let rejected;
+  try {
+    rejected = lgtmState.rejectReviewBatch({ ...rejecting, now: 6000, reviewIds: ['1'], reason: 'Verifier reproduced no defect.' });
+  } finally {
+    fs.linkSync = linkSync;
+  }
+  assert.deepStrictEqual(rejected, { rejected: true, reviewIds: ['1'] });
+  assert.deepStrictEqual(contender, { claimed: false, reason: 'transition-busy' });
+  assert.deepStrictEqual(lgtmState.status(rejecting).fixBudget, { max: 3, spent: 0, remaining: 3 });
+
+  const claimed = { stateDir: temp(), pr: PR_122, headSha: HEAD_A };
+  lgtmState.recordReview({ ...claimed, now: 7000, observation: observation({ reviewId: '2' }) });
+  assert.strictEqual(lgtmState.claimFixRound({ ...claimed, now: 8000, owner: 'worker-b' }).claimed, true);
+  assert.deepStrictEqual(lgtmState.rejectReviewBatch({ ...claimed, now: 9000, reviewIds: ['2'], reason: 'Verifier reproduced no defect.' }), {
+    rejected: false,
+    reason: 'fix-round-claimed',
+    humanRequired: true,
+    owner: 'worker-b',
+  });
+  assert.strictEqual(lgtmState.status(claimed).reconciliation.action, 'complete-claimed-fix-round');
 });
 
 test('status.reconciliation.reviews are ordered by recordedAtMs ascending regardless of file-name order', () => {
@@ -659,6 +703,7 @@ test('Claude, Codex, and Copilot review-until-lgtm skills pin the no-review-obje
   const codex = fs.readFileSync(CODEX_SKILL, 'utf8');
   const copilot = fs.readFileSync(COPILOT_SKILL, 'utf8');
   for (const skill of [claude, codex, copilot]) {
+    assert.match(skill, /positive reaction on the PR itself/i);
     assert.match(skill, /Codex's clean no-review-object path/);
     assert.match(skill, /no Codex review object for the full `headRefOid`/);
     assert.match(skill, /`status\.reconciliation === null`/);

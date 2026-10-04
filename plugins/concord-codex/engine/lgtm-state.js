@@ -209,12 +209,12 @@ function writeExclusive(file, value) {
   }
 }
 
-function withTransitionLock({ stateDir, pr }, fn) {
+function withTransitionLock({ stateDir, pr }, fn, busy = { claimed: false, reason: 'transition-busy' }) {
   fs.mkdirSync(stateDir, { recursive: true });
   const lock = path.join(stateDir, `pr-${pr}.transition.lock`);
   try { fs.mkdirSync(lock); }
   catch (error) {
-    if (error.code === 'EEXIST') return { claimed: false, reason: 'transition-busy' };
+    if (error.code === 'EEXIST') return busy;
     throw error;
   }
   try { return fn(); }
@@ -281,10 +281,12 @@ function reconciliationPacket({ stateDir, pr, headSha }) {
   const signals = [...new Set(findings.flatMap((finding) => finding.signals))].sort();
   const classification = (p1Count > 0 || records.length >= 2 || signals.length > 0) ? 'requires-architecture-review' : 'light-implementation-eligible';
   const claimed = !!fixRoundForHead({ stateDir, pr, headSha });
+  const abandoned = !claimed && !!readMarker(markerPath({ stateDir, pr, headSha }, 'fix-round-claim'));
   const exhausted = !claimed && fixBudget({ stateDir, pr }).remaining === 0;
-  const action = claimed ? 'complete-claimed-fix-round' : exhausted ? 'human-reconciliation' : 'verify-and-fix';
-  const requires = claimed ? 'complete the claimed fix round' : exhausted ? 'human decision: fix-round budget exhausted' : 'verify the batch and claim a fix round';
-  return { pr, headSha, reviews, batchCount: records.length, p1Count, p2Count, signals, classification, action, humanRequired: exhausted, requires };
+  const humanRequired = abandoned || exhausted;
+  const action = claimed ? 'complete-claimed-fix-round' : humanRequired ? 'human-reconciliation' : 'verify-and-fix';
+  const requires = claimed ? 'complete the claimed fix round' : abandoned ? 'human decision: abandoned fix-round claim' : exhausted ? 'human decision: fix-round budget exhausted' : 'verify the batch and claim a fix round';
+  return { pr, headSha, reviews, batchCount: records.length, p1Count, p2Count, signals, classification, action, humanRequired, requires };
 }
 
 function recordReview(input) {
@@ -314,13 +316,18 @@ function rejectReviewBatch(input) {
   if (!Array.isArray(input.reviewIds) || input.reviewIds.length === 0) throw new Error('review-lgtm-state: reject-review-batch requires reviewIds');
   if (typeof reason !== 'string' || !reason.trim() || reason.length > 2000) throw new Error('review-lgtm-state: rejection reason must be a non-empty string of at most 2000 characters');
   const reviewIds = [...new Set(input.reviewIds.map(normalizeReviewId))].sort(compareReviewIds);
-  const activeIds = activeReviewRecords({ stateDir, ...key }).map((record) => record.reviewId).sort(compareReviewIds);
-  if (reviewIds.length !== activeIds.length || reviewIds.some((id, index) => id !== activeIds[index])) {
-    throw new Error('review-lgtm-state: rejected reviewIds must exactly match the active review batch');
-  }
-  const digest = crypto.createHash('sha256').update(reviewIds.join(',')).digest('hex').slice(0, 16);
-  writeExclusive(markerPath({ stateDir, ...key }, `disposition-${digest}`), { ...key, reviewIds, reason: reason.trim(), rejectedAtMs: now });
-  return { rejected: true, reviewIds };
+  return withTransitionLock({ stateDir, pr: key.pr }, () => {
+    const activeIds = activeReviewRecords({ stateDir, ...key }).map((record) => record.reviewId).sort(compareReviewIds);
+    if (reviewIds.length !== activeIds.length || reviewIds.some((id, index) => id !== activeIds[index])) {
+      throw new Error('review-lgtm-state: rejected reviewIds must exactly match the active review batch');
+    }
+    const slot = fixRoundForHead({ stateDir, ...key });
+    if (slot) return { rejected: false, reason: 'fix-round-claimed', humanRequired: true, owner: latestFixOwnership({ stateDir, ...key }, slot).owner };
+    if (readMarker(markerPath({ stateDir, ...key }, 'fix-round-claim'))) return { rejected: false, reason: 'abandoned-fix-claim', humanRequired: true };
+    const digest = crypto.createHash('sha256').update(reviewIds.join(',')).digest('hex').slice(0, 16);
+    writeExclusive(markerPath({ stateDir, ...key }, `disposition-${digest}`), { ...key, reviewIds, reason: reason.trim(), rejectedAtMs: now });
+    return { rejected: true, reviewIds };
+  }, { rejected: false, reason: 'transition-busy' });
 }
 
 function status(input) {
