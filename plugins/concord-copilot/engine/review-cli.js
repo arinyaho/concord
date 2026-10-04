@@ -1810,7 +1810,11 @@ function runVerb(resolveFromCwd, args, initiative) {
         parkReasons[id] = gc.validateParkReason({ kind: 'needs-decision', text: 'a previously absent span returned before record' });
       }
     }
-    const targetUnchanged = isGit || acquireTarget(ledger.target.spec, repoRoot).identity === ledger.target.head_sha;
+    // Re-read a file target only when this round could otherwise converge.
+    // Fixed, parked, and still-open rounds cannot consume clean evidence, and
+    // may use synthetic fixtures with no live file.
+    const targetUnchanged = isGit || fixedIds.length > 0 || parkedIds.length > 0 || candidates.length !== killedIds.length
+      || acquireTarget(ledger.target.spec, repoRoot).identity === ledger.target.head_sha;
     const outcome = {
       dodPassed: !!(ledger.dod && ledger.dod.passed), dodDeferred: !!(ledger.dod && ledger.dod.deferred), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons,
       targetUnchanged,
