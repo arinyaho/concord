@@ -205,7 +205,7 @@ function dedupeAgainstSeen(findings, seen) {
 // Oscillation detection (a finding toggling fixed -> reopened -> fixed) is
 // deliberately out of scope for this shell (deferred per the plan).
 function decideTermination(roundOutcome) {
-  const { dodPassed, dodDeferred = false, dodCommand, dodExitCode, openFindingsCount, specDoubtScope, noProgress, budgetSpent, maxRounds, fixedCount = 0, parkedCount = 0, intentReviewCount = 0, gateOpenCount = 0, panelConfigured = false, panelDone = false, hasDoD = true, dryStreak = 0 } = roundOutcome;
+  const { dodPassed, dodDeferred = false, dodCommand, dodExitCode, openFindingsCount, specDoubtScope, noProgress, budgetSpent, maxRounds, fixedCount = 0, parkedCount = 0, intentReviewCount = 0, gateOpenCount = 0, panelConfigured = false, panelDone = false, hasDoD = true, dryStreak = 0, targetUnchanged = true } = roundOutcome;
 
   if (specDoubtScope === 'whole-diff') {
     return { continue: false, converged: false, parked: false, abandoned: true, reason: 'spec-doubt invalidates the whole diff' };
@@ -218,14 +218,16 @@ function decideTermination(roundOutcome) {
   }
   // Dry-round convergence for a no-DoD (e.g. file) target. A diffless target has
   // no executable DoD gate to run-and-pass, so "clean" cannot be defined by
-  // dodPassed. Instead it converges after N consecutive rounds that surfaced
-  // ZERO new findings (dryStreak), with no findings still open. The boundary
+  // dodPassed. Instead it converges after one unchanged round that surfaced
+  // ZERO new findings (dryStreak), with no findings still open or fixed in that
+  // round. A round that edited the target still needs one clean confirmation.
+  // The boundary
   // hooks (open GATE finding, un-run holistic panel) are honored identically to
   // the git clause below. This branch runs ONLY when hasDoD === false; for a git
   // target (hasDoD truthy/absent) it is skipped entirely and dryStreak is never
   // read, so the git path is byte-identical to before this feature.
   if (hasDoD === false) {
-    if (openFindingsCount === 0 && dryStreak >= 2) {
+    if (targetUnchanged && openFindingsCount === 0 && fixedCount === 0 && dryStreak >= 1) {
       if (gateOpenCount > 0) {
         return { continue: false, converged: false, parked: false, abandoned: false, gatePending: true, reason: 'dry-round clean, but open GATE finding(s) need a human decision (design/AC/cross-context)' };
       }
@@ -483,6 +485,7 @@ function applyRoundOutcome(ledger, outcome) {
     panelDone: !!outcome.panelDone,
     hasDoD,
     dryStreak,
+    targetUnchanged: outcome.targetUnchanged !== false,
   });
 
   const status = decision.converged ? 'clean' : decision.parked ? 'parked' : decision.abandoned ? 'abandoned' : decision.intentReview ? 'intent-review' : decision.gatePending ? 'gate-pending' : decision.panelPending ? 'gate-panel-pending' : 'converging';

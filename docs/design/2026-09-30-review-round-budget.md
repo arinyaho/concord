@@ -12,11 +12,11 @@ The budget bounds charged (continuing) rounds, not every round. A round that wai
 
 For a no-DoD target, the budget check in `decideTermination` is given `spent + 1`, so the round being decided counts as spent. Without that, the last budgeted round saw `spent = max_rounds - 1`, was allowed to continue, was charged up to `max_rounds`, and the next `round-start` opened round `max_rounds + 1`. With the round counted, a round that would be the `max_rounds`-th continuing round without going dry parks uncharged, leaving `spent` at `max_rounds - 1` (`round budget exhausted before the no-DoD target ran dry`), and a later `round-start` on that ledger returns `terminal` and leaves `round` and `budget` untouched. Convergence is checked first, so a dry final round still converges.
 
-A git target keeps the uncounted `spent`. Because the round being decided is not counted, its final budgeted round may continue into one more round, which lets a round that applied fixes be followed by a no-fix confirmation round. A no-DoD target has no such extra round, since it converges on a dry streak and not on a confirmation. Human-wait rounds are uncharged, so they do not move `spent`.
+A git target keeps the uncounted `spent`. Because the round being decided is not counted, its final budgeted round may continue into one more round, which lets a round that applied fixes be followed by a no-fix confirmation round. A no-DoD target also requires a no-fix confirmation after an edit, but an initially unchanged clean target converges in its first round. Human-wait rounds are uncharged, so they do not move `spent`.
 
 ## Dry streak
 
-A no-DoD target converges when `dryStreak` reaches 2 with no finding open. `dryStreak` advances on a round whose new count is 0 and resets to 0 on any other round. A finding is new when it survives deduplication, was not open going into the round, is not a reopen, and was not killed by verification in the same round. A candidate that verification rejects is therefore never new, and a round in which every candidate is rejected is dry.
+A no-DoD target converges after one round with no new or open finding and no fix applied. `dryStreak` advances on a round whose new count is 0 and resets to 0 on any other round. A finding is new when it survives deduplication, was not open going into the round, is not a reopen, and was not killed by verification in the same round. A candidate that verification rejects is therefore never new, and a round in which every candidate is rejected is dry. A round that applies a fix cannot converge; the changed target receives one subsequent clean confirmation.
 
 The history entry's `new` is the same count the streak consumes.
 
@@ -25,7 +25,7 @@ Counting rejected candidates as new made convergence depend on the reviewer retu
 ## Trade-offs
 
 - A rejected re-raise no longer counts as activity, so the loop can converge while the reviewer keeps raising candidates that verification rejects. Convergence then rests on the verifier's judgement and not on the reviewer running out of candidates.
-- A verifier that wrongly rejects a real finding in two consecutive rounds yields a clean exit that misses it. The ledger still records the killed findings, so the history shows what was rejected.
+- A verifier that wrongly rejects a real finding yields a clean exit that misses it. The ledger still records the killed finding, so the history shows what was rejected.
 - A no-DoD run whose last budgeted round applied fixes parks instead of getting one more round. A run that needs it needs a larger budget.
 - A git run can still open a round past `max_rounds`.
 - The default round budget is 5, the initial `budget.max_rounds` of a new review.

@@ -910,13 +910,27 @@ test('decideTermination: git path ignores dryStreak entirely (byte-identical to 
   assert.deepStrictEqual(withStreak, without);
 });
 
-test('decideTermination: no-DoD target needs 2 dry rounds to converge', () => {
-  const one = review.decideTermination({ hasDoD: false, openFindingsCount: 0, dryStreak: 1, budgetSpent: 1, maxRounds: 5 });
-  assert.strictEqual(one.converged, false);
-  assert.strictEqual(one.continue, true);
-  const two = review.decideTermination({ hasDoD: false, openFindingsCount: 0, dryStreak: 2, budgetSpent: 2, maxRounds: 5 });
-  assert.strictEqual(two.converged, true);
-  assert.strictEqual(two.continue, false);
+test('decideTermination: an unchanged no-DoD target converges after one dry round', () => {
+  const clean = review.decideTermination({ hasDoD: false, openFindingsCount: 0, fixedCount: 0, dryStreak: 1, budgetSpent: 1, maxRounds: 5 });
+  assert.strictEqual(clean.converged, true);
+  assert.strictEqual(clean.continue, false);
+  const edited = review.decideTermination({ hasDoD: false, openFindingsCount: 0, fixedCount: 1, dryStreak: 1, budgetSpent: 1, maxRounds: 5 });
+  assert.strictEqual(edited.converged, false);
+  assert.strictEqual(edited.continue, true);
+});
+
+test('decideTermination: a no-DoD target changed after review cannot converge from stale clean evidence', () => {
+  const d = review.decideTermination({
+    hasDoD: false,
+    targetUnchanged: false,
+    openFindingsCount: 0,
+    fixedCount: 0,
+    dryStreak: 1,
+    budgetSpent: 1,
+    maxRounds: 5,
+  });
+  assert.strictEqual(d.converged, false);
+  assert.strictEqual(d.continue, true);
 });
 
 test('decideTermination: no-DoD target with open findings does not converge even at dryStreak>=2', () => {
@@ -961,16 +975,11 @@ test('applyRoundOutcome: dryStreak increments on a zero-new round and resets on 
   assert.strictEqual(ledger.dryStreak, 0);
 });
 
-test('applyRoundOutcome: two consecutive zero-new rounds converge a no-DoD target (dryStreak reaches 2)', () => {
+test('applyRoundOutcome: the first unchanged zero-new round converges a no-DoD target', () => {
   let ledger = review.emptyLedger({ kind: 'local', ref: 'file:n.md', type: 'file', hasDoD: false });
   ledger = review.beginRound(ledger, 'h1').ledger;
-  let r = review.applyRoundOutcome(ledger, { findings: [], fixedIds: [], parkedIds: [], killedIds: [] });
+  const r = review.applyRoundOutcome(ledger, { findings: [], fixedIds: [], parkedIds: [], killedIds: [] });
   assert.strictEqual(r.ledger.dryStreak, 1);
-  assert.strictEqual(r.decision.converged, false);
-  assert.strictEqual(r.decision.continue, true);
-  ledger = review.beginRound(r.ledger, 'h2').ledger;
-  r = review.applyRoundOutcome(ledger, { findings: [], fixedIds: [], parkedIds: [], killedIds: [] });
-  assert.strictEqual(r.ledger.dryStreak, 2);
   assert.strictEqual(r.decision.converged, true);
   assert.strictEqual(r.ledger.status, 'clean');
 });
@@ -988,15 +997,12 @@ test('applyRoundOutcome: a round whose candidates were all killed records new 0 
   assert.strictEqual(ledger.dryStreak, 1);
 });
 
-test('applyRoundOutcome: a no-DoD target converges clean after two all-killed rounds', () => {
+test('applyRoundOutcome: a no-DoD target converges clean after one all-killed round', () => {
   let ledger = review.emptyLedger({ kind: 'local', ref: 'file:n.md', type: 'file', hasDoD: false });
-  let r;
-  for (const [h, ids] of [['h1', ['docreview:a', 'docreview:b']], ['h2', ['docreview:c']]]) {
-    ledger = review.beginRound(ledger, h).ledger;
-    r = review.applyRoundOutcome(ledger, { findings: ids.map(killedCand), fixedIds: [], parkedIds: [], killedIds: ids });
-    ledger = r.ledger;
-  }
-  assert.strictEqual(r.ledger.dryStreak, 2);
+  ledger = review.beginRound(ledger, 'h1').ledger;
+  const ids = ['docreview:a', 'docreview:b'];
+  const r = review.applyRoundOutcome(ledger, { findings: ids.map(killedCand), fixedIds: [], parkedIds: [], killedIds: ids });
+  assert.strictEqual(r.ledger.dryStreak, 1);
   assert.strictEqual(r.decision.converged, true);
   assert.strictEqual(r.ledger.status, 'clean');
 });
@@ -1052,9 +1058,9 @@ test('applyRoundOutcome: roundOutcome threading -- ledger with an extended targe
 
 // ---- beginRound: reReviewOnStableContent flag (Task 7) ----
 
-test('beginRound: reReviewOnStableContent:true with identical hash is NOT a no-op -- round advances (file target fluke-guard)', () => {
-  // A file target's 2nd consecutive dry round runs on identical content.
-  // Without this flag, beginRound would no-op and dryStreak could never reach 2.
+test('beginRound: reReviewOnStableContent:true lets a continuing file target advance on identical content', () => {
+  // A file target resumed after a human boundary may need another real round
+  // even when the document itself did not change.
   let ledger = review.emptyLedger({ kind: 'local', ref: 'file:n.md', type: 'file', hasDoD: false });
   ledger = review.beginRound(ledger, 'same-hash').ledger; // round 1
   const { ledger: r2, noOp, workHappened } = review.beginRound(ledger, 'same-hash', { reReviewOnStableContent: true });

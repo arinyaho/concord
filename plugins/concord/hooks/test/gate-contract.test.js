@@ -51,6 +51,15 @@ test('parseVerifyVerdict: keeps only rejected ids present in candidates', () => 
   assert.deepStrictEqual(v.rejectedIds, ['correctness:a']);
 });
 
+test('parseVerifyVerdict: returns each rejected candidate once', () => {
+  const cands = [{ id: 'correctness:a' }];
+  const v = gc.parseVerifyVerdict(JSON.stringify({ rejected: [
+    { id: 'correctness:a', reason: 'first' },
+    { id: 'correctness:a', reason: 'duplicate' },
+  ] }), cands);
+  assert.deepStrictEqual(v.rejectedIds, ['correctness:a']);
+});
+
 test('validateParkReason: enforces kind + non-empty text', () => {
   assert.deepStrictEqual(gc.validateParkReason({ kind: 'needs-decision', text: 'x' }), { kind: 'needs-decision', text: 'x' });
   assert.throws(() => gc.validateParkReason({ kind: 'bogus', text: 'x' }), /kind/);
