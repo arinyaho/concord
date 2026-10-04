@@ -126,6 +126,8 @@ test('Copilot-specific orchestration uses native clean-context agents and explic
   assert.match(review, /--fixer-model/);
   assert.match(review, /native/i);
   assert.match(review, /CLI/i);
+  assert.match(review, /--add-dir=<stateDir>/);
+  assert.doesNotMatch(review, /--add-dir <stateDir> "<prompt>"/);
   assert.match(alias, /review-and-fix/);
   assert.match(routing, /active root agent cannot satisfy a Deep decision gate/i);
   assert.doesNotMatch(routing, /active agent may perform that pass/i);

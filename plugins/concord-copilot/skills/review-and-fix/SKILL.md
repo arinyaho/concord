@@ -19,7 +19,7 @@ This repo has not verified whether Copilot Agent Host's native agent invocation 
 
 For a non-Copilot role, invoke a clean provider CLI process in the repository root and require it to write the requested artifact directly:
 
-- Claude: `claude -p [--model <model>] --output-format json --no-session-persistence --permission-mode acceptEdits --permission-prompts none --add-dir <stateDir> "<prompt>"`
+- Claude: `claude -p [--model <model>] --output-format json --no-session-persistence --permission-mode acceptEdits --permission-prompts none --add-dir=<stateDir> "<prompt>"`
 - Codex: `codex exec --cd <repoRoot> --sandbox workspace-write --add-dir <stateDir> --skip-git-repo-check [--model <model>] "<prompt>"`
 
 Redirect external CLI output away from the parent context. A missing executable, authentication/model failure, non-zero exit, missing artifact, denied operation, or declared block is a harness failure. Independent review roles may run in parallel only where the driver explicitly permits it; fixes remain sequential and each is followed by the driver's `commit-fix` contract.
