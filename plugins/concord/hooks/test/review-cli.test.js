@@ -4185,25 +4185,22 @@ function newFindingRound(ref, env, dir, extra, i) {
   return { rs, out: JSON.parse(run(['record', ref], { env })) };
 }
 
-test('no-DoD target converges clean after two rounds in which verification rejects every candidate', () => {
+test('no-DoD target converges clean after one round in which verification rejects every candidate', () => {
   const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-allkilled-'));
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
-  let last;
-  for (let i = 1; i <= 2; i++) {
-    fs.writeFileSync(path.join(fileDir, 'note.md'), `# note\nedit ${i}\n`);
-    const rs = JSON.parse(run(['round-start', 'file:note.md'], { env }));
-    assert.strictEqual(rs.decision, 'work');
-    const id = `docreview:f${i}`;
-    writeArtifact(dir, rs.round, 'correctness', { status: 'ok', examined: ['note.md'], findings: [{ id, gate: 'correctness', file: 'note.md', summary: `finding ${i}` }] });
-    writeArtifact(dir, rs.round, 'verify', { status: 'ok', rejected: [{ id, reason: 'read note.md: the claim does not hold' }], findings: [] });
-    run(['plan-fixes', 'file:note.md'], { env });
-    last = JSON.parse(run(['record', 'file:note.md'], { env }));
-  }
+  fs.writeFileSync(path.join(fileDir, 'note.md'), '# note\n');
+  const rs = JSON.parse(run(['round-start', 'file:note.md'], { env }));
+  assert.strictEqual(rs.decision, 'work');
+  const id = 'docreview:false-positive';
+  writeArtifact(dir, rs.round, 'correctness', { status: 'ok', examined: ['note.md'], findings: [{ id, gate: 'correctness', file: 'note.md', summary: 'candidate finding' }] });
+  writeArtifact(dir, rs.round, 'verify', { status: 'ok', rejected: [{ id, reason: 'read note.md: the claim does not hold' }], findings: [] });
+  run(['plan-fixes', 'file:note.md'], { env });
+  const last = JSON.parse(run(['record', 'file:note.md'], { env }));
   assert.strictEqual(last.decision.converged, true);
   const ledger = review.readLedger(dir, review.targetSlug('file:note.md'));
   assert.strictEqual(ledger.status, 'clean');
-  assert.deepStrictEqual(ledger.history.map((h) => h.new), [0, 0]);
+  assert.deepStrictEqual(ledger.history.map((h) => h.new), [0]);
 });
 
 test('no-DoD target parks when the round budget is spent and round-start never opens a round past it', () => {
