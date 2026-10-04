@@ -765,9 +765,7 @@ for (const [provider, executable, expectedArgs] of [
   }
 });
 
-// `claude --add-dir <directories...>` is variadic: a separate directory argument followed by the
-// positional prompt makes claude swallow the prompt as a second directory.
-test('providerExec passes claude --add-dir as one argument so the prompt stays positional', async () => {
+test('providerExec keeps the Claude prompt separate from the variadic --add-dir option', async () => {
   const binDir = temp();
   const claude = path.join(binDir, 'claude');
   const capture = path.join(binDir, 'args.json');
@@ -777,12 +775,14 @@ test('providerExec passes claude --add-dir as one argument so the prompt stays p
   process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
   try {
     await providerExec({
-      provider: 'claude', role: 'correctness', prompt: 'review prompt', repoRoot: binDir,
-      stateDir: binDir, requestedModel: 'review-model',
+      provider: 'claude', role: 'correctness', prompt: 'Reply exactly OK.', repoRoot: binDir,
+      stateDir: binDir, requestedModel: 'opus',
     });
-    const argv = JSON.parse(fs.readFileSync(capture, 'utf8'));
-    assert.deepStrictEqual(argv.slice(-2), [`--add-dir=${binDir}`, 'review prompt']);
-    assert.ok(!argv.includes('--add-dir'));
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(capture, 'utf8')), [
+      '-p', '--model', 'opus', '--output-format', 'json', '--no-session-persistence',
+      '--permission-mode', 'acceptEdits', '--permission-prompts', 'none',
+      `--add-dir=${binDir}`, 'Reply exactly OK.',
+    ]);
   } finally {
     process.env.PATH = previousPath;
   }
