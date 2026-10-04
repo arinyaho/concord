@@ -259,7 +259,7 @@ function providerExec(input) {
         ...(requestedModel ? ['--model', requestedModel] : []),
         '--output-format', 'json', '--no-session-persistence',
         '--permission-mode', 'acceptEdits', '--permission-prompts', 'none',
-        '--add-dir', stateDir, ...(isWindows ? [] : [prompt]),
+        `--add-dir=${stateDir}`, ...(isWindows ? [] : [prompt]),
       ]
     : [
         ...(isWindows ? [] : ['-p', prompt]),
