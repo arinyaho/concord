@@ -919,6 +919,20 @@ test('decideTermination: an unchanged no-DoD target converges after one dry roun
   assert.strictEqual(edited.continue, true);
 });
 
+test('decideTermination: a no-DoD target changed after review cannot converge from stale clean evidence', () => {
+  const d = review.decideTermination({
+    hasDoD: false,
+    targetUnchanged: false,
+    openFindingsCount: 0,
+    fixedCount: 0,
+    dryStreak: 1,
+    budgetSpent: 1,
+    maxRounds: 5,
+  });
+  assert.strictEqual(d.converged, false);
+  assert.strictEqual(d.continue, true);
+});
+
 test('decideTermination: no-DoD target with open findings does not converge even at dryStreak>=2', () => {
   const d = review.decideTermination({ hasDoD: false, openFindingsCount: 1, dryStreak: 2, budgetSpent: 2, maxRounds: 5 });
   assert.strictEqual(d.converged, false);

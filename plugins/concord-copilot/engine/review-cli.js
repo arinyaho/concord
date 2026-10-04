@@ -1810,8 +1810,10 @@ function runVerb(resolveFromCwd, args, initiative) {
         parkReasons[id] = gc.validateParkReason({ kind: 'needs-decision', text: 'a previously absent span returned before record' });
       }
     }
+    const targetUnchanged = isGit || acquireTarget(ledger.target.spec, repoRoot).identity === ledger.target.head_sha;
     const outcome = {
       dodPassed: !!(ledger.dod && ledger.dod.passed), dodDeferred: !!(ledger.dod && ledger.dod.deferred), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons,
+      targetUnchanged,
       intentReviewCount: (ledger.intent_parked || []).length,
       gateOpenCount: gateOpen.length,
       // --no-broad opts the run out of broad review, and the panel IS broad
@@ -2295,8 +2297,12 @@ function runVerb(resolveFromCwd, args, initiative) {
         throw new Error('harness-failure: commit-fix: resolvedFindingIds must be a unique array');
       }
       for (const resolvedId of fx.resolvedFindingIds) {
+        // The primary finding is resolved by this commit already. Treat a
+        // model's redundant self-claim as harmless instead of stranding a
+        // valid edit; every distinct companion claim remains fail-closed.
+        if (resolvedId === id) continue;
         const counterpart = candidates.find((f) => f.id === resolvedId);
-        if (typeof resolvedId !== 'string' || resolvedId === id || !counterpart || !(ledger.planned || []).includes(resolvedId)
+        if (typeof resolvedId !== 'string' || !counterpart || !(ledger.planned || []).includes(resolvedId)
           || !files.includes(finding.file) || !files.includes(counterpart.file) || !gitIsDirtyForFile(repoRoot, finding.file)
           || !gitIsDirtyForFile(repoRoot, counterpart.file) || !finding.span
           || !gitHeadFileContains(repoRoot, finding.file, finding.span)

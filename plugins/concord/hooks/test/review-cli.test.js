@@ -1077,6 +1077,23 @@ test('commit-fix: rejects an unknown mirrored finding claim before committing', 
   assert.strictEqual(execFileSync('git', ['status', '--porcelain', '--', 'a.txt'], { cwd: repo, encoding: 'utf8' }).trim(), 'M a.txt');
 });
 
+test('commit-fix: ignores a redundant self-resolution claim and commits the primary fix', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/self-resolution',
+    { status: 'ok', examined: ['a.txt'], findings: [
+      { id: 'correctness:self', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'primary finding' },
+    ] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/self-resolution'], { env });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_self.json`), JSON.stringify({
+    status: 'ok', edited: true, files: ['a.txt'], resolvedFindingIds: ['correctness:self'],
+  }));
+  const out = JSON.parse(run(['commit-fix', 'feat/self-resolution', 'correctness:self'], { env }));
+  assert.strictEqual(out.committed, true);
+  assert.deepStrictEqual(out.resolvedFindingIds, []);
+});
+
 test('commit-fix: commits one fix and journals it', () => {
   const repo = initRepo(); const dir = tmpDir();
   const { env, n } = seedGatesRound(repo, dir, 'feat/x',
@@ -4201,6 +4218,22 @@ test('no-DoD target converges clean after one round in which verification reject
   const ledger = review.readLedger(dir, review.targetSlug('file:note.md'));
   assert.strictEqual(ledger.status, 'clean');
   assert.deepStrictEqual(ledger.history.map((h) => h.new), [0]);
+});
+
+test('no-DoD target changed after round-start cannot converge from stale clean evidence', () => {
+  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-race-'));
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
+  fs.writeFileSync(path.join(fileDir, 'note.md'), '# reviewed\n');
+  const ref = 'file:note.md';
+  const rs = JSON.parse(run(['round-start', ref], { env }));
+  writeArtifact(dir, rs.round, 'correctness', { status: 'ok', examined: ['note.md'], findings: [] });
+  writeArtifact(dir, rs.round, 'verify', { status: 'ok', rejected: [], findings: [] });
+  run(['plan-fixes', ref], { env });
+  fs.writeFileSync(path.join(fileDir, 'note.md'), '# changed after review\n');
+  const out = JSON.parse(run(['record', ref], { env }));
+  assert.strictEqual(out.decision.converged, false);
+  assert.strictEqual(out.decision.continue, true);
 });
 
 test('no-DoD target parks when the round budget is spent and round-start never opens a round past it', () => {
