@@ -209,6 +209,18 @@ function writeExclusive(file, value) {
   }
 }
 
+function withTransitionLock({ stateDir, pr }, fn) {
+  fs.mkdirSync(stateDir, { recursive: true });
+  const lock = path.join(stateDir, `pr-${pr}.transition.lock`);
+  try { fs.mkdirSync(lock); }
+  catch (error) {
+    if (error.code === 'EEXIST') return { claimed: false, reason: 'transition-busy' };
+    throw error;
+  }
+  try { return fn(); }
+  finally { fs.rmSync(lock, { recursive: true, force: true }); }
+}
+
 function latestRecoveryClaim({ stateDir, pr, headSha }, kind) {
   // ponytail: crash-only recovery markers are scanned per PR head; prune them on request if a long-lived state directory grows large.
   const prefix = `pr-${pr}-${headSha}.${kind}-recovery-claim`;
@@ -318,7 +330,7 @@ function status(input) {
   const retryWindow = readMarker(markerPath({ stateDir, ...key }, 'retry-window'));
   const initialClaim = requestMarkers({ stateDir, ...key }, 'initial', 'claim').sort((a, b) => (b.claimedAtMs || 0) - (a.claimedAtMs || 0))[0] || null;
   const initialRecovery = requestMarkers({ stateDir, ...key }, 'initial', 'recovery-claim')[0] || null;
-  const initialRequested = requestMarkers({ stateDir, ...key }, 'initial', 'request').length > 0;
+  const initialRequested = requestMarkers({ stateDir, ...key }, 'initial', 'request').length > 0 || requestMarkers({ stateDir, ...key }, 'retry', 'request').length > 0;
   const observed = readMarker(markerPath({ stateDir, ...key }, 'observed'));
   for (const [kind, marker] of [['window', window], ['retry-window', retryWindow]]) {
     if (marker && (marker.pr !== key.pr || marker.headSha !== key.headSha || !Number.isSafeInteger(marker.deadlineMs))) {
@@ -329,61 +341,38 @@ function status(input) {
   return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested, reconciliation: reconciliationPacket({ stateDir, ...key }) };
 }
 
-function claimExistingFixRound({ stateDir, ...key }, now, owner) {
-  const slot = fixRoundForHead({ stateDir, ...key });
-  if (!slot) return null;
-  const ownership = latestFixOwnership({ stateDir, ...key }, slot);
-  const eligibleAtMs = ownership.claimedAtMs + INITIAL_CLAIM_LEASE_MS;
-  if (now < eligibleAtMs) return { claimed: false, reason: 'claim-in-progress', eligibleAtMs };
-  if (!writeExclusive(markerPath({ stateDir, ...key }, `fix-round-owner-${eligibleAtMs}`), { ...key, owner, claimedAtMs: now })) return { claimed: false, reason: 'claim-in-progress', eligibleAtMs };
-  const active = latestFixOwnership({ stateDir, ...key }, slot);
-  if (active.owner !== owner) return { claimed: false, reason: 'claim-in-progress', eligibleAtMs: active.claimedAtMs + INITIAL_CLAIM_LEASE_MS };
-  return { claimed: true, resumed: true, owner, round: slot.round, budget: fixBudget({ stateDir, pr: key.pr }) };
-}
-
 function claimFixRound(input) {
   const { stateDir, now = Date.now() } = input;
   const key = validate(input);
   const owner = input.owner || crypto.randomUUID();
   if (typeof owner !== 'string' || !owner || owner.length > 200) throw new Error('review-lgtm-state: fix-round owner must be a non-empty string of at most 200 characters');
-  if (activeReviewRecords({ stateDir, ...key }).length === 0) return { claimed: false, reason: 'no-findings' };
-  const existing = claimExistingFixRound({ stateDir, ...key }, now, owner);
-  if (existing) return existing;
-  const budget = fixBudget({ stateDir, pr: key.pr });
-  if (budget.remaining === 0) return { claimed: false, reason: 'fix-round-budget-exhausted', budget };
-  const claimFile = markerPath({ stateDir, ...key }, 'fix-round-claim');
-  const claimed = writeExclusive(claimFile, { ...key, owner, claimedAtMs: now });
-  if (!claimed) {
-    const claim = readMarker(claimFile);
-    const recovery = latestRecoveryClaim({ stateDir, ...key }, 'fix-round');
-    const claimedAtMs = Math.max(...[claim, recovery].map((marker) => marker && marker.claimedAtMs).filter(Number.isSafeInteger));
-    if (!Number.isSafeInteger(claimedAtMs)) throw new Error('review-lgtm-state: fix-round claim has no valid timestamp');
-    const eligibleAtMs = claimedAtMs + INITIAL_CLAIM_LEASE_MS;
-    if (now < eligibleAtMs) return { claimed: false, reason: 'claim-in-progress', eligibleAtMs };
-    if (!writeExclusive(markerPath({ stateDir, ...key }, `fix-round-recovery-claim-${eligibleAtMs}`), { ...key, owner, claimedAtMs: now })) {
-      const activeRecovery = latestRecoveryClaim({ stateDir, ...key }, 'fix-round');
-      return { claimed: false, reason: 'claim-in-progress', eligibleAtMs: activeRecovery.claimedAtMs + INITIAL_CLAIM_LEASE_MS };
+  return withTransitionLock({ stateDir, pr: key.pr }, () => {
+    if (activeReviewRecords({ stateDir, ...key }).length === 0) return { claimed: false, reason: 'no-findings' };
+    const slot = fixRoundForHead({ stateDir, ...key });
+    if (slot) {
+      const active = latestFixOwnership({ stateDir, ...key }, slot);
+      if (active.owner === owner) return { claimed: true, resumed: true, owner, round: slot.round, budget: fixBudget({ stateDir, pr: key.pr }) };
+      return { claimed: false, reason: 'fix-round-owned', humanRequired: true, owner: active.owner };
     }
-  }
-  const recovered = claimExistingFixRound({ stateDir, ...key }, now, owner);
-  if (recovered) return recovered;
-  const round = reserveFixRound({ stateDir, ...key }, now, owner);
-  if (!round) return { claimed: false, reason: 'fix-round-budget-exhausted', budget: fixBudget({ stateDir, pr: key.pr }) };
-  return { claimed: true, owner, round, budget: fixBudget({ stateDir, pr: key.pr }) };
+    const budget = fixBudget({ stateDir, pr: key.pr });
+    if (budget.remaining === 0) return { claimed: false, reason: 'fix-round-budget-exhausted', budget };
+    const claimFile = markerPath({ stateDir, ...key }, 'fix-round-claim');
+    if (!writeExclusive(claimFile, { ...key, owner, claimedAtMs: now })) return { claimed: false, reason: 'abandoned-fix-claim', humanRequired: true };
+    const round = reserveFixRound({ stateDir, ...key }, now, owner);
+    if (!round) return { claimed: false, reason: 'fix-round-budget-exhausted', budget: fixBudget({ stateDir, pr: key.pr }) };
+    return { claimed: true, owner, round, budget: fixBudget({ stateDir, pr: key.pr }) };
+  });
 }
 
 function renewFixRound(input) {
-  const { stateDir, now = Date.now(), owner } = input;
+  const { stateDir, owner } = input;
   const key = validate(input);
   if (typeof owner !== 'string' || !owner) throw new Error('review-lgtm-state: renew-fix-round requires its claim owner');
   const slot = fixRoundForHead({ stateDir, ...key });
   if (!slot) return { renewed: false, reason: 'no-fix-round' };
   const active = latestFixOwnership({ stateDir, ...key }, slot);
   if (active.owner !== owner) return { renewed: false, reason: 'owner-mismatch' };
-  writeExclusive(markerPath({ stateDir, ...key }, `fix-round-owner-${now}-${crypto.randomUUID()}`), { ...key, owner, claimedAtMs: now });
-  const renewed = latestFixOwnership({ stateDir, ...key }, slot);
-  if (renewed.owner !== owner) return { renewed: false, reason: 'owner-mismatch' };
-  return { renewed: true, eligibleAtMs: now + INITIAL_CLAIM_LEASE_MS };
+  return { renewed: true };
 }
 
 function claimRequest(input, kind) {
@@ -391,18 +380,22 @@ function claimRequest(input, kind) {
   const key = validate(input);
   const provider = normalizeProvider(input.provider);
   const markerKind = requestMarkerKind(kind, provider);
-  const budget = requestBudget({ stateDir, pr: key.pr });
-  if (budget.remaining === 0) return { claimed: false, reason: 'request-budget-exhausted', budget };
+  const currentBudget = requestBudget({ stateDir, pr: key.pr });
+  if (currentBudget.remaining === 0) return { claimed: false, reason: 'request-budget-exhausted', budget: currentBudget };
   if (kind === 'initial') {
     const observedFile = markerPath({ stateDir, ...key }, 'observed');
     if (!readMarker(observedFile)) writeExclusive(observedFile, { ...key, observedAtMs: now, eligibleAtMs: now + AUTO_REVIEW_GRACE_MS });
     const observed = readMarker(observedFile);
     if (now < observed.eligibleAtMs) return { claimed: false, reason: 'auto-review-grace', eligibleAtMs: observed.eligibleAtMs };
   }
-  const claimed = writeExclusive(markerPath({ stateDir, ...key }, `${markerKind}-claim`), { ...key, kind, provider, claimed: true, claimedAtMs: now });
-  if (!claimed) return false;
-  if (reserveRequestSlot({ stateDir, ...key }, kind, now, provider, true)) return true;
-  return { claimed: false, reason: 'request-budget-exhausted', budget: requestBudget({ stateDir, pr: key.pr }) };
+  return withTransitionLock({ stateDir, pr: key.pr }, () => {
+    const budget = requestBudget({ stateDir, pr: key.pr });
+    if (budget.remaining === 0) return { claimed: false, reason: 'request-budget-exhausted', budget };
+    const claimed = writeExclusive(markerPath({ stateDir, ...key }, `${markerKind}-claim`), { ...key, kind, provider, claimed: true, claimedAtMs: now });
+    if (!claimed) return false;
+    if (reserveRequestSlot({ stateDir, ...key }, kind, now, provider, true)) return true;
+    return { claimed: false, reason: 'request-budget-exhausted', budget: requestBudget({ stateDir, pr: key.pr }) };
+  });
 }
 
 function markRequest(input, kind) {
@@ -420,17 +413,19 @@ function recoverRequest(input, kind) {
   const key = validate(input);
   const provider = normalizeProvider(input.provider);
   const markerKind = requestMarkerKind(kind, provider);
-  const claim = readMarker(markerPath({ stateDir, ...key }, `${markerKind}-claim`));
-  const recovery = latestRecoveryClaim({ stateDir, ...key }, markerKind);
-  const claimedAtMs = Math.max(...[claim, recovery].map((marker) => marker && marker.claimedAtMs).filter(Number.isSafeInteger));
-  if (!Number.isSafeInteger(claimedAtMs) || now < claimedAtMs + INITIAL_CLAIM_LEASE_MS) return false;
-  if (readMarker(markerPath({ stateDir, ...key }, `${markerKind}-request`))) return false;
-  const budget = requestBudget({ stateDir, pr: key.pr });
-  if (budget.remaining === 0) return { claimed: false, reason: 'request-budget-exhausted', budget };
-  const recoveryFile = markerPath({ stateDir, ...key }, `${markerKind}-recovery-claim-${claimedAtMs + INITIAL_CLAIM_LEASE_MS}`);
-  if (!writeExclusive(recoveryFile, { ...key, kind: `${kind}-recovery`, provider, claimed: true, claimedAtMs: now })) return false;
-  if (reserveRequestSlot({ stateDir, ...key }, kind, now, provider)) return true;
-  return { claimed: false, reason: 'request-budget-exhausted', budget: requestBudget({ stateDir, pr: key.pr }) };
+  return withTransitionLock({ stateDir, pr: key.pr }, () => {
+    const claim = readMarker(markerPath({ stateDir, ...key }, `${markerKind}-claim`));
+    const recovery = latestRecoveryClaim({ stateDir, ...key }, markerKind);
+    const claimedAtMs = Math.max(...[claim, recovery].map((marker) => marker && marker.claimedAtMs).filter(Number.isSafeInteger));
+    if (!Number.isSafeInteger(claimedAtMs) || now < claimedAtMs + INITIAL_CLAIM_LEASE_MS) return false;
+    if (readMarker(markerPath({ stateDir, ...key }, `${markerKind}-request`))) return false;
+    const budget = requestBudget({ stateDir, pr: key.pr });
+    if (budget.remaining === 0) return { claimed: false, reason: 'request-budget-exhausted', budget };
+    const recoveryFile = markerPath({ stateDir, ...key }, `${markerKind}-recovery-claim-${claimedAtMs + INITIAL_CLAIM_LEASE_MS}`);
+    if (!writeExclusive(recoveryFile, { ...key, kind: `${kind}-recovery`, provider, claimed: true, claimedAtMs: now })) return false;
+    if (reserveRequestSlot({ stateDir, ...key }, kind, now, provider)) return true;
+    return { claimed: false, reason: 'request-budget-exhausted', budget: requestBudget({ stateDir, pr: key.pr }) };
+  });
 }
 
 function recoverInitialRequest(input) { return recoverRequest(input, 'initial'); }
