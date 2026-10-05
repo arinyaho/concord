@@ -57,8 +57,16 @@ test('round-plan.js reviewerPrompt("gate", ...) embeds GATE_SWEEP_CLAUSE byte-fo
 test('every gate verifier prompt embeds the namespace ownership clause byte-for-byte', () => {
   const generated = reviewerPrompt('gate-verify', { stateDir: '/state', round: 3, targetType: 'git', slug: 'feat-x' });
   assert.ok(generated.includes(GATE_VERIFY_OWNERSHIP_CLAUSE));
-  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText]]) {
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
     assert.ok(text.includes(GATE_VERIFY_OWNERSHIP_CLAUSE.trim()), `${name} gate-verify prompt has drifted from round-plan.js`);
+  }
+});
+
+test('manual review drivers normalize gate-verify artifacts through the bounded retry contract', () => {
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
+    const boundary = text.match(/Immediately after every fail-closed reviewer[\s\S]*?A second retry response or any `harness-failure` is terminal\.[^\n]*/)?.[0] || '';
+    assert.match(boundary, /`gate-verify`/, `${name} does not normalize the gate-verify role`);
+    assert.doesNotMatch(boundary, /Do not normalize `gate-verify`/, `${name} bypasses strict gate-verify normalization`);
   }
 });
 
