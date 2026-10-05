@@ -89,8 +89,8 @@ test('review instructions do not terminalize foreground silence or a nested skil
 
 test('manual fix instructions use the same filesystem-safe ID as commit-fix', () => {
   for (const text of [driverText, composedCommandText]) {
-    assert.match(text, /fix-<safe-id>\.json/);
-    assert.match(text, /finding id with `:` and other Windows-illegal filename characters replaced by `_`/);
+    assert.match(text, /fix-<safe-group-id>\.json/);
+    assert.match(text, /exact `groupId`/);
   }
 });
 
@@ -121,10 +121,11 @@ test('the composed Claude command preserves pending final DoD semantics', () => 
   assert.doesNotMatch(composedCommandText, /If `dodPassed` is `false`, tell it DoD failed this round/);
 });
 
-test('manual drivers reserve only unresolved grouped fixes', () => {
+test('manual drivers certify every authorized transaction before commit', () => {
   for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
-    assert.match(text, /skip it if its id is in `resolvedFindingIds` returned by an earlier `commit-fix`/, name);
-    assert.match(text, /Reserve one `fix` launch immediately before spawning each remaining fixer/, name);
+    assert.match(text, /reserve one `fix` launch/i, name);
+    assert.match(text, /independent `certify` launch/i, name);
+    assert.match(text, /A partial or stale certificate never commits/, name);
     assert.doesNotMatch(text, /fix --count <number of fixes>/, name);
   }
 });

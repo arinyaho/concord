@@ -15,6 +15,11 @@ const { runReviewUntilGreen, reviewerPrompt, codexExec, providerExec, resolveCod
 const { reviewerPrompt: packagedReviewerPrompt } = require('../../../concord-codex/engine/codex-review-runner');
 
 function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'codex-runner-')); }
+function v2Plan(fixes, groups) {
+  const fixGroups = (groups || fixes.map((finding) => ({ findingIds: [finding.id], rootCause: finding.summary, invariants: ['fixed behavior'], changeClass: 'local', action: 'fix', findings: [finding] })))
+    .map((group) => ({ groupId: group.groupId || group.findingIds[0], ...group }));
+  return { protocolVersion: 2, planId: 'test-plan', transactionScope: 'group', fixes, fixGroups };
+}
 
 test('initiative terminal recording lock contention fails closed', async () => {
   const stateDir = temp();
@@ -231,7 +236,7 @@ test('initiative terminal evidence uses record reconciliation and post-fix DoD c
     ref: 'feature/x', repoRoot: '/repo', initiativeRunKey: 'final-packet', initiativeStateDir: stateDir, initiativeMaxLaunches: 2, initiativeMaxRounds: 1,
     runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'work', ref: 'feature/x', base: 'main', head: 'reviewed-head', attemptId: 'attempt-1', round: 1, stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: false }
       : verb === 'artifact-normalize' ? { status: 'ok' }
-        : verb === 'plan-fixes' ? { fixes: [] }
+        : verb === 'plan-fixes' ? { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] }
           : { decision: { continue: false, intentReview: true }, reconciliation: { finding: 'intent:missing', stage: 'record', avoidedLaunches: 2, findings: { intent: 1 } }, checks: [{ name: 'definition-of-done', status: 'passed' }] },
     spawn: async () => ({ status: 0 }),
   });
@@ -389,7 +394,7 @@ test('a non-material gate-pending record result produces a working, resumable es
   const options = { ref: 'feature/gate-pending', base: 'main', repoRoot: '/repo', initiativeRunKey: 'gate-pending-e2e', initiativeStateDir: stateDir, initiativeMaxLaunches: 8, initiativeMaxRounds: 4,
     runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false }
       : verb === 'artifact-normalize' ? { status: 'ok' }
-        : verb === 'plan-fixes' ? { fixes: [] }
+        : verb === 'plan-fixes' ? { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] }
           : { decision: { continue: false, gatePending: true } },
     spawn: async () => ({ status: 0 }) };
   const result = await runReviewUntilGreen(options);
@@ -414,7 +419,7 @@ test('a final DoD failure produces a working, resumable escape packet', async ()
   const options = { ref: 'feature/dod-failed', base: 'main', repoRoot: '/repo', initiativeRunKey: 'dod-failed-e2e', initiativeStateDir: stateDir, initiativeMaxLaunches: 8, initiativeMaxRounds: 4,
     runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: false }
       : verb === 'artifact-normalize' ? { status: 'ok' }
-        : verb === 'plan-fixes' ? { fixes: [] }
+        : verb === 'plan-fixes' ? { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] }
           : { decision: { continue: false, dodFailed: true } },
     spawn: async () => ({ status: 0 }) };
   const result = await runReviewUntilGreen(options);
@@ -427,7 +432,7 @@ test('a consumed gate-pending retry does not double-count the prior round\'s tel
   const options = { ref: 'feature/gp-telemetry', base: 'main', repoRoot: '/repo', initiativeRunKey: 'gp-telemetry', initiativeStateDir: stateDir, initiativeMaxLaunches: 8, initiativeMaxRounds: 4,
     runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false }
       : verb === 'artifact-normalize' ? { status: 'ok' }
-        : verb === 'plan-fixes' ? { fixes: [] }
+        : verb === 'plan-fixes' ? { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] }
           : { decision: { continue: false, gatePending: true } },
     spawn: async () => ({ status: 0 }) };
   await runReviewUntilGreen(options);
@@ -518,7 +523,7 @@ test('initiative accepts a runner-owned fixer revision on the next round', async
       if (verb === 'reserve') return { status: 'granted' };
       if (verb === 'round-start') return { decision: 'work', round: ++round, base: 'main', head: round === 1 ? 'before' : 'after', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false };
       if (verb === 'artifact-normalize') return { status: 'ok' };
-      if (verb === 'plan-fixes') return { fixes: round === 1 ? [{ id: 'correctness:bug', file: 'a.txt', span: 'bad', summary: 'fix it' }] : [] };
+      if (verb === 'plan-fixes') return v2Plan(round === 1 ? [{ id: 'correctness:bug', file: 'a.txt', span: 'bad', summary: 'fix it' }] : []);
       if (verb === 'commit-fix') return { committed: true, sha: 'after' };
       if (verb === 'record') return round === 1 ? { decision: { continue: true } } : { decision: { continue: false, converged: true } };
     },
@@ -537,7 +542,7 @@ test('initiative rejects a revision that differs from the committed fixer revisi
       if (verb === 'reserve') return { status: 'granted' };
       if (verb === 'round-start') return { decision: 'work', round: ++round, base: 'main', head: round === 1 ? 'before' : 'other', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false };
       if (verb === 'artifact-normalize') return { status: 'ok' };
-      if (verb === 'plan-fixes') return { fixes: [{ id: 'correctness:bug', file: 'a.txt', span: 'bad', summary: 'fix it' }] };
+      if (verb === 'plan-fixes') return v2Plan([{ id: 'correctness:bug', file: 'a.txt', span: 'bad', summary: 'fix it' }]);
       if (verb === 'commit-fix') return { committed: true, sha: 'after' };
       if (verb === 'record') return { decision: { continue: true } };
     },
@@ -558,7 +563,7 @@ test('initiative accepts a file identity produced by its fixer', async () => {
       if (verb === 'reserve') return { status: 'granted' };
       if (verb === 'round-start') return { decision: 'work', round: ++round, head: identity(), stateDir, targetType: 'file', dodPassed: true, dodDeferred: true, intentApplied: false, gateApplied: false };
       if (verb === 'artifact-normalize') return { status: 'ok' };
-      if (verb === 'plan-fixes') return { fixes: round === 1 ? [{ id: 'docreview:fix', file: 'note.md', span: 'before', summary: 'fix it' }] : [] };
+      if (verb === 'plan-fixes') return v2Plan(round === 1 ? [{ id: 'docreview:fix', file: 'note.md', span: 'before', summary: 'fix it' }] : []);
       if (verb === 'record') return round === 1 ? { decision: { continue: true } } : { decision: { continue: false, converged: true } };
     },
     spawn: async ({ role }) => { if (role === 'fix') fs.writeFileSync(note, 'after\n'); return { status: 0 }; },
@@ -574,7 +579,7 @@ test('reconciliation terminates the target and retains its restored base and avo
       if (verb === 'show') return { target: { base: 'main' } };
       if (verb === 'round-start') return { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: false };
       if (verb === 'artifact-normalize') return { status: 'ok' };
-      if (verb === 'plan-fixes') return { fixes: [], avoidedLaunches: 2, reconciliation: { finding: 'intent:missing', findings: { intent: 1 } } };
+      if (verb === 'plan-fixes') return { ...v2Plan([]), avoidedLaunches: 2, reconciliation: { finding: 'intent:missing', findings: { intent: 1 } } };
       if (verb === 'record') return { decision: { continue: false, intentReview: true }, reconciliation: { finding: 'intent:missing', stage: 'record', avoidedLaunches: 2, findings: { intent: 1 } } };
     },
     spawn: async () => ({ status: 0 }),
@@ -603,7 +608,7 @@ test('initiative terminal records object decision reason and deferred DoD accura
     ref: 'feature/x', repoRoot: '/repo', initiativeRunKey: 'deferred-terminal', initiativeStateDir: stateDir, initiativeMaxLaunches: 2, initiativeMaxRounds: 1,
     runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: true, intentApplied: false, gateApplied: false }
       : verb === 'artifact-normalize' ? { status: 'ok' }
-        : verb === 'plan-fixes' ? { fixes: [] }
+        : verb === 'plan-fixes' ? { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] }
           : { decision: { continue: false, converged: true } },
     spawn: async () => ({ status: 0 }),
   });
@@ -927,7 +932,10 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
       const artifactPath = role;
       return { engine: 'codex', provider: 'openai', artifactPath, attempt: calls.filter((call) => call[0] === 'cli' && call[1] === 'telemetry-slot' && call[3] === artifactPath).length, role: path.basename(artifactPath).includes('-fix-') ? 'fix' : path.basename(artifactPath).match(/^round-\d+-(.+)\.json$/)?.[1], round, ...slotIdentity };
     }
-    if (verb === 'plan-fixes') return { fixes: round === 1 ? [{ id: 'correctness:bug', file: 'a.txt', span: 'bad', summary: 'fix it' }] : [] };
+    if (verb === 'plan-fixes') {
+      const fixes = round === 1 ? [{ id: 'correctness:bug', file: 'a.txt', span: 'bad', summary: 'fix it' }] : [];
+      return { protocolVersion: 2, planId: `plan-${round}`, transactionScope: 'group', fixes, fixGroups: fixes.map((finding) => ({ groupId: finding.id, findingIds: [finding.id], rootCause: finding.summary, invariants: ['fixed behavior'], changeClass: 'local', action: 'fix', findings: [finding] })) };
+    }
     if (verb === 'commit-fix') {
       if (promptDrivenFix && !fs.existsSync(path.join(stateDir, `round-${round}-fix-${String(role).replace(/:/g, '_')}.json`))) throw new Error('commit-fix did not receive its declared artifact');
       return { committed: true, sha: 'abc' };
@@ -941,12 +949,14 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
     const n = round;
     if (role === 'correctness') fs.writeFileSync(path.join(stateDir, `round-${n}-correctness.json`), correctnessArtifact || JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
     if (role === 'verify') fs.writeFileSync(path.join(stateDir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+    if (role === 'plan') fs.writeFileSync(path.join(stateDir, `round-${n}-plan.json`), JSON.stringify({ status: 'ok', protocolVersion: 2, groups: [] }));
     if (role === 'gate') fs.writeFileSync(path.join(stateDir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
     if (role === 'fix') {
       const target = promptDrivenFix ? prompt.match(/write ONLY to (.+\.json): either/)?.[1] : path.join(stateDir, `round-${n}-fix-correctness_bug.json`);
       if (!target) throw new Error('fix prompt did not name an artifact path');
-      fs.writeFileSync(target, JSON.stringify({ status: 'ok', edited: true, files: ['a.txt'] }));
+      fs.writeFileSync(target, JSON.stringify({ status: 'ok', edited: true, groupId: 'correctness:bug', files: ['a.txt'] }));
     }
+    if (role === 'certify') fs.writeFileSync(path.join(stateDir, `round-${n}-certify-correctness_bug.json`), JSON.stringify({ status: 'ok' }));
     return { status: 0 };
   };
   return { stateDir, calls, cli, spawn };
@@ -1019,7 +1029,7 @@ test('resume launches only the artifact role still pending after an interruption
     if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: role, attempt: 1 };
     if (verb === 'artifact-normalize') return { status: 'ok' };
     if (verb === 'round-failure') return { status: 'recorded', retryable: true };
-    if (verb === 'plan-fixes') return { fixes: [] };
+    if (verb === 'plan-fixes') return { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] };
     if (verb === 'record') return { decision: { continue: false, converged: true }, handoff: 'LGTM' };
     throw new Error(`unexpected CLI ${verb}`);
   };
@@ -1031,7 +1041,7 @@ test('resume launches only the artifact role still pending after an interruption
 
   await assert.rejects(runReviewUntilGreen({ ref: 'feature/resume', repoRoot: '/repo', runCli: cli, spawn }), /interrupted/);
   await runReviewUntilGreen({ ref: 'feature/resume', resume: true, repoRoot: '/repo', runCli: cli, spawn });
-  assert.deepStrictEqual(calls, ['1:correctness', '1:verify', '2:verify']);
+  assert.deepStrictEqual(calls, ['1:correctness', '1:verify', '2:verify', '2:plan']);
 });
 
 test('a failing parallel reviewer does not let the parent return before its sibling exits', async () => {
@@ -1081,7 +1091,7 @@ test('a failing pooled broad finder waits for its paired finder before returning
   assert.strictEqual(gateFinished, true);
 });
 
-test('grouped fix resolutions skip later fixer launches for resolved findings', async () => {
+test('a prior group cannot skip a later group without its own certification', async () => {
   const stateDir = temp();
   const fixSpawns = [];
   const commits = [];
@@ -1093,7 +1103,7 @@ test('grouped fix resolutions skip later fixer launches for resolved findings', 
     if (args[0] === 'round-start') return { decision: 'work', round: 1, stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: false };
     if (args[0] === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
     if (args[0] === 'artifact-normalize') return { status: 'ok' };
-    if (args[0] === 'plan-fixes') return { fixes };
+    if (args[0] === 'plan-fixes') return v2Plan(fixes);
     if (args[0] === 'commit-fix') {
       commits.push(args[2]);
       return { committed: true, sha: 'fixed', resolvedFindingIds: ['correctness:b'] };
@@ -1107,8 +1117,36 @@ test('grouped fix resolutions skip later fixer launches for resolved findings', 
   };
 
   await runReviewUntilGreen({ ref: 'feature/grouped', repoRoot: '/repo', runCli: cli, spawn });
-  assert.strictEqual(fixSpawns.length, 1);
-  assert.deepStrictEqual(commits, ['correctness:a']);
+  assert.strictEqual(fixSpawns.length, 2);
+  assert.deepStrictEqual(commits, ['correctness:a', 'correctness:b']);
+});
+
+test('runner launches one fixer for one root-cause group', async () => {
+  const stateDir = temp();
+  const fixes = [
+    { id: 'correctness:a', file: 'a.txt', span: 'bad a', summary: 'first symptom' },
+    { id: 'correctness:b', file: 'b.txt', span: 'bad b', summary: 'second symptom' },
+  ];
+  const fixGroups = [{
+    findingIds: fixes.map((finding) => finding.id), rootCause: 'shared protocol defect',
+    invariants: ['one owner decides the result'], changeClass: 'structural', action: 'fix', findings: fixes,
+  }];
+  const fixPrompts = [];
+  const cli = (args) => {
+    if (args[0] === 'round-start') return { decision: 'work', round: 1, stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: false };
+    if (args[0] === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
+    if (args[0] === 'artifact-normalize') return { status: 'ok' };
+    if (args[0] === 'plan-fixes') return v2Plan(fixes, fixGroups);
+    if (args[0] === 'commit-fix') return { committed: true, sha: 'fixed', resolvedFindingIds: ['correctness:b'] };
+    if (args[0] === 'record') return { decision: { continue: false, converged: true }, handoff: 'LGTM' };
+    throw new Error(`unexpected CLI ${args[0]}`);
+  };
+  const spawn = async ({ role, prompt }) => { if (role === 'fix') fixPrompts.push(prompt); return { status: 0 }; };
+
+  await runReviewUntilGreen({ ref: 'feature/root-group', repoRoot: '/repo', runCli: cli, spawn });
+  assert.strictEqual(fixPrompts.length, 1);
+  assert.match(fixPrompts[0], /shared protocol defect/);
+  assert.match(fixPrompts[0], /correctness:b/);
 });
 
 test('runner automatically executes a clean round in correctness then verify order and returns terminal handoff', async () => {
@@ -1116,7 +1154,7 @@ test('runner automatically executes a clean round in correctness then verify ord
   const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
   assert.strictEqual(out.handoff, 'LGTM');
   assert.deepStrictEqual(h.calls.map((c) => c[0] === 'spawn' ? c.slice(0, 2) : c.slice(0, 2)), [
-    ['cli', 'round-start'], ['cli', 'telemetry-slot'], ['spawn', 'correctness'], ['cli', 'artifact-normalize'], ['cli', 'telemetry-slot'], ['spawn', 'verify'], ['cli', 'artifact-normalize'], ['cli', 'plan-fixes'], ['cli', 'telemetry-slot'], ['spawn', 'fix'], ['cli', 'commit-fix'], ['cli', 'record'],
+    ['cli', 'round-start'], ['cli', 'telemetry-slot'], ['spawn', 'correctness'], ['cli', 'artifact-normalize'], ['cli', 'telemetry-slot'], ['spawn', 'verify'], ['cli', 'artifact-normalize'], ['cli', 'telemetry-slot'], ['spawn', 'plan'], ['cli', 'artifact-normalize'], ['cli', 'plan-fixes'], ['cli', 'telemetry-slot'], ['spawn', 'fix'], ['cli', 'telemetry-slot'], ['spawn', 'certify'], ['cli', 'commit-fix'], ['cli', 'record'],
   ]);
   assert.ok(h.calls.filter((call) => call[0] === 'cli' && call[1] === 'telemetry-slot').every((call) => call.slice(-2).join(' ') === '--engine codex'));
   assert.strictEqual(fs.existsSync(path.join(h.stateDir, 'telemetry-feature-x.json')), false);
@@ -1129,7 +1167,7 @@ test('runner records slots when the review state directory contains whitespace',
 
   await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
 
-  assert.strictEqual(h.calls.filter((call) => call[0] === 'cli' && call[1] === 'telemetry-slot').length, 3);
+  assert.strictEqual(h.calls.filter((call) => call[0] === 'cli' && call[1] === 'telemetry-slot').length, 5);
 });
 
 test('runner fails before spawning when telemetry slot allocation fails', async () => {
@@ -1151,7 +1189,9 @@ test('runner keeps invocation role and round when slot metadata disagrees', asyn
   assert.deepStrictEqual(out.telemetry.invocations.map(({ role, round }) => ({ role, round })), [
     { role: 'correctness', round: 1 },
     { role: 'verify', round: 1 },
+    { role: 'plan', round: 1 },
     { role: 'fix', round: 1 },
+    { role: 'certify', round: 1 },
   ]);
 });
 
@@ -1160,7 +1200,9 @@ test('runner reports aggregate and per-role subprocess telemetry', async () => {
   const usageByRole = {
     correctness: { inputTokens: 100, cacheWriteInputTokens: 0, cachedInputTokens: 10, reasoningOutputTokens: 0, outputTokens: 1, totalTokens: 111 },
     verify: { inputTokens: 200, cacheWriteInputTokens: 0, cachedInputTokens: 20, reasoningOutputTokens: 0, outputTokens: 2, totalTokens: 222 },
+    plan: { inputTokens: 50, cacheWriteInputTokens: 0, cachedInputTokens: 5, reasoningOutputTokens: 0, outputTokens: 1, totalTokens: 56 },
     fix: { inputTokens: 300, cacheWriteInputTokens: 0, cachedInputTokens: 30, reasoningOutputTokens: 0, outputTokens: 3, totalTokens: 333 },
+    certify: { inputTokens: 70, cacheWriteInputTokens: 0, cachedInputTokens: 7, reasoningOutputTokens: 0, outputTokens: 1, totalTokens: 78 },
   };
   const spawn = async (input) => ({
     ...await h.spawn(input),
@@ -1178,25 +1220,29 @@ test('runner reports aggregate and per-role subprocess telemetry', async () => {
 
   assert.deepStrictEqual(out.telemetry, {
     total: {
-      calls: 3,
+      calls: 5,
       partialCalls: 0,
-      inputTokens: 600,
+      inputTokens: 720,
       cacheWriteInputTokens: 0,
-      cachedInputTokens: 60,
+      cachedInputTokens: 72,
       reasoningOutputTokens: 0,
-      outputTokens: 6,
-      totalTokens: 666,
-      elapsedMs: 60,
+      outputTokens: 8,
+      totalTokens: 800,
+      elapsedMs: 120,
     },
     byRole: {
       correctness: { calls: 1, partialCalls: 0, ...usageByRole.correctness, elapsedMs: 10 },
       verify: { calls: 1, partialCalls: 0, ...usageByRole.verify, elapsedMs: 20 },
+      plan: { calls: 1, partialCalls: 0, ...usageByRole.plan, elapsedMs: 30 },
       fix: { calls: 1, partialCalls: 0, ...usageByRole.fix, elapsedMs: 30 },
+      certify: { calls: 1, partialCalls: 0, ...usageByRole.certify, elapsedMs: 30 },
     },
     invocations: [
       { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-correctness', role: 'correctness', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.correctness, elapsedMs: 10, artifactPath: path.join(h.stateDir, 'round-1-correctness.json'), attempt: 1 },
       { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-verify', role: 'verify', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.verify, elapsedMs: 20, artifactPath: path.join(h.stateDir, 'round-1-verify.json'), attempt: 1 },
+      { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-plan', role: 'plan', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.plan, elapsedMs: 30, artifactPath: path.join(h.stateDir, 'round-1-plan.json'), attempt: 1 },
       { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-fix', role: 'fix', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.fix, elapsedMs: 30, artifactPath: path.join(h.stateDir, 'round-1-fix-correctness_bug.json'), attempt: 1 },
+      { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-certify', role: 'certify', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.certify, elapsedMs: 30, artifactPath: path.join(h.stateDir, 'round-1-certify-correctness_bug.json'), attempt: 1 },
     ],
   });
   assert.strictEqual(out.handoff, 'LGTM');
@@ -1218,13 +1264,15 @@ test('resumed runner preserves telemetry from the previous process', async () =>
   const out = await runReviewUntilGreen({ ref: 'feature/x', resume: true, repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
 
   assert.deepStrictEqual(out.telemetry.total, {
-    calls: 4, partialCalls: 3, inputTokens: 10, cacheWriteInputTokens: 0, cachedInputTokens: 1, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 16, elapsedMs: 20,
+    calls: 6, partialCalls: 5, inputTokens: 10, cacheWriteInputTokens: 0, cachedInputTokens: 1, reasoningOutputTokens: 2, outputTokens: 3, totalTokens: 16, elapsedMs: 20,
   });
   assert.deepStrictEqual(out.telemetry.invocations.map(({ role, round }) => ({ role, round })), [
     { role: 'correctness', round: 4 },
     { role: 'correctness', round: 1 },
     { role: 'verify', round: 1 },
+    { role: 'plan', round: 1 },
     { role: 'fix', round: 1 },
+    { role: 'certify', round: 1 },
   ]);
   assert.strictEqual(fs.existsSync(telemetryPath), false);
 });
@@ -1260,7 +1308,7 @@ test('runner persists unknown Codex token components as null', async () => {
   const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn });
   const fields = ['inputTokens', 'cacheWriteInputTokens', 'cachedInputTokens', 'reasoningOutputTokens', 'outputTokens', 'totalTokens'];
   assert.deepStrictEqual(out.telemetry.invocations.map((entry) => fields.map((field) => entry[field])), [
-    fields.map(() => null), fields.map(() => null), fields.map(() => null),
+    fields.map(() => null), fields.map(() => null), fields.map(() => null), fields.map(() => null), fields.map(() => null),
   ]);
 
   const telemetryPath = path.join(h.stateDir, 'telemetry-feature-x.json');
@@ -1270,7 +1318,7 @@ test('runner persists unknown Codex token components as null', async () => {
     telemetrySlots: out.telemetry.invocations.map(({ artifactPath, attempt, role, round }) => ({ engine: 'codex', provider: 'openai', artifactPath, attempt, role, round })),
   }, 'feature-x').telemetry;
   assert.strictEqual(folded.totalTokens, null);
-  assert.strictEqual(folded.partialCalls, 3);
+  assert.strictEqual(folded.partialCalls, 5);
 });
 
 test('runner removes persisted telemetry when the review is abandoned', async () => {
@@ -1502,7 +1550,7 @@ test('runner leaves missing-slot synthesis to the CLI fold', async () => {
 
   assert.strictEqual(out.telemetry.invocations.some((invocation) => invocation.artifactPath === '/missing.json'), false);
   assert.deepStrictEqual({ calls: out.telemetry.total.calls, partialCalls: out.telemetry.total.partialCalls, missingCalls: out.telemetry.total.missingCalls }, {
-    calls: 3, partialCalls: 3, missingCalls: undefined,
+    calls: 5, partialCalls: 5, missingCalls: undefined,
   });
 });
 
@@ -1529,28 +1577,51 @@ test('terminal runner does not invent a missing call from an otherwise empty per
   assert.deepStrictEqual(out.telemetry.invocations, []);
 });
 
-test('fix prompt requires an explicit, span-absent claim for a distinct planned mirror finding', () => {
-  const prompt = reviewerPrompt('fix', { stateDir: '/state', round: 7, finding: { id: 'correctness:bug', file: 'src/parser.js', span: 'lines 41-43', summary: 'repair it' }, plannedFindings: [
+test('fix and certify prompts bind the complete root-cause group', () => {
+  const finding = { id: 'correctness:bug', file: 'src/parser.js', span: 'lines 41-43', summary: 'repair it' };
+  const group = { groupId: 'parser-contract', findingIds: ['correctness:bug', 'correctness:mirror'], rootCause: 'shared parser contract', invariants: ['one parse result'], changeClass: 'local', action: 'fix', findings: [
     { id: 'correctness:bug', file: 'src/parser.js', span: 'lines 41-43', summary: 'repair it' },
     { id: 'correctness:mirror', file: 'src/mirror.js', span: 'line 8', summary: 'same root cause' },
-  ] });
-  assert.match(prompt, /\/state\/round-7-fix-correctness_bug\.json/);
+  ] };
+  const prompt = reviewerPrompt('fix', { stateDir: '/state', round: 7, finding, fixGroup: group, plannedFindings: group.findings });
+  assert.match(prompt, /\/state\/round-7-fix-parser-contract\.json/);
   assert.match(prompt, /src\/parser\.js/);
-  assert.match(prompt, /lines 41-43/);
   assert.match(prompt, /EVERY file/i);
   assert.match(prompt, /"edited":false/);
-  assert.match(prompt, /"resolvedFindingIds"/);
-  assert.match(prompt, /distinct planned mirror finding/i);
-  assert.match(prompt, /exact span must be absent/i);
   assert.match(prompt, /correctness:mirror/);
-  assert.doesNotMatch(prompt, /other planned fixes: \["correctness:bug"/);
-  assert.match(prompt, /"files":\["<every edited path>"\],"resolvedFindingIds":\["<distinct planned mirror finding id>"\]\}/);
+  const certify = reviewerPrompt('certify', { stateDir: '/state', round: 7, finding, fixGroup: group });
+  assert.match(certify, /resolvedFindingIds/);
+  assert.match(certify, /one parse result/);
+  assert.match(certify, /fileHashes/);
 });
 
-test('file-target fix prompt omits git-only mirror claims', () => {
-  const prompt = reviewerPrompt('fix', { stateDir: '/state', round: 7, targetType: 'file', finding: { id: 'correctness:bug', file: 'note.md', span: 'bad', summary: 'fix it' }, plannedFindings: [{ id: 'correctness:mirror', file: 'note.md', span: 'also bad', summary: 'same root cause' }] });
-  assert.doesNotMatch(prompt, /resolvedFindingIds|mirror finding|correctness:mirror/);
-  assert.match(prompt, /\{"status":"ok","edited":true,"files":\["<every edited path>"\]\}\./);
+test('verify stays independent and plan performs design-grounded structural grouping', () => {
+  const verify = reviewerPrompt('verify', { stateDir: '/state', round: 7, targetType: 'git' });
+  assert.doesNotMatch(verify, /round-7-history\.json/);
+  assert.match(verify, /independent/);
+  const plan = reviewerPrompt('plan', { stateDir: '/state', round: 7, targetType: 'git', slug: 'feat-x', intentHash: 'abc' });
+  assert.match(plan, /round-7-history\.json/);
+  assert.match(plan, /identity\|ownership\|retry-accounting/);
+  assert.match(plan, /designEvidence/);
+
+  const finding = { id: 'correctness:a', file: 'a.js', span: 'bad a', summary: 'first symptom' };
+  const group = {
+    groupId: 'shared', findingIds: ['correctness:a', 'correctness:b'], rootCause: 'shared protocol defect',
+    invariants: ['one owner decides the result'], changeClass: 'structural', action: 'fix',
+    findings: [finding, { id: 'correctness:b', file: 'b.js', span: 'bad b', summary: 'second symptom' }],
+  };
+  const fix = reviewerPrompt('fix', { stateDir: '/state', round: 7, finding, fixGroup: group, plannedFindings: group.findings });
+  assert.match(fix, /shared protocol defect/);
+  assert.match(fix, /one owner decides the result/);
+  assert.match(fix, /entire authorized group/i);
+});
+
+test('file-target fix prompt still uses an explicitly classified group', () => {
+  const finding = { id: 'docreview:bug', file: 'note.md', span: 'bad', summary: 'fix it' };
+  const group = { groupId: 'docreview:bug', findingIds: ['docreview:bug'], rootCause: 'unsupported claim', invariants: ['claim is supported'], changeClass: 'local', action: 'fix', findings: [finding] };
+  const prompt = reviewerPrompt('fix', { stateDir: '/state', round: 7, targetType: 'file', finding, fixGroup: group });
+  assert.match(prompt, /groupId":"docreview:bug/);
+  assert.match(prompt, /"files":\["<every edited path>"\]/);
 });
 
 test('correctness prompt requires every changed file in examined', () => {
@@ -1624,7 +1695,7 @@ test('correctness and verify prompts exclude the intent artifact -- the state di
     // Without this the reviewer can read intent-<slug>.md and raise a design
     // objection under a correctness: id, which the loop then AUTO-FIXES --
     // the opposite of intent's report-only-to-a-human contract.
-    assert.match(prompt, /Ignore any intent-\*\.md file/);
+    assert.match(prompt, /Ignore (?:any|every) intent-\*\.md/);
   }
 });
 
@@ -1761,7 +1832,7 @@ test('base broad pools both finder artifacts before launching both verifiers', a
     if (verb === 'round-start') return { decision: 'work', round: 1, stateDir, targetType: 'git', dodPassed: true, intentApplied: true, gateApplied: true, priorIntentIds: ['intent:retry-count'] };
     if (verb === 'artifact-normalize') return { status: 'ok' };
     if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: role, attempt: 1 };
-    if (verb === 'plan-fixes') return { fixes: [] };
+    if (verb === 'plan-fixes') return { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] };
     if (verb === 'record') return { decision: { continue: false }, handoff: 'LGTM' };
     throw new Error(`unexpected CLI ${verb} ${role}`);
   };
@@ -1777,6 +1848,7 @@ test('base broad pools both finder artifacts before launching both verifiers', a
     if (role === 'verify') fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', rejected: [] }));
     if (role === 'intent' || role === 'gate') fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', findings: [] }));
     if (role === 'gate-verify') fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
+    if (role === 'plan') fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', protocolVersion: 2, groups: [] }));
     pending.get(role)({ status: 0 });
   };
 
@@ -1790,6 +1862,9 @@ test('base broad pools both finder artifacts before launching both verifiers', a
   assert.deepStrictEqual(new Set(calls), new Set(['correctness', 'intent', 'gate', 'verify', 'gate-verify']));
   complete('verify');
   complete('gate-verify');
+  await new Promise(setImmediate);
+  assert.deepStrictEqual(new Set(calls), new Set(['correctness', 'intent', 'gate', 'verify', 'gate-verify', 'plan']));
+  complete('plan');
   await running;
 });
 
@@ -1823,7 +1898,7 @@ test('panel lens prompts identify the reviewed diff and require the intent sourc
     if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
     if (verb === 'artifact-normalize') return { status: 'ok' };
     if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
-    if (verb === 'plan-fixes') return { fixes: [] };
+    if (verb === 'plan-fixes') return { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] };
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
     if (verb === 'gate-panel-round-record') return { status: 'done' };
@@ -1859,7 +1934,7 @@ test('panel lens and adversarial-vote prompts carry the blocked-tool clause', as
     if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
     if (verb === 'artifact-normalize') return { status: 'ok' };
     if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
-    if (verb === 'plan-fixes') return { fixes: [] };
+    if (verb === 'plan-fixes') return { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] };
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
     if (verb === 'gate-panel-round-record') return { status: 'done' };
@@ -1908,7 +1983,7 @@ test('an adversarial vote that declares blocked fails the round instead of count
     if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
     if (verb === 'artifact-normalize') return { status: 'ok' };
     if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
-    if (verb === 'plan-fixes') return { fixes: [] };
+    if (verb === 'plan-fixes') return { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] };
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
     if (verb === 'gate-panel-round-record') return { status: 'done' };
@@ -1947,7 +2022,7 @@ test('a failed panel lens is treated as zero findings while the remaining lenses
     if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
     if (verb === 'artifact-normalize') return { status: 'ok' };
     if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
-    if (verb === 'plan-fixes') return { fixes: [] };
+    if (verb === 'plan-fixes') return { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] };
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
     if (verb === 'gate-panel-round-record') return { status: 'done' };
@@ -1978,7 +2053,7 @@ test('an interrupted panel lens waits for every launched sibling before the runn
     if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
     if (verb === 'artifact-normalize') return { status: 'ok' };
     if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
-    if (verb === 'plan-fixes') return { fixes: [] };
+    if (verb === 'plan-fixes') return { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] };
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
     throw new Error(`unexpected CLI ${verb}`);
@@ -2016,7 +2091,7 @@ test('an interrupted adversarial vote waits for every sibling before the runner 
     if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
     if (verb === 'artifact-normalize') return { status: 'ok' };
     if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
-    if (verb === 'plan-fixes') return { fixes: [] };
+    if (verb === 'plan-fixes') return { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] };
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
     throw new Error(`unexpected CLI ${verb}`);
@@ -2068,7 +2143,7 @@ test('panel lenses and each finding\'s adversarial votes fan out concurrently', 
       activeSlots--;
       return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
     }
-    if (verb === 'plan-fixes') return { fixes: [] };
+    if (verb === 'plan-fixes') return { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] };
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
     if (verb === 'gate-panel-round-record') return { status: 'done' };
@@ -2112,7 +2187,7 @@ test('panel candidates with unsafe IDs never reach an interpolated verdict path'
     if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
     if (verb === 'artifact-normalize') return { status: 'ok' };
     if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
-    if (verb === 'plan-fixes') return { fixes: [] };
+    if (verb === 'plan-fixes') return { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] };
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
     if (verb === 'gate-panel-round-record') return { status: 'done' };

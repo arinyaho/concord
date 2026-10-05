@@ -721,7 +721,9 @@ test('Claude, Codex, and Copilot review-until-lgtm skills pin bounded batch fixe
     assert.match(skill, /Codex, Copilot, or another explicitly configured reviewer/);
     assert.match(skill, /Do not start fixing when the first review arrives/);
     assert.match(skill, /complete collected set.*one clean-context verifier/);
-    assert.match(skill, /one implementation plan for all accepted in-scope findings/);
+    assert.match(skill, /partition every accepted finding into exactly one explicit root-cause group/);
+    assert.match(skill, /round-scoped transaction/);
+    assert.match(skill, /independent certifier/);
     assert.match(skill, /three fix-and-push rounds are a PR-wide hard cap, not a quality guarantee/);
     assert.match(skill, /one commit and one push/);
     assert.match(skill, /`initialRequested` is true but `deadlineMs` is absent.*open-window/is);
@@ -733,5 +735,8 @@ test('Claude, Codex, and Copilot review-until-lgtm skills pin bounded batch fixe
     assert.match(skill, /propose a single follow-up issue/);
     assert.match(skill, /do not create it without user authorization/);
     assert.match(skill, /Never request a second full review on the same head solely to obtain a missing reaction/);
+    assert.match(skill, /identity.*ownership.*retry accounting.*ordering.*idempotency.*lease.*fence.*deadline.*TTL/is);
+    assert.match(skill, /approved design.*uniquely determines.*one structural fix/is);
+    assert.match(skill, /before editing.*human reconciliation/is);
   }
 });

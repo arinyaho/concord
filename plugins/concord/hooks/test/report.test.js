@@ -4,17 +4,17 @@ const assert = require('node:assert');
 const report = require('../../core/report');
 const artifactContract = require('../../core/artifact-contract');
 
-test('planRoles: correctness depth is the diff-local pair', () => {
-  assert.deepStrictEqual(report.planRoles('correctness'), ['correctness', 'verify']);
+test('planRoles: correctness depth seals verdict before planning', () => {
+  assert.deepStrictEqual(report.planRoles('correctness'), ['correctness', 'verify', 'plan']);
 });
 
 test('planRoles: gate depth adds the gate pair', () => {
-  assert.deepStrictEqual(report.planRoles('gate'), ['correctness', 'verify', 'gate', 'gate-verify']);
+  assert.deepStrictEqual(report.planRoles('gate'), ['correctness', 'verify', 'gate', 'gate-verify', 'plan']);
 });
 
 test('planRoles: panel depth adds the five lenses and their verification, not the gate pair', () => {
   assert.deepStrictEqual(report.planRoles('panel'), [
-    'correctness', 'verify',
+    'correctness', 'verify', 'plan',
     'ac-coverage', 'design-conformance', 'cross-context', 'silent-gap', 'threat-model',
     'gate-panel-verify',
   ]);
@@ -31,9 +31,10 @@ test('artifactShape: both verifier roles map to gate-verify', () => {
   assert.strictEqual(report.artifactShape('gate-verify'), 'gate-verify');
 });
 
-test('artifactShape: correctness, verify and intent map to themselves', () => {
+test('artifactShape: correctness, verify, plan and intent map to themselves', () => {
   assert.strictEqual(report.artifactShape('correctness'), 'correctness');
   assert.strictEqual(report.artifactShape('verify'), 'verify');
+  assert.strictEqual(report.artifactShape('plan'), 'plan');
   assert.strictEqual(report.artifactShape('intent'), 'intent');
 });
 
@@ -42,7 +43,7 @@ test('artifactShape: an unknown role is a harness failure', () => {
 });
 
 test('planRoles: intent is added at any depth when asked for', () => {
-  assert.deepStrictEqual(report.planRoles('correctness', { intent: true }), ['correctness', 'verify', 'intent']);
+  assert.deepStrictEqual(report.planRoles('correctness', { intent: true }), ['correctness', 'verify', 'plan', 'intent']);
   assert.ok(report.planRoles('panel', { intent: true }).includes('intent'));
 });
 

@@ -231,6 +231,7 @@ test('recognizes every artifact output directive in the review driver', () => {
     .replaceAll('<m>', '1')
     .replaceAll('<lens>', 'threat-model')
     .replaceAll('<safe-finding-id>', 'finding')
+    .replaceAll('<safe-group-id>', 'finding')
     .replaceAll('<finding-id>', 'finding')
     .replaceAll('<vote-index>', '0')
     .replaceAll('<safe-id>', 'finding')
@@ -249,7 +250,9 @@ test('recognizes every artifact output directive in the review driver', () => {
     'round-2-intent.json',
     'round-2-gate.json',
     'round-2-gate-verify.json',
+    'round-2-plan.json',
     'round-2-fix-finding.json',
+    'round-2-certify-finding.json',
   ]);
 });
 

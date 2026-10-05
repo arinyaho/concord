@@ -17,6 +17,13 @@ function fakeCli(script) {
       idx[verb] = i + 1;
       const r = seq[Math.min(i, seq.length - 1)];
       if (r && r.__throw) throw new Error(r.__throw);
+      if (verb === "plan-fixes" && r && !r.harnessFailure && r.protocolVersion === undefined) {
+        const fixes = r.fixes || [];
+        return {
+          ...r, protocolVersion: 2, planId: "test-plan", transactionScope: "group",
+          fixGroups: fixes.map((finding) => ({ groupId: finding.id, findingIds: [finding.id], rootCause: finding.id, invariants: ["fixed behavior"], findings: [finding] })),
+        };
+      }
       return r;
     },
   };
@@ -36,8 +43,8 @@ test("converges in one round (record continue:false, converged)", async () => {
   const res = await runReviewUntilGreen({ target: TARGET, runCli: cli.runCli, spawn: sp.spawn, maxRounds: 5 });
   assert.equal(res.outcome, "converged");
   assert.equal(res.rounds, 1);
-  // review + verify spawned once each; no fixes
-  assert.deepEqual(sp.spawned.map((s) => s[0]).sort(), ["review", "verify"]);
+  // Review, verify, and the sealed-verdict planner run once each; no fixes.
+  assert.deepEqual(sp.spawned.map((s) => s[0]).sort(), ["plan", "review", "verify"]);
 });
 
 test("applies fixes: spawns fix per finding and commit-fixes each", async () => {

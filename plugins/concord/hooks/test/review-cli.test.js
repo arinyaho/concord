@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 const review = require('../../core/review');
+const { normalizeArtifact } = require('../../core/artifact-contract');
 const { safeIdForFilename } = require('../../core/artifact-name');
 const cli = require('../review-cli'); // must be requirable without running main()
 
@@ -28,8 +29,95 @@ function withBroadDefault(args, opts) {
 }
 
 function run(args, opts = {}) {
-  const { broadDefault, ...execOpts } = opts;
+  const { broadDefault, skipPlanSeed, ...execOpts } = opts;
+  if (args[0] === 'plan-fixes' && !skipPlanSeed) seedV2Plan(args[1], execOpts.env);
+  if (args[0] === 'commit-fix') seedV2Certification(args[1], args[2], execOpts.env);
+  if (args[0] === 'record') seedFileCertifications(args[1], execOpts.env);
   return execFileSync('node', [CLI, ...withBroadDefault(args, opts)], { encoding: 'utf8', ...execOpts });
+}
+
+function seedV2Plan(ref, env) {
+  const dir = env?.REVIEW_STATE_DIR;
+  if (!dir) return;
+  const ledger = review.readLedger(dir, review.targetSlug(ref));
+  if (!ledger?.round) return;
+  const planPath = path.join(dir, `round-${ledger.round}-plan.json`);
+  let inputStamp = Date.now();
+  for (const role of ['gate', 'correctness', 'verify', 'gate-verify', 'intent']) {
+    const file = path.join(dir, `round-${ledger.round}-${role}.json`);
+    if (!fs.existsSync(file)) continue;
+    try {
+      const canonical = `${JSON.stringify(normalizeArtifact(role, fs.readFileSync(file, 'utf8')))}\n`;
+      if (fs.readFileSync(file, 'utf8') !== canonical) fs.writeFileSync(file, canonical);
+    } catch (_) { /* invalid fixtures must still fail at the real contract boundary */ }
+    inputStamp = Math.max(inputStamp, fs.statSync(file).mtimeMs) + 1;
+    fs.utimesSync(file, new Date(inputStamp), new Date(inputStamp));
+  }
+  const stampAfterInputs = () => {
+    const inputs = ['verify', 'intent'].map((role) => path.join(dir, `round-${ledger.round}-${role}.json`)).filter((file) => fs.existsSync(file));
+    const newest = Math.max(Date.now(), ...inputs.map((file) => fs.statSync(file).mtimeMs));
+    fs.utimesSync(planPath, new Date(newest + 1), new Date(newest + 1));
+  };
+  if (fs.existsSync(planPath)) { stampAfterInputs(); return; }
+  const read = (role) => { try { return JSON.parse(fs.readFileSync(path.join(dir, `round-${ledger.round}-${role}.json`), 'utf8')); } catch (_) { return {}; } };
+  const correctness = read('correctness'); const verify = read('verify');
+  const rejected = new Set((verify.rejected || []).map((entry) => typeof entry === 'string' ? entry : entry.id));
+  const byId = new Map([...(correctness.findings || []), ...(verify.findings || [])].map((finding) => [finding.id, finding]));
+  const surviving = [...byId.values()].filter((finding) => !rejected.has(finding.id));
+  const covered = new Set();
+  const evidence = { source: 'test-fixture', sourceHash: 'test', requirements: ['fixture-authorized contract'], uniqueness: 'the fixture supplies one expected result' };
+  const groups = (verify.groups || []).filter((group) => group.findingIds.every((id) => byId.has(id) && !rejected.has(id))).map((group, index) => {
+    group.findingIds.forEach((id) => covered.add(id));
+    return { groupId: group.findingIds[0], structuralEffects: group.changeClass === 'structural' ? ['identity'] : [], ...group, ...(group.changeClass === 'structural' && group.action === 'fix' ? { designEvidence: evidence } : {}) };
+  });
+  for (const finding of surviving) if (!covered.has(finding.id)) groups.push({
+    groupId: finding.id, findingIds: [finding.id], rootCause: finding.summary,
+    invariants: ['the reported behavior is corrected'], changeClass: 'local', structuralEffects: [], action: 'fix',
+  });
+  fs.writeFileSync(planPath, JSON.stringify({ status: 'ok', protocolVersion: 2, groups }));
+  stampAfterInputs();
+}
+
+function seedV2Certification(ref, transactionId, env) {
+  const dir = env?.REVIEW_STATE_DIR; const repo = env?.REVIEW_REPO_ROOT;
+  if (!dir || !repo) return;
+  const ledger = review.readLedger(dir, review.targetSlug(ref));
+  const plan = ledger?.fix_plan;
+  if (!plan) return;
+  const groups = plan.transactionScope === 'round' && transactionId === plan.planId ? plan.groups : plan.groups.filter((group) => group.groupId === transactionId);
+  if (!groups.length) return;
+  const certPath = path.join(dir, `round-${ledger.round}-certify-${safeIdForFilename(transactionId)}.json`);
+  if (fs.existsSync(certPath)) return;
+  const read = (name) => { try { return JSON.parse(fs.readFileSync(path.join(dir, `round-${ledger.round}-${name}.json`), 'utf8')); } catch (_) { return {}; } };
+  const candidates = [...(read('correctness').findings || []), ...(read('verify').findings || [])];
+  const files = [];
+  for (const group of groups) {
+    const fixPath = path.join(dir, `round-${ledger.round}-fix-${safeIdForFilename(group.groupId)}.json`);
+    let fix; try { fix = JSON.parse(fs.readFileSync(fixPath, 'utf8')); } catch (_) { continue; }
+    if (fix.edited !== true) continue;
+    fix.groupId ||= group.groupId;
+    fix.files ||= group.findingIds.map((id) => candidates.find((finding) => finding.id === id)?.file).filter(Boolean);
+    fs.writeFileSync(fixPath, JSON.stringify(fix));
+    files.push(...fix.files);
+  }
+  const uniqueFiles = [...new Set(files)];
+  if (!uniqueFiles.length) return;
+  const fileHashes = Object.fromEntries(uniqueFiles.map((file) => {
+    const absolute = path.resolve(repo, file);
+    return [file, absolute.startsWith(`${path.resolve(repo)}${path.sep}`) && fs.existsSync(absolute) ? crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex') : null];
+  }));
+  fs.writeFileSync(certPath, JSON.stringify({
+    status: 'ok', groupId: transactionId, resolvedFindingIds: groups.flatMap((group) => group.findingIds),
+    invariants: [...new Set(groups.flatMap((group) => group.invariants || []))], files: uniqueFiles, fileHashes, evidence: ['test fixture certification'],
+  }));
+}
+
+function seedFileCertifications(ref, env) {
+  const dir = env?.REVIEW_STATE_DIR;
+  if (!dir) return;
+  const ledger = review.readLedger(dir, review.targetSlug(ref));
+  if (ledger?.target?.type !== 'file') return;
+  for (const group of ledger.fix_plan?.groups || []) seedV2Certification(ref, group.groupId, env);
 }
 
 function runCapture(args, opts = {}) {
@@ -351,7 +439,7 @@ test('round-start resume preserves normalized artifacts and records an artifact 
   assert.deepStrictEqual(resumed.completedArtifacts, ['correctness']);
   assert.ok(fs.existsSync(artifact), 'normalized artifact survives an interrupted resume');
   const ledger = review.readLedger(dir, review.targetSlug('feat/resume-artifact'));
-  assert.deepStrictEqual(ledger.execution.pending, ['verify']);
+  assert.deepStrictEqual(ledger.execution.pending, ['verify', 'plan']);
   assert.deepStrictEqual(ledger.execution.failure, null, 'the prior failure is retained in history but cleared for the retry');
   assert.strictEqual(ledger.execution.failures.at(-1).kind, 'artifact-write-failure');
   assert.match(ledger.execution.artifactHashes.correctness, /^[0-9a-f]{64}$/, 'resume must retain the completed artifact hash');
@@ -711,6 +799,218 @@ test('plan-fixes: returns confirmed, non-killed, still-open findings and sets ph
   assert.deepStrictEqual(l.planned, ['correctness:real']);
 });
 
+test('plan-fixes: preserves verifier root-cause groups as one atomic fix group', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'bad b\n');
+  execFileSync('git', ['add', 'b.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add b'], { cwd: repo });
+  const { env, n } = seedGatesRound(repo, dir, 'feat/grouped',
+    { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [
+      { id: 'correctness:a', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'first symptom' },
+      { id: 'correctness:b', gate: 'correctness', file: 'b.txt', span: 'bad b', summary: 'second symptom' },
+    ] },
+    { status: 'ok', rejected: [], groups: [{
+      findingIds: ['correctness:a', 'correctness:b'], rootCause: 'one shared protocol defect',
+      invariants: ['one owner decides the outcome'], changeClass: 'structural', action: 'fix',
+    }] });
+  const slug = review.targetSlug('feat/grouped');
+  review.writeLedger(dir, slug, { ...review.readLedger(dir, slug), intentHash: 'test' });
+  writeArtifact(dir, n, 'intent', { status: 'ok', findings: [] });
+  const out = JSON.parse(run(['plan-fixes', 'feat/grouped'], { env }));
+  assert.strictEqual(out.fixGroups.length, 1);
+  assert.deepStrictEqual(out.fixGroups[0].findingIds, ['correctness:a', 'correctness:b']);
+  assert.strictEqual(out.fixGroups[0].rootCause, 'one shared protocol defect');
+});
+
+test('plan-fixes: structural group with an unsettled design stops before any fixer', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env } = seedGatesRound(repo, dir, 'feat/structural-stop',
+    { status: 'ok', examined: ['a.txt'], findings: [
+      { id: 'correctness:identity', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'identity is ambiguous' },
+    ] },
+    { status: 'ok', rejected: [], groups: [{
+      findingIds: ['correctness:identity'], rootCause: 'attempt identity is undefined',
+      invariants: ['stale attempts cannot decide the active result'], changeClass: 'structural', action: 'reconcile',
+      reason: 'the approved design does not choose an identity contract',
+    }] });
+  const out = JSON.parse(run(['plan-fixes', 'feat/structural-stop'], { env }));
+  assert.deepStrictEqual(out.fixes, []);
+  assert.strictEqual(out.reconciliation.trigger, 'structural-fix');
+  assert.strictEqual(review.readLedger(dir, review.targetSlug('feat/structural-stop')).planned.length, 0);
+  const recorded = JSON.parse(run(['record', 'feat/structural-stop'], { env }));
+  assert.strictEqual(recorded.decision.continue, false);
+  assert.strictEqual(recorded.decision.reconciliation, true);
+  assert.match(recorded.decision.reason, /structural finding group.*before editing/i);
+});
+
+test('plan-fixes: v2 refuses unclassified findings instead of inventing singleton fixes', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/v2-missing-plan',
+    { status: 'ok', examined: ['a.txt'], findings: [
+      { id: 'correctness:identity', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'attempt identity is undefined' },
+    ] },
+    { status: 'ok', rejected: [], findings: [] });
+  fs.writeFileSync(path.join(dir, `round-${n}-plan.json`), JSON.stringify({ status: 'ok', protocolVersion: 2, groups: [] }));
+  assert.throws(() => run(['plan-fixes', 'feat/v2-missing-plan'], { env }), /classification.*correctness:identity/i);
+});
+
+test('plan-fixes: overlapping structural invariants promote the transaction to round scope', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'bad b\n');
+  execFileSync('git', ['add', 'b.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add b'], { cwd: repo });
+  const { env, n } = seedGatesRound(repo, dir, 'feat/v2-round-scope',
+    { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [
+      { id: 'correctness:a', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'first symptom' },
+      { id: 'correctness:b', gate: 'correctness', file: 'b.txt', span: 'bad b', summary: 'second symptom' },
+    ] },
+    { status: 'ok', rejected: [], findings: [] });
+  const evidence = { source: 'intent.md', sourceHash: 'abc', requirements: ['one owner'], uniqueness: 'one owner is explicit' };
+  const slug = review.targetSlug('feat/v2-round-scope');
+  review.writeLedger(dir, slug, { ...review.readLedger(dir, slug), intentHash: 'abc' });
+  writeArtifact(dir, n, 'intent', { status: 'ok', findings: [] });
+  fs.writeFileSync(path.join(dir, `round-${n}-plan.json`), JSON.stringify({ status: 'ok', protocolVersion: 2, groups: [
+    { groupId: 'a', findingIds: ['correctness:a'], rootCause: 'a', invariants: ['one active owner'], changeClass: 'structural', structuralEffects: ['ownership'], action: 'fix', designEvidence: evidence },
+    { groupId: 'b', findingIds: ['correctness:b'], rootCause: 'b', invariants: ['one active owner'], changeClass: 'structural', structuralEffects: ['ownership'], action: 'fix', designEvidence: evidence },
+  ] }));
+  const out = JSON.parse(run(['plan-fixes', 'feat/v2-round-scope'], { env }));
+  assert.strictEqual(out.protocolVersion, 2);
+  assert.strictEqual(out.transactionScope, 'round');
+});
+
+test('plan-fixes: returns every blocked structural group in one reconciliation packet', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'bad b\n');
+  execFileSync('git', ['add', 'b.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add b'], { cwd: repo });
+  const { env, n } = seedGatesRound(repo, dir, 'feat/v2-multi-reconcile',
+    { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [
+      { id: 'correctness:a', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'first choice' },
+      { id: 'correctness:b', gate: 'correctness', file: 'b.txt', span: 'bad b', summary: 'second choice' },
+    ] },
+    { status: 'ok', rejected: [], findings: [] });
+  fs.writeFileSync(path.join(dir, `round-${n}-plan.json`), JSON.stringify({ status: 'ok', protocolVersion: 2, groups: [
+    { groupId: 'a', findingIds: ['correctness:a'], rootCause: 'a', invariants: ['a invariant'], changeClass: 'structural', structuralEffects: ['identity'], action: 'reconcile', reason: 'choice a is open' },
+    { groupId: 'b', findingIds: ['correctness:b'], rootCause: 'b', invariants: ['b invariant'], changeClass: 'structural', structuralEffects: ['ordering'], action: 'reconcile', reason: 'choice b is open' },
+  ] }));
+  const out = JSON.parse(run(['plan-fixes', 'feat/v2-multi-reconcile'], { env }));
+  assert.deepStrictEqual(out.reconciliation.groups.map((group) => group.groupId), ['a', 'b']);
+  assert.deepStrictEqual(out.reconciliation.groups.flatMap((group) => group.findingIds), ['correctness:a', 'correctness:b']);
+});
+
+test('commit-fix: v2 group cannot commit until every member is certified', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'bad b\n');
+  execFileSync('git', ['add', 'b.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add b'], { cwd: repo });
+  const { env, n } = seedGatesRound(repo, dir, 'feat/v2-partial',
+    { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [
+      { id: 'correctness:a', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'first symptom' },
+      { id: 'correctness:b', gate: 'correctness', file: 'b.txt', span: 'bad b', summary: 'second symptom' },
+    ] },
+    { status: 'ok', rejected: [], findings: [] });
+  fs.writeFileSync(path.join(dir, `round-${n}-plan.json`), JSON.stringify({ status: 'ok', protocolVersion: 2, groups: [{
+    groupId: 'shared', findingIds: ['correctness:a', 'correctness:b'], rootCause: 'shared root', invariants: ['one outcome'], changeClass: 'local', structuralEffects: [], action: 'fix',
+  }] }));
+  run(['plan-fixes', 'feat/v2-partial'], { env });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed a\n');
+  writeArtifact(dir, n, 'fix-shared', { status: 'ok', edited: true, groupId: 'shared', files: ['a.txt'] });
+  writeArtifact(dir, n, 'certify-shared', { status: 'ok', groupId: 'shared', resolvedFindingIds: ['correctness:a'], invariants: ['one outcome'] });
+  assert.throws(() => run(['commit-fix', 'feat/v2-partial', 'shared'], { env }), /complete group certification/i);
+});
+
+test('commit-fix: certified shared-helper fix atomically resolves the whole group', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'bad b\n');
+  execFileSync('git', ['add', 'b.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add b'], { cwd: repo });
+  const { env, n } = seedGatesRound(repo, dir, 'feat/v2-complete',
+    { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [
+      { id: 'correctness:a', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'shared helper is wrong' },
+      { id: 'correctness:b', gate: 'correctness', file: 'b.txt', span: 'bad b', summary: 'caller observes the same helper bug' },
+    ] },
+    { status: 'ok', rejected: [], findings: [] });
+  const planPath = path.join(dir, `round-${n}-plan.json`);
+  fs.writeFileSync(planPath, JSON.stringify({ status: 'ok', protocolVersion: 2, groups: [{
+    groupId: 'shared', findingIds: ['correctness:a', 'correctness:b'], rootCause: 'shared helper', invariants: ['one outcome'], changeClass: 'local', structuralEffects: [], action: 'fix',
+  }] }));
+  fs.utimesSync(planPath, new Date(Date.now() + 1000), new Date(Date.now() + 1000));
+  run(['plan-fixes', 'feat/v2-complete'], { env });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed shared helper\n');
+  const hash = crypto.createHash('sha256').update(fs.readFileSync(path.join(repo, 'a.txt'))).digest('hex');
+  writeArtifact(dir, n, 'fix-shared', { status: 'ok', edited: true, groupId: 'shared', files: ['a.txt'] });
+  writeArtifact(dir, n, 'certify-shared', {
+    status: 'ok', groupId: 'shared', resolvedFindingIds: ['correctness:a', 'correctness:b'], invariants: ['one outcome'],
+    files: ['a.txt'], fileHashes: { 'a.txt': hash }, evidence: ['focused shared-helper regression passed'],
+  });
+  const committed = JSON.parse(run(['commit-fix', 'feat/v2-complete', 'shared'], { env }));
+  assert.strictEqual(committed.committed, true);
+  assert.deepStrictEqual(committed.resolvedFindingIds, ['correctness:a', 'correctness:b']);
+});
+
+test('commit-fix: round scope publishes all structural groups in one commit', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'bad b\n');
+  execFileSync('git', ['add', 'b.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add b'], { cwd: repo });
+  const { env, n } = seedGatesRound(repo, dir, 'feat/v2-round-commit',
+    { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [
+      { id: 'correctness:a', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'first structural symptom' },
+      { id: 'correctness:b', gate: 'correctness', file: 'b.txt', span: 'bad b', summary: 'second structural symptom' },
+    ] }, { status: 'ok', rejected: [], findings: [] });
+  const evidence = { source: 'intent.md', sourceHash: 'abc', requirements: ['one owner'], uniqueness: 'one owner is explicit' };
+  const slug = review.targetSlug('feat/v2-round-commit');
+  review.writeLedger(dir, slug, { ...review.readLedger(dir, slug), intentHash: 'abc' });
+  writeArtifact(dir, n, 'intent', { status: 'ok', findings: [] });
+  const planPath = path.join(dir, `round-${n}-plan.json`);
+  fs.writeFileSync(planPath, JSON.stringify({ status: 'ok', protocolVersion: 2, groups: [
+    { groupId: 'a', findingIds: ['correctness:a'], rootCause: 'a', invariants: ['one active owner'], changeClass: 'structural', structuralEffects: ['ownership'], action: 'fix', designEvidence: evidence },
+    { groupId: 'b', findingIds: ['correctness:b'], rootCause: 'b', invariants: ['one active owner'], changeClass: 'structural', structuralEffects: ['ownership'], action: 'fix', designEvidence: evidence },
+  ] }));
+  fs.utimesSync(planPath, new Date(Date.now() + 1000), new Date(Date.now() + 1000));
+  const plan = JSON.parse(run(['plan-fixes', 'feat/v2-round-commit'], { env }));
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed a\n'); fs.writeFileSync(path.join(repo, 'b.txt'), 'fixed b\n');
+  writeArtifact(dir, n, 'fix-a', { status: 'ok', edited: true, groupId: 'a', files: ['a.txt'] });
+  writeArtifact(dir, n, 'fix-b', { status: 'ok', edited: true, groupId: 'b', files: ['b.txt'] });
+  const hashes = Object.fromEntries(['a.txt', 'b.txt'].map((file) => [file, crypto.createHash('sha256').update(fs.readFileSync(path.join(repo, file))).digest('hex')]));
+  writeArtifact(dir, n, `certify-${plan.planId}`, {
+    status: 'ok', groupId: plan.planId, resolvedFindingIds: ['correctness:a', 'correctness:b'], invariants: ['one active owner'],
+    files: ['a.txt', 'b.txt'], fileHashes: hashes, evidence: ['combined ownership regression passed'],
+  });
+  const before = Number(execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim());
+  const committed = JSON.parse(run(['commit-fix', 'feat/v2-round-commit', plan.planId], { env }));
+  const after = Number(execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim());
+  assert.strictEqual(committed.committed, true);
+  assert.strictEqual(after, before + 1);
+  assert.deepStrictEqual(committed.groupIds, ['a', 'b']);
+});
+
+test('commit-fix: refuses a certified candidate when HEAD moved after planning', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/v2-head-fence',
+    { status: 'ok', examined: ['a.txt'], findings: [
+      { id: 'correctness:a', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'local defect' },
+    ] }, { status: 'ok', rejected: [], findings: [] });
+  const planPath = path.join(dir, `round-${n}-plan.json`);
+  fs.writeFileSync(planPath, JSON.stringify({ status: 'ok', protocolVersion: 2, groups: [{
+    groupId: 'a', findingIds: ['correctness:a'], rootCause: 'local defect', invariants: ['one result'], changeClass: 'local', structuralEffects: [], action: 'fix',
+  }] }));
+  const afterVerify = new Date(Date.now() + 1000);
+  fs.utimesSync(planPath, afterVerify, afterVerify);
+  run(['plan-fixes', 'feat/v2-head-fence'], { env });
+  fs.writeFileSync(path.join(repo, 'unrelated.txt'), 'moves head\n');
+  execFileSync('git', ['add', 'unrelated.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'unrelated'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed a\n');
+  const hash = crypto.createHash('sha256').update(fs.readFileSync(path.join(repo, 'a.txt'))).digest('hex');
+  writeArtifact(dir, n, 'fix-a', { status: 'ok', edited: true, groupId: 'a', files: ['a.txt'] });
+  writeArtifact(dir, n, 'certify-a', {
+    status: 'ok', groupId: 'a', resolvedFindingIds: ['correctness:a'], invariants: ['one result'],
+    files: ['a.txt'], fileHashes: { 'a.txt': hash }, evidence: ['focused regression passed'],
+  });
+  assert.throws(() => run(['commit-fix', 'feat/v2-head-fence', 'a'], { env }), /planned predecessor.*HEAD moved/i);
+});
+
 test('plan-fixes: a finding reopened after being marked fixed is not silently dropped as concluded', () => {
   const repo = initRepo(); const dir = tmpDir();
   const slug = review.targetSlug('feat/x');
@@ -785,7 +1085,7 @@ test('plan-fixes: a verify artifact older than its correctness artifact is a har
   fs.writeFileSync(vPath, JSON.stringify({ status: 'ok', rejected: [] }));
   const past = new Date(Date.now() - 60000);
   fs.utimesSync(vPath, past, past); // verify's file predates correctness's -- simulates a parallel spawn racing an empty file
-  assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure.*predates/);
+  assert.throws(() => run(['plan-fixes', 'feat/x'], { env, skipPlanSeed: true }), /harness-failure.*predates/);
 });
 
 test('plan-fixes: a pooled verify artifact older than gate is a harness-failure', () => {
@@ -800,7 +1100,7 @@ test('plan-fixes: a pooled verify artifact older than gate is a harness-failure'
   fs.utimesSync(correctnessPath, past, past);
   fs.utimesSync(verifyPath, middle, middle);
   fs.utimesSync(gatePath, now, now);
-  assert.throws(() => run(['plan-fixes', 'feat/pooled-order'], { env, broadDefault: true }), /round-\d+-verify\.json predates round-\d+-gate\.json/);
+  assert.throws(() => run(['plan-fixes', 'feat/pooled-order'], { env, broadDefault: true, skipPlanSeed: true }), /round-\d+-verify\.json predates round-\d+-gate\.json/);
 });
 
 test('plan-fixes: a changed file never examined is a harness-failure (coverage)', () => {
@@ -932,13 +1232,13 @@ test('commit-fix + record: an explicit mirrored finding claim resolves the decla
       { id: 'correctness:a', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'source mirror' },
       { id: 'correctness:b', gate: 'correctness', file: 'b.txt', span: 'mirror span', summary: 'companion mirror' },
     ] },
-    { status: 'ok', rejected: [] });
+    { status: 'ok', rejected: [], groups: [{ findingIds: ['correctness:a', 'correctness:b'], rootCause: 'one mirror contract', invariants: ['both views agree'], changeClass: 'local', action: 'fix' }] });
   assert.deepStrictEqual(JSON.parse(run(['plan-fixes', 'feat/mirror-claim'], { env })).fixes.map((f) => f.id), ['correctness:a', 'correctness:b']);
 
   fs.writeFileSync(path.join(repo, 'a.txt'), 'source fixed\n');
   fs.writeFileSync(path.join(repo, 'b.txt'), 'mirror fixed\n');
   fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_a.json`), JSON.stringify({
-    status: 'ok', edited: true, files: ['a.txt', 'b.txt'], resolvedFindingIds: ['correctness:b'],
+    status: 'ok', edited: true, groupId: 'correctness:a', files: ['a.txt', 'b.txt'],
   }));
   const committed = JSON.parse(run(['commit-fix', 'feat/mirror-claim', 'correctness:a'], { env }));
   assert.strictEqual(committed.committed, true);
@@ -951,7 +1251,7 @@ test('commit-fix + record: an explicit mirrored finding claim resolves the decla
   assert.strictEqual(out.decision.parked, false);
 });
 
-test('commit-fix: permits a mirror claim when either edited file was deleted', () => {
+test('commit-fix: certified group permits either edited file to be deleted', () => {
   for (const deleted of ['a.txt', 'b.txt']) {
     const repo = initRepo(); const dir = tmpDir();
     fs.writeFileSync(path.join(repo, 'a.txt'), 'source span\n');
@@ -963,17 +1263,15 @@ test('commit-fix: permits a mirror claim when either edited file was deleted', (
         { id: 'correctness:a', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'source mirror' },
         { id: 'correctness:b', gate: 'correctness', file: 'b.txt', span: 'mirror span', summary: 'companion mirror' },
       ] },
-      { status: 'ok', rejected: [] });
+      { status: 'ok', rejected: [], groups: [{ findingIds: ['correctness:a', 'correctness:b'], rootCause: 'one mirror contract', invariants: ['both views agree'], changeClass: 'local', action: 'fix' }] });
     run(['plan-fixes', `feat/deleted-${deleted}`], { env });
     fs.rmSync(path.join(repo, deleted));
     if (deleted === 'a.txt') fs.writeFileSync(path.join(repo, 'b.txt'), 'mirror fixed\n');
     else fs.writeFileSync(path.join(repo, 'a.txt'), 'source fixed\n');
-    const primary = deleted === 'a.txt' ? 'correctness:a' : 'correctness:b';
-    const counterpart = primary === 'correctness:a' ? 'correctness:b' : 'correctness:a';
-    fs.writeFileSync(path.join(dir, `round-${n}-fix-${primary.replace(/:/g, '_')}.json`), JSON.stringify({
-      status: 'ok', edited: true, files: ['a.txt', 'b.txt'], resolvedFindingIds: [counterpart],
+    fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_a.json`), JSON.stringify({
+      status: 'ok', edited: true, groupId: 'correctness:a', files: ['a.txt', 'b.txt'],
     }));
-    assert.strictEqual(JSON.parse(run(['commit-fix', `feat/deleted-${deleted}`, primary], { env })).committed, true);
+    assert.strictEqual(JSON.parse(run(['commit-fix', `feat/deleted-${deleted}`, 'correctness:a'], { env })).committed, true);
     const out = JSON.parse(run(['record', `feat/deleted-${deleted}`], { env }));
     const findings = review.readLedger(dir, review.targetSlug(`feat/deleted-${deleted}`)).findings;
     assert.strictEqual(findings.find((f) => f.id === 'correctness:a').status, 'fixed');
@@ -982,7 +1280,7 @@ test('commit-fix: permits a mirror claim when either edited file was deleted', (
   }
 });
 
-test('record: treats a deleted resolved counterpart as span-absent', () => {
+test('record: treats a deleted certified group member as fixed', () => {
   const repo = initRepo(); const dir = tmpDir();
   fs.writeFileSync(path.join(repo, 'b.txt'), 'mirror span\n');
   execFileSync('git', ['add', 'b.txt'], { cwd: repo });
@@ -992,12 +1290,12 @@ test('record: treats a deleted resolved counterpart as span-absent', () => {
       { id: 'correctness:a', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'source mirror' },
       { id: 'correctness:b', gate: 'correctness', file: 'b.txt', span: 'mirror span', summary: 'companion mirror' },
     ] },
-    { status: 'ok', rejected: [] });
+    { status: 'ok', rejected: [], groups: [{ findingIds: ['correctness:a', 'correctness:b'], rootCause: 'one mirror contract', invariants: ['both views agree'], changeClass: 'local', action: 'fix' }] });
   run(['plan-fixes', 'feat/deleted-counterpart'], { env });
   fs.writeFileSync(path.join(repo, 'a.txt'), 'source fixed\n');
   fs.rmSync(path.join(repo, 'b.txt'));
   fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_a.json`), JSON.stringify({
-    status: 'ok', edited: true, files: ['a.txt', 'b.txt'], resolvedFindingIds: ['correctness:b'],
+    status: 'ok', edited: true, groupId: 'correctness:a', files: ['a.txt', 'b.txt'],
   }));
   assert.strictEqual(JSON.parse(run(['commit-fix', 'feat/deleted-counterpart', 'correctness:a'], { env })).committed, true);
   const out = JSON.parse(run(['record', 'feat/deleted-counterpart'], { env }));
@@ -1006,7 +1304,7 @@ test('record: treats a deleted resolved counterpart as span-absent', () => {
   assert.strictEqual(out.decision.parked, false);
 });
 
-test('commit-fix: rejects a mirrored claim when the primary span remains live', () => {
+test('commit-fix: certification may prove an additive group fix while the primary span remains', () => {
   const repo = initRepo(); const dir = tmpDir();
   fs.writeFileSync(path.join(repo, 'a.txt'), 'source span\n');
   fs.writeFileSync(path.join(repo, 'b.txt'), 'mirror span\n');
@@ -1017,22 +1315,18 @@ test('commit-fix: rejects a mirrored claim when the primary span remains live', 
       { id: 'correctness:a', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'source mirror' },
       { id: 'correctness:b', gate: 'correctness', file: 'b.txt', span: 'mirror span', summary: 'companion mirror' },
     ] },
-    { status: 'ok', rejected: [] });
+    { status: 'ok', rejected: [], groups: [{ findingIds: ['correctness:a', 'correctness:b'], rootCause: 'one mirror contract', invariants: ['both views agree'], changeClass: 'local', action: 'fix' }] });
   run(['plan-fixes', 'feat/mirror-claim-primary-live'], { env });
 
   fs.appendFileSync(path.join(repo, 'a.txt'), 'unrelated dirty change\n');
   fs.writeFileSync(path.join(repo, 'b.txt'), 'mirror fixed\n');
   fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_a.json`), JSON.stringify({
-    status: 'ok', edited: true, files: ['a.txt', 'b.txt'], resolvedFindingIds: ['correctness:b'],
+    status: 'ok', edited: true, groupId: 'correctness:a', files: ['a.txt', 'b.txt'],
   }));
-
-  assert.throws(
-    () => run(['commit-fix', 'feat/mirror-claim-primary-live', 'correctness:a'], { env }),
-    /harness-failure: commit-fix: invalid resolved finding claim "correctness:b"/,
-  );
+  assert.strictEqual(JSON.parse(run(['commit-fix', 'feat/mirror-claim-primary-live', 'correctness:a'], { env })).committed, true);
 });
 
-test('commit-fix: rejects a mirrored claim when the counterpart span was already absent at HEAD', () => {
+test('commit-fix: certification may prove a group fix when a reported span was absent at HEAD', () => {
   const repo = initRepo(); const dir = tmpDir();
   fs.writeFileSync(path.join(repo, 'a.txt'), 'source span\n');
   fs.writeFileSync(path.join(repo, 'b.txt'), 'mirror already absent\n');
@@ -1043,22 +1337,18 @@ test('commit-fix: rejects a mirrored claim when the counterpart span was already
       { id: 'correctness:a', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'source mirror' },
       { id: 'correctness:b', gate: 'correctness', file: 'b.txt', span: 'mirror span', summary: 'companion mirror' },
     ] },
-    { status: 'ok', rejected: [] });
+    { status: 'ok', rejected: [], groups: [{ findingIds: ['correctness:a', 'correctness:b'], rootCause: 'one mirror contract', invariants: ['both views agree'], changeClass: 'local', action: 'fix' }] });
   run(['plan-fixes', 'feat/mirror-claim-preexisting-absence'], { env });
 
   fs.writeFileSync(path.join(repo, 'a.txt'), 'source fixed\n');
   fs.appendFileSync(path.join(repo, 'b.txt'), 'unrelated dirty change\n');
   fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_a.json`), JSON.stringify({
-    status: 'ok', edited: true, files: ['a.txt', 'b.txt'], resolvedFindingIds: ['correctness:b'],
+    status: 'ok', edited: true, groupId: 'correctness:a', files: ['a.txt', 'b.txt'],
   }));
-
-  assert.throws(
-    () => run(['commit-fix', 'feat/mirror-claim-preexisting-absence', 'correctness:a'], { env }),
-    /harness-failure: commit-fix: invalid resolved finding claim "correctness:b"/,
-  );
+  assert.strictEqual(JSON.parse(run(['commit-fix', 'feat/mirror-claim-preexisting-absence', 'correctness:a'], { env })).committed, true);
 });
 
-test('commit-fix: rejects an unknown mirrored finding claim before committing', () => {
+test('commit-fix: rejects a certificate that claims an unknown finding', () => {
   const repo = initRepo(); const dir = tmpDir();
   const { env, n } = seedGatesRound(repo, dir, 'feat/mirror-claim-invalid',
     { status: 'ok', examined: ['a.txt'], findings: [
@@ -1068,11 +1358,16 @@ test('commit-fix: rejects an unknown mirrored finding claim before committing', 
   run(['plan-fixes', 'feat/mirror-claim-invalid'], { env });
   fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
   fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_a.json`), JSON.stringify({
-    status: 'ok', edited: true, files: ['a.txt'], resolvedFindingIds: ['correctness:unknown'],
+    status: 'ok', edited: true, groupId: 'correctness:a', files: ['a.txt'],
+  }));
+  const hash = crypto.createHash('sha256').update(fs.readFileSync(path.join(repo, 'a.txt'))).digest('hex');
+  fs.writeFileSync(path.join(dir, `round-${n}-certify-correctness_a.json`), JSON.stringify({
+    status: 'ok', groupId: 'correctness:a', resolvedFindingIds: ['correctness:a', 'correctness:unknown'],
+    invariants: ['the reported behavior is corrected'], files: ['a.txt'], fileHashes: { 'a.txt': hash }, evidence: ['test'],
   }));
   assert.throws(
     () => run(['commit-fix', 'feat/mirror-claim-invalid', 'correctness:a'], { env }),
-    /harness-failure: commit-fix: invalid resolved finding claim "correctness:unknown"/,
+    /complete group certification/,
   );
   assert.strictEqual(execFileSync('git', ['status', '--porcelain', '--', 'a.txt'], { cwd: repo, encoding: 'utf8' }).trim(), 'M a.txt');
 });
@@ -1091,7 +1386,7 @@ test('commit-fix: ignores a redundant self-resolution claim and commits the prim
   }));
   const out = JSON.parse(run(['commit-fix', 'feat/self-resolution', 'correctness:self'], { env }));
   assert.strictEqual(out.committed, true);
-  assert.deepStrictEqual(out.resolvedFindingIds, []);
+  assert.deepStrictEqual(out.resolvedFindingIds, ['correctness:self']);
 });
 
 test('commit-fix: commits one fix and journals it', () => {
@@ -3901,7 +4196,9 @@ function seedFileTargetFixesRound(dir, ref, fileRef, correctness, verify) {
 
 test('record file target: fix artifact with edited:true marks finding fixed with file-edit sentinel', () => {
   const dir = tmpDir();
-  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  const repo = tmpDir();
+  fs.writeFileSync(path.join(repo, 'note.md'), 'fixed claim\n');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   const ref = 'file:note.md';
   const { n, slug } = seedFileTargetFixesRound(dir, ref, 'note.md',
     { status: 'ok', examined: ['note.md'], findings: [
@@ -3909,7 +4206,16 @@ test('record file target: fix artifact with edited:true marks finding fixed with
     ]},
     { status: 'ok', rejected: [] }
   );
-  fs.writeFileSync(path.join(dir, `round-${n}-fix-docreview_unsupported-claim.json`), JSON.stringify({ status: 'ok', edited: true, files: ['note.md'] }));
+  const groupId = 'docreview:unsupported-claim';
+  const ledger = review.readLedger(dir, slug);
+  review.writeLedger(dir, slug, { ...ledger, fix_plan: { protocolVersion: 2, planId: 'file-plan', transactionScope: 'group', expectedHead: null, groups: [{
+    groupId, findingIds: [groupId], rootCause: 'claim lacks citation', invariants: ['claim is supported'], changeClass: 'local', structuralEffects: [], action: 'fix',
+  }] } });
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-docreview_unsupported-claim.json`), JSON.stringify({ status: 'ok', edited: true, groupId, files: ['note.md'] }));
+  const hash = crypto.createHash('sha256').update(fs.readFileSync(path.join(repo, 'note.md'))).digest('hex');
+  fs.writeFileSync(path.join(dir, `round-${n}-certify-docreview_unsupported-claim.json`), JSON.stringify({
+    status: 'ok', groupId, resolvedFindingIds: [groupId], invariants: ['claim is supported'], files: ['note.md'], fileHashes: { 'note.md': hash }, evidence: ['citation check passed'],
+  }));
   const out = JSON.parse(run(['record', ref], { env }));
   const l = review.readLedger(dir, slug);
   const f = l.findings.find((x) => x.id === 'docreview:unsupported-claim');

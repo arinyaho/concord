@@ -1,6 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -10,6 +11,7 @@ const { runPath } = require('../../core/initiative-review-run');
 const review = require('../../core/review');
 const cliPath = path.resolve(__dirname, '../../hooks/review-cli.js');
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'runner-bound-'));
+const emptyPlan = { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] };
 function fixture({ maxLaunches = 30, mode } = {}) {
   const repoRoot = tmp(), stateDir = tmp(), initiativeStateDir = tmp();
   const git = (...args) => execFileSync('git', args, { cwd: repoRoot, stdio: 'pipe' }).toString().trim();
@@ -31,18 +33,21 @@ function fixture({ maxLaunches = 30, mode } = {}) {
       workers.push(role);
       const destination = /Write ONLY .*? to ([^\n]+?\.json)/.exec(prompt)?.[1];
       assert.ok(destination, `no destination for ${role}`);
-      fs.writeFileSync(destination, JSON.stringify({ status: 'ok', examined: ['a.txt'], rejected: [], findings: [] }));
+      const artifact = role === 'plan'
+        ? { status: 'ok', protocolVersion: 2, groups: [] }
+        : { status: 'ok', examined: ['a.txt'], rejected: [], findings: [] };
+      fs.writeFileSync(destination, JSON.stringify(artifact));
       return { status: 0 };
     } };
   return { options, calls, workers, stateDir, git, ledger: () => JSON.parse(fs.readFileSync(runPath(initiativeStateDir, 'integration'))) };
 }
-test('keyed runner propagates complete options, reserves both roles and delivers only the CLI disposition', async () => {
+test('keyed runner propagates complete options, reserves every review role and delivers only the CLI disposition', async () => {
   const f = fixture(); const result = await runReviewUntilGreen(f.options);
-  assert.deepEqual(f.workers, ['correctness', 'verify']);
+  assert.deepEqual(f.workers, ['correctness', 'verify', 'plan']);
   for (const args of f.calls) for (const flag of ['--initiative-run-key', '--initiative-state-dir', '--initiative-max-launches', '--initiative-max-rounds']) assert.equal(args.filter(x => x === flag).length, 1);
-  assert.equal(f.ledger().launches.length, 2); assert.equal(f.ledger().dispositions.length, 1);
+  assert.equal(f.ledger().launches.length, 3); assert.equal(f.ledger().dispositions.length, 1);
   assert.equal(result.continuationPacket.delivery.claim, f.ledger().dispositions[0].packet.delivery.claim);
-  assert.equal(review.readLedger(f.stateDir, review.targetSlug(f.options.ref)).initiative_reservations.length, 2);
+  assert.equal(review.readLedger(f.stateDir, review.targetSlug(f.options.ref)).initiative_reservations.length, 3);
 });
 test('launcher parses session policy anywhere and rejects missing, duplicate and invalid policies', () => {
   const dir = tmp(), capture = path.join(dir, 'options.json'), preload = path.join(dir, 'preload.cjs');
@@ -67,7 +72,7 @@ test('default suggestions publish once while later progress continues to termina
     if (args[0] === 'record') return { decision: starts < 3 ? { continue: true, rawLog: 'RAW_TRANSCRIPT_NEVER_COPY' } : { converged: true } };
     if (args[0] === 'reserve') return { status: 'granted' };
     if (args[0] === 'artifact-normalize') return { status: 'ok' };
-    if (args[0] === 'plan-fixes') return { fixes: [] };
+    if (args[0] === 'plan-fixes') return emptyPlan;
     if (args[0] === 'telemetry-slot') return {};
     return original(args);
   };
@@ -76,7 +81,7 @@ test('default suggestions publish once while later progress continues to termina
   assert.equal(calls.filter(x => x[0] === 'session-checkpoint').length, 1);
   assert.equal(result.sessionHandoff.promptPath, suggestions[0].promptPath);
   const checkpoint = JSON.parse(fs.readFileSync(result.sessionHandoff.checkpointPath));
-  assert.equal(checkpoint.observations.toolCalls, 11);
+  assert.equal(checkpoint.observations.toolCalls, 15);
   assert.equal(checkpoint.observations.noProgressCalls, 2);
   assert.equal(fs.readFileSync(checkpoint.sources.state.path, 'utf8').includes('RAW_TRANSCRIPT_NEVER_COPY'), false);
   assert.equal(fs.readFileSync(checkpoint.sources.handoff.path, 'utf8').includes('RAW_TRANSCRIPT_NEVER_COPY'), false);
@@ -95,8 +100,10 @@ function fixingWorker(f) {
   return async ({ role, prompt }) => {
     f.workers.push(role);
     const artifact = destination(prompt, f.stateDir), round = Number(/round-(\d+)/.exec(artifact)[1]);
-    const data = { status: 'ok', examined: ['a.txt'], rejected: [], findings: role === 'correctness' && round === 1 ? [bug] : [] };
-    if (role === 'fix') { fs.writeFileSync(path.join(f.options.repoRoot, 'a.txt'), 'three\n'); Object.assign(data, { edited: true, files: ['a.txt'] }); }
+    let data = { status: 'ok', examined: ['a.txt'], rejected: [], findings: role === 'correctness' && round === 1 ? [bug] : [] };
+    if (role === 'plan') data = { status: 'ok', protocolVersion: 2, groups: round === 1 ? [{ groupId: bug.id, findingIds: [bug.id], rootCause: bug.summary, invariants: ['two is replaced'], changeClass: 'local', structuralEffects: [], action: 'fix' }] : [] };
+    if (role === 'fix') { fs.writeFileSync(path.join(f.options.repoRoot, 'a.txt'), 'three\n'); data = { status: 'ok', edited: true, groupId: bug.id, files: ['a.txt'] }; }
+    if (role === 'certify') data = { status: 'ok', groupId: bug.id, resolvedFindingIds: [bug.id], invariants: ['two is replaced'], files: ['a.txt'], fileHashes: { 'a.txt': crypto.createHash('sha256').update(fs.readFileSync(path.join(f.options.repoRoot, 'a.txt'))).digest('hex') }, evidence: ['replacement checked'] };
     fs.writeFileSync(artifact, JSON.stringify(data)); return { status: 0 };
   };
 }
@@ -104,11 +111,14 @@ test('real keyed artifact retry reserves another launch before accepting rewritt
   const f = fixture(); let correctness = 0;
   const result = await runReviewUntilGreen({ ...f.options, spawn: async ({ role, prompt }) => {
     f.workers.push(role); if (role === 'correctness') correctness++;
-    fs.writeFileSync(destination(prompt, f.stateDir), JSON.stringify({ status: 'ok', examined: correctness === 1 && role === 'correctness' ? [] : ['a.txt'], findings: [], rejected: [] })); return { status: 0 };
+    const artifact = role === 'plan'
+      ? { status: 'ok', protocolVersion: 2, groups: [] }
+      : { status: 'ok', examined: correctness === 1 && role === 'correctness' ? [] : ['a.txt'], findings: [], rejected: [] };
+    fs.writeFileSync(destination(prompt, f.stateDir), JSON.stringify(artifact)); return { status: 0 };
   } });
   assert.equal(result.decision.converged, true);
-  assert.deepEqual(f.workers, ['correctness', 'correctness', 'verify']);
-  assert.equal(f.ledger().launches.length, 3);
+  assert.deepEqual(f.workers, ['correctness', 'correctness', 'verify', 'plan']);
+  assert.equal(f.ledger().launches.length, 4);
   const reservations = review.readLedger(f.stateDir, review.targetSlug(f.options.ref)).initiative_reservations;
   assert.equal(reservations.filter(x => x.role === 'correctness').length, 2);
 });
@@ -117,12 +127,12 @@ test('stop-at-checkpoint stops after the committed fix and resume preserves the 
   const stopped = await runReviewUntilGreen({ ...f.options, spawn, sessionHandoff: 'stop-at-checkpoint', getInputContextTokens: () => 128000 });
   assert.equal(stopped.decision, 'session-handoff'); assert.equal(stopped.reviewDecision.continue, true);
   assert.equal(f.calls.filter(x => x[0] === 'round-start').length, 1);
-  assert.deepEqual(f.workers, ['correctness', 'verify', 'fix']);
-  assert.equal(f.ledger().launches.length, 3); assert.equal(f.ledger().dispositions.length, 0);
+  assert.deepEqual(f.workers, ['correctness', 'verify', 'plan', 'fix', 'certify']);
+  assert.equal(f.ledger().launches.length, 5); assert.equal(f.ledger().dispositions.length, 0);
   const next = JSON.parse(fs.readFileSync(JSON.parse(fs.readFileSync(stopped.sessionHandoff.checkpointPath)).sources.state.path)).nextStep;
   assert.equal(next.args[0], 'round-start'); assert.equal(next.args[1], f.options.ref);
   const resumed = await runReviewUntilGreen({ ...f.options, base: undefined, resume: true, spawn, sessionHandoff: 'off' });
-  assert.equal(resumed.decision.converged, true); assert.equal(f.ledger().launches.length, 5);
+  assert.equal(resumed.decision.converged, true); assert.equal(f.ledger().launches.length, 8);
   assert.equal(f.ledger().rounds.length, 2); assert.equal(f.workers.filter(x => x === 'fix').length, 1);
   assert.equal(f.ledger().dispositions.length, 1);
   assert.equal(f.calls[ f.calls.findIndex(x => x[0] === 'show') ][0], 'show');
@@ -148,12 +158,12 @@ test('unmeasured input context stays null and the runner tool-call threshold tri
     if (args[0] === 'reserve') return { status: 'granted' };
     if (args[0] === 'telemetry-slot') return {};
     if (args[0] === 'artifact-normalize') return { status: 'ok' };
-    if (args[0] === 'plan-fixes') return { fixes: [] };
+    if (args[0] === 'plan-fixes') return emptyPlan;
     if (args[0] === 'record') return { decision: starts < 6 ? { continue: true } : { converged: true } };
     return original(args);
   } });
   const checkpoint = JSON.parse(fs.readFileSync(result.sessionHandoff.checkpointPath));
-  assert.equal(checkpoint.observations.inputTokens, null); assert.equal(checkpoint.observations.toolCalls, 55);
+  assert.equal(checkpoint.observations.inputTokens, null); assert.equal(checkpoint.observations.toolCalls, 60);
   assert.equal(checkpoint.observations.noProgressCalls, 2);
   assert.deepEqual(checkpoint.triggers, ['toolCalls']);
 });
@@ -165,8 +175,8 @@ test('resume reuses accepted correctness evidence and charges only the interrupt
   } }), /verifier interrupted/);
   const result = await runReviewUntilGreen({ ...f.options, base: undefined, resume: true, sessionHandoff: 'off' });
   assert.equal(result.decision.converged, true);
-  assert.deepEqual(f.workers, ['correctness', 'verify-failed', 'verify']);
-  assert.equal(f.ledger().launches.length, 3); assert.equal(f.ledger().rounds.length, 1);
+  assert.deepEqual(f.workers, ['correctness', 'verify-failed', 'verify', 'plan']);
+  assert.equal(f.ledger().launches.length, 4); assert.equal(f.ledger().rounds.length, 1);
 });
 test('fresh contexts each suggest once while resuming the same durable review budget', async () => {
   const f = fixture(), first = [], second = [];
@@ -176,10 +186,10 @@ test('fresh contexts each suggest once while resuming the same durable review bu
     return worker(input);
   } }), /replace context/);
   const before = f.ledger(); assert.equal(first.length, 1);
-  assert.equal(before.launches.length, 5); assert.equal(before.rounds.length, 2);
+  assert.equal(before.launches.length, 7); assert.equal(before.rounds.length, 2);
   const result = await runReviewUntilGreen({ ...f.options, base: undefined, resume: true, getInputContextTokens: () => 128000, onSessionHandoff: h => second.push(h), spawn: worker });
   assert.equal(second.length, 1); assert.equal(result.sessionHandoff.promptPath, second[0].promptPath);
-  assert.equal(f.ledger().launches.length, 6); assert.equal(f.ledger().rounds.length, 2);
+  assert.equal(f.ledger().launches.length, 9); assert.equal(f.ledger().rounds.length, 2);
   assert.deepEqual(f.ledger().budget, before.budget);
   assert.equal(f.workers.filter(role => role === 'fix').length, 1);
   assert.equal(f.workers.filter(role => role === 'correctness').length, 2);
@@ -202,7 +212,7 @@ for (const mode of ['suggest', 'stop-at-checkpoint']) {
       assert.equal(result.sessionHandoff.mode, mode);
       assert.equal(f.ledger().dispositions.length, 1);
       assert.equal(result.continuationPacket.delivery.claim, f.ledger().dispositions[0].packet.delivery.claim);
-      assert.deepEqual(f.workers, ['correctness', 'verify']);
+      assert.deepEqual(f.workers, ['correctness', 'verify', 'plan']);
     });
   }
 }
@@ -258,11 +268,11 @@ test('a budget-exhausted block names the carry command, and after a CLI carry th
   const resumed = await runReviewUntilGreen(carriedOptions);
   assert.equal(resumed.decision.converged, true);
   // Correctness was not relaunched: round-start under the new key reused the
-  // hash-verified artifact, and only verify's reservation and launch happened.
-  assert.deepEqual(f.workers, ['correctness', 'verify']);
+  // hash-verified artifact; only verify and the sealed-verdict planner launch.
+  assert.deepEqual(f.workers, ['correctness', 'verify', 'plan']);
   assert.equal(f.ledger().launches.length, 1, "A's launches changed");
   const newLedger = JSON.parse(fs.readFileSync(runPath(f.options.initiativeStateDir, 'integration-2')));
-  assert.equal(newLedger.launches.length, 1, 'B was charged for more than its own launch');
+  assert.equal(newLedger.launches.length, 2, 'B must be charged exactly for its verify and plan launches');
 
   // An old-key invocation now returns terminal with nextAction: carried.
   const oldKeyRetry = await runReviewUntilGreen({ ...f.options, base: undefined, resume: true, sessionHandoff: 'off' });

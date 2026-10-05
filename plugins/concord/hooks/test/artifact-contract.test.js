@@ -36,6 +36,46 @@ test('a rejection carries its stated basis and canonicalizes to {id, reason}', (
   assert.deepStrictEqual(normalizeArtifact('verify', raw), { status: 'ok', rejected: [{ id: 'correctness:x', reason: 'measured with playwright: box is 320px' }], findings: [] });
 });
 
+test('verify preserves root-cause groups and structural reconciliation', () => {
+  const raw = JSON.stringify({
+    status: 'ok', rejected: [], findings: [], groups: [{
+      findingIds: ['correctness:a', 'correctness:b'],
+      rootCause: 'message identity is not attempt identity',
+      invariants: ['a stale delivery cannot fail the active attempt'],
+      changeClass: 'structural', action: 'reconcile',
+      reason: 'the approved design does not choose an attempt-identity contract',
+    }],
+  });
+  assert.deepStrictEqual(normalizeArtifact('verify', raw).groups, [{
+    findingIds: ['correctness:a', 'correctness:b'],
+    rootCause: 'message identity is not attempt identity',
+    invariants: ['a stale delivery cannot fail the active attempt'],
+    changeClass: 'structural', action: 'reconcile',
+    reason: 'the approved design does not choose an attempt-identity contract',
+  }]);
+});
+
+test('plan artifacts require v2 structural design evidence', () => {
+  assert.throws(() => normalizeArtifact('plan', JSON.stringify({
+    status: 'ok', protocolVersion: 2, groups: [{
+      groupId: 'attempt-identity', findingIds: ['correctness:a'],
+      rootCause: 'attempt identity is undefined', invariants: ['only the active attempt may decide the result'],
+      changeClass: 'structural', structuralEffects: ['identity'], action: 'fix',
+    }],
+  })), /designEvidence/);
+
+  const normalized = normalizeArtifact('plan', JSON.stringify({
+    status: 'ok', protocolVersion: 2, groups: [{
+      groupId: 'attempt-identity', findingIds: ['correctness:a'],
+      rootCause: 'attempt identity is undefined', invariants: ['only the active attempt may decide the result'],
+      changeClass: 'structural', structuralEffects: ['identity'], action: 'fix',
+      designEvidence: { source: 'intent-feat.md', sourceHash: 'abc123', requirements: ['attempt generation owns completion'], uniqueness: 'the requirement names one owner' },
+    }],
+  }));
+  assert.strictEqual(normalized.protocolVersion, 2);
+  assert.strictEqual(normalized.groups[0].groupId, 'attempt-identity');
+});
+
 for (const [label, raw] of [
   ['a bare id string', '{"status":"ok","rejected":["correctness:x"]}'],
   ['an empty reason', '{"status":"ok","rejected":[{"id":"correctness:x","reason":"  "}]}'],

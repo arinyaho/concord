@@ -781,7 +781,7 @@ async function runReviewUntilGreen(options) {
     if (started.decision !== 'work') return withTelemetry(started);
     currentRound = started.round;
     checks = [{ name: 'definition-of-done', status: started.dodPending ? 'pending' : started.dodDeferred ? 'deferred' : (started.dodPassed ? 'passed' : 'failed') }];
-    const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodDeferred: started.dodDeferred, dodPending: started.dodPending, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref), gateMode: started.gateMode, gateApplied: started.gateApplied };
+    const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodDeferred: started.dodDeferred, dodPending: started.dodPending, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref), gateMode: started.gateMode, gateApplied: started.gateApplied, intentHash: started.intentHash };
     let slotAllocation = Promise.resolve();
     const reserve = async (role, count = 1) => {
       if (!initiativeRun) return;
@@ -857,18 +857,17 @@ async function runReviewUntilGreen(options) {
     const reviewerFailure = reviewerResults.find((result) => result.status === 'rejected');
     if (reviewerFailure) throw reviewerFailure.reason;
 
+    await runArtifactReviewer('plan');
+
     const planned = await cli(['plan-fixes', ref]);
     await throwIfAborted(true);
-    const groupedResolutions = new Set();
-    for (const finding of planned.fixes || []) {
-      if (groupedResolutions.has(finding.id)) continue;
+    if (planned.protocolVersion !== 2) throw new Error('review-until-green: CLI did not negotiate review protocol v2; refusing legacy per-finding edits');
+    const fixGroups = planned.fixGroups || [];
+    const runFix = async (fixGroup) => {
+      const finding = fixGroup.findings[0];
       try {
-        await launch({ role: 'fix', prompt: reviewerPrompt('fix', { ...context, finding, plannedFindings: planned.fixes || [] }), repoRoot, stateDir: context.stateDir });
-        if (started.targetType !== 'file') {
-          const committed = await cli(['commit-fix', ref, finding.id]);
-          if (committed?.committed && committed.sha) initiativeRevision = { ...initiativeRevision, head_sha: committed.sha };
-          for (const id of committed?.resolvedFindingIds || []) groupedResolutions.add(id);
-        } else {
+        await launch({ role: 'fix', prompt: reviewerPrompt('fix', { ...context, finding, fixGroup, plannedFindings: fixGroup.findings }), repoRoot, stateDir: context.stateDir });
+        if (started.targetType === 'file') {
           const head_sha = options.targetIdentity ? options.targetIdentity(ref, initialBase, canonicalRepoRoot) : fileTarget({ files: [ref.slice('file:'.length)] }, canonicalRepoRoot).identity;
           initiativeRevision = { ...initiativeRevision, head_sha };
         }
@@ -876,6 +875,27 @@ async function runReviewUntilGreen(options) {
         const failure = error.reviewFailure || { role: 'fix', kind: /artifact|missing gate artifact/.test(String(error.message)) ? 'artifact-write-failure' : 'harness-error', message: String(error.message).replace(/^harness-failure:\s*/, '') };
         if (!error.initiativeBlocked) try { await cli(['round-failure', ref, JSON.stringify(failure)]); } catch (_) {}
         throw error;
+      }
+    };
+    if (planned.transactionScope === 'round' && fixGroups.length) {
+      for (const fixGroup of fixGroups) await runFix(fixGroup);
+      if (started.targetType !== 'file') {
+        const transaction = {
+          groupId: planned.planId,
+          findingIds: fixGroups.flatMap((group) => group.findingIds),
+          invariants: Array.from(new Set(fixGroups.flatMap((group) => group.invariants || []))),
+          memberGroups: fixGroups,
+        };
+        await launch({ role: 'certify', prompt: reviewerPrompt('certify', { ...context, finding: fixGroups[0].findings[0], fixGroup: transaction }), repoRoot, stateDir: context.stateDir });
+        const committed = await cli(['commit-fix', ref, planned.planId]);
+        if (committed?.committed && committed.sha) initiativeRevision = { ...initiativeRevision, head_sha: committed.sha };
+      }
+    } else for (const fixGroup of fixGroups) {
+      await runFix(fixGroup);
+      await launch({ role: 'certify', prompt: reviewerPrompt('certify', { ...context, finding: fixGroup.findings[0], fixGroup }), repoRoot, stateDir: context.stateDir });
+      if (started.targetType !== 'file') {
+        const committed = await cli(['commit-fix', ref, fixGroup.groupId]);
+        if (committed?.committed && committed.sha) initiativeRevision = { ...initiativeRevision, head_sha: committed.sha };
       }
     }
     let recorded = await cli(['record', ref]);

@@ -5,6 +5,7 @@ const { isValidFindingId } = require('./gate-contract');
 const SHAPES = {
   correctness: { arrays: ['examined', 'findings'], prefixes: ['correctness:', 'docreview:'] },
   verify: { arrays: ['rejected', 'findings'], prefixes: ['correctness:', 'docreview:'] }, // findings: distrust-green, same as gate-verify
+  plan: { arrays: ['groups'], prefixes: ['correctness:', 'docreview:'] },
   intent: { arrays: ['findings'], prefixes: ['intent:'] },
   gate: { arrays: ['findings'], prefixes: ['gate:'] },
   'gate-verify': { arrays: ['rejected', 'findings'], prefixes: ['gate:'] },
@@ -21,7 +22,8 @@ function retryPrompt(name, prefix) {
   const rejectedRule = shape.arrays.includes('rejected')
     ? ` Each "rejected" entry is an object {"id":"<finding id>","reason":"<one line naming what you actually ran, measured, or read to reject it>"} -- a bare id string is not accepted.`
     : '';
-  return `Rewrite only round artifact ${name} as JSON: {"status":"ok",${fields}}. Findings require id, file, and summary; ids must use ${prefixes}<stable-slug>.${rejectedRule} Do not add prose or extra top-level fields, with one exception: if you could not run the method you were assigned, keep (or add) "blocked":["<tool>: <what failed>"] -- never drop it to make this artifact validate.`;
+  const groupsRule = name === 'plan' ? ' A v2 plan must classify every surviving finding into exactly one group; never invent an implicit singleton.' : name === 'verify' ? ' The optional "groups" array is legacy evidence only and cannot authorize edits.' : '';
+  return `Rewrite only round artifact ${name} as JSON: {"status":"ok",${name === 'plan' ? '"protocolVersion":2,' : ''}${fields}}. Findings require id, file, and summary; ids must use ${prefixes}<stable-slug>.${rejectedRule}${groupsRule} Do not add prose or other extra top-level fields, with one exception: if you could not run the method you were assigned, keep (or add) "blocked":["<tool>: <what failed>"] -- never drop it to make this artifact validate.`;
 }
 
 function normalizeArtifact(name, raw) {
@@ -76,6 +78,59 @@ function normalizeArtifact(name, raw) {
       const reason = entry && typeof entry === 'object' ? entry.reason : undefined;
       if (typeof reason !== 'string' || !reason.trim()) throw new ArtifactError('retry', `${name} rejected[${index}] ("${id}") has no "reason" -- every rejection must state in one line what was actually run, measured, or read to reject it`);
       return { id, reason: reason.trim() };
+    });
+  }
+  if (name === 'plan') {
+    if (parsed.protocolVersion !== 2) throw new ArtifactError('retry', 'plan artifact requires protocolVersion 2');
+    canonical.protocolVersion = 2;
+  }
+  if ((name === 'verify' || name === 'plan') && parsed.groups !== undefined) {
+    if (!Array.isArray(parsed.groups)) throw new ArtifactError('fatal', 'verify artifact field "groups" must be an array');
+    canonical.groups = parsed.groups.map((group, index) => {
+      if (!group || typeof group !== 'object' || Array.isArray(group)) throw new ArtifactError('fatal', `verify group[${index}] is not an object`);
+      const findingIds = group.findingIds;
+      if (!Array.isArray(findingIds) || !findingIds.length || new Set(findingIds).size !== findingIds.length
+        || findingIds.some((id) => !isValidFindingId(id) || !shape.prefixes.some((prefix) => id.startsWith(prefix)))) {
+        throw new ArtifactError('retry', `verify group[${index}] has invalid or duplicate findingIds`);
+      }
+      if (typeof group.rootCause !== 'string' || !group.rootCause.trim()) throw new ArtifactError('retry', `verify group[${index}] is missing "rootCause"`);
+      if (!Array.isArray(group.invariants) || !group.invariants.length || group.invariants.some((item) => typeof item !== 'string' || !item.trim())) {
+        throw new ArtifactError('retry', `verify group[${index}] must name at least one invariant`);
+      }
+      if (!['local', 'structural'].includes(group.changeClass)) throw new ArtifactError('retry', `verify group[${index}] has invalid "changeClass"`);
+      if (!['fix', 'reconcile'].includes(group.action) || (group.action === 'reconcile' && group.changeClass !== 'structural')) {
+        throw new ArtifactError('retry', `verify group[${index}] has invalid "action"`);
+      }
+      if (group.action === 'reconcile' && (typeof group.reason !== 'string' || !group.reason.trim())) {
+        throw new ArtifactError('retry', `verify group[${index}] must explain why human reconciliation is required`);
+      }
+      if (name === 'plan' && (typeof group.groupId !== 'string' || !/^[a-z0-9][a-z0-9:._-]*$/.test(group.groupId))) {
+        throw new ArtifactError('retry', `plan group[${index}] has invalid "groupId"`);
+      }
+      const structuralEffects = group.structuralEffects === undefined ? [] : group.structuralEffects;
+      if (!Array.isArray(structuralEffects) || structuralEffects.some((item) => !['identity', 'ownership', 'retry-accounting', 'ordering', 'idempotency', 'lease-fence', 'deadline-ttl'].includes(item))) {
+        throw new ArtifactError('retry', `${name} group[${index}] has invalid "structuralEffects"`);
+      }
+      if (name === 'plan' && group.changeClass === 'structural' && !structuralEffects.length) {
+        throw new ArtifactError('retry', `plan group[${index}] must name structuralEffects`);
+      }
+      let designEvidence;
+      if (name === 'plan' && group.changeClass === 'structural' && group.action === 'fix') {
+        const evidence = group.designEvidence;
+        if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)
+          || typeof evidence.source !== 'string' || !evidence.source.trim()
+          || typeof evidence.sourceHash !== 'string' || !evidence.sourceHash.trim()
+          || !Array.isArray(evidence.requirements) || !evidence.requirements.length || evidence.requirements.some((item) => typeof item !== 'string' || !item.trim())
+          || typeof evidence.uniqueness !== 'string' || !evidence.uniqueness.trim()) {
+          throw new ArtifactError('retry', `plan group[${index}] structural fix requires designEvidence`);
+        }
+        designEvidence = { source: evidence.source.trim(), sourceHash: evidence.sourceHash.trim(), requirements: evidence.requirements.map((item) => item.trim()), uniqueness: evidence.uniqueness.trim() };
+      }
+      return {
+        ...(name === 'plan' ? { groupId: group.groupId } : {}), findingIds: [...findingIds], rootCause: group.rootCause.trim(), invariants: group.invariants.map((item) => item.trim()),
+        changeClass: group.changeClass, ...(name === 'plan' || group.structuralEffects !== undefined ? { structuralEffects: [...structuralEffects] } : {}), action: group.action,
+        ...(designEvidence ? { designEvidence } : {}), ...(group.action === 'reconcile' ? { reason: group.reason.trim() } : {}),
+      };
     });
   }
   return canonical;

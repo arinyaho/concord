@@ -473,8 +473,8 @@ const INITIATIVE_FLAGS = [['--initiative-run-key', 'key'], ['--initiative-state-
 const MODE_FLAG = '--initiative-mode';
 const RUN_VERBS = new Set(['finalise', 'consume', 'escalate', 'session-checkpoint']);
 const CLI_VERBS = ['show', 'round-start', 'telemetry-slot', 'plan-fixes', 'commit-fix', 'record', 'round-failure', 'gate-panel-round-start', 'gate-panel-round-record', 'unpark', 'dismiss', 'reset', 'rerun', 'artifact-normalize', 'reserve', 'carry', 'finalise', 'consume', 'escalate', 'session-checkpoint', 'feedback'];
-const RESERVE_ROLES = ['correctness', 'verify', 'intent', 'gate-review', 'gate-verify', 'fix', 'lens', 'vote'];
-const ARTIFACT_RESERVE_ROLE = { correctness: 'correctness', verify: 'verify', intent: 'intent', gate: 'gate-review', 'gate-verify': 'gate-verify' };
+const RESERVE_ROLES = ['correctness', 'verify', 'plan', 'intent', 'gate-review', 'gate-verify', 'fix', 'certify', 'lens', 'vote'];
+const ARTIFACT_RESERVE_ROLE = { correctness: 'correctness', verify: 'verify', plan: 'plan', intent: 'intent', gate: 'gate-review', 'gate-verify': 'gate-verify' };
 
 function unknownVerb(verb) {
   return new Error(`review-cli: unknown verb "${verb}" (expected ${CLI_VERBS.join(' | ')})`);
@@ -804,7 +804,11 @@ function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey,
     if (oldLedger.repository !== repositoryIdentity(repoRoot)) fail('the old run is for a different repository');
     const oldReason = denialReason(oldRun, { role: marker.role, round: marker.round, attemptId: marker.attemptId, target: revision.ref, revision }, marker.count);
     if (oldReason !== 'budget-exhausted') fail(`the old run's blocked batch is no longer budget-exhausted (${oldReason || 'it would now be accepted'})`);
-    const carryNeeds = [...gatesNeeds(stateDir, ledger.round), { role: 'fix', present: roundFiles(stateDir, ledger.round, new RegExp(`^round-${ledger.round}-fix-.*\\.json$`)) }];
+    const carryNeeds = [
+      ...gatesNeeds(stateDir, ledger.round),
+      { role: 'fix', present: roundFiles(stateDir, ledger.round, new RegExp(`^round-${ledger.round}-fix-.*\\.json$`)) },
+      { role: 'certify', present: roundFiles(stateDir, ledger.round, new RegExp(`^round-${ledger.round}-certify-.*\\.json$`)) },
+    ];
     if (panelPending) {
       // Same lens/vote coverage gate-panel-round-record applies to the pending
       // panel round -- carry must fail the old run closed on unreserved panel
@@ -1101,7 +1105,7 @@ function runVerb(resolveFromCwd, args, initiative) {
         if (!alreadyRetried) {
           const prompt = e.coveragePaths
             ? `Rewrite only round artifact correctness as JSON. The "examined" array MUST contain every changed path exactly as listed: ${e.coveragePaths.map((file) => JSON.stringify(file)).join(', ')}. Do not infer, omit, or rewrite paths; preserve your actual findings and do not add prose or extra top-level fields.`
-            : artifactContract.retryPrompt(name, ({ correctness: 'correctness:|docreview:', verify: 'correctness:|docreview:', intent: 'intent:', gate: 'gate:', 'gate-verify': 'gate:' })[name]);
+            : artifactContract.retryPrompt(name, ({ correctness: 'correctness:|docreview:', verify: 'correctness:|docreview:', plan: 'correctness:|docreview:', intent: 'intent:', gate: 'gate:', 'gate-verify': 'gate:' })[name]);
           if (ledger.execution && ledger.execution.round === n) {
             retryArtifacts[name] = prompt;
             writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, retryArtifacts, retryArtifact: firstRetryArtifact(retryArtifacts) } });
@@ -1489,7 +1493,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (resumed) {
       const preserveArtifacts = ledger.execution && ledger.execution.round === resumeRound && ledger.execution.diffHash === diffHash;
       const completed = preserveArtifacts
-        ? (ledger.execution.completed || []).filter((role) => ['correctness', 'verify', 'intent', 'gate', 'gate-verify'].includes(role))
+        ? (ledger.execution.completed || []).filter((role) => ['correctness', 'verify', 'plan', 'intent', 'gate', 'gate-verify'].includes(role))
         : [];
       const preserved = new Set(completed.filter((role) => {
         const name = `round-${resumeRound}-${role}.json`;
@@ -1505,6 +1509,7 @@ function runVerb(resolveFromCwd, args, initiative) {
           if (!preserved.has(`round-${resumeRound}-${producer}.json`)) preserved.delete(`round-${resumeRound}-${verifier}.json`);
         }
       }
+      if (!preserved.has(`round-${resumeRound}-verify.json`)) preserved.delete(`round-${resumeRound}-plan.json`);
       resumedCompletedArtifacts = completed.filter((role) => preserved.has(`round-${resumeRound}-${role}.json`));
       deleteRoundArtifacts(stateDir, resumeRound, preserved);
       // Resume re-drives round N at zero budget by pinning round/diff_content_hash
@@ -1529,6 +1534,12 @@ function runVerb(resolveFromCwd, args, initiative) {
 
     fs.mkdirSync(stateDir, { recursive: true });
     fs.writeFileSync(path.join(stateDir, `round-${ledger.round}-diff.txt`), diff);
+    fs.writeFileSync(path.join(stateDir, `round-${ledger.round}-history.json`), JSON.stringify({
+      groups: ledger.review_history || [],
+      fixed: (ledger.findings || []).filter((finding) => finding.status === 'fixed').map((finding) => ({
+        id: finding.id, file: finding.file, summary: finding.summary, fixCommit: finding.fix_commit || null,
+      })),
+    }) + '\n');
 
     // ARMED (does this run do broad review at all) vs FIRED (does the gate pair
     // run THIS round) are two different questions -- keep them apart.
@@ -1579,7 +1590,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // before plan-fixes runs. Re-deriving from review.config.json there would
     // silently miss a flag-enabled round and discard its findings.
     const gateApplied = gateArmed && (gateRounds.length === 0 || gateRounds.includes(ledger.round));
-    const expectedArtifacts = ['correctness', 'verify'].concat(intentCfg ? ['intent'] : [], gateApplied ? (lite ? ['gate'] : ['gate', 'gate-verify']) : []);
+    const expectedArtifacts = ['correctness', 'verify', 'plan'].concat(intentCfg ? ['intent'] : [], gateApplied ? (lite ? ['gate'] : ['gate', 'gate-verify']) : []);
     const completedArtifacts = resumed && ledger.execution
       ? resumedCompletedArtifacts.filter((role) => expectedArtifacts.includes(role))
       : [];
@@ -1686,7 +1697,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // The three fields are mutually descriptive: pending is the normal configured
     // gate waiting for convergence, deferred means no gate will run, and passed is
     // retained for file/no-op compatibility. Callers must not infer one from another.
-    process.stdout.write(JSON.stringify({ decision: 'work', mode: run ? runMode(run) : undefined, gateMode: lite ? 'design-conformance' : 'pair', ref: targetUpdate.ref, base: targetUpdate.base, head: targetUpdate.head_sha, attemptId: ledger.attemptId, round: ledger.round, budget: ledger.budget, dodPassed: dod.deferredBy === 'pending-final' ? false : dod.passed, dodDeferred: !!dod.deferred && dod.deferredBy !== 'pending-final', dodPending: dod.deferredBy === 'pending-final', intentApplied: !!intentCfg, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir, completedArtifacts, retryArtifacts, retryArtifact }) + '\n');
+    process.stdout.write(JSON.stringify({ decision: 'work', mode: run ? runMode(run) : undefined, gateMode: lite ? 'design-conformance' : 'pair', ref: targetUpdate.ref, base: targetUpdate.base, head: targetUpdate.head_sha, attemptId: ledger.attemptId, round: ledger.round, budget: ledger.budget, dodPassed: dod.deferredBy === 'pending-final' ? false : dod.passed, dodDeferred: !!dod.deferred && dod.deferredBy !== 'pending-final', dodPending: dod.deferredBy === 'pending-final', intentApplied: !!intentCfg, intentHash: ledger.intentHash || null, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir, completedArtifacts, retryArtifacts, retryArtifact }) + '\n');
     return;
   }
 
@@ -1724,7 +1735,11 @@ function runVerb(resolveFromCwd, args, initiative) {
     }
     ledger = reviewTelemetry.foldTelemetry(stateDir, ledger, slug);
     if (!ledger || ledger.phase !== 'fixes') throw new Error(`record: expected phase "fixes", got "${ledger && ledger.phase}" ${stateDirHint(stateDir)}`);
-    requireReservations(run, ledger, [...gatesNeeds(stateDir, n), { role: 'fix', present: roundFiles(stateDir, n, new RegExp(`^round-${n}-fix-.*\\.json$`)) }], 'record');
+    requireReservations(run, ledger, [
+      ...gatesNeeds(stateDir, n),
+      { role: 'fix', present: roundFiles(stateDir, n, new RegExp(`^round-${n}-fix-.*\\.json$`)) },
+      { role: 'certify', present: roundFiles(stateDir, n, new RegExp(`^round-${n}-certify-.*\\.json$`)) },
+    ], 'record');
 
     // Per-finding fix artifacts (round-<n>-fix-<safe-id>.json) stay lenient: a
     // missing/non-ok fix artifact is a legitimate outcome (the fixer never
@@ -1766,7 +1781,8 @@ function runVerb(resolveFromCwd, args, initiative) {
     // targets use the per-fix artifact's edited flag (no git commit happens).
     const isGit = !ledger.target || ledger.target.type === 'git';
     const journaled = ledger.journal || [];
-    const journalEntryFor = (finding) => journaled.find((j) => j.id === finding.id)
+    const journalEntryFor = (finding) => journaled.find((j) => (j.findingIds || []).includes(finding.id))
+      || journaled.find((j) => j.id === finding.id)
       || journaled.find((j) => (j.resolutions || []).some((r) => r.id === finding.id && r.file === finding.file && r.span === finding.span)
         && finding.span && gitWorktreeFileLacksSpan(repoRoot, finding.file, finding.span));
     const fixedIds = [];
@@ -1774,10 +1790,19 @@ function runVerb(resolveFromCwd, args, initiative) {
     const fixCommits = {};
     const parkReasons = {};
     for (const id of ledger.planned || []) {
-      const fx = readJson(`fix-${safeIdForFilename(id)}`);
+      const group = ledger.fix_plan?.groups?.find((candidate) => candidate.findingIds.includes(id));
+      const fx = readJson(`fix-${safeIdForFilename(group?.groupId || id)}`);
+      const cert = group && readJson(`certify-${safeIdForFilename(group.groupId)}`);
       const finding = candidates.find((f) => f.id === id);
       const fixedByGit = isGit && finding && journalEntryFor(finding);
-      const fixedByReport = !isGit && fx && fx.edited === true;
+      const fixedByReport = !isGit && fx && fx.edited === true && cert?.status === 'ok' && cert.groupId === group?.groupId
+        && Array.isArray(cert.resolvedFindingIds) && cert.resolvedFindingIds.length === group.findingIds.length && group.findingIds.every((findingId) => cert.resolvedFindingIds.includes(findingId))
+        && Array.isArray(cert.files) && Array.isArray(fx.files) && cert.files.length === fx.files.length && fx.files.every((file) => cert.files.includes(file))
+        && cert.fileHashes && cert.files.every((file) => {
+          const absolute = path.join(repoRoot, file);
+          const actual = fs.existsSync(absolute) ? crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex') : null;
+          return cert.fileHashes[file] === actual;
+        }) && Array.isArray(cert.evidence) && cert.evidence.length > 0;
       if (fixedByGit) {
         fixedIds.push(id);
         fixCommits[id] = journalEntryFor(finding).sha;
@@ -1843,7 +1868,8 @@ function runVerb(resolveFromCwd, args, initiative) {
     // launch ordinary fixers or to spend another round. Derive this here from
     // the persisted state so panel-confirmed findings take the same path.
     const material = [...(ledger.intent_parked || []), ...gateOpen.filter((f) => /^gate:(?:design-conformance|ac-coverage):/.test(f.id))];
-    const reconciliation = material.length && {
+    const structuralReconciliation = ledger.reconciliation?.trigger === 'structural-fix' ? ledger.reconciliation : null;
+    const reconciliation = structuralReconciliation || material.length && {
       trigger: 'material-finding', finding: material[0].id, stage: 'record', avoidedLaunches: ledger.reconciliation?.avoidedLaunches || 0, findings: material.reduce((counts, finding) => {
         const kind = finding.id.startsWith('gate:design-conformance:') ? 'design-conformance' : finding.id.startsWith('gate:ac-coverage:') ? 'ac-coverage' : finding.id.split(':', 1)[0];
         return { ...counts, [kind]: (counts[kind] || 0) + 1 };
@@ -1851,7 +1877,8 @@ function runVerb(resolveFromCwd, args, initiative) {
     };
     if (reconciliation) {
       const intentReview = (ledger.intent_parked || []).length > 0;
-      decision = { continue: false, converged: false, parked: false, abandoned: false, ...(intentReview ? { intentReview: true } : { gatePending: true }), reconciliation: true, reason: intentReview ? 'open intent finding(s) require reconciliation' : 'open design/AC GATE finding(s) require reconciliation' };
+      const structuralReview = reconciliation.trigger === 'structural-fix';
+      decision = { continue: false, converged: false, parked: false, abandoned: false, ...(intentReview ? { intentReview: true } : { gatePending: true }), reconciliation: true, reason: intentReview ? 'open intent finding(s) require reconciliation' : structuralReview ? 'structural finding group requires human reconciliation before editing' : 'open design/AC GATE finding(s) require reconciliation' };
       applied = { ...applied, status: intentReview ? 'intent-review' : 'gate-pending' };
     }
     if (isGit && decision.converged && !ledger.dodDeferred) {
@@ -1918,7 +1945,12 @@ function runVerb(resolveFromCwd, args, initiative) {
     // File targets have no working tree to discard.
     if (isGit) gitCheckoutTree(repoRoot);
     const finalChecks = [{ name: 'definition-of-done', status: ledger.dod?.deferredBy === 'pending-final' ? 'not-run' : ledger.dod?.deferred ? 'deferred' : ledger.dod?.passed ? 'passed' : 'failed' }];
-    ledger = { ...ledger, phase: 'done', last_recorded_round: n, _lastDecision: decision, reconciliationPacket: reconciliation || null, finalChecks, ...(run ? { _lastInitiativeClaim: null } : {}) };
+    const priorHistoryKeys = new Set((ledger.review_history || []).map((entry) => `${entry.planId}:${entry.groupId}`));
+    const newHistory = (ledger.fix_plan?.groups || []).filter((group) => !priorHistoryKeys.has(`${ledger.fix_plan.planId}:${group.groupId}`)).map((group) => {
+      const journal = (ledger.journal || []).find((entry) => (entry.groupIds || []).includes(group.groupId));
+      return { run: (ledger.runs || []).length + 1, round: n, planId: ledger.fix_plan.planId, transactionScope: ledger.fix_plan.transactionScope, ...group, outcome: journal ? 'fixed' : reconciliation ? 'reconcile' : 'unresolved', fixCommit: journal?.sha || null };
+    });
+    ledger = { ...ledger, review_history: [...(ledger.review_history || []), ...newHistory], phase: 'done', last_recorded_round: n, _lastDecision: decision, reconciliationPacket: reconciliation || null, finalChecks, ...(run ? { _lastInitiativeClaim: null } : {}) };
     let entry;
     let recordedNow = false;
     if (run && !decision.continue && !decision.panelPending) {
@@ -2042,7 +2074,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // never matched. Marking those 'fixed' would converge green with a confirmed
     // bug still live, so route them to the fixer instead (it adds the missing
     // code -> a real commit, or reports no-edit -> record parks it needs-decision).
-    const isReplay = (f) => !spanPresent(f.file, f.span) && (ledger.journal || []).some((j) => j.id === f.id
+    const isReplay = (f) => !spanPresent(f.file, f.span) && (ledger.journal || []).some((j) => (j.findingIds || []).includes(f.id) || j.id === f.id
       || (j.resolutions || []).some((r) => r.id === f.id && r.file === f.file && r.span === f.span));
     const fixes = confirmedNonKilled
       .filter((f) => !isReplay(f))
@@ -2127,11 +2159,60 @@ function runVerb(resolveFromCwd, args, initiative) {
       });
       gateOpen = thisRound.concat(carried);
     }
+    const fixById = new Map(fixes.map((finding) => [finding.id, finding]));
+    const groupedIds = new Set();
+    let planArtifact = { status: 'ok', protocolVersion: 2, groups: [] };
+    if (fixes.length) {
+      let rawPlan;
+      try { rawPlan = fs.readFileSync(path.join(stateDir, `round-${n}-plan.json`), 'utf8'); }
+      catch (_) { throw new Error('harness-failure: v2 classification plan is required before editing; legacy or unclassified findings cannot authorize fixes'); }
+      try { planArtifact = artifactContract.normalizeArtifact('plan', rawPlan); }
+      catch (error) { throw new Error(`harness-failure: invalid v2 classification plan: ${error.message}`); }
+      requireArtifactAfter(stateDir, n, 'verify', 'plan');
+      if (ledger.intentHash) requireArtifactAfter(stateDir, n, 'intent', 'plan');
+    }
+    const fixGroups = planArtifact.groups.map((group, index) => {
+      for (const id of group.findingIds) {
+        if (!fixById.has(id)) throw new Error(`harness-failure: plan group[${index}] references finding "${id}" that is rejected, replayed, concluded, or absent`);
+        if (groupedIds.has(id)) throw new Error(`harness-failure: plan finding "${id}" appears in more than one root-cause group`);
+        groupedIds.add(id);
+      }
+      if (group.changeClass === 'structural' && group.action === 'fix'
+        && (!ledger.intentHash || group.designEvidence?.sourceHash !== ledger.intentHash)) {
+        throw new Error(`harness-failure: plan group[${index}] structural fix is not bound to this run's approved design hash`);
+      }
+      return { ...group, findings: group.findingIds.map((id) => fixById.get(id)) };
+    });
+    const unclassified = fixes.filter((finding) => !groupedIds.has(finding.id)).map((finding) => finding.id);
+    if (unclassified.length) throw new Error(`harness-failure: v2 classification is incomplete for finding(s): ${unclassified.join(', ')}`);
+    const blockedGroups = fixGroups.filter((group) => group.changeClass === 'structural' && group.action === 'reconcile');
+    const structuralGroups = fixGroups.filter((group) => group.changeClass === 'structural' && group.action === 'fix');
+    const invariantOwners = new Map();
+    let transactionScope = 'group';
+    for (const group of structuralGroups) for (const invariant of group.invariants) {
+      const key = invariant.trim().toLowerCase();
+      if (invariantOwners.has(key) && invariantOwners.get(key) !== group.groupId) transactionScope = 'round';
+      else invariantOwners.set(key, group.groupId);
+    }
     const material = [...intentParked, ...gateOpen.filter((f) => /^gate:(?:design-conformance|ac-coverage):/.test(f.id))];
-    const reconciliation = material.length > 0;
-    const next = { ...ledger, planned: reconciliation ? [] : fixes.map((f) => f.id), resolved_absent: resolvedAbsent, intent_parked: intentParked, gate_open: gateOpen, reconciliation: reconciliation ? { avoidedLaunches: fixes.length } : null, phase: 'fixes' };
+    const reconciliationPacket = blockedGroups.length ? {
+      trigger: 'structural-fix', finding: blockedGroups[0].findingIds[0], stage: 'plan-fixes', avoidedLaunches: fixes.length,
+      findings: { structural: blockedGroups.reduce((count, group) => count + group.findingIds.length, 0) },
+      reason: 'one or more structural groups require an approved design decision before editing',
+      groups: blockedGroups.map(({ groupId, findingIds, rootCause, invariants, structuralEffects, reason }) => ({ groupId, findingIds, rootCause, invariants, structuralEffects, reason })),
+    } : material.length ? { avoidedLaunches: fixes.length } : null;
+    const reconciliation = !!reconciliationPacket;
+    const planId = contentHash(JSON.stringify({ protocolVersion: 2, round: n, diff: ledger.diff_content_hash, groups: planArtifact.groups, transactionScope }));
+    const fixPlan = {
+      protocolVersion: 2,
+      planId,
+      transactionScope,
+      expectedHead: isGit ? gitHeadSha(repoRoot) : null,
+      groups: fixGroups.map(({ findings, ...group }) => group),
+    };
+    const next = { ...ledger, planned: reconciliation ? [] : fixes.map((f) => f.id), fix_plan: fixPlan, resolved_absent: resolvedAbsent, intent_parked: intentParked, gate_open: gateOpen, reconciliation: reconciliationPacket, reconciliationPacket, phase: 'fixes' };
     writeLedger(stateDir, slug, next);
-    process.stdout.write(JSON.stringify({ fixes: reconciliation ? [] : fixes, avoidedLaunches: reconciliation ? fixes.length : 0, reconciliation: reconciliation && { trigger: 'material-finding', finding: material[0].id, stage: 'plan-fixes', findings: material.reduce((counts, finding) => {
+    process.stdout.write(JSON.stringify({ protocolVersion: 2, planId, transactionScope, fixes: reconciliation ? [] : fixes, fixGroups: reconciliation ? [] : fixGroups, avoidedLaunches: reconciliation ? fixes.length : 0, reconciliation: blockedGroups.length ? reconciliationPacket : reconciliation && { trigger: 'material-finding', finding: material[0].id, stage: 'plan-fixes', findings: material.reduce((counts, finding) => {
       const kind = finding.id.startsWith('gate:design-conformance:') ? 'design-conformance' : finding.id.startsWith('gate:ac-coverage:') ? 'ac-coverage' : finding.id.split(':', 1)[0];
       return { ...counts, [kind]: (counts[kind] || 0) + 1 };
     }, {}) } }) + '\n');
@@ -2240,6 +2321,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     const fresh = {
       ...emptyLedger(prior.target || { kind: 'local', ref }),
       runs,
+      review_history: prior.review_history || [],
       run_budget: { max_runs: maxRuns },
       engine,
       gate_dismissed: prior.gate_dismissed || [],
@@ -2258,76 +2340,72 @@ function runVerb(resolveFromCwd, args, initiative) {
 
   if (verb === 'commit-fix') {
     requireRef(ref, 'commit-fix');
-    const id = rest[0];
-    if (!id) throw new Error('commit-fix: missing <findingId>');
+    const transactionId = rest[0];
+    if (!transactionId) throw new Error('commit-fix: missing <groupId|planId>');
     const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
     const slug = targetSlug(ref);
     let ledger = readLedger(stateDir, slug);
     if (!ledger || ledger.phase !== 'fixes') throw new Error(`commit-fix: expected phase "fixes", got "${ledger && ledger.phase}" ${stateDirHint(stateDir)}`);
     const n = ledger.round;
-    if ((ledger.journal || []).some((j) => j.id === id)) { process.stdout.write(JSON.stringify({ committed: false, reason: 'already journaled' }) + '\n'); return; } // idempotent
-    // plan-fixes is the single source of truth for which ids this round may
-    // fix (empty when the round parked for reconciliation): a finding id
-    // outside `planned` must never reach a commit, keyed or not -- the
-    // companion-id check below already trusts `planned` this way, this just
-    // applies the same rule to the primary id.
-    if (!(ledger.planned || []).includes(id)) throw new Error(`harness-failure: commit-fix: finding id "${id}" is not in this round's planned fixes`);
+    if ((ledger.journal || []).some((j) => j.transactionId === transactionId || j.groupId === transactionId)) { process.stdout.write(JSON.stringify({ committed: false, reason: 'already journaled' }) + '\n'); return; }
+    const plan = ledger.fix_plan;
+    if (!plan || plan.protocolVersion !== 2) throw new Error('harness-failure: commit-fix: review protocol v2 plan is required; legacy per-finding commits are refused');
+    const groups = plan.transactionScope === 'round' && transactionId === plan.planId
+      ? plan.groups
+      : plan.groups.filter((group) => group.groupId === transactionId);
+    if (!groups.length || (plan.transactionScope === 'round' && transactionId !== plan.planId)) {
+      throw new Error(`harness-failure: commit-fix: transaction "${transactionId}" is not authorized by plan ${plan.planId}`);
+    }
+    if (plan.expectedHead && gitHeadSha(repoRoot) !== plan.expectedHead) {
+      throw new Error('harness-failure: commit-fix: planned predecessor no longer matches; HEAD moved after classification');
+    }
+    const findingIds = groups.flatMap((group) => group.findingIds);
+    if (findingIds.some((id) => !(ledger.planned || []).includes(id))) throw new Error('harness-failure: commit-fix: transaction membership differs from the planned findings');
     if (run) {
-      requireReservations(run, ledger, [{ role: 'fix', present: 1 + (ledger.initiative_fix_used?.[n] || 0) }], 'commit-fix');
+      requireReservations(run, ledger, [
+        { role: 'fix', present: roundFiles(stateDir, n, new RegExp(`^round-${n}-fix-.*\\.json$`)) },
+        { role: 'certify', present: roundFiles(stateDir, n, new RegExp(`^round-${n}-certify-.*\\.json$`)) },
+      ], 'commit-fix');
     }
-    const fx = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-fix-${safeIdForFilename(id)}.json`), 'utf8')); } catch (e) { return null; } })();
+    const fixArtifacts = groups.map((group) => {
+      try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-fix-${safeIdForFilename(group.groupId)}.json`), 'utf8')); }
+      catch (_) { return null; }
+    });
+    if (fixArtifacts.some((artifact, index) => !artifact || artifact.status !== 'ok' || artifact.edited !== true || artifact.groupId !== groups[index].groupId || !Array.isArray(artifact.files) || !artifact.files.length)) {
+      throw new Error('harness-failure: commit-fix: every authorized group requires one edited fix artifact');
+    }
+    const files = Array.from(new Set(fixArtifacts.flatMap((artifact) => artifact.files)));
+    validateFixFiles(repoRoot, stateDir, files);
+    const cert = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-certify-${safeIdForFilename(transactionId)}.json`), 'utf8')); } catch (_) { return null; } })();
+    const invariants = Array.from(new Set(groups.flatMap((group) => group.invariants || [])));
+    const sameSet = (left, right) => Array.isArray(left) && left.length === right.length && left.every((item) => right.includes(item));
+    if (!cert || cert.status !== 'ok' || cert.groupId !== transactionId
+      || !sameSet(cert.resolvedFindingIds, findingIds) || !sameSet(cert.invariants, invariants)
+      || !sameSet(cert.files, files) || !Array.isArray(cert.evidence) || !cert.evidence.length
+      || !cert.fileHashes || typeof cert.fileHashes !== 'object') {
+      throw new Error('harness-failure: commit-fix: complete group certification is required before commit');
+    }
+    for (const file of files) {
+      const absolute = path.join(repoRoot, file);
+      const actual = fs.existsSync(absolute) ? crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex') : null;
+      if (cert.fileHashes[file] !== actual) throw new Error(`harness-failure: commit-fix: certified content changed for "${file}"`);
+    }
     const readRound = (role) => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-${role}.json`), 'utf8')); } catch (e) { return { findings: [] }; } };
-    // Both artifacts, for the same reason plan-fixes reads both: a verify-added
-    // finding that resolved to `{file: null}` here would fail the file guard
-    // below and report "no edit or file unchanged" -- silently discarding a fix
-    // the fixer actually made, which record then reverts with the tree checkout.
     const candidates = roundCandidates(require('./gate-contract'), readRound('correctness'), readRound('verify'));
-    const finding = candidates
-      .find((f) => f.id === id) || { summary: '', file: null };
-    // The fix subagent declares every file it touched via `files` (finding.file
-    // plus any companion edit -- e.g. a caller/import the fix legitimately had
-    // to update). Fall back to [finding.file] for backward compatibility with
-    // a fix artifact that never sets `files`.
-    const files = ((fx && Array.isArray(fx.files) && fx.files.length) ? fx.files : [finding.file]).filter(Boolean);
-    // File-scoped, not tree-wide: gating and staging on the whole tree would
-    // sweep unrelated dirty content (a stray untracked dir, a crash-recovery
-    // leftover) into this finding's commit -- the same mis-attribution the
-    // per-finding journal exists to prevent. Staging every declared file (not
-    // just finding.file) matters too: a fix that legitimately edits a second
-    // file must have BOTH edits land in the same attributed commit, or the
-    // companion edit is silently wiped by record()'s later gitCheckoutTree.
-    if (fx && Array.isArray(fx.files)) validateFixFiles(repoRoot, stateDir, files);
-    const resolutions = [];
-    if (fx && Object.hasOwn(fx, 'resolvedFindingIds')) {
-      if (!Array.isArray(fx.resolvedFindingIds) || new Set(fx.resolvedFindingIds).size !== fx.resolvedFindingIds.length) {
-        throw new Error('harness-failure: commit-fix: resolvedFindingIds must be a unique array');
-      }
-      for (const resolvedId of fx.resolvedFindingIds) {
-        // The primary finding is resolved by this commit already. Treat a
-        // model's redundant self-claim as harmless instead of stranding a
-        // valid edit; every distinct companion claim remains fail-closed.
-        if (resolvedId === id) continue;
-        const counterpart = candidates.find((f) => f.id === resolvedId);
-        if (typeof resolvedId !== 'string' || !counterpart || !(ledger.planned || []).includes(resolvedId)
-          || !files.includes(finding.file) || !files.includes(counterpart.file) || !gitIsDirtyForFile(repoRoot, finding.file)
-          || !gitIsDirtyForFile(repoRoot, counterpart.file) || !finding.span
-          || !gitHeadFileContains(repoRoot, finding.file, finding.span)
-          || !gitWorktreeFileLacksSpan(repoRoot, finding.file, finding.span) || !counterpart.span
-          || !gitHeadFileContains(repoRoot, counterpart.file, counterpart.span)
-          || !gitWorktreeFileLacksSpan(repoRoot, counterpart.file, counterpart.span)) {
-          throw new Error(`harness-failure: commit-fix: invalid resolved finding claim "${resolvedId}"`);
-        }
-        resolutions.push({ id: counterpart.id, file: counterpart.file, span: counterpart.span });
-      }
+    const resolvedFindings = findingIds.map((id) => candidates.find((finding) => finding.id === id)).filter(Boolean);
+    if (resolvedFindings.length !== findingIds.length || !files.some((file) => gitIsDirtyForFile(repoRoot, file))) {
+      throw new Error('harness-failure: commit-fix: certified transaction has no matching dirty candidate');
     }
-    if (fx && fx.status === 'ok' && fx.edited === true && finding.file && files.some((f) => gitIsDirtyForFile(repoRoot, f))) {
-      const sha = gitCommitFix(repoRoot, id, finding.summary, files);
-      ledger = { ...ledger, journal: [...(ledger.journal || []), { id, sha, file: finding.file, files, span: finding.span, resolutions }] };
+    {
+      const sha = gitCommitFix(repoRoot, transactionId, groups.map((group) => group.rootCause).join('; '), files);
+      ledger = {
+        ...ledger,
+        fix_plan: { ...plan, expectedHead: sha },
+        journal: [...(ledger.journal || []), { id: findingIds[0], transactionId, groupIds: groups.map((group) => group.groupId), findingIds, sha, files, certificate: `round-${n}-certify-${safeIdForFilename(transactionId)}.json` }],
+      };
       if (run) ledger = { ...ledger, initiative_fix_used: { ...ledger.initiative_fix_used, [n]: (ledger.initiative_fix_used?.[n] || 0) + 1 } };
       writeLedger(stateDir, slug, ledger);
-      process.stdout.write(JSON.stringify({ committed: true, sha, resolvedFindingIds: resolutions.map((resolution) => resolution.id) }) + '\n');
-    } else {
-      process.stdout.write(JSON.stringify({ committed: false, reason: 'no edit or file unchanged' }) + '\n');
+      process.stdout.write(JSON.stringify({ committed: true, sha, groupIds: groups.map((group) => group.groupId), resolvedFindingIds: findingIds }) + '\n');
     }
     return;
   }

@@ -39,14 +39,24 @@ export async function runReviewUntilGreen({ target, runCli, spawn, maxRounds = 5
       if (start.intentApplied) await spawn("intent", { stateDir, round, diffPath });
       await spawn("verify", { stateDir, round, diffPath });
       logger.event("verify", { round });
+      await spawn("plan", { stateDir, round, diffPath, intentHash: start.intentHash || null });
 
       const plan = await runCli("plan-fixes", [ref]);
       if (isHarnessFailure(plan)) throw new Error(plan.message || "harness-failure");
-      for (const fix of plan.fixes || []) {
-        await spawn("fix", { stateDir, round, findingId: fix.id });
-        const committed = await runCli("commit-fix", [ref, fix.id]);
+      if (plan.protocolVersion !== 2) throw new Error("review protocol v2 required");
+      const fixGroups = plan.fixGroups || [];
+      for (const group of fixGroups) {
+        const fix = group.findings[0];
+        await spawn("fix", { stateDir, round, findingId: fix.id, fixGroup: group });
+      }
+      const transactions = plan.transactionScope === "round" && fixGroups.length
+        ? [{ groupId: plan.planId, findings: fixGroups.flatMap((group) => group.findings), findingIds: fixGroups.flatMap((group) => group.findingIds), invariants: [...new Set(fixGroups.flatMap((group) => group.invariants || []))], memberGroups: fixGroups }]
+        : fixGroups;
+      for (const transaction of transactions) {
+        await spawn("certify", { stateDir, round, fixGroup: transaction });
+        const committed = await runCli("commit-fix", [ref, transaction.groupId]);
         if (isHarnessFailure(committed)) throw new Error(committed.message || "harness-failure");
-        if (committed.committed) { fixed += 1; logger.event("fix", { id: fix.id }); }
+        if (committed.committed) { fixed += transaction.findingIds.length; logger.event("fix", { id: transaction.groupId }); }
       }
 
       const rec = await runCli("record", [ref]);
