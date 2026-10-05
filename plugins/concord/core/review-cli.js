@@ -372,10 +372,11 @@ function readArtifact(stateDir, n, name) {
   }
 }
 
-// A DECLARED `blocked` is terminal even on the read paths that are otherwise
-// lenient (panel lenses, panel verify, gate-verify). Those paths tolerate a
+// A DECLARED `blocked` is terminal even on the panel read paths that are
+// otherwise lenient (panel lenses and panel verify). Those paths tolerate a
 // missing or malformed artifact as "zero findings" so one flaky subagent can't
-// blow up an expensive round -- but a non-empty `blocked` is not flakiness: it
+// blow up an expensive round. Gate-verify is fail-closed through readArtifact.
+// A non-empty `blocked` is not flakiness: it
 // is the reviewer positively stating the check it was assigned never ran.
 // Reading that as zero findings advances the panel's dry streak and can
 // converge it to `done` -- exactly the false clean the `blocked` field exists
