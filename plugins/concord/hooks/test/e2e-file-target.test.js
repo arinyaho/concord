@@ -7,6 +7,7 @@
 // Asserts convergence in 2 rounds with ZERO git usage.
 const { test } = require('node:test');
 const assert = require('node:assert');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -27,7 +28,21 @@ function tmpDir() {
 // Helper: write a round artifact into the state dir.
 // ---------------------------------------------------------------------------
 function writeArtifact(stateDir, n, name, obj) {
-  fs.writeFileSync(path.join(stateDir, `round-${n}-${name}.json`), JSON.stringify(obj));
+  fs.writeFileSync(path.join(stateDir, `round-${n}-${name}.json`), `${JSON.stringify(obj)}\n`);
+}
+
+function writePlan(stateDir, n, finding) {
+  writeArtifact(stateDir, n, 'plan', { status: 'ok', protocolVersion: 2, groups: finding ? [{
+    groupId: finding.id, findingIds: [finding.id], rootCause: finding.summary,
+    invariants: ['the document claim is supported'], changeClass: 'local', structuralEffects: [], action: 'fix',
+  }] : [] });
+}
+
+function writeFileCertificate(stateDir, n, groupId, file, absolute) {
+  writeArtifact(stateDir, n, `certify-${groupId.replace(':', '_')}`, {
+    status: 'ok', groupId, resolvedFindingIds: [groupId], invariants: ['the document claim is supported'], files: [file],
+    fileHashes: { [file]: crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex') }, evidence: ['document claim checked'],
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -73,21 +88,21 @@ test('e2e: file target converges in 2 rounds with zero git operations in the fil
 
   // Step 3: simulate the reviewer -- one docreview finding.
   const findingId = 'docreview:unsupported-claim';
+  const finding = {
+    id: findingId,
+    gate: 'correctness',
+    file: 'note.md',
+    span: 'proven to be optimal without any evidence',
+    summary: 'Claim lacks any supporting evidence or citation.',
+  };
   writeArtifact(stateDir, n1, 'correctness', {
     status: 'ok',
     examined: ['note.md'],
-    findings: [
-      {
-        id: findingId,
-        gate: 'correctness',
-        file: 'note.md',
-        span: 'proven to be optimal without any evidence',
-        summary: 'Claim lacks any supporting evidence or citation.',
-      },
-    ],
+    findings: [finding],
   });
   // Empty verify (no rejections).
-  writeArtifact(stateDir, n1, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(stateDir, n1, 'verify', { status: 'ok', rejected: [], findings: [] });
+  writePlan(stateDir, n1, finding);
 
   // Step 4: plan-fixes -- the finding should be routed to fixes.
   const pf1 = JSON.parse(run(['plan-fixes', ref], { env }));
@@ -97,7 +112,8 @@ test('e2e: file target converges in 2 rounds with zero git operations in the fil
   // Simulate the fixer: edit note.md to resolve the issue (remove the unsupported claim).
   fs.writeFileSync(notePath, '# Design Note\nThis approach has been validated by benchmarks in [1].\n');
   // Write the fix artifact.
-  writeArtifact(stateDir, n1, `fix-${findingId.replace(":", "_")}`, { status: 'ok', edited: true, files: ['note.md'] });
+  writeArtifact(stateDir, n1, `fix-${findingId.replace(":", "_")}`, { status: 'ok', edited: true, groupId: findingId, files: ['note.md'] });
+  writeFileCertificate(stateDir, n1, findingId, 'note.md', notePath);
 
   // Step 5: record -- finding must be marked fixed with sentinel, continue=true.
   const rec1 = JSON.parse(run(['record', ref], { env }));
@@ -130,7 +146,7 @@ test('e2e: file target converges in 2 rounds with zero git operations in the fil
 
   // Step 6b: reviewer writes empty findings.
   writeArtifact(stateDir, n2, 'correctness', { status: 'ok', examined: [], findings: [] });
-  writeArtifact(stateDir, n2, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(stateDir, n2, 'verify', { status: 'ok', rejected: [], findings: [] });
 
   // plan-fixes (no findings to plan).
   const pf2 = JSON.parse(run(['plan-fixes', ref], { env }));
@@ -200,15 +216,18 @@ test('e2e: a file-target run spawns ZERO git processes (PATH-shim git-exec spy)'
   const rs = JSON.parse(run(['round-start', ref], { env }));
   assert.strictEqual(rs.targetType, 'file', 'must be a file target');
   const n = rs.round;
+  const finding = { id: 'docreview:claim', gate: 'correctness', file: 'note.md', span: 'an unsupported claim', summary: 'no citation' };
   writeArtifact(stateDir, n, 'correctness', {
     status: 'ok', examined: ['note.md'],
-    findings: [{ id: 'docreview:claim', gate: 'correctness', file: 'note.md', span: 'an unsupported claim', summary: 'no citation' }],
+    findings: [finding],
   });
-  writeArtifact(stateDir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(stateDir, n, 'verify', { status: 'ok', rejected: [], findings: [] });
+  writePlan(stateDir, n, finding);
   const pf = JSON.parse(run(['plan-fixes', ref], { env }));
   assert.strictEqual(pf.fixes.length, 1);
   fs.writeFileSync(notePath, '# Doc\na claim backed by [1]\n');
-  writeArtifact(stateDir, n, `fix-${pf.fixes[0].id.replace(":", "_")}`, { status: 'ok', edited: true, files: ['note.md'] });
+  writeArtifact(stateDir, n, `fix-${pf.fixes[0].id.replace(":", "_")}`, { status: 'ok', edited: true, groupId: finding.id, files: ['note.md'] });
+  writeFileCertificate(stateDir, n, finding.id, 'note.md', notePath);
   run(['record', ref], { env });
 
   // The core assertion: the git shim was NEVER invoked -> the marker is absent

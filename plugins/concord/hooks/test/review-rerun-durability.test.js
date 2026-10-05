@@ -133,7 +133,8 @@ for (const provider of Object.keys(providers)) {
     const resumed = review.readLedger(t.dir, t.slug);
     assert.equal(resumed.rerun_cleanup, undefined); assert.equal(resumed.round, 1);
     assert.deepEqual(fs.readFileSync(runPath(t.initDir, 'durability')), t.initiativeBytes);
-    for (const [name] of t.artifacts) if (!name.startsWith('intent-') && name !== 'round-1-diff.txt') assert.equal(fs.existsSync(path.join(t.dir, name)), false);
+    for (const [name] of t.artifacts) if (!name.startsWith('intent-') && !['round-1-diff.txt', 'round-1-history.json'].includes(name)) assert.equal(fs.existsSync(path.join(t.dir, name)), false);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(t.dir, 'round-1-history.json'), 'utf8')), { groups: [], fixed: [] });
     assert.deepEqual(fs.readFileSync(t.otherPath), t.otherBytes);
     validateArchive(t, resumed.runs[0].archive);
   });

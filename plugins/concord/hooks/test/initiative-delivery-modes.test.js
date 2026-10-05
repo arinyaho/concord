@@ -12,6 +12,7 @@ const { openInitiativeRun, reserveLaunch, lockDiagnosis } = require('../../core/
 const { runReviewUntilGreen } = require('../../core/codex-review-runner');
 const { reviewerPrompt } = require('../../core/round-plan');
 const review = require('../../core/review');
+const { normalizeArtifact } = require('../../core/artifact-contract');
 const { safeIdForFilename } = require('../../core/artifact-name');
 
 const PLUGINS = path.join(__dirname, '..', '..', '..');
@@ -177,7 +178,7 @@ async function drive({ mode, started, key = 'runner-key', maxLaunches = 20, maxR
     runCli: (args) => {
       cliCalls.push(args);
       const verb = args[0];
-      return verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? started : verb === 'artifact-normalize' ? { status: 'ok' } : verb === 'plan-fixes' ? { fixes: [] }
+      return verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? started : verb === 'artifact-normalize' ? { status: 'ok' } : verb === 'plan-fixes' ? { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] }
         : verb === 'record' ? { decision: { continue: false, converged: true }, handoff: 'LGTM' } : {};
     },
     spawn: async (input) => { prompts.push(input); return { status: 0 }; },
@@ -199,7 +200,7 @@ test('the Codex runner passes the initiative flags and the mode to round-start (
 test('without an initiative run the Codex runner passes no initiative flag to round-start', async () => {
   const cliCalls = [];
   await runReviewUntilGreen({ ref: 'feature/x', base: 'main', repoRoot: '/repo', targetIdentity: () => 'h2',
-    runCli: (args) => { cliCalls.push(args); return args[0] === 'round-start' ? work() : args[0] === 'artifact-normalize' ? { status: 'ok' } : args[0] === 'plan-fixes' ? { fixes: [] } : args[0] === 'record' ? { decision: { continue: false, converged: true }, handoff: 'LGTM' } : {}; },
+    runCli: (args) => { cliCalls.push(args); return args[0] === 'round-start' ? work() : args[0] === 'artifact-normalize' ? { status: 'ok' } : args[0] === 'plan-fixes' ? { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] } : args[0] === 'record' ? { decision: { continue: false, converged: true }, handoff: 'LGTM' } : {}; },
     spawn: async () => ({ status: 0 }) });
   assert.ok(!cliCalls.find((args) => args[0] === 'round-start').some((arg) => arg.startsWith('--initiative')));
 });
@@ -242,10 +243,30 @@ function setup(cliName, { mode, maxLaunches = 20, maxRounds = 5, config } = {}) 
     const r = spawnSync('node', [CLIS[cliName], ...args, ...flags], { encoding: 'utf8', env, cwd: repo });
     return { stdout: r.stdout, stderr: r.stderr, status: r.status, json: () => JSON.parse(r.stdout) };
   };
-  const ok = (args, flags) => { const r = cli(args, flags); assert.strictEqual(r.status, 0, `${args.join(' ')}: ${r.stderr}`); return r.json(); };
+  const preparePlan = (ref, flags) => {
+    const ledger = review.readLedger(stateDir, review.targetSlug(ref));
+    const n = ledger.round;
+    const read = (role) => {
+      const file = path.join(stateDir, `round-${n}-${role}.json`);
+      if (!fs.existsSync(file)) return { findings: [], rejected: [] };
+      const artifact = normalizeArtifact(role, fs.readFileSync(file, 'utf8'));
+      fs.writeFileSync(file, `${JSON.stringify(artifact)}\n`);
+      return artifact;
+    };
+    const correctness = read('correctness'); const verify = read('verify');
+    const rejected = new Set((verify.rejected || []).map((entry) => typeof entry === 'string' ? entry : entry.id));
+    const candidates = [...(correctness.findings || []), ...(verify.findings || [])].filter((entry) => !rejected.has(entry.id));
+    fs.writeFileSync(path.join(stateDir, `round-${n}-plan.json`), `${JSON.stringify({ status: 'ok', protocolVersion: 2, groups: candidates.map((entry) => ({ groupId: entry.id, findingIds: [entry.id], rootCause: entry.summary, invariants: ['fixed behavior'], changeClass: 'local', structuralEffects: [], action: 'fix' })) })}\n`);
+    const reserved = cli(['reserve', ref, 'plan'], flags);
+    assert.strictEqual(reserved.status, 0, reserved.stderr);
+  };
+  const ok = (args, flags) => {
+    if (args[0] === 'plan-fixes') preparePlan(args[1], flags);
+    const r = cli(args, flags); assert.strictEqual(r.status, 0, `${args.join(' ')}: ${r.stderr}`); return r.json();
+  };
   const ledgerFile = () => path.join(initDir, fs.readdirSync(initDir).find((f) => /^initiative-review-.*\.json$/.test(f)));
   const initiative = () => JSON.parse(fs.readFileSync(ledgerFile(), 'utf8'));
-  const write = (n, name, obj) => fs.writeFileSync(path.join(stateDir, `round-${n}-${name.replace(/^fix-(.*)$/, (_, id) => `fix-${safeIdForFilename(id)}`)}.json`), JSON.stringify(obj));
+  const write = (n, name, obj) => fs.writeFileSync(path.join(stateDir, `round-${n}-${name.replace(/^fix-(.*)$/, (_, id) => `fix-${safeIdForFilename(id)}`)}.json`), `${JSON.stringify(obj)}\n`);
   return { repo, stateDir, initDir, env, cli, ok, initiative, write, keyed, ledgerFile };
 }
 
@@ -258,7 +279,7 @@ for (const cliName of Object.keys(CLIS)) {
     assert.strictEqual(out.gateMode, 'design-conformance');
     assert.strictEqual(t.initiative().mode, 'lite');
     const ledger = review.readLedger(t.stateDir, review.targetSlug('feat/x'));
-    assert.deepStrictEqual(ledger.execution.pending, ['correctness', 'verify', 'gate']);
+    assert.deepStrictEqual(ledger.execution.pending, ['correctness', 'verify', 'plan', 'gate']);
   });
 
   test(`${cliName}: keyed round-start on a base run keeps the full gate pair (AC3)`, () => {
@@ -267,7 +288,7 @@ for (const cliName of Object.keys(CLIS)) {
     assert.strictEqual(out.mode, 'base');
     assert.strictEqual(out.gateMode, 'pair');
     const ledger = review.readLedger(t.stateDir, review.targetSlug('feat/x'));
-    assert.deepStrictEqual(ledger.execution.pending, ['correctness', 'verify', 'gate', 'gate-verify']);
+    assert.deepStrictEqual(ledger.execution.pending, ['correctness', 'verify', 'plan', 'gate', 'gate-verify']);
   });
 
   test(`${cliName}: a lite run rejects --broad, --gate and --no-broad and changes no state (AC3)`, () => {
@@ -332,7 +353,7 @@ for (const cliName of Object.keys(CLIS)) {
     t.write(n, 'fix-correctness:1', { status: 'ok', edited: true, files: ['a.txt'] });
     const committed = t.cli(['commit-fix', 'feat/x', 'correctness:1']);
     assert.notStrictEqual(committed.status, 0);
-    assert.match(committed.stderr, /not in this round's planned fixes/);
+    assert.match(committed.stderr, /transaction membership differs|not authorized by plan|not in this round's planned fixes/);
     assert.deepStrictEqual(review.readLedger(t.stateDir, review.targetSlug('feat/x')).journal || [], []);
   });
 
@@ -346,7 +367,7 @@ for (const cliName of Object.keys(CLIS)) {
     assert.deepStrictEqual(planned.fixes, []);
     const committed = t.cli(['commit-fix', 'feat/x', 'correctness:never-planned']);
     assert.notStrictEqual(committed.status, 0);
-    assert.match(committed.stderr, /not in this round's planned fixes/);
+    assert.match(committed.stderr, /not authorized by plan|not in this round's planned fixes/);
   });
 
   test(`${cliName}: lite does not run the broad panel even when the repository enables it (AC8)`, () => {

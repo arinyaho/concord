@@ -14,9 +14,9 @@ const PANEL_LENSES = ['ac-coverage', 'design-conformance', 'cross-context', 'sil
 // ONE artifact, read by the single 'gate-panel-verify' role below -- do not
 // read this list as "one role per verifier".
 const DEPTH_ROLES = {
-  correctness: ['correctness', 'verify'],
-  gate: ['correctness', 'verify', 'gate', 'gate-verify'],
-  panel: ['correctness', 'verify', ...PANEL_LENSES, 'gate-panel-verify'],
+  correctness: ['correctness', 'verify', 'plan'],
+  gate: ['correctness', 'verify', 'gate', 'gate-verify', 'plan'],
+  panel: ['correctness', 'verify', 'plan', ...PANEL_LENSES, 'gate-panel-verify'],
 };
 
 const DEPTHS = Object.keys(DEPTH_ROLES);
@@ -44,6 +44,7 @@ const ROLE_SHAPES = {
   'gate-verify': 'gate-verify',
   correctness: 'correctness',
   verify: 'verify',
+  plan: 'plan',
   intent: 'intent',
 };
 

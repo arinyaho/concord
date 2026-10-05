@@ -4,12 +4,14 @@
 // providers' CLI entry points.
 const { test } = require('node:test');
 const assert = require('node:assert');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync, spawn } = require('node:child_process');
 const { openInitiativeRun, reserveLaunch, recordDisposition, publicInitiativeSummary, runPath, canonicalPath } = require('../../core/initiative-review-run');
 const review = require('../../core/review');
+const { normalizeArtifact } = require('../../core/artifact-contract');
 const { safeIdForFilename } = require('../../core/artifact-name');
 const { PANEL_LENSES } = require('../../core/report');
 
@@ -43,10 +45,61 @@ function setup(provider, { config, maxLaunches = 20, maxRounds = 5 } = {}) {
     const r = spawnSync('node', [PROVIDERS[provider], ...args, ...(key ? keyed : [])], { encoding: 'utf8', env, cwd: repo });
     return { stdout: r.stdout, stderr: r.stderr, status: r.status, json: () => JSON.parse(r.stdout) };
   };
-  const ok = (args) => { const r = cli(args); assert.strictEqual(r.status, 0, `${args.join(' ')}: ${r.stderr}`); return r.json(); };
+  const canonicalize = (n, role) => {
+    const file = path.join(dir, `round-${n}-${role}.json`);
+    if (!fs.existsSync(file)) return null;
+    const value = normalizeArtifact(role, fs.readFileSync(file, 'utf8'));
+    fs.writeFileSync(file, `${JSON.stringify(value)}\n`);
+    return value;
+  };
+  const preparePlan = (ref) => {
+    const ledger = review.readLedger(dir, review.targetSlug(ref));
+    if (!ledger?.round) return;
+    const n = ledger.round;
+    const correctness = canonicalize(n, 'correctness') || { findings: [] };
+    const verify = canonicalize(n, 'verify') || { rejected: [], findings: [] };
+    canonicalize(n, 'intent');
+    const rejected = new Set((verify.rejected || []).map((entry) => typeof entry === 'string' ? entry : entry.id));
+    const candidates = [...(correctness.findings || []), ...(verify.findings || [])].filter((entry) => !rejected.has(entry.id));
+    fs.writeFileSync(path.join(dir, `round-${n}-plan.json`), `${JSON.stringify({ status: 'ok', protocolVersion: 2, groups: candidates.map((entry) => ({
+      groupId: entry.id, findingIds: [entry.id], rootCause: entry.summary, invariants: ['fixed behavior'], changeClass: 'local', structuralEffects: [], action: 'fix',
+    })) })}\n`);
+    const reserved = cli(['reserve', ref, 'plan']);
+    assert.strictEqual(reserved.status, 0, reserved.stderr);
+  };
+  const prepareCertificate = (ref, transactionId) => {
+    const ledger = review.readLedger(dir, review.targetSlug(ref));
+    const plan = ledger?.fix_plan;
+    if (!plan) return;
+    const groups = plan.transactionScope === 'round' && transactionId === plan.planId ? plan.groups : plan.groups.filter((group) => group.groupId === transactionId);
+    const files = [];
+    for (const group of groups) {
+      const fixPath = path.join(dir, `round-${ledger.round}-fix-${safeIdForFilename(group.groupId)}.json`);
+      if (!fs.existsSync(fixPath)) continue;
+      const fix = JSON.parse(fs.readFileSync(fixPath, 'utf8'));
+      fix.groupId = group.groupId;
+      fix.files ||= group.findingIds.map(() => 'a.txt');
+      fs.writeFileSync(fixPath, `${JSON.stringify(fix)}\n`);
+      files.push(...fix.files);
+    }
+    const uniqueFiles = [...new Set(files)];
+    fs.writeFileSync(path.join(dir, `round-${ledger.round}-certify-${safeIdForFilename(transactionId)}.json`), `${JSON.stringify({
+      status: 'ok', groupId: transactionId, resolvedFindingIds: groups.flatMap((group) => group.findingIds),
+      invariants: [...new Set(groups.flatMap((group) => group.invariants))], files: uniqueFiles,
+      fileHashes: Object.fromEntries(uniqueFiles.map((file) => [file, crypto.createHash('sha256').update(fs.readFileSync(path.join(repo, file))).digest('hex')])),
+      evidence: ['fixture certification'],
+    })}\n`);
+    const reserved = cli(['reserve', ref, 'certify']);
+    assert.strictEqual(reserved.status, 0, reserved.stderr);
+  };
+  const ok = (args) => {
+    if (args[0] === 'plan-fixes') preparePlan(args[1]);
+    if (args[0] === 'commit-fix') prepareCertificate(args[1], args[2]);
+    const r = cli(args); assert.strictEqual(r.status, 0, `${args.join(' ')}: ${r.stderr}`); return r.json();
+  };
   const ledgerFile = () => path.join(initDir, fs.readdirSync(initDir).find((f) => /^initiative-review-.*\.json$/.test(f)));
   const initiative = () => JSON.parse(fs.readFileSync(ledgerFile(), 'utf8'));
-  const write = (n, name, obj) => fs.writeFileSync(path.join(dir, `round-${n}-${name.replace(/^fix-(.*)$/, (_, id) => `fix-${safeIdForFilename(id)}`)}.json`), JSON.stringify(obj));
+  const write = (n, name, obj) => fs.writeFileSync(path.join(dir, `round-${n}-${name.replace(/^fix-(.*)$/, (_, id) => `fix-${safeIdForFilename(id)}`)}.json`), `${JSON.stringify(obj)}\n`);
   const start = () => { const bound = !!review.readLedger(dir, review.targetSlug('feat/x'))?.initiative_binding; const r = cli(['round-start', 'feat/x', 'HEAD~1', '--no-broad'], { key: bound }); assert.strictEqual(r.status, 0, r.stderr); return r.json().round; };
   return { repo, dir, initDir, env, keyed, cli, ok, initiative, write, start, ledgerFile };
 }
@@ -288,7 +341,7 @@ for (const provider of Object.keys(PROVIDERS)) {
     const summary = JSON.stringify(publicInitiativeSummary({ path: t.ledgerFile() }));
     assert.ok(!summary.includes('feat/x') && !summary.includes(disposition.revision.head_sha));
     assert.match(JSON.parse(summary).targetIds[0], /^[0-9a-f]{64}$/);
-    assert.strictEqual(JSON.parse(summary).counts.launches, 2);
+    assert.strictEqual(JSON.parse(summary).counts.launches, 3);
   });
 
   test(`${provider}: a retried launch needs a fresh reservation (P2-1)`, () => {
@@ -991,7 +1044,7 @@ for (const provider of Object.keys(PROVIDERS)) {
   });
 
   test(`${provider}: carry succeeds from the fixes phase (test gap)`, () => {
-    const t = setup(provider, { maxLaunches: 2 });
+    const t = setup(provider, { maxLaunches: 3 });
     const n = t.start();
     assert.strictEqual(t.ok(['reserve', 'feat/x', 'correctness']).status, 'granted');
     assert.strictEqual(t.ok(['reserve', 'feat/x', 'verify']).status, 'granted');

@@ -101,7 +101,7 @@ async function runnerAt(key, stateDir, maxLaunches) {
   const calls = [];
   const run = open({ stateDir, key, maxLaunches, maxRounds: 3 });
   const result = await runReviewUntilGreen({ ref: 'feature/x', base: 'main', repoRoot: '/repo', initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: maxLaunches, initiativeMaxRounds: 3, targetIdentity: () => 'h2',
-    runCli: (args) => { const [verb] = args; calls.push(verb); return verb === 'reserve' ? targetReserve(run, args) : verb === 'round-start' ? work : verb === 'artifact-normalize' ? { status: 'ok' } : verb === 'plan-fixes' ? { fixes: [] } : verb === 'record' ? { decision: { continue: false, converged: true } } : {}; },
+    runCli: (args) => { const [verb] = args; calls.push(verb); return verb === 'reserve' ? targetReserve(run, args) : verb === 'round-start' ? work : verb === 'artifact-normalize' ? { status: 'ok' } : verb === 'plan-fixes' ? { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] } : verb === 'record' ? { decision: { continue: false, converged: true } } : {}; },
     spawn: async (input) => { spawned.push(input.role); return { status: 0 }; } });
   return { result, spawned, calls };
 }
@@ -254,7 +254,7 @@ test('runner: a panel lens launch denied for budget is a blocked outcome, not a 
   const run = open({ stateDir, key: 'r-panel', maxLaunches: 2, maxRounds: 3 });
   let recorded = 0;
   const result = await runReviewUntilGreen({ ref: 'feature/x', base: 'main', repoRoot: '/repo', initiativeRunKey: 'r-panel', initiativeStateDir: stateDir, initiativeMaxLaunches: 2, initiativeMaxRounds: 3, targetIdentity: () => 'h2',
-    runCli: (args) => args[0] === 'reserve' ? targetReserve(run, args) : args[0] === 'round-start' ? work : args[0] === 'artifact-normalize' ? { status: 'ok' } : args[0] === 'plan-fixes' ? { fixes: [] }
+    runCli: (args) => args[0] === 'reserve' ? targetReserve(run, args) : args[0] === 'round-start' ? work : args[0] === 'artifact-normalize' ? { status: 'ok' } : args[0] === 'plan-fixes' ? { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] }
       : args[0] === 'record' ? (recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false, converged: true }, handoff: 'LGTM' })
       : args[0] === 'gate-panel-round-start' ? { round: 1, rejectedIds: [] } : args[0] === 'gate-panel-round-record' ? { status: 'done' } : {},
     spawn: async () => ({ status: 0 }) });
