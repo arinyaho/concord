@@ -2,7 +2,7 @@
 
 ## Decision
 
-`gate-verify` continues to read the complete correctness candidate set when paired gate mode runs, because cross-panel context lets it identify duplicate, related, or conflicting observations. That context does not transfer disposition ownership: `correctness` and `verify` own `correctness:*` candidates, while `gate` and `gate-verify` own `gate:*` candidates.
+`gate-verify` continues to read the complete correctness candidate set when paired gate mode runs, including when a file-target run enters paired gate mode because broad review is explicitly armed, because cross-panel context lets it identify duplicate, related, or conflicting observations. That context does not transfer disposition ownership: `correctness` and `verify` own both `correctness:*` and `docreview:*` candidates, while `gate` and `gate-verify` own `gate:*` candidates.
 
 The initial `gate-verify` prompt and an artifact-normalization retry must state the same boundary: use correctness candidates only as context, write verdicts only for `gate:*` candidates, and never copy, accept, or reject `correctness:*` IDs. A retry must also preserve the reviewer's evidence and ask for a rewritten gate verdict rather than imply that deleting invalid entries to produce a clean artifact is acceptable.
 
@@ -14,4 +14,4 @@ The prompt becomes slightly more explicit and the prompt generator depends on th
 
 ## Residual exposure
 
-Reviewers can still ignore instructions and emit an invalid artifact. Strict validation and the bounded retry convert that behavior into a terminal harness failure rather than silently discarding evidence.
+Reviewers can still ignore instructions and emit an invalid artifact. Artifact validation distinguishes retryable failures from fatal failures: only retryable validation failures trigger the bounded retry and can lead to terminal failure if the retry also fails validation, while fatal failures such as malformed JSON or structurally incomplete findings fail immediately. A schema-valid retry can omit evidence from the original invalid artifact and be accepted, so normalization does not guarantee that the original evidence is preserved.
