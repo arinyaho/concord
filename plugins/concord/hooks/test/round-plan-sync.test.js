@@ -14,6 +14,8 @@ const path = require('node:path');
 
 const CORE = path.join(__dirname, '..', '..', 'core');
 const { GATE_SWEEP_CLAUSE, GATE_VERIFY_OWNERSHIP_CLAUSE, reviewerPrompt } = require(path.join(CORE, 'round-plan'));
+const { allowedFindingPrefixes } = require(path.join(CORE, 'artifact-contract'));
+const roundPlanText = fs.readFileSync(path.join(CORE, 'round-plan.js'), 'utf8');
 const driverText = fs.readFileSync(path.join(CORE, 'review-driver.md'), 'utf8');
 // plugins/concord/commands/review-and-fix.md is a hand-composed copy of
 // review-driver.md (composed with the Claude Code spawn-include) that the
@@ -55,6 +57,8 @@ test('round-plan.js reviewerPrompt("gate", ...) embeds GATE_SWEEP_CLAUSE byte-fo
 });
 
 test('every gate verifier prompt embeds the namespace ownership clause byte-for-byte', () => {
+  assert.match(roundPlanText, /allowedFindingPrefixes\('correctness'\)/, 'gate-verify context namespaces must come from the artifact registry');
+  for (const prefix of allowedFindingPrefixes('correctness')) assert.ok(GATE_VERIFY_OWNERSHIP_CLAUSE.includes(`${prefix}*`));
   const generated = reviewerPrompt('gate-verify', { stateDir: '/state', round: 3, targetType: 'git', slug: 'feat-x' });
   assert.ok(generated.includes(GATE_VERIFY_OWNERSHIP_CLAUSE));
   for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {

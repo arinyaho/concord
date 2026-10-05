@@ -50,7 +50,8 @@ const BLOCKED_CLAUSE = ' If you cannot run a tool this task requires (missing, d
 // review-driver.md's gate-review prompt (round-plan-sync.test.js enforces it).
 const GATE_SWEEP_CLAUSE = ' If this finding is an instance of a pattern likely to recur elsewhere in the repository (a value, name, or reference that should be mirrored across multiple files), sweep the whole repository for every other file matching that same pattern in this same pass and report each occurrence as its own finding -- do not stop at the first instance and leave the rest for a later round to catch one at a time.';
 const GATE_VERIFY_PREFIX = allowedFindingPrefixes('gate-verify')[0];
-const GATE_VERIFY_OWNERSHIP_CLAUSE = ` Use correctness candidates only as context when evaluating gate candidates. Your artifact may disposition only ${GATE_VERIFY_PREFIX}* candidate IDs. Do not copy, accept, or reject correctness:* or docreview:* IDs in this artifact; their disposition belongs to the correctness verifier.`;
+const CORRECTNESS_PREFIXES = allowedFindingPrefixes('correctness').map((prefix) => `${prefix}*`).join(' or ');
+const GATE_VERIFY_OWNERSHIP_CLAUSE = ` Use correctness candidates only as context when evaluating gate candidates. Your artifact may disposition only ${GATE_VERIFY_PREFIX}* candidate IDs. Do not copy, accept, or reject ${CORRECTNESS_PREFIXES} IDs in this artifact; their disposition belongs to the correctness verifier.`;
 
 function reviewerPrompt(role, { stateDir, round, targetType, dodDeferred, dodPending, finding, fixGroup, retryPrompt, slug, priorIntentIds, plannedFindings = [], gateMode, gateApplied = false, intentHash = null }) {
   const groupArtifactId = fixGroup && fixGroup.groupId ? fixGroup.groupId : finding && finding.id;
