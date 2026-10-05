@@ -218,6 +218,30 @@ test('artifact-normalize fails after retry exhaustion', () => {
   assert.throws(() => run(['artifact-normalize', 'feat/x', 'correctness'], { env }), /harness-failure/);
 });
 
+test('gate-verify namespace retry is specific, preserves the artifact, and remains bounded', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--broad'], { env, broadDefault: true })).round;
+  const file = path.join(dir, `round-${n}-gate-verify.json`);
+  const raw = JSON.stringify({
+    status: 'ok',
+    rejected: [{ id: 'correctness:some-candidate', reason: 'the gate evidence duplicates this candidate' }],
+    findings: [],
+  });
+  fs.writeFileSync(file, raw);
+
+  const retry = JSON.parse(run(['artifact-normalize', 'feat/x', 'gate-verify'], { env, broadDefault: true }));
+  assert.strictEqual(retry.status, 'retry');
+  assert.match(retry.prompt, /role is gate-verify/i);
+  assert.match(retry.prompt, /allowed.*gate:/i);
+  assert.match(retry.prompt, /correctness:\*.*must not.*disposition/i);
+  assert.match(retry.prompt, /preserve.*evidence/i);
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), raw, 'normalization must not filter cross-namespace evidence');
+  assert.throws(() => run(['artifact-normalize', 'feat/x', 'gate-verify'], { env, broadDefault: true }), /harness-failure.*invalid id/);
+});
+
 test('artifact-normalize retries correctness coverage before it writes a canonical artifact', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };

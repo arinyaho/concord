@@ -15,15 +15,24 @@ class ArtifactError extends Error {
   constructor(kind, message) { super(message); this.kind = kind; }
 }
 
-function retryPrompt(name, prefix) {
+function allowedFindingPrefixes(name) {
+  const shape = SHAPES[name];
+  if (!shape) throw new Error(`unknown artifact role: ${name}`);
+  return [...shape.prefixes];
+}
+
+function retryPrompt(name) {
   const shape = SHAPES[name];
   const fields = shape.arrays.map((key) => `"${key}":[]`).join(',');
-  const prefixes = String(prefix).split('|').join(' or ');
+  const prefixes = allowedFindingPrefixes(name).join(' or ');
   const rejectedRule = shape.arrays.includes('rejected')
     ? ` Each "rejected" entry is an object {"id":"<finding id>","reason":"<one line naming what you actually ran, measured, or read to reject it>"} -- a bare id string is not accepted.`
     : '';
   const groupsRule = name === 'plan' ? ' A v2 plan must classify every surviving finding into exactly one group; never invent an implicit singleton.' : name === 'verify' ? ' The optional "groups" array is legacy evidence only and cannot authorize edits.' : '';
-  return `Rewrite only round artifact ${name} as JSON: {"status":"ok",${name === 'plan' ? '"protocolVersion":2,' : ''}${fields}}. Findings require id, file, and summary; ids must use ${prefixes}<stable-slug>.${rejectedRule}${groupsRule} Do not add prose or other extra top-level fields, with one exception: if you could not run the method you were assigned, keep (or add) "blocked":["<tool>: <what failed>"] -- never drop it to make this artifact validate.`;
+  const ownershipRule = name === 'gate-verify'
+    ? ' This artifact role is gate-verify. The only allowed finding ID prefix is gate:. correctness:* and docreview:* candidates are context only and must not be dispositioned in this artifact; their disposition belongs to the correctness verifier. Rewrite only the gate candidates\' verdict, preserve the original evidence, and do not delete evidence merely to manufacture a clean verdict.'
+    : '';
+  return `Rewrite only round artifact ${name} as JSON: {"status":"ok",${name === 'plan' ? '"protocolVersion":2,' : ''}${fields}}. Findings require id, file, and summary; ids must use ${prefixes}<stable-slug>.${rejectedRule}${groupsRule}${ownershipRule} Do not add prose or other extra top-level fields, with one exception: if you could not run the method you were assigned, keep (or add) "blocked":["<tool>: <what failed>"] -- never drop it to make this artifact validate.`;
 }
 
 function normalizeArtifact(name, raw) {
@@ -136,4 +145,4 @@ function normalizeArtifact(name, raw) {
   return canonical;
 }
 
-module.exports = { ArtifactError, normalizeArtifact, retryPrompt, ARTIFACT_ROLES: Object.keys(SHAPES) };
+module.exports = { ArtifactError, normalizeArtifact, retryPrompt, allowedFindingPrefixes, ARTIFACT_ROLES: Object.keys(SHAPES) };

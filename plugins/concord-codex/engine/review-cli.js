@@ -1105,7 +1105,7 @@ function runVerb(resolveFromCwd, args, initiative) {
         if (!alreadyRetried) {
           const prompt = e.coveragePaths
             ? `Rewrite only round artifact correctness as JSON. The "examined" array MUST contain every changed path exactly as listed: ${e.coveragePaths.map((file) => JSON.stringify(file)).join(', ')}. Do not infer, omit, or rewrite paths; preserve your actual findings and do not add prose or extra top-level fields.`
-            : artifactContract.retryPrompt(name, ({ correctness: 'correctness:|docreview:', verify: 'correctness:|docreview:', plan: 'correctness:|docreview:', intent: 'intent:', gate: 'gate:', 'gate-verify': 'gate:' })[name]);
+            : artifactContract.retryPrompt(name);
           if (ledger.execution && ledger.execution.round === n) {
             retryArtifacts[name] = prompt;
             writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, retryArtifacts, retryArtifact: firstRetryArtifact(retryArtifacts) } });

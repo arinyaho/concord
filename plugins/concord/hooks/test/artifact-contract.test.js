@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { normalizeArtifact, ArtifactError, retryPrompt } = require('../../core/artifact-contract');
+const { normalizeArtifact, ArtifactError, retryPrompt, allowedFindingPrefixes } = require('../../core/artifact-contract');
 
 test('canonical correctness artifact is preserved except unsupported top-level fields', () => {
   const finding = { id: 'correctness:real-bug', file: 'a.js', span: 'bad()', summary: 'wrong result', evidence: 'keep' };
@@ -18,9 +18,45 @@ test('clean status canonicalizes to ok', () => {
 });
 
 test('correctness retry prompt names both valid namespaces without inventing a prefix', () => {
-  const prompt = retryPrompt('correctness', 'correctness:|docreview:');
+  const prompt = retryPrompt('correctness');
   assert.match(prompt, /correctness:.*or.*docreview:/);
   assert.doesNotMatch(prompt, /correctness:\|docreview:/);
+});
+
+test('artifact roles retain their finding namespace ownership', () => {
+  assert.deepStrictEqual(allowedFindingPrefixes('correctness'), ['correctness:', 'docreview:']);
+  assert.deepStrictEqual(allowedFindingPrefixes('verify'), ['correctness:', 'docreview:']);
+  assert.deepStrictEqual(allowedFindingPrefixes('gate'), ['gate:']);
+  assert.deepStrictEqual(allowedFindingPrefixes('gate-verify'), ['gate:']);
+  assert.deepStrictEqual(allowedFindingPrefixes('intent'), ['intent:']);
+});
+
+for (const [role, field, allowedId, rejectedId] of [
+  ['correctness', 'findings', 'correctness:owned', 'gate:foreign'],
+  ['verify', 'rejected', 'correctness:owned', 'gate:foreign'],
+  ['gate', 'findings', 'gate:owned', 'correctness:foreign'],
+  ['gate-verify', 'rejected', 'gate:owned', 'correctness:foreign'],
+  ['intent', 'findings', 'intent:owned', 'gate:foreign'],
+]) test(`${role} validation accepts only its owned finding namespace`, () => {
+  const entry = (id) => field === 'rejected'
+    ? { id, reason: 'read the candidate and repository evidence' }
+    : { id, file: 'a.js', summary: 'candidate summary' };
+  const raw = (id) => JSON.stringify({ status: 'ok', [field]: [entry(id)] });
+  assert.doesNotThrow(() => normalizeArtifact(role, raw(allowedId)));
+  assert.throws(
+    () => normalizeArtifact(role, raw(rejectedId)),
+    (error) => error instanceof ArtifactError && error.kind === 'retry' && error.message.includes(rejectedId),
+  );
+});
+
+test('gate-verify retry prompt restates its role and context-only namespace boundary', () => {
+  const prompt = retryPrompt('gate-verify');
+  assert.match(prompt, /role is gate-verify/i);
+  assert.match(prompt, /allowed.*gate:/i);
+  assert.match(prompt, /correctness:\*.*must not.*disposition/i);
+  assert.match(prompt, /correctness verifier/i);
+  assert.match(prompt, /preserve.*evidence/i);
+  assert.match(prompt, /gate.*candidates/i);
 });
 
 for (const [name, raw, kind] of [
@@ -98,10 +134,10 @@ test('blocked wins over an unsupported status, so the reviewer is never retried 
 });
 
 test('the retry prompt never tells a blocked reviewer to drop "blocked"', () => {
-  assert.match(retryPrompt('verify', 'correctness:|docreview:'), /"blocked"/);
+  assert.match(retryPrompt('verify'), /"blocked"/);
 });
 
 test('the verify retry prompt spells out the rejection object shape', () => {
-  assert.match(retryPrompt('verify', 'correctness:|docreview:'), /"reason"/);
-  assert.doesNotMatch(retryPrompt('correctness', 'correctness:|docreview:'), /"reason"/);
+  assert.match(retryPrompt('verify'), /"reason"/);
+  assert.doesNotMatch(retryPrompt('correctness'), /"reason"/);
 });

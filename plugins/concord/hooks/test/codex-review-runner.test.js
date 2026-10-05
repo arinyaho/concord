@@ -1885,6 +1885,10 @@ test('intent and gate prompts preserve their full role contracts', () => {
   assert.match(verify, /Reject false positives/i);
   assert.match(verify, /new.*gate:/i);
   assert.match(verify, /rejected/);
+  assert.match(verify, /correctness candidates only as context/i);
+  assert.match(verify, /disposition only gate:\*/i);
+  assert.match(verify, /Do not copy, accept, or reject correctness:\*/i);
+  assert.match(verify, /belongs to the correctness verifier/i);
   assert.match(reviewerPrompt('verify', { ...base, gateApplied: true }), /round-2-gate\.json/);
   assert.match(reviewerPrompt('gate-verify', { ...base, gateApplied: true }), /round-2-correctness\.json/);
 });

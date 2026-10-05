@@ -13,7 +13,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const CORE = path.join(__dirname, '..', '..', 'core');
-const { GATE_SWEEP_CLAUSE, reviewerPrompt } = require(path.join(CORE, 'round-plan'));
+const { GATE_SWEEP_CLAUSE, GATE_VERIFY_OWNERSHIP_CLAUSE, reviewerPrompt } = require(path.join(CORE, 'round-plan'));
 const driverText = fs.readFileSync(path.join(CORE, 'review-driver.md'), 'utf8');
 // plugins/concord/commands/review-and-fix.md is a hand-composed copy of
 // review-driver.md (composed with the Claude Code spawn-include) that the
@@ -52,6 +52,14 @@ test('round-plan.js reviewerPrompt("gate", ...) embeds GATE_SWEEP_CLAUSE byte-fo
     prompt.includes(GATE_SWEEP_CLAUSE),
     'round-plan.js reviewerPrompt("gate") has drifted from its own exported GATE_SWEEP_CLAUSE constant',
   );
+});
+
+test('every gate verifier prompt embeds the namespace ownership clause byte-for-byte', () => {
+  const generated = reviewerPrompt('gate-verify', { stateDir: '/state', round: 3, targetType: 'git', slug: 'feat-x' });
+  assert.ok(generated.includes(GATE_VERIFY_OWNERSHIP_CLAUSE));
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText]]) {
+    assert.ok(text.includes(GATE_VERIFY_OWNERSHIP_CLAUSE.trim()), `${name} gate-verify prompt has drifted from round-plan.js`);
+  }
 });
 
 test('codex-review-runner.js re-exports the exact same reviewerPrompt as round-plan.js (no second hand-written copy)', () => {
