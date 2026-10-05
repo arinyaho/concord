@@ -3056,7 +3056,7 @@ test('plan-fixes: folds gate + gate-verify artifacts into gate_open, honoring di
     { id: 'gate:ac-coverage:dismissed-one', file: 'a.txt', span: '', summary: 'accepted', requirement: 'r' },
   ] }));
   fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: ['gate:silent-gap:reject'] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [{ id: 'gate:silent-gap:reject', reason: 'the requirement is already implemented' }] }));
   const out = JSON.parse(run(['plan-fixes', 'feat/x'], { env }));
   assert.deepStrictEqual(out.fixes, []); // gate findings NEVER become fixes
   const after = review.readLedger(dir, slug);
@@ -3180,7 +3180,7 @@ test('plan-fixes: a verify-added finding that verify also rejects (in its own "r
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
-  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: ['gate:cross-context:self-reject'], findings: [
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [{ id: 'gate:cross-context:self-reject', reason: 'the surrounding code disproves the finding' }], findings: [
     { id: 'gate:cross-context:self-reject', file: 'other.js', span: 'x', summary: 'flagged then immediately retracted', requirement: 'r' },
   ] }));
   run(['plan-fixes', 'feat/x'], { env });
@@ -3206,7 +3206,7 @@ test('plan-fixes: a non-gate id in the gate-verify findings is a harness-failure
   assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure/);
 });
 
-test('plan-fixes: a missing gate-verify "findings" field defaults to empty (lenient artifact)', () => {
+test('plan-fixes: normalization canonicalizes a missing gate-verify "findings" field to empty', () => {
   const repo = initRepo();
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
@@ -3262,7 +3262,7 @@ test('plan-fixes: a shape-invalid gate artifact finding (missing "file") throws 
   assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure/);
 });
 
-test('plan-fixes: a shape-invalid gate-VERIFY artifact finding (missing "file") degrades to no verify findings, not a harness-failure', () => {
+test('plan-fixes: a shape-invalid gate-verify artifact finding is a harness-failure', () => {
   const repo = initRepo();
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
@@ -3280,11 +3280,7 @@ test('plan-fixes: a shape-invalid gate-VERIFY artifact finding (missing "file") 
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [
     { id: 'gate:silent-gap:x', summary: 's' },
   ] }));
-  const out = JSON.parse(run(['plan-fixes', 'feat/x'], { env })); // must not throw
-  assert.deepStrictEqual(out.fixes, []);
-  const after = review.readLedger(dir, review.targetSlug('feat/x'));
-  assert.strictEqual(after.gate_open.length, 1);
-  assert.strictEqual(after.gate_open[0].id, 'gate:cross-context:valid'); // only the valid gate-review finding; broken verify finding silently dropped
+  assert.throws(() => run(['plan-fixes', 'feat/x'], { env }), /harness-failure: gate-verify finding\[0\] is missing "file"/);
 });
 
 test('record: diff-local clean with an open gate finding -> gate-pending, not clean', () => {

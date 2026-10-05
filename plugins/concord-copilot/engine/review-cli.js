@@ -2117,16 +2117,12 @@ function runVerb(resolveFromCwd, args, initiative) {
         if (!f.id.startsWith('gate:')) throw new Error(`harness-failure: non-gate id "${f.id}" in the gate artifact`);
         if (ledger.gateMode === 'design-conformance' && !f.id.startsWith('gate:design-conformance:')) throw new Error(`harness-failure: lite gate accepts only gate:design-conformance findings, got "${f.id}"`);
       }
-      // gate-verify itself stays lenient (missing/malformed artifact -> the
-      // legacy shape { rejected: [] }, and a shape-invalid findings entry ->
-      // an empty findings list): unlike the gate-review artifact above, a
-      // broken verify pass is not a harness-failure -- it just means no
-      // rejections and no verify-added findings this round.
-      const gvRaw = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-gate-verify.json`), 'utf8')); } catch (e) { return { rejected: [], findings: [] }; } })();
-      requireNotBlocked('gate-verify', gvRaw); // a DECLARED block is not the flakiness this lenience covers
-      let verifyFindings;
-      try { verifyFindings = gc.parseGateFindings(JSON.stringify(gvRaw.findings || [])); }
-      catch (e) { verifyFindings = []; }
+      let gvRaw;
+      let verifyFindings = [];
+      if (ledger.gateMode !== 'design-conformance') {
+        gvRaw = readArtifact(stateDir, n, 'gate-verify'); // fail-closed and normalized before classification
+        verifyFindings = gc.parseGateFindings(JSON.stringify(gvRaw.findings));
+      }
       for (const f of verifyFindings) {
         if (!f.id.startsWith('gate:')) throw new Error(`harness-failure: non-gate id "${f.id}" in the gate-verify artifact`);
       }
@@ -2139,7 +2135,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       for (const f of verifyFindings) byId.set(f.id, f);
       for (const f of gFindings) byId.set(f.id, f);
       const mergedGateFindings = Array.from(byId.values());
-      const rejected = gc.parseVerifyVerdict(JSON.stringify({ rejected: gvRaw.rejected || [] }), mergedGateFindings).rejectedIds;
+      const rejected = gvRaw ? gc.parseVerifyVerdict(JSON.stringify({ rejected: gvRaw.rejected }), mergedGateFindings).rejectedIds : [];
       const thisRound = gateLib.foldGateFindings({ gateFindings: mergedGateFindings, verifyRejectedIds: rejected, dismissedIds: ledger.gate_dismissed || [] });
       // Cross-round persistence (spec decision 4): gate findings must PERSIST
       // across rounds, not be overwritten fresh each round -- a round where the
