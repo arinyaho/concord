@@ -25,6 +25,7 @@ const {
   beginRound,
   unparkFinding,
   resetUnreachable,
+  gateFollowUpEligible,
 } = require('./review');
 const crypto = require('node:crypto');
 const { canonicalPath, openInitiativeRun, claimBroadSweep, reserveLaunchBatch, denialReason, recordDisposition, finaliseInitiativeRun, consumeDispositionDelivery, escalateInitiativeRun, lockDiagnosis, resolveBaseCommit, repositoryIdentity, runPath, terminalDispositionInLedger } = require('./initiative-review-run');
@@ -291,7 +292,13 @@ function renderHandoff(result) {
     lines.push(`Legacy panel evidence: ${ledger.gate_panel.round} round(s), ${(ledger.gate_panel.confirmed || []).length} confirmed`);
   }
   const gateOpen = ledger.gate_open || [];
-  if (gateOpen.length) {
+  const followUps = ledger.status === 'clean' ? gateOpen.filter(gateFollowUpEligible) : [];
+  if (followUps.length) {
+    lines.push('', "Follow-up candidates (not fixed; roll over as root-cause tickets, then record the PR's delivery disposition):");
+    for (const f of followUps) lines.push(`  - [${f.id}] ${f.file}: ${f.summary}`, `    rationale: ${f.rationale}`);
+    lines.push('Note: `clean` here means the local loop converged; it is not the PR delivery disposition.');
+  }
+  if (gateOpen.length && !followUps.length) {
     lines.push('', 'Broad review findings (advisory -- your decision; fix, or dismiss the id):');
     for (const f of gateOpen) {
       lines.push(`  - [${f.id}] ${f.file}: ${f.summary}`);
@@ -1954,7 +1961,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       dodPassed: !!(ledger.dod && ledger.dod.passed), dodDeferred: !!(ledger.dod && ledger.dod.deferred), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons,
       targetUnchanged,
       intentReviewCount: (ledger.intent_parked || []).length,
-      gateOpenCount: gateOpen.length,
+      ...R.splitGateOpen(gateOpen),
       // --no-broad opts the run out of broad review, and the panel IS broad
       // review's other half -- running it anyway would hand the opt-out run the
       // most expensive half of what it declined. (Before broad review became
@@ -1975,7 +1982,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // Material design/AC findings are reconciliation work, never a reason to
     // launch ordinary fixers or to spend another round. Derive this here from
     // the persisted state so panel-confirmed findings take the same path.
-    const material = [...(ledger.intent_parked || []), ...gateOpen.filter((f) => /^gate:(?:design-conformance|ac-coverage):/.test(f.id))];
+    const material = [...(ledger.intent_parked || []), ...gateOpen.filter((f) => /^gate:(?:design-conformance|ac-coverage):/.test(f.id) && !gateFollowUpEligible(f))];
     const structuralReconciliation = ledger.reconciliation?.trigger === 'structural-fix' ? ledger.reconciliation : null;
     const reconciliation = structuralReconciliation || material.length && {
       trigger: 'material-finding', finding: material[0].id, stage: 'record', avoidedLaunches: ledger.reconciliation?.avoidedLaunches || 0, findings: material.reduce((counts, finding) => {
@@ -2244,7 +2251,14 @@ function runVerb(resolveFromCwd, args, initiative) {
       for (const f of gFindings) byId.set(f.id, f);
       const mergedGateFindings = Array.from(byId.values());
       const rejected = gvRaw ? gc.parseVerifyVerdict(JSON.stringify({ rejected: gvRaw.rejected }), mergedGateFindings).rejectedIds : [];
-      const thisRound = gateLib.foldGateFindings({ gateFindings: mergedGateFindings, verifyRejectedIds: rejected, dismissedIds: ledger.gate_dismissed || [] });
+      // gate-verify's `blocking` ids override a finder's follow-up claim (fail closed).
+      const blockingReasons = new Map();
+      for (const b of (gvRaw && gvRaw.blocking) || []) {
+        if (!byId.has(b.id)) throw new Error(`harness-failure: gate-verify blocking id "${b.id}" is not a gate candidate`);
+        blockingReasons.set(b.id, b.reason);
+      }
+      const thisRound = gateLib.foldGateFindings({ gateFindings: mergedGateFindings, verifyRejectedIds: rejected, dismissedIds: ledger.gate_dismissed || [] })
+        .map((f) => (blockingReasons.has(f.id) ? { ...f, blockingReason: blockingReasons.get(f.id) } : f));
       // Cross-round persistence (spec decision 4): gate findings must PERSIST
       // across rounds, not be overwritten fresh each round -- a round where the
       // gate subagent nondeterministically fails to re-report a real finding
@@ -2298,7 +2312,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       if (invariantOwners.has(key) && invariantOwners.get(key) !== group.groupId) transactionScope = 'round';
       else invariantOwners.set(key, group.groupId);
     }
-    const material = [...intentParked, ...gateOpen.filter((f) => /^gate:(?:design-conformance|ac-coverage):/.test(f.id))];
+    const material = [...intentParked, ...gateOpen.filter((f) => /^gate:(?:design-conformance|ac-coverage):/.test(f.id) && !gateFollowUpEligible(f))];
     const reconciliationPacket = blockedGroups.length ? {
       trigger: 'structural-fix', finding: blockedGroups[0].findingIds[0], stage: 'plan-fixes', avoidedLaunches: fixes.length,
       findings: { structural: blockedGroups.reduce((count, group) => count + group.findingIds.length, 0) },
@@ -2531,4 +2545,4 @@ function runMain(resolveFromCwd) {
   }
 }
 
-module.exports = { gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitCheckoutTree, runDod, changedGitPaths, main, runMain, withTargetLock };
+module.exports = { renderHandoff, gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitCheckoutTree, runDod, changedGitPaths, main, runMain, withTargetLock };
