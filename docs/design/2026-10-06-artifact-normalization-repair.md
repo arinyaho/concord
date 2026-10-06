@@ -4,10 +4,10 @@
 
 For the approved outcome ticket, replace the automatic substantive reviewer retry after a retryable artifact representation failure with at most one isolated `artifact-repair` operation. Repair can restate evidence already present; it cannot perform review or supply missing evidence. Failure to demonstrate preservation is terminal, not permission to rerun a reviewer or manufacture a clean result.
 
-The contract is fully recorded in this note with the repository evidence below; no external lookup is required to understand the decision. The following locally readable handoffs record approval without changes on 2026-10-06. They are records of approval, not independent proof or an embedded original user transcript:
+The contract is fully recorded in this note with the repository evidence below; no external lookup is required to understand the decision. The following handoff excerpts record approval without changes on 2026-10-06. They are workflow records of approval, not independent proof or an embedded original user transcript:
 
-- Stage 1: `/Users/inkme/.codex/concord/projects/-Users-inkme-Projects-concord/initiatives/artifact-normalization-retry-cost/stage-1-handoff.md`, SHA-256 `58c42a7aef157596ae1d6be47a9a149ab992dca956da429561976e743b3884c7`; its "User decision" section records approval of the conservative semantic handling, mixed-namespace preservation boundary, outcome ticket, and separate repository-backed design record.
-- Stage 2: `/Users/inkme/.codex/concord/projects/-Users-inkme-Projects-concord/initiatives/artifact-normalization-retry-cost/stage-2-handoff.md`, SHA-256 `482ebc7786a519545ab9e322053c49ad8a54c704c617d02e7781baacfd08559d`; it records human checkpoints 1 and 2 as approved without changes.
+- Stage 1 initiative handoff, SHA-256 `58c42a7aef157596ae1d6be47a9a149ab992dca956da429561976e743b3884c7`: "On 2026-10-06 the user approved the recommended conservative semantic handling, mixed-namespace preservation boundary, one GitHub issue, and one separate repository-backed design record without changes."
+- Stage 2 initiative handoff, SHA-256 `482ebc7786a519545ab9e322053c49ad8a54c704c617d02e7781baacfd08559d`: "Human checkpoint 1: approved without changes on 2026-10-06" and "Human checkpoint 2: approved without changes on 2026-10-06."
 
 Repository evidence was inspected at `a00dc8c9eaee93a7462bb819bd4ac81320b22528`. The merged namespace prerequisite is recorded in `docs/design/2026-10-06-gate-verify-namespace-contract.md`; this decision neither edits that design record nor reopens that work.
 
