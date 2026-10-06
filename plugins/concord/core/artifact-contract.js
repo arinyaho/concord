@@ -69,6 +69,10 @@ function preservesArtifact(name, raw, candidate) {
     // A repair may omit foreign dispositions only when its role-owned evidence
     // remains complete. The immutable original stays audited.
     if (shape.arrays.includes(key) && Array.isArray(original[key])) {
+      if (key === 'examined') {
+        if (!Array.isArray(candidate[key]) || comparable(original[key]) !== comparable(candidate[key])) return false;
+        continue;
+      }
       const owned = original[key].filter(owns);
       if (owned.length !== original[key].length) {
         if (!Array.isArray(candidate[key]) || comparable(owned) !== comparable(candidate[key])) return false;
