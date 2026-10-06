@@ -400,6 +400,8 @@ function claimRequest(input, kind) {
     if (now < observed.eligibleAtMs) return { claimed: false, reason: 'auto-review-grace', eligibleAtMs: observed.eligibleAtMs };
   }
   return withTransitionLock({ stateDir, pr: key.pr }, () => {
+    const lockedTerminal = deliveryTerminal({ stateDir, ...key });
+    if (lockedTerminal) return lockedTerminal;
     const budget = requestBudget({ stateDir, pr: key.pr });
     if (budget.remaining === 0) return { claimed: false, reason: 'request-budget-exhausted', budget };
     const claimed = writeExclusive(markerPath({ stateDir, ...key }, `${markerKind}-claim`), { ...key, kind, provider, claimed: true, claimedAtMs: now });
@@ -489,6 +491,7 @@ function classifyDelivery(input) {
   const key = validate(input);
   validatePacket(input);
   const reasons = [];
+  if (input.acceptance.length === 0) reasons.push('acceptance-missing');
   for (const ac of input.acceptance) if (ac.met !== true) reasons.push(`acceptance-unmet:${ac.id}`);
   for (const check of input.requiredChecks) if (check.conclusion !== 'success') reasons.push(`required-check:${check.name}:${check.conclusion}`);
   if (!input.reviewsTerminal) reasons.push('reviews-not-terminal');
@@ -501,10 +504,11 @@ function classifyDelivery(input) {
     else if (disposition === 'blocking') reasons.push(`blocking:${id}`);
     if (disposition !== 'fixed') for (const category of finding.releaseBlocking || []) reasons.push(`release-blocker:${id}:${category}`);
     if (disposition !== 'follow-up') continue;
-    if (!text(finding.rootCause)) { reasons.push(`unowned:${id}`); continue; }
+    const rootCause = text(finding.rootCause);
+    if (!rootCause) { reasons.push(`unowned:${id}`); continue; }
     if (!text(finding.rationale)) reasons.push(`no-rationale:${id}`);
-    if (!followUps.has(finding.rootCause)) followUps.set(finding.rootCause, []);
-    followUps.get(finding.rootCause).push(finding);
+    if (!followUps.has(rootCause)) followUps.set(rootCause, []);
+    followUps.get(rootCause).push(finding);
   }
 
   const tickets = new Map();
@@ -537,19 +541,36 @@ function classifyDelivery(input) {
   const classification = reasons.length > 0 ? 'blocked' : residual ? 'mergeable-with-follow-ups' : 'mergeable-clean';
   const findings = input.findings.map((finding) => ({
     id: finding.id, url: finding.url, disposition: finding.disposition || null,
-    ticket: finding.disposition === 'follow-up' ? tickets.get(finding.rootCause)?.url || null : null,
+    ticket: finding.disposition === 'follow-up' ? tickets.get(text(finding.rootCause))?.url || null : null,
   }));
   return { pr: key.pr, headSha: key.headSha, baseSha: String(input.baseSha).toLowerCase(), contractDigest: String(input.contractDigest).toLowerCase(), classification, reasons, findings, groups, pending, requiredChecks: input.requiredChecks.map(({ name, conclusion }) => ({ name, conclusion })) };
 }
 
+// The digest covers only the fields the contract defines, in a fixed key
+// order, so key order, extra fields, SHA case and padding do not change it.
+function canonicalPacket(packet) {
+  return {
+    baseSha: String(packet.baseSha).toLowerCase(),
+    contractDigest: String(packet.contractDigest).toLowerCase(),
+    acceptance: packet.acceptance.map((ac) => ({ id: ac.id, met: ac.met === true })),
+    requiredChecks: packet.requiredChecks.map((check) => ({ name: check.name, conclusion: check.conclusion })),
+    reviewsTerminal: packet.reviewsTerminal,
+    openChoices: packet.openChoices.map(String),
+    findings: packet.findings.map((f) => ({ id: f.id, url: f.url, disposition: f.disposition || null, rootCause: text(f.rootCause), releaseBlocking: [...(f.releaseBlocking || [])].sort(), rationale: text(f.rationale), acceptedBy: text(f.acceptedBy) })),
+    tickets: packet.tickets.map((t) => ({ rootCause: text(t.rootCause), url: t.url, readBack: t.readBack === true, reused: !!t.reused, duplicateCheck: text(t.duplicateCheck) })),
+  };
+}
+
+// Records are ordered by a sequence number assigned under the PR transition
+// lock, not by wall-clock time.
 function deliveryRecords({ stateDir, pr, headSha }) {
   const prefix = `pr-${pr}-${headSha}.delivery-`;
   let names;
   try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
-  return names.filter((name) => name.startsWith(prefix) && name.endsWith('.json')).sort()
+  return names.filter((name) => name.startsWith(prefix) && name.endsWith('.json'))
     .map((name) => readMarker(path.join(stateDir, name)))
-    .filter((record) => record && record.pr === pr && record.headSha === headSha)
-    .sort((a, b) => a.recordedAtMs - b.recordedAtMs);
+    .filter((record) => record && record.pr === pr && record.headSha === headSha && Number.isSafeInteger(record.sequence))
+    .sort((a, b) => a.sequence - b.sequence);
 }
 
 function latestDelivery(input) {
@@ -565,12 +586,14 @@ function recordDelivery(input) {
   const { stateDir, now = Date.now(), packet } = input;
   const key = validate(input);
   const classified = classifyDelivery({ ...packet, ...key });
-  const digest = crypto.createHash('sha256').update(JSON.stringify(packet)).digest('hex');
+  const digest = crypto.createHash('sha256').update(JSON.stringify(canonicalPacket(packet))).digest('hex');
   return withTransitionLock({ stateDir, pr: key.pr }, () => {
-    const latest = latestDelivery({ stateDir, ...key });
+    const records = deliveryRecords({ stateDir, ...key });
+    const latest = records.at(-1);
     if (latest && latest.digest === digest) return latest;
-    const record = { ...classified, digest, recordedAtMs: now, budgets: { request: requestBudget({ stateDir, pr: key.pr }), fix: fixBudget({ stateDir, pr: key.pr }) } };
-    if (!writeExclusive(markerPath({ stateDir, ...key }, `delivery-${now}-${digest.slice(0, 16)}`), record)) throw new Error('review-lgtm-state: delivery record collided; retry');
+    const sequence = (latest ? latest.sequence : 0) + 1;
+    const record = { ...classified, digest, sequence, recordedAtMs: now, budgets: { request: requestBudget({ stateDir, pr: key.pr }), fix: fixBudget({ stateDir, pr: key.pr }) } };
+    if (!writeExclusive(markerPath({ stateDir, ...key }, `delivery-${String(sequence).padStart(6, '0')}`), record)) throw new Error('review-lgtm-state: delivery record collided; retry');
     return record;
   }, { recorded: false, reason: 'transition-busy' });
 }

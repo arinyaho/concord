@@ -21,7 +21,7 @@ The caller supplies one JSON evidence packet for the exact PR number and head SH
 | `baseSha` | Resolved base SHA of the pair |
 | `contractDigest` | SHA-256 of the approved contract (ticket, design note or acceptance criteria) the PR is judged against |
 | `acceptance[]` | `{id, met}` for each approved acceptance criterion |
-| `requiredChecks[]` | `{name, conclusion}` for each required check on the exact head; only `success` passes |
+| `requiredChecks[]` | `{name, conclusion}` for each required check on the exact head; only `success` passes. An empty list asserts that the repository requires no check on this head |
 | `reviewsTerminal` | Every configured reviewer finished for this head |
 | `openChoices[]` | Unsettled product, contract or architecture choices |
 | `findings[]` | Every accepted finding: `{id, url, disposition, rootCause, releaseBlocking[], rationale, acceptedBy}` |
@@ -35,7 +35,7 @@ Finding `disposition` is one of `fixed`, `follow-up`, `accepted` or `blocking`. 
 
 Each rule below adds a reason, and any reason makes the result `blocked`:
 
-- An unmet acceptance criterion, a required check whose conclusion is not `success`, non-terminal reviews, or an open choice.
+- No acceptance criteria at all (`acceptance-missing`), an unmet acceptance criterion, a required check whose conclusion is not `success`, non-terminal reviews, or an open choice.
 - A finding that is unowned, marked `blocking`, release-blocking but not `fixed`, `follow-up` without a root cause or rationale, or `accepted` without `acceptedBy`. The classifier checks only that `acceptedBy` is present; it cannot verify that the named human holds that authorization.
 - A follow-up root cause with no ticket. This is `rollover-pending`, and the result carries a ready-to-file packet for that group (its root cause, finding ids, URLs and rationales). Without tracker authorization or access, this is the outcome, and no ticket URL is invented.
 - A ticket that was not read back, a reused ticket whose duplicate check is not recorded, one ticket URL shared by two root causes, or a ticket that owns no follow-up finding.
@@ -44,7 +44,7 @@ Follow-up findings are grouped by `rootCause`. Several findings with one root ca
 
 ## Persistence and launch suppression
 
-`review-lgtm-state record-delivery <pr> <head-sha>` reads the packet on stdin, classifies it, and writes the result as a write-once marker `pr-<pr>-<head>.delivery-<recordedAtMs>-<digest16>.json` beside the existing review markers. The digest covers the canonical packet. The marker also records both PR-wide budgets at that moment, so the handoff can name their max, spent and remaining values. A packet whose digest equals the digest of the latest record for the head writes nothing and returns that latest record. Any other packet, including one that matches an older record, writes a new record, so the latest record always holds the most recently submitted evidence.
+`review-lgtm-state record-delivery <pr> <head-sha>` reads the packet on stdin, classifies it, and writes the result as a write-once marker `pr-<pr>-<head>.delivery-<sequence>.json` beside the existing review markers. The sequence number is assigned under the PR transition lock, so the latest record is the one written last, whatever the wall clock says; a concurrent call returns `transition-busy` and is retried. The digest covers the canonical packet: only the fields defined above, in a fixed key order, with SHAs lowercased and text trimmed, so key order, extra fields and padding do not produce a new record. The marker also records both PR-wide budgets at that moment, so the handoff can name their max, spent and remaining values. A packet whose digest equals the digest of the latest record for the head writes nothing and returns that latest record. Any other packet, including one that matches an older record, writes a new record, so the latest record always holds the most recently submitted evidence.
 
 `status <pr> <head-sha>` reports the latest record for the head as `delivery`. While that record is `mergeable-*`, `claim-initial-request`, `recover-initial-request` and `claim-fix-round` refuse with `delivery-terminal`. Reopening an unchanged head therefore reports the stored classification and spends no request or fix budget.
 

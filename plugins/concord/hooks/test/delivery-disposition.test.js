@@ -199,3 +199,29 @@ test('every distribution shares the delivery disposition contract', () => {
     assert.strictEqual(read(`${pkg}/engine/lgtm-state.js`), read('concord/core/lgtm-state.js'));
   }
 });
+
+test('recovery is refused, ordering follows write sequence, and the digest is canonical', () => {
+  const stateDir = temp();
+  const input = { stateDir, pr: PR, headSha: HEAD };
+  lgtmState.claimInitialRequest({ ...input, provider: 'codex', now: 0 });
+  lgtmState.claimInitialRequest({ ...input, provider: 'codex', now: 200000 });
+  const first = lgtmState.recordDelivery({ ...input, now: 9000, packet: pr172Packet() });
+  assert.deepStrictEqual(lgtmState.recoverInitialRequest({ ...input, provider: 'codex', now: 10 * 60 * 60 * 1000 }), { claimed: false, reason: 'delivery-terminal', classification: 'mergeable-with-follow-ups' });
+
+  // Same evidence with reordered keys, padded text and upper-case SHAs is the same record.
+  const reordered = Object.fromEntries(Object.entries(pr172Packet({ baseSha: BASE.toUpperCase(), extra: 'ignored' })).reverse());
+  reordered.findings[3] = { ...reordered.findings[3], rootCause: '  artifact-repair-admission ' };
+  assert.deepStrictEqual(lgtmState.recordDelivery({ ...input, now: 9500, packet: reordered }), first);
+
+  // A later write with an earlier clock is still the latest record.
+  const failed = lgtmState.recordDelivery({ ...input, now: 1, packet: pr172Packet({ requiredChecks: [{ name: 'test (ubuntu)', conclusion: 'failure' }] }) });
+  assert.strictEqual(failed.sequence, first.sequence + 1);
+  assert.deepStrictEqual(lgtmState.status(input).delivery.reasons, ['required-check:test (ubuntu):failure']);
+  const contract = lgtmState.recordDelivery({ ...input, now: 2, packet: pr172Packet({ contractDigest: 'b'.repeat(64), acceptance: [] }) });
+  assert.deepStrictEqual(contract.reasons, ['acceptance-missing']);
+  assert.strictEqual(lgtmState.status(input).delivery.contractDigest, 'b'.repeat(64));
+  // Returning to the original evidence writes a new latest record, not the old one.
+  const back = lgtmState.recordDelivery({ ...input, now: 3, packet: pr172Packet() });
+  assert.strictEqual(back.sequence, contract.sequence + 1);
+  assert.strictEqual(back.digest, first.digest);
+});
