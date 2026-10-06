@@ -1067,9 +1067,17 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (!n) throw new Error(`harness-failure: artifact-normalize: no active round for ref "${ref}" ${stateDirHint(stateDir)} -- run this verb from the same directory as round-start, or set REVIEW_STATE_DIR`);
     const p = path.join(stateDir, `round-${n}-${name}.json`);
     const retryPath = path.join(stateDir, `round-${n}-${name}.retry`);
+    const snapshotPath = path.join(stateDir, `round-${n}-${name}.original`);
+    const repairPath = path.join(stateDir, `round-${n}-${name}.repair.json`);
     let raw;
     try { raw = fs.readFileSync(p, 'utf8'); } catch (e) { throw new Error(`harness-failure: missing gate artifact ${name} for round ${n}`); }
     try {
+      if (fs.existsSync(repairPath)) {
+        const repair = JSON.parse(fs.readFileSync(repairPath, 'utf8'));
+        const original = fs.readFileSync(snapshotPath);
+        if (contentHash(original) !== repair.originalHash) throw new Error(`${name} repair snapshot hash changed`);
+        if (!artifactContract.preservesArtifact(original.toString('utf8'), JSON.parse(raw))) throw new Error(`${name} repair candidate does not preserve the original evidence`);
+      }
       const canonical = artifactContract.normalizeArtifact(name, raw);
       // Correctness coverage is part of the artifact contract for git targets:
       // retry the reviewer while its original artifact is still intact rather
@@ -1101,8 +1109,11 @@ function runVerb(resolveFromCwd, args, initiative) {
       return;
     } catch (e) {
       if (e instanceof artifactContract.ArtifactError && e.kind === 'retry') {
+        // Repair may only change representation. Missing coverage, namespaces,
+        // evidence, or plan structure would require a new substantive review.
+        if (!/unsupported status$/.test(e.message)) throw new Error(`harness-failure: ${e.message}`);
         const retryArtifacts = retryArtifactMap(ledger.execution);
-        const alreadyRetried = fs.existsSync(retryPath) || !!retryArtifacts[name];
+        const alreadyRetried = fs.existsSync(repairPath) || fs.existsSync(retryPath) || !!retryArtifacts[name];
         if (!alreadyRetried) {
           const prompt = e.coveragePaths
             ? `Rewrite only round artifact correctness as JSON. The "examined" array MUST contain every changed path exactly as listed: ${e.coveragePaths.map((file) => JSON.stringify(file)).join(', ')}. Do not infer, omit, or rewrite paths; preserve your actual findings and do not add prose or extra top-level fields.`
@@ -1111,10 +1122,14 @@ function runVerb(resolveFromCwd, args, initiative) {
             retryArtifacts[name] = prompt;
             writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, retryArtifacts, retryArtifact: firstRetryArtifact(retryArtifacts) } });
           }
+          const bytes = Buffer.from(raw);
+          fs.writeFileSync(snapshotPath, bytes, { flag: 'wx' });
+          const repair = { role: name, round: n, originalHash: contentHash(bytes), error: e.message, snapshotPath, packetPath: repairPath };
+          fs.writeFileSync(repairPath, JSON.stringify(repair) + '\n', { flag: 'wx' });
           fs.writeFileSync(retryPath, '1\n');
           // A retry is a new launch: it must be reserved again before its evidence is accepted.
           if (run && ARTIFACT_RESERVE_ROLE[name]) writeLedger(stateDir, slug, withSupersededLaunch(readLedger(stateDir, slug), ARTIFACT_RESERVE_ROLE[name], n));
-          process.stdout.write(JSON.stringify({ status: 'retry', artifact: name, prompt }) + '\n');
+          process.stdout.write(JSON.stringify({ status: 'repair', artifact: name, repair, prompt }) + '\n');
           return;
         }
       }
@@ -1599,6 +1614,11 @@ function runVerb(resolveFromCwd, args, initiative) {
       ? Object.fromEntries(Object.entries(retryArtifactMap(ledger.execution)).filter(([role, prompt]) => !completedArtifacts.includes(role) && expectedArtifacts.includes(role) && typeof prompt === 'string'))
       : {};
     const retryArtifact = firstRetryArtifact(retryArtifacts);
+    const repairArtifacts = resumed
+      ? Object.fromEntries(Object.keys(retryArtifacts).flatMap((role) => {
+        try { return [[role, JSON.parse(fs.readFileSync(path.join(stateDir, `round-${ledger.round}-${role}.repair.json`), 'utf8'))]]; } catch (_) { return []; }
+      }))
+      : {};
     // Sticky for the same reason gateApplied is: once a run has opted out of the
     // executable gate, round 2's round-start must not have to repeat --no-dod
     // (without stickiness a repo that DOES have `dod` commands would run the
@@ -1698,7 +1718,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // The three fields are mutually descriptive: pending is the normal configured
     // gate waiting for convergence, deferred means no gate will run, and passed is
     // retained for file/no-op compatibility. Callers must not infer one from another.
-    process.stdout.write(JSON.stringify({ decision: 'work', mode: run ? runMode(run) : undefined, gateMode: lite ? 'design-conformance' : 'pair', ref: targetUpdate.ref, base: targetUpdate.base, head: targetUpdate.head_sha, attemptId: ledger.attemptId, round: ledger.round, budget: ledger.budget, dodPassed: dod.deferredBy === 'pending-final' ? false : dod.passed, dodDeferred: !!dod.deferred && dod.deferredBy !== 'pending-final', dodPending: dod.deferredBy === 'pending-final', intentApplied: !!intentCfg, intentHash: ledger.intentHash || null, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir, completedArtifacts, retryArtifacts, retryArtifact }) + '\n');
+    process.stdout.write(JSON.stringify({ decision: 'work', mode: run ? runMode(run) : undefined, gateMode: lite ? 'design-conformance' : 'pair', ref: targetUpdate.ref, base: targetUpdate.base, head: targetUpdate.head_sha, attemptId: ledger.attemptId, round: ledger.round, budget: ledger.budget, dodPassed: dod.deferredBy === 'pending-final' ? false : dod.passed, dodDeferred: !!dod.deferred && dod.deferredBy !== 'pending-final', dodPending: dod.deferredBy === 'pending-final', intentApplied: !!intentCfg, intentHash: ledger.intentHash || null, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir, completedArtifacts, retryArtifacts, retryArtifact, repairArtifacts }) + '\n');
     return;
   }
 

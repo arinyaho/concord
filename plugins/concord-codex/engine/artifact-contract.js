@@ -35,6 +35,22 @@ function retryPrompt(name) {
   return `Rewrite only round artifact ${name} as JSON: {"status":"ok",${name === 'plan' ? '"protocolVersion":2,' : ''}${fields}}. Findings require id, file, and summary; ids must use ${prefixes}<stable-slug>.${rejectedRule}${groupsRule}${ownershipRule} Do not add prose or other extra top-level fields, with one exception: if you could not run the method you were assigned, keep (or add) "blocked":["<tool>: <what failed>"] -- never drop it to make this artifact validate.`;
 }
 
+function repairPrompt(packetPath, candidatePath) {
+  return `You are performing artifact-repair, not a review. Read only ${JSON.stringify(packetPath)} and its immutable snapshot. Do not inspect a repository, diff, history, design, or other artifacts. Write only a JSON candidate to ${JSON.stringify(candidatePath)}. Preserve every established item by identity; do not add, remove, relabel, or infer evidence.`;
+}
+
+function preservesArtifact(raw, candidate) {
+  let original;
+  try { original = JSON.parse(raw); } catch (_) { return false; }
+  if (!original || typeof original !== 'object' || Array.isArray(original) || !candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return false;
+  const comparable = (value) => JSON.stringify(value);
+  for (const key of Object.keys(original)) {
+    if (key === 'status') continue;
+    if (comparable(original[key]) !== comparable(candidate[key])) return false;
+  }
+  return true;
+}
+
 function normalizeArtifact(name, raw) {
   const shape = SHAPES[name];
   if (!shape) throw new Error(`unknown artifact role: ${name}`);
@@ -145,4 +161,4 @@ function normalizeArtifact(name, raw) {
   return canonical;
 }
 
-module.exports = { ArtifactError, normalizeArtifact, retryPrompt, allowedFindingPrefixes, ARTIFACT_ROLES: Object.keys(SHAPES) };
+module.exports = { ArtifactError, normalizeArtifact, retryPrompt, repairPrompt, preservesArtifact, allowedFindingPrefixes, ARTIFACT_ROLES: Object.keys(SHAPES) };
