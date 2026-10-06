@@ -27,7 +27,7 @@ const {
   resetUnreachable,
 } = require('./review');
 const crypto = require('node:crypto');
-const { canonicalPath, openInitiativeRun, reserveLaunchBatch, denialReason, recordDisposition, finaliseInitiativeRun, consumeDispositionDelivery, escalateInitiativeRun, lockDiagnosis, resolveBaseCommit, repositoryIdentity, runPath, terminalDispositionInLedger } = require('./initiative-review-run');
+const { canonicalPath, openInitiativeRun, claimBroadSweep, reserveLaunchBatch, denialReason, recordDisposition, finaliseInitiativeRun, consumeDispositionDelivery, escalateInitiativeRun, lockDiagnosis, resolveBaseCommit, repositoryIdentity, runPath, terminalDispositionInLedger } = require('./initiative-review-run');
 const { acquireTarget, gitDiff, gitHeadSha, gitDirty } = require('./target');
 const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
 
@@ -470,7 +470,7 @@ function firstRetryArtifact(retries) {
 // Keyed initiative runs (native Claude/Copilot drivers). The host model spawns
 // reviewers, so the CLI cannot stop a launch: it reserves launches up front
 // (`reserve`) and refuses to accept evidence from an unreserved launch.
-const INITIATIVE_FLAGS = [['--initiative-run-key', 'key'], ['--initiative-state-dir', 'stateDir'], ['--initiative-max-launches', 'maxLaunches'], ['--initiative-max-rounds', 'maxRounds']];
+const INITIATIVE_FLAGS = [['--initiative-run-key', 'key'], ['--initiative-id', 'initiativeId'], ['--initiative-state-dir', 'stateDir'], ['--initiative-max-launches', 'maxLaunches'], ['--initiative-max-rounds', 'maxRounds']];
 const MODE_FLAG = '--initiative-mode';
 const RUN_VERBS = new Set(['finalise', 'consume', 'escalate', 'session-checkpoint']);
 const CLI_VERBS = ['show', 'round-start', 'telemetry-slot', 'plan-fixes', 'commit-fix', 'record', 'round-failure', 'gate-panel-round-start', 'gate-panel-round-record', 'unpark', 'dismiss', 'reset', 'rerun', 'artifact-normalize', 'reserve', 'carry', 'finalise', 'consume', 'escalate', 'session-checkpoint', 'feedback'];
@@ -535,7 +535,7 @@ function extractInitiative(argv) {
 
 function openKeyedRun(initiative) {
   const stateDir = canonicalPath(initiative.stateDir);
-  const run = openInitiativeRun({ stateDir, key: initiative.key, repository: canonicalPath(process.env.REVIEW_REPO_ROOT || process.cwd()), maxLaunches: Number(initiative.maxLaunches), maxRounds: Number(initiative.maxRounds), allowTerminal: true, mode: initiative.mode || 'base' });
+  const run = openInitiativeRun({ stateDir, key: initiative.key, initiativeId: initiative.initiativeId || initiative.key, repository: canonicalPath(process.env.REVIEW_REPO_ROOT || process.cwd()), maxLaunches: Number(initiative.maxLaunches), maxRounds: Number(initiative.maxRounds), allowTerminal: true, mode: initiative.mode || 'base' });
   const mode = runMode(run);
   if (initiative.mode && initiative.mode !== mode) throw new Error(`review-cli: --initiative-mode ${initiative.mode} disagrees with the run ledger: run mode is ${mode}`);
   return run;
@@ -759,6 +759,14 @@ function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey,
   let oldLedger;
   try { oldLedger = JSON.parse(fs.readFileSync(oldRun.path, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (!oldLedger) fail('no initiative run for --from-run-key');
+  // Legacy callers did not carry an initiative ID. Preserve the old run's
+  // effective identity instead of silently turning a rollover into a new one.
+  initiative = { ...initiative, initiativeId: initiative.initiativeId || oldLedger.initiativeId || fromRunKey };
+  // A pre-ID ledger that already launched a broad role has irrevocably spent
+  // its sweep. Materialize that conservative history before opening a new key.
+  if (!oldLedger.initiativeId && (oldLedger.launches || []).some((launch) => /^gate-(review|verify)$/.test(launch.role))) {
+    claimBroadSweep(openInitiativeRun({ stateDir: newStateDir, key: fromRunKey, initiativeId: fromRunKey, repository: repoRoot, maxLaunches: oldLedger.budget.maxLaunches, maxRounds: oldLedger.budget.maxRounds, allowTerminal: true, mode: oldLedger.mode }));
+  }
 
   // Step 2: the mode check only -- it needs no new-run object, so it runs
   // before anything that would open the new run's ledger file (defaulting
@@ -766,6 +774,7 @@ function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey,
   // afterward can permanently create the wrong-mode ledger before ever
   // reporting the mismatch, leaving the key unusable.
   if ((initiative.mode || 'base') !== oldLedger.mode) fail('the new run mode differs from the old run; carry never changes mode');
+  if ((oldLedger.initiativeId || fromRunKey) !== initiative.initiativeId) fail('the new initiative ID differs from the old run; carry preserves initiative identity');
 
   // Step 3: every old-run check that needs no new-run object runs first --
   // active, same repository, genuinely blocked here, its round's evidence
@@ -986,7 +995,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       if (role === 'fix' && ledger.reconciliation) return { status: 'reconciliation-required', role, count, round: ledger.round };
       const target = ledger.target?.ref || ref;
       const revision = { ref: target, ...(ledger.target?.base ? { base: resolveBaseCommit(process.env.REVIEW_REPO_ROOT || process.cwd(), ledger.target.base) } : {}), ...(ledger.target?.head_sha ? { head_sha: ledger.target.head_sha } : {}) };
-      const launch = { role, round: ledger.round, target, revision, attemptId: ledger.attemptId };
+      const launch = { role, round: ledger.round, target, revision, attemptId: ledger.attemptId, broad: ledger.gateMode === 'pair' && /^gate-/.test(role) };
       if (!reserveLaunchBatch(run, launch, count, () => {
         // Called under the run lock only after phase and budget validation.
         // Publish identity before charging so interruption cannot free the target.
@@ -1640,7 +1649,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       dismissedIds: ledger.gate_dismissed || [],
       changedFiles: changedGitPaths(gitDiff(repoRoot, broadReuse.head_sha)),
     }) : ledger.gate_open;
-    const gateArmed = lite ? true : broadFlagPassed ? true
+    let gateArmed = lite ? true : broadFlagPassed ? true
       : noBroadFlagPassed ? false
       : reuseFrontPass ? false
       : typeof ledger.gateArmed === 'boolean' ? ledger.gateArmed
@@ -1665,7 +1674,11 @@ function runVerb(resolveFromCwd, args, initiative) {
     // round's gate artifact is mandatory, and round-start rewrites it below
     // before plan-fixes runs. Re-deriving from review.config.json there would
     // silently miss a flag-enabled round and discard its findings.
-    const gateApplied = gateArmed && (gateRounds.length === 0 || gateRounds.includes(ledger.round));
+    let gateApplied = gateArmed && (gateRounds.length === 0 || gateRounds.includes(ledger.round));
+    if (run && gateApplied && !lite && !claimBroadSweep(run)) {
+      gateArmed = false;
+      gateApplied = false;
+    }
     const expectedArtifacts = ['correctness', 'verify', 'plan'].concat(intentCfg ? ['intent'] : [], gateApplied ? (lite ? ['gate'] : ['gate', 'gate-verify']) : []);
     const completedArtifacts = resumed && ledger.execution
       ? resumedCompletedArtifacts.filter((role) => expectedArtifacts.includes(role))

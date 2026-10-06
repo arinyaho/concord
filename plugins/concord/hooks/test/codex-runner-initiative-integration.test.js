@@ -253,7 +253,7 @@ test('a budget-exhausted block names the carry command, and after a CLI carry th
   // the repo this run used, and REVIEW_REPO_ROOT restated so a bare `node`
   // invocation from elsewhere resolves the same repo and state dir the blocked
   // run did. Carries the old run's own mode (base here) explicitly.
-  assert.match(blocked.carryCommand, /^cd '.*' && REVIEW_REPO_ROOT='.*'(?: REVIEW_STATE_DIR='.*')? node '.*' carry 'feature\/test' --from-run-key 'integration' --initiative-run-key <new-run-key> --initiative-state-dir '.*' --initiative-max-launches \d+ --initiative-max-rounds \d+ --initiative-mode base$/);
+  assert.match(blocked.carryCommand, /^cd '.*' && REVIEW_REPO_ROOT='.*'(?: REVIEW_STATE_DIR='.*')? node '.*' carry 'feature\/test' --from-run-key 'integration' --initiative-run-key <new-run-key> --initiative-id 'integration' --initiative-state-dir '.*' --initiative-max-launches \d+ --initiative-max-rounds \d+ --initiative-mode base$/);
   assert.equal(f.ledger().launches.length, 1);
 
   const carried = spawnSync('node', [cliPath, 'carry', f.options.ref, '--from-run-key', 'integration',

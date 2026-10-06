@@ -389,7 +389,9 @@ async function runReviewUntilGreen(options) {
     try { worktree = execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: canonicalRepoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() === 'true'; } catch {}
     if (worktree) try { execFileSync('git', ['check-ignore', '-q', '--no-index', '--', path.relative(canonicalRepoRoot, runPath(canonicalStateDir, options.initiativeRunKey))], { cwd: canonicalRepoRoot }); } catch { throw new Error('review-until-green: an initiative state directory inside the repository must be ignored'); }
   }
-  const initiativeRun = keyedRun ? openInitiativeRun({ stateDir: canonicalStateDir, key: options.initiativeRunKey, repository: canonicalRepoRoot, maxLaunches: options.initiativeMaxLaunches, maxRounds: options.initiativeMaxRounds, allowTerminal: !!options.initiativeFinalise, mode: options.initiativeMode }) : null;
+  let initiativeId = options.initiativeId || options.initiativeRunKey;
+  if (keyedRun && !options.initiativeId) try { initiativeId = JSON.parse(fs.readFileSync(runPath(canonicalStateDir, options.initiativeRunKey), 'utf8')).initiativeId || initiativeId; } catch (_) {}
+  const initiativeRun = keyedRun ? openInitiativeRun({ stateDir: canonicalStateDir, key: options.initiativeRunKey, initiativeId, repository: canonicalRepoRoot, maxLaunches: options.initiativeMaxLaunches, maxRounds: options.initiativeMaxRounds, allowTerminal: !!options.initiativeFinalise, mode: options.initiativeMode }) : null;
   if (options.initiativeFinalise) {
     if (!initiativeRun) throw new Error('review-until-green: --initiative-finalise requires an initiative run');
     if (!finaliseInitiativeRun(initiativeRun)) throw new Error('review-until-green: initiative run finalisation was contended');
@@ -404,7 +406,7 @@ async function runReviewUntilGreen(options) {
   // under the same name is a different pair. round-start keeps the name.
   const baseIdentity = (name) => (name && !ref.startsWith('file:') ? resolveBaseCommit(repoRoot, name) : name);
   const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot));
-  const initiativeFlags = initiativeRun ? ['--initiative-run-key', options.initiativeRunKey, '--initiative-state-dir', canonicalStateDir, '--initiative-max-launches', String(options.initiativeMaxLaunches), '--initiative-max-rounds', String(options.initiativeMaxRounds), ...(options.initiativeMode ? ['--initiative-mode', options.initiativeMode] : [])] : [];
+  const initiativeFlags = initiativeRun ? ['--initiative-run-key', options.initiativeRunKey, '--initiative-id', initiativeId, '--initiative-state-dir', canonicalStateDir, '--initiative-max-launches', String(options.initiativeMaxLaunches), '--initiative-max-rounds', String(options.initiativeMaxRounds), ...(options.initiativeMode ? ['--initiative-mode', options.initiativeMode] : [])] : [];
   const sessionMode = options.sessionHandoff || 'suggest';
   if (!SESSION_MODES.includes(sessionMode)) throw new Error('review-until-green: --session-handoff must be off, suggest, or stop-at-checkpoint');
   const observed = { toolCalls: 0, noProgressCalls: 0 };
@@ -961,6 +963,7 @@ async function runReviewUntilGreen(options) {
             `node ${posixQuote(cliPath)} carry ${posixQuote(ref)}`,
             `--from-run-key ${posixQuote(options.initiativeRunKey)}`,
             '--initiative-run-key <new-run-key>',
+            `--initiative-id ${posixQuote(initiativeId)}`,
             `--initiative-state-dir ${posixQuote(canonicalStateDir)}`,
             `--initiative-max-launches ${options.initiativeMaxLaunches}`,
             `--initiative-max-rounds ${options.initiativeMaxRounds}`,

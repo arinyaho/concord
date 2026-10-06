@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { openInitiativeRun, reserveLaunch, reserveLaunchBatch, recordDisposition, normalizeDisposition, consumeDispositionDelivery, finaliseInitiativeRun, publicInitiativeSummary, terminalTarget } = require('../../core/initiative-review-run');
+const { openInitiativeRun, claimBroadSweep, reserveLaunch, reserveLaunchBatch, denialReason, recordDisposition, normalizeDisposition, consumeDispositionDelivery, finaliseInitiativeRun, publicInitiativeSummary, terminalTarget } = require('../../core/initiative-review-run');
 const RUNTIMES = [
   require('../../core/initiative-review-run'),
   require('../../../concord-codex/engine/initiative-review-run'),
@@ -24,6 +24,27 @@ test('keyed runs use a hashed separate ledger and atomically consume launch budg
   assert.deepStrictEqual(ledger.launches.map(({ at, ...launch }) => launch), [{ role: 'correctness', round: 1 }]);
   assert.match(ledger.launches[0].at, /^\d{4}-\d\d-\d\dT/);
   assert.strictEqual(ledger.key, undefined);
+});
+
+test('one initiative claims one broad sweep across run keys and reservations fail before charging', () => {
+  const stateDir = temp();
+  const first = open({ stateDir, key: 'key-a', initiativeId: 'initiative-a', maxLaunches: 4, maxRounds: 2 });
+  const second = open({ stateDir, key: 'key-b', initiativeId: 'initiative-a', maxLaunches: 4, maxRounds: 2 });
+  const other = open({ stateDir, key: 'key-c', initiativeId: 'initiative-b', maxLaunches: 4, maxRounds: 2 });
+  assert.strictEqual(claimBroadSweep(first), true);
+  assert.strictEqual(claimBroadSweep(second), false, 'a rollover key cannot re-claim broad review');
+  assert.strictEqual(claimBroadSweep(other), true, 'a distinct initiative can claim broad review');
+  const broad = { role: 'gate-review', broad: true, round: 1 };
+  assert.strictEqual(reserveLaunch(second, broad), false);
+  assert.strictEqual(denialReason(second, broad), 'broad-sweep-claimed');
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(second.path, 'utf8')).launches, []);
+});
+
+test('a broad claim has one winner under concurrent-equivalent contenders', () => {
+  const stateDir = temp();
+  const a = open({ stateDir, key: 'key-a', initiativeId: 'initiative', maxLaunches: 1, maxRounds: 1 });
+  const b = open({ stateDir, key: 'key-b', initiativeId: 'initiative', maxLaunches: 1, maxRounds: 1 });
+  assert.deepStrictEqual([claimBroadSweep(a), claimBroadSweep(b)].sort(), [false, true]);
 });
 
 test('v5 terminal dispositions are normalized and recorded exactly once', () => {
