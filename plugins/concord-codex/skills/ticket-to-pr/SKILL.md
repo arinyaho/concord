@@ -98,6 +98,10 @@ Sort every finding into one of three, and record the third as well as the first 
 
 If the repository tracks known gaps or limitations, check both directions. Does the change close a row — an adjacent row is not the same row, so read it before claiming it. And does it create a residual that deserves one? A risk your own design note names, that nothing tracks, is a gap you introduced.
 
+### Delivery disposition
+
+The PR's delivery state is the classification recorded by `review-until-lgtm`'s `record-delivery` for the exact PR head and base: `mergeable-clean`, `mergeable-with-follow-ups`, or `blocked`. Record it once the configured reviews for that head are terminal; until then the PR is `blocked` with `reviews-not-terminal`. Give every accepted finding exactly one disposition: fixed in this PR, a read-back follow-up ticket for its root cause, accepted by an authorized human, or blocking. An unmet acceptance criterion, a failed or unexecuted required check, a stage exit condition, contradictory documentation, or an unproven premise is release-blocking (`acceptance-criterion`, `required-check`, `stage-exit`, `contradictory-docs`, `unproven-premise`): it keeps the PR `blocked` and never becomes follow-up work. Once the record is `mergeable-*` for the unchanged pair, launch no further review or fix round. The final report names the exact head and base, required checks, review budgets, every finding id with its disposition, follow-up ticket URLs or pending packets, and the classification, and never calls `mergeable-with-follow-ups` clean.
+
 ## Rationalizations
 
 | Excuse | Reality |
@@ -108,6 +112,7 @@ If the repository tracks known gaps or limitations, check both directions. Does 
 | "The e2e passes, so the fix works" | Run it against the unchanged code. If it also passes, it discriminates nothing. |
 | "The regression test passes locally" | Check the workflow actually runs it. A test CI never executes is not coverage. |
 | "The doc sweep is clean, the docs are done" | A sweep finds contradictions. A document that never mentioned the invariant cannot contradict it, and is now incomplete. |
+| "The budget is spent, so the remaining blocker becomes a follow-up" | A budget bounds automation. A release blocker keeps the PR `blocked`. |
 | "Review found ten things, it is thorough enough" | Diff-local review cannot reject a premise the whole diff shares. |
 | "The design doc is new, there is nothing to review it against" | That is the reason to measure, not the reason to proceed. |
 

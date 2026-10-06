@@ -174,3 +174,28 @@ test('reopening an unchanged head reuses the record; drift is recorded as new ev
   assert.strictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).delivery.baseSha, NEW_BASE);
   assert.strictEqual(lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, now: 11000 }).claimed, true);
 });
+
+test('every distribution shares the delivery disposition contract', () => {
+  const plugins = path.join(__dirname, '..', '..', '..');
+  const read = (file) => fs.readFileSync(path.join(plugins, file), 'utf8');
+  for (const pkg of ['concord', 'concord-codex', 'concord-copilot']) {
+    const lgtm = read(`${pkg}/skills/review-until-lgtm/SKILL.md`);
+    assert.match(lgtm, /record-delivery <pr> <head-sha>/);
+    assert.match(lgtm, /`mergeable-clean`, `mergeable-with-follow-ups`, or `blocked`/);
+    assert.match(lgtm, /release-blocking finding blocks unless it is `fixed`, whatever the remaining budget/);
+    assert.match(lgtm, /`rollover-pending`.*no ticket URL is invented/s);
+    assert.match(lgtm, /never report `mergeable-with-follow-ups` as clean or green/);
+    assert.doesNotMatch(lgtm, /propose a single follow-up issue/);
+    const ticket = read(`${pkg}/skills/ticket-to-pr/SKILL.md`);
+    assert.match(ticket, /### Delivery disposition/);
+    assert.match(ticket, /never becomes follow-up work/);
+    assert.match(read(`${pkg}/skills/initiative-to-prs/references/stages.md`), /`rollover-pending`.*leaves the unit `BLOCKED`/s);
+    assert.match(read(`${pkg}/skills/initiative-to-prs/SKILL.md`), /each PR's delivery disposition/);
+  }
+  for (const file of ['concord/core/review-driver.md', 'concord/commands/review-and-fix.md', 'concord-codex/commands/review-and-fix.md', 'concord-copilot/skills/review-and-fix/references/review-driver.md']) {
+    assert.match(read(file), /A `clean` ledger means this loop's own rounds converged; it is not the PR's delivery disposition/, file);
+  }
+  for (const pkg of ['concord-codex', 'concord-copilot']) {
+    assert.strictEqual(read(`${pkg}/engine/lgtm-state.js`), read('concord/core/lgtm-state.js'));
+  }
+});
