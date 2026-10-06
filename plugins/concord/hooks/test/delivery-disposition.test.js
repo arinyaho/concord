@@ -90,6 +90,8 @@ test('#172 shape: four residuals map to two root-cause tickets and no further re
   assert.deepStrictEqual(after.requestBudget, before.requestBudget);
   assert.strictEqual(after.delivery.classification, 'mergeable-with-follow-ups');
   assert.strictEqual(after.delivery.digest, record.digest);
+  assert.strictEqual(after.reconciliation.action, 'report-delivery');
+  assert.strictEqual(after.reconciliation.humanRequired, false);
 });
 
 test('no residuals is mergeable-clean and an empty follow-up ticket blocks', () => {
@@ -104,7 +106,7 @@ test('no residuals is mergeable-clean and an empty follow-up ticket blocks', () 
 
 test('release blockers stay blocked even with the fix budget exhausted and never become follow-up work', () => {
   const stateDir = temp();
-  for (let i = 0; i < 3; i += 1) fs.writeFileSync(path.join(stateDir, `pr-${PR}.fix-round-slot-${i + 1}.json`), JSON.stringify({ pr: PR, headSha: HEAD, owner: 'o', claimedAtMs: i }));
+  for (let i = 0; i < 3; i += 1) fs.writeFileSync(path.join(stateDir, `pr-${PR}.fix-round-slot-${i + 1}.json`), JSON.stringify({ pr: PR, headSha: OTHER_HEAD, owner: 'o', claimedAtMs: i }));
   const packet = pr172Packet();
   packet.findings[3] = { ...packet.findings[3], releaseBlocking: ['security'] };
   packet.acceptance = [{ id: 'AC1', met: false }, { id: 'AC2', met: true }];
@@ -224,4 +226,32 @@ test('recovery is refused, ordering follows write sequence, and the digest is ca
   const back = lgtmState.recordDelivery({ ...input, now: 3, packet: pr172Packet() });
   assert.strictEqual(back.sequence, contract.sequence + 1);
   assert.strictEqual(back.digest, first.digest);
+});
+
+test('every text field is trimmed, entries are validated, and an open fix round refuses a record', () => {
+  const padded = pr172Packet();
+  padded.acceptance = padded.acceptance.map((ac) => ({ ...ac, id: ` ${ac.id} ` }));
+  padded.requiredChecks = padded.requiredChecks.map((check) => ({ name: ` ${check.name}`, conclusion: 'success ' }));
+  padded.findings = padded.findings.map((f) => ({ ...f, id: ` ${f.id}`, url: `${f.url} ` }));
+  padded.tickets = padded.tickets.map((t) => ({ ...t, url: ` ${t.url}` }));
+  const stateDir = temp();
+  const input = { stateDir, pr: PR, headSha: HEAD };
+  const first = lgtmState.recordDelivery({ ...input, now: 1, packet: pr172Packet() });
+  assert.deepStrictEqual(lgtmState.recordDelivery({ ...input, now: 2, packet: padded }), first);
+
+  const shared = pr172Packet();
+  shared.tickets[1] = { ...shared.tickets[1], url: ` ${ISSUE(173)} ` };
+  assert.deepStrictEqual(lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...shared }).reasons, [`ticket-shared:${ISSUE(173)}`]);
+  const dupId = pr172Packet();
+  dupId.findings.push({ ...dupId.findings[0], id: ` ${dupId.findings[0].id} ` });
+  assert.throws(() => lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...dupId }), /duplicate finding id r1-normalize-retry/);
+  for (const [field, value, pattern] of [['acceptance', [{ met: true }], /acceptance needs id/], ['acceptance', [null], /acceptance needs id/], ['requiredChecks', [{ conclusion: 'success' }], /required check needs name/], ['requiredChecks', [{ name: 'ci' }], /required check ci needs conclusion/], ['openChoices', [''], /openChoices entries/]]) {
+    assert.throws(() => lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...pr172Packet({ [field]: value }) }), pattern);
+  }
+
+  const open = temp();
+  withActiveReview(open);
+  assert.strictEqual(lgtmState.claimFixRound({ stateDir: open, pr: PR, headSha: HEAD, owner: 'fixer', now: 1 }).claimed, true);
+  assert.deepStrictEqual(lgtmState.recordDelivery({ stateDir: open, pr: PR, headSha: HEAD, now: 2, packet: pr172Packet() }), { recorded: false, reason: 'fix-round-open' });
+  assert.strictEqual(lgtmState.status({ stateDir: open, pr: PR, headSha: HEAD }).delivery, null);
 });

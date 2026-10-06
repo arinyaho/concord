@@ -46,8 +46,8 @@ When the verifier rejects every finding in the exact active batch as false posit
 
 - Green: collection is complete, no accepted current-head findings remain, and at least one fresh explicit LGTM exists.
 - `completed-without-lgtm`: a terminal clean review has no qualifying signal by the deadline. The skill does not request another full review on the same head solely to obtain a reaction.
-- Human reconciliation: request or fix budget exhausted, the batch does not converge within three fix rounds, or an accepted finding changes product contract, PR scope, or unrelated architecture.
-- Follow-up suggestion: only minor non-release-blocking findings remain. The skill proposes one grouped issue and does not create it without user authorization.
+- Human reconciliation: the request budget is exhausted, or an accepted finding changes product contract, PR scope, or unrelated architecture.
+- Delivery disposition: when collection is terminal and no fix round is open, including after the fix budget is exhausted, the skill records the delivery disposition (`docs/design/2026-10-06-delivery-disposition.md`). Release-blocking residuals keep the PR `blocked` for human reconciliation; follow-up-eligible residuals are grouped by root cause into read-back tickets within the tracker authorization.
 
 ## Residual exposure
 

@@ -281,6 +281,8 @@ function reconciliationPacket({ stateDir, pr, headSha }) {
   const signals = [...new Set(findings.flatMap((finding) => finding.signals))].sort();
   const classification = (p1Count > 0 || records.length >= 2 || signals.length > 0) ? 'requires-architecture-review' : 'light-implementation-eligible';
   const claimed = !!fixRoundForHead({ stateDir, pr, headSha });
+  const delivered = !claimed && deliveryTerminal({ stateDir, pr, headSha });
+  if (delivered) return { pr, headSha, reviews, batchCount: records.length, p1Count, p2Count, signals, classification: 'delivery-terminal', action: 'report-delivery', humanRequired: false, requires: `report the recorded ${delivered.classification} delivery disposition` };
   const abandoned = !claimed && !!readMarker(markerPath({ stateDir, pr, headSha }, 'fix-round-claim'));
   const exhausted = !claimed && fixBudget({ stateDir, pr }).remaining === 0;
   const humanRequired = abandoned || exhausted;
@@ -475,11 +477,23 @@ function validatePacket(packet) {
     if (!Array.isArray(packet[field])) throw new Error(`review-lgtm-state: delivery ${field} must be an array`);
   }
   if (typeof packet.reviewsTerminal !== 'boolean') throw new Error('review-lgtm-state: delivery reviewsTerminal must be a boolean');
-  const ids = new Set();
+  const unique = (entries, field, label) => {
+    const seen = new Set();
+    for (const entry of entries) {
+      const value = text(entry?.[field]);
+      if (!value) throw new Error(`review-lgtm-state: delivery ${label} needs ${field}`);
+      if (seen.has(value)) throw new Error(`review-lgtm-state: duplicate ${label} ${field} ${value}`);
+      seen.add(value);
+    }
+  };
+  unique(packet.acceptance, 'id', 'acceptance');
+  unique(packet.requiredChecks, 'name', 'required check');
+  for (const check of packet.requiredChecks) if (!text(check.conclusion)) throw new Error(`review-lgtm-state: delivery required check ${text(check.name)} needs conclusion`);
+  for (const choice of packet.openChoices) if (!text(choice)) throw new Error('review-lgtm-state: delivery openChoices entries must be non-empty strings');
+  unique(packet.findings, 'id', 'finding');
+  unique(packet.tickets, 'rootCause', 'ticket');
   for (const finding of packet.findings) {
-    if (!text(finding?.id) || !text(finding.url)) throw new Error('review-lgtm-state: delivery finding needs id and url');
-    if (ids.has(finding.id)) throw new Error(`review-lgtm-state: duplicate finding id ${finding.id}`);
-    ids.add(finding.id);
+    if (!text(finding.url)) throw new Error('review-lgtm-state: delivery finding needs id and url');
     if (finding.disposition != null && !DISPOSITIONS.has(finding.disposition)) throw new Error(`review-lgtm-state: unknown disposition ${JSON.stringify(finding.disposition)}`);
     for (const category of finding.releaseBlocking || []) {
       if (!RELEASE_BLOCKING.has(category)) throw new Error(`review-lgtm-state: unknown release-blocking category ${JSON.stringify(category)}`);
@@ -487,9 +501,10 @@ function validatePacket(packet) {
   }
 }
 
-function classifyDelivery(input) {
-  const key = validate(input);
-  validatePacket(input);
+function classifyDelivery(raw) {
+  const key = validate(raw);
+  validatePacket(raw);
+  const input = canonicalPacket(raw);
   const reasons = [];
   if (input.acceptance.length === 0) reasons.push('acceptance-missing');
   for (const ac of input.acceptance) if (ac.met !== true) reasons.push(`acceptance-unmet:${ac.id}`);
@@ -515,7 +530,7 @@ function classifyDelivery(input) {
   const owners = new Map();
   for (const ticket of input.tickets) {
     const rootCause = text(ticket?.rootCause);
-    if (!rootCause || !text(ticket.url) || tickets.has(rootCause)) throw new Error('review-lgtm-state: delivery tickets need one rootCause and url each');
+    if (!text(ticket.url)) throw new Error('review-lgtm-state: delivery tickets need one rootCause and url each');
     tickets.set(rootCause, ticket);
     if (!followUps.has(rootCause)) reasons.push(`ticket-without-findings:${rootCause}`);
     if (owners.has(ticket.url)) reasons.push(`ticket-shared:${ticket.url}`);
@@ -552,12 +567,12 @@ function canonicalPacket(packet) {
   return {
     baseSha: String(packet.baseSha).toLowerCase(),
     contractDigest: String(packet.contractDigest).toLowerCase(),
-    acceptance: packet.acceptance.map((ac) => ({ id: ac.id, met: ac.met === true })),
-    requiredChecks: packet.requiredChecks.map((check) => ({ name: check.name, conclusion: check.conclusion })),
+    acceptance: packet.acceptance.map((ac) => ({ id: text(ac.id), met: ac.met === true })),
+    requiredChecks: packet.requiredChecks.map((check) => ({ name: text(check.name), conclusion: text(check.conclusion) })),
     reviewsTerminal: packet.reviewsTerminal,
-    openChoices: packet.openChoices.map(String),
-    findings: packet.findings.map((f) => ({ id: f.id, url: f.url, disposition: f.disposition || null, rootCause: text(f.rootCause), releaseBlocking: [...(f.releaseBlocking || [])].sort(), rationale: text(f.rationale), acceptedBy: text(f.acceptedBy) })),
-    tickets: packet.tickets.map((t) => ({ rootCause: text(t.rootCause), url: t.url, readBack: t.readBack === true, reused: !!t.reused, duplicateCheck: text(t.duplicateCheck) })),
+    openChoices: packet.openChoices.map(text),
+    findings: packet.findings.map((f) => ({ id: text(f.id), url: text(f.url), disposition: f.disposition || null, rootCause: text(f.rootCause), releaseBlocking: [...(f.releaseBlocking || [])].sort(), rationale: text(f.rationale), acceptedBy: text(f.acceptedBy) })),
+    tickets: packet.tickets.map((t) => ({ rootCause: text(t.rootCause), url: text(t.url), readBack: t.readBack === true, reused: !!t.reused, duplicateCheck: text(t.duplicateCheck) })),
   };
 }
 
@@ -588,6 +603,7 @@ function recordDelivery(input) {
   const classified = classifyDelivery({ ...packet, ...key });
   const digest = crypto.createHash('sha256').update(JSON.stringify(canonicalPacket(packet))).digest('hex');
   return withTransitionLock({ stateDir, pr: key.pr }, () => {
+    if (fixRoundForHead({ stateDir, ...key })) return { recorded: false, reason: 'fix-round-open' };
     const records = deliveryRecords({ stateDir, ...key });
     const latest = records.at(-1);
     if (latest && latest.digest === digest) return latest;
