@@ -4,7 +4,7 @@
 
 ## Classification
 
-The classification has three values and is computed by one function, `classifyDelivery`, in `core/delivery-disposition.js`.
+The classification has three values and is computed by one function, `classifyDelivery`, exported with `recordDelivery` from `core/lgtm-state.js` beside the existing review-until-lgtm state engine.
 
 - `mergeable-clean`: every approved acceptance criterion is met, every required check succeeded on the exact head, configured reviews are terminal, no material choice is open, and no accepted finding is left as a residual (every accepted finding is `fixed`).
 - `mergeable-with-follow-ups`: the same conditions hold, and every residual is verified follow-up eligible, grouped by root cause, and owned by a read-back tracker ticket, or deliberately accepted by a named human.
