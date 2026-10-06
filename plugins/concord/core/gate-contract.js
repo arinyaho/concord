@@ -40,6 +40,8 @@ function parseGateFindings(rawText) {
       span: typeof f.span === 'string' ? f.span : '',
       summary: f.summary,
       requirement: typeof f.requirement === 'string' ? f.requirement : '',
+      ...(f.releaseBlocking !== undefined ? { releaseBlocking: f.releaseBlocking } : {}),
+      ...(f.rationale !== undefined ? { rationale: f.rationale } : {}),
       status: 'confirmed',
     };
   });

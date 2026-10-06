@@ -204,8 +204,26 @@ function dedupeAgainstSeen(findings, seen) {
 //   6. otherwise -> continue (status stays "converging").
 // Oscillation detection (a finding toggling fixed -> reopened -> fixed) is
 // deliberately out of scope for this shell (deferred per the plan).
+// A gate finding is follow-up eligible only when the finder explicitly said no
+// release-blocking class applies AND gave a rationale, and gate-verify did not
+// override it. Anything absent or malformed is release-blocking (fail closed).
+function gateFollowUpEligible(f) {
+  return Array.isArray(f.releaseBlocking) && f.releaseBlocking.length === 0
+    && typeof f.rationale === 'string' && f.rationale.trim() !== '' && !f.blockingReason;
+}
+
+function splitGateOpen(gateOpen) {
+  const open = gateOpen || [];
+  const followUps = open.filter(gateFollowUpEligible).map((f) => f.id);
+  return { gateOpenCount: open.length - followUps.length, gateFollowUps: followUps };
+}
+
+function followUpSuffix(gateFollowUps) {
+  return gateFollowUps.length ? { followUps: [...gateFollowUps] } : {};
+}
+
 function decideTermination(roundOutcome) {
-  const { dodPassed, dodDeferred = false, dodCommand, dodExitCode, openFindingsCount, specDoubtScope, noProgress, budgetSpent, maxRounds, fixedCount = 0, parkedCount = 0, intentReviewCount = 0, gateOpenCount = 0, panelConfigured = false, panelDone = false, hasDoD = true, dryStreak = 0, targetUnchanged = true } = roundOutcome;
+  const { dodPassed, dodDeferred = false, dodCommand, dodExitCode, openFindingsCount, specDoubtScope, noProgress, budgetSpent, maxRounds, fixedCount = 0, parkedCount = 0, intentReviewCount = 0, gateOpenCount = 0, gateFollowUps = [], panelConfigured = false, panelDone = false, hasDoD = true, dryStreak = 0, targetUnchanged = true } = roundOutcome;
 
   if (specDoubtScope === 'whole-diff') {
     return { continue: false, converged: false, parked: false, abandoned: true, reason: 'spec-doubt invalidates the whole diff' };
@@ -234,7 +252,7 @@ function decideTermination(roundOutcome) {
       if (panelConfigured && !panelDone) {
         return { continue: false, converged: false, parked: false, abandoned: false, panelPending: true, reason: 'dry-round clean, but the holistic GATE panel has not run yet this convergence attempt' };
       }
-      return { continue: false, converged: true, parked: false, abandoned: false, reason: `no new findings for ${dryStreak} consecutive rounds (dry, no-DoD target)` };
+      return { continue: false, converged: true, parked: false, abandoned: false, reason: `no new findings for ${dryStreak} consecutive rounds (dry, no-DoD target)${gateFollowUps.length ? `; ${gateFollowUps.length} non-blocking GATE follow-up candidate(s)` : ''}`, ...followUpSuffix(gateFollowUps) };
     }
     if (budgetSpent >= maxRounds) {
       return { continue: false, converged: false, parked: true, abandoned: false, reason: 'round budget exhausted before the no-DoD target ran dry' };
@@ -268,9 +286,11 @@ function decideTermination(roundOutcome) {
     // decision object from contradicting it.
     return {
       continue: false, converged: true, parked: false, abandoned: false,
-      reason: dodDeferred
+      reason: (dodDeferred
         ? 'DoD-exec deferred (no executable gate ran), zero open findings, and no fixes this round (stable)'
-        : 'DoD-exec ran and passed, zero open findings, and no fixes this round (stable)',
+        : 'DoD-exec ran and passed, zero open findings, and no fixes this round (stable)')
+        + (gateFollowUps.length ? `; ${gateFollowUps.length} non-blocking GATE follow-up candidate(s)` : ''),
+      ...followUpSuffix(gateFollowUps),
     };
   }
   if (budgetSpent >= maxRounds) {
@@ -481,6 +501,7 @@ function applyRoundOutcome(ledger, outcome) {
     parkedCount: (outcome.parkedIds || []).length, // COUNT, not the in-scope Set named parkedIds
     intentReviewCount: outcome.intentReviewCount || 0,
     gateOpenCount: outcome.gateOpenCount || 0,
+    gateFollowUps: outcome.gateFollowUps || [],
     panelConfigured: !!outcome.panelConfigured,
     panelDone: !!outcome.panelDone,
     hasDoD,
@@ -609,6 +630,8 @@ module.exports = {
   seenHash,
   dedupeAgainstSeen,
   decideTermination,
+  gateFollowUpEligible,
+  splitGateOpen,
   countNeedsDecisionParks,
   parkBudgetExceeded,
   resetUnreachable,

@@ -273,6 +273,8 @@ function compareReviewIds(a, b) {
 function reconciliationPacket({ stateDir, pr, headSha }) {
   const records = activeReviewRecords({ stateDir, pr, headSha })
     .sort((a, b) => a.recordedAtMs - b.recordedAtMs || compareReviewIds(a.reviewId, b.reviewId));
+  const delivered = !fixRoundForHead({ stateDir, pr, headSha }) && deliveryTerminal({ stateDir, pr, headSha });
+  if (delivered) return { pr, headSha, reviews: records.map((record) => ({ id: record.reviewId, reviewer: record.reviewer || 'legacy/unknown', url: record.reviewUrl, findings: record.findings })), batchCount: records.length, classification: 'delivery-terminal', action: 'report-delivery', humanRequired: false, requires: `report the recorded ${delivered.classification} delivery disposition` };
   if (records.length === 0) return null;
   const reviews = records.map((record) => ({ id: record.reviewId, reviewer: record.reviewer || 'legacy/unknown', url: record.reviewUrl, findings: record.findings }));
   const findings = records.flatMap((record) => record.findings);
@@ -345,7 +347,7 @@ function status(input) {
     }
   }
   const deadlines = [window, retryWindow].filter(Boolean).map((marker) => marker.deadlineMs);
-  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested, reconciliation: reconciliationPacket({ stateDir, ...key }) };
+  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested, reconciliation: reconciliationPacket({ stateDir, ...key }), delivery: deliveryStatus({ stateDir, ...key }) };
 }
 
 function claimFixRound(input) {
@@ -354,6 +356,8 @@ function claimFixRound(input) {
   const owner = input.owner || crypto.randomUUID();
   if (typeof owner !== 'string' || !owner || owner.length > 200) throw new Error('review-lgtm-state: fix-round owner must be a non-empty string of at most 200 characters');
   return withTransitionLock({ stateDir, pr: key.pr }, () => {
+    const terminal = deliveryTerminal({ stateDir, ...key });
+    if (terminal) return terminal;
     if (activeReviewRecords({ stateDir, ...key }).length === 0) return { claimed: false, reason: 'no-findings' };
     const slot = fixRoundForHead({ stateDir, ...key });
     if (slot) {
@@ -387,6 +391,8 @@ function claimRequest(input, kind) {
   const key = validate(input);
   const provider = normalizeProvider(input.provider);
   const markerKind = requestMarkerKind(kind, provider);
+  const terminal = deliveryTerminal({ stateDir, ...key });
+  if (terminal) return terminal;
   const currentBudget = requestBudget({ stateDir, pr: key.pr });
   if (currentBudget.remaining === 0) return { claimed: false, reason: 'request-budget-exhausted', budget: currentBudget };
   if (kind === 'initial') {
@@ -396,6 +402,8 @@ function claimRequest(input, kind) {
     if (now < observed.eligibleAtMs) return { claimed: false, reason: 'auto-review-grace', eligibleAtMs: observed.eligibleAtMs };
   }
   return withTransitionLock({ stateDir, pr: key.pr }, () => {
+    const lockedTerminal = deliveryTerminal({ stateDir, ...key });
+    if (lockedTerminal) return lockedTerminal;
     const budget = requestBudget({ stateDir, pr: key.pr });
     if (budget.remaining === 0) return { claimed: false, reason: 'request-budget-exhausted', budget };
     const claimed = writeExclusive(markerPath({ stateDir, ...key }, `${markerKind}-claim`), { ...key, kind, provider, claimed: true, claimedAtMs: now });
@@ -421,6 +429,8 @@ function recoverRequest(input, kind) {
   const provider = normalizeProvider(input.provider);
   const markerKind = requestMarkerKind(kind, provider);
   return withTransitionLock({ stateDir, pr: key.pr }, () => {
+    const terminal = deliveryTerminal({ stateDir, ...key });
+    if (terminal) return terminal;
     const claim = readMarker(markerPath({ stateDir, ...key }, `${markerKind}-claim`));
     const recovery = latestRecoveryClaim({ stateDir, ...key }, markerKind);
     const claimedAtMs = Math.max(...[claim, recovery].map((marker) => marker && marker.claimedAtMs).filter(Number.isSafeInteger));
@@ -453,6 +463,179 @@ function claimResult(result) {
   return typeof result === 'object' ? result : { claimed: result };
 }
 
+// Delivery disposition: one classification of an exact PR revision pair once
+// review collection is terminal (docs/design/2026-10-06-delivery-disposition.md).
+const RELEASE_BLOCKING = new Set(['acceptance-criterion', 'required-check', 'correctness', 'security', 'data-integrity', 'contract-choice', 'compatibility', 'contradictory-docs', 'unproven-premise', 'stage-exit']);
+const DISPOSITIONS = new Set(['fixed', 'follow-up', 'accepted', 'blocking']);
+const text = (value) => (typeof value === 'string' ? value.trim() : '');
+
+function validatePacket(packet) {
+  if (!packet || typeof packet !== 'object') throw new Error('review-lgtm-state: delivery packet must be an object');
+  if (!FULL_SHA.test(String(packet.baseSha))) throw new Error('review-lgtm-state: delivery baseSha must be a full SHA');
+  if (!/^[0-9a-f]{64}$/i.test(String(packet.contractDigest))) throw new Error('review-lgtm-state: delivery contractDigest must be a SHA-256 hex digest');
+  for (const field of ['reviewIds', 'acceptance', 'requiredChecks', 'openChoices', 'findings', 'tickets']) {
+    if (!Array.isArray(packet[field])) throw new Error(`review-lgtm-state: delivery ${field} must be an array`);
+  }
+  if (typeof packet.reviewsTerminal !== 'boolean') throw new Error('review-lgtm-state: delivery reviewsTerminal must be a boolean');
+  const unique = (entries, field, label) => {
+    const seen = new Set();
+    for (const entry of entries) {
+      const value = text(entry?.[field]);
+      if (!value) throw new Error(`review-lgtm-state: delivery ${label} needs ${field}`);
+      if (seen.has(value)) throw new Error(`review-lgtm-state: duplicate ${label} ${field} ${value}`);
+      seen.add(value);
+    }
+  };
+  unique(packet.acceptance, 'id', 'acceptance');
+  unique(packet.requiredChecks, 'name', 'required check');
+  for (const check of packet.requiredChecks) if (!text(check.conclusion)) throw new Error(`review-lgtm-state: delivery required check ${text(check.name)} needs conclusion`);
+  for (const choice of packet.openChoices) if (!text(choice)) throw new Error('review-lgtm-state: delivery openChoices entries must be non-empty strings');
+  unique(packet.findings, 'id', 'finding');
+  unique(packet.tickets, 'rootCause', 'ticket');
+  if (!packet.reviewIds.every((id) => /^[0-9]+$/.test(String(id)))) throw new Error('review-lgtm-state: delivery reviewIds must be review ids');
+  for (const finding of packet.findings) {
+    if (finding.releaseBlocking != null && !Array.isArray(finding.releaseBlocking)) throw new Error(`review-lgtm-state: delivery finding ${text(finding.id)} releaseBlocking must be an array`);
+    if (!text(finding.url)) throw new Error('review-lgtm-state: delivery finding needs id and url');
+    if (finding.disposition != null && !DISPOSITIONS.has(finding.disposition)) throw new Error(`review-lgtm-state: unknown disposition ${JSON.stringify(finding.disposition)}`);
+    for (const category of finding.releaseBlocking || []) {
+      if (!RELEASE_BLOCKING.has(category)) throw new Error(`review-lgtm-state: unknown release-blocking category ${JSON.stringify(category)}`);
+    }
+  }
+}
+
+function classifyDelivery(raw) {
+  const key = validate(raw);
+  validatePacket(raw);
+  const input = canonicalPacket(raw);
+  const reasons = [];
+  if (input.acceptance.length === 0) reasons.push('acceptance-missing');
+  for (const ac of input.acceptance) if (ac.met !== true) reasons.push(`acceptance-unmet:${ac.id}`);
+  for (const check of input.requiredChecks) if (check.conclusion !== 'success') reasons.push(`required-check:${check.name}:${check.conclusion}`);
+  if (!input.reviewsTerminal) reasons.push('reviews-not-terminal');
+  for (const choice of input.openChoices) reasons.push(`open-choice:${choice}`);
+
+  const followUps = new Map();
+  for (const finding of input.findings) {
+    const { id, disposition } = finding;
+    if (!disposition || (disposition === 'accepted' && !text(finding.acceptedBy))) reasons.push(`unowned:${id}`);
+    else if (disposition === 'blocking') reasons.push(`blocking:${id}`);
+    if (disposition !== 'fixed') for (const category of finding.releaseBlocking || []) reasons.push(`release-blocker:${id}:${category}`);
+    if (disposition !== 'follow-up') continue;
+    const rootCause = text(finding.rootCause);
+    if (!rootCause) { reasons.push(`unowned:${id}`); continue; }
+    if (!text(finding.rationale)) reasons.push(`no-rationale:${id}`);
+    if (!followUps.has(rootCause)) followUps.set(rootCause, []);
+    followUps.get(rootCause).push(finding);
+  }
+
+  const tickets = new Map();
+  const owners = new Map();
+  for (const ticket of input.tickets) {
+    const rootCause = text(ticket?.rootCause);
+    if (!text(ticket.url)) throw new Error('review-lgtm-state: delivery tickets need one rootCause and url each');
+    tickets.set(rootCause, ticket);
+    if (!followUps.has(rootCause)) reasons.push(`ticket-without-findings:${rootCause}`);
+    if (owners.has(ticket.url)) reasons.push(`ticket-shared:${ticket.url}`);
+    owners.set(ticket.url, rootCause);
+  }
+
+  const groups = [];
+  const pending = [];
+  for (const [rootCause, members] of followUps) {
+    const ticket = tickets.get(rootCause);
+    const findingIds = members.map((finding) => finding.id);
+    groups.push({ rootCause, ticket: ticket ? ticket.url : null, findingIds });
+    if (!ticket) {
+      reasons.push(`rollover-pending:${rootCause}`);
+      pending.push({ rootCause, findingIds, urls: members.map((finding) => finding.url), rationales: members.map((finding) => text(finding.rationale)) });
+      continue;
+    }
+    if (ticket.readBack !== true) reasons.push(`ticket-unread:${rootCause}`);
+    if (ticket.reused && !text(ticket.duplicateCheck)) reasons.push(`duplicate-unchecked:${rootCause}`);
+  }
+
+  const residual = input.findings.some((finding) => finding.disposition !== 'fixed');
+  const classification = reasons.length > 0 ? 'blocked' : residual ? 'mergeable-with-follow-ups' : 'mergeable-clean';
+  const findings = input.findings.map((finding) => ({
+    id: finding.id, url: finding.url, disposition: finding.disposition || null,
+    rootCause: finding.rootCause || null, releaseBlocking: finding.releaseBlocking, rationale: finding.rationale || null, acceptedBy: finding.acceptedBy || null,
+    ticket: finding.disposition === 'follow-up' ? tickets.get(text(finding.rootCause))?.url || null : null,
+  }));
+  return { pr: key.pr, headSha: key.headSha, baseSha: String(input.baseSha).toLowerCase(), contractDigest: String(input.contractDigest).toLowerCase(), classification, reasons, findings, groups, pending, requiredChecks: input.requiredChecks.map(({ name, conclusion }) => ({ name, conclusion })) };
+}
+
+// The digest covers only the fields the contract defines, in a fixed key
+// order, so key order, extra fields, SHA case and padding do not change it.
+function canonicalPacket(packet) {
+  return {
+    baseSha: String(packet.baseSha).toLowerCase(),
+    contractDigest: String(packet.contractDigest).toLowerCase(),
+    reviewIds: [...new Set(packet.reviewIds.map(normalizeReviewId))].sort(compareReviewIds),
+    acceptance: packet.acceptance.map((ac) => ({ id: text(ac.id), met: ac.met === true })),
+    requiredChecks: packet.requiredChecks.map((check) => ({ name: text(check.name), conclusion: text(check.conclusion) })),
+    reviewsTerminal: packet.reviewsTerminal,
+    openChoices: packet.openChoices.map(text),
+    findings: packet.findings.map((f) => ({ id: text(f.id), url: text(f.url), disposition: f.disposition || null, rootCause: text(f.rootCause), releaseBlocking: [...(f.releaseBlocking || [])].sort(), rationale: text(f.rationale), acceptedBy: text(f.acceptedBy) })),
+    tickets: packet.tickets.map((t) => ({ rootCause: text(t.rootCause), url: text(t.url), readBack: t.readBack === true, reused: !!t.reused, duplicateCheck: text(t.duplicateCheck) })),
+  };
+}
+
+// Records are ordered by a sequence number assigned under the PR transition
+// lock, not by wall-clock time.
+function deliveryRecords({ stateDir, pr, headSha }) {
+  const prefix = `pr-${pr}-${headSha}.delivery-`;
+  let names;
+  try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+  return names.filter((name) => name.startsWith(prefix) && name.endsWith('.json'))
+    .map((name) => readMarker(path.join(stateDir, name)))
+    .filter((record) => record && record.pr === pr && record.headSha === headSha && Number.isSafeInteger(record.sequence))
+    .sort((a, b) => a.sequence - b.sequence);
+}
+
+function deliveryStatus(input) {
+  const latest = latestDelivery(input);
+  return latest && { ...latest, current: deliveryCurrent(input, latest) };
+}
+
+function latestDelivery(input) {
+  return deliveryRecords(input).at(-1) || null;
+}
+
+function activeReviewIds(input) {
+  return activeReviewRecords(input).map((record) => record.reviewId).sort(compareReviewIds);
+}
+
+// A record covers only the review batch active when it was written; a review
+// recorded or rejected later is new evidence and lifts the terminal state.
+function deliveryCurrent(input, record) {
+  return !!record && JSON.stringify(record.reviewIds) === JSON.stringify(activeReviewIds(input));
+}
+
+function deliveryTerminal(input) {
+  const latest = latestDelivery(input);
+  return latest && latest.classification !== 'blocked' && deliveryCurrent(input, latest) ? { claimed: false, reason: 'delivery-terminal', classification: latest.classification } : null;
+}
+
+function recordDelivery(input) {
+  const { stateDir, now = Date.now(), packet } = input;
+  const key = validate(input);
+  const classified = classifyDelivery({ ...packet, ...key });
+  const digest = crypto.createHash('sha256').update(JSON.stringify(canonicalPacket(packet))).digest('hex');
+  return withTransitionLock({ stateDir, pr: key.pr }, () => {
+    if (fixRoundForHead({ stateDir, ...key })) return { recorded: false, reason: 'fix-round-open' };
+    const records = deliveryRecords({ stateDir, ...key });
+    const latest = records.at(-1);
+    const reviewIds = activeReviewIds({ stateDir, ...key });
+    const observed = canonicalPacket(packet).reviewIds;
+    if (JSON.stringify(observed) !== JSON.stringify(reviewIds)) return { recorded: false, reason: 'review-batch-changed', reviewIds };
+    if (latest && latest.digest === digest && deliveryCurrent({ stateDir, ...key }, latest)) return latest;
+    const sequence = (latest ? latest.sequence : 0) + 1;
+    const record = { ...classified, reviewIds, digest, sequence, recordedAtMs: now, budgets: { request: requestBudget({ stateDir, pr: key.pr }), fix: fixBudget({ stateDir, pr: key.pr }) } };
+    if (!writeExclusive(markerPath({ stateDir, ...key }, `delivery-${String(sequence).padStart(6, '0')}`), record)) throw new Error('review-lgtm-state: delivery record collided; retry');
+    return record;
+  }, { recorded: false, reason: 'transition-busy' });
+}
+
 function runMain(repoRoot = process.cwd()) {
   const [verb, pr, headSha, argument] = process.argv.slice(2);
   const stateDir = defaultStateDir(repoRoot);
@@ -464,8 +647,9 @@ function runMain(repoRoot = process.cwd()) {
   else if (verb === 'claim-fix-round') process.stdout.write(`${JSON.stringify(claimFixRound({ stateDir, pr, headSha }))}\n`);
   else if (verb === 'renew-fix-round') process.stdout.write(`${JSON.stringify(renewFixRound({ stateDir, pr, headSha, owner: argument }))}\n`);
   else if (verb === 'record-review') process.stdout.write(`${JSON.stringify(recordReview({ stateDir, pr, headSha, observation: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
+  else if (verb === 'record-delivery') process.stdout.write(`${JSON.stringify(recordDelivery({ stateDir, pr, headSha, packet: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'reject-review-batch') process.stdout.write(`${JSON.stringify(rejectReviewBatch({ stateDir, pr, headSha, ...JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
-  else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, record-review, or reject-review-batch');
+  else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, record-review, reject-review-batch, or record-delivery');
 }
 
-module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, recordReview, rejectReviewBatch, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, runMain };
+module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, recordReview, rejectReviewBatch, classifyDelivery, recordDelivery, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, runMain };

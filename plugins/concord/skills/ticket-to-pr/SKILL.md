@@ -29,11 +29,11 @@ Record a discriminating outcome-level red against the unchanged combined system 
 | 6 | Implement | Red test first, verified red for the right reason, and executing where CI will execute it |
 | 7 | Review the diff | `/review-and-fix <branch>`; its final DoD evidence may also satisfy stage 8 under the identity rule below |
 | 8 | Discriminating green | Reuse the final `review-and-fix` DoD only when it ran the same check against the exact final head, dependencies, and environment; otherwise run the check once. The combined outcome check remains a separate ticket gate for multi-repository work |
-| 9 | One PR per unit | Design, docs and code in the same repository PR; the repository's PR template followed; every document contradicted by the change corrected in it; the exact PR URL is read back from the tracker when that mutation is authorized |
+| 9 | One PR per unit | Design, docs and code in the same repository PR; the repository's PR template followed; every document contradicted by the change corrected in it; the exact PR URL is read back from the tracker when that mutation is authorized; a delivery disposition is recorded for the exact PR head and base |
 
 If the work is tracked somewhere and the user explicitly requests or approves an in-progress transition, move it before stage 3, not after stage 9 — a ticket sitting in the backlog while its branch already has commits is a board that lies to everyone reading it. Otherwise, preserve the current state. Expect an approved transition to fail closed on preconditions the tracker does not advertise: an assignee, a parent item that must itself be in-progress, an intermediate status that cannot be skipped. These are cheap to hit and slow to diagnose, so attempt the approved transition and read the refusal rather than assuming it will go through.
 
-Nothing here moves the outcome to `READY FOR TEST` or `Done`. Stage 9 ends at a PR URL. Merge, release, deployment, combined QA, and the outcome ticket's final status are separate decisions.
+Nothing here moves the outcome to `READY FOR TEST` or `Done`. Stage 9 ends at a PR URL with a recorded delivery disposition. Merge, release, deployment, combined QA, and the outcome ticket's final status are separate decisions.
 
 ## Notion ticket lifecycle
 
@@ -98,6 +98,10 @@ Sort every finding into one of three, and record the third as well as the first 
 
 If the repository tracks known gaps or limitations, check both directions. Does the change close a row — an adjacent row is not the same row, so read it before claiming it. And does it create a residual that deserves one? A risk your own design note names, that nothing tracks, is a gap you introduced.
 
+### Delivery disposition
+
+The PR's delivery state is the classification recorded for the exact PR head and base with `node "$STATE_CLI" record-delivery <pr> <head-sha>`, using the `STATE_CLI` locator and evidence packet defined by `review-until-lgtm`: `mergeable-clean`, `mergeable-with-follow-ups`, or `blocked`. Record it once the configured reviews for that head are terminal; until then the PR is `blocked` with `reviews-not-terminal`. Give every accepted finding exactly one disposition: fixed in this PR, a read-back follow-up ticket for its root cause, accepted by an authorized human, or blocking. An unmet acceptance criterion, a failed or unexecuted required check, a stage exit condition, contradictory documentation, or an unproven premise is release-blocking (`acceptance-criterion`, `required-check`, `stage-exit`, `contradictory-docs`, `unproven-premise`): it keeps the PR `blocked` and never becomes follow-up work. Once the record is `mergeable-*` for the unchanged pair, launch no further review or fix round. The final report names the exact head and base, required checks, review budgets, every finding id with its disposition, follow-up ticket URLs or pending packets, and the classification, and never calls `mergeable-with-follow-ups` clean.
+
 ## Rationalizations
 
 | Excuse | Reality |
@@ -108,6 +112,7 @@ If the repository tracks known gaps or limitations, check both directions. Does 
 | "The e2e passes, so the fix works" | Run it against the unchanged code. If it also passes, it discriminates nothing. |
 | "The regression test passes locally" | Check the workflow actually runs it. A test CI never executes is not coverage. |
 | "The doc sweep is clean, the docs are done" | A sweep finds contradictions. A document that never mentioned the invariant cannot contradict it, and is now incomplete. |
+| "The budget is spent, so the remaining blocker becomes a follow-up" | A budget bounds automation. A release blocker keeps the PR `blocked`. |
 | "Review found ten things, it is thorough enough" | Diff-local review cannot reject a premise the whole diff shares. |
 | "The design doc is new, there is nothing to review it against" | That is the reason to measure, not the reason to proceed. |
 
@@ -124,4 +129,4 @@ If the repository tracks known gaps or limitations, check both directions. Does 
 
 ## Notes
 
-`review-and-fix` reports its DoD as DEFERRED when the repository has no `review.config.json`; relay that rather than calling the run verified. Never merge — stage 9 ends at the PR URL.
+`review-and-fix` reports its DoD as DEFERRED when the repository has no `review.config.json`; relay that rather than calling the run verified. Never merge — stage 9 ends at the PR URL and its recorded delivery disposition.

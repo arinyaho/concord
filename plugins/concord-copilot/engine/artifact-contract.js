@@ -30,7 +30,7 @@ function retryPrompt(name) {
     : '';
   const groupsRule = name === 'plan' ? ' A v2 plan must classify every surviving finding into exactly one group; never invent an implicit singleton.' : name === 'verify' ? ' The optional "groups" array is legacy evidence only and cannot authorize edits.' : '';
   const ownershipRule = name === 'gate-verify'
-    ? ` This artifact role is gate-verify. The only allowed finding ID prefix is ${prefixes}. ${allowedFindingPrefixes('verify').map((prefix) => `${prefix}*`).join(' and ')} candidates are context only and must not be dispositioned in this artifact; their disposition belongs to the correctness verifier. Rewrite only the gate candidates' verdict, preserve the original evidence, and do not delete evidence merely to manufacture a clean verdict.`
+    ? ` This artifact role is gate-verify. The only allowed finding ID prefix is ${prefixes}. ${allowedFindingPrefixes('verify').map((prefix) => `${prefix}*`).join(' and ')} candidates are context only and must not be dispositioned in this artifact; their disposition belongs to the correctness verifier. The optional "blocking" array holds {"id":"<gate id>","reason":"<one line>"} entries for gate candidates you judge release-blocking despite a follow-up claim. Rewrite only the gate candidates' verdict, preserve the original evidence, and do not delete evidence merely to manufacture a clean verdict.`
     : '';
   return `Rewrite only round artifact ${name} as JSON: {"status":"ok",${name === 'plan' ? '"protocolVersion":2,' : ''}${fields}}. Findings require id, file, and summary; ids must use ${prefixes}<stable-slug>.${rejectedRule}${groupsRule}${ownershipRule} Do not add prose or other extra top-level fields, with one exception: if you could not run the method you were assigned, keep (or add) "blocked":["<tool>: <what failed>"] -- never drop it to make this artifact validate.`;
 }
@@ -138,6 +138,21 @@ function normalizeArtifact(name, raw) {
       if (typeof reason !== 'string' || !reason.trim()) throw new ArtifactError('retry', `${name} rejected[${index}] ("${id}") has no "reason" -- every rejection must state in one line what was actually run, measured, or read to reject it`);
       return { id, reason: reason.trim() };
     });
+  }
+  if (name === 'gate-verify' && parsed.blocking !== undefined) {
+    if (!Array.isArray(parsed.blocking)) throw new ArtifactError('fatal', 'gate-verify artifact field "blocking" must be an array');
+    canonical.blocking = parsed.blocking.map((entry, index) => {
+      const id = entry && typeof entry === 'object' ? entry.id : undefined;
+      if (typeof id !== 'string' || !isValidFindingId(id) || !id.startsWith('gate:')) throw new ArtifactError('retry', `gate-verify blocking[${index}] has invalid id "${id}"`);
+      const reason = entry.reason;
+      if (typeof reason !== 'string' || !reason.trim()) throw new ArtifactError('retry', `gate-verify blocking[${index}] ("${id}") has no "reason"`);
+      return { id, reason: reason.trim() };
+    });
+    const rejectedIds = new Set((canonical.rejected || []).map((entry) => entry.id));
+    for (const entry of canonical.blocking) {
+      if (rejectedIds.has(entry.id)) throw new ArtifactError('retry', `gate-verify lists "${entry.id}" as both rejected and blocking; a candidate is either a false positive or release-blocking`);
+    }
+    // review-cli additionally requires each id to be a gate-review or gate-verify candidate
   }
   if (name === 'plan') {
     if (parsed.protocolVersion !== 2) throw new ArtifactError('retry', 'plan artifact requires protocolVersion 2');

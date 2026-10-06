@@ -59,7 +59,7 @@ function foldGateFindings({ gateFindings, verifyRejectedIds, dismissedIds }) {
   const dismissed = new Set(dismissedIds || []);
   return (gateFindings || [])
     .filter((f) => !rejected.has(f.id) && !dismissed.has(f.id))
-    .map(toGateFinding);
+    .map((f) => ({ ...toGateFinding(f), ...(f.releaseBlocking !== undefined ? { releaseBlocking: f.releaseBlocking } : {}), ...(f.rationale !== undefined ? { rationale: f.rationale } : {}) }));
 }
 
 // Cross-round persistence retire rule (spec decision 4): gate findings must
