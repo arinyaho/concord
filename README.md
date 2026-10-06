@@ -23,6 +23,12 @@ An agent workflow plugin for **Claude Code**, **Codex**, and **GitHub Copilot** 
 
 A personal, vendor-neutral project: one core runs on all three harnesses, and it is not tied to any product codebase.
 
+## Review policy
+
+Review blocks a pull request only for rollout blockers: serious bugs, security issues, and unmet acceptance criteria. Minor findings do not block. They are collected and triaged once, just before merge, and become tickets.
+
+Concord does not try to prove a change free of defects. Exhaustive static analysis and repeated full-diff review multiply token cost for diminishing returns, so review effort is bounded and the loop ends on a deterministic decision instead of running until no finding is left.
+
 ## Install
 
 ### Claude Code

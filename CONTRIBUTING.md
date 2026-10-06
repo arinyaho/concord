@@ -22,3 +22,7 @@ find plugins -path '*/test/*.test.js' -type f -print0 | xargs -0 -r node --test
 ```
 
 Open a pull request against `main`; CI runs the same checks for changes under `plugins/`, `services/` (each service has its own workflow), `VERSION`, and the marketplace manifests; CI does not run the plugin-install end-to-end tests or cover `scripts/dod.mjs` and `review.config.json`, so run `node scripts/dod.mjs` locally for changes to those files, to `plugins/`, or to the marketplace manifests. Keep each PR to one coherent change.
+
+## Review
+
+Fix review comments that are rollout blockers (serious bugs, security issues, unmet acceptance criteria) before merging. Leave minor comments open while the pull request is in progress; just before merging, read them together once and file a ticket for each one worth keeping. A minor comment does not block a merge.
