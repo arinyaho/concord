@@ -765,7 +765,7 @@ function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey,
   // A pre-ID ledger that already launched a broad role has irrevocably spent
   // its sweep. Materialize that conservative history before opening a new key.
   if (!oldLedger.initiativeId && (oldLedger.launches || []).some((launch) => /^gate-(review|verify)$/.test(launch.role))) {
-    claimBroadSweep(openInitiativeRun({ stateDir: newStateDir, key: fromRunKey, initiativeId: fromRunKey, repository: repoRoot, maxLaunches: oldLedger.budget.maxLaunches, maxRounds: oldLedger.budget.maxRounds, allowTerminal: true, mode: oldLedger.mode }));
+    claimBroadSweep(openInitiativeRun({ stateDir: newStateDir, key: fromRunKey, initiativeId: fromRunKey, repository: repoRoot, maxLaunches: oldLedger.budget.maxLaunches, maxRounds: oldLedger.budget.maxRounds, allowTerminal: true, mode: oldLedger.mode }), { target: ref, attemptId: ledger.attemptId });
   }
 
   // Step 2: the mode check only -- it needs no new-run object, so it runs
@@ -848,6 +848,12 @@ function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey,
     // retry. The new run must still exist and be ready, same as the first
     // attempt, before step 4 repeats the target-ledger write.
     checkNewRunReady();
+  }
+
+  // The broad pair is one claimed unit. A carried round that has not yet
+  // produced gate-verify must retain its own claim under the replacement key.
+  if (ledger.gateApplied && ledger.gateMode === 'pair' && !fs.existsSync(path.join(stateDir, `round-${ledger.round}-gate-verify.json`))) {
+    claimBroadSweep(openKeyedRun(initiative), { target: ref, attemptId: ledger.attemptId }, true);
   }
 
   // Step 4: one atomic target-ledger write -- bind to the new key, append
@@ -946,7 +952,7 @@ function runLevelVerb(verb, arg, initiative, rest = []) {
   const stateDir = canonicalPath(initiative.stateDir);
   const repository = canonicalPath(process.env.REVIEW_REPO_ROOT || process.cwd());
   if (verb === 'escalate') {
-    escalateInitiativeRun({ stateDir, key: initiative.key, repository, trigger: arg, maxLaunches: Number(initiative.maxLaunches), maxRounds: Number(initiative.maxRounds) });
+    escalateInitiativeRun({ stateDir, key: initiative.key, initiativeId: initiative.initiativeId, repository, trigger: arg, maxLaunches: Number(initiative.maxLaunches), maxRounds: Number(initiative.maxRounds) });
     process.stdout.write(`${JSON.stringify({ status: 'escalated', mode: 'base', trigger: arg })}\n`);
     return;
   }
@@ -1016,6 +1022,14 @@ function runVerb(resolveFromCwd, args, initiative) {
         return reason === 'reconciliation-required' ? { status: reason, role, count, round: ledger.round } : { status: 'denied', role, count, round: ledger.round, ...(reason ? { reason } : {}), ...(diagnosis ? { lockDiagnosis: diagnosis } : {}) };
       }
       const token = crypto.randomBytes(16).toString('hex');
+      const artifact = Object.entries(ARTIFACT_RESERVE_ROLE).find(([, mapped]) => mapped === role)?.[0];
+      if (artifact) {
+        const repairPath = path.join(stateDir, `round-${ledger.round}-${artifact}.repair.json`);
+        try {
+          const repair = JSON.parse(fs.readFileSync(repairPath, 'utf8'));
+          if (repair.state === 'prepared' && repair.target?.ref === ref && repair.round === ledger.round) fs.writeFileSync(repairPath, JSON.stringify({ ...repair, state: 'reserved', reservationToken: token }) + '\n');
+        } catch (_) { /* ordinary reviewer reservation */ }
+      }
       const panel = role === 'lens' || role === 'vote' ? (ledger.gate_panel?.round || 0) + 1 : undefined;
       writeLedger(stateDir, slug, { ...ledger, initiative_reservations: [...(ledger.initiative_reservations || []), { token, role, round: ledger.round, ...(panel ? { panel } : {}), count }] });
       return { status: 'granted', role, count, round: ledger.round, token };
@@ -1130,12 +1144,12 @@ function runVerb(resolveFromCwd, args, initiative) {
         const statusSpelling = parsed && typeof parsed.status === 'string' && ['ok', 'findings', 'clean'].includes(parsed.status.toLowerCase()) && parsed.status !== parsed.status.toLowerCase();
         const prefixes = artifactContract.allowedFindingPrefixes(name);
         const items = parsed && artifactContract.ARTIFACT_ROLES.includes(name)
-          ? ['rejected', 'findings', 'groups', 'examined'].flatMap((key) => Array.isArray(parsed[key]) ? parsed[key] : [])
+          ? ['rejected', 'findings', 'groups'].flatMap((key) => Array.isArray(parsed[key]) ? parsed[key] : [])
           : [];
-        const idOf = (item) => typeof item === 'string' ? item : item && item.id;
+        const idOf = (item) => typeof item === 'string' ? item : item && (item.id || item.findingIds);
         const mixedNamespaces = /invalid id/.test(e.message)
-          && items.some((item) => typeof idOf(item) === 'string' && prefixes.some((prefix) => idOf(item).startsWith(prefix)))
-          && items.some((item) => typeof idOf(item) === 'string' && !prefixes.some((prefix) => idOf(item).startsWith(prefix)));
+          && items.flatMap(idOf).some((id) => typeof id === 'string' && prefixes.some((prefix) => id.startsWith(prefix)))
+          && items.flatMap(idOf).some((id) => typeof id === 'string' && !prefixes.some((prefix) => id.startsWith(prefix)));
         if (!statusSpelling && !mixedNamespaces) throw new Error(`harness-failure: ${e.message}`);
         const retryArtifacts = retryArtifactMap(ledger.execution);
         const alreadyRetried = fs.existsSync(repairPath) || fs.existsSync(retryPath) || !!retryArtifacts[name];
@@ -1169,7 +1183,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     const repairPath = path.join(stateDir, `round-${n}-${name}.repair.json`);
     const repair = JSON.parse(fs.readFileSync(repairPath, 'utf8'));
     if (repair.state === 'dispatched') { process.stdout.write(JSON.stringify(repair) + '\n'); return; }
-    if (repair.state !== 'prepared' || repair.target?.ref !== ref || repair.round !== n) throw new Error(`${name} repair binding changed`);
+    if (!['prepared', 'reserved'].includes(repair.state) || repair.target?.ref !== ref || repair.round !== n) throw new Error(`${name} repair binding changed`);
     const dispatched = { ...repair, state: 'dispatched' };
     fs.writeFileSync(repairPath, JSON.stringify(dispatched) + '\n');
     process.stdout.write(JSON.stringify(dispatched) + '\n');

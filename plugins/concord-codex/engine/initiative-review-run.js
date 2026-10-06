@@ -154,7 +154,7 @@ function openInitiativeRun({ stateDir, key, initiativeId = key, repository, maxL
   return run;
 }
 
-function claimBroadSweep(run, claimant) {
+function claimBroadSweep(run, claimant, reclaim = false) {
   const claim = broadClaimPath(run.stateDir, run.repository, run.initiativeId);
   const lock = `${claim}.lock`;
   fs.mkdirSync(path.dirname(lock), { recursive: true });
@@ -167,8 +167,12 @@ function claimBroadSweep(run, claimant) {
     fs.writeFileSync(path.join(lock, 'owner'), `${process.pid}\n`);
     try {
       const prior = JSON.parse(fs.readFileSync(claim, 'utf8'));
-      return prior.repository === run.repository && prior.initiativeId === run.initiativeId && prior.key === run.key
-        && prior.target === claimant.target && prior.attemptId === claimant.attemptId;
+      if (prior.repository === run.repository && prior.initiativeId === run.initiativeId
+        && prior.target === claimant.target && prior.attemptId === claimant.attemptId) {
+        if (reclaim && prior.key !== run.key) writeFileAtomic(claim, `${JSON.stringify({ ...prior, key: run.key })}\n`, { mode: 0o600 });
+        return prior.key === run.key || reclaim;
+      }
+      return false;
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
     writeFileAtomic(claim, `${JSON.stringify({ repository: run.repository, initiativeId: run.initiativeId, key: run.key, target: claimant.target, attemptId: claimant.attemptId, claimedAt: now() })}\n`, { mode: 0o600 });
     return true;
@@ -185,14 +189,14 @@ function hasBroadSweepClaim(run, claimant) {
 
 // Escalates a lite run to base. Allowed only before the first launch, so one run
 // never mixes two reviewer sets under one budget. The caller supplies the base budgets.
-function escalateInitiativeRun({ stateDir, key, repository, trigger, maxLaunches, maxRounds }) {
+function escalateInitiativeRun({ stateDir, key, initiativeId, repository, trigger, maxLaunches, maxRounds }) {
   if (!ESCALATION_TRIGGERS.includes(trigger)) throw new Error(`initiative escalation trigger must be one of ${ESCALATION_TRIGGERS.join(', ')}`);
   if (!Number.isInteger(maxLaunches) || maxLaunches < 1 || !Number.isInteger(maxRounds) || maxRounds < 1) throw new Error('initiative review budgets must be positive integers');
   const run = { path: runPath(stateDir, key), repository: repositoryIdentity(repository) };
   const done = locked(run, (ledger) => {
     if (!ledger) throw new Error('no initiative review run for this key');
     assertVersion(ledger);
-    if (ledger.repository !== run.repository || ledger.status !== 'active') throw new Error('initiative review run has a different repository or is terminal');
+    if (ledger.repository !== run.repository || (ledger.initiativeId || key) !== (initiativeId || key) || ledger.status !== 'active') throw new Error('initiative review run has a different repository, initiative identity, or is terminal');
     if (ledger.mode !== 'lite') throw new Error('initiative review run is not a lite run');
     if ((ledger.launches || []).length) throw new Error('initiative escalation is refused after the first launch; preserve the original initiative and target ledgers and reconcile the lite contract and spent budgets; only after reconciliation start a new run key in base mode in a separate target review state directory, retaining the old target ledger as evidence');
     return { ...ledger, mode: 'base', escalation: { from: 'lite', to: 'base', trigger }, budget: { maxLaunches, maxRounds } };
@@ -280,7 +284,7 @@ function reserveLaunch(run, launch) {
 }
 
 function recordDisposition(run, { target, revision, result, packet = {}, finding = null, stage = null, avoidedLaunches = 0, findings = {}, checks = [], telemetry = [] }) {
-  const safeTelemetry = telemetry.map(({ role, stage: telemetryStage, revision, round, count, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, ...(telemetryStage ? { stage: telemetryStage } : {}), ...(revision ? { revision } : {}), ...(Number.isInteger(round) ? { round } : {}), ...(Number.isInteger(count) ? { count } : {}), elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }));
+  const safeTelemetry = telemetry.map(({ role, operation, stage: telemetryStage, revision, round, count, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, ...(operation ? { operation } : {}), ...(telemetryStage ? { stage: telemetryStage } : {}), ...(revision ? { revision } : {}), ...(Number.isInteger(round) ? { round } : {}), ...(Number.isInteger(count) ? { count } : {}), elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }));
   return Boolean(locked(run, (ledger) => {
     if (!ledger || ledger.version !== 5 || ledger.status !== 'active') return null;
     const disposition = normalizeDisposition(result);

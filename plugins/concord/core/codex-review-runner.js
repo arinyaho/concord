@@ -864,8 +864,8 @@ async function runReviewUntilGreen(options) {
           fs.copyFileSync(repair.snapshotPath, snapshotPath);
           fs.copyFileSync(repair.packetPath, packetPath);
           const alreadyDispatched = repair.state === 'dispatched';
-          const reserved = repair.state === 'prepared' && await reserve(role === 'gate' ? 'gate-review' : role);
-          if (repair.state === 'prepared') repair = await cli(['artifact-repair-dispatch', ref, role]);
+          const reserved = repair.state === 'prepared' ? await reserve(role === 'gate' ? 'gate-review' : role) : repair.state === 'reserved';
+          if (['prepared', 'reserved'].includes(repair.state)) repair = await cli(['artifact-repair-dispatch', ref, role]);
           if (repair.state === 'dispatched' && !fs.existsSync(repair.candidatePath)) {
           // The durable dispatch is the sole launch authorization. A crash
           // after it consumes the attempt rather than duplicating a reviewer.

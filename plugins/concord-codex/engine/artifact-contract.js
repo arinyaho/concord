@@ -62,7 +62,7 @@ function preservesArtifact(name, raw, candidate) {
     const ids = name === 'plan' && item && typeof item === 'object' ? item.findingIds : [typeof item === 'string' ? item : item && item.id];
     return Array.isArray(ids) && ids.some((id) => typeof id === 'string' && shape.prefixes.some((prefix) => id.startsWith(prefix)));
   };
-  const ownedEvidence = shape.arrays.flatMap((key) => Array.isArray(original[key]) ? original[key].filter(owns) : []);
+  const ownedEvidence = shape.arrays.flatMap((key) => key === 'examined' ? (original[key] || []) : (Array.isArray(original[key]) ? original[key].filter(owns) : []));
   if (!ownedEvidence.length && !shape.arrays.every((key) => Array.isArray(original[key]) && original[key].length === 0)) return false;
   for (const key of Object.keys(original)) {
     if (key === 'status') continue;

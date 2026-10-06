@@ -15,6 +15,11 @@ test('canonical correctness artifact is preserved except unsupported top-level f
   assert.deepStrictEqual(normalizeArtifact('correctness', JSON.stringify({ status: 'ok', examined: ['a.js'], findings: [finding], noise: true })), { status: 'ok', examined: ['a.js'], findings: [finding] });
 });
 
+test('status repair preserves correctness examined paths as evidence', () => {
+  const original = JSON.stringify({ status: 'OK', examined: ['changed-file.js'], findings: [] });
+  assert.ok(preservesArtifact('correctness', original, { status: 'ok', examined: ['changed-file.js'], findings: [] }));
+});
+
 test('findings status canonicalizes without changing finding meaning', () => {
   const finding = { id: 'correctness:real-bug', file: 'a.js', span: 'bad()', summary: 'wrong result' };
   assert.deepStrictEqual(normalizeArtifact('correctness', JSON.stringify({ status: 'findings', examined: ['a.js'], findings: [finding] })).findings[0], finding);
