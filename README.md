@@ -6,7 +6,13 @@
 ![Codex](https://img.shields.io/badge/Codex-supported-black)
 ![GitHub Copilot](https://img.shields.io/badge/GitHub_Copilot-supported-1F6FEB)
 
-Harness-engineering plugins for **Claude Code**, **Codex**, and **GitHub Copilot** - small fixes for recurring dysfunction in long agent sessions. Personal tooling, not tied to any product codebase. The same vendor-neutral review-and-fix core runs on all three harnesses.
+Workflow plugins for **Claude Code**, **Codex**, and **GitHub Copilot** that keep long agent sessions on track.
+
+- **Review until it is actually done.** `review-and-fix` reviews a branch, fixes what it finds, and re-checks until a deterministic CLI reaches a terminal decision, not until a model says "looks good".
+- **Keep the goal across sessions.** A task charter carries the north star and merged decisions into every new session.
+- **Ticket to verified PR.** Skills take a ticket from design through implementation to a PR with red/green evidence.
+
+One vendor-neutral core runs on all three harnesses. Personal tooling, not tied to any product codebase.
 
 ## Install
 
