@@ -168,7 +168,7 @@ test('Copilot ships an LGTM state CLI and its skill resolves it from the plugin 
   assert.equal(typeof require(stateCli).status, 'function');
 });
 
-pluginInstallE2ETest('clean Copilot config installs, updates, and removes the plugin', (t) => {
+pluginInstallE2ETest('plugin-install e2e: clean Copilot config installs, updates, and removes the plugin', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concord-copilot-install-'));
   const config = path.join(root, 'config');
   const home = path.join(root, 'home');

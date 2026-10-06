@@ -94,7 +94,7 @@ test('ticket-to-pr keeps Notion lifecycle transitions bounded and unambiguous', 
   assert.match(skill.slice(prCreation), /Do not move the ticket to Done/);
 });
 
-pluginInstallE2ETest('clean Claude and Codex installs discover the same shared skills', (t) => {
+pluginInstallE2ETest('plugin-install e2e: clean Claude and Codex installs discover the same shared skills', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concord-ticket-writing-'));
   const home = path.join(root, 'home');
   const claudeConfig = path.join(root, 'claude');
