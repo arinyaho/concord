@@ -57,7 +57,9 @@ A new commit is a new head and has no record. A changed base, approved contract 
 - `ticket-to-pr` stage 9 ends at a PR URL with a recorded delivery disposition. A stage exit condition is never a follow-up.
 - `initiative-to-prs` reports each PR-backed unit's delivery disposition in the completion report. A `blocked` disposition leaves the unit `BLOCKED`.
 
-Every workflow's final handoff names the exact head and base, required checks and their status, review/request/fix budgets, each finding id with its disposition (fixed findings separate from current follow-ups), follow-up ticket URLs or pending packets, and the classification. It never says clean or LGTM for `mergeable-with-follow-ups`. Thread replies and resolution are provider-specific, and they do not change the classification.
+Every workflow's final handoff names the exact head and base, required checks and their status, review/request/fix budgets, each finding id with its disposition (fixed findings separate from current follow-ups), follow-up ticket URLs or pending packets, whether the PR and thread links to those tickets are posted, and the classification. It never says clean or LGTM for `mergeable-with-follow-ups`.
+
+When tracker mutation is authorized, the workflow links the source PR and each relevant review thread (the `url` of each follow-up finding) to the read-back ticket URL of its root cause. How a link is posted, and whether a thread is replied to or resolved, is provider-specific; that the link is posted is not. Without authorization no link is posted, the group stays `rollover-pending`, and no ticket URL is invented. Linking is a workflow step outside the evidence packet, so posting a link, or not posting one, does not change the classification.
 
 ## Rationale
 
