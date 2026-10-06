@@ -207,12 +207,21 @@ test('artifact-normalize does not create a repair attempt for invalid evidence',
   assert.strictEqual(fs.existsSync(path.join(dir, `round-${n}-correctness.repair.json`)), false);
 });
 
-test('gate-verify namespace retry is specific, preserves the artifact, and remains bounded', () => {
+test('artifact-normalize repairs an unsupported status but fails closed on a gate-verify namespace error', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
   const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--broad'], { env, broadDefault: true })).round;
+  const repairFile = path.join(dir, `round-${n}-gate.json`);
+  const unsupported = JSON.stringify({ status: 'pending', rejected: [], findings: [] });
+  fs.writeFileSync(repairFile, unsupported);
+
+  const repair = JSON.parse(run(['artifact-normalize', 'feat/x', 'gate'], { env, broadDefault: true }));
+  assert.strictEqual(repair.status, 'repair');
+  assert.strictEqual(fs.readFileSync(repairFile, 'utf8'), unsupported, 'repair must retain the original artifact');
+  assert.ok(fs.existsSync(path.join(dir, `round-${n}-gate.repair.json`)));
+
   const file = path.join(dir, `round-${n}-gate-verify.json`);
   const raw = JSON.stringify({
     status: 'ok',
@@ -221,14 +230,8 @@ test('gate-verify namespace retry is specific, preserves the artifact, and remai
   });
   fs.writeFileSync(file, raw);
 
-  const retry = JSON.parse(run(['artifact-normalize', 'feat/x', 'gate-verify'], { env, broadDefault: true }));
-  assert.strictEqual(retry.status, 'retry');
-  assert.match(retry.prompt, /role is gate-verify/i);
-  assert.match(retry.prompt, /allowed.*gate:/i);
-  assert.match(retry.prompt, /correctness:\*.*must not.*disposition/i);
-  assert.match(retry.prompt, /preserve.*evidence/i);
-  assert.strictEqual(fs.readFileSync(file, 'utf8'), raw, 'normalization must not filter cross-namespace evidence');
   assert.throws(() => run(['artifact-normalize', 'feat/x', 'gate-verify'], { env, broadDefault: true }), /harness-failure.*invalid id/);
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), raw, 'normalization must not filter cross-namespace evidence');
 });
 
 test('artifact-normalize fails closed on missing correctness coverage', () => {

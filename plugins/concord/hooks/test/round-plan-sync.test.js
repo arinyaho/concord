@@ -68,7 +68,7 @@ test('every gate verifier prompt embeds the namespace ownership clause byte-for-
 
 test('manual review drivers normalize gate-verify artifacts through the bounded retry contract', () => {
   for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
-    const boundary = text.match(/Immediately after every fail-closed reviewer[\s\S]*?(?:A failed, missing, or non-preserving candidate and any|A second retry response or any) `harness-failure` is terminal\.[^\n]*/)?.[0] || '';
+    const boundary = text.match(/Immediately after every fail-closed reviewer[\s\S]*?(?:A failed, missing, or non-preserving candidate and any|A second retry response or any) `harness-failure` (?:is|are) terminal\.[^\n]*/)?.[0] || '';
     assert.match(boundary, /`gate-verify`/, `${name} does not normalize the gate-verify role`);
     assert.doesNotMatch(boundary, /Do not normalize `gate-verify`/, `${name} bypasses strict gate-verify normalization`);
   }
