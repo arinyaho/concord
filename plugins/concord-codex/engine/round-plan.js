@@ -16,6 +16,7 @@
 // reviewerPrompt() to generate the prompt they actually send.
 const path = require('node:path');
 const { safeIdForFilename } = require('./artifact-name');
+const { allowedFindingPrefixes } = require('./artifact-contract');
 
 // Order and parallelism, mirrored by review-driver.md steps 2-3 and
 // codex-review-runner.js's `reviewers` array in runReviewUntilGreen:
@@ -48,6 +49,9 @@ const BLOCKED_CLAUSE = ' If you cannot run a tool this task requires (missing, d
 // pass. This clause closes that gap; keep it byte-identical between here and
 // review-driver.md's gate-review prompt (round-plan-sync.test.js enforces it).
 const GATE_SWEEP_CLAUSE = ' If this finding is an instance of a pattern likely to recur elsewhere in the repository (a value, name, or reference that should be mirrored across multiple files), sweep the whole repository for every other file matching that same pattern in this same pass and report each occurrence as its own finding -- do not stop at the first instance and leave the rest for a later round to catch one at a time.';
+const GATE_VERIFY_PREFIX = allowedFindingPrefixes('gate-verify')[0];
+const CORRECTNESS_PREFIXES = allowedFindingPrefixes('correctness').map((prefix) => `${prefix}*`).join(' or ');
+const GATE_VERIFY_OWNERSHIP_CLAUSE = ` Use correctness candidates only as context when evaluating gate candidates. Your artifact may disposition only ${GATE_VERIFY_PREFIX}* candidate IDs. Do not copy, accept, or reject ${CORRECTNESS_PREFIXES} IDs in this artifact; their disposition belongs to the correctness verifier.`;
 
 function reviewerPrompt(role, { stateDir, round, targetType, dodDeferred, dodPending, finding, fixGroup, retryPrompt, slug, priorIntentIds, plannedFindings = [], gateMode, gateApplied = false, intentHash = null }) {
   const groupArtifactId = fixGroup && fixGroup.groupId ? fixGroup.groupId : finding && finding.id;
@@ -67,7 +71,7 @@ function reviewerPrompt(role, { stateDir, round, targetType, dodDeferred, dodPen
   if (role === 'intent') return `You are a design-conformance detector. Compare ${path.join(stateDir, `round-${round}-diff.txt`)} with ${path.join(stateDir, `intent-${slug}.md`)}. Raise a finding ONLY for an active contradiction of an explicit stated requirement on an exact changed line. Each finding MUST have an intent: ID, file, span containing that exact changed line, the verbatim requirement text, and summary. Never report omissions, unchanged lines, design taste, or non-normative text. Still-open intent IDs from the previous round: ${JSON.stringify(priorIntentIds || [])}. For the SAME objection against the SAME requirement, REUSE that id verbatim so a human recognises the objection they already saw; mint a new id ONLY for a genuinely new objection -- nothing dedupes intent findings, so a re-slugged repeat reads as a second problem. Write ONLY {"status":"ok","findings":[]} to ${artifact}.${retry}`;
   if (role === 'gate' && gateMode === 'design-conformance') return `Review ${path.join(stateDir, `round-${round}-diff.txt`)} for design-conformance gaps only: places where the change does not do what the design/plan/AC at ${path.join(stateDir, `intent-${slug}.md`)} (read it if it exists) requires, or does something it forbids. You MAY Read/Grep the repository. Report only gate: findings, and every ID MUST be gate:design-conformance:<slug>. Do not report ac-coverage, cross-context or silent-gap findings. Each finding needs file, span/evidence anchor, requirement text when available, and summary.${GATE_SWEEP_CLAUSE} Write ONLY {"status":"ok","findings":[]} to ${artifact}.${retry}`;
   if (role === 'gate') return `Review ${path.join(stateDir, `round-${round}-diff.txt`)} for defects a diff-local reviewer cannot catch. You MAY Read/Grep the repository and MUST read ${path.join(stateDir, `intent-${slug}.md`)} if it exists. Report only gate: findings, and every ID MUST be gate:<class>:<slug> with <class> one of cross-context, silent-gap, ac-coverage, design-conformance, threat-model -- a two-segment id silently defaults the class. Each finding needs file, span/evidence anchor, requirement text when available, and summary.${GATE_SWEEP_CLAUSE} Report every gap you find, including ones you are uncertain about: a separate gate-verify pass rejects false positives, so your job here is coverage, not filtering. Write ONLY {"status":"ok","findings":[]} to ${artifact}.${retry}`;
-  if (role === 'gate-verify') return `Re-review candidates in ${path.join(stateDir, `round-${round}-gate.json`)} together with the complete correctness candidate set in ${path.join(stateDir, `round-${round}-correctness.json`)} against the diff and repository. Evaluate related or conflicting findings as one batch; your verdict artifact covers gate: candidates. Reject false positives and design-taste objections; keep actionable gaps. You MAY add genuinely new gate: findings using the same file, span/evidence, requirement, and summary shape. Write ONLY {"status":"ok","rejected":[],"findings":[]} to ${artifact}; each rejection is {"id":"<finding id>","reason":"<one line naming what you actually ran, measured, or read to reject it>"}.${retry}`;
+  if (role === 'gate-verify') return `Re-review candidates in ${path.join(stateDir, `round-${round}-gate.json`)} together with the complete correctness candidate set in ${path.join(stateDir, `round-${round}-correctness.json`)} against the diff and repository. Evaluate related or conflicting findings as one batch.${GATE_VERIFY_OWNERSHIP_CLAUSE} Reject false positives and design-taste objections; keep actionable gaps. You MAY add genuinely new gate: findings using the same file, span/evidence, requirement, and summary shape. Write ONLY {"status":"ok","rejected":[],"findings":[]} to ${artifact}; each rejection is {"id":"<${GATE_VERIFY_PREFIX} finding id>","reason":"<one line naming what you actually ran, measured, or read to reject it>"}.${retry}`;
   if (role === 'fix') {
     const group = fixGroup || { findingIds: [finding.id], rootCause: finding.summary, invariants: [], changeClass: 'local', action: 'fix', findings: plannedFindings };
     const related = (group.findings || plannedFindings).filter((item) => item.id !== finding.id);
@@ -81,4 +85,4 @@ function reviewerPrompt(role, { stateDir, round, targetType, dodDeferred, dodPen
   throw new Error(`harness-failure: unknown reviewer role ${role}`);
 }
 
-module.exports = { ROLE_SEQUENCE, BLOCKED_CLAUSE, GATE_SWEEP_CLAUSE, reviewerPrompt };
+module.exports = { ROLE_SEQUENCE, BLOCKED_CLAUSE, GATE_SWEEP_CLAUSE, GATE_VERIFY_OWNERSHIP_CLAUSE, reviewerPrompt };

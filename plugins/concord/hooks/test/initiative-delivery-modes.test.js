@@ -307,6 +307,24 @@ for (const cliName of Object.keys(CLIS)) {
     assert.strictEqual(out.gateApplied, false);
   });
 
+  test(`${cliName}: plan-fixes fails closed when gate-verify is missing or malformed`, () => {
+    const t = setup(cliName);
+    const n = t.ok(['round-start', 'feat/x', 'HEAD~1']).round;
+    for (const role of ['correctness', 'verify', 'plan', 'gate-review', 'gate-verify']) assert.strictEqual(t.ok(['reserve', 'feat/x', role]).status, 'granted');
+    t.write(n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+    t.write(n, 'gate', { status: 'ok', findings: [] });
+    t.write(n, 'verify', { status: 'ok', rejected: [] });
+
+    let result = t.cli(['plan-fixes', 'feat/x']);
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.stderr, /harness-failure: missing gate artifact gate-verify/);
+
+    fs.writeFileSync(path.join(t.stateDir, `round-${n}-gate-verify.json`), '{');
+    result = t.cli(['plan-fixes', 'feat/x']);
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.stderr, /harness-failure: gate-verify artifact is not JSON/);
+  });
+
   test(`${cliName}: a mode flag that disagrees with the run ledger is refused (AC3)`, () => {
     const t = setup(cliName, { mode: 'lite' });
     t.ok(['round-start', 'feat/x', 'HEAD~1']);

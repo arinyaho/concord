@@ -372,10 +372,11 @@ function readArtifact(stateDir, n, name) {
   }
 }
 
-// A DECLARED `blocked` is terminal even on the read paths that are otherwise
-// lenient (panel lenses, panel verify, gate-verify). Those paths tolerate a
+// A DECLARED `blocked` is terminal even on the panel read paths that are
+// otherwise lenient (panel lenses and panel verify). Those paths tolerate a
 // missing or malformed artifact as "zero findings" so one flaky subagent can't
-// blow up an expensive round -- but a non-empty `blocked` is not flakiness: it
+// blow up an expensive round. Gate-verify is fail-closed through readArtifact.
+// A non-empty `blocked` is not flakiness: it
 // is the reviewer positively stating the check it was assigned never ran.
 // Reading that as zero findings advances the panel's dry streak and can
 // converge it to `done` -- exactly the false clean the `blocked` field exists
@@ -1105,7 +1106,7 @@ function runVerb(resolveFromCwd, args, initiative) {
         if (!alreadyRetried) {
           const prompt = e.coveragePaths
             ? `Rewrite only round artifact correctness as JSON. The "examined" array MUST contain every changed path exactly as listed: ${e.coveragePaths.map((file) => JSON.stringify(file)).join(', ')}. Do not infer, omit, or rewrite paths; preserve your actual findings and do not add prose or extra top-level fields.`
-            : artifactContract.retryPrompt(name, ({ correctness: 'correctness:|docreview:', verify: 'correctness:|docreview:', plan: 'correctness:|docreview:', intent: 'intent:', gate: 'gate:', 'gate-verify': 'gate:' })[name]);
+            : artifactContract.retryPrompt(name);
           if (ledger.execution && ledger.execution.round === n) {
             retryArtifacts[name] = prompt;
             writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, retryArtifacts, retryArtifact: firstRetryArtifact(retryArtifacts) } });
@@ -2117,16 +2118,12 @@ function runVerb(resolveFromCwd, args, initiative) {
         if (!f.id.startsWith('gate:')) throw new Error(`harness-failure: non-gate id "${f.id}" in the gate artifact`);
         if (ledger.gateMode === 'design-conformance' && !f.id.startsWith('gate:design-conformance:')) throw new Error(`harness-failure: lite gate accepts only gate:design-conformance findings, got "${f.id}"`);
       }
-      // gate-verify itself stays lenient (missing/malformed artifact -> the
-      // legacy shape { rejected: [] }, and a shape-invalid findings entry ->
-      // an empty findings list): unlike the gate-review artifact above, a
-      // broken verify pass is not a harness-failure -- it just means no
-      // rejections and no verify-added findings this round.
-      const gvRaw = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-gate-verify.json`), 'utf8')); } catch (e) { return { rejected: [], findings: [] }; } })();
-      requireNotBlocked('gate-verify', gvRaw); // a DECLARED block is not the flakiness this lenience covers
-      let verifyFindings;
-      try { verifyFindings = gc.parseGateFindings(JSON.stringify(gvRaw.findings || [])); }
-      catch (e) { verifyFindings = []; }
+      let gvRaw;
+      let verifyFindings = [];
+      if (ledger.gateMode !== 'design-conformance') {
+        gvRaw = readArtifact(stateDir, n, 'gate-verify'); // fail-closed and normalized before classification
+        verifyFindings = gc.parseGateFindings(JSON.stringify(gvRaw.findings));
+      }
       for (const f of verifyFindings) {
         if (!f.id.startsWith('gate:')) throw new Error(`harness-failure: non-gate id "${f.id}" in the gate-verify artifact`);
       }
@@ -2139,7 +2136,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       for (const f of verifyFindings) byId.set(f.id, f);
       for (const f of gFindings) byId.set(f.id, f);
       const mergedGateFindings = Array.from(byId.values());
-      const rejected = gc.parseVerifyVerdict(JSON.stringify({ rejected: gvRaw.rejected || [] }), mergedGateFindings).rejectedIds;
+      const rejected = gvRaw ? gc.parseVerifyVerdict(JSON.stringify({ rejected: gvRaw.rejected }), mergedGateFindings).rejectedIds : [];
       const thisRound = gateLib.foldGateFindings({ gateFindings: mergedGateFindings, verifyRejectedIds: rejected, dismissedIds: ledger.gate_dismissed || [] });
       // Cross-round persistence (spec decision 4): gate findings must PERSIST
       // across rounds, not be overwritten fresh each round -- a round where the

@@ -13,7 +13,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const CORE = path.join(__dirname, '..', '..', 'core');
-const { GATE_SWEEP_CLAUSE, reviewerPrompt } = require(path.join(CORE, 'round-plan'));
+const { GATE_SWEEP_CLAUSE, GATE_VERIFY_OWNERSHIP_CLAUSE, reviewerPrompt } = require(path.join(CORE, 'round-plan'));
+const { allowedFindingPrefixes } = require(path.join(CORE, 'artifact-contract'));
+const roundPlanText = fs.readFileSync(path.join(CORE, 'round-plan.js'), 'utf8');
 const driverText = fs.readFileSync(path.join(CORE, 'review-driver.md'), 'utf8');
 // plugins/concord/commands/review-and-fix.md is a hand-composed copy of
 // review-driver.md (composed with the Claude Code spawn-include) that the
@@ -52,6 +54,24 @@ test('round-plan.js reviewerPrompt("gate", ...) embeds GATE_SWEEP_CLAUSE byte-fo
     prompt.includes(GATE_SWEEP_CLAUSE),
     'round-plan.js reviewerPrompt("gate") has drifted from its own exported GATE_SWEEP_CLAUSE constant',
   );
+});
+
+test('every gate verifier prompt embeds the namespace ownership clause byte-for-byte', () => {
+  assert.match(roundPlanText, /allowedFindingPrefixes\('correctness'\)/, 'gate-verify context namespaces must come from the artifact registry');
+  for (const prefix of allowedFindingPrefixes('correctness')) assert.ok(GATE_VERIFY_OWNERSHIP_CLAUSE.includes(`${prefix}*`));
+  const generated = reviewerPrompt('gate-verify', { stateDir: '/state', round: 3, targetType: 'git', slug: 'feat-x' });
+  assert.ok(generated.includes(GATE_VERIFY_OWNERSHIP_CLAUSE));
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
+    assert.ok(text.includes(GATE_VERIFY_OWNERSHIP_CLAUSE.trim()), `${name} gate-verify prompt has drifted from round-plan.js`);
+  }
+});
+
+test('manual review drivers normalize gate-verify artifacts through the bounded retry contract', () => {
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
+    const boundary = text.match(/Immediately after every fail-closed reviewer[\s\S]*?A second retry response or any `harness-failure` is terminal\.[^\n]*/)?.[0] || '';
+    assert.match(boundary, /`gate-verify`/, `${name} does not normalize the gate-verify role`);
+    assert.doesNotMatch(boundary, /Do not normalize `gate-verify`/, `${name} bypasses strict gate-verify normalization`);
+  }
 });
 
 test('codex-review-runner.js re-exports the exact same reviewerPrompt as round-plan.js (no second hand-written copy)', () => {
