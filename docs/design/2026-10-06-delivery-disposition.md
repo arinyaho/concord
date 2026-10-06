@@ -29,7 +29,7 @@ The caller supplies one JSON evidence packet for the exact PR number and head SH
 
 Finding `disposition` is one of `fixed`, `follow-up`, `accepted` or `blocking`. A finding with no disposition is unowned.
 
-`releaseBlocking[]` names the observable release-blocking categories the finding falls in: `acceptance-criterion`, `required-check`, `correctness`, `security`, `data-integrity`, `contract-choice`, `compatibility` and `contradictory-docs`. A finding in any of these categories blocks unless it is `fixed`. A `follow-up` or `accepted` disposition never clears it, and an exhausted budget does not either. A follow-up-eligible finding has no release-blocking category and has a `rationale` explaining why the approved outcome, required checks, safety boundary and documented behavior stay correct without it. Priority labels such as P1 or P2 are not inputs.
+`releaseBlocking[]` names the observable release-blocking categories the finding falls in: `acceptance-criterion`, `required-check`, `correctness`, `security`, `data-integrity`, `contract-choice`, `compatibility`, `contradictory-docs`, `unproven-premise` (the work rests on a false or unproven premise) and `stage-exit` (a required stage exit condition is unmet). A finding in any of these categories blocks unless it is `fixed`. A `follow-up` or `accepted` disposition never clears it, and an exhausted budget does not either. A follow-up-eligible finding has no release-blocking category and has a `rationale` explaining why the approved outcome, required checks, safety boundary and documented behavior stay correct without it. Priority labels such as P1 or P2 are not inputs.
 
 ## Rules
 
