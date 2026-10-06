@@ -107,20 +107,19 @@ function fixingWorker(f) {
     fs.writeFileSync(artifact, JSON.stringify(data)); return { status: 0 };
   };
 }
-test('real keyed artifact retry reserves another launch before accepting rewritten evidence', async () => {
+test('missing correctness coverage fails closed without a second reviewer launch', async () => {
   const f = fixture(); let correctness = 0;
-  const result = await runReviewUntilGreen({ ...f.options, spawn: async ({ role, prompt }) => {
+  await assert.rejects(runReviewUntilGreen({ ...f.options, spawn: async ({ role, prompt }) => {
     f.workers.push(role); if (role === 'correctness') correctness++;
     const artifact = role === 'plan'
       ? { status: 'ok', protocolVersion: 2, groups: [] }
       : { status: 'ok', examined: correctness === 1 && role === 'correctness' ? [] : ['a.txt'], findings: [], rejected: [] };
     fs.writeFileSync(destination(prompt, f.stateDir), JSON.stringify(artifact)); return { status: 0 };
-  } });
-  assert.equal(result.decision.converged, true);
-  assert.deepEqual(f.workers, ['correctness', 'correctness', 'verify', 'plan']);
-  assert.equal(f.ledger().launches.length, 4);
+  } }), /coverage is incomplete/);
+  assert.deepEqual(f.workers, ['correctness']);
+  assert.equal(f.ledger().launches.length, 1);
   const reservations = review.readLedger(f.stateDir, review.targetSlug(f.options.ref)).initiative_reservations;
-  assert.equal(reservations.filter(x => x.role === 'correctness').length, 2);
+  assert.equal(reservations.filter(x => x.role === 'correctness').length, 1);
 });
 test('stop-at-checkpoint stops after the committed fix and resume preserves the same budget and completed round', async () => {
   const f = fixture(); const spawn = fixingWorker(f);
@@ -254,7 +253,7 @@ test('a budget-exhausted block names the carry command, and after a CLI carry th
   // the repo this run used, and REVIEW_REPO_ROOT restated so a bare `node`
   // invocation from elsewhere resolves the same repo and state dir the blocked
   // run did. Carries the old run's own mode (base here) explicitly.
-  assert.match(blocked.carryCommand, /^cd '.*' && REVIEW_REPO_ROOT='.*'(?: REVIEW_STATE_DIR='.*')? node '.*' carry 'feature\/test' --from-run-key 'integration' --initiative-run-key <new-run-key> --initiative-state-dir '.*' --initiative-max-launches \d+ --initiative-max-rounds \d+ --initiative-mode base$/);
+  assert.match(blocked.carryCommand, /^cd '.*' && REVIEW_REPO_ROOT='.*'(?: REVIEW_STATE_DIR='.*')? node '.*' carry 'feature\/test' --from-run-key 'integration' --initiative-run-key <new-run-key> --initiative-id 'integration' --initiative-state-dir '.*' --initiative-max-launches \d+ --initiative-max-rounds \d+ --initiative-mode base$/);
   assert.equal(f.ledger().launches.length, 1);
 
   const carried = spawnSync('node', [cliPath, 'carry', f.options.ref, '--from-run-key', 'integration',

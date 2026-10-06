@@ -27,7 +27,7 @@ const {
   resetUnreachable,
 } = require('./review');
 const crypto = require('node:crypto');
-const { canonicalPath, openInitiativeRun, reserveLaunchBatch, denialReason, recordDisposition, finaliseInitiativeRun, consumeDispositionDelivery, escalateInitiativeRun, lockDiagnosis, resolveBaseCommit, repositoryIdentity, runPath, terminalDispositionInLedger } = require('./initiative-review-run');
+const { canonicalPath, openInitiativeRun, claimBroadSweep, reserveLaunchBatch, denialReason, recordDisposition, finaliseInitiativeRun, consumeDispositionDelivery, escalateInitiativeRun, lockDiagnosis, resolveBaseCommit, repositoryIdentity, runPath, terminalDispositionInLedger } = require('./initiative-review-run');
 const { acquireTarget, gitDiff, gitHeadSha, gitDirty } = require('./target');
 const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
 
@@ -470,7 +470,7 @@ function firstRetryArtifact(retries) {
 // Keyed initiative runs (native Claude/Copilot drivers). The host model spawns
 // reviewers, so the CLI cannot stop a launch: it reserves launches up front
 // (`reserve`) and refuses to accept evidence from an unreserved launch.
-const INITIATIVE_FLAGS = [['--initiative-run-key', 'key'], ['--initiative-state-dir', 'stateDir'], ['--initiative-max-launches', 'maxLaunches'], ['--initiative-max-rounds', 'maxRounds']];
+const INITIATIVE_FLAGS = [['--initiative-run-key', 'key'], ['--initiative-id', 'initiativeId'], ['--initiative-state-dir', 'stateDir'], ['--initiative-max-launches', 'maxLaunches'], ['--initiative-max-rounds', 'maxRounds']];
 const MODE_FLAG = '--initiative-mode';
 const RUN_VERBS = new Set(['finalise', 'consume', 'escalate', 'session-checkpoint']);
 const CLI_VERBS = ['show', 'round-start', 'telemetry-slot', 'plan-fixes', 'commit-fix', 'record', 'round-failure', 'gate-panel-round-start', 'gate-panel-round-record', 'unpark', 'dismiss', 'reset', 'rerun', 'artifact-normalize', 'reserve', 'carry', 'finalise', 'consume', 'escalate', 'session-checkpoint', 'feedback'];
@@ -535,7 +535,7 @@ function extractInitiative(argv) {
 
 function openKeyedRun(initiative) {
   const stateDir = canonicalPath(initiative.stateDir);
-  const run = openInitiativeRun({ stateDir, key: initiative.key, repository: canonicalPath(process.env.REVIEW_REPO_ROOT || process.cwd()), maxLaunches: Number(initiative.maxLaunches), maxRounds: Number(initiative.maxRounds), allowTerminal: true, mode: initiative.mode || 'base' });
+  const run = openInitiativeRun({ stateDir, key: initiative.key, initiativeId: initiative.initiativeId || initiative.key, repository: canonicalPath(process.env.REVIEW_REPO_ROOT || process.cwd()), maxLaunches: Number(initiative.maxLaunches), maxRounds: Number(initiative.maxRounds), allowTerminal: true, mode: initiative.mode || 'base' });
   const mode = runMode(run);
   if (initiative.mode && initiative.mode !== mode) throw new Error(`review-cli: --initiative-mode ${initiative.mode} disagrees with the run ledger: run mode is ${mode}`);
   return run;
@@ -759,6 +759,14 @@ function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey,
   let oldLedger;
   try { oldLedger = JSON.parse(fs.readFileSync(oldRun.path, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (!oldLedger) fail('no initiative run for --from-run-key');
+  // Legacy callers did not carry an initiative ID. Preserve the old run's
+  // effective identity instead of silently turning a rollover into a new one.
+  initiative = { ...initiative, initiativeId: initiative.initiativeId || oldLedger.initiativeId || fromRunKey };
+  // A pre-ID ledger that already launched a broad role has irrevocably spent
+  // its sweep. Materialize that conservative history before opening a new key.
+  if (!oldLedger.initiativeId && (oldLedger.launches || []).some((launch) => /^gate-(review|verify)$/.test(launch.role))) {
+    claimBroadSweep(openInitiativeRun({ stateDir: newStateDir, key: fromRunKey, initiativeId: fromRunKey, repository: repoRoot, maxLaunches: oldLedger.budget.maxLaunches, maxRounds: oldLedger.budget.maxRounds, allowTerminal: true, mode: oldLedger.mode }), { target: ref, attemptId: ledger.attemptId });
+  }
 
   // Step 2: the mode check only -- it needs no new-run object, so it runs
   // before anything that would open the new run's ledger file (defaulting
@@ -766,6 +774,7 @@ function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey,
   // afterward can permanently create the wrong-mode ledger before ever
   // reporting the mismatch, leaving the key unusable.
   if ((initiative.mode || 'base') !== oldLedger.mode) fail('the new run mode differs from the old run; carry never changes mode');
+  if ((oldLedger.initiativeId || fromRunKey) !== initiative.initiativeId) fail('the new initiative ID differs from the old run; carry preserves initiative identity');
 
   // Step 3: every old-run check that needs no new-run object runs first --
   // active, same repository, genuinely blocked here, its round's evidence
@@ -839,6 +848,12 @@ function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey,
     // retry. The new run must still exist and be ready, same as the first
     // attempt, before step 4 repeats the target-ledger write.
     checkNewRunReady();
+  }
+
+  // The broad pair is one claimed unit. A carried round that has not yet
+  // produced gate-verify must retain its own claim under the replacement key.
+  if (ledger.gateApplied && ledger.gateMode === 'pair' && !fs.existsSync(path.join(stateDir, `round-${ledger.round}-gate-verify.json`))) {
+    claimBroadSweep(openKeyedRun(initiative), { target: ref, attemptId: ledger.attemptId }, true);
   }
 
   // Step 4: one atomic target-ledger write -- bind to the new key, append
@@ -937,7 +952,7 @@ function runLevelVerb(verb, arg, initiative, rest = []) {
   const stateDir = canonicalPath(initiative.stateDir);
   const repository = canonicalPath(process.env.REVIEW_REPO_ROOT || process.cwd());
   if (verb === 'escalate') {
-    escalateInitiativeRun({ stateDir, key: initiative.key, repository, trigger: arg, maxLaunches: Number(initiative.maxLaunches), maxRounds: Number(initiative.maxRounds) });
+    escalateInitiativeRun({ stateDir, key: initiative.key, initiativeId: initiative.initiativeId, repository, trigger: arg, maxLaunches: Number(initiative.maxLaunches), maxRounds: Number(initiative.maxRounds) });
     process.stdout.write(`${JSON.stringify({ status: 'escalated', mode: 'base', trigger: arg })}\n`);
     return;
   }
@@ -986,7 +1001,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       if (role === 'fix' && ledger.reconciliation) return { status: 'reconciliation-required', role, count, round: ledger.round };
       const target = ledger.target?.ref || ref;
       const revision = { ref: target, ...(ledger.target?.base ? { base: resolveBaseCommit(process.env.REVIEW_REPO_ROOT || process.cwd(), ledger.target.base) } : {}), ...(ledger.target?.head_sha ? { head_sha: ledger.target.head_sha } : {}) };
-      const launch = { role, round: ledger.round, target, revision, attemptId: ledger.attemptId };
+      const launch = { role, round: ledger.round, target, revision, attemptId: ledger.attemptId, broad: ledger.gateMode === 'pair' && /^gate-/.test(role) };
       if (!reserveLaunchBatch(run, launch, count, () => {
         // Called under the run lock only after phase and budget validation.
         // Publish identity before charging so interruption cannot free the target.
@@ -1007,6 +1022,14 @@ function runVerb(resolveFromCwd, args, initiative) {
         return reason === 'reconciliation-required' ? { status: reason, role, count, round: ledger.round } : { status: 'denied', role, count, round: ledger.round, ...(reason ? { reason } : {}), ...(diagnosis ? { lockDiagnosis: diagnosis } : {}) };
       }
       const token = crypto.randomBytes(16).toString('hex');
+      const artifact = Object.entries(ARTIFACT_RESERVE_ROLE).find(([, mapped]) => mapped === role)?.[0];
+      if (artifact) {
+        const repairPath = path.join(stateDir, `round-${ledger.round}-${artifact}.repair.json`);
+        try {
+          const repair = JSON.parse(fs.readFileSync(repairPath, 'utf8'));
+          if (repair.state === 'prepared' && repair.target?.ref === ref && repair.round === ledger.round) fs.writeFileSync(repairPath, JSON.stringify({ ...repair, state: 'reserved', reservationToken: token }) + '\n');
+        } catch (_) { /* ordinary reviewer reservation */ }
+      }
       const panel = role === 'lens' || role === 'vote' ? (ledger.gate_panel?.round || 0) + 1 : undefined;
       writeLedger(stateDir, slug, { ...ledger, initiative_reservations: [...(ledger.initiative_reservations || []), { token, role, round: ledger.round, ...(panel ? { panel } : {}), count }] });
       return { status: 'granted', role, count, round: ledger.round, token };
@@ -1057,6 +1080,8 @@ function runVerb(resolveFromCwd, args, initiative) {
     // working setup. Accept both forms rather than making a naming ambiguity
     // stop a run, and name the valid roles when it is neither.
     const rawName = rest[0];
+    const candidateArg = rest[1] === '--candidate' ? rest[2] : null;
+    if (rest.length !== 1 && (!candidateArg || rest.length !== 3)) throw new Error('artifact-normalize: expected <role> [--candidate <path>]');
     const name = String(rawName == null ? '' : rawName).replace(/^round-\d+-/, '').replace(/\.json$/, '');
     if (!artifactContract.ARTIFACT_ROLES.includes(name)) {
       throw new Error(`harness-failure: artifact-normalize: unknown artifact "${rawName}" (expected one of ${artifactContract.ARTIFACT_ROLES.join(' | ')}, or the matching round-<n>-<role>.json file name)`);
@@ -1067,9 +1092,19 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (!n) throw new Error(`harness-failure: artifact-normalize: no active round for ref "${ref}" ${stateDirHint(stateDir)} -- run this verb from the same directory as round-start, or set REVIEW_STATE_DIR`);
     const p = path.join(stateDir, `round-${n}-${name}.json`);
     const retryPath = path.join(stateDir, `round-${n}-${name}.retry`);
+    const snapshotPath = path.join(stateDir, `round-${n}-${name}.original`);
+    const repairPath = path.join(stateDir, `round-${n}-${name}.repair.json`);
     let raw;
-    try { raw = fs.readFileSync(p, 'utf8'); } catch (e) { throw new Error(`harness-failure: missing gate artifact ${name} for round ${n}`); }
+    try { raw = fs.readFileSync(candidateArg || p, 'utf8'); } catch (e) { throw new Error(`harness-failure: missing ${candidateArg ? 'repair candidate' : 'gate artifact'} ${name} for round ${n}`); }
     try {
+      if (fs.existsSync(repairPath)) {
+        const repair = JSON.parse(fs.readFileSync(repairPath, 'utf8'));
+        const original = fs.readFileSync(snapshotPath);
+        if (contentHash(original) !== repair.originalHash) throw new Error(`${name} repair snapshot hash changed`);
+        if (!candidateArg) throw new Error(`${name} repair requires a separate candidate`);
+        if (path.resolve(candidateArg) !== path.resolve(repair.candidatePath)) throw new Error(`${name} repair candidate path changed`);
+        if (!artifactContract.preservesArtifact(name, original.toString('utf8'), JSON.parse(raw))) throw new Error(`${name} repair candidate does not preserve the original evidence`);
+      }
       const canonical = artifactContract.normalizeArtifact(name, raw);
       // Correctness coverage is part of the artifact contract for git targets:
       // retry the reviewer while its original artifact is still intact rather
@@ -1088,6 +1123,8 @@ function runVerb(resolveFromCwd, args, initiative) {
         }
       }
       const canonicalText = JSON.stringify(canonical) + '\n';
+      // Only a candidate that passed preservation and strict normalization is
+      // published. Invalid repair bytes never replace the original artifact.
       fs.writeFileSync(p, canonicalText);
       if (ledger.execution && ledger.execution.round === n) {
         const completed = Array.from(new Set([...(ledger.execution.completed || []), name]));
@@ -1101,25 +1138,69 @@ function runVerb(resolveFromCwd, args, initiative) {
       return;
     } catch (e) {
       if (e instanceof artifactContract.ArtifactError && e.kind === 'retry') {
+        // Repair may only change a known status spelling, or remove foreign
+        // dispositions while retaining complete role-owned evidence.
+        let parsed; try { parsed = JSON.parse(raw); } catch (_) { parsed = null; }
+        const statusSpelling = parsed && typeof parsed.status === 'string' && ['ok', 'findings', 'clean'].includes(parsed.status.toLowerCase()) && parsed.status !== parsed.status.toLowerCase();
+        const prefixes = artifactContract.allowedFindingPrefixes(name);
+        const items = parsed && artifactContract.ARTIFACT_ROLES.includes(name)
+          ? ['rejected', 'findings', 'groups'].flatMap((key) => Array.isArray(parsed[key]) ? parsed[key] : [])
+          : [];
+        const idOf = (item) => typeof item === 'string' ? item : item && (item.id || item.findingIds);
+        const mixedNamespaces = /invalid id/.test(e.message)
+          && items.flatMap(idOf).some((id) => typeof id === 'string' && prefixes.some((prefix) => id.startsWith(prefix)))
+          && items.flatMap(idOf).some((id) => typeof id === 'string' && !prefixes.some((prefix) => id.startsWith(prefix)));
+        if (!statusSpelling && !mixedNamespaces) throw new Error(`harness-failure: ${e.message}`);
         const retryArtifacts = retryArtifactMap(ledger.execution);
-        const alreadyRetried = fs.existsSync(retryPath) || !!retryArtifacts[name];
+        const alreadyRetried = fs.existsSync(repairPath) || fs.existsSync(retryPath) || !!retryArtifacts[name];
         if (!alreadyRetried) {
-          const prompt = e.coveragePaths
-            ? `Rewrite only round artifact correctness as JSON. The "examined" array MUST contain every changed path exactly as listed: ${e.coveragePaths.map((file) => JSON.stringify(file)).join(', ')}. Do not infer, omit, or rewrite paths; preserve your actual findings and do not add prose or extra top-level fields.`
-            : artifactContract.retryPrompt(name);
           if (ledger.execution && ledger.execution.round === n) {
-            retryArtifacts[name] = prompt;
-            writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, retryArtifacts, retryArtifact: firstRetryArtifact(retryArtifacts) } });
+            writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, retryArtifacts: {}, retryArtifact: null } });
           }
-          fs.writeFileSync(retryPath, '1\n');
+          const bytes = Buffer.from(raw);
+          fs.writeFileSync(snapshotPath, bytes, { flag: 'wx' });
+          const candidatePath = path.join(stateDir, `round-${n}-${name}.candidate.json`);
+          const packetPath = path.join(stateDir, `round-${n}-${name}.packet.json`);
+          const packet = artifactContract.repairPacket(name, e.message, raw);
+          fs.writeFileSync(packetPath, JSON.stringify(packet) + '\n', { flag: 'wx', mode: 0o600 });
+          const repair = { target: ledger.target || { ref }, role: name, round: n, diffHash: contentHash(fs.readFileSync(path.join(stateDir, `round-${n}-diff.txt`), 'utf8')), originalHash: contentHash(bytes), error: e.message, snapshotPath, packetPath, packetHash: contentHash(fs.readFileSync(packetPath)), candidatePath, candidateHash: null, state: 'prepared' };
+          fs.writeFileSync(repairPath, JSON.stringify(repair) + '\n', { flag: 'wx' });
           // A retry is a new launch: it must be reserved again before its evidence is accepted.
           if (run && ARTIFACT_RESERVE_ROLE[name]) writeLedger(stateDir, slug, withSupersededLaunch(readLedger(stateDir, slug), ARTIFACT_RESERVE_ROLE[name], n));
-          process.stdout.write(JSON.stringify({ status: 'retry', artifact: name, prompt }) + '\n');
+          process.stdout.write(JSON.stringify({ status: 'repair', artifact: name, repair }) + '\n');
           return;
         }
       }
       throw new Error(`harness-failure: ${e.message}`);
     }
+  }
+
+  if (verb === 'artifact-repair-dispatch') {
+    requireRef(ref, 'artifact-repair-dispatch');
+    const name = String(rest[0] || '');
+    const slug = targetSlug(ref); const ledger = readLedger(stateDir, slug); const n = ledger?.round;
+    if (!n || !artifactContract.ARTIFACT_ROLES.includes(name)) throw new Error('artifact-repair-dispatch: requires active <role>');
+    const repairPath = path.join(stateDir, `round-${n}-${name}.repair.json`);
+    const repair = JSON.parse(fs.readFileSync(repairPath, 'utf8'));
+    if (repair.state === 'dispatched') { process.stdout.write(JSON.stringify(repair) + '\n'); return; }
+    if (!['prepared', 'reserved'].includes(repair.state) || repair.target?.ref !== ref || repair.round !== n) throw new Error(`${name} repair binding changed`);
+    const dispatched = { ...repair, state: 'dispatched' };
+    fs.writeFileSync(repairPath, JSON.stringify(dispatched) + '\n');
+    process.stdout.write(JSON.stringify(dispatched) + '\n');
+    return;
+  }
+
+  if (verb === 'artifact-repair-candidate') {
+    requireRef(ref, 'artifact-repair-candidate');
+    const name = String(rest[0] || ''); const slug = targetSlug(ref); const ledger = readLedger(stateDir, slug); const n = ledger?.round;
+    if (!n || !artifactContract.ARTIFACT_ROLES.includes(name)) throw new Error('artifact-repair-candidate: requires active <role>');
+    const repairPath = path.join(stateDir, `round-${n}-${name}.repair.json`); const repair = JSON.parse(fs.readFileSync(repairPath, 'utf8'));
+    if (repair.state !== 'dispatched') throw new Error(`${name} repair was not dispatched`);
+    const candidateHash = contentHash(fs.readFileSync(repair.candidatePath));
+    const completed = { ...repair, candidateHash, state: 'candidate-ready' };
+    fs.writeFileSync(repairPath, JSON.stringify(completed) + '\n');
+    process.stdout.write(JSON.stringify(completed) + '\n');
+    return;
   }
 
   if (verb === 'round-failure') {
@@ -1500,6 +1581,23 @@ function runVerb(resolveFromCwd, args, initiative) {
         const name = `round-${resumeRound}-${role}.json`;
         try { return ledger.execution.artifactHashes && ledger.execution.artifactHashes[role] === contentHash(fs.readFileSync(path.join(stateDir, name), 'utf8')); } catch (_) { return false; }
       }).map((role) => `round-${resumeRound}-${role}.json`));
+      // A pending repair is durable round evidence, not stale output. Keep
+      // every bound input/output record so resume can verify it or fail closed.
+      for (const role of artifactContract.ARTIFACT_ROLES) {
+        const repairName = `round-${resumeRound}-${role}.repair.json`;
+        const repairFile = path.join(stateDir, repairName);
+        if (!fs.existsSync(repairFile)) continue;
+        try {
+          const repair = JSON.parse(fs.readFileSync(repairFile, 'utf8'));
+          if (repair.round !== resumeRound || repair.target?.ref !== ref || repair.diffHash !== diffHash || !repair.snapshotPath || !repair.packetPath || !repair.candidatePath
+            || contentHash(fs.readFileSync(repair.snapshotPath)) !== repair.originalHash
+            || contentHash(fs.readFileSync(repair.packetPath)) !== repair.packetHash
+            || (repair.candidateHash && contentHash(fs.readFileSync(repair.candidatePath)) !== repair.candidateHash)) throw new Error('repair binding invalid');
+          for (const p of [repair.snapshotPath, repair.packetPath, repair.candidatePath, repairFile]) {
+            if (fs.existsSync(p)) preserved.add(path.basename(p));
+          }
+        } catch (_) { throw new Error(`harness-failure: ${role} pending repair evidence is corrupt`); }
+      }
       if (ledger.gateApplied && ledger.gateMode !== 'design-conformance') {
         if (['correctness', 'gate'].some((role) => !preserved.has(`round-${resumeRound}-${role}.json`))) {
           preserved.delete(`round-${resumeRound}-verify.json`);
@@ -1565,7 +1663,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       dismissedIds: ledger.gate_dismissed || [],
       changedFiles: changedGitPaths(gitDiff(repoRoot, broadReuse.head_sha)),
     }) : ledger.gate_open;
-    const gateArmed = lite ? true : broadFlagPassed ? true
+    let gateArmed = lite ? true : broadFlagPassed ? true
       : noBroadFlagPassed ? false
       : reuseFrontPass ? false
       : typeof ledger.gateArmed === 'boolean' ? ledger.gateArmed
@@ -1590,7 +1688,11 @@ function runVerb(resolveFromCwd, args, initiative) {
     // round's gate artifact is mandatory, and round-start rewrites it below
     // before plan-fixes runs. Re-deriving from review.config.json there would
     // silently miss a flag-enabled round and discard its findings.
-    const gateApplied = gateArmed && (gateRounds.length === 0 || gateRounds.includes(ledger.round));
+    let gateApplied = gateArmed && (gateRounds.length === 0 || gateRounds.includes(ledger.round));
+    if (run && gateApplied && !lite && !claimBroadSweep(run, { target: ref, attemptId: ledger.attemptId })) {
+      gateArmed = false;
+      gateApplied = false;
+    }
     const expectedArtifacts = ['correctness', 'verify', 'plan'].concat(intentCfg ? ['intent'] : [], gateApplied ? (lite ? ['gate'] : ['gate', 'gate-verify']) : []);
     const completedArtifacts = resumed && ledger.execution
       ? resumedCompletedArtifacts.filter((role) => expectedArtifacts.includes(role))
@@ -1599,6 +1701,11 @@ function runVerb(resolveFromCwd, args, initiative) {
       ? Object.fromEntries(Object.entries(retryArtifactMap(ledger.execution)).filter(([role, prompt]) => !completedArtifacts.includes(role) && expectedArtifacts.includes(role) && typeof prompt === 'string'))
       : {};
     const retryArtifact = firstRetryArtifact(retryArtifacts);
+    const repairArtifacts = resumed
+      ? Object.fromEntries(artifactContract.ARTIFACT_ROLES.flatMap((role) => {
+        try { return [[role, JSON.parse(fs.readFileSync(path.join(stateDir, `round-${ledger.round}-${role}.repair.json`), 'utf8'))]]; } catch (_) { return []; }
+      }))
+      : {};
     // Sticky for the same reason gateApplied is: once a run has opted out of the
     // executable gate, round 2's round-start must not have to repeat --no-dod
     // (without stickiness a repo that DOES have `dod` commands would run the
@@ -1698,7 +1805,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // The three fields are mutually descriptive: pending is the normal configured
     // gate waiting for convergence, deferred means no gate will run, and passed is
     // retained for file/no-op compatibility. Callers must not infer one from another.
-    process.stdout.write(JSON.stringify({ decision: 'work', mode: run ? runMode(run) : undefined, gateMode: lite ? 'design-conformance' : 'pair', ref: targetUpdate.ref, base: targetUpdate.base, head: targetUpdate.head_sha, attemptId: ledger.attemptId, round: ledger.round, budget: ledger.budget, dodPassed: dod.deferredBy === 'pending-final' ? false : dod.passed, dodDeferred: !!dod.deferred && dod.deferredBy !== 'pending-final', dodPending: dod.deferredBy === 'pending-final', intentApplied: !!intentCfg, intentHash: ledger.intentHash || null, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir, completedArtifacts, retryArtifacts, retryArtifact }) + '\n');
+    process.stdout.write(JSON.stringify({ decision: 'work', mode: run ? runMode(run) : undefined, gateMode: lite ? 'design-conformance' : 'pair', ref: targetUpdate.ref, base: targetUpdate.base, head: targetUpdate.head_sha, attemptId: ledger.attemptId, round: ledger.round, budget: ledger.budget, dodPassed: dod.deferredBy === 'pending-final' ? false : dod.passed, dodDeferred: !!dod.deferred && dod.deferredBy !== 'pending-final', dodPending: dod.deferredBy === 'pending-final', intentApplied: !!intentCfg, intentHash: ledger.intentHash || null, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir, completedArtifacts, retryArtifacts, retryArtifact, repairArtifacts }) + '\n');
     return;
   }
 

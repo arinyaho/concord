@@ -8,12 +8,14 @@ const crypto = require('node:crypto');
 const { canonicalPath, runPath, openInitiativeRun, pairRefusal, resolveBaseCommit, recordDisposition, normalizeDisposition, consumeDispositionDelivery, terminalTarget, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
 const { gitHeadSha, gitDirty, fileTarget } = require('./target');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { safeIdForFilename } = require('./artifact-name');
 const { writeFileAtomic } = require('./atomic-write');
 const { targetSlug, ledgerPath } = require('./review');
 const { SESSION_MODES, THRESHOLDS } = require('./session-handoff');
 const { artifactDestinationFromPrompt } = require('./review-artifact');
+const artifactContract = require('./artifact-contract');
 const { isValidFindingId } = require('./gate-contract');
 const { same } = require('./review-eval');
 const { PANEL_LENSES } = require('./report');
@@ -88,6 +90,28 @@ function jsonCli(cliPath, args, repoRoot) {
   try { return JSON.parse(out); } catch (e) { throw new Error(`harness-failure: review-cli ${args[0]} returned non-JSON output`); }
 }
 
+function isInside(child, parent) {
+  const relative = path.relative(parent, child);
+  return !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+function repairDirectory(repoRoot) {
+  let parent = canonicalPath(os.tmpdir());
+  if (isInside(parent, repoRoot)) parent = canonicalPath('/tmp');
+  if (isInside(parent, repoRoot)) throw new Error('harness-failure: no temporary directory exists outside the reviewed repository');
+  const dir = fs.mkdtempSync(path.join(parent, 'concord-artifact-repair-'));
+  if (isInside(canonicalPath(dir), repoRoot)) { fs.rmSync(dir, { recursive: true, force: true }); throw new Error('harness-failure: repair directory is inside the reviewed repository'); }
+  return dir;
+}
+
+function repairEnvironment(repoRoot, stateDir) {
+  const env = { ...process.env };
+  for (const key of ['REVIEW_REPO_ROOT', 'REVIEW_STATE_DIR']) delete env[key];
+  env.PATH = (env.PATH || '').split(path.delimiter).filter((entry) => entry && !isInside(path.resolve(entry), repoRoot) && !isInside(path.resolve(entry), stateDir)).join(path.delimiter);
+  for (const [key, value] of Object.entries(env)) if (typeof value === 'string' && (value.includes(repoRoot) || value.includes(stateDir))) delete env[key];
+  return env;
+}
+
 function normalizeUsage(raw) {
   const number = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
   const providerUsage = Object.fromEntries(Object.entries(raw || {}).filter(([, value]) => Number.isSafeInteger(value) && value >= 0));
@@ -119,9 +143,9 @@ function sameKeys(actual, expected) {
   return actual.length === expected.length && [...actual].sort().every((key, index) => key === [...expected].sort()[index]);
 }
 
-function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoningEffort, serviceTier, timeoutMs, abortSignal, codexExecutable }) {
+function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoningEffort, serviceTier, timeoutMs, abortSignal, codexExecutable, env }) {
   return new Promise((resolve, reject) => {
-    const resolvedCodex = codexExecutable || resolveCodexExecutable(repoRoot);
+    const resolvedCodex = codexExecutable || resolveCodexExecutable(repoRoot, { env });
     const invocationId = crypto.randomUUID();
     const model = typeof requestedModel === 'string' && requestedModel.trim() ? requestedModel : null;
     const effort = typeof reasoningEffort === 'string' && reasoningEffort.trim() ? reasoningEffort : null;
@@ -144,7 +168,7 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
       ...(effort ? ['--config', `model_reasoning_effort=${JSON.stringify(effort)}`] : []),
       ...(tier ? ['--config', `service_tier=${JSON.stringify(tier)}`] : []),
       '--skip-git-repo-check', '--json', ...(isWindows ? ['-'] : [prompt]),
-    ], needsDoubleEscape(resolvedCodex.command, repoRoot)), crossPlatformOpts({ cwd: repoRoot, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'ignore'], detached: !isWindows }));
+    ], needsDoubleEscape(resolvedCodex.command, repoRoot)), crossPlatformOpts({ cwd: repoRoot, env, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'ignore'], detached: !isWindows }));
     if (isWindows) {
       // If `codex` exits before consuming stdin (a rejected flag, a
       // startup auth failure, the wrong binary on PATH), writing the
@@ -387,7 +411,9 @@ async function runReviewUntilGreen(options) {
     try { worktree = execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: canonicalRepoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() === 'true'; } catch {}
     if (worktree) try { execFileSync('git', ['check-ignore', '-q', '--no-index', '--', path.relative(canonicalRepoRoot, runPath(canonicalStateDir, options.initiativeRunKey))], { cwd: canonicalRepoRoot }); } catch { throw new Error('review-until-green: an initiative state directory inside the repository must be ignored'); }
   }
-  const initiativeRun = keyedRun ? openInitiativeRun({ stateDir: canonicalStateDir, key: options.initiativeRunKey, repository: canonicalRepoRoot, maxLaunches: options.initiativeMaxLaunches, maxRounds: options.initiativeMaxRounds, allowTerminal: !!options.initiativeFinalise, mode: options.initiativeMode }) : null;
+  let initiativeId = options.initiativeId || options.initiativeRunKey;
+  if (keyedRun && !options.initiativeId) try { initiativeId = JSON.parse(fs.readFileSync(runPath(canonicalStateDir, options.initiativeRunKey), 'utf8')).initiativeId || initiativeId; } catch (_) {}
+  const initiativeRun = keyedRun ? openInitiativeRun({ stateDir: canonicalStateDir, key: options.initiativeRunKey, initiativeId, repository: canonicalRepoRoot, maxLaunches: options.initiativeMaxLaunches, maxRounds: options.initiativeMaxRounds, allowTerminal: !!options.initiativeFinalise, mode: options.initiativeMode }) : null;
   if (options.initiativeFinalise) {
     if (!initiativeRun) throw new Error('review-until-green: --initiative-finalise requires an initiative run');
     if (!finaliseInitiativeRun(initiativeRun)) throw new Error('review-until-green: initiative run finalisation was contended');
@@ -402,7 +428,7 @@ async function runReviewUntilGreen(options) {
   // under the same name is a different pair. round-start keeps the name.
   const baseIdentity = (name) => (name && !ref.startsWith('file:') ? resolveBaseCommit(repoRoot, name) : name);
   const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot));
-  const initiativeFlags = initiativeRun ? ['--initiative-run-key', options.initiativeRunKey, '--initiative-state-dir', canonicalStateDir, '--initiative-max-launches', String(options.initiativeMaxLaunches), '--initiative-max-rounds', String(options.initiativeMaxRounds), ...(options.initiativeMode ? ['--initiative-mode', options.initiativeMode] : [])] : [];
+  const initiativeFlags = initiativeRun ? ['--initiative-run-key', options.initiativeRunKey, '--initiative-id', initiativeId, '--initiative-state-dir', canonicalStateDir, '--initiative-max-launches', String(options.initiativeMaxLaunches), '--initiative-max-rounds', String(options.initiativeMaxRounds), ...(options.initiativeMode ? ['--initiative-mode', options.initiativeMode] : [])] : [];
   const sessionMode = options.sessionHandoff || 'suggest';
   if (!SESSION_MODES.includes(sessionMode)) throw new Error('review-until-green: --session-handoff must be off, suggest, or stop-at-checkpoint');
   const observed = { toolCalls: 0, noProgressCalls: 0 };
@@ -515,7 +541,7 @@ async function runReviewUntilGreen(options) {
       totalTokens: Number.isFinite(usage.totalTokens) ? usage.totalTokens : null,
       elapsedMs: Number.isFinite(result && result.elapsedMs) ? result.elapsedMs : null,
     };
-    const role = input.role;
+    const role = input.artifactRole || input.role;
     const aggregate = telemetry.byRole[role] || (telemetry.byRole[role] = {
       calls: 0, partialCalls: 0, inputTokens: 0, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0,
     });
@@ -530,7 +556,7 @@ async function runReviewUntilGreen(options) {
     }
     telemetry.invocations.push({
       ...(input.telemetrySlot || {}),
-      role, round: currentRound, model: input.requestedModel || result?.requestedModel || null, resolvedModel: result?.resolvedModel || null,
+      role, operation: input.operation || 'substantive-review', ...(input.artifactRole ? { launchRole: input.role } : {}), round: currentRound, model: input.requestedModel || result?.requestedModel || null, resolvedModel: result?.resolvedModel || null,
       reasoningEffort: input.reasoningEffort || result?.reasoningEffort || null, serviceTier: input.serviceTier || result?.serviceTier || null,
       status: result && (Number.isInteger(result.status) || result.status === 'failed') ? result.status : null,
       usagePartial: partial, ...values,
@@ -606,7 +632,7 @@ async function runReviewUntilGreen(options) {
         avoidedLaunches: reconciliation?.avoidedLaunches || 0,
         findings: reconciliation?.findings || {},
         checks: result?.checks || checks,
-        telemetry: (output.telemetry?.invocations || []).map(({ role, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, stage: 'review', revision: initiativeRevision, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens })),
+        telemetry: (output.telemetry?.invocations || []).map(({ role, operation, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, operation, stage: 'review', revision: initiativeRevision, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens })),
       });
       // includeConsumed only for 'terminal': its dedup matches regardless of
       // consumption, so a consumed match here is a legitimate concurrent
@@ -784,7 +810,7 @@ async function runReviewUntilGreen(options) {
     const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodDeferred: started.dodDeferred, dodPending: started.dodPending, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref), gateMode: started.gateMode, gateApplied: started.gateApplied, intentHash: started.intentHash };
     let slotAllocation = Promise.resolve();
     const reserve = async (role, count = 1) => {
-      if (!initiativeRun) return;
+      if (!initiativeRun) return false;
       const reservation = await cli(['reserve', ref, role, '--count', String(count)]);
       if (reservation?.status !== 'granted') {
         const reason = reservation?.status === 'reconciliation-required' ? reservation.status : reservation?.reason;
@@ -792,15 +818,16 @@ async function runReviewUntilGreen(options) {
         if (reason === 'budget-exhausted' || reason === 'reconciliation-required') denied.initiativeBlocked = reason;
         throw denied;
       }
+      return true;
     };
     const launch = async (input) => {
-      if (!input.preReserved) await reserve(input.role === 'gate' ? 'gate-review' : input.role);
+      if (!input.preReserved) await reserve(input.reservationRole || (input.role === 'gate' ? 'gate-review' : input.role));
       const artifactPath = artifactDestinationFromPrompt(input.prompt, input.stateDir);
       const isFix = input.role === 'fix';
       const provider = isFix ? fixer : reviewer;
       const requestedModel = isFix ? fixerModel : reviewerModel;
       let telemetrySlot = null;
-      if (artifactPath && provider === 'codex') {
+      if (artifactPath && provider === 'codex' && input.operation !== 'artifact-repair') {
         const allocation = slotAllocation.then(() => cli(['telemetry-slot', ref, artifactPath, '--engine', 'codex']));
         slotAllocation = allocation.catch(() => {});
         telemetrySlot = await allocation;
@@ -819,15 +846,39 @@ async function runReviewUntilGreen(options) {
 
     const runArtifactReviewer = async (role) => {
       if ((started.completedArtifacts || []).includes(role)) return;
-      let retryPrompt = (started.retryArtifacts && started.retryArtifacts[role]) || (started.retryArtifact && started.retryArtifact.role === role ? started.retryArtifact.prompt : undefined);
       try {
-        for (let attempt = retryPrompt ? 1 : 0; attempt < 2; attempt++) {
-          await launch({ role, prompt: reviewerPrompt(role, { ...context, retryPrompt }), repoRoot, stateDir: context.stateDir });
+        let repair = started.repairArtifacts && started.repairArtifacts[role];
+        if (!repair) {
+          await launch({ role, prompt: reviewerPrompt(role, context), repoRoot, stateDir: context.stateDir });
           const normalized = await cli(['artifact-normalize', ref, role]);
           if (normalized.status === 'ok') return;
-          if (normalized.status !== 'retry' || attempt === 1) throw new Error(`harness-failure: ${role} artifact retry exhausted`);
-          retryPrompt = normalized.prompt;
+          if (normalized.status !== 'repair') throw new Error(`harness-failure: ${role} artifact repair exhausted`);
+          repair = normalized.repair;
         }
+        if (reviewer !== 'codex') throw new Error('harness-failure: artifact repair provider cannot enforce the isolation boundary');
+        const repairDir = repairDirectory(canonicalRepoRoot);
+        try {
+          const packetPath = path.join(repairDir, 'packet.json');
+          const snapshotPath = path.join(repairDir, 'original.json');
+          const candidatePath = path.join(repairDir, 'candidate.json');
+          fs.copyFileSync(repair.snapshotPath, snapshotPath);
+          fs.copyFileSync(repair.packetPath, packetPath);
+          const alreadyDispatched = repair.state === 'dispatched';
+          const reserved = repair.state === 'prepared' ? await reserve(role === 'gate' ? 'gate-review' : role) : repair.state === 'reserved';
+          if (['prepared', 'reserved'].includes(repair.state)) repair = await cli(['artifact-repair-dispatch', ref, role]);
+          if (repair.state === 'dispatched' && !fs.existsSync(repair.candidatePath)) {
+          // The durable dispatch is the sole launch authorization. A crash
+          // after it consumes the attempt rather than duplicating a reviewer.
+          if (alreadyDispatched) throw new Error(`harness-failure: ${role} artifact repair outcome is unavailable after dispatch`);
+          await launch({ role: 'artifact-repair', artifactRole: role, reservationRole: role === 'gate' ? 'gate-review' : role, preReserved: reserved, operation: 'artifact-repair', prompt: artifactContract.repairPrompt(packetPath, candidatePath), repoRoot: repairDir, stateDir: repairDir, ...(options.spawn ? {} : { codexExecutable: resolveCodexExecutable(canonicalRepoRoot) }), env: repairEnvironment(canonicalRepoRoot, context.stateDir) });
+          if (!fs.existsSync(candidatePath)) throw new Error(`harness-failure: ${role} artifact repair produced no candidate`);
+          fs.copyFileSync(candidatePath, repair.candidatePath);
+          repair = await cli(['artifact-repair-candidate', ref, role]);
+        }
+          const repaired = await cli(['artifact-normalize', ref, role, '--candidate', repair.candidatePath]);
+          if (repaired.status !== 'ok') throw new Error(`harness-failure: ${role} artifact repair exhausted`);
+          return;
+        } finally { fs.rmSync(repairDir, { recursive: true, force: true }); }
       } catch (error) {
         const failure = error.reviewFailure || { role, kind: /artifact|missing gate artifact/.test(String(error.message)) ? 'artifact-write-failure' : 'harness-error', message: String(error.message).replace(/^harness-failure:\s*/, '') };
         if (!error.initiativeBlocked) try { await cli(['round-failure', ref, JSON.stringify(failure)]); } catch (_) {}
@@ -938,6 +989,7 @@ async function runReviewUntilGreen(options) {
             `node ${posixQuote(cliPath)} carry ${posixQuote(ref)}`,
             `--from-run-key ${posixQuote(options.initiativeRunKey)}`,
             '--initiative-run-key <new-run-key>',
+            `--initiative-id ${posixQuote(initiativeId)}`,
             `--initiative-state-dir ${posixQuote(canonicalStateDir)}`,
             `--initiative-max-launches ${options.initiativeMaxLaunches}`,
             `--initiative-max-rounds ${options.initiativeMaxRounds}`,

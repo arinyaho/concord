@@ -6,7 +6,7 @@ const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleE
 
 const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
-  process.stdout.write('Usage: review-and-fix [<branch> [<base>] | file:<path-or-glob> | resume <ref>] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--reasoning-effort <effort>] [--service-tier <tier>] [--initiative-run-key <key> --initiative-state-dir <absolute-dir> --initiative-max-launches <n> --initiative-max-rounds <n> [--initiative-mode <base|lite>] [--initiative-finalise]] [--session-handoff <off|suggest|stop-at-checkpoint>] [--broad|--no-broad] [--no-dod]\n');
+  process.stdout.write('Usage: review-and-fix [<branch> [<base>] | file:<path-or-glob> | resume <ref>] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--reasoning-effort <effort>] [--service-tier <tier>] [--initiative-run-key <key> --initiative-id <id> --initiative-state-dir <absolute-dir> --initiative-max-launches <n> --initiative-max-rounds <n> [--initiative-mode <base|lite>] [--initiative-finalise]] [--session-handoff <off|suggest|stop-at-checkpoint>] [--broad|--no-broad] [--no-dod]\n');
   process.exit(0);
 }
 const broadPhraseArgs = new Set();
@@ -26,7 +26,7 @@ const noDod = args.includes('--no-dod');
 const inference = {};
 const inferenceArgs = new Set();
 if (args.includes('--initiative-finalise')) { inference.initiativeFinalise = true; inferenceArgs.add(args.indexOf('--initiative-finalise')); }
-for (const [flag, field] of [['--session-handoff', 'sessionHandoff'], ['--reviewer', 'reviewer'], ['--reviewer-model', 'reviewerModel'], ['--fixer', 'fixer'], ['--fixer-model', 'fixerModel'], ['--reasoning-effort', 'reasoningEffort'], ['--service-tier', 'serviceTier'], ['--initiative-run-key', 'initiativeRunKey'], ['--initiative-state-dir', 'initiativeStateDir'], ['--initiative-max-launches', 'initiativeMaxLaunches'], ['--initiative-max-rounds', 'initiativeMaxRounds'], ['--initiative-mode', 'initiativeMode']]) {
+for (const [flag, field] of [['--session-handoff', 'sessionHandoff'], ['--reviewer', 'reviewer'], ['--reviewer-model', 'reviewerModel'], ['--fixer', 'fixer'], ['--fixer-model', 'fixerModel'], ['--reasoning-effort', 'reasoningEffort'], ['--service-tier', 'serviceTier'], ['--initiative-run-key', 'initiativeRunKey'], ['--initiative-id', 'initiativeId'], ['--initiative-state-dir', 'initiativeStateDir'], ['--initiative-max-launches', 'initiativeMaxLaunches'], ['--initiative-max-rounds', 'initiativeMaxRounds'], ['--initiative-mode', 'initiativeMode']]) {
   const index = args.indexOf(flag); const value = index === -1 ? undefined : args[index + 1];
   if (index !== -1 && (!value || !value.trim() || value.startsWith('--') || args.indexOf(flag, index + 1) !== -1)) {
     process.stderr.write(`review-and-fix: ${flag} requires exactly one value\n`);
@@ -38,7 +38,7 @@ if (inference.sessionHandoff && !['off', 'suggest', 'stop-at-checkpoint'].includ
   process.stderr.write('review-and-fix: --session-handoff must be off, suggest, or stop-at-checkpoint\n');
   process.exit(1);
 }
-if (inference.initiativeRunKey || inference.initiativeStateDir || inference.initiativeMaxLaunches || inference.initiativeMaxRounds || inference.initiativeMode) {
+if (inference.initiativeRunKey || inference.initiativeId || inference.initiativeStateDir || inference.initiativeMaxLaunches || inference.initiativeMaxRounds || inference.initiativeMode) {
   if (!inference.initiativeRunKey || !inference.initiativeStateDir || !/^\d+$/.test(inference.initiativeMaxLaunches || '') || !/^\d+$/.test(inference.initiativeMaxRounds || '')) {
     process.stderr.write('review-and-fix: initiative runs require key, canonical state dir, positive launch and round budgets\n');
     process.exit(1);

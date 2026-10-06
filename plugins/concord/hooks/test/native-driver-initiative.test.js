@@ -40,7 +40,7 @@ function setup(provider, { config, maxLaunches = 20, maxRounds = 5 } = {}) {
   const dir = tmp('native-init-state-');
   const initDir = tmp('native-init-ledger-');
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
-  const keyed = ['--initiative-run-key', 'key-1', '--initiative-state-dir', initDir, '--initiative-max-launches', String(maxLaunches), '--initiative-max-rounds', String(maxRounds)];
+  const keyed = ['--initiative-run-key', 'key-1', '--initiative-id', 'initiative-1', '--initiative-state-dir', initDir, '--initiative-max-launches', String(maxLaunches), '--initiative-max-rounds', String(maxRounds)];
   const cli = (args, { key = true } = {}) => {
     const r = spawnSync('node', [PROVIDERS[provider], ...args, ...(key ? keyed : [])], { encoding: 'utf8', env, cwd: repo });
     return { stdout: r.stdout, stderr: r.stderr, status: r.status, json: () => JSON.parse(r.stdout) };
@@ -197,7 +197,7 @@ for (const provider of Object.keys(PROVIDERS)) {
 for (const provider of Object.keys(PROVIDERS)) {
   test(`${provider}: one budget is shared between a Codex-runner-opened ledger and native reservations (AC1)`, () => {
     const t = setup(provider, { maxLaunches: 3 });
-    const run = openInitiativeRun({ stateDir: t.initDir, key: 'key-1', repository: t.repo, maxLaunches: 3, maxRounds: 5 });
+    const run = openInitiativeRun({ stateDir: t.initDir, key: 'key-1', initiativeId: 'initiative-1', repository: t.repo, maxLaunches: 3, maxRounds: 5 });
     assert.ok(reserveLaunch(run, { role: 'correctness', round: 1, target: 'feat/x' }));
     t.start();
     assert.strictEqual(t.ok(['reserve', 'feat/x', 'correctness']).status, 'granted');
@@ -219,7 +219,7 @@ for (const provider of Object.keys(PROVIDERS)) {
     assert.strictEqual(review.readLedger(t.dir, review.targetSlug('feat/x')).initiative_reservations.length, 1);
     assert.strictEqual(t.ok(['reserve', 'feat/x', 'verify']).status, 'granted');
     assert.strictEqual(t.initiative().launches.length, 2);
-    assert.strictEqual(t.ok(['reserve', 'feat/x', 'gate-review']).status, 'granted');
+    assert.strictEqual(t.ok(['reserve', 'feat/x', 'plan']).status, 'granted');
     assert.strictEqual(t.ok(['reserve', 'feat/x', 'lens']).status, 'denied'); // 3 used + 5 lenses > 5
     assert.strictEqual(t.initiative().launches.length, 3);
   });
@@ -227,7 +227,7 @@ for (const provider of Object.keys(PROVIDERS)) {
   test(`${provider}: a lock-contended reserve returns denied and consumes nothing (AC2)`, () => {
     const t = setup(provider);
     t.start();
-    openInitiativeRun({ stateDir: t.initDir, key: 'key-1', repository: t.repo, maxLaunches: 20, maxRounds: 5 });
+    openInitiativeRun({ stateDir: t.initDir, key: 'key-1', initiativeId: 'initiative-1', repository: t.repo, maxLaunches: 20, maxRounds: 5 });
     const before = t.initiative();
     const lock = `${t.ledgerFile()}.lock`;
     fs.mkdirSync(lock);
@@ -241,7 +241,7 @@ for (const provider of Object.keys(PROVIDERS)) {
   test(`${provider}: a lock-contended reserve denial names the lock, its owner pid and how to remove it`, () => {
     const t = setup(provider);
     t.start();
-    openInitiativeRun({ stateDir: t.initDir, key: 'key-1', repository: t.repo, maxLaunches: 20, maxRounds: 5 });
+    openInitiativeRun({ stateDir: t.initDir, key: 'key-1', initiativeId: 'initiative-1', repository: t.repo, maxLaunches: 20, maxRounds: 5 });
     const lock = `${t.ledgerFile()}.lock`;
     fs.mkdirSync(lock);
     fs.writeFileSync(path.join(lock, 'owner'), `${process.pid}\n`);
@@ -344,31 +344,21 @@ for (const provider of Object.keys(PROVIDERS)) {
     assert.strictEqual(JSON.parse(summary).counts.launches, 3);
   });
 
-  test(`${provider}: a retried launch needs a fresh reservation (P2-1)`, () => {
-    for (const reserveAgain of [false, true]) {
-      const t = setup(provider);
-      const n = t.start();
-      t.ok(['reserve', 'feat/x', 'correctness']); t.ok(['reserve', 'feat/x', 'verify']);
-      t.write(n, 'correctness', { status: 'ok', examined: [], findings: [] });
-      assert.strictEqual(t.ok(['artifact-normalize', 'feat/x', 'correctness']).status, 'retry');
-      if (reserveAgain) assert.strictEqual(t.ok(['reserve', 'feat/x', 'correctness']).status, 'granted');
-      t.write(n, 'correctness', CLEAN);
-      assert.strictEqual(t.ok(['artifact-normalize', 'feat/x', 'correctness']).status, 'ok');
-      t.write(n, 'verify', { status: 'ok', rejected: [] });
-      const r = t.cli(['plan-fixes', 'feat/x']);
-      if (reserveAgain) assert.strictEqual(r.status, 0, r.stderr);
-      else {
-        assert.notStrictEqual(r.status, 0, 'retry accepted on one reservation');
-        assert.match(r.stderr, /harness-failure: .*reservation/);
-        assert.strictEqual(t.initiative().status, 'terminal');
-      }
-    }
+  test(`${provider}: missing correctness coverage fails closed without a fresh reservation`, () => {
+    const t = setup(provider);
+    const n = t.start();
+    t.ok(['reserve', 'feat/x', 'correctness']); t.ok(['reserve', 'feat/x', 'verify']);
+    t.write(n, 'correctness', { status: 'ok', examined: [], findings: [] });
+    const result = t.cli(['artifact-normalize', 'feat/x', 'correctness']);
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.stderr, /harness-failure: .*coverage is incomplete/);
+    assert.strictEqual(t.initiative().launches.length, 2);
   });
 
   test(`${provider}: parallel reserve calls serialize: budget consumed equals tokens kept (P2-2)`, async () => {
     const t = setup(provider, { maxLaunches: 5 });
     t.start();
-    const args = [PROVIDERS[provider], 'reserve', 'feat/x', 'correctness', '--initiative-run-key', 'key-1', '--initiative-state-dir', t.initDir, '--initiative-max-launches', '5', '--initiative-max-rounds', '5'];
+    const args = [PROVIDERS[provider], 'reserve', 'feat/x', 'correctness', '--initiative-run-key', 'key-1', '--initiative-id', 'initiative-1', '--initiative-state-dir', t.initDir, '--initiative-max-launches', '5', '--initiative-max-rounds', '5'];
     const child = () => new Promise((resolve) => {
       const c = spawn('node', args, { env: t.env, cwd: t.repo });
       let out = ''; c.stdout.on('data', (d) => { out += d; }); c.stderr.on('data', (d) => { out += d; }); c.on('close', () => resolve(out));
@@ -455,7 +445,7 @@ for (const provider of Object.keys(PROVIDERS)) {
   test(`${provider}: keyed record fails when the terminal disposition is contended and a re-run records it (P2)`, () => {
     const t = setup(provider);
     const n = t.start();
-    const run = openInitiativeRun({ stateDir: t.initDir, key: 'key-1', repository: t.repo, maxLaunches: 20, maxRounds: 5 });
+    const run = openInitiativeRun({ stateDir: t.initDir, key: 'key-1', initiativeId: 'initiative-1', repository: t.repo, maxLaunches: 20, maxRounds: 5 });
     assert.ok(recordDisposition(run, { target: 'feat/x', revision: { ref: 'feat/x', head_sha: 'seed' }, result: { decision: { continue: false, gatePending: true } } }));
     t.ok(['reserve', 'feat/x', 'correctness']); t.ok(['reserve', 'feat/x', 'verify']);
     t.write(n, 'correctness', CLEAN);
@@ -495,7 +485,7 @@ for (const provider of Object.keys(PROVIDERS)) {
     const n = t.start();
     t.write(n, 'correctness', CLEAN);
     t.write(n, 'verify', { status: 'ok', rejected: [] });
-    openInitiativeRun({ stateDir: t.initDir, key: 'key-1', repository: t.repo, maxLaunches: 20, maxRounds: 5 });
+    openInitiativeRun({ stateDir: t.initDir, key: 'key-1', initiativeId: 'initiative-1', repository: t.repo, maxLaunches: 20, maxRounds: 5 });
     fs.mkdirSync(`${t.ledgerFile()}.lock`);
     const r = t.cli(['plan-fixes', 'feat/x']);
     fs.rmdirSync(`${t.ledgerFile()}.lock`);
@@ -561,7 +551,7 @@ for (const provider of Object.keys(PROVIDERS)) {
     t.ok(['plan-fixes', 'feat/x']);
     const planned = review.readLedger(t.dir, slug);
     review.writeLedger(t.dir, slug, { ...planned, gate_open: [{ id: 'gate:cross-context:x', file: 'a.txt', summary: 's', gate: 'cross-context', span: 'two' }] });
-    const run = openInitiativeRun({ stateDir: t.initDir, key: 'key-1', repository: t.repo, maxLaunches: 20, maxRounds: 5 });
+    const run = openInitiativeRun({ stateDir: t.initDir, key: 'key-1', initiativeId: 'initiative-1', repository: t.repo, maxLaunches: 20, maxRounds: 5 });
     const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: t.repo, encoding: 'utf8' }).trim();
     const revision = { ref: 'feat/x', ...(planned.target?.base ? { base: planned.target.base } : {}), head_sha: head };
     assert.ok(recordDisposition(run, { target: 'feat/x', revision, result: { decision: { continue: false, intentReview: true } } }));
@@ -582,7 +572,7 @@ for (const provider of Object.keys(PROVIDERS)) {
   const reverifyOnNewHead = (t, maxLaunches, result) => {
     const target = review.readLedger(t.dir, review.targetSlug('feat/x')).target;
     const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: t.repo, encoding: 'utf8' }).trim();
-    const run = openInitiativeRun({ stateDir: t.initDir, key: 'key-1', repository: t.repo, maxLaunches, maxRounds: 5 });
+    const run = openInitiativeRun({ stateDir: t.initDir, key: 'key-1', initiativeId: 'initiative-1', repository: t.repo, maxLaunches, maxRounds: 5 });
     assert.ok(recordDisposition(run, { target: 'feat/x', revision: { ref: 'feat/x', ...(target?.base ? { base: target.base } : {}), head_sha: head }, result }));
     fs.writeFileSync(path.join(t.repo, 'a.txt'), 'three\n');
     execFileSync('git', ['commit', '-aqm', 'fix'], { cwd: t.repo });
@@ -674,7 +664,7 @@ for (const provider of Object.keys(PROVIDERS)) {
 // follows is denied budget-exhausted on an already-bound target.
 for (const provider of Object.keys(PROVIDERS)) {
   function carryFlags(t, key, { maxLaunches = 5, maxRounds = 5 } = {}) {
-    return ['--initiative-run-key', key, '--initiative-state-dir', t.initDir, '--initiative-max-launches', String(maxLaunches), '--initiative-max-rounds', String(maxRounds)];
+    return ['--initiative-run-key', key, '--initiative-id', 'initiative-1', '--initiative-state-dir', t.initDir, '--initiative-max-launches', String(maxLaunches), '--initiative-max-rounds', String(maxRounds)];
   }
   function carry(t, fromKey, toFlags) {
     return spawnSync('node', [PROVIDERS[provider], 'carry', 'feat/x', '--from-run-key', fromKey, ...toFlags], { encoding: 'utf8', env: t.env, cwd: t.repo });
@@ -851,7 +841,7 @@ for (const provider of Object.keys(PROVIDERS)) {
         name: 'a new run that is already exhausted',
         build: () => {
           const t = blockedSetup(provider);
-          const run = openInitiativeRun({ stateDir: t.initDir, key: 'key-2', repository: t.repo, maxLaunches: 1, maxRounds: 5 });
+          const run = openInitiativeRun({ stateDir: t.initDir, key: 'key-2', initiativeId: 'initiative-1', repository: t.repo, maxLaunches: 1, maxRounds: 5 });
           assert.ok(reserveLaunch(run, { role: 'correctness', round: 0, target: 'other' }));
           return t;
         },
@@ -1103,7 +1093,7 @@ for (const provider of Object.keys(PROVIDERS)) {
 
   test(`${provider}: a new run parked for reconciliation on an unopened pair refuses the carry (test gap)`, () => {
     const t = blockedSetup(provider);
-    const run2 = openInitiativeRun({ stateDir: t.initDir, key: 'key-2', repository: t.repo, maxLaunches: 5, maxRounds: 5 });
+    const run2 = openInitiativeRun({ stateDir: t.initDir, key: 'key-2', initiativeId: 'initiative-1', repository: t.repo, maxLaunches: 5, maxRounds: 5 });
     const ledger2 = JSON.parse(fs.readFileSync(run2.path, 'utf8'));
     fs.writeFileSync(run2.path, JSON.stringify({ ...ledger2, reconciliation: { terminals: [], hint: { trigger: 'reconciliation-required' } } }));
     const result = carry(t, 'key-1', carryFlags(t, 'key-2'));
@@ -1115,7 +1105,7 @@ for (const provider of Object.keys(PROVIDERS)) {
   test(`${provider}: a new run already terminal for this pair refuses the carry (test gap)`, () => {
     const t = blockedSetup(provider);
     const ledger = review.readLedger(t.dir, review.targetSlug('feat/x'));
-    const run2 = openInitiativeRun({ stateDir: t.initDir, key: 'key-2', repository: t.repo, maxLaunches: 5, maxRounds: 5 });
+    const run2 = openInitiativeRun({ stateDir: t.initDir, key: 'key-2', initiativeId: 'initiative-1', repository: t.repo, maxLaunches: 5, maxRounds: 5 });
     const revision = { ref: 'feat/x', base: execFileSync('git', ['rev-parse', ledger.target.base], { cwd: t.repo, encoding: 'utf8' }).trim(), head_sha: ledger.target.head_sha };
     assert.ok(recordDisposition(run2, { target: 'feat/x', revision, result: { status: 'clean' } }));
     const result = carry(t, 'key-1', carryFlags(t, 'key-2'));

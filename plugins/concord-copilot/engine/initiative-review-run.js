@@ -31,6 +31,11 @@ function runPath(stateDir, key) {
   return path.join(canonicalPath(stateDir), `initiative-review-${crypto.createHash('sha256').update(key).digest('hex')}.json`);
 }
 
+function broadClaimPath(stateDir, repository, initiativeId) {
+  const identity = `${repository}\0${initiativeId}`;
+  return path.join(canonicalPath(stateDir), `initiative-broad-${crypto.createHash('sha256').update(identity).digest('hex')}.json`);
+}
+
 function write(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   writeFileAtomic(file, `${JSON.stringify(value)}\n`, { mode: 0o600 });
@@ -130,15 +135,15 @@ function normalizeDisposition(result = {}) {
   return { kind: 'terminal', reason: 'target-terminal' };
 }
 
-function openInitiativeRun({ stateDir, key, repository, maxLaunches, maxRounds, allowTerminal = false, mode = 'base' }) {
+function openInitiativeRun({ stateDir, key, initiativeId = key, repository, maxLaunches, maxRounds, allowTerminal = false, mode = 'base' }) {
   if (!MODES.includes(mode)) throw new Error('initiative review mode must be base or lite');
-  if (!stateDir || !key || !repository) throw new Error('initiative review requires a run key, repository identity, and canonical state directory');
+  if (!stateDir || !key || !initiativeId || !repository) throw new Error('initiative review requires a run key, initiative identity, repository identity, and canonical state directory');
   if (!Number.isInteger(maxLaunches) || maxLaunches < 1 || !Number.isInteger(maxRounds) || maxRounds < 1) throw new Error('initiative review budgets must be positive integers');
-  const run = { path: runPath(stateDir, key), repository: repositoryIdentity(repository) };
+  const run = { path: runPath(stateDir, key), key, initiativeId, stateDir: canonicalPath(stateDir), repository: repositoryIdentity(repository) };
   const initialize = (ledger) => {
-    if (!ledger) return { version: 5, mode, openedAt: now(), repository: run.repository, status: 'active', budget: { maxLaunches, maxRounds }, launches: [], rounds: [], targets: [], findings: {}, checks: [], telemetry: [], terminal: null, dispositions: [], reconciliation: null };
+    if (!ledger) return { version: 5, mode, initiativeId, openedAt: now(), repository: run.repository, status: 'active', budget: { maxLaunches, maxRounds }, launches: [], rounds: [], targets: [], findings: {}, checks: [], telemetry: [], terminal: null, dispositions: [], reconciliation: null };
     assertVersion(ledger);
-    if (ledger.repository !== run.repository || (!allowTerminal && ledger.status === 'terminal') || ledger.budget?.maxLaunches !== maxLaunches || ledger.budget?.maxRounds !== maxRounds) throw new Error('initiative review run has a different repository, is terminal, or has immutable configured budgets');
+    if (ledger.repository !== run.repository || (ledger.initiativeId || key) !== initiativeId || (!allowTerminal && ledger.status === 'terminal') || ledger.budget?.maxLaunches !== maxLaunches || ledger.budget?.maxRounds !== maxRounds) throw new Error('initiative review run has a different repository, initiative identity, is terminal, or has immutable configured budgets');
   };
   if (!locked(run, initialize)) {
     let ledger;
@@ -149,16 +154,49 @@ function openInitiativeRun({ stateDir, key, repository, maxLaunches, maxRounds, 
   return run;
 }
 
+function claimBroadSweep(run, claimant, reclaim = false) {
+  const claim = broadClaimPath(run.stateDir, run.repository, run.initiativeId);
+  const lock = `${claim}.lock`;
+  fs.mkdirSync(path.dirname(lock), { recursive: true });
+  try { fs.mkdirSync(lock); } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    if (!reclaimStaleLock(lock)) throw new Error(`initiative broad-sweep claim is contended: ${lock}`);
+    fs.mkdirSync(lock);
+  }
+  try {
+    fs.writeFileSync(path.join(lock, 'owner'), `${process.pid}\n`);
+    try {
+      const prior = JSON.parse(fs.readFileSync(claim, 'utf8'));
+      if (prior.repository === run.repository && prior.initiativeId === run.initiativeId
+        && prior.target === claimant.target && prior.attemptId === claimant.attemptId) {
+        if (reclaim && prior.key !== run.key) writeFileAtomic(claim, `${JSON.stringify({ ...prior, key: run.key })}\n`, { mode: 0o600 });
+        return prior.key === run.key || reclaim;
+      }
+      return false;
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    writeFileAtomic(claim, `${JSON.stringify({ repository: run.repository, initiativeId: run.initiativeId, key: run.key, target: claimant.target, attemptId: claimant.attemptId, claimedAt: now() })}\n`, { mode: 0o600 });
+    return true;
+  } finally { fs.rmSync(lock, { recursive: true, force: true }); }
+}
+
+function hasBroadSweepClaim(run, claimant) {
+  try {
+    const claim = JSON.parse(fs.readFileSync(broadClaimPath(run.stateDir, run.repository, run.initiativeId), 'utf8'));
+    return claim.repository === run.repository && claim.initiativeId === run.initiativeId && claim.key === run.key
+      && claim.target === claimant?.target && claim.attemptId === claimant?.attemptId;
+  } catch (_) { return false; }
+}
+
 // Escalates a lite run to base. Allowed only before the first launch, so one run
 // never mixes two reviewer sets under one budget. The caller supplies the base budgets.
-function escalateInitiativeRun({ stateDir, key, repository, trigger, maxLaunches, maxRounds }) {
+function escalateInitiativeRun({ stateDir, key, initiativeId, repository, trigger, maxLaunches, maxRounds }) {
   if (!ESCALATION_TRIGGERS.includes(trigger)) throw new Error(`initiative escalation trigger must be one of ${ESCALATION_TRIGGERS.join(', ')}`);
   if (!Number.isInteger(maxLaunches) || maxLaunches < 1 || !Number.isInteger(maxRounds) || maxRounds < 1) throw new Error('initiative review budgets must be positive integers');
   const run = { path: runPath(stateDir, key), repository: repositoryIdentity(repository) };
   const done = locked(run, (ledger) => {
     if (!ledger) throw new Error('no initiative review run for this key');
     assertVersion(ledger);
-    if (ledger.repository !== run.repository || ledger.status !== 'active') throw new Error('initiative review run has a different repository or is terminal');
+    if (ledger.repository !== run.repository || (ledger.initiativeId || key) !== (initiativeId || key) || ledger.status !== 'active') throw new Error('initiative review run has a different repository, initiative identity, or is terminal');
     if (ledger.mode !== 'lite') throw new Error('initiative review run is not a lite run');
     if ((ledger.launches || []).length) throw new Error('initiative escalation is refused after the first launch; preserve the original initiative and target ledgers and reconcile the lite contract and spent budgets; only after reconciliation start a new run key in base mode in a separate target review state directory, retaining the old target ledger as evidence');
     return { ...ledger, mode: 'base', escalation: { from: 'lite', to: 'base', trigger }, budget: { maxLaunches, maxRounds } };
@@ -209,6 +247,7 @@ function launchRefusal(ledger, launch, count) {
   const target = launch.target || launch.revision?.ref || 'unknown';
   const revision = launchRevision(launch, target);
   if (parkedRefusal(ledger, target, revision)) return 'reconciliation-required';
+  if (launch.broad && !hasBroadSweepClaim(launch.run, launch)) return 'broad-sweep-claimed';
   if ((ledger.dispositions || []).some((disposition) => disposition.target === target && disposition.kind === 'terminal' && samePair(disposition.revision, revision))) return 'target-terminal';
   if (ledger.launches.length + count > ledger.budget.maxLaunches) return 'budget-exhausted';
   const round = `${target}\u0000${typeof launch.attemptId === 'string' ? launch.attemptId : 'legacy'}\u0000${launch.round}`;
@@ -221,7 +260,7 @@ function launchRefusal(ledger, launch, count) {
 function reserveLaunchBatch(run, launch, count = 1, beforeCharge) {
   return Boolean(locked(run, (ledger) => {
     if (ledger) assertVersion(ledger);
-    if (launchRefusal(ledger, launch, count)) return null;
+    if (launchRefusal(ledger, { ...launch, run }, count)) return null;
     const target = launch.target || launch.revision?.ref || 'unknown';
     const round = `${target}\u0000${typeof launch.attemptId === 'string' ? launch.attemptId : 'legacy'}\u0000${launch.round}`;
     const rounds = ledger.rounds || [];
@@ -237,7 +276,7 @@ function reserveLaunchBatch(run, launch, count = 1, beforeCharge) {
 function denialReason(run, launch, count = 1) {
   let ledger;
   try { ledger = JSON.parse(fs.readFileSync(run.path, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  return launchRefusal(ledger, launch, count);
+  return launchRefusal(ledger, { ...launch, run }, count);
 }
 
 function reserveLaunch(run, launch) {
@@ -245,7 +284,7 @@ function reserveLaunch(run, launch) {
 }
 
 function recordDisposition(run, { target, revision, result, packet = {}, finding = null, stage = null, avoidedLaunches = 0, findings = {}, checks = [], telemetry = [] }) {
-  const safeTelemetry = telemetry.map(({ role, stage: telemetryStage, revision, round, count, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, ...(telemetryStage ? { stage: telemetryStage } : {}), ...(revision ? { revision } : {}), ...(Number.isInteger(round) ? { round } : {}), ...(Number.isInteger(count) ? { count } : {}), elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }));
+  const safeTelemetry = telemetry.map(({ role, operation, stage: telemetryStage, revision, round, count, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, ...(operation ? { operation } : {}), ...(telemetryStage ? { stage: telemetryStage } : {}), ...(revision ? { revision } : {}), ...(Number.isInteger(round) ? { round } : {}), ...(Number.isInteger(count) ? { count } : {}), elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }));
   return Boolean(locked(run, (ledger) => {
     if (!ledger || ledger.version !== 5 || ledger.status !== 'active') return null;
     const disposition = normalizeDisposition(result);
@@ -357,4 +396,4 @@ function finaliseInitiativeRun(run, reason = 'finalised') {
   return true;
 }
 
-module.exports = { MODES, ESCALATION_TRIGGERS, lockDiagnosis, escalateInitiativeRun, canonicalPath, runPath, repositoryIdentity, openInitiativeRun, reserveLaunch, reserveLaunchBatch, denialReason, pairRefusal, resolveBaseCommit, normalizeDisposition, recordDisposition, consumeDispositionDelivery, terminalTarget, terminalDispositionInLedger, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };
+module.exports = { MODES, ESCALATION_TRIGGERS, lockDiagnosis, escalateInitiativeRun, canonicalPath, runPath, repositoryIdentity, openInitiativeRun, claimBroadSweep, hasBroadSweepClaim, reserveLaunch, reserveLaunchBatch, denialReason, pairRefusal, resolveBaseCommit, normalizeDisposition, recordDisposition, consumeDispositionDelivery, terminalTarget, terminalDispositionInLedger, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };

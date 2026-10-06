@@ -39,7 +39,7 @@ function continuationPrompt(checkpoint) {
     'Verify snapshot hashes, then read the latest originals and live ledger. Ordinary subsequent execution progress is not authoritative source drift: skip completed steps and use current verified evidence.',
     `Keep session handoff policy ${checkpoint.mode}.`,
     'Verify their hashes, authoritative source versions, approved contract, authorization, branch/head/base and current checks before acting. Source drift requires the normal reconciliation procedure.',
-    `Keep the same run key ${JSON.stringify(checkpoint.run.key)}, initiative state directory ${JSON.stringify(checkpoint.run.stateDir)} and delivery mode ${checkpoint.run.mode}.`,
+    `Keep the same run key ${JSON.stringify(checkpoint.run.key)}, initiative ID ${JSON.stringify(checkpoint.run.initiativeId)}, initiative state directory ${JSON.stringify(checkpoint.run.stateDir)} and delivery mode ${checkpoint.run.mode}.`,
     `Budget snapshot: ${checkpoint.budget.usedLaunches}/${checkpoint.budget.maxLaunches} launches; ${checkpoint.budget.usedRounds}/${checkpoint.budget.maxRounds} review rounds. Recheck the live ledger; this snapshot is not authority to launch.`,
     `Recorded run status: ${checkpoint.run.status}. Preserve any terminal or reconciliation disposition. Budget exhaustion requires reconciliation, not reset, a new key or larger budgets.`,
     'Read the exact next CLI step, target review state directory, existing reservations and completed role artifacts from the handoff. Reuse verified evidence; do not repeat completed investigation or relaunch reserved workers.',
@@ -78,7 +78,7 @@ function createSessionHandoff({ packetPath, mode = 'suggest', initiative, reposi
     const checkpoint = {
       schema: 1, mode, scope: packet.scope, boundary: packet.boundary, triggers,
       observationSource: 'caller-reported', observations: observed, sources: { state: { path: state.path, sha256: state.sha256 }, handoff: { path: handoff.path, sha256: handoff.sha256 } }, nextAction: packet.nextAction,
-      run: { key: initiative.key, stateDir: canonicalPath(initiative.stateDir), mode: ledger.mode, status: ledger.status },
+      run: { key: initiative.key, initiativeId: ledger.initiativeId || initiative.key, stateDir: canonicalPath(initiative.stateDir), mode: ledger.mode, status: ledger.status },
       budget: { maxLaunches: ledger.budget.maxLaunches, maxRounds: ledger.budget.maxRounds, usedLaunches: ledger.launches.length, usedRounds: ledger.rounds.length },
     };
     const directory = path.join(checkpoint.run.stateDir, `session-handoff-${digest(JSON.stringify(checkpoint))}`);

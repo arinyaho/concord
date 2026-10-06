@@ -1,11 +1,23 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { normalizeArtifact, ArtifactError, retryPrompt, allowedFindingPrefixes } = require('../../core/artifact-contract');
+const { normalizeArtifact, ArtifactError, retryPrompt, allowedFindingPrefixes, preservesArtifact } = require('../../core/artifact-contract');
+
+test('repair preservation accepts plan findingIds, clean verdicts, and reordered object keys', () => {
+  const plan = { status: 'OK', protocolVersion: 2, groups: [{ groupId: 'g', findingIds: ['correctness:x'], rootCause: 'one', invariants: [], changeClass: 'local', structuralEffects: [], action: 'fix' }] };
+  const candidate = { protocolVersion: 2, groups: [{ action: 'fix', structuralEffects: [], changeClass: 'local', invariants: [], rootCause: 'one', findingIds: ['correctness:x'], groupId: 'g' }], status: 'ok' };
+  assert.ok(preservesArtifact('plan', JSON.stringify(plan), candidate));
+  assert.ok(preservesArtifact('gate', JSON.stringify({ status: 'OK', findings: [] }), { status: 'ok', findings: [] }));
+});
 
 test('canonical correctness artifact is preserved except unsupported top-level fields', () => {
   const finding = { id: 'correctness:real-bug', file: 'a.js', span: 'bad()', summary: 'wrong result', evidence: 'keep' };
   assert.deepStrictEqual(normalizeArtifact('correctness', JSON.stringify({ status: 'ok', examined: ['a.js'], findings: [finding], noise: true })), { status: 'ok', examined: ['a.js'], findings: [finding] });
+});
+
+test('status repair preserves correctness examined paths as evidence', () => {
+  const original = JSON.stringify({ status: 'OK', examined: ['changed-file.js'], findings: [] });
+  assert.ok(preservesArtifact('correctness', original, { status: 'ok', examined: ['changed-file.js'], findings: [] }));
 });
 
 test('findings status canonicalizes without changing finding meaning', () => {

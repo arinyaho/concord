@@ -35,6 +35,56 @@ function retryPrompt(name) {
   return `Rewrite only round artifact ${name} as JSON: {"status":"ok",${name === 'plan' ? '"protocolVersion":2,' : ''}${fields}}. Findings require id, file, and summary; ids must use ${prefixes}<stable-slug>.${rejectedRule}${groupsRule}${ownershipRule} Do not add prose or other extra top-level fields, with one exception: if you could not run the method you were assigned, keep (or add) "blocked":["<tool>: <what failed>"] -- never drop it to make this artifact validate.`;
 }
 
+function repairPrompt(packetPath, candidatePath) {
+  return `You are performing artifact-repair, not a review. Read only ${JSON.stringify(packetPath)} and its immutable snapshot. Do not inspect a repository, diff, history, design, or other artifacts. Write only a JSON candidate to ${JSON.stringify(candidatePath)}. Preserve every established item by identity; do not add, remove, relabel, or infer evidence.`;
+}
+
+function repairPacket(name, error, original) {
+  const shape = SHAPES[name];
+  if (!shape) throw new Error(`unknown artifact role: ${name}`);
+  let parsed;
+  try { parsed = JSON.parse(original); } catch (_) { throw new Error('repair packet requires JSON original'); }
+  const foreign = (value) => typeof value === 'string' && !shape.prefixes.some((prefix) => value.startsWith(prefix));
+  const candidateIds = [...new Set(shape.arrays.flatMap((key) => Array.isArray(parsed[key]) ? parsed[key].map((item) => typeof item === 'string' ? item : item && item.id).filter((id) => typeof id === 'string' && !foreign(id)) : []))];
+  return { role: name, error, schema: { requiredArrays: shape.arrays, ...(name === 'plan' ? { protocolVersion: 2 } : {}) }, allowedPrefixes: [...shape.prefixes], candidateIds };
+}
+
+function preservesArtifact(name, raw, candidate) {
+  let original;
+  try { original = JSON.parse(raw); } catch (_) { return false; }
+  if (!original || typeof original !== 'object' || Array.isArray(original) || !candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return false;
+  const comparable = (value) => value && typeof value === 'object' && !Array.isArray(value)
+    ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${comparable(value[key])}`).join(',')}}`
+    : Array.isArray(value) ? `[${value.map(comparable).join(',')}]` : JSON.stringify(value);
+  const shape = SHAPES[name];
+  if (!shape) return false;
+  const owns = (item) => {
+    const ids = name === 'plan' && item && typeof item === 'object' ? item.findingIds : [typeof item === 'string' ? item : item && item.id];
+    return Array.isArray(ids) && ids.some((id) => typeof id === 'string' && shape.prefixes.some((prefix) => id.startsWith(prefix)));
+  };
+  const ownedEvidence = shape.arrays.flatMap((key) => key === 'examined' ? (original[key] || []) : (Array.isArray(original[key]) ? original[key].filter(owns) : []));
+  if (!ownedEvidence.length && !shape.arrays.every((key) => Array.isArray(original[key]) && original[key].length === 0)) return false;
+  for (const key of Object.keys(original)) {
+    if (key === 'status') continue;
+    // A repair may omit foreign dispositions only when its role-owned evidence
+    // remains complete. The immutable original stays audited.
+    if (shape.arrays.includes(key) && Array.isArray(original[key])) {
+      if (key === 'examined') {
+        if (!Array.isArray(candidate[key]) || comparable(original[key]) !== comparable(candidate[key])) return false;
+        continue;
+      }
+      const owned = original[key].filter(owns);
+      if (owned.length !== original[key].length) {
+        if (!Array.isArray(candidate[key]) || comparable(owned) !== comparable(candidate[key])) return false;
+        continue;
+      }
+    }
+    if (comparable(original[key]) !== comparable(candidate[key])) return false;
+  }
+  for (const key of Object.keys(candidate)) if (key !== 'status' && !Object.hasOwn(original, key)) return false;
+  return true;
+}
+
 function normalizeArtifact(name, raw) {
   const shape = SHAPES[name];
   if (!shape) throw new Error(`unknown artifact role: ${name}`);
@@ -145,4 +195,4 @@ function normalizeArtifact(name, raw) {
   return canonical;
 }
 
-module.exports = { ArtifactError, normalizeArtifact, retryPrompt, allowedFindingPrefixes, ARTIFACT_ROLES: Object.keys(SHAPES) };
+module.exports = { ArtifactError, normalizeArtifact, retryPrompt, repairPrompt, repairPacket, preservesArtifact, allowedFindingPrefixes, ARTIFACT_ROLES: Object.keys(SHAPES) };

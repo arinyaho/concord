@@ -171,7 +171,7 @@ test('changedGitPaths includes added, modified, deleted, and rename paths withou
   ]);
 });
 
-test('artifact-normalize retries an invalid id once, then writes a canonical artifact', () => {
+test('artifact-normalize fails closed on an invalid id instead of repairing evidence', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
@@ -179,15 +179,10 @@ test('artifact-normalize retries an invalid id once, then writes a canonical art
   const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
   const file = path.join(dir, `round-${n}-correctness.json`);
   fs.writeFileSync(file, JSON.stringify({ status: 'findings', examined: ['a.txt'], findings: [{ id: 'gate:wrong', file: 'a.txt', summary: 's' }] }));
-  const retry = JSON.parse(run(['artifact-normalize', 'feat/x', 'correctness'], { env }));
-  assert.strictEqual(retry.status, 'retry');
-  assert.match(retry.prompt, /status.*ok/);
-  fs.writeFileSync(file, JSON.stringify({ status: 'findings', examined: ['a.txt'], findings: [{ id: 'correctness:right', file: 'a.txt', summary: 's' }], extra: true }));
-  assert.strictEqual(JSON.parse(run(['artifact-normalize', 'feat/x', 'correctness'], { env })).status, 'ok');
-  assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:right', file: 'a.txt', summary: 's' }] });
+  assert.throws(() => run(['artifact-normalize', 'feat/x', 'correctness'], { env }), /invalid id/);
 });
 
-test('artifact-normalize persists every pending retry prompt for a later resume', () => {
+test('artifact-normalize leaves missing and foreign evidence terminal', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
@@ -197,33 +192,36 @@ test('artifact-normalize persists every pending retry prompt for a later resume'
   const n = started.round;
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: [], findings: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [{ id: 'correctness:wrong', file: 'a.txt', summary: 'wrong namespace' }] }));
-  const correctnessRetry = JSON.parse(run(['artifact-normalize', 'feat/x', 'correctness'], { env }));
-  const gateRetry = JSON.parse(run(['artifact-normalize', 'feat/x', 'gate'], { env }));
-  const ledger = JSON.parse(fs.readFileSync(path.join(dir, 'review-feat-x.json'), 'utf8'));
-  assert.deepStrictEqual(ledger.execution.retryArtifacts, { correctness: correctnessRetry.prompt, gate: gateRetry.prompt });
-  fs.unlinkSync(path.join(dir, `round-${n}-correctness.retry`));
-  fs.unlinkSync(path.join(dir, `round-${n}-gate.retry`));
-  assert.throws(() => run(['artifact-normalize', 'feat/x', 'correctness'], { env }), /harness-failure/);
-  const resumed = JSON.parse(run(['round-start', 'feat/x'], { env, broadDefault: true }));
-  assert.strictEqual(resumed.gateApplied, true);
-  assert.deepStrictEqual(resumed.retryArtifacts, { correctness: correctnessRetry.prompt, gate: gateRetry.prompt });
+  assert.throws(() => run(['artifact-normalize', 'feat/x', 'correctness'], { env }), /coverage is incomplete/);
+  assert.throws(() => run(['artifact-normalize', 'feat/x', 'gate'], { env }), /invalid id/);
+  assert.strictEqual(fs.existsSync(path.join(dir, `round-${n}-correctness.repair.json`)), false);
+  assert.strictEqual(fs.existsSync(path.join(dir, `round-${n}-gate.repair.json`)), false);
 });
 
-test('artifact-normalize fails after retry exhaustion', () => {
+test('artifact-normalize does not create a repair attempt for invalid evidence', () => {
   const repo = initRepo(); const dir = tmpDir(); const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n'); execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
   const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', findings: [{ id: 'gate:wrong', file: 'a.txt', summary: 's' }] }));
-  run(['artifact-normalize', 'feat/x', 'correctness'], { env });
-  assert.throws(() => run(['artifact-normalize', 'feat/x', 'correctness'], { env }), /harness-failure/);
+  assert.throws(() => run(['artifact-normalize', 'feat/x', 'correctness'], { env }), /invalid id/);
+  assert.strictEqual(fs.existsSync(path.join(dir, `round-${n}-correctness.repair.json`)), false);
 });
 
-test('gate-verify namespace retry is specific, preserves the artifact, and remains bounded', () => {
+test('artifact-normalize repairs only a known status spelling and fails closed on a correctness-only gate-verify artifact', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
   const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--broad'], { env, broadDefault: true })).round;
+  const repairFile = path.join(dir, `round-${n}-gate.json`);
+  const unsupported = JSON.stringify({ status: 'OK', findings: [] });
+  fs.writeFileSync(repairFile, unsupported);
+
+  const repair = JSON.parse(run(['artifact-normalize', 'feat/x', 'gate'], { env, broadDefault: true }));
+  assert.strictEqual(repair.status, 'repair');
+  assert.strictEqual(fs.readFileSync(repairFile, 'utf8'), unsupported, 'repair must retain the original artifact');
+  assert.ok(fs.existsSync(path.join(dir, `round-${n}-gate.repair.json`)));
+
   const file = path.join(dir, `round-${n}-gate-verify.json`);
   const raw = JSON.stringify({
     status: 'ok',
@@ -232,17 +230,44 @@ test('gate-verify namespace retry is specific, preserves the artifact, and remai
   });
   fs.writeFileSync(file, raw);
 
-  const retry = JSON.parse(run(['artifact-normalize', 'feat/x', 'gate-verify'], { env, broadDefault: true }));
-  assert.strictEqual(retry.status, 'retry');
-  assert.match(retry.prompt, /role is gate-verify/i);
-  assert.match(retry.prompt, /allowed.*gate:/i);
-  assert.match(retry.prompt, /correctness:\*.*must not.*disposition/i);
-  assert.match(retry.prompt, /preserve.*evidence/i);
-  assert.strictEqual(fs.readFileSync(file, 'utf8'), raw, 'normalization must not filter cross-namespace evidence');
   assert.throws(() => run(['artifact-normalize', 'feat/x', 'gate-verify'], { env, broadDefault: true }), /harness-failure.*invalid id/);
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), raw, 'normalization must not filter cross-namespace evidence');
 });
 
-test('artifact-normalize retries correctness coverage before it writes a canonical artifact', () => {
+test('artifact-normalize permits only a preserving mixed gate-verify candidate', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n'); execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/mixed', 'HEAD~1', '--broad'], { env, broadDefault: true })).round;
+  const original = { status: 'ok', rejected: [{ id: 'gate:real', reason: 'ran gate' }, { id: 'correctness:context', reason: 'context only' }], findings: [] };
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify(original));
+  const repair = JSON.parse(run(['artifact-normalize', 'feat/mixed', 'gate-verify'], { env, broadDefault: true })).repair;
+  const candidate = { status: 'ok', rejected: [{ id: 'gate:real', reason: 'ran gate' }], findings: [] };
+  fs.writeFileSync(repair.candidatePath, JSON.stringify(candidate));
+  assert.strictEqual(JSON.parse(run(['artifact-normalize', 'feat/mixed', 'gate-verify', '--candidate', repair.candidatePath], { env, broadDefault: true })).status, 'ok');
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(dir, `round-${n}-gate-verify.json`), 'utf8')).rejected, candidate.rejected);
+});
+
+test('artifact-normalize repairs a verify artifact with foreign gate rejections and preserves its correctness verdict', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n'); execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/mixed-verify', 'HEAD~1', '--broad'], { env, broadDefault: true })).round;
+  const original = {
+    status: 'ok',
+    rejected: [{ id: 'gate:foreign-rejection', reason: 'belongs to gate verification' }],
+    findings: [{ id: 'correctness:manual-staging', file: 'review-driver.md', summary: 'repair staging exposes state' }],
+  };
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify(original));
+  const repair = JSON.parse(run(['artifact-normalize', 'feat/mixed-verify', 'verify'], { env, broadDefault: true })).repair;
+  const candidate = { status: 'ok', rejected: [], findings: original.findings };
+  fs.writeFileSync(repair.candidatePath, JSON.stringify(candidate));
+  assert.strictEqual(JSON.parse(run(['artifact-normalize', 'feat/mixed-verify', 'verify', '--candidate', repair.candidatePath], { env, broadDefault: true })).status, 'ok');
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(dir, `round-${n}-verify.json`), 'utf8')), candidate);
+  assert.strictEqual(review.readLedger(dir, review.targetSlug('feat/mixed-verify')).execution.retryArtifacts.verify, undefined);
+});
+
+test('artifact-normalize fails closed on missing correctness coverage', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
@@ -254,12 +279,8 @@ test('artifact-normalize retries correctness coverage before it writes a canonic
   const raw = JSON.stringify({ status: 'findings', examined: ['a.txt'], findings: [] });
   fs.writeFileSync(artifact, raw);
 
-  const retry = JSON.parse(run(['artifact-normalize', 'feat/x', 'correctness'], { env }));
-  assert.deepStrictEqual(retry.status, 'retry');
-  assert.match(retry.prompt, /"examined"/);
-  assert.match(retry.prompt, /a\.txt/);
-  assert.match(retry.prompt, /b\.txt/);
-  assert.strictEqual(fs.readFileSync(artifact, 'utf8'), raw, 'coverage retry must not infer or rewrite examined');
+  assert.throws(() => run(['artifact-normalize', 'feat/x', 'correctness'], { env }), /coverage is incomplete/);
+  assert.strictEqual(fs.readFileSync(artifact, 'utf8'), raw, 'coverage failure must not infer or rewrite examined');
 });
 
 test('artifact-normalize fails closed when correctness coverage is still incomplete after its retry', () => {
@@ -273,7 +294,6 @@ test('artifact-normalize fails closed when correctness coverage is still incompl
   const artifact = path.join(dir, `round-${n}-correctness.json`);
   fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
 
-  assert.strictEqual(JSON.parse(run(['artifact-normalize', 'feat/x', 'correctness'], { env })).status, 'retry');
   assert.throws(() => run(['artifact-normalize', 'feat/x', 'correctness'], { env }), /harness-failure.*coverage/);
 });
 
@@ -285,9 +305,7 @@ test('artifact-normalize retries when a deleted path is not examined', () => {
   const n = JSON.parse(run(['round-start', 'feat/delete', 'HEAD~1'], { env })).round;
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: [], findings: [] }));
 
-  const retry = JSON.parse(run(['artifact-normalize', 'feat/delete', 'correctness'], { env }));
-  assert.strictEqual(retry.status, 'retry');
-  assert.match(retry.prompt, /a\.txt/);
+  assert.throws(() => run(['artifact-normalize', 'feat/delete', 'correctness'], { env }), /coverage is incomplete/);
 });
 
 test('git helpers operate on a real temp repo', () => {
@@ -1991,6 +2009,22 @@ test('manual review drivers restore pending retry prompts and skip completed art
     const md = fs.readFileSync(path.join(__dirname, '..', '..', ...rel), 'utf8');
     assert.match(md, /skip every role named by `completedArtifacts`/i, rel.join('/'));
     assert.match(md, /`retryArtifacts`.*persisted corrective prompt/i, rel.join('/'));
+  }
+});
+
+test('manual repair instructions stage only the packet and immutable snapshot', () => {
+  const root = path.join(__dirname, '..', '..');
+  for (const rel of [
+    ['core', 'review-driver.md'],
+    ['commands', 'review-and-fix.md'],
+    ['..', 'concord-copilot', 'skills', 'review-and-fix', 'references', 'review-driver.md'],
+  ]) {
+    const md = fs.readFileSync(path.join(root, ...rel), 'utf8');
+    assert.match(md, /artifact-repair-dispatch <ref> <role>.*one-attempt durable state/i, rel.join('/'));
+    assert.match(md, /mktemp -d/, rel.join('/'));
+    assert.match(md, /packet\.json/, rel.join('/'));
+    assert.match(md, /original\.json/, rel.join('/'));
+    assert.match(md, /Never pass a state-directory path to the repair launch/i, rel.join('/'));
   }
 });
 
