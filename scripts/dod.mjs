@@ -15,7 +15,7 @@ export const E2E_FILES = ['plugins/concord/hooks/test/ticket-writing-skill.test.
 export const E2E_NAME = '^plugin-install e2e:';
 
 function defaultRun(cmd, args, opts) {
-  const r = spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 20 * 1024 * 1024, ...opts });
+  const r = spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: Infinity, ...opts });
   return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '', error: r.error };
 }
 
@@ -33,8 +33,7 @@ export function main({ root, run = defaultRun, env = process.env, platform = pro
   }
   // node --test exits 0 when the pattern matches nothing or every match is skipped, so read the TAP summary.
   const tests = run('node', ['--test', '--test-reporter=tap', `--test-name-pattern=${E2E_NAME}`, ...E2E_FILES], { cwd: root, env: { ...env, CONCORD_RUN_PLUGIN_INSTALL_E2E: '1' } });
-  process.stdout.write(tests.stdout);
-  process.stderr.write(tests.stderr);
+  for (const out of [tests.stdout, tests.stderr]) if (out) log(out.replace(/\n$/, ''));
   if (tests.status == null) return 1;
   if (tests.status !== 0) return tests.status;
   const passed = Number(/^# pass (\d+)$/m.exec(tests.stdout)?.[1] ?? 0);
