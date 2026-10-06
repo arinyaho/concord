@@ -6,7 +6,9 @@ const path = require('node:path');
 
 const REPO = path.resolve(__dirname, '../../../..');
 
-async function runDod(results = {}, platform) {
+const PASS = { status: 0, stdout: '# pass 2\n# skipped 0\n', stderr: '' };
+
+async function runDod(results = { node: PASS }, platform) {
   const { main } = await import(path.join(REPO, 'scripts/dod.mjs'));
   const calls = [];
   const logs = [];
@@ -26,14 +28,10 @@ test('dod: probes each CLI, then runs only the plugin-install e2e with the e2e f
     ['copilot', '--version'],
   ]);
   assert.strictEqual(r.calls.length, 4);
+  const { E2E_FILES, E2E_NAME } = await import(path.join(REPO, 'scripts/dod.mjs'));
   const test = r.calls[3];
   assert.strictEqual(test.cmd, 'node');
-  assert.deepStrictEqual(test.args, [
-    '--test',
-    '--test-name-pattern=^plugin-install e2e:',
-    'plugins/concord/hooks/test/ticket-writing-skill.test.js',
-    'plugins/concord/hooks/test/copilot-package.test.js',
-  ]);
+  assert.deepStrictEqual(test.args, ['--test', '--test-reporter=tap', `--test-name-pattern=${E2E_NAME}`, ...E2E_FILES]);
   assert.strictEqual(test.opts.cwd, '/repo');
   assert.strictEqual(test.opts.env.CONCORD_RUN_PLUGIN_INSTALL_E2E, '1');
   assert.strictEqual(r.code, 0);
@@ -42,17 +40,31 @@ test('dod: probes each CLI, then runs only the plugin-install e2e with the e2e f
 test('dod: never installs dependencies or runs the suite CI already runs', async () => {
   const r = await runDod();
   assert.ok(!r.calls.some((c) => c.cmd === 'npm'));
-  assert.ok(r.calls.filter((c) => c.cmd === 'node').every((c) => c.args.includes('--test-name-pattern=^plugin-install e2e:')));
+  const { E2E_NAME } = await import(path.join(REPO, 'scripts/dod.mjs'));
+  assert.ok(r.calls.filter((c) => c.cmd === 'node').every((c) => c.args.includes(`--test-name-pattern=${E2E_NAME}`)));
 });
 
-test('dod: the e2e name pattern selects exactly the e2e tests in the files it names', async () => {
-  const titles = [];
-  for (const file of ['ticket-writing-skill', 'copilot-package']) {
-    const src = fs.readFileSync(path.join(__dirname, `${file}.test.js`), 'utf8');
-    titles.push(...[...src.matchAll(/^pluginInstallE2ETest\('([^']+)'/gm)].map((m) => m[1]));
+test('dod: every pluginInstallE2ETest in any test file is selected by the DoD', async () => {
+  const { E2E_FILES, E2E_NAME } = await import(path.join(REPO, 'scripts/dod.mjs'));
+  const re = new RegExp(E2E_NAME);
+  const found = new Set();
+  for (const f of fs.readdirSync(__dirname).filter((n) => n.endsWith('.test.js'))) {
+    const src = fs.readFileSync(path.join(__dirname, f), 'utf8');
+    for (const m of src.matchAll(/^pluginInstallE2ETest\(\s*(['"`])(.+?)\1/gm)) {
+      assert.match(m[2], re, `${f}: e2e title "${m[2]}" is not selected by the DoD name pattern`);
+      assert.ok(E2E_FILES.includes(`plugins/concord/hooks/test/${f}`), `${f} has an e2e test but is missing from the DoD E2E_FILES`);
+      found.add(f);
+    }
   }
-  assert.strictEqual(titles.length, 2);
-  for (const title of titles) assert.match(title, /^plugin-install e2e:/);
+  for (const f of E2E_FILES) assert.ok(found.has(path.basename(f)), `${f} in E2E_FILES has no e2e test`);
+});
+
+test('dod: a run where no e2e test passed fails even though node exits 0', async () => {
+  for (const stdout of ['', '# pass 0\n# skipped 2\n']) {
+    const r = await runDod({ node: { status: 0, stdout, stderr: '' } });
+    assert.strictEqual(r.code, 1);
+    assert.match(r.logs[r.logs.length - 1], /no plugin-install e2e test passed/);
+  }
 });
 
 test('dod: a missing CLI exits 78 with the environment-error line and never runs tests', async () => {
@@ -85,6 +97,6 @@ test('dod: CLIs run through a shell on win32 only', async () => {
 });
 
 test('dod: a failing test run passes its status through', async () => {
-  const r = await runDod({ node: { status: 1 } });
+  const r = await runDod({ node: { status: 1, stdout: '', stderr: '' } });
   assert.strictEqual(r.code, 1);
 });

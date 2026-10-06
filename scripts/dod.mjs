@@ -11,8 +11,8 @@ import { fileURLToPath } from 'node:url';
 const EX_CONFIG = 78;
 const CLIS = ['claude', 'codex', 'copilot'];
 // Test titles of the e2e start with this prefix; every other test in those files is CI's.
-const E2E_FILES = ['plugins/concord/hooks/test/ticket-writing-skill.test.js', 'plugins/concord/hooks/test/copilot-package.test.js'];
-const E2E_NAME = '^plugin-install e2e:';
+export const E2E_FILES = ['plugins/concord/hooks/test/ticket-writing-skill.test.js', 'plugins/concord/hooks/test/copilot-package.test.js'];
+export const E2E_NAME = '^plugin-install e2e:';
 
 function defaultRun(cmd, args, opts) {
   const r = spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 20 * 1024 * 1024, ...opts });
@@ -31,8 +31,18 @@ export function main({ root, run = defaultRun, env = process.env, platform = pro
       return EX_CONFIG;
     }
   }
-  const tests = run('node', ['--test', `--test-name-pattern=${E2E_NAME}`, ...E2E_FILES], { cwd: root, env: { ...env, CONCORD_RUN_PLUGIN_INSTALL_E2E: '1' }, stdio: 'inherit' });
-  return tests.status == null ? 1 : tests.status;
+  // node --test exits 0 when the pattern matches nothing or every match is skipped, so read the TAP summary.
+  const tests = run('node', ['--test', '--test-reporter=tap', `--test-name-pattern=${E2E_NAME}`, ...E2E_FILES], { cwd: root, env: { ...env, CONCORD_RUN_PLUGIN_INSTALL_E2E: '1' } });
+  process.stdout.write(tests.stdout);
+  process.stderr.write(tests.stderr);
+  if (tests.status == null) return 1;
+  if (tests.status !== 0) return tests.status;
+  const passed = Number(/^# pass (\d+)$/m.exec(tests.stdout)?.[1] ?? 0);
+  if (passed === 0) {
+    log(`DoD failure: no plugin-install e2e test passed (pattern ${E2E_NAME}); the selection matched nothing or every match was skipped.`);
+    return 1;
+  }
+  return 0;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
