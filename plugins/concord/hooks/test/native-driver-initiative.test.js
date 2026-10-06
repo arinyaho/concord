@@ -358,7 +358,7 @@ for (const provider of Object.keys(PROVIDERS)) {
   test(`${provider}: parallel reserve calls serialize: budget consumed equals tokens kept (P2-2)`, async () => {
     const t = setup(provider, { maxLaunches: 5 });
     t.start();
-    const args = [PROVIDERS[provider], 'reserve', 'feat/x', 'correctness', '--initiative-run-key', 'key-1', '--initiative-state-dir', t.initDir, '--initiative-max-launches', '5', '--initiative-max-rounds', '5'];
+    const args = [PROVIDERS[provider], 'reserve', 'feat/x', 'correctness', '--initiative-run-key', 'key-1', '--initiative-id', 'initiative-1', '--initiative-state-dir', t.initDir, '--initiative-max-launches', '5', '--initiative-max-rounds', '5'];
     const child = () => new Promise((resolve) => {
       const c = spawn('node', args, { env: t.env, cwd: t.repo });
       let out = ''; c.stdout.on('data', (d) => { out += d; }); c.stderr.on('data', (d) => { out += d; }); c.on('close', () => resolve(out));
