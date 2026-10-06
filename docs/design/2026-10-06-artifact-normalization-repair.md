@@ -2,9 +2,9 @@
 
 ## Decision and evidence
 
-For [issue #171](https://github.com/arinyaho/concord/issues/171), replace the automatic substantive reviewer retry after a retryable artifact representation failure with at most one isolated `artifact-repair` operation. Repair can restate evidence already present; it cannot perform review or supply missing evidence. Failure to demonstrate preservation is terminal, not permission to rerun a reviewer or manufacture a clean result.
+For issue #171, replace the automatic substantive reviewer retry after a retryable artifact representation failure with at most one isolated `artifact-repair` operation. Repair can restate evidence already present; it cannot perform review or supply missing evidence. Failure to demonstrate preservation is terminal, not permission to rerun a reviewer or manufacture a clean result.
 
-The approved contract was recorded in the artifact-normalization-retry-cost Stage 1 and Stage 2 handoffs on 2026-10-06. Repository evidence was inspected at `a00dc8c9eaee93a7462bb819bd4ac81320b22528`. [PR #170](https://github.com/arinyaho/concord/pull/170) is a merged prerequisite establishing the existing namespace ownership contract; this decision neither edits its design record nor reopens that work.
+The approved contract was recorded in the artifact-normalization-retry-cost Stage 1 and Stage 2 handoffs on 2026-10-06 and is fully recorded in this note with the repository evidence below; no external lookup is required to understand the decision. Repository evidence was inspected at `a00dc8c9eaee93a7462bb819bd4ac81320b22528`. PR #170 is a merged prerequisite establishing the existing namespace ownership contract; this decision neither edits its design record nor reopens that work.
 
 At that revision, `plugins/concord/core/codex-review-runner.js` constructs a fresh full `reviewerPrompt(...)` for normalization retries. `core/review-cli.js` persists a retry prompt and marker, charges the superseded launch, and requires another reservation, but resume cleanup retains only verified completed artifacts. `core/review-driver.md` similarly directs manual drivers to rerun the same reviewer. `core/artifact-contract.js` provides the shared role registry and strict validator. Those are the existing integration points; a generalized retry framework and a second namespace registry are unnecessary.
 
