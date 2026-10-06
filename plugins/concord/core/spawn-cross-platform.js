@@ -61,7 +61,7 @@ function crossPlatformOpts(opts = {}) {
 // cover every documented cmd.exe edge case around delayed (`!VAR!`)
 // expansion. This repo has no Windows host to verify the full edge-case
 // set against; see
-// docs/superpowers/specs/2026-09-26-windows-support-design.md for what
+// docs/design/windows-support.md for what
 // remains explicitly untested.
 const META_CHARS_RE = /([()[\]%!^"`<>&|;, *?])/g;
 

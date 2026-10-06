@@ -464,7 +464,7 @@ function claimResult(result) {
 }
 
 // Delivery disposition: one classification of an exact PR revision pair once
-// review collection is terminal (docs/design/2026-10-06-delivery-disposition.md).
+// review collection is terminal (docs/design/delivery-disposition.md).
 const RELEASE_BLOCKING = new Set(['acceptance-criterion', 'required-check', 'correctness', 'security', 'data-integrity', 'contract-choice', 'compatibility', 'contradictory-docs', 'unproven-premise', 'stage-exit']);
 const DISPOSITIONS = new Set(['fixed', 'follow-up', 'accepted', 'blocking']);
 const text = (value) => (typeof value === 'string' ? value.trim() : '');

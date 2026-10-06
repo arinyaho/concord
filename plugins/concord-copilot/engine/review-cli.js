@@ -738,7 +738,7 @@ function gatesNeeds(stateDir, n) {
 // target lock. Human/reconciliation step only: the round's completed artifacts
 // are reused, the new key is charged only for launches it makes itself, and the
 // old run keeps the round's history as a terminal `carried` disposition. See
-// docs/design/2026-10-03-carry-budget-blocked-target.md.
+// docs/design/initiative-review-runs.md.
 function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey, repoRoot, writeLedger }) {
   const fail = (message) => { throw new Error(`review-cli carry: ${message}`); };
   if (fromRunKey === initiative.key) fail('--from-run-key must differ from --initiative-run-key');
@@ -1879,7 +1879,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // from one backed by a guess unless someone reads the reviewer's log.
     const rejectionReasons = new Map((vJson.rejected || []).map((r) => (typeof r === 'string' ? [r, ''] : [r.id, r.reason || ''])));
 
-    // Holistic GATE panel (spec: 2026-07-15-gate-holistic-panel-design.md):
+    // Holistic GATE panel:
     // once the panel has finished (gate-panel-round-record set gate_panel.status
     // to 'done' and reverted phase to 'fixes' so this call could even happen),
     // fold its confirmed findings into gate_open BEFORE computing gateOpenCount

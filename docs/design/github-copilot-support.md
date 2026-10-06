@@ -1,8 +1,8 @@
-# GitHub Copilot support design
+# GitHub Copilot support
 
 ## Decision
 
-Ship GitHub Copilot support as an Agent Plugins 1.0 distribution at `plugins/concord-copilot/`. The distribution vendors the JavaScript core, packages provider-neutral skills, and adds Copilot-specific hooks, commands, agents, model routing, and state resolution. It does not require Claude Code or Codex executables.
+GitHub Copilot support ships as an Agent Plugins 1.0 distribution at `plugins/concord-copilot/`. The distribution vendors the JavaScript core, packages provider-neutral skills, and adds Copilot-specific hooks, commands, agents, model routing, and state resolution. It does not require Claude Code or Codex executables.
 
 ## Architecture choice
 
@@ -18,7 +18,7 @@ An extension does not provide a stable conversation transcript contract. The Age
 
 The shared core remains under `plugins/concord/core/`. `plugins/concord-copilot/bin/bundle.mjs` copies that core and the Copilot adapters into a self-contained `engine/`; drift tests require byte parity. Copilot conditions stay in `plugins/concord/adapters/copilot/` and `plugins/concord-copilot/`.
 
-Provider-neutral workflow files are copied by the bundle. Harness-bound behavior uses Copilot-specific skills or overrides. `review-until-green` drives the shared deterministic CLI but delegates reviewer and fixer roles to clean-context Copilot custom agents. Cross-model review means a second Copilot-hosted model, not an external vendor CLI.
+Provider-neutral workflow files are copied by the bundle. Harness-bound behavior uses Copilot-specific skills or overrides. `review-and-fix` drives the shared deterministic CLI but delegates reviewer and fixer roles to clean-context Copilot custom agents. Cross-model review means a second Copilot-hosted model, not an external vendor CLI.
 
 ## Capability contract
 
@@ -26,7 +26,7 @@ Provider-neutral workflow files are copied by the bundle. Harness-bound behavior
 | --- | --- | --- |
 | Project charter | `/charter set` emits a documented marker; `UserPromptSubmit` persists it; `SessionStart` injects it | Without Preview hooks, skills remain available but persistence and injection are unavailable |
 | Session checkpoint | Explicit charter fields only | Automatic transcript-derived checkpoints are unavailable |
-| Review until green | Shared CLI plus clean-context `Concord Reviewer` and `Concord Fixer` agents | Missing subagent, model, tool, or artifact access stops the run without a clean verdict |
+| Review and fix | Shared CLI plus clean-context `Concord Reviewer` and `Concord Fixer` agents | Missing subagent, model, tool, or artifact access stops the run without a clean verdict |
 | Cross-model review | Re-arms the ledger and selects a different available Copilot model | If a different model is unavailable, stop; never silently reuse the first model |
 | Initiative execution | Shared stages plus Copilot role-based model routing | Deep contract decisions do not downgrade automatically |
 | Ticket and proposal workflows | Packaged skills | External tracker, document, or GitHub prerequisites fail explicitly |
@@ -69,9 +69,9 @@ A model request records the requested and resolved model when the host exposes b
 
 Unit tests cover event normalization, state isolation, marker persistence, context injection, package layout, bundle drift, workflow inventory, agent restrictions, documentation, and live CLI entrypoints. A clean temporary Copilot configuration installs the marketplace package and verifies discovery without existing customizations.
 
-VS Code acceptance uses a clean profile and extension directory: install the plugin, open two projects with the same basename, set distinct charters, start new sessions, verify isolated context injection, invoke `review-until-green` far enough to observe clean-context agent discovery, then update and uninstall. Hook diagnostics and the GitHub Copilot Chat Hooks output must show the package source and no schema errors. The test also verifies that disabled hooks produce the documented degraded behavior rather than an implied persisted charter.
+VS Code acceptance uses a clean profile and extension directory: install the plugin, open two projects with the same basename, set distinct charters, start new sessions, verify isolated context injection, invoke `review-and-fix` far enough to observe clean-context agent discovery, then update and uninstall. Hook diagnostics and the GitHub Copilot Chat Hooks output must show the package source and no schema errors. The test also verifies that disabled hooks produce the documented degraded behavior rather than an implied persisted charter.
 
-## Approved constraints
+## Constraints
 
 The distribution is a global Agent Plugin. Explicit charter state is the checkpoint MVP. Cross-model means multiple models exposed through Copilot. Preview hooks are a minimum requirement for charter lifecycle behavior. Uninstall may delete plugin-managed state, so retention is an operator responsibility.
 
