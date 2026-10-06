@@ -53,15 +53,17 @@ function preservesArtifact(name, raw, candidate) {
   let original;
   try { original = JSON.parse(raw); } catch (_) { return false; }
   if (!original || typeof original !== 'object' || Array.isArray(original) || !candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return false;
-  const comparable = (value) => JSON.stringify(value);
+  const comparable = (value) => value && typeof value === 'object' && !Array.isArray(value)
+    ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${comparable(value[key])}`).join(',')}}`
+    : Array.isArray(value) ? `[${value.map(comparable).join(',')}]` : JSON.stringify(value);
   const shape = SHAPES[name];
   if (!shape) return false;
   const owns = (item) => {
-    const id = typeof item === 'string' ? item : item && item.id;
-    return typeof id === 'string' && shape.prefixes.some((prefix) => id.startsWith(prefix));
+    const ids = name === 'plan' && item && typeof item === 'object' ? item.findingIds : [typeof item === 'string' ? item : item && item.id];
+    return Array.isArray(ids) && ids.some((id) => typeof id === 'string' && shape.prefixes.some((prefix) => id.startsWith(prefix)));
   };
   const ownedEvidence = shape.arrays.flatMap((key) => Array.isArray(original[key]) ? original[key].filter(owns) : []);
-  if (!ownedEvidence.length) return false;
+  if (!ownedEvidence.length && !shape.arrays.every((key) => Array.isArray(original[key]) && original[key].length === 0)) return false;
   for (const key of Object.keys(original)) {
     if (key === 'status') continue;
     // A repair may omit foreign dispositions only when its role-owned evidence

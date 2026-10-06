@@ -90,6 +90,28 @@ function jsonCli(cliPath, args, repoRoot) {
   try { return JSON.parse(out); } catch (e) { throw new Error(`harness-failure: review-cli ${args[0]} returned non-JSON output`); }
 }
 
+function isInside(child, parent) {
+  const relative = path.relative(parent, child);
+  return !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+function repairDirectory(repoRoot) {
+  let parent = canonicalPath(os.tmpdir());
+  if (isInside(parent, repoRoot)) parent = canonicalPath('/tmp');
+  if (isInside(parent, repoRoot)) throw new Error('harness-failure: no temporary directory exists outside the reviewed repository');
+  const dir = fs.mkdtempSync(path.join(parent, 'concord-artifact-repair-'));
+  if (isInside(canonicalPath(dir), repoRoot)) { fs.rmSync(dir, { recursive: true, force: true }); throw new Error('harness-failure: repair directory is inside the reviewed repository'); }
+  return dir;
+}
+
+function repairEnvironment(repoRoot, stateDir) {
+  const env = { ...process.env };
+  for (const key of ['REVIEW_REPO_ROOT', 'REVIEW_STATE_DIR']) delete env[key];
+  env.PATH = (env.PATH || '').split(path.delimiter).filter((entry) => entry && !isInside(path.resolve(entry), repoRoot) && !isInside(path.resolve(entry), stateDir)).join(path.delimiter);
+  for (const [key, value] of Object.entries(env)) if (typeof value === 'string' && (value.includes(repoRoot) || value.includes(stateDir))) delete env[key];
+  return env;
+}
+
 function normalizeUsage(raw) {
   const number = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
   const providerUsage = Object.fromEntries(Object.entries(raw || {}).filter(([, value]) => Number.isSafeInteger(value) && value >= 0));
@@ -121,9 +143,9 @@ function sameKeys(actual, expected) {
   return actual.length === expected.length && [...actual].sort().every((key, index) => key === [...expected].sort()[index]);
 }
 
-function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoningEffort, serviceTier, timeoutMs, abortSignal, codexExecutable }) {
+function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoningEffort, serviceTier, timeoutMs, abortSignal, codexExecutable, env }) {
   return new Promise((resolve, reject) => {
-    const resolvedCodex = codexExecutable || resolveCodexExecutable(repoRoot);
+    const resolvedCodex = codexExecutable || resolveCodexExecutable(repoRoot, { env });
     const invocationId = crypto.randomUUID();
     const model = typeof requestedModel === 'string' && requestedModel.trim() ? requestedModel : null;
     const effort = typeof reasoningEffort === 'string' && reasoningEffort.trim() ? reasoningEffort : null;
@@ -146,7 +168,7 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
       ...(effort ? ['--config', `model_reasoning_effort=${JSON.stringify(effort)}`] : []),
       ...(tier ? ['--config', `service_tier=${JSON.stringify(tier)}`] : []),
       '--skip-git-repo-check', '--json', ...(isWindows ? ['-'] : [prompt]),
-    ], needsDoubleEscape(resolvedCodex.command, repoRoot)), crossPlatformOpts({ cwd: repoRoot, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'ignore'], detached: !isWindows }));
+    ], needsDoubleEscape(resolvedCodex.command, repoRoot)), crossPlatformOpts({ cwd: repoRoot, env, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'ignore'], detached: !isWindows }));
     if (isWindows) {
       // If `codex` exits before consuming stdin (a rejected flag, a
       // startup auth failure, the wrong binary on PATH), writing the
@@ -788,7 +810,7 @@ async function runReviewUntilGreen(options) {
     const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodDeferred: started.dodDeferred, dodPending: started.dodPending, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref), gateMode: started.gateMode, gateApplied: started.gateApplied, intentHash: started.intentHash };
     let slotAllocation = Promise.resolve();
     const reserve = async (role, count = 1) => {
-      if (!initiativeRun) return;
+      if (!initiativeRun) return false;
       const reservation = await cli(['reserve', ref, role, '--count', String(count)]);
       if (reservation?.status !== 'granted') {
         const reason = reservation?.status === 'reconciliation-required' ? reservation.status : reservation?.reason;
@@ -796,6 +818,7 @@ async function runReviewUntilGreen(options) {
         if (reason === 'budget-exhausted' || reason === 'reconciliation-required') denied.initiativeBlocked = reason;
         throw denied;
       }
+      return true;
     };
     const launch = async (input) => {
       if (!input.preReserved) await reserve(input.reservationRole || (input.role === 'gate' ? 'gate-review' : input.role));
@@ -833,26 +856,29 @@ async function runReviewUntilGreen(options) {
           repair = normalized.repair;
         }
         if (reviewer !== 'codex') throw new Error('harness-failure: artifact repair provider cannot enforce the isolation boundary');
-        const repairDir = fs.mkdtempSync(path.join(os.tmpdir(), 'concord-artifact-repair-'));
-        const packetPath = path.join(repairDir, 'packet.json');
-        const snapshotPath = path.join(repairDir, 'original.json');
-        const candidatePath = path.join(repairDir, 'candidate.json');
-        fs.copyFileSync(repair.snapshotPath, snapshotPath);
-        fs.copyFileSync(repair.packetPath, packetPath);
-        const alreadyDispatched = repair.state === 'dispatched';
-        if (repair.state === 'prepared') repair = await cli(['artifact-repair-dispatch', ref, role]);
-        if (repair.state === 'dispatched' && !fs.existsSync(repair.candidatePath)) {
+        const repairDir = repairDirectory(canonicalRepoRoot);
+        try {
+          const packetPath = path.join(repairDir, 'packet.json');
+          const snapshotPath = path.join(repairDir, 'original.json');
+          const candidatePath = path.join(repairDir, 'candidate.json');
+          fs.copyFileSync(repair.snapshotPath, snapshotPath);
+          fs.copyFileSync(repair.packetPath, packetPath);
+          const alreadyDispatched = repair.state === 'dispatched';
+          const reserved = repair.state === 'prepared' && await reserve(role === 'gate' ? 'gate-review' : role);
+          if (repair.state === 'prepared') repair = await cli(['artifact-repair-dispatch', ref, role]);
+          if (repair.state === 'dispatched' && !fs.existsSync(repair.candidatePath)) {
           // The durable dispatch is the sole launch authorization. A crash
           // after it consumes the attempt rather than duplicating a reviewer.
           if (alreadyDispatched) throw new Error(`harness-failure: ${role} artifact repair outcome is unavailable after dispatch`);
-          await launch({ role: 'artifact-repair', artifactRole: role, reservationRole: role === 'gate' ? 'gate-review' : role, operation: 'artifact-repair', prompt: artifactContract.repairPrompt(packetPath, candidatePath), repoRoot: repairDir, stateDir: repairDir });
+          await launch({ role: 'artifact-repair', artifactRole: role, reservationRole: role === 'gate' ? 'gate-review' : role, preReserved: reserved, operation: 'artifact-repair', prompt: artifactContract.repairPrompt(packetPath, candidatePath), repoRoot: repairDir, stateDir: repairDir, ...(options.spawn ? {} : { codexExecutable: resolveCodexExecutable(canonicalRepoRoot) }), env: repairEnvironment(canonicalRepoRoot, context.stateDir) });
           if (!fs.existsSync(candidatePath)) throw new Error(`harness-failure: ${role} artifact repair produced no candidate`);
           fs.copyFileSync(candidatePath, repair.candidatePath);
           repair = await cli(['artifact-repair-candidate', ref, role]);
         }
-        const repaired = await cli(['artifact-normalize', ref, role, '--candidate', repair.candidatePath]);
-        if (repaired.status !== 'ok') throw new Error(`harness-failure: ${role} artifact repair exhausted`);
-        return;
+          const repaired = await cli(['artifact-normalize', ref, role, '--candidate', repair.candidatePath]);
+          if (repaired.status !== 'ok') throw new Error(`harness-failure: ${role} artifact repair exhausted`);
+          return;
+        } finally { fs.rmSync(repairDir, { recursive: true, force: true }); }
       } catch (error) {
         const failure = error.reviewFailure || { role, kind: /artifact|missing gate artifact/.test(String(error.message)) ? 'artifact-write-failure' : 'harness-error', message: String(error.message).replace(/^harness-failure:\s*/, '') };
         if (!error.initiativeBlocked) try { await cli(['round-failure', ref, JSON.stringify(failure)]); } catch (_) {}

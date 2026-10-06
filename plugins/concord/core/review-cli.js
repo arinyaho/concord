@@ -1575,7 +1575,7 @@ function runVerb(resolveFromCwd, args, initiative) {
         if (!fs.existsSync(repairFile)) continue;
         try {
           const repair = JSON.parse(fs.readFileSync(repairFile, 'utf8'));
-          if (repair.round !== resumeRound || !repair.snapshotPath || !repair.packetPath || !repair.candidatePath
+          if (repair.round !== resumeRound || repair.target?.ref !== ref || repair.diffHash !== diffHash || !repair.snapshotPath || !repair.packetPath || !repair.candidatePath
             || contentHash(fs.readFileSync(repair.snapshotPath)) !== repair.originalHash
             || contentHash(fs.readFileSync(repair.packetPath)) !== repair.packetHash
             || (repair.candidateHash && contentHash(fs.readFileSync(repair.candidatePath)) !== repair.candidateHash)) throw new Error('repair binding invalid');
@@ -1675,7 +1675,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // before plan-fixes runs. Re-deriving from review.config.json there would
     // silently miss a flag-enabled round and discard its findings.
     let gateApplied = gateArmed && (gateRounds.length === 0 || gateRounds.includes(ledger.round));
-    if (run && gateApplied && !lite && !claimBroadSweep(run)) {
+    if (run && gateApplied && !lite && !claimBroadSweep(run, { target: ref, attemptId: ledger.attemptId })) {
       gateArmed = false;
       gateApplied = false;
     }

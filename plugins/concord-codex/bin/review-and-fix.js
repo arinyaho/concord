@@ -38,7 +38,7 @@ if (inference.sessionHandoff && !['off', 'suggest', 'stop-at-checkpoint'].includ
   process.stderr.write('review-and-fix: --session-handoff must be off, suggest, or stop-at-checkpoint\n');
   process.exit(1);
 }
-if (inference.initiativeRunKey || inference.initiativeStateDir || inference.initiativeMaxLaunches || inference.initiativeMaxRounds || inference.initiativeMode) {
+if (inference.initiativeRunKey || inference.initiativeId || inference.initiativeStateDir || inference.initiativeMaxLaunches || inference.initiativeMaxRounds || inference.initiativeMode) {
   if (!inference.initiativeRunKey || !inference.initiativeStateDir || !/^\d+$/.test(inference.initiativeMaxLaunches || '') || !/^\d+$/.test(inference.initiativeMaxRounds || '')) {
     process.stderr.write('review-and-fix: initiative runs require key, canonical state dir, positive launch and round budgets\n');
     process.exit(1);

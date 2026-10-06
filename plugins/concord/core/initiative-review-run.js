@@ -154,25 +154,32 @@ function openInitiativeRun({ stateDir, key, initiativeId = key, repository, maxL
   return run;
 }
 
-function claimBroadSweep(run) {
+function claimBroadSweep(run, claimant) {
   const claim = broadClaimPath(run.stateDir, run.repository, run.initiativeId);
   const lock = `${claim}.lock`;
   fs.mkdirSync(path.dirname(lock), { recursive: true });
-  try { fs.mkdirSync(lock); } catch (error) { if (error.code === 'EEXIST') return false; throw error; }
+  try { fs.mkdirSync(lock); } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    if (!reclaimStaleLock(lock)) throw new Error(`initiative broad-sweep claim is contended: ${lock}`);
+    fs.mkdirSync(lock);
+  }
   try {
+    fs.writeFileSync(path.join(lock, 'owner'), `${process.pid}\n`);
     try {
       const prior = JSON.parse(fs.readFileSync(claim, 'utf8'));
-      return prior.repository === run.repository && prior.initiativeId === run.initiativeId && prior.key === run.key;
+      return prior.repository === run.repository && prior.initiativeId === run.initiativeId && prior.key === run.key
+        && prior.target === claimant.target && prior.attemptId === claimant.attemptId;
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    writeFileAtomic(claim, `${JSON.stringify({ repository: run.repository, initiativeId: run.initiativeId, key: run.key, claimedAt: now() })}\n`, { mode: 0o600 });
+    writeFileAtomic(claim, `${JSON.stringify({ repository: run.repository, initiativeId: run.initiativeId, key: run.key, target: claimant.target, attemptId: claimant.attemptId, claimedAt: now() })}\n`, { mode: 0o600 });
     return true;
   } finally { fs.rmSync(lock, { recursive: true, force: true }); }
 }
 
-function hasBroadSweepClaim(run) {
+function hasBroadSweepClaim(run, claimant) {
   try {
     const claim = JSON.parse(fs.readFileSync(broadClaimPath(run.stateDir, run.repository, run.initiativeId), 'utf8'));
-    return claim.repository === run.repository && claim.initiativeId === run.initiativeId && claim.key === run.key;
+    return claim.repository === run.repository && claim.initiativeId === run.initiativeId && claim.key === run.key
+      && claim.target === claimant?.target && claim.attemptId === claimant?.attemptId;
   } catch (_) { return false; }
 }
 
@@ -236,7 +243,7 @@ function launchRefusal(ledger, launch, count) {
   const target = launch.target || launch.revision?.ref || 'unknown';
   const revision = launchRevision(launch, target);
   if (parkedRefusal(ledger, target, revision)) return 'reconciliation-required';
-  if (launch.broad && !hasBroadSweepClaim(launch.run)) return 'broad-sweep-claimed';
+  if (launch.broad && !hasBroadSweepClaim(launch.run, launch)) return 'broad-sweep-claimed';
   if ((ledger.dispositions || []).some((disposition) => disposition.target === target && disposition.kind === 'terminal' && samePair(disposition.revision, revision))) return 'target-terminal';
   if (ledger.launches.length + count > ledger.budget.maxLaunches) return 'budget-exhausted';
   const round = `${target}\u0000${typeof launch.attemptId === 'string' ? launch.attemptId : 'legacy'}\u0000${launch.round}`;

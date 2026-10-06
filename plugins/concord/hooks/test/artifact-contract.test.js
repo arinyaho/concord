@@ -1,7 +1,14 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { normalizeArtifact, ArtifactError, retryPrompt, allowedFindingPrefixes } = require('../../core/artifact-contract');
+const { normalizeArtifact, ArtifactError, retryPrompt, allowedFindingPrefixes, preservesArtifact } = require('../../core/artifact-contract');
+
+test('repair preservation accepts plan findingIds, clean verdicts, and reordered object keys', () => {
+  const plan = { status: 'OK', protocolVersion: 2, groups: [{ groupId: 'g', findingIds: ['correctness:x'], rootCause: 'one', invariants: [], changeClass: 'local', structuralEffects: [], action: 'fix' }] };
+  const candidate = { protocolVersion: 2, groups: [{ action: 'fix', structuralEffects: [], changeClass: 'local', invariants: [], rootCause: 'one', findingIds: ['correctness:x'], groupId: 'g' }], status: 'ok' };
+  assert.ok(preservesArtifact('plan', JSON.stringify(plan), candidate));
+  assert.ok(preservesArtifact('gate', JSON.stringify({ status: 'OK', findings: [] }), { status: 'ok', findings: [] }));
+});
 
 test('canonical correctness artifact is preserved except unsupported top-level fields', () => {
   const finding = { id: 'correctness:real-bug', file: 'a.js', span: 'bad()', summary: 'wrong result', evidence: 'keep' };
