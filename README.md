@@ -27,7 +27,7 @@ A personal, vendor-neutral project: one core runs on all three harnesses, and it
 
 Review blocks a pull request only for rollout blockers: serious bugs, security issues, and unmet acceptance criteria. Minor findings do not block. They are collected and triaged once, just before merge, and become tickets.
 
-Concord does not try to prove a change free of defects. Exhaustive static analysis and repeated full-diff review multiply token cost for diminishing returns, so review effort is bounded and the loop ends on a deterministic decision instead of running until no finding is left.
+Concord does not try to prove a change free of defects, and it does not let review or test runs consume tokens without limit. Exhaustive static analysis and repeated full-diff review multiply cost for diminishing returns, and a loop of review and test runs that never ends spends tokens without moving the change forward. Review rounds have a budget, and the loop ends on a deterministic decision instead of running until no finding is left.
 
 ## Install
 
