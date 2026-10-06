@@ -63,7 +63,7 @@ When tracker mutation is authorized, the workflow links the source PR and each r
 
 ## Rationale
 
-The classifier is a pure function over an explicit packet. It does not query GitHub or the tracker. This keeps one decision identical across Claude, Codex and Copilot distributions. The provider-specific steps (reading checks, posting thread links, creating tickets) stay in the skills, where each host already does them. The record lives in the existing review-until-lgtm state directory, because that directory is already keyed by PR and exact head, and its claims are the launches the record must suppress.
+The classifier is a pure function over an explicit packet. It does not query GitHub or the tracker. The Codex and Copilot packages each carry a bundled copy of the state engine, including `lgtm-state.js`, produced by their existing bundling step (`bin/bundle.mjs` in each package), and the existing bundle-drift tests keep those copies byte-identical to `core/`. That parity mechanism plus the pure classifier keeps one decision identical across Claude, Codex and Copilot distributions, and the synchronized skill-contract and package-parity tests for `ticket-to-pr`, `initiative-to-prs`, `review-and-fix` and `review-until-lgtm` check that each distribution's workflows use it the same way. The provider-specific steps (reading checks, posting thread links, creating tickets) stay in the skills, where each host already does them. The record lives in the existing review-until-lgtm state directory, because that directory is already keyed by PR and exact head, and its claims are the launches the record must suppress.
 
 Rejected alternatives:
 
