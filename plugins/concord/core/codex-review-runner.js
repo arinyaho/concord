@@ -8,12 +8,14 @@ const crypto = require('node:crypto');
 const { canonicalPath, runPath, openInitiativeRun, pairRefusal, resolveBaseCommit, recordDisposition, normalizeDisposition, consumeDispositionDelivery, terminalTarget, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
 const { gitHeadSha, gitDirty, fileTarget } = require('./target');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { safeIdForFilename } = require('./artifact-name');
 const { writeFileAtomic } = require('./atomic-write');
 const { targetSlug, ledgerPath } = require('./review');
 const { SESSION_MODES, THRESHOLDS } = require('./session-handoff');
 const { artifactDestinationFromPrompt } = require('./review-artifact');
+const artifactContract = require('./artifact-contract');
 const { isValidFindingId } = require('./gate-contract');
 const { same } = require('./review-eval');
 const { PANEL_LENSES } = require('./report');
@@ -530,7 +532,7 @@ async function runReviewUntilGreen(options) {
     }
     telemetry.invocations.push({
       ...(input.telemetrySlot || {}),
-      role, round: currentRound, model: input.requestedModel || result?.requestedModel || null, resolvedModel: result?.resolvedModel || null,
+      role, ...(input.operation ? { operation: input.operation } : {}), round: currentRound, model: input.requestedModel || result?.requestedModel || null, resolvedModel: result?.resolvedModel || null,
       reasoningEffort: input.reasoningEffort || result?.reasoningEffort || null, serviceTier: input.serviceTier || result?.serviceTier || null,
       status: result && (Number.isInteger(result.status) || result.status === 'failed') ? result.status : null,
       usagePartial: partial, ...values,
@@ -794,13 +796,13 @@ async function runReviewUntilGreen(options) {
       }
     };
     const launch = async (input) => {
-      if (!input.preReserved) await reserve(input.role === 'gate' ? 'gate-review' : input.role);
+      if (!input.preReserved) await reserve(input.reservationRole || (input.role === 'gate' ? 'gate-review' : input.role));
       const artifactPath = artifactDestinationFromPrompt(input.prompt, input.stateDir);
       const isFix = input.role === 'fix';
       const provider = isFix ? fixer : reviewer;
       const requestedModel = isFix ? fixerModel : reviewerModel;
       let telemetrySlot = null;
-      if (artifactPath && provider === 'codex') {
+      if (artifactPath && provider === 'codex' && !input.operation) {
         const allocation = slotAllocation.then(() => cli(['telemetry-slot', ref, artifactPath, '--engine', 'codex']));
         slotAllocation = allocation.catch(() => {});
         telemetrySlot = await allocation;
@@ -819,15 +821,27 @@ async function runReviewUntilGreen(options) {
 
     const runArtifactReviewer = async (role) => {
       if ((started.completedArtifacts || []).includes(role)) return;
-      let retryPrompt = (started.retryArtifacts && started.retryArtifacts[role]) || (started.retryArtifact && started.retryArtifact.role === role ? started.retryArtifact.prompt : undefined);
       try {
-        for (let attempt = retryPrompt ? 1 : 0; attempt < 2; attempt++) {
-          await launch({ role, prompt: reviewerPrompt(role, { ...context, retryPrompt }), repoRoot, stateDir: context.stateDir });
+        let repair = started.repairArtifacts && started.repairArtifacts[role];
+        if (!repair) {
+          await launch({ role, prompt: reviewerPrompt(role, context), repoRoot, stateDir: context.stateDir });
           const normalized = await cli(['artifact-normalize', ref, role]);
           if (normalized.status === 'ok') return;
-          if (normalized.status !== 'retry' || attempt === 1) throw new Error(`harness-failure: ${role} artifact retry exhausted`);
-          retryPrompt = normalized.prompt;
+          if (normalized.status !== 'repair') throw new Error(`harness-failure: ${role} artifact repair exhausted`);
+          repair = normalized.repair;
         }
+        const repairDir = fs.mkdtempSync(path.join(os.tmpdir(), 'concord-artifact-repair-'));
+        const packetPath = path.join(repairDir, 'packet.json');
+        const snapshotPath = path.join(repairDir, 'original.json');
+        const candidatePath = path.join(repairDir, 'candidate.json');
+        fs.copyFileSync(repair.snapshotPath, snapshotPath);
+        fs.writeFileSync(packetPath, JSON.stringify({ role, error: repair.error, originalHash: repair.originalHash, snapshot: 'original.json', candidate: 'candidate.json' }) + '\n', { mode: 0o600 });
+        await launch({ role: 'artifact-repair', reservationRole: role, operation: 'artifact-repair', prompt: artifactContract.repairPrompt(packetPath, candidatePath), repoRoot: repairDir, stateDir: repairDir });
+        if (!fs.existsSync(candidatePath)) throw new Error(`harness-failure: ${role} artifact repair produced no candidate`);
+        fs.copyFileSync(candidatePath, path.join(context.stateDir, `round-${context.round}-${role}.json`));
+        const repaired = await cli(['artifact-normalize', ref, role]);
+        if (repaired.status !== 'ok') throw new Error(`harness-failure: ${role} artifact repair exhausted`);
+        return;
       } catch (error) {
         const failure = error.reviewFailure || { role, kind: /artifact|missing gate artifact/.test(String(error.message)) ? 'artifact-write-failure' : 'harness-error', message: String(error.message).replace(/^harness-failure:\s*/, '') };
         if (!error.initiativeBlocked) try { await cli(['round-failure', ref, JSON.stringify(failure)]); } catch (_) {}
