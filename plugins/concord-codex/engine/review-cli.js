@@ -1057,6 +1057,8 @@ function runVerb(resolveFromCwd, args, initiative) {
     // working setup. Accept both forms rather than making a naming ambiguity
     // stop a run, and name the valid roles when it is neither.
     const rawName = rest[0];
+    const candidateArg = rest[1] === '--candidate' ? rest[2] : null;
+    if (rest.length !== 1 && (!candidateArg || rest.length !== 3)) throw new Error('artifact-normalize: expected <role> [--candidate <path>]');
     const name = String(rawName == null ? '' : rawName).replace(/^round-\d+-/, '').replace(/\.json$/, '');
     if (!artifactContract.ARTIFACT_ROLES.includes(name)) {
       throw new Error(`harness-failure: artifact-normalize: unknown artifact "${rawName}" (expected one of ${artifactContract.ARTIFACT_ROLES.join(' | ')}, or the matching round-<n>-<role>.json file name)`);
@@ -1070,13 +1072,15 @@ function runVerb(resolveFromCwd, args, initiative) {
     const snapshotPath = path.join(stateDir, `round-${n}-${name}.original`);
     const repairPath = path.join(stateDir, `round-${n}-${name}.repair.json`);
     let raw;
-    try { raw = fs.readFileSync(p, 'utf8'); } catch (e) { throw new Error(`harness-failure: missing gate artifact ${name} for round ${n}`); }
+    try { raw = fs.readFileSync(candidateArg || p, 'utf8'); } catch (e) { throw new Error(`harness-failure: missing ${candidateArg ? 'repair candidate' : 'gate artifact'} ${name} for round ${n}`); }
     try {
       if (fs.existsSync(repairPath)) {
         const repair = JSON.parse(fs.readFileSync(repairPath, 'utf8'));
         const original = fs.readFileSync(snapshotPath);
         if (contentHash(original) !== repair.originalHash) throw new Error(`${name} repair snapshot hash changed`);
-        if (!artifactContract.preservesArtifact(original.toString('utf8'), JSON.parse(raw))) throw new Error(`${name} repair candidate does not preserve the original evidence`);
+        if (!candidateArg) throw new Error(`${name} repair requires a separate candidate`);
+        if (path.resolve(candidateArg) !== path.resolve(repair.candidatePath)) throw new Error(`${name} repair candidate path changed`);
+        if (!artifactContract.preservesArtifact(name, original.toString('utf8'), JSON.parse(raw))) throw new Error(`${name} repair candidate does not preserve the original evidence`);
       }
       const canonical = artifactContract.normalizeArtifact(name, raw);
       // Correctness coverage is part of the artifact contract for git targets:
@@ -1096,6 +1100,8 @@ function runVerb(resolveFromCwd, args, initiative) {
         }
       }
       const canonicalText = JSON.stringify(canonical) + '\n';
+      // Only a candidate that passed preservation and strict normalization is
+      // published. Invalid repair bytes never replace the original artifact.
       fs.writeFileSync(p, canonicalText);
       if (ledger.execution && ledger.execution.round === n) {
         const completed = Array.from(new Set([...(ledger.execution.completed || []), name]));
@@ -1109,32 +1115,53 @@ function runVerb(resolveFromCwd, args, initiative) {
       return;
     } catch (e) {
       if (e instanceof artifactContract.ArtifactError && e.kind === 'retry') {
-        // Repair may only change representation. Missing coverage, namespaces,
-        // evidence, or plan structure would require a new substantive review.
-        if (!/unsupported status$/.test(e.message)) throw new Error(`harness-failure: ${e.message}`);
+        // Repair may only change a known status spelling, or remove foreign
+        // gate-verify dispositions while retaining a complete gate verdict.
+        let parsed; try { parsed = JSON.parse(raw); } catch (_) { parsed = null; }
+        const statusSpelling = parsed && typeof parsed.status === 'string' && ['ok', 'findings', 'clean'].includes(parsed.status.toLowerCase()) && parsed.status !== parsed.status.toLowerCase();
+        const gateEvidence = parsed && ['rejected', 'findings'].some((key) => Array.isArray(parsed[key]) && parsed[key].some((item) => {
+          const id = typeof item === 'string' ? item : item && item.id;
+          return typeof id === 'string' && id.startsWith('gate:');
+        }));
+        const mixedGateVerify = name === 'gate-verify' && gateEvidence && /invalid id/.test(e.message);
+        if (!statusSpelling && !mixedGateVerify) throw new Error(`harness-failure: ${e.message}`);
         const retryArtifacts = retryArtifactMap(ledger.execution);
         const alreadyRetried = fs.existsSync(repairPath) || fs.existsSync(retryPath) || !!retryArtifacts[name];
         if (!alreadyRetried) {
-          const prompt = e.coveragePaths
-            ? `Rewrite only round artifact correctness as JSON. The "examined" array MUST contain every changed path exactly as listed: ${e.coveragePaths.map((file) => JSON.stringify(file)).join(', ')}. Do not infer, omit, or rewrite paths; preserve your actual findings and do not add prose or extra top-level fields.`
-            : artifactContract.retryPrompt(name);
           if (ledger.execution && ledger.execution.round === n) {
-            retryArtifacts[name] = prompt;
-            writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, retryArtifacts, retryArtifact: firstRetryArtifact(retryArtifacts) } });
+            writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, retryArtifacts: {}, retryArtifact: null } });
           }
           const bytes = Buffer.from(raw);
           fs.writeFileSync(snapshotPath, bytes, { flag: 'wx' });
-          const repair = { role: name, round: n, originalHash: contentHash(bytes), error: e.message, snapshotPath, packetPath: repairPath };
+          const candidatePath = path.join(stateDir, `round-${n}-${name}.candidate.json`);
+          const packetPath = path.join(stateDir, `round-${n}-${name}.packet.json`);
+          const packet = artifactContract.repairPacket(name, e.message, raw);
+          fs.writeFileSync(packetPath, JSON.stringify(packet) + '\n', { flag: 'wx', mode: 0o600 });
+          const repair = { target: ledger.target || { ref }, role: name, round: n, diffHash: contentHash(fs.readFileSync(path.join(stateDir, `round-${n}-diff.txt`), 'utf8')), originalHash: contentHash(bytes), error: e.message, snapshotPath, packetPath, packetHash: contentHash(fs.readFileSync(packetPath)), candidatePath, candidateHash: null, state: 'prepared' };
           fs.writeFileSync(repairPath, JSON.stringify(repair) + '\n', { flag: 'wx' });
-          fs.writeFileSync(retryPath, '1\n');
           // A retry is a new launch: it must be reserved again before its evidence is accepted.
           if (run && ARTIFACT_RESERVE_ROLE[name]) writeLedger(stateDir, slug, withSupersededLaunch(readLedger(stateDir, slug), ARTIFACT_RESERVE_ROLE[name], n));
-          process.stdout.write(JSON.stringify({ status: 'repair', artifact: name, repair, prompt }) + '\n');
+          process.stdout.write(JSON.stringify({ status: 'repair', artifact: name, repair }) + '\n');
           return;
         }
       }
       throw new Error(`harness-failure: ${e.message}`);
     }
+  }
+
+  if (verb === 'artifact-repair-dispatch') {
+    requireRef(ref, 'artifact-repair-dispatch');
+    const name = String(rest[0] || '');
+    const slug = targetSlug(ref); const ledger = readLedger(stateDir, slug); const n = ledger?.round;
+    if (!n || !artifactContract.ARTIFACT_ROLES.includes(name)) throw new Error('artifact-repair-dispatch: requires active <role>');
+    const repairPath = path.join(stateDir, `round-${n}-${name}.repair.json`);
+    const repair = JSON.parse(fs.readFileSync(repairPath, 'utf8'));
+    if (repair.state === 'dispatched') { process.stdout.write(JSON.stringify(repair) + '\n'); return; }
+    if (repair.state !== 'prepared' || repair.target?.ref !== ref || repair.round !== n) throw new Error(`${name} repair binding changed`);
+    const dispatched = { ...repair, state: 'dispatched' };
+    fs.writeFileSync(repairPath, JSON.stringify(dispatched) + '\n');
+    process.stdout.write(JSON.stringify(dispatched) + '\n');
+    return;
   }
 
   if (verb === 'round-failure') {
@@ -1515,6 +1542,22 @@ function runVerb(resolveFromCwd, args, initiative) {
         const name = `round-${resumeRound}-${role}.json`;
         try { return ledger.execution.artifactHashes && ledger.execution.artifactHashes[role] === contentHash(fs.readFileSync(path.join(stateDir, name), 'utf8')); } catch (_) { return false; }
       }).map((role) => `round-${resumeRound}-${role}.json`));
+      // A pending repair is durable round evidence, not stale output. Keep
+      // every bound input/output record so resume can verify it or fail closed.
+      for (const role of artifactContract.ARTIFACT_ROLES) {
+        const repairName = `round-${resumeRound}-${role}.repair.json`;
+        const repairFile = path.join(stateDir, repairName);
+        if (!fs.existsSync(repairFile)) continue;
+        try {
+          const repair = JSON.parse(fs.readFileSync(repairFile, 'utf8'));
+          if (repair.round !== resumeRound || !repair.snapshotPath || !repair.packetPath || !repair.candidatePath
+            || contentHash(fs.readFileSync(repair.snapshotPath)) !== repair.originalHash
+            || contentHash(fs.readFileSync(repair.packetPath)) !== repair.packetHash) throw new Error('repair binding invalid');
+          for (const p of [repair.snapshotPath, repair.packetPath, repair.candidatePath, repairFile]) {
+            if (fs.existsSync(p)) preserved.add(path.basename(p));
+          }
+        } catch (_) { throw new Error(`harness-failure: ${role} pending repair evidence is corrupt`); }
+      }
       if (ledger.gateApplied && ledger.gateMode !== 'design-conformance') {
         if (['correctness', 'gate'].some((role) => !preserved.has(`round-${resumeRound}-${role}.json`))) {
           preserved.delete(`round-${resumeRound}-verify.json`);
@@ -1615,7 +1658,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       : {};
     const retryArtifact = firstRetryArtifact(retryArtifacts);
     const repairArtifacts = resumed
-      ? Object.fromEntries(Object.keys(retryArtifacts).flatMap((role) => {
+      ? Object.fromEntries(artifactContract.ARTIFACT_ROLES.flatMap((role) => {
         try { return [[role, JSON.parse(fs.readFileSync(path.join(stateDir, `round-${ledger.round}-${role}.repair.json`), 'utf8'))]]; } catch (_) { return []; }
       }))
       : {};

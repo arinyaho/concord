@@ -517,7 +517,7 @@ async function runReviewUntilGreen(options) {
       totalTokens: Number.isFinite(usage.totalTokens) ? usage.totalTokens : null,
       elapsedMs: Number.isFinite(result && result.elapsedMs) ? result.elapsedMs : null,
     };
-    const role = input.role;
+    const role = input.artifactRole || input.role;
     const aggregate = telemetry.byRole[role] || (telemetry.byRole[role] = {
       calls: 0, partialCalls: 0, inputTokens: 0, cacheWriteInputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0,
     });
@@ -532,7 +532,7 @@ async function runReviewUntilGreen(options) {
     }
     telemetry.invocations.push({
       ...(input.telemetrySlot || {}),
-      role, ...(input.operation ? { operation: input.operation } : {}), round: currentRound, model: input.requestedModel || result?.requestedModel || null, resolvedModel: result?.resolvedModel || null,
+      role, operation: input.operation || 'substantive-review', ...(input.artifactRole ? { launchRole: input.role } : {}), round: currentRound, model: input.requestedModel || result?.requestedModel || null, resolvedModel: result?.resolvedModel || null,
       reasoningEffort: input.reasoningEffort || result?.reasoningEffort || null, serviceTier: input.serviceTier || result?.serviceTier || null,
       status: result && (Number.isInteger(result.status) || result.status === 'failed') ? result.status : null,
       usagePartial: partial, ...values,
@@ -608,7 +608,7 @@ async function runReviewUntilGreen(options) {
         avoidedLaunches: reconciliation?.avoidedLaunches || 0,
         findings: reconciliation?.findings || {},
         checks: result?.checks || checks,
-        telemetry: (output.telemetry?.invocations || []).map(({ role, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, stage: 'review', revision: initiativeRevision, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens })),
+        telemetry: (output.telemetry?.invocations || []).map(({ role, operation, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, operation, stage: 'review', revision: initiativeRevision, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens })),
       });
       // includeConsumed only for 'terminal': its dedup matches regardless of
       // consumption, so a consumed match here is a legitimate concurrent
@@ -802,7 +802,7 @@ async function runReviewUntilGreen(options) {
       const provider = isFix ? fixer : reviewer;
       const requestedModel = isFix ? fixerModel : reviewerModel;
       let telemetrySlot = null;
-      if (artifactPath && provider === 'codex' && !input.operation) {
+      if (artifactPath && provider === 'codex' && input.operation !== 'artifact-repair') {
         const allocation = slotAllocation.then(() => cli(['telemetry-slot', ref, artifactPath, '--engine', 'codex']));
         slotAllocation = allocation.catch(() => {});
         telemetrySlot = await allocation;
@@ -830,16 +830,25 @@ async function runReviewUntilGreen(options) {
           if (normalized.status !== 'repair') throw new Error(`harness-failure: ${role} artifact repair exhausted`);
           repair = normalized.repair;
         }
+        if (reviewer !== 'codex') throw new Error('harness-failure: artifact repair provider cannot enforce the isolation boundary');
         const repairDir = fs.mkdtempSync(path.join(os.tmpdir(), 'concord-artifact-repair-'));
         const packetPath = path.join(repairDir, 'packet.json');
         const snapshotPath = path.join(repairDir, 'original.json');
         const candidatePath = path.join(repairDir, 'candidate.json');
         fs.copyFileSync(repair.snapshotPath, snapshotPath);
-        fs.writeFileSync(packetPath, JSON.stringify({ role, error: repair.error, originalHash: repair.originalHash, snapshot: 'original.json', candidate: 'candidate.json' }) + '\n', { mode: 0o600 });
-        await launch({ role: 'artifact-repair', reservationRole: role, operation: 'artifact-repair', prompt: artifactContract.repairPrompt(packetPath, candidatePath), repoRoot: repairDir, stateDir: repairDir });
-        if (!fs.existsSync(candidatePath)) throw new Error(`harness-failure: ${role} artifact repair produced no candidate`);
-        fs.copyFileSync(candidatePath, path.join(context.stateDir, `round-${context.round}-${role}.json`));
-        const repaired = await cli(['artifact-normalize', ref, role]);
+        fs.copyFileSync(repair.packetPath, packetPath);
+        const alreadyDispatched = repair.state === 'dispatched';
+        if (repair.state === 'prepared') repair = await cli(['artifact-repair-dispatch', ref, role]);
+        if (repair.state === 'dispatched' && !fs.existsSync(repair.candidatePath)) {
+          // The durable dispatch is the sole launch authorization. A crash
+          // after it consumes the attempt rather than duplicating a reviewer.
+          if (alreadyDispatched) throw new Error(`harness-failure: ${role} artifact repair outcome is unavailable after dispatch`);
+          await launch({ role: 'artifact-repair', artifactRole: role, reservationRole: role === 'gate' ? 'gate-review' : role, operation: 'artifact-repair', prompt: artifactContract.repairPrompt(packetPath, candidatePath), repoRoot: repairDir, stateDir: repairDir });
+          if (!fs.existsSync(candidatePath)) throw new Error(`harness-failure: ${role} artifact repair produced no candidate`);
+          fs.copyFileSync(candidatePath, repair.candidatePath);
+          repair = await cli(['artifact-repair-candidate', ref, role]);
+        }
+        const repaired = await cli(['artifact-normalize', ref, role, '--candidate', repair.candidatePath]);
         if (repaired.status !== 'ok') throw new Error(`harness-failure: ${role} artifact repair exhausted`);
         return;
       } catch (error) {

@@ -916,8 +916,11 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
       const pending = retryArtifacts || (retryArtifact ? { [retryArtifact.role]: retryArtifact.prompt } : {});
       const repairs = Object.fromEntries(Object.keys(pending).map((role) => {
         const snapshotPath = path.join(stateDir, `round-${round}-${role}.original`);
+        const packetPath = path.join(stateDir, `round-${round}-${role}.packet.json`);
+        const candidatePath = path.join(stateDir, `round-${round}-${role}.candidate.json`);
         fs.writeFileSync(snapshotPath, JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
-        return [role, { snapshotPath, originalHash: 'test', error: 'invalid representation' }];
+        fs.writeFileSync(packetPath, JSON.stringify({ role }));
+        return [role, { snapshotPath, packetPath, candidatePath, originalHash: 'test', error: 'invalid representation', state: 'prepared' }];
       }));
       return { decision: 'work', round, stateDir, targetType, dodPassed: true, dodDeferred, intentApplied: false, gateApplied, retryArtifact, retryArtifacts, repairArtifacts: repairs };
     }
@@ -934,11 +937,16 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
       if (retry && role === 'correctness' && (!retried || retryForever)) {
         retried = true;
         const snapshotPath = path.join(stateDir, `round-${round}-correctness.original`);
+        const packetPath = path.join(stateDir, `round-${round}-correctness.packet.json`);
+        const candidatePath = path.join(stateDir, `round-${round}-correctness.candidate.json`);
         fs.writeFileSync(snapshotPath, fs.readFileSync(path.join(stateDir, `round-${round}-correctness.json`)));
-        return { status: 'repair', repair: { snapshotPath, originalHash: 'test', error: 'invalid representation' } };
+        fs.writeFileSync(packetPath, JSON.stringify({ role: 'correctness' }));
+        return { status: 'repair', repair: { snapshotPath, packetPath, candidatePath, originalHash: 'test', error: 'invalid representation', state: 'prepared' } };
       }
       return { status: 'ok' };
     }
+    if (verb === 'artifact-repair-dispatch') return { state: 'dispatched', snapshotPath: path.join(stateDir, `round-${round}-${role}.original`), packetPath: path.join(stateDir, `round-${round}-${role}.packet.json`), candidatePath: path.join(stateDir, `round-${round}-${role}.candidate.json`), originalHash: 'test' };
+    if (verb === 'artifact-repair-candidate') return { state: 'candidate-ready', snapshotPath: path.join(stateDir, `round-${round}-${role}.original`), packetPath: path.join(stateDir, `round-${round}-${role}.packet.json`), candidatePath: path.join(stateDir, `round-${round}-${role}.candidate.json`), originalHash: 'test', candidateHash: 'test' };
     if (verb === 'telemetry-slot') {
       const artifactPath = role;
       return { engine: 'codex', provider: 'openai', artifactPath, attempt: calls.filter((call) => call[0] === 'cli' && call[1] === 'telemetry-slot' && call[3] === artifactPath).length, role: path.basename(artifactPath).includes('-fix-') ? 'fix' : path.basename(artifactPath).match(/^round-\d+-(.+)\.json$/)?.[1], round, ...slotIdentity };

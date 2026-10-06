@@ -207,14 +207,14 @@ test('artifact-normalize does not create a repair attempt for invalid evidence',
   assert.strictEqual(fs.existsSync(path.join(dir, `round-${n}-correctness.repair.json`)), false);
 });
 
-test('artifact-normalize repairs an unsupported status but fails closed on a gate-verify namespace error', () => {
+test('artifact-normalize repairs only a known status spelling and fails closed on a correctness-only gate-verify artifact', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
   const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--broad'], { env, broadDefault: true })).round;
   const repairFile = path.join(dir, `round-${n}-gate.json`);
-  const unsupported = JSON.stringify({ status: 'pending', rejected: [], findings: [] });
+  const unsupported = JSON.stringify({ status: 'OK', findings: [] });
   fs.writeFileSync(repairFile, unsupported);
 
   const repair = JSON.parse(run(['artifact-normalize', 'feat/x', 'gate'], { env, broadDefault: true }));
@@ -232,6 +232,20 @@ test('artifact-normalize repairs an unsupported status but fails closed on a gat
 
   assert.throws(() => run(['artifact-normalize', 'feat/x', 'gate-verify'], { env, broadDefault: true }), /harness-failure.*invalid id/);
   assert.strictEqual(fs.readFileSync(file, 'utf8'), raw, 'normalization must not filter cross-namespace evidence');
+});
+
+test('artifact-normalize permits only a preserving mixed gate-verify candidate', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n'); execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/mixed', 'HEAD~1', '--broad'], { env, broadDefault: true })).round;
+  const original = { status: 'ok', rejected: [{ id: 'gate:real', reason: 'ran gate' }, { id: 'correctness:context', reason: 'context only' }], findings: [] };
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify(original));
+  const repair = JSON.parse(run(['artifact-normalize', 'feat/mixed', 'gate-verify'], { env, broadDefault: true })).repair;
+  const candidate = { status: 'ok', rejected: [{ id: 'gate:real', reason: 'ran gate' }], findings: [] };
+  fs.writeFileSync(repair.candidatePath, JSON.stringify(candidate));
+  assert.strictEqual(JSON.parse(run(['artifact-normalize', 'feat/mixed', 'gate-verify', '--candidate', repair.candidatePath], { env, broadDefault: true })).status, 'ok');
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(dir, `round-${n}-gate-verify.json`), 'utf8')).rejected, candidate.rejected);
 });
 
 test('artifact-normalize fails closed on missing correctness coverage', () => {
