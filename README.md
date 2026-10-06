@@ -17,7 +17,7 @@ An agent workflow plugin for **Claude Code**, **Codex**, and **GitHub Copilot** 
 | `initiative-to-prs` | Turns a product brief, problem report, or set of incomplete tickets into implementation-ready tickets and drives each one to a verified PR. | All three |
 | `ticket-writing` | Drafts or updates tickets in GitHub Issues, Jira, Notion, or another tracker so another agent can implement from them. | All three |
 | `proposal-package-authoring` | Builds editable bid and proposal slide decks in Google Slides or PowerPoint from an RFP, source evidence, and reference decks. | All three |
-| `/charter` | Stores the project goal and merged decisions and injects them into each new session. | All three (Copilot needs VS Code Preview hooks) |
+| `/charter` | Stores the project goal and merged decisions and injects them into each new session. On Copilot it persists only the text passed to `/charter set`, and it needs VS Code Preview hooks. | All three |
 | Session-state checkpoint | Saves per-session state from the transcript when a session stops and restores it on start, resume, or compaction. | Claude Code, Codex |
 | `delegate-verbose-work` | Sends broad repository-wide searches to a subagent and keeps only the conclusion in the main conversation. | Claude Code |
 
@@ -95,7 +95,7 @@ Back up `CONCORD_COPILOT_HOME` or `~/.copilot/concord` first when persistent Con
 - `review-and-fix`: reviews a branch or PR, fixes what the review finds, and re-checks until a deterministic CLI reaches a terminal decision. `review-until-green` is a compatibility alias.
 - `review-until-lgtm`, `deep-review`, `initiative-to-prs`, `ticket-to-pr`, `ticket-writing`, `proposal-package-authoring`, and `delegate-verbose-work`.
 
-Not every workflow ships on every harness; the install sections above list what each package provides.
+The Harnesses column above shows where each workflow ships; the install sections list what each package contains.
 
 `review-and-fix` accepts independent `--reviewer`, `--reviewer-model`, `--fixer`, and `--fixer-model` selections. Each role may use `claude`, `codex`, or `copilot`; the active host uses its native clean-context subagent when available and otherwise invokes the selected provider's CLI. Requested models are never silently replaced.
 

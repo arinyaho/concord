@@ -21,4 +21,4 @@ find plugins -path '*/test/*.test.js' -type f -print0 | xargs -0 -r node --test
 (cd services/code-index && uv sync --extra dev && uv run pytest -v)
 ```
 
-Open a pull request against `main`; CI runs the same checks for changes under `plugins/`, `services/` (each service has its own workflow), `VERSION`, and the marketplace manifests; run `node scripts/dod.mjs` locally for changes to `scripts/dod.mjs` or `review.config.json`. Keep each PR to one coherent change.
+Open a pull request against `main`; CI runs the same checks for changes under `plugins/`, `services/` (each service has its own workflow), `VERSION`, and the marketplace manifests; CI does not run the plugin-install end-to-end tests or cover `scripts/dod.mjs` and `review.config.json`, so run `node scripts/dod.mjs` locally for changes to those files, to `plugins/`, or to the marketplace manifests. Keep each PR to one coherent change.
