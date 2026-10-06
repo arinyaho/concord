@@ -8,7 +8,7 @@ Where to look first:
 | `plugins/concord/skills/` | The shared workflow skills (`SKILL.md` per skill). |
 | `plugins/*/hooks/`, `plugins/concord/adapters/`, `plugins/concord/commands/`, `plugins/concord-codex/commands/`, `plugins/concord-copilot/com.github.copilot/commands/` | Per-harness glue and slash commands. |
 | `plugins/concord/hooks/test/` | The plugin test suite. |
-| `docs/design/`, `docs/plans/` | Design documents and implementation plans. |
+| `docs/design/` | Design documents and decision records. |
 | `scripts/dod.mjs`, `review.config.json` | The repo's definition of done, run by the review loop. |
 | `VERSION`, `scripts/release-version.mjs` | Release version and the script that applies it to every manifest. |
 | `.github/workflows/` | CI. |

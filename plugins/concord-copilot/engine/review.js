@@ -267,8 +267,7 @@ function decideTermination(roundOutcome) {
       // correctness/DoD auto-fix flow is never halted early by a design finding.
       return { continue: false, converged: false, parked: false, abandoned: false, gatePending: true, reason: 'diff-local clean, but open GATE finding(s) need a human decision (design/AC/cross-context)' };
     }
-    // Convergence-boundary hook for the holistic GATE panel (spec:
-    // 2026-07-15-gate-holistic-panel-design.md decision 4): the panel is
+    // Convergence-boundary hook for the holistic GATE panel: the panel is
     // expensive (measured ~1.9M tokens/round average), so it triggers
     // exactly once, only once everything else that would keep changing the
     // diff has already gone quiet -- never speculatively on a round that

@@ -30,7 +30,7 @@ function loadGateConfig(repoRoot, readFileFn = fs.readFileSync) {
   if (parsed.gate.panel !== undefined && typeof parsed.gate.panel !== 'boolean') {
     throw new Error(`harness-failure: ${CONFIG_FILENAME} "gate.panel" must be a boolean`);
   }
-  // panel (spec: 2026-07-15-gate-holistic-panel-design.md decision 7): opt-in,
+  // panel: opt-in,
   // no hardcoded file-path/keyword heuristic in the shared plugin -- a repo
   // that wants the heavier 5-lens panel declares it explicitly, the same way
   // DoD commands are already repo-declared.

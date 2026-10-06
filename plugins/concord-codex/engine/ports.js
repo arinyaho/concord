@@ -1,7 +1,6 @@
 'use strict';
 
-// The five harness seams every adapter implements. See
-// docs/superpowers/specs/2026-07-16-vendor-agnostic-harness-adapter-design.md.
+// The five harness seams every adapter implements.
 const PORT_NAMES = ['lifecycle', 'transcript', 'reviewer', 'command', 'statedir'];
 
 /**

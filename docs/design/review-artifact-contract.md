@@ -1,0 +1,77 @@
+# Review artifact contract
+
+Every fail-closed reviewer in a review round writes one JSON artifact for its role, and the review CLI normalizes it with `artifact-normalize <ref> <role>` before anything consumes it. This document covers the role registry and ID namespaces, how a representation failure is repaired without rerunning review, and the plan group contract.
+
+## Roles and namespaces
+
+`core/artifact-contract.js` is the only registry of artifact shapes and owned ID prefixes. Prompt generation and validation both read it, so the namespace a prompt states cannot drift from the one validation enforces.
+
+| Artifact role | Required array fields in the normalized shape | Owned ID prefixes |
+| --- | --- | --- |
+| `correctness` | `examined`, `findings` | `correctness:`, `docreview:` |
+| `verify` | `rejected`, `findings` | `correctness:`, `docreview:` |
+| `plan` | `groups` | `correctness:`, `docreview:` |
+| `intent` | `findings` | `intent:` |
+| `gate` | `findings` | `gate:` |
+| `gate-verify` | `rejected`, `findings` | `gate:` |
+
+Strict normalization rejects IDs outside a role's prefixes, malformed JSON, structurally incomplete findings, and declared blocked checks. It never silently filters cross-namespace entries to make an artifact pass.
+
+### Gate verifier context
+
+When paired gate mode runs, including a file-target run in paired gate mode because broad review is explicitly armed, `gate-verify` reads the complete correctness candidate set, because cross-panel context lets it identify duplicate, related, or conflicting observations. That context does not transfer disposition ownership: `correctness` and `verify` own `correctness:*` and `docreview:*` candidates, while `gate` and `gate-verify` own `gate:*` candidates. The `gate-verify` prompt (`core/round-plan.js`) states that correctness candidates are context only, that verdicts are written only for `gate:*` candidates, and that `correctness:*` IDs are never copied, accepted, or rejected. It builds that clause from the registry's prefix accessor rather than from its own namespace literals.
+
+## Artifact repair
+
+A representation failure in an artifact is handled by at most one isolated `artifact-repair` operation, never by rerunning the substantive reviewer. Repair can restate evidence already present; it cannot perform review or supply missing evidence. Failure to demonstrate preservation is terminal, not permission to rerun a reviewer or manufacture a clean result.
+
+### Eligibility
+
+Only two failures are eligible: a status spelling that differs from an accepted value only by case, and a mixed-namespace artifact that contains both role-owned and foreign IDs. Every other validation failure, including malformed JSON, structurally incomplete findings, declared blocked checks, a bare rejection ID without a reason, missing correctness coverage, absent structural-plan evidence, and a missing artifact, is a terminal `harness-failure`. The error can identify an omission, but nothing may supply the omitted evidence by inventing observations.
+
+### Packet and isolation
+
+The repair packet contains only the artifact role, the exact validation error, the required array fields (and the plan protocol version), the allowed prefixes from the registry, and the role-owned candidate IDs found in the original. Candidate IDs constrain identity; they do not prove that a candidate was examined, accepted, rejected, or measured. The orchestrator keeps target and revision bindings without passing repository contents to the repair.
+
+Repair receives no diff text, repository files or instructions, review history, intent or design documents, unrelated artifacts or candidate sets, or substantive reviewer prompt. It cannot inspect code, rerun checks, discover findings, decide a verdict, or use a previous reviewer conversation.
+
+The repair runs as a fresh invocation in a new temporary directory outside the reviewed repository's ancestry, containing only `packet.json`, the snapshot copy `original.json`, and the destination `candidate.json`. The Codex runner also launches it with a dedicated environment so repository instructions and context are not inherited, and refuses with a `harness-failure` if the directory would fall inside the repository. A shorter prompt with the ordinary reviewer launch configuration is not sufficient: when the selected provider cannot meet this boundary, the runner fails closed instead of falling back to a reviewer launch. In the Codex runner only the `codex` provider is accepted for repair. Manual drivers follow the same contract with a `mktemp -d` directory, copy only the packet and snapshot in and only the candidate back out, and never pass a state-directory path to the repair, rerun the reviewer, or edit an artifact themselves.
+
+### Immutable evidence and acceptance
+
+On the first eligible failure, the CLI writes create-once records in the state directory: `round-<n>-<role>.original` holds the original bytes, `round-<n>-<role>.packet.json` the packet, and `round-<n>-<role>.repair.json` the binding (target, round, role, reviewed diff hash, original content hash, packet hash, candidate path and hash, and dispatch state). Conflicting content never overwrites them. Repair writes a distinct candidate; it never overwrites the original or publishes a canonical artifact directly.
+
+Publication requires both strict validation of the candidate and a separate preservation check against the original. The preservation check compares every field of the original other than `status` with the candidate structurally, so role-owned findings, rejections with their reasons, examined coverage, plan groups, classifications, and design evidence must be unchanged, and the candidate may not add a field the original lacks. The only permitted differences are the status spelling and the omission of foreign dispositions, and that omission is allowed only when the role-owned evidence that remains is exactly the original's role-owned evidence. A correctness-only `gate-verify` artifact contains no established gate verdict, so neither relabeling `correctness:` to `gate:` nor emitting empty `rejected` and `findings` arrays is a valid repair. Cross-namespace findings are never relabeled, fuzzy-mapped, or transferred between owners.
+
+### One attempt, resume, and accounting
+
+At most one repair is allowed per artifact and round across ordinary execution, interruption, and resume. Repair identity and dispatch state (`prepared`, `reserved`, `dispatched`) are persisted before launch. A prepared or reserved repair proceeds through `artifact-repair-dispatch`. A dispatched repair may have an already-produced candidate validated, but uncertainty about whether it ran never authorizes another launch: a dispatched repair with no candidate is a failure. Resume keeps and hash-checks pending repair records alongside hash-verified completed artifacts instead of deleting them as unfinished round output, and a mismatched target, round, role, diff, or content hash fails closed. Publication, cleanup, or context replacement never resets the consumed allowance.
+
+The repair uses the original artifact's reservation role, with `gate` mapping to `gate-review`. The initial attempt is recorded as superseded exactly once, the repair launch is reserved before dispatch and charged once, and a budget denial prevents the launch. Initiative bindings, budgets, terminal dispositions, and round accounting are otherwise untouched. There is no automatic reviewer fallback after a repair fails, is interrupted, or is exhausted.
+
+Repair records are round files, so `rerun` includes them in its verified content-addressed archive before cleaning up the active copies, and archived evidence cannot authorize a repair in a new run. An explicitly permitted reset of an unfinished standalone run discards its active repair evidence with the rest of that run; this does not widen reset eligibility or replenish an initiative budget. Retention ends when the state or archive storage is deleted.
+
+Telemetry carries an `operation` field, `substantive-review` or `artifact-repair`, so repair calls, outcomes, elapsed time, and tokens are attributed separately from substantive review without a new budget role. Partial or unavailable usage stays partial, not zero.
+
+### Rationale
+
+Rerunning a reviewer with an appended correction prompt sends the full review context again and lets a schema-valid retry drop evidence the original contained, so normalization would not guarantee that the original evidence survives. Repair trades some automatic recovery for trustworthy evidence: omissions that a fresh reviewer might investigate now stop for explicit resolution, and the extra snapshot and dispatch state bounds cost and prevents repeated full-context review. Reusing the existing validator, role registry, reservation roles, and telemetry structure avoids a generalized retry framework and a second namespace registry.
+
+## Plan groups
+
+A plan group has a `changeClass` (`local` or `structural`) and an `action` (`fix` or `reconcile`), and any combination is valid. A local group whose fix needs a decision that no approved source settles reports `local` + `reconcile`. Every reconcile group requires a non-empty `reason` naming the unsettled decision, regardless of class. A structural group names its `structuralEffects`, and a structural `fix` requires design evidence bound to the run's design hash.
+
+The plan validator, the plan prompt in `core/round-plan.js`, and the plan step in every review driver state the same rule. A test reads the `changeClass` and `action` values from the generated plan prompt and checks every pair against the validator, so the two cannot define different sets of valid plans.
+
+`plan-fixes` treats every reconcile group the same way: it launches no fixer, records one reconciliation packet with trigger `group-reconcile` and finding counts keyed by the group's `changeClass`, and `record` stops with a decision that requires a human. A plan rejected for its action reports `action must be "fix" or "reconcile"`; a reconcile group without a reason reports that human reconciliation needs an explanation.
+
+Allowing local reconcile gives a local finding that needs a product decision an honest encoding. Without it the only valid encodings were `local` + `fix`, which sends a product question to a fixer, and `structural` + `reconcile`, which claims a structural effect the finding does not have. The cost is a wider contract: a planner can stop a round for a local finding, and the reason text is the only guard against using it to avoid a fix.
+
+## Residual exposure
+
+- A reviewer can still emit false but schema-valid evidence; preservation proves continuity, not truth.
+- A model can ignore the repair instruction, so enforcement rests on candidate validation and the provider isolation surface, not on wording.
+- A neutral working directory is not an operating-system sandbox and does not remove ambient provider configuration or global tools; the runner verifies the context restrictions it can and fails closed where it cannot.
+- The structural preservation comparison rejects harmless rewrites, and failures outside the two eligible kinds stop the round even when a reviewer rerun might have produced a usable artifact.
+- A crash after dispatch but before durable output consumes the only repair attempt without a usable result.
+- A planner can classify a fixable local finding as `reconcile` and stop the round. The stop is visible in the handoff with its reason and costs a human look, not a wrong edit.

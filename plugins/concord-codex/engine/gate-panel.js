@@ -4,8 +4,7 @@ const { toGateFinding } = require('./gate');
 // Pure holistic-panel state machine. No fs, no child_process, no git --
 // mirrors lib/gate.js's purity split (impure I/O lives in review-cli.js).
 //
-// The panel (design: docs/superpowers/specs/2026-07-15-gate-holistic-panel-design.md)
-// is a heavier, opt-in GATE extension that fans out 5 lenses (the existing
+// The panel is a heavier, opt-in GATE extension that fans out 5 lenses (the existing
 // GATE's 4 classes plus a new "threat-model" lens) and loops until 2
 // consecutive rounds contribute zero NEW confirmed findings (decision 5:
 // dedup carry-forward, not a hard round cap). A finding only counts once

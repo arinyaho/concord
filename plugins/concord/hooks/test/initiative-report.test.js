@@ -1,7 +1,7 @@
 'use strict';
 // Initiative completion reports: finalising a keyed run renders report.json and
 // report.md from the terminal ledger, and a derived project-level index lists
-// finalised runs by an allowlist of fields. See docs/design/2026-10-01-initiative-completion-report.md.
+// finalised runs by an allowlist of fields. See docs/design/initiative-completion-report.md.
 const { test } = require('node:test');
 const assert = require('node:assert');
 const crypto = require('node:crypto');

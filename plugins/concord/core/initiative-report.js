@@ -1,7 +1,7 @@
 'use strict';
 // Completion reports for a finalised keyed initiative run, and the project-level
 // index of finalised runs. Both are derived from the run ledgers, never a source
-// of truth. See docs/design/2026-10-01-initiative-completion-report.md.
+// of truth. See docs/design/initiative-completion-report.md.
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
