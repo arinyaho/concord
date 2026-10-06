@@ -50,4 +50,5 @@ test('gate-verify blocking entries are validated by the artifact contract', () =
   assert.throws(() => normalizeArtifact('gate-verify', JSON.stringify({ ...base, blocking: [{ id: 'correctness:a', reason: 'x' }] })), /invalid id/);
   assert.throws(() => normalizeArtifact('gate-verify', JSON.stringify({ ...base, blocking: [{ id: 'gate:silent-gap:a', reason: ' ' }] })), /no "reason"/);
   assert.throws(() => normalizeArtifact('gate-verify', JSON.stringify({ ...base, blocking: 'gate:x' })), /must be an array/);
+  assert.throws(() => normalizeArtifact('gate-verify', JSON.stringify({ ...base, rejected: [{ id: 'gate:silent-gap:a', reason: 'not real' }], blocking: [{ id: 'gate:silent-gap:a', reason: 'breaks AC' }] })), /both rejected and blocking/);
 });

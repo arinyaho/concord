@@ -473,7 +473,7 @@ function validatePacket(packet) {
   if (!packet || typeof packet !== 'object') throw new Error('review-lgtm-state: delivery packet must be an object');
   if (!FULL_SHA.test(String(packet.baseSha))) throw new Error('review-lgtm-state: delivery baseSha must be a full SHA');
   if (!/^[0-9a-f]{64}$/i.test(String(packet.contractDigest))) throw new Error('review-lgtm-state: delivery contractDigest must be a SHA-256 hex digest');
-  for (const field of ['acceptance', 'requiredChecks', 'openChoices', 'findings', 'tickets']) {
+  for (const field of ['reviewIds', 'acceptance', 'requiredChecks', 'openChoices', 'findings', 'tickets']) {
     if (!Array.isArray(packet[field])) throw new Error(`review-lgtm-state: delivery ${field} must be an array`);
   }
   if (typeof packet.reviewsTerminal !== 'boolean') throw new Error('review-lgtm-state: delivery reviewsTerminal must be a boolean');
@@ -492,7 +492,9 @@ function validatePacket(packet) {
   for (const choice of packet.openChoices) if (!text(choice)) throw new Error('review-lgtm-state: delivery openChoices entries must be non-empty strings');
   unique(packet.findings, 'id', 'finding');
   unique(packet.tickets, 'rootCause', 'ticket');
+  if (!packet.reviewIds.every((id) => /^[0-9]+$/.test(String(id)))) throw new Error('review-lgtm-state: delivery reviewIds must be review ids');
   for (const finding of packet.findings) {
+    if (finding.releaseBlocking != null && !Array.isArray(finding.releaseBlocking)) throw new Error(`review-lgtm-state: delivery finding ${text(finding.id)} releaseBlocking must be an array`);
     if (!text(finding.url)) throw new Error('review-lgtm-state: delivery finding needs id and url');
     if (finding.disposition != null && !DISPOSITIONS.has(finding.disposition)) throw new Error(`review-lgtm-state: unknown disposition ${JSON.stringify(finding.disposition)}`);
     for (const category of finding.releaseBlocking || []) {
@@ -568,6 +570,7 @@ function canonicalPacket(packet) {
   return {
     baseSha: String(packet.baseSha).toLowerCase(),
     contractDigest: String(packet.contractDigest).toLowerCase(),
+    reviewIds: [...new Set(packet.reviewIds.map(normalizeReviewId))].sort(compareReviewIds),
     acceptance: packet.acceptance.map((ac) => ({ id: text(ac.id), met: ac.met === true })),
     requiredChecks: packet.requiredChecks.map((check) => ({ name: text(check.name), conclusion: text(check.conclusion) })),
     reviewsTerminal: packet.reviewsTerminal,
@@ -623,6 +626,8 @@ function recordDelivery(input) {
     const records = deliveryRecords({ stateDir, ...key });
     const latest = records.at(-1);
     const reviewIds = activeReviewIds({ stateDir, ...key });
+    const observed = canonicalPacket(packet).reviewIds;
+    if (JSON.stringify(observed) !== JSON.stringify(reviewIds)) return { recorded: false, reason: 'review-batch-changed', reviewIds };
     if (latest && latest.digest === digest && deliveryCurrent({ stateDir, ...key }, latest)) return latest;
     const sequence = (latest ? latest.sequence : 0) + 1;
     const record = { ...classified, reviewIds, digest, sequence, recordedAtMs: now, budgets: { request: requestBudget({ stateDir, pr: key.pr }), fix: fixBudget({ stateDir, pr: key.pr }) } };

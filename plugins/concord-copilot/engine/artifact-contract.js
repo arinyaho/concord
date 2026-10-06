@@ -148,6 +148,10 @@ function normalizeArtifact(name, raw) {
       if (typeof reason !== 'string' || !reason.trim()) throw new ArtifactError('retry', `gate-verify blocking[${index}] ("${id}") has no "reason"`);
       return { id, reason: reason.trim() };
     });
+    const rejectedIds = new Set((canonical.rejected || []).map((entry) => entry.id));
+    for (const entry of canonical.blocking) {
+      if (rejectedIds.has(entry.id)) throw new ArtifactError('retry', `gate-verify lists "${entry.id}" as both rejected and blocking; a candidate is either a false positive or release-blocking`);
+    }
     // review-cli additionally requires each id to be a gate-review or gate-verify candidate
   }
   if (name === 'plan') {

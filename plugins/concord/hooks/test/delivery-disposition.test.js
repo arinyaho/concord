@@ -28,6 +28,7 @@ function pr172Packet(overrides = {}) {
   return {
     baseSha: BASE,
     contractDigest: CONTRACT,
+    reviewIds: [],
     acceptance: [{ id: 'AC1', met: true }, { id: 'AC2', met: true }],
     requiredChecks: [{ name: 'test (ubuntu)', conclusion: 'success' }, { name: 'test (windows)', conclusion: 'success' }],
     reviewsTerminal: true,
@@ -61,7 +62,7 @@ test('#172 shape: four residuals map to two root-cause tickets and no further re
   const stateDir = temp();
   withActiveReview(stateDir);
   const before = lgtmState.status({ stateDir, pr: PR, headSha: HEAD });
-  const record = cli(stateDir, ['record-delivery', String(PR), HEAD], JSON.stringify(pr172Packet()));
+  const record = cli(stateDir, ['record-delivery', String(PR), HEAD], JSON.stringify(pr172Packet({ reviewIds: ['4192088400'] })));
 
   assert.strictEqual(record.classification, 'mergeable-with-follow-ups');
   assert.deepStrictEqual(record.reasons, []);
@@ -162,15 +163,15 @@ test('unowned findings and follow-ups without a rationale block', () => {
 test('reopening an unchanged head reuses the record; drift is recorded as new evidence and re-enables claims', () => {
   const stateDir = temp();
   withActiveReview(stateDir);
-  const first = lgtmState.recordDelivery({ stateDir, pr: PR, headSha: HEAD, now: 5000, packet: pr172Packet() });
-  const again = lgtmState.recordDelivery({ stateDir, pr: PR, headSha: HEAD, now: 9000, packet: pr172Packet() });
+  const first = lgtmState.recordDelivery({ stateDir, pr: PR, headSha: HEAD, now: 5000, packet: pr172Packet({ reviewIds: ['4192088400'] }) });
+  const again = lgtmState.recordDelivery({ stateDir, pr: PR, headSha: HEAD, now: 9000, packet: pr172Packet({ reviewIds: ['4192088400'] }) });
   assert.deepStrictEqual(again, first);
   assert.strictEqual(fs.readdirSync(stateDir).filter((name) => name.includes('.delivery-')).length, 1);
 
   // Another head has no record and is unaffected.
   assert.strictEqual(lgtmState.status({ stateDir, pr: PR, headSha: OTHER_HEAD }).delivery, null);
 
-  const drift = lgtmState.recordDelivery({ stateDir, pr: PR, headSha: HEAD, now: 10000, packet: pr172Packet({ baseSha: NEW_BASE, reviewsTerminal: false }) });
+  const drift = lgtmState.recordDelivery({ stateDir, pr: PR, headSha: HEAD, now: 10000, packet: pr172Packet({ reviewIds: ['4192088400'], baseSha: NEW_BASE, reviewsTerminal: false }) });
   assert.strictEqual(drift.classification, 'blocked');
   assert.deepStrictEqual(drift.reasons, ['reviews-not-terminal']);
   assert.strictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).delivery.baseSha, NEW_BASE);
@@ -260,7 +261,7 @@ test('a later review lifts the terminal record, a clean head reports delivery, a
   const stateDir = temp();
   const input = { stateDir, pr: PR, headSha: HEAD };
   withActiveReview(stateDir);
-  const record = lgtmState.recordDelivery({ ...input, now: 2000, packet: pr172Packet() });
+  const record = lgtmState.recordDelivery({ ...input, now: 2000, packet: pr172Packet({ reviewIds: ['4192088400'] }) });
   assert.deepStrictEqual(record.reviewIds, ['4192088400']);
   assert.deepStrictEqual(record.findings[3], { id: 'c-4192088461', url: THREAD(4192088461), disposition: 'follow-up', rootCause: 'artifact-repair-admission', releaseBlocking: [], rationale: pr172Packet().findings[3].rationale, acceptedBy: null, ticket: ISSUE(173) });
   assert.strictEqual(lgtmState.status(input).delivery.current, true);
@@ -280,4 +281,24 @@ test('a later review lifts the terminal record, a clean head reports delivery, a
   const findings = pr172Packet().findings.filter((f) => f.disposition === 'fixed');
   assert.strictEqual(lgtmState.recordDelivery({ ...clean, now: 1, packet: pr172Packet({ findings, tickets: [] }) }).classification, 'mergeable-clean');
   assert.strictEqual(lgtmState.status(clean).reconciliation.action, 'report-delivery');
+});
+
+test('a packet built before a new review arrived is refused, and a non-array releaseBlocking is rejected', () => {
+  const stateDir = temp();
+  const input = { stateDir, pr: PR, headSha: HEAD };
+  withActiveReview(stateDir);
+  lgtmState.recordReview({ ...input, now: 3000, observation: {
+    reviewId: 4192088500, reviewer: 'copilot-pull-request-reviewer[bot]', reviewUrl: 'https://github.com/arinyaho/concord/pull/172#pullrequestreview-4192088500',
+    commitId: HEAD, state: 'completed', lgtm: false, findings: [{ url: THREAD(4192099999), priority: 'P2', signals: [] }],
+  } });
+  assert.deepStrictEqual(lgtmState.recordDelivery({ ...input, now: 4000, packet: pr172Packet({ reviewIds: ['4192088400'] }) }), { recorded: false, reason: 'review-batch-changed', reviewIds: ['4192088400', '4192088500'] });
+  assert.strictEqual(lgtmState.status(input).delivery, null);
+  assert.strictEqual(lgtmState.claimFixRound({ ...input, owner: 'fixer', now: 5000 }).claimed, true);
+
+  for (const bad of ['', 0, 'security', {}]) {
+    const p = pr172Packet();
+    p.findings[3] = { ...p.findings[3], releaseBlocking: bad };
+    assert.throws(() => lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...p }), /releaseBlocking must be an array/);
+  }
+  assert.throws(() => lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...pr172Packet({ reviewIds: ['abc'] }) }), /reviewIds must be review ids/);
 });

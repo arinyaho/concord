@@ -19,6 +19,7 @@ The caller supplies one JSON evidence packet for the exact PR number and head SH
 | Field | Meaning |
 |---|---|
 | `baseSha` | Resolved base SHA of the pair |
+| `reviewIds` | Ids of the active review batch (recorded, not rejected) that the packet classifies; empty when none. A record whose ids differ from the batch active at write time is refused with `review-batch-changed`, so a review that arrives while the packet is assembled is never classified unseen |
 | `contractDigest` | SHA-256 of the approved contract (ticket, design note or acceptance criteria) the PR is judged against |
 | `acceptance[]` | `{id, met}` for each approved acceptance criterion |
 | `requiredChecks[]` | `{name, conclusion}` for each required check on the exact head; only `success` passes. An empty list asserts that the repository requires no check on this head |
