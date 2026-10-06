@@ -344,25 +344,15 @@ for (const provider of Object.keys(PROVIDERS)) {
     assert.strictEqual(JSON.parse(summary).counts.launches, 3);
   });
 
-  test(`${provider}: a retried launch needs a fresh reservation (P2-1)`, () => {
-    for (const reserveAgain of [false, true]) {
-      const t = setup(provider);
-      const n = t.start();
-      t.ok(['reserve', 'feat/x', 'correctness']); t.ok(['reserve', 'feat/x', 'verify']);
-      t.write(n, 'correctness', { status: 'ok', examined: [], findings: [] });
-      assert.strictEqual(t.ok(['artifact-normalize', 'feat/x', 'correctness']).status, 'retry');
-      if (reserveAgain) assert.strictEqual(t.ok(['reserve', 'feat/x', 'correctness']).status, 'granted');
-      t.write(n, 'correctness', CLEAN);
-      assert.strictEqual(t.ok(['artifact-normalize', 'feat/x', 'correctness']).status, 'ok');
-      t.write(n, 'verify', { status: 'ok', rejected: [] });
-      const r = t.cli(['plan-fixes', 'feat/x']);
-      if (reserveAgain) assert.strictEqual(r.status, 0, r.stderr);
-      else {
-        assert.notStrictEqual(r.status, 0, 'retry accepted on one reservation');
-        assert.match(r.stderr, /harness-failure: .*reservation/);
-        assert.strictEqual(t.initiative().status, 'terminal');
-      }
-    }
+  test(`${provider}: missing correctness coverage fails closed without a fresh reservation`, () => {
+    const t = setup(provider);
+    const n = t.start();
+    t.ok(['reserve', 'feat/x', 'correctness']); t.ok(['reserve', 'feat/x', 'verify']);
+    t.write(n, 'correctness', { status: 'ok', examined: [], findings: [] });
+    const result = t.cli(['artifact-normalize', 'feat/x', 'correctness']);
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.stderr, /harness-failure: .*coverage is incomplete/);
+    assert.strictEqual(t.initiative().launches.length, 2);
   });
 
   test(`${provider}: parallel reserve calls serialize: budget consumed equals tokens kept (P2-2)`, async () => {

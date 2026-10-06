@@ -1116,15 +1116,18 @@ function runVerb(resolveFromCwd, args, initiative) {
     } catch (e) {
       if (e instanceof artifactContract.ArtifactError && e.kind === 'retry') {
         // Repair may only change a known status spelling, or remove foreign
-        // gate-verify dispositions while retaining a complete gate verdict.
+        // dispositions while retaining complete role-owned evidence.
         let parsed; try { parsed = JSON.parse(raw); } catch (_) { parsed = null; }
         const statusSpelling = parsed && typeof parsed.status === 'string' && ['ok', 'findings', 'clean'].includes(parsed.status.toLowerCase()) && parsed.status !== parsed.status.toLowerCase();
-        const gateEvidence = parsed && ['rejected', 'findings'].some((key) => Array.isArray(parsed[key]) && parsed[key].some((item) => {
-          const id = typeof item === 'string' ? item : item && item.id;
-          return typeof id === 'string' && id.startsWith('gate:');
-        }));
-        const mixedGateVerify = name === 'gate-verify' && gateEvidence && /invalid id/.test(e.message);
-        if (!statusSpelling && !mixedGateVerify) throw new Error(`harness-failure: ${e.message}`);
+        const prefixes = artifactContract.allowedFindingPrefixes(name);
+        const items = parsed && artifactContract.ARTIFACT_ROLES.includes(name)
+          ? ['rejected', 'findings', 'groups', 'examined'].flatMap((key) => Array.isArray(parsed[key]) ? parsed[key] : [])
+          : [];
+        const idOf = (item) => typeof item === 'string' ? item : item && item.id;
+        const mixedNamespaces = /invalid id/.test(e.message)
+          && items.some((item) => typeof idOf(item) === 'string' && prefixes.some((prefix) => idOf(item).startsWith(prefix)))
+          && items.some((item) => typeof idOf(item) === 'string' && !prefixes.some((prefix) => idOf(item).startsWith(prefix)));
+        if (!statusSpelling && !mixedNamespaces) throw new Error(`harness-failure: ${e.message}`);
         const retryArtifacts = retryArtifactMap(ledger.execution);
         const alreadyRetried = fs.existsSync(repairPath) || fs.existsSync(retryPath) || !!retryArtifacts[name];
         if (!alreadyRetried) {

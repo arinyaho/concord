@@ -846,6 +846,7 @@ async function runReviewUntilGreen(options) {
           await launch({ role: 'artifact-repair', artifactRole: role, reservationRole: role === 'gate' ? 'gate-review' : role, operation: 'artifact-repair', prompt: artifactContract.repairPrompt(packetPath, candidatePath), repoRoot: repairDir, stateDir: repairDir });
           if (!fs.existsSync(candidatePath)) throw new Error(`harness-failure: ${role} artifact repair produced no candidate`);
           fs.copyFileSync(candidatePath, repair.candidatePath);
+          repair = await cli(['artifact-repair-candidate', ref, role]);
         }
         const repaired = await cli(['artifact-normalize', ref, role, '--candidate', repair.candidatePath]);
         if (repaired.status !== 'ok') throw new Error(`harness-failure: ${role} artifact repair exhausted`);

@@ -248,6 +248,25 @@ test('artifact-normalize permits only a preserving mixed gate-verify candidate',
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(dir, `round-${n}-gate-verify.json`), 'utf8')).rejected, candidate.rejected);
 });
 
+test('artifact-normalize repairs a verify artifact with foreign gate rejections and preserves its correctness verdict', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n'); execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/mixed-verify', 'HEAD~1', '--broad'], { env, broadDefault: true })).round;
+  const original = {
+    status: 'ok',
+    rejected: [{ id: 'gate:foreign-rejection', reason: 'belongs to gate verification' }],
+    findings: [{ id: 'correctness:manual-staging', file: 'review-driver.md', summary: 'repair staging exposes state' }],
+  };
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify(original));
+  const repair = JSON.parse(run(['artifact-normalize', 'feat/mixed-verify', 'verify'], { env, broadDefault: true })).repair;
+  const candidate = { status: 'ok', rejected: [], findings: original.findings };
+  fs.writeFileSync(repair.candidatePath, JSON.stringify(candidate));
+  assert.strictEqual(JSON.parse(run(['artifact-normalize', 'feat/mixed-verify', 'verify', '--candidate', repair.candidatePath], { env, broadDefault: true })).status, 'ok');
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(dir, `round-${n}-verify.json`), 'utf8')), candidate);
+  assert.strictEqual(review.readLedger(dir, review.targetSlug('feat/mixed-verify')).execution.retryArtifacts.verify, undefined);
+});
+
 test('artifact-normalize fails closed on missing correctness coverage', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
@@ -1990,6 +2009,22 @@ test('manual review drivers restore pending retry prompts and skip completed art
     const md = fs.readFileSync(path.join(__dirname, '..', '..', ...rel), 'utf8');
     assert.match(md, /skip every role named by `completedArtifacts`/i, rel.join('/'));
     assert.match(md, /`retryArtifacts`.*persisted corrective prompt/i, rel.join('/'));
+  }
+});
+
+test('manual repair instructions stage only the packet and immutable snapshot', () => {
+  const root = path.join(__dirname, '..', '..');
+  for (const rel of [
+    ['core', 'review-driver.md'],
+    ['commands', 'review-and-fix.md'],
+    ['..', 'concord-copilot', 'skills', 'review-and-fix', 'references', 'review-driver.md'],
+  ]) {
+    const md = fs.readFileSync(path.join(root, ...rel), 'utf8');
+    assert.match(md, /artifact-repair-dispatch <ref> <role>.*one-attempt durable state/i, rel.join('/'));
+    assert.match(md, /mktemp -d/, rel.join('/'));
+    assert.match(md, /packet\.json/, rel.join('/'));
+    assert.match(md, /original\.json/, rel.join('/'));
+    assert.match(md, /Never pass a state-directory path to the repair launch/i, rel.join('/'));
   }
 });
 

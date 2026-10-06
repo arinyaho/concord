@@ -56,17 +56,20 @@ function preservesArtifact(name, raw, candidate) {
   const comparable = (value) => JSON.stringify(value);
   const shape = SHAPES[name];
   if (!shape) return false;
+  const owns = (item) => {
+    const id = typeof item === 'string' ? item : item && item.id;
+    return typeof id === 'string' && shape.prefixes.some((prefix) => id.startsWith(prefix));
+  };
+  const ownedEvidence = shape.arrays.flatMap((key) => Array.isArray(original[key]) ? original[key].filter(owns) : []);
+  if (!ownedEvidence.length) return false;
   for (const key of Object.keys(original)) {
     if (key === 'status') continue;
-    // A gate verifier may remove foreign correctness dispositions only when a
-    // complete gate disposition remains. The immutable original stays audited.
-    if (name === 'gate-verify' && (key === 'findings' || key === 'rejected') && Array.isArray(original[key])) {
-      const owned = original[key].filter((item) => {
-        const id = typeof item === 'string' ? item : item && item.id;
-        return typeof id === 'string' && shape.prefixes.some((prefix) => id.startsWith(prefix));
-      });
+    // A repair may omit foreign dispositions only when its role-owned evidence
+    // remains complete. The immutable original stays audited.
+    if (shape.arrays.includes(key) && Array.isArray(original[key])) {
+      const owned = original[key].filter(owns);
       if (owned.length !== original[key].length) {
-        if (!owned.length || !Array.isArray(candidate[key]) || comparable(owned) !== comparable(candidate[key])) return false;
+        if (!Array.isArray(candidate[key]) || comparable(owned) !== comparable(candidate[key])) return false;
         continue;
       }
     }
