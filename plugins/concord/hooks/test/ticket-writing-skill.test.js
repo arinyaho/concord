@@ -250,12 +250,9 @@ test('maintained package metadata and docs advertise the shared capability set',
   assert.match(claudeManifest.description, /initiative-to-prs/);
   assert.match(codexManifest.description, /initiative-to-prs/);
 
-  const claudeSummary = files[0].split('\n').find((line) => line.startsWith('- `concord` (Claude Code)'));
-  const codexSummary = files[0].split('\n').find((line) => line.startsWith('- `concord` (Codex)'));
-  assert.match(claudeSummary, /ticket-to-pr/);
-  assert.match(codexSummary, /ticket-to-pr/);
-  assert.match(claudeSummary, /initiative-to-prs/);
-  assert.match(codexSummary, /initiative-to-prs/);
+  for (const name of ['ticket-to-pr', 'initiative-to-prs']) {
+    assert.match(files[0], new RegExp(`^\\| \`${name}\` \\|`, 'm'));
+  }
 
   const adapter = read(path.join(REPO, 'plugins/concord/adapters/codex/README.md'));
   const gaps = read(path.join(REPO, 'plugins/concord/adapters/codex/GAPS.md'));
