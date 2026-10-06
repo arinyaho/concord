@@ -1,5 +1,11 @@
 # concord
 
+[![pull-request](https://github.com/arinyaho/concord/actions/workflows/pull-request.yml/badge.svg)](https://github.com/arinyaho/concord/actions/workflows/pull-request.yml)
+[![License: MIT](https://img.shields.io/github/license/arinyaho/concord)](LICENSE)
+![Claude Code](https://img.shields.io/badge/Claude_Code-supported-D97757)
+![Codex](https://img.shields.io/badge/Codex-supported-black)
+![GitHub Copilot](https://img.shields.io/badge/GitHub_Copilot-supported-1F6FEB)
+
 Harness-engineering plugins for **Claude Code**, **Codex**, and **GitHub Copilot** - small fixes for recurring dysfunction in long agent sessions. Personal tooling, not tied to any product codebase. The same vendor-neutral review-and-fix core runs on all three harnesses.
 
 ## Install
@@ -68,26 +74,40 @@ copilot plugin marketplace remove arinyaho-concord
 
 Back up `CONCORD_COPILOT_HOME` or `~/.copilot/concord` first when persistent Concord state must survive removal.
 
-## Plugins
+## What it does
 
-- `concord` (Claude Code) - a per-session state checkpoint, cross-session task charter, `review-and-fix`, `review-until-lgtm`, `initiative-to-prs`, `ticket-to-pr`, `ticket-writing`, `proposal-package-authoring`, and `delegate-verbose-work`.
-- `concord` (Codex) - the same `review-and-fix`, `review-until-lgtm`, `initiative-to-prs`, `ticket-to-pr`, `ticket-writing`, and `proposal-package-authoring` workflows packaged natively for Codex and backed by the vendor-neutral core.
-- `concord` (GitHub Copilot) - explicit project charter persistence and the shared workflow set. It deliberately omits transcript-derived checkpoints and uses only documented hook fields.
+- A per-session state checkpoint and a cross-session task charter (`/charter`).
+- `review-and-fix`: reviews a branch or PR, fixes what the review finds, and re-checks until a deterministic CLI reaches a terminal decision. `review-until-green` is a compatibility alias.
+- `review-until-lgtm`, `deep-review`, `initiative-to-prs`, `ticket-to-pr`, `ticket-writing`, `proposal-package-authoring`, and `delegate-verbose-work`.
+
+Not every workflow ships on every harness; the install sections above list what each package provides.
 
 `review-and-fix` accepts independent `--reviewer`, `--reviewer-model`, `--fixer`, and `--fixer-model` selections. Each role may use `claude`, `codex`, or `copilot`; the active host uses its native clean-context subagent when available and otherwise invokes the selected provider's CLI. Requested models are never silently replaced.
 
-## Track map
+## Contributing
 
-The plugins come from a diagnosis of recurring session dysfunction:
+Where to look first:
 
-- Shell env re-export + `cd` tax -> ambient-env tooling (elsewhere).
-- Memory / ledger / doc churn + self-transcript re-reads -> the `concord` plugin (session-state checkpoint).
-- Monster resumed sessions (session hygiene).
-- Edit round-trip waste (edit-before-read, string-not-found).
-- Manual cross-session review<->fix ping-pong that ends on a weak "looks good" gate -> the `concord` plugin (`/review-and-fix`).
-- Tickets that leave the next agent guessing about product intent, design constraints, or proof -> the shared `ticket-writing` skill.
-- Multi-stage ticket work that skips reproducible red/green evidence or opens a PR with unfinished gates -> the shared `ticket-to-pr` skill.
-- Initiatives that need evidence, product decisions, an implementation-ready ticket set, model-routed execution, and verified PRs -> the shared `initiative-to-prs` skill (`base` delivery mode by default, opt-in `lite` for local, settled-contract changes).
-- Proposal decks that lose requirement traceability, editability, visual consistency, or export safety -> the shared `proposal-package-authoring` skill.
+| Path | What lives there |
+| --- | --- |
+| `plugins/concord/core/` | The vendor-neutral review, charter, and gate logic. `plugins/concord-codex/engine/` and `plugins/concord-copilot/engine/` hold the same files plus harness-specific additions. |
+| `plugins/concord/skills/` | The shared workflow skills (`SKILL.md` per skill). |
+| `plugins/*/hooks/`, `plugins/concord/adapters/`, `commands/` | Per-harness glue. |
+| `plugins/concord/hooks/test/` | The plugin test suite. |
+| `docs/design/`, `docs/plans/` | Design documents and implementation plans. |
+| `scripts/dod.mjs`, `review.config.json` | The repo's definition of done, run by the review loop. |
+| `VERSION`, `scripts/release-version.mjs` | Release version and the script that applies it to every manifest. |
+| `.github/workflows/` | CI. |
 
-Design notes and implementation plans for each fix are kept in Notion, not in this repo.
+Run the tests with Node 22:
+
+```sh
+find plugins -path '*/test/*.test.js' -type f -print0 | xargs -0 -r node --test
+(cd services/agent-team && npm ci && npm test)
+```
+
+Open a pull request against `main`; CI runs the same checks. Keep each PR to one coherent change.
+
+## License
+
+[MIT](LICENSE)
