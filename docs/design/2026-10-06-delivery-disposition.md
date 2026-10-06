@@ -44,7 +44,7 @@ Follow-up findings are grouped by `rootCause`. Several findings with one root ca
 
 ## Persistence and launch suppression
 
-`review-lgtm-state record-delivery <pr> <head-sha>` reads the packet on stdin, classifies it, and writes the result as a write-once marker `pr-<pr>-<head>.delivery-<recordedAtMs>-<digest16>.json` beside the existing review markers. The digest covers the canonical packet. The marker also records both PR-wide budgets at that moment, so the handoff can name their max, spent and remaining values. Recording the same packet again returns the latest record and writes nothing.
+`review-lgtm-state record-delivery <pr> <head-sha>` reads the packet on stdin, classifies it, and writes the result as a write-once marker `pr-<pr>-<head>.delivery-<recordedAtMs>-<digest16>.json` beside the existing review markers. The digest covers the canonical packet. The marker also records both PR-wide budgets at that moment, so the handoff can name their max, spent and remaining values. A packet whose digest equals the digest of the latest record for the head writes nothing and returns that latest record. Any other packet, including one that matches an older record, writes a new record, so the latest record always holds the most recently submitted evidence.
 
 `status <pr> <head-sha>` reports the latest record for the head as `delivery`. While that record is `mergeable-*`, `claim-initial-request`, `recover-initial-request` and `claim-fix-round` refuse with `delivery-terminal`. Reopening an unchanged head therefore reports the stored classification and spends no request or fix budget.
 
