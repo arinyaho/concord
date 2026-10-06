@@ -273,6 +273,8 @@ function compareReviewIds(a, b) {
 function reconciliationPacket({ stateDir, pr, headSha }) {
   const records = activeReviewRecords({ stateDir, pr, headSha })
     .sort((a, b) => a.recordedAtMs - b.recordedAtMs || compareReviewIds(a.reviewId, b.reviewId));
+  const delivered = !fixRoundForHead({ stateDir, pr, headSha }) && deliveryTerminal({ stateDir, pr, headSha });
+  if (delivered) return { pr, headSha, reviews: records.map((record) => ({ id: record.reviewId, reviewer: record.reviewer || 'legacy/unknown', url: record.reviewUrl, findings: record.findings })), batchCount: records.length, classification: 'delivery-terminal', action: 'report-delivery', humanRequired: false, requires: `report the recorded ${delivered.classification} delivery disposition` };
   if (records.length === 0) return null;
   const reviews = records.map((record) => ({ id: record.reviewId, reviewer: record.reviewer || 'legacy/unknown', url: record.reviewUrl, findings: record.findings }));
   const findings = records.flatMap((record) => record.findings);
@@ -281,8 +283,6 @@ function reconciliationPacket({ stateDir, pr, headSha }) {
   const signals = [...new Set(findings.flatMap((finding) => finding.signals))].sort();
   const classification = (p1Count > 0 || records.length >= 2 || signals.length > 0) ? 'requires-architecture-review' : 'light-implementation-eligible';
   const claimed = !!fixRoundForHead({ stateDir, pr, headSha });
-  const delivered = !claimed && deliveryTerminal({ stateDir, pr, headSha });
-  if (delivered) return { pr, headSha, reviews, batchCount: records.length, p1Count, p2Count, signals, classification: 'delivery-terminal', action: 'report-delivery', humanRequired: false, requires: `report the recorded ${delivered.classification} delivery disposition` };
   const abandoned = !claimed && !!readMarker(markerPath({ stateDir, pr, headSha }, 'fix-round-claim'));
   const exhausted = !claimed && fixBudget({ stateDir, pr }).remaining === 0;
   const humanRequired = abandoned || exhausted;
@@ -347,7 +347,7 @@ function status(input) {
     }
   }
   const deadlines = [window, retryWindow].filter(Boolean).map((marker) => marker.deadlineMs);
-  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested, reconciliation: reconciliationPacket({ stateDir, ...key }), delivery: latestDelivery({ stateDir, ...key }) };
+  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested, reconciliation: reconciliationPacket({ stateDir, ...key }), delivery: deliveryStatus({ stateDir, ...key }) };
 }
 
 function claimFixRound(input) {
@@ -556,6 +556,7 @@ function classifyDelivery(raw) {
   const classification = reasons.length > 0 ? 'blocked' : residual ? 'mergeable-with-follow-ups' : 'mergeable-clean';
   const findings = input.findings.map((finding) => ({
     id: finding.id, url: finding.url, disposition: finding.disposition || null,
+    rootCause: finding.rootCause || null, releaseBlocking: finding.releaseBlocking, rationale: finding.rationale || null, acceptedBy: finding.acceptedBy || null,
     ticket: finding.disposition === 'follow-up' ? tickets.get(text(finding.rootCause))?.url || null : null,
   }));
   return { pr: key.pr, headSha: key.headSha, baseSha: String(input.baseSha).toLowerCase(), contractDigest: String(input.contractDigest).toLowerCase(), classification, reasons, findings, groups, pending, requiredChecks: input.requiredChecks.map(({ name, conclusion }) => ({ name, conclusion })) };
@@ -588,13 +589,28 @@ function deliveryRecords({ stateDir, pr, headSha }) {
     .sort((a, b) => a.sequence - b.sequence);
 }
 
+function deliveryStatus(input) {
+  const latest = latestDelivery(input);
+  return latest && { ...latest, current: deliveryCurrent(input, latest) };
+}
+
 function latestDelivery(input) {
   return deliveryRecords(input).at(-1) || null;
 }
 
+function activeReviewIds(input) {
+  return activeReviewRecords(input).map((record) => record.reviewId).sort(compareReviewIds);
+}
+
+// A record covers only the review batch active when it was written; a review
+// recorded or rejected later is new evidence and lifts the terminal state.
+function deliveryCurrent(input, record) {
+  return !!record && JSON.stringify(record.reviewIds) === JSON.stringify(activeReviewIds(input));
+}
+
 function deliveryTerminal(input) {
   const latest = latestDelivery(input);
-  return latest && latest.classification !== 'blocked' ? { claimed: false, reason: 'delivery-terminal', classification: latest.classification } : null;
+  return latest && latest.classification !== 'blocked' && deliveryCurrent(input, latest) ? { claimed: false, reason: 'delivery-terminal', classification: latest.classification } : null;
 }
 
 function recordDelivery(input) {
@@ -606,9 +622,10 @@ function recordDelivery(input) {
     if (fixRoundForHead({ stateDir, ...key })) return { recorded: false, reason: 'fix-round-open' };
     const records = deliveryRecords({ stateDir, ...key });
     const latest = records.at(-1);
-    if (latest && latest.digest === digest) return latest;
+    const reviewIds = activeReviewIds({ stateDir, ...key });
+    if (latest && latest.digest === digest && deliveryCurrent({ stateDir, ...key }, latest)) return latest;
     const sequence = (latest ? latest.sequence : 0) + 1;
-    const record = { ...classified, digest, sequence, recordedAtMs: now, budgets: { request: requestBudget({ stateDir, pr: key.pr }), fix: fixBudget({ stateDir, pr: key.pr }) } };
+    const record = { ...classified, reviewIds, digest, sequence, recordedAtMs: now, budgets: { request: requestBudget({ stateDir, pr: key.pr }), fix: fixBudget({ stateDir, pr: key.pr }) } };
     if (!writeExclusive(markerPath({ stateDir, ...key }, `delivery-${String(sequence).padStart(6, '0')}`), record)) throw new Error('review-lgtm-state: delivery record collided; retry');
     return record;
   }, { recorded: false, reason: 'transition-busy' });

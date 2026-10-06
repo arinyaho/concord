@@ -255,3 +255,29 @@ test('every text field is trimmed, entries are validated, and an open fix round 
   assert.deepStrictEqual(lgtmState.recordDelivery({ stateDir: open, pr: PR, headSha: HEAD, now: 2, packet: pr172Packet() }), { recorded: false, reason: 'fix-round-open' });
   assert.strictEqual(lgtmState.status({ stateDir: open, pr: PR, headSha: HEAD }).delivery, null);
 });
+
+test('a later review lifts the terminal record, a clean head reports delivery, and evidence persists', () => {
+  const stateDir = temp();
+  const input = { stateDir, pr: PR, headSha: HEAD };
+  withActiveReview(stateDir);
+  const record = lgtmState.recordDelivery({ ...input, now: 2000, packet: pr172Packet() });
+  assert.deepStrictEqual(record.reviewIds, ['4192088400']);
+  assert.deepStrictEqual(record.findings[3], { id: 'c-4192088461', url: THREAD(4192088461), disposition: 'follow-up', rootCause: 'artifact-repair-admission', releaseBlocking: [], rationale: pr172Packet().findings[3].rationale, acceptedBy: null, ticket: ISSUE(173) });
+  assert.strictEqual(lgtmState.status(input).delivery.current, true);
+
+  // A delayed exact-head review with findings arrives after the record.
+  lgtmState.recordReview({ ...input, now: 3000, observation: {
+    reviewId: 4192088500, reviewer: 'copilot-pull-request-reviewer[bot]', reviewUrl: 'https://github.com/arinyaho/concord/pull/172#pullrequestreview-4192088500',
+    commitId: HEAD, state: 'completed', lgtm: false, findings: [{ url: THREAD(4192099999), priority: 'P1', signals: [] }],
+  } });
+  const after = lgtmState.status(input);
+  assert.strictEqual(after.delivery.current, false);
+  assert.notStrictEqual(after.reconciliation.action, 'report-delivery');
+  assert.strictEqual(lgtmState.claimFixRound({ ...input, owner: 'fixer', now: 4000 }).claimed, true);
+
+  // A head that finished with no review record still reports its terminal delivery.
+  const clean = { stateDir: temp(), pr: PR, headSha: OTHER_HEAD };
+  const findings = pr172Packet().findings.filter((f) => f.disposition === 'fixed');
+  assert.strictEqual(lgtmState.recordDelivery({ ...clean, now: 1, packet: pr172Packet({ findings, tickets: [] }) }).classification, 'mergeable-clean');
+  assert.strictEqual(lgtmState.status(clean).reconciliation.action, 'report-delivery');
+});
