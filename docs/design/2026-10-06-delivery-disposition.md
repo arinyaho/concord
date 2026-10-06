@@ -7,7 +7,7 @@
 The classification has three values and is computed by one function, `classifyDelivery`, exported with `recordDelivery` from `core/lgtm-state.js` beside the existing review-until-lgtm state engine.
 
 - `mergeable-clean`: every approved acceptance criterion is met, every required check succeeded on the exact head, configured reviews are terminal, no material choice is open, and no accepted finding is left as a residual (every accepted finding is `fixed`).
-- `mergeable-with-follow-ups`: the same conditions hold, and every residual is verified follow-up eligible, grouped by root cause, and owned by a read-back tracker ticket, or deliberately accepted by a named human.
+- `mergeable-with-follow-ups`: the same conditions hold, and every residual is verified follow-up eligible, grouped by root cause, and owned by a read-back tracker ticket, or deliberately accepted by a human named in `acceptedBy` who is authorized to accept the residual within the recorded authorization envelope of the workflow.
 - `blocked`: any other state. The result lists every reason, so a reader sees all blockers at once.
 
 `mergeable-*` means that the delivery workflow has nothing left to do for this pair. It does not mean the PR is merged, released or LGTM, and GitHub's own `mergeable` field is not an input.
@@ -36,7 +36,7 @@ Finding `disposition` is one of `fixed`, `follow-up`, `accepted` or `blocking`. 
 Each rule below adds a reason, and any reason makes the result `blocked`:
 
 - An unmet acceptance criterion, a required check whose conclusion is not `success`, non-terminal reviews, or an open choice.
-- A finding that is unowned, marked `blocking`, release-blocking but not `fixed`, `follow-up` without a root cause or rationale, or `accepted` without `acceptedBy`.
+- A finding that is unowned, marked `blocking`, release-blocking but not `fixed`, `follow-up` without a root cause or rationale, or `accepted` without `acceptedBy`. The classifier checks only that `acceptedBy` is present; it cannot verify that the named human holds that authorization.
 - A follow-up root cause with no ticket. This is `rollover-pending`, and the result carries a ready-to-file packet for that group (its root cause, finding ids, URLs and rationales). Without tracker authorization or access, this is the outcome, and no ticket URL is invented.
 - A ticket that was not read back, a reused ticket whose duplicate check is not recorded, one ticket URL shared by two root causes, or a ticket that owns no follow-up finding.
 
@@ -74,5 +74,6 @@ Rejected alternatives:
 ## Residual exposure
 
 - The classification is only as accurate as the packet. A caller that labels a release-blocking finding as follow-up eligible gets a `mergeable-with-follow-ups` result. The categories and the required rationale make that mislabel visible in the record and handoff, but the CLI cannot detect it.
+- An `accepted` disposition is checked only for a non-empty `acceptedBy`. Whether the named human is authorized to accept the residual is the workflow's responsibility, and the CLI cannot detect an unauthorized acceptance.
 - Launch suppression covers only `review-until-lgtm`'s request and fix claims. `review-and-fix` rounds are local and bounded by their own ledger. They are not refused by a delivery record.
 - Base drift on an unchanged head is detected only when the workflow compares the live pair with the record. Until a new record is written, claims stay refused.
