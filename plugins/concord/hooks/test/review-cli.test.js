@@ -877,12 +877,33 @@ test('plan-fixes: structural group with an unsettled design stops before any fix
     }] });
   const out = JSON.parse(run(['plan-fixes', 'feat/structural-stop'], { env }));
   assert.deepStrictEqual(out.fixes, []);
-  assert.strictEqual(out.reconciliation.trigger, 'structural-fix');
+  assert.strictEqual(out.reconciliation.trigger, 'group-reconcile');
   assert.strictEqual(review.readLedger(dir, review.targetSlug('feat/structural-stop')).planned.length, 0);
   const recorded = JSON.parse(run(['record', 'feat/structural-stop'], { env }));
   assert.strictEqual(recorded.decision.continue, false);
   assert.strictEqual(recorded.decision.reconciliation, true);
-  assert.match(recorded.decision.reason, /structural finding group.*before editing/i);
+  assert.match(recorded.decision.reason, /human decision before editing/i);
+});
+
+test('plan-fixes: local group that needs a human decision stops before any fixer', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env } = seedGatesRound(repo, dir, 'feat/local-stop',
+    { status: 'ok', examined: ['a.txt'], findings: [
+      { id: 'correctness:evidence', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'empty evidence classification is undecided' },
+    ] },
+    { status: 'ok', rejected: [], groups: [{
+      findingIds: ['correctness:evidence'], rootCause: 'empty evidence classification is undecided',
+      invariants: ['a packet with no evidence is never mergeable-clean'], changeClass: 'local', action: 'reconcile',
+      reason: 'whether empty acceptance evidence may classify as mergeable is a product decision',
+    }] });
+  const out = JSON.parse(run(['plan-fixes', 'feat/local-stop'], { env }));
+  assert.deepStrictEqual(out.fixes, []);
+  assert.deepStrictEqual(out.fixGroups, []);
+  assert.strictEqual(out.reconciliation.trigger, 'group-reconcile');
+  assert.deepStrictEqual(out.reconciliation.findings, { local: 1 });
+  const recorded = JSON.parse(run(['record', 'feat/local-stop'], { env }));
+  assert.strictEqual(recorded.decision.continue, false);
+  assert.match(recorded.decision.reason, /human decision before editing/i);
 });
 
 test('plan-fixes: v2 refuses unclassified findings instead of inventing singleton fixes', () => {

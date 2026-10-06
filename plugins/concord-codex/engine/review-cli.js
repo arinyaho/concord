@@ -1983,8 +1983,8 @@ function runVerb(resolveFromCwd, args, initiative) {
     // launch ordinary fixers or to spend another round. Derive this here from
     // the persisted state so panel-confirmed findings take the same path.
     const material = [...(ledger.intent_parked || []), ...gateOpen.filter((f) => /^gate:(?:design-conformance|ac-coverage):/.test(f.id) && !gateFollowUpEligible(f))];
-    const structuralReconciliation = ledger.reconciliation?.trigger === 'structural-fix' ? ledger.reconciliation : null;
-    const reconciliation = structuralReconciliation || material.length && {
+    const groupReconciliation = ledger.reconciliation?.trigger === 'group-reconcile' ? ledger.reconciliation : null;
+    const reconciliation = groupReconciliation || material.length && {
       trigger: 'material-finding', finding: material[0].id, stage: 'record', avoidedLaunches: ledger.reconciliation?.avoidedLaunches || 0, findings: material.reduce((counts, finding) => {
         const kind = finding.id.startsWith('gate:design-conformance:') ? 'design-conformance' : finding.id.startsWith('gate:ac-coverage:') ? 'ac-coverage' : finding.id.split(':', 1)[0];
         return { ...counts, [kind]: (counts[kind] || 0) + 1 };
@@ -1992,8 +1992,8 @@ function runVerb(resolveFromCwd, args, initiative) {
     };
     if (reconciliation) {
       const intentReview = (ledger.intent_parked || []).length > 0;
-      const structuralReview = reconciliation.trigger === 'structural-fix';
-      decision = { continue: false, converged: false, parked: false, abandoned: false, ...(intentReview ? { intentReview: true } : { gatePending: true }), reconciliation: true, reason: intentReview ? 'open intent finding(s) require reconciliation' : structuralReview ? 'structural finding group requires human reconciliation before editing' : 'open design/AC GATE finding(s) require reconciliation' };
+      const groupReconcile = reconciliation.trigger === 'group-reconcile';
+      decision = { continue: false, converged: false, parked: false, abandoned: false, ...(intentReview ? { intentReview: true } : { gatePending: true }), reconciliation: true, reason: intentReview ? 'open intent finding(s) require reconciliation' : groupReconcile ? 'finding group requires a human decision before editing' : 'open design/AC GATE finding(s) require reconciliation' };
       applied = { ...applied, status: intentReview ? 'intent-review' : 'gate-pending' };
     }
     if (isGit && decision.converged && !ledger.dodDeferred) {
@@ -2303,7 +2303,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     });
     const unclassified = fixes.filter((finding) => !groupedIds.has(finding.id)).map((finding) => finding.id);
     if (unclassified.length) throw new Error(`harness-failure: v2 classification is incomplete for finding(s): ${unclassified.join(', ')}`);
-    const blockedGroups = fixGroups.filter((group) => group.changeClass === 'structural' && group.action === 'reconcile');
+    const blockedGroups = fixGroups.filter((group) => group.action === 'reconcile');
     const structuralGroups = fixGroups.filter((group) => group.changeClass === 'structural' && group.action === 'fix');
     const invariantOwners = new Map();
     let transactionScope = 'group';
@@ -2314,9 +2314,9 @@ function runVerb(resolveFromCwd, args, initiative) {
     }
     const material = [...intentParked, ...gateOpen.filter((f) => /^gate:(?:design-conformance|ac-coverage):/.test(f.id) && !gateFollowUpEligible(f))];
     const reconciliationPacket = blockedGroups.length ? {
-      trigger: 'structural-fix', finding: blockedGroups[0].findingIds[0], stage: 'plan-fixes', avoidedLaunches: fixes.length,
-      findings: { structural: blockedGroups.reduce((count, group) => count + group.findingIds.length, 0) },
-      reason: 'one or more structural groups require an approved design decision before editing',
+      trigger: 'group-reconcile', finding: blockedGroups[0].findingIds[0], stage: 'plan-fixes', avoidedLaunches: fixes.length,
+      findings: blockedGroups.reduce((counts, group) => ({ ...counts, [group.changeClass]: (counts[group.changeClass] || 0) + group.findingIds.length }), {}),
+      reason: 'one or more groups require a human decision before editing',
       groups: blockedGroups.map(({ groupId, findingIds, rootCause, invariants, structuralEffects, reason }) => ({ groupId, findingIds, rootCause, invariants, structuralEffects, reason })),
     } : material.length ? { avoidedLaunches: fixes.length } : null;
     const reconciliation = !!reconciliationPacket;

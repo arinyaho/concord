@@ -153,3 +153,18 @@ test('the verify retry prompt spells out the rejection object shape', () => {
   assert.match(retryPrompt('verify'), /"reason"/);
   assert.doesNotMatch(retryPrompt('correctness'), /"reason"/);
 });
+
+test('plan artifacts accept a local group that needs a human decision and name the missing reason', () => {
+  const group = { groupId: 'delivery-evidence', findingIds: ['correctness:a'], rootCause: 'empty evidence classification is undecided', invariants: ['a packet with no evidence is never mergeable-clean'], changeClass: 'local', action: 'reconcile' };
+  const plan = (extra) => JSON.stringify({ status: 'ok', protocolVersion: 2, groups: [{ ...group, ...extra }] });
+  assert.throws(() => normalizeArtifact('plan', plan({})), /human reconciliation is required/);
+  const [normalized] = normalizeArtifact('plan', plan({ reason: 'whether empty acceptance evidence may classify as mergeable is a product decision' })).groups;
+  assert.strictEqual(normalized.changeClass, 'local');
+  assert.strictEqual(normalized.action, 'reconcile');
+});
+
+test('plan artifacts name the rule when action is neither fix nor reconcile', () => {
+  assert.throws(() => normalizeArtifact('plan', JSON.stringify({
+    status: 'ok', protocolVersion: 2, groups: [{ groupId: 'g', findingIds: ['correctness:a'], rootCause: 'r', invariants: ['i'], changeClass: 'local', action: 'park' }],
+  })), /action must be "fix" or "reconcile"/);
+});

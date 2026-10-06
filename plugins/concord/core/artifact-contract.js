@@ -172,8 +172,8 @@ function normalizeArtifact(name, raw) {
         throw new ArtifactError('retry', `verify group[${index}] must name at least one invariant`);
       }
       if (!['local', 'structural'].includes(group.changeClass)) throw new ArtifactError('retry', `verify group[${index}] has invalid "changeClass"`);
-      if (!['fix', 'reconcile'].includes(group.action) || (group.action === 'reconcile' && group.changeClass !== 'structural')) {
-        throw new ArtifactError('retry', `verify group[${index}] has invalid "action"`);
+      if (!['fix', 'reconcile'].includes(group.action)) {
+        throw new ArtifactError('retry', `verify group[${index}] has invalid "action": action must be "fix" or "reconcile"`);
       }
       if (group.action === 'reconcile' && (typeof group.reason !== 'string' || !group.reason.trim())) {
         throw new ArtifactError('retry', `verify group[${index}] must explain why human reconciliation is required`);

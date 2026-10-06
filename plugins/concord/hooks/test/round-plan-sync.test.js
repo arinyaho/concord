@@ -149,3 +149,22 @@ test('manual drivers certify every authorized transaction before commit', () => 
     assert.doesNotMatch(text, /fix --count <number of fixes>/, name);
   }
 });
+
+test('every changeClass/action pair the plan prompt offers is accepted by the plan validator, and each driver carries the reconcile rule', () => {
+  const { normalizeArtifact } = require(path.join(CORE, 'artifact-contract'));
+  const prompt = reviewerPrompt('plan', { stateDir: '/state', round: 1, targetType: 'git', slug: 'feat-x', intentHash: 'h' });
+  const offered = (key) => prompt.match(new RegExp(`"${key}":"([a-z|]+)"`))[1].split('|');
+  for (const changeClass of offered('changeClass')) for (const action of offered('action')) {
+    const group = {
+      groupId: 'g', findingIds: ['correctness:a'], rootCause: 'r', invariants: ['i'], changeClass, action,
+      ...(changeClass === 'structural' ? { structuralEffects: ['identity'] } : {}),
+      ...(action === 'reconcile' ? { reason: 'unsettled decision' } : {}),
+      ...(changeClass === 'structural' && action === 'fix' ? { designEvidence: { source: 'intent-feat-x.md', sourceHash: 'h', requirements: ['q'], uniqueness: 'u' } } : {}),
+    };
+    assert.doesNotThrow(() => normalizeArtifact('plan', JSON.stringify({ status: 'ok', protocolVersion: 2, groups: [group] })), `${changeClass}+${action} is offered by the plan prompt but rejected by the validator`);
+  }
+  assert.match(prompt, /local group[^.]*may also use action:"reconcile"/);
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot driver', copilotDriverText]]) {
+    assert.match(text, /local group[^.]*may also use `?action:"reconcile"`?/, `${name} plan step does not state that a local group may reconcile`);
+  }
+});
