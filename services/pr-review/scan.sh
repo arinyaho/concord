@@ -27,32 +27,42 @@ ME=$(gh api user --jq .login)
 # automatic reviews; requested ones are dispatched first.
 requested=(); automatic=()
 for repo in $REPOS; do
+  # A poll that cannot list a repository fails rather than reporting nothing to do.
+  # ponytail: the newest 1000 open pull requests per repository.
+  prs=$(gh pr list --repo "$repo" --state open --limit 1000 --json number,headRefOid,isDraft,title,updatedAt)
   while IFS=$'\t' read -r num sha title; do
+    [ -n "$num" ] || continue
     # A review of this commit is queued or running. Dispatching it again would
     # cancel that run, and a review longer than the poll interval never posts.
-    review_status=$(gh api "repos/$repo/commits/$sha/status" \
+    review_status=$(gh api "repos/$repo/commits/$sha/status?per_page=100" \
       --jq '[.statuses[] | select(.context == "concord/review")][0] | "\(.state) \(.updated_at)"' 2>/dev/null || true)
     state=${review_status%% *}; updated=${review_status#* }
     if [ "$state" = pending ] && [[ "$updated" > "$running_cutoff" ]]; then continue; fi
 
-    # Without the conversation there is no telling whether this commit was reviewed.
-    convo=$(gh pr view "$num" --repo "$repo" --json comments,reviews 2>/dev/null) || continue
+    # Every page of the conversation; without it there is no telling whether
+    # this commit was reviewed, so the pull request waits for the next poll.
+    comments=$(gh api --paginate "repos/$repo/issues/$num/comments" --jq '.[]' 2>/dev/null | jq -s .) || continue
+    reviews=$(gh api --paginate "repos/$repo/pulls/$num/reviews" --jq '.[]' 2>/dev/null | jq -s .) || continue
     # A marker counts only as the first line of a body this account posted:
     # the lines after it carry model-written finding text.
-    markers=$(jq -r --arg me "$ME" '((.comments // []) + (.reviews // []))[]
-                 | select(.author.login == $me) | .body | split("\n")[0]
-                 | select(startswith("<!-- concord-review:"))' <<<"$convo")
-    # A review costs money, so only someone with a role on the repository asks for one.
-    cmd=$(jq -r '(.comments // [])[]
-                 | select(.authorAssociation == "OWNER" or .authorAssociation == "MEMBER" or .authorAssociation == "COLLABORATOR")
-                 | select(.body | test("@concord +(broad|diff)"))
-                 | "\(.url | capture("issuecomment-(?<i>[0-9]+)").i)\t\(.body | capture("@concord +(?<m>broad|diff)").m)\t\(.createdAt)"' <<<"$convo" | tail -1)
-    IFS=$'\t' read -r cmd_id cmd_mode cmd_at <<<"$cmd"
+    markers=$(jq -rn --arg me "$ME" --argjson c "$comments" --argjson r "$reviews" '($c + $r)[]
+                 | select(.user.login == $me) | .body // "" | split("\n")[0]
+                 | select(startswith("<!-- concord-review:"))')
 
-    # A command runs once: it is done when its review posted, or when a review
+    # Commands from someone with a role on the repository, newest first. The
+    # newest one not yet done runs: done means its review posted, or a review
     # of this commit failed after it was asked.
-    if [ -n "$cmd" ] && ! grep -qF "cmd:$cmd_id" <<<"$markers" \
-        && ! { [ "$state" = error ] && [[ "$updated" > "$cmd_at" ]]; }; then
+    cmd_id=
+    while IFS=$'\t' read -r id cmd_mode at; do
+      [ -n "$id" ] || continue
+      grep -qF " cmd:$id -->" <<<"$markers" && continue
+      [ "$state" = error ] && [[ "$updated" > "$at" ]] && continue
+      cmd_id=$id; break
+    done < <(jq -r '[.[] | select(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR")
+                      | select(.body | test("@concord +(broad|diff)"))]
+                    | sort_by(.created_at) | reverse[]
+                    | "\(.id)\t\(.body | capture("@concord +(?<m>broad|diff)").m)\t\(.created_at)"' <<<"$comments")
+    if [ -n "$cmd_id" ]; then
       requested+=("$repo $num $sha $cmd_mode $cmd_id $title")
       continue
     fi
@@ -62,14 +72,13 @@ for repo in $REPOS; do
     # command starts the next one.
     [ "$state" = error ] && continue
     # This exact commit was already reviewed, automatically or on request.
-    if grep -qE "^<!-- concord-review: $sha( cmd:[0-9]+)? -->$" <<<"$markers"; then continue; fi
-    # The broad pass runs on the first review only; a PR carrying an earlier
-    # marker has had it, so later pushes get the diff-local pass alone.
-    if [ -n "$markers" ]; then mode='diff'; else mode='broad'; fi
+    if grep -qE "^<!-- concord-review: $sha mode:(broad|diff)( cmd:[0-9]+)? -->$" <<<"$markers"; then continue; fi
+    # The broad pass runs until one has completed on this pull request, then
+    # later pushes get the diff-local pass alone.
+    if grep -qF ' mode:broad' <<<"$markers"; then mode='diff'; else mode='broad'; fi
     automatic+=("$repo $num $sha $mode - $title")
-  done < <(gh pr list --repo "$repo" --state open --limit 100 --json number,headRefOid,isDraft,title,updatedAt |
-             jq -r --arg cutoff "$cutoff" \
-               '.[] | select(.isDraft | not) | select(.updatedAt > $cutoff) | "\(.number)\t\(.headRefOid)\t\(.title)"')
+  done < <(jq -r --arg cutoff "$cutoff" \
+             '.[] | select(.isDraft | not) | select(.updatedAt > $cutoff) | "\(.number)\t\(.headRefOid)\t\(.title)"' <<<"$prs")
 done
 
 started=0

@@ -20,16 +20,27 @@ if [ "$MODE" = broad ]; then
 else
   MODE_NOTE="reviewed: diff-local correctness only (the repo-wide gate already ran on an earlier commit of this PR)"
 fi
-MARKER="<!-- concord-review: $SHA${CMD_ID:+ cmd:$CMD_ID} -->"
+# The marker records the commit and the pass that ran, so the poller knows
+# whether this pull request has had its broad review.
+MARKER="<!-- concord-review: $SHA mode:$MODE${CMD_ID:+ cmd:$CMD_ID} -->"
 gh auth setup-git   # git itself does not read GH_TOKEN; the clone below needs the credential helper
 ME=$(gh api user --jq .login)   # whose reactions are ours to clear
 
-status() { gh api -X POST "repos/$REPO/statuses/$SHA" -f context=concord/review \
-             -f state="$1" -f description="$2" >/dev/null 2>&1 || true; }
+# Retried, because a status left pending makes the commit look under review.
+status() {
+  local attempt
+  for attempt in 1 2 3; do
+    gh api -X POST "repos/$REPO/statuses/$SHA" -f context=concord/review \
+      -f state="$1" -f description="$2" >/dev/null 2>&1 && return 0
+    sleep "$attempt"
+  done
+  return 1
+}
 
 # 🚀 on the comment that asked, so the asker knows it was picked up.
-[ -n "${CMD_ID:-}" ] && gh api -X POST "repos/$REPO/issues/comments/$CMD_ID/reactions" \
-  -f content=rocket >/dev/null 2>&1 || true
+if [ -n "${CMD_ID:-}" ]; then
+  gh api -X POST "repos/$REPO/issues/comments/$CMD_ID/reactions" -f content=rocket >/dev/null 2>&1 || true
+fi
 
 # Clear the previous review's verdict before this one starts. A reaction is one
 # per account per kind, so a 👍 left from an earlier commit is never overwritten
@@ -39,23 +50,23 @@ unreact() {
   local id
   id=$(gh api --paginate "repos/$REPO/issues/$PR/reactions" \
          --jq ".[] | select(.user.login == \"$ME\" and .content == \"$1\") | .id" | head -1 || true)
-  [ -n "$id" ] && gh api -X DELETE "repos/$REPO/issues/$PR/reactions/$id" >/dev/null 2>&1 || true
+  if [ -n "$id" ]; then gh api -X DELETE "repos/$REPO/issues/$PR/reactions/$id" >/dev/null 2>&1 || true; fi
 }
 unreact '+1'
 
 rid=$(gh api -X POST "repos/$REPO/issues/$PR/reactions" -f content=eyes --jq .id 2>/dev/null || true)
-work=$(mktemp -d); intent=$(mktemp); claude_config=$(mktemp -d); posted=
+work=$(mktemp -d); intent=$(mktemp); intent_full=$(mktemp); claude_config=$(mktemp -d); posted=
 # Runs on every exit -- success, a failed command under set -e, or a cancel
 # because a newer commit superseded this review. Only a posted review settles
 # the status; anything else leaves it in error rather than pending.
 finish() {
-  [ -n "$rid" ] && gh api -X DELETE "repos/$REPO/issues/$PR/reactions/$rid" >/dev/null 2>&1 || true
-  rm -rf "$work" "$intent" "$intent.full" "$claude_config"
-  [ -n "$posted" ] || status error "review did not complete"
+  if [ -n "$rid" ]; then gh api -X DELETE "repos/$REPO/issues/$PR/reactions/$rid" >/dev/null 2>&1 || true; fi
+  rm -rf "$work" "$intent" "$intent_full" "$claude_config"
+  [ -n "$posted" ] || status error "review did not complete" || true
 }
 trap finish EXIT
 trap 'exit 130' INT TERM
-status pending "reviewing ($MODE)"
+status pending "reviewing ($MODE)" || true
 
 # A full clone, so the merge base with the pull request's own base branch and
 # every blob the review reads are local: the engine runs without the token and
@@ -82,10 +93,10 @@ if [ "$MODE" = broad ]; then
           --jq '"\n\n## Closes \(.number): \(.title)\n\n\(.body)"' 2>/dev/null \
           || printf '\n\n## Closes %s#%s (not readable with the review token)\n' "$issue_repo" "$issue"
       done
-  } > "$intent.full"
+  } > "$intent_full"
   # Truncated after it is written: cutting the pipe would kill the writers
   # with SIGPIPE. The engine refuses intent over 256 KiB.
-  head -c 200000 "$intent.full" > "$intent"; rm -f "$intent.full"
+  head -c 200000 "$intent_full" > "$intent"
   INTENT_ARGS=(--intent-file "$intent")
 fi
 
@@ -149,7 +160,9 @@ review inline | gh api -X POST "repos/$REPO/pulls/$PR/reviews" --input - >/dev/n
 posted=1
 case "$n" in
   0) gh api -X POST "repos/$REPO/issues/$PR/reactions" -f content=+1 >/dev/null 2>&1 || true
-     status success "no issues found" ;;
-  1) status success "1 finding" ;;
-  *) status success "$n findings" ;;
+     verdict_status="no issues found" ;;
+  1) verdict_status="1 finding" ;;
+  *) verdict_status="$n findings" ;;
 esac
+# The review is posted; a status that cannot be settled fails the job visibly.
+status success "$verdict_status" || { echo "could not set the concord/review status for $REPO@$SHA" >&2; exit 1; }

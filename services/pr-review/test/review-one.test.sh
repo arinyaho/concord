@@ -9,7 +9,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="${1:-$HERE/../review-one.sh}"
 work=$(mktemp -d)
-trap '[ -n "${KEEP:-}" ] && echo "kept $work" || rm -rf "$work"' EXIT
+trap 'if [ -n "${KEEP:-}" ]; then echo "kept $work"; else rm -rf "$work"; fi' EXIT
 mkdir -p "$work/bin"
 
 # The reviewed repository: main, and a pull request head one commit ahead.
@@ -43,7 +43,11 @@ case "$*" in
   *"--json title,body"*) out '{"title":"Add a","body":"The PR body says a.txt must exist."}' ;;
   *"--json closingIssuesReferences"*) out '{"closingIssuesReferences":[{"number":5,"repository":{"name":"private","owner":{"login":"other"}}}]}' ;;
   "issue view "*) echo "HTTP 404" >&2; exit 1 ;;
-  *"/statuses/"*) all="$*"; state=${all#*state=}; echo "status ${state%% *}" >> "$LOG" ;;
+  *"/statuses/"*)
+    all="$*"; state=${all#*state=}; state=${state%% *}
+    # FLAKY_STATUS fails the first attempt to settle a final status.
+    if [ -n "${FLAKY_STATUS:-}" ] && [ "$state" != pending ] && [ ! -e "$LOG.flaked" ]; then touch "$LOG.flaked"; exit 1; fi
+    echo "status $state" >> "$LOG" ;;
   *"/pulls/1/reviews --input -") cat > "$LOG.review"; echo review >> "$LOG" ;;
   *"content=+1"*) echo "+1" >> "$LOG" ;;
   *"content=eyes"*) echo 1 ;;
@@ -77,6 +81,7 @@ run() {  # run <case> <engine result json>
 run clean '{"decision":"review-only","round":1,"findings":[]}'
 check "clean review is posted" 'grep -qx review "$LOG"'
 check "clean review settles the status to success" '[ "$(grep ^status "$LOG" | tail -1)" = "status success" ]'
+check "the marker records the commit and the mode that ran" '[ "$(jq -r .body "$LOG.review" | head -1)" = "<!-- concord-review: $SHA mode:broad -->" ]'
 check "clean review leaves a thumbs-up" 'grep -qx "+1" "$LOG"'
 check "an unreadable closing issue is named, not fatal" 'grep -q "other/private#5 (not readable" "$LOG.intent"'
 check "the reviewer runs with its own Claude configuration directory" '[ "$(cat "$LOG.config-dir")" != unset ] && [ "$(cat "$LOG.config-dir")" != "$HOME/.claude" ]'
@@ -90,5 +95,8 @@ check "a review quoting a credential ends in error" '[ "$(grep ^status "$LOG" | 
 run outside-diff '{"decision":"review-only","round":1,"findings":[{"id":"correctness:in","category":"correctness","file":"a.txt","line":1,"span":"change","summary":"in the diff","requirement":""},{"id":"gate:cross-context:out","category":"cross-context","file":"b.txt","line":2,"span":"two","summary":"unchanged file","requirement":""}]}'
 check "a finding on a changed line is posted inline" '[ "$(jq -c "[.comments[].path]" "$LOG.review")" = "[\"a.txt\"]" ]'
 check "a finding outside the diff goes in the body" 'jq -r .body "$LOG.review" | grep -q "b.txt:2"'
+
+FLAKY_STATUS=1 run flaky-status '{"decision":"review-only","round":1,"findings":[]}'
+check "a failed attempt to settle the status is retried" '[ "$(grep ^status "$LOG" | tail -1)" = "status success" ]'
 
 exit "$fail"

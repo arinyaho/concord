@@ -7,7 +7,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCAN="$HERE/../scan.sh"
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+trap 'if [ -n "${KEEP:-}" ]; then echo "kept $work"; else rm -rf "$work"; fi' EXIT
 mkdir -p "$work/bin"
 
 # The fake gh answers from fixture files under $FIXTURES/<owner_repo>/.
@@ -19,6 +19,7 @@ args=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --jq) jq_expr=$2; shift 2 ;;
+    --paginate) shift ;;
     *) args+=("$1"); shift ;;
   esac
 done
@@ -28,10 +29,14 @@ repo_dir() { echo "$FIXTURES/${1//\//_}"; }
 out() { if [ -n "$jq_expr" ]; then jq -r "$jq_expr" "$1"; else cat "$1"; fi; }
 case "$1 $2" in
   "api user") echo reviewbot ;;
-  "pr list") out "$(repo_dir "$4")/prs.json" ;;
-  "pr view") f="$(repo_dir "$5")/convo.json"; [ -f "$f" ] || { echo "HTTP 502" >&2; exit 1; }; out "$f" ;;
+  "pr list") f="$(repo_dir "$4")/prs.json"; [ -f "$f" ] || { echo "HTTP 401" >&2; exit 1; }; out "$f" ;;
   "workflow run"*) ;;
   "api -X POST repos/"*"/statuses/"*) ;;
+  "api repos/"*"/issues/"*"/comments")
+    path=${2#repos/}; f="$(repo_dir "${path%%/issues/*}")/comments.json"
+    [ -f "$f" ] || { echo "HTTP 502" >&2; exit 1; }; out "$f" ;;
+  "api repos/"*"/pulls/"*"/reviews")
+    path=${2#repos/}; f="$(repo_dir "${path%%/pulls/*}")/reviews.json"; out "$f" ;;
   "api repos/"*)
     path=${2#repos/}; repo=${path%%/commits/*}
     f="$(repo_dir "$repo")/status.json"
@@ -49,32 +54,37 @@ old=$(date -u -d "2 hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-2H 
 SHA=aaaaaaaa1111
 OTHER=bbbbbbbb2222
 
-# fixture <case> <convo json or "fail"> [status json]
+# fixture <case> <comments json array or "fail"> <reviews json array> [status json]
 fixture() {
   local d="$FIXTURES/o_$1"
   mkdir -p "$d"
   printf '[{"number":1,"headRefOid":"%s","isDraft":false,"title":"t","updatedAt":"%s"}]\n' "$SHA" "$now" > "$d/prs.json"
-  [ "$2" = fail ] || printf '%s\n' "$2" > "$d/convo.json"
-  [ -z "${3:-}" ] || printf '%s\n' "$3" > "$d/status.json"
+  [ "$2" = fail ] || printf '%s\n' "$2" > "$d/comments.json"
+  printf '%s\n' "$3" > "$d/reviews.json"
+  [ -z "${4:-}" ] || printf '%s\n' "$4" > "$d/status.json"
 }
-comment() { printf '{"author":{"login":"%s"},"authorAssociation":"%s","body":"%s","url":"https://x/pull/1#issuecomment-%s","createdAt":"%s"}' "$1" "$2" "$3" "$4" "${5:-$recent}"; }
-review() { printf '{"author":{"login":"%s"},"body":"%s"}' "$1" "$2"; }
+# REST shapes: issue comments and pull request reviews.
+comment() { printf '{"user":{"login":"%s"},"author_association":"%s","body":"%s","id":%s,"created_at":"%s"}' "$1" "$2" "$3" "$4" "${5:-$recent}"; }
+review() { printf '{"user":{"login":"%s"},"body":"%s"}' "$1" "$2"; }
 status() { printf '{"statuses":[{"context":"concord/review","state":"%s","updated_at":"%s"}]}' "$1" "$2"; }
+marker() { printf '<!-- concord-review: %s mode:%s%s -->' "$1" "$2" "${3:+ cmd:$3}"; }
 
-fixture fresh '{"comments":[],"reviews":[]}'
-fixture reviewed "{\"comments\":[],\"reviews\":[$(review reviewbot "<!-- concord-review: $SHA -->")]}"
-fixture reviewed-on-request "{\"comments\":[],\"reviews\":[$(review reviewbot "<!-- concord-review: $SHA cmd:7 -->")]}"
-fixture forged-marker "{\"comments\":[$(comment outsider NONE "<!-- concord-review: $SHA -->" 5)],\"reviews\":[]}"
-fixture pushed-again "{\"comments\":[],\"reviews\":[$(review reviewbot "<!-- concord-review: $OTHER -->")]}"
-fixture running '{"comments":[],"reviews":[]}' "$(status pending "$recent")"
-fixture died-running '{"comments":[],"reviews":[]}' "$(status pending "$old")"
-fixture failed '{"comments":[],"reviews":[]}' "$(status error "$recent")"
-fixture failed-then-asked "{\"comments\":[$(comment alice MEMBER "@concord diff" 9 "$recent")],\"reviews\":[]}" "$(status error "$earlier")"
-fixture asked-then-failed "{\"comments\":[$(comment alice MEMBER "@concord diff" 10 "$earlier")],\"reviews\":[]}" "$(status error "$recent")"
-fixture marker-quoted-in-body "{\"comments\":[],\"reviews\":[$(review reviewbot "<!-- concord-review: $OTHER -->\\n- finding text <!-- concord-review: $SHA -->")]}"
-fixture outsider-asks "{\"comments\":[$(comment outsider NONE "@concord broad" 11)],\"reviews\":[$(review reviewbot "<!-- concord-review: $SHA -->")]}"
-fixture member-asks "{\"comments\":[$(comment alice MEMBER "@concord broad" 12)],\"reviews\":[$(review reviewbot "<!-- concord-review: $SHA -->")]}"
-fixture fetch-fails fail
+fixture fresh '[]' '[]'
+fixture reviewed '[]' "[$(review reviewbot "$(marker "$SHA" broad)")]"
+fixture reviewed-on-request '[]' "[$(review reviewbot "$(marker "$SHA" diff 7)")]"
+fixture forged-marker "[$(comment outsider NONE "$(marker "$SHA" broad)" 5)]" '[]'
+fixture pushed-again '[]' "[$(review reviewbot "$(marker "$OTHER" broad)")]"
+fixture broad-never-ran '[]' "[$(review reviewbot "$(marker "$OTHER" diff 4)")]"
+fixture running '[]' '[]' "$(status pending "$recent")"
+fixture died-running '[]' '[]' "$(status pending "$old")"
+fixture failed '[]' '[]' "$(status error "$recent")"
+fixture failed-then-asked "[$(comment alice MEMBER "@concord diff" 9 "$recent")]" '[]' "$(status error "$earlier")"
+fixture asked-then-failed "[$(comment alice MEMBER "@concord diff" 10 "$earlier")]" '[]' "$(status error "$recent")"
+fixture marker-quoted-in-body '[]' "[$(review reviewbot "$(marker "$OTHER" broad)\\n- finding text $(marker "$SHA" broad)")]"
+fixture outsider-asks "[$(comment outsider NONE "@concord broad" 11)]" "[$(review reviewbot "$(marker "$SHA" broad)")]"
+fixture member-asks "[$(comment alice MEMBER "@concord broad" 12)]" "[$(review reviewbot "$(marker "$SHA" broad)")]"
+fixture older-command-pending "[$(comment alice MEMBER "@concord diff" 20 "$earlier"),$(comment bob MEMBER "@concord broad" 21 "$recent")]" "[$(review reviewbot "$(marker "$SHA" broad 21)")]"
+fixture fetch-fails fail '[]'
 
 expect=(
   "fresh:broad"
@@ -90,6 +100,8 @@ expect=(
   "marker-quoted-in-body:diff"
   "outsider-asks:"
   "member-asks:broad"
+  "broad-never-ran:broad"
+  "older-command-pending:diff"
   "fetch-fails:"
 )
 
@@ -101,6 +113,10 @@ for e in "${expect[@]}"; do
   if [ "$got" = "$want" ]; then echo "ok   $name"; else echo "FAIL $name: want '${want:-no dispatch}', got '${got:-no dispatch}'"; fail=1; fi
 done
 
+# A poll that cannot list a repository's pull requests fails instead of reporting nothing to do.
+if PATH="$work/bin:$PATH" REPOS="o/no-such-repo" SELF=o/self GH_TOKEN=x SELF_TOKEN=x DRY_RUN=1 bash "$SCAN" >/dev/null 2>&1; then
+  echo "FAIL a failed pull request listing fails the poll"; fail=1; else echo "ok   a failed pull request listing fails the poll"; fi
+
 scan() { PATH="$work/bin:$PATH" SELF=o/self GH_TOKEN=x SELF_TOKEN=x DRY_RUN=1 "$@" bash "$SCAN" 2>/dev/null | sed -n 's/^dispatch (\([a-z]*\), \([a-z]*\)): o\/\([a-z-]*\)#.*/\3:\1:\2/p'; }
 got=$(scan env REPOS="o/fresh o/member-asks" MAX_PER_RUN=1)
 if [ "$got" = "member-asks:broad:requested" ]; then echo "ok   a requested review goes before an automatic one"; else echo "FAIL a requested review goes before an automatic one: $got"; fail=1; fi
@@ -110,7 +126,7 @@ if [ "$got" = "member-asks:broad:requested" ]; then echo "ok   manual mode dispa
 # One poll reads each pull request's conversation once, however many passes it makes.
 : > "$FIXTURES/calls.log"
 PATH="$work/bin:$PATH" REPOS="o/fresh" SELF=o/self GH_TOKEN=x SELF_TOKEN=x DRY_RUN=1 bash "$SCAN" >/dev/null 2>&1
-n=$(grep -c "^pr view" "$FIXTURES/calls.log" || true)
+n=$(grep -c "/issues/1/comments" "$FIXTURES/calls.log" || true)
 if [ "$n" = 1 ]; then echo "ok   one conversation read per pull request"; else echo "FAIL one conversation read per pull request: $n"; fail=1; fi
 
 # A dispatched review is marked pending at once, so a run still queued is not dispatched again.

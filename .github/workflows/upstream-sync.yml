@@ -19,12 +19,15 @@ jobs:
           token: ${{ secrets.SYNC_TOKEN }}
       # Follows the newest release, the last upstream commit that changed
       # VERSION, so unreleased work never runs with this copy's secrets. A
-      # fast-forward only: a copy carrying its own commits fails here loudly
-      # instead of merging.
+      # fast-forward only: a copy carrying commits past the release, its own or
+      # unreleased upstream ones, fails here loudly instead of merging.
       - run: |
           git fetch --no-tags "https://github.com/$UPSTREAM_REPO.git" main
           release=$(git log -1 --format=%H FETCH_HEAD -- VERSION)
-          if git merge-base --is-ancestor "$release" HEAD; then echo "already at or past $release"; exit 0; fi
+          if [ "$(git rev-parse HEAD)" = "$release" ]; then echo "already at $release"; exit 0; fi
+          if git merge-base --is-ancestor "$release" HEAD; then
+            echo "::error::main is past the release $release; reset it to the release" >&2; exit 1
+          fi
           git merge --ff-only "$release"
           git push origin HEAD:main
         env:
