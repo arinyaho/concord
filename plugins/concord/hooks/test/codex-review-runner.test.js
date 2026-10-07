@@ -2624,11 +2624,11 @@ test('reviewOnly keeps its round out of the persistent review ledger', async () 
   assert.ok(!fs.existsSync(seen[0]), 'the isolated state is removed when the run ends');
 });
 
-for (const reviewer of ['codex', 'copilot']) test(`reviewOnly refuses the ${reviewer} reviewer, which cannot be kept from an untrusted checkout's configuration`, async () => {
+for (const reviewer of ['copilot']) test(`reviewOnly refuses the ${reviewer} reviewer, which cannot be kept from an untrusted checkout's configuration`, async () => {
   const h = harness();
   await assert.rejects(
     runReviewUntilGreen({ ref: 'feature/untrusted-reviewer', base: 'main', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn, reviewOnly: true, reviewer }),
-    /reviewOnly supports only the claude reviewer/,
+    /reviewOnly supports the claude and codex reviewers/,
   );
   assert.deepStrictEqual(h.calls, [], 'nothing starts before the refusal');
 });
@@ -2660,4 +2660,49 @@ test('reviewOnly refuses resume, which has no ledger to recover the base from', 
     /reviewOnly cannot resume/,
   );
   assert.deepStrictEqual(h.calls, []);
+});
+
+test('codexExec keeps AGENTS.md and project rules out of a Codex reviewer on an untrusted checkout', async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  const capture = path.join(binDir, 'args.json');
+  fs.writeFileSync(codex, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(capture)}, JSON.stringify(process.argv.slice(2)));\n`);
+  fs.chmodSync(codex, 0o755);
+  await codexExec({ role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir, untrustedCheckout: true, codexExecutable: { command: codex, version: 'codex-cli 0.154.0' } });
+  const args = JSON.parse(fs.readFileSync(capture, 'utf8'));
+  assert.ok(args.includes('project_doc_max_bytes=0'), `args: ${args.join(' ')}`);
+  assert.ok(args.includes('--ignore-rules'));
+});
+
+test('reviewOnly runs a Codex reviewer from its own CODEX_HOME, which marks the checkout untrusted before Codex can trust it', async () => {
+  const sourceHome = temp();
+  fs.writeFileSync(path.join(sourceHome, 'auth.json'), '{"OPENAI_API_KEY":"sk-test"}');
+  fs.writeFileSync(path.join(sourceHome, 'config.toml'), '[mcp_servers.user]\ncommand = "user-tool"\n');
+  const repo = cleanRepo();
+  const h = harness();
+  const seen = [];
+  const cli = (args) => (args[0] === 'findings' ? { findings: [] } : h.cli(args));
+  const spawn = (input) => {
+    const home = input.env && input.env.CODEX_HOME;
+    seen.push({ role: input.role, untrusted: input.untrustedCheckout, home,
+      config: home && fs.readFileSync(path.join(home, 'config.toml'), 'utf8'),
+      auth: home && fs.readFileSync(path.join(home, 'auth.json'), 'utf8') });
+    return h.spawn(input);
+  };
+  const previous = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = sourceHome;
+  try {
+    await runReviewUntilGreen({ ref: 'feature/codex', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'codex', noBroad: true });
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous;
+  }
+  assert.ok(seen.length);
+  for (const launch of seen) {
+    assert.strictEqual(launch.untrusted, true);
+    assert.ok(launch.home && launch.home !== sourceHome, `${launch.role} ran from its own CODEX_HOME`);
+    assert.ok(launch.config.includes(`[projects.${JSON.stringify(fs.realpathSync(repo))}]\ntrust_level = "untrusted"`), launch.config);
+    assert.ok(!launch.config.includes('mcp_servers'), 'the account\'s own Codex configuration stays out');
+    assert.strictEqual(launch.auth, '{"OPENAI_API_KEY":"sk-test"}');
+  }
+  assert.ok(!fs.existsSync(seen[0].home), 'the review-only CODEX_HOME is removed when the run ends');
 });

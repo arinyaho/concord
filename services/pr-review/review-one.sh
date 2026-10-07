@@ -7,8 +7,12 @@ set -euo pipefail
 
 : "${GH_TOKEN:?REVIEW_PAT is not set}"
 : "${REPO:?}" "${PR:?}" "${SHA:?}" "${MODE:?}"
-# Claude is the only reviewer the engine can keep from the checkout's own configuration.
-: "${CLAUDE_CODE_OAUTH_TOKEN:?not set}"
+REVIEWER="${REVIEWER:-claude}"
+case "$REVIEWER" in
+  claude) : "${CLAUDE_CODE_OAUTH_TOKEN:?not set}" ;;
+  codex) : "${OPENAI_API_KEY:?not set}" ;;   # the workflow logs Codex in with it before this runs
+  *) echo "REVIEWER must be claude or codex, got $REVIEWER" >&2; exit 1 ;;
+esac
 case "$MODE" in broad) BROAD=--broad ;; diff) BROAD=--no-broad ;; *) echo "MODE must be broad or diff" >&2; exit 1 ;; esac
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ENGINE="$ROOT/plugins/concord-codex/bin/review-and-fix.js"
@@ -16,9 +20,9 @@ ENGINE="$ROOT/plugins/concord-codex/bin/review-and-fix.js"
 # Fixed per mode, not left to the reviewer to restate -- so it reads the same
 # on every review and can't drift from what the mode actually does.
 if [ "$MODE" = broad ]; then
-  MODE_NOTE="reviewed: diff-local correctness + repo-wide gate (ac-coverage, design-conformance, cross-context, silent-gap, threat-model)"
+  MODE_NOTE="reviewed by $REVIEWER: diff-local correctness + repo-wide gate (ac-coverage, design-conformance, cross-context, silent-gap, threat-model)"
 else
-  MODE_NOTE="reviewed: diff-local correctness only (the repo-wide gate already ran on an earlier commit of this PR)"
+  MODE_NOTE="reviewed by $REVIEWER: diff-local correctness only (the repo-wide gate already ran on an earlier commit of this PR)"
 fi
 # The marker records the commit and the pass that ran, so the poller knows
 # whether this pull request has had its broad review.
@@ -66,7 +70,7 @@ finish() {
 }
 trap finish EXIT
 trap 'exit 130' INT TERM
-status pending "reviewing ($MODE)" || true
+status pending "reviewing ($MODE, $REVIEWER)" || true
 
 # A full clone, so the merge base with the pull request's own base branch and
 # every blob the review reads are local: the engine runs without the token and
@@ -104,9 +108,11 @@ fi
 # this script talks to GitHub. The engine treats the checkout as untrusted and
 # keeps the round in a throwaway state directory. An empty Claude configuration
 # directory keeps the runner account's own allow-lists, hooks, MCP servers, and
-# plugins away from the reviewer; the OAuth token still comes from the environment.
-result=$(cd "$work" && env -u GH_TOKEN -u GITHUB_TOKEN CLAUDE_CONFIG_DIR="$claude_config" \
-  node "$ENGINE" "concord-pr-$PR" "$BASE" --review-only "$BROAD" --reviewer claude ${INTENT_ARGS[@]+"${INTENT_ARGS[@]}"} \
+# plugins away from a Claude reviewer; its OAuth token still comes from the
+# environment. A Codex reviewer gets a CODEX_HOME of its own from the engine,
+# holding only the login, and never sees the API key itself.
+result=$(cd "$work" && env -u GH_TOKEN -u GITHUB_TOKEN -u OPENAI_API_KEY CLAUDE_CONFIG_DIR="$claude_config" \
+  node "$ENGINE" "concord-pr-$PR" "$BASE" --review-only "$BROAD" --reviewer "$REVIEWER" ${INTENT_ARGS[@]+"${INTENT_ARGS[@]}"} \
     ${REVIEW_MODEL:+--reviewer-model "$REVIEW_MODEL"} \
   | tail -1) || result=''
 
@@ -116,8 +122,8 @@ if ! jq -e '.decision == "review-only" and (.findings | type == "array")' <<<"$r
 fi
 # The findings are model output from a model that read untrusted files, so it
 # can be led to quote a credential it can read. Never post one.
-for secret in "$CLAUDE_CODE_OAUTH_TOKEN" "$GH_TOKEN"; do
-  if grep -qF -- "$secret" <<<"$result"; then
+for secret in "$GH_TOKEN" "${CLAUDE_CODE_OAUTH_TOKEN:-}" "${OPENAI_API_KEY:-}"; do
+  if [ -n "$secret" ] && grep -qF -- "$secret" <<<"$result"; then
     echo "review of $REPO#$PR quoted a credential; nothing was posted" >&2
     exit 1
   fi

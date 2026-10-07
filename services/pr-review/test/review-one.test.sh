@@ -60,6 +60,8 @@ cat > "$work/bin/node" <<'EOF'
 # Stands in for the review engine: keeps the intent it was given and the
 # configuration directory it would run Claude with, prints the result.
 printf '%s\n' "${CLAUDE_CONFIG_DIR:-unset}" > "$LOG.config-dir"
+printf '%s\n' "$*" > "$LOG.args"
+printf '%s\n' "${OPENAI_API_KEY:-unset}" > "$LOG.openai-key"
 ls -A "${CLAUDE_CONFIG_DIR:-/nonexistent}" > "$LOG.config-files" 2>&1 || true
 while [ $# -gt 0 ]; do
   [ "$1" = --intent-file ] && cp "$2" "$LOG.intent"
@@ -74,7 +76,7 @@ check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
 run() {  # run <case> <engine result json>
   export LOG="$work/$1.log"; : > "$LOG"
   PATH="$work/bin:$PATH" UPSTREAM="$repo" ENGINE_RESULT="$2" REPO=o/r PR=1 SHA="$SHA" MODE=broad \
-    GH_TOKEN=review-pat-secret CLAUDE_CODE_OAUTH_TOKEN=model-token-secret \
+    GH_TOKEN=review-pat-secret CLAUDE_CODE_OAUTH_TOKEN=model-token-secret OPENAI_API_KEY=openai-key-secret \
     bash "$SCRIPT" >"$LOG.out" 2>&1 || true
 }
 
@@ -98,5 +100,10 @@ check "a finding outside the diff goes in the body" 'jq -r .body "$LOG.review" |
 
 FLAKY_STATUS=1 run flaky-status '{"decision":"review-only","round":1,"findings":[]}'
 check "a failed attempt to settle the status is retried" '[ "$(grep ^status "$LOG" | tail -1)" = "status success" ]'
+
+REVIEWER=codex run codex-leak '{"decision":"review-only","round":1,"findings":[{"id":"correctness:x","category":"correctness","file":"a.txt","line":1,"span":"change","summary":"key is openai-key-secret","requirement":""}]}'
+check "the codex reviewer is passed to the engine" 'grep -q -- "--reviewer codex" "$LOG.args"'
+check "the codex reviewer does not receive the API key" '[ "$(cat "$LOG.openai-key")" = unset ]'
+check "a review quoting the OpenAI key is not posted" '! grep -qx review "$LOG"'
 
 exit "$fail"
