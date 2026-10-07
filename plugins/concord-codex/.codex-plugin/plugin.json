@@ -5,6 +5,11 @@
   "author": {
     "name": "arinyaho"
   },
+  "homepage": "https://github.com/arinyaho/concord",
+  "repository": "https://github.com/arinyaho/concord",
+  "interface": {
+    "websiteURL": "https://github.com/arinyaho/concord"
+  },
   "license": "MIT",
   "keywords": [
     "review",
