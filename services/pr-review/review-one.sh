@@ -61,9 +61,10 @@ trap finish EXIT
 trap 'exit 130' INT TERM
 status pending "reviewing ($MODE, $REVIEWER)"
 
-# The full history, without file contents until they are read, so the merge
-# base with the pull request's own base branch is always reachable.
-gh repo clone "$REPO" "$work" -- --filter=blob:none --quiet
+# A full clone, so the merge base with the pull request's own base branch and
+# every blob the review reads are local: the engine runs without the token and
+# cannot fetch anything later.
+gh repo clone "$REPO" "$work" -- --quiet
 git -C "$work" fetch --quiet origin "pull/$PR/head"
 # Review exactly the dispatched commit, even if the branch moved since.
 git -C "$work" checkout -q -B "concord-pr-$PR" "$SHA"
