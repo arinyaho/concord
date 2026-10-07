@@ -7,6 +7,13 @@ set -euo pipefail
 
 : "${GH_TOKEN:?REVIEW_PAT is not set}"
 : "${REPO:?}" "${PR:?}" "${SHA:?}" "${MODE:?}"
+# A dispatch names any repository, but the review token may reach more than
+# the configured ones, so only those are reviewed.
+: "${REVIEW_REPOS:?set REVIEW_REPOS to the repositories this copy reviews}"
+case " $REVIEW_REPOS " in
+  *" $REPO "*) ;;
+  *) echo "$REPO is not in REVIEW_REPOS" >&2; exit 1 ;;
+esac
 REVIEWER="${REVIEWER:-claude}"
 case "$REVIEWER" in
   claude) : "${CLAUDE_CODE_OAUTH_TOKEN:?not set}" ;;
@@ -31,13 +38,12 @@ gh auth setup-git   # git itself does not read GH_TOKEN; the clone below needs t
 ME=$(gh api user --jq .login)   # whose reactions are ours to clear
 
 # Retried, because a status left pending makes the commit look under review.
-# The description names the pull request and the command: other pull requests
-# can share the commit, and the poller ties a failure to the command it ran for.
+# The context names the pull request, since other pull requests can share the commit.
 status() {
   local attempt
   for attempt in 1 2 3; do
-    gh api -X POST "repos/$REPO/statuses/$SHA" -f context=concord/review \
-      -f state="$1" -f description="$2 (#$PR${CMD_ID:+ cmd:$CMD_ID})" >/dev/null 2>&1 && return 0
+    gh api -X POST "repos/$REPO/statuses/$SHA" -f "context=concord/review (#$PR)" \
+      -f state="$1" -f description="$2" >/dev/null 2>&1 && return 0
     sleep "$attempt"
   done
   return 1
@@ -68,7 +74,14 @@ work=$(mktemp -d); intent=$(mktemp); intent_full=$(mktemp); claude_config=$(mkte
 finish() {
   if [ -n "$rid" ]; then gh api -X DELETE "repos/$REPO/issues/$PR/reactions/$rid" >/dev/null 2>&1 || true; fi
   rm -rf "$work" "$intent" "$intent_full" "$claude_config"
-  [ -n "$posted" ] || status error "review did not complete" || true
+  [ -n "$posted" ] && return
+  status error "review did not complete" || true
+  # A requested review that fails is marked done, so the poller does not run
+  # the same command again on every poll or after the next push.
+  if [ -n "${CMD_ID:-}" ]; then
+    gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="<!-- concord-review-failed: $SHA cmd:$CMD_ID -->
+The review requested in https://github.com/$REPO/pull/$PR#issuecomment-$CMD_ID did not complete. Comment the command again to retry." >/dev/null 2>&1 || true
+  fi
 }
 trap finish EXIT
 trap 'exit 130' INT TERM

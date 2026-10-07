@@ -1,4 +1,6 @@
 name: pr-review
+# scan.sh reads this name to tell which reviews are queued or running.
+run-name: review ${{ inputs.repo }}#${{ inputs.pr }} @ ${{ inputs.sha }}
 on:
   workflow_dispatch:
     inputs:
@@ -22,7 +24,8 @@ jobs:
   review:
     if: vars.REVIEW_REPOS != ''
     runs-on: ${{ fromJSON(vars.REVIEW_RUNNER || '"ubuntu-latest"') }}
-    timeout-minutes: 60
+    # Two reviewer phases run one after the other, each allowed 30 minutes.
+    timeout-minutes: 90
     env:
       # A reviewer named in the @concord comment wins over the copy's default.
       REVIEWER: ${{ inputs.reviewer || vars.REVIEW_REVIEWER || 'claude' }}
@@ -38,12 +41,18 @@ jobs:
       - if: env.REVIEWER == 'codex'
         run: |
           npm install -g @openai/codex
+          # Log in under RUNNER_TEMP, which the runner empties after every job,
+          # so the API key does not stay on a self-hosted runner.
+          export CODEX_HOME="$RUNNER_TEMP/codex-home"
+          mkdir -p "$CODEX_HOME"
+          echo "CODEX_HOME=$CODEX_HOME" >> "$GITHUB_ENV"
           printenv OPENAI_API_KEY | codex login --with-api-key
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       - run: services/pr-review/review-one.sh
         env:
           REPO: ${{ inputs.repo }}
+          REVIEW_REPOS: ${{ vars.REVIEW_REPOS }}
           PR: ${{ inputs.pr }}
           SHA: ${{ inputs.sha }}
           MODE: ${{ inputs.mode }}

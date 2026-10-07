@@ -31,6 +31,7 @@ case "$1 $2" in
   "api user") echo reviewbot ;;
   "pr list") f="$(repo_dir "$4")/prs.json"; [ -f "$f" ] || { echo "HTTP 401" >&2; exit 1; }; out "$f" ;;
   "workflow run"*) ;;
+  "run list") f="$FIXTURES/runs.json"; [ -e "$FIXTURES/runs.fail" ] && { echo "HTTP 502" >&2; exit 1; }; out "$f" ;;
   "api -X POST repos/"*"/statuses/"*) ;;
   "api repos/"*"/issues/"*"/comments")
     path=${2#repos/}; f="$(repo_dir "${path%%/issues/*}")/comments.json"
@@ -51,7 +52,6 @@ export FIXTURES="$work/fixtures"
 now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 recent=$(date -u -d "10 minutes ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-10M +%Y-%m-%dT%H:%M:%SZ)
 earlier=$(date -u -d "20 minutes ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-20M +%Y-%m-%dT%H:%M:%SZ)
-old=$(date -u -d "2 hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-2H +%Y-%m-%dT%H:%M:%SZ)
 SHA=aaaaaaaa1111
 OTHER=bbbbbbbb2222
 
@@ -67,8 +67,9 @@ fixture() {
 # REST shapes: issue comments and pull request reviews.
 comment() { printf '{"user":{"login":"%s"},"author_association":"%s","body":"%s","id":%s,"created_at":"%s"}' "$1" "$2" "$3" "$4" "${5:-$recent}"; }
 review() { printf '{"user":{"login":"%s"},"body":"%s"}' "$1" "$2"; }
-# status <state> <updated_at> [description suffix, default "(#1)"]
-status() { printf '{"statuses":[{"context":"concord/review","state":"%s","updated_at":"%s","description":"review %s"}]}' "$1" "$2" "${3:-(#1)}"; }
+# status <state> [pull request number, default 1]: the context is per pull request.
+status() { printf '{"statuses":[{"context":"concord/review (#%s)","state":"%s","updated_at":"%s"}]}' "${2:-1}" "$1" "$recent"; }
+failed_marker() { printf '<!-- concord-review-failed: %s cmd:%s -->' "$1" "$2"; }
 marker() { printf '<!-- concord-review: %s mode:%s%s -->' "$1" "$2" "${3:+ cmd:$3}"; }
 
 fixture fresh '[]' '[]'
@@ -77,14 +78,15 @@ fixture reviewed-on-request '[]' "[$(review reviewbot "$(marker "$SHA" diff 7)")
 fixture forged-marker "[$(comment outsider NONE "$(marker "$SHA" broad)" 5)]" '[]'
 fixture pushed-again '[]' "[$(review reviewbot "$(marker "$OTHER" broad)")]"
 fixture broad-never-ran '[]' "[$(review reviewbot "$(marker "$OTHER" diff 4)")]"
-fixture running '[]' '[]' "$(status pending "$recent")"
-fixture died-running '[]' '[]' "$(status pending "$old")"
-fixture failed '[]' '[]' "$(status error "$recent")"
-fixture failed-then-asked "[$(comment alice MEMBER "@concord diff" 9 "$recent")]" '[]' "$(status error "$earlier")"
-fixture asked-then-failed "[$(comment alice MEMBER "@concord diff" 10 "$earlier")]" '[]' "$(status error "$recent" "(#1 cmd:10)")"
-fixture other-failure-after-ask "[$(comment alice MEMBER "@concord diff" 13 "$earlier")]" '[]' "$(status error "$recent")"
-fixture failed-other-pr '[]' '[]' "$(status error "$recent" "(#2)")"
-fixture running-other-pr '[]' '[]' "$(status pending "$recent" "(#2)")"
+fixture running '[]' '[]' "$(status pending)"
+fixture died-running '[]' '[]' "$(status pending)"
+fixture running-other-pr '[]' '[]'
+fixture failed '[]' '[]' "$(status error)"
+fixture failed-then-asked "[$(comment alice MEMBER "@concord diff" 9 "$recent")]" '[]' "$(status error)"
+fixture asked-then-failed "[$(comment alice MEMBER "@concord diff" 10 "$earlier"),$(comment reviewbot NONE "$(failed_marker "$SHA" 10)" 99)]" '[]' "$(status error)"
+fixture other-failure-after-ask "[$(comment alice MEMBER "@concord diff" 13 "$earlier")]" '[]' "$(status error)"
+fixture command-failed-before-push "[$(comment alice MEMBER "@concord diff" 15 "$earlier"),$(comment reviewbot NONE "$(failed_marker "$OTHER" 15)" 98)]" '[]'
+fixture failed-other-pr '[]' '[]' "$(status error 2)"
 fixture status-lookup-fails '[]' '[]'
 touch "$FIXTURES/o_status-lookup-fails/status.fail"
 fixture command-word-prefix "[$(comment alice MEMBER "@concord difference of opinion" 14)]" "[$(review reviewbot "$(marker "$SHA" broad)")]"
@@ -96,6 +98,9 @@ fixture asks-codex "[$(comment alice MEMBER "@concord broad codex" 30)]" "[$(rev
 fixture asks-claude "[$(comment alice MEMBER "@concord diff claude" 31)]" "[$(review reviewbot "$(marker "$SHA" broad)")]"
 fixture asks-unknown-reviewer "[$(comment alice MEMBER "@concord diff gpt" 32)]" "[$(review reviewbot "$(marker "$SHA" broad)")]"
 fixture fetch-fails fail '[]'
+
+# Actions runs of pr-review.yml still queued or in progress, named by run-name.
+printf '[{"status":"queued","displayTitle":"review o/running#1 @ %s"},{"status":"in_progress","displayTitle":"review o/running-other-pr#2 @ %s"},{"status":"completed","displayTitle":"review o/died-running#1 @ %s"}]\n' "$SHA" "$SHA" "$SHA" > "$FIXTURES/runs.json"
 
 expect=(
   "fresh:broad"
@@ -111,6 +116,7 @@ expect=(
   "other-failure-after-ask:diff"
   "failed-other-pr:broad"
   "running-other-pr:broad"
+  "command-failed-before-push:broad"
   "status-lookup-fails:"
   "command-word-prefix:"
   "marker-quoted-in-body:diff"
@@ -132,6 +138,12 @@ done
 # A poll that cannot list a repository's pull requests fails instead of reporting nothing to do.
 if PATH="$work/bin:$PATH" REPOS="o/no-such-repo" SELF=o/self GH_TOKEN=x SELF_TOKEN=x DRY_RUN=1 bash "$SCAN" >/dev/null 2>&1; then
   echo "FAIL a failed pull request listing fails the poll"; fail=1; else echo "ok   a failed pull request listing fails the poll"; fi
+
+# Without the list of active review runs there is no telling what is in flight.
+touch "$FIXTURES/runs.fail"
+if PATH="$work/bin:$PATH" REPOS="o/fresh" SELF=o/self GH_TOKEN=x SELF_TOKEN=x DRY_RUN=1 bash "$SCAN" >/dev/null 2>&1; then
+  echo "FAIL a failed run listing fails the poll"; fail=1; else echo "ok   a failed run listing fails the poll"; fi
+rm "$FIXTURES/runs.fail"
 
 scan() { PATH="$work/bin:$PATH" SELF=o/self GH_TOKEN=x SELF_TOKEN=x DRY_RUN=1 "$@" bash "$SCAN" 2>/dev/null | sed -n 's/^dispatch (\([a-z]*\), \([a-z]*\), \([a-z]*\)): o\/\([a-z-]*\)#.*/\4:\1:\2:\3/p'; }
 got=$(scan env REPOS="o/fresh o/member-asks" MAX_PER_RUN=1)
@@ -158,7 +170,7 @@ if [ "$n" = 1 ]; then echo "ok   one conversation read per pull request"; else e
 # A dispatched review is marked pending at once, so a run still queued is not dispatched again.
 : > "$FIXTURES/calls.log"
 PATH="$work/bin:$PATH" REPOS="o/fresh" SELF=o/self GH_TOKEN=x SELF_TOKEN=x bash "$SCAN" >/dev/null 2>&1
-if grep -q "^api -X POST repos/o/fresh/statuses/$SHA .*state=pending" "$FIXTURES/calls.log" && grep -q "^workflow run" "$FIXTURES/calls.log"; then
+if grep -q "^api -X POST repos/o/fresh/statuses/$SHA -f context=concord/review (#1) .*state=pending" "$FIXTURES/calls.log" && grep -q "^workflow run" "$FIXTURES/calls.log"; then
   echo "ok   a dispatch marks the commit pending"; else echo "FAIL a dispatch marks the commit pending"; fail=1; fi
 
 exit "$fail"

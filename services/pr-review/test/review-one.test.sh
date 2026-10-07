@@ -47,7 +47,9 @@ case "$*" in
     all="$*"; state=${all#*state=}; state=${state%% *}
     # FLAKY_STATUS fails the first attempt to settle a final status.
     if [ -n "${FLAKY_STATUS:-}" ] && [ "$state" != pending ] && [ ! -e "$LOG.flaked" ]; then touch "$LOG.flaked"; exit 1; fi
-    echo "status $state" >> "$LOG"; echo "${all#*description=}" >> "$LOG.descriptions" ;;
+    context=${all#*context=}; echo "${context%% -f *}" >> "$LOG.contexts"
+    echo "status $state" >> "$LOG" ;;
+  *"/issues/1/comments -f body="*) all="$*"; printf '%s\n' "${all#*body=}" > "$LOG.comment"; echo comment >> "$LOG" ;;
   *"/pulls/1/reviews --input -") cat > "$LOG.review"; echo review >> "$LOG" ;;
   *"content=+1"*) echo "+1" >> "$LOG" ;;
   *"content=eyes"*) echo 1 ;;
@@ -77,6 +79,7 @@ run() {  # run <case> <engine result json>
   export LOG="$work/$1.log"; : > "$LOG"
   PATH="$work/bin:$PATH" UPSTREAM="$repo" ENGINE_RESULT="$2" REPO=o/r PR=1 SHA="$SHA" MODE=broad \
     GH_TOKEN=review-pat-secret CLAUDE_CODE_OAUTH_TOKEN=model-token-secret OPENAI_API_KEY=openai-key-secret \
+    REVIEW_REPOS="${REVIEW_REPOS-o/other o/r}" \
     bash "$SCRIPT" >"$LOG.out" 2>&1 || true
 }
 
@@ -107,6 +110,12 @@ check "the codex reviewer does not receive the API key" '[ "$(cat "$LOG.openai-k
 check "a review quoting the OpenAI key is not posted" '! grep -qx review "$LOG"'
 
 CMD_ID=42 run requested '{"decision":"review-only","round":1,"findings":[]}'
-check "every status names the pull request and the command it ran for" '[ -s "$LOG.descriptions" ] && ! grep -v "(#1 cmd:42)$" "$LOG.descriptions"'
+check "every status uses the pull request's own context" '[ -s "$LOG.contexts" ] && ! grep -vx "concord/review (#1)" "$LOG.contexts"'
+
+CMD_ID=42 run requested-fails '{"decision":"review-only","round":1,"findings":[{"id":"correctness:x","category":"correctness","file":"a.txt","line":1,"span":"change","summary":"model-token-secret","requirement":""}]}'
+check "a failed requested review leaves a marker naming the command" '[ "$(head -1 "$LOG.comment")" = "<!-- concord-review-failed: $SHA cmd:42 -->" ]'
+
+REVIEW_REPOS="o/other" run outside-repos '{"decision":"review-only","round":1,"findings":[]}'
+check "a repository outside REVIEW_REPOS is not touched" '[ ! -s "$LOG" ] && [ ! -e "$LOG.args" ]'
 
 exit "$fail"
