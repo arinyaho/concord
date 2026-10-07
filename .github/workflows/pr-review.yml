@@ -22,8 +22,6 @@ jobs:
     if: vars.REVIEW_REPOS != ''
     runs-on: ${{ fromJSON(vars.REVIEW_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 60
-    env:
-      REVIEWER: ${{ vars.REVIEW_REVIEWER || 'claude' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -31,14 +29,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - if: env.REVIEWER == 'claude'
-        run: npm install -g @anthropic-ai/claude-code
-      - if: env.REVIEWER == 'codex'
-        run: |
-          npm install -g @openai/codex
-          printenv OPENAI_API_KEY | codex login --with-api-key
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      - run: npm install -g @anthropic-ai/claude-code
       - run: services/pr-review/review-one.sh
         env:
           REPO: ${{ inputs.repo }}
@@ -47,6 +38,5 @@ jobs:
           MODE: ${{ inputs.mode }}
           CMD_ID: ${{ inputs.cmd_id }}
           REVIEW_MODEL: ${{ vars.REVIEW_MODEL }}
-          REVIEW_EFFORT: ${{ vars.REVIEW_EFFORT }}
           GH_TOKEN: ${{ secrets.REVIEW_PAT }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

@@ -24,6 +24,8 @@ cutoff=$(date -u -d "${STALE_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
 # pr-review.yml's job timeout is 60 minutes.
 running_cutoff=$(date -u -d "60 minutes ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
       || date -u -v-60M +%Y-%m-%dT%H:%M:%SZ)
+# Only markers this account posted count: anyone can write the same text in a comment.
+ME=$(gh api user --jq .login)
 started=0
 
 for phase in $PHASES; do
@@ -33,12 +35,14 @@ for repo in $REPOS; do
 
     # A review of this commit is still running. Dispatching it again would
     # cancel that run, and a review longer than the poll interval never posts.
-    running=$(gh api "repos/$repo/commits/$sha/status" \
-      --jq '[.statuses[] | select(.context == "concord/review")][0] | select(.state == "pending") | .updated_at' 2>/dev/null || true)
-    if [ -n "$running" ] && [[ "$running" > "$running_cutoff" ]]; then continue; fi
+    review_status=$(gh api "repos/$repo/commits/$sha/status" \
+      --jq '[.statuses[] | select(.context == "concord/review")][0] | "\(.state) \(.updated_at)"' 2>/dev/null || true)
+    state=${review_status%% *}; updated=${review_status#* }
+    if [ "$state" = pending ] && [[ "$updated" > "$running_cutoff" ]]; then continue; fi
 
-    convo=$(gh pr view "$num" --repo "$repo" --json comments,reviews 2>/dev/null || echo '{}')
-    bodies=$(jq -r '(.comments // [])[].body, (.reviews // [])[].body' <<<"$convo")
+    # Without the conversation there is no telling whether this commit was reviewed.
+    convo=$(gh pr view "$num" --repo "$repo" --json comments,reviews 2>/dev/null) || continue
+    bodies=$(jq -r --arg me "$ME" '((.comments // []) + (.reviews // []))[] | select(.author.login == $me) | .body' <<<"$convo")
     # A review costs money, so only someone with a role on the repository asks for one.
     cmd=$(jq -r '(.comments // [])[]
                  | select(.authorAssociation == "OWNER" or .authorAssociation == "MEMBER" or .authorAssociation == "COLLABORATOR")
@@ -53,6 +57,9 @@ for repo in $REPOS; do
     else
       [ "$phase" = requested ] && continue
       cmd_id=
+      # A failed review is not retried on its own: a new push or an @concord
+      # command starts the next one.
+      [ "$state" = error ] && continue
       # This exact commit was already reviewed, automatically or on request.
       if grep -qE "<!-- concord-review: $sha( cmd:[0-9]+)? -->" <<<"$bodies"; then continue; fi
       # The broad pass runs on the first review only; a PR carrying an earlier

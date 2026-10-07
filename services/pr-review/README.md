@@ -1,16 +1,16 @@
 # pr-review
 
-Reviews open pull requests in other repositories with Concord's review engine and posts the verified findings as a GitHub review. Nothing is installed in the reviewed repositories. The workflows stay idle until `REVIEW_REPOS` is set, so this repository runs none of it; a private copy configured as below does.
+Reviews open pull requests in other repositories with Concord's review engine, using Claude as the reviewer, and posts the verified findings as a GitHub review. Nothing is installed in the reviewed repositories. The workflows stay idle until `REVIEW_REPOS` is set, so this repository runs none of it; a private copy configured as below does.
 
 ## How a review runs
 
-Every ten minutes `pr-review-poll.yml` runs `scan.sh`, which lists open non-draft pull requests touched within `REVIEW_STALE_DAYS` days, skips any whose comments already carry a `<!-- concord-review: <sha> -->` marker for the current head commit or whose review of that commit is still running (a `concord/review` status pending for under an hour), and dispatches one `pr-review.yml` run for each of the rest, at most `REVIEW_MAX_PER_RUN` per poll. A pull request nobody has touched in a week is not waiting on a review.
+Every ten minutes `pr-review-poll.yml` runs `scan.sh`, which lists open non-draft pull requests touched within `REVIEW_STALE_DAYS` days, and dispatches one `pr-review.yml` run for each, at most `REVIEW_MAX_PER_RUN` per poll. It skips a pull request whose head commit already carries a `<!-- concord-review: <sha> -->` marker posted by the review account, whose review of that commit is still running (a `concord/review` status pending for under an hour), or whose review of that commit failed (status `error`); a failed review is not retried on its own, and a new push or an `@concord` command starts the next one. It also skips, for that poll, a pull request whose conversation it cannot read. A pull request nobody has touched in a week is not waiting on a review.
 
 Each review is its own run, keyed on the pull request, so a new push cancels the run still reviewing the commit it replaced. `review-one.sh` checks out the dispatched commit, takes the merge base with the pull request's own base branch, and runs `plugins/concord-codex/bin/review-and-fix.js --review-only`: the correctness finder and its verifier, plus the repository-wide gate and gate verifier on a pull request's first review. The engine stops after verification and prints the findings that survived; it edits nothing. The script then posts them as one review, inline where a finding has a line in the diff and in the review body otherwise.
 
-The first review of a pull request runs the gate (`--broad`); later pushes run the diff-local pass alone (`--no-broad`). The gate asks whether the change as a whole meets its requirements and keeps the invariants of files it did not touch, and those answers do not change when the author fixes a bug and pushes again. On that pass the pull request's title and body and the issues it closes are passed to the engine with `--intent-file` as the requirements to check against, in place of any intent command the reviewed repository configures. A pull request is on its first review when none of its comments carry a `<!-- concord-review:` marker.
+The first review of a pull request runs the gate (`--broad`); later pushes run the diff-local pass alone (`--no-broad`). The gate asks whether the change as a whole meets its requirements and keeps the invariants of files it did not touch, and those answers do not change when the author fixes a bug and pushes again. On that pass the pull request's title and body and the issues it closes are passed to the engine with `--intent-file` as the requirements to check against, in place of any intent command the reviewed repository configures; an issue the review token cannot read is named and skipped. A pull request is on its first review when the review account has posted no `<!-- concord-review:` marker on it. Markers anyone else writes are ignored.
 
-The checkout is untrusted, so the engine runs none of its configuration: not the intent command in its `review.config.json`, not its `.claude/settings.json` hooks and permissions (Claude runs with `--setting-sources user`), and not its `AGENTS.md` or execpolicy rules (Codex runs with `project_doc_max_bytes=0` and `--ignore-rules`). The reviewer process never receives the review token: it reads the checkout, and only `review-one.sh` talks to GitHub. Instructions written into the reviewed files can still reach the model as text, which is why the reviewer holds no credential beyond its own model token.
+The checkout is untrusted, so the engine runs none of its configuration: not the intent command in its `review.config.json`, and not its `.claude/settings.json`, `CLAUDE.md`, skills, or agents (Claude runs with `--setting-sources user`). Review-only mode refuses the Codex and Copilot reviewers, because neither can be kept from a checkout's own skills or instructions. The reviewer process never receives the review token: it reads the checkout, and only `review-one.sh` talks to GitHub. Instructions written into the reviewed files still reach the model as text, so the script refuses to post a review whose text contains the model token or the review token, and ends in `error` instead.
 
 ## Following a review in progress
 
@@ -34,8 +34,7 @@ Then configure it as below. Keep the copy free of its own commits so `upstream-s
 | Variable | Meaning |
 | --- | --- |
 | `REVIEW_REPOS` | Space-separated `owner/name` list of repositories to review. Setting it turns the poller on |
-| `REVIEW_REVIEWER` | `claude` (default) or `codex` |
-| `REVIEW_MODEL`, `REVIEW_EFFORT` | Optional reviewer model and reasoning effort passed to the engine |
+| `REVIEW_MODEL` | Optional Claude model for the reviewer |
 | `REVIEW_RUNNER` | `runs-on` value as JSON, for example `["self-hosted","linux"]`; default `"ubuntu-latest"` |
 | `REVIEW_MANUAL_ONLY` | Any value: review only what an `@concord` comment asks for |
 | `REVIEW_STALE_DAYS`, `REVIEW_MAX_PER_RUN` | Defaults 7 and 3 |
@@ -44,8 +43,7 @@ Then configure it as below. Keep the copy free of its own commits so `upstream-s
 | Secret | Meaning |
 | --- | --- |
 | `REVIEW_PAT` | Fine-grained token over the reviewed repositories: Contents read, Pull requests read and write, Commit statuses read and write, Issues read (the broad pass reads the issues a pull request closes). Reviews are posted under its account |
-| `CLAUDE_CODE_OAUTH_TOKEN` | From `claude setup-token`, when the reviewer is `claude` |
-| `OPENAI_API_KEY` | When the reviewer is `codex` |
+| `CLAUDE_CODE_OAUTH_TOKEN` | From `claude setup-token` |
 | `SYNC_TOKEN` | Fine-grained token over this copy: Contents and Workflows read and write |
 
 `upstream-sync.yml` runs daily and fast-forwards `main` to the newest Concord release, the last upstream commit that changed `VERSION`, so unreleased work never runs with the copy's secrets. If the copy has commits of its own, the fast-forward fails and the run fails rather than merging.

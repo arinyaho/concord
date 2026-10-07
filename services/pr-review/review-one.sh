@@ -7,12 +7,8 @@ set -euo pipefail
 
 : "${GH_TOKEN:?REVIEW_PAT is not set}"
 : "${REPO:?}" "${PR:?}" "${SHA:?}" "${MODE:?}"
-REVIEWER="${REVIEWER:-claude}"
-case "$REVIEWER" in
-  claude) : "${CLAUDE_CODE_OAUTH_TOKEN:?not set}" ;;
-  codex) ;;   # the workflow logs Codex in before this runs
-  *) echo "REVIEWER must be claude or codex, got $REVIEWER" >&2; exit 1 ;;
-esac
+# Claude is the only reviewer the engine can keep from the checkout's own configuration.
+: "${CLAUDE_CODE_OAUTH_TOKEN:?not set}"
 case "$MODE" in broad) BROAD=--broad ;; diff) BROAD=--no-broad ;; *) echo "MODE must be broad or diff" >&2; exit 1 ;; esac
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ENGINE="$ROOT/plugins/concord-codex/bin/review-and-fix.js"
@@ -20,9 +16,9 @@ ENGINE="$ROOT/plugins/concord-codex/bin/review-and-fix.js"
 # Fixed per mode, not left to the reviewer to restate -- so it reads the same
 # on every review and can't drift from what the mode actually does.
 if [ "$MODE" = broad ]; then
-  MODE_NOTE="reviewed by $REVIEWER: diff-local correctness + repo-wide gate (ac-coverage, design-conformance, cross-context, silent-gap, threat-model)"
+  MODE_NOTE="reviewed: diff-local correctness + repo-wide gate (ac-coverage, design-conformance, cross-context, silent-gap, threat-model)"
 else
-  MODE_NOTE="reviewed by $REVIEWER: diff-local correctness only (the repo-wide gate already ran on an earlier commit of this PR)"
+  MODE_NOTE="reviewed: diff-local correctness only (the repo-wide gate already ran on an earlier commit of this PR)"
 fi
 MARKER="<!-- concord-review: $SHA${CMD_ID:+ cmd:$CMD_ID} -->"
 gh auth setup-git   # git itself does not read GH_TOKEN; the clone below needs the credential helper
@@ -41,7 +37,7 @@ status() { gh api -X POST "repos/$REPO/statuses/$SHA" -f context=concord/review 
 # the first thing someone skimming the PR sees.
 unreact() {
   local id
-  id=$(gh api "repos/$REPO/issues/$PR/reactions" \
+  id=$(gh api --paginate "repos/$REPO/issues/$PR/reactions" \
          --jq ".[] | select(.user.login == \"$ME\" and .content == \"$1\") | .id" | head -1 || true)
   [ -n "$id" ] && gh api -X DELETE "repos/$REPO/issues/$PR/reactions/$id" >/dev/null 2>&1 || true
 }
@@ -59,7 +55,7 @@ finish() {
 }
 trap finish EXIT
 trap 'exit 130' INT TERM
-status pending "reviewing ($MODE, $REVIEWER)"
+status pending "reviewing ($MODE)"
 
 # A full clone, so the merge base with the pull request's own base branch and
 # every blob the review reads are local: the engine runs without the token and
@@ -81,8 +77,10 @@ if [ "$MODE" = broad ]; then
     gh pr view "$PR" --repo "$REPO" --json closingIssuesReferences \
       --jq '.closingIssuesReferences[] | "\(.repository.owner.login)/\(.repository.name) \(.number)"' |
       while read -r issue_repo issue; do
+        # An issue the review token cannot read is named, not fatal.
         gh issue view "$issue" --repo "$issue_repo" --json number,title,body \
-          --jq '"\n\n## Closes \(.number): \(.title)\n\n\(.body)"'
+          --jq '"\n\n## Closes \(.number): \(.title)\n\n\(.body)"' 2>/dev/null \
+          || printf '\n\n## Closes %s#%s (not readable with the review token)\n' "$issue_repo" "$issue"
       done
   } > "$intent.full"
   # Truncated after it is written: cutting the pipe would kill the writers
@@ -95,14 +93,22 @@ fi
 # this script talks to GitHub. The engine treats the checkout as untrusted and
 # keeps the round in a throwaway state directory.
 result=$(cd "$work" && env -u GH_TOKEN -u GITHUB_TOKEN \
-  node "$ENGINE" "concord-pr-$PR" "$BASE" --review-only "$BROAD" --reviewer "$REVIEWER" ${INTENT_ARGS[@]+"${INTENT_ARGS[@]}"} \
-    ${REVIEW_MODEL:+--reviewer-model "$REVIEW_MODEL"} ${REVIEW_EFFORT:+--reasoning-effort "$REVIEW_EFFORT"} \
+  node "$ENGINE" "concord-pr-$PR" "$BASE" --review-only "$BROAD" --reviewer claude ${INTENT_ARGS[@]+"${INTENT_ARGS[@]}"} \
+    ${REVIEW_MODEL:+--reviewer-model "$REVIEW_MODEL"} \
   | tail -1) || result=''
 
 if ! jq -e '.decision == "review-only" and (.findings | type == "array")' <<<"$result" >/dev/null 2>&1; then
   echo "review failed for $REPO#$PR: ${result:-the engine printed nothing}"
   exit 1
 fi
+# The findings are model output from a model that read untrusted files, so it
+# can be led to quote a credential it can read. Never post one.
+for secret in "$CLAUDE_CODE_OAUTH_TOKEN" "$GH_TOKEN"; do
+  if grep -qF -- "$secret" <<<"$result"; then
+    echo "review of $REPO#$PR quoted a credential; nothing was posted" >&2
+    exit 1
+  fi
+done
 
 n=$(jq '.findings | length' <<<"$result")
 files=$(git -C "$work" diff --name-only "$BASE" HEAD | wc -l | tr -d ' ')

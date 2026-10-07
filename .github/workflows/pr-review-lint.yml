@@ -11,12 +11,14 @@ permissions:
   contents: read
 
 jobs:
-  shellcheck:
+  scripts:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      # ubuntu-latest ships shellcheck.
-      - run: shellcheck services/pr-review/*.sh
+      # ubuntu-latest ships shellcheck and jq.
+      - run: shellcheck services/pr-review/*.sh services/pr-review/test/*.sh
+      - run: services/pr-review/test/scan.test.sh
+      - run: services/pr-review/test/review-one.test.sh

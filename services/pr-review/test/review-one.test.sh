@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# check() takes assertions as text and evaluates them later, so they stay single-quoted.
+# shellcheck disable=SC2016
+# Runs review-one.sh against a fake gh, a fake review engine (node on PATH),
+# and a local repository standing in for the reviewed one. Usage:
+#   review-one.test.sh [path/to/review-one.sh]
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT="${1:-$HERE/../review-one.sh}"
+work=$(mktemp -d)
+trap '[ -n "${KEEP:-}" ] && echo "kept $work" || rm -rf "$work"' EXIT
+mkdir -p "$work/bin"
+
+# The reviewed repository: main, and a pull request head one commit ahead.
+repo="$work/upstream"
+git init -q -b main "$repo"
+git -C "$repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
+echo change > "$repo/a.txt"
+git -C "$repo" checkout -q -b feature
+git -C "$repo" add a.txt
+git -C "$repo" -c user.email=t@t -c user.name=t commit -q -m change
+SHA=$(git -C "$repo" rev-parse HEAD)
+git -C "$repo" update-ref refs/pull/1/head "$SHA"
+git -C "$repo" checkout -q main
+
+cat > "$work/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+jq_expr=; args=()
+while [ $# -gt 0 ]; do
+  case "$1" in --jq) jq_expr=$2; shift 2 ;; --paginate) shift ;; *) args+=("$1"); shift ;; esac
+done
+set -- "${args[@]}"
+out() { if [ -n "$jq_expr" ]; then jq -r "$jq_expr" <<<"$1"; else printf '%s\n' "$1"; fi; }
+case "$*" in
+  "auth setup-git") ;;
+  "api user") echo reviewbot ;;
+  "repo clone "*) git clone -q "$UPSTREAM" "$4" ;;
+  *"--json baseRefName"*) out '{"baseRefName":"main"}' ;;
+  *"--json title,body"*) out '{"title":"Add a","body":"The PR body says a.txt must exist."}' ;;
+  *"--json closingIssuesReferences"*) out '{"closingIssuesReferences":[{"number":5,"repository":{"name":"private","owner":{"login":"other"}}}]}' ;;
+  "issue view "*) echo "HTTP 404" >&2; exit 1 ;;
+  *"/statuses/"*) all="$*"; state=${all#*state=}; echo "status ${state%% *}" >> "$LOG" ;;
+  *"/pulls/1/reviews --input -") cat > "$LOG.review"; echo review >> "$LOG" ;;
+  *"content=+1"*) echo "+1" >> "$LOG" ;;
+  *"content=eyes"*) echo 1 ;;
+  "api repos/"*"/reactions") echo '[]' ;;
+  *) ;;
+esac
+EOF
+cat > "$work/bin/node" <<'EOF'
+#!/usr/bin/env bash
+# Stands in for the review engine: keeps the intent it was given, prints the result.
+while [ $# -gt 0 ]; do
+  [ "$1" = --intent-file ] && cp "$2" "$LOG.intent"
+  shift
+done
+printf '%s\n' "$ENGINE_RESULT"
+EOF
+chmod +x "$work/bin/gh" "$work/bin/node"
+
+fail=0
+check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
+run() {  # run <case> <engine result json>
+  export LOG="$work/$1.log"; : > "$LOG"
+  PATH="$work/bin:$PATH" UPSTREAM="$repo" ENGINE_RESULT="$2" REPO=o/r PR=1 SHA="$SHA" MODE=broad \
+    GH_TOKEN=review-pat-secret CLAUDE_CODE_OAUTH_TOKEN=model-token-secret \
+    bash "$SCRIPT" >"$LOG.out" 2>&1 || true
+}
+
+run clean '{"decision":"review-only","round":1,"findings":[]}'
+check "clean review is posted" 'grep -qx review "$LOG"'
+check "clean review settles the status to success" '[ "$(grep ^status "$LOG" | tail -1)" = "status success" ]'
+check "clean review leaves a thumbs-up" 'grep -qx "+1" "$LOG"'
+check "an unreadable closing issue is named, not fatal" 'grep -q "other/private#5 (not readable" "$LOG.intent"'
+check "the pull request body reaches the intent" 'grep -q "must exist" "$LOG.intent"'
+
+run leak '{"decision":"review-only","round":1,"findings":[{"id":"correctness:x","category":"correctness","file":"a.txt","line":1,"span":"change","summary":"token is model-token-secret","requirement":""}]}'
+check "a review quoting a credential is not posted" '! grep -qx review "$LOG"'
+check "a review quoting a credential ends in error" '[ "$(grep ^status "$LOG" | tail -1)" = "status error" ]'
+
+exit "$fail"
