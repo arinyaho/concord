@@ -398,7 +398,10 @@ async function invoke(spawn, input) {
 }
 
 async function runReviewUntilGreen(options) {
-  const { ref, base, broad = false, noBroad = false, noDod = false, resume = false, repoRoot: configuredRepoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
+  const { ref, base, broad = false, noBroad = false, reviewOnly = false, resume = false, repoRoot: configuredRepoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
+  // A review-only run never edits, so it has no definition of done to check.
+  const noDod = reviewOnly || !!options.noDod;
+  if (reviewOnly && options.initiativeRunKey) throw new Error('review-until-green: reviewOnly cannot run inside an initiative, which records every round');
   const repoRoot = canonicalPath(configuredRepoRoot);
   const canonicalRepoRoot = repoRoot;
   const canonicalStateDir = options.initiativeStateDir && canonicalPath(options.initiativeStateDir);
@@ -907,6 +910,11 @@ async function runReviewUntilGreen(options) {
     const reviewerResults = await Promise.allSettled(reviewers);
     const reviewerFailure = reviewerResults.find((result) => result.status === 'rejected');
     if (reviewerFailure) throw reviewerFailure.reason;
+
+    if (reviewOnly) {
+      const reported = await cli(['findings', ref]);
+      return { decision: 'review-only', round: currentRound, findings: reported.findings };
+    }
 
     await runArtifactReviewer('plan');
 

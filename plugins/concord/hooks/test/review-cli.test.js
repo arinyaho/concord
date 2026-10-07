@@ -4699,3 +4699,32 @@ test('target lock never offers to remove a live owner after its wait expires', (
     assert.equal(fs.readFileSync(path.join(lock, 'owner'), 'utf8'), `${process.pid}\n`);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+// `findings` is the review-only exit: the same verified fold plan-fixes routes
+// into fixes, reported without a plan artifact and without touching the ledger.
+test('findings: reports verified correctness findings with their line, drops rejected ones, and leaves the ledger in gates', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env } = seedGatesRound(repo, dir, 'feat/ro',
+    { status: 'ok', examined: ['a.txt'], findings: [
+      { id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' },
+      { id: 'correctness:fp', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'y' } ] },
+    { status: 'ok', rejected: [{ id: 'correctness:fp', reason: 'the span is inside a comment' }] });
+  const slug = review.targetSlug('feat/ro');
+  const before = fs.readFileSync(review.ledgerPath(dir, slug), 'utf8');
+  const out = JSON.parse(run(['findings', 'feat/ro'], { env, skipPlanSeed: true }));
+  assert.deepStrictEqual(out.findings, [{ id: 'correctness:real', category: 'correctness', file: 'a.txt', line: 1, span: 'two', summary: 'x', requirement: '' }]);
+  assert.strictEqual(fs.readFileSync(review.ledgerPath(dir, slug), 'utf8'), before);
+});
+
+test('findings: includes gate findings gate-verify did not reject, categorised by their class', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/ro-broad',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] }, { armBroad: true });
+  writeArtifact(dir, n, 'gate', { status: 'ok', findings: [
+    { id: 'gate:cross-context:kept', file: 'review.config.json', span: 'dod', summary: 'an unchanged file breaks' },
+    { id: 'gate:silent-gap:dropped', file: 'a.txt', summary: 'not real' } ] });
+  writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [{ id: 'gate:silent-gap:dropped', reason: 'covered' }], findings: [] });
+  const out = JSON.parse(run(['findings', 'feat/ro-broad'], { env, skipPlanSeed: true }));
+  assert.deepStrictEqual(out.findings.map((f) => [f.id, f.category, f.line]), [['gate:cross-context:kept', 'cross-context', 1]]);
+});

@@ -6,7 +6,7 @@ const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleE
 
 const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
-  process.stdout.write('Usage: review-and-fix [<branch> [<base>] | file:<path-or-glob> | resume <ref>] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--reasoning-effort <effort>] [--service-tier <tier>] [--initiative-run-key <key> --initiative-id <id> --initiative-state-dir <absolute-dir> --initiative-max-launches <n> --initiative-max-rounds <n> [--initiative-mode <base|lite>] [--initiative-finalise]] [--session-handoff <off|suggest|stop-at-checkpoint>] [--broad|--no-broad] [--no-dod]\n');
+  process.stdout.write('Usage: review-and-fix [<branch> [<base>] | file:<path-or-glob> | resume <ref>] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--reasoning-effort <effort>] [--service-tier <tier>] [--initiative-run-key <key> --initiative-id <id> --initiative-state-dir <absolute-dir> --initiative-max-launches <n> --initiative-max-rounds <n> [--initiative-mode <base|lite>] [--initiative-finalise]] [--session-handoff <off|suggest|stop-at-checkpoint>] [--broad|--no-broad] [--no-dod] [--review-only]\n');
   process.exit(0);
 }
 const broadPhraseArgs = new Set();
@@ -23,6 +23,8 @@ const broad = args.includes('--broad') || args.includes('--gate') || broadPhrase
 // left in, it would be read as `ref` or `base` and passed to git as a ref.
 const noBroad = args.includes('--no-broad');
 const noDod = args.includes('--no-dod');
+// --review-only stops after verification and prints the verified findings; nothing is edited.
+const reviewOnly = args.includes('--review-only');
 const inference = {};
 const inferenceArgs = new Set();
 if (args.includes('--initiative-finalise')) { inference.initiativeFinalise = true; inferenceArgs.add(args.indexOf('--initiative-finalise')); }
@@ -56,11 +58,11 @@ for (const field of ['reviewer', 'fixer']) {
     process.exit(1);
   }
 }
-const positional = args.filter((arg, index) => arg !== '--broad' && arg !== '--gate' && arg !== '--no-broad' && arg !== '--no-dod' && !inferenceArgs.has(index) && !broadPhraseArgs.has(index));
+const positional = args.filter((arg, index) => arg !== '--broad' && arg !== '--gate' && arg !== '--no-broad' && arg !== '--no-dod' && arg !== '--review-only' && !inferenceArgs.has(index) && !broadPhraseArgs.has(index));
 const resumed = positional[0] === 'resume';
 const ref = (resumed ? positional[1] : positional[0]) || (inference.initiativeFinalise ? undefined : require('node:child_process').execFileSync(crossPlatformCommand('git', process.cwd()), crossPlatformArgs(['branch', '--show-current'], needsDoubleEscape('git', process.cwd())), crossPlatformOpts({ encoding: 'utf8' })).trim());
 const base = resumed ? positional[2] : positional[1];
-const runnerOptions = { ref, base, broad, noBroad, noDod, ...inference, resume: resumed, handleSignals: true, repoRoot: process.cwd(), cliPath: path.join(__dirname, 'review-cli.js') };
+const runnerOptions = { ref, base, broad, noBroad, noDod, reviewOnly, ...inference, resume: resumed, handleSignals: true, repoRoot: process.cwd(), cliPath: path.join(__dirname, 'review-cli.js') };
 const write = (stream, text) => new Promise((resolve, reject) => stream.write(text, (error) => error ? reject(error) : resolve()));
 const deliver = async (stream, packet) => {
   // Write before acknowledging: the packet must actually reach the caller

@@ -2516,3 +2516,43 @@ test('Codex launcher emits then acknowledges an error continuation packet before
   assert.throws(() => execFileSync('node', ['--require', preload, bin, 'feature/x'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }), (error) => error.status === 1 && error.stderr === '{"delivery":{"consumed":false,"claim":"error"}}\n');
   assert.strictEqual(fs.readFileSync(capture, 'utf8'), 'error');
 });
+
+test('reviewOnly stops after verification, reports the verified findings, and never plans, fixes, or records', async () => {
+  const h = harness({ gateApplied: true });
+  const verified = [{ id: 'correctness:bug', category: 'correctness', file: 'a.txt', line: 1, span: 'bad', summary: 'fix it', requirement: '' }];
+  const cli = (args) => (args[0] === 'findings' ? (h.calls.push(['cli', ...args]), { findings: verified }) : h.cli(args));
+  const result = await runReviewUntilGreen({ ref: 'feature/ro', base: 'main', repoRoot: '/repo', runCli: cli, spawn: h.spawn, reviewOnly: true, broad: true, reviewer: 'claude' });
+  assert.deepStrictEqual(result, { decision: 'review-only', round: 1, findings: verified });
+  const spawned = h.calls.filter((c) => c[0] === 'spawn').map((c) => c[1]).sort();
+  assert.deepStrictEqual(spawned, ['correctness', 'gate', 'gate-verify', 'verify']);
+  assert.ok(h.calls.filter((c) => c[0] === 'spawn').every((c) => c[3] === 'claude'));
+  const verbs = h.calls.filter((c) => c[0] === 'cli').map((c) => c[1]);
+  for (const verb of ['plan-fixes', 'commit-fix', 'record']) assert.ok(!verbs.includes(verb), `${verb} must not run in review-only mode`);
+  const start = h.calls.find((c) => c[0] === 'cli' && c[1] === 'round-start');
+  assert.ok(start.includes('--no-dod'), 'a review that never edits has no definition of done to run');
+});
+
+test('Codex review-and-fix launcher passes --review-only to the runner and prints its findings as JSON', () => {
+  const dir = temp();
+  const capture = path.join(dir, 'options.json');
+  const preload = path.join(dir, 'capture-runner.js');
+  const bin = path.join(__dirname, '..', '..', '..', 'concord-codex', 'bin', 'review-and-fix.js');
+  fs.writeFileSync(preload, `
+    const fs = require('node:fs');
+    const Module = require('node:module');
+    const load = Module._load;
+    Module._load = function(request, parent, isMain) {
+      if (request === '../engine/codex-review-runner') return { runReviewUntilGreen: async (options) => {
+        fs.writeFileSync(process.env.CAPTURE, JSON.stringify(options));
+        return { decision: 'review-only', round: 1, findings: [] };
+      }, acknowledgeContinuationPacket: () => true };
+      return load.apply(this, arguments);
+    };
+  `);
+  const output = execFileSync('node', ['--require', preload, bin, 'feature/x', 'main', '--review-only', '--no-broad', '--reviewer', 'claude'], { cwd: dir, env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
+  const options = JSON.parse(fs.readFileSync(capture, 'utf8'));
+  assert.strictEqual(options.reviewOnly, true);
+  assert.strictEqual(options.ref, 'feature/x');
+  assert.strictEqual(options.base, 'main');
+  assert.deepStrictEqual(JSON.parse(output), { decision: 'review-only', round: 1, findings: [] });
+});

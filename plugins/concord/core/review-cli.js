@@ -480,7 +480,7 @@ function firstRetryArtifact(retries) {
 const INITIATIVE_FLAGS = [['--initiative-run-key', 'key'], ['--initiative-id', 'initiativeId'], ['--initiative-state-dir', 'stateDir'], ['--initiative-max-launches', 'maxLaunches'], ['--initiative-max-rounds', 'maxRounds']];
 const MODE_FLAG = '--initiative-mode';
 const RUN_VERBS = new Set(['finalise', 'consume', 'escalate', 'session-checkpoint']);
-const CLI_VERBS = ['show', 'round-start', 'telemetry-slot', 'plan-fixes', 'commit-fix', 'record', 'round-failure', 'gate-panel-round-start', 'gate-panel-round-record', 'unpark', 'dismiss', 'reset', 'rerun', 'artifact-normalize', 'reserve', 'carry', 'finalise', 'consume', 'escalate', 'session-checkpoint', 'feedback'];
+const CLI_VERBS = ['show', 'round-start', 'telemetry-slot', 'findings', 'plan-fixes', 'commit-fix', 'record', 'round-failure', 'gate-panel-round-start', 'gate-panel-round-record', 'unpark', 'dismiss', 'reset', 'rerun', 'artifact-normalize', 'reserve', 'carry', 'finalise', 'consume', 'escalate', 'session-checkpoint', 'feedback'];
 const RESERVE_ROLES = ['correctness', 'verify', 'plan', 'intent', 'gate-review', 'gate-verify', 'fix', 'certify', 'lens', 'vote'];
 const ARTIFACT_RESERVE_ROLE = { correctness: 'correctness', verify: 'verify', plan: 'plan', intent: 'intent', gate: 'gate-review', 'gate-verify': 'gate-verify' };
 
@@ -873,6 +873,181 @@ function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey,
 
 // Every mutating target verb takes the same lock, including an unkeyed call
 // racing the target's first initiative binding. `show` only reads.
+// The verified fold of one gates-phase round: correctness candidates the
+// verifier did not kill, intent findings on changed files, and the gate
+// findings gate-verify did not reject. plan-fixes routes it into fixes;
+// findings reports it as-is for a review that never edits. Reads only.
+function verifiedRound(ref, stateDir, run, what) {
+  const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
+  const gc = require('./gate-contract');
+  const slug = targetSlug(ref);
+  const ledger = readLedger(stateDir, slug);
+  if (!ledger || ledger.phase !== 'gates') throw new Error(`${what}: expected phase "gates", got "${ledger && ledger.phase}" ${stateDirHint(stateDir)}`);
+  // Read round-start's decision from the ledger, not a fresh
+  // review.config.json read: gateApplied may have come from the --broad
+  // flag, which leaves no trace in the config file. Re-deriving from
+  // loadGateConfig here would silently miss a flag-enabled round and
+  // discard that round's gate-review/gate-verify findings.
+  const gateApplied = !!ledger.gateApplied;
+  const n = ledger.round;
+  requireReservations(run, ledger, gatesNeeds(stateDir, n), what);
+  requireVerifierOrder(stateDir, n, ledger.gateApplied, ledger.gateMode);
+  const cJson = readArtifact(stateDir, n, 'correctness');
+  const vJson = readArtifact(stateDir, n, 'verify');
+  const candidates = roundCandidates(gc, cJson, vJson);
+  // Symmetric guard: an intent-prefixed id must never come from the
+  // correctness (auto-fixing) gate -- only the intent detector may mint
+  // "intent:" ids. Catching this here (not just on the intent side) keeps
+  // the fold below trustworthy even if a gate misbehaves or is spoofed.
+  for (const c of candidates) {
+    if (c.id.startsWith('intent:')) {
+      throw new Error(`harness-failure: intent-prefixed id "${c.id}" in the correctness or verify artifact -- intent findings must come from the intent detector, never the auto-fixing gate`);
+    }
+    if (c.id.startsWith('gate:')) {
+      throw new Error(`harness-failure: gate-prefixed id "${c.id}" in the correctness or verify artifact -- gate findings must come from the gate reviewer, never the auto-fixing gate`);
+    }
+  }
+  // Coverage: every changed file must be in examined. This is a GIT-DIFF-shaped
+  // check -- `changed` is parsed from old/new headers and rename metadata -- so both the
+  // derivation and the assertion are gated on the target being git (same isGit
+  // test record uses). For a file target, round-<n>-diff.txt holds raw document
+  // CONTENT, not a git diff; a doc that merely QUOTES a unified diff (a line
+  // starting `+++ b/...`) would otherwise mint a phantom "changed file" the doc
+  // reviewer never examined and throw a spurious coverage harness-failure. A
+  // file target has no diff-header notion of changed files, so `changed` stays
+  // empty and the coverage invariant does not apply -- the reviewer's examined
+  // list is advisory there. `changed` remains in scope (empty for file targets)
+  // for the intent/gate folds below, which are git-only concepts. (finding #2)
+  const isGit = !ledger.target || ledger.target.type === 'git';
+  let changed = [];
+  if (isGit) {
+    // Derive the changed-file set from the diff file round-start already wrote
+    // (single-sourced diff) -- do NOT re-run git against ledger.target.base,
+    // which duplicates a git call the CLI already made once this round.
+    const diffText = fs.readFileSync(path.join(stateDir, `round-${n}-diff.txt`), 'utf8');
+    changed = changedGitPaths(diffText);
+    const examined = new Set(Array.isArray(cJson.examined) ? cJson.examined : []);
+    const missing = changed.filter((f) => !examined.has(f));
+    if (missing.length) throw new Error(`harness-failure: coverage -- changed file(s) never examined: ${missing.join(', ')}`);
+  }
+  const verdict = gc.parseVerifyVerdict(JSON.stringify({ rejected: vJson.rejected || [] }), candidates);
+  const killed = new Set(verdict.rejectedIds);
+  const survivors = require('./review').dedupeAgainstSeen(candidates, ledger.seen);
+  const concluded = new Set((ledger.findings || []).filter((f) => f.status !== 'open').map((f) => f.id));
+  const spanPresent = (file, span) => {
+    if (!span) return true;
+    try {
+      return fs.readFileSync(path.join(repoRoot, file), 'utf8').includes(span);
+    } catch (e) {
+      return false;
+    }
+  };
+  // A finding dedupeAgainstSeen marked `reopened: true` recurred after being
+  // marked 'fixed' -- it is still present in `ledger.findings` with that
+  // 'fixed' status (so `concluded` contains its id), but it is NOT actually
+  // concluded: the fix didn't hold or was reverted. Let it bypass the
+  // concluded check so it can reach the driver as a fix or a park, instead
+  // of being silently discarded.
+  const confirmedNonKilled = survivors.filter((f) => !killed.has(f.id) && (!concluded.has(f.id) || f.reopened));
+  // A span still present is genuinely fixable and drives a fix subagent. A
+  // span ABSENT from the file is a true idempotent replay -- a fix that already
+  // landed in a prior/crashed attempt -- ONLY when this run's journal proves a
+  // commit for it. An absent span WITHOUT that evidence is NOT a replay: it is
+  // an additive/absence finding (nothing to quote) or a reviewer span that
+  // never matched. Marking those 'fixed' would converge green with a confirmed
+  // bug still live, so route them to the fixer instead (it adds the missing
+  // code -> a real commit, or reports no-edit -> record parks it needs-decision).
+  const isReplay = (f) => !spanPresent(f.file, f.span) && (ledger.journal || []).some((j) => (j.findingIds || []).includes(f.id) || j.id === f.id
+    || (j.resolutions || []).some((r) => r.id === f.id && r.file === f.file && r.span === f.span));
+  const fixes = confirmedNonKilled
+    .filter((f) => !isReplay(f))
+    .map((f) => ({ id: f.id, file: f.file, span: f.span, summary: f.summary }));
+  const resolvedAbsent = confirmedNonKilled
+    .filter((f) => isReplay(f))
+    .map((f) => f.id);
+  // Intent fold: report-only, never routed into fixes/resolved_absent. If
+  // intent was fetched this round (ledger.intentHash set), the detector
+  // artifact is mandatory -- a skipped/missing detector is fail-closed
+  // (harness-failure), never a silent "no intent findings".
+  let intentParked = [];
+  if (ledger.intentHash) {
+    const iJson = readArtifact(stateDir, n, 'intent'); // fail-closed: skipped detector -> harness-failure
+    const intentFindings = gc.parseGateFindings(JSON.stringify(iJson.findings || []));
+    for (const f of intentFindings) {
+      if (!f.id.startsWith('intent:')) throw new Error(`harness-failure: non-intent id "${f.id}" in the intent artifact`);
+    }
+    const changedSet = new Set(changed);
+    intentParked = intentFindings
+      .filter((f) => changedSet.has(f.file)) // out-of-PR-scope findings dropped
+      .map((f) => ({ id: f.id, file: f.file, span: f.span, requirement: f.requirement || '', summary: f.summary }));
+  }
+  // Gate fold: report-only, never routed into fixes. Fail-closed like the
+  // intent detector -- if the gate was applied this round, its artifact is
+  // mandatory. Deliberately NOT filtered to changed files (unchanged-sibling
+  // cross-context is the point). gate: namespace is guarded symmetrically.
+  // A round the pair did NOT fire in (every round after the front pass) has no
+  // gate artifact to fold and no verdict on the standing set -- carry it
+  // forward untouched. Recomputing from an absent artifact would read as "the
+  // gate reported nothing" and silently erase findings the front pass raised,
+  // letting the run converge clean over them.
+  let gateOpen = ledger.gate_open || [];
+  if (gateApplied) { // the fold below replaces gateOpen wholesale
+    const gJson = readArtifact(stateDir, n, 'gate'); // fail-closed
+    let gFindings;
+    try { gFindings = gc.parseGateFindings(JSON.stringify(gJson.findings || [])); }
+    catch (e) { throw new Error(`harness-failure: gate artifact invalid: ${e.message}`); }
+    for (const f of gFindings) {
+      if (!f.id.startsWith('gate:')) throw new Error(`harness-failure: non-gate id "${f.id}" in the gate artifact`);
+      if (ledger.gateMode === 'design-conformance' && !f.id.startsWith('gate:design-conformance:')) throw new Error(`harness-failure: lite gate accepts only gate:design-conformance findings, got "${f.id}"`);
+    }
+    let gvRaw;
+    let verifyFindings = [];
+    if (ledger.gateMode !== 'design-conformance') {
+      gvRaw = readArtifact(stateDir, n, 'gate-verify'); // fail-closed and normalized before classification
+      verifyFindings = gc.parseGateFindings(JSON.stringify(gvRaw.findings));
+    }
+    for (const f of verifyFindings) {
+      if (!f.id.startsWith('gate:')) throw new Error(`harness-failure: non-gate id "${f.id}" in the gate-verify artifact`);
+    }
+    // Distrust-green: gate-verify's different lens may surface a class of gap
+    // gate-review missed, by adding it as a new gate: finding of its own. Merge
+    // it into the candidate set BEFORE folding, deduped by id -- a verify
+    // finding whose id collides with a gate-review finding collapses to the
+    // gate-review entry (set second so it overwrites).
+    const byId = new Map();
+    for (const f of verifyFindings) byId.set(f.id, f);
+    for (const f of gFindings) byId.set(f.id, f);
+    const mergedGateFindings = Array.from(byId.values());
+    const rejected = gvRaw ? gc.parseVerifyVerdict(JSON.stringify({ rejected: gvRaw.rejected }), mergedGateFindings).rejectedIds : [];
+    // gate-verify's `blocking` ids override a finder's follow-up claim (fail closed).
+    const blockingReasons = new Map();
+    for (const b of (gvRaw && gvRaw.blocking) || []) {
+      if (!byId.has(b.id)) throw new Error(`harness-failure: gate-verify blocking id "${b.id}" is not a gate candidate`);
+      blockingReasons.set(b.id, b.reason);
+    }
+    const thisRound = gateLib.foldGateFindings({ gateFindings: mergedGateFindings, verifyRejectedIds: rejected, dismissedIds: ledger.gate_dismissed || [] })
+      .map((f) => (blockingReasons.has(f.id) ? { ...f, blockingReason: blockingReasons.get(f.id) } : f));
+    // Cross-round persistence (spec decision 4): gate findings must PERSIST
+    // across rounds, not be overwritten fresh each round -- a round where the
+    // gate subagent nondeterministically fails to re-report a real finding
+    // must not silently erase it and let the run converge clean. Carry
+    // forward anything from the PRIOR round's gate_open not already covered
+    // by thisRound, unless it is plausibly resolved: dismissed, rejected by
+    // this round's gate-verify, or its file was touched by the diff since
+    // base (a fix plausibly addressed it). thisRound and carried are
+    // disjoint by construction (carried excludes thisRound's ids).
+    const carried = gateLib.carryForwardGateFindings({
+      priorGateOpen: ledger.gate_open || [],
+      thisRoundIds: thisRound.map((f) => f.id),
+      verifyRejectedIds: rejected,
+      dismissedIds: ledger.gate_dismissed || [],
+      changedFiles: changed,
+    });
+    gateOpen = thisRound.concat(carried);
+  }
+  return { repoRoot, slug, ledger, n, isGit, changed, fixes, resolvedAbsent, intentParked, gateOpen, gateApplied };
+}
+
 function main(resolveFromCwd) {
   const { args, initiative } = extractInitiative(process.argv.slice(2));
   if (args[0] === 'feedback') {
@@ -2108,175 +2283,29 @@ function runVerb(resolveFromCwd, args, initiative) {
     return;
   }
 
+  if (verb === 'findings') {
+    requireRef(ref, 'findings');
+    const { repoRoot, fixes, intentParked, gateOpen } = verifiedRound(ref, stateDir, run, 'findings');
+    const lineOf = (file, span) => {
+      if (!span) return null;
+      try {
+        const text = fs.readFileSync(path.join(repoRoot, file), 'utf8');
+        const at = text.indexOf(span);
+        return at === -1 ? null : text.slice(0, at).split('\n').length;
+      } catch (_) { return null; }
+    };
+    // Gate findings carry their span as `evidence` and their lens as `class`.
+    const findings = [...fixes, ...intentParked, ...gateOpen].map((f) => {
+      const span = f.span ?? f.evidence ?? '';
+      return { id: f.id, category: f.class || f.id.split(':', 1)[0], file: f.file, line: lineOf(f.file, span), span, summary: f.summary, requirement: f.requirement || '' };
+    });
+    process.stdout.write(JSON.stringify({ findings }) + '\n');
+    return;
+  }
+
   if (verb === 'plan-fixes') {
     requireRef(ref, 'plan-fixes');
-    const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
-    const gc = require('./gate-contract');
-    const slug = targetSlug(ref);
-    const ledger = readLedger(stateDir, slug);
-    if (!ledger || ledger.phase !== 'gates') throw new Error(`plan-fixes: expected phase "gates", got "${ledger && ledger.phase}" ${stateDirHint(stateDir)}`);
-    // Read round-start's decision from the ledger, not a fresh
-    // review.config.json read: gateApplied may have come from the --broad
-    // flag, which leaves no trace in the config file. Re-deriving from
-    // loadGateConfig here would silently miss a flag-enabled round and
-    // discard that round's gate-review/gate-verify findings.
-    const gateApplied = !!ledger.gateApplied;
-    const n = ledger.round;
-    requireReservations(run, ledger, gatesNeeds(stateDir, n), 'plan-fixes');
-    requireVerifierOrder(stateDir, n, ledger.gateApplied, ledger.gateMode);
-    const cJson = readArtifact(stateDir, n, 'correctness');
-    const vJson = readArtifact(stateDir, n, 'verify');
-    const candidates = roundCandidates(gc, cJson, vJson);
-    // Symmetric guard: an intent-prefixed id must never come from the
-    // correctness (auto-fixing) gate -- only the intent detector may mint
-    // "intent:" ids. Catching this here (not just on the intent side) keeps
-    // the fold below trustworthy even if a gate misbehaves or is spoofed.
-    for (const c of candidates) {
-      if (c.id.startsWith('intent:')) {
-        throw new Error(`harness-failure: intent-prefixed id "${c.id}" in the correctness or verify artifact -- intent findings must come from the intent detector, never the auto-fixing gate`);
-      }
-      if (c.id.startsWith('gate:')) {
-        throw new Error(`harness-failure: gate-prefixed id "${c.id}" in the correctness or verify artifact -- gate findings must come from the gate reviewer, never the auto-fixing gate`);
-      }
-    }
-    // Coverage: every changed file must be in examined. This is a GIT-DIFF-shaped
-    // check -- `changed` is parsed from old/new headers and rename metadata -- so both the
-    // derivation and the assertion are gated on the target being git (same isGit
-    // test record uses). For a file target, round-<n>-diff.txt holds raw document
-    // CONTENT, not a git diff; a doc that merely QUOTES a unified diff (a line
-    // starting `+++ b/...`) would otherwise mint a phantom "changed file" the doc
-    // reviewer never examined and throw a spurious coverage harness-failure. A
-    // file target has no diff-header notion of changed files, so `changed` stays
-    // empty and the coverage invariant does not apply -- the reviewer's examined
-    // list is advisory there. `changed` remains in scope (empty for file targets)
-    // for the intent/gate folds below, which are git-only concepts. (finding #2)
-    const isGit = !ledger.target || ledger.target.type === 'git';
-    let changed = [];
-    if (isGit) {
-      // Derive the changed-file set from the diff file round-start already wrote
-      // (single-sourced diff) -- do NOT re-run git against ledger.target.base,
-      // which duplicates a git call the CLI already made once this round.
-      const diffText = fs.readFileSync(path.join(stateDir, `round-${n}-diff.txt`), 'utf8');
-      changed = changedGitPaths(diffText);
-      const examined = new Set(Array.isArray(cJson.examined) ? cJson.examined : []);
-      const missing = changed.filter((f) => !examined.has(f));
-      if (missing.length) throw new Error(`harness-failure: coverage -- changed file(s) never examined: ${missing.join(', ')}`);
-    }
-    const verdict = gc.parseVerifyVerdict(JSON.stringify({ rejected: vJson.rejected || [] }), candidates);
-    const killed = new Set(verdict.rejectedIds);
-    const survivors = require('./review').dedupeAgainstSeen(candidates, ledger.seen);
-    const concluded = new Set((ledger.findings || []).filter((f) => f.status !== 'open').map((f) => f.id));
-    const spanPresent = (file, span) => {
-      if (!span) return true;
-      try {
-        return fs.readFileSync(path.join(repoRoot, file), 'utf8').includes(span);
-      } catch (e) {
-        return false;
-      }
-    };
-    // A finding dedupeAgainstSeen marked `reopened: true` recurred after being
-    // marked 'fixed' -- it is still present in `ledger.findings` with that
-    // 'fixed' status (so `concluded` contains its id), but it is NOT actually
-    // concluded: the fix didn't hold or was reverted. Let it bypass the
-    // concluded check so it can reach the driver as a fix or a park, instead
-    // of being silently discarded.
-    const confirmedNonKilled = survivors.filter((f) => !killed.has(f.id) && (!concluded.has(f.id) || f.reopened));
-    // A span still present is genuinely fixable and drives a fix subagent. A
-    // span ABSENT from the file is a true idempotent replay -- a fix that already
-    // landed in a prior/crashed attempt -- ONLY when this run's journal proves a
-    // commit for it. An absent span WITHOUT that evidence is NOT a replay: it is
-    // an additive/absence finding (nothing to quote) or a reviewer span that
-    // never matched. Marking those 'fixed' would converge green with a confirmed
-    // bug still live, so route them to the fixer instead (it adds the missing
-    // code -> a real commit, or reports no-edit -> record parks it needs-decision).
-    const isReplay = (f) => !spanPresent(f.file, f.span) && (ledger.journal || []).some((j) => (j.findingIds || []).includes(f.id) || j.id === f.id
-      || (j.resolutions || []).some((r) => r.id === f.id && r.file === f.file && r.span === f.span));
-    const fixes = confirmedNonKilled
-      .filter((f) => !isReplay(f))
-      .map((f) => ({ id: f.id, file: f.file, span: f.span, summary: f.summary }));
-    const resolvedAbsent = confirmedNonKilled
-      .filter((f) => isReplay(f))
-      .map((f) => f.id);
-    // Intent fold: report-only, never routed into fixes/resolved_absent. If
-    // intent was fetched this round (ledger.intentHash set), the detector
-    // artifact is mandatory -- a skipped/missing detector is fail-closed
-    // (harness-failure), never a silent "no intent findings".
-    let intentParked = [];
-    if (ledger.intentHash) {
-      const iJson = readArtifact(stateDir, n, 'intent'); // fail-closed: skipped detector -> harness-failure
-      const intentFindings = gc.parseGateFindings(JSON.stringify(iJson.findings || []));
-      for (const f of intentFindings) {
-        if (!f.id.startsWith('intent:')) throw new Error(`harness-failure: non-intent id "${f.id}" in the intent artifact`);
-      }
-      const changedSet = new Set(changed);
-      intentParked = intentFindings
-        .filter((f) => changedSet.has(f.file)) // out-of-PR-scope findings dropped
-        .map((f) => ({ id: f.id, file: f.file, span: f.span, requirement: f.requirement || '', summary: f.summary }));
-    }
-    // Gate fold: report-only, never routed into fixes. Fail-closed like the
-    // intent detector -- if the gate was applied this round, its artifact is
-    // mandatory. Deliberately NOT filtered to changed files (unchanged-sibling
-    // cross-context is the point). gate: namespace is guarded symmetrically.
-    // A round the pair did NOT fire in (every round after the front pass) has no
-    // gate artifact to fold and no verdict on the standing set -- carry it
-    // forward untouched. Recomputing from an absent artifact would read as "the
-    // gate reported nothing" and silently erase findings the front pass raised,
-    // letting the run converge clean over them.
-    let gateOpen = ledger.gate_open || [];
-    if (gateApplied) { // the fold below replaces gateOpen wholesale
-      const gJson = readArtifact(stateDir, n, 'gate'); // fail-closed
-      let gFindings;
-      try { gFindings = gc.parseGateFindings(JSON.stringify(gJson.findings || [])); }
-      catch (e) { throw new Error(`harness-failure: gate artifact invalid: ${e.message}`); }
-      for (const f of gFindings) {
-        if (!f.id.startsWith('gate:')) throw new Error(`harness-failure: non-gate id "${f.id}" in the gate artifact`);
-        if (ledger.gateMode === 'design-conformance' && !f.id.startsWith('gate:design-conformance:')) throw new Error(`harness-failure: lite gate accepts only gate:design-conformance findings, got "${f.id}"`);
-      }
-      let gvRaw;
-      let verifyFindings = [];
-      if (ledger.gateMode !== 'design-conformance') {
-        gvRaw = readArtifact(stateDir, n, 'gate-verify'); // fail-closed and normalized before classification
-        verifyFindings = gc.parseGateFindings(JSON.stringify(gvRaw.findings));
-      }
-      for (const f of verifyFindings) {
-        if (!f.id.startsWith('gate:')) throw new Error(`harness-failure: non-gate id "${f.id}" in the gate-verify artifact`);
-      }
-      // Distrust-green: gate-verify's different lens may surface a class of gap
-      // gate-review missed, by adding it as a new gate: finding of its own. Merge
-      // it into the candidate set BEFORE folding, deduped by id -- a verify
-      // finding whose id collides with a gate-review finding collapses to the
-      // gate-review entry (set second so it overwrites).
-      const byId = new Map();
-      for (const f of verifyFindings) byId.set(f.id, f);
-      for (const f of gFindings) byId.set(f.id, f);
-      const mergedGateFindings = Array.from(byId.values());
-      const rejected = gvRaw ? gc.parseVerifyVerdict(JSON.stringify({ rejected: gvRaw.rejected }), mergedGateFindings).rejectedIds : [];
-      // gate-verify's `blocking` ids override a finder's follow-up claim (fail closed).
-      const blockingReasons = new Map();
-      for (const b of (gvRaw && gvRaw.blocking) || []) {
-        if (!byId.has(b.id)) throw new Error(`harness-failure: gate-verify blocking id "${b.id}" is not a gate candidate`);
-        blockingReasons.set(b.id, b.reason);
-      }
-      const thisRound = gateLib.foldGateFindings({ gateFindings: mergedGateFindings, verifyRejectedIds: rejected, dismissedIds: ledger.gate_dismissed || [] })
-        .map((f) => (blockingReasons.has(f.id) ? { ...f, blockingReason: blockingReasons.get(f.id) } : f));
-      // Cross-round persistence (spec decision 4): gate findings must PERSIST
-      // across rounds, not be overwritten fresh each round -- a round where the
-      // gate subagent nondeterministically fails to re-report a real finding
-      // must not silently erase it and let the run converge clean. Carry
-      // forward anything from the PRIOR round's gate_open not already covered
-      // by thisRound, unless it is plausibly resolved: dismissed, rejected by
-      // this round's gate-verify, or its file was touched by the diff since
-      // base (a fix plausibly addressed it). thisRound and carried are
-      // disjoint by construction (carried excludes thisRound's ids).
-      const carried = gateLib.carryForwardGateFindings({
-        priorGateOpen: ledger.gate_open || [],
-        thisRoundIds: thisRound.map((f) => f.id),
-        verifyRejectedIds: rejected,
-        dismissedIds: ledger.gate_dismissed || [],
-        changedFiles: changed,
-      });
-      gateOpen = thisRound.concat(carried);
-    }
+    const { repoRoot, slug, ledger, n, isGit, fixes, resolvedAbsent, intentParked, gateOpen } = verifiedRound(ref, stateDir, run, 'plan-fixes');
     const fixById = new Map(fixes.map((finding) => [finding.id, finding]));
     const groupedIds = new Set();
     let planArtifact = { status: 'ok', protocolVersion: 2, groups: [] };
