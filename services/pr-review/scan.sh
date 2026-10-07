@@ -34,9 +34,13 @@ for repo in $REPOS; do
     [ -n "$num" ] || continue
     # A review of this commit is queued or running. Dispatching it again would
     # cancel that run, and a review longer than the poll interval never posts.
+    # A commit status belongs to the commit, which other pull requests can share,
+    # so it counts only when its description names this pull request. Without
+    # the lookup there is no telling, so the pull request waits for the next poll.
     review_status=$(gh api "repos/$repo/commits/$sha/status?per_page=100" \
-      --jq '[.statuses[] | select(.context == "concord/review")][0] | "\(.state) \(.updated_at)"' 2>/dev/null || true)
-    state=${review_status%% *}; updated=${review_status#* }
+      --jq '[.statuses[] | select(.context == "concord/review")][0] | "\(.state)\t\(.updated_at)\t\(.description)"' 2>/dev/null) || continue
+    IFS=$'\t' read -r state updated description <<<"$review_status"
+    if ! grep -qE "\(#$num( cmd:[0-9]+)?\)$" <<<"$description"; then state=; fi
     if [ "$state" = pending ] && [[ "$updated" > "$running_cutoff" ]]; then continue; fi
 
     # Every page of the conversation; without it there is no telling whether
@@ -50,18 +54,18 @@ for repo in $REPOS; do
                  | select(startswith("<!-- concord-review:"))')
 
     # Commands from someone with a role on the repository, newest first. The
-    # newest one not yet done runs: done means its review posted, or a review
-    # of this commit failed after it was asked.
+    # newest one not yet done runs: done means its review posted, or its own
+    # review failed, which the error status names.
     cmd_id=
-    while IFS=$'\t' read -r id cmd_mode at; do
+    while IFS=$'\t' read -r id cmd_mode; do
       [ -n "$id" ] || continue
       grep -qF " cmd:$id -->" <<<"$markers" && continue
-      [ "$state" = error ] && [[ "$updated" > "$at" ]] && continue
+      [ "$state" = error ] && grep -qF " cmd:$id)" <<<"$description" && continue
       cmd_id=$id; break
     done < <(jq -r '[.[] | select(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR")
-                      | select(.body | test("@concord +(broad|diff)"))]
+                      | select(.body | test("@concord +(broad|diff)(\\s|$)"))]
                     | sort_by(.created_at) | reverse[]
-                    | "\(.id)\t\(.body | capture("@concord +(?<m>broad|diff)").m)\t\(.created_at)"' <<<"$comments")
+                    | "\(.id)\t\(.body | capture("@concord +(?<m>broad|diff)(\\s|$)").m)"' <<<"$comments")
     if [ -n "$cmd_id" ]; then
       requested+=("$repo $num $sha $cmd_mode $cmd_id $title")
       continue
@@ -94,7 +98,7 @@ for entry in ${requested[@]+"${requested[@]}"} ${automatic[@]+"${automatic[@]}"}
     # Pending from the moment it is dispatched, so a run still waiting for a
     # runner is not dispatched again by the next poll.
     gh api -X POST "repos/$repo/statuses/$sha" -f context=concord/review \
-      -f state=pending -f description="queued ($mode)" >/dev/null || true
+      -f state=pending -f description="queued ($mode) (#$num${cmd_id:+ cmd:$cmd_id})" >/dev/null || true
   fi
   started=$((started + 1))
 done

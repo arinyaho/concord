@@ -47,7 +47,7 @@ case "$*" in
     all="$*"; state=${all#*state=}; state=${state%% *}
     # FLAKY_STATUS fails the first attempt to settle a final status.
     if [ -n "${FLAKY_STATUS:-}" ] && [ "$state" != pending ] && [ ! -e "$LOG.flaked" ]; then touch "$LOG.flaked"; exit 1; fi
-    echo "status $state" >> "$LOG" ;;
+    echo "status $state" >> "$LOG"; echo "${all#*description=}" >> "$LOG.descriptions" ;;
   *"/pulls/1/reviews --input -") cat > "$LOG.review"; echo review >> "$LOG" ;;
   *"content=+1"*) echo "+1" >> "$LOG" ;;
   *"content=eyes"*) echo 1 ;;
@@ -105,5 +105,8 @@ REVIEWER=codex run codex-leak '{"decision":"review-only","round":1,"findings":[{
 check "the codex reviewer is passed to the engine" 'grep -q -- "--reviewer codex" "$LOG.args"'
 check "the codex reviewer does not receive the API key" '[ "$(cat "$LOG.openai-key")" = unset ]'
 check "a review quoting the OpenAI key is not posted" '! grep -qx review "$LOG"'
+
+CMD_ID=42 run requested '{"decision":"review-only","round":1,"findings":[]}'
+check "every status names the pull request and the command it ran for" '[ -s "$LOG.descriptions" ] && ! grep -v "(#1 cmd:42)$" "$LOG.descriptions"'
 
 exit "$fail"

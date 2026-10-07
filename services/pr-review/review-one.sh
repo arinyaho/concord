@@ -31,11 +31,13 @@ gh auth setup-git   # git itself does not read GH_TOKEN; the clone below needs t
 ME=$(gh api user --jq .login)   # whose reactions are ours to clear
 
 # Retried, because a status left pending makes the commit look under review.
+# The description names the pull request and the command: other pull requests
+# can share the commit, and the poller ties a failure to the command it ran for.
 status() {
   local attempt
   for attempt in 1 2 3; do
     gh api -X POST "repos/$REPO/statuses/$SHA" -f context=concord/review \
-      -f state="$1" -f description="$2" >/dev/null 2>&1 && return 0
+      -f state="$1" -f description="$2 (#$PR${CMD_ID:+ cmd:$CMD_ID})" >/dev/null 2>&1 && return 0
     sleep "$attempt"
   done
   return 1

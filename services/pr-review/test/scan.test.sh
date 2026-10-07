@@ -40,6 +40,7 @@ case "$1 $2" in
   "api repos/"*)
     path=${2#repos/}; repo=${path%%/commits/*}
     f="$(repo_dir "$repo")/status.json"
+    [ -e "$(repo_dir "$repo")/status.fail" ] && { echo "HTTP 502" >&2; exit 1; }
     if [ -f "$f" ]; then out "$f"; else echo '{"statuses":[]}' > "$f.empty"; out "$f.empty"; fi ;;
   *) echo "fake gh: unexpected $*" >&2; exit 1 ;;
 esac
@@ -66,7 +67,8 @@ fixture() {
 # REST shapes: issue comments and pull request reviews.
 comment() { printf '{"user":{"login":"%s"},"author_association":"%s","body":"%s","id":%s,"created_at":"%s"}' "$1" "$2" "$3" "$4" "${5:-$recent}"; }
 review() { printf '{"user":{"login":"%s"},"body":"%s"}' "$1" "$2"; }
-status() { printf '{"statuses":[{"context":"concord/review","state":"%s","updated_at":"%s"}]}' "$1" "$2"; }
+# status <state> <updated_at> [description suffix, default "(#1)"]
+status() { printf '{"statuses":[{"context":"concord/review","state":"%s","updated_at":"%s","description":"review %s"}]}' "$1" "$2" "${3:-(#1)}"; }
 marker() { printf '<!-- concord-review: %s mode:%s%s -->' "$1" "$2" "${3:+ cmd:$3}"; }
 
 fixture fresh '[]' '[]'
@@ -79,7 +81,13 @@ fixture running '[]' '[]' "$(status pending "$recent")"
 fixture died-running '[]' '[]' "$(status pending "$old")"
 fixture failed '[]' '[]' "$(status error "$recent")"
 fixture failed-then-asked "[$(comment alice MEMBER "@concord diff" 9 "$recent")]" '[]' "$(status error "$earlier")"
-fixture asked-then-failed "[$(comment alice MEMBER "@concord diff" 10 "$earlier")]" '[]' "$(status error "$recent")"
+fixture asked-then-failed "[$(comment alice MEMBER "@concord diff" 10 "$earlier")]" '[]' "$(status error "$recent" "(#1 cmd:10)")"
+fixture other-failure-after-ask "[$(comment alice MEMBER "@concord diff" 13 "$earlier")]" '[]' "$(status error "$recent")"
+fixture failed-other-pr '[]' '[]' "$(status error "$recent" "(#2)")"
+fixture running-other-pr '[]' '[]' "$(status pending "$recent" "(#2)")"
+fixture status-lookup-fails '[]' '[]'
+touch "$FIXTURES/o_status-lookup-fails/status.fail"
+fixture command-word-prefix "[$(comment alice MEMBER "@concord difference of opinion" 14)]" "[$(review reviewbot "$(marker "$SHA" broad)")]"
 fixture marker-quoted-in-body '[]' "[$(review reviewbot "$(marker "$OTHER" broad)\\n- finding text $(marker "$SHA" broad)")]"
 fixture outsider-asks "[$(comment outsider NONE "@concord broad" 11)]" "[$(review reviewbot "$(marker "$SHA" broad)")]"
 fixture member-asks "[$(comment alice MEMBER "@concord broad" 12)]" "[$(review reviewbot "$(marker "$SHA" broad)")]"
@@ -97,6 +105,11 @@ expect=(
   "failed:"
   "failed-then-asked:diff"
   "asked-then-failed:"
+  "other-failure-after-ask:diff"
+  "failed-other-pr:broad"
+  "running-other-pr:broad"
+  "status-lookup-fails:"
+  "command-word-prefix:"
   "marker-quoted-in-body:diff"
   "outsider-asks:"
   "member-asks:broad"
