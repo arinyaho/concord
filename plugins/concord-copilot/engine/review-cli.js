@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const { execFileSync } = require('node:child_process');
 const path = require('node:path');
+const { TextDecoder } = require('node:util');
 const { safeIdForFilename } = require('./artifact-name');
 const { writeFileAtomic, publishDirectoryAtomic } = require('./atomic-write');
 const dodExec = require('./dod-exec');
@@ -371,19 +372,56 @@ function requireRef(ref, verb) {
 // Keep this parser shared by artifact normalization and plan-fixes so retry and
 // fail-closed coverage enforce the same contract.
 function changedGitPaths(diffText) {
+  const decode = (raw, suffixAllowed = false) => {
+    const valid = (file) => {
+      if (!file || file.includes('\0')) throw new Error('harness-failure: malformed quoted Git path');
+      return file;
+    };
+    if (!raw) throw new Error('harness-failure: malformed quoted Git path');
+    if (!raw.startsWith('"')) return valid(suffixAllowed ? raw.split('\t', 1)[0] : raw);
+    const bytes = []; const escapes = { a: 7, b: 8, f: 12, n: 10, r: 13, t: 9, v: 11, '"': 34, '\\': 92 };
+    let i = 1;
+    while (i < raw.length && raw[i] !== '"') {
+      if (raw[i] === '\\') {
+        i++;
+        if (/^[0-7]$/.test(raw[i] || '')) {
+          if (!/^[0-7]{3}$/.test(raw.slice(i, i + 3))) throw new Error('harness-failure: malformed quoted Git path');
+          const byte = Number.parseInt(raw.slice(i, i + 3), 8);
+          if (byte > 255) throw new Error('harness-failure: malformed quoted Git path');
+          bytes.push(byte); i += 3;
+        } else if (Object.hasOwn(escapes, raw[i])) bytes.push(escapes[raw[i++]]);
+        else throw new Error('harness-failure: malformed quoted Git path');
+      } else {
+        const point = raw.codePointAt(i);
+        bytes.push(...Buffer.from(String.fromCodePoint(point), 'utf8'));
+        i += point > 0xffff ? 2 : 1;
+      }
+    }
+    if (raw[i] !== '"' || (raw.slice(i + 1) && (!suffixAllowed || !raw.slice(i + 1).startsWith('\t')))) throw new Error('harness-failure: malformed quoted Git path');
+    try { return valid(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Uint8Array.from(bytes))); }
+    catch (_) { throw new Error('harness-failure: malformed quoted Git path'); }
+  };
   const paths = [];
   const add = (file) => {
     if (file && file !== '/dev/null' && !paths.includes(file)) paths.push(file);
   };
+  let inHunk = false;
   for (const line of String(diffText).split(/\r?\n/)) {
-    let match = /^--- a\/(.+?)(?:\t.*)?$/.exec(line);
-    if (match) { add(match[1]); continue; }
-    match = /^\+\+\+ b\/(.+?)(?:\t.*)?$/.exec(line);
-    if (match) { add(match[1]); continue; }
-    match = /^rename from (.+)$/.exec(line);
-    if (match) { add(match[1]); continue; }
-    match = /^rename to (.+)$/.exec(line);
-    if (match) add(match[1]);
+    if (line.startsWith('diff --git ')) { inHunk = false; continue; }
+    if (line.startsWith('@@')) { inHunk = true; continue; }
+    if (inHunk) continue;
+    if (line.startsWith('--- ') || line.startsWith('+++ ')) {
+      const prefix = line.startsWith('--- ') ? 'a/' : 'b/';
+      const raw = line.slice(4);
+      if (!raw.startsWith('"') && !raw.startsWith(prefix) && !raw.startsWith('/dev/null')) continue;
+      const file = decode(raw, true);
+      if (file === '/dev/null') continue;
+      if (!file.startsWith(prefix) || file.length === prefix.length) throw new Error('harness-failure: malformed quoted Git path');
+      add(file.slice(prefix.length));
+      continue;
+    }
+    if (line.startsWith('rename from ')) { add(decode(line.slice('rename from '.length))); continue; }
+    if (line.startsWith('rename to ')) add(decode(line.slice('rename to '.length)));
   }
   return paths;
 }

@@ -171,6 +171,60 @@ test('changedGitPaths includes added, modified, deleted, and rename paths withou
   ]);
 });
 
+test('changedGitPaths decodes Git C-quoted UTF-8 and escaped rename paths', () => {
+  const repo = initRepo();
+  fs.writeFileSync(path.join(repo, 'é-old.js'), 'same\n');
+  fs.writeFileSync(path.join(repo, 'é-gone.js'), 'gone\n');
+  execFileSync('git', ['add', 'é-old.js', 'é-gone.js'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add unicode'], { cwd: repo });
+  execFileSync('git', ['mv', 'é-old.js', 'é-new.js'], { cwd: repo });
+  execFileSync('git', ['rm', 'a.txt', 'é-gone.js'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'rename and delete'], { cwd: repo });
+  const diff = execFileSync('git', ['diff', 'HEAD~1...HEAD'], { cwd: repo, encoding: 'utf8' });
+  assert.match(diff, /rename from "\\303\\251-old\.js"/);
+  assert.match(diff, /--- "a\/\\303\\251-gone\.js"/);
+  assert.deepStrictEqual(cli.changedGitPaths(diff), ['a.txt', 'é-gone.js', 'é-old.js', 'é-new.js']);
+  const escaped = '--- "a/name\\twith\\nline\\\\slash\\\"quote"\n+++ "b/name\\twith\\nline\\\\slash\\\"quote"\n';
+  assert.deepStrictEqual(cli.changedGitPaths(escaped), ['name\twith\nline\\slash"quote']);
+  assert.deepStrictEqual(cli.changedGitPaths('rename to "\\357\\273\\277x"\n'), ['\ufeffx']);
+  assert.throws(() => cli.changedGitPaths('+++ "b/\\q.js"\n'), /quoted Git path/);
+  assert.throws(() => cli.changedGitPaths('rename to "\\377.js"\n'), /quoted Git path/);
+  assert.throws(() => cli.changedGitPaths('rename to "\\400x"\n'), /quoted Git path/);
+  assert.throws(() => cli.changedGitPaths('rename to ""\n'), /quoted Git path/);
+  assert.throws(() => cli.changedGitPaths('rename to "\\000x"\n'), /quoted Git path/);
+});
+
+test('changedGitPaths ignores quoted header lookalikes inside a real Git hunk', () => {
+  const repo = initRepo();
+  fs.writeFileSync(path.join(repo, 'a.txt'), '-- "a/phantom.js"\nold\n');
+  execFileSync('git', ['commit', '-aqm', 'source with header lookalike'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), '++ "b/\\q.js"\nnew\n');
+  execFileSync('git', ['commit', '-aqm', 'replace source'], { cwd: repo });
+  const diff = execFileSync('git', ['diff', 'HEAD~1...HEAD'], { cwd: repo, encoding: 'utf8' });
+  assert.match(diff, /^--- "a\/phantom\.js"$/m);
+  assert.match(diff, /^\+\+\+ "b\/\\q\.js"$/m);
+  assert.deepStrictEqual(cli.changedGitPaths(diff), ['a.txt']);
+});
+
+test('plan-fixes enforces coverage and keeps intent findings for a C-quoted Unicode file', () => {
+  const repo = initRepoWithIntent('printf "REQ: unicode file"'); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'é.js'), 'old\n');
+  execFileSync('git', ['add', 'é.js'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add unicode'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'é.js'), 'new\n');
+  execFileSync('git', ['commit', '-aqm', 'change unicode'], { cwd: repo });
+  const ref = 'feat/unicode'; const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+  assert.match(fs.readFileSync(path.join(dir, `round-${n}-diff.txt`), 'utf8'), /\+\+\+ "b\/\\303\\251\.js"/);
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: [], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'intent', { status: 'ok', findings: [{ id: 'intent:unicode', file: 'é.js', span: 'new', requirement: 'REQ: unicode file', summary: 'missing behavior' }] });
+  assert.throws(() => run(['plan-fixes', ref], { env }), /coverage -- changed file\(s\) never examined: é\.js/);
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['é.js'], findings: [] });
+  run(['plan-fixes', ref], { env });
+  assert.deepStrictEqual(review.readLedger(dir, review.targetSlug(ref)).intent_parked.map((f) => f.id), ['intent:unicode']);
+});
+
 test('artifact-normalize fails closed on an invalid id instead of repairing evidence', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
