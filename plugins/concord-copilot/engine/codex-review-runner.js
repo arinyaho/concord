@@ -143,7 +143,7 @@ function sameKeys(actual, expected) {
   return actual.length === expected.length && [...actual].sort().every((key, index) => key === [...expected].sort()[index]);
 }
 
-function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoningEffort, serviceTier, timeoutMs, abortSignal, codexExecutable, env, untrustedCheckout = false }) {
+function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoningEffort, serviceTier, timeoutMs, abortSignal, codexExecutable, env }) {
   return new Promise((resolve, reject) => {
     const resolvedCodex = codexExecutable || resolveCodexExecutable(repoRoot, { env });
     const invocationId = crypto.randomUUID();
@@ -167,8 +167,6 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
       ...(model ? ['--model', model] : []),
       ...(effort ? ['--config', `model_reasoning_effort=${JSON.stringify(effort)}`] : []),
       ...(tier ? ['--config', `service_tier=${JSON.stringify(tier)}`] : []),
-      // An untrusted checkout's AGENTS.md and execpolicy rules must not steer the reviewer.
-      ...(untrustedCheckout ? ['--config', 'project_doc_max_bytes=0', '--ignore-rules'] : []),
       '--skip-git-repo-check', '--json', ...(isWindows ? ['-'] : [prompt]),
     ], needsDoubleEscape(resolvedCodex.command, repoRoot)), crossPlatformOpts({ cwd: repoRoot, env, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'ignore'], detached: !isWindows }));
     if (isWindows) {
@@ -415,8 +413,10 @@ async function runRounds(options) {
   // A review-only run never edits, so it has no definition of done to check.
   const noDod = reviewOnly || !!options.noDod;
   if (reviewOnly && options.initiativeRunKey) throw new Error('review-until-green: reviewOnly cannot run inside an initiative, which records every round');
-  // Copilot has no way to ignore the checkout's own instruction files and runs with every tool allowed.
-  if (reviewOnly && options.reviewer === 'copilot') throw new Error('review-until-green: reviewOnly supports the claude and codex reviewers; copilot cannot be kept from an untrusted checkout\'s configuration');
+  // Only Claude can be kept from an untrusted checkout's configuration
+  // (--setting-sources user). Codex trusts and loads the checkout's own skills
+  // whatever its configuration says, and Copilot has no such control at all.
+  if (reviewOnly && options.reviewer !== 'claude') throw new Error(`review-until-green: reviewOnly supports only the claude reviewer; ${options.reviewer || 'codex'} cannot be kept from an untrusted checkout's configuration`);
   const repoRoot = canonicalPath(configuredRepoRoot);
   const canonicalRepoRoot = repoRoot;
   const canonicalStateDir = options.initiativeStateDir && canonicalPath(options.initiativeStateDir);

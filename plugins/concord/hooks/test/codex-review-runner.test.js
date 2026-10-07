@@ -2584,24 +2584,12 @@ test('providerExec keeps project settings out of a Claude reviewer on an untrust
   }
 });
 
-test('codexExec keeps AGENTS.md and project rules out of a Codex reviewer on an untrusted checkout', async () => {
-  const binDir = temp();
-  const codex = path.join(binDir, 'codex');
-  const capture = path.join(binDir, 'args.json');
-  fs.writeFileSync(codex, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(capture)}, JSON.stringify(process.argv.slice(2)));\n`);
-  fs.chmodSync(codex, 0o755);
-  await codexExec({ role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir, untrustedCheckout: true, codexExecutable: { command: codex, version: 'codex-cli 0.154.0' } });
-  const args = JSON.parse(fs.readFileSync(capture, 'utf8'));
-  assert.ok(args.includes('project_doc_max_bytes=0'), `args: ${args.join(' ')}`);
-  assert.ok(args.includes('--ignore-rules'));
-});
-
 test('reviewOnly treats the checkout as untrusted: no repository intent command and no project agent config', async () => {
   const h = harness();
   const inputs = [];
   const cli = (args) => (args[0] === 'findings' ? { findings: [] } : h.cli(args));
   const spawn = (input) => { inputs.push(input); return h.spawn(input); };
-  await runReviewUntilGreen({ ref: 'feature/untrusted', base: 'main', repoRoot: '/repo', runCli: cli, spawn, reviewOnly: true, noBroad: true });
+  await runReviewUntilGreen({ ref: 'feature/untrusted', base: 'main', repoRoot: '/repo', runCli: cli, spawn, reviewOnly: true, noBroad: true, reviewer: 'claude' });
   const start = h.calls.find((c) => c[0] === 'cli' && c[1] === 'round-start');
   assert.ok(start.includes('--no-intent-command'), `round-start args: ${start.join(' ')}`);
   assert.ok(inputs.length && inputs.every((input) => input.untrustedCheckout === true));
@@ -2615,7 +2603,7 @@ test('reviewOnly keeps its round out of the persistent review ledger', async () 
   const previous = process.env.REVIEW_STATE_DIR;
   process.env.REVIEW_STATE_DIR = path.join(dir, 'persistent');
   try {
-    await runReviewUntilGreen({ ref: 'feature/isolated', base: 'main', repoRoot: dir, cliPath: fakeCli, reviewOnly: true, spawn: () => ({ status: 0 }) });
+    await runReviewUntilGreen({ ref: 'feature/isolated', base: 'main', repoRoot: dir, cliPath: fakeCli, reviewOnly: true, reviewer: 'claude', spawn: () => ({ status: 0 }) });
   } finally {
     if (previous === undefined) delete process.env.REVIEW_STATE_DIR; else process.env.REVIEW_STATE_DIR = previous;
   }
@@ -2629,11 +2617,11 @@ test('reviewOnly keeps its round out of the persistent review ledger', async () 
   assert.ok(!fs.existsSync(seen[0]), 'the isolated state is removed when the run ends');
 });
 
-test('reviewOnly refuses a Copilot reviewer, which cannot be kept from an untrusted checkout\'s configuration', async () => {
+for (const reviewer of ['codex', 'copilot']) test(`reviewOnly refuses the ${reviewer} reviewer, which cannot be kept from an untrusted checkout's configuration`, async () => {
   const h = harness();
   await assert.rejects(
-    runReviewUntilGreen({ ref: 'feature/copilot', base: 'main', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn, reviewOnly: true, reviewer: 'copilot' }),
-    /reviewOnly supports the claude and codex reviewers/,
+    runReviewUntilGreen({ ref: 'feature/untrusted-reviewer', base: 'main', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn, reviewOnly: true, reviewer }),
+    /reviewOnly supports only the claude reviewer/,
   );
   assert.deepStrictEqual(h.calls, [], 'nothing starts before the refusal');
 });
