@@ -67,13 +67,13 @@ unreact() {
 unreact '+1'
 
 rid=$(gh api -X POST "repos/$REPO/issues/$PR/reactions" -f content=eyes --jq .id 2>/dev/null || true)
-work=$(mktemp -d); intent=$(mktemp); intent_full=$(mktemp); claude_config=$(mktemp -d); posted=
+work=$(mktemp -d); intent=$(mktemp); claude_config=$(mktemp -d); posted=
 # Runs on every exit -- success, a failed command under set -e, or a cancel
 # because a newer commit superseded this review. Only a posted review settles
 # the status; anything else leaves it in error rather than pending.
 finish() {
   if [ -n "$rid" ]; then gh api -X DELETE "repos/$REPO/issues/$PR/reactions/$rid" >/dev/null 2>&1 || true; fi
-  rm -rf "$work" "$intent" "$intent_full" "$claude_config"
+  rm -rf "$work" "$intent" "$claude_config"
   [ -n "$posted" ] && return
   status error "review did not complete" || true
   # A requested review that fails is marked done, so the poller does not run
@@ -116,10 +116,8 @@ if [ "$MODE" = broad ]; then
           --jq '"\n\n## Closes \(.number): \(.title)\n\n\(.body)"' 2>/dev/null \
           || printf '\n\n## Closes %s#%s (not readable with the review token)\n' "$issue_repo" "$issue"
       done
-  } > "$intent_full"
-  # Truncated after it is written: cutting the pipe would kill the writers
-  # with SIGPIPE. The engine refuses intent over 256 KiB.
-  head -c 200000 "$intent_full" > "$intent"
+  } > "$intent"
+  # The engine refuses intent over 256 KiB rather than reviewing an incomplete requirement set.
   INTENT_ARGS=(--intent-file "$intent")
 fi
 

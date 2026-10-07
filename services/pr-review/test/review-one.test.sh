@@ -8,6 +8,8 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="${1:-$HERE/../review-one.sh}"
+REAL_NODE=$(command -v node)
+export REAL_NODE INTENT_READER="$HERE/../../../plugins/concord/core/intent.js"
 work=$(mktemp -d)
 trap 'if [ -n "${KEEP:-}" ]; then echo "kept $work"; else rm -rf "$work"; fi' EXIT
 mkdir -p "$work/bin"
@@ -42,13 +44,16 @@ case "$*" in
   *"--json baseRefName"*) out '{"baseRefName":"main"}' ;;
   *"--json title,body"*) out '{"title":"Add a","body":"The PR body says a.txt must exist."}' ;;
   *"--json closingIssuesReferences"*)
-    if [ "${ISSUE_REF:-foreign}" = local ] || [ "${ISSUE_REF:-foreign}" = unreadable ]; then
+    if [ "${ISSUE_REF:-foreign}" = large ]; then
+      jq -r "$jq_expr" "$ISSUE_CASE_DIR/refs.json"
+    elif [ "${ISSUE_REF:-foreign}" = local ] || [ "${ISSUE_REF:-foreign}" = unreadable ]; then
       out '{"closingIssuesReferences":[{"number":6,"repository":{"name":"r","owner":{"login":"o"}}}]}'
     else
       out '{"closingIssuesReferences":[{"number":5,"repository":{"name":"private","owner":{"login":"other"}}}]}'
     fi ;;
   "issue view "*)
     echo "$*" >> "$LOG.issue-views"
+    if [ "${ISSUE_REF:-}" = large ]; then jq -r "$jq_expr" "$ISSUE_CASE_DIR/$3.json"; exit; fi
     if [ "${ISSUE_REF:-}" = unreadable ]; then echo "HTTP 404" >&2; exit 1; fi
     if [ "$5" = other/private ]; then
       out '{"number":5,"title":"Foreign requirement","body":"FOREIGN_BODY_SENTINEL"}'
@@ -71,6 +76,7 @@ esac
 EOF
 cat > "$work/bin/node" <<'EOF'
 #!/usr/bin/env bash
+set -euo pipefail
 # Stands in for the review engine: keeps the intent it was given and the
 # configuration directory it would run Claude with, prints the result.
 printf '%s\n' "${CLAUDE_CONFIG_DIR:-unset}" > "$LOG.config-dir"
@@ -78,7 +84,10 @@ printf '%s\n' "$*" > "$LOG.args"
 printf '%s\n' "${OPENAI_API_KEY:-unset}" > "$LOG.openai-key"
 ls -A "${CLAUDE_CONFIG_DIR:-/nonexistent}" > "$LOG.config-files" 2>&1 || true
 while [ $# -gt 0 ]; do
-  [ "$1" = --intent-file ] && cp "$2" "$LOG.intent"
+  if [ "$1" = --intent-file ]; then
+    cp "$2" "$LOG.intent"
+    "$REAL_NODE" -e 'require(process.argv[1]).readIntentFile(process.argv[2])' "$INTENT_READER" "$2"
+  fi
   shift
 done
 printf '%s\n' "$ENGINE_RESULT"
@@ -115,6 +124,31 @@ check "same-repo issue body reaches intent" 'grep -q "LOCAL_BODY_SENTINEL" "$LOG
 ISSUE_REF=unreadable run unreadable-same-repo-issue '{"decision":"review-only","round":1,"findings":[]}'
 check "an unreadable same-repo issue is fetched" 'grep -q "issue view 6 --repo o/r" "$LOG.issue-views"'
 check "an unreadable same-repo issue is named without failing review" 'grep -q "o/r#6 (not readable" "$LOG.intent" && grep -qx review "$LOG"'
+
+# Each issue body is individually small; their accumulated requirements cross
+# the old 200 KB truncation point and then the engine's existing 256 KiB cap.
+make_large_issues() {
+  export ISSUE_CASE_DIR="$work/issues-$1"
+  mkdir -p "$ISSUE_CASE_DIR"
+  python3 - "$ISSUE_CASE_DIR" "$1" <<'PY'
+import json, pathlib, sys
+folder, count = pathlib.Path(sys.argv[1]), int(sys.argv[2])
+refs = [{"number": n, "repository": {"name": "r", "owner": {"login": "o"}}} for n in range(6, 6 + count)]
+(folder / "refs.json").write_text(json.dumps({"closingIssuesReferences": refs}))
+for n in range(6, 6 + count):
+    body = "x" * 55_000 + ("TRAILING_REQUIREMENT_SENTINEL" if n == 6 + count - 1 else "")
+    (folder / f"{n}.json").write_text(json.dumps({"number": n, "title": f"Issue {n}", "body": body}))
+PY
+}
+make_large_issues 4
+ISSUE_REF=large run large-valid-intent '{"decision":"review-only","round":1,"findings":[]}'
+check "a valid intent over 200 KB retains its last requirement" 'grep -q TRAILING_REQUIREMENT_SENTINEL "$LOG.intent"'
+check "a valid intent over 200 KB posts its review" 'grep -qx review "$LOG"'
+
+make_large_issues 5
+ISSUE_REF=large run oversized-intent '{"decision":"review-only","round":1,"findings":[]}'
+check "an intent over the engine cap posts no review or broad marker" '[ ! -e "$LOG.review" ] && ! grep -qx review "$LOG"'
+check "an intent over the engine cap ends in error" '[ "$(grep ^status "$LOG" | tail -1)" = "status error" ]'
 
 run leak '{"decision":"review-only","round":1,"findings":[{"id":"correctness:x","category":"correctness","file":"a.txt","line":1,"span":"change","summary":"token is model-token-secret","requirement":""}]}'
 check "a review quoting a credential is not posted" '! grep -qx review "$LOG"'
