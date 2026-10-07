@@ -51,9 +51,9 @@ for repo in $REPOS; do
     # A marker counts only as the first line of a body this account posted:
     # the lines after it carry model-written finding text. A posted review
     # leaves "concord-review:", a failed requested one "concord-review-failed:".
-    markers=$(jq -rn --arg me "$ME" --argjson c "$comments" --argjson r "$reviews" '($c + $r)[]
+    markers=$(printf '%s\n%s\n' "$comments" "$reviews" | jq -r --arg me "$ME" '.[]
                  | select(.user.login == $me) | .body // "" | split("\n")[0]
-                 | select(startswith("<!-- concord-review"))')
+                 | select(startswith("<!-- concord-review"))') || continue
 
     # Commands from someone with a role on the repository, newest first. The
     # newest one not yet done runs: done means a marker names it, whether its

@@ -167,6 +167,25 @@ PATH="$work/bin:$PATH" REPOS="o/fresh" SELF=o/self GH_TOKEN=x SELF_TOKEN=x DRY_R
 n=$(grep -c "/issues/1/comments" "$FIXTURES/calls.log" || true)
 if [ "$n" = 1 ]; then echo "ok   one conversation read per pull request"; else echo "FAIL one conversation read per pull request: $n"; fail=1; fi
 
+# GitHub conversations can exceed the per-argument OS limit. Keep the payload
+# in fixture files so only scan.sh's jq invocation can trigger E2BIG.
+fixture large-reviewed '[]' '[]'
+python3 - "$FIXTURES/o_large-reviewed" "$SHA" <<'PY'
+import json, pathlib, sys
+folder, sha = pathlib.Path(sys.argv[1]), sys.argv[2]
+padding = "x" * 60_000
+(folder / "comments.json").write_text(json.dumps([{"user": {"login": "outsider"}, "body": padding}] * 3))
+(folder / "reviews.json").write_text(json.dumps(
+    [{"user": {"login": "reviewbot"}, "body": f"<!-- concord-review: {sha} mode:broad -->"}]
+    + [{"user": {"login": "reviewbot"}, "body": padding}] * 3
+))
+PY
+if large_out=$(PATH="$work/bin:$PATH" REPOS="o/large-reviewed o/fresh" SELF=o/self GH_TOKEN=x SELF_TOKEN=x DRY_RUN=1 MAX_PER_RUN=5 bash "$SCAN" 2>"$work/large-scan.err"); then
+  if grep -q 'dispatch (broad, auto, default): o/fresh#1' <<<"$large_out" && ! grep -q 'dispatch .*o/large-reviewed#1' <<<"$large_out"; then
+    echo "ok   a large reviewed conversation is skipped and the next pull request is scanned"
+  else echo "FAIL a large reviewed conversation is skipped and the next pull request is scanned"; fail=1; fi
+else echo "FAIL a large conversation aborts the poll: $(head -1 "$work/large-scan.err")"; fail=1; fi
+
 # A dispatched review is marked pending at once, so a run still queued is not dispatched again.
 : > "$FIXTURES/calls.log"
 PATH="$work/bin:$PATH" REPOS="o/fresh" SELF=o/self GH_TOKEN=x SELF_TOKEN=x bash "$SCAN" >/dev/null 2>&1
