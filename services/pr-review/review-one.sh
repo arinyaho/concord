@@ -44,13 +44,13 @@ unreact() {
 unreact '+1'
 
 rid=$(gh api -X POST "repos/$REPO/issues/$PR/reactions" -f content=eyes --jq .id 2>/dev/null || true)
-work=$(mktemp -d); intent=$(mktemp); posted=
+work=$(mktemp -d); intent=$(mktemp); claude_config=$(mktemp -d); posted=
 # Runs on every exit -- success, a failed command under set -e, or a cancel
 # because a newer commit superseded this review. Only a posted review settles
 # the status; anything else leaves it in error rather than pending.
 finish() {
   [ -n "$rid" ] && gh api -X DELETE "repos/$REPO/issues/$PR/reactions/$rid" >/dev/null 2>&1 || true
-  rm -rf "$work" "$intent" "$intent.full"
+  rm -rf "$work" "$intent" "$intent.full" "$claude_config"
   [ -n "$posted" ] || status error "review did not complete"
 }
 trap finish EXIT
@@ -91,8 +91,10 @@ fi
 
 # The reviewer never sees the review token: it reads the checkout, and only
 # this script talks to GitHub. The engine treats the checkout as untrusted and
-# keeps the round in a throwaway state directory.
-result=$(cd "$work" && env -u GH_TOKEN -u GITHUB_TOKEN \
+# keeps the round in a throwaway state directory. An empty Claude configuration
+# directory keeps the runner account's own allow-lists, hooks, MCP servers, and
+# plugins away from the reviewer; the OAuth token still comes from the environment.
+result=$(cd "$work" && env -u GH_TOKEN -u GITHUB_TOKEN CLAUDE_CONFIG_DIR="$claude_config" \
   node "$ENGINE" "concord-pr-$PR" "$BASE" --review-only "$BROAD" --reviewer claude ${INTENT_ARGS[@]+"${INTENT_ARGS[@]}"} \
     ${REVIEW_MODEL:+--reviewer-model "$REVIEW_MODEL"} \
   | tail -1) || result=''
@@ -122,13 +124,20 @@ header="$MARKER
 $MODE_NOTE
 $verdict"
 
-# Inline where the finding has a line; GitHub rejects the whole review when a
-# line is outside the diff, so on rejection every finding goes in the body.
+# Inline only where the finding's line is inside a diff hunk: GitHub rejects
+# the whole review when one inline comment falls outside them. If it rejects
+# the review anyway, every finding goes in the body.
+hunks=$(git -C "$work" diff -U3 "$BASE" HEAD | awk '
+  /^\+\+\+ b\// { file = substr($0, 7) }
+  /^@@ / { split($3, a, ","); start = substr(a[1], 2); len = (a[2] == "" ? 1 : a[2])
+           if (len > 0) printf "%s\t%d\t%d\n", file, start, start + len - 1 }' |
+  jq -R -s 'split("\n") | map(select(length > 0) | split("\t") | {file: .[0], from: (.[1] | tonumber), to: (.[2] | tonumber)})')
 review() {  # $1 = inline | body
-  jq --arg sha "$SHA" --arg header "$header" --arg how "$1" '
+  jq --arg sha "$SHA" --arg header "$header" --arg how "$1" --argjson hunks "$hunks" '
     def text: "**\(.category)** \(.summary)" + (if .requirement != "" then "\n\n> \(.requirement)" else "" end) + "\n\n`\(.id)`";
-    (if $how == "inline" then [.findings[] | select(.line != null)] else [] end) as $inline
-    | ([.findings[] | select(($how != "inline") or (.line == null))]) as $rest
+    def in_diff: . as $f | $f.line != null and any($hunks[]; .file == $f.file and $f.line >= .from and $f.line <= .to);
+    (if $how == "inline" then [.findings[] | select(in_diff)] else [] end) as $inline
+    | ([.findings[] | select(($how != "inline") or (in_diff | not))]) as $rest
     | { commit_id: $sha, event: "COMMENT",
         body: ([$header] + ($rest | map("- `\(.file)\(if .line then ":\(.line)" else "" end)` " + text)) | join("\n\n")),
         comments: ($inline | map({ path: .file, line: .line, side: "RIGHT", body: text })) }' <<<"$result"

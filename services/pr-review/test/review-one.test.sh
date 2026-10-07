@@ -15,7 +15,9 @@ mkdir -p "$work/bin"
 # The reviewed repository: main, and a pull request head one commit ahead.
 repo="$work/upstream"
 git init -q -b main "$repo"
-git -C "$repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
+printf 'one\ntwo\n' > "$repo/b.txt"
+git -C "$repo" add b.txt
+git -C "$repo" -c user.email=t@t -c user.name=t commit -q -m base
 echo change > "$repo/a.txt"
 git -C "$repo" checkout -q -b feature
 git -C "$repo" add a.txt
@@ -51,7 +53,10 @@ esac
 EOF
 cat > "$work/bin/node" <<'EOF'
 #!/usr/bin/env bash
-# Stands in for the review engine: keeps the intent it was given, prints the result.
+# Stands in for the review engine: keeps the intent it was given and the
+# configuration directory it would run Claude with, prints the result.
+printf '%s\n' "${CLAUDE_CONFIG_DIR:-unset}" > "$LOG.config-dir"
+ls -A "${CLAUDE_CONFIG_DIR:-/nonexistent}" > "$LOG.config-files" 2>&1 || true
 while [ $# -gt 0 ]; do
   [ "$1" = --intent-file ] && cp "$2" "$LOG.intent"
   shift
@@ -74,10 +79,16 @@ check "clean review is posted" 'grep -qx review "$LOG"'
 check "clean review settles the status to success" '[ "$(grep ^status "$LOG" | tail -1)" = "status success" ]'
 check "clean review leaves a thumbs-up" 'grep -qx "+1" "$LOG"'
 check "an unreadable closing issue is named, not fatal" 'grep -q "other/private#5 (not readable" "$LOG.intent"'
+check "the reviewer runs with its own Claude configuration directory" '[ "$(cat "$LOG.config-dir")" != unset ] && [ "$(cat "$LOG.config-dir")" != "$HOME/.claude" ]'
+check "that directory holds no settings of the runner account" '[ ! -s "$LOG.config-files" ]'
 check "the pull request body reaches the intent" 'grep -q "must exist" "$LOG.intent"'
 
 run leak '{"decision":"review-only","round":1,"findings":[{"id":"correctness:x","category":"correctness","file":"a.txt","line":1,"span":"change","summary":"token is model-token-secret","requirement":""}]}'
 check "a review quoting a credential is not posted" '! grep -qx review "$LOG"'
 check "a review quoting a credential ends in error" '[ "$(grep ^status "$LOG" | tail -1)" = "status error" ]'
+
+run outside-diff '{"decision":"review-only","round":1,"findings":[{"id":"correctness:in","category":"correctness","file":"a.txt","line":1,"span":"change","summary":"in the diff","requirement":""},{"id":"gate:cross-context:out","category":"cross-context","file":"b.txt","line":2,"span":"two","summary":"unchanged file","requirement":""}]}'
+check "a finding on a changed line is posted inline" '[ "$(jq -c "[.comments[].path]" "$LOG.review")" = "[\"a.txt\"]" ]'
+check "a finding outside the diff goes in the body" 'jq -r .body "$LOG.review" | grep -q "b.txt:2"'
 
 exit "$fail"
