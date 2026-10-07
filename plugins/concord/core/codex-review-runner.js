@@ -415,6 +415,8 @@ async function runRounds(options) {
   // A review-only run never edits, so it has no definition of done to check.
   const noDod = reviewOnly || !!options.noDod;
   if (reviewOnly && options.initiativeRunKey) throw new Error('review-until-green: reviewOnly cannot run inside an initiative, which records every round');
+  // Copilot has no way to ignore the checkout's own instruction files and runs with every tool allowed.
+  if (reviewOnly && options.reviewer === 'copilot') throw new Error('review-until-green: reviewOnly supports the claude and codex reviewers; copilot cannot be kept from an untrusted checkout\'s configuration');
   const repoRoot = canonicalPath(configuredRepoRoot);
   const canonicalRepoRoot = repoRoot;
   const canonicalStateDir = options.initiativeStateDir && canonicalPath(options.initiativeStateDir);

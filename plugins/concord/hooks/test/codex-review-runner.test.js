@@ -2628,3 +2628,12 @@ test('reviewOnly keeps its round out of the persistent review ledger', async () 
   assert.strictEqual(new Set(seen).size, 1, 'one isolated directory for the whole run');
   assert.ok(!fs.existsSync(seen[0]), 'the isolated state is removed when the run ends');
 });
+
+test('reviewOnly refuses a Copilot reviewer, which cannot be kept from an untrusted checkout\'s configuration', async () => {
+  const h = harness();
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/copilot', base: 'main', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn, reviewOnly: true, reviewer: 'copilot' }),
+    /reviewOnly supports the claude and codex reviewers/,
+  );
+  assert.deepStrictEqual(h.calls, [], 'nothing starts before the refusal');
+});
