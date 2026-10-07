@@ -2706,3 +2706,22 @@ test('reviewOnly runs a Codex reviewer from its own CODEX_HOME, which marks the 
   }
   assert.ok(!fs.existsSync(seen[0].home), 'the review-only CODEX_HOME is removed when the run ends');
 });
+
+test('reviewOnly fails when a reviewer moved HEAD, even with a clean worktree', async () => {
+  const repo = cleanRepo();
+  const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  const h = harness();
+  const cli = (args) => {
+    if (args[0] === 'findings') return { findings: [] };
+    const out = h.cli(args);
+    return args[0] === 'round-start' ? { ...out, head } : out;
+  };
+  const spawn = (input) => {
+    if (input.role === 'correctness') execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'moved'], { cwd: repo });
+    return h.spawn(input);
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/moved', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'claude', noBroad: true }),
+    /reviewer moved HEAD/,
+  );
+});

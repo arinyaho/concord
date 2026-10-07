@@ -958,6 +958,7 @@ async function runRounds(options) {
       // The reviewers can write to the checkout. Findings describe the commit,
       // so a tree a reviewer modified is not one to report on.
       if (started.targetType !== 'file' && gitDirty(canonicalRepoRoot)) throw new Error('harness-failure: a reviewer left the checkout modified; review-only reports only on the commit as it was');
+      if (started.targetType !== 'file' && started.head && gitHeadSha(canonicalRepoRoot) !== started.head) throw new Error('harness-failure: a reviewer moved HEAD; review-only reports only on the commit it was started on');
       const reported = await cli(['findings', ref]);
       return { decision: 'review-only', round: currentRound, findings: reported.findings };
     }

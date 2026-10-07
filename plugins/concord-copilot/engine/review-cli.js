@@ -2302,10 +2302,16 @@ function runVerb(resolveFromCwd, args, initiative) {
   if (verb === 'findings') {
     requireRef(ref, 'findings');
     const { repoRoot, fixes, intentParked, gateOpen } = verifiedRound(ref, stateDir, run, 'findings');
+    // The file name comes from a reviewer, so it is read only when its real
+    // path stays inside the checkout: a line number for a file elsewhere would
+    // tell whoever reads the review whether a guessed span is in that file.
+    const root = fs.realpathSync(repoRoot);
     const lineOf = (file, span) => {
       if (!span) return null;
       try {
-        const text = fs.readFileSync(path.join(repoRoot, file), 'utf8');
+        const real = fs.realpathSync(path.resolve(root, file));
+        if (real !== root && !real.startsWith(root + path.sep)) return null;
+        const text = fs.readFileSync(real, 'utf8');
         // A span that occurs more than once does not say which occurrence the
         // reviewer meant, so it gets no line rather than a guessed one.
         const at = text.indexOf(span);

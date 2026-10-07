@@ -4807,3 +4807,19 @@ test('findings: a span that occurs more than once in its file gets no line rathe
   const out = JSON.parse(run(['findings', 'feat/twice'], { env, skipPlanSeed: true }));
   assert.strictEqual(out.findings[0].line, null);
 });
+
+test('findings: a finding whose file resolves outside the checkout is not read', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const outside = path.join(tmpDir(), 'secret.txt');
+  fs.writeFileSync(outside, 'TOKEN=abc\n');
+  fs.symlinkSync(outside, path.join(repo, 'link.txt'));
+  execFileSync('git', ['add', 'link.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'link'], { cwd: repo });
+  const { env } = seedGatesRound(repo, dir, 'feat/escape',
+    { status: 'ok', examined: ['a.txt'], findings: [
+      { id: 'correctness:traversal', gate: 'correctness', file: path.relative(repo, outside), span: 'TOKEN=abc', summary: 'x' },
+      { id: 'correctness:symlink', gate: 'correctness', file: 'link.txt', span: 'TOKEN=abc', summary: 'y' } ] },
+    { status: 'ok', rejected: [] });
+  const out = JSON.parse(run(['findings', 'feat/escape'], { env, skipPlanSeed: true }));
+  assert.deepStrictEqual(out.findings.map((f) => [f.id, f.line]), [['correctness:traversal', null], ['correctness:symlink', null]]);
+});
