@@ -20,6 +20,10 @@ PHASES="requested auto"
 if [ -n "${MANUAL_ONLY:-}" ]; then PHASES="requested"; fi
 cutoff=$(date -u -d "${STALE_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
       || date -u -v-"${STALE_DAYS}"d +%Y-%m-%dT%H:%M:%SZ)
+# A review still pending after this long died without settling its status;
+# pr-review.yml's job timeout is 60 minutes.
+running_cutoff=$(date -u -d "60 minutes ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+      || date -u -v-60M +%Y-%m-%dT%H:%M:%SZ)
 started=0
 
 for phase in $PHASES; do
@@ -27,9 +31,17 @@ for repo in $REPOS; do
   while IFS=$'\t' read -r num sha title; do
     [ "$started" -ge "$MAX_PER_RUN" ] && break 3
 
+    # A review of this commit is still running. Dispatching it again would
+    # cancel that run, and a review longer than the poll interval never posts.
+    running=$(gh api "repos/$repo/commits/$sha/status" \
+      --jq '[.statuses[] | select(.context == "concord/review")][0] | select(.state == "pending") | .updated_at' 2>/dev/null || true)
+    if [ -n "$running" ] && [[ "$running" > "$running_cutoff" ]]; then continue; fi
+
     convo=$(gh pr view "$num" --repo "$repo" --json comments,reviews 2>/dev/null || echo '{}')
     bodies=$(jq -r '(.comments // [])[].body, (.reviews // [])[].body' <<<"$convo")
+    # A review costs money, so only someone with a role on the repository asks for one.
     cmd=$(jq -r '(.comments // [])[]
+                 | select(.authorAssociation == "OWNER" or .authorAssociation == "MEMBER" or .authorAssociation == "COLLABORATOR")
                  | select(.body | test("@concord +(broad|diff)"))
                  | "\(.url | capture("issuecomment-(?<i>[0-9]+)").i)\t\(.body | capture("@concord +(?<m>broad|diff)").m)"' <<<"$convo" | tail -1)
     cmd_id=${cmd%%$'\t'*}
@@ -41,11 +53,11 @@ for repo in $REPOS; do
     else
       [ "$phase" = requested ] && continue
       cmd_id=
-      # This exact commit was already reviewed.
-      if grep -qF "<!-- concord-review: $sha -->" <<<"$bodies"; then continue; fi
+      # This exact commit was already reviewed, automatically or on request.
+      if grep -qE "<!-- concord-review: $sha( cmd:[0-9]+)? -->" <<<"$bodies"; then continue; fi
       # The broad pass runs on the first review only; a PR carrying an earlier
       # marker has had it, so later pushes get the diff-local pass alone.
-      if grep -qF '<!-- concord-review:' <<<"$bodies"; then mode=diff; else mode=broad; fi
+      if grep -qF '<!-- concord-review:' <<<"$bodies"; then mode='diff'; else mode='broad'; fi
     fi
 
     echo "dispatch ($mode, $phase): $repo#$num @ ${sha:0:8} — $title"

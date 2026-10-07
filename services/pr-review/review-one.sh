@@ -48,19 +48,27 @@ unreact() {
 unreact '+1'
 
 rid=$(gh api -X POST "repos/$REPO/issues/$PR/reactions" -f content=eyes --jq .id 2>/dev/null || true)
-work=$(mktemp -d); state=$(mktemp -d); intent=$(mktemp)
-cleanup() {
+work=$(mktemp -d); intent=$(mktemp); posted=
+# Runs on every exit -- success, a failed command under set -e, or a cancel
+# because a newer commit superseded this review. Only a posted review settles
+# the status; anything else leaves it in error rather than pending.
+finish() {
   [ -n "$rid" ] && gh api -X DELETE "repos/$REPO/issues/$PR/reactions/$rid" >/dev/null 2>&1 || true
-  rm -rf "$work" "$state" "$intent"
+  rm -rf "$work" "$intent"
+  [ -n "$posted" ] || status error "review did not complete"
 }
-# Runs on a cancel (a newer commit superseded this review) as well as on success.
-trap 'cleanup; status error "review did not complete"; exit' INT TERM
+trap finish EXIT
+trap 'exit 130' INT TERM
 status pending "reviewing ($MODE, $REVIEWER)"
 
-gh repo clone "$REPO" "$work" -- --depth 50 --no-single-branch >/dev/null
-git -C "$work" fetch --depth 50 origin "pull/$PR/head" >/dev/null
-git -C "$work" checkout -q -B "concord-pr-$PR" FETCH_HEAD
-BASE="$(git -C "$work" merge-base origin/HEAD HEAD 2>/dev/null || git -C "$work" rev-parse origin/HEAD)"
+# The full history, without file contents until they are read, so the merge
+# base with the pull request's own base branch is always reachable.
+gh repo clone "$REPO" "$work" -- --filter=blob:none --quiet
+git -C "$work" fetch --quiet origin "pull/$PR/head"
+# Review exactly the dispatched commit, even if the branch moved since.
+git -C "$work" checkout -q -B "concord-pr-$PR" "$SHA"
+base_ref=$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq .baseRefName)
+BASE=$(git -C "$work" merge-base "origin/$base_ref" HEAD)
 
 # The broad pass checks the change against what it was asked to do: the pull
 # request's title and body and the issues it closes become the review intent.
@@ -75,20 +83,24 @@ if [ "$MODE" = broad ]; then
         gh issue view "$issue" --repo "$issue_repo" --json number,title,body \
           --jq '"\n\n## Closes \(.number): \(.title)\n\n\(.body)"'
       done
-  } | head -c 200000 > "$intent"   # the engine refuses intent over 256 KiB
+  } > "$intent.full"
+  # Truncated after it is written: cutting the pipe would kill the writers
+  # with SIGPIPE. The engine refuses intent over 256 KiB.
+  head -c 200000 "$intent.full" > "$intent"; rm -f "$intent.full"
   INTENT_ARGS=(--intent-file "$intent")
 fi
 
 # The reviewer never sees the review token: it reads the checkout, and only
-# this script talks to GitHub.
-result=$(cd "$work" && env -u GH_TOKEN -u GITHUB_TOKEN REVIEW_STATE_DIR="$state" \
-  node "$ENGINE" "concord-pr-$PR" "$BASE" --review-only "$BROAD" --reviewer "$REVIEWER" "${INTENT_ARGS[@]}" \
+# this script talks to GitHub. The engine treats the checkout as untrusted and
+# keeps the round in a throwaway state directory.
+result=$(cd "$work" && env -u GH_TOKEN -u GITHUB_TOKEN \
+  node "$ENGINE" "concord-pr-$PR" "$BASE" --review-only "$BROAD" --reviewer "$REVIEWER" ${INTENT_ARGS[@]+"${INTENT_ARGS[@]}"} \
     ${REVIEW_MODEL:+--reviewer-model "$REVIEW_MODEL"} ${REVIEW_EFFORT:+--reasoning-effort "$REVIEW_EFFORT"} \
   | tail -1) || result=''
 
 if ! jq -e '.decision == "review-only" and (.findings | type == "array")' <<<"$result" >/dev/null 2>&1; then
   echo "review failed for $REPO#$PR: ${result:-the engine printed nothing}"
-  cleanup; status error "review did not complete"; exit 1
+  exit 1
 fi
 
 n=$(jq '.findings | length' <<<"$result")
@@ -116,9 +128,9 @@ review() {  # $1 = inline | body
 }
 review inline | gh api -X POST "repos/$REPO/pulls/$PR/reviews" --input - >/dev/null 2>&1 \
   || review body | gh api -X POST "repos/$REPO/pulls/$PR/reviews" --input - >/dev/null \
-  || { echo "posting the review failed for $REPO#$PR"; cleanup; status error "review did not post"; exit 1; }
+  || { echo "posting the review failed for $REPO#$PR"; exit 1; }
 
-cleanup
+posted=1
 case "$n" in
   0) gh api -X POST "repos/$REPO/issues/$PR/reactions" -f content=+1 >/dev/null 2>&1 || true
      status success "no issues found" ;;
