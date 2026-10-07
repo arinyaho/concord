@@ -4823,3 +4823,40 @@ test('findings: a finding whose file resolves outside the checkout is not read',
   const out = JSON.parse(run(['findings', 'feat/escape'], { env, skipPlanSeed: true }));
   assert.deepStrictEqual(out.findings.map((f) => [f.id, f.line]), [['correctness:traversal', null], ['correctness:symlink', null]]);
 });
+
+test('plan-fixes: unsafe or oversized reviewer paths cannot become journal-proven replays', () => {
+  for (const kind of ['traversal', 'symlink', 'fifo', 'oversized']) {
+    const repo = initRepo(); const dir = tmpDir(); const outside = path.join(tmpDir(), 'outside.txt');
+    fs.writeFileSync(outside, 'different text\n');
+    const file = kind === 'traversal' ? path.relative(repo, outside) : `${kind}.txt`;
+    const ref = `feat/safe-read-${kind}`;
+    const { env } = seedGatesRound(repo, dir, ref,
+      { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:unsafe', gate: 'correctness', file, span: 'outside span', summary: 'x' }] },
+      { status: 'ok', rejected: [] });
+    if (kind === 'symlink') fs.symlinkSync(outside, path.join(repo, file));
+    if (kind === 'fifo') execFileSync('mkfifo', [path.join(repo, file)]);
+    if (kind === 'oversized') { fs.writeFileSync(path.join(repo, file), ''); fs.truncateSync(path.join(repo, file), 21 * 1024 * 1024); }
+    const slug = review.targetSlug(ref);
+    review.writeLedger(dir, slug, { ...review.readLedger(dir, slug), journal: [{ id: 'correctness:unsafe', sha: 'prior' }] });
+    seedV2Plan(ref, env);
+    const result = runCapture(['plan-fixes', ref], { env, timeout: 10000 });
+    assert.strictEqual(result.status, 0, `${kind}: ${result.stderr}`);
+    assert.deepStrictEqual(JSON.parse(result.stdout).fixes.map((f) => f.id), ['correctness:unsafe'], kind);
+    assert.deepStrictEqual(review.readLedger(dir, slug).resolved_absent, [], kind);
+  }
+});
+
+test('findings: nonregular and oversized reviewer paths have no source line', () => {
+  for (const kind of ['fifo', 'oversized']) {
+    const repo = initRepo(); const dir = tmpDir(); const file = `${kind}.txt`;
+    const ref = `feat/no-line-${kind}`;
+    const { env } = seedGatesRound(repo, dir, ref,
+      { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:unsafe', gate: 'correctness', file, span: 'needle', summary: 'x' }] },
+      { status: 'ok', rejected: [] });
+    if (kind === 'fifo') execFileSync('mkfifo', [path.join(repo, file)]);
+    else { fs.writeFileSync(path.join(repo, file), 'needle\n'); fs.truncateSync(path.join(repo, file), 21 * 1024 * 1024); }
+    const result = runCapture(['findings', ref], { env, timeout: 10000 });
+    assert.strictEqual(result.status, 0, `${kind}: ${result.stderr}`);
+    assert.strictEqual(JSON.parse(result.stdout).findings[0].line, null, kind);
+  }
+});

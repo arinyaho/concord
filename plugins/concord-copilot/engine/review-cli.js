@@ -120,6 +120,37 @@ function pathWithin(child, parent) {
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
+const MAX_REVIEW_SOURCE_BYTES = 20 * 1024 * 1024;
+// Reviewer-supplied paths are evidence, not trusted filenames. Resolve inside
+// the checkout and inspect an opened regular file before reading bounded bytes.
+function readReviewSource(repoRoot, file) {
+  if (typeof file !== 'string' || !file || path.isAbsolute(file)) return null;
+  let fd;
+  try {
+    const root = fs.realpathSync(repoRoot);
+    const requested = path.resolve(root, file);
+    const real = fs.realpathSync(requested);
+    if (!pathWithin(real, root)) return null;
+    const before = fs.lstatSync(real);
+    if (!before.isFile() || before.size > MAX_REVIEW_SOURCE_BYTES) return null;
+    fd = fs.openSync(real, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | (fs.constants.O_NOFOLLOW || 0));
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile() || opened.size > MAX_REVIEW_SOURCE_BYTES || opened.dev !== before.dev || opened.ino !== before.ino) return null;
+    if (fs.realpathSync(requested) !== real) return null;
+    const after = fs.lstatSync(real);
+    if (!after.isFile() || after.dev !== opened.dev || after.ino !== opened.ino) return null;
+    const chunks = []; let total = 0;
+    while (total <= MAX_REVIEW_SOURCE_BYTES) {
+      const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, MAX_REVIEW_SOURCE_BYTES + 1 - total));
+      const count = fs.readSync(fd, chunk, 0, chunk.length, null);
+      if (count === 0) return Buffer.concat(chunks, total).toString('utf8');
+      chunks.push(chunk.subarray(0, count)); total += count;
+    }
+  } catch (_) { /* Unsafe or unavailable evidence cannot supply a source span. */ }
+  finally { if (fd !== undefined) fs.closeSync(fd); }
+  return null;
+}
+
 function validateFixFiles(repoRoot, stateDir, files) {
   const repo = path.resolve(repoRoot);
   const artifacts = path.resolve(stateDir);
@@ -934,11 +965,8 @@ function verifiedRound(ref, stateDir, run, what) {
   const concluded = new Set((ledger.findings || []).filter((f) => f.status !== 'open').map((f) => f.id));
   const spanPresent = (file, span) => {
     if (!span) return true;
-    try {
-      return fs.readFileSync(path.join(repoRoot, file), 'utf8').includes(span);
-    } catch (e) {
-      return false;
-    }
+    const text = readReviewSource(repoRoot, file);
+    return text === null || text.includes(span);
   };
   // A finding dedupeAgainstSeen marked `reopened: true` recurred after being
   // marked 'fixed' -- it is still present in `ledger.findings` with that
@@ -955,8 +983,8 @@ function verifiedRound(ref, stateDir, run, what) {
   // never matched. Marking those 'fixed' would converge green with a confirmed
   // bug still live, so route them to the fixer instead (it adds the missing
   // code -> a real commit, or reports no-edit -> record parks it needs-decision).
-  const isReplay = (f) => !spanPresent(f.file, f.span) && (ledger.journal || []).some((j) => (j.findingIds || []).includes(f.id) || j.id === f.id
-    || (j.resolutions || []).some((r) => r.id === f.id && r.file === f.file && r.span === f.span));
+  const isReplay = (f) => (ledger.journal || []).some((j) => (j.findingIds || []).includes(f.id) || j.id === f.id
+    || (j.resolutions || []).some((r) => r.id === f.id && r.file === f.file && r.span === f.span)) && !spanPresent(f.file, f.span);
   const fixes = confirmedNonKilled
     .filter((f) => !isReplay(f))
     .map((f) => ({ id: f.id, file: f.file, span: f.span, summary: f.summary }));
@@ -2305,13 +2333,11 @@ function runVerb(resolveFromCwd, args, initiative) {
     // The file name comes from a reviewer, so it is read only when its real
     // path stays inside the checkout: a line number for a file elsewhere would
     // tell whoever reads the review whether a guessed span is in that file.
-    const root = fs.realpathSync(repoRoot);
     const lineOf = (file, span) => {
       if (!span) return null;
       try {
-        const real = fs.realpathSync(path.resolve(root, file));
-        if (real !== root && !real.startsWith(root + path.sep)) return null;
-        const text = fs.readFileSync(real, 'utf8');
+        const text = readReviewSource(repoRoot, file);
+        if (text === null) return null;
         // A span that occurs more than once does not say which occurrence the
         // reviewer meant, so it gets no line rather than a guessed one.
         const at = text.indexOf(span);
