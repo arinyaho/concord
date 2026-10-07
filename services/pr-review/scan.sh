@@ -56,18 +56,19 @@ for repo in $REPOS; do
     # Commands from someone with a role on the repository, newest first. The
     # newest one not yet done runs: done means its review posted, or its own
     # review failed, which the error status names.
-    cmd_id=
-    while IFS=$'\t' read -r id cmd_mode; do
+    cmd_id=; reviewer=-
+    while IFS=$'\t' read -r id cmd_mode cmd_reviewer; do
       [ -n "$id" ] || continue
       grep -qF " cmd:$id -->" <<<"$markers" && continue
       [ "$state" = error ] && grep -qF " cmd:$id)" <<<"$description" && continue
-      cmd_id=$id; break
+      cmd_id=$id; reviewer=$cmd_reviewer; break
     done < <(jq -r '[.[] | select(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR")
-                      | select(.body | test("@concord +(broad|diff)(\\s|$)"))]
+                      | select(.body | test("@concord +(broad|diff)( +(claude|codex))?(\\s|$)"))]
                     | sort_by(.created_at) | reverse[]
-                    | "\(.id)\t\(.body | capture("@concord +(?<m>broad|diff)(\\s|$)").m)"' <<<"$comments")
+                    | (.body | capture("@concord +(?<m>broad|diff)( +(?<r>claude|codex))?(\\s|$)")) as $c
+                    | "\(.id)\t\($c.m)\t\($c.r // "-")"' <<<"$comments")
     if [ -n "$cmd_id" ]; then
-      requested+=("$repo $num $sha $cmd_mode $cmd_id $title")
+      requested+=("$repo $num $sha $cmd_mode $cmd_id $reviewer $title")
       continue
     fi
     # Manual mode: review only what somebody asked for with an @concord comment.
@@ -80,7 +81,7 @@ for repo in $REPOS; do
     # The broad pass runs until one has completed on this pull request, then
     # later pushes get the diff-local pass alone.
     if grep -qF ' mode:broad' <<<"$markers"; then mode='diff'; else mode='broad'; fi
-    automatic+=("$repo $num $sha $mode - $title")
+    automatic+=("$repo $num $sha $mode - - $title")
   done < <(jq -r --arg cutoff "$cutoff" \
              '.[] | select(.isDraft | not) | select(.updatedAt > $cutoff) | "\(.number)\t\(.headRefOid)\t\(.title)"' <<<"$prs")
 done
@@ -88,13 +89,15 @@ done
 started=0
 for entry in ${requested[@]+"${requested[@]}"} ${automatic[@]+"${automatic[@]}"}; do
   [ "$started" -ge "$MAX_PER_RUN" ] && break
-  read -r repo num sha mode cmd_id title <<<"$entry"
+  read -r repo num sha mode cmd_id reviewer title <<<"$entry"
+  # A command may name the reviewer; otherwise the workflow uses REVIEW_REVIEWER.
+  [ "$reviewer" = - ] && reviewer=
   phase=requested
   if [ "$cmd_id" = - ]; then cmd_id=; phase=auto; fi
-  echo "dispatch ($mode, $phase): $repo#$num @ ${sha:0:8} — $title"
+  echo "dispatch ($mode, $phase, ${reviewer:-default}): $repo#$num @ ${sha:0:8} — $title"
   if [ -z "${DRY_RUN:-}" ]; then
     GH_TOKEN="$SELF_TOKEN" gh workflow run pr-review.yml --repo "$SELF" \
-      -f repo="$repo" -f pr="$num" -f sha="$sha" -f mode="$mode" -f cmd_id="$cmd_id"
+      -f repo="$repo" -f pr="$num" -f sha="$sha" -f mode="$mode" -f cmd_id="$cmd_id" -f reviewer="$reviewer"
     # Pending from the moment it is dispatched, so a run still waiting for a
     # runner is not dispatched again by the next poll.
     gh api -X POST "repos/$repo/statuses/$sha" -f context=concord/review \

@@ -18,7 +18,7 @@ While a pull request is being reviewed it carries a 👀 reaction and a pending 
 
 ## Asking for a review
 
-An owner, member, or collaborator of the repository can comment `@concord broad` or `@concord diff` on a pull request to get that pass on the next poll, whatever the automatic rule would have chosen, including on a commit that was already reviewed. The comment gets a 🚀 when the command is picked up. Each command runs once: if its own review fails, which the error status names, it is not run again until someone asks again. The mode must be a whole word, so `@concord difference` is not a command. When several commands are waiting, the newest one not yet done runs. With `REVIEW_MANUAL_ONLY` set, only requested reviews run.
+An owner, member, or collaborator of the repository can comment `@concord broad` or `@concord diff` on a pull request to get that pass on the next poll, optionally naming the reviewer (`@concord broad codex`, `@concord diff claude`; without one, `REVIEW_REVIEWER` applies), whatever the automatic rule would have chosen, including on a commit that was already reviewed. The comment gets a 🚀 when the command is picked up. Each command runs once: if its own review fails, which the error status names, it is not run again until someone asks again. The mode must be a whole word, so `@concord difference` is not a command. When several commands are waiting, the newest one not yet done runs. With `REVIEW_MANUAL_ONLY` set, only requested reviews run.
 
 ## Setting up a private copy
 
@@ -34,7 +34,7 @@ Then configure it as below. Keep the copy free of its own commits so `upstream-s
 | Variable | Meaning |
 | --- | --- |
 | `REVIEW_REPOS` | Space-separated `owner/name` list of repositories to review. Setting it turns the poller on |
-| `REVIEW_REVIEWER` | `claude` (default) or `codex` |
+| `REVIEW_REVIEWER` | `claude` (default) or `codex`, for automatic reviews and commands that name no reviewer |
 | `REVIEW_MODEL` | Optional model for the reviewer |
 | `REVIEW_RUNNER` | `runs-on` value as JSON, for example `["self-hosted","linux"]`; default `"ubuntu-latest"` |
 | `REVIEW_MANUAL_ONLY` | Any value: review only what an `@concord` comment asks for |
@@ -44,8 +44,8 @@ Then configure it as below. Keep the copy free of its own commits so `upstream-s
 | Secret | Meaning |
 | --- | --- |
 | `REVIEW_PAT` | Fine-grained token over the reviewed repositories: Contents read, Pull requests read and write, Commit statuses read and write, Issues read and write (the broad pass reads the issues a pull request closes, and the 👀, 🚀, and 👍 reactions are issue reactions). Reviews are posted under its account |
-| `CLAUDE_CODE_OAUTH_TOKEN` | From `claude setup-token`, when the reviewer is `claude` |
-| `OPENAI_API_KEY` | When the reviewer is `codex` |
+| `CLAUDE_CODE_OAUTH_TOKEN` | From `claude setup-token`, for the `claude` reviewer |
+| `OPENAI_API_KEY` | For the `codex` reviewer. Set both to switch reviewers with a comment when one runs out |
 | `SYNC_TOKEN` | Fine-grained token over this copy: Contents and Workflows read and write |
 
 `upstream-sync.yml` runs daily and fast-forwards `main` to the newest Concord release, the last upstream commit that changed `VERSION`, so unreleased work never runs with the copy's secrets. If the copy has commits past the release, its own or unreleased upstream ones, the run fails rather than merging or carrying them.
