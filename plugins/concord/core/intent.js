@@ -71,4 +71,19 @@ function fetchIntent({ command, cwd, ref, base, execFn = intentExecFn }) {
   return { text, sha, bytes };
 }
 
-module.exports = { CONFIG_FILENAME, INTENT_MAX_BYTES, INTENT_TIMEOUT_MS, loadIntentConfig, intentExecFn, fetchIntent };
+// Read the intent from a file the caller supplied (round-start --intent-file),
+// for a caller that already holds the requirements -- a CI reviewer passing a
+// pull request's body -- rather than a repository-configured command. Same
+// substance checks as fetchIntent: unreadable, empty, or oversized fails closed.
+function readIntentFile(file, readFileFn = fs.readFileSync) {
+  let text;
+  try { text = String(readFileFn(file, 'utf8')); } catch (e) {
+    throw new Error(`harness-failure: intent file ${file} is unreadable: ${e && e.message ? e.message : e}`);
+  }
+  if (text.trim() === '') throw new Error(`harness-failure: intent file ${file} is empty`);
+  const bytes = Buffer.byteLength(text, 'utf8');
+  if (bytes > INTENT_MAX_BYTES) throw new Error(`harness-failure: intent file ${bytes} bytes exceeds cap ${INTENT_MAX_BYTES}`);
+  return { text, sha: crypto.createHash('sha256').update(text, 'utf8').digest('hex'), bytes };
+}
+
+module.exports = { CONFIG_FILENAME, INTENT_MAX_BYTES, INTENT_TIMEOUT_MS, loadIntentConfig, intentExecFn, fetchIntent, readIntentFile };

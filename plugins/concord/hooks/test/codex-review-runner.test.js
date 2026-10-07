@@ -2549,10 +2549,19 @@ test('Codex review-and-fix launcher passes --review-only to the runner and print
       return load.apply(this, arguments);
     };
   `);
-  const output = execFileSync('node', ['--require', preload, bin, 'feature/x', 'main', '--review-only', '--no-broad', '--reviewer', 'claude'], { cwd: dir, env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
+  const output = execFileSync('node', ['--require', preload, bin, 'feature/x', 'main', '--review-only', '--no-broad', '--reviewer', 'claude', '--intent-file', '/abs/pr.md'], { cwd: dir, env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
   const options = JSON.parse(fs.readFileSync(capture, 'utf8'));
   assert.strictEqual(options.reviewOnly, true);
+  assert.strictEqual(options.intentFile, '/abs/pr.md');
   assert.strictEqual(options.ref, 'feature/x');
   assert.strictEqual(options.base, 'main');
   assert.deepStrictEqual(JSON.parse(output), { decision: 'review-only', round: 1, findings: [] });
+});
+
+test('runner passes intentFile to round-start as --intent-file', async () => {
+  const h = harness();
+  await runReviewUntilGreen({ ref: 'feature/intent', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn, intentFile: '/abs/pr.md' });
+  const start = h.calls.find((c) => c[0] === 'cli' && c[1] === 'round-start');
+  const at = start.indexOf('--intent-file');
+  assert.ok(at > 0 && start[at + 1] === '/abs/pr.md', `round-start args: ${start.join(' ')}`);
 });

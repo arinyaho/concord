@@ -735,7 +735,7 @@ async function runReviewUntilGreen(options) {
     const run = JSON.parse(fs.readFileSync(initiativeRun.path, 'utf8'));
     const sourcePaths = [path.join(repoRoot, 'AGENTS.md'), path.join(repoRoot, 'review.config.json'), path.join(started.stateDir, `intent-${targetSlug(ref)}.md`), ...(options.authoritativeSources || [])];
     const authoritativeSources = [...new Set(sourcePaths)].filter(source => fs.existsSync(source)).map(source => ({ path: canonicalPath(source), sha256: crypto.createHash('sha256').update(fs.readFileSync(source)).digest('hex') }));
-    const nextArgs = result.decision?.continue ? ['round-start', ref, ...(initialBase ? [initialBase] : []), ...(broad ? ['--broad'] : []), ...(noBroad ? ['--no-broad'] : []), ...(noDod ? ['--no-dod'] : [])] : ['show', ref];
+    const nextArgs = result.decision?.continue ? ['round-start', ref, ...(initialBase ? [initialBase] : []), ...(broad ? ['--broad'] : []), ...(noBroad ? ['--no-broad'] : []), ...(noDod ? ['--no-dod'] : []), ...(options.intentFile ? ['--intent-file', options.intentFile] : [])] : ['show', ref];
     const nextStep = { executable: process.execPath, cliPath: path.resolve(cliPath), args: [...nextArgs, ...initiativeFlags] };
     const completedArtifacts = fs.readdirSync(started.stateDir).filter(name => new RegExp(`^round-${started.round}-.*\\.json$`).test(name)).map(name => {
       const artifactPath = path.join(started.stateDir, name);
@@ -769,6 +769,7 @@ async function runReviewUntilGreen(options) {
     if (broad) startArgs.push('--broad');
     if (noBroad) startArgs.push('--no-broad'); // broad review is on by default; this is the opt-out
     if (noDod) startArgs.push('--no-dod');
+    if (options.intentFile) startArgs.push('--intent-file', options.intentFile);
     // The keyed run is the mode authority: round-start reads the run's mode and rejects a flag that disagrees.
     // On resume, an unpassed reviewer/fixer must NOT be resent as the 'codex'
     // default -- round-start rejects a request that conflicts with the

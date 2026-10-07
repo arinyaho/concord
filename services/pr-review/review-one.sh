@@ -20,7 +20,7 @@ ENGINE="$ROOT/plugins/concord-codex/bin/review-and-fix.js"
 # Fixed per mode, not left to the reviewer to restate -- so it reads the same
 # on every review and can't drift from what the mode actually does.
 if [ "$MODE" = broad ]; then
-  MODE_NOTE="reviewed by $REVIEWER: diff-local correctness + repo-wide gate (ac-coverage, design-conformance, cross-context, silent-gap)"
+  MODE_NOTE="reviewed by $REVIEWER: diff-local correctness + repo-wide gate (ac-coverage, design-conformance, cross-context, silent-gap, threat-model)"
 else
   MODE_NOTE="reviewed by $REVIEWER: diff-local correctness only (the repo-wide gate already ran on an earlier commit of this PR)"
 fi
@@ -48,10 +48,10 @@ unreact() {
 unreact '+1'
 
 rid=$(gh api -X POST "repos/$REPO/issues/$PR/reactions" -f content=eyes --jq .id 2>/dev/null || true)
-work=$(mktemp -d); state=$(mktemp -d)
+work=$(mktemp -d); state=$(mktemp -d); intent=$(mktemp)
 cleanup() {
   [ -n "$rid" ] && gh api -X DELETE "repos/$REPO/issues/$PR/reactions/$rid" >/dev/null 2>&1 || true
-  rm -rf "$work" "$state"
+  rm -rf "$work" "$state" "$intent"
 }
 # Runs on a cancel (a newer commit superseded this review) as well as on success.
 trap 'cleanup; status error "review did not complete"; exit' INT TERM
@@ -62,10 +62,27 @@ git -C "$work" fetch --depth 50 origin "pull/$PR/head" >/dev/null
 git -C "$work" checkout -q -B "concord-pr-$PR" FETCH_HEAD
 BASE="$(git -C "$work" merge-base origin/HEAD HEAD 2>/dev/null || git -C "$work" rev-parse origin/HEAD)"
 
+# The broad pass checks the change against what it was asked to do: the pull
+# request's title and body and the issues it closes become the review intent.
+# The diff-local pass on later pushes does not re-check requirements.
+INTENT_ARGS=()
+if [ "$MODE" = broad ]; then
+  {
+    gh pr view "$PR" --repo "$REPO" --json title,body --jq '"# \(.title)\n\n\(.body)"'
+    gh pr view "$PR" --repo "$REPO" --json closingIssuesReferences \
+      --jq '.closingIssuesReferences[] | "\(.repository.owner.login)/\(.repository.name) \(.number)"' |
+      while read -r issue_repo issue; do
+        gh issue view "$issue" --repo "$issue_repo" --json number,title,body \
+          --jq '"\n\n## Closes \(.number): \(.title)\n\n\(.body)"'
+      done
+  } | head -c 200000 > "$intent"   # the engine refuses intent over 256 KiB
+  INTENT_ARGS=(--intent-file "$intent")
+fi
+
 # The reviewer never sees the review token: it reads the checkout, and only
 # this script talks to GitHub.
 result=$(cd "$work" && env -u GH_TOKEN -u GITHUB_TOKEN REVIEW_STATE_DIR="$state" \
-  node "$ENGINE" "concord-pr-$PR" "$BASE" --review-only "$BROAD" --reviewer "$REVIEWER" \
+  node "$ENGINE" "concord-pr-$PR" "$BASE" --review-only "$BROAD" --reviewer "$REVIEWER" "${INTENT_ARGS[@]}" \
     ${REVIEW_MODEL:+--reviewer-model "$REVIEW_MODEL"} ${REVIEW_EFFORT:+--reasoning-effort "$REVIEW_EFFORT"} \
   | tail -1) || result=''
 

@@ -4728,3 +4728,29 @@ test('findings: includes gate findings gate-verify did not reject, categorised b
   const out = JSON.parse(run(['findings', 'feat/ro-broad'], { env, skipPlanSeed: true }));
   assert.deepStrictEqual(out.findings.map((f) => [f.id, f.category, f.line]), [['gate:cross-context:kept', 'cross-context', 1]]);
 });
+
+test('round-start: --intent-file supplies the intent and takes precedence over a configured intent command', () => {
+  const repo = initRepoWithIntent('exit 7'); // would fail the round if it ran
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const intentFile = path.join(tmpDir(), 'pr.md');
+  fs.writeFileSync(intentFile, 'REQ: the PR body says retry three times');
+  const out = JSON.parse(run(['round-start', 'feat/intent-file', 'HEAD~1', '--intent-file', intentFile], { env }));
+  assert.strictEqual(out.intentApplied, true);
+  assert.strictEqual(fs.readFileSync(path.join(dir, `intent-${review.targetSlug('feat/intent-file')}.md`), 'utf8'), 'REQ: the PR body says retry three times');
+  assert.strictEqual(out.intentHash, crypto.createHash('sha256').update('REQ: the PR body says retry three times').digest('hex'));
+});
+
+test('round-start: an empty --intent-file fails closed', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const intentFile = path.join(tmpDir(), 'empty.md');
+  fs.writeFileSync(intentFile, '  \n');
+  const { status, stderr } = runCapture(['round-start', 'feat/empty-intent', 'HEAD~1', '--no-broad', '--intent-file', intentFile], { env });
+  assert.strictEqual(status, 1);
+  assert.match(stderr, /intent file .* is empty/);
+});

@@ -1650,7 +1650,15 @@ function runVerb(resolveFromCwd, args, initiative) {
     // to a pass.
     const NO_DOD_FLAGS = new Set(['--no-dod']);
     const noDodFlagPassed = rest.some((a) => NO_DOD_FLAGS.has(a));
-    const positional = rest.filter((a, index) => !BROAD_FLAGS.has(a) && !NO_BROAD_FLAGS.has(a) && !NO_DOD_FLAGS.has(a) && !routingIndexes.has(index));
+    // --intent-file <path>: the caller supplies the intent text directly and the
+    // repository's configured intent command, if any, is not run.
+    const intentFileAt = rest.indexOf('--intent-file');
+    const intentFile = intentFileAt === -1 ? null : rest[intentFileAt + 1];
+    if (intentFileAt !== -1 && (!intentFile || intentFile.startsWith('--') || rest.indexOf('--intent-file', intentFileAt + 1) !== -1)) {
+      throw new Error('review-cli round-start: --intent-file requires exactly one value');
+    }
+    const positional = rest.filter((a, index) => !BROAD_FLAGS.has(a) && !NO_BROAD_FLAGS.has(a) && !NO_DOD_FLAGS.has(a) && !routingIndexes.has(index)
+      && (intentFileAt === -1 || (index !== intentFileAt && index !== intentFileAt + 1)));
     for (const tok of positional) {
       if (tok.startsWith('--')) throw new Error(`review-cli round-start: unknown flag "${tok}"`);
     }
@@ -1744,7 +1752,8 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (!isFileTarget && ledger.target && ledger.target.head_sha && !gitIsReachable(repoRoot, ledger.target.head_sha)) {
       ledger = resetUnreachable(ledger);
     }
-    const intentCfg = intentLib.loadIntentConfig(repoRoot);
+    const intentCfg = intentFile ? { file: path.resolve(intentFile) } : intentLib.loadIntentConfig(repoRoot);
+    const fetchIntentNow = () => (intentCfg.file ? intentLib.readIntentFile(intentCfg.file) : intentLib.fetchIntent({ command: intentCfg.command, cwd: repoRoot, ref, base }));
     const broadReuse = ledger.broad_reuse;
     const reuseFrontPass = !!broadReuse && !broadFlagPassed && !noBroadFlagPassed && !isFileTarget && !intentCfg && !broadReuse.intentHash
       && broadReuse.base_sha === baseSha
@@ -1896,7 +1905,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (intentCfg) {
       const intentPath = path.join(stateDir, `intent-${slug}.md`);
       if (!ledger.intentHash) {
-        const { text, sha, bytes } = intentLib.fetchIntent({ command: intentCfg.command, cwd: repoRoot, ref, base });
+        const { text, sha, bytes } = fetchIntentNow();
         writeFileAtomic(intentPath, text); // atomic: never leave a partial file a later step trusts
         ledger = { ...ledger, intentHash: sha, intentBytes: bytes };
       } else {
@@ -1915,7 +1924,7 @@ function runVerb(resolveFromCwd, args, initiative) {
         // this cache exists to prevent.
         let fresh;
         try {
-          fresh = intentLib.fetchIntent({ command: intentCfg.command, cwd: repoRoot, ref, base });
+          fresh = fetchIntentNow();
         } catch (e) {
           const why = String((e && e.message) || e).replace(/^harness-failure:\s*/, '');
           throw new Error(`harness-failure: intent drift-check fetch failed (the cached intent is intact; this is a fetch failure, not a changed source): ${why}`);
