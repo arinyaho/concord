@@ -83,9 +83,9 @@ function terminateProcessTree(child, signal) {
   child.kill(signal);
 }
 
-function jsonCli(cliPath, args, repoRoot) {
+function jsonCli(cliPath, args, repoRoot, stateDir) {
   const out = execFileSync('node', [cliPath, ...args], {
-    cwd: repoRoot, encoding: 'utf8', env: { ...process.env, REVIEW_REPO_ROOT: repoRoot },
+    cwd: repoRoot, encoding: 'utf8', env: { ...process.env, REVIEW_REPO_ROOT: repoRoot, ...(stateDir ? { REVIEW_STATE_DIR: stateDir } : {}) },
   });
   try { return JSON.parse(out); } catch (e) { throw new Error(`harness-failure: review-cli ${args[0]} returned non-JSON output`); }
 }
@@ -143,7 +143,7 @@ function sameKeys(actual, expected) {
   return actual.length === expected.length && [...actual].sort().every((key, index) => key === [...expected].sort()[index]);
 }
 
-function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoningEffort, serviceTier, timeoutMs, abortSignal, codexExecutable, env }) {
+function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoningEffort, serviceTier, timeoutMs, abortSignal, codexExecutable, env, untrustedCheckout = false }) {
   return new Promise((resolve, reject) => {
     const resolvedCodex = codexExecutable || resolveCodexExecutable(repoRoot, { env });
     const invocationId = crypto.randomUUID();
@@ -167,6 +167,8 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
       ...(model ? ['--model', model] : []),
       ...(effort ? ['--config', `model_reasoning_effort=${JSON.stringify(effort)}`] : []),
       ...(tier ? ['--config', `service_tier=${JSON.stringify(tier)}`] : []),
+      // An untrusted checkout's AGENTS.md and execpolicy rules must not steer the reviewer.
+      ...(untrustedCheckout ? ['--config', 'project_doc_max_bytes=0', '--ignore-rules'] : []),
       '--skip-git-repo-check', '--json', ...(isWindows ? ['-'] : [prompt]),
     ], needsDoubleEscape(resolvedCodex.command, repoRoot)), crossPlatformOpts({ cwd: repoRoot, env, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'ignore'], detached: !isWindows }));
     if (isWindows) {
@@ -283,6 +285,8 @@ function providerExec(input) {
         ...(requestedModel ? ['--model', requestedModel] : []),
         '--output-format', 'json', '--no-session-persistence',
         '--permission-mode', 'acceptEdits', '--permission-prompts', 'none',
+        // An untrusted checkout's .claude/settings.json (hooks, permissions) must not run.
+        ...(input.untrustedCheckout ? ['--setting-sources', 'user'] : []),
         `--add-dir=${stateDir}`, ...(isWindows ? [] : [prompt]),
       ]
     : [
@@ -397,7 +401,16 @@ async function invoke(spawn, input) {
   }
 }
 
+// A review-only run keeps its round in a throwaway state directory: it never
+// edits, so it has nothing to resume, and a round left open in the persistent
+// ledger would read as a crashed round to the next review-and-fix on the ref.
 async function runReviewUntilGreen(options) {
+  if (!options.reviewOnly || options.runCli) return runRounds(options);
+  const reviewStateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'concord-review-only-'));
+  try { return await runRounds({ ...options, reviewStateDir }); } finally { fs.rmSync(reviewStateDir, { recursive: true, force: true }); }
+}
+
+async function runRounds(options) {
   const { ref, base, broad = false, noBroad = false, reviewOnly = false, resume = false, repoRoot: configuredRepoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
   // A review-only run never edits, so it has no definition of done to check.
   const noDod = reviewOnly || !!options.noDod;
@@ -430,7 +443,7 @@ async function runReviewUntilGreen(options) {
   // Pair identity uses the commit a base name points at, so a base that moved
   // under the same name is a different pair. round-start keeps the name.
   const baseIdentity = (name) => (name && !ref.startsWith('file:') ? resolveBaseCommit(repoRoot, name) : name);
-  const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot));
+  const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot, options.reviewStateDir));
   const initiativeFlags = initiativeRun ? ['--initiative-run-key', options.initiativeRunKey, '--initiative-id', initiativeId, '--initiative-state-dir', canonicalStateDir, '--initiative-max-launches', String(options.initiativeMaxLaunches), '--initiative-max-rounds', String(options.initiativeMaxRounds), ...(options.initiativeMode ? ['--initiative-mode', options.initiativeMode] : [])] : [];
   const sessionMode = options.sessionHandoff || 'suggest';
   if (!SESSION_MODES.includes(sessionMode)) throw new Error('review-until-green: --session-handoff must be off, suggest, or stop-at-checkpoint');
@@ -770,6 +783,8 @@ async function runReviewUntilGreen(options) {
     if (noBroad) startArgs.push('--no-broad'); // broad review is on by default; this is the opt-out
     if (noDod) startArgs.push('--no-dod');
     if (options.intentFile) startArgs.push('--intent-file', options.intentFile);
+    // A review-only checkout is untrusted: its configured intent command is never run.
+    if (reviewOnly) startArgs.push('--no-intent-command');
     // The keyed run is the mode authority: round-start reads the run's mode and rejects a flag that disagrees.
     // On resume, an unpassed reviewer/fixer must NOT be resent as the 'codex'
     // default -- round-start rejects a request that conflicts with the
@@ -844,6 +859,7 @@ async function runReviewUntilGreen(options) {
         ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
         ...(options.subprocessTimeoutMs ? { timeoutMs: options.subprocessTimeoutMs } : {}),
         ...(abortController ? { abortSignal: abortController.signal } : {}),
+        ...(reviewOnly ? { untrustedCheckout: true } : {}),
         ...(telemetrySlot ? { telemetrySlot } : {}),
       });
     };

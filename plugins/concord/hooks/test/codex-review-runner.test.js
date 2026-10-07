@@ -2565,3 +2565,66 @@ test('runner passes intentFile to round-start as --intent-file', async () => {
   const at = start.indexOf('--intent-file');
   assert.ok(at > 0 && start[at + 1] === '/abs/pr.md', `round-start args: ${start.join(' ')}`);
 });
+
+test('providerExec keeps project settings out of a Claude reviewer on an untrusted checkout', async () => {
+  const binDir = temp();
+  const capture = path.join(binDir, 'args.json');
+  fs.writeFileSync(path.join(binDir, 'claude'), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(capture)}, JSON.stringify(process.argv.slice(2)));\n`);
+  fs.chmodSync(path.join(binDir, 'claude'), 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  try {
+    await providerExec({ provider: 'claude', role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir, untrustedCheckout: true });
+    const args = JSON.parse(fs.readFileSync(capture, 'utf8'));
+    assert.strictEqual(args[args.indexOf('--setting-sources') + 1], 'user');
+    await providerExec({ provider: 'claude', role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir });
+    assert.ok(!JSON.parse(fs.readFileSync(capture, 'utf8')).includes('--setting-sources'), 'a trusted checkout keeps its project settings');
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
+test('codexExec keeps AGENTS.md and project rules out of a Codex reviewer on an untrusted checkout', async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  const capture = path.join(binDir, 'args.json');
+  fs.writeFileSync(codex, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(capture)}, JSON.stringify(process.argv.slice(2)));\n`);
+  fs.chmodSync(codex, 0o755);
+  await codexExec({ role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir, untrustedCheckout: true, codexExecutable: { command: codex, version: 'codex-cli 0.154.0' } });
+  const args = JSON.parse(fs.readFileSync(capture, 'utf8'));
+  assert.ok(args.includes('project_doc_max_bytes=0'), `args: ${args.join(' ')}`);
+  assert.ok(args.includes('--ignore-rules'));
+});
+
+test('reviewOnly treats the checkout as untrusted: no repository intent command and no project agent config', async () => {
+  const h = harness();
+  const inputs = [];
+  const cli = (args) => (args[0] === 'findings' ? { findings: [] } : h.cli(args));
+  const spawn = (input) => { inputs.push(input); return h.spawn(input); };
+  await runReviewUntilGreen({ ref: 'feature/untrusted', base: 'main', repoRoot: '/repo', runCli: cli, spawn, reviewOnly: true, noBroad: true });
+  const start = h.calls.find((c) => c[0] === 'cli' && c[1] === 'round-start');
+  assert.ok(start.includes('--no-intent-command'), `round-start args: ${start.join(' ')}`);
+  assert.ok(inputs.length && inputs.every((input) => input.untrustedCheckout === true));
+});
+
+test('reviewOnly keeps its round out of the persistent review ledger', async () => {
+  const dir = temp();
+  const fakeCli = path.join(dir, 'fake-cli.js');
+  const capture = path.join(dir, 'state-dirs.txt');
+  fs.writeFileSync(fakeCli, `require('node:fs').appendFileSync(${JSON.stringify(capture)}, (process.env.REVIEW_STATE_DIR || '') + '\\n'); process.stdout.write(JSON.stringify({ decision: 'no-op', message: 'nothing', stateDir: process.env.REVIEW_STATE_DIR }));\n`);
+  const previous = process.env.REVIEW_STATE_DIR;
+  process.env.REVIEW_STATE_DIR = path.join(dir, 'persistent');
+  try {
+    await runReviewUntilGreen({ ref: 'feature/isolated', base: 'main', repoRoot: dir, cliPath: fakeCli, reviewOnly: true, spawn: () => ({ status: 0 }) });
+  } finally {
+    if (previous === undefined) delete process.env.REVIEW_STATE_DIR; else process.env.REVIEW_STATE_DIR = previous;
+  }
+  const seen = fs.readFileSync(capture, 'utf8').trim().split('\n');
+  assert.ok(seen.length >= 1);
+  for (const stateDir of seen) {
+    assert.notStrictEqual(stateDir, path.join(dir, 'persistent'));
+    assert.ok(stateDir.startsWith(fs.realpathSync(os.tmpdir())) || stateDir.startsWith(os.tmpdir()), stateDir);
+  }
+  assert.strictEqual(new Set(seen).size, 1, 'one isolated directory for the whole run');
+  assert.ok(!fs.existsSync(seen[0]), 'the isolated state is removed when the run ends');
+});

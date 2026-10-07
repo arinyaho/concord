@@ -871,8 +871,6 @@ function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey,
   return { status: 'carried', from: fromRunKey, to: initiative.key, round: ledger.round };
 }
 
-// Every mutating target verb takes the same lock, including an unkeyed call
-// racing the target's first initiative binding. `show` only reads.
 // The verified fold of one gates-phase round: correctness candidates the
 // verifier did not kill, intent findings on changed files, and the gate
 // findings gate-verify did not reject. plan-fixes routes it into fixes;
@@ -1048,6 +1046,8 @@ function verifiedRound(ref, stateDir, run, what) {
   return { repoRoot, slug, ledger, n, isGit, changed, fixes, resolvedAbsent, intentParked, gateOpen, gateApplied };
 }
 
+// Every mutating target verb takes the same lock, including an unkeyed call
+// racing the target's first initiative binding. `show` only reads.
 function main(resolveFromCwd) {
   const { args, initiative } = extractInitiative(process.argv.slice(2));
   if (args[0] === 'feedback') {
@@ -1652,12 +1652,15 @@ function runVerb(resolveFromCwd, args, initiative) {
     const noDodFlagPassed = rest.some((a) => NO_DOD_FLAGS.has(a));
     // --intent-file <path>: the caller supplies the intent text directly and the
     // repository's configured intent command, if any, is not run.
+    // --no-intent-command: the checkout is untrusted, so its configured intent
+    // command is not run; only an --intent-file supplies intent.
+    const noIntentCommand = rest.includes('--no-intent-command');
     const intentFileAt = rest.indexOf('--intent-file');
     const intentFile = intentFileAt === -1 ? null : rest[intentFileAt + 1];
     if (intentFileAt !== -1 && (!intentFile || intentFile.startsWith('--') || rest.indexOf('--intent-file', intentFileAt + 1) !== -1)) {
       throw new Error('review-cli round-start: --intent-file requires exactly one value');
     }
-    const positional = rest.filter((a, index) => !BROAD_FLAGS.has(a) && !NO_BROAD_FLAGS.has(a) && !NO_DOD_FLAGS.has(a) && !routingIndexes.has(index)
+    const positional = rest.filter((a, index) => !BROAD_FLAGS.has(a) && !NO_BROAD_FLAGS.has(a) && !NO_DOD_FLAGS.has(a) && a !== '--no-intent-command' && !routingIndexes.has(index)
       && (intentFileAt === -1 || (index !== intentFileAt && index !== intentFileAt + 1)));
     for (const tok of positional) {
       if (tok.startsWith('--')) throw new Error(`review-cli round-start: unknown flag "${tok}"`);
@@ -1752,7 +1755,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (!isFileTarget && ledger.target && ledger.target.head_sha && !gitIsReachable(repoRoot, ledger.target.head_sha)) {
       ledger = resetUnreachable(ledger);
     }
-    const intentCfg = intentFile ? { file: path.resolve(intentFile) } : intentLib.loadIntentConfig(repoRoot);
+    const intentCfg = intentFile ? { file: path.resolve(intentFile) } : noIntentCommand ? null : intentLib.loadIntentConfig(repoRoot);
     const fetchIntentNow = () => (intentCfg.file ? intentLib.readIntentFile(intentCfg.file) : intentLib.fetchIntent({ command: intentCfg.command, cwd: repoRoot, ref, base }));
     const broadReuse = ledger.broad_reuse;
     const reuseFrontPass = !!broadReuse && !broadFlagPassed && !noBroadFlagPassed && !isFileTarget && !intentCfg && !broadReuse.intentHash

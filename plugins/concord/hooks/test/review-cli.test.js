@@ -4754,3 +4754,27 @@ test('round-start: an empty --intent-file fails closed', () => {
   assert.strictEqual(status, 1);
   assert.match(stderr, /intent file .* is empty/);
 });
+
+test('round-start: --no-intent-command skips the repository intent command but still takes --intent-file', () => {
+  const repo = initRepoWithIntent('exit 7');
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const without = JSON.parse(run(['round-start', 'feat/no-intent', 'HEAD~1', '--no-intent-command'], { env }));
+  assert.strictEqual(without.intentApplied, false);
+  const intentFile = path.join(tmpDir(), 'pr.md');
+  fs.writeFileSync(intentFile, 'REQ: from the PR');
+  const withFile = JSON.parse(run(['round-start', 'feat/no-intent-file', 'HEAD~1', '--no-intent-command', '--intent-file', intentFile], { env }));
+  assert.strictEqual(withFile.intentApplied, true);
+});
+
+test('findings: reports an intent finding on a changed file with its requirement', () => {
+  const repo = initRepoWithIntent('printf "REQ: retry three times"'); const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/ro-intent',
+    { status: 'ok', examined: ['a.txt'], findings: [] }, { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'intent', { status: 'ok', findings: [
+    { id: 'intent:no-retry', file: 'a.txt', span: 'two', requirement: 'REQ: retry three times', summary: 'does not retry' } ] });
+  const out = JSON.parse(run(['findings', 'feat/ro-intent'], { env, skipPlanSeed: true }));
+  assert.deepStrictEqual(out.findings, [{ id: 'intent:no-retry', category: 'intent', file: 'a.txt', line: 1, span: 'two', summary: 'does not retry', requirement: 'REQ: retry three times' }]);
+});
