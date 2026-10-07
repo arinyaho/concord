@@ -178,6 +178,9 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
       ...(untrustedCheckout ? ['--config', 'project_doc_max_bytes=0', '--ignore-rules'] : []),
       '--skip-git-repo-check', '--json', ...(isWindows ? ['-'] : [prompt]),
     ], needsDoubleEscape(resolvedCodex.command, repoRoot)), crossPlatformOpts({ cwd: repoRoot, env: childEnv, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'ignore'], detached: !isWindows }));
+    // A top-level CLI can exit after spawning a same-group child. End the
+    // untrusted review's process group before 'close' resolves the launch.
+    if (untrustedCheckout) child.once('exit', () => terminateProcessTree(child, 'SIGKILL'));
     if (isWindows) {
       // If `codex` exits before consuming stdin (a rejected flag, a
       // startup auth failure, the wrong binary on PATH), writing the
@@ -310,6 +313,7 @@ function providerExec(input) {
 
   return new Promise((resolve, reject) => {
     const child = spawn(crossPlatformCommand(executable, repoRoot), crossPlatformArgs(args, needsDoubleEscape(executable, repoRoot)), crossPlatformOpts({ cwd: repoRoot, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'pipe'], detached: !isWindows }));
+    if (input.untrustedCheckout) child.once('exit', () => terminateProcessTree(child, 'SIGKILL'));
     if (isWindows) {
       // See codexExec's identical stdin 'error' handling above -- the
       // same EPIPE risk (child exits before consuming the prompt) applies
@@ -883,6 +887,17 @@ async function runRounds(options) {
       ...(started.gateApplied ? ['gate'] : []), 'verify',
       ...(started.gateApplied && started.gateMode !== 'design-conformance' ? ['gate-verify'] : []),
     ] : [];
+    const checkReviewCheckout = () => {
+      if (!reviewOnly) return;
+      if (started.targetType === 'file') {
+        const current = options.targetIdentity ? options.targetIdentity(ref, initialBase, canonicalRepoRoot)
+          : fileTarget({ files: [ref.slice('file:'.length)] }, canonicalRepoRoot).identity;
+        if (current !== started.head) throw new Error('harness-failure: a reviewer modified the file target; review-only reports only on the content it started on');
+      } else {
+        if (gitDirty(canonicalRepoRoot)) throw new Error('harness-failure: a reviewer left the checkout modified; review-only reports only on the commit as it was');
+        if (started.head && gitHeadSha(canonicalRepoRoot) !== started.head) throw new Error('harness-failure: a reviewer moved HEAD; review-only reports only on the commit it was started on');
+      }
+    };
     const roleArtifacts = new Map(reviewRoles.map((role) => [role, artifactDestinationFromPrompt(reviewerPrompt(role, context), context.stateDir)]));
     if (reviewOnly && [...roleArtifacts.values()].some((file) => !file)) throw new Error('harness-failure: review artifact destination is missing');
     const protectedReviewFiles = reviewOnly ? new Map() : null;
@@ -942,6 +957,7 @@ async function runRounds(options) {
       return true;
     };
     const launch = async (input) => {
+      checkReviewCheckout();
       const ownOutput = roleArtifacts.get(input.artifactRole || input.role) || null;
       checkProtected(false, ownOutput);
       if (!input.preReserved) await reserve(input.reservationRole || (input.role === 'gate' ? 'gate-review' : input.role));
@@ -959,6 +975,7 @@ async function runRounds(options) {
         refreshLedger();
       }
       checkProtected(false, ownOutput);
+      checkReviewCheckout();
       const result = await invoke(spawn, {
         ...input,
         provider,
@@ -971,6 +988,7 @@ async function runRounds(options) {
         ...(options.reviewCodexHome && provider === 'codex' ? { env: { ...process.env, CODEX_HOME: options.reviewCodexHome } } : {}),
         ...(telemetrySlot ? { telemetrySlot } : {}),
       });
+      checkReviewCheckout();
       checkProtected(false, ownOutput);
       return result;
     };
@@ -1069,13 +1087,7 @@ async function runRounds(options) {
       checkProtected();
       // The reviewers can write to the checkout. Findings describe the commit,
       // so a tree a reviewer modified is not one to report on.
-      if (started.targetType === 'file') {
-        const current = options.targetIdentity ? options.targetIdentity(ref, initialBase, canonicalRepoRoot)
-          : fileTarget({ files: [ref.slice('file:'.length)] }, canonicalRepoRoot).identity;
-        if (current !== started.head) throw new Error('harness-failure: a reviewer modified the file target; review-only reports only on the content it started on');
-      }
-      if (started.targetType !== 'file' && gitDirty(canonicalRepoRoot)) throw new Error('harness-failure: a reviewer left the checkout modified; review-only reports only on the commit as it was');
-      if (started.targetType !== 'file' && started.head && gitHeadSha(canonicalRepoRoot) !== started.head) throw new Error('harness-failure: a reviewer moved HEAD; review-only reports only on the commit it was started on');
+      checkReviewCheckout();
       const reported = await cli(['findings', ref]);
       return { decision: 'review-only', round: currentRound, findings: reported.findings };
     }

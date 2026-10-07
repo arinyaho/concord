@@ -2593,6 +2593,27 @@ test('providerExec keeps project settings out of a Claude reviewer on an untrust
   }
 });
 
+for (const provider of ['codex', 'claude']) test(`an untrusted ${provider} reviewer cannot leave a same-group child running after its CLI exits`, async () => {
+  if (process.platform === 'win32') return;
+  const binDir = temp(); const marker = path.join(binDir, 'late-marker');
+  const executable = path.join(binDir, provider);
+  const delayed = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'late'), 450)`;
+  fs.writeFileSync(executable, `#!${process.execPath}\nrequire('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(delayed)}], { stdio: 'ignore' }).unref();\nconsole.log(${JSON.stringify(provider === 'codex' ? '{"type":"turn.completed","usage":{}}' : '{}')});\n`);
+  fs.chmodSync(executable, 0o755);
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${oldPath}`;
+  try {
+    if (provider === 'codex') await codexExec({ role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir, untrustedCheckout: true, codexExecutable: { command: executable, version: 'codex-cli 0.154.0' } });
+    else await providerExec({ provider, role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir, untrustedCheckout: true });
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    assert.strictEqual(fs.existsSync(marker), false, 'a reviewer descendant must not write after the top-level CLI exits');
+    if (provider === 'codex') await codexExec({ role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir, codexExecutable: { command: executable, version: 'codex-cli 0.154.0' } });
+    else await providerExec({ provider, role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir });
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    assert.strictEqual(fs.existsSync(marker), true, 'trusted launches retain their prior process lifecycle');
+  } finally { process.env.PATH = oldPath; }
+});
+
 test('reviewOnly treats the checkout as untrusted: no repository intent command and no project agent config', async () => {
   const h = harness();
   const inputs = [];
@@ -2653,6 +2674,25 @@ test('reviewOnly fails when a reviewer left the checkout modified, instead of re
     /reviewer left the checkout modified/,
   );
   assert.strictEqual(reported, false, 'no findings are reported from a modified tree');
+});
+
+test('reviewOnly rejects a finder edit before a verifier can restore the checkout', async () => {
+  const repo = cleanRepo();
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'original\n');
+  execFileSync('git', ['add', 'a.txt'], { cwd: repo });
+  execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'file'], { cwd: repo });
+  const h = harness({ gateApplied: false }); let verifierRan = false;
+  const cli = (args) => args[0] === 'findings' ? { findings: [] } : h.cli(args);
+  const spawn = (input) => {
+    if (input.role === 'correctness') fs.writeFileSync(path.join(repo, 'a.txt'), 'reviewer edit\n');
+    if (input.role === 'verify') { verifierRan = true; fs.writeFileSync(path.join(repo, 'a.txt'), 'original\n'); }
+    return h.spawn(input);
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/transient-edit', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'claude', noBroad: true }),
+    /reviewer left the checkout modified/,
+  );
+  assert.strictEqual(verifierRan, false, 'the next reviewer must not run on a tree altered by a prior reviewer');
 });
 
 for (const reviewer of ['claude', 'codex']) test(`reviewOnly rejects a file target changed by its ${reviewer} reviewer before reporting findings`, async () => {

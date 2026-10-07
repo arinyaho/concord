@@ -75,6 +75,7 @@ marker() { printf '<!-- concord-review: %s mode:%s%s -->' "$1" "$2" "${3:+ cmd:$
 fixture fresh '[]' '[]'
 fixture reviewed '[]' "[$(review reviewbot "$(marker "$SHA" broad)")]"
 fixture reviewed-on-request '[]' "[$(review reviewbot "$(marker "$SHA" diff 7)")]"
+fixture broad-before-request '[]' "[$(review reviewbot "$(marker "$OTHER" broad)"),$(review reviewbot "$(marker "$SHA" diff 7)")]"
 fixture forged-marker "[$(comment outsider NONE "$(marker "$SHA" broad)" 5)]" '[]'
 fixture pushed-again '[]' "[$(review reviewbot "$(marker "$OTHER" broad)")]"
 fixture broad-never-ran '[]' "[$(review reviewbot "$(marker "$OTHER" diff 4)")]"
@@ -105,7 +106,8 @@ printf '[{"status":"queued","displayTitle":"review o/running#1 @ %s"},{"status":
 expect=(
   "fresh:broad"
   "reviewed:"
-  "reviewed-on-request:"
+  "reviewed-on-request:broad"
+  "broad-before-request:"
   "forged-marker:broad"
   "pushed-again:diff"
   "running:"
@@ -150,6 +152,8 @@ got=$(scan env REPOS="o/fresh o/member-asks" MAX_PER_RUN=1)
 if [ "$got" = "member-asks:broad:requested:default" ]; then echo "ok   a requested review goes before an automatic one"; else echo "FAIL a requested review goes before an automatic one: $got"; fail=1; fi
 got=$(scan env REPOS="o/fresh o/member-asks" MANUAL_ONLY=1)
 if [ "$got" = "member-asks:broad:requested:default" ]; then echo "ok   manual mode dispatches only requested reviews"; else echo "FAIL manual mode dispatches only requested reviews: $got"; fail=1; fi
+got=$(scan env REPOS="o/reviewed-on-request" MANUAL_ONLY=1)
+if [ -z "$got" ]; then echo "ok   manual mode does not schedule a broad pass after requested diff"; else echo "FAIL manual mode scheduled $got"; fail=1; fi
 
 # A command can name the reviewer; without one the copy's REVIEW_REVIEWER applies.
 for e in asks-codex:broad:codex asks-claude:diff:claude asks-unknown-reviewer:diff:default member-asks:broad:default; do

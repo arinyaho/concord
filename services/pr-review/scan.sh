@@ -77,11 +77,13 @@ for repo in $REPOS; do
     # A failed review is not retried on its own: a new push or an @concord
     # command starts the next one.
     [ "$state" = error ] && continue
-    # This exact commit was already reviewed, automatically or on request.
-    if grep -qE "^<!-- concord-review: $sha mode:(broad|diff)( cmd:[0-9]+)? -->$" <<<"$markers"; then continue; fi
+    # A broad review of this commit covers the automatic pass entirely.
+    if grep -qE "^<!-- concord-review: $sha mode:broad( cmd:[0-9]+)? -->$" <<<"$markers"; then continue; fi
     # The broad pass runs until one has completed on this pull request, then
-    # later pushes get the diff-local pass alone.
+    # later pushes get the diff-local pass alone. A requested diff on the
+    # current commit does not satisfy the first broad pass.
     if grep -qF ' mode:broad' <<<"$markers"; then mode='diff'; else mode='broad'; fi
+    if grep -qE "^<!-- concord-review: $sha mode:$mode( cmd:[0-9]+)? -->$" <<<"$markers"; then continue; fi
     automatic+=("$repo $num $sha $mode - - $title")
   done < <(jq -r --arg cutoff "$cutoff" \
              '.[] | select(.isDraft | not) | select(.updatedAt > $cutoff) | "\(.number)\t\(.headRefOid)\t\(.title)"' <<<"$prs")
