@@ -24,7 +24,7 @@ jobs:
   review:
     if: vars.REVIEW_REPOS != ''
     runs-on: ${{ fromJSON(vars.REVIEW_RUNNER || '"ubuntu-latest"') }}
-    # Two reviewer phases run one after the other, each allowed 30 minutes.
+    # Review-only workers run sequentially within this 90-minute job limit.
     timeout-minutes: 90
     env:
       # A reviewer named in the @concord comment wins over the copy's default.
