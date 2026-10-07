@@ -1016,7 +1016,11 @@ function verifiedRound(ref, stateDir, run, what) {
     for (const f of verifyFindings) byId.set(f.id, f);
     for (const f of gFindings) byId.set(f.id, f);
     const mergedGateFindings = Array.from(byId.values());
-    const rejected = gvRaw ? gc.parseVerifyVerdict(JSON.stringify({ rejected: gvRaw.rejected }), mergedGateFindings).rejectedIds : [];
+    // A gate duplicate of a correctness finding drops out only while that
+    // correctness finding survives its own verifier; otherwise it stands.
+    const survivingCorrectness = new Set(candidates.filter((f) => !killed.has(f.id)).map((f) => f.id));
+    const duplicateIds = ((gvRaw && gvRaw.duplicates) || []).filter((d) => survivingCorrectness.has(d.of)).map((d) => d.id);
+    const rejected = (gvRaw ? gc.parseVerifyVerdict(JSON.stringify({ rejected: gvRaw.rejected }), mergedGateFindings).rejectedIds : []).concat(duplicateIds);
     // gate-verify's `blocking` ids override a finder's follow-up claim (fail closed).
     const blockingReasons = new Map();
     for (const b of (gvRaw && gvRaw.blocking) || []) {
@@ -2302,8 +2306,11 @@ function runVerb(resolveFromCwd, args, initiative) {
       if (!span) return null;
       try {
         const text = fs.readFileSync(path.join(repoRoot, file), 'utf8');
+        // A span that occurs more than once does not say which occurrence the
+        // reviewer meant, so it gets no line rather than a guessed one.
         const at = text.indexOf(span);
-        return at === -1 ? null : text.slice(0, at).split('\n').length;
+        if (at === -1 || text.indexOf(span, at + 1) !== -1) return null;
+        return text.slice(0, at).split('\n').length;
       } catch (_) { return null; }
     };
     // Gate findings carry their span as `evidence` and their lens as `class`.

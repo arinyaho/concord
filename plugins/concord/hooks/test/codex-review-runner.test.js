@@ -2517,11 +2517,18 @@ test('Codex launcher emits then acknowledges an error continuation packet before
   assert.strictEqual(fs.readFileSync(capture, 'utf8'), 'error');
 });
 
+function cleanRepo() {
+  const repo = temp();
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: repo });
+  return repo;
+}
+
 test('reviewOnly stops after verification, reports the verified findings, and never plans, fixes, or records', async () => {
   const h = harness({ gateApplied: true });
   const verified = [{ id: 'correctness:bug', category: 'correctness', file: 'a.txt', line: 1, span: 'bad', summary: 'fix it', requirement: '' }];
   const cli = (args) => (args[0] === 'findings' ? (h.calls.push(['cli', ...args]), { findings: verified }) : h.cli(args));
-  const result = await runReviewUntilGreen({ ref: 'feature/ro', base: 'main', repoRoot: '/repo', runCli: cli, spawn: h.spawn, reviewOnly: true, broad: true, reviewer: 'claude' });
+  const result = await runReviewUntilGreen({ ref: 'feature/ro', base: 'main', repoRoot: cleanRepo(), runCli: cli, spawn: h.spawn, reviewOnly: true, broad: true, reviewer: 'claude' });
   assert.deepStrictEqual(result, { decision: 'review-only', round: 1, findings: verified });
   const spawned = h.calls.filter((c) => c[0] === 'spawn').map((c) => c[1]).sort();
   assert.deepStrictEqual(spawned, ['correctness', 'gate', 'gate-verify', 'verify']);
@@ -2589,7 +2596,7 @@ test('reviewOnly treats the checkout as untrusted: no repository intent command 
   const inputs = [];
   const cli = (args) => (args[0] === 'findings' ? { findings: [] } : h.cli(args));
   const spawn = (input) => { inputs.push(input); return h.spawn(input); };
-  await runReviewUntilGreen({ ref: 'feature/untrusted', base: 'main', repoRoot: '/repo', runCli: cli, spawn, reviewOnly: true, noBroad: true, reviewer: 'claude' });
+  await runReviewUntilGreen({ ref: 'feature/untrusted', base: 'main', repoRoot: cleanRepo(), runCli: cli, spawn, reviewOnly: true, noBroad: true, reviewer: 'claude' });
   const start = h.calls.find((c) => c[0] === 'cli' && c[1] === 'round-start');
   assert.ok(start.includes('--no-intent-command'), `round-start args: ${start.join(' ')}`);
   assert.ok(inputs.length && inputs.every((input) => input.untrustedCheckout === true));
@@ -2624,4 +2631,33 @@ for (const reviewer of ['codex', 'copilot']) test(`reviewOnly refuses the ${revi
     /reviewOnly supports only the claude reviewer/,
   );
   assert.deepStrictEqual(h.calls, [], 'nothing starts before the refusal');
+});
+
+test('reviewOnly fails when a reviewer left the checkout modified, instead of reporting on a tree that is not the commit', async () => {
+  const repo = temp();
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n');
+  execFileSync('git', ['add', 'a.txt'], { cwd: repo });
+  execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init'], { cwd: repo });
+  const h = harness({ gateApplied: false });
+  let reported = false;
+  const cli = (args) => (args[0] === 'findings' ? (reported = true, { findings: [] }) : h.cli(args));
+  const spawn = (input) => {
+    if (input.role === 'correctness') fs.writeFileSync(path.join(repo, 'a.txt'), 'edited by the reviewer\n');
+    return h.spawn(input);
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/dirty', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'claude' }),
+    /reviewer left the checkout modified/,
+  );
+  assert.strictEqual(reported, false, 'no findings are reported from a modified tree');
+});
+
+test('reviewOnly refuses resume, which has no ledger to recover the base from', async () => {
+  const h = harness();
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/resume', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn, reviewOnly: true, reviewer: 'claude', resume: true }),
+    /reviewOnly cannot resume/,
+  );
+  assert.deepStrictEqual(h.calls, []);
 });

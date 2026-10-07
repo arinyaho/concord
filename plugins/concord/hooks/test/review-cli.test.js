@@ -4778,3 +4778,32 @@ test('findings: reports an intent finding on a changed file with its requirement
   const out = JSON.parse(run(['findings', 'feat/ro-intent'], { env, skipPlanSeed: true }));
   assert.deepStrictEqual(out.findings, [{ id: 'intent:no-retry', category: 'intent', file: 'a.txt', line: 1, span: 'two', summary: 'does not retry', requirement: 'REQ: retry three times' }]);
 });
+
+test('findings: a gate duplicate is dropped only while the correctness finding it restates survives', () => {
+  for (const [label, killed, expected] of [['kept', false, ['correctness:bug']], ['killed', true, ['gate:design-conformance:bug']]]) {
+    const repo = initRepo(); const dir = tmpDir();
+    const ref = `feat/dup-${label}`;
+    const { env, n } = seedGatesRound(repo, dir, ref,
+      { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:bug', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'bug' }] },
+      { status: 'ok', rejected: killed ? [{ id: 'correctness:bug', reason: 'read a.txt: not a bug' }] : [] }, { armBroad: true });
+    writeArtifact(dir, n, 'gate', { status: 'ok', findings: [{ id: 'gate:design-conformance:bug', file: 'a.txt', span: 'two', summary: 'same bug' }] });
+    // Verifiers run after both finders, so their artifacts are written last.
+    writeArtifact(dir, n, 'verify', { status: 'ok', rejected: killed ? [{ id: 'correctness:bug', reason: 'read a.txt: not a bug' }] : [] });
+    writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [], findings: [], duplicates: [{ id: 'gate:design-conformance:bug', of: 'correctness:bug' }] });
+    const out = JSON.parse(run(['findings', ref], { env, skipPlanSeed: true }));
+    assert.deepStrictEqual(out.findings.map((f) => f.id), expected, label);
+  }
+});
+
+test('findings: a span that occurs more than once in its file gets no line rather than a guessed one', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'retry()\nother\nretry()\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  run(['round-start', 'feat/twice', 'HEAD~1'], { env });
+  const n = review.readLedger(dir, review.targetSlug('feat/twice')).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:twice', gate: 'correctness', file: 'a.txt', span: 'retry()', summary: 'x' }] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  const out = JSON.parse(run(['findings', 'feat/twice'], { env, skipPlanSeed: true }));
+  assert.strictEqual(out.findings[0].line, null);
+});

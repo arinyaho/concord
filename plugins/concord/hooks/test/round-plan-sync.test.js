@@ -169,9 +169,10 @@ test('every changeClass/action pair the plan prompt offers is accepted by the pl
   }
 });
 
-test('gate-verify rejects a gate candidate that restates a correctness candidate, so one defect is reported once', () => {
+test('gate-verify records a gate candidate that restates a correctness candidate as a duplicate, not a rejection', () => {
   assert.match(GATE_VERIFY_OWNERSHIP_CLAUSE, /restates the same defect .* correctness candidate/);
-  assert.match(GATE_VERIFY_OWNERSHIP_CLAUSE, /reason naming that correctness id/);
+  assert.match(GATE_VERIFY_OWNERSHIP_CLAUSE, /"duplicates" as \{"id":"<gate id>","of":"<correctness id>"\}/);
+  assert.doesNotMatch(GATE_VERIFY_OWNERSHIP_CLAUSE, /Reject a gate candidate that restates/);
 });
 
 test('the correctness verifier given the gate batch may disposition only correctness ids', () => {

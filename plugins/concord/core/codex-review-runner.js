@@ -416,6 +416,7 @@ async function runRounds(options) {
   // Only Claude can be kept from an untrusted checkout's configuration
   // (--setting-sources user). Codex trusts and loads the checkout's own skills
   // whatever its configuration says, and Copilot has no such control at all.
+  if (reviewOnly && resume) throw new Error('review-until-green: reviewOnly cannot resume; it keeps no ledger to recover the base from, so name the ref and base again');
   if (reviewOnly && options.reviewer !== 'claude') throw new Error(`review-until-green: reviewOnly supports only the claude reviewer; ${options.reviewer || 'codex'} cannot be kept from an untrusted checkout's configuration`);
   const repoRoot = canonicalPath(configuredRepoRoot);
   const canonicalRepoRoot = repoRoot;
@@ -931,6 +932,9 @@ async function runRounds(options) {
     if (reviewerFailure) throw reviewerFailure.reason;
 
     if (reviewOnly) {
+      // The reviewers can write to the checkout. Findings describe the commit,
+      // so a tree a reviewer modified is not one to report on.
+      if (started.targetType !== 'file' && gitDirty(canonicalRepoRoot)) throw new Error('harness-failure: a reviewer left the checkout modified; review-only reports only on the commit as it was');
       const reported = await cli(['findings', ref]);
       return { decision: 'review-only', round: currentRound, findings: reported.findings };
     }
