@@ -54,7 +54,7 @@ work=$(mktemp -d); intent=$(mktemp); posted=
 # the status; anything else leaves it in error rather than pending.
 finish() {
   [ -n "$rid" ] && gh api -X DELETE "repos/$REPO/issues/$PR/reactions/$rid" >/dev/null 2>&1 || true
-  rm -rf "$work" "$intent"
+  rm -rf "$work" "$intent" "$intent.full"
   [ -n "$posted" ] || status error "review did not complete"
 }
 trap finish EXIT
