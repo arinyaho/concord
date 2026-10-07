@@ -2672,6 +2672,28 @@ test('codexExec keeps AGENTS.md and project rules out of a Codex reviewer on an 
   const args = JSON.parse(fs.readFileSync(capture, 'utf8'));
   assert.ok(args.includes('project_doc_max_bytes=0'), `args: ${args.join(' ')}`);
   assert.ok(args.includes('--ignore-rules'));
+  assert.ok(args.includes('--strict-config'));
+  assert.ok(!args.includes('--sandbox'));
+});
+
+test('codexExec keeps its normal sandbox and strips inherited credentials from untrusted reviews', async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  const capture = path.join(binDir, 'capture.json');
+  fs.writeFileSync(codex, `#!${process.execPath}\nconst keys = ['GH_TOKEN', 'GITHUB_TOKEN', 'OPENAI_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'SAFE_VALUE']; require('node:fs').writeFileSync(${JSON.stringify(capture)}, JSON.stringify({ args: process.argv.slice(2), env: Object.fromEntries(keys.map(key => [key, process.env[key] || null])) }));\n`);
+  fs.chmodSync(codex, 0o755);
+  const input = { role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir,
+    codexExecutable: { command: codex, version: 'codex-cli 0.154.0' }, env: { ...process.env, GH_TOKEN: 'secret', GITHUB_TOKEN: 'secret', OPENAI_API_KEY: 'secret', CLAUDE_CODE_OAUTH_TOKEN: 'secret', SAFE_VALUE: 'kept' } };
+  await codexExec({ ...input, untrustedCheckout: true });
+  const untrusted = JSON.parse(fs.readFileSync(capture, 'utf8'));
+  for (const key of ['GH_TOKEN', 'GITHUB_TOKEN', 'OPENAI_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']) assert.strictEqual(untrusted.env[key], null, key);
+  assert.strictEqual(untrusted.env.SAFE_VALUE, 'kept');
+  await codexExec(input);
+  const normal = JSON.parse(fs.readFileSync(capture, 'utf8'));
+  for (const key of ['GH_TOKEN', 'GITHUB_TOKEN', 'OPENAI_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']) assert.strictEqual(normal.env[key], 'secret', key);
+  assert.strictEqual(normal.env.SAFE_VALUE, 'kept');
+  assert.deepStrictEqual(normal.args.slice(0, 7), ['exec', '--cd', binDir, '--sandbox', 'workspace-write', '--add-dir', binDir]);
+  assert.ok(!normal.args.includes('--strict-config'));
 });
 
 test('reviewOnly runs a Codex reviewer from its own CODEX_HOME, which marks the checkout untrusted before Codex can trust it', async () => {
@@ -2701,6 +2723,14 @@ test('reviewOnly runs a Codex reviewer from its own CODEX_HOME, which marks the 
     assert.strictEqual(launch.untrusted, true);
     assert.ok(launch.home && launch.home !== sourceHome, `${launch.role} ran from its own CODEX_HOME`);
     assert.ok(launch.config.includes(`[projects.${JSON.stringify(fs.realpathSync(repo))}]\ntrust_level = "untrusted"`), launch.config);
+    assert.ok(launch.config.includes('default_permissions = "concord-review"'), launch.config);
+    assert.ok(launch.config.includes('approval_policy = "never"'), launch.config);
+    assert.ok(launch.config.includes('[shell_environment_policy]\ninherit = "core"'), launch.config);
+    assert.ok(launch.config.includes('ignore_default_excludes = false'), launch.config);
+    assert.ok(launch.config.includes('[permissions.concord-review]\nextends = ":workspace"'), launch.config);
+    assert.ok(launch.config.includes(`[permissions.concord-review.filesystem]\n${JSON.stringify(path.join(sourceHome, 'auth.json'))} = "deny"`), launch.config);
+    assert.ok(launch.config.includes(`${JSON.stringify(path.join(launch.home, 'auth.json'))} = "deny"`), launch.config);
+    assert.ok(launch.config.includes('[permissions.concord-review.network]\nenabled = false'), launch.config);
     assert.ok(!launch.config.includes('mcp_servers'), 'the account\'s own Codex configuration stays out');
     assert.strictEqual(launch.auth, '{"OPENAI_API_KEY":"sk-test"}');
   }

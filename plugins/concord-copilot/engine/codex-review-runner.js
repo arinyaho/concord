@@ -162,15 +162,22 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
     // path for this value. Scoped to win32 only: the POSIX path (`prompt`
     // as the trailing positional arg) is unaffected by this class of bug
     // and stays exactly as tested.
+    const childEnv = untrustedCheckout ? { ...(env || process.env) } : env;
+    if (untrustedCheckout) {
+      for (const key of Object.keys(childEnv)) {
+        if (/KEY|SECRET|TOKEN/i.test(key)) delete childEnv[key];
+      }
+    }
     const child = spawn(crossPlatformCommand(resolvedCodex.command, repoRoot), crossPlatformArgs([
-      'exec', '--cd', repoRoot, '--sandbox', 'workspace-write', '--add-dir', stateDir,
+      'exec', '--cd', repoRoot,
+      ...(untrustedCheckout ? ['--strict-config'] : ['--sandbox', 'workspace-write']), '--add-dir', stateDir,
       ...(model ? ['--model', model] : []),
       ...(effort ? ['--config', `model_reasoning_effort=${JSON.stringify(effort)}`] : []),
       ...(tier ? ['--config', `service_tier=${JSON.stringify(tier)}`] : []),
       // An untrusted checkout's AGENTS.md and execpolicy rules must not steer the reviewer.
       ...(untrustedCheckout ? ['--config', 'project_doc_max_bytes=0', '--ignore-rules'] : []),
       '--skip-git-repo-check', '--json', ...(isWindows ? ['-'] : [prompt]),
-    ], needsDoubleEscape(resolvedCodex.command, repoRoot)), crossPlatformOpts({ cwd: repoRoot, env, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'ignore'], detached: !isWindows }));
+    ], needsDoubleEscape(resolvedCodex.command, repoRoot)), crossPlatformOpts({ cwd: repoRoot, env: childEnv, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'ignore'], detached: !isWindows }));
     if (isWindows) {
       // If `codex` exits before consuming stdin (a rejected flag, a
       // startup auth failure, the wrong binary on PATH), writing the
@@ -422,7 +429,26 @@ async function runReviewUntilGreen(options) {
       const sourceAuth = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'auth.json');
       if (fs.existsSync(sourceAuth)) fs.copyFileSync(sourceAuth, path.join(home, 'auth.json'));
       const checkout = canonicalPath(options.repoRoot || process.cwd());
-      fs.writeFileSync(path.join(home, 'config.toml'), `[projects.${JSON.stringify(checkout)}]\ntrust_level = "untrusted"\n`);
+      fs.writeFileSync(path.join(home, 'config.toml'), `default_permissions = "concord-review"
+approval_policy = "never"
+
+[shell_environment_policy]
+inherit = "core"
+ignore_default_excludes = false
+
+[permissions.concord-review]
+extends = ":workspace"
+
+[permissions.concord-review.filesystem]
+${JSON.stringify(sourceAuth)} = "deny"
+${JSON.stringify(path.join(home, 'auth.json'))} = "deny"
+
+[permissions.concord-review.network]
+enabled = false
+
+[projects.${JSON.stringify(checkout)}]
+trust_level = "untrusted"
+`);
       extra.reviewCodexHome = home;
     }
     return await runRounds({ ...options, ...extra });

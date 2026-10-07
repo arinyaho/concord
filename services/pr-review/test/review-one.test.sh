@@ -41,8 +41,20 @@ case "$*" in
   "repo clone "*) git clone -q "$UPSTREAM" "$4" ;;
   *"--json baseRefName"*) out '{"baseRefName":"main"}' ;;
   *"--json title,body"*) out '{"title":"Add a","body":"The PR body says a.txt must exist."}' ;;
-  *"--json closingIssuesReferences"*) out '{"closingIssuesReferences":[{"number":5,"repository":{"name":"private","owner":{"login":"other"}}}]}' ;;
-  "issue view "*) echo "HTTP 404" >&2; exit 1 ;;
+  *"--json closingIssuesReferences"*)
+    if [ "${ISSUE_REF:-foreign}" = local ] || [ "${ISSUE_REF:-foreign}" = unreadable ]; then
+      out '{"closingIssuesReferences":[{"number":6,"repository":{"name":"r","owner":{"login":"o"}}}]}'
+    else
+      out '{"closingIssuesReferences":[{"number":5,"repository":{"name":"private","owner":{"login":"other"}}}]}'
+    fi ;;
+  "issue view "*)
+    echo "$*" >> "$LOG.issue-views"
+    if [ "${ISSUE_REF:-}" = unreadable ]; then echo "HTTP 404" >&2; exit 1; fi
+    if [ "$5" = other/private ]; then
+      out '{"number":5,"title":"Foreign requirement","body":"FOREIGN_BODY_SENTINEL"}'
+    else
+      out '{"number":6,"title":"Local requirement","body":"LOCAL_BODY_SENTINEL"}'
+    fi ;;
   *"/statuses/"*)
     all="$*"; state=${all#*state=}; state=${state%% *}
     # FLAKY_STATUS fails the first attempt to settle a final status.
@@ -88,10 +100,21 @@ check "clean review is posted" 'grep -qx review "$LOG"'
 check "clean review settles the status to success" '[ "$(grep ^status "$LOG" | tail -1)" = "status success" ]'
 check "the marker records the commit and the mode that ran" '[ "$(jq -r .body "$LOG.review" | head -1)" = "<!-- concord-review: $SHA mode:broad -->" ]'
 check "clean review leaves a thumbs-up" 'grep -qx "+1" "$LOG"'
-check "an unreadable closing issue is named, not fatal" 'grep -q "other/private#5 (not readable" "$LOG.intent"'
+check "a foreign closing issue is named without its body" 'grep -q "other/private#5 (external issue; body omitted)" "$LOG.intent"'
+check "foreign issue body is never fetched" '[ ! -e "$LOG.issue-views" ]'
+check "foreign issue body cannot reach intent" '! grep -q "FOREIGN_BODY_SENTINEL" "$LOG.intent"'
+check "foreign issue body cannot reach output" '! grep -q "FOREIGN_BODY_SENTINEL" "$LOG.out"'
 check "the reviewer runs with its own Claude configuration directory" '[ "$(cat "$LOG.config-dir")" != unset ] && [ "$(cat "$LOG.config-dir")" != "$HOME/.claude" ]'
 check "that directory holds no settings of the runner account" '[ ! -s "$LOG.config-files" ]'
 check "the pull request body reaches the intent" 'grep -q "must exist" "$LOG.intent"'
+
+ISSUE_REF=local run same-repo-issue '{"decision":"review-only","round":1,"findings":[]}'
+check "same-repo issue is fetched" 'grep -q "issue view 6 --repo o/r" "$LOG.issue-views"'
+check "same-repo issue body reaches intent" 'grep -q "LOCAL_BODY_SENTINEL" "$LOG.intent"'
+
+ISSUE_REF=unreadable run unreadable-same-repo-issue '{"decision":"review-only","round":1,"findings":[]}'
+check "an unreadable same-repo issue is fetched" 'grep -q "issue view 6 --repo o/r" "$LOG.issue-views"'
+check "an unreadable same-repo issue is named without failing review" 'grep -q "o/r#6 (not readable" "$LOG.intent" && grep -qx review "$LOG"'
 
 run leak '{"decision":"review-only","round":1,"findings":[{"id":"correctness:x","category":"correctness","file":"a.txt","line":1,"span":"change","summary":"token is model-token-secret","requirement":""}]}'
 check "a review quoting a credential is not posted" '! grep -qx review "$LOG"'

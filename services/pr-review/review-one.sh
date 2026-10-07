@@ -107,6 +107,10 @@ if [ "$MODE" = broad ]; then
     gh pr view "$PR" --repo "$REPO" --json closingIssuesReferences \
       --jq '.closingIssuesReferences[] | "\(.repository.owner.login)/\(.repository.name) \(.number)"' |
       while read -r issue_repo issue; do
+        if [ "$issue_repo" != "$REPO" ]; then
+          printf '\n\n## Closes %s#%s (external issue; body omitted)\n' "$issue_repo" "$issue"
+          continue
+        fi
         # An issue the review token cannot read is named, not fatal.
         gh issue view "$issue" --repo "$issue_repo" --json number,title,body \
           --jq '"\n\n## Closes \(.number): \(.title)\n\n\(.body)"' 2>/dev/null \
@@ -125,7 +129,7 @@ fi
 # directory keeps the runner account's own allow-lists, hooks, MCP servers, and
 # plugins away from a Claude reviewer; its OAuth token still comes from the
 # environment. A Codex reviewer gets a CODEX_HOME of its own from the engine,
-# holding only the login, and never sees the API key itself.
+# holding only the login; its shell is denied access to that auth file.
 result=$(cd "$work" && env -u GH_TOKEN -u GITHUB_TOKEN -u OPENAI_API_KEY CLAUDE_CONFIG_DIR="$claude_config" \
   node "$ENGINE" "concord-pr-$PR" "$BASE" --review-only "$BROAD" --reviewer "$REVIEWER" ${INTENT_ARGS[@]+"${INTENT_ARGS[@]}"} \
     ${REVIEW_MODEL:+--reviewer-model "$REVIEW_MODEL"} \

@@ -39,8 +39,9 @@ jobs:
       - if: env.REVIEWER == 'claude'
         run: npm install -g @anthropic-ai/claude-code
       - if: env.REVIEWER == 'codex'
+        run: npm install -g @openai/codex
+      - if: env.REVIEWER == 'codex'
         run: |
-          npm install -g @openai/codex
           # Log in under RUNNER_TEMP, which the runner empties after every job,
           # so the API key does not stay on a self-hosted runner.
           export CODEX_HOME="$RUNNER_TEMP/codex-home"
