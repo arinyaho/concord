@@ -1398,10 +1398,16 @@ function runVerb(resolveFromCwd, args, initiative) {
           && items.flatMap(idOf).some((id) => typeof id === 'string' && !prefixes.some((prefix) => id.startsWith(prefix)));
         if (!statusSpelling && !mixedNamespaces) throw new Error(`harness-failure: ${e.message}`);
         const retryArtifacts = retryArtifactMap(ledger.execution);
-        const alreadyRetried = fs.existsSync(repairPath) || fs.existsSync(retryPath) || !!retryArtifacts[name];
+        // The pending semantic prompt requests a new plan, not a representation
+        // repair. Durable repair bindings still bound that replacement to one repair.
+        const semanticReplacement = name === 'plan' && ledger.execution?.round === n && ledger.execution.planRetry?.state === 'pending';
+        const alreadyRetried = fs.existsSync(repairPath) || fs.existsSync(retryPath) || (!!retryArtifacts[name] && !semanticReplacement);
         if (!alreadyRetried) {
           if (ledger.execution && ledger.execution.round === n) {
-            writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, retryArtifacts: {}, retryArtifact: null } });
+            if (!semanticReplacement) delete retryArtifacts[name];
+            writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, retryArtifacts, retryArtifact: firstRetryArtifact(retryArtifacts),
+              // From this point resume must retain the replacement's repair.
+              ...(semanticReplacement ? { planRetry: { ...ledger.execution.planRetry, discardRepair: false } } : {}) } });
           }
           const bytes = Buffer.from(raw);
           fs.writeFileSync(snapshotPath, bytes, { flag: 'wx' });
@@ -2477,12 +2483,21 @@ function runVerb(resolveFromCwd, args, initiative) {
       else retryArtifacts.plan = `The previous normalized plan omitted surviving finding(s): ${unclassified.join(', ')}. Classify every surviving finding exactly once using the sealed correctness and verify evidence. Do not rerun reviewers or invent findings.`;
       const artifactHashes = { ...(execution.artifactHashes || {}) };
       delete artifactHashes.plan;
+      const repairArtifacts = { ...(execution.repairArtifacts || {}) };
+      delete repairArtifacts.plan;
       const failure = { role: 'plan', kind: 'incomplete-classification', message, at: new Date().toISOString() };
       const rejected = { ...ledger, execution: { ...execution, completed: (execution.completed || []).filter((role) => role !== 'plan'), artifactHashes,
         normalizedPlan: null, pending: Array.from(new Set([...(execution.pending || []), 'plan'])), retryArtifacts, retryArtifact: firstRetryArtifact(retryArtifacts),
+        ...(execution.repairArtifacts ? { repairArtifacts } : {}),
         planRetry: { state: exhausted ? 'exhausted' : 'pending', missingIds: unclassified, rejectedHash, message, discardRepair: true },
         failures: [...(execution.failures || []), failure].slice(-5), failure } };
       writeLedger(stateDir, slug, run ? withSupersededLaunch(rejected, 'plan', n) : rejected);
+      // Publish semantic accounting before discarding only the rejected plan's
+      // representation bindings. discardRepair covers interruption during cleanup.
+      for (const suffix of ['repair.json', 'original', 'packet.json', 'candidate.json', 'retry']) {
+        try { fs.unlinkSync(path.join(stateDir, `round-${n}-plan.${suffix}`)); }
+        catch (error) { if (error.code !== 'ENOENT') throw error; }
+      }
       throw new Error(`harness-failure: ${message}`);
     }
     const blockedGroups = fixGroups.filter((group) => group.action === 'reconcile');

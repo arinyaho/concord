@@ -12,7 +12,7 @@ const { runPath } = require('../../core/initiative-review-run');
 
 const ref = 'feature/plan-resume';
 const ids = ['correctness:first', 'correctness:second'];
-function fixture({ maxLaunches = 12, incompleteReplacement = false, acceptedInitially = false, repairInitialPlan = false, broadIntent = false, keyed = true } = {}) {
+function fixture({ maxLaunches = 12, incompleteReplacement = false, acceptedInitially = false, repairInitialPlan = false, replacementError = null, cliCopy = 'core', broadIntent = false, keyed = true } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-resume-'));
   const repo = path.join(root, 'repo');
   const stateDir = path.join(root, 'review');
@@ -34,7 +34,7 @@ function fixture({ maxLaunches = 12, incompleteReplacement = false, acceptedInit
   const launches = [];
   const calls = [];
   const plans = [];
-  const cliPath = path.join(__dirname, '..', 'review-cli.js');
+  const cliPath = path.resolve(__dirname, cliCopy === 'core' ? '../review-cli.js' : `../../../concord-${cliCopy}/bin/review-cli.js`);
   const runCli = (args) => {
     calls.push(args);
     try {
@@ -50,6 +50,7 @@ function fixture({ maxLaunches = 12, incompleteReplacement = false, acceptedInit
     if (input.role === 'artifact-repair') {
       const artifact = JSON.parse(fs.readFileSync(path.join(input.repoRoot, 'original.json'), 'utf8'));
       artifact.status = 'ok';
+      if (artifact.groups) artifact.groups = artifact.groups.filter((group) => group.findingIds.some((id) => id.startsWith('correctness:')));
       fs.writeFileSync(path.join(input.repoRoot, 'candidate.json'), JSON.stringify(artifact));
       return { status: 0 };
     }
@@ -63,6 +64,12 @@ function fixture({ maxLaunches = 12, incompleteReplacement = false, acceptedInit
     else if (input.role === 'plan') {
       const complete = acceptedInitially || (!incompleteReplacement && launches.filter((role) => role === 'plan').length > 1);
       artifact = { status: repairInitialPlan && launches.filter((role) => role === 'plan').length === 1 ? 'OK' : 'ok', protocolVersion: 2, groups: complete ? [{ groupId: 'shared', findingIds: ids, rootCause: 'shared local defect', invariants: ['both findings fixed'], changeClass: 'local', structuralEffects: [], action: 'fix' }] : [] };
+      if (launches.filter((role) => role === 'plan').length > 1) {
+        if (replacementError === 'status') artifact.status = 'OK';
+        // Status case makes this mixed-namespace plan eligible under the existing repair contract.
+        if (replacementError === 'namespace') artifact.status = 'OK';
+        if (replacementError === 'namespace') artifact.groups.push({ groupId: 'foreign', findingIds: ['gate:cross-context:foreign'], rootCause: 'foreign defect', invariants: ['foreign'], changeClass: 'local', structuralEffects: [], action: 'fix' });
+      }
     } else throw new Error(`unexpected provider role ${input.role}`);
     fs.writeFileSync(destination, JSON.stringify(artifact));
     return { status: 0 };
@@ -256,4 +263,75 @@ test('rereading a rejected plan remains idempotent and does not finalise its key
   await assert.rejects(h.resume(), /fix.*(?:exit|failed)|(?:exit|failed).*fix/);
   assert.deepEqual(h.launches, ['correctness', 'verify', 'plan', 'plan', 'fix']);
   assert.deepEqual(h.plans[0].fixGroups[0].findingIds, ids);
+});
+
+for (const cliCopy of ['core', 'codex', 'copilot']) for (const replacementError of ['status', 'namespace']) {
+  test(`${cliCopy}: semantic replacement retains its own ${replacementError === 'namespace' ? 'status-and-namespace' : replacementError} repair allowance`, async (t) => {
+    const h = fixture({ cliCopy, replacementError, repairInitialPlan: replacementError === 'namespace' });
+    t.after(() => fs.rmSync(h.root, { recursive: true, force: true }));
+    await assert.rejects(runReviewUntilGreen(h.options), /classification is incomplete/);
+    const before = sealed(h);
+    for (const suffix of ['repair.json', 'original', 'packet.json', 'candidate.json', 'retry']) {
+      assert.equal(fs.existsSync(path.join(h.stateDir, `round-1-plan.${suffix}`)), false, `stale ${suffix}`);
+    }
+    await assert.rejects(h.resume(), /fix.*(?:exit|failed)|(?:exit|failed).*fix/);
+    assert.deepEqual(h.launches, ['correctness', 'verify', 'plan', ...(replacementError === 'namespace' ? ['artifact-repair'] : []), 'plan', 'artifact-repair', 'fix']);
+    assert.deepEqual(sealed(h), before);
+    assert.deepEqual(h.plans[0].fixGroups[0].findingIds, ids);
+    assert.equal(h.initiative().launches.filter((launch) => launch.role === 'plan').length, replacementError === 'namespace' ? 4 : 3);
+  });
+}
+
+test('replacement repair survives interruption without consuming a second semantic retry', async (t) => {
+  const h = fixture({ replacementError: 'status', incompleteReplacement: true });
+  t.after(() => fs.rmSync(h.root, { recursive: true, force: true }));
+  await initialIncomplete(h);
+  const before = sealed(h);
+  // Simulate process loss at the CLI boundary, without recording a failed launch.
+  h.runCli(h.calls.find((args) => args[0] === 'round-start'));
+  h.runCli(h.calls.find((args) => args[0] === 'reserve' && args[2] === 'plan'));
+  fs.writeFileSync(path.join(h.stateDir, 'round-1-plan.json'), JSON.stringify({ status: 'OK', protocolVersion: 2, groups: [] }));
+  const repair = h.runCli(h.calls.find((args) => args[0] === 'artifact-normalize' && args[2] === 'plan'));
+  assert.equal(repair.status, 'repair');
+  const snapshot = fs.readFileSync(path.join(h.stateDir, 'round-1-plan.original'), 'utf8');
+  await assert.rejects(h.resume(), /planner retry exhausted/);
+  assert.deepEqual(h.launches, ['correctness', 'verify', 'plan', 'artifact-repair']);
+  assert.equal(JSON.parse(snapshot).status, 'OK');
+  assert.deepEqual(sealed(h), before);
+  await assert.rejects(h.resume(), /planner retry exhausted/);
+  assert.equal(h.ledger().execution.planRetry.state, 'exhausted');
+});
+
+test('replacement repair requires a separate budgeted reservation', async (t) => {
+  const h = fixture({ replacementError: 'status', maxLaunches: 4 });
+  t.after(() => fs.rmSync(h.root, { recursive: true, force: true }));
+  await initialIncomplete(h);
+  const before = sealed(h);
+  const result = await h.resume();
+  assert.equal(result.reason, 'budget-exhausted');
+  assert.deepEqual(h.launches, ['correctness', 'verify', 'plan', 'plan']);
+  assert.deepEqual(sealed(h), before);
+  assert.equal(h.initiative().launches.length, 4);
+});
+
+
+test('preparing replacement repair preserves unrelated retry accounting and semantic exhaustion state', async (t) => {
+  const h = fixture({ keyed: false });
+  t.after(() => fs.rmSync(h.root, { recursive: true, force: true }));
+  await assert.rejects(runReviewUntilGreen(h.options), /classification is incomplete/);
+  const stored = h.ledger();
+  stored.execution.retryArtifacts.verify = 'unrelated correction';
+  stored.execution.repairArtifacts = { verify: { state: 'prepared' } };
+  fs.writeFileSync(ledgerPath(h.stateDir, targetSlug(ref)), JSON.stringify(stored));
+  fs.writeFileSync(path.join(h.stateDir, 'round-1-plan.json'), JSON.stringify({ status: 'OK', protocolVersion: 2, groups: [] }));
+  const result = h.runCli(['artifact-normalize', ref, 'plan']);
+  assert.equal(result.status, 'repair');
+  assert.equal(h.ledger().execution.retryArtifacts.verify, 'unrelated correction');
+  assert.deepEqual(h.ledger().execution.repairArtifacts.verify, { state: 'prepared' });
+  assert.equal(h.ledger().execution.planRetry.state, 'pending');
+  assert.equal(h.ledger().execution.planRetry.rejectedHash, stored.execution.planRetry.rejectedHash);
+  assert.throws(() => h.runCli(['artifact-normalize', ref, 'plan']), /requires a separate candidate/);
+  fs.writeFileSync(result.repair.candidatePath, JSON.stringify({ status: 'ok', protocolVersion: 2, groups: [], injected: true }));
+  assert.throws(() => h.runCli(['artifact-normalize', ref, 'plan', '--candidate', result.repair.candidatePath]), /does not preserve/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(h.stateDir, 'round-1-plan.json'))).status, 'OK');
 });
