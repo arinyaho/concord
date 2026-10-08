@@ -14,7 +14,7 @@ One semantic replacement is allowed per unchanged round. A replacement that also
 
 Leaving normalization as completion and merely catching runner errors would leave native drivers and interrupted transitions inconsistent. Rerunning all reviewers would discard sealed evidence and spend unrelated reservations. CLI-owned acceptance and rejection applies uniformly to every driver, at the cost of one additional pending evidence field and one durable bounded retry record.
 
-The retry can still produce an invalid or incomplete plan; invalid schemas fail closed and a second incomplete plan requires reconciliation. A denied budget cannot be repaired by increasing limits or changing the initiative key. Scope or hash drift invalidates reusable evidence under the existing resume rules.
+The retry can still produce an invalid or incomplete plan; invalid schemas fail closed and a second incomplete plan requires reconciliation. Automatic resume cannot repair a denied budget by increasing limits or changing the initiative key. Human reconciliation through `carryBudgetBlockedTarget` can carry a budget-blocked target to a new run key while retaining completed artifacts and the old run history. Scope or hash drift invalidates reusable evidence under the existing resume rules.
 
 ## Executable checks
 
