@@ -1,6 +1,6 @@
 # Combined PR review dispatch durability plan
 
-Scope: one PR for #196, #197, and #201. The [run inventory](pr-review-run-inventory.md), [requested command completion](pr-review-command-completion.md), and [automatic failure completion](pr-review-automatic-failure-completion.md) define the target. Keep the existing publication, attempt receipt, and status settlement path.
+Scope: one PR for #196, #197, and #201. The [run inventory](../design/pr-review-run-inventory.md), [requested command completion](../design/pr-review-command-completion.md), and [automatic failure completion](../design/pr-review-automatic-failure-completion.md) define the target. Keep the existing publication, attempt receipt, and status settlement path.
 
 1. Preserve #196 full unfiltered pagination. The scanner must fail closed on later-page failure, malformed output, or rate limit, while any noncompleted matching run suppresses same-head dispatch. Confirm >200 and >1000 records in `services/pr-review/test/scan.test.sh`.
 2. Add the exact workflow `run-name` with `cmd:${{ inputs.cmd_id || '-' }}`. Parse whole titles with the documented grammar, retaining decimal command IDs as strings. Derive active `(repo, PR, SHA)`, terminal consumed `(repo, PR, command ID)`, and completed non-success `(repo, PR, SHA)` sets from the same inventory. Keep large histories out of shell argument lists.
