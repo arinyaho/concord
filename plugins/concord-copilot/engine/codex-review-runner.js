@@ -12,6 +12,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { safeIdForFilename } = require('./artifact-name');
 const { writeFileAtomic } = require('./atomic-write');
+const { captureArtifactRoot, hashArtifact, readArtifactBytes } = require('./bounded-artifact');
 const { targetSlug, ledgerPath } = require('./review');
 const { SESSION_MODES, THRESHOLDS } = require('./session-handoff');
 const { artifactDestinationFromPrompt } = require('./review-artifact');
@@ -83,9 +84,9 @@ function terminateProcessTree(child, signal) {
   child.kill(signal);
 }
 
-function jsonCli(cliPath, args, repoRoot, stateDir) {
+function jsonCli(cliPath, args, repoRoot, stateDir, reviewOnly = false) {
   const out = execFileSync('node', [cliPath, ...args], {
-    cwd: repoRoot, encoding: 'utf8', env: { ...process.env, REVIEW_REPO_ROOT: repoRoot, ...(stateDir ? { REVIEW_STATE_DIR: stateDir } : {}) },
+    cwd: repoRoot, encoding: 'utf8', env: { ...process.env, REVIEW_REPO_ROOT: repoRoot, ...(stateDir ? { REVIEW_STATE_DIR: stateDir } : {}), ...(reviewOnly ? { CONCORD_UNTRUSTED_ARTIFACTS: '1' } : {}) },
   });
   try { return JSON.parse(out); } catch (e) { throw new Error(`harness-failure: review-cli ${args[0]} returned non-JSON output`); }
 }
@@ -498,7 +499,7 @@ async function runRounds(options) {
   // Pair identity uses the commit a base name points at, so a base that moved
   // under the same name is a different pair. round-start keeps the name.
   const baseIdentity = (name) => (name && !ref.startsWith('file:') ? resolveBaseCommit(repoRoot, name) : name);
-  const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot, options.reviewStateDir));
+  const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot, options.reviewStateDir, reviewOnly));
   const initiativeFlags = initiativeRun ? ['--initiative-run-key', options.initiativeRunKey, '--initiative-id', initiativeId, '--initiative-state-dir', canonicalStateDir, '--initiative-max-launches', String(options.initiativeMaxLaunches), '--initiative-max-rounds', String(options.initiativeMaxRounds), ...(options.initiativeMode ? ['--initiative-mode', options.initiativeMode] : [])] : [];
   const sessionMode = options.sessionHandoff || 'suggest';
   if (!SESSION_MODES.includes(sessionMode)) throw new Error('review-until-green: --session-handoff must be off, suggest, or stop-at-checkpoint');
@@ -598,7 +599,7 @@ async function runRounds(options) {
   let telemetryLoaded = false;
   const persistTelemetry = () => {
     if (!telemetryPath) return;
-    writeFileAtomic(telemetryPath, `${JSON.stringify(telemetry)}\n`);
+    writeFileAtomic(telemetryPath, `${JSON.stringify(telemetry)}\n`, reviewOnly ? { flag: 'wx', mode: 0o600 } : undefined);
   };
   const record = (input, result) => {
     const usage = result && result.usage || {};
@@ -722,7 +723,7 @@ async function runRounds(options) {
     if (!abortController || !abortController.signal.aborted) return;
     const signal = String(abortController.signal.reason || 'signal');
     const failure = { role: 'runner', kind: 'interrupted', message: `review runner interrupted by ${signal}`, signal };
-    if (persist) try { await cli(['round-failure', ref, JSON.stringify(failure)]); } catch (_) {}
+    if (persist && !reviewOnly) try { await cli(['round-failure', ref, JSON.stringify(failure)]); } catch (_) {}
     const error = new Error(`harness-failure: ${failure.message}`);
     error.reviewFailure = failure;
     throw error;
@@ -891,7 +892,7 @@ async function runRounds(options) {
       if (!reviewOnly) return;
       if (started.targetType === 'file') {
         const current = options.targetIdentity ? options.targetIdentity(ref, initialBase, canonicalRepoRoot)
-          : fileTarget({ files: [ref.slice('file:'.length)] }, canonicalRepoRoot).identity;
+          : fileTarget({ files: [ref.slice('file:'.length)] }, canonicalRepoRoot, { untrusted: true }).identity;
         if (current !== started.head) throw new Error('harness-failure: a reviewer modified the file target; review-only reports only on the content it started on');
       } else {
         if (gitDirty(canonicalRepoRoot)) throw new Error('harness-failure: a reviewer left the checkout modified; review-only reports only on the commit as it was');
@@ -901,9 +902,22 @@ async function runRounds(options) {
     const roleArtifacts = new Map(reviewRoles.map((role) => [role, artifactDestinationFromPrompt(reviewerPrompt(role, context), context.stateDir)]));
     if (reviewOnly && [...roleArtifacts.values()].some((file) => !file)) throw new Error('harness-failure: review artifact destination is missing');
     const protectedReviewFiles = reviewOnly ? new Map() : null;
+    const protectedRoots = reviewOnly ? new Map() : null;
+    const pinProtectedRoot = (root) => {
+      if (!protectedRoots) return;
+      const absolute = path.resolve(root);
+      protectedRoots.set(absolute, captureArtifactRoot(absolute));
+    };
+    if (reviewOnly) pinProtectedRoot(context.stateDir);
     const fileHash = (file) => {
-      try { return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'); }
-      catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+      const changed = () => new Error(`harness-failure: protected review artifact changed: ${path.basename(file)}`);
+      try { return hashArtifact(file, protectedRoots.get(path.dirname(path.resolve(file))), { allowMissing: true }); }
+      catch (_) { throw changed(); }
+    };
+    const copyRepairArtifact = (source, destination) => {
+      if (!reviewOnly) { fs.copyFileSync(source, destination); return; }
+      const bytes = readArtifactBytes(source, protectedRoots.get(path.dirname(path.resolve(source))));
+      writeFileAtomic(destination, bytes, { flag: 'wx', mode: 0o600 });
     };
     const protect = (file) => { if (protectedReviewFiles) protectedReviewFiles.set(file, fileHash(file)); };
     const checkProtected = (skipLedger = false, allowedOutput = null, trustedChange = null) => {
@@ -991,6 +1005,7 @@ async function runRounds(options) {
       });
       checkReviewCheckout();
       checkProtected(false, ownOutput);
+      if (reviewOnly && ownOutput) fileHash(ownOutput);
       return result;
     };
 
@@ -1010,12 +1025,13 @@ async function runRounds(options) {
         }
         if (reviewer !== 'codex') throw new Error('harness-failure: artifact repair provider cannot enforce the isolation boundary');
         const repairDir = repairDirectory(canonicalRepoRoot);
+        pinProtectedRoot(repairDir);
         try {
           const packetPath = path.join(repairDir, 'packet.json');
           const snapshotPath = path.join(repairDir, 'original.json');
           const candidatePath = path.join(repairDir, 'candidate.json');
-          fs.copyFileSync(repair.snapshotPath, snapshotPath);
-          fs.copyFileSync(repair.packetPath, packetPath);
+          copyRepairArtifact(repair.snapshotPath, snapshotPath);
+          copyRepairArtifact(repair.packetPath, packetPath);
           protect(snapshotPath);
           protect(packetPath);
           const alreadyDispatched = repair.state === 'dispatched';
@@ -1031,8 +1047,8 @@ async function runRounds(options) {
           // after it consumes the attempt rather than duplicating a reviewer.
           if (alreadyDispatched) throw new Error(`harness-failure: ${role} artifact repair outcome is unavailable after dispatch`);
           await launch({ role: 'artifact-repair', artifactRole: role, reservationRole: role === 'gate' ? 'gate-review' : role, preReserved: reserved, operation: 'artifact-repair', prompt: artifactContract.repairPrompt(packetPath, candidatePath), repoRoot: repairDir, stateDir: repairDir, ...(options.spawn ? {} : { codexExecutable: resolveCodexExecutable(canonicalRepoRoot) }), env: repairEnvironment(canonicalRepoRoot, context.stateDir) });
-          if (!fs.existsSync(candidatePath)) throw new Error(`harness-failure: ${role} artifact repair produced no candidate`);
-          fs.copyFileSync(candidatePath, repair.candidatePath);
+          if (reviewOnly ? fileHash(candidatePath) === null : !fs.existsSync(candidatePath)) throw new Error(`harness-failure: ${role} artifact repair produced no candidate`);
+          copyRepairArtifact(candidatePath, repair.candidatePath);
           checkProtected(false, roleArtifacts.get(role));
           repair = await cli(['artifact-repair-candidate', ref, role]);
           checkProtected(false, roleArtifacts.get(role), repairPaths(role).descriptor);
@@ -1053,7 +1069,7 @@ async function runRounds(options) {
         }
       } catch (error) {
         const failure = error.reviewFailure || { role, kind: /artifact|missing gate artifact/.test(String(error.message)) ? 'artifact-write-failure' : 'harness-error', message: String(error.message).replace(/^harness-failure:\s*/, '') };
-        if (!error.initiativeBlocked) try { await cli(['round-failure', ref, JSON.stringify(failure)]); } catch (_) {}
+        if (!reviewOnly && !error.initiativeBlocked) try { await cli(['round-failure', ref, JSON.stringify(failure)]); } catch (_) {}
         throw error;
       }
     };

@@ -5,6 +5,7 @@ const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 const { safeIdForFilename } = require('./artifact-name');
 const { writeFileAtomic, publishDirectoryAtomic } = require('./atomic-write');
+const { captureArtifactRoot, readArtifactBytes } = require('./bounded-artifact');
 const dodExec = require('./dod-exec');
 const { lockOwner: targetOwnerPid, pidRunning } = require('./run-lock');
 const intentLib = require('./intent');
@@ -365,6 +366,17 @@ function requireRef(ref, verb) {
   if (!ref) throw new Error(`review-cli ${verb}: missing required <ref> argument`);
 }
 
+function readReviewArtifact(file, stateDir, encoding = null) {
+  if (process.env.CONCORD_UNTRUSTED_ARTIFACTS !== '1') return fs.readFileSync(file, encoding || undefined);
+  const bytes = readArtifactBytes(file, captureArtifactRoot(stateDir));
+  return encoding ? bytes.toString(encoding) : bytes;
+}
+
+function writeReviewArtifact(file, bytes) {
+  if (process.env.CONCORD_UNTRUSTED_ARTIFACTS === '1') writeFileAtomic(file, bytes, { flag: 'wx', mode: 0o600 });
+  else fs.writeFileSync(file, bytes);
+}
+
 function readChangeManifest(stateDir, ledger, ref, n) {
   if (ledger.target?.type === 'file') return null;
   const declared = ledger.execution?.changeManifest;
@@ -372,11 +384,11 @@ function readChangeManifest(stateDir, ledger, ref, n) {
     throw new Error('harness-failure: Git changed-path manifest is missing; resume/round-start to regenerate round inputs');
   }
   let bytes;
-  try { bytes = fs.readFileSync(path.join(stateDir, `round-${n}-changes.json`)); }
+  try { bytes = readReviewArtifact(path.join(stateDir, `round-${n}-changes.json`), stateDir); }
   catch (_) { throw new Error('harness-failure: Git changed-path manifest is missing or corrupt'); }
   if (crypto.createHash('sha256').update(bytes).digest('hex') !== declared.sha256) throw new Error('harness-failure: Git changed-path manifest hash changed');
   try {
-    if (contentHash(fs.readFileSync(path.join(stateDir, `round-${n}-diff.txt`), 'utf8')) !== ledger.execution.diffHash) {
+    if (contentHash(readReviewArtifact(path.join(stateDir, `round-${n}-diff.txt`), stateDir, 'utf8')) !== ledger.execution.diffHash) {
       throw new Error('harness-failure: Git review diff changed after round-start');
     }
   } catch (error) {
@@ -387,7 +399,9 @@ function readChangeManifest(stateDir, ledger, ref, n) {
   try { manifest = JSON.parse(bytes.toString('utf8')); }
   catch (_) { throw new Error('harness-failure: Git changed-path manifest is malformed'); }
   if (manifest.version !== 1 || manifest.round !== n || manifest.target?.type !== 'git' || manifest.target.ref !== ref
-    || manifest.target.headSha !== ledger.target?.head_sha || !/^[0-9a-f]{40}$/.test(manifest.target.baseSha || '')
+    || manifest.target.headSha !== ledger.target?.head_sha
+    || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(manifest.target.baseSha || '')
+    || manifest.target.baseSha.length !== manifest.target.headSha.length
     || manifest.diffHash !== ledger.execution.diffHash || !Array.isArray(manifest.paths)
     || manifest.paths.some((file) => typeof file !== 'string' || !file || file.includes('\0') || path.isAbsolute(file) || path.win32.isAbsolute(file)
       || file.split('/').some((part) => part === '' || part === '.' || part === '..'))
@@ -408,14 +422,14 @@ function readArtifact(stateDir, n, name) {
   const p = path.join(stateDir, `round-${n}-${name}.json`);
   let raw;
   try {
-    raw = fs.readFileSync(p, 'utf8');
+    raw = readReviewArtifact(p, stateDir, 'utf8');
   } catch (e) {
     throw new Error(`harness-failure: missing gate artifact ${name} for round ${n}`);
   }
   try {
     const canonical = artifactContract.normalizeArtifact(name, raw);
     const text = JSON.stringify(canonical) + '\n';
-    if (raw !== text) fs.writeFileSync(p, text);
+    if (raw !== text) writeReviewArtifact(p, text);
     return canonical;
   } catch (e) {
     throw new Error(`harness-failure: ${e.message}`);
@@ -643,6 +657,7 @@ function withTargetLock(ledgerFile, fn, { confirm = promptRemoveLock, waitMs = 1
   for (;;) {
     try { fs.mkdirSync(lock); break; } catch (e) {
       if (e.code !== 'EEXIST') throw e;
+      if (process.env.CONCORD_UNTRUSTED_ARTIFACTS === '1') throw new Error('harness-failure: review target lock is occupied');
       if (Date.now() > deadline) {
         const held = `target ledger lock is held: ${lock} (${lockOwner(lock)})`;
         const ownerPid = targetOwnerPid(lock);
@@ -1250,7 +1265,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       if (artifact) {
         const repairPath = path.join(stateDir, `round-${ledger.round}-${artifact}.repair.json`);
         try {
-          const repair = JSON.parse(fs.readFileSync(repairPath, 'utf8'));
+          const repair = JSON.parse(readReviewArtifact(repairPath, stateDir, 'utf8'));
           if (repair.state === 'prepared' && repair.target?.ref === ref && repair.round === ledger.round) fs.writeFileSync(repairPath, JSON.stringify({ ...repair, state: 'reserved', reservationToken: token }) + '\n');
         } catch (_) { /* ordinary reviewer reservation */ }
       }
@@ -1319,11 +1334,11 @@ function runVerb(resolveFromCwd, args, initiative) {
     const snapshotPath = path.join(stateDir, `round-${n}-${name}.original`);
     const repairPath = path.join(stateDir, `round-${n}-${name}.repair.json`);
     let raw;
-    try { raw = fs.readFileSync(candidateArg || p, 'utf8'); } catch (e) { throw new Error(`harness-failure: missing ${candidateArg ? 'repair candidate' : 'gate artifact'} ${name} for round ${n}`); }
+    try { raw = readReviewArtifact(candidateArg || p, stateDir, 'utf8'); } catch (e) { throw new Error(`harness-failure: missing or unsafe ${candidateArg ? 'repair candidate' : 'gate artifact'} ${name} for round ${n}`); }
     try {
       if (fs.existsSync(repairPath)) {
-        const repair = JSON.parse(fs.readFileSync(repairPath, 'utf8'));
-        const original = fs.readFileSync(snapshotPath);
+        const repair = JSON.parse(readReviewArtifact(repairPath, stateDir, 'utf8'));
+        const original = readReviewArtifact(snapshotPath, stateDir);
         if (contentHash(original) !== repair.originalHash) throw new Error(`${name} repair snapshot hash changed`);
         if (!candidateArg) throw new Error(`${name} repair requires a separate candidate`);
         if (path.resolve(candidateArg) !== path.resolve(repair.candidatePath)) throw new Error(`${name} repair candidate path changed`);
@@ -1348,7 +1363,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       const canonicalText = JSON.stringify(canonical) + '\n';
       // Only a candidate that passed preservation and strict normalization is
       // published. Invalid repair bytes never replace the original artifact.
-      fs.writeFileSync(p, canonicalText);
+      writeReviewArtifact(p, canonicalText);
       if (ledger.execution && ledger.execution.round === n) {
         const completed = Array.from(new Set([...(ledger.execution.completed || []), name]));
         const artifactHashes = { ...(ledger.execution.artifactHashes || {}), [name]: contentHash(canonicalText) };
@@ -1386,7 +1401,7 @@ function runVerb(resolveFromCwd, args, initiative) {
           const packetPath = path.join(stateDir, `round-${n}-${name}.packet.json`);
           const packet = artifactContract.repairPacket(name, e.message, raw);
           fs.writeFileSync(packetPath, JSON.stringify(packet) + '\n', { flag: 'wx', mode: 0o600 });
-          const repair = { target: ledger.target || { ref }, role: name, round: n, diffHash: contentHash(fs.readFileSync(path.join(stateDir, `round-${n}-diff.txt`), 'utf8')), originalHash: contentHash(bytes), error: e.message, snapshotPath, packetPath, packetHash: contentHash(fs.readFileSync(packetPath)), candidatePath, candidateHash: null, state: 'prepared' };
+          const repair = { target: ledger.target || { ref }, role: name, round: n, diffHash: contentHash(readReviewArtifact(path.join(stateDir, `round-${n}-diff.txt`), stateDir, 'utf8')), originalHash: contentHash(bytes), error: e.message, snapshotPath, packetPath, packetHash: contentHash(readReviewArtifact(packetPath, stateDir)), candidatePath, candidateHash: null, state: 'prepared' };
           fs.writeFileSync(repairPath, JSON.stringify(repair) + '\n', { flag: 'wx' });
           // A retry is a new launch: it must be reserved again before its evidence is accepted.
           if (run && ARTIFACT_RESERVE_ROLE[name]) writeLedger(stateDir, slug, withSupersededLaunch(readLedger(stateDir, slug), ARTIFACT_RESERVE_ROLE[name], n));
@@ -1404,11 +1419,11 @@ function runVerb(resolveFromCwd, args, initiative) {
     const slug = targetSlug(ref); const ledger = readLedger(stateDir, slug); const n = ledger?.round;
     if (!n || !artifactContract.ARTIFACT_ROLES.includes(name)) throw new Error('artifact-repair-dispatch: requires active <role>');
     const repairPath = path.join(stateDir, `round-${n}-${name}.repair.json`);
-    const repair = JSON.parse(fs.readFileSync(repairPath, 'utf8'));
+    const repair = JSON.parse(readReviewArtifact(repairPath, stateDir, 'utf8'));
     if (repair.state === 'dispatched') { process.stdout.write(JSON.stringify(repair) + '\n'); return; }
     if (!['prepared', 'reserved'].includes(repair.state) || repair.target?.ref !== ref || repair.round !== n) throw new Error(`${name} repair binding changed`);
     const dispatched = { ...repair, state: 'dispatched' };
-    fs.writeFileSync(repairPath, JSON.stringify(dispatched) + '\n');
+    writeReviewArtifact(repairPath, JSON.stringify(dispatched) + '\n');
     process.stdout.write(JSON.stringify(dispatched) + '\n');
     return;
   }
@@ -1417,11 +1432,11 @@ function runVerb(resolveFromCwd, args, initiative) {
     requireRef(ref, 'artifact-repair-candidate');
     const name = String(rest[0] || ''); const slug = targetSlug(ref); const ledger = readLedger(stateDir, slug); const n = ledger?.round;
     if (!n || !artifactContract.ARTIFACT_ROLES.includes(name)) throw new Error('artifact-repair-candidate: requires active <role>');
-    const repairPath = path.join(stateDir, `round-${n}-${name}.repair.json`); const repair = JSON.parse(fs.readFileSync(repairPath, 'utf8'));
+    const repairPath = path.join(stateDir, `round-${n}-${name}.repair.json`); const repair = JSON.parse(readReviewArtifact(repairPath, stateDir, 'utf8'));
     if (repair.state !== 'dispatched') throw new Error(`${name} repair was not dispatched`);
-    const candidateHash = contentHash(fs.readFileSync(repair.candidatePath));
+    const candidateHash = contentHash(readReviewArtifact(repair.candidatePath, stateDir));
     const completed = { ...repair, candidateHash, state: 'candidate-ready' };
-    fs.writeFileSync(repairPath, JSON.stringify(completed) + '\n');
+    writeReviewArtifact(repairPath, JSON.stringify(completed) + '\n');
     process.stdout.write(JSON.stringify(completed) + '\n');
     return;
   }
@@ -1836,9 +1851,9 @@ function runVerb(resolveFromCwd, args, initiative) {
         try {
           const repair = JSON.parse(fs.readFileSync(repairFile, 'utf8'));
           if (repair.round !== resumeRound || repair.target?.ref !== ref || repair.diffHash !== diffHash || !repair.snapshotPath || !repair.packetPath || !repair.candidatePath
-            || contentHash(fs.readFileSync(repair.snapshotPath)) !== repair.originalHash
-            || contentHash(fs.readFileSync(repair.packetPath)) !== repair.packetHash
-            || (repair.candidateHash && contentHash(fs.readFileSync(repair.candidatePath)) !== repair.candidateHash)) throw new Error('repair binding invalid');
+            || contentHash(readReviewArtifact(repair.snapshotPath, stateDir)) !== repair.originalHash
+            || contentHash(readReviewArtifact(repair.packetPath, stateDir)) !== repair.packetHash
+            || (repair.candidateHash && contentHash(readReviewArtifact(repair.candidatePath, stateDir)) !== repair.candidateHash)) throw new Error('repair binding invalid');
           for (const p of [repair.snapshotPath, repair.packetPath, repair.candidatePath, repairFile]) {
             if (fs.existsSync(p)) preserved.add(path.basename(p));
           }

@@ -2732,6 +2732,58 @@ test('reviewOnly reports findings for an unchanged file target', async () => {
   assert.deepStrictEqual(result, { decision: 'review-only', round: 1, findings: [] });
 });
 
+test('reviewOnly rejects a file target replaced by an identical external symlink', async () => {
+  const repo = temp(); const external = path.join(temp(), 'note.md');
+  fs.writeFileSync(path.join(repo, 'note.md'), 'original\n');
+  fs.writeFileSync(external, 'original\n');
+  const head = fileTarget({ files: ['note.md'] }, repo).identity;
+  const h = harness({ targetType: 'file' });
+  let reported = false;
+  const cli = (args) => {
+    if (args[0] === 'findings') return (reported = true, { findings: [] });
+    const result = h.cli(args);
+    return args[0] === 'round-start' ? { ...result, head } : result;
+  };
+  const spawn = (input) => {
+    const result = h.spawn(input);
+    if (input.role === 'correctness') {
+      fs.unlinkSync(path.join(repo, 'note.md'));
+      fs.symlinkSync(external, path.join(repo, 'note.md'));
+    }
+    return result;
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'file:note.md', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'claude', noBroad: true }),
+    /unsafe or oversized file target/,
+  );
+  assert.strictEqual(reported, false);
+});
+
+test('reviewOnly rejects a file target enlarged beyond its aggregate identity limit', async () => {
+  const repo = temp(); fs.writeFileSync(path.join(repo, 'note.md'), 'original\n');
+  const head = fileTarget({ files: ['note.md'] }, repo).identity;
+  const h = harness({ targetType: 'file' });
+  let reported = false;
+  const cli = (args) => {
+    if (args[0] === 'findings') return (reported = true, { findings: [] });
+    const result = h.cli(args);
+    return args[0] === 'round-start' ? { ...result, head } : result;
+  };
+  const spawn = (input) => {
+    const result = h.spawn(input);
+    if (input.role === 'correctness') {
+      const fd = fs.openSync(path.join(repo, 'note.md'), 'w');
+      try { fs.ftruncateSync(fd, 20 * 1024 * 1024 + 1); } finally { fs.closeSync(fd); }
+    }
+    return result;
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'file:note.md', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'claude', noBroad: true }),
+    /unsafe or oversized file target/,
+  );
+  assert.strictEqual(reported, false);
+});
+
 test('reviewOnly runs broad workers one at a time while accepting trusted ledger updates', async () => {
   const repo = cleanRepo();
   const stateDir = temp();
@@ -2865,6 +2917,8 @@ for (const [name, target, action] of [
     /protected review artifact changed/,
   );
   assert.strictEqual(reported, false);
+  assert.strictEqual(h.calls.some((call) => call[0] === 'cli' && call[1] === 'round-failure'), false,
+    'a disposable review must not read poisoned ledger evidence during failure recording');
 });
 
 test('reviewOnly rejects a finder that forges a later verifier artifact', async () => {
@@ -2882,6 +2936,126 @@ test('reviewOnly rejects a finder that forges a later verifier artifact', async 
     /protected review artifact changed: round-1-verify.json/,
   );
   assert.strictEqual(reported, false);
+});
+
+test('reviewOnly rejects a protected artifact replaced by an identical external symlink', async () => {
+  const repo = cleanRepo(); const stateDir = temp(); const h = harness({ stateDir });
+  const external = path.join(temp(), 'copy.json');
+  let reported = false;
+  const cli = (args) => {
+    if (args[0] === 'findings') return (reported = true, { findings: [] });
+    const result = h.cli(args);
+    if (args[0] === 'round-start') fs.writeFileSync(path.join(stateDir, 'round-1-changes.json'), '{"paths":[]}\n');
+    return result;
+  };
+  const spawn = (input) => {
+    const result = h.spawn(input);
+    if (input.role === 'correctness') {
+      const protectedPath = path.join(stateDir, 'round-1-changes.json');
+      fs.copyFileSync(protectedPath, external);
+      fs.unlinkSync(protectedPath);
+      fs.symlinkSync(external, protectedPath);
+    }
+    return result;
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/symlink-hash', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'claude', noBroad: true }),
+    /protected review artifact.*round-1-changes\.json/,
+  );
+  assert.strictEqual(reported, false);
+});
+
+test('reviewOnly rejects an oversized protected artifact before launching workers', async () => {
+  const repo = cleanRepo(); const stateDir = temp(); const h = harness({ stateDir });
+  let launched = false;
+  const cli = (args) => {
+    if (args[0] === 'findings') return { findings: [] };
+    const result = h.cli(args);
+    if (args[0] === 'round-start') {
+      const fd = fs.openSync(path.join(stateDir, 'round-1-changes.json'), 'w');
+      try { fs.ftruncateSync(fd, 20 * 1024 * 1024 + 1); } finally { fs.closeSync(fd); }
+    }
+    return result;
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/oversized-hash', base: 'main', repoRoot: repo, runCli: cli, spawn: (input) => (launched = true, h.spawn(input)), reviewOnly: true, reviewer: 'claude', noBroad: true }),
+    /protected review artifact.*round-1-changes\.json/,
+  );
+  assert.strictEqual(launched, false);
+});
+
+test('bounded review hash accepts missing future output and refuses a FIFO without hanging', { skip: process.platform === 'win32' }, () => {
+  const directory = temp();
+  const root = require('../../core/bounded-artifact').captureArtifactRoot(directory);
+  const { hashArtifact } = require('../../core/bounded-artifact');
+  assert.strictEqual(hashArtifact(path.join(directory, 'future.json'), root, { allowMissing: true }), null);
+  fs.writeFileSync(path.join(directory, 'ordinary.json'), '{}\n');
+  assert.match(hashArtifact(path.join(directory, 'ordinary.json'), root), /^[0-9a-f]{64}$/);
+  const pipe = path.join(directory, 'pipe.json');
+  assert.strictEqual(spawnSync('mkfifo', [pipe]).status, 0);
+  const child = spawnSync(process.execPath, ['-e',
+    'const h=require(process.argv[1]);try{h.hashArtifact(process.argv[2],h.captureArtifactRoot(process.argv[3]));process.exit(2)}catch(e){if(/unsafe or oversized/.test(e.message))process.exit(0);process.exit(3)}',
+    require.resolve('../../core/bounded-artifact'), pipe, directory], { timeout: 3000 });
+  assert.strictEqual(child.status, 0, `FIFO hash stalled or failed unsafely: ${child.error || child.stderr}`);
+});
+
+test('bounded review hash rejects a same-path inode replacement during its read', () => {
+  const directory = temp(); const file = path.join(directory, 'artifact.json');
+  fs.writeFileSync(file, 'original\n');
+  const script = [
+    'const fs=require("node:fs"),path=require("node:path"),h=require(process.argv[1]),file=process.argv[2];',
+    'const read=fs.readSync;let swapped=false;',
+    'fs.readSync=function(...args){const n=read.apply(this,args);if(!swapped){swapped=true;fs.unlinkSync(file);fs.writeFileSync(file,"replaced\\n")}return n};',
+    'try{h.hashArtifact(file,h.captureArtifactRoot(path.dirname(file)));process.exit(2)}catch(e){process.exit(/unsafe or oversized/.test(e.message)?0:3)}',
+  ].join('');
+  const child = spawnSync(process.execPath, ['-e', script, require.resolve('../../core/bounded-artifact'), file], { timeout: 3000 });
+  assert.strictEqual(child.status, 0, `replacement was not rejected: ${child.error || child.stderr}`);
+});
+
+test('reviewOnly refuses a symlinked producer output before trusted normalization', async () => {
+  const repo = cleanRepo(); const stateDir = temp(); const h = harness({ stateDir });
+  const external = path.join(temp(), 'artifact.json');
+  let normalized = false;
+  const cli = (args) => {
+    if (args[0] === 'findings') return { findings: [] };
+    if (args[0] === 'artifact-normalize') normalized = true;
+    return h.cli(args);
+  };
+  const spawn = (input) => {
+    const result = h.spawn(input);
+    if (input.role === 'correctness') {
+      const output = path.join(stateDir, 'round-1-correctness.json');
+      fs.copyFileSync(output, external);
+      fs.unlinkSync(output);
+      fs.symlinkSync(external, output);
+    }
+    return result;
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/producer-output', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'claude', noBroad: true }),
+    /protected review artifact changed: round-1-correctness\.json/,
+  );
+  assert.strictEqual(normalized, false);
+});
+
+test('reviewOnly telemetry publication refuses a worker-planted temporary symlink', async () => {
+  const repo = cleanRepo(); const stateDir = temp(); const h = harness({ stateDir });
+  const ref = 'feature/telemetry-temp'; const external = path.join(temp(), 'sentinel.txt');
+  fs.writeFileSync(external, 'untouched\n');
+  const cli = (args) => args[0] === 'findings' ? { findings: [] } : h.cli(args);
+  const spawn = (input) => {
+    const result = h.spawn(input);
+    if (input.role === 'correctness') {
+      const slug = require('../../core/review').targetSlug(ref);
+      fs.symlinkSync(external, path.join(stateDir, `telemetry-${slug}.json.${process.pid}.tmp`));
+    }
+    return result;
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref, base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'claude', noBroad: true }),
+    /EEXIST/,
+  );
+  assert.strictEqual(fs.readFileSync(external, 'utf8'), 'untouched\n');
 });
 
 test('reviewOnly refuses resume, which has no ledger to recover the base from', async () => {

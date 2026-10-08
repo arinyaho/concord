@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { acquireTarget } = require('../../core/target');
+const { acquireTarget, fileTarget } = require('../../core/target');
 
 test('acquireTarget ignores only its own untracked review lock, keeping other dirty files visible', (t) => {
   const { dir } = makeGitRepo();
@@ -88,6 +88,15 @@ test('acquireTarget file: reviewText contains file content, identity is a hex ha
   assert.ok(t.reviewText.includes('claim without evidence'), 'reviewText must contain the file body');
   assert.ok(t.reviewText.includes('===== note.md ====='), 'reviewText must contain the section header');
   assert.match(t.identity, /^[0-9a-f]{7,}$/, 'identity must be a hex string (content hash)');
+});
+
+test('untrusted file-target identity caps the aggregate review text across files', () => {
+  const dir = mkdtempNonGit();
+  for (const name of ['a.md', 'b.md']) {
+    const fd = fs.openSync(path.join(dir, name), 'w');
+    try { fs.ftruncateSync(fd, 11 * 1024 * 1024); } finally { fs.closeSync(fd); }
+  }
+  assert.throws(() => fileTarget({ files: ['a.md', 'b.md'] }, dir, { untrusted: true }), /unsafe or oversized file target: b\.md/);
 });
 
 test('acquireTarget file: does not carry a computed-but-unused key field (finding #5)', () => {

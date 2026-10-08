@@ -10,6 +10,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { TextDecoder } = require('node:util');
+const { MAX_BYTES: MAX_REVIEW_ARTIFACT_BYTES, captureArtifactRoot, readArtifactBytes } = require('./bounded-artifact');
 const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
 
 function sh(bin, args, opts = {}) {
@@ -144,7 +145,7 @@ function resolveGlob(glob, repoRoot) {
 // File target: reads each matched file's current content, concatenates them with
 // '===== <relpath> =====' headers (sorted), content-hashes the result for
 // identity, and carries hasDoD:false. Does NOT invoke git at any point.
-function fileTarget(spec, repoRoot) {
+function fileTarget(spec, repoRoot, options = {}) {
   // Resolve each entry in spec.files (may be literal paths or simple globs).
   const rels = [];
   for (const pattern of spec.files) {
@@ -161,12 +162,24 @@ function fileTarget(spec, repoRoot) {
   if (rels.length === 0) {
     throw new Error(`round-start: file target matched no files: ${spec.files.join(', ')}`);
   }
-  const blocks = rels.map((rel) => {
+  const untrusted = options.untrusted || process.env.CONCORD_UNTRUSTED_ARTIFACTS === '1';
+  const realRepo = untrusted ? fs.realpathSync(repoRoot) : null;
+  let totalBytes = 0;
+  const blocks = rels.map((rel, index) => {
     const abs = path.resolve(repoRoot, rel);
     let body;
     try {
-      body = fs.readFileSync(abs, 'utf8');
+      if (untrusted) {
+        const parent = fs.realpathSync(path.dirname(abs));
+        const relative = path.relative(realRepo, parent);
+        if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error('outside repository');
+        const bytes = readArtifactBytes(abs, captureArtifactRoot(path.dirname(abs)));
+        body = bytes.toString('utf8');
+        totalBytes += Buffer.byteLength(body, 'utf8') + Buffer.byteLength(`===== ${rel} =====\n`) + 1 + (index ? 1 : 0);
+        if (totalBytes > MAX_REVIEW_ARTIFACT_BYTES) throw new Error('too large');
+      } else body = fs.readFileSync(abs, 'utf8');
     } catch (e) {
+      if (untrusted) throw new Error(`harness-failure: unsafe or oversized file target: ${rel}`);
       // A literal path (no '*') is passed through by resolveGlob unresolved, so
       // a nonexistent literal reaches here. Report it as a clear no-such-file
       // error rather than a raw ENOENT stack.

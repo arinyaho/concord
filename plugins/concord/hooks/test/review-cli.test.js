@@ -194,6 +194,101 @@ test('round-start preserves unusual Git paths and rejects a declared NUL path', 
   assert.throws(() => run(['findings', ref], { env, skipPlanSeed: true }), /changed-path manifest binding is invalid/);
 });
 
+test('a SHA-256 Git repository binds and folds its 64-digit changed-path manifest', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-sha256-'));
+  execFileSync('git', ['init', '-q', '--object-format=sha256'], { cwd: repo });
+  execFileSync('git', ['config', 'user.email', 't@t'], { cwd: repo });
+  execFileSync('git', ['config', 'user.name', 't'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n');
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'] }));
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'base'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const dir = tmpDir(); const ref = 'feat/sha256-manifest';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+  const manifest = JSON.parse(fs.readFileSync(path.join(dir, `round-${n}-changes.json`), 'utf8'));
+  assert.match(manifest.target.baseSha, /^[0-9a-f]{64}$/);
+  assert.match(manifest.target.headSha, /^[0-9a-f]{64}$/);
+  assert.deepStrictEqual(manifest.paths, ['a.txt']);
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  assert.deepStrictEqual(JSON.parse(run(['findings', ref], { env, skipPlanSeed: true })).findings, []);
+});
+
+test('review-only CLI refuses a symlinked reviewer artifact before normalization', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/unsafe-artifact';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo, CONCORD_UNTRUSTED_ARTIFACTS: '1' };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+  const external = path.join(tmpDir(), 'artifact.json');
+  fs.writeFileSync(external, JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.symlinkSync(external, path.join(dir, `round-${n}-correctness.json`));
+  assert.throws(() => run(['artifact-normalize', ref, 'correctness'], { env }), /missing or unsafe gate artifact correctness/);
+});
+
+test('review-only CLI refuses a FIFO reviewer artifact without hanging', { skip: process.platform === 'win32' }, () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/fifo-artifact';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo, CONCORD_UNTRUSTED_ARTIFACTS: '1' };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+  assert.strictEqual(spawnSync('mkfifo', [path.join(dir, `round-${n}-correctness.json`)]).status, 0);
+  const result = spawnSync(process.execPath, [path.resolve(__dirname, '../review-cli.js'), 'artifact-normalize', ref, 'correctness'],
+    { cwd: repo, env, encoding: 'utf8', timeout: 3000 });
+  assert.strictEqual(result.status, 1, `FIFO normalization stalled: ${result.error || result.stderr}`);
+  assert.match(result.stderr, /missing or unsafe gate artifact correctness/);
+});
+
+test('review-only CLI refuses an occupied target lock before reading its FIFO owner', { skip: process.platform === 'win32' }, () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/fifo-lock';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo, CONCORD_UNTRUSTED_ARTIFACTS: '1' };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  run(['round-start', ref, 'HEAD~1'], { env });
+  const lock = `${review.ledgerPath(dir, review.targetSlug(ref))}.lock`;
+  fs.mkdirSync(lock);
+  assert.strictEqual(spawnSync('mkfifo', [path.join(lock, 'owner')]).status, 0);
+  const result = spawnSync(process.execPath, [path.resolve(__dirname, '../review-cli.js'), 'artifact-normalize', ref, 'correctness'],
+    { cwd: repo, env, encoding: 'utf8', timeout: 3000 });
+  assert.strictEqual(result.status, 1, `occupied review lock stalled: ${result.error || result.stderr}`);
+  assert.match(result.stderr, /review target lock is occupied/);
+});
+
+test('review-only ledger publication refuses a planted temporary symlink', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/ledger-temp';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo, CONCORD_UNTRUSTED_ARTIFACTS: '1' };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  const ledgerFile = review.ledgerPath(dir, review.targetSlug(ref));
+  const before = fs.readFileSync(ledgerFile);
+  const sentinel = path.join(tmpDir(), 'sentinel.txt');
+  fs.writeFileSync(sentinel, 'untouched\n');
+  const preload = path.join(tmpDir(), 'plant.cjs');
+  fs.writeFileSync(preload, `require('node:fs').symlinkSync(${JSON.stringify(sentinel)}, ${JSON.stringify(ledgerFile)} + '.' + process.pid + '.tmp');`);
+  const result = spawnSync(process.execPath, ['--require', preload, path.resolve(__dirname, '../review-cli.js'), 'artifact-normalize', ref, 'correctness'],
+    { cwd: repo, env, encoding: 'utf8', timeout: 3000 });
+  assert.strictEqual(result.status, 1, `ledger write followed a planted temporary path: ${result.error || result.stderr}`);
+  assert.match(result.stderr, /EEXIST/);
+  assert.strictEqual(fs.readFileSync(sentinel, 'utf8'), 'untouched\n');
+  assert.deepStrictEqual(fs.readFileSync(ledgerFile), before);
+});
+
+test('review-only CLI refuses a repair candidate outside its state directory', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/unsafe-candidate';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo, CONCORD_UNTRUSTED_ARTIFACTS: '1' };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  run(['round-start', ref, 'HEAD~1'], { env });
+  const external = path.join(tmpDir(), 'candidate.json');
+  fs.writeFileSync(external, JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  assert.throws(() => run(['artifact-normalize', ref, 'correctness', '--candidate', external], { env }), /missing or unsafe repair candidate correctness/);
+});
+
 test('round-start freezes header-only Git changes for correctness coverage', () => {
   const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/header-only';
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };

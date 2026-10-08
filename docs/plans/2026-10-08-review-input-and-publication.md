@@ -41,3 +41,9 @@ Modify `.github/workflows/pr-review.yml`, `services/pr-review/review-one.sh`, `s
 ## Task 3: Review and delivery
 
 Run focused changed-input and service regressions plus `node scripts/dod.mjs` locally. Inspect red/green evidence and mirrored-file consistency. Have Sol high review the final diff and Astra inspect the invariant boundaries. Commit and push to PR #195, let GitHub run the full suites and lint, then update the PR description and answer the three review threads with verified evidence. No merge is authorized.
+
+## Task 4: Bound untrusted artifact consumption
+
+Modify `core/codex-review-runner.js`, `core/review-cli.js` and a shared `core/bounded-artifact.js`, then synchronize both engine bundles. Apply the reader to review-only integrity hashing, role-output normalization and repair staging/consumption. Use no-follow/nonblocking descriptor opens, regular-file and identity checks, and a 20 MiB read cap. Hash in chunks; copy only validated bounded bytes. Preserve normal trusted-mode behavior and missing future-output semantics. Publish normalized artifacts, ledger updates and telemetry through atomic replacement with exclusive temporary-file creation. Reject occupied review-only target locks before reading owner metadata, and stop failure handling without rereading unsafe state. Bound file-target identity reads across the aggregate selected content and headers.
+
+Verify finite symlink, FIFO, oversized sparse file, missing/ordinary file and substitution cases without running an unbounded device read. Cover permitted role outputs and repair candidates at the actual trusted consumer, not just at a hash preflight. Add a real SHA-256 Git repository regression through round-start, normalization and findings; accept both full object-ID widths. Run only affected regressions and DoD locally, then verify full GitHub CI.
