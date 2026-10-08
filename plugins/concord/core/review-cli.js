@@ -1912,8 +1912,13 @@ function runVerb(resolveFromCwd, args, initiative) {
       }
       // A plan depends on the unchanged round intent detector, as well as verify.
       if (ledger.intentHash && !preserved.has(`round-${resumeRound}-intent.json`)) {
-        if (run && completed.includes('intent')) ledger = withSupersededLaunch(ledger, 'intent', resumeRound);
-        if (run && (preserved.has(`round-${resumeRound}-plan.json`) || preserved.has(`round-${resumeRound}-plan.repair.json`))) ledger = withSupersededLaunch(ledger, 'plan', resumeRound);
+        if (run) {
+          // All prior grants belong to the invalidated dependency generation,
+          // including an interrupted repair; none can authorize fresh evidence.
+          const launched = { ...ledger.initiative_launched };
+          for (const role of ['intent', 'plan']) launched[launchKey(role, resumeRound)] = Math.max(launchedBefore(ledger, role, resumeRound), reservedCount(ledger, role, resumeRound));
+          ledger = { ...ledger, initiative_launched: launched };
+        }
         for (const name of [...preserved]) if (name.startsWith(`round-${resumeRound}-plan.`)) preserved.delete(name);
       }
       if (!preserved.has(`round-${resumeRound}-verify.json`)) preserved.delete(`round-${resumeRound}-plan.json`);
