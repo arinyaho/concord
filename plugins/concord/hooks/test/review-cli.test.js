@@ -4859,6 +4859,9 @@ test('findings: includes gate findings gate-verify did not reject, categorised b
   writeArtifact(dir, n, 'gate', { status: 'ok', findings: [
     { id: 'gate:cross-context:kept', file: 'review.config.json', span: 'dod', summary: 'an unchanged file breaks' },
     { id: 'gate:silent-gap:dropped', file: 'a.txt', summary: 'not real' } ] });
+  // This fixture replaces the front-pass artifact after seeding verify. Keep
+  // the verifier newer than that gate, as the real sequential review does.
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
   writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [{ id: 'gate:silent-gap:dropped', reason: 'covered' }], findings: [] });
   const out = JSON.parse(run(['findings', 'feat/ro-broad'], { env, skipPlanSeed: true }));
   assert.deepStrictEqual(out.findings.map((f) => [f.id, f.category, f.line]), [['gate:cross-context:kept', 'cross-context', 1]]);
