@@ -25,17 +25,59 @@ while [ $# -gt 0 ]; do
 done
 set -- "${args[@]}"
 echo "$*" >> "$FIXTURES/calls.log"
-if [ "$1" = api ] && [ "${2:-}" = -X ] && [ "${3:-}" = POST ]; then exit 0; fi
 repo_dir() {
   local LC_ALL=C
   local name=${1,,}
   echo "$FIXTURES/${name//\//_}"
 }
+if [ "$1" = api ] && [ "${2:-}" = -X ] && [ "${3:-}" = POST ]; then
+  if [[ "${4:-}" == repos/*/statuses/* ]]; then
+    path=${4#repos/}; repo=${path%%/statuses/*}
+    if [ -n "${STATUS_POST_FAIL:-}" ] || [ "$repo" = "${STATUS_POST_FAIL_REPO:-}" ]; then
+      echo "status post failed" >&2; exit 1
+    fi
+  fi
+  if [[ "${4:-}" == repos/*/statuses/* ]] && [ -n "${PERSIST_STATUS:-}" ]; then
+    path=${4#repos/}; repo=${path%%/statuses/*}
+    context=; state=; description=
+    for arg in "$@"; do
+      case "$arg" in context=*) context=${arg#context=} ;; state=*) state=${arg#state=} ;; description=*) description=${arg#description=} ;; esac
+    done
+    jq -n --arg context "$context" --arg state "$state" --arg description "$description" \
+      --arg created "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '[{context:$context,state:$state,description:$description,created_at:$created}]' > "$(repo_dir "$repo")/status.json"
+  fi
+  exit 0
+fi
 out() { if [ -n "$jq_expr" ]; then jq -r "$jq_expr" "$1"; else cat "$1"; fi; }
 case "$1 $2" in
   "api user") echo reviewbot ;;
   "pr list") f="$(repo_dir "$4")/prs.json"; [ -f "$f" ] || { echo "HTTP 401" >&2; exit 1; }; out "$f" ;;
-  "workflow run"*) ;;
+  "pr view")
+    f="$(repo_dir "$5")/prs.json"
+    if [ -n "$jq_expr" ]; then jq -r ".[0] | $jq_expr" "$f"; else jq '.[0]' "$f"; fi ;;
+  "issue view") f="$(repo_dir "$5")/issue.json"; [ -f "$f" ] || { echo "HTTP 404" >&2; exit 1; }; out "$f" ;;
+  "api repos/"*"/compare/"*)
+    path=${2#repos/}; repo=${path%%/compare/*}; f="$(repo_dir "$repo")/base.json"
+    [ -f "$f" ] || printf '{"merge_base_commit":{"sha":"cccccccc3333"}}' > "$f"
+    out "$f" ;;
+  "workflow run"*)
+    repo=; pr=; sha=; identity=; cmd=; attempt_id=
+    for arg in "$@"; do
+      case "$arg" in repo=*) repo=${arg#repo=} ;; pr=*) pr=${arg#pr=} ;; sha=*) sha=${arg#sha=} ;; identity=*) identity=${arg#identity=} ;; cmd_id=*) cmd=${arg#cmd_id=} ;; attempt_id=*) attempt_id=${arg#attempt_id=} ;; esac
+    done
+    if [ -n "${WORKFLOW_FAIL:-}" ] || [ "$repo" = "${WORKFLOW_FAIL_REPO:-}" ]; then
+      if [ -n "${WORKER_STATE:-}" ]; then
+        jq --arg state "$WORKER_STATE" --arg description "attempt:$attempt_id identity:$identity worker progressed" \
+          '.[0].state=$state | .[0].description=$description' "$(repo_dir "$repo")/status.json" > "$FIXTURES/advanced-status.json"
+        mv "$FIXTURES/advanced-status.json" "$(repo_dir "$repo")/status.json"
+      fi
+      if [ -n "${REPLACE_BEFORE_DISPATCH_ERROR:-}" ]; then
+        folder=$(repo_dir o/fresh)
+        printf '[{"context":"concord/review (#1)","state":"pending","description":"attempt:123e4567-e89b-42d3-a456-426614174099 identity:%064d replacement","created_at":"2026-10-08T00:00:00Z"}]\n' 0 > "$folder/status.json"
+      fi
+      echo "workflow dispatch failed" >&2; exit 1
+    fi ;;
   "run list") f="$FIXTURES/runs.json"; [ -e "$FIXTURES/runs.fail" ] && { echo "HTTP 502" >&2; exit 1; }
     # gh run list applies --limit before --jq. The real 200-run window must
     # hide an active run at position 201 for this fixture to discriminate.
@@ -51,6 +93,10 @@ case "$1 $2" in
         out "$FIXTURES/malformed.json"; exit
       fi
       f="$FIXTURES/runs-api-page$page.json"
+      if [ "$page" -eq 1 ] && [ ! -f "$f" ] && [ -f "$FIXTURES/runs.json" ]; then
+        jq '{workflow_runs: map({status, conclusion, display_title: .displayTitle})}' "$FIXTURES/runs.json" > "$FIXTURES/runs-fallback.json"
+        f="$FIXTURES/runs-fallback.json"
+      fi
       [ -f "$f" ] || break
       out "$f"
     done ;;
@@ -83,7 +129,7 @@ OTHER=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 fixture() {
   local d="$FIXTURES/o_$1"
   mkdir -p "$d"
-  printf '[{"number":1,"headRefOid":"%s","isDraft":false,"title":"t","updatedAt":"%s"}]\n' "$SHA" "$now" > "$d/prs.json"
+  printf '[{"number":1,"headRefOid":"%s","baseRefName":"main","baseRefOid":"eeeeeeee5555","body":"body","closingIssuesReferences":[],"isDraft":false,"title":"t","updatedAt":"%s"}]\n' "$SHA" "$now" > "$d/prs.json"
   [ "$2" = fail ] || printf '%s\n' "$2" > "$d/comments.json"
   printf '%s\n' "$3" > "$d/reviews.json"
   [ -z "${4:-}" ] || printf '%s\n' "$4" > "$d/status.json"
@@ -95,11 +141,56 @@ review() { printf '{"user":{"login":"%s"},"commit_id":"%s","submitted_at":"%s","
 status() { printf '[{"context":"concord/review (#%s)","state":"%s","created_at":"%s","description":"%s"}]' "${2:-1}" "$1" "$recent" "${3:-}"; }
 failed_marker() { printf '<!-- concord-review-failed: %s cmd:%s -->' "$1" "$2"; }
 marker() { printf '<!-- concord-review: %s mode:%s%s -->' "$1" "$2" "${3:+ cmd:$3}"; }
+current_intent=$(printf '# t\n\nbody\n' | node -e 'const c=require("node:crypto");let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(c.createHash("sha256").update(s).digest("hex")))')
+current_marker() { printf '<!-- concord-review: %s mode:%s base:cccccccc3333 intent:%s%s -->' "$SHA" "$1" "$current_intent" "${2:+ cmd:$2}"; }
+
+dispatch_budget_cases() {
+  local budget_fail=0 count
+  mkdir -p "$FIXTURES"
+  printf '{"workflow_runs":[]}\n' > "$FIXTURES/runs-api-page1.json"
+  printf '[]\n' > "$FIXTURES/runs.json"
+  fixture budget-unknown-first "[$(comment alice MEMBER '@concord diff' 991)]" '[]'
+  fixture budget-unknown-second '[]' '[]'
+  : > "$FIXTURES/calls.log"
+  PATH="$work/bin:$PATH" REPOS='o/budget-unknown-first o/budget-unknown-second' SELF=o/self GH_TOKEN=x SELF_TOKEN=x \
+    MAX_PER_RUN=1 WORKFLOW_FAIL=1 bash "$SCAN" > "$work/budget-unknown.out" 2>&1
+  count=$(grep -c '^workflow run' "$FIXTURES/calls.log" || true)
+  if [ "$count" = 1 ] && grep -q '^dispatched 1 review(s)$' "$work/budget-unknown.out"; then
+    echo 'ok   ambiguous dispatches consume the poll cap'
+  else echo "FAIL ambiguous responses bypass the cap: $count requests"; budget_fail=1; fi
+
+  fixture budget-mixed-first "[$(comment alice MEMBER '@concord diff' 992)]" '[]'
+  fixture budget-mixed-second '[]' '[]'
+  fixture budget-mixed-third '[]' '[]'
+  : > "$FIXTURES/calls.log"
+  PATH="$work/bin:$PATH" REPOS='o/budget-mixed-first o/budget-mixed-second o/budget-mixed-third' SELF=o/self GH_TOKEN=x SELF_TOKEN=x \
+    MAX_PER_RUN=2 WORKFLOW_FAIL_REPO=o/budget-mixed-second bash "$SCAN" > "$work/budget-mixed.out" 2>&1
+  count=$(grep -c '^workflow run' "$FIXTURES/calls.log" || true)
+  if [ "$count" = 2 ] && ! grep -q '^workflow run .*repo=o/budget-mixed-third' "$FIXTURES/calls.log" && \
+     grep -q '^dispatched 2 review(s)$' "$work/budget-mixed.out"; then
+    echo 'ok   acknowledged and ambiguous dispatches share one cap'
+  else echo "FAIL mixed responses bypass or double-charge the cap: $count requests"; budget_fail=1; fi
+
+  fixture budget-claim-failed "[$(comment alice MEMBER '@concord diff' 993)]" '[]'
+  fixture budget-claim-next '[]' '[]'
+  fixture budget-claim-last '[]' '[]'
+  : > "$FIXTURES/calls.log"
+  PATH="$work/bin:$PATH" REPOS='o/budget-claim-failed o/budget-claim-next o/budget-claim-last' SELF=o/self GH_TOKEN=x SELF_TOKEN=x \
+    MAX_PER_RUN=1 STATUS_POST_FAIL_REPO=o/budget-claim-failed bash "$SCAN" > "$work/budget-claim.out" 2>&1
+  count=$(grep -c '^workflow run' "$FIXTURES/calls.log" || true)
+  if [ "$count" = 1 ] && grep -q '^workflow run .*repo=o/budget-claim-next' "$FIXTURES/calls.log" && \
+     grep -q '^dispatched 1 review(s)$' "$work/budget-claim.out"; then
+    echo 'ok   a failed status claim leaves capacity for eligible work'
+  else echo "FAIL status claim failure consumes dispatch capacity: $count requests"; budget_fail=1; fi
+  return "$budget_fail"
+}
+
+if [ -n "${DISPATCH_BUDGET_PROBE_ONLY:-}" ]; then dispatch_budget_cases; exit; fi
 
 fixture fresh '[]' '[]'
-fixture reviewed '[]' "[$(review reviewbot "$(marker "$SHA" broad)")]"
-fixture reviewed-on-request '[]' "[$(review reviewbot "$(marker "$SHA" diff 7)")]"
-fixture broad-before-request '[]' "[$(review reviewbot "$(marker "$OTHER" broad)"),$(review reviewbot "$(marker "$SHA" diff 7)")]"
+fixture reviewed '[]' "[$(review reviewbot "$(current_marker broad)")]"
+fixture reviewed-on-request '[]' "[$(review reviewbot "$(current_marker diff 7)")]"
+fixture broad-before-request '[]' "[$(review reviewbot "$(marker "$OTHER" broad)"),$(review reviewbot "$(current_marker diff 7)")]"
 fixture forged-marker "[$(comment outsider NONE "$(marker "$SHA" broad)" 5)]" '[]'
 fixture pushed-again '[]' "[$(review reviewbot "$(marker "$OTHER" broad)")]"
 fixture broad-never-ran '[]' "[$(review reviewbot "$(marker "$OTHER" diff 4)")]"
@@ -114,10 +205,10 @@ fixture command-failed-before-push "[$(comment alice MEMBER "@concord diff" 15 "
 fixture failed-other-pr '[]' '[]' "$(status error 2)"
 fixture status-lookup-fails '[]' '[]'
 touch "$FIXTURES/o_status-lookup-fails/status.fail"
-fixture command-word-prefix "[$(comment alice MEMBER "@concord difference of opinion" 14)]" "[$(review reviewbot "$(marker "$SHA" broad)")]"
+fixture command-word-prefix "[$(comment alice MEMBER "@concord difference of opinion" 14)]" "[$(review reviewbot "$(current_marker broad)")]"
 fixture marker-quoted-in-body '[]' "[$(review reviewbot "$(marker "$OTHER" broad)\\n- finding text $(marker "$SHA" broad)")]"
-fixture outsider-asks "[$(comment outsider NONE "@concord broad" 11)]" "[$(review reviewbot "$(marker "$SHA" broad)")]"
-fixture member-asks "[$(comment alice MEMBER "@concord broad" 12)]" "[$(review reviewbot "$(marker "$SHA" broad)")]"
+fixture outsider-asks "[$(comment outsider NONE "@concord broad" 11)]" "[$(review reviewbot "$(current_marker broad)")]"
+fixture member-asks "[$(comment alice MEMBER "@concord broad" 12)]" "[$(review reviewbot "$(current_marker broad)")]"
 fixture older-command-pending "[$(comment alice MEMBER "@concord diff" 20 "$earlier"),$(comment bob MEMBER "@concord broad" 21 "$recent")]" "[$(review reviewbot "$(marker "$SHA" broad 21)")]"
 fixture asks-codex "[$(comment alice MEMBER "@concord broad codex" 30)]" "[$(review reviewbot "$(marker "$SHA" broad)")]"
 fixture asks-claude "[$(comment alice MEMBER "@concord diff claude" 31)]" "[$(review reviewbot "$(marker "$SHA" broad)")]"
@@ -182,14 +273,16 @@ jq --arg sha "$SHA" '. + ([range(0; 200) | {status:"completed", displayTitle:("r
 mv "$FIXTURES/runs.next.json" "$FIXTURES/runs.json"
 # Extended title fixtures follow the intended workflow run-name expression.
 run_title() {
-  python3 - "$HERE/../../../.github/workflows/pr-review.yml" "$1" "$2" "$3" <<'PYTITLE'
+  python3 - "$HERE/../../../.github/workflows/pr-review.yml" "$1" "$2" "$3" "${4:-}" <<'PYTITLE'
 import pathlib, sys
-workflow, repo, sha, cmd = sys.argv[1:]
+workflow, repo, sha, cmd, identity = sys.argv[1:]
 line = next(line for line in pathlib.Path(workflow).read_text().splitlines() if line.startswith('run-name: '))
 title = line.removeprefix('run-name: ')
 for expression, value in (
     ('${{ inputs.repo }}', repo), ('${{ inputs.pr }}', '1'),
-    ('${{ inputs.sha }}', sha), ("${{ inputs.cmd_id || '-' }}", cmd),
+    ('${{ inputs.sha }}', sha),
+    ("${{ inputs.identity && format(' identity:{0}', inputs.identity) || '' }}", f" identity:{identity}" if identity else ""),
+    ("${{ inputs.cmd_id || '-' }}", cmd),
 ):
     title = title.replace(expression, value)
 assert '${{' not in title, title
@@ -266,9 +359,9 @@ expect=(
   "fresh:broad"
   "reviewed:"
   "reviewed-on-request:broad"
-  "broad-before-request:"
+  "broad-before-request:broad"
   "forged-marker:broad"
-  "pushed-again:diff"
+  "pushed-again:broad"
   "running:"
   "active-after-200:"
   "active-pending:"
@@ -303,7 +396,7 @@ expect=(
   "command-failed-before-push:broad"
   "status-lookup-fails:"
   "command-word-prefix:"
-  "marker-quoted-in-body:diff"
+  "marker-quoted-in-body:broad"
   "outsider-asks:"
   "member-asks:broad"
   "broad-never-ran:broad"
@@ -312,14 +405,14 @@ expect=(
   "posted-pending:"
   "posted-new-command:diff"
   "posted-diff-needs-broad:broad"
-  "older-receipt-new-attempt:"
-  "same-second-receipt:"
+  "older-receipt-new-attempt:broad"
+  "same-second-receipt:broad"
   "foreign-receipt:broad"
-  "malformed-receipt:"
-  "legacy-tie:"
-  "legacy-newer:"
+  "malformed-receipt:broad"
+  "legacy-tie:broad"
+  "legacy-newer:broad"
   "page2-error:"
-  "stale-posted:"
+  "stale-posted:broad"
 )
 
 for conclusion in cancelled timed_out action_required neutral skipped stale mystery null; do expect+=("automatic-$conclusion:"); done
@@ -388,13 +481,14 @@ else echo "FAIL dry run wrote to GitHub"; fail=1; fi
 # GitHub conversations can exceed the per-argument OS limit. Keep the payload
 # in fixture files so only scan.sh's jq invocation can trigger E2BIG.
 fixture large-reviewed '[]' '[]'
-python3 - "$FIXTURES/o_large-reviewed" "$SHA" <<'PY'
+large_broad_marker=$(current_marker broad)
+python3 - "$FIXTURES/o_large-reviewed" "$large_broad_marker" <<'PY'
 import json, pathlib, sys
-folder, sha = pathlib.Path(sys.argv[1]), sys.argv[2]
+folder, marker = pathlib.Path(sys.argv[1]), sys.argv[2]
 padding = "x" * 60_000
 (folder / "comments.json").write_text(json.dumps([{"user": {"login": "outsider"}, "body": padding}] * 3))
 (folder / "reviews.json").write_text(json.dumps(
-    [{"user": {"login": "reviewbot"}, "body": f"<!-- concord-review: {sha} mode:broad -->"}]
+    [{"user": {"login": "reviewbot"}, "body": marker}]
     + [{"user": {"login": "reviewbot"}, "body": padding}] * 3
 ))
 PY
@@ -451,11 +545,19 @@ elif grep -Eq '^workflow run .*attempt_id=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0
 if ! grep -Fq "cmd:\${{ inputs.cmd_id || '-' }}" "$HERE/../../../.github/workflows/pr-review.yml"; then
   echo "FAIL workflow run-name template lacks command identity"; fail=1
 fi
-worker_output=$(KEEP=1 bash "$HERE/review-one.test.sh" 2>&1) || true
+worker_exit=0
+worker_output=$(KEEP=1 bash "$HERE/review-one.test.sh" 2>&1) || worker_exit=$?
+if [ "$worker_exit" -ne 0 ]; then
+  echo "FAIL worker harness exited $worker_exit"
+  grep '^FAIL' <<<"$worker_output" || true
+  fail=1
+fi
 worker_dir=$(sed -n 's/^kept //p' <<<"$worker_output" | tail -1)
 if [ -z "$worker_dir" ]; then echo "FAIL worker harness produced no observed records"; fail=1
 else
   worker_sha=$(git -C "$worker_dir/upstream" rev-parse feature)
+  worker_base=$(git -C "$worker_dir/upstream" rev-parse main)
+  worker_identity=$(sed -n 's/.* identity:\([0-9a-f]\{64\}\) .*/\1/p' "$worker_dir/requested-fails.log.descriptions" | head -1)
   requested_log="$worker_dir/requested-fails-marker-unavailable.log"
   automatic_log="$worker_dir/automatic-fails-status-unavailable.log"
   if [ -s "$requested_log.exit" ] && [ ! -e "$requested_log.comment" ] &&
@@ -471,15 +573,25 @@ else
         fixture "$name" '[]' '[]' "$(status pending)"
         command_id=-
       fi
-      printf '{"workflow_runs":[{"status":"completed","conclusion":"failure","display_title":"%s"}]}\n' "$(run_title "o/$name" "$worker_sha" "$command_id")" > "$FIXTURES/runs-api-page1.json"
-      printf '[{"status":"completed","conclusion":"failure","displayTitle":"%s"}]\n' "$(run_title "o/$name" "$worker_sha" "$command_id")" > "$FIXTURES/runs.json"
-      printf '[{"number":1,"headRefOid":"%s","isDraft":false,"title":"t","updatedAt":"%s"}]\n' "$worker_sha" "$now" > "$FIXTURES/o_$name/prs.json"
+      printf '{"workflow_runs":[{"status":"completed","conclusion":"failure","display_title":"%s"}]}\n' "$(run_title "o/$name" "$worker_sha" "$command_id" "$worker_identity")" > "$FIXTURES/runs-api-page1.json"
+      printf '[{"status":"completed","conclusion":"failure","displayTitle":"%s"}]\n' "$(run_title "o/$name" "$worker_sha" "$command_id" "$worker_identity")" > "$FIXTURES/runs.json"
+      jq -n --arg sha "$worker_sha" --arg base "$worker_base" --arg now "$now" \
+        '[{number:1,headRefOid:$sha,baseRefOid:$base,baseRefName:"main",isDraft:false,
+           title:"Add a",body:"The PR body says a.txt must exist.",updatedAt:$now,
+           closingIssuesReferences:[{number:5,repository:{name:"private",owner:{login:"other"}}}]}]' \
+        > "$FIXTURES/o_$name/prs.json"
+      jq -n --arg base "$worker_base" '{merge_base_commit:{sha:$base}}' > "$FIXTURES/o_$name/base.json"
       : > "$FIXTURES/calls.log"
       scan_exit=0
       PATH="$work/bin:$PATH" REPOS="o/$name" SELF=o/self GH_TOKEN=x SELF_TOKEN=x bash "$SCAN" >"$work/$name.out" 2>&1 || scan_exit=$?
       if [ "$scan_exit" -ne 0 ]; then echo "FAIL $name later poll exited $scan_exit"; fail=1
       elif grep -q '^workflow run' "$FIXTURES/calls.log"; then echo "FAIL $name later poll redispatched observed failed worker"; fail=1
       else echo "ok   $name later poll did not redispatch"; fi
+      printf '{"workflow_runs":[]}\n' > "$FIXTURES/runs-api-page1.json"
+      control=$(PATH="$work/bin:$PATH" REPOS="o/$name" SELF=o/self GH_TOKEN=x SELF_TOKEN=x DRY_RUN=1 bash "$SCAN")
+      if grep -q '^dispatched 1 review(s)$' <<<"$control"; then
+        echo "ok   $name becomes eligible when its failure evidence is removed"
+      else echo "FAIL $name was hidden by unrelated fixture state"; fail=1; fi
     done
   else echo "FAIL worker failure evidence missing"; fail=1; fi
   rm -rf "$worker_dir"
@@ -495,7 +607,7 @@ case_check() {
   local label=$1 configured=$2 retained=$3 evidence=$4 want=$5 locale=$6
   local d="$FIXTURES/acme_widget" output rc=0 count selected actual
   mkdir -p "$d"
-  printf '[{"number":1,"headRefOid":"%s","isDraft":false,"title":"case","updatedAt":"%s"}]\n' "$SHA" "$now" > "$d/prs.json"
+  printf '[{"number":1,"headRefOid":"%s","baseRefName":"main","baseRefOid":"eeeeeeee5555","body":"body","closingIssuesReferences":[],"isDraft":false,"title":"t","updatedAt":"%s"}]\n' "$SHA" "$now" > "$d/prs.json"
   printf '[]\n' > "$d/reviews.json"
   printf '[]\n' > "$d/status.json"
   case "$evidence" in
@@ -618,4 +730,170 @@ if [ "$rc" -eq 0 ] && [ "$count" = 1 ] && [ ! -s "$work/raw.err" ] &&
   echo 'ok   raw configured spelling reaches API, display, and dispatch'
 else echo "FAIL raw configured spelling: exit=$rc dispatch=$count"; fail=1; fi
 
+rm -f "$FIXTURES"/runs-api-page*.json "$FIXTURES"/runs-page2.*
+printf '[]\n' > "$FIXTURES/runs.json"
+fixture identity-seed '[]' '[]'
+: > "$FIXTURES/calls.log"
+PATH="$work/bin:$PATH" REPOS="o/identity-seed" SELF=o/self GH_TOKEN=x SELF_TOKEN=x bash "$SCAN" > "$work/seed.out" 2>&1
+identity=$(sed -n 's/.* identity=\([^ ]*\).*/\1/p' "$FIXTURES/calls.log" | head -1)
+base=cccccccc3333
+intent=$(printf '# t\n\nbody\n' | node -e 'const c=require("node:crypto");let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(c.createHash("sha256").update(s).digest("hex")))')
+versioned_marker="<!-- concord-review: $SHA mode:broad base:$base intent:$intent -->"
+for name in identity-unchanged retarget-changed retarget-same-diff changed-title changed-body; do
+  fixture "$name" '[]' "[$(review reviewbot "$versioned_marker")]"
+done
+printf '{"merge_base_commit":{"sha":"dddddddd4444"}}' > "$FIXTURES/o_retarget-changed/base.json"
+python3 - "$FIXTURES" <<'PYFIX'
+import json, pathlib, sys
+root=pathlib.Path(sys.argv[1])
+for name, key, value in [('retarget-changed','baseRefName','release'),('retarget-same-diff','baseRefName','release'),('changed-title','title','new title'),('changed-body','body','new requirements')]:
+    p=root/f'o_{name}'/'prs.json'; prs=json.loads(p.read_text()); prs[0][key]=value;p.write_text(json.dumps(prs))
+PYFIX
+for e in identity-unchanged: retarget-changed:broad retarget-same-diff: changed-title:broad changed-body:broad; do
+  name=${e%%:*}; want=${e#*:}
+  got=$(scan env REPOS="o/$name" | sed -n "s/^$name:\([^:]*\):.*/\1/p")
+  if [ "$got" = "$want" ]; then echo "ok   $name"; else echo "FAIL $name: want '$want', got '$got'"; fail=1; fi
+done
+if [ -n "$identity" ]; then echo "ok   dispatch includes reviewed identity"; else echo "FAIL dispatch omits reviewed identity"; fail=1; fi
+
+# The status claim must precede the dispatch so an eager worker sees its owner.
+: > "$FIXTURES/calls.log"
+PATH="$work/bin:$PATH" REPOS="o/fresh" SELF=o/self GH_TOKEN=x SELF_TOKEN=x bash "$SCAN" >"$work/order.out" 2>&1
+dispatch_line=$(grep -n '^workflow run ' "$FIXTURES/calls.log" | cut -d: -f1 || true)
+pending_line=$(grep -n 'api -X POST repos/o/fresh/statuses/' "$FIXTURES/calls.log" | cut -d: -f1 || true)
+if [ -n "$dispatch_line" ] && [ -n "$pending_line" ] && [ "$pending_line" -lt "$dispatch_line" ]; then
+  echo "ok   pending ownership is established before dispatch"
+else
+  echo "FAIL pending ownership is established before dispatch"; fail=1
+fi
+
+# A failed status claim must not launch a worker that will reject its own dispatch.
+: > "$FIXTURES/calls.log"
+if PATH="$work/bin:$PATH" REPOS="o/fresh" SELF=o/self GH_TOKEN=x SELF_TOKEN=x STATUS_POST_FAIL=1 bash "$SCAN" >"$work/status-post-fails.out" 2>&1; then
+  if grep -q '^workflow run ' "$FIXTURES/calls.log"; then echo "FAIL status failure still dispatched a worker"; fail=1
+  else echo "ok   status failure prevents worker dispatch"; fi
+else
+  echo "FAIL status failure should defer dispatch without failing the poll"; fail=1
+fi
+
+# A dispatch error response is ambiguous; retain the claim for run reconciliation.
+: > "$FIXTURES/calls.log"
+PATH="$work/bin:$PATH" REPOS="o/fresh" SELF=o/self GH_TOKEN=x SELF_TOKEN=x WORKFLOW_FAIL=1 bash "$SCAN" >"$work/workflow-fails.out" 2>&1 || true
+if ! grep -q 'state=error' "$FIXTURES/calls.log" && grep -q 'state=pending' "$FIXTURES/calls.log"; then echo "ok   ambiguous dispatch leaves its claim pending"; else echo "FAIL ambiguous dispatch changed its claim"; fail=1; fi
+: > "$FIXTURES/calls.log"
+PATH="$work/bin:$PATH" REPOS="o/fresh" SELF=o/self GH_TOKEN=x SELF_TOKEN=x WORKFLOW_FAIL=1 REPLACE_BEFORE_DISPATCH_ERROR=1 bash "$SCAN" >"$work/replaced-workflow-fails.out" 2>&1 || true
+if ! grep -q 'state=error' "$FIXTURES/calls.log"; then echo "ok   failed dispatch does not overwrite a replacement attempt"; else echo "FAIL failed dispatch overwrote a replacement status"; fail=1; fi
+
+# A lost response must preserve even an eagerly progressing/completed worker.
+for worker_state in pending success; do
+  fixture "dispatch-worker-$worker_state" '[]' '[]'
+  : > "$FIXTURES/calls.log"
+  PATH="$work/bin:$PATH" REPOS="o/dispatch-worker-$worker_state" SELF=o/self GH_TOKEN=x SELF_TOKEN=x \
+    PERSIST_STATUS=1 WORKFLOW_FAIL=1 WORKER_STATE="$worker_state" bash "$SCAN" >"$work/worker-$worker_state.out" 2>&1
+  if ! grep -q 'state=error' "$FIXTURES/calls.log" && \
+     [ "$(jq -r '.[0].state' "$FIXTURES/o_dispatch-worker-$worker_state/status.json")" = "$worker_state" ]; then
+    echo "ok   ambiguous dispatch preserves same-attempt worker $worker_state"
+  else echo "FAIL ambiguous dispatch overwrites worker $worker_state"; fail=1; fi
+done
+
+# Consecutive polls defer the same claim without restarting its grace clock.
+fixture dispatch-grace '[]' '[]'
+: > "$FIXTURES/calls.log"
+PATH="$work/bin:$PATH" REPOS=o/dispatch-grace SELF=o/self GH_TOKEN=x SELF_TOKEN=x PERSIST_STATUS=1 WORKFLOW_FAIL=1 \
+  bash "$SCAN" >"$work/grace-first.out" 2>&1
+claim_before=$(cat "$FIXTURES/o_dispatch-grace/status.json")
+for poll in 1 2; do
+  : > "$FIXTURES/calls.log"
+  PATH="$work/bin:$PATH" REPOS=o/dispatch-grace SELF=o/self GH_TOKEN=x SELF_TOKEN=x PERSIST_STATUS=1 \
+    bash "$SCAN" >"$work/grace-$poll.out" 2>&1
+  if ! grep -Eq '^(workflow run|api -X POST)' "$FIXTURES/calls.log" && \
+     [ "$(cat "$FIXTURES/o_dispatch-grace/status.json")" = "$claim_before" ]; then
+    echo "ok   grace poll $poll preserves the original attempt and timestamp"
+  else echo "FAIL grace poll $poll repeats or renews the dispatch"; fail=1; fi
+done
+printf '[%s]\n' "$(comment alice MEMBER '@concord broad' 981)" > "$FIXTURES/o_dispatch-grace/comments.json"
+: > "$FIXTURES/calls.log"
+PATH="$work/bin:$PATH" REPOS=o/dispatch-grace SELF=o/self GH_TOKEN=x SELF_TOKEN=x bash "$SCAN" >"$work/grace-command.out" 2>&1
+if ! grep -q '^workflow run' "$FIXTURES/calls.log"; then echo "ok   a same-input command waits for the dispatch grace"; else echo "FAIL a command bypasses dispatch grace"; fail=1; fi
+
+# Once a delayed run becomes visible it suppresses retry even after grace ends.
+grace_identity=$(jq -r '.[0].description' "$FIXTURES/o_dispatch-grace/status.json" | sed -n 's/.* identity:\([0-9a-f]\{64\}\) .*/\1/p')
+jq --arg created "$earlier" '.[0].created_at=$created' "$FIXTURES/o_dispatch-grace/status.json" > "$FIXTURES/grace-aged.json"
+mv "$FIXTURES/grace-aged.json" "$FIXTURES/o_dispatch-grace/status.json"
+reset_inventory_pages
+jq -n --arg title "$(run_title o/dispatch-grace "$SHA" - "$grace_identity")" \
+  '{workflow_runs:[{status:"in_progress",conclusion:null,display_title:$title}]}' > "$FIXTURES/runs-api-page1.json"
+: > "$FIXTURES/calls.log"
+PATH="$work/bin:$PATH" REPOS=o/dispatch-grace SELF=o/self GH_TOKEN=x SELF_TOKEN=x bash "$SCAN" >"$work/grace-visible.out" 2>&1
+if ! grep -q '^workflow run' "$FIXTURES/calls.log"; then echo "ok   a delayed visible run prevents retry after grace"; else echo "FAIL a delayed run is duplicated"; fail=1; fi
+printf '{"workflow_runs":[]}\n' > "$FIXTURES/runs-api-page1.json"
+: > "$FIXTURES/calls.log"
+PATH="$work/bin:$PATH" REPOS=o/dispatch-grace SELF=o/self GH_TOKEN=x SELF_TOKEN=x bash "$SCAN" >"$work/grace-expired.out" 2>&1
+if [ "$(grep -c '^workflow run' "$FIXTURES/calls.log" || true)" = 1 ] && grep -q 'cmd_id=981' "$FIXTURES/calls.log"; then
+  echo "ok   expired grace permits one fresh attempt when full inventory has no run"
+else echo "FAIL expired grace does not recover dispatch"; fail=1; fi
+reset_inventory_pages
+
+# A changed intent is a different review, and unknown timestamps cannot expire.
+for case_name in grace-changed-intent grace-unknown-time; do
+  fixture "$case_name" '[]' '[]' "$claim_before"
+done
+jq '.[0].body="changed requirements"' "$FIXTURES/o_grace-changed-intent/prs.json" > "$FIXTURES/changed-pr.json"
+mv "$FIXTURES/changed-pr.json" "$FIXTURES/o_grace-changed-intent/prs.json"
+jq '.[0].created_at="invalid"' "$FIXTURES/o_grace-unknown-time/status.json" > "$FIXTURES/unknown-status.json"
+mv "$FIXTURES/unknown-status.json" "$FIXTURES/o_grace-unknown-time/status.json"
+for e in grace-changed-intent:broad grace-unknown-time:; do
+  name=${e%%:*}; want=${e#*:}; got=$(scan env REPOS="o/$name" | sed -n "s/^$name:\([^:]*\):.*/\1/p")
+  if [ "$got" = "$want" ]; then echo "ok   $name"; else echo "FAIL $name: want '$want', got '$got'"; fail=1; fi
+done
+
+# Only matching input identities suppress errors or active runs.
+fixture failed-same-identity '[]' '[]' "$(status error 1 "attempt:$attempt identity:$identity failed")"
+fixture failed-old-identity '[]' '[]' "$(status error 1 "attempt:$attempt identity:$(printf 'f%.0s' {1..64}) failed")"
+fixture active-same-identity '[]' '[]'
+fixture active-old-identity '[]' '[]'
+python3 - "$FIXTURES/runs.json" "$SHA" "$identity" <<'PYRUN'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1]); runs=json.loads(p.read_text())
+runs += [{"status":"in_progress","displayTitle":f"review o/active-same-identity#1 @ {sys.argv[2]} identity:{sys.argv[3]}"},
+         {"status":"queued","displayTitle":f"review o/active-old-identity#1 @ {sys.argv[2]} identity:{'f'*64}"}]
+p.write_text(json.dumps(runs))
+PYRUN
+for e in failed-same-identity: failed-old-identity:broad active-same-identity: active-old-identity:broad; do
+  name=${e%%:*}; want=${e#*:}; got=$(scan env REPOS="o/$name" | sed -n "s/^$name:\([^:]*\):.*/\1/p")
+  if [ "$got" = "$want" ]; then echo "ok   $name"; else echo "FAIL $name: want '$want', got '$got'"; fail=1; fi
+done
+
+# Legacy head-only coverage must migrate once, while preserving old commands.
+fixture legacy-completed '[]' "[$(review reviewbot "<!-- concord-review: $SHA mode:broad -->")]"
+got=$(scan env REPOS=o/legacy-completed)
+if [ "$got" = 'legacy-completed:broad:auto:default' ]; then echo "ok   legacy coverage refreshes once"; else echo "FAIL legacy coverage migration: $got"; fail=1; fi
+
+# A closing issue edit can invalidate a broad pass without updating the PR.
+issue_hash=$(printf '# t\n\nbody\n\n\n## Closes 6: Issue\n\nrequirements\n' | node -e 'const c=require("node:crypto");let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(c.createHash("sha256").update(s).digest("hex")))')
+for name in issue-unchanged issue-edited; do
+  fixture "$name" '[]' "[$(review reviewbot "<!-- concord-review: $SHA mode:broad base:$base intent:$issue_hash -->")]"
+  python3 - "$FIXTURES/o_$name/prs.json" "$name" <<'PYISSUE'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1]); data=json.loads(p.read_text()); repo=sys.argv[2]
+data[0]['closingIssuesReferences']=[{'number':6,'repository':{'name':repo,'owner':{'login':'o'}}}]
+data[0]['updatedAt']='2000-01-01T00:00:00Z'; p.write_text(json.dumps(data))
+PYISSUE
+  printf '{"number":6,"title":"Issue","body":"requirements"}' > "$FIXTURES/o_$name/issue.json"
+done
+printf '{"number":6,"title":"Issue","body":"changed requirements"}' > "$FIXTURES/o_issue-edited/issue.json"
+for e in issue-unchanged: issue-edited:broad; do
+  name=${e%%:*}; want=${e#*:}; got=$(scan env REPOS="o/$name" | sed -n "s/^$name:\([^:]*\):.*/\1/p")
+  if [ "$got" = "$want" ]; then echo "ok   $name"; else echo "FAIL $name: want '$want', got '$got'"; fail=1; fi
+done
+
+fixture malformed-intent '[]' '[]'
+python3 - "$FIXTURES/o_malformed-intent/prs.json" <<'PYBAD'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1]);data=json.loads(p.read_text());data[0]['closingIssuesReferences']=None;p.write_text(json.dumps(data))
+PYBAD
+got=$(scan env REPOS=o/malformed-intent)
+if [ -z "$got" ]; then echo "ok   malformed intent metadata defers dispatch"; else echo "FAIL malformed intent metadata dispatched $got"; fail=1; fi
+
+dispatch_budget_cases || fail=1
 exit "$fail"
