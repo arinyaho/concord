@@ -4,7 +4,7 @@ After active same-head suppression, trusted publication reconciliation, and unco
 
 `failure`, `cancelled`, `timed_out`, `action_required`, `neutral`, `skipped`, `stale`, null or missing conclusions, and unknown conclusions all satisfy the predicate. They mean success is unconfirmed, not necessarily that the reviewer model failed. A noncompleted run remains active regardless of its conclusion. A completed successful run alone creates no failure barrier.
 
-An explicit command takes precedence over the automatic barrier, subject to active same-head suppression. A later successful explicit attempt does not erase an earlier retained non-success barrier for the same head. A new head has a different key and remains eligible under the other scheduling rules. A trusted posted review proves publication; its receipt names the exact attempt eligible for status settlement. A terminal run proves neither publication nor successful status settlement.
+An explicit command takes precedence over the automatic barrier, subject to active same-head suppression. A later successful explicit attempt does not erase an earlier retained non-success barrier for the same head. A new head has a different key and remains eligible under the other scheduling rules. A trusted posted review proves publication. When the review has an attempt receipt, it identifies the exact attempt eligible for status settlement; legacy reviews without receipts retain timestamp-based reconciliation. A terminal run proves neither publication nor successful status settlement.
 
 ## Decision and trade-off
 

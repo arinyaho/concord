@@ -16,13 +16,37 @@ MAX_PER_RUN="${MAX_PER_RUN:-3}"   # ponytail: flat cap on reviews started per po
 STALE_DAYS="${STALE_DAYS:-7}"
 cutoff=$(date -u -d "${STALE_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
       || date -u -v-"${STALE_DAYS}"d +%Y-%m-%dT%H:%M:%SZ)
-# Reviews in flight are the pr-review.yml runs not yet completed, named
-# "review <repo>#<pr> @ <sha>". Read the full unfiltered workflow history:
-# a fixed window can miss an older active run after many newer runs. An
-# incomplete page read fails the poll before any dispatch.
-active=$(GH_TOKEN="$SELF_TOKEN" gh api --paginate \
-           "repos/$SELF/actions/workflows/pr-review.yml/runs?per_page=100" \
-           --jq '.workflow_runs[] | select(.status != "completed") | .display_title')
+# Read the full unfiltered history once. A failed or malformed page must stop
+# the poll before dispatch. Keep the inventory in a file rather than argv.
+inventory=$(mktemp)
+trap 'rm -f "$inventory"' EXIT
+GH_TOKEN="$SELF_TOKEN" gh api --paginate \
+  "repos/$SELF/actions/workflows/pr-review.yml/runs?per_page=100" \
+  --jq 'if (.workflow_runs | type) == "array" and
+             all(.workflow_runs[]; type == "object" and
+               (.status | type) == "string" and
+               (.display_title | type) == "string" and
+               ((.conclusion == null) or ((.conclusion | type) == "string")))
+        then .workflow_runs[] | [.status, (.conclusion // "null"), .display_title] | @tsv
+        else error("malformed workflow run inventory") end' > "$inventory"
+declare -A active_heads=() consumed_commands=() failed_heads=()
+title_pattern='^review ([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([1-9][0-9]*) @ ([0-9a-f]{40})( cmd:([1-9][0-9]*|-))?$'
+while IFS=$'\t' read -r run_status conclusion run_title; do
+  [[ "$run_title" =~ $title_pattern ]] || continue
+  run_repo=${BASH_REMATCH[1]}
+  run_pr=${BASH_REMATCH[2]}
+  run_sha=${BASH_REMATCH[3]}
+  run_cmd=${BASH_REMATCH[5]:-}
+  head_key="$run_repo|$run_pr|$run_sha"
+  if [ "$run_status" != completed ]; then
+    active_heads["$head_key"]=1
+  else
+    if [ -n "$run_cmd" ] && [ "$run_cmd" != - ]; then
+      consumed_commands["$run_repo|$run_pr|$run_cmd"]=1
+    fi
+    if [ "$conclusion" != success ]; then failed_heads["$head_key"]=1; fi
+  fi
+done < "$inventory"
 # Only markers this account posted count: anyone can write the same text in a comment.
 ME=$(gh api user --jq .login)
 
@@ -35,11 +59,8 @@ for repo in $REPOS; do
   prs=$(gh pr list --repo "$repo" --state open --limit 1000 --json number,headRefOid,isDraft,title,updatedAt)
   while IFS=$'\t' read -r num sha updated title; do
     [ -n "$num" ] || continue
-    # A review of this commit is queued or running. Dispatching it again would
-    # cancel that run, and a review longer than the poll interval never posts.
-    # A review of this commit is queued or running. Dispatching it again would
-    # cancel that run.
-    grep -qxF "review $repo#$num @ $sha" <<<"$active" && continue
+    # An existing noncompleted attempt for this target prevents a new dispatch.
+    [ -n "${active_heads["$repo|$num|$sha"]+x}" ] && continue
     # The status context names the pull request, since other pull requests can
     # share the commit. Without the lookup there is no telling whether the last
     # review failed, so the pull request waits for the next poll.
@@ -116,6 +137,7 @@ for repo in $REPOS; do
     while IFS=$'\t' read -r id cmd_mode cmd_reviewer; do
       [ -n "$id" ] || continue
       grep -qF " cmd:$id -->" <<<"$markers" && continue
+      [ -n "${consumed_commands["$repo|$num|$id"]+x}" ] && continue
       cmd_id=$id; reviewer=$cmd_reviewer; break
     done < <(jq -r '[.[] | select(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR")
                       | select(.body | test("@concord +(broad|diff)( +(claude|codex))?(\\s|$)"))]
@@ -128,6 +150,7 @@ for repo in $REPOS; do
     fi
     # Manual mode: review only what somebody asked for with an @concord comment.
     [ -n "${MANUAL_ONLY:-}" ] && continue
+    [ -n "${failed_heads["$repo|$num|$sha"]+x}" ] && continue
     # A failed review is not retried on its own: a new push or an @concord
     # command starts the next one.
     [ "$state" = error ] && continue
