@@ -30,19 +30,30 @@ GH_TOKEN="$SELF_TOKEN" gh api --paginate \
         then .workflow_runs[] | [.status, (.conclusion // "null"), .display_title] | @tsv
         else error("malformed workflow run inventory") end' > "$inventory"
 declare -A active_heads=() consumed_commands=() failed_heads=()
+canonical_repo() {
+  local LC_ALL=C
+  printf -v "$2" '%s' "${1,,}"
+}
 title_pattern='^review ([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([1-9][0-9]*) @ ([0-9a-f]{40})( cmd:([1-9][0-9]*|-))?$'
+run_repo_key=''
+repo_key=''
 while IFS=$'\t' read -r run_status conclusion run_title; do
   [[ "$run_title" =~ $title_pattern ]] || continue
   run_repo=${BASH_REMATCH[1]}
   run_pr=${BASH_REMATCH[2]}
   run_sha=${BASH_REMATCH[3]}
   run_cmd=${BASH_REMATCH[5]:-}
-  head_key="$run_repo|$run_pr|$run_sha"
+  if [[ "$run_status" == completed && "$conclusion" == success &&
+        ( -z "$run_cmd" || "$run_cmd" == - ) ]]; then
+    continue
+  fi
+  canonical_repo "$run_repo" run_repo_key
+  head_key="$run_repo_key|$run_pr|$run_sha"
   if [ "$run_status" != completed ]; then
     active_heads["$head_key"]=1
   else
     if [ -n "$run_cmd" ] && [ "$run_cmd" != - ]; then
-      consumed_commands["$run_repo|$run_pr|$run_cmd"]=1
+      consumed_commands["$run_repo_key|$run_pr|$run_cmd"]=1
     fi
     if [ "$conclusion" != success ]; then failed_heads["$head_key"]=1; fi
   fi
@@ -54,13 +65,14 @@ ME=$(gh api user --jq .login)
 # automatic reviews; requested ones are dispatched first.
 requested=(); automatic=()
 for repo in $REPOS; do
+  canonical_repo "$repo" repo_key
   # A poll that cannot list a repository fails rather than reporting nothing to do.
   # ponytail: the newest 1000 open pull requests per repository.
   prs=$(gh pr list --repo "$repo" --state open --limit 1000 --json number,headRefOid,isDraft,title,updatedAt)
   while IFS=$'\t' read -r num sha updated title; do
     [ -n "$num" ] || continue
     # An existing noncompleted attempt for this target prevents a new dispatch.
-    [ -n "${active_heads["$repo|$num|$sha"]+x}" ] && continue
+    [ -n "${active_heads["$repo_key|$num|$sha"]+x}" ] && continue
     # The status context names the pull request, since other pull requests can
     # share the commit. Without the lookup there is no telling whether the last
     # review failed, so the pull request waits for the next poll.
@@ -137,7 +149,7 @@ for repo in $REPOS; do
     while IFS=$'\t' read -r id cmd_mode cmd_reviewer; do
       [ -n "$id" ] || continue
       grep -qF " cmd:$id -->" <<<"$markers" && continue
-      [ -n "${consumed_commands["$repo|$num|$id"]+x}" ] && continue
+      [ -n "${consumed_commands["$repo_key|$num|$id"]+x}" ] && continue
       cmd_id=$id; reviewer=$cmd_reviewer; break
     done < <(jq -r '[.[] | select(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR")
                       | select(.body | test("@concord +(broad|diff)( +(claude|codex))?(\\s|$)"))]
@@ -150,7 +162,7 @@ for repo in $REPOS; do
     fi
     # Manual mode: review only what somebody asked for with an @concord comment.
     [ -n "${MANUAL_ONLY:-}" ] && continue
-    [ -n "${failed_heads["$repo|$num|$sha"]+x}" ] && continue
+    [ -n "${failed_heads["$repo_key|$num|$sha"]+x}" ] && continue
     # A failed review is not retried on its own: a new push or an @concord
     # command starts the next one.
     [ "$state" = error ] && continue

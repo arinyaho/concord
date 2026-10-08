@@ -10,6 +10,8 @@ An unfiltered paginated endpoint is used because an arbitrary fixed window can o
 
 The run's display title is scheduling evidence, not a record that a review was published. A completed run does not by itself prove a review marker or status was written.
 
+For scheduling keys, the scanner folds only the `owner/name` repository component to ASCII lowercase under the `C` locale. It applies the same rule to retained titles and configured repositories. Pull request numbers and target SHAs remain exact. API requests, display output, queued work, and dispatch inputs retain the configured repository spelling.
+
 ## Residual exposure
 
 GitHub's workflow-run retention and deletion policies bound the inventory. A deleted or expired active run cannot be recovered from this endpoint. A run accepted after its page or the full inventory was read may be absent. A later dispatch for the same pull request and SHA can duplicate work and cancel the earlier review through workflow concurrency; status and receipt checks do not eliminate this interval. API pagination is not a transactional snapshot, so a run moving between pages during the read can also be missed. Complete pagination removes the fixed-window omission but does not provide an atomic inventory and dispatch operation.
