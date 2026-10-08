@@ -36,9 +36,12 @@ case "$1 $2" in
     path=${2#repos/}; repo=${path%%/compare/*}; f="$(repo_dir "$repo")/base.json"
     [ -f "$f" ] || printf '{"merge_base_commit":{"sha":"cccccccc3333"}}' > "$f"
     out "$f" ;;
-  "workflow run"*) ;;
+  "workflow run"*) [ -z "${WORKFLOW_FAIL:-}" ] || { echo "workflow dispatch failed" >&2; exit 1; } ;;
   "run list") f="$FIXTURES/runs.json"; [ -e "$FIXTURES/runs.fail" ] && { echo "HTTP 502" >&2; exit 1; }; out "$f" ;;
-  "api -X POST repos/"*"/statuses/"*) ;;
+  "api -X"*)
+    if [[ "$*" == *"/statuses/"* ]]; then
+      [ -z "${STATUS_POST_FAIL:-}" ] || { echo "status post failed" >&2; exit 1; }
+    fi ;;
   "api repos/"*"/issues/"*"/comments")
     path=${2#repos/}; f="$(repo_dir "${path%%/issues/*}")/comments.json"
     [ -f "$f" ] || { echo "HTTP 502" >&2; exit 1; }; out "$f" ;;
@@ -126,6 +129,8 @@ sed -i "s/$recent/$earlier/" "$FIXTURES/o_page2-error/status.json"
 printf '%s\n' "$(status error)" > "$FIXTURES/o_page2-error/status-page2.json"
 fixture stale-posted '[]' "[$(review reviewbot "$receipt")]" "$(status pending 1 "attempt:$attempt queued")"
 sed -i "s/\"updatedAt\":\"$now\"/\"updatedAt\":\"2000-01-01T00:00:00Z\"/" "$FIXTURES/o_stale-posted/prs.json"
+fixture stale-head-old-coverage '[]' "[$(review reviewbot "$(marker "$SHA" broad)")]"
+sed -i "s/\"headRefOid\":\"$SHA\"/\"headRefOid\":\"$OTHER\"/; s/\"updatedAt\":\"$now\"/\"updatedAt\":\"2000-01-01T00:00:00Z\"/" "$FIXTURES/o_stale-head-old-coverage/prs.json"
 
 # Actions runs of pr-review.yml still queued or in progress, named by run-name.
 printf '[{"status":"queued","displayTitle":"review o/running#1 @ %s"},{"status":"in_progress","displayTitle":"review o/running-other-pr#2 @ %s"},{"status":"completed","displayTitle":"review o/died-running#1 @ %s"}]\n' "$SHA" "$SHA" "$SHA" > "$FIXTURES/runs.json"
@@ -165,6 +170,7 @@ expect=(
   "legacy-newer:"
   "page2-error:"
   "stale-posted:"
+  "stale-head-old-coverage:diff"
 )
 
 fail=0
@@ -289,6 +295,31 @@ for e in identity-unchanged: retarget-changed:broad retarget-same-diff: changed-
   if [ "$got" = "$want" ]; then echo "ok   $name"; else echo "FAIL $name: want '$want', got '$got'"; fail=1; fi
 done
 if [ -n "$identity" ]; then echo "ok   dispatch includes reviewed identity"; else echo "FAIL dispatch omits reviewed identity"; fail=1; fi
+
+# The status claim must precede the dispatch so an eager worker sees its owner.
+: > "$FIXTURES/calls.log"
+PATH="$work/bin:$PATH" REPOS="o/fresh" SELF=o/self GH_TOKEN=x SELF_TOKEN=x bash "$SCAN" >"$work/order.out" 2>&1
+dispatch_line=$(grep -n '^workflow run ' "$FIXTURES/calls.log" | cut -d: -f1 || true)
+pending_line=$(grep -n 'api -X POST repos/o/fresh/statuses/' "$FIXTURES/calls.log" | cut -d: -f1 || true)
+if [ -n "$dispatch_line" ] && [ -n "$pending_line" ] && [ "$pending_line" -lt "$dispatch_line" ]; then
+  echo "ok   pending ownership is established before dispatch"
+else
+  echo "FAIL pending ownership is established before dispatch"; fail=1
+fi
+
+# A failed status claim must not launch a worker that will reject its own dispatch.
+: > "$FIXTURES/calls.log"
+if PATH="$work/bin:$PATH" REPOS="o/fresh" SELF=o/self GH_TOKEN=x SELF_TOKEN=x STATUS_POST_FAIL=1 bash "$SCAN" >"$work/status-post-fails.out" 2>&1; then
+  if grep -q '^workflow run ' "$FIXTURES/calls.log"; then echo "FAIL status failure still dispatched a worker"; fail=1
+  else echo "ok   status failure prevents worker dispatch"; fi
+else
+  echo "FAIL status failure should defer dispatch without failing the poll"; fail=1
+fi
+
+# A dispatch failure after the status claim settles that exact attempt to error.
+: > "$FIXTURES/calls.log"
+PATH="$work/bin:$PATH" REPOS="o/fresh" SELF=o/self GH_TOKEN=x SELF_TOKEN=x WORKFLOW_FAIL=1 bash "$SCAN" >"$work/workflow-fails.out" 2>&1 || true
+if grep -q 'state=error' "$FIXTURES/calls.log"; then echo "ok   failed dispatch settles its claimed status"; else echo "FAIL failed dispatch leaves a pending status"; fail=1; fi
 
 
 # Only matching input identities suppress errors or active runs.

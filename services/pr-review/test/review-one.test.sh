@@ -85,6 +85,8 @@ case "$*" in
   "api repos/"*"/commits/"*"/statuses?per_page=100")
     if { [ -e "$LOG.args" ] && [ -n "${NEWER_ATTEMPT:-}" ]; } || [ -n "${NEWER_BEFORE_PENDING:-}" ]; then
       out '[{"context":"concord/review (#1)","state":"pending","description":"attempt:123e4567-e89b-42d3-a456-426614174099 identity:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff queued broad","created_at":"2026-10-08T00:00:00Z"}]'
+    elif [ -n "${PREEXISTING_TERMINAL:-}" ]; then
+      out '[{"context":"concord/review (#1)","state":"success","description":"attempt:123e4567-e89b-42d3-a456-426614174099 identity:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff posted","created_at":"2026-10-08T00:00:00Z"}]'
     elif [ -e "$LOG.latest-status" ]; then out "$(cat "$LOG.latest-status")"; else out '[]'; fi ;;
   *"/statuses/"*)
     all="$*"; state=${all#*state=}; state=${state%% *}
@@ -259,5 +261,8 @@ export MODE_OVERRIDE=diff
 run diff-pass '{"decision":"review-only","round":1,"findings":[]}'
 unset MODE_OVERRIDE
 check "a diff pass records identity without running intent gates" '[ -e "$LOG.review" ] && grep -q -- "--no-broad" "$LOG.args" && [ ! -e "$LOG.intent" ]'
+
+PREEXISTING_TERMINAL=1 ATTEMPT_ID_OVERRIDE='' run direct-manual-retry '{"decision":"review-only","round":1,"findings":[]}'
+check "a direct manual retry can claim a completed review status" '[ -e "$LOG.review" ] && [ "$(grep ^status "$LOG" | head -1)" = "status pending" ]'
 
 exit "$fail"

@@ -123,7 +123,6 @@ for repo in $REPOS; do
     scope="base:$SNAP_BASE intent:$SNAP_INTENT"
     broad_covered=
     if grep -qE "^<!-- concord-review: [0-9a-f]+ mode:broad $scope( cmd:[0-9]+)? -->$" <<<"$markers"; then broad_covered=1; fi
-    if [ -n "$stale" ] && [ -n "$broad_covered" ]; then continue; fi
 
     # Commands from someone with a role on the repository, newest first. The
     # newest one not yet done runs: done means a marker names it, whether its
@@ -167,12 +166,16 @@ for entry in ${requested[@]+"${requested[@]}"} ${automatic[@]+"${automatic[@]}"}
   echo "dispatch ($mode, $phase, ${reviewer:-default}): $repo#$num @ ${sha:0:8} — $title"
   if [ -z "${DRY_RUN:-}" ]; then
     attempt_id=$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')
-    GH_TOKEN="$SELF_TOKEN" gh workflow run pr-review.yml --repo "$SELF" \
-      -f repo="$repo" -f pr="$num" -f sha="$sha" -f mode="$mode" -f cmd_id="$cmd_id" -f reviewer="$reviewer" -f attempt_id="$attempt_id" -f identity="$identity"
-    # Pending from the moment it is dispatched, so a run still waiting for a
-    # runner is not dispatched again by the next poll.
+    # Claim the status before dispatch so an eagerly-starting worker can verify
+    # ownership. On failure, do not launch a worker that will correctly refuse it.
     gh api -X POST "repos/$repo/statuses/$sha" -f "context=concord/review (#$num)" \
-      -f state=pending -f "description=attempt:$attempt_id identity:$identity queued $mode" >/dev/null || true
+      -f state=pending -f "description=attempt:$attempt_id identity:$identity queued $mode" >/dev/null || continue
+    if ! GH_TOKEN="$SELF_TOKEN" gh workflow run pr-review.yml --repo "$SELF" \
+      -f repo="$repo" -f pr="$num" -f sha="$sha" -f mode="$mode" -f cmd_id="$cmd_id" -f reviewer="$reviewer" -f attempt_id="$attempt_id" -f identity="$identity"; then
+      gh api -X POST "repos/$repo/statuses/$sha" -f "context=concord/review (#$num)" \
+        -f state=error -f "description=attempt:$attempt_id identity:$identity dispatch failed" >/dev/null 2>&1 || true
+      continue
+    fi
   fi
   started=$((started + 1))
 done

@@ -25,6 +25,8 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 # shellcheck source=services/pr-review/identity.sh
 source "$ROOT/services/pr-review/identity.sh"
 EXPECTED_ID="${IDENTITY:-}"
+DIRECT_ATTEMPT=
+if [ -z "${ATTEMPT_ID:-}" ]; then DIRECT_ATTEMPT=1; fi
 if [ -n "$EXPECTED_ID" ] && [[ ! "$EXPECTED_ID" =~ ^[0-9a-f]{64}$ ]]; then
   echo "IDENTITY must be a SHA-256 hash" >&2; exit 1
 fi
@@ -60,6 +62,10 @@ status() {
       # Refuse to overwrite a replacement or a status whose owner is unknown.
       case "$ownership" in
         0|3) ;;
+        2)
+          if [ -n "$DIRECT_ATTEMPT" ] && review_status_terminal "$REPO" "$PR" "$SHA"; then :
+          else superseded=1; return 0
+          fi ;;
         *) superseded=1; return 0 ;;
       esac
     else

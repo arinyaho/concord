@@ -58,3 +58,10 @@ review_owns_status() {
   [[ "$description" == attempt:* ]] || return 1
   if [[ "$description" == "attempt:$4 "* ]]; then return 0; else return 2; fi
 }
+
+review_status_terminal() {
+  local latest state
+  latest=$(review_latest_status "$1" "$2" "$3") || return 1
+  state=$(jq -r '.state // ""' <<< "$latest") || return 1
+  [[ "$state" == success || "$state" == error ]]
+}
