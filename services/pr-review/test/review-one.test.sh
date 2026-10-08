@@ -68,7 +68,9 @@ case "$*" in
     context=${all#*context=}; echo "${context%% -f *}" >> "$LOG.contexts"
     description=${all#*description=}; echo "${description%% -f *}" >> "$LOG.descriptions"
     echo "status $state" >> "$LOG" ;;
-  *"/issues/1/comments -f body="*) all="$*"; printf '%s\n' "${all#*body=}" > "$LOG.comment"; echo comment >> "$LOG" ;;
+  *"/issues/1/comments -f body="*)
+    if [ -n "${FAIL_FAILURE_MARKER:-}" ]; then echo "marker unavailable" >> "$LOG"; exit 1; fi
+    all="$*"; printf '%s\n' "${all#*body=}" > "$LOG.comment"; echo comment >> "$LOG" ;;
   *"/pulls/1/reviews --input -") cat > "$LOG.review"; echo review >> "$LOG" ;;
   *"content=+1"*) echo "+1" >> "$LOG" ;;
   *"content=eyes"*) echo 1 ;;
@@ -185,6 +187,13 @@ check "every status uses the pull request's own context" '[ -s "$LOG.contexts" ]
 
 CMD_ID=42 run requested-fails '{"decision":"review-only","round":1,"findings":[{"id":"correctness:x","category":"correctness","file":"a.txt","line":1,"span":"change","summary":"model-token-secret","requirement":""}]}'
 check "a failed requested review leaves a marker naming the command" '[ "$(head -1 "$LOG.comment")" = "<!-- concord-review-failed: $SHA cmd:42 -->" ]'
+
+FAIL_FAILURE_MARKER=1 CMD_ID=43 run requested-fails-marker-unavailable '{"decision":"review-only","round":1,"findings":[{"id":"correctness:x","category":"correctness","file":"a.txt","line":1,"span":"change","summary":"model-token-secret","requirement":""}]}'
+check "failed requested worker exits without a command marker" '[ -s "$LOG.exit" ] && [ ! -e "$LOG.comment" ] && grep -q "marker unavailable" "$LOG"'
+
+FAIL_FINAL_STATUS=1 run automatic-fails-status-unavailable '{"decision":"review-only","round":1,"findings":[{"id":"correctness:x","category":"correctness","file":"a.txt","line":1,"span":"change","summary":"model-token-secret","requirement":""}]}'
+check "failed automatic worker exhausts three error status writes" '[ -s "$LOG.exit" ] && [ "$(grep -c "final status unavailable" "$LOG")" -eq 3 ] && [ ! -e "$LOG.review" ]'
+
 
 REVIEW_REPOS="o/other" run outside-repos '{"decision":"review-only","round":1,"findings":[]}'
 check "a repository outside REVIEW_REPOS is not touched" '[ ! -s "$LOG" ] && [ ! -e "$LOG.args" ]'
