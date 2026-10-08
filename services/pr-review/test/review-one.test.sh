@@ -51,13 +51,16 @@ case "$*" in
       *) refs='{"closingIssuesReferences":[{"number":5,"repository":{"name":"private","owner":{"login":"other"}}}]}' ;;
     esac
     current_sha=$SHA
+    if [ -n "${ADVANCE_BEFORE_REVIEW:-}" ]; then current_sha=bbbbbbbb2222; fi
     if [ -e "$LOG.args" ] && [ -n "${ADVANCE_HEAD:-}" ]; then current_sha=bbbbbbbb2222; fi
-    jq --arg sha "$current_sha" --arg base "$BASE_SHA" '. + {headRefOid:$sha,baseRefOid:$base,baseRefName:"main",title:"Add a",body:"The PR body says a.txt must exist."}' <<< "$refs" ;;
+    body='The PR body says a.txt must exist.'
+    if [ -e "$LOG.args" ] && [ -n "${CHANGE_INTENT:-}" ]; then body='new requirements'; fi
+    jq --arg body "$body" --arg sha "$current_sha" --arg base "$BASE_SHA" '. + {headRefOid:$sha,baseRefOid:$base,baseRefName:"main",title:"Add a",body:$body}' <<< "$refs" ;;
   "api repos/"*"/compare/"*) out "{\"merge_base_commit\":{\"sha\":\"$BASE_SHA\"}}" ;;
   *"--json headRefOid"*)
     echo head-lookup >> "$LOG"
     if [ -e "$LOG.args" ] && [ -n "${HEAD_LOOKUP_FAIL:-}" ]; then exit 1; fi
-    if [ -e "$LOG.args" ] && [ -n "${ADVANCE_HEAD:-}" ]; then out '{"headRefOid":"bbbbbbbb2222"}'; else out "{\"headRefOid\":\"$SHA\"}"; fi ;;
+    if { [ -e "$LOG.args" ] && [ -n "${ADVANCE_HEAD:-}" ]; } || [ -e "$LOG.inline-failed" ]; then out '{"headRefOid":"bbbbbbbb2222"}'; else out "{\"headRefOid\":\"$SHA\"}"; fi ;;
   *"--json baseRefName"*) out '{"baseRefName":"main"}' ;;
   *"--json title,body"*) out '{"title":"Add a","body":"The PR body says a.txt must exist."}' ;;
   *"--json closingIssuesReferences"*)
@@ -86,7 +89,9 @@ case "$*" in
     description=${all#*description=}; echo "${description%% -f *}" >> "$LOG.descriptions"
     echo "status $state" >> "$LOG" ;;
   *"/issues/1/comments -f body="*) all="$*"; printf '%s\n' "${all#*body=}" > "$LOG.comment"; echo comment >> "$LOG" ;;
-  *"/pulls/1/reviews --input -") cat > "$LOG.review"; echo review >> "$LOG" ;;
+  *"/pulls/1/reviews --input -")
+    if [ -n "${ADVANCE_ON_FALLBACK:-}" ] && [ ! -e "$LOG.inline-failed" ]; then cat >/dev/null; touch "$LOG.inline-failed"; exit 1; fi
+    cat > "$LOG.review"; echo review >> "$LOG" ;;
   "api -X DELETE "*"/reactions/1") echo clear-eyes >> "$LOG" ;;
   *"content=+1"*) echo "+1" >> "$LOG" ;;
   *"content=eyes"*) echo 1 ;;
@@ -111,6 +116,7 @@ while [ $# -gt 0 ]; do
   fi
   shift
 done
+if [ -n "${CANCEL_REVIEW:-}" ]; then kill -TERM "$PPID"; fi
 printf '%s\n' "$ENGINE_RESULT"
 EOF
 chmod +x "$work/bin/gh" "$work/bin/node"
@@ -216,5 +222,14 @@ HEAD_LOOKUP_FAIL=1 run failed-head-lookup '{"decision":"review-only","round":1,"
 check "a failed final head lookup posts no review or thumbs-up" '[ ! -e "$LOG.review" ] && ! grep -qx "+1" "$LOG"'
 check "a failed head lookup cleans up and leaves error" 'grep -qx clear-eyes "$LOG" && [ "$(grep ^status "$LOG" | tail -1)" = "status error" ]'
 check "the head is checked after the engine runs" 'grep -qx head-lookup "$LOG"'
+
+CHANGE_INTENT=1 run changed-intent '{"decision":"review-only","round":1,"findings":[]}'
+check "changed intent at the same head prevents stale publication" '[ ! -e "$LOG.review" ] && ! grep -qx "+1" "$LOG"'
+ADVANCE_BEFORE_REVIEW=1 run already-superseded '{"decision":"review-only","round":1,"findings":[]}'
+check "an already-superseded dispatch runs no engine" '[ ! -e "$LOG.args" ] && [ ! -e "$LOG.review" ]'
+ADVANCE_ON_FALLBACK=1 run advanced-on-fallback '{"decision":"review-only","round":1,"findings":[]}'
+check "a fallback POST rechecks the head" '[ -e "$LOG.inline-failed" ] && [ ! -e "$LOG.review" ] && ! grep -qx "+1" "$LOG"'
+CANCEL_REVIEW=1 CMD_ID=44 run canceled-request '{"decision":"review-only","round":1,"findings":[]}'
+check "cancellation does not consume a requested command" '[ ! -e "$LOG.comment" ] && [ ! -e "$LOG.review" ]'
 
 exit "$fail"
