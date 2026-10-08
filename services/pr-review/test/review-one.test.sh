@@ -46,6 +46,8 @@ case "$*" in
   *"--json closingIssuesReferences"*)
     if [ "${ISSUE_REF:-foreign}" = large ]; then
       jq -r "$jq_expr" "$ISSUE_CASE_DIR/refs.json"
+    elif [ "${ISSUE_REF:-}" = case-mismatch ]; then
+      out '{"closingIssuesReferences":[{"number":6,"repository":{"name":"R","owner":{"login":"O"}}}]}'
     elif [ "${ISSUE_REF:-foreign}" = local ] || [ "${ISSUE_REF:-foreign}" = unreadable ]; then
       out '{"closingIssuesReferences":[{"number":6,"repository":{"name":"r","owner":{"login":"o"}}}]}'
     else
@@ -133,6 +135,11 @@ ISSUE_REF=local run same-repo-issue '{"decision":"review-only","round":1,"findin
 check "same-repo issue is fetched" 'grep -q "issue view 6 --repo o/r" "$LOG.issue-views"'
 check "same-repo issue body reaches intent" 'grep -q "LOCAL_BODY_SENTINEL" "$LOG.intent"'
 
+ISSUE_REF=case-mismatch run same-repo-case-mismatch '{"decision":"review-only","round":1,"findings":[]}'
+check "case-mismatched same-repo issue is fetched using configured spelling" 'grep -q "issue view 6 --repo o/r" "$LOG.issue-views"'
+check "case-mismatched same-repo issue body reaches intent" 'grep -q "LOCAL_BODY_SENTINEL" "$LOG.intent"'
+check "foreign issue bodies remain excluded after case-insensitive matching" '! grep -q "FOREIGN_BODY_SENTINEL" "$LOG.intent"'
+
 ISSUE_REF=unreadable run unreadable-same-repo-issue '{"decision":"review-only","round":1,"findings":[]}'
 check "an unreadable same-repo issue is fetched" 'grep -q "issue view 6 --repo o/r" "$LOG.issue-views"'
 check "an unreadable same-repo issue is named without failing review" 'grep -q "o/r#6 (not readable" "$LOG.intent" && grep -qx review "$LOG"'
@@ -197,5 +204,47 @@ check "failed automatic worker exhausts three error status writes" '[ -s "$LOG.e
 
 REVIEW_REPOS="o/other" run outside-repos '{"decision":"review-only","round":1,"findings":[]}'
 check "a repository outside REVIEW_REPOS is not touched" '[ ! -s "$LOG" ] && [ ! -e "$LOG.args" ]'
+
+# Thousands of disjoint hunks exceed Linux's per-argument limit when serialized
+# into one jq --argjson argument. The poster must carry the metadata by file.
+large_repo="$work/upstream-large"
+git init -q -b main "$large_repo"
+python3 - "$large_repo/large.txt" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+path.write_text("".join(f"line {n:06d} original\n" for n in range(1, 64_001)))
+PY
+git -C "$large_repo" add large.txt
+git -C "$large_repo" -c user.email=t@t -c user.name=t commit -q -m base
+python3 - "$large_repo/large.txt" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+lines = path.read_text().splitlines()
+for n in range(3, len(lines), 8):
+    lines[n] = lines[n].replace("original", "changed")
+path.write_text("\n".join(lines) + "\n")
+PY
+printf 'do-not-overwrite\n' > "$work/hunks-target.json"
+ln -s "$work/hunks-target.json" "$large_repo/hunks.json"
+git -C "$large_repo" checkout -q -b feature
+git -C "$large_repo" add large.txt hunks.json
+git -C "$large_repo" -c user.email=t@t -c user.name=t commit -q -m "many disjoint hunks"
+large_sha=$(git -C "$large_repo" rev-parse HEAD)
+git -C "$large_repo" update-ref refs/pull/1/head "$large_sha"
+git -C "$large_repo" checkout -q main
+hunk_bytes=$(git -C "$large_repo" diff -U3 main feature | awk '
+  /^\+\+\+ b\// { file = substr($0, 7) }
+  /^@@ / { split($3, a, ","); start = substr(a[1], 2); len = (a[2] == "" ? 1 : a[2])
+           if (len > 0) printf "%s\t%d\t%d\n", file, start, start + len - 1 }' |
+  jq -R -s 'split("\n") | map(select(length > 0) | split("\t") | {file: .[0], from: (.[1] | tonumber), to: (.[2] | tonumber)})' | wc -c | tr -d ' ')
+LOG="$work/large-hunks.log"; : > "$LOG"
+PATH="$work/bin:$PATH" UPSTREAM="$large_repo" ENGINE_RESULT='{"decision":"review-only","round":1,"findings":[{"id":"correctness:large","category":"correctness","file":"large.txt","line":4,"span":"changed","summary":"large diff remains publishable","requirement":""}]}' \
+  REPO=o/r PR=1 SHA="$large_sha" MODE=broad GH_TOKEN=review-pat-secret CLAUDE_CODE_OAUTH_TOKEN=model-token-secret \
+  REVIEW_REPOS=o/r ATTEMPT_ID=123e4567-e89b-42d3-a456-426614174000 bash "$SCRIPT" >"$LOG.out" 2>&1 || echo $? > "$LOG.exit"
+if [ "$hunk_bytes" -gt 131072 ]; then echo "ok   large hunk fixture exceeds the Linux per-argument limit ($hunk_bytes bytes)"
+else echo "FAIL large hunk fixture is only $hunk_bytes bytes"; fail=1; fi
+check "large hunk metadata still posts the review" 'grep -qx review "$LOG"'
+check "large hunk metadata still posts an inline finding" 'jq -e ".comments | length == 1" "$LOG.review" >/dev/null'
+check "checkout hunk symlink cannot overwrite the runner file" 'grep -qx do-not-overwrite "$work/hunks-target.json"'
 
 exit "$fail"
