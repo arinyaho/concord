@@ -976,6 +976,11 @@ async function runRounds(options) {
       const ownOutput = roleArtifacts.get(input.artifactRole || input.role) || null;
       checkProtected(false, ownOutput);
       if (!input.preReserved) await reserve(input.reservationRole || (input.role === 'gate' ? 'gate-review' : input.role));
+      if (input.role === 'plan' && started.planRetry && started.planRetry.state !== 'accepted' && input.operation !== 'artifact-repair') {
+        await cli(['plan-dispatch', ref]);
+        checkProtected(true, ownOutput);
+        refreshLedger();
+      }
       const artifactPath = artifactDestinationFromPrompt(input.prompt, input.stateDir);
       const isFix = input.role === 'fix';
       const provider = isFix ? fixer : reviewer;

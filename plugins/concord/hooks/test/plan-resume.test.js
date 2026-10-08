@@ -12,7 +12,7 @@ const { runPath } = require('../../core/initiative-review-run');
 
 const ref = 'feature/plan-resume';
 const ids = ['correctness:first', 'correctness:second'];
-function fixture({ maxLaunches = 12, incompleteReplacement = false, acceptedInitially = false, repairInitialPlan = false, replacementError = null, cliCopy = 'core', broadIntent = false, keyed = true } = {}) {
+function fixture({ maxLaunches = 12, incompleteReplacement = false, acceptedInitially = false, repairInitialPlan = false, replacementError = null, cliCopy = 'core', broadIntent = false, keyed = true, failReplacement = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-resume-'));
   const repo = path.join(root, 'repo');
   const stateDir = path.join(root, 'review');
@@ -54,6 +54,7 @@ function fixture({ maxLaunches = 12, incompleteReplacement = false, acceptedInit
       fs.writeFileSync(path.join(input.repoRoot, 'candidate.json'), JSON.stringify(artifact));
       return { status: 0 };
     }
+    if (failReplacement && input.role === 'plan' && launches.filter((role) => role === 'plan').length === 2) return { status: 1 };
     if (input.role === 'fix') return { status: 1 }; // Halt after the real CLI authorizes the exact group; never edit the fixture.
     const destination = artifactDestinationFromPrompt(input.prompt, input.stateDir);
     let artifact;
@@ -335,3 +336,74 @@ test('preparing replacement repair preserves unrelated retry accounting and sema
   assert.throws(() => h.runCli(['artifact-normalize', ref, 'plan', '--candidate', result.repair.candidatePath]), /does not preserve/);
   assert.equal(JSON.parse(fs.readFileSync(path.join(h.stateDir, 'round-1-plan.json'))).status, 'OK');
 });
+
+
+async function interruptPendingPlan(h) {
+  const runCli = (args) => {
+    if (args[0] === 'plan-fixes') throw new Error('test interruption before semantic acceptance');
+    return h.runCli(args);
+  };
+  await assert.rejects(runReviewUntilGreen({ ...h.options, runCli }), /test interruption/);
+}
+
+for (const keyed of [true, false]) {
+  test(`failed replacement subprocess consumes the one semantic planner launch (keyed=${keyed})`, async (t) => {
+    const h = fixture({ keyed, failReplacement: true });
+    t.after(() => fs.rmSync(h.root, { recursive: true, force: true }));
+    await assert.rejects(runReviewUntilGreen(h.options), /classification is incomplete/);
+    const before = sealed(h);
+    await assert.rejects(h.resume(), /plan.*(?:exit|failed)|(?:exit|failed).*plan/);
+    assert.deepEqual(h.launches, ['correctness', 'verify', 'plan', 'plan']);
+    await assert.rejects(h.resume(), /(?:exhausted|incomplete|failed)/);
+    assert.deepEqual(h.launches, ['correctness', 'verify', 'plan', 'plan']);
+    assert.deepEqual(sealed(h), before);
+    assert.equal(h.ledger().round, 1);
+    if (keyed) assert.equal(h.initiative().launches.filter((launch) => launch.role === 'plan').length, 2);
+  });
+}
+
+for (const invalidation of ['missing', 'hash-invalid', 'missing-after-repair']) {
+  test(`pending normalized planner reruns after ${invalidation} intent detector evidence`, async (t) => {
+    const h = fixture({ acceptedInitially: true, broadIntent: true, repairInitialPlan: invalidation === 'missing-after-repair' });
+    t.after(() => fs.rmSync(h.root, { recursive: true, force: true }));
+    await interruptPendingPlan(h);
+    const initialRoles = [...h.launches];
+    const before = sealed(h);
+    delete before.intent;
+    const intentPath = path.join(h.stateDir, 'round-1-intent.json');
+    if (invalidation.startsWith('missing')) fs.unlinkSync(intentPath);
+    else fs.appendFileSync(intentPath, '\n');
+    await assert.rejects(h.resume(), /fix.*(?:exit|failed)|(?:exit|failed).*fix/);
+    assert.deepEqual(h.launches, [...initialRoles, 'intent', 'plan', 'fix']);
+    const after = sealed(h);
+    delete after.intent;
+    assert.deepEqual(after, before);
+    assert.equal(h.ledger().round, 1);
+    assert.equal(h.initiative().rounds.length, 1);
+    assert.equal(h.initiative().launches.filter((launch) => launch.role === 'plan').length, invalidation === 'missing-after-repair' ? 3 : 2);
+    assert.equal(h.initiative().launches.filter((launch) => launch.role === 'intent').length, 2);
+  });
+}
+
+for (const legacy of [false, true]) {
+  test(`plan-fixes rejects changed ${legacy ? 'legacy completed' : 'pending normalized'} bytes without resealing`, async (t) => {
+    const h = fixture({ acceptedInitially: true });
+    t.after(() => fs.rmSync(h.root, { recursive: true, force: true }));
+    await interruptPendingPlan(h);
+    if (legacy) {
+      const stored = h.ledger();
+      stored.execution.completed = [...stored.execution.completed, 'plan'];
+      delete stored.execution.normalizedPlan;
+      fs.writeFileSync(ledgerPath(h.stateDir, targetSlug(ref)), JSON.stringify(stored));
+    }
+    const originalHash = h.ledger().execution.artifactHashes.plan;
+    const originalLaunches = h.initiative().launches;
+    fs.appendFileSync(path.join(h.stateDir, 'round-1-plan.json'), '\n');
+    const flags = h.calls.find((args) => args[0] === 'artifact-normalize' && args[2] === 'plan').slice(3);
+    assert.throws(() => h.runCli(['plan-fixes', ref, ...flags]), /hash|changed|sealed|normalized/i);
+    assert.equal(h.ledger().execution.artifactHashes.plan, originalHash);
+    assert.deepEqual(h.initiative().launches, originalLaunches);
+    assert.deepEqual(h.launches, ['correctness', 'verify', 'plan']);
+    assert.equal(h.plans.length, 0);
+  });
+}

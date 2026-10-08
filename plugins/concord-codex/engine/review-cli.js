@@ -537,7 +537,7 @@ function firstRetryArtifact(retries) {
 const INITIATIVE_FLAGS = [['--initiative-run-key', 'key'], ['--initiative-id', 'initiativeId'], ['--initiative-state-dir', 'stateDir'], ['--initiative-max-launches', 'maxLaunches'], ['--initiative-max-rounds', 'maxRounds']];
 const MODE_FLAG = '--initiative-mode';
 const RUN_VERBS = new Set(['finalise', 'consume', 'escalate', 'session-checkpoint']);
-const CLI_VERBS = ['show', 'round-start', 'telemetry-slot', 'findings', 'plan-fixes', 'commit-fix', 'record', 'round-failure', 'gate-panel-round-start', 'gate-panel-round-record', 'unpark', 'dismiss', 'reset', 'rerun', 'artifact-normalize', 'reserve', 'carry', 'finalise', 'consume', 'escalate', 'session-checkpoint', 'feedback'];
+const CLI_VERBS = ['show', 'round-start', 'telemetry-slot', 'findings', 'plan-fixes', 'plan-dispatch', 'commit-fix', 'record', 'round-failure', 'gate-panel-round-start', 'gate-panel-round-record', 'unpark', 'dismiss', 'reset', 'rerun', 'artifact-normalize', 'reserve', 'carry', 'finalise', 'consume', 'escalate', 'session-checkpoint', 'feedback'];
 const RESERVE_ROLES = ['correctness', 'verify', 'plan', 'intent', 'gate-review', 'gate-verify', 'fix', 'certify', 'lens', 'vote'];
 const ARTIFACT_RESERVE_ROLE = { correctness: 'correctness', verify: 'verify', plan: 'plan', intent: 'intent', gate: 'gate-review', 'gate-verify': 'gate-verify' };
 
@@ -1455,6 +1455,21 @@ function runVerb(resolveFromCwd, args, initiative) {
     return;
   }
 
+  if (verb === 'plan-dispatch') {
+    requireRef(ref, 'plan-dispatch');
+    const slug = targetSlug(ref);
+    const ledger = readLedger(stateDir, slug);
+    if (!ledger || ledger.phase !== 'gates') throw new Error('plan-dispatch: no active planning work');
+    const retry = ledger.execution?.planRetry;
+    if (retry && retry.state !== 'accepted') {
+      if (retry.launched || retry.state === 'exhausted') throw new Error(`harness-failure: planner retry exhausted for this round; ${retry.message}`);
+      requireReservations(run, ledger, [{ role: 'plan', present: 1 }], 'plan-dispatch');
+      writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, planRetry: { ...retry, launched: true } } });
+    }
+    process.stdout.write(JSON.stringify({ status: 'granted' }) + '\n');
+    return;
+  }
+
   if (verb === 'round-failure') {
     requireRef(ref, 'round-failure');
     const slug = targetSlug(ref);
@@ -1465,7 +1480,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (!failure || typeof failure.role !== 'string' || typeof failure.kind !== 'string' || typeof failure.message !== 'string') throw new Error('round-failure: failure requires role, kind, and message strings');
     const execution = ledger.execution || { round: ledger.round, completed: [], pending: [] };
     const entry = { role: failure.role, kind: failure.kind, message: failure.message, ...(failure.exitCode !== undefined ? { exitCode: failure.exitCode } : {}), ...(failure.signal ? { signal: failure.signal } : {}), at: new Date().toISOString() };
-    const failed = { ...ledger, execution: { ...execution, failures: [...(execution.failures || []), entry].slice(-5), failure: entry } };
+    const failed = { ...ledger, execution: { ...execution, ...(failure.role === 'plan' && execution.planRetry?.launched ? { planRetry: { ...execution.planRetry, state: 'exhausted', message: `planner retry exhausted for this round; ${failure.message}` } } : {}), failures: [...(execution.failures || []), entry].slice(-5), failure: entry } };
     writeLedger(stateDir, slug, run && ARTIFACT_RESERVE_ROLE[failure.role] ? withSupersededLaunch(failed, ARTIFACT_RESERVE_ROLE[failure.role], ledger.round) : failed);
     process.stdout.write(JSON.stringify({ status: 'recorded', round: ledger.round, retryable: true }) + '\n');
     return;
@@ -1870,7 +1885,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       // every bound input/output record so resume can verify it or fail closed.
       for (const role of preserveScope ? artifactContract.ARTIFACT_ROLES : []) {
         // A semantic replacement must not consume the rejected attempt's repair.
-        if (role === 'plan' && ledger.execution?.planRetry?.discardRepair) continue;
+        if (role === 'plan' && (ledger.execution?.planRetry?.discardRepair || (ledger.intentHash && !preserved.has(`round-${resumeRound}-intent.json`)))) continue;
         const repairName = `round-${resumeRound}-${role}.repair.json`;
         const repairFile = path.join(stateDir, repairName);
         if (!fs.existsSync(repairFile)) continue;
@@ -1895,8 +1910,18 @@ function runVerb(resolveFromCwd, args, initiative) {
           if (!preserved.has(`round-${resumeRound}-${producer}.json`)) preserved.delete(`round-${resumeRound}-${verifier}.json`);
         }
       }
+      // A plan depends on the unchanged round intent detector, as well as verify.
+      if (ledger.intentHash && !preserved.has(`round-${resumeRound}-intent.json`)) {
+        if (run && completed.includes('intent')) ledger = withSupersededLaunch(ledger, 'intent', resumeRound);
+        if (run && (preserved.has(`round-${resumeRound}-plan.json`) || preserved.has(`round-${resumeRound}-plan.repair.json`))) ledger = withSupersededLaunch(ledger, 'plan', resumeRound);
+        for (const name of [...preserved]) if (name.startsWith(`round-${resumeRound}-plan.`)) preserved.delete(name);
+      }
       if (!preserved.has(`round-${resumeRound}-verify.json`)) preserved.delete(`round-${resumeRound}-plan.json`);
       if (!preserved.has(`round-${resumeRound}-plan.json`)) resumedNormalizedPlan = null;
+      if (preserveArtifacts && ledger.execution.planRetry?.launched && !resumedNormalizedPlan
+        && !preserved.has(`round-${resumeRound}-plan.json`) && !preserved.has(`round-${resumeRound}-plan.repair.json`)) {
+        throw new Error(`harness-failure: planner retry exhausted for this round; ${ledger.execution.planRetry.message}`);
+      }
       resumedCompletedArtifacts = completed.filter((role) => preserved.has(`round-${resumeRound}-${role}.json`));
       deleteRoundArtifacts(stateDir, resumeRound, preserved);
       // Resume re-drives round N at zero budget by pinning round/diff_content_hash
@@ -2107,7 +2132,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // The three fields are mutually descriptive: pending is the normal configured
     // gate waiting for convergence, deferred means no gate will run, and passed is
     // retained for file/no-op compatibility. Callers must not infer one from another.
-    process.stdout.write(JSON.stringify({ decision: 'work', mode: run ? runMode(run) : undefined, gateMode: lite ? 'design-conformance' : 'pair', ref: targetUpdate.ref, base: targetUpdate.base, head: targetUpdate.head_sha, attemptId: ledger.attemptId, round: ledger.round, budget: ledger.budget, dodPassed: dod.deferredBy === 'pending-final' ? false : dod.passed, dodDeferred: !!dod.deferred && dod.deferredBy !== 'pending-final', dodPending: dod.deferredBy === 'pending-final', intentApplied: !!intentCfg, intentHash: ledger.intentHash || null, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir, completedArtifacts, normalizedArtifacts, retryArtifacts, retryArtifact, repairArtifacts }) + '\n');
+    process.stdout.write(JSON.stringify({ decision: 'work', mode: run ? runMode(run) : undefined, gateMode: lite ? 'design-conformance' : 'pair', ref: targetUpdate.ref, base: targetUpdate.base, head: targetUpdate.head_sha, attemptId: ledger.attemptId, round: ledger.round, budget: ledger.budget, dodPassed: dod.deferredBy === 'pending-final' ? false : dod.passed, dodDeferred: !!dod.deferred && dod.deferredBy !== 'pending-final', dodPending: dod.deferredBy === 'pending-final', intentApplied: !!intentCfg, intentHash: ledger.intentHash || null, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir, completedArtifacts, normalizedArtifacts, planRetry: ledger.execution?.planRetry || null, retryArtifacts, retryArtifact, repairArtifacts }) + '\n');
     return;
   }
 
@@ -2448,10 +2473,14 @@ function runVerb(resolveFromCwd, args, initiative) {
     const fixById = new Map(fixes.map((finding) => [finding.id, finding]));
     const groupedIds = new Set();
     let planArtifact = { status: 'ok', protocolVersion: 2, groups: [] };
+    let consumedPlanHash = ledger.execution?.normalizedPlan || ledger.execution?.artifactHashes?.plan;
     if (fixes.length) {
       let rawPlan;
       try { rawPlan = fs.readFileSync(path.join(stateDir, `round-${n}-plan.json`), 'utf8'); }
       catch (_) { throw new Error('harness-failure: v2 classification plan is required before editing; legacy or unclassified findings cannot authorize fixes'); }
+      const seal = ledger.execution?.normalizedPlan || ((ledger.execution?.completed || []).includes('plan') ? ledger.execution.artifactHashes?.plan : null);
+      consumedPlanHash = contentHash(rawPlan);
+      if (seal && consumedPlanHash !== seal) throw new Error('harness-failure: sealed plan hash changed before acceptance');
       try { planArtifact = artifactContract.normalizeArtifact('plan', rawPlan); }
       catch (error) { throw new Error(`harness-failure: invalid v2 classification plan: ${error.message}`); }
       requireArtifactAfter(stateDir, n, 'verify', 'plan');
@@ -2472,7 +2501,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     const unclassified = fixes.filter((finding) => !groupedIds.has(finding.id)).map((finding) => finding.id);
     if (unclassified.length) {
       const execution = ledger.execution || { round: n, completed: [], pending: [] };
-      const rejectedHash = contentHash(fs.readFileSync(path.join(stateDir, `round-${n}-plan.json`), 'utf8'));
+      const rejectedHash = consumedPlanHash;
       const prior = execution.planRetry;
       // Re-reading the rejected bytes is not another launch or retry attempt.
       if (prior?.rejectedHash === rejectedHash && !execution.normalizedPlan && !(execution.completed || []).includes('plan')) throw new Error(`harness-failure: ${prior.message}`);
@@ -2528,7 +2557,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     const execution = ledger.execution ? { ...ledger.execution,
       completed: Array.from(new Set([...(ledger.execution.completed || []), 'plan'])),
       pending: (ledger.execution.pending || []).filter((role) => role !== 'plan'), normalizedPlan: null,
-      artifactHashes: { ...(ledger.execution.artifactHashes || {}), ...(fs.existsSync(path.join(stateDir, `round-${n}-plan.json`)) ? { plan: contentHash(fs.readFileSync(path.join(stateDir, `round-${n}-plan.json`), 'utf8')) } : {}) },
+      artifactHashes: { ...(ledger.execution.artifactHashes || {}), ...(consumedPlanHash ? { plan: consumedPlanHash } : {}) },
       planRetry: ledger.execution.planRetry ? { ...ledger.execution.planRetry, state: 'accepted', discardRepair: false } : null,
     } : ledger.execution;
     const next = { ...ledger, execution, planned: reconciliation ? [] : fixes.map((f) => f.id), fix_plan: fixPlan, resolved_absent: resolvedAbsent, intent_parked: intentParked, gate_open: gateOpen, reconciliation: reconciliationPacket, reconciliationPacket, phase: 'fixes' };
