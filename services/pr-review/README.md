@@ -7,11 +7,11 @@ Reviews open pull requests in other repositories with Concord's review engine, w
 Every ten minutes `pr-review-poll.yml` runs `scan.sh`, which reads listed open non-draft pull requests to reconcile unfinished status updates, then considers those touched within `REVIEW_STALE_DAYS` days and dispatches one `pr-review.yml` run per pull request that needs a review, requested reviews first, at most `REVIEW_MAX_PER_RUN` per poll. It skips a pull request when:
 
 - the review account has already posted a `<!-- concord-review: <sha> mode:<broad|diff> -->` marker for its head commit;
-- a `pr-review.yml` run for that commit is still queued or running, which the run's name `review <repo>#<pr> @ <sha>` tells;
+- a `pr-review.yml` run for that commit has any status other than `completed`, which the run's name `review <repo>#<pr> @ <sha>` tells;
 - the last review of that commit failed (its `concord/review (#<pr>)` status is `error`): a failed review is not retried on its own, and a new push or an `@concord` command starts the next one;
 - its conversation or its status cannot be read, until the next poll.
 
-A poll that cannot list a repository's pull requests or the active runs fails. The activity cutoff applies to new review dispatches; status reconciliation also considers older open pull requests in the listed set.
+A poll reads every page of the unfiltered `pr-review.yml` run history before deciding what to dispatch, so an older active run cannot be omitted by a fixed result limit. A poll that cannot finish that inventory, or cannot list a repository's pull requests, fails without dispatching. The poll workflow has a 10-minute job limit; a long history can exhaust that budget and defer new dispatches to a later poll. The activity cutoff applies to new review dispatches; status reconciliation also considers older open pull requests in the listed set.
 
 Each review is its own run, keyed on the pull request, so a new push cancels the run still reviewing the commit it replaced. `review-one.sh` reviews only repositories listed in `REVIEW_REPOS`, checks out the dispatched commit, takes the merge base with the pull request's own base branch, and runs `plugins/concord-codex/bin/review-and-fix.js --review-only`: the correctness finder and its verifier, plus the repository-wide gate and gate verifier on a pull request's first review. The engine stops after verification and prints the findings that survived; it edits nothing. The script then posts them as one review, inline where a finding's line is inside a diff hunk and in the review body otherwise.
 

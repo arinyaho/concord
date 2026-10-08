@@ -31,7 +31,19 @@ case "$1 $2" in
   "api user") echo reviewbot ;;
   "pr list") f="$(repo_dir "$4")/prs.json"; [ -f "$f" ] || { echo "HTTP 401" >&2; exit 1; }; out "$f" ;;
   "workflow run"*) ;;
-  "run list") f="$FIXTURES/runs.json"; [ -e "$FIXTURES/runs.fail" ] && { echo "HTTP 502" >&2; exit 1; }; out "$f" ;;
+  "run list") f="$FIXTURES/runs.json"; [ -e "$FIXTURES/runs.fail" ] && { echo "HTTP 502" >&2; exit 1; }
+    # gh run list applies --limit before --jq. The real 200-run window must
+    # hide an active run at position 201 for this fixture to discriminate.
+    if [ -n "$jq_expr" ]; then jq -r "$jq_expr" <(jq '.[0:200]' "$f"); else jq '.[0:200]' "$f"; fi ;;
+  "api repos/o/self/actions/workflows/pr-review.yml/runs?per_page=100")
+    [ -e "$FIXTURES/runs.fail" ] && { echo "HTTP 502" >&2; exit 1; }
+    for page in 1 2 3; do
+      [ "$page" -eq 1 ] || [ -n "$paginate" ] || break
+      if [ "$page" -eq 2 ] && [ -e "$FIXTURES/runs-page2.fail" ]; then echo "HTTP 502 after page one" >&2; exit 1; fi
+      f="$FIXTURES/runs-api-page$page.json"
+      [ -f "$f" ] || break
+      out "$f"
+    done ;;
   "api -X POST repos/"*"/statuses/"*) ;;
   "api repos/"*"/issues/"*"/comments")
     path=${2#repos/}; f="$(repo_dir "${path%%/issues/*}")/comments.json"
@@ -119,9 +131,18 @@ sed -i "s/$recent/$earlier/" "$FIXTURES/o_page2-error/status.json"
 printf '%s\n' "$(status error)" > "$FIXTURES/o_page2-error/status-page2.json"
 fixture stale-posted '[]' "[$(review reviewbot "$receipt")]" "$(status pending 1 "attempt:$attempt queued")"
 sed -i "s/\"updatedAt\":\"$now\"/\"updatedAt\":\"2000-01-01T00:00:00Z\"/" "$FIXTURES/o_stale-posted/prs.json"
+fixture active-after-200 '[]' '[]'
+for state in pending requested waiting; do fixture "active-$state" '[]' '[]'; done
 
 # Actions runs of pr-review.yml still queued or in progress, named by run-name.
 printf '[{"status":"queued","displayTitle":"review o/running#1 @ %s"},{"status":"in_progress","displayTitle":"review o/running-other-pr#2 @ %s"},{"status":"completed","displayTitle":"review o/died-running#1 @ %s"}]\n' "$SHA" "$SHA" "$SHA" > "$FIXTURES/runs.json"
+# More than 200 newer completed runs precede an older review still in progress.
+# Dispatching active-after-200 would cancel the expensive original review.
+jq --arg sha "$SHA" '. + ([range(0; 200) | {status:"completed", displayTitle:("review o/history#" + (.|tostring) + " @ " + $sha)}] + [{status:"in_progress", displayTitle:("review o/active-after-200#1 @ " + $sha)}] + (["pending","requested","waiting"] | map({status:., displayTitle:("review o/active-" + . + "#1 @ " + $sha)})))' "$FIXTURES/runs.json" > "$FIXTURES/runs.next.json"
+mv "$FIXTURES/runs.next.json" "$FIXTURES/runs.json"
+for page in 1 2 3; do
+  jq --argjson start "$(((page - 1) * 100))" '{workflow_runs: [.[$start:($start + 100)][] | {status, display_title:.displayTitle}]}' "$FIXTURES/runs.json" > "$FIXTURES/runs-api-page$page.json"
+done
 
 expect=(
   "fresh:broad"
@@ -131,6 +152,10 @@ expect=(
   "forged-marker:broad"
   "pushed-again:diff"
   "running:"
+  "active-after-200:"
+  "active-pending:"
+  "active-requested:"
+  "active-waiting:"
   "died-running:broad"
   "failed:"
   "failed-then-asked:diff"
@@ -177,6 +202,14 @@ touch "$FIXTURES/runs.fail"
 if PATH="$work/bin:$PATH" REPOS="o/fresh" SELF=o/self GH_TOKEN=x SELF_TOKEN=x DRY_RUN=1 bash "$SCAN" >/dev/null 2>&1; then
   echo "FAIL a failed run listing fails the poll"; fail=1; else echo "ok   a failed run listing fails the poll"; fi
 rm "$FIXTURES/runs.fail"
+
+# A successful first page cannot authorize dispatch if a later page fails.
+touch "$FIXTURES/runs-page2.fail"
+: > "$FIXTURES/calls.log"
+if PATH="$work/bin:$PATH" REPOS="o/fresh" SELF=o/self GH_TOKEN=x SELF_TOKEN=x bash "$SCAN" >/dev/null 2>&1 || grep -q '^workflow run' "$FIXTURES/calls.log"; then
+  echo "FAIL partial workflow inventory dispatched or passed"; fail=1
+else echo "ok   partial workflow inventory fails before dispatch"; fi
+rm "$FIXTURES/runs-page2.fail"
 
 scan() { PATH="$work/bin:$PATH" SELF=o/self GH_TOKEN=x SELF_TOKEN=x DRY_RUN=1 "$@" bash "$SCAN" 2>/dev/null | sed -n 's/^dispatch (\([a-z]*\), \([a-z]*\), \([a-z]*\)): o\/\([a-z-]*\)#.*/\4:\1:\2:\3/p'; }
 got=$(scan env REPOS="o/fresh o/member-asks" MAX_PER_RUN=1)

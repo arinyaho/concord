@@ -17,10 +17,12 @@ STALE_DAYS="${STALE_DAYS:-7}"
 cutoff=$(date -u -d "${STALE_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
       || date -u -v-"${STALE_DAYS}"d +%Y-%m-%dT%H:%M:%SZ)
 # Reviews in flight are the pr-review.yml runs not yet completed, named
-# "review <repo>#<pr> @ <sha>"; a run waits in the queue as long as the runner
-# lets it, so no status age can stand in for this. Without the list, the poll fails.
-active=$(GH_TOKEN="$SELF_TOKEN" gh run list --repo "$SELF" --workflow pr-review.yml --limit 200 \
-           --json status,displayTitle --jq '.[] | select(.status != "completed") | .displayTitle')
+# "review <repo>#<pr> @ <sha>". Read the full unfiltered workflow history:
+# a fixed window can miss an older active run after many newer runs. An
+# incomplete page read fails the poll before any dispatch.
+active=$(GH_TOKEN="$SELF_TOKEN" gh api --paginate \
+           "repos/$SELF/actions/workflows/pr-review.yml/runs?per_page=100" \
+           --jq '.workflow_runs[] | select(.status != "completed") | .display_title')
 # Only markers this account posted count: anyone can write the same text in a comment.
 ME=$(gh api user --jq .login)
 
