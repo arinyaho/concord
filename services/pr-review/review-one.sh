@@ -74,7 +74,7 @@ status() {
           fi ;;
       esac
     else
-      [ "$ownership" -ne 2 ] || return 0  # leave a replacement's status alone
+      if [ "$ownership" -eq 2 ]; then superseded=1; return 0; fi  # leave replacement status and command alone
       if [ "$ownership" -ne 0 ]; then sleep "$attempt"; continue; fi
     fi
     gh api -X POST "repos/$REPO/statuses/$SHA" -f "context=concord/review (#$PR)" \

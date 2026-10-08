@@ -268,6 +268,10 @@ check "cancellation does not consume a requested command" '[ ! -e "$LOG.comment"
 NEWER_ATTEMPT=1 ADVANCE_HEAD=1 run replaced-attempt '{"decision":"review-only","round":1,"findings":[]}'
 check "old cleanup cannot overwrite a newer attempt on the same SHA" '! grep -qx "status error" "$LOG"'
 
+NEWER_ATTEMPT=1 CMD_ID=45 run replaced-before-failure 'invalid engine output'
+check "replacement during a requested failure is detected after execution begins" '[ -s "$LOG.exit" ] && [ -e "$LOG.args" ] && grep -qx "status pending" "$LOG"'
+check "a replaced failed worker leaves replacement status and command alone" '! grep -qx "status error" "$LOG" && [ ! -e "$LOG.comment" ] && [ ! -e "$LOG.review" ] && ! grep -qx "+1" "$LOG"'
+
 NEWER_BEFORE_PENDING=1 PREVIOUS_PLUS=1 run replaced-before-pending '{"decision":"review-only","round":1,"findings":[]}'
 check "an old worker cannot replace a newer pending status" '! grep -q "status pending" "$LOG" && ! grep -q "status error" "$LOG"'
 check "an old worker with a newer pending owner does not start review" '[ ! -e "$LOG.args" ] && [ ! -e "$LOG.review" ]'
