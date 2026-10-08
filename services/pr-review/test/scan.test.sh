@@ -30,6 +30,7 @@ out() { if [ -n "$jq_expr" ]; then jq -r "$jq_expr" "$1"; else cat "$1"; fi; }
 case "$1 $2" in
   "api user") echo reviewbot ;;
   "pr list") f="$(repo_dir "$4")/prs.json"; [ -f "$f" ] || { echo "HTTP 401" >&2; exit 1; }; out "$f" ;;
+  "issue view") f="$(repo_dir "$5")/issue.json"; out "$f" ;;
   "pr view") f="$(repo_dir "$5")/prs.json"; if [ -n "$jq_expr" ]; then jq -r ".[0] | $jq_expr" "$f"; else jq '.[0]' "$f"; fi ;;
   "api repos/"*"/compare/"*)
     path=${2#repos/}; repo=${path%%/compare/*}; f="$(repo_dir "$repo")/base.json"
@@ -288,5 +289,46 @@ for e in identity-unchanged: retarget-changed:broad retarget-same-diff: changed-
   if [ "$got" = "$want" ]; then echo "ok   $name"; else echo "FAIL $name: want '$want', got '$got'"; fail=1; fi
 done
 if [ -n "$identity" ]; then echo "ok   dispatch includes reviewed identity"; else echo "FAIL dispatch omits reviewed identity"; fail=1; fi
+
+
+# Only matching input identities suppress errors or active runs.
+fixture failed-same-identity '[]' '[]' "$(status error 1 "attempt:$attempt identity:$identity failed")"
+fixture failed-old-identity '[]' '[]' "$(status error 1 "attempt:$attempt identity:$(printf 'f%.0s' {1..64}) failed")"
+fixture active-same-identity '[]' '[]'
+fixture active-old-identity '[]' '[]'
+python3 - "$FIXTURES/runs.json" "$SHA" "$identity" <<'PYRUN'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1]); runs=json.loads(p.read_text())
+runs += [{"status":"in_progress","displayTitle":f"review o/active-same-identity#1 @ {sys.argv[2]} identity:{sys.argv[3]}"},
+         {"status":"queued","displayTitle":f"review o/active-old-identity#1 @ {sys.argv[2]} identity:{'f'*64}"}]
+p.write_text(json.dumps(runs))
+PYRUN
+for e in failed-same-identity: failed-old-identity:broad active-same-identity: active-old-identity:broad; do
+  name=${e%%:*}; want=${e#*:}; got=$(scan env REPOS="o/$name" | sed -n "s/^$name:\([^:]*\):.*/\1/p")
+  if [ "$got" = "$want" ]; then echo "ok   $name"; else echo "FAIL $name: want '$want', got '$got'"; fail=1; fi
+done
+
+# Legacy head-only coverage must migrate once, while preserving old commands.
+fixture legacy-completed '[]' "[$(review reviewbot "<!-- concord-review: $SHA mode:broad -->")]"
+got=$(scan env REPOS=o/legacy-completed)
+if [ "$got" = 'legacy-completed:broad:auto:default' ]; then echo "ok   legacy coverage refreshes once"; else echo "FAIL legacy coverage migration: $got"; fail=1; fi
+
+# A closing issue edit can invalidate a broad pass without updating the PR.
+issue_hash=$(printf '# t\n\nbody\n\n\n## Closes 6: Issue\n\nrequirements\n' | node -e 'const c=require("node:crypto");let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(c.createHash("sha256").update(s).digest("hex")))')
+for name in issue-unchanged issue-edited; do
+  fixture "$name" '[]' "[$(review reviewbot "<!-- concord-review: $SHA mode:broad base:$base intent:$issue_hash -->")]"
+  python3 - "$FIXTURES/o_$name/prs.json" "$name" <<'PYISSUE'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1]); data=json.loads(p.read_text()); repo=sys.argv[2]
+data[0]['closingIssuesReferences']=[{'number':6,'repository':{'name':repo,'owner':{'login':'o'}}}]
+data[0]['updatedAt']='2000-01-01T00:00:00Z'; p.write_text(json.dumps(data))
+PYISSUE
+  printf '{"number":6,"title":"Issue","body":"requirements"}' > "$FIXTURES/o_$name/issue.json"
+done
+printf '{"number":6,"title":"Issue","body":"changed requirements"}' > "$FIXTURES/o_issue-edited/issue.json"
+for e in issue-unchanged: issue-edited:broad; do
+  name=${e%%:*}; want=${e#*:}; got=$(scan env REPOS="o/$name" | sed -n "s/^$name:\([^:]*\):.*/\1/p")
+  if [ "$got" = "$want" ]; then echo "ok   $name"; else echo "FAIL $name: want '$want', got '$got'"; fail=1; fi
+done
 
 exit "$fail"
