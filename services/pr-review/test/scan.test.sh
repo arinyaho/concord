@@ -446,8 +446,10 @@ else
       printf '[{"status":"completed","conclusion":"failure","displayTitle":"%s"}]\n' "$(run_title "o/$name" "$worker_sha" "$command_id")" > "$FIXTURES/runs.json"
       printf '[{"number":1,"headRefOid":"%s","isDraft":false,"title":"t","updatedAt":"%s"}]\n' "$worker_sha" "$now" > "$FIXTURES/o_$name/prs.json"
       : > "$FIXTURES/calls.log"
-      PATH="$work/bin:$PATH" REPOS="o/$name" SELF=o/self GH_TOKEN=x SELF_TOKEN=x bash "$SCAN" >"$work/$name.out" 2>&1 || true
-      if grep -q '^workflow run' "$FIXTURES/calls.log"; then echo "FAIL $name later poll redispatched observed failed worker"; fail=1
+      scan_exit=0
+      PATH="$work/bin:$PATH" REPOS="o/$name" SELF=o/self GH_TOKEN=x SELF_TOKEN=x bash "$SCAN" >"$work/$name.out" 2>&1 || scan_exit=$?
+      if [ "$scan_exit" -ne 0 ]; then echo "FAIL $name later poll exited $scan_exit"; fail=1
+      elif grep -q '^workflow run' "$FIXTURES/calls.log"; then echo "FAIL $name later poll redispatched observed failed worker"; fail=1
       else echo "ok   $name later poll did not redispatch"; fi
     done
   else echo "FAIL worker failure evidence missing"; fail=1; fi
