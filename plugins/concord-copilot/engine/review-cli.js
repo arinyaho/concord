@@ -625,6 +625,13 @@ function withSupersededLaunch(ledger, role, round, panel) {
   return { ...ledger, initiative_launched: { ...ledger.initiative_launched, [key]: launchedBefore(ledger, role, round, panel) + 1 } };
 }
 
+function requirePlanDispatch(ledger) {
+  const retry = ledger?.execution?.planRetry;
+  if (retry && retry.state !== 'accepted' && !retry.launched) {
+    throw new Error('harness-failure: semantic replacement requires plan-dispatch before evidence acceptance');
+  }
+}
+
 // Exclusive lock on the target ledger (same mkdir style as the initiative
 // ledger lock) with bounded retry, so parallel `reserve` calls serialize.
 // The holder writes its pid into the lock directory. It is shown when the lock
@@ -1330,7 +1337,10 @@ function runVerb(resolveFromCwd, args, initiative) {
     const n = ledger && ledger.round;
     if (name === 'plan' && ledger?.execution?.planRetry?.state === 'exhausted') throw new Error(`harness-failure: ${ledger.execution.planRetry.message}`);
     if (!n) throw new Error(`harness-failure: artifact-normalize: no active round for ref "${ref}" ${stateDirHint(stateDir)} -- run this verb from the same directory as round-start, or set REVIEW_STATE_DIR`);
-    if (name === 'plan') requireReservations(run, ledger, [{ role: 'plan', present: 1 }], 'artifact-normalize');
+    if (name === 'plan') {
+      requireReservations(run, ledger, [{ role: 'plan', present: 1 }], 'artifact-normalize');
+      requirePlanDispatch(ledger);
+    }
     const p = path.join(stateDir, `round-${n}-${name}.json`);
     const retryPath = path.join(stateDir, `round-${n}-${name}.retry`);
     const snapshotPath = path.join(stateDir, `round-${n}-${name}.original`);
@@ -2475,6 +2485,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     }
     const { repoRoot, slug, ledger, n, isGit, fixes, resolvedAbsent, intentParked, gateOpen } = verifiedRound(ref, stateDir, run, 'plan-fixes');
     if (ledger.execution?.planRetry?.state === 'exhausted') throw new Error(`harness-failure: ${ledger.execution.planRetry.message}`);
+    requirePlanDispatch(ledger);
     const fixById = new Map(fixes.map((finding) => [finding.id, finding]));
     const groupedIds = new Set();
     let planArtifact = { status: 'ok', protocolVersion: 2, groups: [] };

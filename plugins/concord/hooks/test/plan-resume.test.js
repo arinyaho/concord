@@ -291,6 +291,7 @@ test('replacement repair survives interruption without consuming a second semant
   // Simulate process loss at the CLI boundary, without recording a failed launch.
   h.runCli(h.calls.find((args) => args[0] === 'round-start'));
   h.runCli(h.calls.find((args) => args[0] === 'reserve' && args[2] === 'plan'));
+  h.runCli(['plan-dispatch', ref, ...h.calls.find((args) => args[0] === 'reserve' && args[2] === 'plan').slice(5)]);
   fs.writeFileSync(path.join(h.stateDir, 'round-1-plan.json'), JSON.stringify({ status: 'OK', protocolVersion: 2, groups: [] }));
   const repair = h.runCli(h.calls.find((args) => args[0] === 'artifact-normalize' && args[2] === 'plan'));
   assert.equal(repair.status, 'repair');
@@ -324,6 +325,7 @@ test('preparing replacement repair preserves unrelated retry accounting and sema
   stored.execution.retryArtifacts.verify = 'unrelated correction';
   stored.execution.repairArtifacts = { verify: { state: 'prepared' } };
   fs.writeFileSync(ledgerPath(h.stateDir, targetSlug(ref)), JSON.stringify(stored));
+  h.runCli(['plan-dispatch', ref]);
   fs.writeFileSync(path.join(h.stateDir, 'round-1-plan.json'), JSON.stringify({ status: 'OK', protocolVersion: 2, groups: [] }));
   const result = h.runCli(['artifact-normalize', ref, 'plan']);
   assert.equal(result.status, 'repair');
@@ -403,6 +405,28 @@ for (const legacy of [false, true]) {
     assert.throws(() => h.runCli(['plan-fixes', ref, ...flags]), /hash|changed|sealed|normalized/i);
     assert.equal(h.ledger().execution.artifactHashes.plan, originalHash);
     assert.deepEqual(h.initiative().launches, originalLaunches);
+    assert.deepEqual(h.launches, ['correctness', 'verify', 'plan']);
+    assert.equal(h.plans.length, 0);
+  });
+}
+
+for (const verb of ['artifact-normalize', 'plan-fixes']) {
+  test(`standalone ${verb} refuses undispatched semantic replacement evidence`, async (t) => {
+    const h = fixture({ keyed: false });
+    t.after(() => fs.rmSync(h.root, { recursive: true, force: true }));
+    await assert.rejects(runReviewUntilGreen(h.options), /classification is incomplete.*correctness:first.*correctness:second/);
+    const before = sealed(h);
+    const execution = h.ledger().execution;
+    fs.writeFileSync(path.join(h.stateDir, 'round-1-plan.json'), JSON.stringify({
+      status: 'ok', protocolVersion: 2, groups: [{ groupId: 'shared', findingIds: ids,
+        rootCause: 'shared local defect', invariants: ['both findings fixed'],
+        changeClass: 'local', structuralEffects: [], action: 'fix' }],
+    }));
+    const args = [verb, ref, ...(verb === 'artifact-normalize' ? ['plan'] : [])];
+    assert.throws(() => h.runCli(args), /dispatch|launch/i);
+    assert.deepEqual(h.ledger().execution, execution);
+    assert.equal(h.ledger().execution.completed.includes('plan'), false);
+    assert.deepEqual(sealed(h), before);
     assert.deepEqual(h.launches, ['correctness', 'verify', 'plan']);
     assert.equal(h.plans.length, 0);
   });
