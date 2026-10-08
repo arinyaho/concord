@@ -16,7 +16,9 @@ matches the dispatched snapshot before reviewing.
 
 Completed markers record head, mode, merge base and intent hash. A broad pass
 covers later heads only while merge base and intent match. A changed merge base
-or intent requires a fresh broad pass. Identical inputs suppress repeat work.
+or intent requires a fresh broad pass. Identical inputs suppress repeat work when matching coverage or an active run
+is visible to the scanner. Active-run discovery retains its 200-run window;
+matching runs outside that window can be redispatched and canceled.
 Active workflow names and failed status descriptions carry the full identity,
 so an old run or failure cannot suppress replacement inputs at the same head.
 Command IDs remain consumed across input revisions once a command posts or
@@ -31,7 +33,9 @@ second line of the review body.
 
 The worker re-reads head immediately before each review POST, including a
 fallback POST. A changed head or failed lookup prevents findings and thumbs-up,
-clears the eyes reaction, and settles the dispatched commit's status to error.
+attempts to clear the eyes reaction and settle the dispatched commit's status
+to error. Cleanup writes are best-effort; an API outage can leave eyes or a
+pending status even when publication was safely prevented.
 A superseded requested command receives no failed-command completion marker.
 A final identity check also rejects a changed base or intent before publication.
 After publication, the worker rechecks head before adding a PR-wide thumbs-up.
