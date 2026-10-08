@@ -124,7 +124,7 @@ check "the pull request body reaches the intent" 'grep -q "must exist" "$LOG.int
 
 ATTEMPT_ID_OVERRIDE=invalid run bad-attempt '{"decision":"review-only","round":1,"findings":[]}'
 check "an invalid attempt is rejected before GitHub or model work" '[ -s "$LOG.exit" ] && [ ! -e "$LOG.review" ] && [ ! -e "$LOG.args" ]'
-ATTEMPT_ID_OVERRIDE= run direct-attempt '{"decision":"review-only","round":1,"findings":[]}'
+ATTEMPT_ID_OVERRIDE='' run direct-attempt '{"decision":"review-only","round":1,"findings":[]}'
 check "a direct worker invocation generates an attempt" 'jq -r .body "$LOG.review" | sed -n 2p | grep -Eq "^<!-- concord-review-attempt: [0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12} -->$"'
 
 ISSUE_REF=local run same-repo-issue '{"decision":"review-only","round":1,"findings":[]}'
