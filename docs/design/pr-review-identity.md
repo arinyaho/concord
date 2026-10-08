@@ -71,7 +71,10 @@ editing a closing issue need not update PR activity. The activity cutoff still
 prevents initial automatic reviews of inactive PRs. Refresh applies only to PRs returned by the existing newest-1000-open-PR
 selection and actually processed before the workflow timeout. There is no
 fair-rotation guarantee for excluded PRs or separate bound on closing-issue
-reads. The dispatch cap limits reviews started, not metadata discovery cost.
+reads. The dispatch cap limits issued workflow requests, including ambiguous
+responses that may already have started a review, not metadata discovery cost.
+A failed status claim issues no workflow request and consumes no cap slot.
+The reported dispatch count includes ambiguous attempts.
 Unavailable PR or merge-base metadata defers dispatch. Unreadable local issue
 content uses the established omission policy, so review covers only visible
 requirements; gaining access changes intent and triggers a broad refresh.

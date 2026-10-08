@@ -11,6 +11,8 @@ Every ten minutes `pr-review-poll.yml` runs `scan.sh`, which reads listed open n
 - a retained run for matching inputs completed without a confirmed successful conclusion, or the matching `concord/review (#<pr>)` status is `error`: automatic work waits, while an explicit `@concord` command remains available;
 - its conversation or its status cannot be read, until the next poll.
 
+The cap and reported dispatch count include every issued workflow request, even when its response is ambiguous and the worker may already have started. Failed status claims issue no request and consume no cap slot.
+
 A poll reads every page of the unfiltered `pr-review.yml` run history before deciding what to dispatch, so an older active run cannot be omitted by a fixed result limit. A poll that cannot finish that inventory fails before dispatching. Successful traversal is not an atomic snapshot: concurrent changes to run pages or a run accepted after traversal may be missed. A poll that cannot list a repository's pull requests also fails. The poll workflow has a 10-minute job limit; a long history can exhaust that budget or the shared Actions API quota. Affected polls dispatch nothing, and repeated polls may defer work until quota or history changes. The activity cutoff applies to new review dispatches; status reconciliation also considers older open pull requests in the listed set.
 
 For active runs, consumed commands, and failed heads, the scanner treats case variants of the repository owner and name as one repository. It folds that component to ASCII lowercase internally while preserving the configured spelling in API paths, display, and workflow dispatch. PR numbers, target SHAs, and command IDs keep their exact matching rules.

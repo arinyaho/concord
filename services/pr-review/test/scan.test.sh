@@ -31,8 +31,11 @@ repo_dir() {
   echo "$FIXTURES/${name//\//_}"
 }
 if [ "$1" = api ] && [ "${2:-}" = -X ] && [ "${3:-}" = POST ]; then
-  if [[ "${4:-}" == repos/*/statuses/* ]] && [ -n "${STATUS_POST_FAIL:-}" ]; then
-    echo "status post failed" >&2; exit 1
+  if [[ "${4:-}" == repos/*/statuses/* ]]; then
+    path=${4#repos/}; repo=${path%%/statuses/*}
+    if [ -n "${STATUS_POST_FAIL:-}" ] || [ "$repo" = "${STATUS_POST_FAIL_REPO:-}" ]; then
+      echo "status post failed" >&2; exit 1
+    fi
   fi
   if [[ "${4:-}" == repos/*/statuses/* ]] && [ -n "${PERSIST_STATUS:-}" ]; then
     path=${4#repos/}; repo=${path%%/statuses/*}
@@ -59,11 +62,11 @@ case "$1 $2" in
     [ -f "$f" ] || printf '{"merge_base_commit":{"sha":"cccccccc3333"}}' > "$f"
     out "$f" ;;
   "workflow run"*)
-    if [ -n "${WORKFLOW_FAIL:-}" ]; then
-      repo=; pr=; sha=; identity=; cmd=; attempt_id=
-      for arg in "$@"; do
-        case "$arg" in repo=*) repo=${arg#repo=} ;; pr=*) pr=${arg#pr=} ;; sha=*) sha=${arg#sha=} ;; identity=*) identity=${arg#identity=} ;; cmd_id=*) cmd=${arg#cmd_id=} ;; attempt_id=*) attempt_id=${arg#attempt_id=} ;; esac
-      done
+    repo=; pr=; sha=; identity=; cmd=; attempt_id=
+    for arg in "$@"; do
+      case "$arg" in repo=*) repo=${arg#repo=} ;; pr=*) pr=${arg#pr=} ;; sha=*) sha=${arg#sha=} ;; identity=*) identity=${arg#identity=} ;; cmd_id=*) cmd=${arg#cmd_id=} ;; attempt_id=*) attempt_id=${arg#attempt_id=} ;; esac
+    done
+    if [ -n "${WORKFLOW_FAIL:-}" ] || [ "$repo" = "${WORKFLOW_FAIL_REPO:-}" ]; then
       if [ -n "${WORKER_STATE:-}" ]; then
         jq --arg state "$WORKER_STATE" --arg description "attempt:$attempt_id identity:$identity worker progressed" \
           '.[0].state=$state | .[0].description=$description' "$(repo_dir "$repo")/status.json" > "$FIXTURES/advanced-status.json"
@@ -140,6 +143,49 @@ failed_marker() { printf '<!-- concord-review-failed: %s cmd:%s -->' "$1" "$2"; 
 marker() { printf '<!-- concord-review: %s mode:%s%s -->' "$1" "$2" "${3:+ cmd:$3}"; }
 current_intent=$(printf '# t\n\nbody\n' | node -e 'const c=require("node:crypto");let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(c.createHash("sha256").update(s).digest("hex")))')
 current_marker() { printf '<!-- concord-review: %s mode:%s base:cccccccc3333 intent:%s%s -->' "$SHA" "$1" "$current_intent" "${2:+ cmd:$2}"; }
+
+dispatch_budget_cases() {
+  local budget_fail=0 count
+  mkdir -p "$FIXTURES"
+  printf '{"workflow_runs":[]}\n' > "$FIXTURES/runs-api-page1.json"
+  printf '[]\n' > "$FIXTURES/runs.json"
+  fixture budget-unknown-first "[$(comment alice MEMBER '@concord diff' 991)]" '[]'
+  fixture budget-unknown-second '[]' '[]'
+  : > "$FIXTURES/calls.log"
+  PATH="$work/bin:$PATH" REPOS='o/budget-unknown-first o/budget-unknown-second' SELF=o/self GH_TOKEN=x SELF_TOKEN=x \
+    MAX_PER_RUN=1 WORKFLOW_FAIL=1 bash "$SCAN" > "$work/budget-unknown.out" 2>&1
+  count=$(grep -c '^workflow run' "$FIXTURES/calls.log" || true)
+  if [ "$count" = 1 ] && grep -q '^dispatched 1 review(s)$' "$work/budget-unknown.out"; then
+    echo 'ok   ambiguous dispatches consume the poll cap'
+  else echo "FAIL ambiguous responses bypass the cap: $count requests"; budget_fail=1; fi
+
+  fixture budget-mixed-first "[$(comment alice MEMBER '@concord diff' 992)]" '[]'
+  fixture budget-mixed-second '[]' '[]'
+  fixture budget-mixed-third '[]' '[]'
+  : > "$FIXTURES/calls.log"
+  PATH="$work/bin:$PATH" REPOS='o/budget-mixed-first o/budget-mixed-second o/budget-mixed-third' SELF=o/self GH_TOKEN=x SELF_TOKEN=x \
+    MAX_PER_RUN=2 WORKFLOW_FAIL_REPO=o/budget-mixed-second bash "$SCAN" > "$work/budget-mixed.out" 2>&1
+  count=$(grep -c '^workflow run' "$FIXTURES/calls.log" || true)
+  if [ "$count" = 2 ] && ! grep -q '^workflow run .*repo=o/budget-mixed-third' "$FIXTURES/calls.log" && \
+     grep -q '^dispatched 2 review(s)$' "$work/budget-mixed.out"; then
+    echo 'ok   acknowledged and ambiguous dispatches share one cap'
+  else echo "FAIL mixed responses bypass or double-charge the cap: $count requests"; budget_fail=1; fi
+
+  fixture budget-claim-failed "[$(comment alice MEMBER '@concord diff' 993)]" '[]'
+  fixture budget-claim-next '[]' '[]'
+  fixture budget-claim-last '[]' '[]'
+  : > "$FIXTURES/calls.log"
+  PATH="$work/bin:$PATH" REPOS='o/budget-claim-failed o/budget-claim-next o/budget-claim-last' SELF=o/self GH_TOKEN=x SELF_TOKEN=x \
+    MAX_PER_RUN=1 STATUS_POST_FAIL_REPO=o/budget-claim-failed bash "$SCAN" > "$work/budget-claim.out" 2>&1
+  count=$(grep -c '^workflow run' "$FIXTURES/calls.log" || true)
+  if [ "$count" = 1 ] && grep -q '^workflow run .*repo=o/budget-claim-next' "$FIXTURES/calls.log" && \
+     grep -q '^dispatched 1 review(s)$' "$work/budget-claim.out"; then
+    echo 'ok   a failed status claim leaves capacity for eligible work'
+  else echo "FAIL status claim failure consumes dispatch capacity: $count requests"; budget_fail=1; fi
+  return "$budget_fail"
+}
+
+if [ -n "${DISPATCH_BUDGET_PROBE_ONLY:-}" ]; then dispatch_budget_cases; exit; fi
 
 fixture fresh '[]' '[]'
 fixture reviewed '[]' "[$(review reviewbot "$(current_marker broad)")]"
@@ -849,4 +895,5 @@ PYBAD
 got=$(scan env REPOS=o/malformed-intent)
 if [ -z "$got" ]; then echo "ok   malformed intent metadata defers dispatch"; else echo "FAIL malformed intent metadata dispatched $got"; fail=1; fi
 
+dispatch_budget_cases || fail=1
 exit "$fail"

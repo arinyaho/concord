@@ -239,6 +239,9 @@ for entry in ${requested[@]+"${requested[@]}"} ${automatic[@]+"${automatic[@]}"}
     # ownership. On failure, do not launch a worker that will correctly refuse it.
     gh api -X POST "repos/$repo/statuses/$sha" -f "context=concord/review (#$num)" \
       -f state=pending -f "description=attempt:$attempt_id identity:$identity queued $mode" >/dev/null || continue
+    # Reserve capacity for every issued request, including one whose accepted
+    # response might be lost. Failed status claims issue no request and cost none.
+    started=$((started + 1))
     if ! GH_TOKEN="$SELF_TOKEN" gh workflow run pr-review.yml --repo "$SELF" \
       -f repo="$repo" -f pr="$num" -f sha="$sha" -f mode="$mode" -f cmd_id="$cmd_id" -f reviewer="$reviewer" -f identity="$identity" -f attempt_id="$attempt_id"; then
       # A failed client response does not prove GitHub rejected the dispatch.
@@ -247,8 +250,9 @@ for entry in ${requested[@]+"${requested[@]}"} ${automatic[@]+"${automatic[@]}"}
       echo "workflow dispatch result is ambiguous; leaving attempt pending for reconciliation"
       continue
     fi
+  else
+    started=$((started + 1))
   fi
-  started=$((started + 1))
 done
 
 echo "dispatched $started review(s)"
