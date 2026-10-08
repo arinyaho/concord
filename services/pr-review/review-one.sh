@@ -79,25 +79,15 @@ status() {
   return 1
 }
 
-# 🚀 on the comment that asked, so the asker knows it was picked up.
-if [ -n "${CMD_ID:-}" ]; then
-  gh api -X POST "repos/$REPO/issues/comments/$CMD_ID/reactions" -f content=rocket >/dev/null 2>&1 || true
-fi
-
-# Clear the previous review's verdict before this one starts. A reaction is one
-# per account per kind, so a 👍 left from an earlier commit is never overwritten
-# -- it just sits there while the new review reports findings, and a reaction is
-# the first thing someone skimming the PR sees.
+# Clear the previous review's verdict only after this attempt has claimed its
+# status; a superseded worker must leave the replacement's reactions alone.
 unreact() {
   local id
   id=$(gh api --paginate "repos/$REPO/issues/$PR/reactions" \
          --jq ".[] | select(.user.login == \"$ME\" and .content == \"$1\") | .id" | head -1 || true)
   if [ -n "$id" ]; then gh api -X DELETE "repos/$REPO/issues/$PR/reactions/$id" >/dev/null 2>&1 || true; fi
 }
-unreact '+1'
-
-rid=$(gh api -X POST "repos/$REPO/issues/$PR/reactions" -f content=eyes --jq .id 2>/dev/null || true)
-work=$(mktemp -d); intent=$(mktemp); claude_config=$(mktemp -d); posted=; settled=; superseded=; snapshot=$(mktemp -d)
+rid=; work=$(mktemp -d); intent=$(mktemp); claude_config=$(mktemp -d); posted=; settled=; superseded=; snapshot=$(mktemp -d)
 # Runs on every exit -- success, a failed command under set -e, or a cancel
 # because a newer commit superseded this review. Only a posted review settles
 # the status; anything else leaves it in error rather than pending.
@@ -131,8 +121,15 @@ REVIEW_BASE=$SNAP_BASE
 REVIEW_INTENT=$SNAP_INTENT
 BASE_TIP=$SNAP_BASE_TIP
 MARKER="<!-- concord-review: $SHA mode:$MODE base:$REVIEW_BASE intent:$REVIEW_INTENT${CMD_ID:+ cmd:$CMD_ID} -->"
-status pending "reviewing $MODE" || true
+status pending "reviewing $MODE" || { superseded=1; echo "could not claim the review status" >&2; exit 1; }
 [ -z "$superseded" ] || { echo "another review attempt owns the status" >&2; exit 1; }
+
+# 🚀 on the comment that asked, so the asker knows it was picked up.
+if [ -n "${CMD_ID:-}" ]; then
+  gh api -X POST "repos/$REPO/issues/comments/$CMD_ID/reactions" -f content=rocket >/dev/null 2>&1 || true
+fi
+unreact '+1'
+rid=$(gh api -X POST "repos/$REPO/issues/$PR/reactions" -f content=eyes --jq .id 2>/dev/null || true)
 
 # A full clone, so the merge base with the pull request's own base branch and
 # every blob the review reads are local: the engine runs without the token and

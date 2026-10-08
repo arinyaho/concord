@@ -36,11 +36,25 @@ case "$1 $2" in
     path=${2#repos/}; repo=${path%%/compare/*}; f="$(repo_dir "$repo")/base.json"
     [ -f "$f" ] || printf '{"merge_base_commit":{"sha":"cccccccc3333"}}' > "$f"
     out "$f" ;;
-  "workflow run"*) [ -z "${WORKFLOW_FAIL:-}" ] || { echo "workflow dispatch failed" >&2; exit 1; } ;;
+  "workflow run"*)
+    if [ -n "${WORKFLOW_FAIL:-}" ]; then
+      if [ -n "${REPLACE_BEFORE_DISPATCH_ERROR:-}" ]; then
+        printf '[{"context":"concord/review (#1)","state":"pending","description":"attempt:123e4567-e89b-42d3-a456-426614174099 identity:%s replacement","created_at":"2026-10-08T00:00:00Z"}]\n' "$(printf '%064d' 0)" > "$FIXTURES/o_fresh/status.json"
+      fi
+      echo "workflow dispatch failed" >&2; exit 1
+    fi ;;
   "run list") f="$FIXTURES/runs.json"; [ -e "$FIXTURES/runs.fail" ] && { echo "HTTP 502" >&2; exit 1; }; out "$f" ;;
   "api -X"*)
     if [[ "$*" == *"/statuses/"* ]]; then
       [ -z "${STATUS_POST_FAIL:-}" ] || { echo "status post failed" >&2; exit 1; }
+      path=
+      for arg in "$@"; do case "$arg" in repos/*) path=${arg#repos/}; break ;; esac; done
+      repo=${path%%/statuses/*}; folder=$(repo_dir "$repo"); mkdir -p "$folder"
+      context=; state=; description=
+      for arg in "$@"; do
+        case "$arg" in context=*) context=${arg#context=} ;; state=*) state=${arg#state=} ;; description=*) description=${arg#description=} ;; esac
+      done
+      jq -n --arg context "$context" --arg state "$state" --arg description "$description" --arg created '2026-10-08T00:00:00Z' '[{context:$context,state:$state,description:$description,created_at:$created}]' > "$folder/status.json"
     fi ;;
   "api repos/"*"/issues/"*"/comments")
     path=${2#repos/}; f="$(repo_dir "${path%%/issues/*}")/comments.json"
@@ -198,6 +212,11 @@ got=$(scan env REPOS="o/fresh o/member-asks" MANUAL_ONLY=1)
 if [ "$got" = "member-asks:broad:requested:default" ]; then echo "ok   manual mode dispatches only requested reviews"; else echo "FAIL manual mode dispatches only requested reviews: $got"; fail=1; fi
 got=$(scan env REPOS="o/reviewed-on-request" MANUAL_ONLY=1)
 if [ -z "$got" ]; then echo "ok   manual mode does not schedule a broad pass after requested diff"; else echo "FAIL manual mode scheduled $got"; fail=1; fi
+: > "$FIXTURES/calls.log"
+PATH="$work/bin:$PATH" REPOS="o/reviewed" SELF=o/self GH_TOKEN=x SELF_TOKEN=x MANUAL_ONLY=1 DRY_RUN=1 bash "$SCAN" >/dev/null 2>&1
+if ! grep -q '/compare/' "$FIXTURES/calls.log" && ! grep -q '^pr view ' "$FIXTURES/calls.log" && ! grep -q '^issue view ' "$FIXTURES/calls.log"; then
+  echo "ok   manual-only polling skips unused review snapshots"
+else echo "FAIL manual-only polling fetched unrequested review inputs"; fail=1; fi
 
 # A command can name the reviewer; without one the copy's REVIEW_REVIEWER applies.
 for e in asks-codex:broad:codex asks-claude:diff:claude asks-unknown-reviewer:diff:default member-asks:broad:default; do
@@ -320,6 +339,9 @@ fi
 : > "$FIXTURES/calls.log"
 PATH="$work/bin:$PATH" REPOS="o/fresh" SELF=o/self GH_TOKEN=x SELF_TOKEN=x WORKFLOW_FAIL=1 bash "$SCAN" >"$work/workflow-fails.out" 2>&1 || true
 if grep -q 'state=error' "$FIXTURES/calls.log"; then echo "ok   failed dispatch settles its claimed status"; else echo "FAIL failed dispatch leaves a pending status"; fail=1; fi
+: > "$FIXTURES/calls.log"
+PATH="$work/bin:$PATH" REPOS="o/fresh" SELF=o/self GH_TOKEN=x SELF_TOKEN=x WORKFLOW_FAIL=1 REPLACE_BEFORE_DISPATCH_ERROR=1 bash "$SCAN" >"$work/replaced-workflow-fails.out" 2>&1 || true
+if ! grep -q 'state=error' "$FIXTURES/calls.log"; then echo "ok   failed dispatch does not overwrite a replacement attempt"; else echo "FAIL failed dispatch overwrote a replacement status"; fail=1; fi
 
 
 # Only matching input identities suppress errors or active runs.

@@ -85,9 +85,9 @@ case "$*" in
   "api repos/"*"/commits/"*"/statuses?per_page=100")
     if { [ -e "$LOG.args" ] && [ -n "${NEWER_ATTEMPT:-}" ]; } || [ -n "${NEWER_BEFORE_PENDING:-}" ]; then
       out '[{"context":"concord/review (#1)","state":"pending","description":"attempt:123e4567-e89b-42d3-a456-426614174099 identity:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff queued broad","created_at":"2026-10-08T00:00:00Z"}]'
-    elif [ -n "${PREEXISTING_TERMINAL:-}" ]; then
-      out '[{"context":"concord/review (#1)","state":"success","description":"attempt:123e4567-e89b-42d3-a456-426614174099 identity:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff posted","created_at":"2026-10-08T00:00:00Z"}]'
-    elif [ -e "$LOG.latest-status" ]; then out "$(cat "$LOG.latest-status")"; else out '[]'; fi ;;
+    elif [ -e "$LOG.latest-status" ]; then out "$(cat "$LOG.latest-status")"
+    elif [ -n "${PREEXISTING_TERMINAL:-}" ]; then out '[{"context":"concord/review (#1)","state":"success","description":"attempt:123e4567-e89b-42d3-a456-426614174099 identity:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff posted","created_at":"2026-10-08T00:00:00Z"}]'
+    else out '[]'; fi ;;
   *"/statuses/"*)
     all="$*"; state=${all#*state=}; state=${state%% *}
     # FLAKY_STATUS fails the first attempt to settle a final status.
@@ -102,9 +102,11 @@ case "$*" in
     if [ -n "${ADVANCE_ON_FALLBACK:-}" ] && [ ! -e "$LOG.inline-failed" ]; then cat >/dev/null; touch "$LOG.inline-failed"; exit 1; fi
     cat > "$LOG.review"; echo review >> "$LOG" ;;
   "api -X DELETE "*"/reactions/1") echo clear-eyes >> "$LOG" ;;
+  "api -X DELETE "*"/reactions/2") echo clear-plus >> "$LOG" ;;
   *"content=+1"*) echo "+1" >> "$LOG" ;;
-  *"content=eyes"*) echo 1 ;;
-  "api repos/"*"/reactions") echo '[]' ;;
+  *"content=eyes"*) echo eyes >> "$LOG"; echo 1 ;;
+  "api repos/o/r/issues/1/reactions")
+    if [ -n "${PREVIOUS_PLUS:-}" ]; then out '[{"id":2,"content":"+1"}]'; else out '[]'; fi ;;
   *) ;;
 esac
 EOF
@@ -249,9 +251,10 @@ check "cancellation does not consume a requested command" '[ ! -e "$LOG.comment"
 NEWER_ATTEMPT=1 ADVANCE_HEAD=1 run replaced-attempt '{"decision":"review-only","round":1,"findings":[]}'
 check "old cleanup cannot overwrite a newer attempt on the same SHA" '! grep -qx "status error" "$LOG"'
 
-NEWER_BEFORE_PENDING=1 run replaced-before-pending '{"decision":"review-only","round":1,"findings":[]}'
+NEWER_BEFORE_PENDING=1 PREVIOUS_PLUS=1 run replaced-before-pending '{"decision":"review-only","round":1,"findings":[]}'
 check "an old worker cannot replace a newer pending status" '! grep -q "status pending" "$LOG" && ! grep -q "status error" "$LOG"'
 check "an old worker with a newer pending owner does not start review" '[ ! -e "$LOG.args" ] && [ ! -e "$LOG.review" ]'
+check "an old worker with a newer pending owner leaves PR reactions alone" '! grep -qx clear-plus "$LOG" && ! grep -qx eyes "$LOG" && ! grep -qx clear-eyes "$LOG"'
 
 CHANGE_BASE=1 run changed-base '{"decision":"review-only","round":1,"findings":[]}'
 check "a changed merge base during review prevents publication" '[ ! -e "$LOG.review" ] && ! grep -qx "+1" "$LOG"'
@@ -263,6 +266,6 @@ unset MODE_OVERRIDE
 check "a diff pass records identity without running intent gates" '[ -e "$LOG.review" ] && grep -q -- "--no-broad" "$LOG.args" && [ ! -e "$LOG.intent" ]'
 
 PREEXISTING_TERMINAL=1 ATTEMPT_ID_OVERRIDE='' run direct-manual-retry '{"decision":"review-only","round":1,"findings":[]}'
-check "a direct manual retry can claim a completed review status" '[ -e "$LOG.review" ] && [ "$(grep ^status "$LOG" | head -1)" = "status pending" ]'
+check "a direct manual retry can claim and settle a completed review status" '[ -e "$LOG.review" ] && [ ! -e "$LOG.exit" ] && [ "$(jq -r ".[0].state" "$LOG.latest-status")" = success ]'
 
 exit "$fail"

@@ -38,12 +38,13 @@ settle the dispatched commit's status to error. Cleanup writes are best-effort;
 an API outage can leave eyes or a pending status even when publication was
 safely prevented. Before writing pending or terminal status, a worker checks
 that the status is absent for a direct invocation or still belongs to its own
-attempt. A replacement attempt's or unknown owner's status is left untouched. A direct
+attempt. It verifies snapshot and status ownership before changing PR reactions. A replacement attempt's or unknown owner's status is left untouched. A direct
 workflow retry may take over a terminal status; it cannot replace another
 attempt that is still pending. The scanner writes an attempt's pending status
 before dispatching its workflow, so an eager worker can verify ownership. A
 failed status claim defers dispatch, and a failed dispatch settles the claim to
-error. A review of a stale PR head still runs as a diff pass when broad coverage
+error only while that attempt still owns the status; a replacement status remains
+untouched. A review of a stale PR head still runs as a diff pass when broad coverage
 exists for an older head; the activity cutoff applies only before first broad
 coverage.
 A superseded requested command receives no failed-command completion marker.

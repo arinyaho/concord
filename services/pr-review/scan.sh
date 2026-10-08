@@ -114,9 +114,26 @@ for repo in $REPOS; do
                  | select(.user.login == $me) | .body // "" | split("\n")[0]
                  | select(startswith("<!-- concord-review"))') || continue
 
+    # Commands from someone with a role on the repository, newest first. The
+    # newest one not yet done runs: done means a marker names it, whether its
+    # review posted or failed.
+    cmd_id=; reviewer=-; cmd_mode=
+    while IFS=$'\t' read -r id candidate_mode cmd_reviewer; do
+      [ -n "$id" ] || continue
+      grep -qF " cmd:$id -->" <<<"$markers" && continue
+      cmd_id=$id; cmd_mode=$candidate_mode; reviewer=$cmd_reviewer; break
+    done < <(jq -r '[.[] | select(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR")
+                      | select(.body | test("@concord +(broad|diff)( +(claude|codex))?(\\s|$)"))]
+                    | sort_by(.created_at) | reverse[]
+                    | (.body | capture("@concord +(?<m>broad|diff)( +(?<r>claude|codex))?(\\s|$)")) as $c
+                    | "\(.id)\t\($c.m)\t\($c.r // "-")"' <<<"$comments")
+    # Manual mode still reads the conversation to find commands, but does not
+    # collect PR/issue snapshots for PRs that have no eligible request.
+    if [ -z "$cmd_id" ] && [ -n "${MANUAL_ONLY:-}" ]; then continue; fi
+
     # Closing issue edits need not touch PR.updatedAt. Check inputs on old
     # covered PRs too, while retaining the cutoff for initial automatic passes.
-    if [ -n "$stale" ] && ! grep -qF ' mode:broad' <<<"$markers"; then continue; fi
+    if [ -z "$cmd_id" ] && [ -n "$stale" ] && ! grep -qF ' mode:broad' <<<"$markers"; then continue; fi
     review_snapshot "$repo" "$num" "$work/pr.json" "$work/intent.md" || continue
     [ "$SNAP_HEAD" = "$sha" ] || continue  # changed since the PR listing
     grep -qxF "review $repo#$num @ $sha identity:$SNAP_ID" <<<"$active" && continue
@@ -124,25 +141,10 @@ for repo in $REPOS; do
     broad_covered=
     if grep -qE "^<!-- concord-review: [0-9a-f]+ mode:broad $scope( cmd:[0-9]+)? -->$" <<<"$markers"; then broad_covered=1; fi
 
-    # Commands from someone with a role on the repository, newest first. The
-    # newest one not yet done runs: done means a marker names it, whether its
-    # review posted or failed.
-    cmd_id=; reviewer=-
-    while IFS=$'\t' read -r id cmd_mode cmd_reviewer; do
-      [ -n "$id" ] || continue
-      grep -qF " cmd:$id -->" <<<"$markers" && continue
-      cmd_id=$id; reviewer=$cmd_reviewer; break
-    done < <(jq -r '[.[] | select(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR")
-                      | select(.body | test("@concord +(broad|diff)( +(claude|codex))?(\\s|$)"))]
-                    | sort_by(.created_at) | reverse[]
-                    | (.body | capture("@concord +(?<m>broad|diff)( +(?<r>claude|codex))?(\\s|$)")) as $c
-                    | "\(.id)\t\($c.m)\t\($c.r // "-")"' <<<"$comments")
     if [ -n "$cmd_id" ]; then
       requested+=("$repo $num $sha $cmd_mode $cmd_id $reviewer $SNAP_ID $title")
       continue
     fi
-    # Manual mode: review only what somebody asked for with an @concord comment.
-    [ -n "${MANUAL_ONLY:-}" ] && continue
     # A failed review is not retried on its own: a new push or an @concord
     # command starts the next one.
     if [ "$state" = error ] && { [ -z "$status_identity" ] || [ "$status_identity" = "$SNAP_ID" ]; }; then continue; fi
@@ -172,8 +174,12 @@ for entry in ${requested[@]+"${requested[@]}"} ${automatic[@]+"${automatic[@]}"}
       -f state=pending -f "description=attempt:$attempt_id identity:$identity queued $mode" >/dev/null || continue
     if ! GH_TOKEN="$SELF_TOKEN" gh workflow run pr-review.yml --repo "$SELF" \
       -f repo="$repo" -f pr="$num" -f sha="$sha" -f mode="$mode" -f cmd_id="$cmd_id" -f reviewer="$reviewer" -f attempt_id="$attempt_id" -f identity="$identity"; then
-      gh api -X POST "repos/$repo/statuses/$sha" -f "context=concord/review (#$num)" \
-        -f state=error -f "description=attempt:$attempt_id identity:$identity dispatch failed" >/dev/null 2>&1 || true
+      owner=0
+      review_owns_status "$repo" "$num" "$sha" "$attempt_id" || owner=$?
+      if [ "$owner" -eq 0 ]; then
+        gh api -X POST "repos/$repo/statuses/$sha" -f "context=concord/review (#$num)" \
+          -f state=error -f "description=attempt:$attempt_id identity:$identity dispatch failed" >/dev/null 2>&1 || true
+      fi
       continue
     fi
   fi
