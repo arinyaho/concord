@@ -66,7 +66,12 @@ status() {
           if [ -n "$DIRECT_ATTEMPT" ] && review_status_terminal "$REPO" "$PR" "$SHA"; then :
           else superseded=1; return 0
           fi ;;
-        *) superseded=1; return 0 ;;
+        *)
+          # A direct retry may replace any terminal legacy status. If lookup
+          # fails or the status is nonterminal, do not assume ownership.
+          if [ -n "$DIRECT_ATTEMPT" ] && review_status_terminal "$REPO" "$PR" "$SHA"; then :
+          else superseded=1; return 0
+          fi ;;
       esac
     else
       [ "$ownership" -ne 2 ] || return 0  # leave a replacement's status alone
@@ -87,13 +92,16 @@ unreact() {
          --jq ".[] | select(.user.login == \"$ME\" and .content == \"$1\") | .id" | head -1 || true)
   if [ -n "$id" ]; then gh api -X DELETE "repos/$REPO/issues/$PR/reactions/$id" >/dev/null 2>&1 || true; fi
 }
-rid=; work=$(mktemp -d); intent=$(mktemp); claude_config=$(mktemp -d); posted=; settled=; superseded=; snapshot=$(mktemp -d)
+rid=; work=$(mktemp -d); intent=$(mktemp); claude_config=$(mktemp -d); snapshot=$(mktemp -d)
+hunks=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/concord-review-hunks.XXXXXX")
+posted=; settled=; superseded=
 # Runs on every exit -- success, a failed command under set -e, or a cancel
 # because a newer commit superseded this review. Only a posted review settles
 # the status; anything else leaves it in error rather than pending.
 finish() {
   if [ -n "$rid" ]; then gh api -X DELETE "repos/$REPO/issues/$PR/reactions/$rid" >/dev/null 2>&1 || true; fi
   rm -rf "$work" "$intent" "$claude_config" "$snapshot"
+  rm -f "$hunks"
   if [ -n "$posted" ]; then
     # Publication is durable. If settlement failed, only retry success.
     [ -n "$settled" ] || status success "posted; recovery" || true
@@ -189,15 +197,15 @@ $verdict"
 # Inline only where the finding's line is inside a diff hunk: GitHub rejects
 # the whole review when one inline comment falls outside them. If it rejects
 # the review anyway, every finding goes in the body.
-hunks=$(git -C "$work" diff -U3 "$BASE" HEAD | awk '
+git -C "$work" diff -U3 "$BASE" HEAD | awk '
   /^\+\+\+ b\// { file = substr($0, 7) }
   /^@@ / { split($3, a, ","); start = substr(a[1], 2); len = (a[2] == "" ? 1 : a[2])
            if (len > 0) printf "%s\t%d\t%d\n", file, start, start + len - 1 }' |
-  jq -R -s 'split("\n") | map(select(length > 0) | split("\t") | {file: .[0], from: (.[1] | tonumber), to: (.[2] | tonumber)})')
+  jq -R -s 'split("\n") | map(select(length > 0) | split("\t") | {file: .[0], from: (.[1] | tonumber), to: (.[2] | tonumber)})' > "$hunks"
 review() {  # $1 = inline | body
-  jq --arg sha "$SHA" --arg header "$header" --arg how "$1" --argjson hunks "$hunks" '
+  jq --slurpfile hunks "$hunks" --arg sha "$SHA" --arg header "$header" --arg how "$1" '
     def text: "**\(.category)** \(.summary)" + (if .requirement != "" then "\n\n> \(.requirement)" else "" end) + "\n\n`\(.id)`";
-    def in_diff: . as $f | $f.line != null and any($hunks[]; .file == $f.file and $f.line >= .from and $f.line <= .to);
+    def in_diff: . as $f | $f.line != null and any($hunks[0][]; .file == $f.file and $f.line >= .from and $f.line <= .to);
     (if $how == "inline" then [.findings[] | select(in_diff)] else [] end) as $inline
     | ([.findings[] | select(($how != "inline") or (in_diff | not))]) as $rest
     | { commit_id: $sha, event: "COMMENT",

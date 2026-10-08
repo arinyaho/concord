@@ -48,6 +48,7 @@ case "$*" in
     case "${ISSUE_REF:-foreign}" in
       large) refs=$(cat "$ISSUE_CASE_DIR/refs.json") ;;
       local|unreadable) refs='{"closingIssuesReferences":[{"number":6,"repository":{"name":"r","owner":{"login":"o"}}}]}' ;;
+      case-mismatch) refs='{"closingIssuesReferences":[{"number":6,"repository":{"name":"R","owner":{"login":"O"}}}]}' ;;
       *) refs='{"closingIssuesReferences":[{"number":5,"repository":{"name":"private","owner":{"login":"other"}}}]}' ;;
     esac
     current_sha=$SHA
@@ -70,6 +71,8 @@ case "$*" in
       jq -r "$jq_expr" "$ISSUE_CASE_DIR/refs.json"
     elif [ "${ISSUE_REF:-foreign}" = local ] || [ "${ISSUE_REF:-foreign}" = unreadable ]; then
       out '{"closingIssuesReferences":[{"number":6,"repository":{"name":"r","owner":{"login":"o"}}}]}'
+    elif [ "${ISSUE_REF:-}" = case-mismatch ]; then
+      out '{"closingIssuesReferences":[{"number":6,"repository":{"name":"R","owner":{"login":"O"}}}]}'
     else
       out '{"closingIssuesReferences":[{"number":5,"repository":{"name":"private","owner":{"login":"other"}}}]}'
     fi ;;
@@ -87,6 +90,7 @@ case "$*" in
       out '[{"context":"concord/review (#1)","state":"pending","description":"attempt:123e4567-e89b-42d3-a456-426614174099 identity:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff queued broad","created_at":"2026-10-08T00:00:00Z"}]'
     elif [ -e "$LOG.latest-status" ]; then out "$(cat "$LOG.latest-status")"
     elif [ -n "${PREEXISTING_TERMINAL:-}" ]; then out '[{"context":"concord/review (#1)","state":"success","description":"attempt:123e4567-e89b-42d3-a456-426614174099 identity:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff posted","created_at":"2026-10-08T00:00:00Z"}]'
+    elif [ -n "${PREEXISTING_LEGACY_TERMINAL:-}" ]; then out '[{"context":"concord/review (#1)","state":"success","description":"review posted","created_at":"2026-10-08T00:00:00Z"}]'
     else out '[]'; fi ;;
   *"/statuses/"*)
     all="$*"; state=${all#*state=}; state=${state%% *}
@@ -97,7 +101,9 @@ case "$*" in
     description=${all#*description=}; echo "${description%% -f *}" >> "$LOG.descriptions"
     jq -n --arg description "$description" --arg state "$state" --arg context "${context%% -f *}" '[{context:$context,state:$state,description:$description,created_at:"2026-10-08T00:00:00Z"}]' > "$LOG.latest-status"
     echo "status $state" >> "$LOG" ;;
-  *"/issues/1/comments -f body="*) all="$*"; printf '%s\n' "${all#*body=}" > "$LOG.comment"; echo comment >> "$LOG" ;;
+  *"/issues/1/comments -f body="*)
+    if [ -n "${FAIL_FAILURE_MARKER:-}" ]; then echo "marker unavailable" >> "$LOG"; exit 1; fi
+    all="$*"; printf '%s\n' "${all#*body=}" > "$LOG.comment"; echo comment >> "$LOG" ;;
   *"/pulls/1/reviews --input -")
     if [ -n "${ADVANCE_ON_FALLBACK:-}" ] && [ ! -e "$LOG.inline-failed" ]; then cat >/dev/null; touch "$LOG.inline-failed"; exit 1; fi
     cat > "$LOG.review"; echo review >> "$LOG" ;;
@@ -169,6 +175,11 @@ ISSUE_REF=local run same-repo-issue '{"decision":"review-only","round":1,"findin
 check "same-repo issue is fetched" 'grep -q "issue view 6 --repo o/r" "$LOG.issue-views"'
 check "same-repo issue body reaches intent" 'grep -q "LOCAL_BODY_SENTINEL" "$LOG.intent"'
 
+ISSUE_REF=case-mismatch run same-repo-case-mismatch '{"decision":"review-only","round":1,"findings":[]}'
+check "case-mismatched same-repo issue uses configured repository spelling" 'grep -q "issue view 6 --repo o/r" "$LOG.issue-views"'
+check "case-mismatched same-repo issue body reaches intent" 'grep -q "LOCAL_BODY_SENTINEL" "$LOG.intent"'
+check "foreign issue bodies stay excluded after case-insensitive matching" '! grep -q "FOREIGN_BODY_SENTINEL" "$LOG.intent"'
+
 ISSUE_REF=unreadable run unreadable-same-repo-issue '{"decision":"review-only","round":1,"findings":[]}'
 check "an unreadable same-repo issue is fetched" 'grep -q "issue view 6 --repo o/r" "$LOG.issue-views"'
 check "an unreadable same-repo issue is named without failing review" 'grep -q "o/r#6 (not readable" "$LOG.intent" && grep -qx review "$LOG"'
@@ -224,13 +235,19 @@ check "every status uses the PR-specific context" '[ -s "$LOG.contexts" ] && ! g
 CMD_ID=42 run requested-fails '{"decision":"review-only","round":1,"findings":[{"id":"correctness:x","category":"correctness","file":"a.txt","line":1,"span":"change","summary":"model-token-secret","requirement":""}]}'
 check "a failed requested review leaves a marker naming the command" '[ "$(head -1 "$LOG.comment")" = "<!-- concord-review-failed: $SHA cmd:42 -->" ]'
 
+FAIL_FAILURE_MARKER=1 CMD_ID=43 run requested-fails-marker-unavailable '{"decision":"review-only","round":1,"findings":[{"id":"correctness:x","category":"correctness","file":"a.txt","line":1,"span":"change","summary":"model-token-secret","requirement":""}]}'
+check "failed requested worker exits without a command marker" '[ -s "$LOG.exit" ] && [ ! -e "$LOG.comment" ] && grep -q "marker unavailable" "$LOG"'
+
+FAIL_FINAL_STATUS=1 run automatic-fails-status-unavailable '{"decision":"review-only","round":1,"findings":[{"id":"correctness:x","category":"correctness","file":"a.txt","line":1,"span":"change","summary":"model-token-secret","requirement":""}]}'
+check "failed automatic worker exhausts three error status writes" '[ -s "$LOG.exit" ] && [ "$(grep -c "final status unavailable" "$LOG")" -eq 3 ] && [ ! -e "$LOG.review" ]'
+
 REVIEW_REPOS="o/other" run outside-repos '{"decision":"review-only","round":1,"findings":[]}'
 check "a repository outside REVIEW_REPOS is not touched" '[ ! -s "$LOG" ] && [ ! -e "$LOG.args" ]'
 
 ADVANCE_HEAD=1 CMD_ID=43 run advanced-head '{"decision":"review-only","round":1,"findings":[]}'
 check "an advanced head receives no review or thumbs-up" '[ ! -e "$LOG.review" ] && ! grep -qx "+1" "$LOG"'
 check "a superseded review clears eyes and settles the old status" 'grep -qx clear-eyes "$LOG" && [ "$(grep ^status "$LOG" | tail -1)" = "status error" ]'
-check "a superseded requested command stays eligible on the replacement" '[ ! -e "$LOG.comment" ]'
+check "a superseded requested command creates no worker failure marker" '[ ! -e "$LOG.comment" ]'
 
 HEAD_LOOKUP_FAIL=1 run failed-head-lookup '{"decision":"review-only","round":1,"findings":[]}'
 check "a failed final head lookup posts no review or thumbs-up" '[ ! -e "$LOG.review" ] && ! grep -qx "+1" "$LOG"'
@@ -267,5 +284,51 @@ check "a diff pass records identity without running intent gates" '[ -e "$LOG.re
 
 PREEXISTING_TERMINAL=1 ATTEMPT_ID_OVERRIDE='' run direct-manual-retry '{"decision":"review-only","round":1,"findings":[]}'
 check "a direct manual retry can claim and settle a completed review status" '[ -e "$LOG.review" ] && [ ! -e "$LOG.exit" ] && [ "$(jq -r ".[0].state" "$LOG.latest-status")" = success ]'
+
+PREEXISTING_LEGACY_TERMINAL=1 ATTEMPT_ID_OVERRIDE='' run direct-legacy-manual-retry '{"decision":"review-only","round":1,"findings":[]}'
+check "a direct retry can take over a legacy terminal status" '[ -e "$LOG.review" ] && [ ! -e "$LOG.exit" ] && [ "$(jq -r ".[0].state" "$LOG.latest-status")" = success ]'
+
+# Thousands of disjoint hunks exceed Linux's per-argument limit when serialized
+# into one jq --argjson argument. The poster must carry the metadata by file.
+large_repo="$work/upstream-large"
+git init -q -b main "$large_repo"
+python3 - "$large_repo/large.txt" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+path.write_text("".join(f"line {n:06d} original\n" for n in range(1, 64_001)))
+PY
+git -C "$large_repo" add large.txt
+git -C "$large_repo" -c user.email=t@t -c user.name=t commit -q -m base
+python3 - "$large_repo/large.txt" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+lines = path.read_text().splitlines()
+for n in range(3, len(lines), 8):
+    lines[n] = lines[n].replace("original", "changed")
+path.write_text("\n".join(lines) + "\n")
+PY
+printf 'do-not-overwrite\n' > "$work/hunks-target.json"
+ln -s "$work/hunks-target.json" "$large_repo/hunks.json"
+git -C "$large_repo" checkout -q -b feature
+git -C "$large_repo" add large.txt hunks.json
+git -C "$large_repo" -c user.email=t@t -c user.name=t commit -q -m "many disjoint hunks"
+large_sha=$(git -C "$large_repo" rev-parse HEAD)
+git -C "$large_repo" update-ref refs/pull/1/head "$large_sha"
+git -C "$large_repo" checkout -q main
+hunk_bytes=$(git -C "$large_repo" diff -U3 main feature | awk '
+  /^\+\+\+ b\// { file = substr($0, 7) }
+  /^@@ / { split($3, a, ","); start = substr(a[1], 2); len = (a[2] == "" ? 1 : a[2])
+           if (len > 0) printf "%s\t%d\t%d\n", file, start, start + len - 1 }' |
+  jq -R -s 'split("\n") | map(select(length > 0) | split("\t") | {file: .[0], from: (.[1] | tonumber), to: (.[2] | tonumber)})' | wc -c | tr -d ' ')
+LOG="$work/large-hunks.log"; : > "$LOG"
+PATH="$work/bin:$PATH" UPSTREAM="$large_repo" ENGINE_RESULT='{"decision":"review-only","round":1,"findings":[{"id":"correctness:large","category":"correctness","file":"large.txt","line":4,"span":"changed","summary":"large diff remains publishable","requirement":""}]}' \
+  REPO=o/r PR=1 SHA="$large_sha" BASE_SHA="$(git -C "$large_repo" rev-parse main)" MODE=broad GH_TOKEN=review-pat-secret CLAUDE_CODE_OAUTH_TOKEN=model-token-secret \
+  REVIEW_REPOS=o/r ATTEMPT_ID=123e4567-e89b-42d3-a456-426614174000 bash "$SCRIPT" >"$LOG.out" 2>&1 || echo $? > "$LOG.exit"
+if [ "$hunk_bytes" -gt 131072 ]; then echo "ok   large hunk fixture exceeds the Linux per-argument limit ($hunk_bytes bytes)"
+else echo "FAIL large hunk fixture is only $hunk_bytes bytes"; fail=1; fi
+check "large hunk metadata still posts the review" 'grep -qx review "$LOG"'
+check "large hunk metadata still posts an inline finding" 'jq -e ".comments | length == 1" "$LOG.review" >/dev/null'
+check "checkout hunk symlink cannot overwrite the runner file" 'grep -qx do-not-overwrite "$work/hunks-target.json"'
+
 
 exit "$fail"

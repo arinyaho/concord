@@ -1,6 +1,6 @@
 name: pr-review
 # scan.sh reads this name to tell which reviews are queued or running.
-run-name: review ${{ inputs.repo }}#${{ inputs.pr }} @ ${{ inputs.sha }}${{ inputs.identity && format(' identity:{0}', inputs.identity) || '' }}
+run-name: review ${{ inputs.repo }}#${{ inputs.pr }} @ ${{ inputs.sha }}${{ inputs.identity && format(' identity:{0}', inputs.identity) || '' }} cmd:${{ inputs.cmd_id || '-' }}
 on:
   workflow_dispatch:
     inputs:

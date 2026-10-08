@@ -16,13 +16,13 @@ matches the dispatched snapshot before reviewing.
 
 Completed markers record head, mode, merge base and intent hash. A broad pass
 covers later heads only while merge base and intent match. A changed merge base
-or intent requires a fresh broad pass. Identical inputs suppress repeat work when matching coverage or an active run
-is visible to the scanner. Active-run discovery retains its 200-run window;
-matching runs outside that window can be redispatched and canceled.
-Active workflow names and failed status descriptions carry the full identity,
-so an old run or failure cannot suppress replacement inputs at the same head.
-Command IDs remain consumed across input revisions once a command posts or
-fails; supersession before posting keeps a requested command eligible.
+or intent requires a fresh broad pass. Identical inputs suppress repeat work
+when matching coverage or an active run is visible to the scanner. The scanner
+reads the complete paginated workflow-run inventory, then uses identity-qualified
+run names and status descriptions so an old run or failure cannot suppress
+replacement inputs at the same head. Command IDs remain consumed across input
+revisions once a workflow run reaches a terminal state, including a superseded
+run that never posts. An operator submits a new command to request another attempt.
 
 Legacy completions lack evidence of their base and intent. They require one
 broad refresh; their command IDs remain consumed. A legacy active run suppresses
@@ -42,9 +42,19 @@ attempt. It verifies snapshot and status ownership before changing PR reactions.
 workflow retry may take over a terminal status; it cannot replace another
 attempt that is still pending. The scanner writes an attempt's pending status
 before dispatching its workflow, so an eager worker can verify ownership. A
-failed status claim defers dispatch, and a failed dispatch settles the claim to
-error only while that attempt still owns the status; a replacement status remains
-untouched. A review of a stale PR head still runs as a diff pass when broad coverage
+failed status claim defers dispatch; a replacement status remains untouched.
+A nonzero workflow-dispatch response is not proof that GitHub rejected
+the run. The scanner preserves the attempt's status rather than writing a false
+failure. Every poll reads the complete inventory before considering a retry.
+Matching pending inputs wait 15 minutes from the latest status's creation time
+by default (`DISPATCH_GRACE_SECONDS=900`, configurable from 1 to 86400 seconds),
+including explicit same-input commands. Polling does not refresh this timestamp.
+Missing or invalid timestamps defer retry because expiry cannot be proved.
+A visible matching active run suppresses retry even after grace expires; when
+the grace has expired and no run or completion evidence suppresses dispatch,
+the scanner may create a fresh attempt. Changed heads or input identities are
+eligible independently of the old claim's grace. A late worker must still
+prove status ownership before acting. A review of a stale PR head still runs as a diff pass when broad coverage
 exists for an older head; the activity cutoff applies only before first broad
 coverage.
 A superseded requested command receives no failed-command completion marker.
@@ -77,10 +87,17 @@ against the unchanged scripts, then pass after implementation:
 - Changed title, body or readable closing issue intent dispatches broad;
   unchanged intent does not. New heads reuse matching broad coverage as diff.
 - Full identity controls active and failed suppression, while manual commands
-  remain deduplicated and explicit refresh still runs.
+  remain deduplicated and explicit refresh still runs. The complete workflow-run
+  inventory is parsed before dispatch; incomplete pagination stops the poll.
 - Advancing head during review or a failed head lookup posts neither findings
   nor thumbs-up; unchanged head posts; cleanup settles the old SHA.
 - Publication receipts repair only their matching attempt.
+- Direct/manual retries can take over legacy terminal statuses, but neither
+  dispatched workers nor direct retries replace another attempt's pending status.
+- An ambiguous workflow-dispatch response never overwrites worker progress with
+  an error status. Repeated polls do not retry matching pending inputs during
+  grace or renew the grace clock. Delayed active-run visibility suppresses retry
+  after expiry; absent run evidence permits a fresh attempt after expiry.
 
 The required checks are shellcheck and both shell fixture suites, executed by
 `pr-review-lint.yml`. Review-and-fix uses the repository's configured DoD.

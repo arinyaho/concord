@@ -30,6 +30,7 @@ jobs:
           SELF: ${{ github.repository }}
           MAX_PER_RUN: ${{ vars.REVIEW_MAX_PER_RUN || '3' }}
           STALE_DAYS: ${{ vars.REVIEW_STALE_DAYS || '7' }}
+          DISPATCH_GRACE_SECONDS: ${{ vars.REVIEW_DISPATCH_GRACE_SECONDS || '900' }}
           MANUAL_ONLY: ${{ vars.REVIEW_MANUAL_ONLY }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           GH_TOKEN: ${{ secrets.REVIEW_PAT }}

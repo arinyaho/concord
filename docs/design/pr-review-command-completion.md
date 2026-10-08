@@ -1,0 +1,19 @@
+# Requested PR review command completion
+
+The hosted workflow name is `review <owner>/<repo>#<pr> @ <sha> identity:<hash> cmd:<command-id-or->`; legacy runs may omit identity, and older runs may also omit the command suffix. The workflow emits identity before command id. The poller matches the complete title. Command IDs are decimal strings. The encoded target SHA identifies the reviewed commit; Actions `head_sha` identifies the workflow source and cannot replace it.
+
+Every valid status other than `completed` is active. Versioned runs suppress only the same `(repository, pull request, target SHA, input identity)`; legacy runs without identity suppress the entire head. A completed run with a decimal command ID consumes `(repository, pull request, command ID)` regardless of conclusion, target SHA, identity, or whether the worker started. A distinct command remains eligible. A completed legacy run cannot consume an unidentified command. Failed or unparseable inventory pagination aborts dispatch; successful traversal is not a transactional snapshot and cannot exclude concurrent pagination or dispatch races.
+
+The repository component of these scanner scheduling keys is ASCII lowercase under the `C` locale on both insertion and lookup. The pull request, SHA, and command ID components retain exact matching. The title remains raw evidence, and API calls and dispatch use the configured repository spelling.
+
+The poller reconciles publication evidence, selects unconsumed explicit commands, then applies automatic failure and coverage rules. An explicit command can bypass an automatic same-head failure barrier, but active same-head work still suppresses it. `review-one.sh` creates reviews with `event: "COMMENT"`, submitting them immediately when creation succeeds. For scheduling, the scanner collects first-line marker candidates from trusted-account issue comments and review objects without checking review state or submission time; this collection also does not validate review `commit_id`. These markers are scheduling evidence, not independent proof of submission.
+
+For a status description beginning with a valid `attempt:<UUID>` prefix, settlement requires a trusted-account review with matching target-SHA `commit_id`, a valid first-line marker for that SHA, and an exact second-line receipt for the attempt. When the status includes an input identity, the third review-body line must match that identity too. This path checks neither review state nor `submitted_at`; a returned pending review satisfying those predicates can qualify. For a status description that does not start with `attempt:`, legacy settlement requires a known status timestamp and a trusted same-SHA marked review whose `submitted_at` is strictly later, whether or not it carries a receipt. Equal timestamps do not qualify. A malformed `attempt:` prefix permits neither path. A terminal workflow run proves neither publication nor successful status settlement.
+
+## Decision and trade-off
+
+The command ID in the hosted title survives a failed marker write without adding storage. A terminal workflow run consumes its command even if cancellation or setup/preflight failure prevented the worker from starting. Consumption prevents replay; it does not guarantee a review, failure comment, reaction cleanup, notification, or terminal commit status. A pending status may require operator reconciliation. Submit a new command to request another attempt.
+
+## Residual exposure
+
+Retention and deletion of workflow runs bound this fallback. If a terminal command run disappears and no trusted command-specific marker remains, that command may be selected again even if its commit status remains. Full history traversal consumes Actions API quota proportional to retained runs. These records are scheduling evidence only.

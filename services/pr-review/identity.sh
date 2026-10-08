@@ -9,7 +9,7 @@ review_hash() {
 # Collect the exact text a broad pass reads, including stable omission messages.
 # Files keep arbitrarily large title/body/issue payloads out of argv.
 review_snapshot() {
-  local repo=$1 pr=$2 metadata=$3 intent=$4 issue_repo issue
+  local repo=$1 pr=$2 metadata=$3 intent=$4 issue_repo issue LC_ALL=C
   gh pr view "$pr" --repo "$repo" \
     --json headRefOid,baseRefOid,baseRefName,title,body,closingIssuesReferences > "$metadata" || return 1
   jq -e '(.headRefOid | type) == "string" and (.baseRefOid | type) == "string"
@@ -26,10 +26,10 @@ review_snapshot() {
   jq -er '"# \(.title)\n\n\(.body)"' "$metadata" > "$intent" || return 1
   while read -r issue_repo issue; do
     [ -n "$issue_repo" ] || continue
-    if [ "$issue_repo" != "$repo" ]; then
+    if [[ "${issue_repo,,}" != "${repo,,}" ]]; then
       printf '\n\n## Closes %s#%s (external issue; body omitted)\n' "$issue_repo" "$issue" >> "$intent"
     else
-      gh issue view "$issue" --repo "$issue_repo" --json number,title,body \
+      gh issue view "$issue" --repo "$repo" --json number,title,body \
         --jq '"\n\n## Closes \(.number): \(.title)\n\n\(.body)"' >> "$intent" 2>/dev/null \
         || printf '\n\n## Closes %s#%s (not readable with the review token)\n' "$issue_repo" "$issue" >> "$intent"
     fi
