@@ -1,0 +1,11 @@
+# Combined PR review dispatch durability plan
+
+Scope: one PR for #196, #197, and #201. The [run inventory](pr-review-run-inventory.md), [requested command completion](pr-review-command-completion.md), and [automatic failure completion](pr-review-automatic-failure-completion.md) define the target. Keep the existing publication, attempt receipt, and status settlement path.
+
+1. Preserve #196 full unfiltered pagination. The scanner must fail closed on later-page failure, malformed output, or rate limit, while any noncompleted matching run suppresses same-head dispatch. Confirm >200 and >1000 records in `services/pr-review/test/scan.test.sh`.
+2. Add the exact workflow `run-name` with `cmd:${{ inputs.cmd_id || '-' }}`. Parse whole titles with the documented grammar, retaining decimal command IDs as strings. Derive active `(repo, PR, SHA)`, terminal consumed `(repo, PR, command ID)`, and completed non-success `(repo, PR, SHA)` sets from the same inventory. Keep large histories out of shell argument lists.
+3. Reconcile trusted posted reviews and exact attempt receipts, select unconsumed explicit commands, then apply automatic barriers and coverage. A distinct command bypasses the barrier but never active same-head work. Do not change `review-one.sh` publication or cleanup semantics.
+4. Run the CI entrypoint suites `services/pr-review/test/scan.test.sh` and `services/pr-review/test/review-one.test.sh`. Red cases must show failed requested marker POST and failed automatic error-status POSTs followed by a later poll, with workflow terminal records derived from observed nonzero worker exits. Cover new SHA, new command, legacy names, identity isolation, all active states, all non-success conclusions, success, earlier failure after later success, and later-page failure.
+5. Run ShellCheck, doc cross-reference and GAP checks, `git diff --check`, and configured DoD. Only after code and tests pass, run the supported design and diff review rounds on the existing ledgers and budgets. The parent owns that runner and the single PR.
+
+Red evidence from the design phase is `/tmp/concord-combined-red.log`; red tests are stashed after execution. A failing red suite is expected and is not a passing design or implementation gate.
