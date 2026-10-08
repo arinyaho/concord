@@ -25,6 +25,8 @@ git -C "$repo" checkout -q -b feature
 git -C "$repo" add a.txt
 git -C "$repo" -c user.email=t@t -c user.name=t commit -q -m change
 SHA=$(git -C "$repo" rev-parse HEAD)
+BASE_SHA=$(git -C "$repo" rev-parse main)
+export SHA BASE_SHA
 git -C "$repo" update-ref refs/pull/1/head "$SHA"
 git -C "$repo" checkout -q main
 
@@ -41,6 +43,21 @@ case "$*" in
   "auth setup-git") ;;
   "api user") echo reviewbot ;;
   "repo clone "*) git clone -q "$UPSTREAM" "$4" ;;
+  *"--json headRefOid,baseRefOid,baseRefName,title,body,closingIssuesReferences"*)
+    refs='{"closingIssuesReferences":[]}'
+    case "${ISSUE_REF:-foreign}" in
+      large) refs=$(cat "$ISSUE_CASE_DIR/refs.json") ;;
+      local|unreadable) refs='{"closingIssuesReferences":[{"number":6,"repository":{"name":"r","owner":{"login":"o"}}}]}' ;;
+      *) refs='{"closingIssuesReferences":[{"number":5,"repository":{"name":"private","owner":{"login":"other"}}}]}' ;;
+    esac
+    current_sha=$SHA
+    if [ -e "$LOG.args" ] && [ -n "${ADVANCE_HEAD:-}" ]; then current_sha=bbbbbbbb2222; fi
+    jq --arg sha "$current_sha" --arg base "$BASE_SHA" '. + {headRefOid:$sha,baseRefOid:$base,baseRefName:"main",title:"Add a",body:"The PR body says a.txt must exist."}' <<< "$refs" ;;
+  "api repos/"*"/compare/"*) out "{\"merge_base_commit\":{\"sha\":\"$BASE_SHA\"}}" ;;
+  *"--json headRefOid"*)
+    echo head-lookup >> "$LOG"
+    if [ -e "$LOG.args" ] && [ -n "${HEAD_LOOKUP_FAIL:-}" ]; then exit 1; fi
+    if [ -e "$LOG.args" ] && [ -n "${ADVANCE_HEAD:-}" ]; then out '{"headRefOid":"bbbbbbbb2222"}'; else out "{\"headRefOid\":\"$SHA\"}"; fi ;;
   *"--json baseRefName"*) out '{"baseRefName":"main"}' ;;
   *"--json title,body"*) out '{"title":"Add a","body":"The PR body says a.txt must exist."}' ;;
   *"--json closingIssuesReferences"*)
@@ -70,6 +87,7 @@ case "$*" in
     echo "status $state" >> "$LOG" ;;
   *"/issues/1/comments -f body="*) all="$*"; printf '%s\n' "${all#*body=}" > "$LOG.comment"; echo comment >> "$LOG" ;;
   *"/pulls/1/reviews --input -") cat > "$LOG.review"; echo review >> "$LOG" ;;
+  "api -X DELETE "*"/reactions/1") echo clear-eyes >> "$LOG" ;;
   *"content=+1"*) echo "+1" >> "$LOG" ;;
   *"content=eyes"*) echo 1 ;;
   "api repos/"*"/reactions") echo '[]' ;;
@@ -188,5 +206,15 @@ check "a failed requested review leaves a marker naming the command" '[ "$(head 
 
 REVIEW_REPOS="o/other" run outside-repos '{"decision":"review-only","round":1,"findings":[]}'
 check "a repository outside REVIEW_REPOS is not touched" '[ ! -s "$LOG" ] && [ ! -e "$LOG.args" ]'
+
+ADVANCE_HEAD=1 CMD_ID=43 run advanced-head '{"decision":"review-only","round":1,"findings":[]}'
+check "an advanced head receives no review or thumbs-up" '[ ! -e "$LOG.review" ] && ! grep -qx "+1" "$LOG"'
+check "a superseded review clears eyes and settles the old status" 'grep -qx clear-eyes "$LOG" && [ "$(grep ^status "$LOG" | tail -1)" = "status error" ]'
+check "a superseded requested command stays eligible on the replacement" '[ ! -e "$LOG.comment" ]'
+
+HEAD_LOOKUP_FAIL=1 run failed-head-lookup '{"decision":"review-only","round":1,"findings":[]}'
+check "a failed final head lookup posts no review or thumbs-up" '[ ! -e "$LOG.review" ] && ! grep -qx "+1" "$LOG"'
+check "a failed head lookup cleans up and leaves error" 'grep -qx clear-eyes "$LOG" && [ "$(grep ^status "$LOG" | tail -1)" = "status error" ]'
+check "the head is checked after the engine runs" 'grep -qx head-lookup "$LOG"'
 
 exit "$fail"

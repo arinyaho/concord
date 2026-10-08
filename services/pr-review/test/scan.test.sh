@@ -30,6 +30,11 @@ out() { if [ -n "$jq_expr" ]; then jq -r "$jq_expr" "$1"; else cat "$1"; fi; }
 case "$1 $2" in
   "api user") echo reviewbot ;;
   "pr list") f="$(repo_dir "$4")/prs.json"; [ -f "$f" ] || { echo "HTTP 401" >&2; exit 1; }; out "$f" ;;
+  "pr view") f="$(repo_dir "$5")/prs.json"; if [ -n "$jq_expr" ]; then jq -r ".[0] | $jq_expr" "$f"; else jq '.[0]' "$f"; fi ;;
+  "api repos/"*"/compare/"*)
+    path=${2#repos/}; repo=${path%%/compare/*}; f="$(repo_dir "$repo")/base.json"
+    [ -f "$f" ] || printf '{"merge_base_commit":{"sha":"cccccccc3333"}}' > "$f"
+    out "$f" ;;
   "workflow run"*) ;;
   "run list") f="$FIXTURES/runs.json"; [ -e "$FIXTURES/runs.fail" ] && { echo "HTTP 502" >&2; exit 1; }; out "$f" ;;
   "api -X POST repos/"*"/statuses/"*) ;;
@@ -56,12 +61,13 @@ recent=$(date -u -d "10 minutes ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u 
 earlier=$(date -u -d "20 minutes ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-20M +%Y-%m-%dT%H:%M:%SZ)
 SHA=aaaaaaaa1111
 OTHER=bbbbbbbb2222
+INTENT_HASH=$(printf '# t\n\nbody\n' | node -e 'const c=require("node:crypto");let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(c.createHash("sha256").update(s).digest("hex")))')
 
 # fixture <case> <comments json array or "fail"> <reviews json array> [status json]
 fixture() {
   local d="$FIXTURES/o_$1"
   mkdir -p "$d"
-  printf '[{"number":1,"headRefOid":"%s","isDraft":false,"title":"t","updatedAt":"%s"}]\n' "$SHA" "$now" > "$d/prs.json"
+  printf '[{"number":1,"headRefOid":"%s","isDraft":false,"baseRefName":"main","baseRefOid":"eeeeeeee5555","body":"body","closingIssuesReferences":[],"title":"t","updatedAt":"%s"}]\n' "$SHA" "$now" > "$d/prs.json"
   [ "$2" = fail ] || printf '%s\n' "$2" > "$d/comments.json"
   printf '%s\n' "$3" > "$d/reviews.json"
   [ -z "${4:-}" ] || printf '%s\n' "$4" > "$d/status.json"
@@ -72,7 +78,7 @@ review() { printf '{"user":{"login":"%s"},"commit_id":"%s","submitted_at":"%s","
 # status <state> [pull request number, default 1]: the context is per pull request.
 status() { printf '[{"context":"concord/review (#%s)","state":"%s","created_at":"%s","description":"%s"}]' "${2:-1}" "$1" "$recent" "${3:-}"; }
 failed_marker() { printf '<!-- concord-review-failed: %s cmd:%s -->' "$1" "$2"; }
-marker() { printf '<!-- concord-review: %s mode:%s%s -->' "$1" "$2" "${3:+ cmd:$3}"; }
+marker() { printf '<!-- concord-review: %s mode:%s base:cccccccc3333 intent:%s%s -->' "$1" "$2" "$INTENT_HASH" "${3:+ cmd:$3}"; }
 
 fixture fresh '[]' '[]'
 fixture reviewed '[]' "[$(review reviewbot "$(marker "$SHA" broad)")]"
@@ -255,5 +261,32 @@ if ! grep -q '^workflow run' "$FIXTURES/calls.log"; then echo "ok   a newer erro
 PATH="$work/bin:$PATH" REPOS="o/fresh" SELF=o/self GH_TOKEN=x SELF_TOKEN=x bash "$SCAN" >"$work/fresh-dispatch.out" 2>&1
 if grep -q "^workflow run .*attempt_id=$" "$FIXTURES/calls.log"; then echo "FAIL dispatch omitted attempt id"; fail=1
 elif grep -Eq '^workflow run .*attempt_id=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' "$FIXTURES/calls.log" && grep -q 'description=attempt:' "$FIXTURES/calls.log"; then echo "ok   a dispatch propagates the attempt id"; else echo "FAIL dispatch lacks attempt id"; fail=1; fi
+
+
+# Capture a trusted completion's metadata and replay it against edited PRs.
+# Same head must no longer hide changed requirements or a changed reviewed diff.
+fixture identity-seed '[]' '[]'
+: > "$FIXTURES/calls.log"
+PATH="$work/bin:$PATH" REPOS="o/identity-seed" SELF=o/self GH_TOKEN=x SELF_TOKEN=x bash "$SCAN" > "$work/seed.out" 2>&1
+identity=$(sed -n 's/.* identity=\([^ ]*\).*/\1/p' "$FIXTURES/calls.log" | head -1)
+base=cccccccc3333
+intent=$(printf '# t\n\nbody\n' | node -e 'const c=require("node:crypto");let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(c.createHash("sha256").update(s).digest("hex")))')
+versioned_marker="<!-- concord-review: $SHA mode:broad base:$base intent:$intent -->"
+for name in identity-unchanged retarget-changed retarget-same-diff changed-title changed-body; do
+  fixture "$name" '[]' "[$(review reviewbot "$versioned_marker")]"
+done
+printf '{"merge_base_commit":{"sha":"dddddddd4444"}}' > "$FIXTURES/o_retarget-changed/base.json"
+python3 - "$FIXTURES" <<'PYFIX'
+import json, pathlib, sys
+root=pathlib.Path(sys.argv[1])
+for name, key, value in [('retarget-changed','baseRefName','release'),('retarget-same-diff','baseRefName','release'),('changed-title','title','new title'),('changed-body','body','new requirements')]:
+    p=root/f'o_{name}'/'prs.json'; prs=json.loads(p.read_text()); prs[0][key]=value;p.write_text(json.dumps(prs))
+PYFIX
+for e in identity-unchanged: retarget-changed:broad retarget-same-diff: changed-title:broad changed-body:broad; do
+  name=${e%%:*}; want=${e#*:}
+  got=$(scan env REPOS="o/$name" | sed -n "s/^$name:\([^:]*\):.*/\1/p")
+  if [ "$got" = "$want" ]; then echo "ok   $name"; else echo "FAIL $name: want '$want', got '$got'"; fail=1; fi
+done
+if [ -n "$identity" ]; then echo "ok   dispatch includes reviewed identity"; else echo "FAIL dispatch omits reviewed identity"; fail=1; fi
 
 exit "$fail"
