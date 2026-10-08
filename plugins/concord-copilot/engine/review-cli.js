@@ -3,7 +3,6 @@
 const fs = require('node:fs');
 const { execFileSync } = require('node:child_process');
 const path = require('node:path');
-const { TextDecoder } = require('node:util');
 const { safeIdForFilename } = require('./artifact-name');
 const { writeFileAtomic, publishDirectoryAtomic } = require('./atomic-write');
 const dodExec = require('./dod-exec');
@@ -30,7 +29,7 @@ const {
 } = require('./review');
 const crypto = require('node:crypto');
 const { canonicalPath, openInitiativeRun, claimBroadSweep, reserveLaunchBatch, denialReason, recordDisposition, finaliseInitiativeRun, consumeDispositionDelivery, escalateInitiativeRun, lockDiagnosis, resolveBaseCommit, repositoryIdentity, runPath, terminalDispositionInLedger } = require('./initiative-review-run');
-const { acquireTarget, gitDiff, gitHeadSha, gitDirty } = require('./target');
+const { acquireTarget, gitDiff, gitReviewSnapshot, gitHeadSha, gitDirty } = require('./target');
 const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
 
 function resolveStateDir(resolveFromCwd) {
@@ -366,64 +365,39 @@ function requireRef(ref, verb) {
   if (!ref) throw new Error(`review-cli ${verb}: missing required <ref> argument`);
 }
 
-// Derive the complete changed-path set from a unified git diff. Looking only at
-// `+++ b/...` silently omits deletions (`+++ /dev/null`) and pure renames,
-// allowing a reviewer to skip them without triggering the coverage guard.
-// Keep this parser shared by artifact normalization and plan-fixes so retry and
-// fail-closed coverage enforce the same contract.
-function changedGitPaths(diffText) {
-  const decode = (raw, suffixAllowed = false) => {
-    const valid = (file) => {
-      if (!file || file.includes('\0')) throw new Error('harness-failure: malformed quoted Git path');
-      return file;
-    };
-    if (!raw) throw new Error('harness-failure: malformed quoted Git path');
-    if (!raw.startsWith('"')) return valid(suffixAllowed ? raw.split('\t', 1)[0] : raw);
-    const bytes = []; const escapes = { a: 7, b: 8, f: 12, n: 10, r: 13, t: 9, v: 11, '"': 34, '\\': 92 };
-    let i = 1;
-    while (i < raw.length && raw[i] !== '"') {
-      if (raw[i] === '\\') {
-        i++;
-        if (/^[0-7]$/.test(raw[i] || '')) {
-          if (!/^[0-7]{3}$/.test(raw.slice(i, i + 3))) throw new Error('harness-failure: malformed quoted Git path');
-          const byte = Number.parseInt(raw.slice(i, i + 3), 8);
-          if (byte > 255) throw new Error('harness-failure: malformed quoted Git path');
-          bytes.push(byte); i += 3;
-        } else if (Object.hasOwn(escapes, raw[i])) bytes.push(escapes[raw[i++]]);
-        else throw new Error('harness-failure: malformed quoted Git path');
-      } else {
-        const point = raw.codePointAt(i);
-        bytes.push(...Buffer.from(String.fromCodePoint(point), 'utf8'));
-        i += point > 0xffff ? 2 : 1;
-      }
-    }
-    if (raw[i] !== '"' || (raw.slice(i + 1) && (!suffixAllowed || !raw.slice(i + 1).startsWith('\t')))) throw new Error('harness-failure: malformed quoted Git path');
-    try { return valid(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Uint8Array.from(bytes))); }
-    catch (_) { throw new Error('harness-failure: malformed quoted Git path'); }
-  };
-  const paths = [];
-  const add = (file) => {
-    if (file && file !== '/dev/null' && !paths.includes(file)) paths.push(file);
-  };
-  let inHunk = false;
-  for (const line of String(diffText).split(/\r?\n/)) {
-    if (line.startsWith('diff --git ')) { inHunk = false; continue; }
-    if (line.startsWith('@@')) { inHunk = true; continue; }
-    if (inHunk) continue;
-    if (line.startsWith('--- ') || line.startsWith('+++ ')) {
-      const prefix = line.startsWith('--- ') ? 'a/' : 'b/';
-      const raw = line.slice(4);
-      if (!raw.startsWith('"') && !raw.startsWith(prefix) && !raw.startsWith('/dev/null')) continue;
-      const file = decode(raw, true);
-      if (file === '/dev/null') continue;
-      if (!file.startsWith(prefix) || file.length === prefix.length) throw new Error('harness-failure: malformed quoted Git path');
-      add(file.slice(prefix.length));
-      continue;
-    }
-    if (line.startsWith('rename from ')) { add(decode(line.slice('rename from '.length))); continue; }
-    if (line.startsWith('rename to ')) add(decode(line.slice('rename to '.length)));
+function readChangeManifest(stateDir, ledger, ref, n) {
+  if (ledger.target?.type === 'file') return null;
+  const declared = ledger.execution?.changeManifest;
+  if (ledger.execution?.round !== n || declared?.version !== 1 || !/^[0-9a-f]{64}$/.test(declared.sha256 || '')) {
+    throw new Error('harness-failure: Git changed-path manifest is missing; resume/round-start to regenerate round inputs');
   }
-  return paths;
+  let bytes;
+  try { bytes = fs.readFileSync(path.join(stateDir, `round-${n}-changes.json`)); }
+  catch (_) { throw new Error('harness-failure: Git changed-path manifest is missing or corrupt'); }
+  if (crypto.createHash('sha256').update(bytes).digest('hex') !== declared.sha256) throw new Error('harness-failure: Git changed-path manifest hash changed');
+  try {
+    if (contentHash(fs.readFileSync(path.join(stateDir, `round-${n}-diff.txt`), 'utf8')) !== ledger.execution.diffHash) {
+      throw new Error('harness-failure: Git review diff changed after round-start');
+    }
+  } catch (error) {
+    if (/^harness-failure:/.test(error.message)) throw error;
+    throw new Error('harness-failure: Git review diff is missing');
+  }
+  let manifest;
+  try { manifest = JSON.parse(bytes.toString('utf8')); }
+  catch (_) { throw new Error('harness-failure: Git changed-path manifest is malformed'); }
+  if (manifest.version !== 1 || manifest.round !== n || manifest.target?.type !== 'git' || manifest.target.ref !== ref
+    || manifest.target.headSha !== ledger.target?.head_sha || !/^[0-9a-f]{40}$/.test(manifest.target.baseSha || '')
+    || manifest.diffHash !== ledger.execution.diffHash || !Array.isArray(manifest.paths)
+    || manifest.paths.some((file) => typeof file !== 'string' || !file || file.includes('\0') || path.isAbsolute(file) || path.win32.isAbsolute(file)
+      || file.split('/').some((part) => part === '' || part === '.' || part === '..'))
+    || JSON.stringify(manifest.paths) !== JSON.stringify([...new Set(manifest.paths)].sort())) {
+    throw new Error('harness-failure: Git changed-path manifest binding is invalid');
+  }
+  return manifest;
+}
+function readChangedPaths(stateDir, ledger, ref, n) {
+  return readChangeManifest(stateDir, ledger, ref, n)?.paths || [];
 }
 
 // Fail-closed gate artifact read (design invariant: a broken/missing gate must
@@ -974,8 +948,8 @@ function verifiedRound(ref, stateDir, run, what) {
       throw new Error(`harness-failure: gate-prefixed id "${c.id}" in the correctness or verify artifact -- gate findings must come from the gate reviewer, never the auto-fixing gate`);
     }
   }
-  // Coverage: every changed file must be in examined. This is a GIT-DIFF-shaped
-  // check -- `changed` is parsed from old/new headers and rename metadata -- so both the
+  // Coverage: every changed file must be in examined. This is a Git manifest
+  // check, so both the
   // derivation and the assertion are gated on the target being git (same isGit
   // test record uses). For a file target, round-<n>-diff.txt holds raw document
   // CONTENT, not a git diff; a doc that merely QUOTES a unified diff (a line
@@ -988,11 +962,9 @@ function verifiedRound(ref, stateDir, run, what) {
   const isGit = !ledger.target || ledger.target.type === 'git';
   let changed = [];
   if (isGit) {
-    // Derive the changed-file set from the diff file round-start already wrote
-    // (single-sourced diff) -- do NOT re-run git against ledger.target.base,
-    // which duplicates a git call the CLI already made once this round.
-    const diffText = fs.readFileSync(path.join(stateDir, `round-${n}-diff.txt`), 'utf8');
-    changed = changedGitPaths(diffText);
+    // Use the changed-path manifest saved with this round's diff. Do not
+    // re-run git against a mutable ref while folding reviewer evidence.
+    changed = readChangedPaths(stateDir, ledger, ref, n);
     const examined = new Set(Array.isArray(cJson.examined) ? cJson.examined : []);
     const missing = changed.filter((f) => !examined.has(f));
     if (missing.length) throw new Error(`harness-failure: coverage -- changed file(s) never examined: ${missing.join(', ')}`);
@@ -1364,8 +1336,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       // problem only after verify has already run. File targets hold document
       // contents, not a unified diff, so their examined list stays advisory.
       if (name === 'correctness' && (!ledger.target || ledger.target.type === 'git')) {
-        const diffText = fs.readFileSync(path.join(stateDir, `round-${n}-diff.txt`), 'utf8');
-        const changed = changedGitPaths(diffText);
+        const changed = readChangedPaths(stateDir, ledger, ref, n);
         const examined = new Set(canonical.examined);
         const missing = changed.filter((file) => !examined.has(file));
         if (missing.length) {
@@ -1806,6 +1777,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // on both fresh and resume; its identity is a content hash.
     let headSha;
     let diff;
+    let snapshot;
     let acquiredTarget;
     if (isFileTarget) {
       acquiredTarget = acquireTarget(fileSpec, repoRoot);
@@ -1813,12 +1785,14 @@ function runVerb(resolveFromCwd, args, initiative) {
       diff = acquiredTarget.reviewText;
     } else if (resumed) {
       headSha = gitHeadSha(repoRoot); // no dirty-check on resume
-      diff = gitDiff(repoRoot, base);
+      snapshot = gitReviewSnapshot(repoRoot, baseSha, headSha);
+      diff = snapshot.reviewText;
     } else {
-      const target = acquireTarget({ ref, base, reviewLock: `${ledgerPath(stateDir, slug)}.lock` }, repoRoot); // ignore only our own untracked lock
+      const target = acquireTarget({ ref, base, baseCommit: baseSha, reviewLock: `${ledgerPath(stateDir, slug)}.lock` }, repoRoot); // ignore only our own untracked lock
       acquiredTarget = target;
       headSha = target.identity;
       diff = target.reviewText;
+      snapshot = target.snapshot;
     }
     // Reachability check and resetUnreachable are git-ledger-only operations:
     // a file target carries no head_sha ref and git must not be invoked.
@@ -1832,12 +1806,20 @@ function runVerb(resolveFromCwd, args, initiative) {
       && broadReuse.base_sha === baseSha
       && gitIsReachable(repoRoot, broadReuse.head_sha);
     const retryDiffBase = !isFileTarget && ledger.target?.base_sha === baseSha && ledger.retry_diff_base && gitIsReachable(repoRoot, ledger.retry_diff_base) ? ledger.retry_diff_base : null;
-    if (retryDiffBase || (reuseFrontPass && broadReuse.head_sha !== headSha)) diff = gitDiff(repoRoot, retryDiffBase || broadReuse.head_sha);
+    if (retryDiffBase || (reuseFrontPass && broadReuse.head_sha !== headSha)) {
+      snapshot = gitReviewSnapshot(repoRoot, retryDiffBase || broadReuse.head_sha, headSha);
+      diff = snapshot.reviewText;
+    }
     const diffHash = contentHash(diff);
 
     let resumedCompletedArtifacts = [];
     if (resumed) {
-      const preserveArtifacts = ledger.execution && ledger.execution.round === resumeRound && ledger.execution.diffHash === diffHash;
+      const priorManifest = isGit && ledger.execution?.changeManifest ? readChangeManifest(stateDir, ledger, ref, resumeRound) : null;
+      const preserveScope = !isGit || !!(priorManifest && priorManifest.target.headSha === headSha
+        && priorManifest.target.baseSha === snapshot.leftSha
+        && JSON.stringify(priorManifest.paths) === JSON.stringify(snapshot.paths));
+      const preserveArtifacts = ledger.execution && ledger.execution.round === resumeRound && ledger.execution.diffHash === diffHash
+        && preserveScope;
       const completed = preserveArtifacts
         ? (ledger.execution.completed || []).filter((role) => ['correctness', 'verify', 'plan', 'intent', 'gate', 'gate-verify'].includes(role))
         : [];
@@ -1847,7 +1829,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       }).map((role) => `round-${resumeRound}-${role}.json`));
       // A pending repair is durable round evidence, not stale output. Keep
       // every bound input/output record so resume can verify it or fail closed.
-      for (const role of artifactContract.ARTIFACT_ROLES) {
+      for (const role of preserveScope ? artifactContract.ARTIFACT_ROLES : []) {
         const repairName = `round-${resumeRound}-${role}.repair.json`;
         const repairFile = path.join(stateDir, repairName);
         if (!fs.existsSync(repairFile)) continue;
@@ -1897,6 +1879,13 @@ function runVerb(resolveFromCwd, args, initiative) {
 
     fs.mkdirSync(stateDir, { recursive: true });
     fs.writeFileSync(path.join(stateDir, `round-${ledger.round}-diff.txt`), diff);
+    let changeManifestHash = null;
+    if (isGit) {
+      const manifest = { version: 1, round: ledger.round, target: { type: 'git', ref, headSha, baseSha: snapshot.leftSha }, diffHash, paths: snapshot.paths };
+      const bytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+      fs.writeFileSync(path.join(stateDir, `round-${ledger.round}-changes.json`), bytes);
+      changeManifestHash = crypto.createHash('sha256').update(bytes).digest('hex');
+    }
     fs.writeFileSync(path.join(stateDir, `round-${ledger.round}-history.json`), JSON.stringify({
       groups: ledger.review_history || [],
       fixed: (ledger.findings || []).filter((finding) => finding.status === 'fixed').map((finding) => ({
@@ -1920,12 +1909,15 @@ function runVerb(resolveFromCwd, args, initiative) {
     // plan-fixes would drop that round's gate findings on the floor.
     // A ledger written before gateArmed existed has no boolean here and falls
     // through to the target-type default, which is what it ran under.
+    const reusedGateChangedPaths = reuseFrontPass
+      ? broadReuse.head_sha === headSha ? [] : gitReviewSnapshot(repoRoot, broadReuse.head_sha, headSha).paths
+      : [];
     const reusedGateOpen = reuseFrontPass ? gateLib.carryForwardGateFindings({
       priorGateOpen: broadReuse.gate_open || [],
       thisRoundIds: [],
       verifyRejectedIds: [],
       dismissedIds: ledger.gate_dismissed || [],
-      changedFiles: changedGitPaths(gitDiff(repoRoot, broadReuse.head_sha)),
+      changedFiles: reusedGateChangedPaths,
     }) : ledger.gate_open;
     let gateArmed = lite ? true : broadFlagPassed ? true
       : noBroadFlagPassed ? false
@@ -2055,6 +2047,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       execution: {
         round: ledger.round,
         diffHash,
+        ...(isGit ? { changeManifest: { version: 1, sha256: changeManifestHash } } : {}),
         completed: completedArtifacts,
         artifactHashes: Object.fromEntries(completedArtifacts.map((role) => [role, ledger.execution && ledger.execution.artifactHashes && ledger.execution.artifactHashes[role]]).filter(([, hash]) => typeof hash === 'string')),
         pending: expectedArtifacts.filter((role) => !completedArtifacts.includes(role)),
@@ -2663,4 +2656,4 @@ function runMain(resolveFromCwd) {
   }
 }
 
-module.exports = { renderHandoff, gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitCheckoutTree, runDod, changedGitPaths, main, runMain, withTargetLock };
+module.exports = { renderHandoff, gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitCheckoutTree, runDod, main, runMain, withTargetLock };

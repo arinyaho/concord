@@ -10,6 +10,7 @@ on:
       mode:   { description: 'broad or diff', required: true }
       cmd_id: { description: 'id of the comment that asked, if any', required: false }
       reviewer: { description: 'claude or codex, when the comment named one', required: false }
+      attempt_id: { description: 'unique identifier for this review dispatch', required: false }
 
 # One review per pull request. A newer commit dispatches its own run, which
 # cancels this one -- reviewing a commit the branch has already left is waste.
@@ -58,6 +59,7 @@ jobs:
           SHA: ${{ inputs.sha }}
           MODE: ${{ inputs.mode }}
           CMD_ID: ${{ inputs.cmd_id }}
+          ATTEMPT_ID: ${{ inputs.attempt_id }}
           REVIEW_MODEL: ${{ vars.REVIEW_MODEL }}
           GH_TOKEN: ${{ secrets.REVIEW_PAT }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

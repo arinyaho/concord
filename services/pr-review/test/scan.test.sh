@@ -14,12 +14,12 @@ mkdir -p "$work/bin"
 cat > "$work/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-jq_expr=
+jq_expr=; paginate=
 args=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --jq) jq_expr=$2; shift 2 ;;
-    --paginate) shift ;;
+    --paginate) paginate=1; shift ;;
     *) args+=("$1"); shift ;;
   esac
 done
@@ -42,7 +42,9 @@ case "$1 $2" in
     path=${2#repos/}; repo=${path%%/commits/*}
     f="$(repo_dir "$repo")/status.json"
     [ -e "$(repo_dir "$repo")/status.fail" ] && { echo "HTTP 502" >&2; exit 1; }
-    if [ -f "$f" ]; then out "$f"; else echo '{"statuses":[]}' > "$f.empty"; out "$f.empty"; fi ;;
+    [[ "$path" == */statuses?per_page=100 ]] && [ -n "$paginate" ] || { echo "status pagination required" >&2; exit 1; }
+    if [ -f "$f" ]; then out "$f"; else echo '[]' > "$f.empty"; out "$f.empty"; fi
+    if [ -f "$(repo_dir "$repo")/status-page2.json" ]; then out "$(repo_dir "$repo")/status-page2.json"; fi ;;
   *) echo "fake gh: unexpected $*" >&2; exit 1 ;;
 esac
 EOF
@@ -66,9 +68,9 @@ fixture() {
 }
 # REST shapes: issue comments and pull request reviews.
 comment() { printf '{"user":{"login":"%s"},"author_association":"%s","body":"%s","id":%s,"created_at":"%s"}' "$1" "$2" "$3" "$4" "${5:-$recent}"; }
-review() { printf '{"user":{"login":"%s"},"body":"%s"}' "$1" "$2"; }
+review() { printf '{"user":{"login":"%s"},"commit_id":"%s","submitted_at":"%s","body":"%s"}' "$1" "$SHA" "$recent" "$2"; }
 # status <state> [pull request number, default 1]: the context is per pull request.
-status() { printf '{"statuses":[{"context":"concord/review (#%s)","state":"%s","updated_at":"%s"}]}' "${2:-1}" "$1" "$recent"; }
+status() { printf '[{"context":"concord/review (#%s)","state":"%s","created_at":"%s","description":"%s"}]' "${2:-1}" "$1" "$recent" "${3:-}"; }
 failed_marker() { printf '<!-- concord-review-failed: %s cmd:%s -->' "$1" "$2"; }
 marker() { printf '<!-- concord-review: %s mode:%s%s -->' "$1" "$2" "${3:+ cmd:$3}"; }
 
@@ -99,6 +101,24 @@ fixture asks-codex "[$(comment alice MEMBER "@concord broad codex" 30)]" "[$(rev
 fixture asks-claude "[$(comment alice MEMBER "@concord diff claude" 31)]" "[$(review reviewbot "$(marker "$SHA" broad)")]"
 fixture asks-unknown-reviewer "[$(comment alice MEMBER "@concord diff gpt" 32)]" "[$(review reviewbot "$(marker "$SHA" broad)")]"
 fixture fetch-fails fail '[]'
+attempt=123e4567-e89b-42d3-a456-426614174000
+new_attempt=123e4567-e89b-42d3-a456-426614174001
+receipt="$(marker "$SHA" broad)\\n<!-- concord-review-attempt: $attempt -->"
+fixture posted-pending '[]' "[$(review reviewbot "$receipt")]" "$(status pending 1 "attempt:$attempt queued")"
+fixture posted-new-command "[$(comment alice MEMBER "@concord diff" 81)]" "[$(review reviewbot "$receipt")]" "$(status pending 1 "attempt:$attempt queued")"
+fixture posted-diff-needs-broad '[]' "[$(review reviewbot "$(marker "$SHA" diff)\\n<!-- concord-review-attempt: $attempt -->")]" "$(status pending 1 "attempt:$attempt queued")"
+fixture older-receipt-new-attempt '[]' "[$(review reviewbot "$receipt")]" "$(status pending 1 "attempt:$new_attempt queued")"
+fixture same-second-receipt '[]' "[$(review reviewbot "$receipt")]" "$(status pending 1 "attempt:$attempt queued")"
+fixture foreign-receipt '[]' "[$(review outsider "$receipt")]" "$(status pending 1 "attempt:$attempt queued")"
+fixture malformed-receipt '[]' "[$(review reviewbot "$(marker "$SHA" broad)\\n<!-- concord-review-attempt: invalid -->")]" "$(status pending 1 "attempt:$attempt queued")"
+fixture legacy-tie '[]' "[$(review reviewbot "$(marker "$SHA" broad)")]" "$(status pending)"
+fixture legacy-newer '[]' "[$(review reviewbot "$(marker "$SHA" broad)")]" "$(status pending)"
+sed -i "s/$recent/$earlier/" "$FIXTURES/o_legacy-newer/status.json"
+fixture page2-error '[]' '[]' "$(status success)"
+sed -i "s/$recent/$earlier/" "$FIXTURES/o_page2-error/status.json"
+printf '%s\n' "$(status error)" > "$FIXTURES/o_page2-error/status-page2.json"
+fixture stale-posted '[]' "[$(review reviewbot "$receipt")]" "$(status pending 1 "attempt:$attempt queued")"
+sed -i "s/\"updatedAt\":\"$now\"/\"updatedAt\":\"2000-01-01T00:00:00Z\"/" "$FIXTURES/o_stale-posted/prs.json"
 
 # Actions runs of pr-review.yml still queued or in progress, named by run-name.
 printf '[{"status":"queued","displayTitle":"review o/running#1 @ %s"},{"status":"in_progress","displayTitle":"review o/running-other-pr#2 @ %s"},{"status":"completed","displayTitle":"review o/died-running#1 @ %s"}]\n' "$SHA" "$SHA" "$SHA" > "$FIXTURES/runs.json"
@@ -127,6 +147,17 @@ expect=(
   "broad-never-ran:broad"
   "older-command-pending:diff"
   "fetch-fails:"
+  "posted-pending:"
+  "posted-new-command:diff"
+  "posted-diff-needs-broad:broad"
+  "older-receipt-new-attempt:"
+  "same-second-receipt:"
+  "foreign-receipt:broad"
+  "malformed-receipt:"
+  "legacy-tie:"
+  "legacy-newer:"
+  "page2-error:"
+  "stale-posted:"
 )
 
 fail=0
@@ -195,5 +226,34 @@ else echo "FAIL a large conversation aborts the poll: $(head -1 "$work/large-sca
 PATH="$work/bin:$PATH" REPOS="o/fresh" SELF=o/self GH_TOKEN=x SELF_TOKEN=x bash "$SCAN" >/dev/null 2>&1
 if grep -q "^api -X POST repos/o/fresh/statuses/$SHA -f context=concord/review (#1) .*state=pending" "$FIXTURES/calls.log" && grep -q "^workflow run" "$FIXTURES/calls.log"; then
   echo "ok   a dispatch marks the commit pending"; else echo "FAIL a dispatch marks the commit pending"; fail=1; fi
+
+# Settlement uses the posted attempt as durable evidence and never invokes a reviewer.
+for name in posted-pending same-second-receipt stale-posted; do
+  : > "$FIXTURES/calls.log"
+  PATH="$work/bin:$PATH" REPOS="o/$name" SELF=o/self GH_TOKEN=x SELF_TOKEN=x MANUAL_ONLY=1 bash "$SCAN" >"$work/$name.out" 2>&1
+  if grep -q "^api -X POST repos/o/$name/statuses/$SHA .*state=success .*description=attempt:$attempt " "$FIXTURES/calls.log" && ! grep -q '^workflow run' "$FIXTURES/calls.log"; then
+    echo "ok   $name settles without dispatch"
+  else echo "FAIL $name does not settle the posted attempt"; fail=1; fi
+  if [ "$name" = stale-posted ] && grep -q '/issues/1/comments' "$FIXTURES/calls.log"; then echo "FAIL stale recovery fetched comments"; fail=1; fi
+done
+for name in older-receipt-new-attempt foreign-receipt malformed-receipt; do
+  : > "$FIXTURES/calls.log"
+  PATH="$work/bin:$PATH" REPOS="o/$name" SELF=o/self GH_TOKEN=x SELF_TOKEN=x MANUAL_ONLY=1 bash "$SCAN" >"$work/$name.out" 2>&1
+  if ! grep -q 'state=success' "$FIXTURES/calls.log"; then echo "ok   $name cannot settle"; else echo "FAIL $name settled"; fail=1; fi
+done
+for name in legacy-tie legacy-newer; do
+  : > "$FIXTURES/calls.log"
+  PATH="$work/bin:$PATH" REPOS="o/$name" SELF=o/self GH_TOKEN=x SELF_TOKEN=x MANUAL_ONLY=1 bash "$SCAN" >"$work/$name.out" 2>&1
+  if [ "$name" = legacy-tie ] && ! grep -q 'state=success' "$FIXTURES/calls.log"; then echo "ok   equal legacy timestamps do not settle"
+  elif [ "$name" = legacy-newer ] && grep -q 'state=success' "$FIXTURES/calls.log"; then echo "ok   strictly newer legacy review settles"
+  else echo "FAIL $name legacy settlement"; fail=1; fi
+done
+: > "$FIXTURES/calls.log"
+PATH="$work/bin:$PATH" REPOS="o/page2-error" SELF=o/self GH_TOKEN=x SELF_TOKEN=x bash "$SCAN" >"$work/page2-error.out" 2>&1
+if ! grep -q '^workflow run' "$FIXTURES/calls.log"; then echo "ok   a newer error on page two prevents retry"; else echo "FAIL page two error was hidden"; fail=1; fi
+: > "$FIXTURES/calls.log"
+PATH="$work/bin:$PATH" REPOS="o/fresh" SELF=o/self GH_TOKEN=x SELF_TOKEN=x bash "$SCAN" >"$work/fresh-dispatch.out" 2>&1
+if grep -q "^workflow run .*attempt_id=$" "$FIXTURES/calls.log"; then echo "FAIL dispatch omitted attempt id"; fail=1
+elif grep -Eq '^workflow run .*attempt_id=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' "$FIXTURES/calls.log" && grep -q 'description=attempt:' "$FIXTURES/calls.log"; then echo "ok   a dispatch propagates the attempt id"; else echo "FAIL dispatch lacks attempt id"; fail=1; fi
 
 exit "$fail"

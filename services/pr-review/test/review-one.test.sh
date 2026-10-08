@@ -64,7 +64,9 @@ case "$*" in
     all="$*"; state=${all#*state=}; state=${state%% *}
     # FLAKY_STATUS fails the first attempt to settle a final status.
     if [ -n "${FLAKY_STATUS:-}" ] && [ "$state" != pending ] && [ ! -e "$LOG.flaked" ]; then touch "$LOG.flaked"; exit 1; fi
+    if [ -n "${FAIL_FINAL_STATUS:-}" ] && [ "$state" != pending ]; then echo "final status unavailable" >> "$LOG"; exit 1; fi
     context=${all#*context=}; echo "${context%% -f *}" >> "$LOG.contexts"
+    description=${all#*description=}; echo "${description%% -f *}" >> "$LOG.descriptions"
     echo "status $state" >> "$LOG" ;;
   *"/issues/1/comments -f body="*) all="$*"; printf '%s\n' "${all#*body=}" > "$LOG.comment"; echo comment >> "$LOG" ;;
   *"/pulls/1/reviews --input -") cat > "$LOG.review"; echo review >> "$LOG" ;;
@@ -79,6 +81,7 @@ cat > "$work/bin/node" <<'EOF'
 set -euo pipefail
 # Stands in for the review engine: keeps the intent it was given and the
 # configuration directory it would run Claude with, prints the result.
+if [ "${1:-}" = -e ]; then exec "$REAL_NODE" "$@"; fi
 printf '%s\n' "${CLAUDE_CONFIG_DIR:-unset}" > "$LOG.config-dir"
 printf '%s\n' "$*" > "$LOG.args"
 printf '%s\n' "${OPENAI_API_KEY:-unset}" > "$LOG.openai-key"
@@ -100,14 +103,16 @@ run() {  # run <case> <engine result json>
   export LOG="$work/$1.log"; : > "$LOG"
   PATH="$work/bin:$PATH" UPSTREAM="$repo" ENGINE_RESULT="$2" REPO=o/r PR=1 SHA="$SHA" MODE=broad \
     GH_TOKEN=review-pat-secret CLAUDE_CODE_OAUTH_TOKEN=model-token-secret OPENAI_API_KEY=openai-key-secret \
-    REVIEW_REPOS="${REVIEW_REPOS-o/other o/r}" \
-    bash "$SCRIPT" >"$LOG.out" 2>&1 || true
+    REVIEW_REPOS="${REVIEW_REPOS-o/other o/r}" ATTEMPT_ID="${ATTEMPT_ID_OVERRIDE-123e4567-e89b-42d3-a456-426614174000}" \
+    bash "$SCRIPT" >"$LOG.out" 2>&1 || echo $? > "$LOG.exit"
 }
 
 run clean '{"decision":"review-only","round":1,"findings":[]}'
 check "clean review is posted" 'grep -qx review "$LOG"'
 check "clean review settles the status to success" '[ "$(grep ^status "$LOG" | tail -1)" = "status success" ]'
 check "the marker records the commit and the mode that ran" '[ "$(jq -r .body "$LOG.review" | head -1)" = "<!-- concord-review: $SHA mode:broad -->" ]'
+check "a posted review records a separate attempt receipt" '[ "$(jq -r .body "$LOG.review" | sed -n 2p)" = "<!-- concord-review-attempt: 123e4567-e89b-42d3-a456-426614174000 -->" ]'
+check "worker status descriptions carry its attempt" '! grep -v "^attempt:123e4567-e89b-42d3-a456-426614174000 " "$LOG.descriptions"'
 check "clean review leaves a thumbs-up" 'grep -qx "+1" "$LOG"'
 check "a foreign closing issue is named without its body" 'grep -q "other/private#5 (external issue; body omitted)" "$LOG.intent"'
 check "foreign issue body is never fetched" '[ ! -e "$LOG.issue-views" ]'
@@ -116,6 +121,11 @@ check "foreign issue body cannot reach output" '! grep -q "FOREIGN_BODY_SENTINEL
 check "the reviewer runs with its own Claude configuration directory" '[ "$(cat "$LOG.config-dir")" != unset ] && [ "$(cat "$LOG.config-dir")" != "$HOME/.claude" ]'
 check "that directory holds no settings of the runner account" '[ ! -s "$LOG.config-files" ]'
 check "the pull request body reaches the intent" 'grep -q "must exist" "$LOG.intent"'
+
+ATTEMPT_ID_OVERRIDE=invalid run bad-attempt '{"decision":"review-only","round":1,"findings":[]}'
+check "an invalid attempt is rejected before GitHub or model work" '[ -s "$LOG.exit" ] && [ ! -e "$LOG.review" ] && [ ! -e "$LOG.args" ]'
+ATTEMPT_ID_OVERRIDE= run direct-attempt '{"decision":"review-only","round":1,"findings":[]}'
+check "a direct worker invocation generates an attempt" 'jq -r .body "$LOG.review" | sed -n 2p | grep -Eq "^<!-- concord-review-attempt: [0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12} -->$"'
 
 ISSUE_REF=local run same-repo-issue '{"decision":"review-only","round":1,"findings":[]}'
 check "same-repo issue is fetched" 'grep -q "issue view 6 --repo o/r" "$LOG.issue-views"'
@@ -160,6 +170,10 @@ check "a finding outside the diff goes in the body" 'jq -r .body "$LOG.review" |
 
 FLAKY_STATUS=1 run flaky-status '{"decision":"review-only","round":1,"findings":[]}'
 check "a failed attempt to settle the status is retried" '[ "$(grep ^status "$LOG" | tail -1)" = "status success" ]'
+
+FAIL_FINAL_STATUS=1 CMD_ID=42 run exhausted-final-status '{"decision":"review-only","round":1,"findings":[]}'
+check "an exhausted final status leaves the posted review" 'grep -qx review "$LOG" && [ -s "$LOG.exit" ]'
+check "an exhausted final status never publishes error or failed command marker" '! grep -qx "status error" "$LOG" && [ ! -e "$LOG.comment" ]'
 
 REVIEWER=codex run codex-leak '{"decision":"review-only","round":1,"findings":[{"id":"correctness:x","category":"correctness","file":"a.txt","line":1,"span":"change","summary":"key is openai-key-secret","requirement":""}]}'
 check "the codex reviewer is passed to the engine" 'grep -q -- "--reviewer codex" "$LOG.args"'

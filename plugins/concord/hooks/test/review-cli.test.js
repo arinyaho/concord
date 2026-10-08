@@ -145,34 +145,9 @@ test('review-cli is requirable as a module without executing main (guarded)', ()
   assert.strictEqual(typeof cli.runDod, 'function');
 });
 
-test('changedGitPaths includes added, modified, deleted, and rename paths without /dev/null', () => {
-  const diff = [
-    'diff --git a/modified.js b/modified.js',
-    '--- a/modified.js',
-    '+++ b/modified.js',
-    'diff --git a/added.js b/added.js',
-    '--- /dev/null',
-    '+++ b/added.js',
-    'diff --git a/deleted.js b/deleted.js',
-    '--- a/deleted.js',
-    '+++ /dev/null',
-    'diff --git a/old-name.js b/new-name.js',
-    'similarity index 100%',
-    'rename from old-name.js',
-    'rename to new-name.js',
-  ].join('\n') + '\n';
-
-  assert.deepStrictEqual(cli.changedGitPaths(diff), [
-    'modified.js',
-    'added.js',
-    'deleted.js',
-    'old-name.js',
-    'new-name.js',
-  ]);
-});
-
-test('changedGitPaths decodes Git C-quoted UTF-8 and escaped rename paths', () => {
-  const repo = initRepo();
+test('round-start inventories quoted Unicode rename and deletion paths', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/rename-inventory';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   fs.writeFileSync(path.join(repo, 'é-old.js'), 'same\n');
   fs.writeFileSync(path.join(repo, 'é-gone.js'), 'gone\n');
   execFileSync('git', ['add', 'é-old.js', 'é-gone.js'], { cwd: repo });
@@ -180,30 +155,117 @@ test('changedGitPaths decodes Git C-quoted UTF-8 and escaped rename paths', () =
   execFileSync('git', ['mv', 'é-old.js', 'é-new.js'], { cwd: repo });
   execFileSync('git', ['rm', 'a.txt', 'é-gone.js'], { cwd: repo });
   execFileSync('git', ['commit', '-qm', 'rename and delete'], { cwd: repo });
-  const diff = execFileSync('git', ['diff', 'HEAD~1...HEAD'], { cwd: repo, encoding: 'utf8' });
-  assert.match(diff, /rename from "\\303\\251-old\.js"/);
-  assert.match(diff, /--- "a\/\\303\\251-gone\.js"/);
-  assert.deepStrictEqual(cli.changedGitPaths(diff), ['a.txt', 'é-gone.js', 'é-old.js', 'é-new.js']);
-  const escaped = '--- "a/name\\twith\\nline\\\\slash\\\"quote"\n+++ "b/name\\twith\\nline\\\\slash\\\"quote"\n';
-  assert.deepStrictEqual(cli.changedGitPaths(escaped), ['name\twith\nline\\slash"quote']);
-  assert.deepStrictEqual(cli.changedGitPaths('rename to "\\357\\273\\277x"\n'), ['\ufeffx']);
-  assert.throws(() => cli.changedGitPaths('+++ "b/\\q.js"\n'), /quoted Git path/);
-  assert.throws(() => cli.changedGitPaths('rename to "\\377.js"\n'), /quoted Git path/);
-  assert.throws(() => cli.changedGitPaths('rename to "\\400x"\n'), /quoted Git path/);
-  assert.throws(() => cli.changedGitPaths('rename to ""\n'), /quoted Git path/);
-  assert.throws(() => cli.changedGitPaths('rename to "\\000x"\n'), /quoted Git path/);
+  const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(dir, `round-${n}-changes.json`), 'utf8')).paths,
+    ['a.txt', 'é-gone.js', 'é-new.js', 'é-old.js']);
 });
 
-test('changedGitPaths ignores quoted header lookalikes inside a real Git hunk', () => {
-  const repo = initRepo();
+test('round-start inventory ignores quoted header lookalikes in source hunks', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/hunk-inventory';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   fs.writeFileSync(path.join(repo, 'a.txt'), '-- "a/phantom.js"\nold\n');
   execFileSync('git', ['commit', '-aqm', 'source with header lookalike'], { cwd: repo });
   fs.writeFileSync(path.join(repo, 'a.txt'), '++ "b/\\q.js"\nnew\n');
   execFileSync('git', ['commit', '-aqm', 'replace source'], { cwd: repo });
-  const diff = execFileSync('git', ['diff', 'HEAD~1...HEAD'], { cwd: repo, encoding: 'utf8' });
-  assert.match(diff, /^--- "a\/phantom\.js"$/m);
-  assert.match(diff, /^\+\+\+ "b\/\\q\.js"$/m);
-  assert.deepStrictEqual(cli.changedGitPaths(diff), ['a.txt']);
+  const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(dir, `round-${n}-changes.json`), 'utf8')).paths, ['a.txt']);
+});
+
+test('round-start preserves unusual Git paths and rejects a declared NUL path', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/unusual-inventory';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const unusual = '\ufeffé\tline\n.txt';
+  fs.writeFileSync(path.join(repo, unusual), 'content\n');
+  execFileSync('git', ['add', unusual], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'unusual path'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+  const manifestPath = path.join(dir, `round-${n}-changes.json`);
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  assert.deepStrictEqual(manifest.paths, [unusual]);
+  manifest.paths = ['bad\0path'];
+  const bytes = Buffer.from(JSON.stringify(manifest));
+  fs.writeFileSync(manifestPath, bytes);
+  const slug = review.targetSlug(ref);
+  const ledger = review.readLedger(dir, slug);
+  ledger.execution.changeManifest.sha256 = require('node:crypto').createHash('sha256').update(bytes).digest('hex');
+  review.writeLedger(dir, slug, ledger);
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: [unusual], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  assert.throws(() => run(['findings', ref], { env, skipPlanSeed: true }), /changed-path manifest binding is invalid/);
+});
+
+test('round-start freezes header-only Git changes for correctness coverage', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/header-only';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'empty.txt'), '');
+  fs.writeFileSync(path.join(repo, 'binary.bin'), Buffer.from([0, 1, 2, 0]));
+  fs.chmodSync(path.join(repo, 'a.txt'), 0o755);
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'header-only changes'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: [], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  assert.throws(() => run(['plan-fixes', ref], { env }), /coverage -- changed file\(s\) never examined: a\.txt, binary\.bin, empty\.txt/);
+  const manifest = JSON.parse(fs.readFileSync(path.join(dir, `round-${n}-changes.json`), 'utf8'));
+  assert.deepStrictEqual(manifest.paths, ['a.txt', 'binary.bin', 'empty.txt']);
+});
+
+test('header-only changed files retain correctness and intent findings', () => {
+  const repo = initRepoWithIntent('printf "REQ: empty file"'); const dir = tmpDir(); const ref = 'feat/header-findings';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'empty.txt'), '');
+  execFileSync('git', ['add', 'empty.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add empty file'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'findings', examined: ['empty.txt'], findings: [
+    { id: 'correctness:empty', file: 'empty.txt', span: '', summary: 'empty file needs content' },
+  ] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'intent', { status: 'findings', findings: [
+    { id: 'intent:empty', file: 'empty.txt', span: '', requirement: 'REQ: empty file', summary: 'missing content' },
+  ] });
+  run(['plan-fixes', ref], { env });
+  const ledger = review.readLedger(dir, review.targetSlug(ref));
+  assert.deepStrictEqual(ledger.intent_parked.map((f) => f.id), ['intent:empty']);
+  assert.ok(JSON.parse(fs.readFileSync(path.join(dir, `round-${n}-plan.json`), 'utf8'))
+    .groups.some((group) => group.findingIds.includes('correctness:empty')));
+});
+
+test('a Git round rejects changed manifest or diff bytes before folding findings', () => {
+  for (const changed of ['manifest', 'diff']) {
+    const repo = initRepo(); const dir = tmpDir(); const ref = `feat/tamper-${changed}`;
+    const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+    execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+    const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+    writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+    writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+    const file = path.join(dir, `round-${n}-${changed === 'manifest' ? 'changes.json' : 'diff.txt'}`);
+    fs.appendFileSync(file, 'tampered\n');
+    assert.throws(() => run(['findings', ref], { env, skipPlanSeed: true }), /Git (changed-path manifest hash changed|review diff changed)/, changed);
+  }
+});
+
+test('legacy Git round regenerates its manifest and discards old reviewer repair evidence on resume', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/legacy-manifest';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const first = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env }));
+  const slug = review.targetSlug(ref);
+  const ledger = review.readLedger(dir, slug);
+  delete ledger.execution.changeManifest;
+  review.writeLedger(dir, slug, ledger);
+  const repairPath = path.join(dir, `round-${first.round}-correctness.repair.json`);
+  fs.writeFileSync(repairPath, '{"legacy":true}');
+  writeArtifact(dir, first.round, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, first.round, 'verify', { status: 'ok', rejected: [] });
+  assert.throws(() => run(['findings', ref], { env, skipPlanSeed: true }), /changed-path manifest is missing/);
+  const resumed = JSON.parse(run(['round-start', ref], { env }));
+  assert.deepStrictEqual(resumed.completedArtifacts, []);
+  assert.deepStrictEqual(resumed.repairArtifacts, {});
+  assert.strictEqual(fs.existsSync(repairPath), false);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(dir, `round-${resumed.round}-changes.json`), 'utf8')).paths, ['a.txt']);
 });
 
 test('plan-fixes enforces coverage and keeps intent findings for a C-quoted Unicode file', () => {
@@ -3638,6 +3700,25 @@ test('rerun carries unresolved broad findings on unchanged files', () => {
   const recorded = JSON.parse(run(['record', ref], { env }));
   assert.strictEqual(recorded.decision.gatePending, true, 'an unchanged unresolved broad finding must still block clean');
   assert.deepStrictEqual(review.readLedger(dir, review.targetSlug(ref)).gate_open.map((finding) => finding.id), ['gate:cross-context:unchanged']);
+});
+
+test('rerun at the same HEAD retains a broad finding on a PR-changed file', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/carry-same-head';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', ref, base], { env, broadDefault: true })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'gate', { status: 'ok', findings: [{ id: 'gate:design-conformance:standing', file: 'a.txt', span: 'two', summary: 'standing gap', requirement: 'r' }] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', ref], { env });
+  assert.strictEqual(JSON.parse(run(['record', ref], { env })).decision.gatePending, true);
+  run(['rerun', ref], { env });
+  const next = JSON.parse(run(['round-start', ref], { env, broadDefault: true }));
+  assert.strictEqual(next.gateApplied, false);
+  assert.deepStrictEqual(review.readLedger(dir, review.targetSlug(ref)).gate_open.map((finding) => finding.id), ['gate:design-conformance:standing']);
 });
 
 test('rerun does not reuse an interrupted front pass', () => {

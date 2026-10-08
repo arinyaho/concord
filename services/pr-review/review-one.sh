@@ -34,16 +34,22 @@ fi
 # The marker records the commit and the pass that ran, so the poller knows
 # whether this pull request has had its broad review.
 MARKER="<!-- concord-review: $SHA mode:$MODE${CMD_ID:+ cmd:$CMD_ID} -->"
+ATTEMPT_ID="${ATTEMPT_ID:-$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')}"
+if [[ ! "$ATTEMPT_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]]; then
+  echo "ATTEMPT_ID must be a UUID" >&2; exit 1
+fi
+ATTEMPT_ID="${ATTEMPT_ID,,}"
 gh auth setup-git   # git itself does not read GH_TOKEN; the clone below needs the credential helper
 ME=$(gh api user --jq .login)   # whose reactions are ours to clear
 
 # Retried, because a status left pending makes the commit look under review.
 # The context names the pull request, since other pull requests can share the commit.
 status() {
-  local attempt
+  local attempt description="attempt:$ATTEMPT_ID $2"
+  if [ "${#description}" -gt 140 ]; then echo "status description exceeds 140 characters" >&2; return 1; fi
   for attempt in 1 2 3; do
     gh api -X POST "repos/$REPO/statuses/$SHA" -f "context=concord/review (#$PR)" \
-      -f state="$1" -f description="$2" >/dev/null 2>&1 && return 0
+      -f state="$1" -f description="$description" >/dev/null 2>&1 && return 0
     sleep "$attempt"
   done
   return 1
@@ -67,14 +73,18 @@ unreact() {
 unreact '+1'
 
 rid=$(gh api -X POST "repos/$REPO/issues/$PR/reactions" -f content=eyes --jq .id 2>/dev/null || true)
-work=$(mktemp -d); intent=$(mktemp); claude_config=$(mktemp -d); posted=
+work=$(mktemp -d); intent=$(mktemp); claude_config=$(mktemp -d); posted=; settled=
 # Runs on every exit -- success, a failed command under set -e, or a cancel
 # because a newer commit superseded this review. Only a posted review settles
 # the status; anything else leaves it in error rather than pending.
 finish() {
   if [ -n "$rid" ]; then gh api -X DELETE "repos/$REPO/issues/$PR/reactions/$rid" >/dev/null 2>&1 || true; fi
   rm -rf "$work" "$intent" "$claude_config"
-  [ -n "$posted" ] && return
+  if [ -n "$posted" ]; then
+    # Publication is durable. If settlement failed, only retry success.
+    [ -n "$settled" ] || status success "review posted; status recovery needed" || true
+    return
+  fi
   status error "review did not complete" || true
   # A requested review that fails is marked done, so the poller does not run
   # the same command again on every poll or after the next push.
@@ -154,6 +164,7 @@ else
   verdict=$(jq -r '[.findings[].category] | group_by(.) | map("\(length) \(.[0])") | join(", ")' <<<"$result")
 fi
 header="$MARKER
+<!-- concord-review-attempt: $ATTEMPT_ID -->
 <!-- concord-review-findings: $n -->
 $MODE_NOTE
 $verdict"
@@ -189,3 +200,4 @@ case "$n" in
 esac
 # The review is posted; a status that cannot be settled fails the job visibly.
 status success "$verdict_status" || { echo "could not set the concord/review status for $REPO@$SHA" >&2; exit 1; }
+settled=1

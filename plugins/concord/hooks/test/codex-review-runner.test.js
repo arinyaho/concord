@@ -2828,6 +2828,7 @@ for (const [name, target, action] of [
   ['rewrites the normalized correctness artifact', 'round-1-correctness.json', 'rewrite'],
   ['deletes the normalized correctness artifact', 'round-1-correctness.json', 'delete'],
   ['rewrites the round diff', 'round-1-diff.txt', 'rewrite'],
+  ['rewrites the changed-path manifest', 'round-1-changes.json', 'rewrite'],
   ['rewrites the round history', 'round-1-history.json', 'rewrite'],
   ['rewrites the intent', 'intent-file.md', 'rewrite'],
   ['rewrites the ledger', 'ledger', 'rewrite'],
@@ -2841,6 +2842,7 @@ for (const [name, target, action] of [
     const result = h.cli(args);
     if (args[0] === 'round-start') {
       fs.writeFileSync(path.join(stateDir, 'round-1-diff.txt'), 'original diff\n');
+      fs.writeFileSync(path.join(stateDir, 'round-1-changes.json'), '{"paths":[]}\n');
       fs.writeFileSync(path.join(stateDir, 'round-1-history.json'), '{}\n');
       fs.writeFileSync(path.join(stateDir, `intent-${require('../../core/review').targetSlug('feature/tamper')}.md`), 'original intent\n');
       fs.writeFileSync(require('../../core/review').ledgerPath(stateDir, require('../../core/review').targetSlug('feature/tamper')), '{}\n');

@@ -916,6 +916,7 @@ async function runRounds(options) {
     const protectedLedger = ledgerPath(context.stateDir, context.slug);
     for (const file of [
       path.join(context.stateDir, `round-${context.round}-diff.txt`),
+      ...(reviewOnly && started.targetType !== 'file' ? [path.join(context.stateDir, `round-${context.round}-changes.json`)] : []),
       path.join(context.stateDir, `round-${context.round}-history.json`),
       path.join(context.stateDir, `intent-${context.slug}.md`),
       protectedLedger,

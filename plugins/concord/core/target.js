@@ -9,6 +9,7 @@ const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { TextDecoder } = require('node:util');
 const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
 
 function sh(bin, args, opts = {}) {
@@ -24,6 +25,29 @@ function sh(bin, args, opts = {}) {
 function gitDiff(repoRoot, base) {
   const args = base ? ['diff', `${base}...HEAD`] : ['diff', 'HEAD'];
   return sh('git', args, { cwd: repoRoot });
+}
+
+function gitReviewSnapshot(repoRoot, baseCommit, headCommit) {
+  const leftSha = baseCommit ? sh('git', ['merge-base', baseCommit, headCommit], { cwd: repoRoot }).trim() : headCommit;
+  const reviewText = sh('git', ['diff', leftSha, headCommit, '--'], { cwd: repoRoot });
+  const raw = sh('git', ['diff', '--name-only', '-z', '--no-renames', leftSha, headCommit, '--'], { cwd: repoRoot, encoding: null });
+  if (raw.length && raw[raw.length - 1] !== 0) throw new Error('harness-failure: Git changed-path inventory is not NUL terminated');
+  const decode = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+  const paths = [];
+  let start = 0;
+  for (let i = 0; i < raw.length; i++) {
+    if (raw[i] !== 0) continue;
+    if (i === start) throw new Error('harness-failure: Git changed-path inventory contains an empty path');
+    let file;
+    try { file = decode.decode(raw.subarray(start, i)); }
+    catch (_) { throw new Error('harness-failure: Git changed-path inventory is not UTF-8'); }
+    if (!file || path.isAbsolute(file) || path.win32.isAbsolute(file) || file.split('/').some((part) => part === '' || part === '.' || part === '..')) {
+      throw new Error('harness-failure: Git changed-path inventory contains an unsafe path');
+    }
+    paths.push(file);
+    start = i + 1;
+  }
+  return { leftSha, headSha: headCommit, reviewText, paths: [...new Set(paths)].sort() };
 }
 
 // Moved verbatim from review-cli.js round-start L434 (`git rev-parse HEAD`).
@@ -54,8 +78,9 @@ function gitDirty(repoRoot, reviewLock = null) {
 function gitTarget(spec, repoRoot) {
   if (gitDirty(repoRoot, spec.reviewLock)) throw new Error('round-start: working tree is dirty; commit or stash before review-until-green');
   const identity = gitHeadSha(repoRoot);
-  const reviewText = gitDiff(repoRoot, spec.base);
-  return { type: 'git', reviewText, identity, hasDoD: true };
+  const baseCommit = spec.baseCommit || (spec.base ? sh('git', ['rev-parse', spec.base], { cwd: repoRoot }).trim() : null);
+  const snapshot = gitReviewSnapshot(repoRoot, baseCommit, identity);
+  return { type: 'git', reviewText: snapshot.reviewText, identity, hasDoD: true, snapshot };
 }
 
 // Content hash for a file target's identity (SHA-1 of the concatenated review
@@ -165,4 +190,4 @@ function acquireTarget(spec, repoRoot) {
   return gitTarget(spec, repoRoot);
 }
 
-module.exports = { acquireTarget, gitTarget, fileTarget, gitDiff, gitHeadSha, gitDirty };
+module.exports = { acquireTarget, gitTarget, fileTarget, gitDiff, gitReviewSnapshot, gitHeadSha, gitDirty };
