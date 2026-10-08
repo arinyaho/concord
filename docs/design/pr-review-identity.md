@@ -31,11 +31,14 @@ suppressed pending an explicit command or a new commit. Exact attempt receipts
 still reconcile publication status, independently of coverage, and remain the
 second line of the review body.
 
-The worker re-reads head immediately before each review POST, including a
-fallback POST. A changed head or failed lookup prevents findings and thumbs-up,
-attempts to clear the eyes reaction and settle the dispatched commit's status
-to error. Cleanup writes are best-effort; an API outage can leave eyes or a
-pending status even when publication was safely prevented.
+The worker re-reads the complete review identity and head immediately before
+each review POST, including a fallback POST. A changed input, head or failed
+lookup prevents findings and thumbs-up, attempts to clear the eyes reaction and
+settle the dispatched commit's status to error. Cleanup writes are best-effort;
+an API outage can leave eyes or a pending status even when publication was
+safely prevented. Before writing pending or terminal status, a worker checks
+that the status is absent for a direct invocation or still belongs to its own
+attempt. A replacement attempt's or unknown owner's status is left untouched.
 A superseded requested command receives no failed-command completion marker.
 A final identity check also rejects a changed base or intent before publication.
 After publication, the worker rechecks head before adding a PR-wide thumbs-up.

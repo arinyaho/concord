@@ -5,6 +5,10 @@
 #
 # DRY_RUN=1 prints what it would dispatch and dispatches nothing.
 set -euo pipefail
+# shellcheck source=services/pr-review/identity.sh
+source "$(dirname "$0")/identity.sh"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
 
 : "${REPOS:?set REPOS to a space-separated list of owner/name}"
 : "${GH_TOKEN:?REVIEW_PAT is not set}"
@@ -35,24 +39,23 @@ for repo in $REPOS; do
     [ -n "$num" ] || continue
     # A review of this commit is queued or running. Dispatching it again would
     # cancel that run, and a review longer than the poll interval never posts.
-    # A review of this commit is queued or running. Dispatching it again would
-    # cancel that run.
     grep -qxF "review $repo#$num @ $sha" <<<"$active" && continue
     # The status context names the pull request, since other pull requests can
     # share the commit. Without the lookup there is no telling whether the last
     # review failed, so the pull request waits for the next poll.
     statuses=$(gh api --paginate "repos/$repo/commits/$sha/statuses?per_page=100" --jq '.[]' 2>/dev/null | jq -s .) || continue
-    latest=$(jq -c --arg context "concord/review (#$num)" '
+    latest=$(jq -Sc --arg context "concord/review (#$num)" '
       [to_entries[] | select(.value.context == $context)]
       | sort_by(.value.created_at // .value.updated_at // "", -.key) | last | .value // {}' <<<"$statuses") || continue
     state=$(jq -r '.state // ""' <<<"$latest")
     description=$(jq -r '.description // ""' <<<"$latest")
+    status_identity=
+    if [[ "$description" =~ identity:([0-9a-f]{64})(\ |$) ]]; then status_identity=${BASH_REMATCH[1]}; fi
     status_created=$(jq -r '.created_at // .updated_at // ""' <<<"$latest")
     stale=
     [ "$updated" \> "$cutoff" ] || stale=1
     # Old inactive PRs need no conversation read. Pending/error statuses may
     # still need receipt recovery, which only needs the posted reviews.
-    if [ -n "$stale" ] && { [ -z "$state" ] || [ "$state" = success ]; }; then continue; fi
 
     # Every page of the conversation; without it there is no telling whether
     # this commit was reviewed, so the pull request waits for the next poll.
@@ -67,17 +70,20 @@ for repo in $REPOS; do
     attempt=
     if [[ "$description" =~ ^attempt:([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})(\ |$) ]]; then
       attempt="${BASH_REMATCH[1],,}"
-      receipt=$(jq -r --arg me "$ME" --arg sha "$sha" --arg attempt "$attempt" '
+      receipt=$(jq -r --arg me "$ME" --arg sha "$sha" --arg attempt "$attempt" --arg identity "$status_identity" '
         [.[] | select(.user.login == $me and .commit_id == $sha)
           | (.body // "" | split("\n")) as $lines
-          | select($lines[0] | test("^<!-- concord-review: " + $sha + " mode:(broad|diff)( cmd:[0-9]+)? -->$"))
-          | select($lines[1] == ("<!-- concord-review-attempt: " + $attempt + " -->"))] | length' <<<"$reviews") || continue
+          | select($lines[0] | test("^<!-- concord-review: " + $sha + " mode:(broad|diff)( base:[0-9a-f]+ intent:[0-9a-f]{64})?( cmd:[0-9]+)? -->$"))
+          | select($lines[1] == ("<!-- concord-review-attempt: " + $attempt + " -->"))
+          | select($identity == "" or $lines[2] == ("<!-- concord-review-identity: " + $identity + " -->"))] | length' <<<"$reviews") || continue
       if [ "$receipt" -gt 0 ]; then
         if [ "$state" != success ]; then
           echo "settle posted review: $repo#$num @ ${sha:0:8} attempt:$attempt"
           if [ -z "${DRY_RUN:-}" ]; then
+            latest_now=$(review_latest_status "$repo" "$num" "$sha") || continue
+            [ "$latest_now" = "$latest" ] || continue
             gh api -X POST "repos/$repo/statuses/$sha" -f "context=concord/review (#$num)" \
-              -f state=success -f "description=attempt:$attempt review posted" >/dev/null || continue
+              -f state=success -f "description=attempt:$attempt${status_identity:+ identity:$status_identity} posted" >/dev/null || continue
           fi
         fi
         state=success
@@ -89,23 +95,35 @@ for repo in $REPOS; do
       legacy=$(jq -r --arg me "$ME" --arg sha "$sha" --arg created "$status_created" '
         [.[] | select(.user.login == $me and .commit_id == $sha and .submitted_at > $created)
           | (.body // "" | split("\n"))[0]
-          | select(test("^<!-- concord-review: " + $sha + " mode:(broad|diff)( cmd:[0-9]+)? -->$"))] | length' <<<"$reviews") || continue
+          | select(test("^<!-- concord-review: " + $sha + " mode:(broad|diff)( base:[0-9a-f]+ intent:[0-9a-f]{64})?( cmd:[0-9]+)? -->$"))] | length' <<<"$reviews") || continue
       if [ "$legacy" -gt 0 ]; then
         echo "settle legacy posted review: $repo#$num @ ${sha:0:8}"
         if [ -z "${DRY_RUN:-}" ]; then
+          latest_now=$(review_latest_status "$repo" "$num" "$sha") || continue
+          [ "$latest_now" = "$latest" ] || continue
           gh api -X POST "repos/$repo/statuses/$sha" -f "context=concord/review (#$num)" \
             -f state=success -f description="review posted" >/dev/null || continue
         fi
         state=success
       fi
     fi
-    [ -z "$stale" ] || continue
     # A marker counts only as the first line of a body this account posted:
     # the lines after it carry model-written finding text. A posted review
     # leaves "concord-review:", a failed requested one "concord-review-failed:".
     markers=$(printf '%s\n%s\n' "$comments" "$reviews" | jq -r --arg me "$ME" '.[]
                  | select(.user.login == $me) | .body // "" | split("\n")[0]
                  | select(startswith("<!-- concord-review"))') || continue
+
+    # Closing issue edits need not touch PR.updatedAt. Check inputs on old
+    # covered PRs too, while retaining the cutoff for initial automatic passes.
+    if [ -n "$stale" ] && ! grep -qF ' mode:broad' <<<"$markers"; then continue; fi
+    review_snapshot "$repo" "$num" "$work/pr.json" "$work/intent.md" || continue
+    [ "$SNAP_HEAD" = "$sha" ] || continue  # changed since the PR listing
+    grep -qxF "review $repo#$num @ $sha identity:$SNAP_ID" <<<"$active" && continue
+    scope="base:$SNAP_BASE intent:$SNAP_INTENT"
+    broad_covered=
+    if grep -qE "^<!-- concord-review: [0-9a-f]+ mode:broad $scope( cmd:[0-9]+)? -->$" <<<"$markers"; then broad_covered=1; fi
+    if [ -n "$stale" ] && [ -n "$broad_covered" ]; then continue; fi
 
     # Commands from someone with a role on the repository, newest first. The
     # newest one not yet done runs: done means a marker names it, whether its
@@ -121,29 +139,27 @@ for repo in $REPOS; do
                     | (.body | capture("@concord +(?<m>broad|diff)( +(?<r>claude|codex))?(\\s|$)")) as $c
                     | "\(.id)\t\($c.m)\t\($c.r // "-")"' <<<"$comments")
     if [ -n "$cmd_id" ]; then
-      requested+=("$repo $num $sha $cmd_mode $cmd_id $reviewer $title")
+      requested+=("$repo $num $sha $cmd_mode $cmd_id $reviewer $SNAP_ID $title")
       continue
     fi
     # Manual mode: review only what somebody asked for with an @concord comment.
     [ -n "${MANUAL_ONLY:-}" ] && continue
     # A failed review is not retried on its own: a new push or an @concord
     # command starts the next one.
-    [ "$state" = error ] && continue
-    # A broad review of this commit covers the automatic pass entirely.
-    if grep -qE "^<!-- concord-review: $sha mode:broad( cmd:[0-9]+)? -->$" <<<"$markers"; then continue; fi
-    # The broad pass runs until one has completed on this pull request, then
-    # later pushes get the diff-local pass alone. A requested diff on the
-    # current commit does not satisfy the first broad pass.
-    if grep -qF ' mode:broad' <<<"$markers"; then mode='diff'; else mode='broad'; fi
-    if grep -qE "^<!-- concord-review: $sha mode:$mode( cmd:[0-9]+)? -->$" <<<"$markers"; then continue; fi
-    automatic+=("$repo $num $sha $mode - - $title")
+    if [ "$state" = error ] && { [ -z "$status_identity" ] || [ "$status_identity" = "$SNAP_ID" ]; }; then continue; fi
+    # Reuse a broad pass only for the same requirements and actual merge base.
+    # Legacy head-only completions establish no coverage and refresh once.
+    if [ -n "$broad_covered" ]; then mode='diff'; else mode='broad'; fi
+    if grep -qE "^<!-- concord-review: $sha mode:broad $scope( cmd:[0-9]+)? -->$" <<<"$markers"; then continue; fi
+    if grep -qE "^<!-- concord-review: $sha mode:$mode $scope( cmd:[0-9]+)? -->$" <<<"$markers"; then continue; fi
+    automatic+=("$repo $num $sha $mode - - $SNAP_ID $title")
   done < <(jq -r '.[] | select(.isDraft | not) | "\(.number)\t\(.headRefOid)\t\(.updatedAt)\t\(.title)"' <<<"$prs")
 done
 
 started=0
 for entry in ${requested[@]+"${requested[@]}"} ${automatic[@]+"${automatic[@]}"}; do
   [ "$started" -ge "$MAX_PER_RUN" ] && break
-  read -r repo num sha mode cmd_id reviewer title <<<"$entry"
+  read -r repo num sha mode cmd_id reviewer identity title <<<"$entry"
   # A command may name the reviewer; otherwise the workflow uses REVIEW_REVIEWER.
   [ "$reviewer" = - ] && reviewer=
   phase=requested
@@ -152,11 +168,11 @@ for entry in ${requested[@]+"${requested[@]}"} ${automatic[@]+"${automatic[@]}"}
   if [ -z "${DRY_RUN:-}" ]; then
     attempt_id=$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')
     GH_TOKEN="$SELF_TOKEN" gh workflow run pr-review.yml --repo "$SELF" \
-      -f repo="$repo" -f pr="$num" -f sha="$sha" -f mode="$mode" -f cmd_id="$cmd_id" -f reviewer="$reviewer" -f attempt_id="$attempt_id"
+      -f repo="$repo" -f pr="$num" -f sha="$sha" -f mode="$mode" -f cmd_id="$cmd_id" -f reviewer="$reviewer" -f attempt_id="$attempt_id" -f identity="$identity"
     # Pending from the moment it is dispatched, so a run still waiting for a
     # runner is not dispatched again by the next poll.
     gh api -X POST "repos/$repo/statuses/$sha" -f "context=concord/review (#$num)" \
-      -f state=pending -f "description=attempt:$attempt_id queued ($mode)" >/dev/null || true
+      -f state=pending -f "description=attempt:$attempt_id identity:$identity queued $mode" >/dev/null || true
   fi
   started=$((started + 1))
 done

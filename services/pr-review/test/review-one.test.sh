@@ -54,13 +54,15 @@ case "$*" in
     if [ -n "${ADVANCE_BEFORE_REVIEW:-}" ]; then current_sha=bbbbbbbb2222; fi
     if [ -e "$LOG.args" ] && [ -n "${ADVANCE_HEAD:-}" ]; then current_sha=bbbbbbbb2222; fi
     body='The PR body says a.txt must exist.'
-    if [ -e "$LOG.args" ] && [ -n "${CHANGE_INTENT:-}" ]; then body='new requirements'; fi
+    if { [ -e "$LOG.args" ] && [ -n "${CHANGE_INTENT:-}" ]; } || { [ -e "$LOG.inline-failed" ] && [ -n "${CHANGE_INTENT_ON_FALLBACK:-}" ]; }; then body='new requirements'; fi
     jq --arg body "$body" --arg sha "$current_sha" --arg base "$BASE_SHA" '. + {headRefOid:$sha,baseRefOid:$base,baseRefName:"main",title:"Add a",body:$body}' <<< "$refs" ;;
-  "api repos/"*"/compare/"*) out "{\"merge_base_commit\":{\"sha\":\"$BASE_SHA\"}}" ;;
+  "api repos/"*"/compare/"*)
+    if [ -e "$LOG.args" ] && [ -n "${CHANGE_BASE:-}" ]; then out '{"merge_base_commit":{"sha":"dddddddd4444"}}'; exit; fi
+    out "{\"merge_base_commit\":{\"sha\":\"$BASE_SHA\"}}" ;;
   *"--json headRefOid"*)
     echo head-lookup >> "$LOG"
     if [ -e "$LOG.args" ] && [ -n "${HEAD_LOOKUP_FAIL:-}" ]; then exit 1; fi
-    if { [ -e "$LOG.args" ] && [ -n "${ADVANCE_HEAD:-}" ]; } || [ -e "$LOG.inline-failed" ]; then out '{"headRefOid":"bbbbbbbb2222"}'; else out "{\"headRefOid\":\"$SHA\"}"; fi ;;
+    if { [ -e "$LOG.args" ] && [ -n "${ADVANCE_HEAD:-}" ]; } || { [ -e "$LOG.inline-failed" ] && [ -z "${CHANGE_INTENT_ON_FALLBACK:-}" ]; } || { [ -e "$LOG.review" ] && [ -n "${ADVANCE_AFTER_POST:-}" ]; }; then out '{"headRefOid":"bbbbbbbb2222"}'; else out "{\"headRefOid\":\"$SHA\"}"; fi ;;
   *"--json baseRefName"*) out '{"baseRefName":"main"}' ;;
   *"--json title,body"*) out '{"title":"Add a","body":"The PR body says a.txt must exist."}' ;;
   *"--json closingIssuesReferences"*)
@@ -80,6 +82,10 @@ case "$*" in
     else
       out '{"number":6,"title":"Local requirement","body":"LOCAL_BODY_SENTINEL"}'
     fi ;;
+  "api repos/"*"/commits/"*"/statuses?per_page=100")
+    if { [ -e "$LOG.args" ] && [ -n "${NEWER_ATTEMPT:-}" ]; } || [ -n "${NEWER_BEFORE_PENDING:-}" ]; then
+      out '[{"context":"concord/review (#1)","state":"pending","description":"attempt:123e4567-e89b-42d3-a456-426614174099 identity:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff queued broad","created_at":"2026-10-08T00:00:00Z"}]'
+    elif [ -e "$LOG.latest-status" ]; then out "$(cat "$LOG.latest-status")"; else out '[]'; fi ;;
   *"/statuses/"*)
     all="$*"; state=${all#*state=}; state=${state%% *}
     # FLAKY_STATUS fails the first attempt to settle a final status.
@@ -87,6 +93,7 @@ case "$*" in
     if [ -n "${FAIL_FINAL_STATUS:-}" ] && [ "$state" != pending ]; then echo "final status unavailable" >> "$LOG"; exit 1; fi
     context=${all#*context=}; echo "${context%% -f *}" >> "$LOG.contexts"
     description=${all#*description=}; echo "${description%% -f *}" >> "$LOG.descriptions"
+    jq -n --arg description "$description" --arg state "$state" --arg context "${context%% -f *}" '[{context:$context,state:$state,description:$description,created_at:"2026-10-08T00:00:00Z"}]' > "$LOG.latest-status"
     echo "status $state" >> "$LOG" ;;
   *"/issues/1/comments -f body="*) all="$*"; printf '%s\n' "${all#*body=}" > "$LOG.comment"; echo comment >> "$LOG" ;;
   *"/pulls/1/reviews --input -")
@@ -116,7 +123,7 @@ while [ $# -gt 0 ]; do
   fi
   shift
 done
-if [ -n "${CANCEL_REVIEW:-}" ]; then kill -TERM "$PPID"; fi
+if [ -n "${CANCEL_REVIEW:-}" ]; then kill -TERM "$(cat "$LOG.worker-pid")"; fi
 printf '%s\n' "$ENGINE_RESULT"
 EOF
 chmod +x "$work/bin/gh" "$work/bin/node"
@@ -125,16 +132,19 @@ fail=0
 check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
 run() {  # run <case> <engine result json>
   export LOG="$work/$1.log"; : > "$LOG"
-  PATH="$work/bin:$PATH" UPSTREAM="$repo" ENGINE_RESULT="$2" REPO=o/r PR=1 SHA="$SHA" MODE=broad \
+  PATH="$work/bin:$PATH" UPSTREAM="$repo" ENGINE_RESULT="$2" REPO=o/r PR=1 SHA="$SHA" MODE="${MODE_OVERRIDE-broad}" \
     GH_TOKEN=review-pat-secret CLAUDE_CODE_OAUTH_TOKEN=model-token-secret OPENAI_API_KEY=openai-key-secret \
     REVIEW_REPOS="${REVIEW_REPOS-o/other o/r}" ATTEMPT_ID="${ATTEMPT_ID_OVERRIDE-123e4567-e89b-42d3-a456-426614174000}" \
-    bash "$SCRIPT" >"$LOG.out" 2>&1 || echo $? > "$LOG.exit"
+    bash "$SCRIPT" >"$LOG.out" 2>&1 &
+  worker_pid=$!
+  echo "$worker_pid" > "$LOG.worker-pid"
+  wait "$worker_pid" || echo $? > "$LOG.exit"
 }
 
 run clean '{"decision":"review-only","round":1,"findings":[]}'
 check "clean review is posted" 'grep -qx review "$LOG"'
 check "clean review settles the status to success" '[ "$(grep ^status "$LOG" | tail -1)" = "status success" ]'
-check "the marker records the commit and the mode that ran" '[ "$(jq -r .body "$LOG.review" | head -1)" = "<!-- concord-review: $SHA mode:broad -->" ]'
+check "the marker records the commit and the mode that ran" 'jq -r .body "$LOG.review" | head -1 | grep -Eq "^<!-- concord-review: $SHA mode:broad base:$BASE_SHA intent:[0-9a-f]{64} -->$"'
 check "a posted review records a separate attempt receipt" '[ "$(jq -r .body "$LOG.review" | sed -n 2p)" = "<!-- concord-review-attempt: 123e4567-e89b-42d3-a456-426614174000 -->" ]'
 check "worker status descriptions carry its attempt" '! grep -v "^attempt:123e4567-e89b-42d3-a456-426614174000 " "$LOG.descriptions"'
 check "clean review leaves a thumbs-up" 'grep -qx "+1" "$LOG"'
@@ -205,7 +215,7 @@ check "the codex reviewer does not receive the API key" '[ "$(cat "$LOG.openai-k
 check "a review quoting the OpenAI key is not posted" '! grep -qx review "$LOG"'
 
 CMD_ID=42 run requested '{"decision":"review-only","round":1,"findings":[]}'
-check "every status uses the pull request's own context" '[ -s "$LOG.contexts" ] && ! grep -vx "concord/review (#1)" "$LOG.contexts"'
+check "every status uses the PR-specific context" '[ -s "$LOG.contexts" ] && ! grep -vx "concord/review (#1)" "$LOG.contexts"'
 
 CMD_ID=42 run requested-fails '{"decision":"review-only","round":1,"findings":[{"id":"correctness:x","category":"correctness","file":"a.txt","line":1,"span":"change","summary":"model-token-secret","requirement":""}]}'
 check "a failed requested review leaves a marker naming the command" '[ "$(head -1 "$LOG.comment")" = "<!-- concord-review-failed: $SHA cmd:42 -->" ]'
@@ -229,7 +239,25 @@ ADVANCE_BEFORE_REVIEW=1 run already-superseded '{"decision":"review-only","round
 check "an already-superseded dispatch runs no engine" '[ ! -e "$LOG.args" ] && [ ! -e "$LOG.review" ]'
 ADVANCE_ON_FALLBACK=1 run advanced-on-fallback '{"decision":"review-only","round":1,"findings":[]}'
 check "a fallback POST rechecks the head" '[ -e "$LOG.inline-failed" ] && [ ! -e "$LOG.review" ] && ! grep -qx "+1" "$LOG"'
+ADVANCE_ON_FALLBACK=1 CHANGE_INTENT_ON_FALLBACK=1 run intent-changed-on-fallback '{"decision":"review-only","round":1,"findings":[]}'
+check "a fallback POST rechecks the full review identity" '[ -e "$LOG.inline-failed" ] && [ ! -e "$LOG.review" ] && ! grep -qx "+1" "$LOG"'
 CANCEL_REVIEW=1 CMD_ID=44 run canceled-request '{"decision":"review-only","round":1,"findings":[]}'
 check "cancellation does not consume a requested command" '[ ! -e "$LOG.comment" ] && [ ! -e "$LOG.review" ]'
+
+NEWER_ATTEMPT=1 ADVANCE_HEAD=1 run replaced-attempt '{"decision":"review-only","round":1,"findings":[]}'
+check "old cleanup cannot overwrite a newer attempt on the same SHA" '! grep -qx "status error" "$LOG"'
+
+NEWER_BEFORE_PENDING=1 run replaced-before-pending '{"decision":"review-only","round":1,"findings":[]}'
+check "an old worker cannot replace a newer pending status" '! grep -q "status pending" "$LOG" && ! grep -q "status error" "$LOG"'
+check "an old worker with a newer pending owner does not start review" '[ ! -e "$LOG.args" ] && [ ! -e "$LOG.review" ]'
+
+CHANGE_BASE=1 run changed-base '{"decision":"review-only","round":1,"findings":[]}'
+check "a changed merge base during review prevents publication" '[ ! -e "$LOG.review" ] && ! grep -qx "+1" "$LOG"'
+ADVANCE_AFTER_POST=1 run head-after-post '{"decision":"review-only","round":1,"findings":[]}'
+check "a changed head after durable publication receives no thumbs-up" '[ -e "$LOG.review" ] && ! grep -qx "+1" "$LOG" && [ "$(grep ^status "$LOG" | tail -1)" = "status success" ]'
+export MODE_OVERRIDE=diff
+run diff-pass '{"decision":"review-only","round":1,"findings":[]}'
+unset MODE_OVERRIDE
+check "a diff pass records identity without running intent gates" '[ -e "$LOG.review" ] && grep -q -- "--no-broad" "$LOG.args" && [ ! -e "$LOG.intent" ]'
 
 exit "$fail"

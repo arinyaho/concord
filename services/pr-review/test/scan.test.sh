@@ -212,13 +212,13 @@ if [ "$n" = 1 ]; then echo "ok   one conversation read per pull request"; else e
 # GitHub conversations can exceed the per-argument OS limit. Keep the payload
 # in fixture files so only scan.sh's jq invocation can trigger E2BIG.
 fixture large-reviewed '[]' '[]'
-python3 - "$FIXTURES/o_large-reviewed" "$SHA" <<'PY'
+python3 - "$FIXTURES/o_large-reviewed" "$SHA" "$INTENT_HASH" <<'PY'
 import json, pathlib, sys
 folder, sha = pathlib.Path(sys.argv[1]), sys.argv[2]
 padding = "x" * 60_000
 (folder / "comments.json").write_text(json.dumps([{"user": {"login": "outsider"}, "body": padding}] * 3))
 (folder / "reviews.json").write_text(json.dumps(
-    [{"user": {"login": "reviewbot"}, "body": f"<!-- concord-review: {sha} mode:broad -->"}]
+    [{"user": {"login": "reviewbot"}, "body": f"<!-- concord-review: {sha} mode:broad base:cccccccc3333 intent:{sys.argv[3]} -->"}]
     + [{"user": {"login": "reviewbot"}, "body": padding}] * 3
 ))
 PY
@@ -261,7 +261,7 @@ if ! grep -q '^workflow run' "$FIXTURES/calls.log"; then echo "ok   a newer erro
 : > "$FIXTURES/calls.log"
 PATH="$work/bin:$PATH" REPOS="o/fresh" SELF=o/self GH_TOKEN=x SELF_TOKEN=x bash "$SCAN" >"$work/fresh-dispatch.out" 2>&1
 if grep -q "^workflow run .*attempt_id=$" "$FIXTURES/calls.log"; then echo "FAIL dispatch omitted attempt id"; fail=1
-elif grep -Eq '^workflow run .*attempt_id=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' "$FIXTURES/calls.log" && grep -q 'description=attempt:' "$FIXTURES/calls.log"; then echo "ok   a dispatch propagates the attempt id"; else echo "FAIL dispatch lacks attempt id"; fail=1; fi
+elif grep -Eq '^workflow run .*attempt_id=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}( |$)' "$FIXTURES/calls.log" && grep -q 'description=attempt:' "$FIXTURES/calls.log"; then echo "ok   a dispatch propagates the attempt id"; else echo "FAIL dispatch lacks attempt id"; fail=1; fi
 
 
 # Capture a trusted completion's metadata and replay it against edited PRs.
@@ -330,5 +330,13 @@ for e in issue-unchanged: issue-edited:broad; do
   name=${e%%:*}; want=${e#*:}; got=$(scan env REPOS="o/$name" | sed -n "s/^$name:\([^:]*\):.*/\1/p")
   if [ "$got" = "$want" ]; then echo "ok   $name"; else echo "FAIL $name: want '$want', got '$got'"; fail=1; fi
 done
+
+fixture malformed-intent '[]' '[]'
+python3 - "$FIXTURES/o_malformed-intent/prs.json" <<'PYBAD'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1]);data=json.loads(p.read_text());data[0]['closingIssuesReferences']=None;p.write_text(json.dumps(data))
+PYBAD
+got=$(scan env REPOS=o/malformed-intent)
+if [ -z "$got" ]; then echo "ok   malformed intent metadata defers dispatch"; else echo "FAIL malformed intent metadata dispatched $got"; fail=1; fi
 
 exit "$fail"
