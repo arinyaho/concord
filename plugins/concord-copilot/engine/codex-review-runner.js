@@ -1010,11 +1010,11 @@ async function runRounds(options) {
     };
 
     const runArtifactReviewer = async (role) => {
-      if ((started.completedArtifacts || []).includes(role)) return;
+      if ([...(started.completedArtifacts || []), ...(started.normalizedArtifacts || [])].includes(role)) return;
       try {
         let repair = started.repairArtifacts && started.repairArtifacts[role];
         if (!repair) {
-          await launch({ role, prompt: reviewerPrompt(role, context), repoRoot, stateDir: context.stateDir });
+          await launch({ role, prompt: reviewerPrompt(role, context) + (started.retryArtifacts?.[role] ? `\n${started.retryArtifacts[role]}` : ''), repoRoot, stateDir: context.stateDir });
           const normalized = await cli(['artifact-normalize', ref, role]);
           checkProtected(true, roleArtifacts.get(role));
           refreshLedger();
