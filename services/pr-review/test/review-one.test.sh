@@ -224,8 +224,10 @@ for n in range(3, len(lines), 8):
     lines[n] = lines[n].replace("original", "changed")
 path.write_text("\n".join(lines) + "\n")
 PY
+printf 'do-not-overwrite\n' > "$work/hunks-target.json"
+ln -s "$work/hunks-target.json" "$large_repo/hunks.json"
 git -C "$large_repo" checkout -q -b feature
-git -C "$large_repo" add large.txt
+git -C "$large_repo" add large.txt hunks.json
 git -C "$large_repo" -c user.email=t@t -c user.name=t commit -q -m "many disjoint hunks"
 large_sha=$(git -C "$large_repo" rev-parse HEAD)
 git -C "$large_repo" update-ref refs/pull/1/head "$large_sha"
@@ -243,5 +245,6 @@ if [ "$hunk_bytes" -gt 131072 ]; then echo "ok   large hunk fixture exceeds the 
 else echo "FAIL large hunk fixture is only $hunk_bytes bytes"; fail=1; fi
 check "large hunk metadata still posts the review" 'grep -qx review "$LOG"'
 check "large hunk metadata still posts an inline finding" 'jq -e ".comments | length == 1" "$LOG.review" >/dev/null'
+check "checkout hunk symlink cannot overwrite the runner file" 'grep -qx do-not-overwrite "$work/hunks-target.json"'
 
 exit "$fail"

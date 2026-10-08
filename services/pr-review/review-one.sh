@@ -77,13 +77,16 @@ unreact() {
 unreact '+1'
 
 rid=$(gh api -X POST "repos/$REPO/issues/$PR/reactions" -f content=eyes --jq .id 2>/dev/null || true)
-work=$(mktemp -d); intent=$(mktemp); claude_config=$(mktemp -d); posted=; settled=
+work=$(mktemp -d); intent=$(mktemp); claude_config=$(mktemp -d)
+hunks=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/concord-review-hunks.XXXXXX")
+posted=; settled=
 # Runs on every exit -- success, a failed command under set -e, or a cancel
 # because a newer commit superseded this review. Only a posted review settles
 # the status; anything else leaves it in error rather than pending.
 finish() {
   if [ -n "$rid" ]; then gh api -X DELETE "repos/$REPO/issues/$PR/reactions/$rid" >/dev/null 2>&1 || true; fi
   rm -rf "$work" "$intent" "$claude_config"
+  rm -f "$hunks"
   if [ -n "$posted" ]; then
     # Publication is durable. If settlement failed, only retry success.
     [ -n "$settled" ] || status success "review posted; status recovery needed" || true
@@ -176,7 +179,6 @@ $verdict"
 # Inline only where the finding's line is inside a diff hunk: GitHub rejects
 # the whole review when one inline comment falls outside them. If it rejects
 # the review anyway, every finding goes in the body.
-hunks="$work/hunks.json"
 git -C "$work" diff -U3 "$BASE" HEAD | awk '
   /^\+\+\+ b\// { file = substr($0, 7) }
   /^@@ / { split($3, a, ","); start = substr(a[1], 2); len = (a[2] == "" ? 1 : a[2])
