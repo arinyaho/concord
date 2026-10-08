@@ -54,3 +54,9 @@ Every target mutation, including standalone operations, holds the target lock. D
 - Retry is bounded, so a rename blocked longer than the backoff window still fails the write, with the previous file intact. Retry behavior is verified only with injected rename failures, not on Windows.
 - The atomic-write helper does not `fsync`. Readers see the old or the new file, but a write may not survive a crash or power loss, which can also leave a stray temporary file.
 - Archives grow without bound for long initiatives; disk usage needs monitoring.
+
+## Pending plan and bounded semantic retry
+
+`execution.normalizedPlan` seals a plan hash before semantic acceptance; `plan` remains pending until `plan-fixes` accepts its membership. Same-scope resume preserves this artifact and reports it in `normalizedArtifacts` so drivers consume it without relaunching. Acceptance adds `plan` to completed roles and clears the pending hash.
+
+An incomplete plan records a plan failure and `execution.planRetry`, including missing IDs, rejected hash, retry state and whether stale plan repair evidence must be discarded. Re-reading the rejected attempt does not supersede another launch. Resume retains this state and the other completed role hashes; one replacement is allowed even for an unkeyed target. A second incomplete result records exhaustion, and another same-scope resume fails before launching any role. The round number and charged round budget do not change. Keyed replacements additionally consume fresh reservations under the same run key. See [incomplete-plan resume](incomplete-plan-resume.md).

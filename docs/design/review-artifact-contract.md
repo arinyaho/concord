@@ -43,7 +43,7 @@ A representation failure in an artifact is handled by at most one isolated `arti
 
 ### Eligibility
 
-Only two failures are eligible: a status spelling that differs from an accepted value only by case, and a mixed-namespace artifact that contains both role-owned and foreign IDs. Every other validation failure, including malformed JSON, structurally incomplete findings, declared blocked checks, a bare rejection ID without a reason, missing correctness coverage, absent structural-plan evidence, and a missing artifact, is a terminal `harness-failure`. The error can identify an omission, but nothing may supply the omitted evidence by inventing observations.
+Only two failures are eligible: a status spelling that differs from an accepted value only by case, and a mixed-namespace artifact that contains both role-owned and foreign IDs. Every other schema-validation failure, including malformed JSON, structurally incomplete findings, declared blocked checks, a bare rejection ID without a reason, missing correctness coverage, absent structural-plan evidence, and a missing artifact, is a terminal `harness-failure`. The error can identify an omission, but nothing may supply the omitted evidence by inventing observations.
 
 ### Packet and isolation
 
@@ -61,7 +61,7 @@ Publication requires both strict validation of the candidate and a separate pres
 
 ### One attempt, resume, and accounting
 
-At most one repair is allowed per artifact and round across ordinary execution, interruption, and resume. Repair identity and dispatch state (`prepared`, `reserved`, `dispatched`) are persisted before launch. A prepared or reserved repair proceeds through `artifact-repair-dispatch`. A dispatched repair may have an already-produced candidate validated, but uncertainty about whether it ran never authorizes another launch: a dispatched repair with no candidate is a failure. Resume keeps and hash-checks pending repair records alongside hash-verified completed artifacts instead of deleting them as unfinished round output, and a mismatched target, round, role, diff, or content hash fails closed. Publication, cleanup, or context replacement never resets the consumed allowance.
+At most one repair is allowed per artifact attempt and round across ordinary execution, interruption, and resume. For unchanged sealed detector evidence, the plan has at most two substantive attempts: its original attempt and the single semantic replacement. Each has its own representation-only repair allowance; semantic rejection discards only the rejected attempt’s bindings, while `plan-dispatch` durably bounds replacement launches even when the subprocess fails. Repair identity and dispatch state (`prepared`, `reserved`, `dispatched`) are persisted before launch. A prepared or reserved repair proceeds through `artifact-repair-dispatch`. A dispatched repair may have an already-produced candidate validated, but uncertainty about whether it ran never authorizes another launch: a dispatched repair with no candidate is a failure. Resume keeps and hash-checks pending repair records alongside hash-verified completed artifacts instead of deleting them as unfinished round output, and a mismatched target, round, role, diff, or content hash fails closed. Publication, cleanup, or context replacement never resets the consumed allowance.
 
 The repair uses the original artifact's reservation role, with `gate` mapping to `gate-review`. The initial attempt is recorded as superseded exactly once, the repair launch is reserved before dispatch and charged once, and a budget denial prevents the launch. Initiative bindings, budgets, terminal dispositions, and round accounting are otherwise untouched. There is no automatic reviewer fallback after a repair fails, is interrupted, or is exhausted.
 
@@ -88,6 +88,12 @@ Allowing local reconcile gives a local finding that needs a product decision an 
 - A reviewer can still emit false but schema-valid evidence; preservation proves continuity, not truth.
 - A model can ignore the repair instruction, so enforcement rests on candidate validation and the provider isolation surface, not on wording.
 - A neutral working directory is not an operating-system sandbox and does not remove ambient provider configuration or global tools; the runner verifies the context restrictions it can and fails closed where it cannot.
-- The structural preservation comparison rejects harmless rewrites, and failures outside the two eligible kinds stop the round even when a reviewer rerun might have produced a usable artifact.
+- The structural preservation comparison rejects harmless rewrites, and schema-validation failures outside the two eligible kinds stop the round even when a reviewer rerun might have produced a usable artifact.
 - A crash after dispatch but before durable output consumes the only repair attempt without a usable result.
 - A planner can classify a fixable local finding as `reconcile` and stop the round. The stop is visible in the handoff with its reason and costs a human look, not a wrong edit.
+
+## Semantic plan acceptance and resume
+
+Normalization seals a plan as hash-bound pending evidence in `execution.normalizedPlan`. It does not complete the plan role. `plan-fixes` validates membership against surviving findings before any fixer reservation or edit, then marks an accepted plan completed. Resume consumes a normalized pending plan without reserving another planner. Accepted plans and legacy completed evidence pass through the same semantic guard.
+
+A schema-valid plan that omits surviving findings has a separate bounded recovery path: the CLI invalidates only plan evidence, records the missing IDs, supersedes its launch, and supplies a corrective planner prompt. One replacement may run in the unchanged round, with a fresh initiative reservation when keyed. The CLI discards stale plan repair bindings before replacement, retains other sealed evidence and spent budgets, and stops after another incomplete result. This does not extend schema repair eligibility or permit manufacturing findings. See [incomplete-plan resume](incomplete-plan-resume.md).
