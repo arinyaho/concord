@@ -5,7 +5,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-SCAN="$HERE/../scan.sh"
+SCAN="${SCAN_OVERRIDE:-$HERE/../scan.sh}"
 work=$(mktemp -d)
 trap 'if [ -n "${KEEP:-}" ]; then echo "kept $work"; else rm -rf "$work"; fi' EXIT
 mkdir -p "$work/bin"
@@ -25,7 +25,12 @@ while [ $# -gt 0 ]; do
 done
 set -- "${args[@]}"
 echo "$*" >> "$FIXTURES/calls.log"
-repo_dir() { echo "$FIXTURES/${1//\//_}"; }
+if [ "$1" = api ] && [ "${2:-}" = -X ] && [ "${3:-}" = POST ]; then exit 0; fi
+repo_dir() {
+  local LC_ALL=C
+  local name=${1,,}
+  echo "$FIXTURES/${name//\//_}"
+}
 out() { if [ -n "$jq_expr" ]; then jq -r "$jq_expr" "$1"; else cat "$1"; fi; }
 case "$1 $2" in
   "api user") echo reviewbot ;;
@@ -213,8 +218,6 @@ for conclusion in ('cancelled','timed_out','action_required','neutral','skipped'
     add(f'automatic-{conclusion if conclusion else "null"}',sha,'-','completed',conclusion)
 for state in ('queued','in_progress','pending','requested','waiting','mystery'):
     add(f'extended-active-{state}',sha,'-',state,'success')
-add('active-after-1000',sha,'-', 'in_progress')
-add('legacy-active-after-1000',sha,'-', 'in_progress',legacy=True)
 add('terminal-before-worker',sha,'601','completed','cancelled')
 add('terminal-after-worker',sha,'602','completed','failure')
 add('terminal-new-command',sha,'600','completed','cancelled')
@@ -226,13 +229,38 @@ add('terminal-other-sha',old,'-', 'completed','failure')
 add('legacy-terminal-failure',sha,'-', 'completed','failure',True)
 add('posted-pending',sha,'-', 'completed','failure')
 for i in range(1001):
-    runs.insert(-2,dict(status='completed',conclusion='success',displayTitle=f'review o/archive#{i+1} @ {sha} cmd:-'))
+    runs.append(dict(status='completed',conclusion='success',displayTitle=f'review o/archive#{i+1} @ {sha} cmd:-'))
+add('active-after-1000',sha,'-', 'in_progress')
+add('legacy-active-after-1000',sha,'-', 'in_progress',legacy=True)
 runs.append(dict(status='completed',conclusion='failure',displayTitle=f'review o/exact-title-isolation#1 @ {sha} cmd:- trailing'))
+for name in ('active-after-1000', 'legacy-active-after-1000'):
+    positions=[i for i, run in enumerate(runs) if run['displayTitle'].startswith(f'review o/{name}#1 @ ')]
+    assert len(positions) == 1 and positions[0] > 1000, (name, positions)
+    print(f'pagination index {name}={positions[0]}', flush=True)
 json.dump(runs,open(path,'w'))
 PYFIX
 for page in $(seq 1 20); do
   jq --argjson start "$(((page - 1) * 100))" '{workflow_runs: [.[$start:($start + 100)][] | {status, conclusion, display_title:.displayTitle}]}' "$FIXTURES/runs.json" > "$FIXTURES/runs-api-page$page.json"
 done
+
+if [ -n "${PAGINATION_PROBE_ONLY:-}" ]; then
+  probe_fail=0
+  for name in active-after-1000 legacy-active-after-1000; do
+    : > "$FIXTURES/calls.log"
+    probe_exit=0
+    probe_output=$(PATH="$work/bin:$PATH" REPOS="o/$name" SELF=o/self GH_TOKEN=x SELF_TOKEN=x \
+      bash "$SCAN" 2>"$work/$name.probe.err") || probe_exit=$?
+    probe_count=$(grep -c '^workflow run ' "$FIXTURES/calls.log" || true)
+    if [ "$probe_exit" -eq 0 ] && [ "$probe_count" = "$PAGINATION_PROBE_ONLY" ] &&
+       grep -Fq "dispatched $PAGINATION_PROBE_ONLY review(s)" <<<"$probe_output"; then
+      echo "ok   $name probe exit=$probe_exit dispatch=$probe_count"
+    else
+      echo "FAIL $name probe exit=$probe_exit dispatch=$probe_count expected=$PAGINATION_PROBE_ONLY"
+      probe_fail=1
+    fi
+  done
+  exit "$probe_fail"
+fi
 
 expect=(
   "fresh:broad"
@@ -433,6 +461,7 @@ else
   if [ -s "$requested_log.exit" ] && [ ! -e "$requested_log.comment" ] &&
      [ -s "$automatic_log.exit" ] && [ "$(grep -c 'final status unavailable' "$automatic_log")" -eq 3 ]; then
     echo "ok   observed nonzero worker exits and failed completion writes"
+    rm -f "$FIXTURES"/runs-api-page*.json
     for case_name in requested automatic; do
       name="worker-chain-$case_name"
       if [ "$case_name" = requested ]; then
@@ -455,5 +484,138 @@ else
   else echo "FAIL worker failure evidence missing"; fail=1; fi
   rm -rf "$worker_dir"
 fi
+
+# Repository spelling is API-insensitive, while retained titles keep the
+# spelling used by the dispatch that created them. Test both lookup directions.
+reset_inventory_pages() {
+  rm -f "$FIXTURES"/runs-api-page*.json "$FIXTURES"/runs-page2.fail \
+    "$FIXTURES"/runs-page2.rate-limit "$FIXTURES"/runs-page2.malformed
+}
+case_check() {
+  local label=$1 configured=$2 retained=$3 evidence=$4 want=$5 locale=$6
+  local d="$FIXTURES/acme_widget" output rc=0 count selected actual
+  mkdir -p "$d"
+  printf '[{"number":1,"headRefOid":"%s","isDraft":false,"title":"case","updatedAt":"%s"}]\n' "$SHA" "$now" > "$d/prs.json"
+  printf '[]\n' > "$d/reviews.json"
+  printf '[]\n' > "$d/status.json"
+  case "$evidence" in
+    active-legacy|active-extended)
+      printf '[%s]\n' "$(comment alice MEMBER '@concord diff' 701)" > "$d/comments.json"
+      title="review $retained#1 @ $SHA"
+      [ "$evidence" = active-legacy ] || title="$title cmd:701"
+      run_status=in_progress; conclusion=null; manual=1 ;;
+    consumed|consumed-current)
+      printf '[%s]\n' "$(comment alice MEMBER '@concord diff' 701)" > "$d/comments.json"
+      title="review $retained#1 @ $OTHER cmd:701"
+      [ "$evidence" != consumed-current ] || title="review $retained#1 @ $SHA cmd:701"
+      run_status=completed; conclusion=success; manual=1 ;;
+    success-legacy|success-dash)
+      printf '[]\n' > "$d/comments.json"
+      title="review $retained#1 @ $SHA"
+      [ "$evidence" != success-dash ] || title="$title cmd:-"
+      run_status=completed; conclusion=success; manual= ;;
+    failed-auto|failed-auto-legacy)
+      printf '[]\n' > "$d/comments.json"
+      printf '%s\n' "$(status pending)" > "$d/status.json"
+      title="review $retained#1 @ $SHA"
+      [ "$evidence" = failed-auto-legacy ] || title="$title cmd:-"
+      run_status=completed; conclusion=failure; manual= ;;
+    failed-requested)
+      printf '[%s]\n' "$(comment alice MEMBER '@concord diff' 701)" > "$d/comments.json"
+      title="review $retained#1 @ $SHA cmd:701"
+      run_status=completed; conclusion=failure; manual= ;;
+  esac
+  title=${CASE_TITLE_OVERRIDE:-$title}
+  reset_inventory_pages
+  jq -n --arg status "$run_status" --arg conclusion "$conclusion" --arg title "$title" \
+    '{workflow_runs:[{status:$status,conclusion:$conclusion,display_title:$title}]}' > "$FIXTURES/runs-api-page1.json"
+  : > "$FIXTURES/calls.log"
+  output=$(PATH="$work/bin:$PATH" LC_ALL="$locale" REPOS="$configured" SELF=o/self GH_TOKEN=x SELF_TOKEN=x \
+    MANUAL_ONLY="$manual" bash "$SCAN" 2>"$work/case.err") || rc=$?
+  if [ -s "$work/case.err" ]; then echo "ERROR $label: $(head -1 "$work/case.err")"; fail=1; fi
+  count=$(grep -c '^workflow run ' "$FIXTURES/calls.log" || true)
+  selected=$(sed -n 's/^workflow run .* -f cmd_id=\([^ ]*\) .*/\1/p' "$FIXTURES/calls.log")
+  actual=$(sed -n 's/^dispatched \([0-9]*\) review(s)$/\1/p' <<<"$output")
+  if [ "$rc" -eq 0 ] && [ "$count" = "$want" ] && [ "$actual" = "$want" ] &&
+     { [ "$want" = 0 ] || [ "$selected" = "${CASE_COMMAND-701}" ]; }; then
+    echo "ok   $label"
+  else
+    echo "FAIL $label: exit=$rc dispatch=$count reported=$actual command=$selected wanted=$want $(head -1 "$work/case.err")"
+    fail=1
+  fi
+}
+for locale in C C.utf8 en_US.utf8; do
+  if ! locale -a | grep -Fxiq "$locale"; then echo "FAIL required locale $locale unavailable"; fail=1; continue; fi
+  for direction in upper-retained upper-configured; do
+    for component in owner repo both; do
+      case "$component" in owner) mixed=Acme/widget ;; repo) mixed=acme/Widget ;; both) mixed=Acme/Widget ;; esac
+      if [ "$direction" = upper-retained ]; then retained=$mixed; configured=acme/widget
+      else retained=acme/widget; configured=$mixed; fi
+      for evidence in active-legacy active-extended consumed failed-auto failed-requested; do
+        case_check "$locale $direction $component $evidence" "$configured" "$retained" "$evidence" 0 "$locale"
+      done
+    done
+  done
+done
+if locale -a | grep -Eiq '^tr_TR([.]|$)'; then
+  case_check 'Turkish locale ASCII I' acme/widget Acme/WIDGET active-extended 0 "$(locale -a | grep -Ei '^tr_TR([.]|$)' | head -1)"
+else echo 'SKIP Turkish locale unavailable'; fi
+for locale in C C.utf8 en_US.utf8; do
+  case_check "$locale uppercase ASCII I" acme/widget Acme/WIDGET active-extended 0 "$locale"
+done
+case_check 'successful decimal command consumes on current SHA' acme/widget Acme/Widget consumed-current 0 C
+CASE_COMMAND=
+case_check 'successful legacy completion does not suppress' acme/widget Acme/Widget success-legacy 1 C
+case_check 'successful dash completion does not suppress' acme/widget Acme/Widget success-dash 1 C
+unset CASE_COMMAND
+
+# Repository punctuation and the other key fields retain exact identity.
+for evidence in active-extended consumed failed-auto; do
+  case "$evidence" in failed-auto) CASE_COMMAND= ;; *) CASE_COMMAND=701 ;; esac
+  for different in owner repo punctuation pr sha command; do
+    case "$different" in
+      owner) alt=Other/Widget ;; repo) alt=Acme/Other ;; punctuation) alt=Acme/Widget.extra ;;
+      *) alt=Acme/Widget ;;
+    esac
+    CASE_TITLE_OVERRIDE="review $alt#1 @ $SHA cmd:701"
+    [ "$evidence" = failed-auto ] && CASE_TITLE_OVERRIDE="review $alt#1 @ $SHA cmd:-"
+    case "$different" in
+      pr) CASE_TITLE_OVERRIDE=${CASE_TITLE_OVERRIDE/\#1 /\#2 } ;;
+      sha) [ "$evidence" = consumed ] && continue; CASE_TITLE_OVERRIDE=${CASE_TITLE_OVERRIDE/@ $SHA/@ $OTHER} ;;
+      command) [ "$evidence" = consumed ] || continue; CASE_TITLE_OVERRIDE=${CASE_TITLE_OVERRIDE/cmd:701/cmd:702} ;;
+    esac
+    case_check "isolation $evidence $different" acme/widget "$alt" "$evidence" 1 C
+  done
+done
+unset CASE_COMMAND CASE_TITLE_OVERRIDE
+
+# A differently spelled active title beyond 200 newer records still wins.
+reset_inventory_pages
+printf '[%s]\n' "$(comment alice MEMBER '@concord diff' 701)" > "$FIXTURES/acme_widget/comments.json"
+jq -n --arg sha "$SHA" '{workflow_runs:[range(0;100) | {status:"completed",conclusion:"success",display_title:("review archive/history#1 @ " + $sha + " cmd:-")}]} ' > "$FIXTURES/runs-api-page1.json"
+cp "$FIXTURES/runs-api-page1.json" "$FIXTURES/runs-api-page2.json"
+jq -n --arg sha "$SHA" '{workflow_runs:[{status:"in_progress",conclusion:null,display_title:("review Acme/Widget#1 @ " + $sha + " cmd:701")}]} ' > "$FIXTURES/runs-api-page3.json"
+: > "$FIXTURES/calls.log"
+rc=0
+output=$(PATH="$work/bin:$PATH" REPOS=acme/widget SELF=o/self GH_TOKEN=x SELF_TOKEN=x MANUAL_ONLY=1 bash "$SCAN" 2>"$work/deep.err") || rc=$?
+count=$(grep -c '^workflow run ' "$FIXTURES/calls.log" || true)
+if [ "$rc" -eq 0 ] && [ "$count" = 0 ] && grep -q '^dispatched 0 review(s)$' <<<"$output" && [ ! -s "$work/deep.err" ]; then
+  echo 'ok   mixed-case active title beyond 200 records suppresses explicit command'
+else echo "FAIL mixed-case active title beyond 200 records: exit=$rc dispatch=$count"; fail=1; fi
+
+# Eligible work retains configured spelling at every external boundary.
+reset_inventory_pages
+printf '{"workflow_runs":[]}\n' > "$FIXTURES/runs-api-page1.json"
+: > "$FIXTURES/calls.log"
+rc=0
+output=$(PATH="$work/bin:$PATH" REPOS=AcMe/WiDgEt SELF=o/self GH_TOKEN=x SELF_TOKEN=x bash "$SCAN" 2>"$work/raw.err") || rc=$?
+count=$(grep -c '^workflow run ' "$FIXTURES/calls.log" || true)
+if [ "$rc" -eq 0 ] && [ "$count" = 1 ] && [ ! -s "$work/raw.err" ] &&
+   grep -Fq 'dispatch (diff, requested, default): AcMe/WiDgEt#1' <<<"$output" &&
+   grep -Fq 'pr list --repo AcMe/WiDgEt' "$FIXTURES/calls.log" &&
+   grep -Fq 'api repos/AcMe/WiDgEt/commits/' "$FIXTURES/calls.log" &&
+   grep -Fq 'workflow run pr-review.yml --repo o/self -f repo=AcMe/WiDgEt' "$FIXTURES/calls.log"; then
+  echo 'ok   raw configured spelling reaches API, display, and dispatch'
+else echo "FAIL raw configured spelling: exit=$rc dispatch=$count"; fail=1; fi
 
 exit "$fail"
