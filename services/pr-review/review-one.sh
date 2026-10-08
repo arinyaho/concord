@@ -23,6 +23,10 @@ esac
 case "$MODE" in broad) BROAD=--broad ;; diff) BROAD=--no-broad ;; *) echo "MODE must be broad or diff" >&2; exit 1 ;; esac
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ENGINE="$ROOT/plugins/concord-codex/bin/review-and-fix.js"
+same_repository() {
+  local LC_ALL=C
+  [[ "${1,,}" == "${2,,}" ]]
+}
 
 # Fixed per mode, not left to the reviewer to restate -- so it reads the same
 # on every review and can't drift from what the mode actually does.
@@ -117,12 +121,12 @@ if [ "$MODE" = broad ]; then
     gh pr view "$PR" --repo "$REPO" --json closingIssuesReferences \
       --jq '.closingIssuesReferences[] | "\(.repository.owner.login)/\(.repository.name) \(.number)"' |
       while read -r issue_repo issue; do
-        if [ "$issue_repo" != "$REPO" ]; then
+        if ! same_repository "$issue_repo" "$REPO"; then
           printf '\n\n## Closes %s#%s (external issue; body omitted)\n' "$issue_repo" "$issue"
           continue
         fi
         # An issue the review token cannot read is named, not fatal.
-        gh issue view "$issue" --repo "$issue_repo" --json number,title,body \
+        gh issue view "$issue" --repo "$REPO" --json number,title,body \
           --jq '"\n\n## Closes \(.number): \(.title)\n\n\(.body)"' 2>/dev/null \
           || printf '\n\n## Closes %s#%s (not readable with the review token)\n' "$issue_repo" "$issue"
       done
@@ -172,15 +176,16 @@ $verdict"
 # Inline only where the finding's line is inside a diff hunk: GitHub rejects
 # the whole review when one inline comment falls outside them. If it rejects
 # the review anyway, every finding goes in the body.
-hunks=$(git -C "$work" diff -U3 "$BASE" HEAD | awk '
+hunks="$work/hunks.json"
+git -C "$work" diff -U3 "$BASE" HEAD | awk '
   /^\+\+\+ b\// { file = substr($0, 7) }
   /^@@ / { split($3, a, ","); start = substr(a[1], 2); len = (a[2] == "" ? 1 : a[2])
            if (len > 0) printf "%s\t%d\t%d\n", file, start, start + len - 1 }' |
-  jq -R -s 'split("\n") | map(select(length > 0) | split("\t") | {file: .[0], from: (.[1] | tonumber), to: (.[2] | tonumber)})')
+  jq -R -s 'split("\n") | map(select(length > 0) | split("\t") | {file: .[0], from: (.[1] | tonumber), to: (.[2] | tonumber)})' > "$hunks"
 review() {  # $1 = inline | body
-  jq --arg sha "$SHA" --arg header "$header" --arg how "$1" --argjson hunks "$hunks" '
+  jq --slurpfile hunks "$hunks" --arg sha "$SHA" --arg header "$header" --arg how "$1" '
     def text: "**\(.category)** \(.summary)" + (if .requirement != "" then "\n\n> \(.requirement)" else "" end) + "\n\n`\(.id)`";
-    def in_diff: . as $f | $f.line != null and any($hunks[]; .file == $f.file and $f.line >= .from and $f.line <= .to);
+    def in_diff: . as $f | $f.line != null and any($hunks[0][]; .file == $f.file and $f.line >= .from and $f.line <= .to);
     (if $how == "inline" then [.findings[] | select(in_diff)] else [] end) as $inline
     | ([.findings[] | select(($how != "inline") or (in_diff | not))]) as $rest
     | { commit_id: $sha, event: "COMMENT",
