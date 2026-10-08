@@ -8,6 +8,7 @@ const { execFileSync, spawnSync } = require('node:child_process');
 const { normalizeArtifact } = require('../../core/artifact-contract');
 const { foldTelemetry } = require('../../core/review-telemetry');
 const { runPath, openInitiativeRun, recordDisposition } = require('../../core/initiative-review-run');
+const { fileTarget } = require('../../core/target');
 
 // The runner owns all sequencing. Its subprocess seam makes this a no-network
 // integration test while exercising the real artifact contract at the boundary.
@@ -975,6 +976,7 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
     if (role === 'verify') fs.writeFileSync(path.join(stateDir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
     if (role === 'plan') fs.writeFileSync(path.join(stateDir, `round-${n}-plan.json`), JSON.stringify({ status: 'ok', protocolVersion: 2, groups: [] }));
     if (role === 'gate') fs.writeFileSync(path.join(stateDir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
+    if (role === 'gate-verify') fs.writeFileSync(path.join(stateDir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
     if (role === 'fix') {
       const target = promptDrivenFix ? prompt.match(/write ONLY to (.+\.json): either/)?.[1] : path.join(stateDir, `round-${n}-fix-correctness_bug.json`);
       if (!target) throw new Error('fix prompt did not name an artifact path');
@@ -2515,4 +2517,646 @@ test('Codex launcher emits then acknowledges an error continuation packet before
   fs.writeFileSync(preload, `const fs = require('node:fs'); const Module = require('node:module'); const load = Module._load; Module._load = function(request, parent, isMain) { if (request === '../engine/codex-review-runner') return { runReviewUntilGreen: async () => { const error = new Error('legacy'); error.continuationPacket = { delivery: { consumed: false, claim: 'error' } }; throw error; }, acknowledgeContinuationPacket: async (_options, claim) => fs.writeFileSync(process.env.CAPTURE, claim) }; return load.apply(this, arguments); };`);
   assert.throws(() => execFileSync('node', ['--require', preload, bin, 'feature/x'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }), (error) => error.status === 1 && error.stderr === '{"delivery":{"consumed":false,"claim":"error"}}\n');
   assert.strictEqual(fs.readFileSync(capture, 'utf8'), 'error');
+});
+
+function cleanRepo() {
+  const repo = temp();
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: repo });
+  return repo;
+}
+
+test('reviewOnly stops after verification, reports the verified findings, and never plans, fixes, or records', async () => {
+  const h = harness({ gateApplied: true });
+  const verified = [{ id: 'correctness:bug', category: 'correctness', file: 'a.txt', line: 1, span: 'bad', summary: 'fix it', requirement: '' }];
+  const cli = (args) => (args[0] === 'findings' ? (h.calls.push(['cli', ...args]), { findings: verified }) : h.cli(args));
+  const result = await runReviewUntilGreen({ ref: 'feature/ro', base: 'main', repoRoot: cleanRepo(), runCli: cli, spawn: h.spawn, reviewOnly: true, broad: true, reviewer: 'claude' });
+  assert.deepStrictEqual(result, { decision: 'review-only', round: 1, findings: verified });
+  const spawned = h.calls.filter((c) => c[0] === 'spawn').map((c) => c[1]).sort();
+  assert.deepStrictEqual(spawned, ['correctness', 'gate', 'gate-verify', 'verify']);
+  assert.ok(h.calls.filter((c) => c[0] === 'spawn').every((c) => c[3] === 'claude'));
+  const verbs = h.calls.filter((c) => c[0] === 'cli').map((c) => c[1]);
+  for (const verb of ['plan-fixes', 'commit-fix', 'record']) assert.ok(!verbs.includes(verb), `${verb} must not run in review-only mode`);
+  const start = h.calls.find((c) => c[0] === 'cli' && c[1] === 'round-start');
+  assert.ok(start.includes('--no-dod'), 'a review that never edits has no definition of done to run');
+});
+
+test('Codex review-and-fix launcher passes --review-only to the runner and prints its findings as JSON', () => {
+  const dir = temp();
+  const capture = path.join(dir, 'options.json');
+  const preload = path.join(dir, 'capture-runner.js');
+  const bin = path.join(__dirname, '..', '..', '..', 'concord-codex', 'bin', 'review-and-fix.js');
+  fs.writeFileSync(preload, `
+    const fs = require('node:fs');
+    const Module = require('node:module');
+    const load = Module._load;
+    Module._load = function(request, parent, isMain) {
+      if (request === '../engine/codex-review-runner') return { runReviewUntilGreen: async (options) => {
+        fs.writeFileSync(process.env.CAPTURE, JSON.stringify(options));
+        return { decision: 'review-only', round: 1, findings: [] };
+      }, acknowledgeContinuationPacket: () => true };
+      return load.apply(this, arguments);
+    };
+  `);
+  const output = execFileSync('node', ['--require', preload, bin, 'feature/x', 'main', '--review-only', '--no-broad', '--reviewer', 'claude', '--intent-file', '/abs/pr.md'], { cwd: dir, env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
+  const options = JSON.parse(fs.readFileSync(capture, 'utf8'));
+  assert.strictEqual(options.reviewOnly, true);
+  assert.strictEqual(options.intentFile, '/abs/pr.md');
+  assert.strictEqual(options.ref, 'feature/x');
+  assert.strictEqual(options.base, 'main');
+  assert.deepStrictEqual(JSON.parse(output), { decision: 'review-only', round: 1, findings: [] });
+});
+
+test('runner passes intentFile to round-start as --intent-file', async () => {
+  const h = harness();
+  await runReviewUntilGreen({ ref: 'feature/intent', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn, intentFile: '/abs/pr.md' });
+  const start = h.calls.find((c) => c[0] === 'cli' && c[1] === 'round-start');
+  const at = start.indexOf('--intent-file');
+  assert.ok(at > 0 && start[at + 1] === '/abs/pr.md', `round-start args: ${start.join(' ')}`);
+});
+
+test('providerExec keeps project settings out of a Claude reviewer on an untrusted checkout', async () => {
+  const binDir = temp();
+  const capture = path.join(binDir, 'args.json');
+  fs.writeFileSync(path.join(binDir, 'claude'), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(capture)}, JSON.stringify(process.argv.slice(2)));\n`);
+  fs.chmodSync(path.join(binDir, 'claude'), 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  try {
+    await providerExec({ provider: 'claude', role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir, untrustedCheckout: true });
+    const args = JSON.parse(fs.readFileSync(capture, 'utf8'));
+    assert.strictEqual(args[args.indexOf('--setting-sources') + 1], 'user');
+    await providerExec({ provider: 'claude', role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir });
+    assert.ok(!JSON.parse(fs.readFileSync(capture, 'utf8')).includes('--setting-sources'), 'a trusted checkout keeps its project settings');
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
+for (const provider of ['codex', 'claude']) test(`an untrusted ${provider} reviewer cannot leave a same-group child running after its CLI exits`, async () => {
+  if (process.platform === 'win32') return;
+  const binDir = temp(); const marker = path.join(binDir, 'late-marker');
+  const executable = path.join(binDir, provider);
+  const delayed = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'late'), 450)`;
+  fs.writeFileSync(executable, `#!${process.execPath}\nrequire('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(delayed)}], { stdio: 'ignore' }).unref();\nconsole.log(${JSON.stringify(provider === 'codex' ? '{"type":"turn.completed","usage":{}}' : '{}')});\n`);
+  fs.chmodSync(executable, 0o755);
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${oldPath}`;
+  try {
+    if (provider === 'codex') await codexExec({ role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir, untrustedCheckout: true, codexExecutable: { command: executable, version: 'codex-cli 0.154.0' } });
+    else await providerExec({ provider, role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir, untrustedCheckout: true });
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    assert.strictEqual(fs.existsSync(marker), false, 'a reviewer descendant must not write after the top-level CLI exits');
+    if (provider === 'codex') await codexExec({ role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir, codexExecutable: { command: executable, version: 'codex-cli 0.154.0' } });
+    else await providerExec({ provider, role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir });
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    assert.strictEqual(fs.existsSync(marker), true, 'trusted launches retain their prior process lifecycle');
+  } finally { process.env.PATH = oldPath; }
+});
+
+test('reviewOnly treats the checkout as untrusted: no repository intent command and no project agent config', async () => {
+  const h = harness();
+  const inputs = [];
+  const cli = (args) => (args[0] === 'findings' ? { findings: [] } : h.cli(args));
+  const spawn = (input) => { inputs.push(input); return h.spawn(input); };
+  await runReviewUntilGreen({ ref: 'feature/untrusted', base: 'main', repoRoot: cleanRepo(), runCli: cli, spawn, reviewOnly: true, noBroad: true, reviewer: 'claude' });
+  const start = h.calls.find((c) => c[0] === 'cli' && c[1] === 'round-start');
+  assert.ok(start.includes('--no-intent-command'), `round-start args: ${start.join(' ')}`);
+  assert.ok(inputs.length && inputs.every((input) => input.untrustedCheckout === true));
+});
+
+test('reviewOnly keeps its round out of the persistent review ledger', async () => {
+  const dir = temp();
+  const fakeCli = path.join(dir, 'fake-cli.js');
+  const capture = path.join(dir, 'state-dirs.txt');
+  fs.writeFileSync(fakeCli, `require('node:fs').appendFileSync(${JSON.stringify(capture)}, (process.env.REVIEW_STATE_DIR || '') + '\\n'); process.stdout.write(JSON.stringify({ decision: 'no-op', message: 'nothing', stateDir: process.env.REVIEW_STATE_DIR }));\n`);
+  const previous = process.env.REVIEW_STATE_DIR;
+  process.env.REVIEW_STATE_DIR = path.join(dir, 'persistent');
+  try {
+    await runReviewUntilGreen({ ref: 'feature/isolated', base: 'main', repoRoot: dir, cliPath: fakeCli, reviewOnly: true, reviewer: 'claude', spawn: () => ({ status: 0 }) });
+  } finally {
+    if (previous === undefined) delete process.env.REVIEW_STATE_DIR; else process.env.REVIEW_STATE_DIR = previous;
+  }
+  const seen = fs.readFileSync(capture, 'utf8').trim().split('\n');
+  assert.ok(seen.length >= 1);
+  for (const stateDir of seen) {
+    assert.notStrictEqual(stateDir, path.join(dir, 'persistent'));
+    assert.ok(stateDir.startsWith(fs.realpathSync(os.tmpdir())) || stateDir.startsWith(os.tmpdir()), stateDir);
+  }
+  assert.strictEqual(new Set(seen).size, 1, 'one isolated directory for the whole run');
+  assert.ok(!fs.existsSync(seen[0]), 'the isolated state is removed when the run ends');
+});
+
+for (const reviewer of ['copilot']) test(`reviewOnly refuses the ${reviewer} reviewer, which cannot be kept from an untrusted checkout's configuration`, async () => {
+  const h = harness();
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/untrusted-reviewer', base: 'main', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn, reviewOnly: true, reviewer }),
+    /reviewOnly supports the claude and codex reviewers/,
+  );
+  assert.deepStrictEqual(h.calls, [], 'nothing starts before the refusal');
+});
+
+test('reviewOnly fails when a reviewer left the checkout modified, instead of reporting on a tree that is not the commit', async () => {
+  const repo = temp();
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n');
+  execFileSync('git', ['add', 'a.txt'], { cwd: repo });
+  execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init'], { cwd: repo });
+  const h = harness({ gateApplied: false });
+  let reported = false;
+  const cli = (args) => (args[0] === 'findings' ? (reported = true, { findings: [] }) : h.cli(args));
+  const spawn = (input) => {
+    if (input.role === 'correctness') fs.writeFileSync(path.join(repo, 'a.txt'), 'edited by the reviewer\n');
+    return h.spawn(input);
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/dirty', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'claude' }),
+    /reviewer left the checkout modified/,
+  );
+  assert.strictEqual(reported, false, 'no findings are reported from a modified tree');
+});
+
+test('reviewOnly rejects a finder edit before a verifier can restore the checkout', async () => {
+  const repo = cleanRepo();
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'original\n');
+  execFileSync('git', ['add', 'a.txt'], { cwd: repo });
+  execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'file'], { cwd: repo });
+  const h = harness({ gateApplied: false }); let verifierRan = false;
+  const cli = (args) => args[0] === 'findings' ? { findings: [] } : h.cli(args);
+  const spawn = (input) => {
+    if (input.role === 'correctness') fs.writeFileSync(path.join(repo, 'a.txt'), 'reviewer edit\n');
+    if (input.role === 'verify') { verifierRan = true; fs.writeFileSync(path.join(repo, 'a.txt'), 'original\n'); }
+    return h.spawn(input);
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/transient-edit', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'claude', noBroad: true }),
+    /reviewer left the checkout modified/,
+  );
+  assert.strictEqual(verifierRan, false, 'the next reviewer must not run on a tree altered by a prior reviewer');
+});
+
+for (const reviewer of ['claude', 'codex']) test(`reviewOnly rejects a file target changed by its ${reviewer} reviewer before reporting findings`, async () => {
+  const repo = temp();
+  fs.writeFileSync(path.join(repo, 'note.md'), 'original\n');
+  const head = fileTarget({ files: ['note.md'] }, repo).identity;
+  const h = harness({ targetType: 'file' });
+  let reported = false;
+  const cli = (args) => {
+    if (args[0] === 'findings') return (reported = true, { findings: [] });
+    const result = h.cli(args);
+    return args[0] === 'round-start' ? { ...result, head } : result;
+  };
+  const spawn = (input) => {
+    if (input.role === 'correctness') fs.writeFileSync(path.join(repo, 'note.md'), 'reviewer edit\n');
+    return h.spawn(input);
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'file:note.md', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer, noBroad: true }),
+    /reviewer modified the file target/,
+  );
+  assert.strictEqual(reported, false, 'findings must not describe stale file content');
+  assert.strictEqual(fs.readFileSync(path.join(repo, 'note.md'), 'utf8'), 'reviewer edit\n');
+});
+
+test('reviewOnly reports findings for an unchanged file target', async () => {
+  const repo = temp();
+  fs.writeFileSync(path.join(repo, 'note.md'), 'original\n');
+  const head = fileTarget({ files: ['note.md'] }, repo).identity;
+  const h = harness({ targetType: 'file' });
+  const cli = (args) => {
+    if (args[0] === 'findings') return { findings: [] };
+    const result = h.cli(args);
+    return args[0] === 'round-start' ? { ...result, head } : result;
+  };
+  const result = await runReviewUntilGreen({ ref: 'file:note.md', repoRoot: repo, runCli: cli, spawn: h.spawn, reviewOnly: true, reviewer: 'claude', noBroad: true });
+  assert.deepStrictEqual(result, { decision: 'review-only', round: 1, findings: [] });
+});
+
+test('reviewOnly rejects a file target replaced by an identical external symlink', async () => {
+  const repo = temp(); const external = path.join(temp(), 'note.md');
+  fs.writeFileSync(path.join(repo, 'note.md'), 'original\n');
+  fs.writeFileSync(external, 'original\n');
+  const head = fileTarget({ files: ['note.md'] }, repo).identity;
+  const h = harness({ targetType: 'file' });
+  let reported = false;
+  const cli = (args) => {
+    if (args[0] === 'findings') return (reported = true, { findings: [] });
+    const result = h.cli(args);
+    return args[0] === 'round-start' ? { ...result, head } : result;
+  };
+  const spawn = (input) => {
+    const result = h.spawn(input);
+    if (input.role === 'correctness') {
+      fs.unlinkSync(path.join(repo, 'note.md'));
+      fs.symlinkSync(external, path.join(repo, 'note.md'));
+    }
+    return result;
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'file:note.md', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'claude', noBroad: true }),
+    /unsafe or oversized file target/,
+  );
+  assert.strictEqual(reported, false);
+});
+
+test('reviewOnly rejects a file target enlarged beyond its aggregate identity limit', async () => {
+  const repo = temp(); fs.writeFileSync(path.join(repo, 'note.md'), 'original\n');
+  const head = fileTarget({ files: ['note.md'] }, repo).identity;
+  const h = harness({ targetType: 'file' });
+  let reported = false;
+  const cli = (args) => {
+    if (args[0] === 'findings') return (reported = true, { findings: [] });
+    const result = h.cli(args);
+    return args[0] === 'round-start' ? { ...result, head } : result;
+  };
+  const spawn = (input) => {
+    const result = h.spawn(input);
+    if (input.role === 'correctness') {
+      const fd = fs.openSync(path.join(repo, 'note.md'), 'w');
+      try { fs.ftruncateSync(fd, 20 * 1024 * 1024 + 1); } finally { fs.closeSync(fd); }
+    }
+    return result;
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'file:note.md', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'claude', noBroad: true }),
+    /unsafe or oversized file target/,
+  );
+  assert.strictEqual(reported, false);
+});
+
+test('reviewOnly runs broad workers one at a time while accepting trusted ledger updates', async () => {
+  const repo = cleanRepo();
+  const stateDir = temp();
+  const h = harness({ stateDir, gateApplied: true });
+  const ledger = require('../../core/review').ledgerPath(stateDir, require('../../core/review').targetSlug('feature/serial'));
+  let revision = 0; let active = 0; let maximum = 0;
+  const roles = [];
+  const cli = (args) => {
+    if (args[0] === 'findings') return { findings: [] };
+    const result = h.cli(args);
+    if (args[0] === 'round-start') fs.writeFileSync(ledger, JSON.stringify({ revision: revision++ }));
+    if (args[0] === 'telemetry-slot' || args[0] === 'artifact-normalize') fs.writeFileSync(ledger, JSON.stringify({ revision: revision++ }));
+    return result;
+  };
+  const spawn = async (input) => {
+    roles.push(input.role);
+    maximum = Math.max(maximum, ++active);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    active--;
+    return h.spawn(input);
+  };
+  const result = await runReviewUntilGreen({ ref: 'feature/serial', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'codex', broad: true });
+  assert.deepStrictEqual(result.findings, []);
+  assert.deepStrictEqual(roles, ['correctness', 'gate', 'verify', 'gate-verify']);
+  assert.strictEqual(maximum, 1);
+  assert.ok(revision > 4, 'trusted CLI calls updated the ledger between workers');
+});
+
+test('normal review keeps its parallel broad worker pool', async () => {
+  const h = harness({ gateApplied: true });
+  let active = 0; let maximum = 0;
+  const spawn = async (input) => {
+    maximum = Math.max(maximum, ++active);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    active--;
+    return h.spawn(input);
+  };
+  await runReviewUntilGreen({ ref: 'feature/parallel', base: 'main', repoRoot: cleanRepo(), runCli: h.cli, spawn, reviewer: 'claude', noDod: true });
+  assert.ok(maximum > 1, 'normal broad reviewers still overlap');
+});
+
+test('reviewOnly preserves its artifact guard during an isolated artifact repair', async () => {
+  const repo = cleanRepo();
+  const stateDir = temp();
+  const h = harness({ stateDir, retry: true });
+  const ledger = require('../../core/review').ledgerPath(stateDir, require('../../core/review').targetSlug('feature/repair'));
+  const descriptor = path.join(stateDir, 'round-1-correctness.repair.json');
+  let revision = 0;
+  const cli = (args) => {
+    if (args[0] === 'findings') return { findings: [] };
+    const result = h.cli(args);
+    if (['round-start', 'telemetry-slot', 'artifact-normalize'].includes(args[0])) {
+      fs.writeFileSync(ledger, JSON.stringify({ revision: revision++ }));
+    }
+    if (args[0] === 'artifact-normalize' && result.status === 'repair') fs.writeFileSync(descriptor, JSON.stringify(result.repair));
+    if (args[0] === 'artifact-repair-dispatch' || args[0] === 'artifact-repair-candidate') fs.writeFileSync(descriptor, JSON.stringify(result));
+    return result;
+  };
+  const result = await runReviewUntilGreen({ ref: 'feature/repair', base: 'main', repoRoot: repo, runCli: cli, spawn: h.spawn, reviewOnly: true, reviewer: 'codex', noBroad: true });
+  assert.deepStrictEqual(result.findings, []);
+  assert.strictEqual(h.calls.filter((c) => c[0] === 'spawn' && c[1] === 'artifact-repair').length, 1);
+});
+
+test('reviewOnly rejects a repair worker that rewrites the trusted source snapshot and descriptor', async () => {
+  const repo = cleanRepo();
+  const stateDir = temp();
+  const h = harness({ stateDir, retry: true });
+  const stem = path.join(stateDir, 'round-1-correctness');
+  const descriptor = `${stem}.repair.json`;
+  let reported = false;
+  const cli = (args) => {
+    if (args[0] === 'findings') return (reported = true, { findings: [] });
+    const result = h.cli(args);
+    if (args[0] === 'artifact-normalize' && result.status === 'repair') fs.writeFileSync(descriptor, JSON.stringify(result.repair));
+    if (args[0] === 'artifact-repair-dispatch' || args[0] === 'artifact-repair-candidate') fs.writeFileSync(descriptor, JSON.stringify(result));
+    return result;
+  };
+  const spawn = (input) => {
+    const result = h.spawn(input);
+    if (input.role === 'artifact-repair') {
+      fs.writeFileSync(`${stem}.original`, '{"status":"ok","examined":[],"findings":[]}');
+      fs.writeFileSync(descriptor, JSON.stringify({ ...JSON.parse(fs.readFileSync(descriptor, 'utf8')), originalHash: 'forged' }));
+    }
+    return result;
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/repair-tamper', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'codex', noBroad: true }),
+    /protected review artifact changed/,
+  );
+  assert.strictEqual(reported, false);
+});
+
+for (const [name, target, action] of [
+  ['rewrites the normalized correctness artifact', 'round-1-correctness.json', 'rewrite'],
+  ['deletes the normalized correctness artifact', 'round-1-correctness.json', 'delete'],
+  ['rewrites the round diff', 'round-1-diff.txt', 'rewrite'],
+  ['rewrites the changed-path manifest', 'round-1-changes.json', 'rewrite'],
+  ['rewrites the round history', 'round-1-history.json', 'rewrite'],
+  ['rewrites the intent', 'intent-file.md', 'rewrite'],
+  ['rewrites the ledger', 'ledger', 'rewrite'],
+]) test(`reviewOnly rejects a verifier that ${name} before findings`, async () => {
+  const repo = cleanRepo();
+  const stateDir = temp();
+  const h = harness({ stateDir });
+  let reported = false;
+  const cli = (args) => {
+    if (args[0] === 'findings') return (reported = true, { findings: [] });
+    const result = h.cli(args);
+    if (args[0] === 'round-start') {
+      fs.writeFileSync(path.join(stateDir, 'round-1-diff.txt'), 'original diff\n');
+      fs.writeFileSync(path.join(stateDir, 'round-1-changes.json'), '{"paths":[]}\n');
+      fs.writeFileSync(path.join(stateDir, 'round-1-history.json'), '{}\n');
+      fs.writeFileSync(path.join(stateDir, `intent-${require('../../core/review').targetSlug('feature/tamper')}.md`), 'original intent\n');
+      fs.writeFileSync(require('../../core/review').ledgerPath(stateDir, require('../../core/review').targetSlug('feature/tamper')), '{}\n');
+    }
+    return result;
+  };
+  const spawn = (input) => {
+    const result = h.spawn(input);
+    if (input.role === 'verify') {
+      const pathToChange = target === 'ledger'
+        ? require('../../core/review').ledgerPath(stateDir, require('../../core/review').targetSlug('feature/tamper'))
+        : path.join(stateDir, target === 'intent-file.md' ? `intent-${require('../../core/review').targetSlug('feature/tamper')}.md` : target);
+      if (action === 'delete') fs.unlinkSync(pathToChange);
+      else fs.writeFileSync(pathToChange, 'tampered\n');
+    }
+    return result;
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/tamper', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'claude', noBroad: true }),
+    /protected review artifact changed/,
+  );
+  assert.strictEqual(reported, false);
+  assert.strictEqual(h.calls.some((call) => call[0] === 'cli' && call[1] === 'round-failure'), false,
+    'a disposable review must not read poisoned ledger evidence during failure recording');
+});
+
+test('reviewOnly rejects a finder that forges a later verifier artifact', async () => {
+  const repo = cleanRepo();
+  const h = harness();
+  let reported = false;
+  const cli = (args) => args[0] === 'findings' ? (reported = true, { findings: [] }) : h.cli(args);
+  const spawn = (input) => {
+    const result = h.spawn(input);
+    if (input.role === 'correctness') fs.writeFileSync(path.join(h.stateDir, 'round-1-verify.json'), '{"status":"ok","rejected":[]}');
+    return result;
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/forged', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'claude', noBroad: true }),
+    /protected review artifact changed: round-1-verify.json/,
+  );
+  assert.strictEqual(reported, false);
+});
+
+test('reviewOnly rejects a protected artifact replaced by an identical external symlink', async () => {
+  const repo = cleanRepo(); const stateDir = temp(); const h = harness({ stateDir });
+  const external = path.join(temp(), 'copy.json');
+  let reported = false;
+  const cli = (args) => {
+    if (args[0] === 'findings') return (reported = true, { findings: [] });
+    const result = h.cli(args);
+    if (args[0] === 'round-start') fs.writeFileSync(path.join(stateDir, 'round-1-changes.json'), '{"paths":[]}\n');
+    return result;
+  };
+  const spawn = (input) => {
+    const result = h.spawn(input);
+    if (input.role === 'correctness') {
+      const protectedPath = path.join(stateDir, 'round-1-changes.json');
+      fs.copyFileSync(protectedPath, external);
+      fs.unlinkSync(protectedPath);
+      fs.symlinkSync(external, protectedPath);
+    }
+    return result;
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/symlink-hash', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'claude', noBroad: true }),
+    /protected review artifact.*round-1-changes\.json/,
+  );
+  assert.strictEqual(reported, false);
+});
+
+test('reviewOnly rejects an oversized protected artifact before launching workers', async () => {
+  const repo = cleanRepo(); const stateDir = temp(); const h = harness({ stateDir });
+  let launched = false;
+  const cli = (args) => {
+    if (args[0] === 'findings') return { findings: [] };
+    const result = h.cli(args);
+    if (args[0] === 'round-start') {
+      const fd = fs.openSync(path.join(stateDir, 'round-1-changes.json'), 'w');
+      try { fs.ftruncateSync(fd, 20 * 1024 * 1024 + 1); } finally { fs.closeSync(fd); }
+    }
+    return result;
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/oversized-hash', base: 'main', repoRoot: repo, runCli: cli, spawn: (input) => (launched = true, h.spawn(input)), reviewOnly: true, reviewer: 'claude', noBroad: true }),
+    /protected review artifact.*round-1-changes\.json/,
+  );
+  assert.strictEqual(launched, false);
+});
+
+test('bounded review hash accepts missing future output and refuses a FIFO without hanging', { skip: process.platform === 'win32' }, () => {
+  const directory = temp();
+  const root = require('../../core/bounded-artifact').captureArtifactRoot(directory);
+  const { hashArtifact } = require('../../core/bounded-artifact');
+  assert.strictEqual(hashArtifact(path.join(directory, 'future.json'), root, { allowMissing: true }), null);
+  fs.writeFileSync(path.join(directory, 'ordinary.json'), '{}\n');
+  assert.match(hashArtifact(path.join(directory, 'ordinary.json'), root), /^[0-9a-f]{64}$/);
+  const pipe = path.join(directory, 'pipe.json');
+  assert.strictEqual(spawnSync('mkfifo', [pipe]).status, 0);
+  const child = spawnSync(process.execPath, ['-e',
+    'const h=require(process.argv[1]);try{h.hashArtifact(process.argv[2],h.captureArtifactRoot(process.argv[3]));process.exit(2)}catch(e){if(/unsafe or oversized/.test(e.message))process.exit(0);process.exit(3)}',
+    require.resolve('../../core/bounded-artifact'), pipe, directory], { timeout: 3000 });
+  assert.strictEqual(child.status, 0, `FIFO hash stalled or failed unsafely: ${child.error || child.stderr}`);
+});
+
+test('bounded review hash rejects a same-path inode replacement during its read', () => {
+  const directory = temp(); const file = path.join(directory, 'artifact.json');
+  fs.writeFileSync(file, 'original\n');
+  const script = [
+    'const fs=require("node:fs"),path=require("node:path"),h=require(process.argv[1]),file=process.argv[2];',
+    'const read=fs.readSync;let swapped=false;',
+    'fs.readSync=function(...args){const n=read.apply(this,args);if(!swapped){swapped=true;fs.unlinkSync(file);fs.writeFileSync(file,"replaced\\n")}return n};',
+    'try{h.hashArtifact(file,h.captureArtifactRoot(path.dirname(file)));process.exit(2)}catch(e){process.exit(/unsafe or oversized/.test(e.message)?0:3)}',
+  ].join('');
+  const child = spawnSync(process.execPath, ['-e', script, require.resolve('../../core/bounded-artifact'), file], { timeout: 3000 });
+  assert.strictEqual(child.status, 0, `replacement was not rejected: ${child.error || child.stderr}`);
+});
+
+test('reviewOnly refuses a symlinked producer output before trusted normalization', async () => {
+  const repo = cleanRepo(); const stateDir = temp(); const h = harness({ stateDir });
+  const external = path.join(temp(), 'artifact.json');
+  let normalized = false;
+  const cli = (args) => {
+    if (args[0] === 'findings') return { findings: [] };
+    if (args[0] === 'artifact-normalize') normalized = true;
+    return h.cli(args);
+  };
+  const spawn = (input) => {
+    const result = h.spawn(input);
+    if (input.role === 'correctness') {
+      const output = path.join(stateDir, 'round-1-correctness.json');
+      fs.copyFileSync(output, external);
+      fs.unlinkSync(output);
+      fs.symlinkSync(external, output);
+    }
+    return result;
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/producer-output', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'claude', noBroad: true }),
+    /protected review artifact changed: round-1-correctness\.json/,
+  );
+  assert.strictEqual(normalized, false);
+});
+
+test('reviewOnly telemetry publication refuses a worker-planted temporary symlink', async () => {
+  const repo = cleanRepo(); const stateDir = temp(); const h = harness({ stateDir });
+  const ref = 'feature/telemetry-temp'; const external = path.join(temp(), 'sentinel.txt');
+  fs.writeFileSync(external, 'untouched\n');
+  const cli = (args) => args[0] === 'findings' ? { findings: [] } : h.cli(args);
+  const spawn = (input) => {
+    const result = h.spawn(input);
+    if (input.role === 'correctness') {
+      const slug = require('../../core/review').targetSlug(ref);
+      fs.symlinkSync(external, path.join(stateDir, `telemetry-${slug}.json.${process.pid}.tmp`));
+    }
+    return result;
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref, base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'claude', noBroad: true }),
+    /EEXIST/,
+  );
+  assert.strictEqual(fs.readFileSync(external, 'utf8'), 'untouched\n');
+});
+
+test('reviewOnly refuses resume, which has no ledger to recover the base from', async () => {
+  const h = harness();
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/resume', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn, reviewOnly: true, reviewer: 'claude', resume: true }),
+    /reviewOnly cannot resume/,
+  );
+  assert.deepStrictEqual(h.calls, []);
+});
+
+test('codexExec keeps AGENTS.md and project rules out of a Codex reviewer on an untrusted checkout', async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  const capture = path.join(binDir, 'args.json');
+  fs.writeFileSync(codex, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(capture)}, JSON.stringify(process.argv.slice(2)));\n`);
+  fs.chmodSync(codex, 0o755);
+  await codexExec({ role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir, untrustedCheckout: true, codexExecutable: { command: codex, version: 'codex-cli 0.154.0' } });
+  const args = JSON.parse(fs.readFileSync(capture, 'utf8'));
+  assert.ok(args.includes('project_doc_max_bytes=0'), `args: ${args.join(' ')}`);
+  assert.ok(args.includes('--ignore-rules'));
+  assert.ok(args.includes('--strict-config'));
+  assert.ok(!args.includes('--sandbox'));
+});
+
+test('codexExec keeps its normal sandbox and strips inherited credentials from untrusted reviews', async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  const capture = path.join(binDir, 'capture.json');
+  fs.writeFileSync(codex, `#!${process.execPath}\nconst keys = ['GH_TOKEN', 'GITHUB_TOKEN', 'OPENAI_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'SAFE_VALUE']; require('node:fs').writeFileSync(${JSON.stringify(capture)}, JSON.stringify({ args: process.argv.slice(2), env: Object.fromEntries(keys.map(key => [key, process.env[key] || null])) }));\n`);
+  fs.chmodSync(codex, 0o755);
+  const input = { role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir,
+    codexExecutable: { command: codex, version: 'codex-cli 0.154.0' }, env: { ...process.env, GH_TOKEN: 'secret', GITHUB_TOKEN: 'secret', OPENAI_API_KEY: 'secret', CLAUDE_CODE_OAUTH_TOKEN: 'secret', SAFE_VALUE: 'kept' } };
+  await codexExec({ ...input, untrustedCheckout: true });
+  const untrusted = JSON.parse(fs.readFileSync(capture, 'utf8'));
+  for (const key of ['GH_TOKEN', 'GITHUB_TOKEN', 'OPENAI_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']) assert.strictEqual(untrusted.env[key], null, key);
+  assert.strictEqual(untrusted.env.SAFE_VALUE, 'kept');
+  await codexExec(input);
+  const normal = JSON.parse(fs.readFileSync(capture, 'utf8'));
+  for (const key of ['GH_TOKEN', 'GITHUB_TOKEN', 'OPENAI_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']) assert.strictEqual(normal.env[key], 'secret', key);
+  assert.strictEqual(normal.env.SAFE_VALUE, 'kept');
+  assert.deepStrictEqual(normal.args.slice(0, 7), ['exec', '--cd', binDir, '--sandbox', 'workspace-write', '--add-dir', binDir]);
+  assert.ok(!normal.args.includes('--strict-config'));
+});
+
+test('reviewOnly runs a Codex reviewer from its own CODEX_HOME, which marks the checkout untrusted before Codex can trust it', async () => {
+  const sourceHome = temp();
+  fs.writeFileSync(path.join(sourceHome, 'auth.json'), '{"OPENAI_API_KEY":"sk-test"}');
+  fs.writeFileSync(path.join(sourceHome, 'config.toml'), '[mcp_servers.user]\ncommand = "user-tool"\n');
+  const repo = cleanRepo();
+  const h = harness();
+  const seen = [];
+  const cli = (args) => (args[0] === 'findings' ? { findings: [] } : h.cli(args));
+  const spawn = (input) => {
+    const home = input.env && input.env.CODEX_HOME;
+    seen.push({ role: input.role, untrusted: input.untrustedCheckout, home,
+      config: home && fs.readFileSync(path.join(home, 'config.toml'), 'utf8'),
+      auth: home && fs.readFileSync(path.join(home, 'auth.json'), 'utf8') });
+    return h.spawn(input);
+  };
+  const previous = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = sourceHome;
+  try {
+    await runReviewUntilGreen({ ref: 'feature/codex', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'codex', noBroad: true });
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous;
+  }
+  assert.ok(seen.length);
+  for (const launch of seen) {
+    assert.strictEqual(launch.untrusted, true);
+    assert.ok(launch.home && launch.home !== sourceHome, `${launch.role} ran from its own CODEX_HOME`);
+    assert.ok(launch.config.includes(`[projects.${JSON.stringify(fs.realpathSync(repo))}]\ntrust_level = "untrusted"`), launch.config);
+    assert.ok(launch.config.includes('default_permissions = "concord-review"'), launch.config);
+    assert.ok(launch.config.includes('approval_policy = "never"'), launch.config);
+    assert.ok(launch.config.includes('[shell_environment_policy]\ninherit = "core"'), launch.config);
+    assert.ok(launch.config.includes('ignore_default_excludes = false'), launch.config);
+    assert.ok(launch.config.includes('[permissions.concord-review]\nextends = ":workspace"'), launch.config);
+    assert.ok(launch.config.includes(`[permissions.concord-review.filesystem]\n${JSON.stringify(path.join(sourceHome, 'auth.json'))} = "deny"`), launch.config);
+    assert.ok(launch.config.includes(`${JSON.stringify(path.join(launch.home, 'auth.json'))} = "deny"`), launch.config);
+    assert.ok(launch.config.includes('[permissions.concord-review.network]\nenabled = false'), launch.config);
+    assert.ok(!launch.config.includes('mcp_servers'), 'the account\'s own Codex configuration stays out');
+    assert.strictEqual(launch.auth, '{"OPENAI_API_KEY":"sk-test"}');
+  }
+  assert.ok(!fs.existsSync(seen[0].home), 'the review-only CODEX_HOME is removed when the run ends');
+});
+
+test('reviewOnly fails when a reviewer moved HEAD, even with a clean worktree', async () => {
+  const repo = cleanRepo();
+  const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  const h = harness();
+  const cli = (args) => {
+    if (args[0] === 'findings') return { findings: [] };
+    const out = h.cli(args);
+    return args[0] === 'round-start' ? { ...out, head } : out;
+  };
+  const spawn = (input) => {
+    if (input.role === 'correctness') execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'moved'], { cwd: repo });
+    return h.spawn(input);
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/moved', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'claude', noBroad: true }),
+    /reviewer moved HEAD/,
+  );
 });

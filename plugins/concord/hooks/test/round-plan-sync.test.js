@@ -168,3 +168,17 @@ test('every changeClass/action pair the plan prompt offers is accepted by the pl
     assert.match(text, /local group[^.]*may also use `?action:"reconcile"`?/, `${name} plan step does not state that a local group may reconcile`);
   }
 });
+
+test('gate-verify records a gate candidate that restates a correctness candidate as a duplicate, not a rejection', () => {
+  assert.match(GATE_VERIFY_OWNERSHIP_CLAUSE, /restates the same defect .* correctness candidate/);
+  assert.match(GATE_VERIFY_OWNERSHIP_CLAUSE, /"duplicates" as \{"id":"<gate id>","of":"<correctness id>"\}/);
+  assert.doesNotMatch(GATE_VERIFY_OWNERSHIP_CLAUSE, /Reject a gate candidate that restates/);
+});
+
+test('the correctness verifier given the gate batch may disposition only correctness ids', () => {
+  const base = reviewerPrompt('verify', { stateDir: '/state', round: 1, targetType: 'git', gateMode: 'pair', gateApplied: true });
+  for (const prefix of allowedFindingPrefixes('correctness')) assert.ok(base.includes(`${prefix}*`), `verify prompt must name ${prefix}* as its own namespace`);
+  assert.match(base, /Do not copy, accept, or reject gate:\* IDs in this artifact; their disposition belongs to the gate verifier\./);
+  const alone = reviewerPrompt('verify', { stateDir: '/state', round: 2, targetType: 'git', gateMode: 'pair', gateApplied: false });
+  assert.doesNotMatch(alone, /gate verifier/, 'without the gate batch there is nothing to keep out');
+});

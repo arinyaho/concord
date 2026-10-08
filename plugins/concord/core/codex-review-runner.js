@@ -12,6 +12,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { safeIdForFilename } = require('./artifact-name');
 const { writeFileAtomic } = require('./atomic-write');
+const { captureArtifactRoot, hashArtifact, readArtifactBytes } = require('./bounded-artifact');
 const { targetSlug, ledgerPath } = require('./review');
 const { SESSION_MODES, THRESHOLDS } = require('./session-handoff');
 const { artifactDestinationFromPrompt } = require('./review-artifact');
@@ -83,9 +84,9 @@ function terminateProcessTree(child, signal) {
   child.kill(signal);
 }
 
-function jsonCli(cliPath, args, repoRoot) {
+function jsonCli(cliPath, args, repoRoot, stateDir, reviewOnly = false) {
   const out = execFileSync('node', [cliPath, ...args], {
-    cwd: repoRoot, encoding: 'utf8', env: { ...process.env, REVIEW_REPO_ROOT: repoRoot },
+    cwd: repoRoot, encoding: 'utf8', env: { ...process.env, REVIEW_REPO_ROOT: repoRoot, ...(stateDir ? { REVIEW_STATE_DIR: stateDir } : {}), ...(reviewOnly ? { CONCORD_UNTRUSTED_ARTIFACTS: '1' } : {}) },
   });
   try { return JSON.parse(out); } catch (e) { throw new Error(`harness-failure: review-cli ${args[0]} returned non-JSON output`); }
 }
@@ -143,7 +144,7 @@ function sameKeys(actual, expected) {
   return actual.length === expected.length && [...actual].sort().every((key, index) => key === [...expected].sort()[index]);
 }
 
-function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoningEffort, serviceTier, timeoutMs, abortSignal, codexExecutable, env }) {
+function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoningEffort, serviceTier, timeoutMs, abortSignal, codexExecutable, env, untrustedCheckout = false }) {
   return new Promise((resolve, reject) => {
     const resolvedCodex = codexExecutable || resolveCodexExecutable(repoRoot, { env });
     const invocationId = crypto.randomUUID();
@@ -162,13 +163,25 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
     // path for this value. Scoped to win32 only: the POSIX path (`prompt`
     // as the trailing positional arg) is unaffected by this class of bug
     // and stays exactly as tested.
+    const childEnv = untrustedCheckout ? { ...(env || process.env) } : env;
+    if (untrustedCheckout) {
+      for (const key of Object.keys(childEnv)) {
+        if (/KEY|SECRET|TOKEN/i.test(key)) delete childEnv[key];
+      }
+    }
     const child = spawn(crossPlatformCommand(resolvedCodex.command, repoRoot), crossPlatformArgs([
-      'exec', '--cd', repoRoot, '--sandbox', 'workspace-write', '--add-dir', stateDir,
+      'exec', '--cd', repoRoot,
+      ...(untrustedCheckout ? ['--strict-config'] : ['--sandbox', 'workspace-write']), '--add-dir', stateDir,
       ...(model ? ['--model', model] : []),
       ...(effort ? ['--config', `model_reasoning_effort=${JSON.stringify(effort)}`] : []),
       ...(tier ? ['--config', `service_tier=${JSON.stringify(tier)}`] : []),
+      // An untrusted checkout's AGENTS.md and execpolicy rules must not steer the reviewer.
+      ...(untrustedCheckout ? ['--config', 'project_doc_max_bytes=0', '--ignore-rules'] : []),
       '--skip-git-repo-check', '--json', ...(isWindows ? ['-'] : [prompt]),
-    ], needsDoubleEscape(resolvedCodex.command, repoRoot)), crossPlatformOpts({ cwd: repoRoot, env, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'ignore'], detached: !isWindows }));
+    ], needsDoubleEscape(resolvedCodex.command, repoRoot)), crossPlatformOpts({ cwd: repoRoot, env: childEnv, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'ignore'], detached: !isWindows }));
+    // A top-level CLI can exit after spawning a same-group child. End the
+    // untrusted review's process group before 'close' resolves the launch.
+    if (untrustedCheckout) child.once('exit', () => terminateProcessTree(child, 'SIGKILL'));
     if (isWindows) {
       // If `codex` exits before consuming stdin (a rejected flag, a
       // startup auth failure, the wrong binary on PATH), writing the
@@ -283,6 +296,8 @@ function providerExec(input) {
         ...(requestedModel ? ['--model', requestedModel] : []),
         '--output-format', 'json', '--no-session-persistence',
         '--permission-mode', 'acceptEdits', '--permission-prompts', 'none',
+        // An untrusted checkout's .claude/settings.json (hooks, permissions) must not run.
+        ...(input.untrustedCheckout ? ['--setting-sources', 'user'] : []),
         `--add-dir=${stateDir}`, ...(isWindows ? [] : [prompt]),
       ]
     : [
@@ -299,6 +314,7 @@ function providerExec(input) {
 
   return new Promise((resolve, reject) => {
     const child = spawn(crossPlatformCommand(executable, repoRoot), crossPlatformArgs(args, needsDoubleEscape(executable, repoRoot)), crossPlatformOpts({ cwd: repoRoot, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'pipe'], detached: !isWindows }));
+    if (input.untrustedCheckout) child.once('exit', () => terminateProcessTree(child, 'SIGKILL'));
     if (isWindows) {
       // See codexExec's identical stdin 'error' handling above -- the
       // same EPIPE risk (child exits before consuming the prompt) applies
@@ -397,8 +413,64 @@ async function invoke(spawn, input) {
   }
 }
 
+// A review-only run keeps its round in a throwaway state directory: it never
+// edits, so it has nothing to resume, and a round left open in the persistent
+// ledger would read as a crashed round to the next review-and-fix on the ref.
+//
+// A Codex reviewer of an untrusted checkout runs from a CODEX_HOME of its own.
+// Codex marks the directory it runs in as trusted and then loads that
+// directory's .codex/config.toml, which can start MCP servers; an entry that
+// marks the checkout untrusted before Codex starts keeps that configuration
+// out. The account's own configuration stays out too; only its login is copied.
 async function runReviewUntilGreen(options) {
-  const { ref, base, broad = false, noBroad = false, noDod = false, resume = false, repoRoot: configuredRepoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
+  if (!options.reviewOnly) return runRounds(options);
+  const made = [];
+  const temp = (prefix) => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix)); made.push(dir); return dir; };
+  try {
+    const extra = {};
+    if (!options.runCli) extra.reviewStateDir = temp('concord-review-only-');
+    if ((options.reviewer || 'codex') === 'codex') {
+      const home = temp('concord-review-codex-home-');
+      const sourceAuth = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'auth.json');
+      if (fs.existsSync(sourceAuth)) fs.copyFileSync(sourceAuth, path.join(home, 'auth.json'));
+      const checkout = canonicalPath(options.repoRoot || process.cwd());
+      fs.writeFileSync(path.join(home, 'config.toml'), `default_permissions = "concord-review"
+approval_policy = "never"
+
+[shell_environment_policy]
+inherit = "core"
+ignore_default_excludes = false
+
+[permissions.concord-review]
+extends = ":workspace"
+
+[permissions.concord-review.filesystem]
+${JSON.stringify(sourceAuth)} = "deny"
+${JSON.stringify(path.join(home, 'auth.json'))} = "deny"
+
+[permissions.concord-review.network]
+enabled = false
+
+[projects.${JSON.stringify(checkout)}]
+trust_level = "untrusted"
+`);
+      extra.reviewCodexHome = home;
+    }
+    return await runRounds({ ...options, ...extra });
+  } finally {
+    for (const dir of made) fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function runRounds(options) {
+  const { ref, base, broad = false, noBroad = false, reviewOnly = false, resume = false, repoRoot: configuredRepoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
+  // A review-only run never edits, so it has no definition of done to check.
+  const noDod = reviewOnly || !!options.noDod;
+  if (reviewOnly && options.initiativeRunKey) throw new Error('review-until-green: reviewOnly cannot run inside an initiative, which records every round');
+  // Copilot runs with every tool allowed and has no way to ignore the
+  // checkout's own instruction files, so it cannot review an untrusted checkout.
+  if (reviewOnly && resume) throw new Error('review-until-green: reviewOnly cannot resume; it keeps no ledger to recover the base from, so name the ref and base again');
+  if (reviewOnly && options.reviewer === 'copilot') throw new Error('review-until-green: reviewOnly supports the claude and codex reviewers; copilot cannot be kept from an untrusted checkout\'s configuration');
   const repoRoot = canonicalPath(configuredRepoRoot);
   const canonicalRepoRoot = repoRoot;
   const canonicalStateDir = options.initiativeStateDir && canonicalPath(options.initiativeStateDir);
@@ -427,7 +499,7 @@ async function runReviewUntilGreen(options) {
   // Pair identity uses the commit a base name points at, so a base that moved
   // under the same name is a different pair. round-start keeps the name.
   const baseIdentity = (name) => (name && !ref.startsWith('file:') ? resolveBaseCommit(repoRoot, name) : name);
-  const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot));
+  const runCli = options.runCli || ((args) => jsonCli(cliPath, args, repoRoot, options.reviewStateDir, reviewOnly));
   const initiativeFlags = initiativeRun ? ['--initiative-run-key', options.initiativeRunKey, '--initiative-id', initiativeId, '--initiative-state-dir', canonicalStateDir, '--initiative-max-launches', String(options.initiativeMaxLaunches), '--initiative-max-rounds', String(options.initiativeMaxRounds), ...(options.initiativeMode ? ['--initiative-mode', options.initiativeMode] : [])] : [];
   const sessionMode = options.sessionHandoff || 'suggest';
   if (!SESSION_MODES.includes(sessionMode)) throw new Error('review-until-green: --session-handoff must be off, suggest, or stop-at-checkpoint');
@@ -527,7 +599,7 @@ async function runReviewUntilGreen(options) {
   let telemetryLoaded = false;
   const persistTelemetry = () => {
     if (!telemetryPath) return;
-    writeFileAtomic(telemetryPath, `${JSON.stringify(telemetry)}\n`);
+    writeFileAtomic(telemetryPath, `${JSON.stringify(telemetry)}\n`, reviewOnly ? { flag: 'wx', mode: 0o600 } : undefined);
   };
   const record = (input, result) => {
     const usage = result && result.usage || {};
@@ -651,7 +723,7 @@ async function runReviewUntilGreen(options) {
     if (!abortController || !abortController.signal.aborted) return;
     const signal = String(abortController.signal.reason || 'signal');
     const failure = { role: 'runner', kind: 'interrupted', message: `review runner interrupted by ${signal}`, signal };
-    if (persist) try { await cli(['round-failure', ref, JSON.stringify(failure)]); } catch (_) {}
+    if (persist && !reviewOnly) try { await cli(['round-failure', ref, JSON.stringify(failure)]); } catch (_) {}
     const error = new Error(`harness-failure: ${failure.message}`);
     error.reviewFailure = failure;
     throw error;
@@ -732,7 +804,7 @@ async function runReviewUntilGreen(options) {
     const run = JSON.parse(fs.readFileSync(initiativeRun.path, 'utf8'));
     const sourcePaths = [path.join(repoRoot, 'AGENTS.md'), path.join(repoRoot, 'review.config.json'), path.join(started.stateDir, `intent-${targetSlug(ref)}.md`), ...(options.authoritativeSources || [])];
     const authoritativeSources = [...new Set(sourcePaths)].filter(source => fs.existsSync(source)).map(source => ({ path: canonicalPath(source), sha256: crypto.createHash('sha256').update(fs.readFileSync(source)).digest('hex') }));
-    const nextArgs = result.decision?.continue ? ['round-start', ref, ...(initialBase ? [initialBase] : []), ...(broad ? ['--broad'] : []), ...(noBroad ? ['--no-broad'] : []), ...(noDod ? ['--no-dod'] : [])] : ['show', ref];
+    const nextArgs = result.decision?.continue ? ['round-start', ref, ...(initialBase ? [initialBase] : []), ...(broad ? ['--broad'] : []), ...(noBroad ? ['--no-broad'] : []), ...(noDod ? ['--no-dod'] : []), ...(options.intentFile ? ['--intent-file', options.intentFile] : [])] : ['show', ref];
     const nextStep = { executable: process.execPath, cliPath: path.resolve(cliPath), args: [...nextArgs, ...initiativeFlags] };
     const completedArtifacts = fs.readdirSync(started.stateDir).filter(name => new RegExp(`^round-${started.round}-.*\\.json$`).test(name)).map(name => {
       const artifactPath = path.join(started.stateDir, name);
@@ -766,6 +838,9 @@ async function runReviewUntilGreen(options) {
     if (broad) startArgs.push('--broad');
     if (noBroad) startArgs.push('--no-broad'); // broad review is on by default; this is the opt-out
     if (noDod) startArgs.push('--no-dod');
+    if (options.intentFile) startArgs.push('--intent-file', options.intentFile);
+    // A review-only checkout is untrusted: its configured intent command is never run.
+    if (reviewOnly) startArgs.push('--no-intent-command');
     // The keyed run is the mode authority: round-start reads the run's mode and rejects a flag that disagrees.
     // On resume, an unpassed reviewer/fixer must NOT be resent as the 'codex'
     // default -- round-start rejects a request that conflicts with the
@@ -808,6 +883,82 @@ async function runReviewUntilGreen(options) {
     currentRound = started.round;
     checks = [{ name: 'definition-of-done', status: started.dodPending ? 'pending' : started.dodDeferred ? 'deferred' : (started.dodPassed ? 'passed' : 'failed') }];
     const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodDeferred: started.dodDeferred, dodPending: started.dodPending, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref), gateMode: started.gateMode, gateApplied: started.gateApplied, intentHash: started.intentHash };
+    const reviewRoles = reviewOnly ? [
+      ...(started.intentApplied ? ['intent'] : []), 'correctness',
+      ...(started.gateApplied ? ['gate'] : []), 'verify',
+      ...(started.gateApplied && started.gateMode !== 'design-conformance' ? ['gate-verify'] : []),
+    ] : [];
+    const checkReviewCheckout = () => {
+      if (!reviewOnly) return;
+      if (started.targetType === 'file') {
+        const current = options.targetIdentity ? options.targetIdentity(ref, initialBase, canonicalRepoRoot)
+          : fileTarget({ files: [ref.slice('file:'.length)] }, canonicalRepoRoot, { untrusted: true }).identity;
+        if (current !== started.head) throw new Error('harness-failure: a reviewer modified the file target; review-only reports only on the content it started on');
+      } else {
+        if (gitDirty(canonicalRepoRoot)) throw new Error('harness-failure: a reviewer left the checkout modified; review-only reports only on the commit as it was');
+        if (started.head && gitHeadSha(canonicalRepoRoot) !== started.head) throw new Error('harness-failure: a reviewer moved HEAD; review-only reports only on the commit it was started on');
+      }
+    };
+    const roleArtifacts = new Map(reviewRoles.map((role) => [role, artifactDestinationFromPrompt(reviewerPrompt(role, context), context.stateDir)]));
+    if (reviewOnly && [...roleArtifacts.values()].some((file) => !file)) throw new Error('harness-failure: review artifact destination is missing');
+    const protectedReviewFiles = reviewOnly ? new Map() : null;
+    const protectedRoots = reviewOnly ? new Map() : null;
+    const pinProtectedRoot = (root) => {
+      if (!protectedRoots) return;
+      const absolute = path.resolve(root);
+      protectedRoots.set(absolute, captureArtifactRoot(absolute));
+    };
+    if (reviewOnly) pinProtectedRoot(context.stateDir);
+    const fileHash = (file) => {
+      const changed = () => new Error(`harness-failure: protected review artifact changed: ${path.basename(file)}`);
+      try { return hashArtifact(file, protectedRoots.get(path.dirname(path.resolve(file))), { allowMissing: true }); }
+      catch (_) { throw changed(); }
+    };
+    const copyRepairArtifact = (source, destination) => {
+      if (!reviewOnly) { fs.copyFileSync(source, destination); return; }
+      const bytes = readArtifactBytes(source, protectedRoots.get(path.dirname(path.resolve(source))));
+      writeFileAtomic(destination, bytes, { flag: 'wx', mode: 0o600 });
+    };
+    const protect = (file) => { if (protectedReviewFiles) protectedReviewFiles.set(file, fileHash(file)); };
+    const checkProtected = (skipLedger = false, allowedOutput = null, trustedChange = null) => {
+      if (!protectedReviewFiles) return;
+      for (const [file, expected] of protectedReviewFiles) {
+        if ((skipLedger && file === protectedLedger) || file === allowedOutput || file === trustedChange) continue;
+        if (fileHash(file) !== expected) throw new Error(`harness-failure: protected review artifact changed: ${path.basename(file)}`);
+      }
+    };
+    const protectedLedger = ledgerPath(context.stateDir, context.slug);
+    for (const file of [
+      path.join(context.stateDir, `round-${context.round}-diff.txt`),
+      ...(reviewOnly && started.targetType !== 'file' ? [path.join(context.stateDir, `round-${context.round}-changes.json`)] : []),
+      path.join(context.stateDir, `round-${context.round}-history.json`),
+      path.join(context.stateDir, `intent-${context.slug}.md`),
+      protectedLedger,
+      ...roleArtifacts.values(),
+    ]) protect(file);
+    const refreshLedger = () => protect(protectedLedger);
+    const sealArtifact = (role) => {
+      if (!protectedReviewFiles) return;
+      const artifact = roleArtifacts.get(role);
+      if (fileHash(artifact) === null) throw new Error(`harness-failure: normalized review artifact is missing: ${path.basename(artifact)}`);
+      protect(artifact);
+    };
+    const repairPaths = (role) => {
+      const stem = path.join(context.stateDir, `round-${context.round}-${role}`);
+      return { snapshot: `${stem}.original`, packet: `${stem}.packet.json`, descriptor: `${stem}.repair.json` };
+    };
+    const sealRepair = (role) => {
+      if (!protectedReviewFiles) return;
+      for (const file of Object.values(repairPaths(role))) {
+        if (fileHash(file) === null) throw new Error(`harness-failure: trusted repair artifact is missing: ${path.basename(file)}`);
+        protect(file);
+      }
+    };
+    if (reviewOnly) for (const role of started.completedArtifacts || []) {
+      if (!roleArtifacts.has(role)) throw new Error(`harness-failure: unexpected completed review artifact: ${role}`);
+      sealArtifact(role);
+    }
+    if (reviewOnly) for (const role of Object.keys(started.repairArtifacts || {})) sealRepair(role);
     let slotAllocation = Promise.resolve();
     const reserve = async (role, count = 1) => {
       if (!initiativeRun) return false;
@@ -821,6 +972,9 @@ async function runReviewUntilGreen(options) {
       return true;
     };
     const launch = async (input) => {
+      checkReviewCheckout();
+      const ownOutput = roleArtifacts.get(input.artifactRole || input.role) || null;
+      checkProtected(false, ownOutput);
       if (!input.preReserved) await reserve(input.reservationRole || (input.role === 'gate' ? 'gate-review' : input.role));
       const artifactPath = artifactDestinationFromPrompt(input.prompt, input.stateDir);
       const isFix = input.role === 'fix';
@@ -828,11 +982,16 @@ async function runReviewUntilGreen(options) {
       const requestedModel = isFix ? fixerModel : reviewerModel;
       let telemetrySlot = null;
       if (artifactPath && provider === 'codex' && input.operation !== 'artifact-repair') {
+        checkProtected(false, ownOutput);
         const allocation = slotAllocation.then(() => cli(['telemetry-slot', ref, artifactPath, '--engine', 'codex']));
         slotAllocation = allocation.catch(() => {});
         telemetrySlot = await allocation;
+        checkProtected(true, ownOutput);
+        refreshLedger();
       }
-      return invoke(spawn, {
+      checkProtected(false, ownOutput);
+      checkReviewCheckout();
+      const result = await invoke(spawn, {
         ...input,
         provider,
         ...(requestedModel ? { requestedModel } : {}),
@@ -840,8 +999,14 @@ async function runReviewUntilGreen(options) {
         ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
         ...(options.subprocessTimeoutMs ? { timeoutMs: options.subprocessTimeoutMs } : {}),
         ...(abortController ? { abortSignal: abortController.signal } : {}),
+        ...(reviewOnly ? { untrustedCheckout: true } : {}),
+        ...(options.reviewCodexHome && provider === 'codex' ? { env: { ...process.env, CODEX_HOME: options.reviewCodexHome } } : {}),
         ...(telemetrySlot ? { telemetrySlot } : {}),
       });
+      checkReviewCheckout();
+      checkProtected(false, ownOutput);
+      if (reviewOnly && ownOutput) fileHash(ownOutput);
+      return result;
     };
 
     const runArtifactReviewer = async (role) => {
@@ -851,41 +1016,67 @@ async function runReviewUntilGreen(options) {
         if (!repair) {
           await launch({ role, prompt: reviewerPrompt(role, context), repoRoot, stateDir: context.stateDir });
           const normalized = await cli(['artifact-normalize', ref, role]);
-          if (normalized.status === 'ok') return;
+          checkProtected(true, roleArtifacts.get(role));
+          refreshLedger();
+          if (normalized.status === 'ok') { sealArtifact(role); return; }
           if (normalized.status !== 'repair') throw new Error(`harness-failure: ${role} artifact repair exhausted`);
+          sealRepair(role);
           repair = normalized.repair;
         }
         if (reviewer !== 'codex') throw new Error('harness-failure: artifact repair provider cannot enforce the isolation boundary');
         const repairDir = repairDirectory(canonicalRepoRoot);
+        pinProtectedRoot(repairDir);
         try {
           const packetPath = path.join(repairDir, 'packet.json');
           const snapshotPath = path.join(repairDir, 'original.json');
           const candidatePath = path.join(repairDir, 'candidate.json');
-          fs.copyFileSync(repair.snapshotPath, snapshotPath);
-          fs.copyFileSync(repair.packetPath, packetPath);
+          copyRepairArtifact(repair.snapshotPath, snapshotPath);
+          copyRepairArtifact(repair.packetPath, packetPath);
+          protect(snapshotPath);
+          protect(packetPath);
           const alreadyDispatched = repair.state === 'dispatched';
           const reserved = repair.state === 'prepared' ? await reserve(role === 'gate' ? 'gate-review' : role) : repair.state === 'reserved';
-          if (['prepared', 'reserved'].includes(repair.state)) repair = await cli(['artifact-repair-dispatch', ref, role]);
+          if (['prepared', 'reserved'].includes(repair.state)) {
+            checkProtected(false, roleArtifacts.get(role));
+            repair = await cli(['artifact-repair-dispatch', ref, role]);
+            checkProtected(false, roleArtifacts.get(role), repairPaths(role).descriptor);
+            protect(repairPaths(role).descriptor);
+          }
           if (repair.state === 'dispatched' && !fs.existsSync(repair.candidatePath)) {
           // The durable dispatch is the sole launch authorization. A crash
           // after it consumes the attempt rather than duplicating a reviewer.
           if (alreadyDispatched) throw new Error(`harness-failure: ${role} artifact repair outcome is unavailable after dispatch`);
           await launch({ role: 'artifact-repair', artifactRole: role, reservationRole: role === 'gate' ? 'gate-review' : role, preReserved: reserved, operation: 'artifact-repair', prompt: artifactContract.repairPrompt(packetPath, candidatePath), repoRoot: repairDir, stateDir: repairDir, ...(options.spawn ? {} : { codexExecutable: resolveCodexExecutable(canonicalRepoRoot) }), env: repairEnvironment(canonicalRepoRoot, context.stateDir) });
-          if (!fs.existsSync(candidatePath)) throw new Error(`harness-failure: ${role} artifact repair produced no candidate`);
-          fs.copyFileSync(candidatePath, repair.candidatePath);
+          if (reviewOnly ? fileHash(candidatePath) === null : !fs.existsSync(candidatePath)) throw new Error(`harness-failure: ${role} artifact repair produced no candidate`);
+          copyRepairArtifact(candidatePath, repair.candidatePath);
+          checkProtected(false, roleArtifacts.get(role));
           repair = await cli(['artifact-repair-candidate', ref, role]);
+          checkProtected(false, roleArtifacts.get(role), repairPaths(role).descriptor);
+          protect(repairPaths(role).descriptor);
         }
           const repaired = await cli(['artifact-normalize', ref, role, '--candidate', repair.candidatePath]);
+          checkProtected(true, roleArtifacts.get(role));
+          refreshLedger();
           if (repaired.status !== 'ok') throw new Error(`harness-failure: ${role} artifact repair exhausted`);
+          sealArtifact(role);
           return;
-        } finally { fs.rmSync(repairDir, { recursive: true, force: true }); }
+        } finally {
+          if (protectedReviewFiles) {
+            protectedReviewFiles.delete(path.join(repairDir, 'original.json'));
+            protectedReviewFiles.delete(path.join(repairDir, 'packet.json'));
+          }
+          fs.rmSync(repairDir, { recursive: true, force: true });
+        }
       } catch (error) {
         const failure = error.reviewFailure || { role, kind: /artifact|missing gate artifact/.test(String(error.message)) ? 'artifact-write-failure' : 'harness-error', message: String(error.message).replace(/^harness-failure:\s*/, '') };
-        if (!error.initiativeBlocked) try { await cli(['round-failure', ref, JSON.stringify(failure)]); } catch (_) {}
+        if (!reviewOnly && !error.initiativeBlocked) try { await cli(['round-failure', ref, JSON.stringify(failure)]); } catch (_) {}
         throw error;
       }
     };
 
+    if (reviewOnly) {
+      for (const role of reviewRoles) await runArtifactReviewer(role);
+    } else {
     const reviewers = [];
     if (started.intentApplied) reviewers.push(runArtifactReviewer('intent'));
     if (started.gateApplied && started.gateMode !== 'design-conformance') reviewers.push((async () => {
@@ -907,6 +1098,16 @@ async function runReviewUntilGreen(options) {
     const reviewerResults = await Promise.allSettled(reviewers);
     const reviewerFailure = reviewerResults.find((result) => result.status === 'rejected');
     if (reviewerFailure) throw reviewerFailure.reason;
+    }
+
+    if (reviewOnly) {
+      checkProtected();
+      // The reviewers can write to the checkout. Findings describe the commit,
+      // so a tree a reviewer modified is not one to report on.
+      checkReviewCheckout();
+      const reported = await cli(['findings', ref]);
+      return { decision: 'review-only', round: currentRound, findings: reported.findings };
+    }
 
     await runArtifactReviewer('plan');
 

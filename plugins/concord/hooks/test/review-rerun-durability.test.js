@@ -133,8 +133,11 @@ for (const provider of Object.keys(providers)) {
     const resumed = review.readLedger(t.dir, t.slug);
     assert.equal(resumed.rerun_cleanup, undefined); assert.equal(resumed.round, 1);
     assert.deepEqual(fs.readFileSync(runPath(t.initDir, 'durability')), t.initiativeBytes);
-    for (const [name] of t.artifacts) if (!name.startsWith('intent-') && !['round-1-diff.txt', 'round-1-history.json'].includes(name)) assert.equal(fs.existsSync(path.join(t.dir, name)), false);
+    for (const [name] of t.artifacts) if (!name.startsWith('intent-') && !['round-1-diff.txt', 'round-1-history.json', 'round-1-changes.json'].includes(name)) assert.equal(fs.existsSync(path.join(t.dir, name)), false);
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(t.dir, 'round-1-history.json'), 'utf8')), { groups: [], fixed: [] });
+    const currentManifest = fs.readFileSync(path.join(t.dir, 'round-1-changes.json'));
+    assert.equal(hash(currentManifest), resumed.execution.changeManifest.sha256, 'new manifest is bound to the fresh round');
+    assert.deepEqual(JSON.parse(currentManifest).paths, ['a.txt']);
     assert.deepEqual(fs.readFileSync(t.otherPath), t.otherBytes);
     validateArchive(t, resumed.runs[0].archive);
   });

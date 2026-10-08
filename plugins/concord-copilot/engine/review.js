@@ -37,7 +37,8 @@ function readLedger(stateDir, slug) {
 
 function writeLedger(stateDir, slug, ledger) {
   fs.mkdirSync(stateDir, { recursive: true });
-  writeFileAtomic(ledgerPath(stateDir, slug), JSON.stringify(ledger));
+  writeFileAtomic(ledgerPath(stateDir, slug), JSON.stringify(ledger),
+    process.env.CONCORD_UNTRUSTED_ARTIFACTS === '1' ? { flag: 'wx', mode: 0o600 } : undefined);
 }
 
 // Removes the durable ledger for a ref so the next round-start begins a fresh

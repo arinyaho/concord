@@ -1,6 +1,6 @@
 ---
 description: Deterministically review, fix, commit, and repeat with independently selected Claude, Codex, or Copilot providers and models until Concord reaches a terminal decision.
-argument-hint: "[target | file:<path-or-glob> | resume <ref>] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--broad|--no-broad] [--no-dod]"
+argument-hint: "[target | file:<path-or-glob> | resume <ref>] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--broad|--no-broad] [--no-dod] [--review-only] [--intent-file <path>]"
 ---
 
 Run the bundled deterministic runner once; do not manually orchestrate reviewers:
@@ -8,6 +8,8 @@ Run the bundled deterministic runner once; do not manually orchestrate reviewers
 ```sh
 node "${CLAUDE_PLUGIN_ROOT}/bin/review-and-fix.js" $ARGUMENTS
 ```
+
+`--review-only` stops after the finders and verifiers and prints the verified findings as JSON without planning, fixing, or recording; it treats the checkout as untrusted, so it runs none of the checkout's configuration and accepts the `claude` and `codex` reviewers. `--intent-file <path>` supplies the review intent from a file in place of the repository's configured intent command. Both exist only in this runner; the Claude Code and Copilot drivers do not take them.
 
 Reviewer and fixer selections are independent. Codex has no native clean-context subagent primitive, so this host invokes the selected provider through its non-interactive CLI. An omitted provider defaults to `codex`; an omitted model uses that provider's configured default. A requested provider or model is never silently replaced.
 

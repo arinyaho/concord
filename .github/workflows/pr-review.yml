@@ -1,0 +1,66 @@
+name: pr-review
+# scan.sh reads this name to tell which reviews are queued or running.
+run-name: review ${{ inputs.repo }}#${{ inputs.pr }} @ ${{ inputs.sha }}
+on:
+  workflow_dispatch:
+    inputs:
+      repo:   { description: 'owner/name of the repository', required: true }
+      pr:     { description: 'pull request number', required: true }
+      sha:    { description: 'head commit to review', required: true }
+      mode:   { description: 'broad or diff', required: true }
+      cmd_id: { description: 'id of the comment that asked, if any', required: false }
+      reviewer: { description: 'claude or codex, when the comment named one', required: false }
+      attempt_id: { description: 'unique identifier for this review dispatch', required: false }
+
+# One review per pull request. A newer commit dispatches its own run, which
+# cancels this one -- reviewing a commit the branch has already left is waste.
+concurrency:
+  group: pr-review-${{ inputs.repo }}-${{ inputs.pr }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    if: vars.REVIEW_REPOS != ''
+    runs-on: ${{ fromJSON(vars.REVIEW_RUNNER || '"ubuntu-latest"') }}
+    # Review-only workers run sequentially within this 90-minute job limit.
+    timeout-minutes: 90
+    env:
+      # A reviewer named in the @concord comment wins over the copy's default.
+      REVIEWER: ${{ inputs.reviewer || vars.REVIEW_REVIEWER || 'claude' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - if: env.REVIEWER == 'claude'
+        run: npm install -g @anthropic-ai/claude-code
+      - if: env.REVIEWER == 'codex'
+        run: npm install -g @openai/codex
+      - if: env.REVIEWER == 'codex'
+        run: |
+          # Log in under RUNNER_TEMP, which the runner empties after every job,
+          # so the API key does not stay on a self-hosted runner.
+          export CODEX_HOME="$RUNNER_TEMP/codex-home"
+          mkdir -p "$CODEX_HOME"
+          echo "CODEX_HOME=$CODEX_HOME" >> "$GITHUB_ENV"
+          printenv OPENAI_API_KEY | codex login --with-api-key
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      - run: services/pr-review/review-one.sh
+        env:
+          REPO: ${{ inputs.repo }}
+          REVIEW_REPOS: ${{ vars.REVIEW_REPOS }}
+          PR: ${{ inputs.pr }}
+          SHA: ${{ inputs.sha }}
+          MODE: ${{ inputs.mode }}
+          CMD_ID: ${{ inputs.cmd_id }}
+          ATTEMPT_ID: ${{ inputs.attempt_id }}
+          REVIEW_MODEL: ${{ vars.REVIEW_MODEL }}
+          GH_TOKEN: ${{ secrets.REVIEW_PAT }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

@@ -17,6 +17,22 @@ Every fail-closed reviewer in a review round writes one JSON artifact for its ro
 
 Strict normalization rejects IDs outside a role's prefixes, malformed JSON, structurally incomplete findings, and declared blocked checks. It never silently filters cross-namespace entries to make an artifact pass.
 
+### Git review scope
+
+A Git round captures its patch and changed-path manifest from the same fixed comparison endpoints. Manifest object IDs accept both Git SHA-1 and SHA-256 formats. The path inventory uses NUL-delimited Git output with rename detection disabled, so both rename paths, deletions, binary changes, empty additions and mode-only changes participate in correctness coverage. Patch display headers do not define the coverage set.
+
+The versioned manifest is bound to the round, target identity and patch hash, with an integrity digest in the execution ledger. Artifact normalization and the verified fold use this saved manifest; neither reconstructs the scope from a moving checkout. Missing, mismatched or malformed scope evidence fails closed. A trusted round-start can regenerate inputs for a legacy round, but must invalidate completion evidence that lacks this binding. File targets retain their document contract without Git path inventory.
+
+Review-only runners protect the manifest alongside the patch, ledger and reviewer artifacts. An untrusted role cannot narrow the required examined set by changing the saved scope.
+
+### Reading untrusted state artifacts
+
+Review-only integrity hashes and trusted artifact consumers share a bounded reader. It rejects symlinks and nonregular files, opens descriptors without following the final link and without waiting on FIFOs, and verifies that the opened file agrees with path metadata. Reads stop at 20 MiB; integrity hashes consume bounded chunks without loading the entire file. Missing future artifacts can be represented as absent, while an entry that changes during opening or reading is a failure.
+
+The same boundary applies to the current role's output before normalization and to repair snapshots, packets, descriptors and candidates. A hash preflight does not replace bounds at the trusted consumer. Repair staging copies validated bounded bytes, and normalized artifacts are published with atomic replacement rather than writing through an untrusted leaf path. File-target identity checks use the same reader and enforce the 20 MiB cap across the combined selected content and headers. Review-only commands reject an occupied target lock before reading owner metadata, and failures stop without rereading a potentially modified ledger. Atomic publications use exclusive temporary-file creation so a planted temporary symlink cannot redirect a trusted write. Trusted normal-mode consumers keep their existing behavior.
+
+This protects resource use and checks file identity at the read boundary. It does not provide a universal operating-system sandbox or an atomic directory-tree snapshot.
+
 ### Gate verifier context
 
 When paired gate mode runs, including a file-target run in paired gate mode because broad review is explicitly armed, `gate-verify` reads the complete correctness candidate set, because cross-panel context lets it identify duplicate, related, or conflicting observations. That context does not transfer disposition ownership: `correctness` and `verify` own `correctness:*` and `docreview:*` candidates, while `gate` and `gate-verify` own `gate:*` candidates. The `gate-verify` prompt (`core/round-plan.js`) states that correctness candidates are context only, that verdicts are written only for `gate:*` candidates, and that `correctness:*` IDs are never copied, accepted, or rejected. It builds that clause from the registry's prefix accessor rather than from its own namespace literals.

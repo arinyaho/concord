@@ -145,30 +145,241 @@ test('review-cli is requirable as a module without executing main (guarded)', ()
   assert.strictEqual(typeof cli.runDod, 'function');
 });
 
-test('changedGitPaths includes added, modified, deleted, and rename paths without /dev/null', () => {
-  const diff = [
-    'diff --git a/modified.js b/modified.js',
-    '--- a/modified.js',
-    '+++ b/modified.js',
-    'diff --git a/added.js b/added.js',
-    '--- /dev/null',
-    '+++ b/added.js',
-    'diff --git a/deleted.js b/deleted.js',
-    '--- a/deleted.js',
-    '+++ /dev/null',
-    'diff --git a/old-name.js b/new-name.js',
-    'similarity index 100%',
-    'rename from old-name.js',
-    'rename to new-name.js',
-  ].join('\n') + '\n';
+test('round-start inventories quoted Unicode rename and deletion paths', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/rename-inventory';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'é-old.js'), 'same\n');
+  fs.writeFileSync(path.join(repo, 'é-gone.js'), 'gone\n');
+  execFileSync('git', ['add', 'é-old.js', 'é-gone.js'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add unicode'], { cwd: repo });
+  execFileSync('git', ['mv', 'é-old.js', 'é-new.js'], { cwd: repo });
+  execFileSync('git', ['rm', 'a.txt', 'é-gone.js'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'rename and delete'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(dir, `round-${n}-changes.json`), 'utf8')).paths,
+    ['a.txt', 'é-gone.js', 'é-new.js', 'é-old.js']);
+});
 
-  assert.deepStrictEqual(cli.changedGitPaths(diff), [
-    'modified.js',
-    'added.js',
-    'deleted.js',
-    'old-name.js',
-    'new-name.js',
-  ]);
+test('round-start inventory ignores quoted header lookalikes in source hunks', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/hunk-inventory';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), '-- "a/phantom.js"\nold\n');
+  execFileSync('git', ['commit', '-aqm', 'source with header lookalike'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), '++ "b/\\q.js"\nnew\n');
+  execFileSync('git', ['commit', '-aqm', 'replace source'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(dir, `round-${n}-changes.json`), 'utf8')).paths, ['a.txt']);
+});
+
+test('round-start preserves unusual Git paths and rejects a declared NUL path', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/unusual-inventory';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const unusual = '\ufeffé\tline\n.txt';
+  fs.writeFileSync(path.join(repo, unusual), 'content\n');
+  execFileSync('git', ['add', unusual], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'unusual path'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+  const manifestPath = path.join(dir, `round-${n}-changes.json`);
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  assert.deepStrictEqual(manifest.paths, [unusual]);
+  manifest.paths = ['bad\0path'];
+  const bytes = Buffer.from(JSON.stringify(manifest));
+  fs.writeFileSync(manifestPath, bytes);
+  const slug = review.targetSlug(ref);
+  const ledger = review.readLedger(dir, slug);
+  ledger.execution.changeManifest.sha256 = require('node:crypto').createHash('sha256').update(bytes).digest('hex');
+  review.writeLedger(dir, slug, ledger);
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: [unusual], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  assert.throws(() => run(['findings', ref], { env, skipPlanSeed: true }), /changed-path manifest binding is invalid/);
+});
+
+test('a SHA-256 Git repository binds and folds its 64-digit changed-path manifest', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-sha256-'));
+  execFileSync('git', ['init', '-q', '--object-format=sha256'], { cwd: repo });
+  execFileSync('git', ['config', 'user.email', 't@t'], { cwd: repo });
+  execFileSync('git', ['config', 'user.name', 't'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n');
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'] }));
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'base'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const dir = tmpDir(); const ref = 'feat/sha256-manifest';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+  const manifest = JSON.parse(fs.readFileSync(path.join(dir, `round-${n}-changes.json`), 'utf8'));
+  assert.match(manifest.target.baseSha, /^[0-9a-f]{64}$/);
+  assert.match(manifest.target.headSha, /^[0-9a-f]{64}$/);
+  assert.deepStrictEqual(manifest.paths, ['a.txt']);
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  assert.deepStrictEqual(JSON.parse(run(['findings', ref], { env, skipPlanSeed: true })).findings, []);
+});
+
+test('review-only CLI refuses a symlinked reviewer artifact before normalization', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/unsafe-artifact';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo, CONCORD_UNTRUSTED_ARTIFACTS: '1' };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+  const external = path.join(tmpDir(), 'artifact.json');
+  fs.writeFileSync(external, JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.symlinkSync(external, path.join(dir, `round-${n}-correctness.json`));
+  assert.throws(() => run(['artifact-normalize', ref, 'correctness'], { env }), /missing or unsafe gate artifact correctness/);
+});
+
+test('review-only CLI refuses a FIFO reviewer artifact without hanging', { skip: process.platform === 'win32' }, () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/fifo-artifact';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo, CONCORD_UNTRUSTED_ARTIFACTS: '1' };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+  assert.strictEqual(spawnSync('mkfifo', [path.join(dir, `round-${n}-correctness.json`)]).status, 0);
+  const result = spawnSync(process.execPath, [path.resolve(__dirname, '../review-cli.js'), 'artifact-normalize', ref, 'correctness'],
+    { cwd: repo, env, encoding: 'utf8', timeout: 3000 });
+  assert.strictEqual(result.status, 1, `FIFO normalization stalled: ${result.error || result.stderr}`);
+  assert.match(result.stderr, /missing or unsafe gate artifact correctness/);
+});
+
+test('review-only CLI refuses an occupied target lock before reading its FIFO owner', { skip: process.platform === 'win32' }, () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/fifo-lock';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo, CONCORD_UNTRUSTED_ARTIFACTS: '1' };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  run(['round-start', ref, 'HEAD~1'], { env });
+  const lock = `${review.ledgerPath(dir, review.targetSlug(ref))}.lock`;
+  fs.mkdirSync(lock);
+  assert.strictEqual(spawnSync('mkfifo', [path.join(lock, 'owner')]).status, 0);
+  const result = spawnSync(process.execPath, [path.resolve(__dirname, '../review-cli.js'), 'artifact-normalize', ref, 'correctness'],
+    { cwd: repo, env, encoding: 'utf8', timeout: 3000 });
+  assert.strictEqual(result.status, 1, `occupied review lock stalled: ${result.error || result.stderr}`);
+  assert.match(result.stderr, /review target lock is occupied/);
+});
+
+test('review-only ledger publication refuses a planted temporary symlink', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/ledger-temp';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo, CONCORD_UNTRUSTED_ARTIFACTS: '1' };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  const ledgerFile = review.ledgerPath(dir, review.targetSlug(ref));
+  const before = fs.readFileSync(ledgerFile);
+  const sentinel = path.join(tmpDir(), 'sentinel.txt');
+  fs.writeFileSync(sentinel, 'untouched\n');
+  const preload = path.join(tmpDir(), 'plant.cjs');
+  fs.writeFileSync(preload, `require('node:fs').symlinkSync(${JSON.stringify(sentinel)}, ${JSON.stringify(ledgerFile)} + '.' + process.pid + '.tmp');`);
+  const result = spawnSync(process.execPath, ['--require', preload, path.resolve(__dirname, '../review-cli.js'), 'artifact-normalize', ref, 'correctness'],
+    { cwd: repo, env, encoding: 'utf8', timeout: 3000 });
+  assert.strictEqual(result.status, 1, `ledger write followed a planted temporary path: ${result.error || result.stderr}`);
+  assert.match(result.stderr, /EEXIST/);
+  assert.strictEqual(fs.readFileSync(sentinel, 'utf8'), 'untouched\n');
+  assert.deepStrictEqual(fs.readFileSync(ledgerFile), before);
+});
+
+test('review-only CLI refuses a repair candidate outside its state directory', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/unsafe-candidate';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo, CONCORD_UNTRUSTED_ARTIFACTS: '1' };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  run(['round-start', ref, 'HEAD~1'], { env });
+  const external = path.join(tmpDir(), 'candidate.json');
+  fs.writeFileSync(external, JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  assert.throws(() => run(['artifact-normalize', ref, 'correctness', '--candidate', external], { env }), /missing or unsafe repair candidate correctness/);
+});
+
+test('round-start freezes header-only Git changes for correctness coverage', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/header-only';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'empty.txt'), '');
+  fs.writeFileSync(path.join(repo, 'binary.bin'), Buffer.from([0, 1, 2, 0]));
+  fs.chmodSync(path.join(repo, 'a.txt'), 0o755);
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'header-only changes'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: [], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  assert.throws(() => run(['plan-fixes', ref], { env }), /coverage -- changed file\(s\) never examined: a\.txt, binary\.bin, empty\.txt/);
+  const manifest = JSON.parse(fs.readFileSync(path.join(dir, `round-${n}-changes.json`), 'utf8'));
+  assert.deepStrictEqual(manifest.paths, ['a.txt', 'binary.bin', 'empty.txt']);
+});
+
+test('header-only changed files retain correctness and intent findings', () => {
+  const repo = initRepoWithIntent('printf "REQ: empty file"'); const dir = tmpDir(); const ref = 'feat/header-findings';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'empty.txt'), '');
+  execFileSync('git', ['add', 'empty.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add empty file'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'findings', examined: ['empty.txt'], findings: [
+    { id: 'correctness:empty', file: 'empty.txt', span: '', summary: 'empty file needs content' },
+  ] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'intent', { status: 'findings', findings: [
+    { id: 'intent:empty', file: 'empty.txt', span: '', requirement: 'REQ: empty file', summary: 'missing content' },
+  ] });
+  run(['plan-fixes', ref], { env });
+  const ledger = review.readLedger(dir, review.targetSlug(ref));
+  assert.deepStrictEqual(ledger.intent_parked.map((f) => f.id), ['intent:empty']);
+  assert.ok(JSON.parse(fs.readFileSync(path.join(dir, `round-${n}-plan.json`), 'utf8'))
+    .groups.some((group) => group.findingIds.includes('correctness:empty')));
+});
+
+test('a Git round rejects changed manifest or diff bytes before folding findings', () => {
+  for (const changed of ['manifest', 'diff']) {
+    const repo = initRepo(); const dir = tmpDir(); const ref = `feat/tamper-${changed}`;
+    const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+    execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+    const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+    writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+    writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+    const file = path.join(dir, `round-${n}-${changed === 'manifest' ? 'changes.json' : 'diff.txt'}`);
+    fs.appendFileSync(file, 'tampered\n');
+    assert.throws(() => run(['findings', ref], { env, skipPlanSeed: true }), /Git (changed-path manifest hash changed|review diff changed)/, changed);
+  }
+});
+
+test('legacy Git round regenerates its manifest and discards old reviewer repair evidence on resume', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/legacy-manifest';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const first = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env }));
+  const slug = review.targetSlug(ref);
+  const ledger = review.readLedger(dir, slug);
+  delete ledger.execution.changeManifest;
+  review.writeLedger(dir, slug, ledger);
+  const repairPath = path.join(dir, `round-${first.round}-correctness.repair.json`);
+  fs.writeFileSync(repairPath, '{"legacy":true}');
+  writeArtifact(dir, first.round, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, first.round, 'verify', { status: 'ok', rejected: [] });
+  assert.throws(() => run(['findings', ref], { env, skipPlanSeed: true }), /changed-path manifest is missing/);
+  const resumed = JSON.parse(run(['round-start', ref], { env }));
+  assert.deepStrictEqual(resumed.completedArtifacts, []);
+  assert.deepStrictEqual(resumed.repairArtifacts, {});
+  assert.strictEqual(fs.existsSync(repairPath), false);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(dir, `round-${resumed.round}-changes.json`), 'utf8')).paths, ['a.txt']);
+});
+
+test('plan-fixes enforces coverage and keeps intent findings for a C-quoted Unicode file', () => {
+  const repo = initRepoWithIntent('printf "REQ: unicode file"'); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'é.js'), 'old\n');
+  execFileSync('git', ['add', 'é.js'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add unicode'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'é.js'), 'new\n');
+  execFileSync('git', ['commit', '-aqm', 'change unicode'], { cwd: repo });
+  const ref = 'feat/unicode'; const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+  assert.match(fs.readFileSync(path.join(dir, `round-${n}-diff.txt`), 'utf8'), /\+\+\+ "b\/\\303\\251\.js"/);
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: [], findings: [] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'intent', { status: 'ok', findings: [{ id: 'intent:unicode', file: 'é.js', span: 'new', requirement: 'REQ: unicode file', summary: 'missing behavior' }] });
+  assert.throws(() => run(['plan-fixes', ref], { env }), /coverage -- changed file\(s\) never examined: é\.js/);
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['é.js'], findings: [] });
+  run(['plan-fixes', ref], { env });
+  assert.deepStrictEqual(review.readLedger(dir, review.targetSlug(ref)).intent_parked.map((f) => f.id), ['intent:unicode']);
 });
 
 test('artifact-normalize fails closed on an invalid id instead of repairing evidence', () => {
@@ -3586,6 +3797,25 @@ test('rerun carries unresolved broad findings on unchanged files', () => {
   assert.deepStrictEqual(review.readLedger(dir, review.targetSlug(ref)).gate_open.map((finding) => finding.id), ['gate:cross-context:unchanged']);
 });
 
+test('rerun at the same HEAD retains a broad finding on a PR-changed file', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/carry-same-head';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', ref, base], { env, broadDefault: true })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'gate', { status: 'ok', findings: [{ id: 'gate:design-conformance:standing', file: 'a.txt', span: 'two', summary: 'standing gap', requirement: 'r' }] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [] });
+  run(['plan-fixes', ref], { env });
+  assert.strictEqual(JSON.parse(run(['record', ref], { env })).decision.gatePending, true);
+  run(['rerun', ref], { env });
+  const next = JSON.parse(run(['round-start', ref], { env, broadDefault: true }));
+  assert.strictEqual(next.gateApplied, false);
+  assert.deepStrictEqual(review.readLedger(dir, review.targetSlug(ref)).gate_open.map((finding) => finding.id), ['gate:design-conformance:standing']);
+});
+
 test('rerun does not reuse an interrupted front pass', () => {
   const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/interrupted-broad';
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
@@ -4698,4 +4928,168 @@ test('target lock never offers to remove a live owner after its wait expires', (
     assert.equal(offered, 0); assert.equal(entered, false);
     assert.equal(fs.readFileSync(path.join(lock, 'owner'), 'utf8'), `${process.pid}\n`);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// `findings` is the review-only exit: the same verified fold plan-fixes routes
+// into fixes, reported without a plan artifact and without touching the ledger.
+test('findings: reports verified correctness findings with their line, drops rejected ones, and leaves the ledger in gates', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env } = seedGatesRound(repo, dir, 'feat/ro',
+    { status: 'ok', examined: ['a.txt'], findings: [
+      { id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' },
+      { id: 'correctness:fp', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'y' } ] },
+    { status: 'ok', rejected: [{ id: 'correctness:fp', reason: 'the span is inside a comment' }] });
+  const slug = review.targetSlug('feat/ro');
+  const before = fs.readFileSync(review.ledgerPath(dir, slug), 'utf8');
+  const out = JSON.parse(run(['findings', 'feat/ro'], { env, skipPlanSeed: true }));
+  assert.deepStrictEqual(out.findings, [{ id: 'correctness:real', category: 'correctness', file: 'a.txt', line: 1, span: 'two', summary: 'x', requirement: '' }]);
+  assert.strictEqual(fs.readFileSync(review.ledgerPath(dir, slug), 'utf8'), before);
+});
+
+test('findings: includes gate findings gate-verify did not reject, categorised by their class', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/ro-broad',
+    { status: 'ok', examined: ['a.txt'], findings: [] },
+    { status: 'ok', rejected: [] }, { armBroad: true });
+  writeArtifact(dir, n, 'gate', { status: 'ok', findings: [
+    { id: 'gate:cross-context:kept', file: 'review.config.json', span: 'dod', summary: 'an unchanged file breaks' },
+    { id: 'gate:silent-gap:dropped', file: 'a.txt', summary: 'not real' } ] });
+  // This fixture replaces the front-pass artifact after seeding verify. Keep
+  // the verifier newer than that gate, as the real sequential review does.
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [{ id: 'gate:silent-gap:dropped', reason: 'covered' }], findings: [] });
+  const out = JSON.parse(run(['findings', 'feat/ro-broad'], { env, skipPlanSeed: true }));
+  assert.deepStrictEqual(out.findings.map((f) => [f.id, f.category, f.line]), [['gate:cross-context:kept', 'cross-context', 1]]);
+});
+
+test('round-start: --intent-file supplies the intent and takes precedence over a configured intent command', () => {
+  const repo = initRepoWithIntent('exit 7'); // would fail the round if it ran
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const intentFile = path.join(tmpDir(), 'pr.md');
+  fs.writeFileSync(intentFile, 'REQ: the PR body says retry three times');
+  const out = JSON.parse(run(['round-start', 'feat/intent-file', 'HEAD~1', '--intent-file', intentFile], { env }));
+  assert.strictEqual(out.intentApplied, true);
+  assert.strictEqual(fs.readFileSync(path.join(dir, `intent-${review.targetSlug('feat/intent-file')}.md`), 'utf8'), 'REQ: the PR body says retry three times');
+  assert.strictEqual(out.intentHash, crypto.createHash('sha256').update('REQ: the PR body says retry three times').digest('hex'));
+});
+
+test('round-start: an empty --intent-file fails closed', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const intentFile = path.join(tmpDir(), 'empty.md');
+  fs.writeFileSync(intentFile, '  \n');
+  const { status, stderr } = runCapture(['round-start', 'feat/empty-intent', 'HEAD~1', '--no-broad', '--intent-file', intentFile], { env });
+  assert.strictEqual(status, 1);
+  assert.match(stderr, /intent file .* is empty/);
+});
+
+test('round-start: --no-intent-command skips the repository intent command but still takes --intent-file', () => {
+  const repo = initRepoWithIntent('exit 7');
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const without = JSON.parse(run(['round-start', 'feat/no-intent', 'HEAD~1', '--no-intent-command'], { env }));
+  assert.strictEqual(without.intentApplied, false);
+  const intentFile = path.join(tmpDir(), 'pr.md');
+  fs.writeFileSync(intentFile, 'REQ: from the PR');
+  const withFile = JSON.parse(run(['round-start', 'feat/no-intent-file', 'HEAD~1', '--no-intent-command', '--intent-file', intentFile], { env }));
+  assert.strictEqual(withFile.intentApplied, true);
+});
+
+test('findings: reports an intent finding on a changed file with its requirement', () => {
+  const repo = initRepoWithIntent('printf "REQ: retry three times"'); const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, 'feat/ro-intent',
+    { status: 'ok', examined: ['a.txt'], findings: [] }, { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'intent', { status: 'ok', findings: [
+    { id: 'intent:no-retry', file: 'a.txt', span: 'two', requirement: 'REQ: retry three times', summary: 'does not retry' } ] });
+  const out = JSON.parse(run(['findings', 'feat/ro-intent'], { env, skipPlanSeed: true }));
+  assert.deepStrictEqual(out.findings, [{ id: 'intent:no-retry', category: 'intent', file: 'a.txt', line: 1, span: 'two', summary: 'does not retry', requirement: 'REQ: retry three times' }]);
+});
+
+test('findings: a gate duplicate is dropped only while the correctness finding it restates survives', () => {
+  for (const [label, killed, expected] of [['kept', false, ['correctness:bug']], ['killed', true, ['gate:design-conformance:bug']]]) {
+    const repo = initRepo(); const dir = tmpDir();
+    const ref = `feat/dup-${label}`;
+    const { env, n } = seedGatesRound(repo, dir, ref,
+      { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:bug', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'bug' }] },
+      { status: 'ok', rejected: killed ? [{ id: 'correctness:bug', reason: 'read a.txt: not a bug' }] : [] }, { armBroad: true });
+    writeArtifact(dir, n, 'gate', { status: 'ok', findings: [{ id: 'gate:design-conformance:bug', file: 'a.txt', span: 'two', summary: 'same bug' }] });
+    // Verifiers run after both finders, so their artifacts are written last.
+    writeArtifact(dir, n, 'verify', { status: 'ok', rejected: killed ? [{ id: 'correctness:bug', reason: 'read a.txt: not a bug' }] : [] });
+    writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [], findings: [], duplicates: [{ id: 'gate:design-conformance:bug', of: 'correctness:bug' }] });
+    const out = JSON.parse(run(['findings', ref], { env, skipPlanSeed: true }));
+    assert.deepStrictEqual(out.findings.map((f) => f.id), expected, label);
+  }
+});
+
+test('findings: a span that occurs more than once in its file gets no line rather than a guessed one', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'retry()\nother\nretry()\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  run(['round-start', 'feat/twice', 'HEAD~1'], { env });
+  const n = review.readLedger(dir, review.targetSlug('feat/twice')).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:twice', gate: 'correctness', file: 'a.txt', span: 'retry()', summary: 'x' }] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  const out = JSON.parse(run(['findings', 'feat/twice'], { env, skipPlanSeed: true }));
+  assert.strictEqual(out.findings[0].line, null);
+});
+
+test('findings: a finding whose file resolves outside the checkout is not read', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const outside = path.join(tmpDir(), 'secret.txt');
+  fs.writeFileSync(outside, 'TOKEN=abc\n');
+  fs.symlinkSync(outside, path.join(repo, 'link.txt'));
+  execFileSync('git', ['add', 'link.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'link'], { cwd: repo });
+  const { env } = seedGatesRound(repo, dir, 'feat/escape',
+    { status: 'ok', examined: ['a.txt'], findings: [
+      { id: 'correctness:traversal', gate: 'correctness', file: path.relative(repo, outside), span: 'TOKEN=abc', summary: 'x' },
+      { id: 'correctness:symlink', gate: 'correctness', file: 'link.txt', span: 'TOKEN=abc', summary: 'y' } ] },
+    { status: 'ok', rejected: [] });
+  const out = JSON.parse(run(['findings', 'feat/escape'], { env, skipPlanSeed: true }));
+  assert.deepStrictEqual(out.findings.map((f) => [f.id, f.line]), [['correctness:traversal', null], ['correctness:symlink', null]]);
+});
+
+test('plan-fixes: unsafe or oversized reviewer paths cannot become journal-proven replays', () => {
+  for (const kind of ['traversal', 'symlink', 'fifo', 'oversized']) {
+    const repo = initRepo(); const dir = tmpDir(); const outside = path.join(tmpDir(), 'outside.txt');
+    fs.writeFileSync(outside, 'different text\n');
+    const file = kind === 'traversal' ? path.relative(repo, outside) : `${kind}.txt`;
+    const ref = `feat/safe-read-${kind}`;
+    const { env } = seedGatesRound(repo, dir, ref,
+      { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:unsafe', gate: 'correctness', file, span: 'outside span', summary: 'x' }] },
+      { status: 'ok', rejected: [] });
+    if (kind === 'symlink') fs.symlinkSync(outside, path.join(repo, file));
+    if (kind === 'fifo') execFileSync('mkfifo', [path.join(repo, file)]);
+    if (kind === 'oversized') { fs.writeFileSync(path.join(repo, file), ''); fs.truncateSync(path.join(repo, file), 21 * 1024 * 1024); }
+    const slug = review.targetSlug(ref);
+    review.writeLedger(dir, slug, { ...review.readLedger(dir, slug), journal: [{ id: 'correctness:unsafe', sha: 'prior' }] });
+    seedV2Plan(ref, env);
+    const result = runCapture(['plan-fixes', ref], { env, timeout: 10000 });
+    assert.strictEqual(result.status, 0, `${kind}: ${result.stderr}`);
+    assert.deepStrictEqual(JSON.parse(result.stdout).fixes.map((f) => f.id), ['correctness:unsafe'], kind);
+    assert.deepStrictEqual(review.readLedger(dir, slug).resolved_absent, [], kind);
+  }
+});
+
+test('findings: nonregular and oversized reviewer paths have no source line', () => {
+  for (const kind of ['fifo', 'oversized']) {
+    const repo = initRepo(); const dir = tmpDir(); const file = `${kind}.txt`;
+    const ref = `feat/no-line-${kind}`;
+    const { env } = seedGatesRound(repo, dir, ref,
+      { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:unsafe', gate: 'correctness', file, span: 'needle', summary: 'x' }] },
+      { status: 'ok', rejected: [] });
+    if (kind === 'fifo') execFileSync('mkfifo', [path.join(repo, file)]);
+    else { fs.writeFileSync(path.join(repo, file), 'needle\n'); fs.truncateSync(path.join(repo, file), 21 * 1024 * 1024); }
+    const result = runCapture(['findings', ref], { env, timeout: 10000 });
+    assert.strictEqual(result.status, 0, `${kind}: ${result.stderr}`);
+    assert.strictEqual(JSON.parse(result.stdout).findings[0].line, null, kind);
+  }
 });

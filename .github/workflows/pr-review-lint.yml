@@ -1,0 +1,24 @@
+name: pr-review-lint
+
+on:
+  pull_request:
+    paths:
+      - "services/pr-review/**"
+      - ".github/workflows/pr-review*.yml"
+      - ".github/workflows/upstream-sync.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  scripts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # ubuntu-latest ships shellcheck and jq.
+      - run: shellcheck services/pr-review/*.sh services/pr-review/test/*.sh
+      - run: services/pr-review/test/scan.test.sh
+      - run: services/pr-review/test/review-one.test.sh

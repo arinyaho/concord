@@ -168,3 +168,13 @@ test('plan artifacts name the rule when action is neither fix nor reconcile', ()
     status: 'ok', protocolVersion: 2, groups: [{ groupId: 'g', findingIds: ['correctness:a'], rootCause: 'r', invariants: ['i'], changeClass: 'local', action: 'park' }],
   })), /action must be "fix" or "reconcile"/);
 });
+
+test('gate-verify keeps a duplicates entry that names the correctness candidate it restates', () => {
+  const out = normalizeArtifact('gate-verify', JSON.stringify({ status: 'ok', rejected: [], findings: [], duplicates: [{ id: 'gate:design-conformance:x', of: 'correctness:x' }] }));
+  assert.deepStrictEqual(out.duplicates, [{ id: 'gate:design-conformance:x', of: 'correctness:x' }]);
+});
+
+test('gate-verify duplicates must pair a gate id with a correctness id, and not also reject it', () => {
+  assert.throws(() => normalizeArtifact('gate-verify', JSON.stringify({ status: 'ok', rejected: [], findings: [], duplicates: [{ id: 'gate:a:x', of: 'gate:b:y' }] })), ArtifactError);
+  assert.throws(() => normalizeArtifact('gate-verify', JSON.stringify({ status: 'ok', rejected: [{ id: 'gate:a:x', reason: 'r' }], findings: [], duplicates: [{ id: 'gate:a:x', of: 'correctness:x' }] })), ArtifactError);
+});

@@ -9,6 +9,8 @@ const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { TextDecoder } = require('node:util');
+const { MAX_BYTES: MAX_REVIEW_ARTIFACT_BYTES, captureArtifactRoot, readArtifactBytes } = require('./bounded-artifact');
 const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
 
 function sh(bin, args, opts = {}) {
@@ -24,6 +26,29 @@ function sh(bin, args, opts = {}) {
 function gitDiff(repoRoot, base) {
   const args = base ? ['diff', `${base}...HEAD`] : ['diff', 'HEAD'];
   return sh('git', args, { cwd: repoRoot });
+}
+
+function gitReviewSnapshot(repoRoot, baseCommit, headCommit) {
+  const leftSha = baseCommit ? sh('git', ['merge-base', baseCommit, headCommit], { cwd: repoRoot }).trim() : headCommit;
+  const reviewText = sh('git', ['diff', leftSha, headCommit, '--'], { cwd: repoRoot });
+  const raw = sh('git', ['diff', '--name-only', '-z', '--no-renames', leftSha, headCommit, '--'], { cwd: repoRoot, encoding: null });
+  if (raw.length && raw[raw.length - 1] !== 0) throw new Error('harness-failure: Git changed-path inventory is not NUL terminated');
+  const decode = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+  const paths = [];
+  let start = 0;
+  for (let i = 0; i < raw.length; i++) {
+    if (raw[i] !== 0) continue;
+    if (i === start) throw new Error('harness-failure: Git changed-path inventory contains an empty path');
+    let file;
+    try { file = decode.decode(raw.subarray(start, i)); }
+    catch (_) { throw new Error('harness-failure: Git changed-path inventory is not UTF-8'); }
+    if (!file || path.isAbsolute(file) || path.win32.isAbsolute(file) || file.split('/').some((part) => part === '' || part === '.' || part === '..')) {
+      throw new Error('harness-failure: Git changed-path inventory contains an unsafe path');
+    }
+    paths.push(file);
+    start = i + 1;
+  }
+  return { leftSha, headSha: headCommit, reviewText, paths: [...new Set(paths)].sort() };
 }
 
 // Moved verbatim from review-cli.js round-start L434 (`git rev-parse HEAD`).
@@ -54,8 +79,9 @@ function gitDirty(repoRoot, reviewLock = null) {
 function gitTarget(spec, repoRoot) {
   if (gitDirty(repoRoot, spec.reviewLock)) throw new Error('round-start: working tree is dirty; commit or stash before review-until-green');
   const identity = gitHeadSha(repoRoot);
-  const reviewText = gitDiff(repoRoot, spec.base);
-  return { type: 'git', reviewText, identity, hasDoD: true };
+  const baseCommit = spec.baseCommit || (spec.base ? sh('git', ['rev-parse', spec.base], { cwd: repoRoot }).trim() : null);
+  const snapshot = gitReviewSnapshot(repoRoot, baseCommit, identity);
+  return { type: 'git', reviewText: snapshot.reviewText, identity, hasDoD: true, snapshot };
 }
 
 // Content hash for a file target's identity (SHA-1 of the concatenated review
@@ -119,7 +145,7 @@ function resolveGlob(glob, repoRoot) {
 // File target: reads each matched file's current content, concatenates them with
 // '===== <relpath> =====' headers (sorted), content-hashes the result for
 // identity, and carries hasDoD:false. Does NOT invoke git at any point.
-function fileTarget(spec, repoRoot) {
+function fileTarget(spec, repoRoot, options = {}) {
   // Resolve each entry in spec.files (may be literal paths or simple globs).
   const rels = [];
   for (const pattern of spec.files) {
@@ -136,12 +162,24 @@ function fileTarget(spec, repoRoot) {
   if (rels.length === 0) {
     throw new Error(`round-start: file target matched no files: ${spec.files.join(', ')}`);
   }
-  const blocks = rels.map((rel) => {
+  const untrusted = options.untrusted || process.env.CONCORD_UNTRUSTED_ARTIFACTS === '1';
+  const realRepo = untrusted ? fs.realpathSync(repoRoot) : null;
+  let totalBytes = 0;
+  const blocks = rels.map((rel, index) => {
     const abs = path.resolve(repoRoot, rel);
     let body;
     try {
-      body = fs.readFileSync(abs, 'utf8');
+      if (untrusted) {
+        const parent = fs.realpathSync(path.dirname(abs));
+        const relative = path.relative(realRepo, parent);
+        if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error('outside repository');
+        const bytes = readArtifactBytes(abs, captureArtifactRoot(path.dirname(abs)));
+        body = bytes.toString('utf8');
+        totalBytes += Buffer.byteLength(body, 'utf8') + Buffer.byteLength(`===== ${rel} =====\n`) + 1 + (index ? 1 : 0);
+        if (totalBytes > MAX_REVIEW_ARTIFACT_BYTES) throw new Error('too large');
+      } else body = fs.readFileSync(abs, 'utf8');
     } catch (e) {
+      if (untrusted) throw new Error(`harness-failure: unsafe or oversized file target: ${rel}`);
       // A literal path (no '*') is passed through by resolveGlob unresolved, so
       // a nonexistent literal reaches here. Report it as a clear no-such-file
       // error rather than a raw ENOENT stack.
@@ -165,4 +203,4 @@ function acquireTarget(spec, repoRoot) {
   return gitTarget(spec, repoRoot);
 }
 
-module.exports = { acquireTarget, gitTarget, fileTarget, gitDiff, gitHeadSha, gitDirty };
+module.exports = { acquireTarget, gitTarget, fileTarget, gitDiff, gitReviewSnapshot, gitHeadSha, gitDirty };
