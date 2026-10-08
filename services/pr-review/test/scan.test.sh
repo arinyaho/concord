@@ -131,6 +131,14 @@ fixture malformed-receipt '[]' "[$(review reviewbot "$(marker "$SHA" broad)\\n<!
 fixture legacy-tie '[]' "[$(review reviewbot "$(marker "$SHA" broad)")]" "$(status pending)"
 fixture legacy-newer '[]' "[$(review reviewbot "$(marker "$SHA" broad)")]" "$(status pending)"
 sed -i "s/$recent/$earlier/" "$FIXTURES/o_legacy-newer/status.json"
+for state in pending error; do
+  fixture "legacy-receipt-$state" '[]' "[$(review reviewbot "$receipt")]" "$(status "$state")"
+  sed -i "s/$recent/$earlier/" "$FIXTURES/o_legacy-receipt-$state/status.json"
+done
+fixture legacy-older '[]' "[$(review reviewbot "$(marker "$SHA" broad)")]" "$(status error)"
+sed -i "s/$recent/$earlier/" "$FIXTURES/o_legacy-older/reviews.json"
+fixture legacy-malformed-attempt '[]' "[$(review reviewbot "$receipt")]" "$(status error 1 'attempt:invalid queued')"
+sed -i "s/$recent/$earlier/" "$FIXTURES/o_legacy-malformed-attempt/status.json"
 fixture page2-error '[]' '[]' "$(status success)"
 sed -i "s/$recent/$earlier/" "$FIXTURES/o_page2-error/status.json"
 printf '%s\n' "$(status error)" > "$FIXTURES/o_page2-error/status-page2.json"
@@ -388,12 +396,19 @@ for name in older-receipt-new-attempt foreign-receipt malformed-receipt; do
   PATH="$work/bin:$PATH" REPOS="o/$name" SELF=o/self GH_TOKEN=x SELF_TOKEN=x MANUAL_ONLY=1 bash "$SCAN" >"$work/$name.out" 2>&1
   if ! grep -q 'state=success' "$FIXTURES/calls.log"; then echo "ok   $name cannot settle"; else echo "FAIL $name settled"; fail=1; fi
 done
-for name in legacy-tie legacy-newer; do
+for name in legacy-tie legacy-newer legacy-receipt-pending legacy-receipt-error legacy-older legacy-malformed-attempt; do
   : > "$FIXTURES/calls.log"
   PATH="$work/bin:$PATH" REPOS="o/$name" SELF=o/self GH_TOKEN=x SELF_TOKEN=x MANUAL_ONLY=1 bash "$SCAN" >"$work/$name.out" 2>&1
-  if [ "$name" = legacy-tie ] && ! grep -q 'state=success' "$FIXTURES/calls.log"; then echo "ok   equal legacy timestamps do not settle"
-  elif [ "$name" = legacy-newer ] && grep -q 'state=success' "$FIXTURES/calls.log"; then echo "ok   strictly newer legacy review settles"
-  else echo "FAIL $name legacy settlement"; fail=1; fi
+  case "$name" in
+    legacy-newer|legacy-receipt-pending|legacy-receipt-error)
+      if grep -Fq "api -X POST repos/o/$name/statuses/$SHA -f context=concord/review (#1) -f state=success -f description=review posted" "$FIXTURES/calls.log" && ! grep -q '^workflow run' "$FIXTURES/calls.log"; then
+        echo "ok   $name posts legacy success without dispatch"
+      else echo "FAIL $name did not post legacy success or dispatched"; fail=1; fi ;;
+    *)
+      if ! grep -q 'state=success' "$FIXTURES/calls.log" && ! grep -q '^workflow run' "$FIXTURES/calls.log"; then
+        echo "ok   $name does not settle or dispatch"
+      else echo "FAIL $name settled or dispatched"; fail=1; fi ;;
+  esac
 done
 : > "$FIXTURES/calls.log"
 PATH="$work/bin:$PATH" REPOS="o/page2-error" SELF=o/self GH_TOKEN=x SELF_TOKEN=x bash "$SCAN" >"$work/page2-error.out" 2>&1
