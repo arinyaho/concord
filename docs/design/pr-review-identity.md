@@ -10,7 +10,7 @@ base branch, title, body and closing issue references together, reads issues in
 stable repository/number order, and renders the exact intent text passed to a
 broad review. Foreign issues and unreadable local issues retain the service's
 explicit omission messages. The intent hash includes those messages. A compare
-API lookup supplies the actual merge base; a changed base branch with the same
+API lookup against the immutable base-tip OID from the PR snapshot supplies the actual merge base; a changed base branch with the same
 merge base preserves coverage. The worker verifies that its local merge base
 matches the dispatched snapshot before reviewing.
 
@@ -36,13 +36,17 @@ A superseded requested command receives no failed-command completion marker.
 A final identity check also rejects a changed base or intent before publication.
 After publication, the worker rechecks head before adding a PR-wide thumbs-up.
 GitHub does not expose an atomic compare-and-post operation: a head can change
-between the last lookup and the POST. This residual race is bounded by the
-additional reaction check and the following scanner poll.
+between the last lookup and the POST. Head, base or intent can change after the last lookup. A stale review or
+reaction can therefore appear; this change cannot retract a stale POST or
+guarantee its correction time. The reaction check avoids a thumbs-up when
+the worker observes a changed head after posting.
 
 The scanner checks intent even for inactive PRs with prior broad coverage:
 editing a closing issue need not update PR activity. The activity cutoff still
-prevents initial automatic reviews of inactive PRs. This costs metadata and
-issue reads on covered inactive PRs, bounded by the scanner's 1000-PR limit.
+prevents initial automatic reviews of inactive PRs. Refresh applies only to PRs returned by the existing newest-1000-open-PR
+selection and actually processed before the workflow timeout. There is no
+fair-rotation guarantee for excluded PRs or separate bound on closing-issue
+reads. The dispatch cap limits reviews started, not metadata discovery cost.
 Unavailable PR or merge-base metadata defers dispatch. Unreadable local issue
 content uses the established omission policy, so review covers only visible
 requirements; gaining access changes intent and triggers a broad refresh.
