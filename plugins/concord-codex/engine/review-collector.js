@@ -130,7 +130,7 @@ function analyze(response, head, reviewers = DEFAULT_REVIEWERS) {
     if (reviewCommit !== head && !inline.some(madeOnHead)) continue;
     // Only comments made on this head count (a reply keeps its thread's older original commit), and a comment in a resolved thread is no longer a finding.
     const own = inline.filter((c) => (c.originalCommit ? madeOnHead(c) : reviewCommit === head) && !resolved.has(c.databaseId));
-    observations.push({ reviewId: String(review.databaseId), reviewer, reviewUrl: review.url, commitId: head, reviewCommitId: reviewCommit, state: 'completed', lgtm: review.state === 'APPROVED', findings: own.map(finding), ...limited(review.body), untrusted: true });
+    observations.push({ reviewId: String(review.databaseId), reviewer, reviewUrl: review.url, commitId: head, reviewCommitId: reviewCommit, submittedAt: review.submittedAt, state: 'completed', lgtm: review.state === 'APPROVED', findings: own.map(finding), ...limited(review.body), untrusted: true });
   }
   const pending = reviewers.filter((reviewer) => {
     const hasReview = observations.some((o) => o.reviewer === reviewer);
@@ -171,12 +171,11 @@ async function complete(analysis, { pr, graphql, reviewers = DEFAULT_REVIEWERS }
     const node = nodes[0];
     packet.reaction = { reviewer: loginOf(node.user.login), content: node.content, createdAt: node.createdAt, fresh: wholeSeconds(node.createdAt) >= wholeSeconds(summary.completedAt) };
   }
-  // A clean Codex review (no findings) is green once its thumbs-up is fresh, and waits for it until then.
-  const fresh = !!(packet.reaction && packet.reaction.fresh);
+  // A clean Codex review (no findings) is green once a fresh thumbs-up at least as new as the review itself arrives, and waits for it until then.
   for (const observation of packet.observations) {
     if (observation.reviewer !== CODEX_REVIEWER || observation.findings.length > 0 || observation.lgtm) continue;
-    observation.lgtm = fresh;
-    if (!fresh) packet.awaitingReaction = true;
+    observation.lgtm = !!(packet.reaction && packet.reaction.fresh && (!observation.submittedAt || wholeSeconds(packet.reaction.createdAt) >= wholeSeconds(observation.submittedAt)));
+    if (!observation.lgtm) packet.awaitingReaction = true;
   }
   if (!packet.observations.some((o) => o.reviewer === CODEX_REVIEWER) && reviewers.includes(CODEX_REVIEWER)) {
     packet.observations.push({ reviewId: String(analysis.summaryId), reviewer: CODEX_REVIEWER, reviewUrl: summary.url, commitId: packet.head, reviewCommitId: packet.head, state: 'completed', lgtm: !!(packet.reaction && packet.reaction.fresh), findings: [] });

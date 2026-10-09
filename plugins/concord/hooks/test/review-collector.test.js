@@ -355,3 +355,14 @@ test('watch keeps polling a clean COMMENTED review for its reaction instead of p
   assert.strictEqual(packets.length, 1);
   assert.strictEqual(packets[0].observations.find((o) => o.reviewId === String(REVIEW)).lgtm, true);
 });
+
+test('a thumbs-up older than the clean review it would approve does not make that review lgtm', async () => {
+  const data = fixture();
+  const review = headReview(data);
+  review.comments.nodes = [];
+  review.submittedAt = '2026-10-09T13:50:00Z';
+  const packet = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble({ main: () => data, reactions: reactionsResponse([thumbsUp('2026-10-09T13:47:56Z')]) }) });
+  assert.strictEqual(packet.reaction.fresh, true);
+  assert.strictEqual(packet.observations.find((o) => o.reviewId === String(REVIEW)).lgtm, false);
+  assert.strictEqual(packet.awaitingReaction, true);
+});
