@@ -1306,13 +1306,28 @@ test('commit-fix: a certificate whose file hash does not match the worktree is s
   assert.throws(() => run(['commit-fix', 'feat/cert-badhash', 'doc-fix'], { env }), /certified content changed/);
 });
 
-test('record keeps an edited fix whose commit-fix was rejected and parks it with the reason', () => {
+test('record keeps a rejected fix edit, restores every other path, and parks the run', () => {
   const { repo, env } = seedCertifiedSingleGroup('feat/cert-kept', { fileHashes: { 'a.txt': 'deadbeef' } });
   assert.throws(() => run(['commit-fix', 'feat/cert-kept', 'doc-fix'], { env }), /certified content changed/);
+  const STRAY = JSON.stringify({ dod: ['true'], stray: 'edit no fixer declared' });
+  fs.writeFileSync(path.join(repo, 'review.config.json'), STRAY);
   const recorded = JSON.parse(run(['record', 'feat/cert-kept'], { env }));
   assert.strictEqual(fs.readFileSync(path.join(repo, 'a.txt'), 'utf8'), 'fixed a\n', 'record must not discard the uncommitted edit');
-  assert.strictEqual(recorded.decision.converged, false);
-  assert.match(JSON.stringify(recorded), /edit kept/);
+  assert.notStrictEqual(fs.readFileSync(path.join(repo, 'review.config.json'), 'utf8'), STRAY, 'record must restore paths no rejected fix declared');
+  assert.strictEqual(recorded.decision.continue, false);
+  assert.strictEqual(recorded.decision.parked, true);
+  assert.match(recorded.decision.reason, /a\.txt.*commit or discard/);
+  assert.strictEqual(review.readLedger(env.REVIEW_STATE_DIR, review.targetSlug('feat/cert-kept')).status, 'parked');
+});
+
+test('a kept fix edit blocks round-start until the person commits or discards it, then unpark resumes', () => {
+  const { repo, env } = seedCertifiedSingleGroup('feat/cert-decide', { fileHashes: { 'a.txt': 'deadbeef' } });
+  assert.throws(() => run(['commit-fix', 'feat/cert-decide', 'doc-fix'], { env }), /certified content changed/);
+  run(['record', 'feat/cert-decide'], { env });
+  run(['unpark', 'feat/cert-decide', 'correctness:a'], { env });
+  assert.throws(() => run(['round-start', 'feat/cert-decide'], { env }), /working tree is dirty/);
+  execFileSync('git', ['commit', '-qam', 'adopt the kept fix'], { cwd: repo });
+  assert.strictEqual(JSON.parse(run(['round-start', 'feat/cert-decide'], { env })).decision, 'work');
 });
 
 test('commit-fix: certified shared-helper fix atomically resolves the whole group', () => {

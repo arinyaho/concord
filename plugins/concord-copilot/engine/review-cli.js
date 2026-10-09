@@ -189,8 +189,8 @@ function validateFixFiles(repoRoot, stateDir, files) {
     }
   }
 }
-function gitCheckoutTree(repoRoot) {
-  sh('git', ['checkout', 'HEAD', '--', '.'], { cwd: repoRoot });
+function gitCheckoutTree(repoRoot, keep = []) {
+  sh('git', ['checkout', 'HEAD', '--', '.', ...keep.map((file) => `:(exclude)${file}`)], { cwd: repoRoot });
 }
 function runDod(repoRoot) {
   const cfg = dodExec.loadDodConfig(repoRoot);
@@ -2507,6 +2507,13 @@ function runVerb(resolveFromCwd, args, initiative) {
       decision = { continue: false, converged: false, parked: false, abandoned: false, ...(intentReview ? { intentReview: true } : { gatePending: true }), reconciliation: true, reason: intentReview ? 'open intent finding(s) require reconciliation' : groupReconcile ? 'finding group requires a human decision before editing' : 'open design/AC GATE finding(s) require reconciliation' };
       applied = { ...applied, status: intentReview ? 'intent-review' : 'gate-pending' };
     }
+    // A kept edit makes the tree dirty, so no later round can start until the
+    // person commits or discards it; end the run here instead of continuing.
+    const keptFiles = [...new Set(keptEditFiles)];
+    if (keptFiles.length) {
+      decision = { continue: false, converged: false, parked: true, abandoned: false, dodFailed: false, intentReview: false, gatePending: false, reason: `a rejected fix left an uncommitted edit in ${keptFiles.join(', ')}; commit or discard it, then unpark` };
+      applied = { ...applied, status: 'parked' };
+    }
     if (isGit && decision.converged && !ledger.dodDeferred) {
       gitCheckoutTree(repoRoot);
       if (gitIsDirty(repoRoot, stateDir)) throw new Error('harness-failure: review work left untracked files in the repository; final DoD was not run against an uncommitted worktree');
@@ -2567,10 +2574,10 @@ function runVerb(resolveFromCwd, args, initiative) {
         ledger = { ...ledger, status: 'parked' };
       }
     }
-    // Git only: clean any leftover uncommitted edit from a rejected/parked fixer.
-    // File targets have no working tree to discard.
-    // A fix that was edited but not committed stays for the person who decides (unpark/dismiss).
-    if (isGit && !keptEditFiles.length) gitCheckoutTree(repoRoot);
+    // Git only: clean any leftover uncommitted edit from a rejected/parked fixer,
+    // except the declared files of a rejected fix, which stay for the person to
+    // commit or discard. File targets have no working tree to discard.
+    if (isGit) gitCheckoutTree(repoRoot, keptFiles);
     const finalChecks = [{ name: 'definition-of-done', status: ledger.dod?.deferredBy === 'pending-final' ? 'not-run' : ledger.dod?.deferred ? 'deferred' : ledger.dod?.passed ? 'passed' : 'failed' }];
     const priorHistoryKeys = new Set((ledger.review_history || []).map((entry) => `${entry.planId}:${entry.groupId}`));
     const newHistory = (ledger.fix_plan?.groups || []).filter((group) => !priorHistoryKeys.has(`${ledger.fix_plan.planId}:${group.groupId}`)).map((group) => {
