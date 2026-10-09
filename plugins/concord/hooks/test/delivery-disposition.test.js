@@ -433,3 +433,24 @@ test('a dropped minor needs a reason and cannot also be a finding', () => {
   assert.throws(() => lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...pr172Packet({ droppedMinors: [{ id: 'm1', reason: ' ' }] }) }), /dropped minor m1 needs a reason/);
   assert.throws(() => lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...pr172Packet({ findings: [finding], droppedMinors: [{ id: 'm1', reason: 'r' }], tickets: [] }) }), /both a finding and a dropped minor/);
 });
+
+test('a reviewer declared unavailable records no-automated-review and never classifies the head as clean', () => {
+  const packet = pr172Packet({ findings: [], tickets: [], reviewsTerminal: false, openChoices: ['no-automated-review'] });
+  const result = lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...packet });
+  assert.strictEqual(result.classification, 'blocked');
+  assert.deepStrictEqual(result.reasons, ['reviews-not-terminal', 'open-choice:no-automated-review']);
+});
+
+test('every distribution states the reviewer-unavailable declaration', () => {
+  const plugins = path.join(__dirname, '..', '..', '..');
+  const read = (file) => fs.readFileSync(path.join(plugins, file), 'utf8');
+  for (const pkg of ['concord', 'concord-codex', 'concord-copilot']) {
+    const lgtm = read(`${pkg}/skills/review-until-lgtm/SKILL.md`);
+    assert.match(lgtm, /`reviewerUnavailable`.*request no review and start no wait loop or watch/s);
+    assert.match(lgtm, /`reviewsTerminal: false` and `openChoices: \["no-automated-review"\]`/);
+    assert.match(lgtm, /never `mergeable-\*`/);
+    assert.match(lgtm, /remove the declaration.*`claim-initial-request`.*record the delivery again/s);
+    const ticket = read(`${pkg}/skills/ticket-to-pr/SKILL.md`);
+    assert.match(ticket, /`reviewerUnavailable`.*no wait loop or watch.*`no-automated-review`/s);
+  }
+});
