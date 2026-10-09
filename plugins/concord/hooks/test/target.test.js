@@ -197,6 +197,7 @@ test('tracked inventory: mode, symlink target, deletion and type changes are rep
   git(dir, 'add', '-A'); git(dir, 'commit', '-qm', 'more');
   if (process.platform !== 'win32') assert.strictEqual(changeAfter(dir, () => fs.chmodSync(path.join(dir, 'run.sh'), 0o755)), 'run.sh');
   assert.strictEqual(changeAfter(dir, () => { fs.unlinkSync(path.join(dir, 'link')); fs.symlinkSync('y', path.join(dir, 'link')); }), 'link');
+  assert.match(inventoryOf(dir).get('link'), /^\|link:\d+:/, 'a symlink fingerprint carries its own mode');
   assert.strictEqual(changeAfter(dir, () => fs.rmSync(path.join(dir, 'gone.txt'))), 'gone.txt');
   assert.strictEqual(changeAfter(dir, () => { fs.rmSync(path.join(dir, 'swap.txt')); fs.mkdirSync(path.join(dir, 'swap.txt')); }), 'swap.txt');
 });

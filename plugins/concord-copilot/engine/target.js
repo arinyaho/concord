@@ -276,7 +276,7 @@ function trackedCheckoutInventory(repoRoot, commitSha, budget = { entries: 0, by
       } else {
         fingerprint = `gitlink-empty:${stat.mode}:${fs.readdirSync(abs).sort().slice(0, UNINITIALIZED_SUBMODULE_NAMES).join('\0')}`;
       }
-    } else if (stat.isSymbolicLink()) fingerprint = `link:${fs.readlinkSync(abs, { encoding: 'buffer' }).toString('hex')}`;
+    } else if (stat.isSymbolicLink()) fingerprint = `link:${stat.mode}:${fs.readlinkSync(abs, { encoding: 'buffer' }).toString('hex')}`;
     else if (stat.isDirectory()) fingerprint = `dir:${stat.mode}`;
     else if (!stat.isFile()) fingerprint = `other:${stat.mode}`;
     else {

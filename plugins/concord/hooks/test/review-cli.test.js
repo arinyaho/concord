@@ -5157,14 +5157,34 @@ test('record: a missing journaled file replaced before record is parked, not sta
   }
 });
 
+test('record: a reopened finding sent to the fixer is parked without a fresh journal entry, not fixed by its old one', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/reopened-record';
+  const slug = review.targetSlug(ref);
+  const finding = { id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'recurred span', summary: 'x' };
+  let ledger = review.emptyLedger({ kind: 'local', ref });
+  ledger.findings = [{ id: finding.id, status: 'fixed' }];
+  ledger.seen = [{ id: finding.id, status: 'fixed', hash: review.seenHash(finding) }];
+  ledger.journal = [{ id: finding.id, sha: 'earlier-fix' }];
+  review.writeLedger(dir, slug, ledger);
+  const { env } = seedGatesRound(repo, dir, ref,
+    { status: 'ok', examined: ['a.txt'], findings: [finding] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', ref], { env });
+  assert.deepStrictEqual(review.readLedger(dir, slug).planned, ['correctness:real']);
+  run(['record', ref], { env });
+  const recorded = review.readLedger(dir, slug).findings.find((f) => f.id === 'correctness:real');
+  assert.strictEqual(recorded.status, 'parked');
+});
+
 test('plan-fixes: a missing path outside the checkout or behind a symlink is not a replay', () => {
-  for (const kind of ['outside', 'dangling-symlink', 'symlinked-directory', 'file-as-directory']) {
+  for (const kind of ['outside', 'dangling-symlink', 'symlinked-directory', 'file-as-directory', 'internal-symlink']) {
     const { fixes, resolved } = planFixesWithJournal(kind, ({ repo, outside }) => {
       if (kind === 'outside') return path.relative(repo, outside);
-      return { 'dangling-symlink': 'dangling.txt', 'symlinked-directory': 'linked/gone.txt', 'file-as-directory': 'a.txt/gone.txt' }[kind];
+      return { 'dangling-symlink': 'dangling.txt', 'symlinked-directory': 'linked/gone.txt', 'file-as-directory': 'a.txt/gone.txt', 'internal-symlink': 'inside.txt' }[kind];
     }, ({ repo, outside }) => {
       if (kind === 'dangling-symlink') fs.symlinkSync(outside, path.join(repo, 'dangling.txt'));
       if (kind === 'symlinked-directory') fs.symlinkSync(path.dirname(outside), path.join(repo, 'linked'));
+      if (kind === 'internal-symlink') { fs.writeFileSync(path.join(repo, 'real.txt'), 'no such span\n'); fs.symlinkSync('real.txt', path.join(repo, 'inside.txt')); }
     });
     assert.deepStrictEqual(fixes, ['correctness:gone'], kind);
     assert.deepStrictEqual(resolved, [], kind);
