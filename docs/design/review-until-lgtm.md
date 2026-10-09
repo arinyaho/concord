@@ -59,7 +59,7 @@ The loop ends when no rollout blocker remains, the required checks are green, an
 
 ## Merge gate
 
-An agent merges a PR only at the user's explicit request naming it, and only after `merge-ready <pr> <head-sha>` prints `{"result":"ready"}`. A human merging by hand is not gated. The CLI cannot observe GitHub, so the caller reads the live facts immediately before merging and passes them on stdin:
+An agent merges a PR only at the user's explicit request naming it, and only after `merge-ready <pr> <head-sha>` prints `{"result":"ready"}`, merging with `gh pr merge --match-head-commit <head-sha>` so a push after the check makes the merge fail. A human merging by hand is not gated. The CLI cannot observe GitHub, so the caller reads the live facts immediately before merging and passes them on stdin:
 
 ```json
 {
