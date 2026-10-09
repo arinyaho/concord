@@ -366,3 +366,30 @@ test('the delivery digest separates a url reference from a local reference', () 
   assert.notStrictEqual(digest(a), digest(b));
   assert.deepStrictEqual(lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...b }).findings[3].url, null);
 });
+
+test('a minor finding never blocks: serious-bug blocks unless fixed and the unqualified correctness category is gone', () => {
+  const minor = { id: 'm1', url: THREAD(1), disposition: 'follow-up', rootCause: 'edge-case', rationale: 'Needs an unusual input; the approved outcome holds without it.', releaseBlocking: [] };
+  const ticket = { rootCause: 'edge-case', url: ISSUE(300), readBack: true };
+  const packet = (findings, tickets = []) => pr172Packet({ findings, tickets });
+  assert.strictEqual(lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...packet([minor], [ticket]) }).classification, 'mergeable-with-follow-ups');
+  assert.strictEqual(lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...packet([{ ...minor, disposition: 'fixed' }]) }).classification, 'mergeable-clean');
+  const serious = lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...packet([{ ...minor, releaseBlocking: ['serious-bug'] }], [ticket]) });
+  assert.deepStrictEqual([serious.classification, serious.reasons], ['blocked', ['release-blocker:m1:serious-bug']]);
+  assert.throws(() => lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...packet([{ ...minor, releaseBlocking: ['correctness'] }], [ticket]) }), /unknown release-blocking category "correctness"/);
+});
+
+test('collect-minor records a minor finding once per id and status lists the PR-wide list', () => {
+  const stateDir = temp();
+  assert.deepStrictEqual(cli(stateDir, ['status', String(PR), HEAD]).minors, []);
+  const first = cli(stateDir, ['collect-minor', String(PR), HEAD], JSON.stringify({ id: 'm1', url: THREAD(1), reason: 'Edge case needing unusual input.' }));
+  assert.strictEqual(first.collected, true);
+  assert.strictEqual(cli(stateDir, ['collect-minor', String(PR), HEAD], JSON.stringify({ id: 'm1', url: THREAD(1), reason: 'Edge case needing unusual input.' })).existing, true);
+  cli(stateDir, ['collect-minor', String(PR), OTHER_HEAD], JSON.stringify({ id: 'm2', url: THREAD(2), reason: 'Wording request.' }));
+  assert.deepStrictEqual(cli(stateDir, ['status', String(PR), HEAD]).minors.map(({ id, url, reason }) => ({ id, url, reason })), [
+    { id: 'm1', url: THREAD(1), reason: 'Edge case needing unusual input.' },
+    { id: 'm2', url: THREAD(2), reason: 'Wording request.' },
+  ]);
+  for (const bad of [{ url: THREAD(3), reason: 'r' }, { id: 'm3', reason: 'r' }, { id: 'm3', url: THREAD(3) }, { id: 'm3', url: THREAD(3), reason: 'x'.repeat(501) }]) {
+    assert.throws(() => cli(stateDir, ['collect-minor', String(PR), HEAD], JSON.stringify(bad)), /minor/);
+  }
+});

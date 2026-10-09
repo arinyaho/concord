@@ -182,6 +182,26 @@ function waiveFixBudget({ stateDir, pr, person, count, now = Date.now() }) {
   return { waived: true, ...(created ? {} : { existing: true }), waiver };
 }
 
+function collectedMinors({ stateDir, pr }) {
+  let names;
+  try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') names = []; else throw error; }
+  return names.filter((name) => name.startsWith(`pr-${Number(pr)}.minor-`) && name.endsWith('.json'))
+    .map((name) => readMarker(path.join(stateDir, name)))
+    .filter((marker) => marker && typeof marker.id === 'string' && Number.isSafeInteger(marker.atMs))
+    .map(({ id, url, reason, headSha, atMs }) => ({ id, url, reason, headSha, atMs }))
+    .sort((a, b) => a.atMs - b.atMs || a.id.localeCompare(b.id));
+}
+
+// A finding classified minor is recorded, never fixed; the pre-merge triage turns the PR-wide list into follow-up tickets.
+function collectMinor({ stateDir, pr, headSha, id, url, reason, now = Date.now() }) {
+  const key = validate({ pr, headSha });
+  const entry = { id: text(id), url: text(url), reason: text(reason) };
+  if (!entry.id || !entry.url || !entry.reason || entry.id.length > 200 || entry.url.length > 500 || entry.reason.length > 500) throw new Error('review-lgtm-state: a collected minor finding needs an id, a url and a one-line reason of at most 500 characters');
+  const hash = crypto.createHash('sha256').update(entry.id).digest('hex').slice(0, 16);
+  const created = writeExclusive(path.join(stateDir, `pr-${key.pr}.minor-${hash}.json`), { pr: key.pr, headSha: key.headSha, ...entry, atMs: now });
+  return { collected: true, ...(created ? {} : { existing: true }), minor: collectedMinors({ stateDir, pr: key.pr }).find((minor) => minor.id === entry.id) };
+}
+
 function reserveFixRound({ stateDir, pr, headSha }, now, owner) {
   const { max } = fixBudget({ stateDir, pr });
   for (let round = 1; round <= max; round += 1) {
@@ -373,7 +393,7 @@ function status(input) {
     }
   }
   const deadlines = [window, retryWindow].filter(Boolean).map((marker) => marker.deadlineMs);
-  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), waivers: fixWaivers({ stateDir, pr: key.pr }), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested, reconciliation: reconciliationPacket({ stateDir, ...key }), delivery: deliveryStatus({ stateDir, ...key }) };
+  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), waivers: fixWaivers({ stateDir, pr: key.pr }), minors: collectedMinors({ stateDir, pr: key.pr }), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested, reconciliation: reconciliationPacket({ stateDir, ...key }), delivery: deliveryStatus({ stateDir, ...key }) };
 }
 
 function claimFixRound(input) {
@@ -491,7 +511,7 @@ function claimResult(result) {
 
 // Delivery disposition: one classification of an exact PR revision pair once
 // review collection is terminal (docs/design/delivery-disposition.md).
-const RELEASE_BLOCKING = new Set(['acceptance-criterion', 'required-check', 'correctness', 'security', 'data-integrity', 'contract-choice', 'compatibility', 'contradictory-docs', 'unproven-premise', 'stage-exit']);
+const RELEASE_BLOCKING = new Set(['acceptance-criterion', 'required-check', 'serious-bug', 'security', 'data-integrity', 'contract-choice', 'compatibility', 'contradictory-docs', 'unproven-premise', 'stage-exit']);
 const DISPOSITIONS = new Set(['fixed', 'follow-up', 'accepted', 'blocking']);
 const text = (value) => (typeof value === 'string' ? value.trim() : '');
 
@@ -733,11 +753,12 @@ function runMain(repoRoot = process.cwd()) {
   else if (verb === 'claim-fix-round') process.stdout.write(`${JSON.stringify(claimFixRound({ stateDir, pr, headSha }))}\n`);
   else if (verb === 'renew-fix-round') process.stdout.write(`${JSON.stringify(renewFixRound({ stateDir, pr, headSha, owner: argument }))}\n`);
   else if (verb === 'waive-fix-budget') process.stdout.write(`${JSON.stringify(waiveFixBudget({ stateDir, pr, person: headSha, count: Number(argument) }))}\n`);
+  else if (verb === 'collect-minor') process.stdout.write(`${JSON.stringify(collectMinor({ stateDir, pr, headSha, ...JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'self-feeding') { const [start, end] = process.argv.slice(6); process.stdout.write(`${JSON.stringify(selfFeeding({ repoRoot: worktreeRoot(repoRoot), stateDir, pr, headSha, file: argument, start: Number(start), end: Number(end === undefined ? start : end) }))}\n`); }
   else if (verb === 'record-review') process.stdout.write(`${JSON.stringify(recordReview({ stateDir, pr, headSha, observation: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'record-delivery') process.stdout.write(`${JSON.stringify(recordDelivery({ stateDir, pr, headSha, packet: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'reject-review-batch') process.stdout.write(`${JSON.stringify(rejectReviewBatch({ stateDir, pr, headSha, ...JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
-  else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, waive-fix-budget, self-feeding, record-review, reject-review-batch, or record-delivery');
+  else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, waive-fix-budget, collect-minor, self-feeding, record-review, reject-review-batch, or record-delivery');
 }
 
-module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, waiveFixBudget, selfFeeding, recordReview, rejectReviewBatch, classifyDelivery, recordDelivery, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, runMain };
+module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, waiveFixBudget, collectMinor, selfFeeding, recordReview, rejectReviewBatch, classifyDelivery, recordDelivery, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, runMain };
