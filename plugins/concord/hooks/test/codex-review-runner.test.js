@@ -836,8 +836,13 @@ test('codexExec elapsed time excludes the synchronous version probe', async () =
   const previousPath = process.env.PATH;
   process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
   try {
+    const begin = Date.now();
     const result = await codexExec({ role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir });
-    assert.ok(result.elapsedMs < 800, `review elapsed time included version probe: ${result.elapsedMs}ms`);
+    const total = Date.now() - begin;
+    // The probe blocks 900 ms before the review starts. Whatever elapsedMs
+    // leaves out of the call's own wall time must cover it, so spawn delay
+    // under load moves both sides equally.
+    assert.ok(total - result.elapsedMs >= 850, `review elapsed time included version probe: ${result.elapsedMs}ms of ${total}ms`);
   } finally {
     process.env.PATH = previousPath;
   }
@@ -2333,6 +2338,17 @@ test('normalization retry is an isolated artifact-repair operation, never a seco
   const repair = h.calls.find((call) => call[0] === 'spawn' && call[1] === 'artifact-repair');
   assert.ok(repair, 'retry must launch artifact-repair');
   assert.doesNotMatch(repair[2], /Review the diff|REWRITE ARTIFACT/, 'repair receives no substantive reviewer context');
+});
+
+test('artifact repair prompt names the staged packet, immutable snapshot, and candidate paths', async () => {
+  const h = harness({ retry: true });
+  let repairRoot;
+  const spawn = (input) => { if (input.role === 'artifact-repair') repairRoot = input.repoRoot; return h.spawn(input); };
+  await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn });
+  const repair = h.calls.find((call) => call[0] === 'spawn' && call[1] === 'artifact-repair');
+  for (const name of ['packet.json', 'original.json', 'candidate.json']) {
+    assert.ok(repair[2].includes(JSON.stringify(path.join(repairRoot, name))), `repair prompt omitted the staged ${name} path`);
+  }
 });
 
 test('runner resumes an artifact repair from its retained snapshot', async () => {

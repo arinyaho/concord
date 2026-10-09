@@ -55,7 +55,7 @@ The loop ends when no rollout blocker remains, the required checks are green, an
 - Green: collection is complete, no unfixed blocker remains, and at least one fresh explicit LGTM exists.
 - `completed-without-lgtm`: a terminal clean review has no qualifying signal by the deadline. The skill does not request another full review on the same head solely to obtain a reaction.
 - Human reconciliation: the request budget is exhausted, or an accepted finding changes product contract, PR scope, or unrelated architecture.
-- Delivery disposition: when collection is terminal and no fix round is open, including after the fix budget is exhausted, the skill records the delivery disposition (see the delivery disposition design). Release-blocking residuals keep the PR `blocked` for human reconciliation; collected minors and other follow-up-eligible residuals are grouped by root cause into read-back tickets within the tracker authorization.
+- Delivery disposition: when collection is terminal and no fix round is open, including after the fix budget is exhausted, the skill records the delivery disposition (see the [delivery disposition design](delivery-disposition.md)). Release-blocking residuals keep the PR `blocked` for human reconciliation; collected minors and other follow-up-eligible residuals are grouped by root cause into read-back tickets within the tracker authorization.
 
 ## Merge gate
 
