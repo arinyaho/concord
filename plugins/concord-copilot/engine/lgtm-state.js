@@ -180,7 +180,7 @@ function waiveFixBudget({ stateDir, pr, person, count, now = Date.now() }) {
   const file = path.join(stateDir, `pr-${Number(pr)}.fix-waiver-${id}.json`);
   const created = writeExclusive(file, { pr: Number(pr), person: who, count, atMs: now });
   const waiver = fixWaivers({ stateDir, pr }).find((entry) => entry.person === who && entry.count === count);
-  return { waived: true, ...(created ? {} : { existing: true }), waiver };
+  return { waived: true, ...(created ? {} : { existing: true }), waiver, budget: fixBudget({ stateDir, pr }) };
 }
 
 function collectedMinors({ stateDir, pr }) {
@@ -199,8 +199,12 @@ function collectMinor({ stateDir, pr, headSha, id, url, reason, now = Date.now()
   const entry = { id: text(id), url: text(url), reason: text(reason) };
   if (!entry.id || !entry.url || !entry.reason || entry.id.length > 200 || entry.url.length > 500 || entry.reason.length > 500) throw new Error('review-lgtm-state: a collected minor finding needs an id, a url and a one-line reason of at most 500 characters');
   const hash = crypto.createHash('sha256').update(entry.id).digest('hex').slice(0, 16);
-  const created = writeExclusive(path.join(stateDir, `pr-${key.pr}.minor-${hash}.json`), { pr: key.pr, headSha: key.headSha, ...entry, atMs: now });
-  return { collected: true, ...(created ? {} : { existing: true }), minor: collectedMinors({ stateDir, pr: key.pr }).find((minor) => minor.id === entry.id) };
+  return withTransitionLock({ stateDir, pr: key.pr }, () => {
+    const created = writeExclusive(path.join(stateDir, `pr-${key.pr}.minor-${hash}.json`), { pr: key.pr, headSha: key.headSha, ...entry, atMs: now });
+    const minor = collectedMinors({ stateDir, pr: key.pr }).find((item) => item.id === entry.id);
+    if (!created && minor.url !== entry.url) throw new Error(`review-lgtm-state: minor finding ${entry.id} is already collected with a different url`);
+    return { collected: true, ...(created ? {} : { existing: true }), minor };
+  }, { collected: false, reason: 'transition-busy' });
 }
 
 // The merge gate of an AI agent merging at the user's explicit request. Live facts (CI, reviewer completion, LGTM)
@@ -211,11 +215,15 @@ function mergeReady({ stateDir, pr, headSha, evidence }) {
   if (!evidence || typeof evidence !== 'object') throw new Error('review-lgtm-state: merge-ready evidence must be an object');
   const checks = list(evidence.checks, 'checks');
   const reviewers = list(evidence.reviewers, 'reviewers');
+  const expected = list(evidence.expectedReviewers, 'expectedReviewers').map(text);
+  if (reviewers.some((reviewer) => !text(reviewer?.reviewer))) throw new Error('review-lgtm-state: merge-ready reviewers need a reviewer identity each');
   const reasons = [];
-  const live = String(evidence.headSha || '').toLowerCase();
+  const lower = (value) => String(value || '').trim().toLowerCase();
+  const live = lower(evidence.headSha);
   if (live !== key.headSha) reasons.push(`head-mismatch:${live}`);
   for (const check of checks) if (text(check?.conclusion) !== 'success') reasons.push(`check:${text(check?.name)}:${text(check?.conclusion)}`);
-  if (reviewers.length === 0) reasons.push('no-automated-review');
+  if (reviewers.length === 0 && expected.length === 0) reasons.push('no-automated-review');
+  for (const name of expected) if (!reviewers.some((reviewer) => text(reviewer.reviewer) === name)) reasons.push(`reviewer-missing:${name}`);
   for (const reviewer of reviewers) {
     const name = text(reviewer?.reviewer);
     if (text(reviewer?.failure)) reasons.push(`reviewer-failure:${name}:${text(reviewer.failure)}`);
@@ -226,6 +234,12 @@ function mergeReady({ stateDir, pr, headSha, evidence }) {
   if (!delivery) reasons.push('no-delivery');
   else if (!delivery.current) reasons.push('delivery-stale');
   else if (delivery.classification === 'blocked') reasons.push('delivery-blocked');
+  if (delivery) {
+    if (lower(evidence.baseSha) !== delivery.baseSha) reasons.push('base-changed');
+    if (lower(evidence.contractDigest) !== delivery.contractDigest) reasons.push('contract-changed');
+    for (const { name } of delivery.requiredChecks || []) if (!checks.some((check) => text(check?.name) === name)) reasons.push(`check-missing:${name}`);
+  }
+  if (fixRoundForHead({ stateDir, ...key })) reasons.push('fix-round-open');
   return { result: reasons.length === 0 ? 'ready' : 'blocked', reasons };
 }
 
@@ -730,11 +744,8 @@ function selfFeeding({ repoRoot, stateDir, pr, headSha, file, start, end }) {
   try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') names = []; else throw error; }
   const git = crossPlatformCommand('git', repoRoot);
   const run = (args) => execFileSync(git, crossPlatformArgs(['--literal-pathspecs', ...args], needsDoubleEscape('git', repoRoot)), crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20 }));
-  // Only exit status 1 means "not an ancestor"; any other failure (missing object, bad repository) surfaces.
-  const isAncestor = (sha) => {
-    try { run(['merge-base', '--is-ancestor', sha, key.headSha]); return true; } catch (error) { if (error.status === 1) return false; throw error; }
-  };
-  // The fix round is measured along the first-parent history, so the earlier fix head must sit on it.
+  // The fix round is measured along the first-parent history, so the earlier fix head must sit on it; a head
+  // that history does not list (rebased away, or absent from a shallow clone) counts as absent.
   let firstParent = null;
   const onFirstParent = (sha) => {
     firstParent = firstParent || new Set(run(['rev-list', '--first-parent', key.headSha]).split('\n').filter(Boolean));
@@ -746,7 +757,7 @@ function selfFeeding({ repoRoot, stateDir, pr, headSha, file, start, end }) {
     .filter(({ marker }) => marker && FULL_SHA.test(String(marker.headSha)) && marker.headSha !== key.headSha)
     .sort((a, b) => b.round - a.round)
     .map(({ marker }) => marker)
-    .find((marker) => isAncestor(marker.headSha) && onFirstParent(marker.headSha));
+    .find((marker) => onFirstParent(marker.headSha));
   if (!previous) return { selfFeeding: false, previousFixHead: null };
   // A line is self-feeding when blame at the head attributes it to a commit made since the previous fix head.
   // Blame follows renames itself; -C attributes lines copied or moved by the fix to their origin, and textconv and configured
