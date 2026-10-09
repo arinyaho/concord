@@ -8,7 +8,7 @@ const { execFileSync } = require('node:child_process');
 const { runReviewUntilGreen } = require('../../core/codex-review-runner');
 const { artifactDestinationFromPrompt } = require('../../core/review-artifact');
 const { readLedger, targetSlug, ledgerPath } = require('../../core/review');
-const { runPath } = require('../../core/initiative-review-run');
+const { runPath, consumeDispositionDelivery } = require('../../core/initiative-review-run');
 
 const ref = 'feature/plan-resume';
 const ids = ['correctness:first', 'correctness:second'];
@@ -190,6 +190,80 @@ test('transport retry failure exhausts recovery and leaves no resume instruction
   assert.deepEqual(sealed(h), before);
   assert.equal(h.initiative().launches.length, 5);
 });
+
+for (const cliCopy of ['core', 'codex']) {
+  test(`${cliCopy}: identical canonical transport failures append a new terminal disposition without rewriting delivered history`, async (t) => {
+    const failure = { status: 1, stderr: 'rate_limit_error' };
+    const h = fixture({ cliCopy, replacementResult: failure, transportResult: failure });
+    t.after(() => fs.rmSync(h.root, { recursive: true, force: true }));
+    await initialIncomplete(h);
+    const before = sealed(h);
+    let replacementError;
+    await assert.rejects(h.resume(), (error) => { replacementError = error; return true; });
+    assert.equal(replacementError.continuationPacket.nextAction, 'resume');
+    assert.equal(consumeDispositionDelivery({ path: runPath(path.join(h.root, 'initiative'), 'same-run') }, replacementError.continuationPacket.delivery.claim), true);
+    const history = h.initiative().dispositions;
+    const original = history.at(-1);
+    assert.equal(original.packet.delivery.consumed, true);
+    let transportError;
+    await assert.rejects(h.resume(), (error) => { transportError = error; return true; });
+    assert.equal(transportError.message, replacementError.message, 'both executions have the same canonical diagnostic');
+    assert.equal(h.ledger().execution.failure.nextAction, 'terminal-handoff');
+    assert.equal(transportError.continuationPacket.nextAction, 'terminal-handoff');
+    const dispositions = h.initiative().dispositions;
+    assert.equal(dispositions.length, history.length + 1);
+    assert.deepEqual(dispositions.slice(0, history.length), history, 'prior outcomes, delivery claims and budget snapshots are immutable');
+    const terminal = dispositions.at(-1);
+    assert.notEqual(terminal.packet.delivery.claim, original.packet.delivery.claim);
+    assert.equal(terminal.packet.delivery.consumed, false);
+    assert.equal(original.packet.budget.launches, 4);
+    assert.equal(terminal.packet.budget.launches, 5);
+    assert.deepEqual(sealed(h), before);
+    assert.equal(h.ledger().round, 1);
+    await assert.rejects(h.resume());
+    assert.deepEqual(h.launches, ['correctness', 'verify', 'plan', 'plan', 'plan']);
+    assert.equal(h.initiative().launches.length, 5);
+  });
+}
+
+for (const [cliCopy, corruption] of [['core', 'changed'], ['codex', 'deleted']]) {
+  test(`${cliCopy}: ${corruption} normalized transport plan persists terminal refusal before any process`, async (t) => {
+    const h = fixture({ cliCopy, replacementResult: { status: 1, stderr: 'rate_limit_error' } });
+    t.after(() => fs.rmSync(h.root, { recursive: true, force: true }));
+    await initialIncomplete(h);
+    const before = sealed(h);
+    await assert.rejects(h.resume());
+    const originalCli = h.options.runCli;
+    h.options.runCli = (args) => {
+      if (args[0] === 'plan-fixes') throw new Error('test interruption after successful transport plan normalization');
+      return originalCli(args);
+    };
+    await assert.rejects(h.resume(), /test interruption after successful transport plan normalization/);
+    assert.ok(h.ledger().execution.normalizedPlan);
+    assert.equal(h.ledger().execution.planTransportRetry.attempts, 1);
+    h.options.runCli = originalCli;
+    const planFile = path.join(h.stateDir, 'round-1-plan.json');
+    if (corruption === 'changed') fs.appendFileSync(planFile, '\n');
+    else fs.unlinkSync(planFile);
+    let error;
+    await assert.rejects(h.resume(), (value) => { error = value; return true; });
+    assert.equal(error.continuationPacket.nextAction, 'terminal-handoff');
+    const ledger = h.ledger();
+    assert.equal(ledger.execution.planTransportRetry.state, 'exhausted', 'durable recovery authority must be exhausted when usable plan evidence is lost');
+    assert.equal(ledger.execution.planRetry.state, 'exhausted');
+    assert.equal(ledger.execution.failure.nextAction, 'terminal-handoff');
+    const report = require('../../core/review').renderReviewReport([{ ledger }]);
+    assert.match(report, /terminal handoff/);
+    assert.doesNotMatch(report, /\/review-and-fix resume/);
+    assert.deepEqual(sealed(h), before);
+    assert.equal(ledger.round, 1);
+    assert.deepEqual(h.launches, ['correctness', 'verify', 'plan', 'plan', 'plan']);
+    assert.equal(h.initiative().launches.length, 5);
+    await assert.rejects(h.resume());
+    assert.equal(h.launches.length, 5);
+    assert.equal(h.initiative().launches.length, 5);
+  });
+}
 
 test('successful invalid transport recovery does not reopen semantic replacement allowance', async (t) => {
   const h = fixture({ incompleteReplacement: true, replacementResult: { status: 1, stderr: 'rate_limit_error' } });

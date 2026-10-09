@@ -16,6 +16,8 @@ Provider execution failures are classified in memory into `authentication`, `rat
 
 One shared continuation function governs CLI failure results, resume dispatch, session reports and runner packets. Actionable transport recovery advertises `resume`; exhausted or terminal work advertises `terminal-handoff`. The runner verifies durable failure state before advertising continuation and fails closed when persistence/readback fails. An error disposition alone never authorizes another launch.
 
+Initiative error entries remain audit records with their original budget snapshot and delivery claim. Failure identity includes the bounded round, semantic/transport attempt state and continuation, so identical canonical diagnostics from distinct recovery attempts append distinct dispositions. Recording or redelivering the same occurrence remains idempotent. Neither an earlier outcome nor its consumed delivery claim is overwritten to represent a later failure.
+
 ## Alternatives, costs and residual exposure
 
 Restoring `planRetry.launched` would conflate semantic and transport attempts and permit repeated invalid plans. Treating every failure as terminal is bounded but prevents supported recovery from rate limiting. Regex redaction of arbitrary provider output cannot guarantee that opaque credentials are removed. Canonical summaries sacrifice verbatim debugging detail for a reliable persistence boundary. Classification can miss an unrecognized transient error; unknown failures intentionally terminate.

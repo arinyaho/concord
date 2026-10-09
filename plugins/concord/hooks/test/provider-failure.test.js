@@ -69,6 +69,44 @@ test('model-authored JSON with an error property is not a provider error envelop
   assert.equal(failure.retryable, false);
 });
 
+for (const [engine, implementation] of [
+  ['core', providerFailure],
+  ['codex bundle', require('../../../concord-codex/engine/provider-failure').providerFailure],
+]) {
+  test(`${engine}: untyped stdout error objects cannot authorize provider transport retry`, () => {
+    const failure = implementation(input, { status: 1, stdout: JSON.stringify({ error: { message: 'rate_limit_error' } }), stderr: '' });
+    assert.equal(failure.diagnostic.classification, 'unknown');
+    assert.equal(failure.retryable, false);
+  });
+  test(`${engine}: structured stdout errors must match the selected provider schema`, () => {
+    for (const [provider, record] of [
+      ['claude', { type: 'turn.failed', error: { message: 'rate_limit_error' } }],
+      ['codex', { type: 'result', is_error: true, errors: ['rate_limit_error'] }],
+      ['copilot', { type: 'turn.failed', error: { message: 'rate_limit_error' } }],
+    ]) {
+      const failure = implementation({ role: 'plan', provider }, { status: 1, stdout: JSON.stringify(record), stderr: '' });
+      assert.equal(failure.retryable, false, `${provider} must reject another provider's error envelope`);
+    }
+  });
+  test(`${engine}: unrelated fields in a typed error envelope cannot authorize retry`, () => {
+    const failure = implementation({ role: 'plan', provider: 'codex' }, {
+      status: 1, stdout: JSON.stringify({ type: 'error', message: 'Executable is unavailable', documentation: { example: 'rate_limit_error' } }), stderr: '',
+    });
+    assert.equal(failure.diagnostic.classification, 'unknown');
+    assert.equal(failure.retryable, false);
+  });
+  test(`${engine}: supported structured Codex errors preserve actionable diagnostic fields`, () => {
+    for (const record of [
+      { type: 'error', message: 'rate limit exceeded' },
+      { type: 'turn.failed', error: { message: 'service unavailable' } },
+    ]) {
+      const failure = safe(implementation({ role: 'plan', provider: 'codex' }, { status: 1, stdout: JSON.stringify(record), stderr: '' }));
+      assert.equal(failure.retryable, true);
+      assert.equal(failure.diagnostic.engine, 'codex');
+    }
+  });
+}
+
 test('an unrelated stderr reference number is not HTTP transient evidence', () => {
   const failure = providerFailure(input, { status: 1, stdout: '', stderr: 'Configuration reference 503 could not be loaded.' });
   assert.equal(failure.retryable, false);

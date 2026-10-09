@@ -24,6 +24,20 @@ const { BLOCKED_CLAUSE, reviewerPrompt } = require('./round-plan');
 const { isWindows, crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
 const { providerFailure, normalizeProviderFailure, reviewContinuation } = require('./provider-failure');
 
+function failureOccurrence(ledger, continuation) {
+  const execution = ledger?.execution;
+  const retry = execution?.planRetry;
+  const transport = execution?.planTransportRetry;
+  return {
+    nextAction: continuation.nextAction,
+    round: Number.isSafeInteger(execution?.round) ? execution.round : null,
+    semanticState: ['pending', 'accepted', 'exhausted'].includes(retry?.state) ? retry.state : null,
+    semanticDispatched: retry?.launched === true,
+    transportState: ['pending', 'dispatched', 'exhausted'].includes(transport?.state) ? transport.state : null,
+    transportAttempts: [0, 1].includes(transport?.attempts) ? transport.attempts : null,
+  };
+}
+
 const CODEX_VERSION = 'codex-cli 0.154.0';
 const CODEX_BIN_ENV = 'CONCORD_CODEX_BIN';
 const MACOS_APP_CODEX = '/Applications/ChatGPT.app/Contents/Resources/codex';
@@ -1092,6 +1106,7 @@ async function runRounds(options) {
             const durable = await cli(['show', ref]);
             if (durable.execution?.failure?.message !== failure.message || durable.execution.failure.role !== failure.role) throw new Error('failure readback mismatch');
             error.durableContinuation = reviewContinuation(durable);
+            error.durableFailureOccurrence = failureOccurrence(durable, error.durableContinuation);
           } catch (_) {
             error.durableContinuation = { nextAction: 'terminal-handoff', retryable: false };
             error.message += ' (failure recording or readback failed; reconcile the existing ledger)';
@@ -1228,8 +1243,13 @@ async function runRounds(options) {
     }
     const failure = error.reviewFailure || {};
     let continuation = error.durableContinuation;
+    let occurrence = error.durableFailureOccurrence;
     if (!continuation) {
-      try { continuation = reviewContinuation(await cli(['show', ref])); }
+      try {
+        const durable = await cli(['show', ref]);
+        continuation = reviewContinuation(durable);
+        occurrence = failureOccurrence(durable, continuation);
+      }
       catch (_) { continuation = { nextAction: 'terminal-handoff', retryable: false }; }
     }
     // recordDisposition dedups an 'error' by its reason (a hash of the
@@ -1237,7 +1257,11 @@ async function runRounds(options) {
     // below must filter by that same reason, or a different, more recent
     // error at this revision could be returned in place of this one's own
     // (distinct) failure.
-    const errorReason = normalizeDisposition(error).reason;
+    // Canonical messages can repeat across distinct bounded planner attempts.
+    // Preserve each occurrence's audit snapshot and claim; repeat delivery of
+    // the same occurrence still uses the identical record/lookup reason.
+    const dispositionError = new Error(JSON.stringify({ message: error.message, occurrence: occurrence || continuation }));
+    const errorReason = normalizeDisposition(dispositionError).reason;
     // A failure here (the ledger lock was busy with no retry, or the run
     // was finalised concurrently) must not replace the real review failure
     // this catch is handling -- rethrow the ORIGINAL error, with the
@@ -1245,7 +1269,7 @@ async function runRounds(options) {
     // sees what actually went wrong instead of a generic "contended".
     const failurePacket = { trigger: 'error', exit: { code: Number.isInteger(failure.exitCode) ? failure.exitCode : null, signal: failure.signal || null }, dod: { status: checks[0]?.status || 'not-run' }, telemetry: { complete: false }, ...continuation, error: { message: error.message, ...(failure.diagnostic ? { diagnostic: failure.diagnostic } : {}) } };
     if (!initiativeRun) error.continuationPacket = failurePacket;
-    if (initiativeRun && initiativeRevision.head_sha && !recordDisposition(initiativeRun, { target: ref, revision: initiativeRevision, result: error, packet: failurePacket, checks })) {
+    if (initiativeRun && initiativeRevision.head_sha && !recordDisposition(initiativeRun, { target: ref, revision: initiativeRevision, result: dispositionError, packet: failurePacket, checks })) {
       if (!pendingContinuationPacket(initiativeRun, ref, initiativeRevision, 'error', true, errorReason)) {
         error.message = `${error.message} (review-until-green: initiative error disposition recording was also contended)`;
         throw error;

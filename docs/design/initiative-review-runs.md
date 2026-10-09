@@ -63,6 +63,8 @@ Every terminal runner result is normalized into one durable disposition: `termin
 
 Retaining an error disposition does not authorize retry by itself. Its continuation packet reflects the target ledger's bounded recovery state: actionable work uses `resume`, while exhausted or terminal planner execution failure uses `terminal-handoff`. Canonical provider diagnostics preserve classification without raw credentials. See [failed planner provider recovery](planner-provider-recovery.md).
 
+Canonical provider messages can repeat across distinct planner attempts. The runner binds error deduplication and packet lookup to the same bounded round, attempt state and continuation identity; a later exhausted attempt appends a new audit entry with its own budget snapshot and delivery claim. An earlier entry and its delivery state are preserved, while repeated delivery of the same occurrence remains idempotent.
+
 - `escape` covers `record`'s re-runnable stop states, `gate-pending` and `intent-review`, where a human dismisses or resolves the reported finding and a fresh `round-start` clears it, plus a literal `escape` decision. A material finding (every parked intent finding, or a design-conformance or AC-coverage gate finding) always carries a reconciliation, which takes precedence and stays `terminal`, so these states land as `escape` only when the open finding is non-material.
 - `error` is a harness or runner failure (a thrown exception).
 - Every other outcome (converged, parked, abandoned, or a reconciliation-required target) is `terminal`.

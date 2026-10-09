@@ -1906,6 +1906,7 @@ function runVerb(resolveFromCwd, args, initiative) {
         const execution = recoveryLedger.execution;
         const failure = { role: 'plan', kind: 'evidence-failure', message, retryable: false, nextAction: 'terminal-handoff', at: new Date().toISOString() };
         const stopped = { ...recoveryLedger, execution: { ...execution,
+          normalizedPlan: null, planRepairPending: false, completed: (execution.completed || []).filter((role) => role !== 'plan'),
           planRetry: { ...execution.planRetry, state: 'exhausted', message },
           planTransportRetry: { ...execution.planTransportRetry, state: 'exhausted' },
           failures: [...(execution.failures || []), failure].slice(-5), failure } };
@@ -1992,6 +1993,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       if (preserveArtifacts && ledger.execution.planRetry?.launched && !resumedNormalizedPlan
         && !preserved.has(`round-${resumeRound}-plan.json`) && !preserved.has(`round-${resumeRound}-plan.repair.json`)
         && !(ledger.execution.planTransportRetry?.state === 'pending' && ledger.execution.planTransportRetry.attempts === 0)) {
+        if (transportRecovery) stopTransportRecovery('planner transport recovery plan evidence is missing or changed; reconcile the existing evidence before continuing');
         throw new Error(`harness-failure: planner retry exhausted for this round; ${ledger.execution.planRetry.message}`);
       }
       resumedCompletedArtifacts = completed.filter((role) => preserved.has(`round-${resumeRound}-${role}.json`));

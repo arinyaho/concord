@@ -34,7 +34,27 @@ function normalizeProviderFailure(failure) {
   return { role, kind, message: `${summary}; ${diagnostic.message}`, ...(exitCode !== null ? { exitCode } : {}), ...(signal ? { signal } : {}), diagnostic, retryable };
 }
 
-function classify(result) {
+function errorFields(record, engine) {
+  const fields = (value) => {
+    if (typeof value === 'string') return [value];
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+    return ['type', 'code', 'message'].map((key) => value[key]).filter((value) => typeof value === 'string');
+  };
+  if (engine === 'codex') {
+    if (record.type === 'error') return [...fields(record.error), ...fields(record.message)];
+    if (record.type === 'turn.failed') return fields(record.error);
+    if (record.type === 'item.completed' && record.item?.type === 'error') return [...fields(record.item.error), ...fields(record.item.message)];
+  }
+  if (engine === 'claude') {
+    if (record.type === 'error') return fields(record.error);
+    if (record.type === 'result' && record.is_error === true) {
+      return [...fields(record.error), ...fields(record.result), ...(Array.isArray(record.errors) ? record.errors.flatMap(fields) : [])];
+    }
+  }
+  return [];
+}
+
+function classify(result, engine) {
   // Only error records from stdout are diagnostic evidence, never arbitrary
   // model prose. stderr is an invocation error channel, bounded by the caller.
   const stderr = String(result instanceof Error ? result.message : result?.stderr || '').slice(0, 8192);
@@ -45,9 +65,7 @@ function classify(result) {
     if (!/^\s*[\[{]/.test(line)) continue;
     try {
       const record = JSON.parse(line);
-      if (record && (record.type === 'error' || record.type === 'turn.failed' || (!record.type && typeof record.error === 'object') || record.is_error === true || record.item?.type === 'error')) {
-        records.push(JSON.stringify(record));
-      }
+      if (record && typeof record === 'object' && !Array.isArray(record)) records.push(...errorFields(record, engine));
     } catch (_) { malformed = true; }
   }
   const evidence = `${records.join('\n')}\n${stderr}`;
@@ -62,7 +80,7 @@ function classify(result) {
 function providerFailure(input, result) {
   const kind = result?.interrupted || result?.reviewFailure?.kind === 'interrupted' ? 'interrupted' : result?.timedOut || result?.reviewFailure?.kind === 'timeout' ? 'timeout' : result?.signal ? 'signal' : result instanceof Error ? 'provider-error' : 'subprocess-exit';
   return normalizeProviderFailure({ role: input.role, kind, exitCode: result?.status, signal: result?.signal,
-    diagnostic: { classification: classify(result), engine: input.provider } });
+    diagnostic: { classification: classify(result, input.provider), engine: input.provider } });
 }
 
 function reviewContinuation(ledger) {
