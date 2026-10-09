@@ -171,9 +171,12 @@ async function complete(analysis, { pr, graphql, reviewers = DEFAULT_REVIEWERS }
     const node = nodes[0];
     packet.reaction = { reviewer: loginOf(node.user.login), content: node.content, createdAt: node.createdAt, fresh: wholeSeconds(node.createdAt) >= wholeSeconds(summary.completedAt) };
   }
-  // A clean Codex review (no findings) is green once its thumbs-up is fresh.
+  // A clean Codex review (no findings) is green once its thumbs-up is fresh, and waits for it until then.
+  const fresh = !!(packet.reaction && packet.reaction.fresh);
   for (const observation of packet.observations) {
-    if (observation.reviewer === CODEX_REVIEWER && observation.findings.length === 0 && packet.reaction && packet.reaction.fresh) observation.lgtm = true;
+    if (observation.reviewer !== CODEX_REVIEWER || observation.findings.length > 0 || observation.lgtm) continue;
+    observation.lgtm = fresh;
+    if (!fresh) packet.awaitingReaction = true;
   }
   if (!packet.observations.some((o) => o.reviewer === CODEX_REVIEWER) && reviewers.includes(CODEX_REVIEWER)) {
     packet.observations.push({ reviewId: String(analysis.summaryId), reviewer: CODEX_REVIEWER, reviewUrl: summary.url, commitId: packet.head, reviewCommitId: packet.head, state: 'completed', lgtm: !!(packet.reaction && packet.reaction.fresh), findings: [] });

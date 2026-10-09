@@ -339,3 +339,19 @@ test('a comment of a review made on the head that was originally made on an olde
   const packet = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble({ main: () => data }) });
   assert.deepStrictEqual(findingIds(packet), [FIRST_FINDING]);
 });
+
+test('watch keeps polling a clean COMMENTED review for its reaction instead of printing a not-green packet', async () => {
+  const cleanReview = () => { const data = fixture(); headReview(data).comments.nodes = []; return data; };
+  const immediate = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble({ main: cleanReview }) });
+  assert.strictEqual(immediate.awaitingReaction, true);
+  let reads = 0;
+  const harness = watchHarness({
+    responses: [cleanReview],
+    reactions: () => { reads += 1; return reactionsResponse(reads < 3 ? [] : [thumbsUp('2026-10-09T13:47:56Z')]); },
+    status: (_head, tick) => ({ deadlineMs: 900000, delivery: tick >= 4 ? { classification: 'mergeable-clean', current: true } : null }),
+  });
+  await harness.run();
+  const packets = harness.lines.filter((l) => l.event === 'packet');
+  assert.strictEqual(packets.length, 1);
+  assert.strictEqual(packets[0].observations.find((o) => o.reviewId === String(REVIEW)).lgtm, true);
+});
