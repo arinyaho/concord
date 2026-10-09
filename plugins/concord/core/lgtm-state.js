@@ -560,7 +560,7 @@ function validatePacket(packet) {
   if (!packet || typeof packet !== 'object') throw new Error('review-lgtm-state: delivery packet must be an object');
   if (!FULL_SHA.test(String(packet.baseSha))) throw new Error('review-lgtm-state: delivery baseSha must be a full SHA');
   if (!/^[0-9a-f]{64}$/i.test(String(packet.contractDigest))) throw new Error('review-lgtm-state: delivery contractDigest must be a SHA-256 hex digest');
-  for (const field of ['reviewIds', 'acceptance', 'requiredChecks', 'openChoices', 'findings', 'tickets']) {
+  for (const field of ['reviewIds', 'acceptance', 'requiredChecks', 'openChoices', 'findings', 'droppedMinors', 'tickets']) {
     if (!Array.isArray(packet[field])) throw new Error(`review-lgtm-state: delivery ${field} must be an array`);
   }
   if (typeof packet.reviewsTerminal !== 'boolean') throw new Error('review-lgtm-state: delivery reviewsTerminal must be a boolean');
@@ -578,6 +578,11 @@ function validatePacket(packet) {
   for (const check of packet.requiredChecks) if (!text(check.conclusion)) throw new Error(`review-lgtm-state: delivery required check ${text(check.name)} needs conclusion`);
   for (const choice of packet.openChoices) if (!text(choice)) throw new Error('review-lgtm-state: delivery openChoices entries must be non-empty strings');
   unique(packet.findings, 'id', 'finding');
+  unique(packet.droppedMinors, 'id', 'dropped minor');
+  for (const dropped of packet.droppedMinors) {
+    if (!text(dropped.reason)) throw new Error(`review-lgtm-state: delivery dropped minor ${text(dropped.id)} needs a reason`);
+    if (packet.findings.some((finding) => text(finding.id) === text(dropped.id))) throw new Error(`review-lgtm-state: minor ${text(dropped.id)} is both a finding and a dropped minor`);
+  }
   unique(packet.tickets, 'rootCause', 'ticket');
   if (!packet.reviewIds.every((id) => /^[0-9]+$/.test(String(id)))) throw new Error('review-lgtm-state: delivery reviewIds must be review ids');
   for (const finding of packet.findings) {
@@ -597,7 +602,8 @@ function validatePacket(packet) {
   }
 }
 
-function classifyDelivery(raw) {
+// `minorIds` are the minors collected for the PR; each must be a follow-up finding under its own id or a dropped minor.
+function classifyDelivery(raw, minorIds = []) {
   const key = validate(raw);
   validatePacket(raw);
   const input = canonicalPacket(raw);
@@ -620,6 +626,10 @@ function classifyDelivery(raw) {
     if (!text(finding.rationale)) reasons.push(`no-rationale:${id}`);
     if (!followUps.has(rootCause)) followUps.set(rootCause, []);
     followUps.get(rootCause).push(finding);
+  }
+
+  for (const id of minorIds) {
+    if (!input.findings.some((finding) => finding.id === id && finding.disposition === 'follow-up') && !input.droppedMinors.some((dropped) => dropped.id === id)) reasons.push(`minor-unaccounted:${id}`);
   }
 
   const tickets = new Map();
@@ -655,7 +665,7 @@ function classifyDelivery(raw) {
     rootCause: finding.rootCause || null, releaseBlocking: finding.releaseBlocking, rationale: finding.rationale || null, acceptedBy: finding.acceptedBy || null,
     ticket: finding.disposition === 'follow-up' ? tickets.get(text(finding.rootCause))?.url || null : null,
   }));
-  return { pr: key.pr, headSha: key.headSha, baseSha: String(input.baseSha).toLowerCase(), contractDigest: String(input.contractDigest).toLowerCase(), classification, reasons, findings, groups, pending, requiredChecks: input.requiredChecks.map(({ name, conclusion }) => ({ name, conclusion })) };
+  return { pr: key.pr, headSha: key.headSha, baseSha: String(input.baseSha).toLowerCase(), contractDigest: String(input.contractDigest).toLowerCase(), classification, reasons, findings, droppedMinors: input.droppedMinors, groups, pending, requiredChecks: input.requiredChecks.map(({ name, conclusion }) => ({ name, conclusion })) };
 }
 
 // The digest covers only the fields the contract defines, in a fixed key
@@ -670,6 +680,7 @@ function canonicalPacket(packet) {
     reviewsTerminal: packet.reviewsTerminal,
     openChoices: packet.openChoices.map(text),
     findings: packet.findings.map((f) => ({ id: text(f.id), url: text(f.url) || null, local: f.local ? { file: text(f.local.file), span: f.local.span.trim() } : null, disposition: f.disposition || null, rootCause: text(f.rootCause), releaseBlocking: [...(f.releaseBlocking || [])].sort(), rationale: text(f.rationale), acceptedBy: text(f.acceptedBy) })),
+    droppedMinors: packet.droppedMinors.map((d) => ({ id: text(d.id), reason: text(d.reason) })),
     tickets: packet.tickets.map((t) => ({ rootCause: text(t.rootCause), url: text(t.url), readBack: t.readBack === true, reused: !!t.reused, duplicateCheck: text(t.duplicateCheck) })),
   };
 }
@@ -727,10 +738,12 @@ function deliveryTerminal(input, { fixCap = false } = {}) {
 function recordDelivery(input) {
   const { stateDir, now = Date.now(), packet } = input;
   const key = validate(input);
-  const classified = classifyDelivery({ ...packet, ...key });
+  classifyDelivery({ ...packet, ...key }); // a malformed packet throws before the lock
   const digest = crypto.createHash('sha256').update(JSON.stringify(canonicalPacket(packet))).digest('hex');
   return withTransitionLock({ stateDir, pr: key.pr }, () => {
     if (fixRoundForHead({ stateDir, ...key })) return { recorded: false, reason: 'fix-round-open' };
+    const minorIds = collectedMinorIds({ stateDir, pr: key.pr });
+    const classified = classifyDelivery({ ...packet, ...key }, minorIds);
     const records = deliveryRecords({ stateDir, ...key });
     const latest = records.at(-1);
     const reviewIds = activeReviewIds({ stateDir, ...key });
@@ -738,7 +751,7 @@ function recordDelivery(input) {
     if (JSON.stringify(observed) !== JSON.stringify(reviewIds)) return { recorded: false, reason: 'review-batch-changed', reviewIds };
     if (latest && latest.digest === digest && deliveryCurrent({ stateDir, ...key }, latest)) return latest;
     const sequence = (latest ? latest.sequence : 0) + 1;
-    const record = { ...classified, reviewIds, minorIds: collectedMinorIds({ stateDir, pr: key.pr }), digest, sequence, recordedAtMs: now, budgets: { request: requestBudget({ stateDir, pr: key.pr }), fix: fixBudget({ stateDir, pr: key.pr }) } };
+    const record = { ...classified, reviewIds, minorIds, digest, sequence, recordedAtMs: now, budgets: { request: requestBudget({ stateDir, pr: key.pr }), fix: fixBudget({ stateDir, pr: key.pr }) } };
     if (!writeExclusive(markerPath({ stateDir, ...key }, `delivery-${String(sequence).padStart(6, '0')}`), record)) throw new Error('review-lgtm-state: delivery record collided; retry');
     return record;
   }, { recorded: false, reason: 'transition-busy' });

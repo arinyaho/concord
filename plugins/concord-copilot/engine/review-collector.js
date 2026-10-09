@@ -12,13 +12,14 @@ const DEFAULT_REVIEWERS = ['chatgpt-codex-connector'];
 const CODEX_REVIEWER = 'chatgpt-codex-connector';
 const SUMMARY_MARKER = '<!-- codex-pull-request-review-summary -->';
 const MAX_BODY_CHARS = 4000;
+const MAX_PAGES = 20; // per connection; a longer one fails the collection instead of being truncated
 const WINDOW_SECONDS = 900;
 const DEFAULT_INTERVAL_MS = 30000;
 const MIN_INTERVAL_MS = 30000;
 
 const COMMENT_FIELDS = 'id databaseId url body path line commit{oid} originalCommit{oid}';
 const CONTEXT_FIELDS = '__typename ... on CheckRun{name status conclusion} ... on StatusContext{context state}';
-const THREAD_FIELDS = 'isResolved comments(first:100){nodes{id}}';
+const THREAD_FIELDS = 'id isResolved comments(first:100){pageInfo{hasNextPage endCursor} nodes{id}}';
 const QUERY = `query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){id headRefOid
 reviews(last:100){nodes{id databaseId url state submittedAt body author{login} commit{oid} comments(first:100){pageInfo{hasNextPage endCursor} nodes{${COMMENT_FIELDS}}}}}
 reviewThreads(first:100){pageInfo{hasNextPage endCursor} nodes{${THREAD_FIELDS}}}
@@ -26,6 +27,7 @@ comments(last:100){nodes{databaseId url body createdAt author{login}}}
 commits(last:1){nodes{commit{oid statusCheckRollup{id contexts(first:100){pageInfo{hasNextPage endCursor} nodes{${CONTEXT_FIELDS}}}}}}}}}}`;
 // Follow-up pages for a pull request with more than 100 review threads, a review with more than 100 inline comments and a check rollup with more than 100 contexts.
 const THREADS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on PullRequest{reviewThreads(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${THREAD_FIELDS}}}}}}`;
+const THREAD_COMMENTS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on PullRequestReviewThread{comments(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{id}}}}}`;
 const COMMENTS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on PullRequestReview{comments(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${COMMENT_FIELDS}}}}}}`;
 const CONTEXTS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on StatusCheckRollup{contexts(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${CONTEXT_FIELDS}}}}}}`;
 const REACTIONS_QUERY = 'query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){headRefOid reactions(first:100,content:THUMBS_UP){nodes{content createdAt user{login}}}}}}';
@@ -95,7 +97,8 @@ function pullRequestOf(response) {
 
 // Fills `connection.nodes` with every following page. Read once per collection, so a huge review costs extra reads only when it exists.
 async function fillPages(connection, query, id, field, graphql) {
-  while (connection.pageInfo && connection.pageInfo.hasNextPage && connection.pageInfo.endCursor) {
+  for (let pages = 0; connection.pageInfo && connection.pageInfo.hasNextPage && connection.pageInfo.endCursor; pages += 1) {
+    if (pages >= MAX_PAGES) throw new Error(`review-collector: ${field} exceeds ${MAX_PAGES} pages`);
     const page = (await graphql(query, { id, cursor: connection.pageInfo.endCursor })).data.node[field];
     connection.nodes.push(...page.nodes);
     connection.pageInfo = page.pageInfo;
@@ -107,6 +110,8 @@ async function read(graphql, pr, reviewers) {
   const response = await graphql(QUERY, { pr });
   const pull = pullRequestOf(response);
   await fillPages(pull.reviewThreads, THREADS_PAGE_QUERY, pull.id, 'reviewThreads', graphql);
+  // Only a resolved thread's comments matter: they are the ids that stop being findings.
+  await Promise.all(pull.reviewThreads.nodes.filter((thread) => thread.isResolved).map((thread) => fillPages(thread.comments, THREAD_COMMENTS_PAGE_QUERY, thread.id, 'comments', graphql)));
   await Promise.all(pull.reviews.nodes.filter((review) => review.author && reviewers.includes(loginOf(review.author.login))).map((review) => fillPages(review.comments, COMMENTS_PAGE_QUERY, review.id, 'comments', graphql)));
   const commit = pull.commits.nodes[0] && pull.commits.nodes[0].commit;
   if (commit && commit.statusCheckRollup) await fillPages(commit.statusCheckRollup.contexts, CONTEXTS_PAGE_QUERY, commit.statusCheckRollup.id, 'contexts', graphql);

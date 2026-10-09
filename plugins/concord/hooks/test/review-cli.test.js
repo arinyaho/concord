@@ -193,6 +193,20 @@ test('round-start fails closed when the head is already contained in the base', 
   assert.doesNotMatch(r.stdout, /"decision":"work"/);
 });
 
+test('round-start replays a terminal ledger even when its head has since been merged into the base', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/terminal-then-merged';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'ahead'], { cwd: repo });
+  const first = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env }));
+  const slug = review.targetSlug(ref);
+  review.writeLedger(dir, slug, { ...review.readLedger(dir, slug), phase: 'done', status: 'clean' });
+  execFileSync('git', ['branch', 'merged-base'], { cwd: repo });
+  const replay = JSON.parse(run(['round-start', ref, 'merged-base'], { env }));
+  assert.strictEqual(replay.decision, 'terminal');
+  assert.strictEqual(replay.head, first.head);
+});
+
 test('round-start inventory ignores quoted header lookalikes in source hunks', () => {
   const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/hunk-inventory';
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
@@ -5543,4 +5557,29 @@ test('plan-fixes does not stamp a cleared finding the gate raised again and gate
   const text = cli.renderHandoff({ ledger: review.readLedger(dir, slug) });
   assert.match(text, new RegExp(`cleared at restart, raised again and rejected by gate-verify \\(round ${n}\\): \\[gate:cross-context:rejected\\]`));
   assert.doesNotMatch(text, /not re-raised/);
+});
+
+test('plan-fixes does not read a cleared finding dropped as a duplicate of a correctness finding as rejected by gate-verify', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
+  execFileSync('git', ['commit', '-aqm', 'enable gate'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true })).round;
+  const slug = review.targetSlug('feat/x');
+  const cleared = { id: 'gate:cross-context:dup', file: 'a.txt', span: 'two', summary: 'a real gap', rationale: 'r', releaseBlocking: ['serious-bug'], clearedAt: '2026-10-09T00:00:00.000Z' };
+  review.writeLedger(dir, slug, { ...review.readLedger(dir, slug), gate_cleared: [cleared] });
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:bug', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'bug' }] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [{ id: cleared.id, file: 'a.txt', span: 'two', summary: 'a real gap' }] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [], duplicates: [{ id: cleared.id, of: 'correctness:bug' }] }));
+  run(['plan-fixes', 'feat/x'], { env });
+  const after = review.readLedger(dir, slug);
+  assert.strictEqual(after.gate_cleared[0].notRaisedRound ?? null, null);
+  run(['rerun', 'feat/x'], { env });
+  const text = cli.renderHandoff({ ledger: review.readLedger(dir, slug) });
+  assert.match(text, new RegExp(`cleared at restart, raised again and dropped as a duplicate of a correctness finding \\(round ${n}\\): \\[gate:cross-context:dup\\]`));
+  assert.doesNotMatch(text, /rejected by gate-verify|not re-raised/);
 });
