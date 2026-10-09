@@ -721,7 +721,7 @@ test('Claude, Codex, and Copilot review-until-lgtm skills pin bounded batch fixe
     assert.match(skill, /Codex, Copilot, or another explicitly configured reviewer/);
     assert.match(skill, /Do not start fixing when the first review arrives/);
     assert.match(skill, /complete collected set.*one clean-context verifier/);
-    assert.match(skill, /partition every accepted finding into exactly one explicit root-cause group/);
+    assert.match(skill, /partition every conceded finding into exactly one explicit root-cause group/);
     assert.match(skill, /round-scoped transaction/);
     assert.match(skill, /independent certifier/);
     assert.match(skill, /three fix-and-push rounds are a PR-wide hard cap, not a quality guarantee/);
@@ -1147,4 +1147,18 @@ test('self-feeding CLI works in a bare repository, which has no work tree root',
   claimFixHead(stateDir, reviewed, 1000);
   const out = execFileSync('node', [CLI, 'self-feeding', '221', head, 'x.md', '2', '2'], { cwd: bare, encoding: 'utf8', env: { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir } });
   assert.strictEqual(JSON.parse(out).selfFeeding, true);
+});
+
+test('review-until-lgtm adjudicates findings and escalates a PR that does not settle once', () => {
+  for (const file of [CLAUDE_SKILL, CODEX_SKILL, COPILOT_SKILL]) {
+    const skill = fs.readFileSync(file, 'utf8');
+    assert.match(skill, /^### Adjudicate and escalate$/m);
+    for (const token of ['CONCEDE', 'REBUT', 'KEEP', 'REWRITE', 'self-feeding', 'waive-fix-budget', 'new agent', 'once per PR', 'mergeable-clean']) {
+      assert.ok(skill.includes(token), `${path.basename(path.dirname(file))} lacks ${token}`);
+    }
+    assert.match(skill, /rebutted finding[^.]*never enters the plan or the delivery packet/);
+    assert.match(skill, /stop for human reconciliation/);
+  }
+  assert.strictEqual(fs.readFileSync(CLAUDE_SKILL, 'utf8'), fs.readFileSync(CODEX_SKILL, 'utf8'));
+  assert.strictEqual(fs.readFileSync(CLAUDE_SKILL, 'utf8'), fs.readFileSync(COPILOT_SKILL, 'utf8'));
 });
