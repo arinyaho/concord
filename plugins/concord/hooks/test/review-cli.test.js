@@ -1306,6 +1306,27 @@ test('plan-fixes: a finding reopened after being marked fixed is not silently dr
   assert.deepStrictEqual(l.planned, ['correctness:real']);
 });
 
+test('plan-fixes: a reopened finding is never resolved as a replay of its earlier journaled fix', () => {
+  for (const kind of ['span-removed', 'file-deleted']) {
+    const repo = initRepo(); const dir = tmpDir(); const ref = `feat/reopened-${kind}`;
+    const slug = review.targetSlug(ref);
+    const finding = { id: 'correctness:real', gate: 'correctness', file: kind === 'file-deleted' ? 'gone.txt' : 'a.txt', span: 'recurred span', summary: 'x' };
+    // A later round brought the problem back: the id is 'fixed' in the ledger and seen,
+    // the old fix is still journaled, and the evidence now is a missing span or file.
+    let ledger = review.emptyLedger({ kind: 'local', ref });
+    ledger.findings = [{ id: finding.id, status: 'fixed' }];
+    ledger.seen = [{ id: finding.id, status: 'fixed', hash: review.seenHash(finding) }];
+    ledger.journal = [{ id: finding.id, sha: 'earlier-fix' }];
+    review.writeLedger(dir, slug, ledger);
+    const { env } = seedGatesRound(repo, dir, ref,
+      { status: 'ok', examined: ['a.txt'], findings: [finding] },
+      { status: 'ok', rejected: [] });
+    const out = JSON.parse(run(['plan-fixes', ref], { env }));
+    assert.deepStrictEqual(out.fixes.map((f) => f.id), ['correctness:real'], kind);
+    assert.deepStrictEqual(review.readLedger(dir, slug).resolved_absent, [], kind);
+  }
+});
+
 test('plan-fixes: a missing correctness artifact is a harness-failure (never clean)', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
@@ -5076,6 +5097,119 @@ test('plan-fixes: unsafe or oversized reviewer paths cannot become journal-prove
     assert.strictEqual(result.status, 0, `${kind}: ${result.stderr}`);
     assert.deepStrictEqual(JSON.parse(result.stdout).fixes.map((f) => f.id), ['correctness:unsafe'], kind);
     assert.deepStrictEqual(review.readLedger(dir, slug).resolved_absent, [], kind);
+  }
+});
+
+// A journaled fix that deleted the file and crashed before recording convergence
+// leaves a path that is safely missing inside the checkout: that is a replay.
+// Any other unavailable evidence stays with the fixer.
+function planFixesWithJournal(kind, setup, afterSeed = () => {}) {
+  const repo = initRepo(); const dir = tmpDir(); const outside = path.join(tmpDir(), 'gone.txt');
+  const ref = `feat/missing-${kind}`;
+  const file = setup({ repo, outside });
+  const { env } = seedGatesRound(repo, dir, ref,
+    { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:gone', gate: 'correctness', file, span: 'removed span', summary: 'x' }] },
+    { status: 'ok', rejected: [] });
+  afterSeed({ repo, outside });
+  const slug = review.targetSlug(ref);
+  review.writeLedger(dir, slug, { ...review.readLedger(dir, slug), journal: [{ id: 'correctness:gone', sha: 'prior' }] });
+  seedV2Plan(ref, env);
+  const result = runCapture(['plan-fixes', ref], { env, timeout: 10000 });
+  assert.strictEqual(result.status, 0, `${kind}: ${result.stderr}`);
+  return { fixes: JSON.parse(result.stdout).fixes.map((f) => f.id), resolved: review.readLedger(dir, slug).resolved_absent };
+}
+
+test('plan-fixes: a journaled finding whose file was deleted inside the checkout is a replay', () => {
+  for (const kind of ['file', 'directory']) {
+    const { fixes, resolved } = planFixesWithJournal(`deleted-${kind}`, ({ repo }) => {
+      const file = kind === 'file' ? 'gone.txt' : 'pkg/gone.txt';
+      fs.mkdirSync(path.join(repo, 'pkg'));
+      fs.writeFileSync(path.join(repo, file), 'removed span\n');
+      execFileSync('git', ['add', file], { cwd: repo });
+      execFileSync('git', ['commit', '-qm', 'add'], { cwd: repo });
+      execFileSync('git', ['rm', '-rqf', kind === 'file' ? file : 'pkg'], { cwd: repo });
+      execFileSync('git', ['commit', '-qm', 'delete'], { cwd: repo });
+      return file;
+    });
+    assert.deepStrictEqual(fixes, [], kind);
+    assert.deepStrictEqual(resolved, ['correctness:gone'], kind);
+  }
+});
+
+test('record: a missing journaled file replaced before record is parked, not stamped fixed', () => {
+  for (const kind of ['symlink', 'fifo']) {
+    const repo = initRepo(); const dir = tmpDir(); const ref = `feat/replaced-${kind}`;
+    const slug = review.targetSlug(ref);
+    const outside = path.join(tmpDir(), 'other.txt'); fs.writeFileSync(outside, 'no such span here\n');
+    const { env } = seedGatesRound(repo, dir, ref,
+      { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:gone', gate: 'correctness', file: 'gone.txt', span: 'removed span', summary: 'x' }] },
+      { status: 'ok', rejected: [] });
+    review.writeLedger(dir, slug, { ...review.readLedger(dir, slug), journal: [{ id: 'correctness:gone', sha: 'prior' }] });
+    seedV2Plan(ref, env);
+    run(['plan-fixes', ref], { env });
+    assert.deepStrictEqual(review.readLedger(dir, slug).resolved_absent, ['correctness:gone'], kind);
+    if (kind === 'symlink') fs.symlinkSync(outside, path.join(repo, 'gone.txt'));
+    else execFileSync('mkfifo', [path.join(repo, 'gone.txt')]);
+    const result = runCapture(['record', ref], { env, timeout: 10000 });
+    assert.strictEqual(result.status, 0, `${kind}: ${result.stderr}`);
+    const finding = review.readLedger(dir, slug).findings.find((f) => f.id === 'correctness:gone');
+    assert.strictEqual(finding.status, 'parked', kind);
+  }
+});
+
+test('record: a reopened finding sent to the fixer is parked without a fresh journal entry, not fixed by its old one', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/reopened-record';
+  const slug = review.targetSlug(ref);
+  const finding = { id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'recurred span', summary: 'x' };
+  let ledger = review.emptyLedger({ kind: 'local', ref });
+  ledger.findings = [{ id: finding.id, status: 'fixed' }];
+  ledger.seen = [{ id: finding.id, status: 'fixed', hash: review.seenHash(finding) }];
+  ledger.journal = [{ id: finding.id, sha: 'earlier-fix' }];
+  review.writeLedger(dir, slug, ledger);
+  const { env } = seedGatesRound(repo, dir, ref,
+    { status: 'ok', examined: ['a.txt'], findings: [finding] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', ref], { env });
+  assert.deepStrictEqual(review.readLedger(dir, slug).planned, ['correctness:real']);
+  run(['record', ref], { env });
+  const recorded = review.readLedger(dir, slug).findings.find((f) => f.id === 'correctness:real');
+  assert.strictEqual(recorded.status, 'parked');
+});
+
+test('plan-fixes: replanning a round keeps the journal floor, so the interrupted attempt\'s own commit still counts', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/reopened-resume';
+  const slug = review.targetSlug(ref);
+  const finding = { id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'recurred span', summary: 'x' };
+  let ledger = review.emptyLedger({ kind: 'local', ref });
+  ledger.findings = [{ id: finding.id, status: 'fixed' }];
+  ledger.seen = [{ id: finding.id, status: 'fixed', hash: review.seenHash(finding) }];
+  ledger.journal = [{ id: finding.id, sha: 'earlier-fix' }];
+  review.writeLedger(dir, slug, ledger);
+  const { env } = seedGatesRound(repo, dir, ref,
+    { status: 'ok', examined: ['a.txt'], findings: [finding] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', ref], { env });
+  // The fixer committed, then the process died before record; the round is planned again.
+  const planned = review.readLedger(dir, slug);
+  review.writeLedger(dir, slug, { ...planned, phase: 'gates', planned: [], resolved_absent: [], journal: [...planned.journal, { id: finding.id, sha: 'current-fix' }] });
+  run(['plan-fixes', ref], { env });
+  run(['record', ref], { env });
+  const recorded = review.readLedger(dir, slug).findings.find((f) => f.id === finding.id);
+  assert.strictEqual(recorded.fix_commit, 'current-fix');
+});
+
+test('plan-fixes: a missing path outside the checkout or behind a symlink is not a replay', () => {
+  for (const kind of ['outside', 'dangling-symlink', 'symlinked-directory', 'file-as-directory', 'internal-symlink']) {
+    const { fixes, resolved } = planFixesWithJournal(kind, ({ repo, outside }) => {
+      if (kind === 'outside') return path.relative(repo, outside);
+      return { 'dangling-symlink': 'dangling.txt', 'symlinked-directory': 'linked/gone.txt', 'file-as-directory': 'a.txt/gone.txt', 'internal-symlink': 'inside.txt' }[kind];
+    }, ({ repo, outside }) => {
+      if (kind === 'dangling-symlink') fs.symlinkSync(outside, path.join(repo, 'dangling.txt'));
+      if (kind === 'symlinked-directory') fs.symlinkSync(path.dirname(outside), path.join(repo, 'linked'));
+      if (kind === 'internal-symlink') { fs.writeFileSync(path.join(repo, 'real.txt'), 'no such span\n'); fs.symlinkSync('real.txt', path.join(repo, 'inside.txt')); }
+    });
+    assert.deepStrictEqual(fixes, ['correctness:gone'], kind);
+    assert.deepStrictEqual(resolved, [], kind);
   }
 });
 

@@ -46,7 +46,16 @@ if [[ ! "$ATTEMPT_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89a
   echo "ATTEMPT_ID must be a UUID" >&2; exit 1
 fi
 ATTEMPT_ID="${ATTEMPT_ID,,}"
-gh auth setup-git   # git itself does not read GH_TOKEN; the clone below needs the credential helper
+# git itself does not read GH_TOKEN. The clone and fetches below get the GitHub
+# credential helper through the environment of those commands only, checkout
+# included because a smudge filter such as Git LFS downloads with it, so a
+# persistent runner account's Git configuration is never written.
+git_auth() {
+  GIT_CONFIG_COUNT=2 \
+  GIT_CONFIG_KEY_0=credential.https://github.com.helper GIT_CONFIG_VALUE_0='' \
+  GIT_CONFIG_KEY_1=credential.https://github.com.helper GIT_CONFIG_VALUE_1='!gh auth git-credential' \
+  "$@"
+}
 ME=$(gh api user --jq .login)   # whose reactions are ours to clear
 
 # Retried, because a status left pending makes the commit look under review.
@@ -142,11 +151,11 @@ rid=$(gh api -X POST "repos/$REPO/issues/$PR/reactions" -f content=eyes --jq .id
 # A full clone, so the merge base with the pull request's own base branch and
 # every blob the review reads are local: the engine runs without the token and
 # cannot fetch anything later.
-gh repo clone "$REPO" "$work" -- --quiet
-git -C "$work" fetch --quiet origin "pull/$PR/head"
+git_auth gh repo clone "$REPO" "$work" -- --quiet
+git_auth git -C "$work" fetch --quiet origin "pull/$PR/head"
 # Review exactly the dispatched commit, even if the branch moved since.
-git -C "$work" checkout -q -B "concord-pr-$PR" "$SHA"
-git -C "$work" fetch --quiet origin "$BASE_TIP"
+git_auth git -C "$work" checkout -q -B "concord-pr-$PR" "$SHA"
+git_auth git -C "$work" fetch --quiet origin "$BASE_TIP"
 BASE=$(git -C "$work" merge-base "$BASE_TIP" HEAD)
 [ "$BASE" = "$REVIEW_BASE" ] || { echo "local merge base differs from review snapshot" >&2; exit 1; }
 

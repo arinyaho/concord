@@ -108,13 +108,12 @@ function gitHeadFileContains(repoRoot, file, span) {
     return false;
   }
 }
+// Bounded and no-follow like readReviewSource: a path replaced by a symlink,
+// FIFO or other unreadable entry is not evidence that the span is gone.
 function gitWorktreeFileLacksSpan(repoRoot, file, span) {
-  try {
-    return !fs.readFileSync(path.join(repoRoot, file), 'utf8').includes(span);
-  } catch (e) {
-    if (e && e.code === 'ENOENT') return true;
-    throw e;
-  }
+  const text = readReviewSource(repoRoot, file);
+  if (text !== null) return !text.includes(span);
+  return reviewSourceMissing(repoRoot, file);
 }
 
 function pathWithin(child, parent) {
@@ -132,7 +131,7 @@ function readReviewSource(repoRoot, file) {
     const root = fs.realpathSync(repoRoot);
     const requested = path.resolve(root, file);
     const real = fs.realpathSync(requested);
-    if (!pathWithin(real, root)) return null;
+    if (!pathWithin(real, root) || real !== requested) return null; // a symlink anywhere on the path is not the file itself
     const before = fs.lstatSync(real);
     if (!before.isFile() || before.size > MAX_REVIEW_SOURCE_BYTES) return null;
     fd = fs.openSync(real, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | (fs.constants.O_NOFOLLOW || 0));
@@ -151,6 +150,27 @@ function readReviewSource(repoRoot, file) {
   } catch (_) { /* Unsafe or unavailable evidence cannot supply a source span. */ }
   finally { if (fd !== undefined) fs.closeSync(fd); }
   return null;
+}
+
+// True only when the path is provably absent inside the checkout: every
+// existing component is a real directory and the first missing one is ENOENT.
+// A symlink anywhere on the path (dangling or not), a path leaving the
+// checkout, or any other failure is not "missing" -- the evidence stays unknown.
+function reviewSourceMissing(repoRoot, file) {
+  if (typeof file !== 'string' || !file || path.isAbsolute(file)) return false;
+  try {
+    const root = fs.realpathSync(repoRoot);
+    const requested = path.resolve(root, file);
+    if (!pathWithin(requested, root) || requested === root) return false;
+    let current = root;
+    for (const part of path.relative(root, requested).split(path.sep)) {
+      current = path.join(current, part);
+      let stat;
+      try { stat = fs.lstatSync(current); } catch (e) { return e.code === 'ENOENT'; }
+      if (!stat.isDirectory()) return false;
+    }
+  } catch (_) { /* Unavailable evidence is not absence. */ }
+  return false;
 }
 
 function validateFixFiles(repoRoot, stateDir, files) {
@@ -1037,7 +1057,8 @@ function verifiedRound(ref, stateDir, run, what) {
   const spanPresent = (file, span) => {
     if (!span) return true;
     const text = readReviewSource(repoRoot, file);
-    return text === null || text.includes(span);
+    if (text !== null) return text.includes(span);
+    return !reviewSourceMissing(repoRoot, file);
   };
   // A finding dedupeAgainstSeen marked `reopened: true` recurred after being
   // marked 'fixed' -- it is still present in `ledger.findings` with that
@@ -1054,7 +1075,8 @@ function verifiedRound(ref, stateDir, run, what) {
   // never matched. Marking those 'fixed' would converge green with a confirmed
   // bug still live, so route them to the fixer instead (it adds the missing
   // code -> a real commit, or reports no-edit -> record parks it needs-decision).
-  const isReplay = (f) => (ledger.journal || []).some((j) => (j.findingIds || []).includes(f.id) || j.id === f.id
+  // A reopened finding recurred after its fix, so the journaled fix is not evidence that it holds.
+  const isReplay = (f) => !f.reopened && (ledger.journal || []).some((j) => (j.findingIds || []).includes(f.id) || j.id === f.id
     || (j.resolutions || []).some((r) => r.id === f.id && r.file === f.file && r.span === f.span)) && !spanPresent(f.file, f.span);
   const fixes = confirmedNonKilled
     .filter((f) => !isReplay(f))
@@ -1146,7 +1168,8 @@ function verifiedRound(ref, stateDir, run, what) {
     });
     gateOpen = thisRound.concat(carried);
   }
-  return { repoRoot, slug, ledger, n, isGit, changed, fixes, resolvedAbsent, intentParked, gateOpen, gateApplied };
+  const reopenedIds = confirmedNonKilled.filter((f) => f.reopened).map((f) => f.id);
+  return { repoRoot, slug, ledger, n, isGit, changed, fixes, resolvedAbsent, reopenedIds, intentParked, gateOpen, gateApplied };
 }
 
 // Every mutating target verb takes the same lock, including an unkeyed call
@@ -2331,10 +2354,13 @@ function runVerb(resolveFromCwd, args, initiative) {
     // targets use the per-fix artifact's edited flag (no git commit happens).
     const isGit = !ledger.target || ledger.target.type === 'git';
     const journaled = ledger.journal || [];
-    const journalEntryFor = (finding) => journaled.find((j) => (j.findingIds || []).includes(finding.id))
-      || journaled.find((j) => j.id === finding.id)
-      || journaled.find((j) => (j.resolutions || []).some((r) => r.id === finding.id && r.file === finding.file && r.span === finding.span)
+    const journalEntryFor = (finding) => {
+      const entries = journaled.slice((ledger.journal_floor || {})[finding.id]?.at || 0);
+      return entries.find((j) => (j.findingIds || []).includes(finding.id))
+      || entries.find((j) => j.id === finding.id)
+      || entries.find((j) => (j.resolutions || []).some((r) => r.id === finding.id && r.file === finding.file && r.span === finding.span)
         && finding.span && gitWorktreeFileLacksSpan(repoRoot, finding.file, finding.span));
+    };
     const fixedIds = [];
     const parkedIds = [];
     const fixCommits = {};
@@ -2583,7 +2609,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       && contentHash(readReviewArtifact(priorPlan, stateDir, 'utf8')) === priorRejection.rejectedHash) {
       throw new Error(`harness-failure: ${priorRejection.message}`);
     }
-    const { repoRoot, slug, ledger, n, isGit, fixes, resolvedAbsent, intentParked, gateOpen } = verifiedRound(ref, stateDir, run, 'plan-fixes');
+    const { repoRoot, slug, ledger, n, isGit, fixes, resolvedAbsent, reopenedIds, intentParked, gateOpen } = verifiedRound(ref, stateDir, run, 'plan-fixes');
     if (ledger.execution?.planRetry?.state === 'exhausted') throw new Error(`harness-failure: ${ledger.execution.planRetry.message}`);
     requirePlanDispatch(ledger);
     const fixById = new Map(fixes.map((finding) => [finding.id, finding]));
@@ -2676,7 +2702,11 @@ function runVerb(resolveFromCwd, args, initiative) {
       artifactHashes: { ...(ledger.execution.artifactHashes || {}), ...(consumedPlanHash ? { plan: consumedPlanHash } : {}) },
       planRetry: ledger.execution.planRetry ? { ...ledger.execution.planRetry, state: 'accepted', discardRepair: false } : null,
     } : ledger.execution;
-    const next = { ...ledger, execution, planned: reconciliation ? [] : fixes.map((f) => f.id), fix_plan: fixPlan, resolved_absent: resolvedAbsent, intent_parked: intentParked, gate_open: gateOpen, reconciliation: reconciliationPacket, reconciliationPacket, phase: 'fixes' };
+    // A reopened finding's earlier fixes no longer prove it: only journal entries added after this plan count.
+    // Planning the same round again after an interrupted attempt keeps its floor, so that attempt's own commit still counts.
+    const journalFloor = { ...(ledger.journal_floor || {}) };
+    for (const id of reopenedIds) if (journalFloor[id]?.round !== n) journalFloor[id] = { at: (ledger.journal || []).length, round: n };
+    const next = { ...ledger, journal_floor: journalFloor, execution, planned: reconciliation ? [] : fixes.map((f) => f.id), fix_plan: fixPlan, resolved_absent: resolvedAbsent, intent_parked: intentParked, gate_open: gateOpen, reconciliation: reconciliationPacket, reconciliationPacket, phase: 'fixes' };
     writeLedger(stateDir, slug, next);
     process.stdout.write(JSON.stringify({ protocolVersion: 2, planId, transactionScope, fixes: reconciliation ? [] : fixes, fixGroups: reconciliation ? [] : fixGroups, avoidedLaunches: reconciliation ? fixes.length : 0, reconciliation: blockedGroups.length ? reconciliationPacket : reconciliation && { trigger: 'material-finding', finding: material[0].id, stage: 'plan-fixes', findings: material.reduce((counts, finding) => {
       const kind = finding.id.startsWith('gate:design-conformance:') ? 'design-conformance' : finding.id.startsWith('gate:ac-coverage:') ? 'ac-coverage' : finding.id.split(':', 1)[0];
