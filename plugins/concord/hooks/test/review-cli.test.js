@@ -5228,3 +5228,40 @@ test('the evidence line tells an empty release classification from a missing one
   assert.match(missing, /release-blocking: unclassified/);
   assert.match(line({ id: 'gate:silent-gap:c', file: 'a.js', summary: 's', releaseBlocking: ['security'] }), /release-blocking: security/);
 });
+
+const fixedLoopFinding = { id: 'correctness:f1', file: 'a.txt', evidence: 'const a = 1;', summary: 'off by one', status: 'fixed', fix_commit: 'abc1234' };
+
+test('rerun archives a fixed finding with its file and anchor, and the handoffs show them next to the commit', () => {
+  const dir = tmpDir();
+  const repo = initRepo();
+  const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  review.writeLedger(dir, slug, { ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), status: 'clean', findings: [fixedLoopFinding] });
+  const live = cli.renderHandoff({ ledger: review.readLedger(dir, slug) });
+  assert.match(live, /- \[correctness:f1\] a\.txt: off by one .*span: const a = 1; -> commit abc1234/);
+  run(['rerun', 'feat/x'], { env });
+  const archived = review.readLedger(dir, slug).runs[0].fixed;
+  assert.deepStrictEqual(archived.map(({ id, file, span, summary, fix_commit }) => ({ id, file, span, summary, fix_commit })), [{ id: 'correctness:f1', file: 'a.txt', span: 'const a = 1;', summary: 'off by one', fix_commit: 'abc1234' }]);
+  assert.match(cli.renderHandoff({ ledger: review.readLedger(dir, slug) }), /fixed in prior run #1: \[correctness:f1\] a\.txt: off by one .*span: const a = 1; -> commit abc1234/);
+});
+
+test('a gate-pending restart keeps the cleared open finding as evidence, outside gate_open, and the handoff names it', () => {
+  const dir = tmpDir();
+  const repo = initRepo();
+  const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const open = { id: 'gate:cross-context:x', file: 'a.txt', span: 'two', summary: 'a real gap', rationale: 'r', releaseBlocking: ['serious-bug'] };
+  review.writeLedger(dir, slug, { ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), status: 'gate-pending', gate_open: [open], diff_content_hash: 'stale' });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  run(['round-start', 'feat/x', 'HEAD~1'], { env });
+  const after = review.readLedger(dir, slug);
+  assert.deepStrictEqual(after.gate_open, [], 'a cleared finding is not put back into gate_open');
+  assert.deepStrictEqual(after.gate_cleared.map(({ id, file, span, summary, rationale, releaseBlocking }) => ({ id, file, span, summary, rationale, releaseBlocking })), [{ id: 'gate:cross-context:x', file: 'a.txt', span: 'two', summary: 'a real gap', rationale: 'r', releaseBlocking: ['serious-bug'] }]);
+  assert.match(after.gate_cleared[0].clearedAt, /^\d{4}-\d\d-\d\dT/);
+  assert.match(cli.renderHandoff({ ledger: after }), /cleared at restart, not re-raised: \[gate:cross-context:x\] a\.txt: a real gap .*release-blocking: serious-bug/);
+  const raisedAgain = { ...after, gate_open: [open] };
+  assert.doesNotMatch(cli.renderHandoff({ ledger: raisedAgain }), /cleared at restart/);
+  run(['rerun', 'feat/x'], { env });
+  assert.deepStrictEqual(review.readLedger(dir, slug).gate_cleared.map((f) => f.id), ['gate:cross-context:x'], 'rerun carries the cleared evidence forward');
+});
