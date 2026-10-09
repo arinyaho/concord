@@ -39,6 +39,7 @@ function priorityOf(body) {
 }
 
 function finding(comment) {
+  const { body, truncated } = limited(comment.body);
   return {
     url: comment.url,
     priority: priorityOf(comment.body),
@@ -46,8 +47,9 @@ function finding(comment) {
     commitId: comment.commit && comment.commit.oid,
     path: comment.path || null,
     line: Number.isSafeInteger(comment.line) ? comment.line : null,
-    ...limited(comment.body),
-    suggestions: suggestionsOf(comment.body),
+    body,
+    truncated,
+    suggestions: suggestionsOf(body),
     untrusted: true,
   };
 }
@@ -96,7 +98,9 @@ function analyze(response, head, reviewers = DEFAULT_REVIEWERS) {
     const inline = review.comments.nodes;
     const reviewCommit = review.commit.oid.toLowerCase();
     if (reviewCommit !== head && !inline.some((c) => c.commit && c.commit.oid.toLowerCase() === head)) continue;
-    observations.push({ reviewId: String(review.databaseId), reviewer, reviewUrl: review.url, commitId: head, reviewCommitId: reviewCommit, state: 'completed', lgtm: review.state === 'APPROVED', findings: inline.map(finding) });
+    // A review on an older commit keeps only its comments on this head; the others belong to the older head.
+    const own = inline.filter((c) => reviewCommit === head || (c.commit && c.commit.oid.toLowerCase() === head));
+    observations.push({ reviewId: String(review.databaseId), reviewer, reviewUrl: review.url, commitId: head, reviewCommitId: reviewCommit, state: 'completed', lgtm: review.state === 'APPROVED', findings: own.map(finding) });
   }
   const pending = reviewers.filter((reviewer) => {
     const hasReview = observations.some((o) => o.reviewer === reviewer);
@@ -127,11 +131,11 @@ function analyze(response, head, reviewers = DEFAULT_REVIEWERS) {
 // to see the clean-result thumbs-up.
 async function complete(analysis, { pr, graphql, reviewers = DEFAULT_REVIEWERS }) {
   const { untrusted, ...rest } = analysis.model;
-  const packet = { untrusted, pr: Number(pr), ...rest };
+  const packet = { untrusted, pr: Number(pr), ...rest, awaitingReaction: false };
   const summary = packet.summary;
   if (!summary || summary.status !== 'completed' || !summary.completedAt) return packet;
   const nodes = pullRequestOf(await graphql(REACTIONS_QUERY, { pr })).reactions.nodes
-    .filter((node) => node.content === 'THUMBS_UP' && node.user && reviewers.includes(node.user.login))
+    .filter((node) => node.content === 'THUMBS_UP' && node.user && node.user.login === CODEX_REVIEWER)
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   if (nodes.length > 0) {
     const node = nodes[0];
@@ -139,6 +143,7 @@ async function complete(analysis, { pr, graphql, reviewers = DEFAULT_REVIEWERS }
   }
   if (!packet.observations.some((o) => o.reviewer === CODEX_REVIEWER) && reviewers.includes(CODEX_REVIEWER)) {
     packet.observations.push({ reviewId: String(analysis.summaryId), reviewer: CODEX_REVIEWER, reviewUrl: summary.url, commitId: packet.head, reviewCommitId: packet.head, state: 'completed', lgtm: !!(packet.reaction && packet.reaction.fresh), findings: [] });
+    packet.awaitingReaction = !(packet.reaction && packet.reaction.fresh);
   }
   return packet;
 }
@@ -150,6 +155,18 @@ async function collect({ pr, head, graphql, reviewers = DEFAULT_REVIEWERS }) {
   return complete(analysis, { pr, graphql, reviewers });
 }
 
+// `--reviewer <login>` (repeatable) names the configured automated reviewers; every one must be terminal.
+function reviewersFrom(args) {
+  const reviewers = [];
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] !== '--reviewer') continue;
+    if (!args[i + 1] || args[i + 1].startsWith('--')) throw new Error('review-collector: --reviewer needs a reviewer login');
+    reviewers.push(args[i + 1]);
+    i += 1;
+  }
+  return reviewers.length > 0 ? reviewers : DEFAULT_REVIEWERS;
+}
+
 function formatPacketLine(packet) { return JSON.stringify(packet); }
 
 // Shell-level polling: the model is not involved between lines. One packet
@@ -157,6 +174,7 @@ function formatPacketLine(packet) { return JSON.stringify(packet); }
 async function watch({ pr, graphql, state, now = Date.now, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), intervalMs = DEFAULT_INTERVAL_MS, write, reviewers = DEFAULT_REVIEWERS }) {
   if (intervalMs < MIN_INTERVAL_MS) throw new Error(`review-collector: the watch interval must be at least ${MIN_INTERVAL_MS} ms`);
   const printed = new Set();
+  let awaitingReaction = false;
   const windowed = new Set();
   const since = new Map();
   for (;;) {
@@ -167,10 +185,12 @@ async function watch({ pr, graphql, state, now = Date.now, sleep = (ms) => new P
     if (analysis.activity && !windowed.has(head)) { state.openWindow(head); windowed.add(head); }
     const status = state.status(head);
     if (status.delivery) { write(JSON.stringify({ event: 'delivery', pr: Number(pr), head, classification: status.delivery.classification })); return 'delivery'; }
-    if (now() >= (status.deadlineMs ?? since.get(head) + WINDOW_SECONDS * 1000)) { write(JSON.stringify({ event: 'deadline', pr: Number(pr), head, pending: analysis.model.pending })); return 'deadline'; }
+    if (now() >= (status.deadlineMs ?? since.get(head) + WINDOW_SECONDS * 1000)) { write(JSON.stringify({ event: 'deadline', pr: Number(pr), head, pending: analysis.model.pending, awaitingReaction })); return 'deadline'; }
     if (analysis.model.terminal && !printed.has(head)) {
-      printed.add(head);
-      write(formatPacketLine({ event: 'packet', ...(await complete(analysis, { pr, graphql, reviewers })) }));
+      // A clean Codex result is final only with its reaction, which arrives after the summary: keep reading until it does or the deadline passes.
+      const packet = await complete(analysis, { pr, graphql, reviewers });
+      awaitingReaction = packet.awaitingReaction;
+      if (!awaitingReaction) { printed.add(head); write(formatPacketLine({ event: 'packet', ...packet })); }
     }
     await sleep(intervalMs);
   }
@@ -181,4 +201,4 @@ function ghGraphql(cwd = process.cwd()) {
   return async (query, { pr }) => JSON.parse(execFileSync(gh, crossPlatformArgs(['api', 'graphql', '-F', 'owner={owner}', '-F', 'name={repo}', '-F', `pr=${pr}`, '-f', `query=${query}`], needsDoubleEscape('gh', cwd)), crossPlatformOpts({ cwd, encoding: 'utf8', maxBuffer: 64 << 20 })));
 }
 
-module.exports = { DEFAULT_REVIEWERS, MAX_BODY_CHARS, WINDOW_SECONDS, collect, watch, analyze, complete, formatPacketLine, ghGraphql };
+module.exports = { DEFAULT_REVIEWERS, reviewersFrom, MAX_BODY_CHARS, WINDOW_SECONDS, collect, watch, analyze, complete, formatPacketLine, ghGraphql };

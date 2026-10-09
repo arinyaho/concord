@@ -791,11 +791,11 @@ function runMain(repoRoot = process.cwd()) {
   else if (verb === 'record-review') process.stdout.write(`${JSON.stringify(recordReview({ stateDir, pr, headSha, observation: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'record-delivery') process.stdout.write(`${JSON.stringify(recordDelivery({ stateDir, pr, headSha, packet: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'reject-review-batch') process.stdout.write(`${JSON.stringify(rejectReviewBatch({ stateDir, pr, headSha, ...JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
-  else if (verb === 'collect') collector.collect({ pr, head: headSha, graphql: collector.ghGraphql(repoRoot) }).then((packet) => process.stdout.write(`${collector.formatPacketLine(packet)}\n`), fail);
+  else if (verb === 'collect') collector.collect({ pr, head: headSha, graphql: collector.ghGraphql(repoRoot), reviewers: collector.reviewersFrom(process.argv.slice(5)) }).then((packet) => process.stdout.write(`${collector.formatPacketLine(packet)}\n`), fail);
   else if (verb === 'watch') {
     const graphql = collector.ghGraphql(repoRoot);
     const state = { status: (head) => status({ stateDir, pr, headSha: head }), openWindow: (head) => openWindow({ stateDir, pr, headSha: head, durationMs: collector.WINDOW_SECONDS * 1000 }) };
-    collector.watch({ pr, graphql, state, write: (line) => process.stdout.write(`${line}\n`) }).catch(fail);
+    collector.watch({ pr, graphql, state, reviewers: collector.reviewersFrom(process.argv.slice(3)), write: (line) => process.stdout.write(`${line}\n`) }).catch(fail);
   }
   else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, waive-fix-budget, collect-minor, self-feeding, merge-ready, collect, watch, record-review, reject-review-batch, or record-delivery');
 }
