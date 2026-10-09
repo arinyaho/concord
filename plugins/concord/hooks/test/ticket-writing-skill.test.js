@@ -80,6 +80,46 @@ test('ticket-to-pr delegates by the kind of work, not by importance', () => {
   assert.match(read(path.join(REPO, 'plugins/concord/skills/review-until-lgtm/SKILL.md')), /^### Adjudicate and escalate$/m);
 });
 
+test('ticket-to-pr and the review waiters wait once, run the full suite once, and report long turns', () => {
+  const skill = read(CLAUDE_TICKET_TO_PR);
+  assert.equal(read(CODEX_TICKET_TO_PR), skill);
+  assert.equal(read(path.join(REPO, 'plugins/concord-copilot/skills/ticket-to-pr/SKILL.md')), skill);
+  const section = skill.split('## Waiting and test scope\n')[1]?.split('\n## ')[0] ?? '';
+  assert.ok(section, 'missing "Waiting and test scope" section');
+  for (const pattern of [
+    /one blocking wait or a background notification/,
+    /never with repeated short sleeps/,
+    /the tests focused on the change/,
+    /full test suite once, on the final head/,
+    /together with the DoD/,
+    /CI still runs the full suite on the PR/,
+    /passes 30 minutes/,
+    /what is running and what the budget status is/,
+  ]) {
+    assert.match(section, pattern);
+  }
+  const waitPhrases = [
+    /one shell command that exits when/,
+    /a background watch where the host has one/,
+    /not by repeated model-level sleep or status calls/,
+  ];
+  const lgtm = read(path.join(REPO, 'plugins/concord/skills/review-until-lgtm/SKILL.md'));
+  assert.equal(read(CODEX_REVIEW_UNTIL_LGTM), lgtm);
+  assert.equal(read(path.join(REPO, 'plugins/concord-copilot/skills/review-until-lgtm/SKILL.md')), lgtm);
+  assert.doesNotMatch(lgtm, /poll until `requestEligibleAtMs`/);
+  for (const pattern of waitPhrases) assert.match(lgtm, pattern);
+  for (const file of [
+    'plugins/concord/core/review-driver.md',
+    'plugins/concord/commands/review-and-fix.md',
+    'plugins/concord-codex/commands/review-and-fix.md',
+    'plugins/concord-copilot/skills/review-and-fix/references/review-driver.md',
+  ]) {
+    const text = read(path.join(REPO, file));
+    assert.doesNotMatch(text, /inspect that process and ledger and keep waiting/, file);
+    for (const pattern of waitPhrases) assert.match(text, pattern, file);
+  }
+});
+
 test('Claude and Codex source packages ship the same initiative-to-prs skill', () => {
   for (const file of INITIATIVE_TO_PRS_FILES) {
     const claude = path.join(REPO, 'plugins/concord/skills/initiative-to-prs', file);
