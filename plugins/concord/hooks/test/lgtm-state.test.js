@@ -1050,3 +1050,47 @@ test('self-feeding ignores a configured blame ignore list', () => {
   claimFixHead(stateDir, reviewed, 1000);
   assert.strictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'a.md', start: 2, end: 2 }).selfFeeding, true);
 });
+
+test('self-feeding counts the lines of the file itself, not of a textconv rendering', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-textconv-');
+  write('a.md', '1\n2\n3\n4\n5\n');
+  const reviewed = commit('base');
+  write('a.md', '1\n2\n3\n4\n5\nnew\n');
+  const head = commit('fix');
+  write('.gitattributes', 'a.md diff=dbl\n');
+  write('double.js', "process.stdout.write(require('fs').readFileSync(process.argv[1], 'utf8').replace(/\\n/g, '\\n\\n'));\n");
+  git(repo, 'config', 'diff.dbl.textconv', `node ${path.join(repo, 'double.js').replace(/\\/g, '/')}`);
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  const check = (start) => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'a.md', start, end: start }).selfFeeding;
+  assert.strictEqual(check(6), true);
+  assert.strictEqual(check(5), false);
+});
+
+test('self-feeding ignores a configured blame ignore list even when its file is missing', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-ignore-missing-');
+  write('a.md', '1\n2\n');
+  const reviewed = commit('base');
+  write('a.md', '1\n2\n3\n');
+  const head = commit('fix');
+  git(repo, 'config', 'blame.ignoreRevsFile', path.join(repo, 'no-such-file'));
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  assert.strictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'a.md', start: 3, end: 3 }).selfFeeding, true);
+});
+
+test('self-feeding keeps the inherited lines of a renamed and heavily rewritten file', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-rename-rewrite-');
+  const line = (prefix, i) => `${prefix} function handleRequest${i}(request, response) { return respond(request.body, ${i}); }`;
+  const body = (n, prefix) => Array.from({ length: n }, (_, i) => line(prefix, i)).join('\n');
+  write('old.js', `${body(100, 'export')}\n`);
+  const reviewed = commit('base');
+  fs.unlinkSync(path.join(repo, 'old.js'));
+  write('new.js', `${body(60, 'rewritten')}\n${body(100, 'export').split('\n').slice(60).join('\n')}\n`);
+  const head = commit('rename with 60 of 100 lines rewritten');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  const check = (start) => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'new.js', start, end: start }).selfFeeding;
+  assert.strictEqual(check(80), false);
+  assert.strictEqual(check(10), true);
+});

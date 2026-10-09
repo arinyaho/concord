@@ -299,7 +299,7 @@ function compareReviewIds(a, b) {
 function reconciliationPacket({ stateDir, pr, headSha }) {
   const records = activeReviewRecords({ stateDir, pr, headSha })
     .sort((a, b) => a.recordedAtMs - b.recordedAtMs || compareReviewIds(a.reviewId, b.reviewId));
-  const delivered = !fixRoundForHead({ stateDir, pr, headSha }) && deliveryTerminal({ stateDir, pr, headSha });
+  const delivered = !fixRoundForHead({ stateDir, pr, headSha }) && deliveryTerminal({ stateDir, pr, headSha }, { fixCap: true });
   if (delivered) return { pr, headSha, reviews: records.map((record) => ({ id: record.reviewId, reviewer: record.reviewer || 'legacy/unknown', url: record.reviewUrl, findings: record.findings })), batchCount: records.length, classification: 'delivery-terminal', action: 'report-delivery', humanRequired: false, requires: `report the recorded ${delivered.classification} delivery disposition` };
   if (records.length === 0) return null;
   const reviews = records.map((record) => ({ id: record.reviewId, reviewer: record.reviewer || 'legacy/unknown', url: record.reviewUrl, findings: record.findings }));
@@ -695,10 +695,11 @@ function selfFeeding({ repoRoot, stateDir, pr, headSha, file, start, end }) {
     .find((marker) => isAncestor(marker.headSha) && onFirstParent(marker.headSha));
   if (!previous) return { selfFeeding: false, previousFixHead: null };
   // A line is self-feeding when blame at the head attributes it to a commit made since the previous fix head.
-  // Blame follows renames itself. git fails for a file missing at the head or a range starting past its end;
+  // Blame follows renames itself; -C attributes lines copied or moved by the fix to their origin, and textconv and configured
+  // ignore lists are switched off so line numbers and attribution are those of the file at the head. git fails for a file missing at the head or a range starting past its end;
   // a range ending past the end is clamped by git to the last line.
   const fixCommits = new Set(run(['rev-list', '--first-parent', `${previous.headSha}..${key.headSha}`]).split('\n').filter(Boolean));
-  const blamed = run(['blame', '--ignore-revs-file=', '--porcelain', '-L', `${start},${end}`, key.headSha, '--', file]).split('\n')
+  const blamed = run(['blame', '-C', '--no-textconv', '--no-ignore-revs-file', '--porcelain', '-L', `${start},${end}`, key.headSha, '--', file]).split('\n')
     .map((line) => /^([0-9a-f]{40}|[0-9a-f]{64}) \d+ \d+/.exec(line)).filter(Boolean).map((match) => match[1]);
   return { selfFeeding: blamed.some((sha) => fixCommits.has(sha)), previousFixHead: previous.headSha };
 }

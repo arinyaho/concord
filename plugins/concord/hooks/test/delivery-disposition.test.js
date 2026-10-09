@@ -322,3 +322,13 @@ test('a fix-budget waiver does not reopen review requests on a terminal delivery
   assert.strictEqual(cli(stateDir, ['claim-initial-request', String(PR), HEAD, 'codex']).reason, 'delivery-terminal');
   assert.strictEqual(cli(stateDir, ['claim-fix-round', String(PR), HEAD]).claimed, true);
 });
+
+test('status reopens the reconciliation packet when a waiver lifts a terminal delivery', () => {
+  const stateDir = temp();
+  withActiveReview(stateDir);
+  cli(stateDir, ['record-delivery', String(PR), HEAD], JSON.stringify(pr172Packet({ reviewIds: ['4192088400'] })));
+  assert.strictEqual(cli(stateDir, ['status', String(PR), HEAD]).reconciliation.action, 'report-delivery');
+  cli(stateDir, ['waive-fix-budget', String(PR), 'someone', '1']);
+  assert.strictEqual(cli(stateDir, ['status', String(PR), HEAD]).reconciliation.action, 'verify-and-fix');
+  assert.strictEqual(cli(stateDir, ['claim-fix-round', String(PR), HEAD]).claimed, true);
+});
