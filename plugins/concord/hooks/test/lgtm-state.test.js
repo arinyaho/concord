@@ -855,5 +855,5 @@ test('self-feeding uses the latest earlier round on the head ancestry and matche
   assert.strictEqual(check(':(top)b.md', 4, 4).selfFeeding, false);
   assert.strictEqual(check('*.md', 4, 4).selfFeeding, false);
   const cli = execFileSync('node', [CLI, 'self-feeding', '221', third, 'b.md', '4', '4'], { cwd: repo, encoding: 'utf8', env: { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir } });
-  assert.strictEqual(JSON.parse(cli).selfFeeding, false);
+  assert.deepStrictEqual(JSON.parse(cli), { selfFeeding: true, previousFixHead: second });
 });
