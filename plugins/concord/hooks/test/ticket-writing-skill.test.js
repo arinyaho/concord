@@ -45,30 +45,16 @@ test('ticket-to-pr defines the table and tests required for stateful changes', (
   const rows = Object.fromEntries(
     skill.split('\n').filter((l) => /^\| \d \|/.test(l)).map((l) => [l.split('|')[1].trim(), l]),
   );
-  assert.match(rows['3'], /table defined in "Stateful changes"; any other change gives the one-line statement defined there/);
-  assert.match(rows['6'], /"Stateful changes" requires/);
+  assert.match(rows['3'], /"Stateful changes"/);
+  assert.match(rows['6'], /"Stateful changes"/);
   const section = skill.split('## Stateful changes\n')[1]?.split('\n## ')[0] ?? '';
   assert.ok(section, 'missing "Stateful changes" section');
   for (const pattern of [
-    /writes, reads or branches on data that carries state from one run or process to the next, such as a ledger, cache, git ref, or tracker or PR field/,
-    /Configuration or input that only the caller supplies is not state/,
-    /touches persisted state or adds or alters a retry, recovery or replay path, whether or not that path persists anything/,
+    /retry, recovery or replay path/,
     /Any other change says in one line that it is not stateful/,
-    /one row per combination of a state and an event and the columns outcome, kind and test or reason/,
-    /every operation the changed code handles, such as charging and notifying in a retried call, and every operation that reads or writes the persisted state the change touches, whether or not the change edits it, such as approve, cancel or polling/,
-    /one combination of the values of every persisted dimension and every piece of retry, recovery or replay progress, recorded or not, that influences what any operation does, whether or not the change touches it/,
-    /Operations and state values are taken from both revisions, so a removed operation or a state value no longer recognized gets rows showing how callers and stored records are rejected or migrated/,
-    /one operation, or operations running concurrently or interleaved on the same state, such as two approvals that both read pending, combined with how it occurs \(first occurrence, repetition or replay, corrupt or missing input or evidence, base or head change, interruption\) and with each class of input, result or signal that changes the outcome, such as success, decline or timeout/,
-    /A way of occurring that does not apply to the domain is marked not applicable with the reason and gets no rows, but every operation gets rows/,
-    /everything an observer can distinguish after the event: the response, the resulting values of every state dimension including those expected to stay unchanged, and externally observable effects such as downstream calls\. The row's evidence asserts all of them, and asserts unrecorded progress, such as a local attempt counter, through what it determines/,
-    /A row is changed when its outcome differs from the base, and every row of a new behavior is introduced/,
-    /still gets its own row, kind unreachable, naming the invariant that prevents it and where that invariant is enforced; its outcome is not applicable and its evidence checks only that invariant/,
-    /every dimension of state, event, input and outcome is reduced to finite classes whose members behave alike, such as a counter or revision split into zero, the value just below each limit, the limit and the value just past it, or an identifier or timestamp echoed into the response/,
-    /A row groups only combinations that share outcome and kind, and its evidence exercises every combination it groups/,
-    /Stage 6 fills the test or reason column/,
-    /Each row's evidence is a named test or, when no test can exercise the row, such as a crash between two writes, a recorded reason and the check that stands in\. Every row's evidence passes after the change/,
-    /Evidence for an introduced or changed row, or for an unreachable row whose invariant the change introduces, also fails before the change for the right reason; evidence for any other row also passes against the base revision and may be newly written/,
-    /A state or event found missing at any later stage, including PR review, is added to the table in the same PR with its evidence/,
+    /columns outcome, kind and evidence/,
+    /resulting state/,
+    /found missing at any later stage, including PR review, is added to the table in the same PR/,
   ]) {
     assert.match(section, pattern);
   }

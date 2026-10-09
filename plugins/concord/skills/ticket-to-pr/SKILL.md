@@ -26,7 +26,7 @@ Record a discriminating outcome-level red against the unchanged combined system 
 | 3 | Design note, committed where the next reader finds it | The decision, the trade-off it costs, and the residual exposure are all written down. A stateful change also carries the table defined in "Stateful changes"; any other change gives the one-line statement defined there |
 | 4 | Review the design note | `/review-and-fix file:<path>` |
 | 5 | Plan | Each task ends in something runnable and independently rejectable |
-| 6 | Implement | Red test first, verified red for the right reason, and executing where CI will execute it. Each row of a stateful change's table has the test or recorded reason "Stateful changes" requires |
+| 6 | Implement | Red test first, verified red for the right reason, and executing where CI will execute it. Each row of a stateful change's table has the evidence "Stateful changes" requires |
 | 7 | Review the diff | `/review-and-fix <branch>`; its final DoD evidence may also satisfy stage 8 under the identity rule below |
 | 8 | Discriminating green | Reuse the final `review-and-fix` DoD only when it ran the same check against the exact final head, dependencies, and environment; otherwise run the check once. The combined outcome check remains a separate ticket gate for multi-repository work |
 | 9 | One PR per unit | Design, docs and code in the same repository PR; the repository's PR template followed; every document contradicted by the change corrected in it; the exact PR URL is read back from the tracker when that mutation is authorized; a delivery disposition is recorded for the exact PR head and base |
@@ -45,18 +45,18 @@ Stages 1, 3 and 5 have no single owner here — use whatever the repository alre
 
 ## Stateful changes
 
-A change touches persisted state when it writes, reads or branches on data that carries state from one run or process to the next, such as a ledger, cache, git ref, or tracker or PR field. Configuration or input that only the caller supplies is not state. A change is stateful when it touches persisted state or adds or alters a retry, recovery or replay path, whether or not that path persists anything. Any other change says in one line that it is not stateful.
+A change is stateful when it writes, reads or branches on data that outlives one run or process, such as a ledger, cache, git ref, or tracker or PR field, or when it adds or alters a retry, recovery or replay path. Input the caller supplies each time is not state. Any other change says in one line that it is not stateful.
 
-A stateful change carries a table in its design note with one row per combination of a state and an event and the columns outcome, kind and test or reason. Operations and state values are taken from both revisions, so a removed operation or a state value no longer recognized gets rows showing how callers and stored records are rejected or migrated.
+A stateful change carries a transition table in its design note: one row per state and event the change can affect, with the columns outcome, kind and evidence. The outcome names the resulting state and every external effect, including what stays unchanged. The kind is introduced, changed or unchanged against the base revision. Events include the first occurrence, a repeat or replay, two operations interleaved on the same state, and a state value or operation the change removes. Combinations an invariant rules out go in one line under the table naming the invariant, not in rows.
 
-- **Operation**: every operation the changed code handles, such as charging and notifying in a retried call, and every operation that reads or writes the persisted state the change touches, whether or not the change edits it, such as approve, cancel or polling.
-- **State**: one combination of the values of every persisted dimension and every piece of retry, recovery or replay progress, recorded or not, that influences what any operation does, whether or not the change touches it, such as status, attempt count and lock together.
-- **Event**: one operation, or operations running concurrently or interleaved on the same state, such as two approvals that both read pending, combined with how it occurs (first occurrence, repetition or replay, corrupt or missing input or evidence, base or head change, interruption) and with each class of input, result or signal that changes the outcome, such as success, decline or timeout. A way of occurring that does not apply to the domain is marked not applicable with the reason and gets no rows, but every operation gets rows.
-- **Outcome**: everything an observer can distinguish after the event: the response, the resulting values of every state dimension including those expected to stay unchanged, and externally observable effects such as downstream calls. The row's evidence asserts all of them, and asserts unrecorded progress, such as a local attempt counter, through what it determines.
-- **Kind**: introduced, changed, unchanged or unreachable, judged against the base revision. A row is changed when its outcome differs from the base, and every row of a new behavior is introduced. A combination that cannot occur still gets its own row, kind unreachable, naming the invariant that prevents it and where that invariant is enforced; its outcome is not applicable and its evidence checks only that invariant.
-- **Classes**: every dimension of state, event, input and outcome is reduced to finite classes whose members behave alike, such as a counter or revision split into zero, the value just below each limit, the limit and the value just past it, or an identifier or timestamp echoed into the response. A row groups only combinations that share outcome and kind, and its evidence exercises every combination it groups.
+| State | Event | Outcome | Kind | Evidence |
+|---|---|---|---|---|
+| pending | approve, first time | approved; notifier called once | changed | `approve_pending_notifies_once` |
+| approved | approve replayed | approved; no second notification | introduced | `approve_replay_is_noop` |
+| pending | two approvals both read pending | one wins; the other is rejected; notifier called once | introduced | `concurrent_approve_single_winner` |
+| legacy `queued` record | any read | rejected with a migration error | introduced | `queued_record_rejected` |
 
-Stage 6 fills the test or reason column. Each row's evidence is a named test or, when no test can exercise the row, such as a crash between two writes, a recorded reason and the check that stands in. Every row's evidence passes after the change. Evidence for an introduced or changed row, or for an unreachable row whose invariant the change introduces, also fails before the change for the right reason; evidence for any other row also passes against the base revision and may be newly written. A state or event found missing at any later stage, including PR review, is added to the table in the same PR with its evidence.
+Stage 6 fills the evidence column. An introduced or changed row has a test that fails before the change for the right reason and passes after it. An unchanged row cites an existing test or says "untested, because" with the reason. A state or event found missing at any later stage, including PR review, is added to the table in the same PR with its evidence.
 
 ## Delegation
 
