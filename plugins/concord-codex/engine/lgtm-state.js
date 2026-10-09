@@ -666,27 +666,39 @@ function recordDelivery(input) {
 // added lines that overlap [start, end] of `file`. Uses only the path and line numbers, never the review text.
 function selfFeeding({ repoRoot, stateDir, pr, headSha, file, start, end }) {
   const key = validate({ pr, headSha });
-  if (typeof file !== 'string' || !file || file.startsWith('-') || file.includes('\0') || path.isAbsolute(file) || file.split(/[\\/]/).includes('..')) throw new Error('review-lgtm-state: file must be a relative path inside the repository');
+  if (typeof file !== 'string' || !file || file.includes('\0') || path.isAbsolute(file) || file.split(/[\\/]/).includes('..')) throw new Error('review-lgtm-state: file must be a relative path inside the repository');
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start) throw new Error('review-lgtm-state: line range must be positive integers with start <= end');
   let names;
   try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') names = []; else throw error; }
   const git = crossPlatformCommand('git', repoRoot);
-  const run = (args) => execFileSync(git, crossPlatformArgs(['--literal-pathspecs', ...args], needsDoubleEscape('git', repoRoot)), crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
-  const isAncestor = (sha) => { try { run(['merge-base', '--is-ancestor', sha, key.headSha]); return true; } catch (_) { return false; } };
-  const previous = names.filter((name) => name.startsWith(`pr-${key.pr}.fix-round-slot-`) && name.endsWith('.json'))
-    .map((name) => readMarker(path.join(stateDir, name)))
-    .filter((marker) => marker && FULL_SHA.test(String(marker.headSha)) && marker.headSha !== key.headSha)
-    .sort((a, b) => (b.claimedAtMs || 0) - (a.claimedAtMs || 0))
+  const run = (args) => execFileSync(git, crossPlatformArgs(args, needsDoubleEscape('git', repoRoot)), crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+  // Only exit status 1 means "not an ancestor"; any other failure (missing object, bad repository) surfaces.
+  const isAncestor = (sha) => {
+    try { run(['merge-base', '--is-ancestor', sha, key.headSha]); return true; } catch (error) { if (error.status === 1) return false; throw error; }
+  };
+  const previous = names.map((name) => ({ slot: /^pr-(\d+)\.fix-round-slot-(\d+)\.json$/.exec(name), name }))
+    .filter(({ slot }) => slot && Number(slot[1]) === key.pr)
+    .map(({ slot, name }) => ({ round: Number(slot[2]), marker: readMarker(path.join(stateDir, name)) }))
+    .filter(({ marker }) => marker && FULL_SHA.test(String(marker.headSha)) && marker.headSha !== key.headSha)
+    .sort((a, b) => b.round - a.round)
+    .map(({ marker }) => marker)
     .find((marker) => isAncestor(marker.headSha));
   if (!previous) return { selfFeeding: false, previousFixHead: null };
-  const diff = run(['diff', '-U0', '--no-color', '--no-ext-diff', '--no-textconv', `${previous.headSha}..${key.headSha}`, '--', file]);
-  const overlaps = diff.split('\n').some((line) => {
-    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
-    if (!hunk) return false;
-    const first = Number(hunk[1]);
-    const length = hunk[2] === undefined ? 1 : Number(hunk[2]);
-    return length > 0 && first <= end && first + length - 1 >= start;
-  });
+  // The whole range is diffed with rename detection and matched by destination path, so the file never reaches git as an argument.
+  const diff = run(['-c', 'core.quotepath=off', 'diff', '-U0', '-M', '--inter-hunk-context=0', '--no-color', '--no-ext-diff', '--no-textconv', `${previous.headSha}..${key.headSha}`]);
+  let inFile = false;
+  let overlaps = false;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('diff --git ')) inFile = false;
+    else if (line.startsWith('+++ ')) inFile = line === `+++ b/${file}`;
+    else if (inFile) {
+      const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
+      if (!hunk) continue;
+      const first = Number(hunk[1]);
+      const length = hunk[2] === undefined ? 1 : Number(hunk[2]);
+      if (length > 0 && first <= end && first + length - 1 >= start) overlaps = true;
+    }
+  }
   return { selfFeeding: overlaps, previousFixHead: previous.headSha };
 }
 

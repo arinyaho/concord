@@ -857,3 +857,80 @@ test('self-feeding uses the latest earlier round on the head ancestry and matche
   const cli = execFileSync('node', [CLI, 'self-feeding', '221', third, 'b.md', '4', '4'], { cwd: repo, encoding: 'utf8', env: { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir } });
   assert.deepStrictEqual(JSON.parse(cli), { selfFeeding: true, previousFixHead: second });
 });
+
+function selfFeedingRepo(prefix) {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  git(repo, 'init', '-q');
+  git(repo, 'config', 'user.email', 't@example.com');
+  git(repo, 'config', 'user.name', 't');
+  return {
+    repo,
+    write: (file, text) => fs.writeFileSync(path.join(repo, file), text),
+    commit: (message) => { git(repo, 'add', '-A'); git(repo, 'commit', '-qm', message); return git(repo, 'rev-parse', 'HEAD'); },
+  };
+}
+
+function claimFixHead(stateDir, headSha, now) {
+  lgtmState.recordReview({ stateDir, pr: 221, headSha, now, observation: observation({ reviewId: String(now), commitId: headSha }) });
+  assert.strictEqual(lgtmState.claimFixRound({ stateDir, pr: 221, headSha, now, owner: `w-${now}` }).claimed, true);
+}
+
+test('self-feeding ignores unchanged content of a renamed file', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-rename-');
+  write('old.md', 'one\ntwo\nthree\nfour\n');
+  const reviewed = commit('base');
+  git(repo, 'mv', 'old.md', 'new.md');
+  const head = commit('rename only');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  const check = (start, end) => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'new.md', start, end });
+  assert.strictEqual(check(2, 3).selfFeeding, false);
+});
+
+test('self-feeding accepts a tracked path that begins with a dash', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-dash-');
+  write('-notes.md', '1\n2\n');
+  const reviewed = commit('base');
+  write('-notes.md', '1\n2\n3\n');
+  const head = commit('fix');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  assert.strictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: '-notes.md', start: 3, end: 3 }).selfFeeding, true);
+});
+
+test('self-feeding reports only added lines whatever diff context the repository configures', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-hunk-');
+  write('a.md', Array.from({ length: 30 }, (_, i) => `l${i + 1}`).join('\n') + '\n');
+  const reviewed = commit('base');
+  git(repo, 'config', 'diff.interHunkContext', '20');
+  write('a.md', Array.from({ length: 30 }, (_, i) => (i === 4 || i === 14 ? `changed${i + 1}` : `l${i + 1}`)).join('\n') + '\n');
+  const head = commit('two distant edits');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  const check = (start, end) => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'a.md', start, end }).selfFeeding;
+  assert.strictEqual(check(5, 5), true);
+  assert.strictEqual(check(10, 10), false);
+});
+
+test('self-feeding picks the latest fix round by slot order, not by timestamp', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-slot-');
+  write('a.md', '1\n');
+  const first = commit('base');
+  write('a.md', '1\n2\n');
+  const second = commit('fix one');
+  write('a.md', '1\n2\n3\n');
+  const head = commit('fix two');
+  const stateDir = temp();
+  claimFixHead(stateDir, first, 5000);
+  claimFixHead(stateDir, second, 5000);
+  assert.deepStrictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'a.md', start: 2, end: 2 }), { selfFeeding: false, previousFixHead: second });
+});
+
+test('self-feeding surfaces git failures instead of reporting not self-feeding', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-missing-');
+  write('a.md', '1\n');
+  const head = commit('base');
+  const stateDir = temp();
+  claimFixHead(stateDir, 'b'.repeat(40), 1000);
+  assert.throws(() => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'a.md', start: 1, end: 1 }));
+});
