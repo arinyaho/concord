@@ -60,6 +60,23 @@ test('ticket-to-pr defines the table and tests required for stateful changes', (
   }
 });
 
+test('ticket-to-pr delegates by the kind of work, not by importance', () => {
+  const skill = read(CLAUDE_TICKET_TO_PR);
+  assert.equal(read(CODEX_TICKET_TO_PR), skill);
+  assert.equal(read(path.join(REPO, 'plugins/concord-copilot/skills/ticket-to-pr/SKILL.md')), skill);
+  const section = skill.split('## Delegation\n')[1]?.split('\n## ')[0] ?? '';
+  assert.ok(section, 'missing "Delegation" section');
+  assert.doesNotMatch(section, /material/);
+  for (const pattern of [
+    /decides what something should be/,
+    /applies a decision already made/,
+    /separate deep-capability reviewer/,
+    /excluding the responsible agent's reasoning/,
+  ]) {
+    assert.match(section, pattern);
+  }
+});
+
 test('Claude and Codex source packages ship the same initiative-to-prs skill', () => {
   for (const file of INITIATIVE_TO_PRS_FILES) {
     const claude = path.join(REPO, 'plugins/concord/skills/initiative-to-prs', file);
