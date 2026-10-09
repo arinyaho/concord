@@ -2726,6 +2726,28 @@ test('reviewOnly fails when a reviewer left the checkout modified, instead of re
   assert.strictEqual(reported, false, 'no findings are reported from a modified tree');
 });
 
+for (const flag of ['--assume-unchanged', '--skip-worktree']) test(`reviewOnly rejects a reviewer edit hidden from git status by ${flag}`, async () => {
+  const repo = cleanRepo();
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'original\n');
+  execFileSync('git', ['add', 'a.txt'], { cwd: repo });
+  execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'file'], { cwd: repo });
+  const h = harness({ gateApplied: false });
+  let reported = false;
+  const cli = (args) => (args[0] === 'findings' ? (reported = true, { findings: [] }) : h.cli(args));
+  const spawn = (input) => {
+    if (input.role === 'correctness') {
+      execFileSync('git', ['update-index', flag, 'a.txt'], { cwd: repo });
+      fs.writeFileSync(path.join(repo, 'a.txt'), 'hidden reviewer edit\n');
+    }
+    return h.spawn(input);
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/hidden-edit', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'claude', noBroad: true }),
+    /reviewer left the checkout modified/,
+  );
+  assert.strictEqual(reported, false, 'no findings are reported from a modified tree');
+});
+
 test('reviewOnly rejects a finder edit before a verifier can restore the checkout', async () => {
   const repo = cleanRepo();
   fs.writeFileSync(path.join(repo, 'a.txt'), 'original\n');

@@ -6,7 +6,7 @@
 const { execFileSync, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const { canonicalPath, runPath, openInitiativeRun, pairRefusal, resolveBaseCommit, recordDisposition, normalizeDisposition, consumeDispositionDelivery, terminalTarget, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
-const { gitHeadSha, gitDirty, fileTarget } = require('./target');
+const { gitHeadSha, gitDirty, fileTarget, trackedCheckoutInventory, changedTrackedPath } = require('./target');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -916,7 +916,12 @@ async function runRounds(options) {
       ...(started.gateApplied ? ['gate'] : []), 'verify',
       ...(started.gateApplied && started.gateMode !== 'design-conformance' ? ['gate-verify'] : []),
     ] : [];
-    const checkReviewCheckout = () => {
+    // The index can hide an edit from git status, so a git target also compares
+    // an index-independent inventory of its tracked paths, taken before any
+    // reviewer starts.
+    const trackedBefore = reviewOnly && started.targetType !== 'file'
+      ? trackedCheckoutInventory(canonicalRepoRoot, started.head || gitHeadSha(canonicalRepoRoot)) : null;
+    const checkReviewCheckout = (compareContent = false) => {
       if (!reviewOnly) return;
       if (started.targetType === 'file') {
         const current = options.targetIdentity ? options.targetIdentity(ref, initialBase, canonicalRepoRoot)
@@ -925,6 +930,12 @@ async function runRounds(options) {
       } else {
         if (gitDirty(canonicalRepoRoot)) throw new Error('harness-failure: a reviewer left the checkout modified; review-only reports only on the commit as it was');
         if (started.head && gitHeadSha(canonicalRepoRoot) !== started.head) throw new Error('harness-failure: a reviewer moved HEAD; review-only reports only on the commit it was started on');
+        if (compareContent) {
+          let changed;
+          try { changed = changedTrackedPath(trackedBefore, trackedCheckoutInventory(canonicalRepoRoot, gitHeadSha(canonicalRepoRoot))); }
+          catch (_) { changed = true; }
+          if (changed) throw new Error('harness-failure: a reviewer left the checkout modified; review-only reports only on the commit as it was');
+        }
       }
     };
     const roleArtifacts = new Map(reviewRoles.map((role) => [role, artifactDestinationFromPrompt(reviewerPrompt(role, context), context.stateDir)]));
@@ -1036,7 +1047,7 @@ async function runRounds(options) {
         ...(options.reviewCodexHome && provider === 'codex' ? { env: { ...process.env, CODEX_HOME: options.reviewCodexHome } } : {}),
         ...(telemetrySlot ? { telemetrySlot } : {}),
       });
-      checkReviewCheckout();
+      checkReviewCheckout(true);
       checkProtected(false, ownOutput);
       if (reviewOnly && ownOutput) fileHash(ownOutput);
       return result;
@@ -1148,7 +1159,7 @@ async function runRounds(options) {
       checkProtected();
       // The reviewers can write to the checkout. Findings describe the commit,
       // so a tree a reviewer modified is not one to report on.
-      checkReviewCheckout();
+      checkReviewCheckout(true);
       const reported = await cli(['findings', ref]);
       return { decision: 'review-only', round: currentRound, findings: reported.findings };
     }

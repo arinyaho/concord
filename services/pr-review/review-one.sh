@@ -51,7 +51,7 @@ ATTEMPT_ID="${ATTEMPT_ID,,}"
 # persistent runner account's Git configuration is never written.
 git_auth() {
   GIT_CONFIG_COUNT=2 \
-  GIT_CONFIG_KEY_0=credential.https://github.com.helper GIT_CONFIG_VALUE_0= \
+  GIT_CONFIG_KEY_0=credential.https://github.com.helper GIT_CONFIG_VALUE_0='' \
   GIT_CONFIG_KEY_1=credential.https://github.com.helper GIT_CONFIG_VALUE_1='!gh auth git-credential' \
   "$@"
 }
