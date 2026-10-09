@@ -26,7 +26,7 @@ commits(last:1){nodes{commit{oid statusCheckRollup{id contexts(first:100){pageIn
 // Follow-up pages for a review with more than 100 inline comments and a check rollup with more than 100 contexts.
 const COMMENTS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on PullRequestReview{comments(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${COMMENT_FIELDS}}}}}}`;
 const CONTEXTS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on StatusCheckRollup{contexts(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${CONTEXT_FIELDS}}}}}}`;
-const REACTIONS_QUERY = 'query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){reactions(first:100,content:THUMBS_UP){nodes{content createdAt user{login}}}}}}';
+const REACTIONS_QUERY = 'query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){headRefOid reactions(first:100,content:THUMBS_UP){nodes{content createdAt user{login}}}}}}';
 
 // Reactions carry the bot account's login with a [bot] suffix; review and comment authors do not.
 function loginOf(login) { return typeof login === 'string' ? login.replace(/\[bot\]$/, '') : login; }
@@ -164,7 +164,11 @@ async function complete(analysis, { pr, graphql, reviewers = DEFAULT_REVIEWERS }
   const packet = { untrusted, pr: Number(pr), ...rest, awaitingReaction: false };
   const summary = packet.summary;
   if (!summary || summary.status !== 'completed' || !summary.completedAt) return packet;
-  const nodes = pullRequestOf(await graphql(REACTIONS_QUERY, { pr })).reactions.nodes
+  const reactions = pullRequestOf(await graphql(REACTIONS_QUERY, { pr }));
+  // The head may have moved while the reaction was read: a packet for a head that is no longer live is stale.
+  const live = reactions.headRefOid.toLowerCase();
+  if (live !== packet.head) return { stale: true, head: packet.head, liveHead: live };
+  const nodes = reactions.reactions.nodes
     .filter((node) => node.content === 'THUMBS_UP' && node.user && loginOf(node.user.login) === CODEX_REVIEWER)
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   if (nodes.length > 0) {
@@ -212,8 +216,8 @@ function formatPacketLine(packet) { return JSON.stringify(packet); }
 async function watch({ pr, graphql, state, now = Date.now, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), intervalMs = DEFAULT_INTERVAL_MS, write, reviewers = DEFAULT_REVIEWERS }) {
   if (intervalMs < MIN_INTERVAL_MS) throw new Error(`review-collector: the watch interval must be at least ${MIN_INTERVAL_MS} ms`);
   reviewers = reviewers.map(loginOf);
-  const printed = new Set();
-  let awaitingReaction = false;
+  const printed = new Map(); // head -> the reviews its last packet covered
+  const awaitingReaction = new Map(); // head -> a clean result still waits for its reaction
   const windowed = new Set();
   const since = new Map();
   for (;;) {
@@ -223,13 +227,17 @@ async function watch({ pr, graphql, state, now = Date.now, sleep = (ms) => new P
     const analysis = analyze(response, head, reviewers);
     if (analysis.activity && !windowed.has(head)) { state.openWindow(head); windowed.add(head); }
     const status = state.status(head);
-    if (status.delivery) { write(JSON.stringify({ event: 'delivery', pr: Number(pr), head, classification: status.delivery.classification })); return 'delivery'; }
-    if (now() >= (status.deadlineMs ?? since.get(head) + WINDOW_SECONDS * 1000)) { write(JSON.stringify({ event: 'deadline', pr: Number(pr), head, pending: analysis.model.pending, awaitingReaction })); return 'deadline'; }
-    if (analysis.model.terminal && !printed.has(head)) {
+    if (status.delivery && status.delivery.current === true) { write(JSON.stringify({ event: 'delivery', pr: Number(pr), head, classification: status.delivery.classification })); return 'delivery'; }
+    // The deadline bounds the wait for a first packet; once one was printed the watch runs on to catch later reviews until a delivery is recorded.
+    if (!printed.has(head) && now() >= (status.deadlineMs ?? since.get(head) + WINDOW_SECONDS * 1000)) { write(JSON.stringify({ event: 'deadline', pr: Number(pr), head, pending: analysis.model.pending, awaitingReaction: awaitingReaction.get(head) === true })); return 'deadline'; }
+    const covered = analysis.model.observations.map((o) => o.reviewId).join(',');
+    if (analysis.model.terminal && printed.get(head) !== covered) {
       // A clean Codex result is final only with its reaction, which arrives after the summary: keep reading until it does or the deadline passes.
       const packet = await complete(analysis, { pr, graphql, reviewers });
-      awaitingReaction = packet.awaitingReaction;
-      if (!awaitingReaction) { printed.add(head); write(formatPacketLine({ event: 'packet', ...packet })); }
+      if (!packet.stale) {
+        awaitingReaction.set(head, packet.awaitingReaction);
+        if (!packet.awaitingReaction) { printed.set(head, covered); write(formatPacketLine({ event: 'packet', ...packet })); }
+      }
     }
     await sleep(intervalMs);
   }
