@@ -227,3 +227,19 @@ test('the Codex clean result needs Codex\'s own reaction, not another configured
   assert.strictEqual(packet.reaction, null);
   assert.strictEqual(packet.observations.find((o) => o.reviewer === CODEX).lgtm, false);
 });
+
+test('a review whose commit is gone (null after a force-push) neither aborts collection nor hides its comments on the head', async () => {
+  const data = fixture();
+  const reviews = pullRequest(data).reviews.nodes;
+  reviews.find((r) => r.databaseId === 5470807189).commit = null;
+  const orphan = JSON.parse(JSON.stringify(reviews.find((r) => r.databaseId === 5470929926)));
+  orphan.databaseId = 5470999999;
+  orphan.commit = null;
+  orphan.comments.nodes.forEach((c) => { c.commit = null; });
+  reviews.push(orphan);
+  const packet = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble({ main: () => data }) });
+  assert.deepStrictEqual(packet.observations.map((o) => o.reviewId), ['5470732672', '5470807189', '5470929926']);
+  const attributed = packet.observations.find((o) => o.reviewId === '5470807189');
+  assert.strictEqual(attributed.reviewCommitId, null);
+  assert.strictEqual(attributed.findings.length, 3);
+});

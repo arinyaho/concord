@@ -96,7 +96,7 @@ function analyze(response, head, reviewers = DEFAULT_REVIEWERS) {
     const reviewer = review.author && review.author.login;
     if (!reviewers.includes(reviewer) || review.state === 'PENDING') continue;
     const inline = review.comments.nodes;
-    const reviewCommit = review.commit.oid.toLowerCase();
+    const reviewCommit = review.commit ? review.commit.oid.toLowerCase() : null; // null once a force-push drops the commit
     if (reviewCommit !== head && !inline.some((c) => c.commit && c.commit.oid.toLowerCase() === head)) continue;
     // A review on an older commit keeps only its comments on this head; the others belong to the older head.
     const own = inline.filter((c) => reviewCommit === head || (c.commit && c.commit.oid.toLowerCase() === head));
