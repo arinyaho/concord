@@ -92,14 +92,25 @@ test('touchedVersionFiles keeps only the files the release script writes', async
   assert.deepEqual(touchedVersionFiles(['plugins/concord/package.json', '.claude-plugin/marketplace.json']), []);
 });
 
-test('push makes one bot bump per merge, serializes stale clones, skips its own commit, and retries a lost race', () => {
-  const { tmp, remote } = makeOrigin();
-  const first = clone(remote, path.join(tmp, 'first'));
-  const stale = clone(remote, path.join(tmp, 'stale'));
+function merge(remote, tmp, name) {
+  const dir = clone(remote, path.join(tmp, `merge-${name}`));
+  git(dir, 'commit', '-q', '--allow-empty', '-m', `merge ${name}`);
+  git(dir, 'push', '-q', 'origin', 'main');
+}
 
-  let result = runBump(first, 'push', 'main');
+function botVersions(tmp, remote) {
+  const view = clone(remote, path.join(tmp, `bots-${Date.now()}-${Math.random()}`));
+  return git(view, 'log', '--reverse', '--format=%ae %s').split('\n')
+    .filter((line) => line.startsWith(`${BOT_EMAIL} `))
+    .map((line) => line.replace(`${BOT_EMAIL} chore(release): bump Concord to `, ''));
+}
+
+test('push bumps once for the first merge and is a no-op while the tip is a bump', () => {
+  const { tmp, remote } = makeOrigin();
+  const run = clone(remote, path.join(tmp, 'run'));
+  let result = runBump(run, 'push', 'main');
   assert.equal(result.status, 0, result.stderr);
-  let log = originLog(tmp, remote);
+  const log = originLog(tmp, remote);
   assert.equal(log.count, 2);
   assert.equal(log.subject, 'chore(release): bump Concord to 0.9.0-beta.10');
   assert.equal(log.version, '0.9.0-beta.10');
@@ -107,43 +118,64 @@ test('push makes one bot bump per merge, serializes stale clones, skips its own 
   assert.equal(log.author, BOT_EMAIL);
   assert.deepEqual(log.files, RELEASE_FILES);
 
-  // A run whose checkout predates the previous bump still yields the next consecutive version.
-  result = runBump(stale, 'push', 'main');
+  result = runBump(clone(remote, path.join(tmp, 'again')), 'push', 'main');
   assert.equal(result.status, 0, result.stderr);
-  log = originLog(tmp, remote);
-  assert.equal(log.count, 3);
-  assert.equal(log.version, '0.9.0-beta.11');
+  assert.equal(originLog(tmp, remote).count, 2);
+});
+
+test('push gives three quick merges three consecutive bumps even though only one run survives', () => {
+  const { tmp, remote } = makeOrigin();
+  runBump(clone(remote, path.join(tmp, 'seed-run')), 'push', 'main');
+  for (const name of ['a', 'b', 'c']) merge(remote, tmp, name);
+  const result = runBump(clone(remote, path.join(tmp, 'survivor')), 'push', 'main');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(botVersions(tmp, remote), ['0.9.0-beta.10', '0.9.0-beta.11', '0.9.0-beta.12', '0.9.0-beta.13']);
+  const log = originLog(tmp, remote);
+  assert.equal(log.version, '0.9.0-beta.13');
   assert.deepEqual(log.files, RELEASE_FILES);
+});
 
-  // A run triggered by the bot's own bump commit does nothing.
-  const fresh = clone(remote, path.join(tmp, 'fresh'));
-  result = runBump(fresh, 'push', 'main');
+test('push counts only the merges after the last bump when a bump landed between merges', () => {
+  const { tmp, remote } = makeOrigin();
+  runBump(clone(remote, path.join(tmp, 'seed-run')), 'push', 'main');
+  merge(remote, tmp, 'a');
+  const early = clone(remote, path.join(tmp, 'early'));
+  runBump(early, 'push', 'main');
+  merge(remote, tmp, 'b');
+  merge(remote, tmp, 'c');
+  const result = runBump(early, 'push', 'main');
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(originLog(tmp, remote).count, 3);
+  assert.deepEqual(botVersions(tmp, remote), ['0.9.0-beta.10', '0.9.0-beta.11', '0.9.0-beta.12', '0.9.0-beta.13']);
+});
 
-  // Lost race: another clone pushes a bump after this run fetched and before its push lands.
-  git(fresh, 'commit', '-q', '--allow-empty', '-m', 'feature merged');
-  git(fresh, 'push', '-q', 'origin', 'main');
+test('rerunning a finished run at its original checkout creates no commit', () => {
+  const { tmp, remote } = makeOrigin();
+  const original = clone(remote, path.join(tmp, 'original'));
+  runBump(clone(remote, path.join(tmp, 'first-run')), 'push', 'main');
+  assert.equal(originLog(tmp, remote).count, 2);
+  const result = runBump(original, 'push', 'main');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(originLog(tmp, remote).count, 2);
+  assert.deepEqual(botVersions(tmp, remote), ['0.9.0-beta.10']);
+});
+
+test('push retries a lost race and ends with the racer\'s bump only', () => {
+  const { tmp, remote } = makeOrigin();
+  runBump(clone(remote, path.join(tmp, 'seed-run')), 'push', 'main');
+  merge(remote, tmp, 'feature');
   const racer = clone(remote, path.join(tmp, 'racer'));
   const racing = clone(remote, path.join(tmp, 'racing'));
   const marker = path.join(tmp, 'raced');
   const hook = path.join(racing, '.git/hooks/pre-push');
   fs.writeFileSync(hook, `#!/bin/sh\nif [ ! -e '${marker}' ]; then\n  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX\n  touch '${marker}'\n  cd '${racer}' && '${process.execPath}' scripts/release-bump.mjs push main >/dev/null 2>&1 || exit 2\nfi\nexit 0\n`);
   fs.chmodSync(hook, 0o755);
-  result = runBump(racing, 'push', 'main');
+  const result = runBump(racing, 'push', 'main');
   assert.equal(result.status, 0, result.stderr);
   assert.ok(fs.existsSync(marker), 'the race hook did not run');
-  const view = clone(remote, path.join(tmp, 'final'));
-  const subjects = git(view, 'log', '-3', '--format=%s').split('\n');
-  assert.deepEqual(subjects, [
-    'chore(release): bump Concord to 0.9.0-beta.13',
-    'chore(release): bump Concord to 0.9.0-beta.12',
-    'feature merged',
-  ]);
-  assert.equal(fs.readFileSync(path.join(view, 'VERSION'), 'utf8').trim(), '0.9.0-beta.13');
+  assert.deepEqual(botVersions(tmp, remote), ['0.9.0-beta.10', '0.9.0-beta.11']);
 });
 
-test('guard fails a branch that edits a version file and passes one that does not', () => {
+test('guard fails a head that edits a version file and passes one that does not', () => {
   const { tmp, remote } = makeOrigin();
   const repo = clone(remote, path.join(tmp, 'guard'));
 
@@ -151,13 +183,33 @@ test('guard fails a branch that edits a version file and passes one that does no
   fs.writeFileSync(path.join(repo, 'README.md'), 'docs\n');
   git(repo, 'add', 'README.md');
   git(repo, 'commit', '-q', '-m', 'docs');
-  let result = runBump(repo, 'guard', 'origin/main');
+  let result = runBump(repo, 'guard', 'origin/main', 'docs-only');
   assert.equal(result.status, 0, result.stderr);
 
   git(repo, 'checkout', '-q', '-b', 'edits-version', 'origin/main');
   fs.writeFileSync(path.join(repo, 'VERSION'), '0.9.0-beta.10\n');
   git(repo, 'commit', '-q', '-am', 'hand bump');
-  result = runBump(repo, 'guard', 'origin/main');
+  result = runBump(repo, 'guard', 'origin/main', 'edits-version');
   assert.equal(result.status, 1);
+  assert.match(result.stdout + result.stderr, /VERSION/);
+});
+
+test('guard run from the base code fails a head that rewrites the guard together with VERSION', () => {
+  const { tmp, remote } = makeOrigin();
+  const pr = clone(remote, path.join(tmp, 'pr'));
+  const script = path.join(pr, 'scripts/release-bump.mjs');
+  fs.writeFileSync(script, fs.readFileSync(script, 'utf8').replace(/export const VERSION_FILES = \[[^\]]*\];/, 'export const VERSION_FILES = [];'));
+  fs.writeFileSync(path.join(pr, 'VERSION'), '0.9.0-beta.10\n');
+  git(pr, 'commit', '-q', '-am', 'disable the guard and hand bump');
+  git(pr, 'push', '-q', 'origin', 'HEAD:refs/pull/1/head');
+
+  // The checkout the old workflow ran from: the pull request's own script approves itself.
+  assert.equal(runBump(pr, 'guard', 'origin/main', 'HEAD').status, 0);
+
+  // The trusted checkout holds the base code and fetches the head only as data.
+  const trusted = clone(remote, path.join(tmp, 'trusted'));
+  git(trusted, 'fetch', '-q', '--no-tags', 'origin', 'refs/pull/1/head:refs/pr/head');
+  const result = runBump(trusted, 'guard', 'origin/main', 'refs/pr/head');
+  assert.equal(result.status, 1, result.stderr);
   assert.match(result.stdout + result.stderr, /VERSION/);
 });
