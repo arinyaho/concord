@@ -222,15 +222,17 @@ function mergeReady({ stateDir, pr, headSha, evidence }) {
   const live = lower(evidence.headSha);
   if (live !== key.headSha) reasons.push(`head-mismatch:${live}`);
   for (const check of checks) if (text(check?.conclusion) !== 'success') reasons.push(`check:${text(check?.name)}:${text(check?.conclusion)}`);
-  if (reviewers.length === 0 && expected.length === 0) reasons.push('no-automated-review');
-  for (const name of expected) if (!reviewers.some((reviewer) => text(reviewer.reviewer) === name)) reasons.push(`reviewer-missing:${name}`);
+  const delivery = deliveryStatus({ stateDir, ...key });
+  // A declared-unavailable reviewer covers the configured ones; the agent merges only at the user's explicit request.
+  const declared = delivery?.classification === 'mergeable-without-review';
+  if (declared || (reviewers.length === 0 && expected.length === 0)) reasons.push('no-automated-review');
+  for (const name of declared ? [] : expected) if (!reviewers.some((reviewer) => text(reviewer.reviewer) === name)) reasons.push(`reviewer-missing:${name}`);
   for (const reviewer of reviewers) {
     const name = text(reviewer?.reviewer);
     if (text(reviewer?.failure)) reasons.push(`reviewer-failure:${name}:${text(reviewer.failure)}`);
     else if (reviewer?.terminal !== true) reasons.push(`reviewer-pending:${name}`);
     else if (reviewer.lgtm !== true) reasons.push(`no-lgtm:${name}`);
   }
-  const delivery = deliveryStatus({ stateDir, ...key });
   if (!delivery) reasons.push('no-delivery');
   else if (!delivery.current) reasons.push('delivery-stale');
   else if (delivery.classification === 'blocked') reasons.push('delivery-blocked');
@@ -564,6 +566,8 @@ function validatePacket(packet) {
     if (!Array.isArray(packet[field])) throw new Error(`review-lgtm-state: delivery ${field} must be an array`);
   }
   if (typeof packet.reviewsTerminal !== 'boolean') throw new Error('review-lgtm-state: delivery reviewsTerminal must be a boolean');
+  if (packet.reviewerUnavailable != null && typeof packet.reviewerUnavailable !== 'boolean') throw new Error('review-lgtm-state: delivery reviewerUnavailable must be a boolean');
+  if (packet.reviewerUnavailable === true && packet.reviewIds.length > 0) throw new Error('review-lgtm-state: delivery reviewerUnavailable needs empty reviewIds; a recorded review means the reviewer is available');
   const unique = (entries, field, label) => {
     const seen = new Set();
     for (const entry of entries) {
@@ -659,7 +663,7 @@ function classifyDelivery(raw, minorIds = []) {
   }
 
   const residual = input.findings.some((finding) => finding.disposition !== 'fixed');
-  const classification = reasons.length > 0 ? 'blocked' : residual ? 'mergeable-with-follow-ups' : 'mergeable-clean';
+  const classification = reasons.length > 0 ? 'blocked' : input.reviewerUnavailable ? 'mergeable-without-review' : residual ? 'mergeable-with-follow-ups' : 'mergeable-clean';
   const findings = input.findings.map((finding) => ({
     id: finding.id, url: finding.url, local: finding.local, disposition: finding.disposition || null,
     rootCause: finding.rootCause || null, releaseBlocking: finding.releaseBlocking, rationale: finding.rationale || null, acceptedBy: finding.acceptedBy || null,
@@ -679,6 +683,8 @@ function canonicalPacket(packet) {
     requiredChecks: packet.requiredChecks.map((check) => ({ name: text(check.name), conclusion: text(check.conclusion) })),
     reviewsTerminal: packet.reviewsTerminal,
     openChoices: packet.openChoices.map(text),
+    // Present only when declared, so the digest of a packet without the declaration is unchanged.
+    ...(packet.reviewerUnavailable === true ? { reviewerUnavailable: true } : {}),
     findings: packet.findings.map((f) => ({ id: text(f.id), url: text(f.url) || null, local: f.local ? { file: text(f.local.file), span: f.local.span.trim() } : null, disposition: f.disposition || null, rootCause: text(f.rootCause), releaseBlocking: [...(f.releaseBlocking || [])].sort(), rationale: text(f.rationale), acceptedBy: text(f.acceptedBy) })),
     droppedMinors: packet.droppedMinors.map((d) => ({ id: text(d.id), reason: text(d.reason) })),
     tickets: packet.tickets.map((t) => ({ rootCause: text(t.rootCause), url: text(t.url), readBack: t.readBack === true, reused: !!t.reused, duplicateCheck: text(t.duplicateCheck) })),

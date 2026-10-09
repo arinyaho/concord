@@ -133,3 +133,11 @@ test('a minor collected after the delivery record makes it stale until the deliv
   assert.strictEqual(cli(stateDir, ['status', String(PR), HEAD_A]).delivery.current, true);
   assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A)), { result: 'ready', reasons: [] });
 });
+
+test('a mergeable-without-review record blocks merge-ready with no-automated-review alone and no delivery-blocked', () => {
+  const stateDir = temp();
+  assert.strictEqual(deliver(stateDir, HEAD_A, { reviewerUnavailable: true }).classification, 'mergeable-without-review');
+  assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A, { reviewers: [], expectedReviewers: [CODEX] })), { result: 'blocked', reasons: ['no-automated-review'] });
+  assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A)), { result: 'blocked', reasons: ['no-automated-review'] });
+  assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A, { checks: [{ name: 'plugin-tests', conclusion: 'failure' }] })).reasons, ['check:plugin-tests:failure', 'no-automated-review']);
+});

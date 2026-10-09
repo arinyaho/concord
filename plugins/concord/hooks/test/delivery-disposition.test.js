@@ -187,7 +187,7 @@ test('every distribution shares the delivery disposition contract', () => {
     assert.match(lgtm, /record-delivery <pr> <head-sha>/);
     assert.match(lgtm, /"url" \| "local":\{"file","span"\}/);
     assert.match(lgtm, /link the source PR and the review thread of each finding that has a `url`.*local reference/s);
-    assert.match(lgtm, /`mergeable-clean`, `mergeable-with-follow-ups`, or `blocked`/);
+    assert.match(lgtm, /`mergeable-clean`, `mergeable-with-follow-ups`, `mergeable-without-review`, or `blocked`/);
     assert.match(lgtm, /release-blocking finding blocks unless it is `fixed`, whatever the remaining budget/);
     assert.match(lgtm, /`rollover-pending`.*no ticket URL is invented/s);
     assert.match(lgtm, /never report `mergeable-with-follow-ups` as clean or green/);
@@ -434,11 +434,47 @@ test('a dropped minor needs a reason and cannot also be a finding', () => {
   assert.throws(() => lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...pr172Packet({ findings: [finding], droppedMinors: [{ id: 'm1', reason: 'r' }], tickets: [] }) }), /both a finding and a dropped minor/);
 });
 
-test('a reviewer declared unavailable records no-automated-review and never classifies the head as clean', () => {
-  const packet = pr172Packet({ findings: [], tickets: [], reviewsTerminal: false, openChoices: ['no-automated-review'] });
-  const result = lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...packet });
-  assert.strictEqual(result.classification, 'blocked');
-  assert.deepStrictEqual(result.reasons, ['reviews-not-terminal', 'open-choice:no-automated-review']);
+test('a reviewer declared unavailable classifies mergeable-without-review, never clean, also with follow-ups', () => {
+  const classify = (overrides) => lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...pr172Packet(overrides) });
+  const bare = classify({ findings: [], tickets: [], reviewerUnavailable: true });
+  assert.strictEqual(bare.classification, 'mergeable-without-review');
+  assert.deepStrictEqual(bare.reasons, []);
+  const withFollowUps = classify({ reviewerUnavailable: true });
+  assert.strictEqual(withFollowUps.classification, 'mergeable-without-review');
+  assert.ok(withFollowUps.groups.every((group) => group.ticket));
+  const failing = classify({ findings: [], tickets: [], reviewerUnavailable: true, requiredChecks: [{ name: 'test (ubuntu)', conclusion: 'failure' }] });
+  assert.deepStrictEqual([failing.classification, failing.reasons], ['blocked', ['required-check:test (ubuntu):failure']]);
+  assert.deepStrictEqual(classify({ findings: [], tickets: [], reviewerUnavailable: true, reviewsTerminal: false }).reasons, ['reviews-not-terminal']);
+  assert.deepStrictEqual(classify({ findings: [], tickets: [], reviewsTerminal: false, openChoices: ['no-automated-review'] }).reasons, ['reviews-not-terminal', 'open-choice:no-automated-review']);
+});
+
+test('the declaration must be a boolean and cannot cover recorded reviews', () => {
+  assert.throws(() => lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...pr172Packet({ reviewerUnavailable: 'yes' }) }), /reviewerUnavailable must be a boolean/);
+  assert.throws(() => lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...pr172Packet({ reviewerUnavailable: true, reviewIds: ['4192088400'] }) }), /reviewerUnavailable needs empty reviewIds/);
+});
+
+test('without the declaration the classification and digest are unchanged', () => {
+  const stateDir = temp();
+  const input = { stateDir, pr: PR, headSha: HEAD };
+  const absent = lgtmState.recordDelivery({ ...input, now: 1000, packet: pr172Packet() });
+  const off = lgtmState.recordDelivery({ ...input, now: 1001, packet: pr172Packet({ reviewerUnavailable: false }) });
+  assert.strictEqual(absent.classification, 'mergeable-with-follow-ups');
+  assert.deepStrictEqual([off.sequence, off.digest], [absent.sequence, absent.digest]);
+  const declared = lgtmState.recordDelivery({ ...input, now: 1002, packet: pr172Packet({ reviewerUnavailable: true }) });
+  assert.strictEqual(declared.classification, 'mergeable-without-review');
+  assert.strictEqual(declared.sequence, absent.sequence + 1);
+  assert.notStrictEqual(declared.digest, absent.digest);
+});
+
+test('a declared record is terminal for claims until recorded again without the declaration', () => {
+  const stateDir = temp();
+  const input = { stateDir, pr: PR, headSha: HEAD };
+  lgtmState.recordDelivery({ ...input, now: 1000, packet: pr172Packet({ findings: [], tickets: [], reviewerUnavailable: true }) });
+  assert.deepStrictEqual(lgtmState.claimInitialRequest({ ...input, provider: 'codex', now: 2000 }), { claimed: false, reason: 'delivery-terminal', classification: 'mergeable-without-review' });
+  assert.strictEqual(lgtmState.status(input).reconciliation.action, 'report-delivery');
+  const cleared = lgtmState.recordDelivery({ ...input, now: 3000, packet: pr172Packet({ findings: [], tickets: [], reviewsTerminal: false }) });
+  assert.deepStrictEqual([cleared.classification, cleared.reasons], ['blocked', ['reviews-not-terminal']]);
+  assert.notStrictEqual(lgtmState.claimInitialRequest({ ...input, provider: 'codex', now: 4000 }).reason, 'delivery-terminal');
 });
 
 test('every distribution states the reviewer-unavailable declaration', () => {
@@ -447,10 +483,12 @@ test('every distribution states the reviewer-unavailable declaration', () => {
   for (const pkg of ['concord', 'concord-codex', 'concord-copilot']) {
     const lgtm = read(`${pkg}/skills/review-until-lgtm/SKILL.md`);
     assert.match(lgtm, /`reviewerUnavailable`.*request no review and start no wait loop or watch/s);
-    assert.match(lgtm, /`reviewsTerminal: false` and `openChoices: \["no-automated-review"\]`/);
-    assert.match(lgtm, /never `mergeable-\*`/);
+    assert.match(lgtm, /`"reviewerUnavailable": true`, `reviewsTerminal: true`/);
+    assert.match(lgtm, /`mergeable-without-review`, never `mergeable-clean`/);
     assert.match(lgtm, /remove the declaration.*`claim-initial-request`.*record the delivery again/s);
     const ticket = read(`${pkg}/skills/ticket-to-pr/SKILL.md`);
-    assert.match(ticket, /`reviewerUnavailable`.*no wait loop or watch.*`no-automated-review`/s);
+    assert.match(ticket, /`reviewerUnavailable`.*no wait loop or watch.*`mergeable-without-review`.*`no-automated-review`/s);
+    assert.match(read(`${pkg}/skills/initiative-to-prs/SKILL.md`), /`reviewerUnavailable`.*child packet/s);
+    assert.match(read(`${pkg}/skills/initiative-to-prs/references/stages.md`), /`mergeable-without-review` satisfy this condition/);
   }
 });
