@@ -18,7 +18,7 @@ const SKILL = path.join(__dirname, '..', '..', 'skills', 'review-until-lgtm', 'S
 
 function fixture() { return JSON.parse(fs.readFileSync(FIXTURE, 'utf8')); }
 function pullRequest(data) { return data.data.repository.pullRequest; }
-function reactionsResponse(nodes) { return { data: { repository: { pullRequest: { reactions: { nodes } } } } }; }
+function reactionsResponse(nodes, headRefOid = HEAD) { return { data: { repository: { pullRequest: { headRefOid, reactions: { nodes } } } } }; }
 function thumbsUp(createdAt, login = `${CODEX}[bot]`) { return { content: 'THUMBS_UP', createdAt, user: { login } }; }
 function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'review-collector-')); }
 
@@ -156,7 +156,7 @@ test('watch prints nothing while reviewers are in progress, then exactly one pac
   const inProgress = () => withSummaryStatus(fixture(), '👀 **In progress**');
   const harness = watchHarness({
     responses: [inProgress, inProgress, fixture, fixture, fixture],
-    status: (_head, tick) => ({ deadlineMs: 900000, delivery: tick >= 4 ? { classification: 'mergeable-clean' } : null }),
+    status: (_head, tick) => ({ deadlineMs: 900000, delivery: tick >= 4 ? { classification: 'mergeable-clean', current: true } : null }),
   });
   const exit = await harness.run();
   assert.strictEqual(exit, 'delivery');
@@ -384,4 +384,64 @@ test('findings of one Codex review are not held back waiting for a reaction on a
   const harness = watchHarness({ responses: [mixed], status: (_head, tick) => ({ deadlineMs: 900000, delivery: tick >= 2 ? { classification: 'requires-architecture-review', current: true } : null }) });
   await harness.run();
   assert.deepStrictEqual(harness.lines.map((l) => l.event), ['packet', 'delivery']);
+});
+
+test('a reaction read that finds the live head moved reports stale instead of a packet', async () => {
+  const moved = graphqlDouble({ reactions: reactionsResponse([thumbsUp('2026-10-09T13:47:56Z')], '1'.repeat(40)) });
+  assert.deepStrictEqual(await collector.collect({ pr: 244, head: HEAD, graphql: moved }), { stale: true, head: HEAD, liveHead: '1'.repeat(40) });
+});
+
+test('watch prints no packet for a head that moved during the reaction read', async () => {
+  const harness = watchHarness({ responses: [fixture], reactions: reactionsResponse([thumbsUp('2026-10-09T13:47:56Z')], '1'.repeat(40)), status: () => ({ deadlineMs: 120000, delivery: null }) });
+  assert.strictEqual(await harness.run(), 'deadline');
+  assert.deepStrictEqual(harness.lines.map((l) => l.event), ['deadline']);
+});
+
+test('a delivery record that is not current for the head does not end the watch', async () => {
+  const harness = watchHarness({
+    responses: [fixture],
+    status: (_head, tick) => ({ deadlineMs: 900000, delivery: { classification: 'mergeable-clean', current: tick >= 3 } }),
+  });
+  assert.strictEqual(await harness.run(), 'delivery');
+  assert.deepStrictEqual(harness.lines.map((l) => l.event), ['packet', 'delivery']);
+});
+
+test('a second review on the head after the packet was printed prints a new packet', async () => {
+  const second = () => {
+    const data = fixture();
+    const reviews = pullRequest(data).reviews.nodes;
+    const copy = JSON.parse(JSON.stringify(reviews.find((r) => r.databaseId === REVIEW)));
+    copy.databaseId = 5479999999;
+    copy.id = 'PRR_second';
+    reviews.push(copy);
+    return data;
+  };
+  const harness = watchHarness({
+    responses: [fixture, fixture, second, second],
+    status: (_head, tick) => ({ deadlineMs: 900000, delivery: tick >= 4 ? { classification: 'mergeable-clean', current: true } : null }),
+  });
+  await harness.run();
+  const packets = harness.lines.filter((l) => l.event === 'packet');
+  assert.deepStrictEqual(packets.map((p) => p.observations.map((o) => o.reviewId)), [[String(REVIEW)], [String(REVIEW), '5479999999']]);
+});
+
+test('the deadline does not end the watch once a packet was printed for the head', async () => {
+  const harness = watchHarness({
+    responses: [fixture],
+    status: (_head, tick) => ({ deadlineMs: 60000, delivery: tick >= 6 ? { classification: 'mergeable-clean', current: true } : null }),
+  });
+  assert.strictEqual(await harness.run(), 'delivery');
+  assert.deepStrictEqual(harness.lines.map((l) => l.event), ['packet', 'delivery']);
+});
+
+test('awaitingReaction belongs to one head: the deadline line of a new head does not inherit it', async () => {
+  const clean = () => { const data = fixture(); pullRequest(data).reviews.nodes = []; return data; };
+  const NEXT = '2'.repeat(40);
+  const next = () => { const data = fixture(); pullRequest(data).headRefOid = NEXT; pullRequest(data).reviews.nodes = []; return data; };
+  const harness = watchHarness({
+    responses: [clean, next],
+    status: (head, tick) => ({ deadlineMs: head === HEAD ? 900000 : 3 * 30000, delivery: null }),
+  });
+  assert.strictEqual(await harness.run(), 'deadline');
+  assert.deepStrictEqual(harness.lines.map((l) => [l.event, l.head, l.awaitingReaction]), [['deadline', NEXT, false]]);
 });

@@ -290,15 +290,17 @@ function renderHandoff(result) {
   for (const r of ledger.runs || []) {
     for (const f of r.gate_open || []) lines.push(`  open in prior run #${r.run}: ${evidenceLine(f)}`);
   }
+  // A finding fixed in a prior run and open, parked or dismissed now is reported once, in its current state.
+  const reopened = new Set([...(ledger.findings || []).filter((f) => f.status === 'parked').map((f) => f.id), ...(ledger.gate_open || []).map((f) => f.id), ...dismissedIds(ledger)]);
   for (const r of ledger.runs || []) {
-    for (const f of r.fixed || []) lines.push(`  fixed in prior run #${r.run}: ${evidenceLine(f)} -> commit ${f.fix_commit}`);
+    for (const f of (r.fixed || []).filter((fixed) => !reopened.has(fixed.id))) lines.push(`  fixed in prior run #${r.run}: ${evidenceLine(f)} -> commit ${f.fix_commit}`);
   }
   for (const d of ledger.gate_dismissed || []) lines.push(`dismissed by ${d.dismissedBy}: ${evidenceLine(d)}`);
   // A cleared finding is reported once: still open or dismissed ids show in their own section, and "not re-raised" needs a gate round whose verdict was recorded.
   const reported = new Set([...(ledger.gate_open || []).map((f) => f.id), ...dismissedIds(ledger)]);
   const gateRan = (ledger.gate_rounds || []).some((round) => (ledger.history || []).some((h) => h.round === round));
   for (const c of ledger.gate_cleared || []) {
-    if (!reported.has(c.id)) lines.push(`cleared at restart, ${gateRan ? 'not re-raised' : 'gate verdict not recorded'}: ${evidenceLine(c)}`);
+    if (!reported.has(c.id)) lines.push(`cleared at restart, ${c.notRaisedRound != null ? `not re-raised (round ${c.notRaisedRound})` : gateRan ? 'not re-raised' : 'gate verdict not recorded'}: ${evidenceLine(c)}`);
   }
   if (aborted) lines.push(`ABORTED (${aborted.kind}): ${aborted.message}`);
 
@@ -611,6 +613,13 @@ function clearedFindings(ledger, clearedAt = new Date().toISOString()) {
   const byId = new Map((ledger.gate_cleared || []).map((f) => [f.id, f]));
   for (const f of ledger.gate_open || []) byId.set(f.id, findingEvidence(f, { clearedAt }));
   return Array.from(byId.values());
+}
+
+// A gate round that ran and did not raise a cleared finding again stamps its round on the entry, so the verdict survives a rerun.
+function stampNotRaised(cleared, gateApplied, gateOpen, round) {
+  if (!gateApplied) return cleared;
+  const open = new Set(gateOpen.map((f) => f.id));
+  return cleared.map((c) => (open.has(c.id) || c.notRaisedRound != null ? c : { ...c, notRaisedRound: round }));
 }
 
 function rerunOptions(rest) {
@@ -2609,7 +2618,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       && contentHash(readReviewArtifact(priorPlan, stateDir, 'utf8')) === priorRejection.rejectedHash) {
       throw new Error(`harness-failure: ${priorRejection.message}`);
     }
-    const { repoRoot, slug, ledger, n, isGit, fixes, resolvedAbsent, reopenedIds, intentParked, gateOpen } = verifiedRound(ref, stateDir, run, 'plan-fixes');
+    const { repoRoot, slug, ledger, n, isGit, fixes, resolvedAbsent, reopenedIds, intentParked, gateOpen, gateApplied } = verifiedRound(ref, stateDir, run, 'plan-fixes');
     if (ledger.execution?.planRetry?.state === 'exhausted') throw new Error(`harness-failure: ${ledger.execution.planRetry.message}`);
     requirePlanDispatch(ledger);
     const fixById = new Map(fixes.map((finding) => [finding.id, finding]));
@@ -2706,7 +2715,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // Planning the same round again after an interrupted attempt keeps its floor, so that attempt's own commit still counts.
     const journalFloor = { ...(ledger.journal_floor || {}) };
     for (const id of reopenedIds) if (journalFloor[id]?.round !== n) journalFloor[id] = { at: (ledger.journal || []).length, round: n };
-    const next = { ...ledger, journal_floor: journalFloor, execution, planned: reconciliation ? [] : fixes.map((f) => f.id), fix_plan: fixPlan, resolved_absent: resolvedAbsent, intent_parked: intentParked, gate_open: gateOpen, reconciliation: reconciliationPacket, reconciliationPacket, phase: 'fixes' };
+    const next = { ...ledger, journal_floor: journalFloor, execution, planned: reconciliation ? [] : fixes.map((f) => f.id), fix_plan: fixPlan, resolved_absent: resolvedAbsent, intent_parked: intentParked, gate_open: gateOpen, gate_cleared: stampNotRaised(ledger.gate_cleared || [], gateApplied, gateOpen, n), reconciliation: reconciliationPacket, reconciliationPacket, phase: 'fixes' };
     writeLedger(stateDir, slug, next);
     process.stdout.write(JSON.stringify({ protocolVersion: 2, planId, transactionScope, fixes: reconciliation ? [] : fixes, fixGroups: reconciliation ? [] : fixGroups, avoidedLaunches: reconciliation ? fixes.length : 0, reconciliation: blockedGroups.length ? reconciliationPacket : reconciliation && { trigger: 'material-finding', finding: material[0].id, stage: 'plan-fixes', findings: material.reduce((counts, finding) => {
       const kind = finding.id.startsWith('gate:design-conformance:') ? 'design-conformance' : finding.id.startsWith('gate:ac-coverage:') ? 'ac-coverage' : finding.id.split(':', 1)[0];
