@@ -283,3 +283,12 @@ test('tracked inventory: a mode change on a submodule directory is reported', (t
     assert.strictEqual(changeAfter(dir, () => fs.chmodSync(path.join(dir, 'sub'), 0o700)), 'sub', `initialized=${initialized}`);
   }
 });
+
+test('tracked inventory: an uninitialized submodule directory over the name cap fails closed', (t) => {
+  const dir = inventoryRepo(t); const upstream = inventoryRepo(t);
+  git(dir, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', upstream, 'sub');
+  git(dir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'submodule');
+  fs.rmSync(path.join(dir, 'sub'), { recursive: true }); fs.mkdirSync(path.join(dir, 'sub'));
+  for (let i = 0; i < 1001; i++) fs.writeFileSync(path.join(dir, 'sub', `f${String(i).padStart(4, '0')}`), '');
+  assert.throws(() => inventoryOf(dir), /harness-failure.*inventory bound/);
+});

@@ -274,7 +274,9 @@ function trackedCheckoutInventory(repoRoot, commitSha, budget = { entries: 0, by
         fingerprint = `gitlink:${stat.mode}:${sha}`;
         for (const [key, value] of trackedCheckoutInventory(abs, sha, budget, `${prefix}${rel}/`)) inventory.set(key, value);
       } else {
-        fingerprint = `gitlink-empty:${stat.mode}:${fs.readdirSync(abs).sort().slice(0, UNINITIALIZED_SUBMODULE_NAMES).join('\0')}`;
+        const names = fs.readdirSync(abs).sort();
+        if (names.length > UNINITIALIZED_SUBMODULE_NAMES) throw new Error(INVENTORY_BOUND_ERROR);
+        fingerprint = `gitlink-empty:${stat.mode}:${names.join('\0')}`;
       }
     } else if (stat.isSymbolicLink()) fingerprint = `link:${stat.mode}:${fs.readlinkSync(abs, { encoding: 'buffer' }).toString('hex')}`;
     else if (stat.isDirectory()) fingerprint = `dir:${stat.mode}`;
