@@ -51,18 +51,20 @@ test('ticket-to-pr defines the table and tests required for stateful changes', (
   assert.ok(section, 'missing "Stateful changes" section');
   assert.match(section, /writes, reads or branches on data that carries state from one run or process to the next, such as a ledger, cache, git ref, or tracker or PR field/);
   assert.match(section, /touches persisted state or adds or alters a retry, recovery or replay path, whether or not that path persists anything/);
+  assert.match(section, /The outcome is an observable result that the test asserts\. Kind is judged against the base revision, so every row of a new behavior is introduced/);
+  assert.match(section, /such as the attempt number even when it is not recorded\. Group only combinations that have the same outcome and kind/);
+  assert.match(section, /A state or event found missing at stage 6 or 7 is added to the table in the same PR with its test/);
   assert.match(section, /Configuration or input that only the caller supplies is not state/);
   assert.match(section, /one row per combination of a state and an event, and the columns outcome, kind \(introduced, changed, unchanged or unreachable\) and test or reason/);
-  assert.match(section, /for a retry, recovery or replay path, its progress/);
+  assert.match(section, /one combination of the values of all the persisted dimensions the change touches, such as status and attempt count together, or, for a retry, recovery or replay path, its progress/);
   assert.match(section, /zero, each limit and the value just past it a class of their own/);
-  assert.match(section, /first occurrence, repetition or replay, corrupt or missing input or evidence, base or head change, and interruption/);
+  assert.match(section, /each operation or input the change handles, such as approve and cancel, together with first occurrence, repetition or replay, corrupt or missing input or evidence, base or head change, and interruption/);
   assert.match(section, /still gets its own row, kind unreachable, naming the invariant that prevents it and where that invariant is enforced/);
   assert.match(section, /it touches no persisted state and adds or alters no retry, recovery or replay path/);
   assert.match(section, /Stage 6 fills the test or reason column/);
-  assert.match(section, /Each reachable row has a named test that passes after the change\./);
-  assert.match(section, /A row that no test can exercise, for example a crash between two writes, records why and the check that stands in, in place of the test/);
-  assert.match(section, /kind is introduced or changed has a test that fails before the change for the right reason/);
-  assert.match(section, /kind is unchanged has a test that passes against the unchanged revision, which may be newly written/);
+  assert.match(section, /Each reachable row has a named test that passes after the change or, when no test can exercise the row, such as a crash between two writes, records why and the check that stands in/);
+  assert.match(section, /A test for a row whose kind is introduced or changed fails before the change for the right reason/);
+  assert.match(section, /A test for a row whose kind is unchanged passes against the unchanged revision and may be newly written/);
 });
 
 test('Claude and Codex source packages ship the same initiative-to-prs skill', () => {
