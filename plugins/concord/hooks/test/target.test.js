@@ -60,12 +60,9 @@ test('acquireTarget git: reviewText is the diff, identity is HEAD sha, hasDoD tr
   assert.strictEqual('key' in t, false, 'git target must not carry a computed-but-unused key field');
 });
 
-test('acquireTarget git: base undefined diffs the working tree vs HEAD (empty on a clean tree)', () => {
+test('acquireTarget git: base undefined is a harness failure, not an empty review', () => {
   const { dir } = makeGitRepo();
-  // Clean tree + base undefined -> `git diff HEAD` is empty; identity is still HEAD.
-  const t = acquireTarget({ ref: 'HEAD', base: undefined }, dir);
-  assert.strictEqual(t.type, 'git');
-  assert.strictEqual(t.reviewText, '');
+  assert.throws(() => acquireTarget({ ref: 'HEAD', base: undefined }, dir), /harness-failure: review base and head resolve to the same commit/);
 });
 
 test('acquireTarget git: dirty working tree throws the identical round-start error', () => {
