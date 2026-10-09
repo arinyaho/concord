@@ -23,10 +23,10 @@ Record a discriminating outcome-level red against the unchanged combined system 
 | 0 | Branch | A dedicated work branch exists, is checked out, and starts from the intended base; create it if absent |
 | 1 | The work has agreed acceptance criteria and a definition of done, and any approved in-progress transition is applied | Every criterion names an observation, not an intention. The DoD says which gates are executable and which are deferred. The board reflects that work began only when the user approved that transition; a supplied Notion ticket is verified at `In progress`, `In review`, or `Done` |
 | 2 | Discriminating red | For a single-repository ticket, the claimed breakage or absent feature reproduces at the outcome level against unchanged code. For a repository unit under a multi-repository ticket, its contract check fails against the unchanged unit and the shared outcome-level red has been recorded |
-| 3 | Design note, committed where the next reader finds it | The decision, the trade-off it costs, and the residual exposure are all written down |
+| 3 | Design note, committed where the next reader finds it | The decision, the trade-off it costs, and the residual exposure are all written down. A stateful change also carries the table defined in "Stateful changes"; any other change gives the one-line statement defined there |
 | 4 | Review the design note | `/review-and-fix file:<path>` |
 | 5 | Plan | Each task ends in something runnable and independently rejectable |
-| 6 | Implement | Red test first, verified red for the right reason, and executing where CI will execute it |
+| 6 | Implement | Red test first, verified red for the right reason, and executing where CI will execute it. Each row of a stateful change's table has the evidence "Stateful changes" requires |
 | 7 | Review the diff | `/review-and-fix <branch>`; its final DoD evidence may also satisfy stage 8 under the identity rule below |
 | 8 | Discriminating green | Reuse the final `review-and-fix` DoD only when it ran the same check against the exact final head, dependencies, and environment; otherwise run the check once. The combined outcome check remains a separate ticket gate for multi-repository work |
 | 9 | One PR per unit | Design, docs and code in the same repository PR; the repository's PR template followed; every document contradicted by the change corrected in it; the exact PR URL is read back from the tracker when that mutation is authorized; a delivery disposition is recorded for the exact PR head and base |
@@ -42,6 +42,21 @@ When the input work item is a Notion ticket, the `ticket-to-pr` request authoriz
 After the PR URL exists, an eligible PR URL field is an editable URL field explicitly for the PR. For a single-PR ticket, when exactly one eligible PR URL field is empty or already has the same URL, write it; otherwise append an idempotent labelled `PR:` link to the ticket body, only when absent. For a multi-repository outcome, append or update the PR link in its repository implementation record without overwriting another unit's URL. Read the ticket back to verify the exact PR URL before changing the status. Preserve `In review` or `Done`; for a single-PR ticket, otherwise use the same status property to transition only from `In progress` to `In review`, then verify URL and status in the readback. For a multi-repository outcome, preserve its status until every required unit PR has been read back; only then may an approved `In review` transition occur. If any update or verification fails, report the failure; do not claim the stage completed. Do not move the ticket to Done.
 
 Stages 1, 3 and 5 have no single owner here — use whatever the repository already provides (a tracker, a `docs/` convention, a planning skill). Stages 4 and 7 are Concord's `review-and-fix`. Stages 2 and 8 are described below, because they are the ones that get skipped.
+
+## Stateful changes
+
+A change is stateful when it writes, reads or branches on data that outlives one run or process, such as a ledger, cache, git ref, or tracker or PR field, or when it adds or alters a retry, recovery or replay path. Input the caller supplies each time is not state unless it carries state from an earlier interaction, such as a continuation token or cursor. Any other change says in one line that it is not stateful.
+
+A stateful change carries a transition table in its design note: one row per combination of a state and an event that the change can affect, with the columns outcome, kind and evidence. The outcome names the response or error, the resulting state and every external effect, including what stays unchanged and any ordering or timing that matters, such as a write before its notification or a backoff before a retry. The kind is introduced, changed or unchanged against the base revision. Events include the first occurrence, a repeat or replay, two operations interleaved on the same state, an interruption between or during durable writes and external effects, including before an effect is acknowledged, and the restart that recovers from it, a result or signal that changes the outcome, such as a decline or timeout, and a state value or operation the change removes. Combinations an invariant rules out go in one line under the table naming the invariant, not in rows.
+
+| State | Event | Outcome | Kind | Evidence |
+|---|---|---|---|---|
+| pending | approve, first time | approved; notifier called once | changed | `approve_pending_notifies_once` |
+| approved | approve replayed | approved; no second notification | introduced | `approve_replay_is_noop` |
+| pending | two approvals both read pending | one wins; the other is rejected; notifier called once | introduced | `concurrent_approve_single_winner` |
+| legacy `queued` record | approve | rejected with a migration error; record unchanged | introduced | `approve_queued_record_rejected` |
+
+Stage 6 fills the evidence column; a row's evidence asserts its whole outcome, not only the response. An introduced or changed row has a test that fails before the change for the right reason and passes after it, or, when no test can exercise it, such as a crash between two durable writes, a recorded reason and an executable stand-in check, run where CI runs the row tests and held to the same fail-before, pass-after bar. An unchanged row cites an existing test that passes after the change or says "untested, because" with the reason. A state or event found missing at any later stage, including PR review, is added to the table in the same PR with its evidence.
 
 ## Delegation
 

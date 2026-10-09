@@ -38,6 +38,28 @@ test('Claude and Codex source packages ship the same ticket-to-pr skill', () => 
   assert.equal(read(CODEX_TICKET_TO_PR), read(CLAUDE_TICKET_TO_PR));
 });
 
+test('ticket-to-pr defines the table and tests required for stateful changes', () => {
+  const skill = read(CLAUDE_TICKET_TO_PR);
+  assert.equal(read(CODEX_TICKET_TO_PR), skill);
+  assert.equal(read(path.join(REPO, 'plugins/concord-copilot/skills/ticket-to-pr/SKILL.md')), skill);
+  const rows = Object.fromEntries(
+    skill.split('\n').filter((l) => /^\| \d \|/.test(l)).map((l) => [l.split('|')[1].trim(), l]),
+  );
+  assert.match(rows['3'], /"Stateful changes"/);
+  assert.match(rows['6'], /"Stateful changes"/);
+  const section = skill.split('## Stateful changes\n')[1]?.split('\n## ')[0] ?? '';
+  assert.ok(section, 'missing "Stateful changes" section');
+  for (const pattern of [
+    /retry, recovery or replay path/,
+    /Any other change says in one line that it is not stateful/,
+    /columns outcome, kind and evidence/,
+    /resulting state/,
+    /found missing at any later stage, including PR review, is added to the table in the same PR/,
+  ]) {
+    assert.match(section, pattern);
+  }
+});
+
 test('Claude and Codex source packages ship the same initiative-to-prs skill', () => {
   for (const file of INITIATIVE_TO_PRS_FILES) {
     const claude = path.join(REPO, 'plugins/concord/skills/initiative-to-prs', file);
