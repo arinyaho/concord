@@ -38,7 +38,7 @@ test('review-until-lgtm persists its monitoring window and request budget', () =
 
   // Simulates a process/session interruption: a new invocation reconstructs
   // the exact same deadline and cannot restart the bounded wait window.
-  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: 901000, requestEligibleAtMs: null, requestBudget: { max: 3, spent: 0, remaining: 3 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, initialClaimed: false, initialClaimedAtMs: null, initialRecoveryClaimed: false, initialRequested: false, reconciliation: null, delivery: null });
+  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: 901000, requestEligibleAtMs: null, requestBudget: { max: 3, spent: 0, remaining: 3 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, waivers: [], initialClaimed: false, initialClaimedAtMs: null, initialRecoveryClaimed: false, initialRequested: false, reconciliation: null, delivery: null });
   assert.deepStrictEqual(lgtmState.openWindow({ ...input, now: 2000, durationMs: 900000 }), { created: false, deadlineMs: 901000 });
 });
 
@@ -142,9 +142,9 @@ test('review requests distinguish a durable claim from a request that was sent',
   const input = { stateDir, pr: 116, headSha: '0123456789abcdef0123456789abcdef01234567' };
   lgtmState.claimInitialRequest({ ...input, now: 2000 });
   assert.strictEqual(lgtmState.claimInitialRequest({ ...input, now: 122000 }), true);
-  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, requestEligibleAtMs: 122000, requestBudget: { max: 3, spent: 1, remaining: 2 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, initialClaimed: true, initialClaimedAtMs: 122000, initialRecoveryClaimed: false, initialRequested: false, reconciliation: null, delivery: null });
+  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, requestEligibleAtMs: 122000, requestBudget: { max: 3, spent: 1, remaining: 2 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, waivers: [], initialClaimed: true, initialClaimedAtMs: 122000, initialRecoveryClaimed: false, initialRequested: false, reconciliation: null, delivery: null });
   assert.strictEqual(lgtmState.markInitialRequested(input), true);
-  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, requestEligibleAtMs: 122000, requestBudget: { max: 3, spent: 1, remaining: 2 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, initialClaimed: true, initialClaimedAtMs: 122000, initialRecoveryClaimed: false, initialRequested: true, reconciliation: null, delivery: null });
+  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, requestEligibleAtMs: 122000, requestBudget: { max: 3, spent: 1, remaining: 2 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, waivers: [], initialClaimed: true, initialClaimedAtMs: 122000, initialRecoveryClaimed: false, initialRequested: true, reconciliation: null, delivery: null });
 });
 
 test('status exposes a provider-specific sent request so resume can open its window', () => {
@@ -739,4 +739,412 @@ test('Claude, Codex, and Copilot review-until-lgtm skills pin bounded batch fixe
     assert.match(skill, /approved design.*uniquely determines.*one structural fix/is);
     assert.match(skill, /before editing.*human reconciliation/is);
   }
+});
+
+function claimRounds(stateDir, pr, count, first = 1) {
+  const results = [];
+  for (let index = first; index < first + count; index += 1) {
+    const headSha = String(index).repeat(40);
+    lgtmState.recordReview({ stateDir, pr, headSha, now: 1000 + index, observation: observation({ reviewId: String(index), commitId: headSha }) });
+    results.push(lgtmState.claimFixRound({ stateDir, pr, headSha, now: 2000 + index, owner: `worker-${index}` }));
+  }
+  return results;
+}
+
+test('waive-fix-budget records the waiver and allows the waived rounds only', () => {
+  const stateDir = temp();
+  assert.ok(claimRounds(stateDir, 221, 3).every((result) => result.claimed));
+  assert.strictEqual(claimRounds(stateDir, 221, 1, 4)[0].reason, 'fix-round-budget-exhausted');
+  assert.deepStrictEqual(lgtmState.waiveFixBudget({ stateDir, pr: 221, person: 'someone', count: 2, now: 9000 }), { waived: true, waiver: { person: 'someone', count: 2, atMs: 9000 } });
+  const headSha = '4'.repeat(40);
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: 221, headSha }).waivers, [{ person: 'someone', count: 2, atMs: 9000 }]);
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: 221, headSha }).fixBudget, { max: 5, spent: 3, remaining: 2 });
+  const more = claimRounds(stateDir, 221, 3, 4);
+  assert.deepStrictEqual(more.map((result) => result.claimed), [true, true, false]);
+  assert.deepStrictEqual(more[1].budget, { max: 5, spent: 5, remaining: 0 });
+  assert.strictEqual(more[2].reason, 'fix-round-budget-exhausted');
+});
+
+test('waive-fix-budget is idempotent and rejects invalid input without changing state', () => {
+  const stateDir = temp();
+  const input = { stateDir, pr: 221, person: 'someone', count: 2 };
+  lgtmState.waiveFixBudget({ ...input, now: 1000 });
+  lgtmState.waiveFixBudget({ ...input, now: 2000 });
+  const headSha = '1'.repeat(40);
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: 221, headSha }).waivers, [{ person: 'someone', count: 2, atMs: 1000 }]);
+  for (const bad of [{ person: '' }, { person: '  ' }, { count: 0 }, { count: -1 }, { count: 1.5 }, { count: '2' }]) {
+    assert.throws(() => lgtmState.waiveFixBudget({ ...input, ...bad }), /review-lgtm-state:/);
+  }
+  assert.strictEqual(lgtmState.status({ stateDir, pr: 221, headSha }).waivers.length, 1);
+  assert.strictEqual(lgtmState.status({ stateDir, pr: 221, headSha }).fixBudget.max, 5);
+});
+
+test('waive-fix-budget CLI exits non-zero for an empty person', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'lgtm-cli-'));
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  assert.throws(() => execFileSync('node', [CLI, 'waive-fix-budget', '221', '', '2'], { cwd: repo, stdio: 'pipe' }), /person/);
+  const out = execFileSync('node', [CLI, 'waive-fix-budget', '221', 'someone', '2'], { cwd: repo, encoding: 'utf8' });
+  assert.strictEqual(JSON.parse(out).waived, true);
+});
+
+function git(repo, ...args) { return execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim(); }
+
+test('self-feeding reports whether the previous fix commit added the finding lines', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'lgtm-self-'));
+  git(repo, 'init', '-q');
+  git(repo, 'config', 'user.email', 't@example.com');
+  git(repo, 'config', 'user.name', 't');
+  const lines = (n, prefix) => `${Array.from({ length: n }, (_, i) => `${prefix}${i + 1}`).join('\n')}\n`;
+  fs.writeFileSync(path.join(repo, 'rule.md'), lines(9, 'base'));
+  git(repo, 'add', 'rule.md');
+  git(repo, 'commit', '-qm', 'base');
+  const reviewed = git(repo, 'rev-parse', 'HEAD');
+  const added = Array.from({ length: 11 }, (_, i) => `fix${i + 1}`).join('\n');
+  const body = lines(9, 'base').split('\n');
+  body.splice(9, 0, added);
+  fs.writeFileSync(path.join(repo, 'rule.md'), `${body.join('\n')}`);
+  git(repo, 'commit', '-qam', 'fix');
+  const head = git(repo, 'rev-parse', 'HEAD');
+  const stateDir = temp();
+  lgtmState.recordReview({ stateDir, pr: 221, headSha: reviewed, now: 1000, observation: observation({ reviewId: '1', commitId: reviewed }) });
+  assert.strictEqual(lgtmState.claimFixRound({ stateDir, pr: 221, headSha: reviewed, now: 2000, owner: 'w' }).claimed, true);
+  const check = (file, start, end) => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file, start, end });
+  assert.deepStrictEqual(check('rule.md', 15, 15), { selfFeeding: true, previousFixHead: reviewed });
+  assert.strictEqual(check('rule.md', 10, 20).selfFeeding, true);
+  assert.strictEqual(check('rule.md', 5, 5).selfFeeding, false);
+  assert.strictEqual(check('rule.md', 1, 9).selfFeeding, false);
+  assert.throws(() => check('../outside.md', 1, 1), /file/);
+  assert.throws(() => check('/etc/passwd', 1, 1), /file/);
+  assert.throws(() => check('rule.md', 5, 3), /range/);
+});
+
+test('self-feeding is false when no earlier fix round exists', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'lgtm-self-none-'));
+  git(repo, 'init', '-q');
+  assert.deepStrictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir: temp(), pr: 221, headSha: 'a'.repeat(40), file: 'x.md', start: 1, end: 1 }), { selfFeeding: false, previousFixHead: null });
+});
+
+test('self-feeding uses the latest earlier round on the head ancestry and matches the file literally', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'lgtm-self-anc-'));
+  git(repo, 'init', '-q');
+  git(repo, 'config', 'user.email', 't@example.com');
+  git(repo, 'config', 'user.name', 't');
+  const write = (file, text) => fs.writeFileSync(path.join(repo, file), text);
+  const commit = (message) => { git(repo, 'add', '-A'); git(repo, 'commit', '-qm', message); return git(repo, 'rev-parse', 'HEAD'); };
+  write('a.md', '1\n2\n3\n');
+  write('b.md', '1\n2\n3\n');
+  const first = commit('base');
+  write('a.md', '1\n2\n3\nA4\n');
+  const second = commit('fix one adds a.md line 4');
+  write('b.md', '1\n2\n3\nB4\n');
+  const third = commit('fix two adds b.md line 4');
+  git(repo, 'checkout', '-q', '-b', 'side', first);
+  write('a.md', 'side\n2\n3\n');
+  const side = commit('unrelated head');
+  git(repo, 'checkout', '-q', third);
+  const stateDir = temp();
+  const claim = (headSha, now) => {
+    lgtmState.recordReview({ stateDir, pr: 221, headSha, now, observation: observation({ reviewId: String(now), commitId: headSha }) });
+    assert.strictEqual(lgtmState.claimFixRound({ stateDir, pr: 221, headSha, now, owner: `w-${now}` }).claimed, true);
+  };
+  claim(second, 1000);
+  claim(side, 2000);
+  const check = (file, start, end) => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: third, file, start, end });
+  assert.deepStrictEqual(check('b.md', 4, 4), { selfFeeding: true, previousFixHead: second });
+  assert.strictEqual(check('a.md', 4, 4).selfFeeding, false);
+  assert.throws(() => check(':(top)b.md', 4, 4), /no such path/);
+  assert.throws(() => check('*.md', 4, 4), /no such path/);
+  const cli = execFileSync('node', [CLI, 'self-feeding', '221', third, 'b.md', '4', '4'], { cwd: repo, encoding: 'utf8', env: { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir } });
+  assert.deepStrictEqual(JSON.parse(cli), { selfFeeding: true, previousFixHead: second });
+});
+
+function selfFeedingRepo(prefix) {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  git(repo, 'init', '-q');
+  git(repo, 'config', 'user.email', 't@example.com');
+  git(repo, 'config', 'user.name', 't');
+  return {
+    repo,
+    write: (file, text) => fs.writeFileSync(path.join(repo, file), text),
+    commit: (message) => { git(repo, 'add', '-A'); git(repo, 'commit', '-qm', message); return git(repo, 'rev-parse', 'HEAD'); },
+  };
+}
+
+function claimFixHead(stateDir, headSha, now) {
+  lgtmState.recordReview({ stateDir, pr: 221, headSha, now, observation: observation({ reviewId: String(now), commitId: headSha }) });
+  assert.strictEqual(lgtmState.claimFixRound({ stateDir, pr: 221, headSha, now, owner: `w-${now}` }).claimed, true);
+}
+
+test('self-feeding ignores unchanged content of a renamed file', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-rename-');
+  for (const name of ['old', 'other1', 'other2', 'other3']) write(`${name}.md`, 'one\ntwo\nthree\nfour\n');
+  const reviewed = commit('base');
+  for (const name of ['old', 'other1', 'other2', 'other3']) git(repo, 'mv', `${name}.md`, `${name === 'old' ? 'new' : `${name}-moved`}.md`);
+  git(repo, 'config', 'diff.renameLimit', '1');
+  const head = commit('rename only');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  const check = (start, end) => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'new.md', start, end });
+  assert.strictEqual(check(2, 3).selfFeeding, false);
+});
+
+test('self-feeding accepts a tracked path that begins with a dash', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-dash-');
+  write('-notes.md', '1\n2\n');
+  const reviewed = commit('base');
+  write('-notes.md', '1\n2\n3\n');
+  const head = commit('fix');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  assert.strictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: '-notes.md', start: 3, end: 3 }).selfFeeding, true);
+});
+
+test('self-feeding reports only added lines whatever diff context the repository configures', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-hunk-');
+  write('a.md', Array.from({ length: 30 }, (_, i) => `l${i + 1}`).join('\n') + '\n');
+  const reviewed = commit('base');
+  git(repo, 'config', 'diff.interHunkContext', '20');
+  write('a.md', Array.from({ length: 30 }, (_, i) => (i === 4 || i === 14 ? `changed${i + 1}` : `l${i + 1}`)).join('\n') + '\n');
+  const head = commit('two distant edits');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  const check = (start, end) => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'a.md', start, end }).selfFeeding;
+  assert.strictEqual(check(5, 5), true);
+  assert.strictEqual(check(10, 10), false);
+});
+
+test('self-feeding picks the latest fix round by slot order, not by timestamp', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-slot-');
+  write('a.md', '1\n');
+  const first = commit('base');
+  write('a.md', '1\n2\n');
+  const second = commit('fix one');
+  write('a.md', '1\n2\n3\n');
+  const head = commit('fix two');
+  const stateDir = temp();
+  claimFixHead(stateDir, first, 5000);
+  claimFixHead(stateDir, second, 5000);
+  assert.deepStrictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'a.md', start: 2, end: 2 }), { selfFeeding: false, previousFixHead: second });
+});
+
+test('self-feeding surfaces git failures instead of reporting not self-feeding', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-missing-');
+  write('a.md', '1\n');
+  const head = commit('base');
+  const stateDir = temp();
+  claimFixHead(stateDir, 'b'.repeat(40), 1000);
+  assert.throws(() => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'a.md', start: 1, end: 1 }));
+});
+
+test('self-feeding does not depend on the configured diff path prefix', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-prefix-');
+  write('a.md', '1\n2\n');
+  const reviewed = commit('base');
+  git(repo, 'config', 'diff.noprefix', 'true');
+  write('a.md', '1\n2\n3\n');
+  const head = commit('fix');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  assert.strictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'a.md', start: 3, end: 3 }).selfFeeding, true);
+});
+
+test('self-feeding reads paths, attributes and added lines literally', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-literal-');
+  write('q"x.md', '1\n2\n');
+  write('bin.md', '1\n2\n');
+  write('plus.md', '1\n2\n');
+  write('.gitattributes', 'bin.md -diff\n');
+  const reviewed = commit('base');
+  write('q"x.md', '1\n2\n3\n');
+  write('bin.md', '1\n2\n3\n');
+  write('plus.md', '1\n2\n++ b/plus.md\n');
+  const head = commit('fix');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  const check = (file, start) => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file, start, end: start }).selfFeeding;
+  for (const file of ['q"x.md', 'bin.md', 'plus.md']) {
+    assert.strictEqual(check(file, 3), true, file);
+    assert.strictEqual(check(file, 2), false, file);
+  }
+});
+
+test('self-feeding is unaffected by a large unrelated change in the fix round', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-large-');
+  write('a.md', '1\n2\n');
+  const reviewed = commit('base');
+  write('big.txt', `${'x'.repeat(100)}\n`.repeat(30000));
+  write('a.md', '1\n2\n3\n');
+  const head = commit('fix with a 3 MB unrelated file');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  assert.strictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'a.md', start: 3, end: 3 }).selfFeeding, true);
+});
+
+test('self-feeding clamps a range ending past the file end and rejects one starting past it or a missing file', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-eof-');
+  write('a.md', '1\n2\n');
+  const reviewed = commit('base');
+  write('a.md', '1\n2\n3\n');
+  const head = commit('fix');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  const check = (file, start, end) => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file, start, end }).selfFeeding;
+  assert.strictEqual(check('a.md', 3, 50), true);
+  assert.strictEqual(check('a.md', 1, 50), true);
+  assert.throws(() => check('a.md', 4, 4), /has only 3 lines/);
+  assert.throws(() => check('gone.md', 1, 1), /no such path/);
+});
+
+test('self-feeding ignores lines that arrived by merging the base branch after the fix round', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-merge-');
+  write('a.md', 'one\ntwo\n');
+  write('b.md', 'x\ny\n');
+  const base = commit('base');
+  const trunk = git(repo, 'rev-parse', '--abbrev-ref', 'HEAD');
+  git(repo, 'checkout', '-q', '-b', 'pr');
+  write('b.md', 'x\ny\nfix\n');
+  const reviewed = commit('pr work');
+  git(repo, 'checkout', '-q', trunk);
+  write('a.md', 'one\ntwo\nmain-edit\n');
+  commit('main edits a.md');
+  git(repo, 'checkout', '-q', 'pr');
+  git(repo, 'merge', '-q', '--no-edit', trunk);
+  write('b.md', 'x\ny\nfix\nfix2\n');
+  const head = commit('fix round');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  const check = (file, start, end) => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file, start, end }).selfFeeding;
+  assert.strictEqual(check('a.md', 3, 3), false, 'a line the base branch added is not the fix round');
+  assert.strictEqual(check('b.md', 4, 4), true);
+  assert.ok(base);
+});
+
+test('self-feeding requires the earlier fix head on the first-parent history of the checked head', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-reverse-merge-');
+  write('a.md', 'one\n');
+  write('b.md', 'x\n');
+  commit('base');
+  const trunk = git(repo, 'rev-parse', '--abbrev-ref', 'HEAD');
+  git(repo, 'checkout', '-q', '-b', 'pr');
+  write('b.md', 'x\ny\n');
+  const reviewed = commit('pr work');
+  git(repo, 'checkout', '-q', trunk);
+  write('a.md', 'one\ntrunk-edit\n');
+  commit('trunk edits a.md');
+  git(repo, 'merge', '-q', '--no-edit', 'pr');
+  const head = git(repo, 'rev-parse', 'HEAD');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  assert.deepStrictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'a.md', start: 2, end: 2 }), { selfFeeding: false, previousFixHead: null });
+});
+
+test('self-feeding ignores a configured blame ignore list', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-ignore-revs-');
+  write('a.md', 'a\n b\n');
+  const reviewed = commit('base');
+  write('a.md', 'a\n  b\n');
+  const head = commit('whitespace-only fix');
+  fs.writeFileSync(path.join(repo, 'ignore-revs'), `${head}\n`);
+  git(repo, 'config', 'blame.ignoreRevsFile', path.join(repo, 'ignore-revs'));
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  assert.strictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'a.md', start: 2, end: 2 }).selfFeeding, true);
+});
+
+test('self-feeding counts the lines of the file itself, not of a textconv rendering', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-textconv-');
+  write('a.md', '1\n2\n3\n4\n5\n');
+  const reviewed = commit('base');
+  write('a.md', '1\n2\n3\n4\n5\nnew\n');
+  const head = commit('fix');
+  write('.gitattributes', 'a.md diff=dbl\n');
+  write('double.js', "process.stdout.write(require('fs').readFileSync(process.argv[1], 'utf8').replace(/\\n/g, '\\n\\n'));\n");
+  git(repo, 'config', 'diff.dbl.textconv', `node ${path.join(repo, 'double.js').replace(/\\/g, '/')}`);
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  const check = (start) => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'a.md', start, end: start }).selfFeeding;
+  assert.strictEqual(check(6), true);
+  assert.strictEqual(check(5), false);
+});
+
+test('self-feeding ignores a configured blame ignore list even when its file is missing', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-ignore-missing-');
+  write('a.md', '1\n2\n');
+  const reviewed = commit('base');
+  write('a.md', '1\n2\n3\n');
+  const head = commit('fix');
+  git(repo, 'config', 'blame.ignoreRevsFile', path.join(repo, 'no-such-file'));
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  assert.strictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'a.md', start: 3, end: 3 }).selfFeeding, true);
+});
+
+test('self-feeding keeps the inherited lines of a renamed and heavily rewritten file', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-rename-rewrite-');
+  const line = (prefix, i) => `${prefix} function handleRequest${i}(request, response) { return respond(request.body, ${i}); }`;
+  const body = (n, prefix) => Array.from({ length: n }, (_, i) => line(prefix, i)).join('\n');
+  write('old.js', `${body(100, 'export')}\n`);
+  const reviewed = commit('base');
+  fs.unlinkSync(path.join(repo, 'old.js'));
+  write('new.js', `${body(60, 'rewritten')}\n${body(100, 'export').split('\n').slice(60).join('\n')}\n`);
+  const head = commit('rename with 60 of 100 lines rewritten');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  const check = (start) => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'new.js', start, end: start }).selfFeeding;
+  assert.strictEqual(check(80), false);
+  assert.strictEqual(check(10), true);
+});
+
+test('self-feeding keeps the original attribution of lines copied from a file the fix did not modify', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-copy-unchanged-');
+  const line = (i) => `export function handleRequest${i}(request, response) { return respond(request.body, ${i}); }`;
+  const source = Array.from({ length: 20 }, (_, i) => line(i)).join('\n');
+  write('source.js', `${source}\n`);
+  const reviewed = commit('base');
+  write('copy.js', `${source}\nfresh line written by the fix, long enough to stay unique in the file\n`);
+  const head = commit('fix copies source.js into copy.js without touching it');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  const check = (start) => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'copy.js', start, end: start }).selfFeeding;
+  assert.strictEqual(check(5), false);
+  assert.strictEqual(check(21), true);
+});
+
+test('self-feeding accepts a tracked path whose name contains a backslash', { skip: process.platform === 'win32' }, () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-backslash-');
+  const name = 'foo\\..\\bar.md';
+  write(name, '1\n');
+  const reviewed = commit('base');
+  write(name, '1\n2\n');
+  const head = commit('fix');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  assert.strictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: name, start: 2, end: 2 }).selfFeeding, true);
+});
+
+test('self-feeding CLI resolves the repository root when run from a subdirectory', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-subdir-');
+  fs.mkdirSync(path.join(repo, 'src', 'nested'), { recursive: true });
+  write('src/x.md', '1\n');
+  const reviewed = commit('base');
+  write('src/x.md', '1\n2\n');
+  const head = commit('fix');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  const out = execFileSync('node', [CLI, 'self-feeding', '221', head, 'src/x.md', '2', '2'], { cwd: path.join(repo, 'src', 'nested'), encoding: 'utf8', env: { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir } });
+  assert.deepStrictEqual(JSON.parse(out), { selfFeeding: true, previousFixHead: reviewed });
+});
+
+test('self-feeding CLI works in a bare repository, which has no work tree root', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-bare-src-');
+  write('x.md', '1\n');
+  const reviewed = commit('base');
+  write('x.md', '1\n2\n');
+  const head = commit('fix');
+  const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'lgtm-self-bare-'));
+  execFileSync('git', ['clone', '-q', '--bare', repo, bare]);
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  const out = execFileSync('node', [CLI, 'self-feeding', '221', head, 'x.md', '2', '2'], { cwd: bare, encoding: 'utf8', env: { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir } });
+  assert.strictEqual(JSON.parse(out).selfFeeding, true);
 });

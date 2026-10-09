@@ -302,3 +302,33 @@ test('a packet built before a new review arrived is refused, and a non-array rel
   }
   assert.throws(() => lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...pr172Packet({ reviewIds: ['abc'] }) }), /reviewIds must be review ids/);
 });
+
+test('a recorded fix-budget waiver lifts a terminal delivery so the waived rounds can be claimed', () => {
+  const stateDir = temp();
+  withActiveReview(stateDir);
+  cli(stateDir, ['record-delivery', String(PR), HEAD], JSON.stringify(pr172Packet({ reviewIds: ['4192088400'] })));
+  assert.strictEqual(cli(stateDir, ['claim-fix-round', String(PR), HEAD]).reason, 'delivery-terminal');
+  cli(stateDir, ['waive-fix-budget', String(PR), 'someone', '1']);
+  const claim = cli(stateDir, ['claim-fix-round', String(PR), HEAD]);
+  assert.strictEqual(claim.claimed, true);
+  assert.strictEqual(claim.budget.max, 4);
+});
+
+test('a fix-budget waiver does not reopen review requests on a terminal delivery', () => {
+  const stateDir = temp();
+  withActiveReview(stateDir);
+  cli(stateDir, ['record-delivery', String(PR), HEAD], JSON.stringify(pr172Packet({ reviewIds: ['4192088400'] })));
+  cli(stateDir, ['waive-fix-budget', String(PR), 'someone', '1']);
+  assert.strictEqual(cli(stateDir, ['claim-initial-request', String(PR), HEAD, 'codex']).reason, 'delivery-terminal');
+  assert.strictEqual(cli(stateDir, ['claim-fix-round', String(PR), HEAD]).claimed, true);
+});
+
+test('status reopens the reconciliation packet when a waiver lifts a terminal delivery', () => {
+  const stateDir = temp();
+  withActiveReview(stateDir);
+  cli(stateDir, ['record-delivery', String(PR), HEAD], JSON.stringify(pr172Packet({ reviewIds: ['4192088400'] })));
+  assert.strictEqual(cli(stateDir, ['status', String(PR), HEAD]).reconciliation.action, 'report-delivery');
+  cli(stateDir, ['waive-fix-budget', String(PR), 'someone', '1']);
+  assert.strictEqual(cli(stateDir, ['status', String(PR), HEAD]).reconciliation.action, 'verify-and-fix');
+  assert.strictEqual(cli(stateDir, ['claim-fix-round', String(PR), HEAD]).claimed, true);
+});

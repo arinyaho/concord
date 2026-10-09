@@ -150,15 +150,41 @@ function reserveRequestSlot({ stateDir, pr, headSha }, kind, now, provider = nul
   return null;
 }
 
+function fixWaivers({ stateDir, pr }) {
+  let names;
+  try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') names = []; else throw error; }
+  return names.filter((name) => name.startsWith(`pr-${Number(pr)}.fix-waiver-`) && name.endsWith('.json'))
+    .map((name) => readMarker(path.join(stateDir, name)))
+    .filter((marker) => marker && typeof marker.person === 'string' && Number.isSafeInteger(marker.count) && Number.isSafeInteger(marker.atMs))
+    .map(({ person, count, atMs }) => ({ person, count, atMs }))
+    .sort((a, b) => a.atMs - b.atMs || a.person.localeCompare(b.person) || a.count - b.count);
+}
+
 function fixBudget({ stateDir, pr }) {
   let names;
   try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') names = []; else throw error; }
   const spent = names.filter((name) => name.startsWith(`pr-${Number(pr)}.fix-round-slot-`) && name.endsWith('.json')).length;
-  return { max: MAX_FIX_ROUNDS_PER_PR, spent, remaining: Math.max(0, MAX_FIX_ROUNDS_PER_PR - spent) };
+  const max = MAX_FIX_ROUNDS_PER_PR + fixWaivers({ stateDir, pr }).reduce((sum, waiver) => sum + waiver.count, 0);
+  return { max, spent, remaining: Math.max(0, max - spent) };
+}
+
+// A human's waiver raises the per-PR fix-round cap by `count`. The cap stays a hard stop for
+// automation; the waiver is the recorded decision that changes who may continue.
+function waiveFixBudget({ stateDir, pr, person, count, now = Date.now() }) {
+  if (!Number.isSafeInteger(Number(pr)) || Number(pr) < 1) throw new Error('review-lgtm-state: PR number must be a positive integer');
+  if (typeof person !== 'string' || !person.trim() || person.length > 200) throw new Error('review-lgtm-state: waiver person must be a non-empty string of at most 200 characters');
+  if (!Number.isSafeInteger(count) || count < 1) throw new Error('review-lgtm-state: waiver count must be a positive integer');
+  const who = person.trim();
+  const id = crypto.createHash('sha256').update(`${who}\0${count}`).digest('hex').slice(0, 16);
+  const file = path.join(stateDir, `pr-${Number(pr)}.fix-waiver-${id}.json`);
+  const created = writeExclusive(file, { pr: Number(pr), person: who, count, atMs: now });
+  const waiver = fixWaivers({ stateDir, pr }).find((entry) => entry.person === who && entry.count === count);
+  return { waived: true, ...(created ? {} : { existing: true }), waiver };
 }
 
 function reserveFixRound({ stateDir, pr, headSha }, now, owner) {
-  for (let round = 1; round <= MAX_FIX_ROUNDS_PER_PR; round += 1) {
+  const { max } = fixBudget({ stateDir, pr });
+  for (let round = 1; round <= max; round += 1) {
     const file = path.join(stateDir, `pr-${pr}.fix-round-slot-${round}.json`);
     if (writeExclusive(file, { pr, headSha, owner, claimedAtMs: now })) return round;
   }
@@ -273,7 +299,7 @@ function compareReviewIds(a, b) {
 function reconciliationPacket({ stateDir, pr, headSha }) {
   const records = activeReviewRecords({ stateDir, pr, headSha })
     .sort((a, b) => a.recordedAtMs - b.recordedAtMs || compareReviewIds(a.reviewId, b.reviewId));
-  const delivered = !fixRoundForHead({ stateDir, pr, headSha }) && deliveryTerminal({ stateDir, pr, headSha });
+  const delivered = !fixRoundForHead({ stateDir, pr, headSha }) && deliveryTerminal({ stateDir, pr, headSha }, { fixCap: true });
   if (delivered) return { pr, headSha, reviews: records.map((record) => ({ id: record.reviewId, reviewer: record.reviewer || 'legacy/unknown', url: record.reviewUrl, findings: record.findings })), batchCount: records.length, classification: 'delivery-terminal', action: 'report-delivery', humanRequired: false, requires: `report the recorded ${delivered.classification} delivery disposition` };
   if (records.length === 0) return null;
   const reviews = records.map((record) => ({ id: record.reviewId, reviewer: record.reviewer || 'legacy/unknown', url: record.reviewUrl, findings: record.findings }));
@@ -347,7 +373,7 @@ function status(input) {
     }
   }
   const deadlines = [window, retryWindow].filter(Boolean).map((marker) => marker.deadlineMs);
-  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested, reconciliation: reconciliationPacket({ stateDir, ...key }), delivery: deliveryStatus({ stateDir, ...key }) };
+  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), waivers: fixWaivers({ stateDir, pr: key.pr }), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested, reconciliation: reconciliationPacket({ stateDir, ...key }), delivery: deliveryStatus({ stateDir, ...key }) };
 }
 
 function claimFixRound(input) {
@@ -356,7 +382,7 @@ function claimFixRound(input) {
   const owner = input.owner || crypto.randomUUID();
   if (typeof owner !== 'string' || !owner || owner.length > 200) throw new Error('review-lgtm-state: fix-round owner must be a non-empty string of at most 200 characters');
   return withTransitionLock({ stateDir, pr: key.pr }, () => {
-    const terminal = deliveryTerminal({ stateDir, ...key });
+    const terminal = deliveryTerminal({ stateDir, ...key }, { fixCap: true });
     if (terminal) return terminal;
     if (activeReviewRecords({ stateDir, ...key }).length === 0) return { claimed: false, reason: 'no-findings' };
     const slot = fixRoundForHead({ stateDir, ...key });
@@ -611,9 +637,13 @@ function deliveryCurrent(input, record) {
   return !!record && JSON.stringify(record.reviewIds) === JSON.stringify(activeReviewIds(input));
 }
 
-function deliveryTerminal(input) {
+// A fix claim also finds the delivery stale when a waiver changed the fix cap the record was written under;
+// review-request claims depend on the review batch alone.
+function deliveryTerminal(input, { fixCap = false } = {}) {
   const latest = latestDelivery(input);
-  return latest && latest.classification !== 'blocked' && deliveryCurrent(input, latest) ? { claimed: false, reason: 'delivery-terminal', classification: latest.classification } : null;
+  if (!latest || latest.classification === 'blocked' || !deliveryCurrent(input, latest)) return null;
+  if (fixCap && latest.budgets?.fix?.max !== fixBudget(input).max) return null;
+  return { claimed: false, reason: 'delivery-terminal', classification: latest.classification };
 }
 
 function recordDelivery(input) {
@@ -636,6 +666,55 @@ function recordDelivery(input) {
   }, { recorded: false, reason: 'transition-busy' });
 }
 
+// Answers whether the fix commit(s) between the head of the latest earlier fix round and `headSha`
+// wrote any line in [start, end] of `file` as it stands at `headSha`. Uses only the path and line numbers, never the review text.
+function selfFeeding({ repoRoot, stateDir, pr, headSha, file, start, end }) {
+  const key = validate({ pr, headSha });
+  if (typeof file !== 'string' || !file || file.includes('\0') || path.isAbsolute(file) || file.split(path.sep === '\\' ? /[\\/]/ : '/').includes('..')) throw new Error('review-lgtm-state: file must be a relative path inside the repository');
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start) throw new Error('review-lgtm-state: line range must be positive integers with start <= end');
+  let names;
+  try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') names = []; else throw error; }
+  const git = crossPlatformCommand('git', repoRoot);
+  const run = (args) => execFileSync(git, crossPlatformArgs(['--literal-pathspecs', ...args], needsDoubleEscape('git', repoRoot)), crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20 }));
+  // Only exit status 1 means "not an ancestor"; any other failure (missing object, bad repository) surfaces.
+  const isAncestor = (sha) => {
+    try { run(['merge-base', '--is-ancestor', sha, key.headSha]); return true; } catch (error) { if (error.status === 1) return false; throw error; }
+  };
+  // The fix round is measured along the first-parent history, so the earlier fix head must sit on it.
+  let firstParent = null;
+  const onFirstParent = (sha) => {
+    firstParent = firstParent || new Set(run(['rev-list', '--first-parent', key.headSha]).split('\n').filter(Boolean));
+    return firstParent.has(sha);
+  };
+  const previous = names.map((name) => ({ slot: /^pr-(\d+)\.fix-round-slot-(\d+)\.json$/.exec(name), name }))
+    .filter(({ slot }) => slot && Number(slot[1]) === key.pr)
+    .map(({ slot, name }) => ({ round: Number(slot[2]), marker: readMarker(path.join(stateDir, name)) }))
+    .filter(({ marker }) => marker && FULL_SHA.test(String(marker.headSha)) && marker.headSha !== key.headSha)
+    .sort((a, b) => b.round - a.round)
+    .map(({ marker }) => marker)
+    .find((marker) => isAncestor(marker.headSha) && onFirstParent(marker.headSha));
+  if (!previous) return { selfFeeding: false, previousFixHead: null };
+  // A line is self-feeding when blame at the head attributes it to a commit made since the previous fix head.
+  // Blame follows renames itself; -C attributes lines copied or moved by the fix to their origin, and textconv and configured
+  // ignore lists are switched off so line numbers and attribution are those of the file at the head. git fails for a file missing at the head or a range starting past its end;
+  // a range ending past the end is clamped by git to the last line.
+  const fixCommits = new Set(run(['rev-list', '--first-parent', `${previous.headSha}..${key.headSha}`]).split('\n').filter(Boolean));
+  const blamed = run(['blame', '-C', '-C', '--no-textconv', '--no-ignore-revs-file', '--porcelain', '-L', `${start},${end}`, key.headSha, '--', file]).split('\n')
+    .map((line) => /^([0-9a-f]{40}|[0-9a-f]{64}) \d+ \d+/.exec(line)).filter(Boolean).map((match) => match[1]);
+  return { selfFeeding: blamed.some((sha) => fixCommits.has(sha)), previousFixHead: previous.headSha };
+}
+
+// The finding's file is repository-relative, so git must run from the work tree root, not the caller's subdirectory.
+function worktreeRoot(cwd) {
+  const git = crossPlatformCommand('git', cwd);
+  try {
+    return execFileSync(git, crossPlatformArgs(['rev-parse', '--show-toplevel'], needsDoubleEscape('git', cwd)), crossPlatformOpts({ cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })).trim();
+  } catch (error) {
+    if (error.status === 128) return cwd; // a bare repository has no work tree; blame runs from where it is
+    throw error;
+  }
+}
+
 function runMain(repoRoot = process.cwd()) {
   const [verb, pr, headSha, argument] = process.argv.slice(2);
   const stateDir = defaultStateDir(repoRoot);
@@ -646,10 +725,12 @@ function runMain(repoRoot = process.cwd()) {
   else if (verb === 'mark-initial-requested') process.stdout.write(`${JSON.stringify({ marked: markInitialRequested({ stateDir, pr, headSha, provider: argument }) })}\n`);
   else if (verb === 'claim-fix-round') process.stdout.write(`${JSON.stringify(claimFixRound({ stateDir, pr, headSha }))}\n`);
   else if (verb === 'renew-fix-round') process.stdout.write(`${JSON.stringify(renewFixRound({ stateDir, pr, headSha, owner: argument }))}\n`);
+  else if (verb === 'waive-fix-budget') process.stdout.write(`${JSON.stringify(waiveFixBudget({ stateDir, pr, person: headSha, count: Number(argument) }))}\n`);
+  else if (verb === 'self-feeding') { const [start, end] = process.argv.slice(6); process.stdout.write(`${JSON.stringify(selfFeeding({ repoRoot: worktreeRoot(repoRoot), stateDir, pr, headSha, file: argument, start: Number(start), end: Number(end === undefined ? start : end) }))}\n`); }
   else if (verb === 'record-review') process.stdout.write(`${JSON.stringify(recordReview({ stateDir, pr, headSha, observation: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'record-delivery') process.stdout.write(`${JSON.stringify(recordDelivery({ stateDir, pr, headSha, packet: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'reject-review-batch') process.stdout.write(`${JSON.stringify(rejectReviewBatch({ stateDir, pr, headSha, ...JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
-  else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, record-review, reject-review-batch, or record-delivery');
+  else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, waive-fix-budget, self-feeding, record-review, reject-review-batch, or record-delivery');
 }
 
-module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, recordReview, rejectReviewBatch, classifyDelivery, recordDelivery, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, runMain };
+module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, waiveFixBudget, selfFeeding, recordReview, rejectReviewBatch, classifyDelivery, recordDelivery, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, runMain };
