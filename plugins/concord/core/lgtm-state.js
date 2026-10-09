@@ -703,18 +703,23 @@ function collectedMinorIds(input) {
   return collectedMinors(input).map((minor) => minor.id).sort();
 }
 
-// A record covers only the review batch and the collected minors present when it was written;
-// a review recorded or rejected later, or a minor collected later, is new evidence and lifts the terminal state.
+// A record covers the review batch active when it was written; a review recorded or rejected later is new evidence
+// and lifts the terminal state.
+function deliveryBatchCurrent(input, record) {
+  return !!record && JSON.stringify(record.reviewIds) === JSON.stringify(activeReviewIds(input));
+}
+
+// A merge also needs the record to cover the minors collected when it was written; a minor collected later only
+// blocks the merge until the delivery is recorded again, and leaves request and fix claims terminal.
 function deliveryCurrent(input, record) {
-  return !!record && JSON.stringify(record.reviewIds) === JSON.stringify(activeReviewIds(input))
-    && JSON.stringify(record.minorIds) === JSON.stringify(collectedMinorIds(input));
+  return deliveryBatchCurrent(input, record) && JSON.stringify(record.minorIds) === JSON.stringify(collectedMinorIds(input));
 }
 
 // A fix claim also finds the delivery stale when a waiver changed the fix cap the record was written under;
 // review-request claims depend on the review batch alone.
 function deliveryTerminal(input, { fixCap = false } = {}) {
   const latest = latestDelivery(input);
-  if (!latest || latest.classification === 'blocked' || !deliveryCurrent(input, latest)) return null;
+  if (!latest || latest.classification === 'blocked' || !deliveryBatchCurrent(input, latest)) return null;
   if (fixCap && latest.budgets?.fix?.max !== fixBudget(input).max) return null;
   return { claimed: false, reason: 'delivery-terminal', classification: latest.classification };
 }
