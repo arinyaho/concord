@@ -755,7 +755,7 @@ test('waive-fix-budget records the waiver and allows the waived rounds only', ()
   const stateDir = temp();
   assert.ok(claimRounds(stateDir, 221, 3).every((result) => result.claimed));
   assert.strictEqual(claimRounds(stateDir, 221, 1, 4)[0].reason, 'fix-round-budget-exhausted');
-  assert.deepStrictEqual(lgtmState.waiveFixBudget({ stateDir, pr: 221, person: 'someone', count: 2, now: 9000 }), { waived: true, waiver: { person: 'someone', count: 2, atMs: 9000 } });
+  assert.deepStrictEqual(lgtmState.waiveFixBudget({ stateDir, pr: 221, person: 'someone', count: 2, now: 9000 }), { waived: true, waiver: { person: 'someone', count: 2, atMs: 9000 }, budget: { max: 5, spent: 3, remaining: 2 } });
   const headSha = '4'.repeat(40);
   assert.deepStrictEqual(lgtmState.status({ stateDir, pr: 221, headSha }).waivers, [{ person: 'someone', count: 2, atMs: 9000 }]);
   assert.deepStrictEqual(lgtmState.status({ stateDir, pr: 221, headSha }).fixBudget, { max: 5, spent: 3, remaining: 2 });
@@ -927,13 +927,20 @@ test('self-feeding picks the latest fix round by slot order, not by timestamp', 
   assert.deepStrictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'a.md', start: 2, end: 2 }), { selfFeeding: false, previousFixHead: second });
 });
 
-test('self-feeding surfaces git failures instead of reporting not self-feeding', () => {
+test('self-feeding treats a fix head missing from the object store as absent', () => {
   const { repo, write, commit } = selfFeedingRepo('lgtm-self-missing-');
   write('a.md', '1\n');
   const head = commit('base');
   const stateDir = temp();
   claimFixHead(stateDir, 'b'.repeat(40), 1000);
-  assert.throws(() => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'a.md', start: 1, end: 1 }));
+  assert.deepStrictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'a.md', start: 1, end: 1 }), { selfFeeding: false, previousFixHead: null });
+});
+
+test('self-feeding still surfaces a git failure on the head itself', () => {
+  const { repo } = selfFeedingRepo('lgtm-self-badhead-');
+  const stateDir = temp();
+  claimFixHead(stateDir, 'b'.repeat(40), 1000);
+  assert.throws(() => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: 'c'.repeat(40), file: 'a.md', start: 1, end: 1 }));
 });
 
 test('self-feeding does not depend on the configured diff path prefix', () => {
@@ -1179,4 +1186,44 @@ test('review-until-lgtm merges only on explicit request and a ready merge-ready 
   }
   assert.strictEqual(fs.readFileSync(CLAUDE_SKILL, 'utf8'), fs.readFileSync(CODEX_SKILL, 'utf8'));
   assert.strictEqual(fs.readFileSync(CLAUDE_SKILL, 'utf8'), fs.readFileSync(COPILOT_SKILL, 'utf8'));
+});
+
+test('review-until-lgtm pins late reviews, adjudication records, minor triage, merge evidence, and waivers', () => {
+  for (const file of [CLAUDE_SKILL, CODEX_SKILL, COPILOT_SKILL]) {
+    const skill = fs.readFileSync(file, 'utf8');
+    assert.match(skill, /review recorded later is history for that head, and its reviewer is collected again on the new head after the push/);
+    assert.match(skill, /conceded finding whose fix a stop rule withholds stays out of the plan and enters the delivery disposition as `follow-up`/);
+    assert.match(skill, /verdicts and reasons persist in the head's plan.*`reject-review-batch` evidence or the `collect-minor` reasons.*runs once/);
+    assert.match(skill, /obsolete or duplicate minor may be dropped with its reason stated in the handoff/);
+    assert.match(skill, /same id with a different URL fails/);
+    assert.match(skill, /collected minors is `mergeable-with-follow-ups`, never green/);
+    for (const token of ['"baseSha","contractDigest"', '"expectedReviewers"', '`base-changed`', '`contract-changed`', '`check-missing:<name>`', '`fix-round-open`', '`reviewer-missing:<login>`', 'gh pr merge <pr> --match-head-commit']) {
+      assert.ok(skill.includes(token), `${path.basename(path.dirname(file))} lacks ${token}`);
+    }
+    assert.match(skill, /no reviewer is configured and none was observed, the result is `no-automated-review`/);
+    assert.match(skill, /waivers with different person and count pairs add up/);
+    assert.match(skill, /prints the resulting `budget`/);
+    assert.match(skill, /previous fix head missing from the head's history.*counts as absent/);
+  }
+  assert.strictEqual(fs.readFileSync(CLAUDE_SKILL, 'utf8'), fs.readFileSync(CODEX_SKILL, 'utf8'));
+  assert.strictEqual(fs.readFileSync(CLAUDE_SKILL, 'utf8'), fs.readFileSync(COPILOT_SKILL, 'utf8'));
+});
+
+test('waivers add up: two waivers by one person with different counts grant their sum', () => {
+  const stateDir = temp();
+  assert.deepStrictEqual(lgtmState.waiveFixBudget({ stateDir, pr: 221, person: 'someone', count: 1, now: 1000 }).budget, { max: 4, spent: 0, remaining: 4 });
+  assert.deepStrictEqual(lgtmState.waiveFixBudget({ stateDir, pr: 221, person: 'someone', count: 2, now: 2000 }).budget, { max: 6, spent: 0, remaining: 6 });
+  assert.deepStrictEqual(lgtmState.waiveFixBudget({ stateDir, pr: 221, person: 'someone', count: 2, now: 3000 }).budget, { max: 6, spent: 0, remaining: 6 });
+});
+
+test('collect-minor refuses a known id with a different url and yields to a held transition lock', () => {
+  const stateDir = temp();
+  const headSha = '5'.repeat(40);
+  const minor = { stateDir, pr: 221, headSha, id: 'm1', url: 'https://github.com/o/r/pull/221#discussion_r1', reason: 'edge case' };
+  assert.strictEqual(lgtmState.collectMinor(minor).collected, true);
+  assert.throws(() => lgtmState.collectMinor({ ...minor, url: 'https://github.com/o/r/pull/221#discussion_r2' }), /different url/);
+  assert.strictEqual(lgtmState.collectMinor({ ...minor, reason: 'another wording' }).existing, true);
+  fs.mkdirSync(path.join(stateDir, 'pr-221.transition.lock'));
+  assert.deepStrictEqual(lgtmState.collectMinor({ ...minor, id: 'm2' }), { collected: false, reason: 'transition-busy' });
+  assert.strictEqual(lgtmState.status({ stateDir, pr: 221, headSha }).minors.length, 1);
 });

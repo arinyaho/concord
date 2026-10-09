@@ -25,8 +25,8 @@ function deliver(stateDir, headSha, overrides = {}) {
   }));
 }
 const evidence = (headSha, overrides = {}) => ({
-  headSha, checks: [{ name: 'plugin-tests', conclusion: 'success' }],
-  reviewers: [{ reviewer: CODEX, terminal: true, lgtm: true }], ...overrides,
+  headSha, baseSha: BASE, contractDigest: 'a'.repeat(64), checks: [{ name: 'plugin-tests', conclusion: 'success' }],
+  reviewers: [{ reviewer: CODEX, terminal: true, lgtm: true }], expectedReviewers: [CODEX], ...overrides,
 });
 const ready = (stateDir, headSha, ev) => cli(stateDir, ['merge-ready', String(PR), headSha], JSON.stringify(ev));
 
@@ -71,10 +71,45 @@ test('failing or missing checks, a blocked delivery, no observed reviewer and a 
   const stateDir = temp();
   deliver(stateDir, HEAD_A);
   assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A, { checks: [{ name: 'plugin-tests', conclusion: 'failure' }] })).reasons, ['check:plugin-tests:failure']);
-  assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A, { reviewers: [] })).reasons, ['no-automated-review']);
+  assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A, { reviewers: [], expectedReviewers: [] })).reasons, ['no-automated-review']);
+  assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A, { reviewers: [] })).reasons, [`reviewer-missing:${CODEX}`]);
   assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A, { reviewers: [{ reviewer: CODEX, terminal: false, lgtm: false, failure: 'timeout' }] })).reasons, [`reviewer-failure:${CODEX}:timeout`]);
   const blockedDir = temp();
   deliver(blockedDir, HEAD_A, { acceptance: [{ id: 'AC1', met: false }] });
   assert.deepStrictEqual(ready(blockedDir, HEAD_A, evidence(HEAD_A)).reasons, ['delivery-blocked']);
-  assert.throws(() => ready(stateDir, HEAD_A, { headSha: HEAD_A, checks: 'green', reviewers: [] }), /merge-ready/);
+  assert.throws(() => ready(stateDir, HEAD_A, { headSha: HEAD_A, baseSha: BASE, contractDigest: 'a'.repeat(64), checks: 'green', reviewers: [], expectedReviewers: [] }), /merge-ready/);
+});
+
+test('the live base and the live contract digest must equal the delivery record', () => {
+  const stateDir = temp();
+  deliver(stateDir, HEAD_A);
+  assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A, { baseSha: HEAD_B })).reasons, ['base-changed']);
+  assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A, { contractDigest: 'b'.repeat(64) })).reasons, ['contract-changed']);
+  assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A, { baseSha: BASE.toUpperCase(), contractDigest: 'A'.repeat(64) })).reasons, []);
+});
+
+test('every required check the delivery record names must be present and successful on the live head', () => {
+  const stateDir = temp();
+  deliver(stateDir, HEAD_A);
+  assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A, { checks: [] })).reasons, ['check-missing:plugin-tests']);
+  assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A, { checks: [{ name: 'lint', conclusion: 'success' }] })).reasons, ['check-missing:plugin-tests']);
+});
+
+test('every expected reviewer must be observed, and a reviewer entry needs an identity', () => {
+  const stateDir = temp();
+  deliver(stateDir, HEAD_A);
+  assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A, { expectedReviewers: [CODEX, 'copilot-pull-request-reviewer[bot]'] })).reasons, ['reviewer-missing:copilot-pull-request-reviewer[bot]']);
+  assert.throws(() => ready(stateDir, HEAD_A, evidence(HEAD_A, { reviewers: [{ terminal: true, lgtm: true }] })), /merge-ready/);
+  assert.throws(() => ready(stateDir, HEAD_A, evidence(HEAD_A, { expectedReviewers: undefined })), /merge-ready/);
+});
+
+test('an open fix claim on the head blocks the merge even when the delivery record is current', () => {
+  const stateDir = temp();
+  const observation = { reviewId: 5410169503, reviewer: CODEX, reviewUrl: 'https://github.com/arinyaho/concord/pull/165#pullrequestreview-5410169503', commitId: HEAD_A, state: 'completed', lgtm: false, findings: [{ url: 'https://github.com/arinyaho/concord/pull/165#discussion_r1', priority: 'P1', signals: [] }] };
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD_A, now: 1000, observation });
+  deliver(stateDir, HEAD_A, { reviewIds: [5410169503], findings: [{ id: 'f1', url: observation.findings[0].url, disposition: 'fixed', rootCause: 'rc', releaseBlocking: [], rationale: 'fixed' }] });
+  assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A)).reasons, []);
+  cli(stateDir, ['waive-fix-budget', String(PR), 'someone', '1']);
+  assert.strictEqual(cli(stateDir, ['claim-fix-round', String(PR), HEAD_A]).claimed, true);
+  assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A)).reasons, ['fix-round-open']);
 });
