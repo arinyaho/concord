@@ -274,11 +274,11 @@ function renderHandoff(result) {
     for (const f of r.fixed || []) lines.push(`  fixed in prior run #${r.run}: ${evidenceLine(f)} -> commit ${f.fix_commit}`);
   }
   for (const d of ledger.gate_dismissed || []) lines.push(`dismissed by ${d.dismissedBy}: ${evidenceLine(d)}`);
-  // A cleared finding is reported once: still open or dismissed ids show in their own section, and "not re-raised" needs a gate that ran again after the restart.
+  // A cleared finding is reported once: still open or dismissed ids show in their own section, and "not re-raised" needs a gate round whose verdict was recorded.
   const reported = new Set([...(ledger.gate_open || []).map((f) => f.id), ...dismissedIds(ledger)]);
-  const gateRan = (ledger.gate_rounds || []).length > 0;
+  const gateRan = (ledger.gate_rounds || []).some((round) => (ledger.history || []).some((h) => h.round === round));
   for (const c of ledger.gate_cleared || []) {
-    if (!reported.has(c.id)) lines.push(`cleared at restart, ${gateRan ? 'not re-raised' : 'gate not re-run'}: ${evidenceLine(c)}`);
+    if (!reported.has(c.id)) lines.push(`cleared at restart, ${gateRan ? 'not re-raised' : 'gate verdict not recorded'}: ${evidenceLine(c)}`);
   }
   if (aborted) lines.push(`ABORTED (${aborted.kind}): ${aborted.message}`);
 

@@ -443,6 +443,7 @@ function applyRoundOutcome(ledger, outcome) {
       gate: f.gate,
       file: f.file,
       line: f.line,
+      ...(f.span ? { span: f.span } : {}),
       summary: f.summary,
       status,
       fix_commit: status === 'fixed' ? fixCommits[f.id] || null : null,

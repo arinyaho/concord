@@ -5259,16 +5259,18 @@ test('a gate-pending restart keeps the cleared open finding as evidence, outside
   assert.deepStrictEqual(after.gate_open, [], 'a cleared finding is not put back into gate_open');
   assert.deepStrictEqual(after.gate_cleared.map(({ id, file, span, summary, rationale, releaseBlocking }) => ({ id, file, span, summary, rationale, releaseBlocking })), [{ id: 'gate:cross-context:x', file: 'a.txt', span: 'two', summary: 'a real gap', rationale: 'r', releaseBlocking: ['serious-bug'] }]);
   assert.match(after.gate_cleared[0].clearedAt, /^\d{4}-\d\d-\d\dT/);
-  const gateRan = { ...after, gate_rounds: [after.round] };
+  const gateRan = { ...after, gate_rounds: [after.round], history: [{ round: after.round }] };
   assert.match(cli.renderHandoff({ ledger: gateRan }), /cleared at restart, not re-raised: \[gate:cross-context:x\] a\.txt: a real gap .*release-blocking: serious-bug/);
   const raisedAgain = { ...gateRan, gate_open: [open] };
   assert.doesNotMatch(cli.renderHandoff({ ledger: raisedAgain }), /cleared at restart/);
   const dismissedAfter = { ...gateRan, gate_dismissed: [{ ...open, dismissedBy: 'someone', dismissedAt: '2026-10-09T00:00:00.000Z' }] };
   assert.doesNotMatch(cli.renderHandoff({ ledger: dismissedAfter }), /cleared at restart/, 'a dismissed finding is reported once, as dismissed');
-  // The gate did not run again (a --no-broad restart): the finding is not known to be fixed.
-  const gateSkipped = cli.renderHandoff({ ledger: after });
-  assert.match(gateSkipped, /cleared at restart, gate not re-run: \[gate:cross-context:x\]/);
-  assert.doesNotMatch(gateSkipped, /not re-raised/);
+  // No recorded gate verdict (a --no-broad restart, or a gate scheduled but crashed before round-record): the finding is not known to be fixed.
+  for (const unverified of [after, { ...after, gate_rounds: [after.round] }]) {
+    const text = cli.renderHandoff({ ledger: unverified });
+    assert.match(text, /cleared at restart, gate verdict not recorded: \[gate:cross-context:x\]/);
+    assert.doesNotMatch(text, /not re-raised/);
+  }
   run(['rerun', 'feat/x'], { env });
   assert.deepStrictEqual(review.readLedger(dir, slug).gate_cleared.map((f) => f.id), ['gate:cross-context:x'], 'rerun carries the cleared evidence forward');
 });
