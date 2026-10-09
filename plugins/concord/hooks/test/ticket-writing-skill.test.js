@@ -73,6 +73,7 @@ test('ticket-to-pr delegates by the kind of work, not by importance', () => {
     /separate deep-capability reviewer/,
     /excluding the responsible agent's reasoning/,
     /"Adjudicate and escalate" subsection of `review-until-lgtm`/,
+    /before a PR exists, the deep-capability agent rules on it/,
   ]) {
     assert.match(section, pattern);
   }
