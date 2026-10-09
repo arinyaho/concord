@@ -6,6 +6,7 @@ on:
       - "plugins/**"
       - "services/agent-team/**"
       - "scripts/release-version.mjs"
+      - "scripts/release-bump.mjs"
       - "VERSION"
       - "README.md"
       - ".github/plugin/marketplace.json"

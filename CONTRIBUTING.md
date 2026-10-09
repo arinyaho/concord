@@ -23,6 +23,12 @@ find plugins -path '*/test/*.test.js' -type f -print0 | xargs -0 -r node --test
 
 Open a pull request against `main`; CI runs the same checks for changes under `plugins/`, `services/` (each service has its own workflow), `VERSION`, and the marketplace manifests; CI does not run the plugin-install end-to-end tests or cover `scripts/dod.mjs` and `review.config.json`, so run `node scripts/dod.mjs` locally for changes to those files, to `plugins/`, or to the marketplace manifests. Keep each PR to one coherent change.
 
+## Versioning
+
+Pull requests never edit `VERSION` or the version fields derived from it. After each merge, the `release-bump` workflow on `main` raises the beta version in one commit, and the `version-guard` check fails a pull request that edits them.
+
 ## Review
 
 Fix review comments that are rollout blockers (serious bugs, security issues, unmet acceptance criteria) before merging. Leave minor comments open while the pull request is in progress; just before merging, read them together once and file a ticket for each one worth keeping. A minor comment does not block a merge.
+
+Group small issues that change the same file or area into one pull request, including the tickets filed for minor review comments, and take the groups with the most issues first. Run groups in different areas in parallel when the files they change do not overlap. Within a group, mark each item that needs rule wording or a design, and give it to an agent of Opus-class or higher capability.

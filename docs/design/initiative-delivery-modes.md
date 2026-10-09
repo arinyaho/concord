@@ -40,9 +40,9 @@ The skill forbids launching reviewers outside the plan under new task names. A h
 
 ### Deep decision gate
 
-When the workflow identifies a material architecture or behavioral decision that requires Deep capability, a separate Deep-capability specialist in clean context must make the pass. The active orchestrator never satisfies this gate itself, regardless of its model, reasoning effort, or self-assessment.
+A task that decides what something should be, the content or wording of a rule, contract, interface, schema, or architecture, is design work and requires Deep capability; applying a decision already made stays with the active agent, and the reader splits a task that mixes both. A separate Deep-capability specialist in clean context must do the design work. The active orchestrator never satisfies this gate itself, regardless of its model, reasoning effort, or self-assessment.
 
-Before the first human checkpoint, the handoff identifies the decision, the specialist invocation or agent, the requested and resolved model, the provider or catalog basis, the reasoning effort when exposed, the completed conclusion, and unresolved assumptions. Material cryptography, security, and migration decisions also require a second independent Deep reviewer with separate evidence.
+Before the first human checkpoint, the handoff identifies the decision, the specialist invocation or agent, the requested and resolved model, the provider or catalog basis, the reasoning effort when exposed, the completed conclusion, and unresolved assumptions. A cryptography, security, or migration decision also requires a second independent Deep reviewer with separate evidence.
 
 The checkpoint and the following stage do not proceed when the handoff is missing or unreadable, a model identity is unresolved, the specialist did not complete successfully, the evidence does not cover the proposed decision, or required independent-review evidence is absent. User approval cannot replace missing technical evidence. The general permission to avoid unnecessary delegation is subordinate to this gate.
 
