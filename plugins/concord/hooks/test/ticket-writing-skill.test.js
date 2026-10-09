@@ -44,7 +44,7 @@ test('ticket-to-pr requires a state-and-event table for stateful changes and a t
     skill.split('\n').filter((l) => /^\| \d \|/.test(l)).map((l) => [l.split('|')[1].trim(), l]),
   );
   assert.match(rows['3'], /persisted state or a retry, recovery or replay path/);
-  assert.match(rows['3'], /table of states and events/);
+  assert.match(rows['3'], /one row per combination of a state and an event/);
   assert.match(rows['3'], /no persisted state/);
   assert.match(rows['6'], /state-and-event row has a named test/);
   assert.match(rows['6'], /recorded reason/);
