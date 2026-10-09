@@ -6,7 +6,7 @@ A rule that routes work to a deep-capability agent only when a choice is importa
 
 The rule asks one question that the task itself answers: does the task decide what something should be, or apply a decision already made. Design work (the content and wording of a rule, contract, interface, schema or architecture) goes to a deep-capability agent; implementation, tests, edits, pushes and PR handling stay with the active agent. A task that mixes both kinds is split by the reader.
 
-A review finding against the content or wording of a rule, contract, interface or schema is design work. The deep-capability agent rules on it and the active agent applies the verdict, because patching wording without that ruling repeats the many-round pattern the rule exists to prevent.
+A review finding against the content or wording of a rule, contract, interface or schema is design work. For a finding a PR review thread raised, the skill defers to the "Adjudicate and escalate" subsection of `review-until-lgtm`, which sends such a finding to a Fable-class adjudicator when a signal of suspicion holds; for a finding local review raised, the deep-capability agent rules on it and the active agent applies the verdict, because patching wording without that ruling repeats the many-round pattern the rule exists to prevent.
 
 The separate-reviewer requirement for cryptography, security and migration stays. It names areas and not a degree of importance, so it needs no judgment to trigger.
 
@@ -18,4 +18,4 @@ A task can mix both kinds, and the split is the reader's judgment; the question 
 
 ## Evidence and executable gates
 
-The skill-content test in `plugins/concord/hooks/test/ticket-writing-skill.test.js` asserts that the section does not contain the word "material" and does contain the design-versus-apply question and the separate-reviewer requirement as literal phrases, and compares the shared, Codex and Copilot copies, which each package's `bundle.mjs` regenerates.
+The skill-content test in `plugins/concord/hooks/test/ticket-writing-skill.test.js` asserts that the section does not contain the word "material" and does contain the design-versus-apply question, the separate-reviewer requirement and the pointer to the "Adjudicate and escalate" subsection as literal phrases, and compares the shared, Codex and Copilot copies, which each package's `bundle.mjs` regenerates.

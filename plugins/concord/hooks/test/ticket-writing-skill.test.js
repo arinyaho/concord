@@ -72,9 +72,12 @@ test('ticket-to-pr delegates by the kind of work, not by importance', () => {
     /applies a decision already made/,
     /separate deep-capability reviewer/,
     /excluding the responsible agent's reasoning/,
+    /"Adjudicate and escalate" subsection of `review-until-lgtm`/,
+    /when a PR review thread raised it; when local review raised it, the deep-capability agent rules on it/,
   ]) {
     assert.match(section, pattern);
   }
+  assert.match(read(path.join(REPO, 'plugins/concord/skills/review-until-lgtm/SKILL.md')), /^### Adjudicate and escalate$/m);
 });
 
 test('Claude and Codex source packages ship the same initiative-to-prs skill', () => {
