@@ -14,6 +14,7 @@ const gatePanelLib = require('./gate-panel');
 const artifactContract = require('./artifact-contract');
 const reportLib = require('./report');
 const reviewTelemetry = require('./review-telemetry');
+const { normalizeProviderFailure, reviewContinuation } = require('./provider-failure');
 const { REVIEW_MAX_RUNS_DEFAULT } = require('./config');
 const {
   targetSlug,
@@ -630,6 +631,7 @@ function requirePlanDispatch(ledger) {
   if (retry && retry.state !== 'accepted' && !retry.launched) {
     throw new Error('harness-failure: semantic replacement requires plan-dispatch before evidence acceptance');
   }
+  if (ledger?.execution?.planTransportRetry?.state === 'pending') throw new Error('harness-failure: transport recovery requires plan-dispatch before evidence acceptance');
 }
 
 // Exclusive lock on the target ledger (same mkdir style as the initiative
@@ -1387,7 +1389,7 @@ function runVerb(resolveFromCwd, args, initiative) {
           ? Array.from(new Set([...(ledger.execution.pending || []), 'plan']))
           : (ledger.execution.pending || []).filter((role) => role !== name);
         writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, completed, artifactHashes, pending,
-          ...(name === 'plan' ? { normalizedPlan: contentHash(canonicalText) } : {}), retryArtifacts, retryArtifact: firstRetryArtifact(retryArtifacts) } });
+          ...(name === 'plan' ? { normalizedPlan: contentHash(canonicalText), planRepairPending: false } : {}), retryArtifacts, retryArtifact: firstRetryArtifact(retryArtifacts) } });
       }
       try { fs.unlinkSync(retryPath); } catch (e) { /* no prior retry */ }
       process.stdout.write(JSON.stringify({ status: 'ok', artifact: name }) + '\n');
@@ -1427,6 +1429,10 @@ function runVerb(resolveFromCwd, args, initiative) {
           fs.writeFileSync(packetPath, JSON.stringify(packet) + '\n', { flag: 'wx', mode: 0o600 });
           const repair = { target: ledger.target || { ref }, role: name, round: n, diffHash: contentHash(readReviewArtifact(path.join(stateDir, `round-${n}-diff.txt`), stateDir, 'utf8')), originalHash: contentHash(bytes), error: e.message, snapshotPath, packetPath, packetHash: contentHash(readReviewArtifact(packetPath, stateDir)), candidatePath, candidateHash: null, state: 'prepared' };
           fs.writeFileSync(repairPath, JSON.stringify(repair) + '\n', { flag: 'wx' });
+          if (name === 'plan') {
+            const preparedLedger = readLedger(stateDir, slug);
+            writeLedger(stateDir, slug, { ...preparedLedger, execution: { ...preparedLedger.execution, planRepairPending: true } });
+          }
           // A retry is a new launch: it must be reserved again before its evidence is accepted.
           if (run && ARTIFACT_RESERVE_ROLE[name]) writeLedger(stateDir, slug, withSupersededLaunch(readLedger(stateDir, slug), ARTIFACT_RESERVE_ROLE[name], n));
           process.stdout.write(JSON.stringify({ status: 'repair', artifact: name, repair }) + '\n');
@@ -1472,9 +1478,12 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (!ledger || ledger.phase !== 'gates') throw new Error('plan-dispatch: no active planning work');
     const retry = ledger.execution?.planRetry;
     if (retry && retry.state !== 'accepted') {
-      if (retry.launched || retry.state === 'exhausted') throw new Error(`harness-failure: planner retry exhausted for this round; ${retry.message}`);
+      const transport = ledger.execution.planTransportRetry;
+      const recovering = retry.state === 'pending' && retry.launched && transport?.state === 'pending' && transport.attempts === 0;
+      if ((!recovering && retry.launched) || retry.state === 'exhausted') throw new Error(`harness-failure: planner retry exhausted for this round; ${retry.message}`);
       requireReservations(run, ledger, [{ role: 'plan', present: 1 }], 'plan-dispatch');
-      writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, planRetry: { ...retry, launched: true } } });
+      writeLedger(stateDir, slug, { ...ledger, execution: { ...ledger.execution, planRetry: { ...retry, launched: true },
+        ...(recovering ? { planTransportRetry: { state: 'dispatched', attempts: 1 } } : {}) } });
     }
     process.stdout.write(JSON.stringify({ status: 'granted' }) + '\n');
     return;
@@ -1488,11 +1497,33 @@ function runVerb(resolveFromCwd, args, initiative) {
     let failure;
     try { failure = JSON.parse(rest[0]); } catch (_) { throw new Error('round-failure: expected one JSON failure record'); }
     if (!failure || typeof failure.role !== 'string' || typeof failure.kind !== 'string' || typeof failure.message !== 'string') throw new Error('round-failure: failure requires role, kind, and message strings');
+    if (failure.diagnostic || (failure.role !== 'runner' && ['subprocess-exit', 'provider-error', 'timeout', 'signal', 'interrupted'].includes(failure.kind))) {
+      failure = normalizeProviderFailure({ ...failure, diagnostic: failure.diagnostic || {
+        classification: failure.kind === 'timeout' ? 'transient' : 'unknown',
+        engine: failure.role === 'fix' ? ledger.reviewRouting?.fixer : ledger.reviewRouting?.reviewer,
+      } });
+    }
     const execution = ledger.execution || { round: ledger.round, completed: [], pending: [] };
-    const entry = { role: failure.role, kind: failure.kind, message: failure.message, ...(failure.exitCode !== undefined ? { exitCode: failure.exitCode } : {}), ...(failure.signal ? { signal: failure.signal } : {}), at: new Date().toISOString() };
-    const failed = { ...ledger, execution: { ...execution, ...(failure.role === 'plan' && execution.planRetry?.launched ? { planRetry: { ...execution.planRetry, state: 'exhausted', message: `planner retry exhausted for this round; ${failure.message}` } } : {}), failures: [...(execution.failures || []), entry].slice(-5), failure: entry } };
+    const replacement = (failure.role === 'plan' || (failure.role === 'artifact-repair' && execution.planRepairPending)) && execution.planRetry?.launched && execution.planRetry.state !== 'accepted';
+    const transport = execution.planTransportRetry;
+    const retryable = replacement ? failure.role === 'plan' && failure.retryable === true && (!transport || (transport.state === 'pending' && transport.attempts === 0)) : true;
+    const entry = { role: failure.role, kind: failure.kind, message: failure.message, ...(failure.exitCode !== undefined ? { exitCode: failure.exitCode } : {}), ...(failure.signal ? { signal: failure.signal } : {}),
+      ...(failure.diagnostic ? { diagnostic: failure.diagnostic } : {}), retryable, nextAction: retryable ? 'resume' : 'terminal-handoff', at: new Date().toISOString() };
+    // No new dispatch happened while pending: a repeated failure report cannot
+    // consume a second launch or exhaust the unconsumed transport allowance.
+    if (replacement && transport?.state === 'pending' && execution.failure?.message === entry.message) {
+      process.stdout.write(JSON.stringify({ status: 'recorded', round: ledger.round, ...reviewContinuation(ledger) }) + '\n');
+      return;
+    }
+    const failed = { ...ledger, execution: { ...execution, ...(replacement ? {
+      planRetry: { ...execution.planRetry, state: retryable ? 'pending' : 'exhausted', discardRepair: true,
+        message: retryable ? `planner transport retry available for this round; ${failure.message}` : `planner retry exhausted for this round; ${failure.message}` },
+      planTransportRetry: { state: retryable ? 'pending' : 'exhausted', attempts: transport?.attempts || 0 },
+      normalizedPlan: null, planRepairPending: false, completed: (execution.completed || []).filter((role) => role !== 'plan'),
+    } : {}), failures: [...(execution.failures || []), entry].slice(-5), failure: entry } };
+    Object.assign(entry, reviewContinuation(failed));
     writeLedger(stateDir, slug, run && ARTIFACT_RESERVE_ROLE[failure.role] ? withSupersededLaunch(failed, ARTIFACT_RESERVE_ROLE[failure.role], ledger.round) : failed);
-    process.stdout.write(JSON.stringify({ status: 'recorded', round: ledger.round, retryable: true }) + '\n');
+    process.stdout.write(JSON.stringify({ status: 'recorded', round: ledger.round, ...reviewContinuation(failed) }) + '\n');
     return;
   }
 
@@ -1869,12 +1900,34 @@ function runVerb(resolveFromCwd, args, initiative) {
     let resumedCompletedArtifacts = [];
     let resumedNormalizedPlan = null;
     if (resumed) {
-      const priorManifest = isGit && ledger.execution?.changeManifest ? readChangeManifest(stateDir, ledger, ref, resumeRound) : null;
+      const recoveryLedger = ledger;
+      const transportRecovery = ledger.execution?.planTransportRetry;
+      const stopTransportRecovery = (message) => {
+        const execution = recoveryLedger.execution;
+        const failure = { role: 'plan', kind: 'evidence-failure', message, retryable: false, nextAction: 'terminal-handoff', at: new Date().toISOString() };
+        const stopped = { ...recoveryLedger, execution: { ...execution,
+          normalizedPlan: null, planRepairPending: false, completed: (execution.completed || []).filter((role) => role !== 'plan'),
+          planRetry: { ...execution.planRetry, state: 'exhausted', message },
+          planTransportRetry: { ...execution.planTransportRetry, state: 'exhausted' },
+          failures: [...(execution.failures || []), failure].slice(-5), failure } };
+        try { writeLedger(stateDir, slug, stopped); }
+        catch (_) { throw new Error(`harness-failure: ${message} (failure recording or readback failed; reconcile the existing ledger)`); }
+        throw new Error(`harness-failure: ${message}`);
+      };
+      let priorManifest;
+      try { priorManifest = isGit && ledger.execution?.changeManifest ? readChangeManifest(stateDir, ledger, ref, resumeRound) : null; }
+      catch (error) {
+        if (transportRecovery) stopTransportRecovery('planner transport recovery manifest changed; reconcile the existing evidence before continuing');
+        throw error;
+      }
       const preserveScope = !isGit || !!(priorManifest && priorManifest.target.headSha === headSha
         && priorManifest.target.baseSha === snapshot.leftSha
         && JSON.stringify(priorManifest.paths) === JSON.stringify(snapshot.paths));
       const preserveArtifacts = ledger.execution && ledger.execution.round === resumeRound && ledger.execution.diffHash === diffHash
         && preserveScope;
+      // Acceptance ends unchanged-scope transport recovery. Retain its history
+      // for evidence refusals, but let a committed fix invalidate the old generation.
+      if (transportRecovery && ledger.execution.planRetry?.state !== 'accepted' && !preserveArtifacts) stopTransportRecovery('planner transport recovery scope changed; reconcile the existing evidence before continuing');
       if (preserveArtifacts && ledger.execution.planRetry?.state === 'exhausted') throw new Error(`harness-failure: ${ledger.execution.planRetry.message}`);
       const completed = preserveArtifacts
         ? (ledger.execution.completed || []).filter((role) => ['correctness', 'verify', 'plan', 'intent', 'gate', 'gate-verify'].includes(role))
@@ -1908,7 +1961,10 @@ function runVerb(resolveFromCwd, args, initiative) {
           for (const p of [repair.snapshotPath, repair.packetPath, repair.candidatePath, repairFile]) {
             if (fs.existsSync(p)) preserved.add(path.basename(p));
           }
-        } catch (_) { throw new Error(`harness-failure: ${role} pending repair evidence is corrupt`); }
+        } catch (_) {
+          if (transportRecovery) stopTransportRecovery('planner transport recovery repair evidence is corrupt; reconcile the existing evidence before continuing');
+          throw new Error(`harness-failure: ${role} pending repair evidence is corrupt`);
+        }
       }
       if (ledger.gateApplied && ledger.gateMode !== 'design-conformance') {
         if (['correctness', 'gate'].some((role) => !preserved.has(`round-${resumeRound}-${role}.json`))) {
@@ -1932,9 +1988,14 @@ function runVerb(resolveFromCwd, args, initiative) {
         for (const name of [...preserved]) if (name.startsWith(`round-${resumeRound}-plan.`)) preserved.delete(name);
       }
       if (!preserved.has(`round-${resumeRound}-verify.json`)) preserved.delete(`round-${resumeRound}-plan.json`);
+      if (transportRecovery && completed.filter((role) => role !== 'plan').some((role) => !preserved.has(`round-${resumeRound}-${role}.json`))) {
+        stopTransportRecovery('planner transport recovery requires unchanged sealed reviewers; reconcile the existing evidence before continuing');
+      }
       if (!preserved.has(`round-${resumeRound}-plan.json`)) resumedNormalizedPlan = null;
       if (preserveArtifacts && ledger.execution.planRetry?.launched && !resumedNormalizedPlan
-        && !preserved.has(`round-${resumeRound}-plan.json`) && !preserved.has(`round-${resumeRound}-plan.repair.json`)) {
+        && !preserved.has(`round-${resumeRound}-plan.json`) && !preserved.has(`round-${resumeRound}-plan.repair.json`)
+        && !(ledger.execution.planTransportRetry?.state === 'pending' && ledger.execution.planTransportRetry.attempts === 0)) {
+        if (ledger.execution.planTransportRetry) stopTransportRecovery('planner transport recovery plan evidence is missing or changed; reconcile the existing evidence before continuing');
         throw new Error(`harness-failure: planner retry exhausted for this round; ${ledger.execution.planRetry.message}`);
       }
       resumedCompletedArtifacts = completed.filter((role) => preserved.has(`round-${resumeRound}-${role}.json`));
@@ -2134,6 +2195,8 @@ function runVerb(resolveFromCwd, args, initiative) {
         completed: completedArtifacts,
         normalizedPlan: resumedNormalizedPlan,
         planRetry: resumed && ledger.execution?.planRetry ? { ...ledger.execution.planRetry, discardRepair: false } : null,
+        planTransportRetry: resumed ? ledger.execution?.planTransportRetry || null : null,
+        planRepairPending: resumed && !!ledger.execution?.planRepairPending,
         artifactHashes: Object.fromEntries([...completedArtifacts, ...normalizedArtifacts].map((role) => [role, ledger.execution && ledger.execution.artifactHashes && ledger.execution.artifactHashes[role]]).filter(([, hash]) => typeof hash === 'string')),
         pending: expectedArtifacts.filter((role) => !completedArtifacts.includes(role)),
         retryArtifacts,
@@ -2530,11 +2593,11 @@ function runVerb(resolveFromCwd, args, initiative) {
       delete artifactHashes.plan;
       const repairArtifacts = { ...(execution.repairArtifacts || {}) };
       delete repairArtifacts.plan;
-      const failure = { role: 'plan', kind: 'incomplete-classification', message, at: new Date().toISOString() };
+      const failure = { role: 'plan', kind: 'incomplete-classification', message, retryable: !exhausted, nextAction: exhausted ? 'terminal-handoff' : 'resume', at: new Date().toISOString() };
       const rejected = { ...ledger, execution: { ...execution, completed: (execution.completed || []).filter((role) => role !== 'plan'), artifactHashes,
-        normalizedPlan: null, pending: Array.from(new Set([...(execution.pending || []), 'plan'])), retryArtifacts, retryArtifact: firstRetryArtifact(retryArtifacts),
+        normalizedPlan: null, planRepairPending: false, pending: Array.from(new Set([...(execution.pending || []), 'plan'])), retryArtifacts, retryArtifact: firstRetryArtifact(retryArtifacts),
         ...(execution.repairArtifacts ? { repairArtifacts } : {}),
-        planRetry: { state: exhausted ? 'exhausted' : 'pending', missingIds: unclassified, rejectedHash, message, discardRepair: true },
+        planRetry: { ...prior, state: exhausted ? 'exhausted' : 'pending', missingIds: unclassified, rejectedHash, message, discardRepair: true },
         failures: [...(execution.failures || []), failure].slice(-5), failure } };
       writeLedger(stateDir, slug, run ? withSupersededLaunch(rejected, 'plan', n) : rejected);
       // Publish semantic accounting before discarding only the rejected plan's

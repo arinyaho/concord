@@ -61,6 +61,10 @@ Under one run key, a target is identified by its revision pair: the ref, the bas
 
 Every terminal runner result is normalized into one durable disposition: `terminal`, `error`, or `escape`. A terminal disposition is the only replay and identity authority; error and escape entries are retained for audit but do not suppress a later retry. Duplicate dispositions are ignored under the ledger lock.
 
+Retaining an error disposition does not authorize retry by itself. Its continuation packet reflects the target ledger's bounded recovery state: actionable work uses `resume`, while exhausted or terminal planner execution failure uses `terminal-handoff`. Canonical provider diagnostics preserve classification without raw credentials. See [failed planner provider recovery](planner-provider-recovery.md).
+
+Canonical provider messages can repeat across distinct provider attempts. The runner binds error deduplication and packet lookup to the same internally generated per-launch UUID, bounded round, attempt state and continuation identity; a later attempt appends a new audit entry with its own budget snapshot and delivery claim. Provider-returned metadata cannot select that UUID. An earlier entry and its delivery state are preserved, while repeated delivery of the same occurrence and generic harness errors remain idempotent.
+
 - `escape` covers `record`'s re-runnable stop states, `gate-pending` and `intent-review`, where a human dismisses or resolves the reported finding and a fresh `round-start` clears it, plus a literal `escape` decision. A material finding (every parked intent finding, or a design-conformance or AC-coverage gate finding) always carries a reconciliation, which takes precedence and stays `terminal`, so these states land as `escape` only when the open finding is non-material.
 - `error` is a harness or runner failure (a thrown exception).
 - Every other outcome (converged, parked, abandoned, or a reconciliation-required target) is `terminal`.
@@ -113,7 +117,7 @@ Invariants:
 - Reserving each launch of a fan-out individually would let concurrent lenses and votes deny each other on lock contention and could leave a fan-out half granted, so batches are reserved as a unit.
 - Keying the run ledger by revision pair keeps the terminal refusal a plain equality check and keeps budget accounting global per key, which is the bound the budget exists to enforce. The cost is weaker same-ref traceability, mitigated by recording the ref on every target and disposition.
 - Rejected for revision pairs: reopening the old target on a new revision (it erases the evidence that the earlier pair was reviewed and lets a terminal pair be reviewed again by changing nothing); keying only by ref and resetting on a revision change (the refusal would depend on mutable heads and would not survive a base change); making the per-ref target ledger per pair (verbs after `round-start` receive only the ref, so head and base would have to be threaded through every verb, and unkeyed behavior would change).
-- Exhaustion is not an error disposition. An error reads as a defect and is replayed as a resumable failure; an exhausted budget is a decision for a human. The same reasoning applies to `carry`.
+- Budget exhaustion is not an error disposition. An error records an execution defect and carries its durable continuation, which may require terminal handoff; an exhausted budget is a decision for a human. The same reasoning applies to `carry`.
 - `carry` rather than restart: treating the blocked round as spent throws away accepted review work to recover from a budgeting accident and makes the new key pay twice. Taking the carried role and count from the caller would let a typo carry the wrong batch, so the marker is the only input. A new run-ledger field for cross-run provenance would need a schema bump; reusing the disposition shape with a `carried` reason needs none.
 
 ## Residual exposure
