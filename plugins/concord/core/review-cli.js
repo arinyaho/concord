@@ -270,7 +270,16 @@ function renderHandoff(result) {
   for (const r of ledger.runs || []) {
     for (const f of r.gate_open || []) lines.push(`  open in prior run #${r.run}: ${evidenceLine(f)}`);
   }
+  for (const r of ledger.runs || []) {
+    for (const f of r.fixed || []) lines.push(`  fixed in prior run #${r.run}: ${evidenceLine(f)} -> commit ${f.fix_commit}`);
+  }
   for (const d of ledger.gate_dismissed || []) lines.push(`dismissed by ${d.dismissedBy}: ${evidenceLine(d)}`);
+  // A cleared finding is reported once: still open or dismissed ids show in their own section, and "not re-raised" needs a gate round whose verdict was recorded.
+  const reported = new Set([...(ledger.gate_open || []).map((f) => f.id), ...dismissedIds(ledger)]);
+  const gateRan = (ledger.gate_rounds || []).some((round) => (ledger.history || []).some((h) => h.round === round));
+  for (const c of ledger.gate_cleared || []) {
+    if (!reported.has(c.id)) lines.push(`cleared at restart, ${gateRan ? 'not re-raised' : 'gate verdict not recorded'}: ${evidenceLine(c)}`);
+  }
   if (aborted) lines.push(`ABORTED (${aborted.kind}): ${aborted.message}`);
 
   const dodLine = !ledger.dod
@@ -298,7 +307,7 @@ function renderHandoff(result) {
   if (fixed.length) {
     const conf = ledger.status === 'intent-review' ? ' (pending confirmation)' : '';
     lines.push('', `Fix digest${conf}:`);
-    for (const f of fixed) lines.push(`  - [${f.id}] ${f.summary} -> commit ${f.fix_commit}`);
+    for (const f of fixed) lines.push(`  - ${evidenceLine(findingEvidence(f))} -> commit ${f.fix_commit}`);
   }
   // A killed finding is a real finding a reviewer talked the loop out of. Show
   // the basis it gave, so a rejection can be audited from the handoff alone.
@@ -575,6 +584,13 @@ function dismissedIds(ledger) {
 
 function findingEvidence(f, extra = {}) {
   return { id: f.id, file: f.file, span: f.span ?? f.evidence ?? '', summary: f.summary, rationale: f.rationale, releaseBlocking: f.releaseBlocking, ...(f.blockingReason ? { blockingReason: f.blockingReason } : {}), ...extra };
+}
+
+// Open findings a gate-pending restart clears keep their evidence here; nothing reads this list back into gate_open.
+function clearedFindings(ledger, clearedAt = new Date().toISOString()) {
+  const byId = new Map((ledger.gate_cleared || []).map((f) => [f.id, f]));
+  for (const f of ledger.gate_open || []) byId.set(f.id, findingEvidence(f, { clearedAt }));
+  return Array.from(byId.values());
 }
 
 function rerunOptions(rest) {
@@ -1758,7 +1774,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // possibly-new requirements and must re-fetch rather than trip the drift check.
     if (ledger.status === 'gate-pending') {
       ledger = clearIntentForFreshLook(stateDir, slug, ledger);
-      ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_open: [], gate_panel: gatePanelLib.emptyGatePanel(), gate_rounds: [] };
+      ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_cleared: clearedFindings(ledger), gate_open: [], gate_panel: gatePanelLib.emptyGatePanel(), gate_rounds: [] };
     }
 
     // gate-panel-pending is also re-runnable: a session may have crashed or been
@@ -2767,7 +2783,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       reviewRouting: prior.reviewRouting || null,
       status: prior.status,
       rounds: prior.round || 0,
-      fixed: (prior.findings || []).filter((f) => f.status === 'fixed').map((f) => ({ id: f.id, summary: f.summary, fix_commit: f.fix_commit })),
+      fixed: (prior.findings || []).filter((f) => f.status === 'fixed').map((f) => findingEvidence(f, { fix_commit: f.fix_commit })),
       parked: (prior.findings || []).filter((f) => f.status === 'parked').map((f) => f.id),
       killed: prior.killed_digest || [],
       gate_open: (prior.gate_open || []).map((f) => findingEvidence(f)),
@@ -2781,6 +2797,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       run_budget: { max_runs: maxRuns },
       engine,
       gate_dismissed: prior.gate_dismissed || [],
+      gate_cleared: prior.gate_cleared || [],
       ...(completedFrontPass && !prior.intentHash && prior.target?.base_sha && prior.gate_reviewed_head_sha ? {
         broad_reuse: { run: runs.length, base_sha: prior.target.base_sha, head_sha: prior.gate_reviewed_head_sha, intentHash: null, gate_open: prior.gate_open || [] },
       } : {}),

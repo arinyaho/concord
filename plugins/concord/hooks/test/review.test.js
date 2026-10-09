@@ -1097,3 +1097,20 @@ test('renderReviewReport: the gate-pending report advertises dismiss with the re
   const out = review.renderReviewReport([{ slug: 'feat-x', ledger: l }]);
   assert.match(out, /dismiss feat\/x <gateId> --by <name>/);
 });
+
+test('applyRoundOutcome: a fixed finding keeps the anchor the reviewer reported', () => {
+  let ledger = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
+  ledger = review.beginRound(ledger, 'hash-1').ledger;
+  const { ledger: after } = review.applyRoundOutcome(ledger, {
+    dodPassed: true,
+    findings: [finding({ id: 'f1', status: 'confirmed', span: 'const a = 1;' })],
+    fixedIds: ['f1'],
+    fixCommits: { f1: 'abc1234' },
+    parkedIds: [],
+    killedIds: [],
+    specDoubtScope: 'none',
+  });
+  const f1 = after.findings.find((f) => f.id === 'f1');
+  assert.strictEqual(f1.status, 'fixed');
+  assert.strictEqual(f1.span, 'const a = 1;');
+});
