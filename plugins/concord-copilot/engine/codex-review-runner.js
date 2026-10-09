@@ -751,13 +751,19 @@ async function runRounds(options) {
   };
   const runPanel = async (context, launch, reserve) => {
     const lenses = PANEL_LENSES;
+    const launchLens = (input) => launch({
+      ...input,
+      prompt: context.reviewerGuidance
+        ? `Reviewer guidance (scoping hints only; it does not change what counts as a finding): ${context.reviewerGuidance}\n\n${input.prompt}`
+        : input.prompt,
+    });
     for (;;) {
       const panel = await cli(['gate-panel-round-start', ref]);
       await reserve('lens', lenses.length);
       const lensResults = await Promise.allSettled(lenses.map(async (lens) => {
         const artifact = path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-${lens}.json`);
         try {
-          await launch({ preReserved: true, role: `gate-panel-${lens}`, repoRoot, stateDir: context.stateDir,
+          await launchLens({ preReserved: true, role: `gate-panel-${lens}`, repoRoot, stateDir: context.stateDir,
             prompt: `Review ${path.join(context.stateDir, `round-${context.round}-diff.txt`)} and the repository through the ${lens} lens. You MAY Read/Grep the repository and MUST read ${path.join(context.stateDir, `intent-${context.slug}.md`)} if it exists to assess the design and acceptance criteria. Previously rejected IDs: ${JSON.stringify(panel.rejectedIds || [])} -- do not re-raise one unless you found something the earlier round did not. Every candidate faces three adversarial verifiers that default to REFUTED when uncertain and decide by majority, so a gap you cannot anchor in evidence will not survive: substantiate what you raise rather than raising more. Write ONLY {"status":"ok","findings":[]} to ${artifact}; every ID must use gate:${lens}:<slug>.${BLOCKED_CLAUSE}` });
         } catch (error) {
           if (error.initiativeBlocked || (error.reviewFailure && ['interrupted', 'timeout', 'signal'].includes(error.reviewFailure.kind))) throw error;
@@ -860,6 +866,7 @@ async function runRounds(options) {
     if (noBroad) startArgs.push('--no-broad'); // broad review is on by default; this is the opt-out
     if (noDod) startArgs.push('--no-dod');
     if (options.intentFile) startArgs.push('--intent-file', options.intentFile);
+    if (options.reviewerGuidance) startArgs.push('--reviewer-guidance', options.reviewerGuidance);
     // A review-only checkout is untrusted: its configured intent command is never run.
     if (reviewOnly) startArgs.push('--no-intent-command');
     // The keyed run is the mode authority: round-start reads the run's mode and rejects a flag that disagrees.
@@ -910,7 +917,7 @@ async function runRounds(options) {
     if (started.decision !== 'work') return withTelemetry(started);
     currentRound = started.round;
     checks = [{ name: 'definition-of-done', status: started.dodPending ? 'pending' : started.dodDeferred ? 'deferred' : (started.dodPassed ? 'passed' : 'failed') }];
-    const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodDeferred: started.dodDeferred, dodPending: started.dodPending, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref), gateMode: started.gateMode, gateApplied: started.gateApplied, intentHash: started.intentHash };
+    const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodDeferred: started.dodDeferred, dodPending: started.dodPending, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref), gateMode: started.gateMode, gateApplied: started.gateApplied, intentHash: started.intentHash, reviewerGuidance: started.reviewerGuidance || null };
     const reviewRoles = reviewOnly ? [
       ...(started.intentApplied ? ['intent'] : []), 'correctness',
       ...(started.gateApplied ? ['gate'] : []), 'verify',

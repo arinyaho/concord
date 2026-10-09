@@ -79,6 +79,15 @@ test('codex-review-runner.js re-exports the exact same reviewerPrompt as round-p
   assert.equal(runner.reviewerPrompt, reviewerPrompt, 'codex-review-runner.js must delegate to round-plan.js, not redefine reviewerPrompt itself');
 });
 
+test('all native review drivers document the :: reviewer-guidance boundary and prompt isolation', () => {
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
+    assert.match(text, /literal separator `::`/i, `${name} does not document the guidance separator`);
+    assert.match(text, /Never read that text as the target ref or base/i, `${name} can still misparse guidance as a ref`);
+    assert.match(text, /only in the correctness, gate-review, and gate-panel lens prompts/i, `${name} does not limit guidance to finder prompts`);
+    assert.match(text, /Do not include it in verify, gate-verify, intent, plan, fix, certify, record, or termination inputs/i, `${name} leaks guidance into decision inputs`);
+  }
+});
+
 test('the vendored Codex engine copy of round-plan.js is byte-identical to core (run bin/bundle.mjs if this fails)', () => {
   const REPO = path.join(__dirname, '..', '..', '..', '..');
   const vendored = path.join(REPO, 'plugins/concord-codex/engine/round-plan.js');

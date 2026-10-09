@@ -1764,6 +1764,30 @@ test('gate prompt states the three-segment id shape -- a two-segment id defaults
   assert.match(prompt, /gate:<class>:<slug>/);
 });
 
+test('reviewer guidance reaches only correctness and gate finder prompts', () => {
+  const context = { stateDir: '/state', round: 3, targetType: 'git', slug: 'feat-x', reviewerGuidance: 'UI only; focus on accessibility' };
+  for (const role of ['correctness', 'gate']) assert.match(reviewerPrompt(role, context), /UI only; focus on accessibility/);
+  for (const role of ['verify', 'gate-verify', 'intent', 'plan']) assert.doesNotMatch(reviewerPrompt(role, context), /UI only; focus on accessibility/);
+  const finding = { id: 'correctness:bug', file: 'a.js', span: 'x', summary: 'bug' };
+  const fixGroup = { groupId: 'g', findingIds: [finding.id], rootCause: 'bug', invariants: [], changeClass: 'local', findings: [finding] };
+  assert.doesNotMatch(reviewerPrompt('fix', { ...context, finding, fixGroup }), /UI only; focus on accessibility/);
+  assert.doesNotMatch(reviewerPrompt('certify', { ...context, finding, fixGroup }), /UI only; focus on accessibility/);
+});
+
+test('runner passes reviewer guidance to round-start and uses the persisted value in correctness', async () => {
+  const h = harness();
+  const cli = (args) => {
+    const result = h.cli(args);
+    if (args[0] === 'round-start') result.reviewerGuidance = 'UI only';
+    return result;
+  };
+  await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn: h.spawn, reviewerGuidance: 'UI only', resolveDefaultBase: () => 'upstream/main' });
+  assert.ok(h.calls[0].includes('--reviewer-guidance'));
+  assert.ok(h.calls[0].includes('UI only'));
+  assert.match(h.calls.find((call) => call[0] === 'spawn' && call[1] === 'correctness')[2], /UI only/);
+  assert.doesNotMatch(h.calls.find((call) => call[0] === 'spawn' && call[1] === 'plan')[2], /UI only/);
+});
+
 test('fix prompt forbids declaring state artifacts or paths outside the repository', () => {
   const prompt = reviewerPrompt('fix', { stateDir: '/state', round: 7, finding: { id: 'correctness:bug', file: 'src/parser.js', span: 'lines 41-43', summary: 'repair it' } });
   assert.match(prompt, /repository-relative/i);
@@ -2493,6 +2517,34 @@ test('Codex launcher forwards independent reviewer and fixer routing without con
   fs.rmSync(capture, { force: true });
   execFileSync('node', ['--require', preload, bin, 'feature/x'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
   assert.strictEqual(JSON.parse(fs.readFileSync(capture, 'utf8')).noDod, false);
+});
+
+test('Codex launcher splits free-text reviewer guidance after :: without changing ref or base', () => {
+  const dir = temp();
+  const capture = path.join(dir, 'options.json');
+  const preload = path.join(dir, 'capture-runner.js');
+  const bin = path.join(__dirname, '..', '..', '..', 'concord-codex', 'bin', 'review-until-green.js');
+  fs.writeFileSync(preload, `
+    const fs = require('node:fs');
+    const Module = require('node:module');
+    const load = Module._load;
+    Module._load = function(request, parent, isMain) {
+      if (request === '../engine/codex-review-runner') return { runReviewUntilGreen: async (options) => {
+        fs.writeFileSync(process.env.CAPTURE, JSON.stringify(options));
+        return { handoff: 'ok' };
+      } };
+      return load.apply(this, arguments);
+    };
+  `);
+  execFileSync('node', ['--require', preload, bin, 'feature/x', 'main', '::', 'UI', 'only,', 'skip', 'the', 'backend'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
+  const options = JSON.parse(fs.readFileSync(capture, 'utf8'));
+  assert.strictEqual(options.ref, 'feature/x');
+  assert.strictEqual(options.base, 'main');
+  assert.strictEqual(options.reviewerGuidance, 'UI only, skip the backend');
+
+  const empty = spawnSync('node', ['--require', preload, bin, 'feature/x', '::'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
+  assert.strictEqual(empty.status, 1);
+  assert.match(empty.stderr, /non-empty reviewer guidance/);
 });
 
 test('Codex launcher marks resume so the runner preserves the ledger base', () => {

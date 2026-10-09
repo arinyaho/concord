@@ -2799,6 +2799,22 @@ test('round-start: resume rejects a routing change', () => {
   );
 });
 
+test('round-start: reviewer guidance is persisted, restored on resume, and never parsed as base', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const guidance = 'UI only, skip the backend, focus on accessibility';
+  const first = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1', '--reviewer-guidance', guidance], { env }));
+  assert.strictEqual(first.base, 'HEAD~1');
+  assert.strictEqual(first.reviewerGuidance, guidance);
+  assert.strictEqual(review.readLedger(dir, review.targetSlug('feat/x')).reviewerGuidance, guidance);
+  const resumed = JSON.parse(run(['round-start', 'feat/x'], { env }));
+  assert.strictEqual(resumed.reviewerGuidance, guidance);
+  assert.throws(() => run(['round-start', 'feat/x', '--reviewer-guidance', 'backend only'], { env }), /guidance differs/);
+});
+
 test('round-start: a mid-round resume keeps gateApplied true for the round that already fired', () => {
   const repo = initRepo();
   const dir = tmpDir();
