@@ -452,7 +452,7 @@ test('a consumed gate-pending retry does not double-count the prior round\'s tel
   assert.strictEqual(ledger.telemetry.length, firstRoundCount * 2);
 });
 
-test('initiative error retains completed DoD, diagnostic, and duplicate retry packet', async () => {
+test('initiative provider errors retain completed DoD and a separate claim for each actual launch', async () => {
   const stateDir = temp();
   const options = { ref: 'feature/error-retry', base: 'main', repoRoot: '/repo', initiativeRunKey: 'error-retry', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 2,
     runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false } : verb === 'artifact-normalize' ? { status: 'ok' } : undefined,
@@ -464,10 +464,11 @@ test('initiative error retains completed DoD, diagnostic, and duplicate retry pa
   assert.strictEqual(first.continuationPacket.nextAction, 'terminal-handoff');
   let second;
   await assert.rejects(runReviewUntilGreen(options), (error) => { second = error; return /Provider execution failed without a recognized diagnostic/.test(error.message); });
-  assert.strictEqual(second.continuationPacket.delivery.claim, first.continuationPacket.delivery.claim);
+  assert.notStrictEqual(second.continuationPacket.delivery.claim, first.continuationPacket.delivery.claim);
+  assert.strictEqual(JSON.parse(fs.readFileSync(runPath(stateDir, 'error-retry'), 'utf8')).dispositions.length, 2);
 });
 
-test('initiative replays a consumed duplicate error packet', async () => {
+test('initiative provider retry preserves consumed history and returns a new delivery claim', async () => {
   const stateDir = temp();
   const options = { ref: 'feature/error-consumed', base: 'main', repoRoot: '/repo', initiativeRunKey: 'error-consumed', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 2,
     runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false } : verb === 'artifact-normalize' ? { status: 'ok' } : undefined,
@@ -478,7 +479,37 @@ test('initiative replays a consumed duplicate error packet', async () => {
   const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
   ledger.dispositions[0].packet.delivery.consumed = true;
   fs.writeFileSync(ledgerPath, JSON.stringify(ledger));
-  await assert.rejects(runReviewUntilGreen(options), (error) => error.continuationPacket.delivery.claim === first.continuationPacket.delivery.claim);
+  await assert.rejects(runReviewUntilGreen(options), (error) => error.continuationPacket.delivery.claim !== first.continuationPacket.delivery.claim && error.continuationPacket.delivery.consumed === false);
+  const after = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+  assert.deepStrictEqual(after.dispositions[0], ledger.dispositions[0]);
+  assert.strictEqual(after.dispositions.length, 2);
+});
+
+test('initiative generic harness replay deduplicates the same Error and reads back its consumed claim', async () => {
+  const stateDir = temp();
+  const sameError = new Error('harness normalization failed');
+  let launches = 0;
+  let recordedFailure;
+  const options = { ref: 'feature/harness-error-retry', base: 'main', repoRoot: '/repo', initiativeRunKey: 'harness-error-retry', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 2,
+    runCli: ([verb, , failureJson]) => {
+      if (verb === 'reserve') return { status: 'granted' };
+      if (verb === 'round-start') return { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false };
+      if (verb === 'artifact-normalize') throw sameError;
+      if (verb === 'round-failure') { recordedFailure = JSON.parse(failureJson); return { status: 'recorded' }; }
+      if (verb === 'show') return { round: 1, execution: { failure: recordedFailure } };
+    },
+    spawn: async () => { launches++; return { status: 0 }; } };
+  let first;
+  await assert.rejects(runReviewUntilGreen(options), (error) => { first = error; return error === sameError; });
+  const file = runPath(stateDir, 'harness-error-retry');
+  const stored = JSON.parse(fs.readFileSync(file, 'utf8'));
+  stored.dispositions[0].packet.delivery.consumed = true;
+  fs.writeFileSync(file, JSON.stringify(stored));
+  const priorPacket = first.continuationPacket;
+  await assert.rejects(runReviewUntilGreen(options), (error) => error === sameError && error.continuationPacket.delivery.claim === priorPacket.delivery.claim && error.continuationPacket.delivery.consumed === true);
+  const after = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.deepStrictEqual(after.dispositions, stored.dispositions);
+  assert.strictEqual(launches, 2, 'generic harness dedup must not hide actual provider activity');
 });
 
 test('initiative records a distinct second failure at an unchanged revision instead of masking it as a duplicate', async () => {
@@ -497,23 +528,25 @@ test('initiative records a distinct second failure at an unchanged revision inst
   assert.strictEqual(ledger.dispositions.length, 2);
 });
 
-test('a repeated error at an unchanged revision retrieves its own packet, not a different error\'s', async () => {
+test('separate A B A provider failures each retrieve their own occurrence packet', async () => {
   const stateDir = temp();
   let call = 0;
   const options = { ref: 'feature/error-abab', base: 'main', repoRoot: '/repo', initiativeRunKey: 'error-abab', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 2,
     runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false } : verb === 'artifact-normalize' ? { status: 'ok' } : undefined,
-    // A, then a distinct B, then A again -- the dedup guard matches A's
-    // repeat against the FIRST A entry (same reason), but a lookup keyed
-    // only on target+revision+kind (ignoring reason) would findLast to B's
-    // more-recently-written entry instead.
+    // The third launch repeats A's canonical diagnostic, but is a distinct
+    // actual provider invocation with its own audit and delivery occurrence.
     spawn: async () => { call++; throw Object.assign(new Error('opaque provider detail'), { code: call === 2 ? 'ENOENT' : 'ETIMEDOUT' }); } };
   let first;
   await assert.rejects(runReviewUntilGreen(options), (error) => { first = error; return /Provider execution failed temporarily/.test(error.message); });
-  await assert.rejects(runReviewUntilGreen(options), (error) => /Provider execution failed without a recognized diagnostic/.test(error.message));
+  let second;
+  await assert.rejects(runReviewUntilGreen(options), (error) => { second = error; return /Provider execution failed without a recognized diagnostic/.test(error.message); });
   const third = await runReviewUntilGreen(options).catch((error) => error);
   assert.match(third.message, /Provider execution failed temporarily/);
-  assert.strictEqual(third.continuationPacket.delivery.claim, first.continuationPacket.delivery.claim);
+  assert.notStrictEqual(third.continuationPacket.delivery.claim, first.continuationPacket.delivery.claim);
+  assert.notStrictEqual(third.continuationPacket.delivery.claim, second.continuationPacket.delivery.claim);
   assert.match(third.continuationPacket.error.message, /Provider execution failed temporarily/);
+  assert.strictEqual(call, 3);
+  assert.strictEqual(JSON.parse(fs.readFileSync(runPath(stateDir, 'error-abab'), 'utf8')).dispositions.length, 3);
 });
 
 test('initiative accepts a runner-owned fixer revision on the next round', async () => {

@@ -12,7 +12,7 @@ const { runPath, consumeDispositionDelivery } = require('../../core/initiative-r
 
 const ref = 'feature/plan-resume';
 const ids = ['correctness:first', 'correctness:second'];
-function fixture({ maxLaunches = 12, incompleteReplacement = false, acceptedInitially = false, repairInitialPlan = false, replacementError = null, cliCopy = 'core', broadIntent = false, keyed = true, replacementResult = null, transportResult = null } = {}) {
+function fixture({ maxLaunches = 12, incompleteReplacement = false, acceptedInitially = false, repairInitialPlan = false, replacementError = null, cliCopy = 'core', broadIntent = false, keyed = true, replacementResult = null, transportResult = null, initialPlanFailure = null, fixResult = null } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-resume-'));
   const repo = path.join(root, 'repo');
   const stateDir = path.join(root, 'review');
@@ -48,6 +48,7 @@ function fixture({ maxLaunches = 12, incompleteReplacement = false, acceptedInit
   const runner = cliCopy === 'core' ? runReviewUntilGreen : require(`../../../concord-${cliCopy}/engine/codex-review-runner`).runReviewUntilGreen;
   const spawn = (input) => {
     launches.push(input.role);
+    if (initialPlanFailure && input.role === 'plan') return typeof initialPlanFailure === 'function' ? initialPlanFailure(input) : initialPlanFailure;
     if (input.role === 'artifact-repair') {
       const artifact = JSON.parse(fs.readFileSync(path.join(input.repoRoot, 'original.json'), 'utf8'));
       artifact.status = 'ok';
@@ -57,7 +58,7 @@ function fixture({ maxLaunches = 12, incompleteReplacement = false, acceptedInit
     }
     if (transportResult && input.role === 'plan' && launches.filter((role) => role === 'plan').length === 3) return transportResult;
     if (replacementResult && input.role === 'plan' && launches.filter((role) => role === 'plan').length === 2) return typeof replacementResult === 'function' ? replacementResult(input) : replacementResult;
-    if (input.role === 'fix') return { status: 1 }; // Halt after the real CLI authorizes the exact group; never edit the fixture.
+    if (input.role === 'fix') return fixResult ? (typeof fixResult === 'function' ? fixResult(input) : fixResult) : { status: 1 }; // Halt after the real CLI authorizes the exact group; never edit the fixture.
     const destination = artifactDestinationFromPrompt(input.prompt, input.stateDir);
     let artifact;
     if (input.role === 'correctness') artifact = { status: 'ok', examined: ['a.txt'], findings: ids.map((id) => ({ id, gate: 'correctness', file: 'a.txt', span: 'two', summary: id })) };
@@ -92,6 +93,75 @@ async function initialIncomplete(h) {
 }
 function sealed(h) {
   return Object.fromEntries((h.broadIntent ? ['correctness', 'verify', 'intent', 'gate', 'gate-verify'] : ['correctness', 'verify']).map((role) => [role, { hash: h.ledger().execution.artifactHashes[role], bytes: fs.readFileSync(path.join(h.stateDir, `round-1-${role}.json`), 'utf8') }]));
+}
+
+for (const cliCopy of ['core', 'codex']) {
+  for (const role of ['initial-plan', 'fix']) {
+    for (const mode of ['nonzero', 'thrown']) {
+      test(`${cliCopy}: separately reserved ${role} ${mode} failures retain distinct claims despite provider invocationId collision`, async (t) => {
+        const suppliedId = 'provider-controlled-identical-invocation';
+        const failed = mode === 'nonzero' ? { status: 1, invocationId: suppliedId } : () => { throw Object.assign(new Error('opaque failure'), { invocationId: suppliedId, telemetry: { invocationId: suppliedId } }); };
+        const h = fixture({ cliCopy, acceptedInitially: true, ...(role === 'initial-plan' ? { initialPlanFailure: failed } : { fixResult: failed }) });
+        t.after(() => fs.rmSync(h.root, { recursive: true, force: true }));
+        let first;
+        await assert.rejects(h.run(), (error) => { first = error; return true; });
+        const before = sealed(h);
+        const count = role === 'initial-plan' ? 3 : 4;
+        assert.equal(h.initiative().launches.length, count);
+        assert.equal(consumeDispositionDelivery({ path: runPath(path.join(h.root, 'initiative'), 'same-run') }, first.continuationPacket.delivery.claim), true);
+        const history = h.initiative().dispositions;
+        let second;
+        await assert.rejects(h.resume(), (error) => { second = error; return true; });
+        assert.equal(second.message, first.message);
+        assert.notEqual(second.continuationPacket.delivery.claim, first.continuationPacket.delivery.claim);
+        const current = h.initiative();
+        assert.equal(current.dispositions.length, history.length + 1);
+        assert.deepEqual(current.dispositions.slice(0, history.length), history);
+        assert.equal(current.dispositions.at(-1).packet.budget.launches, count + 1);
+        assert.equal(current.dispositions.at(-1).packet.delivery.consumed, false);
+        assert.equal(current.launches.length, count + 1);
+        assert.equal(current.rounds.length, 1);
+        assert.deepEqual(sealed(h), before);
+        assert.deepEqual(h.launches, role === 'initial-plan' ? ['correctness', 'verify', 'plan', 'plan'] : ['correctness', 'verify', 'plan', 'fix', 'fix']);
+        assert.equal(JSON.stringify(second.continuationPacket).includes(suppliedId), false, 'provider invocation metadata cannot enter failure continuation identity');
+      });
+    }
+  }
+}
+
+for (const [cliCopy, corruption] of [['core', 'changed'], ['codex', 'deleted']]) {
+  test(`${cliCopy}: ${corruption} accepted transport plan refuses resume durably without launching`, async (t) => {
+    const h = fixture({ cliCopy, replacementResult: { status: 1, stderr: 'rate_limit_error' } });
+    t.after(() => fs.rmSync(h.root, { recursive: true, force: true }));
+    await initialIncomplete(h);
+    const before = sealed(h);
+    await assert.rejects(h.resume(), /plan/);
+    await assert.rejects(h.resume(), /fix/);
+    assert.equal(h.ledger().execution.planRetry.state, 'accepted');
+    assert.ok(h.ledger().execution.completed.includes('plan'));
+    const history = h.initiative().launches;
+    const planFile = path.join(h.stateDir, 'round-1-plan.json');
+    if (corruption === 'changed') fs.appendFileSync(planFile, '\n');
+    else fs.unlinkSync(planFile);
+    let error;
+    await assert.rejects(h.resume(), (value) => { error = value; return true; });
+    assert.equal(error.continuationPacket.nextAction, 'terminal-handoff');
+    const ledger = h.ledger();
+    assert.equal(ledger.execution.planRetry.state, 'exhausted');
+    assert.equal(ledger.execution.planTransportRetry.state, 'exhausted');
+    assert.equal(ledger.execution.failure.nextAction, 'terminal-handoff');
+    assert.equal(ledger.execution.completed.includes('plan'), false);
+    const report = require('../../core/review').renderReviewReport([{ ledger }]);
+    assert.match(report, /terminal handoff/);
+    assert.doesNotMatch(report, /\/review-and-fix resume/);
+    assert.deepEqual(sealed(h), before);
+    assert.deepEqual(h.initiative().launches, history);
+    assert.equal(ledger.round, 1);
+    assert.deepEqual(h.launches, ['correctness', 'verify', 'plan', 'plan', 'plan', 'fix']);
+    await assert.rejects(h.resume());
+    assert.deepEqual(h.initiative().launches, history);
+    assert.equal(h.launches.length, 6);
+  });
 }
 
 test('nonzero replacement retains safe provider diagnostics and agrees with terminal continuation', async (t) => {

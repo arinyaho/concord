@@ -1993,7 +1993,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       if (preserveArtifacts && ledger.execution.planRetry?.launched && !resumedNormalizedPlan
         && !preserved.has(`round-${resumeRound}-plan.json`) && !preserved.has(`round-${resumeRound}-plan.repair.json`)
         && !(ledger.execution.planTransportRetry?.state === 'pending' && ledger.execution.planTransportRetry.attempts === 0)) {
-        if (transportRecovery) stopTransportRecovery('planner transport recovery plan evidence is missing or changed; reconcile the existing evidence before continuing');
+        if (ledger.execution.planTransportRetry) stopTransportRecovery('planner transport recovery plan evidence is missing or changed; reconcile the existing evidence before continuing');
         throw new Error(`harness-failure: planner retry exhausted for this round; ${ledger.execution.planRetry.message}`);
       }
       resumedCompletedArtifacts = completed.filter((role) => preserved.has(`round-${resumeRound}-${role}.json`));

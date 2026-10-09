@@ -424,6 +424,7 @@ async function invoke(spawn, input) {
     const failure = providerFailure(input, result);
     const error = new Error(`harness-failure: ${failure.message}`);
     error.reviewFailure = failure;
+    error.providerInvocationId = result.concordInvocationId;
     throw error;
   }
 }
@@ -670,11 +671,12 @@ async function runRounds(options) {
       record(input, { ...(error?.telemetry || {}), ...identity, status: 'failed', usagePartial: true, diagnostic: providerFailure(input, error).diagnostic });
       const safeError = new Error(`harness-failure: ${failure.message}`);
       safeError.reviewFailure = failure;
+      safeError.providerInvocationId = identity.invocationId;
       throw safeError;
     }
     record(input, { ...identity, ...result, engine: identity.engine, provider: identity.provider, providerSchema: identity.providerSchema,
       ...(result && (result.status !== 0 || result.signal || result.interrupted || result.timedOut) ? { diagnostic: providerFailure(input, result).diagnostic } : {}) });
-    return result;
+    return result ? { ...result, concordInvocationId: identity.invocationId } : result;
   };
   const withTelemetry = (result) => {
     const output = { ...result, telemetry: result?.telemetry || telemetry };
@@ -1260,7 +1262,8 @@ async function runRounds(options) {
     // Canonical messages can repeat across distinct bounded planner attempts.
     // Preserve each occurrence's audit snapshot and claim; repeat delivery of
     // the same occurrence still uses the identical record/lookup reason.
-    const dispositionError = new Error(JSON.stringify({ message: error.message, occurrence: occurrence || continuation }));
+    const dispositionError = new Error(JSON.stringify({ message: error.message, occurrence: occurrence || continuation,
+      ...(error.providerInvocationId ? { providerInvocationId: error.providerInvocationId } : {}) }));
     const errorReason = normalizeDisposition(dispositionError).reason;
     // A failure here (the ledger lock was busy with no retry, or the run
     // was finalised concurrently) must not replace the real review failure
