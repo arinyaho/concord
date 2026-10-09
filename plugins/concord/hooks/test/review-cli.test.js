@@ -5444,3 +5444,38 @@ test('plan-fixes stamps the round on a cleared finding the gate did not raise ag
   assert.match(text, new RegExp(`cleared at restart, not re-raised \\(round ${n}\\): \\[gate:cross-context:gone\\]`));
   assert.doesNotMatch(text, /gate verdict not recorded: \[gate:cross-context:gone\]/);
 });
+
+test('a finding fixed in a prior run and killed in the current run is not also reported as fixed', () => {
+  const prior = { id: 'correctness:f1', file: 'a.txt', span: 's', summary: 'off by one', releaseBlocking: ['serious-bug'], fix_commit: 'abc1234' };
+  const other = { ...prior, id: 'correctness:f2', summary: 'other' };
+  const ledger = { ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), runs: [{ run: 1, status: 'clean', rounds: 1, fixed: [prior, other], parked: [], killed: [], gate_open: [] }], killed_digest: [{ id: 'correctness:f1', round: 1, reason: 'false positive' }] };
+  const text = cli.renderHandoff({ ledger });
+  assert.doesNotMatch(text, /fixed in prior run #1: \[correctness:f1\]/);
+  assert.match(text, /fixed in prior run #1: \[correctness:f2\]/);
+  assert.match(text, /\[correctness:f1\] false positive/);
+});
+
+test('plan-fixes does not stamp a cleared finding the gate raised again and gate-verify rejected as not re-raised', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
+  execFileSync('git', ['commit', '-aqm', 'enable gate'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true })).round;
+  const slug = review.targetSlug('feat/x');
+  const cleared = { id: 'gate:cross-context:rejected', file: 'a.txt', span: 'two', summary: 'a real gap', rationale: 'r', releaseBlocking: ['serious-bug'], clearedAt: '2026-10-09T00:00:00.000Z' };
+  review.writeLedger(dir, slug, { ...review.readLedger(dir, slug), gate_cleared: [cleared] });
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [{ id: cleared.id, file: 'a.txt', span: 'two', summary: 'a real gap' }] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [{ id: cleared.id, reason: 'not a defect' }] }));
+  run(['plan-fixes', 'feat/x'], { env });
+  const after = review.readLedger(dir, slug);
+  assert.strictEqual(after.gate_cleared[0].notRaisedRound ?? null, null);
+  run(['rerun', 'feat/x'], { env });
+  const text = cli.renderHandoff({ ledger: review.readLedger(dir, slug) });
+  assert.match(text, new RegExp(`cleared at restart, raised again and rejected by gate-verify \\(round ${n}\\): \\[gate:cross-context:rejected\\]`));
+  assert.doesNotMatch(text, /not re-raised/);
+});
