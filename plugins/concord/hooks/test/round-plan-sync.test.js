@@ -185,6 +185,7 @@ test('the correctness verifier given the gate batch may disposition only correct
 
 test('every gate verifier prompt asks an added finding for its follow-up classification byte-for-byte', () => {
   assert.match(GATE_VERIFY_ADDED_CLAUSE, /releaseBlocking.*rationale/);
+  for (const word of ['acceptance-criterion', 'unproven-premise', 'stage-exit', 'rationale', 'approved outcome']) assert.ok(GATE_VERIFY_ADDED_CLAUSE.includes(word), `the verifier clause lacks ${word}`);
   const generated = reviewerPrompt('gate-verify', { stateDir: '/state', round: 3, targetType: 'git', slug: 'feat-x' });
   assert.ok(generated.includes(GATE_VERIFY_ADDED_CLAUSE));
   for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {

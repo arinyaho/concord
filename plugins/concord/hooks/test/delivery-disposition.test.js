@@ -185,6 +185,7 @@ test('every distribution shares the delivery disposition contract', () => {
     const lgtm = read(`${pkg}/skills/review-until-lgtm/SKILL.md`);
     assert.match(lgtm, /record-delivery <pr> <head-sha>/);
     assert.match(lgtm, /"url" \| "local":\{"file","span"\}/);
+    assert.match(lgtm, /link the source PR and the review thread of each finding that has a `url`.*local reference/s);
     assert.match(lgtm, /`mergeable-clean`, `mergeable-with-follow-ups`, or `blocked`/);
     assert.match(lgtm, /release-blocking finding blocks unless it is `fixed`, whatever the remaining budget/);
     assert.match(lgtm, /`rollover-pending`.*no ticket URL is invented/s);

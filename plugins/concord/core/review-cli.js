@@ -245,8 +245,9 @@ function roundCandidates(gc, cJson, vJson) {
 
 // One line per archived or dismissed finding: what a delivery packet needs to reference it.
 function evidenceLine(f) {
-  const blocking = [].concat(f.releaseBlocking || []);
-  return `[${f.id}] ${f.file}: ${f.summary}${f.rationale ? ` -- rationale: ${f.rationale}` : ''}${blocking.length ? ` -- release-blocking: ${blocking.join(', ')}` : ''}${f.blockingReason ? ` -- verifier: ${f.blockingReason}` : ''}${f.span ? ` -- span: ${f.span}` : ''}`;
+  // [] is an explicit follow-up classification, an absent field is unclassified (fail closed), anything else is shown as claimed.
+  const blocking = f.releaseBlocking == null ? 'unclassified' : [].concat(f.releaseBlocking).join(', ') || 'none';
+  return `[${f.id}] ${f.file}: ${f.summary}${f.rationale ? ` -- rationale: ${f.rationale}` : ''} -- release-blocking: ${blocking}${f.blockingReason ? ` -- verifier: ${f.blockingReason}` : ''}${f.span ? ` -- span: ${f.span}` : ''}`;
 }
 
 function renderHandoff(result) {

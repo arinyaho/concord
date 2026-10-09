@@ -5207,7 +5207,7 @@ test('the handoff names every dismissed finding with its evidence, the dismissin
   review.writeLedger(dir, slug, { ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), status: 'gate-pending', gate_open: [followUp('gate:silent-gap:a', { blockingReason: 'touches the auth path' }), followUp('gate:silent-gap:b')] });
   run(['dismiss', 'feat/x', 'gate:silent-gap:a', '--by', 'someone'], { env });
   const handoff = cli.renderHandoff({ ledger: review.readLedger(dir, slug) });
-  assert.match(handoff, /dismissed by someone: \[gate:silent-gap:a\] a\.js: summary of gate:silent-gap:a -- rationale: gate:silent-gap:a leaves the outcome correct -- verifier: touches the auth path/);
+  assert.match(handoff, /dismissed by someone: \[gate:silent-gap:a\] a\.js: summary of gate:silent-gap:a -- rationale: gate:silent-gap:a leaves the outcome correct -- release-blocking: none -- verifier: touches the auth path/);
   assert.doesNotMatch(handoff, /dismissed by .*gate:silent-gap:b/);
 });
 
@@ -5218,4 +5218,13 @@ test('the evidence line carries the span, so a local reference can be built from
   review.writeLedger(dir, slug, { ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), status: 'gate-pending', gate_open: [followUp('gate:silent-gap:a', { span: 'exact anchor text' })] });
   run(['dismiss', 'feat/x', 'gate:silent-gap:a', '--by', 'someone'], { env });
   assert.match(cli.renderHandoff({ ledger: review.readLedger(dir, slug) }), /dismissed by someone: \[gate:silent-gap:a\].* -- span: exact anchor text/);
+});
+
+test('the evidence line tells an empty release classification from a missing one', () => {
+  const line = (f) => cli.renderHandoff({ ledger: { ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), runs: [{ run: 1, status: 'clean', rounds: 1, gate_open: [f] }] } });
+  const eligible = line({ id: 'gate:silent-gap:a', file: 'a.js', summary: 's', rationale: 'r', releaseBlocking: [] });
+  const missing = line({ id: 'gate:silent-gap:b', file: 'a.js', summary: 's', rationale: 'r' });
+  assert.match(eligible, /release-blocking: none/);
+  assert.match(missing, /release-blocking: unclassified/);
+  assert.match(line({ id: 'gate:silent-gap:c', file: 'a.js', summary: 's', releaseBlocking: ['security'] }), /release-blocking: security/);
 });
