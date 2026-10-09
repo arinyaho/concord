@@ -4,7 +4,7 @@ A change that persists state or adds a retry, recovery or replay path has bounda
 
 ## Decision
 
-Stage 3 of `ticket-to-pr` requires a table for a change that adds or alters persisted state or a retry, recovery or replay path. Each row is one combination of a state the change persists or branches on and an event that can reach it: first occurrence, repetition or replay, corrupt or missing evidence, base or head change, or interruption. Each row states the expected outcome. A change with no persisted state and no retry, recovery or replay path states that in one line instead.
+Stage 3 of `ticket-to-pr` requires a table for a change that adds, alters or branches on persisted state, or adds or alters a retry, recovery or replay path. Each row is one combination of a state the change persists or branches on and an event that can reach it: first occurrence, repetition or replay, corrupt or missing evidence, base or head change, or interruption. Each row states the expected outcome. A change that neither reads nor writes persisted state and has no retry, recovery or replay path states that in one line instead. This change edits skill text and its test only, so it has no table: it neither reads nor writes persisted state and has no retry, recovery or replay path.
 
 Stage 6 requires every row to have a named test, or a recorded reason no test is needed. A row whose behavior is introduced or changed has a test that fails before the change for the right reason. A row whose behavior is unchanged names its existing passing test.
 

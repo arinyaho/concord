@@ -43,9 +43,9 @@ test('ticket-to-pr requires a state-and-event table for stateful changes and a t
   const rows = Object.fromEntries(
     skill.split('\n').filter((l) => /^\| \d \|/.test(l)).map((l) => [l.split('|')[1].trim(), l]),
   );
-  assert.match(rows['3'], /persisted state or a retry, recovery or replay path/);
+  assert.match(rows['3'], /adds, alters or branches on persisted state, or adds or alters a retry, recovery or replay path/);
   assert.match(rows['3'], /one row per combination of a state and an event/);
-  assert.match(rows['3'], /no persisted state and no retry, recovery or replay path/);
+  assert.match(rows['3'], /neither reads nor writes persisted state and has no retry, recovery or replay path/);
   assert.match(rows['3'], /first occurrence, repetition or replay, corrupt or missing evidence, base or head change, and interruption/);
   assert.match(rows['6'], /state-and-event row has a named test/);
   assert.match(rows['6'], /recorded reason/);
