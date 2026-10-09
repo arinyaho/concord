@@ -56,7 +56,7 @@ A stateful change carries a transition table in its design note: one row per sta
 | pending | two approvals both read pending | one wins; the other is rejected; notifier called once | introduced | `concurrent_approve_single_winner` |
 | legacy `queued` record | any read | rejected with a migration error | introduced | `queued_record_rejected` |
 
-Stage 6 fills the evidence column; a row's evidence asserts its whole outcome, not only the response. An introduced or changed row has a test that fails before the change for the right reason and passes after it, or, when no test can exercise it, such as a crash between two durable writes, a recorded reason and the check that stands in. An unchanged row cites an existing test or says "untested, because" with the reason. A state or event found missing at any later stage, including PR review, is added to the table in the same PR with its evidence.
+Stage 6 fills the evidence column; a row's evidence asserts its whole outcome, not only the response. An introduced or changed row has a test that fails before the change for the right reason and passes after it, or, when no test can exercise it, such as a crash between two durable writes, a recorded reason and the check that stands in. An unchanged row cites an existing test that passes after the change or says "untested, because" with the reason. A state or event found missing at any later stage, including PR review, is added to the table in the same PR with its evidence.
 
 ## Delegation
 
