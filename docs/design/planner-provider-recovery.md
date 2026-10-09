@@ -6,6 +6,8 @@ An incomplete protocol-v2 classification permits one semantic replacement in the
 
 The CLI owns `execution.planTransportRetry`: `pending` with zero attempts, `dispatched` with one attempt, or `exhausted`. `planRetry.launched` remains true. After the existing initiative reservation is granted, `plan-dispatch` atomically consumes transport recovery before spawning. A crash after dispatch cannot authorize another process. Every actual failed launch remains charged; neither the run key nor round changes. Reservation denial launches nothing and preserves the budget blocker.
 
+Successful normalization retains a pending plan for acceptance without another process. `execution.planRepairPending` retains the separate representation workflow after a successful planner process needs repair. A successful repair interrupted after its bound candidate is staged may validate that candidate on resume. A failed repair subprocess during replacement or transport recovery terminates planning conservatively, even if it wrote candidate bytes; it never earns another transport launch or restores its one representation attempt.
+
 Resume preserves the exact sealed correctness, verify, intent and gate evidence under the existing scope/hash checks. It launches only plan when those dependencies remain valid. Lost or changed evidence cannot silently turn transport recovery into reviewer replay; reconciliation is required. Existing beta.5 exhausted failures have no diagnostics proving retryability and remain terminal without ledger surgery.
 
 ## Diagnostics and continuation

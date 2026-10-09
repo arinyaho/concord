@@ -22,6 +22,7 @@ const { same } = require('./review-eval');
 const { PANEL_LENSES } = require('./report');
 const { BLOCKED_CLAUSE, reviewerPrompt } = require('./round-plan');
 const { isWindows, crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
+const { providerFailure, normalizeProviderFailure, reviewContinuation } = require('./provider-failure');
 
 const CODEX_VERSION = 'codex-cli 0.154.0';
 const CODEX_BIN_ENV = 'CONCORD_CODEX_BIN';
@@ -178,7 +179,7 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
       // An untrusted checkout's AGENTS.md and execpolicy rules must not steer the reviewer.
       ...(untrustedCheckout ? ['--config', 'project_doc_max_bytes=0', '--ignore-rules'] : []),
       '--skip-git-repo-check', '--json', ...(isWindows ? ['-'] : [prompt]),
-    ], needsDoubleEscape(resolvedCodex.command, repoRoot)), crossPlatformOpts({ cwd: repoRoot, env: childEnv, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'ignore'], detached: !isWindows }));
+    ], needsDoubleEscape(resolvedCodex.command, repoRoot)), crossPlatformOpts({ cwd: repoRoot, env: childEnv, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'pipe'], detached: !isWindows }));
     // A top-level CLI can exit after spawning a same-group child. End the
     // untrusted review's process group before 'close' resolves the launch.
     if (untrustedCheckout) child.once('exit', () => terminateProcessTree(child, 'SIGKILL'));
@@ -211,6 +212,10 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
     let streamPartial = cliVersion !== CODEX_VERSION;
     let collaborationEvidenceCount = 0;
     let errorEvidenceCount = 0;
+    let diagnosticText = '';
+    let diagnosticStderr = '';
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => { diagnosticStderr = (diagnosticStderr + chunk).slice(0, 8192); });
     const consume = (line) => {
       if (!line.trim()) return;
       try {
@@ -224,6 +229,7 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
         if (event.type === 'error' || event.type === 'turn.failed' || event.item?.type === 'error') {
           errorEvidenceCount++;
           streamPartial = true;
+          diagnosticText = (diagnosticText + line + '\n').slice(0, 8192);
         }
         if (/collab|agent/i.test(String(event.item?.type || event.type)) && event.item?.type !== 'agent_message') {
           collaborationEvidenceCount++;
@@ -262,6 +268,7 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
         signal: signal || null,
         timedOut,
         interrupted: abortSignal?.aborted ? String(abortSignal.reason || 'signal') : null,
+        diagnosticText, stderr: diagnosticStderr,
         usagePartial: normalized.usagePartial || streamPartial || completionCount !== 1 || status !== 0 || !!signal,
         ...(cliVersion !== CODEX_VERSION ? { usageStatus: 'unsupported-cli-version' } : {}),
         evidence: { collaboration: collaborationEvidenceCount, errors: errorEvidenceCount },
@@ -336,9 +343,9 @@ function providerExec(input) {
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stdout.on('data', (chunk) => { stdout = (stdout + chunk).slice(0, OUTPUT_LIMIT); });
     child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(0, OUTPUT_LIMIT); });
     child.once('error', (error) => {
       if (timeout) clearTimeout(timeout);
       if (killTimer) clearTimeout(killTimer);
@@ -400,13 +407,7 @@ function acknowledgeContinuationPacket(options, claim) {
 async function invoke(spawn, input) {
   const result = await spawn(input);
   if (result && (result.interrupted || result.timedOut || result.signal || result.status !== 0)) {
-    const failure = result.interrupted
-      ? { role: input.role, kind: 'interrupted', message: `${input.role} interrupted by parent ${result.interrupted}`, signal: result.interrupted }
-      : result.timedOut
-        ? { role: input.role, kind: 'timeout', message: `${input.role} subprocess timed out` }
-        : result.signal
-          ? { role: input.role, kind: 'signal', message: `${input.role} subprocess ended from ${result.signal}`, signal: result.signal }
-          : { role: input.role, kind: 'subprocess-exit', message: `${input.role} subprocess exited ${result.status}`, exitCode: result.status };
+    const failure = providerFailure(input, result);
     const error = new Error(`harness-failure: ${failure.message}`);
     error.reviewFailure = failure;
     throw error;
@@ -636,6 +637,7 @@ async function runRounds(options) {
       ...(result && result.invocationId ? { engine: result.engine, provider: result.provider, providerSchema: result.providerSchema, invocationId: result.invocationId } : {}),
       ...(result?.cliVersion ? { cliVersion: result.cliVersion } : {}),
       ...(result?.evidence ? { evidence: result.evidence } : {}),
+      ...(result?.diagnostic && result.status !== 0 ? { diagnostic: normalizeProviderFailure({ diagnostic: { classification: result.diagnostic.classification, engine: input.provider } }).diagnostic } : {}),
       ...(result && result.providerUsage && Object.keys(result.providerUsage).length ? { providerUsage: result.providerUsage } : {}),
     });
     persistTelemetry();
@@ -647,15 +649,18 @@ async function runRounds(options) {
     const identity = {
       engine: provider, provider: providerName, providerSchema, invocationId: crypto.randomUUID(),
     };
-    try {
-      invocation();
-      const result = await rawSpawn(input);
-      record(input, { ...identity, ...result });
-      return result;
-    } catch (error) {
-      record(input, { ...identity, status: 'failed', usagePartial: true, ...(error?.telemetry || {}) });
-      throw error;
+    invocation();
+    let result;
+    try { result = await rawSpawn(input); } catch (error) {
+      const failure = providerFailure(input, error);
+      record(input, { ...(error?.telemetry || {}), ...identity, status: 'failed', usagePartial: true, diagnostic: providerFailure(input, error).diagnostic });
+      const safeError = new Error(`harness-failure: ${failure.message}`);
+      safeError.reviewFailure = failure;
+      throw safeError;
     }
+    record(input, { ...identity, ...result, engine: identity.engine, provider: identity.provider, providerSchema: identity.providerSchema,
+      ...(result && (result.status !== 0 || result.signal || result.interrupted || result.timedOut) ? { diagnostic: providerFailure(input, result).diagnostic } : {}) });
+    return result;
   };
   const withTelemetry = (result) => {
     const output = { ...result, telemetry: result?.telemetry || telemetry };
@@ -850,7 +855,14 @@ async function runRounds(options) {
     if (!resume || options.fixer) startArgs.push('--fixer', fixer);
     if (options.reviewerModel) startArgs.push('--reviewer-model', options.reviewerModel);
     if (options.fixerModel) startArgs.push('--fixer-model', options.fixerModel);
-    const started = await cli(startArgs);
+    let started;
+    try { started = await cli(startArgs); }
+    catch (error) {
+      // A refused round has not established executable recovery preconditions.
+      // In particular, a failed durable refusal must not replay old pending state.
+      error.durableContinuation = { nextAction: 'terminal-handoff', retryable: false };
+      throw error;
+    }
     if (!initialBase && started.base) initialBase = started.base;
     if (initiativeRevision.head_sha && started.head && initiativeRevision.head_sha !== started.head) throw new Error('review-until-green: initiative target revision changed before round-start');
     initiativeRevision = { ref: started.ref || ref, ...(started.base || initialBase ? { base: baseIdentity(started.base || initialBase) } : {}), ...(started.head || initiativeRevision.head_sha ? { head_sha: started.head || initiativeRevision.head_sha } : {}) };
@@ -1074,7 +1086,17 @@ async function runRounds(options) {
         }
       } catch (error) {
         const failure = error.reviewFailure || { role, kind: /artifact|missing gate artifact/.test(String(error.message)) ? 'artifact-write-failure' : 'harness-error', message: String(error.message).replace(/^harness-failure:\s*/, '') };
-        if (!reviewOnly && !error.initiativeBlocked) try { await cli(['round-failure', ref, JSON.stringify(failure)]); } catch (_) {}
+        if (!reviewOnly && !error.initiativeBlocked) {
+          try {
+            await cli(['round-failure', ref, JSON.stringify(failure)]);
+            const durable = await cli(['show', ref]);
+            if (durable.execution?.failure?.message !== failure.message || durable.execution.failure.role !== failure.role) throw new Error('failure readback mismatch');
+            error.durableContinuation = reviewContinuation(durable);
+          } catch (_) {
+            error.durableContinuation = { nextAction: 'terminal-handoff', retryable: false };
+            error.message += ' (failure recording or readback failed; reconcile the existing ledger)';
+          }
+        }
         throw error;
       }
     };
@@ -1205,6 +1227,11 @@ async function runRounds(options) {
       return { decision: error.initiativeBlocked === 'budget-exhausted' ? 'blocked' : error.initiativeBlocked, reason: error.initiativeBlocked, initiative: publicInitiativeSummary(initiativeRun), ...(carryCommand ? { carryCommand } : {}) };
     }
     const failure = error.reviewFailure || {};
+    let continuation = error.durableContinuation;
+    if (!continuation) {
+      try { continuation = reviewContinuation(await cli(['show', ref])); }
+      catch (_) { continuation = { nextAction: 'terminal-handoff', retryable: false }; }
+    }
     // recordDisposition dedups an 'error' by its reason (a hash of the
     // message), not just target+revision+kind -- so the fallback lookups
     // below must filter by that same reason, or a different, more recent
@@ -1216,7 +1243,9 @@ async function runRounds(options) {
     // this catch is handling -- rethrow the ORIGINAL error, with the
     // recording failure only noted on its message, so the caller still
     // sees what actually went wrong instead of a generic "contended".
-    if (initiativeRun && initiativeRevision.head_sha && !recordDisposition(initiativeRun, { target: ref, revision: initiativeRevision, result: error, packet: { trigger: 'error', exit: { code: Number.isInteger(failure.exitCode) ? failure.exitCode : null, signal: failure.signal || null }, dod: { status: checks[0]?.status || 'not-run' }, telemetry: { complete: false }, nextAction: 'resume', error: { message: error.message } }, checks })) {
+    const failurePacket = { trigger: 'error', exit: { code: Number.isInteger(failure.exitCode) ? failure.exitCode : null, signal: failure.signal || null }, dod: { status: checks[0]?.status || 'not-run' }, telemetry: { complete: false }, ...continuation, error: { message: error.message, ...(failure.diagnostic ? { diagnostic: failure.diagnostic } : {}) } };
+    if (!initiativeRun) error.continuationPacket = failurePacket;
+    if (initiativeRun && initiativeRevision.head_sha && !recordDisposition(initiativeRun, { target: ref, revision: initiativeRevision, result: error, packet: failurePacket, checks })) {
       if (!pendingContinuationPacket(initiativeRun, ref, initiativeRevision, 'error', true, errorReason)) {
         error.message = `${error.message} (review-until-green: initiative error disposition recording was also contended)`;
         throw error;

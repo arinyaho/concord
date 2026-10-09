@@ -171,7 +171,7 @@ test('resume reuses accepted correctness evidence and charges only the interrupt
   await assert.rejects(runReviewUntilGreen({ ...f.options, sessionHandoff: 'off', spawn: input => {
     if (input.role === 'verify') { f.workers.push('verify-failed'); throw new Error('verifier interrupted'); }
     return original(input);
-  } }), /verifier interrupted/);
+  } }), /verify provider execution failed/);
   const result = await runReviewUntilGreen({ ...f.options, base: undefined, resume: true, sessionHandoff: 'off' });
   assert.equal(result.decision.converged, true);
   assert.deepEqual(f.workers, ['correctness', 'verify-failed', 'verify', 'plan']);
@@ -183,7 +183,7 @@ test('fresh contexts each suggest once while resuming the same durable review bu
   await assert.rejects(runReviewUntilGreen({ ...f.options, getInputContextTokens: () => 128000, onSessionHandoff: h => first.push(h), spawn: input => {
     if (input.role === 'verify' && input.prompt.includes('round-2-verify.json')) { f.workers.push('verify-failed'); throw new Error('replace context after round-one suggestion'); }
     return worker(input);
-  } }), /replace context/);
+  } }), /verify provider execution failed/);
   const before = f.ledger(); assert.equal(first.length, 1);
   assert.equal(before.launches.length, 7); assert.equal(before.rounds.length, 2);
   const result = await runReviewUntilGreen({ ...f.options, base: undefined, resume: true, getInputContextTokens: () => 128000, onSessionHandoff: h => second.push(h), spawn: worker });

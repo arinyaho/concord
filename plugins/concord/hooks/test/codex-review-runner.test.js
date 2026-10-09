@@ -268,12 +268,12 @@ test('initiative runner records escaped results and thrown errors as durable dis
 
   const failed = { ref: 'feature/error', repoRoot: '/repo', initiativeRunKey: 'errored', initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1 };
   let error;
-  await assert.rejects(runReviewUntilGreen({ ...failed, runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: false } : verb === 'artifact-normalize' ? { status: 'ok' } : undefined, spawn: async () => { throw new Error('subprocess failed'); } }), (caught) => { error = caught; return /subprocess failed/.test(caught.message); });
+  await assert.rejects(runReviewUntilGreen({ ...failed, runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: false } : verb === 'artifact-normalize' ? { status: 'ok' } : undefined, spawn: async () => { throw new Error('subprocess failed'); } }), (caught) => { error = caught; return /Provider execution failed without a recognized diagnostic/.test(caught.message); });
   assert.strictEqual(error.continuationPacket.delivery.consumed, false);
   const errorDisposition = JSON.parse(fs.readFileSync(runPath(stateDir, 'errored'), 'utf8')).dispositions[0];
   assert.deepStrictEqual(errorDisposition.packet.exit, { code: null, signal: null });
   assert.deepStrictEqual(errorDisposition.packet.telemetry, { complete: false });
-  assert.strictEqual(errorDisposition.packet.nextAction, 'resume');
+  assert.strictEqual(errorDisposition.packet.nextAction, 'terminal-handoff');
 });
 
 test('initiative terminal recording contended by an already-recorded matching disposition returns its packet instead of throwing', async () => {
@@ -458,11 +458,12 @@ test('initiative error retains completed DoD, diagnostic, and duplicate retry pa
     runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false } : verb === 'artifact-normalize' ? { status: 'ok' } : undefined,
     spawn: async () => { throw new Error('subprocess failed'); } };
   let first;
-  await assert.rejects(runReviewUntilGreen(options), (error) => { first = error; return /subprocess failed/.test(error.message); });
+  await assert.rejects(runReviewUntilGreen(options), (error) => { first = error; return /Provider execution failed without a recognized diagnostic/.test(error.message); });
   assert.deepStrictEqual(first.continuationPacket.dod, { status: 'passed' });
-  assert.match(first.continuationPacket.error.message, /subprocess failed/);
+  assert.match(first.continuationPacket.error.message, /Provider execution failed without a recognized diagnostic/);
+  assert.strictEqual(first.continuationPacket.nextAction, 'terminal-handoff');
   let second;
-  await assert.rejects(runReviewUntilGreen(options), (error) => { second = error; return /subprocess failed/.test(error.message); });
+  await assert.rejects(runReviewUntilGreen(options), (error) => { second = error; return /Provider execution failed without a recognized diagnostic/.test(error.message); });
   assert.strictEqual(second.continuationPacket.delivery.claim, first.continuationPacket.delivery.claim);
 });
 
@@ -472,7 +473,7 @@ test('initiative replays a consumed duplicate error packet', async () => {
     runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false } : verb === 'artifact-normalize' ? { status: 'ok' } : undefined,
     spawn: async () => { throw new Error('subprocess failed'); } };
   let first;
-  await assert.rejects(runReviewUntilGreen(options), (error) => { first = error; return /subprocess failed/.test(error.message); });
+  await assert.rejects(runReviewUntilGreen(options), (error) => { first = error; return /Provider execution failed without a recognized diagnostic/.test(error.message); });
   const ledgerPath = runPath(stateDir, 'error-consumed');
   const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
   ledger.dispositions[0].packet.delivery.consumed = true;
@@ -485,13 +486,13 @@ test('initiative records a distinct second failure at an unchanged revision inst
   let call = 0;
   const options = { ref: 'feature/error-distinct', base: 'main', repoRoot: '/repo', initiativeRunKey: 'error-distinct', initiativeStateDir: stateDir, initiativeMaxLaunches: 4, initiativeMaxRounds: 2,
     runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false } : verb === 'artifact-normalize' ? { status: 'ok' } : undefined,
-    spawn: async () => { call++; throw new Error(call === 1 ? 'first failure' : 'second distinct failure'); } };
+    spawn: async () => { call++; throw Object.assign(new Error('opaque provider detail'), { code: call === 1 ? 'ETIMEDOUT' : 'ENOENT' }); } };
   let first;
-  await assert.rejects(runReviewUntilGreen(options), (error) => { first = error; return /first failure/.test(error.message); });
+  await assert.rejects(runReviewUntilGreen(options), (error) => { first = error; return /Provider execution failed temporarily/.test(error.message); });
   let second;
-  await assert.rejects(runReviewUntilGreen(options), (error) => { second = error; return /second distinct failure/.test(error.message); });
+  await assert.rejects(runReviewUntilGreen(options), (error) => { second = error; return /Provider execution failed without a recognized diagnostic/.test(error.message); });
   assert.notStrictEqual(second.continuationPacket.delivery.claim, first.continuationPacket.delivery.claim);
-  assert.match(second.continuationPacket.error.message, /second distinct failure/);
+  assert.match(second.continuationPacket.error.message, /Provider execution failed without a recognized diagnostic/);
   const ledger = JSON.parse(fs.readFileSync(runPath(stateDir, 'error-distinct'), 'utf8'));
   assert.strictEqual(ledger.dispositions.length, 2);
 });
@@ -505,14 +506,14 @@ test('a repeated error at an unchanged revision retrieves its own packet, not a 
     // repeat against the FIRST A entry (same reason), but a lookup keyed
     // only on target+revision+kind (ignoring reason) would findLast to B's
     // more-recently-written entry instead.
-    spawn: async () => { call++; throw new Error(call === 1 ? 'failure A' : call === 2 ? 'failure B' : 'failure A'); } };
+    spawn: async () => { call++; throw Object.assign(new Error('opaque provider detail'), { code: call === 2 ? 'ENOENT' : 'ETIMEDOUT' }); } };
   let first;
-  await assert.rejects(runReviewUntilGreen(options), (error) => { first = error; return /failure A/.test(error.message); });
-  await assert.rejects(runReviewUntilGreen(options), (error) => /failure B/.test(error.message));
+  await assert.rejects(runReviewUntilGreen(options), (error) => { first = error; return /Provider execution failed temporarily/.test(error.message); });
+  await assert.rejects(runReviewUntilGreen(options), (error) => /Provider execution failed without a recognized diagnostic/.test(error.message));
   const third = await runReviewUntilGreen(options).catch((error) => error);
-  assert.match(third.message, /failure A/);
+  assert.match(third.message, /Provider execution failed temporarily/);
   assert.strictEqual(third.continuationPacket.delivery.claim, first.continuationPacket.delivery.claim);
-  assert.match(third.continuationPacket.error.message, /failure A/);
+  assert.match(third.continuationPacket.error.message, /Provider execution failed temporarily/);
 });
 
 test('initiative accepts a runner-owned fixer revision on the next round', async () => {
@@ -1061,7 +1062,7 @@ test('resume launches only the artifact role still pending after an interruption
   };
   const spawn = ({ role }) => {
     calls.push(`${attempt}:${role}`);
-    if (attempt === 1 && role === 'verify') throw new Error('interrupted');
+    if (attempt === 1 && role === 'verify') throw Object.assign(new Error('opaque interrupted detail'), { reviewFailure: { role, kind: 'interrupted' } });
     return { status: 0 };
   };
 
@@ -1090,7 +1091,7 @@ test('a failing parallel reviewer does not let the parent return before its sibl
     return { status: 0 };
   };
 
-  await assert.rejects(runReviewUntilGreen({ ref: 'feature/wait', repoRoot: '/repo', runCli: cli, spawn }), /correctness failed/);
+  await assert.rejects(runReviewUntilGreen({ ref: 'feature/wait', repoRoot: '/repo', runCli: cli, spawn }), /correctness provider execution failed/);
   assert.strictEqual(siblingFinished, true);
 });
 
@@ -1113,7 +1114,7 @@ test('a failing pooled broad finder waits for its paired finder before returning
     return { status: 0 };
   };
 
-  await assert.rejects(runReviewUntilGreen({ ref: 'feature/pooled-wait', repoRoot: '/repo', runCli: cli, spawn }), /correctness failed/);
+  await assert.rejects(runReviewUntilGreen({ ref: 'feature/pooled-wait', repoRoot: '/repo', runCli: cli, spawn }), /correctness provider execution failed/);
   assert.strictEqual(gateFinished, true);
 });
 
@@ -1366,7 +1367,7 @@ test('runner preserves a rejected Codex probe as a failed invocation', async () 
   try {
     await assert.rejects(
       runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli }),
-      /no usable Codex executable/,
+      /correctness provider execution failed; Provider execution failed without a recognized diagnostic/,
     );
   } finally {
     process.env.PATH = previousPath;
@@ -1393,7 +1394,7 @@ test('runner stamps Codex identity on a custom spawn rejection without telemetry
       runCli: cli,
       spawn: async () => { throw new Error('spawn failed'); },
     }),
-    /spawn failed/,
+    /correctness provider execution failed; Provider execution failed without a recognized diagnostic/,
   );
 
   const telemetryPath = path.join(h.stateDir, 'telemetry-feature-x.json');
@@ -1836,7 +1837,7 @@ test('runner fails closed when a required reviewer subprocess is terminated by a
     runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn }),
     /harness-failure: correctness subprocess ended from SIGTERM/,
   );
-  assert.deepStrictEqual(failure, { role: 'correctness', kind: 'signal', message: 'correctness subprocess ended from SIGTERM', signal: 'SIGTERM' });
+  assert.deepStrictEqual(failure, { role: 'correctness', kind: 'signal', message: 'correctness subprocess ended from SIGTERM; Provider execution failed without a recognized diagnostic.', signal: 'SIGTERM', retryable: false, diagnostic: { classification: 'unknown', message: 'Provider execution failed without a recognized diagnostic.', engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1' } });
   assert.strictEqual(h.calls.some((call) => call[0] === 'spawn' && call[1] === 'verify'), false);
 });
 
@@ -2109,7 +2110,7 @@ test('an interrupted panel lens waits for every launched sibling before the runn
   await new Promise(setImmediate);
   assert.strictEqual(settled, false, 'the interrupted lens must wait for sibling cleanup');
   for (const resolve of pending) resolve({ status: 0 });
-  assert.match((await running).message, /interrupted panel lens/);
+  assert.match((await running).message, /gate-panel-ac-coverage subprocess interrupted/);
 });
 
 test('an interrupted adversarial vote waits for every sibling before the runner rejects', async () => {
@@ -2154,7 +2155,7 @@ test('an interrupted adversarial vote waits for every sibling before the runner 
   await new Promise(setImmediate);
   assert.strictEqual(settled, false, 'the interrupted vote must wait for sibling cleanup');
   for (const resolve of pending) resolve({ status: 0 });
-  assert.match((await running).message, /interrupted adversarial vote/);
+  assert.match((await running).message, /gate-panel-verify subprocess interrupted/);
 });
 
 test('panel lenses and each finding\'s adversarial votes fan out concurrently', async () => {

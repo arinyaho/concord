@@ -602,7 +602,9 @@ function renderReviewReport(ledgers) {
       const ph = (ledger.phase === 'gates' || ledger.phase === 'fixes') ? `, phase ${ledger.phase}` : '';
       const failure = ledger.execution && ledger.execution.failure;
       const retry = failure ? `; last harness failure: ${reportFailureText(failure.role)} ${reportFailureText(failure.kind)} (${reportFailureText(failure.message)})` : '';
-      lines.push(`review-and-fix [${ref}]: ${roundInfo}${ph}, ${open} open finding(s) -- converging${retry}; resume with \`/review-and-fix resume ${ref}\`.`);
+      const continuation = require('./provider-failure').reviewContinuation(ledger);
+      const action = continuation.retryable ? `resume with \`/review-and-fix resume ${ref}\`` : 'terminal handoff; reconcile the failed planner before continuing';
+      lines.push(`review-and-fix [${ref}]: ${roundInfo}${ph}, ${open} open finding(s) -- converging${retry}; ${action}.`);
     } else if (ledger.status === 'parked') {
       lines.push(`review-and-fix [${ref}]: ${roundInfo}, ${open} open finding(s) -- parked, needs a human decision; see \`review-cli.js show ${ref}\` (unpark a finding with \`review-cli.js unpark ${ref} <findingId>\`).`);
     } else if (ledger.status === 'intent-review') {
