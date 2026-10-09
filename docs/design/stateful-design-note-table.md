@@ -4,7 +4,7 @@ A change that persists state or adds a retry, recovery or replay path has bounda
 
 ## Decision
 
-The rule is defined once, in the "Stateful changes" section of the `ticket-to-pr` skill, because installed packages ship the skill and not this note. Stage 3 points to it for the table and Stage 6 points to it for the tests. The rule is stated over classes of behavior and not over every value or every row, so that a counter, a revision or an unreachable combination has a finite, honest entry.
+The rule is defined once, in the "Stateful changes" section of the `ticket-to-pr` skill, because installed packages ship the skill and not this note. Stage 3 points to it for the table and Stage 6 points to it for the tests. The rule is stated over classes of behavior and not over every value or every row, so that a counter, a revision or an unreachable combination has a finite, honest entry. Operations, state dimensions and evidence are each defined once for every row: the operations are those the changed code handles or that read or write the touched state, the state dimensions are everything that influences those operations, and one evidence rule covers tests and stand-in checks for every kind of row, so a new kind of row needs no rule of its own.
 
 This change edits skill text and its test only, so it touches no persisted state and adds or alters no retry, recovery or replay path, and has no table.
 
