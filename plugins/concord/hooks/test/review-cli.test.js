@@ -5210,3 +5210,12 @@ test('the handoff names every dismissed finding with its evidence, the dismissin
   assert.match(handoff, /dismissed by someone: \[gate:silent-gap:a\] a\.js: summary of gate:silent-gap:a -- rationale: gate:silent-gap:a leaves the outcome correct -- verifier: touches the auth path/);
   assert.doesNotMatch(handoff, /dismissed by .*gate:silent-gap:b/);
 });
+
+test('the evidence line carries the span, so a local reference can be built from the handoff', () => {
+  const dir = tmpDir();
+  const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  review.writeLedger(dir, slug, { ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), status: 'gate-pending', gate_open: [followUp('gate:silent-gap:a', { span: 'exact anchor text' })] });
+  run(['dismiss', 'feat/x', 'gate:silent-gap:a', '--by', 'someone'], { env });
+  assert.match(cli.renderHandoff({ ledger: review.readLedger(dir, slug) }), /dismissed by someone: \[gate:silent-gap:a\].* -- span: exact anchor text/);
+});
