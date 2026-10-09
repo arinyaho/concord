@@ -6,7 +6,7 @@ A change that persists state or adds a retry, recovery or replay path has bounda
 
 The rule is defined once, in the "Stateful changes" section of the `ticket-to-pr` skill, because installed packages ship the skill and not this note. Stage 3 points to it for the table and Stage 6 points to it for the tests. The rule is stated over classes of behavior and not over every value or every row, so that a counter, a revision or an unreachable combination has a finite, honest entry.
 
-This change edits skill text and its test only, so it has no table: it touches no persisted state and adds or alters no retry, recovery or replay path.
+This change edits skill text and its test only, so it touches no persisted state and adds or alters no retry, recovery or replay path, and has no table.
 
 ## Cost and residual exposure
 
