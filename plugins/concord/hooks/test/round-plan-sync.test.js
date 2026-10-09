@@ -13,7 +13,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const CORE = path.join(__dirname, '..', '..', 'core');
-const { GATE_SWEEP_CLAUSE, GATE_VERIFY_OWNERSHIP_CLAUSE, reviewerPrompt } = require(path.join(CORE, 'round-plan'));
+const { GATE_SWEEP_CLAUSE, GATE_VERIFY_OWNERSHIP_CLAUSE, GATE_VERIFY_ADDED_CLAUSE, reviewerPrompt } = require(path.join(CORE, 'round-plan'));
 const { allowedFindingPrefixes } = require(path.join(CORE, 'artifact-contract'));
 const roundPlanText = fs.readFileSync(path.join(CORE, 'round-plan.js'), 'utf8');
 const driverText = fs.readFileSync(path.join(CORE, 'review-driver.md'), 'utf8');
@@ -181,4 +181,13 @@ test('the correctness verifier given the gate batch may disposition only correct
   assert.match(base, /Do not copy, accept, or reject gate:\* IDs in this artifact; their disposition belongs to the gate verifier\./);
   const alone = reviewerPrompt('verify', { stateDir: '/state', round: 2, targetType: 'git', gateMode: 'pair', gateApplied: false });
   assert.doesNotMatch(alone, /gate verifier/, 'without the gate batch there is nothing to keep out');
+});
+
+test('every gate verifier prompt asks an added finding for its follow-up classification byte-for-byte', () => {
+  assert.match(GATE_VERIFY_ADDED_CLAUSE, /releaseBlocking.*rationale/);
+  const generated = reviewerPrompt('gate-verify', { stateDir: '/state', round: 3, targetType: 'git', slug: 'feat-x' });
+  assert.ok(generated.includes(GATE_VERIFY_ADDED_CLAUSE));
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
+    assert.ok(text.includes(GATE_VERIFY_ADDED_CLAUSE.trim()), `${name} gate-verify prompt has drifted from round-plan.js`);
+  }
 });

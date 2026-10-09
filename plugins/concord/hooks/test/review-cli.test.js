@@ -3196,7 +3196,7 @@ test('round-start: a gate-pending ledger is a re-runnable stop (resets to conver
   const slug = review.targetSlug('feat/x');
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   let l = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
-  l = { ...l, status: 'gate-pending', gate_open: [{ id: 'gate:cross-context:x', file: 'a.txt', summary: 's' }], gate_dismissed: ['gate:ac-coverage:y'], diff_content_hash: 'stale' };
+  l = { ...l, status: 'gate-pending', gate_open: [{ id: 'gate:cross-context:x', file: 'a.txt', summary: 's' }], gate_dismissed: [{ id: 'gate:ac-coverage:y', file: 'a.txt', span: '', summary: 's', dismissedBy: 'someone', dismissedAt: '2026-10-09T00:00:00.000Z' }], diff_content_hash: 'stale' };
   review.writeLedger(dir, slug, l);
   fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
   execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
@@ -3205,7 +3205,7 @@ test('round-start: a gate-pending ledger is a re-runnable stop (resets to conver
   const after = review.readLedger(dir, slug);
   assert.strictEqual(after.status, 'converging');
   assert.deepStrictEqual(after.gate_open, []);            // cleared for a fresh evaluation
-  assert.deepStrictEqual(after.gate_dismissed, ['gate:ac-coverage:y']); // preserved
+  assert.deepStrictEqual(after.gate_dismissed.map((d) => d.id), ['gate:ac-coverage:y']); // preserved
 });
 
 test('round-start: gate-pending re-entry on an IDENTICAL diff still yields work, not no-op', () => {
@@ -3314,7 +3314,7 @@ test('plan-fixes: folds gate + gate-verify artifacts into gate_open, honoring di
   const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true })).round;
   // pre-dismiss one finding
   const slug = review.targetSlug('feat/x');
-  let l = review.readLedger(dir, slug); l = { ...l, gate_dismissed: ['gate:ac-coverage:dismissed-one'] }; review.writeLedger(dir, slug, l);
+  let l = review.readLedger(dir, slug); l = { ...l, gate_dismissed: [{ id: 'gate:ac-coverage:dismissed-one', file: 'a.txt', span: '', summary: 's', dismissedBy: 'someone', dismissedAt: '2026-10-09T00:00:00.000Z' }] }; review.writeLedger(dir, slug, l);
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
   fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [
     { id: 'gate:cross-context:keep', file: 'other.js', span: 'x', summary: 'unchanged sibling issue' },
@@ -4051,10 +4051,10 @@ test('review-cli dismiss: records the id in gate_dismissed and drops it from gat
   let l = review.emptyLedger({ kind: 'local', ref: 'feat/x' });
   l = { ...l, status: 'gate-pending', gate_open: [{ id: 'gate:ac-coverage:defer', file: 'a.js', summary: 's' }] };
   review.writeLedger(dir, slug, l);
-  const out = run(['dismiss', 'feat/x', 'gate:ac-coverage:defer'], { env });
+  const out = run(['dismiss', 'feat/x', 'gate:ac-coverage:defer', '--by', 'someone'], { env });
   assert.match(out, /dismissed gate:ac-coverage:defer/);
   const after = review.readLedger(dir, slug);
-  assert.deepStrictEqual(after.gate_dismissed, ['gate:ac-coverage:defer']);
+  assert.deepStrictEqual(after.gate_dismissed.map((d) => d.id), ['gate:ac-coverage:defer']);
   assert.deepStrictEqual(after.gate_open, []);
 });
 
@@ -4062,9 +4062,9 @@ test('review-cli dismiss: idempotent (no duplicate in gate_dismissed)', () => {
   const dir = tmpDir();
   const slug = review.targetSlug('feat/x');
   const env = { ...process.env, REVIEW_STATE_DIR: dir };
-  review.writeLedger(dir, slug, { ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), gate_dismissed: ['gate:x:y'] });
-  run(['dismiss', 'feat/x', 'gate:x:y'], { env });
-  assert.deepStrictEqual(review.readLedger(dir, slug).gate_dismissed, ['gate:x:y']);
+  review.writeLedger(dir, slug, { ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), gate_dismissed: [{ id: 'gate:x:y', file: 'a.txt', span: '', summary: 's', dismissedBy: 'someone', dismissedAt: '2026-10-09T00:00:00.000Z' }] });
+  run(['dismiss', 'feat/x', 'gate:x:y', '--by', 'someone'], { env });
+  assert.deepStrictEqual(review.readLedger(dir, slug).gate_dismissed.map((d) => d.id), ['gate:x:y']);
 });
 
 test('review-cli dismiss: rejects a gateId that is not in the gate: namespace', () => {
@@ -4072,7 +4072,7 @@ test('review-cli dismiss: rejects a gateId that is not in the gate: namespace', 
   const slug = review.targetSlug('feat/x');
   const env = { ...process.env, REVIEW_STATE_DIR: dir };
   review.writeLedger(dir, slug, review.emptyLedger({ kind: 'local', ref: 'feat/x' }));
-  assert.throws(() => run(['dismiss', 'feat/x', 'not-a-gate-id'], { env }), /must be a gate: id/);
+  assert.throws(() => run(['dismiss', 'feat/x', 'not-a-gate-id', '--by', 'someone'], { env }), /must be a gate: id/);
   // must not have mutated the ledger on the rejected call
   assert.deepStrictEqual(review.readLedger(dir, slug).gate_dismissed, []);
 });
@@ -4273,7 +4273,7 @@ test('gate-panel-round-record: a finding whose id was already human-dismissed is
     { status: 'ok', examined: ['a.txt'], findings: [] },
     { status: 'ok', rejected: [] });
   let ledger = review.readLedger(dir, review.targetSlug('feat/x'));
-  ledger = { ...ledger, gate_dismissed: ['gate:threat-model:already-dismissed'] };
+  ledger = { ...ledger, gate_dismissed: [{ id: 'gate:threat-model:already-dismissed', file: 'a.txt', span: '', summary: 's', dismissedBy: 'someone', dismissedAt: '2026-10-09T00:00:00.000Z' }] };
   review.writeLedger(dir, review.targetSlug('feat/x'), ledger);
   fs.writeFileSync(path.join(dir, `round-${n}-gate-panel-1-threat-model.json`),
     JSON.stringify({ status: 'ok', findings: [{ id: 'gate:threat-model:already-dismissed', file: 'a.txt', summary: 'a human already dismissed this' }] }));
@@ -5092,4 +5092,85 @@ test('findings: nonregular and oversized reviewer paths have no source line', ()
     assert.strictEqual(result.status, 0, `${kind}: ${result.stderr}`);
     assert.strictEqual(JSON.parse(result.stdout).findings[0].line, null, kind);
   }
+});
+
+const followUp = (id, extra = {}) => ({ id, file: 'a.js', span: 'old invariant', summary: `summary of ${id}`, requirement: 'r', releaseBlocking: [], rationale: `${id} leaves the outcome correct`, ...extra });
+
+test('review-cli dismiss: keeps the finding evidence and the dismissing human', () => {
+  const dir = tmpDir();
+  const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  review.writeLedger(dir, slug, { ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), status: 'gate-pending', gate_open: [followUp('gate:silent-gap:a'), followUp('gate:silent-gap:b')] });
+  run(['dismiss', 'feat/x', 'gate:silent-gap:a', '--by', 'someone'], { env });
+  run(['dismiss', 'feat/x', 'gate:silent-gap:a', '--by', 'someone-else'], { env });
+  const after = review.readLedger(dir, slug);
+  assert.deepStrictEqual(after.gate_dismissed.map((d) => d.id), ['gate:silent-gap:a'], 'a repeated dismiss keeps the first record');
+  const [kept] = after.gate_dismissed;
+  assert.deepStrictEqual({ id: kept.id, file: kept.file, summary: kept.summary, rationale: kept.rationale, dismissedBy: kept.dismissedBy }, { id: 'gate:silent-gap:a', file: 'a.js', summary: 'summary of gate:silent-gap:a', rationale: 'gate:silent-gap:a leaves the outcome correct', dismissedBy: 'someone' });
+});
+
+test('review-cli dismiss: requires the dismissing human and changes nothing without one', () => {
+  const dir = tmpDir();
+  const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  review.writeLedger(dir, slug, { ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), gate_open: [followUp('gate:silent-gap:a')] });
+  assert.throws(() => run(['dismiss', 'feat/x', 'gate:silent-gap:a'], { env }), /--by/);
+  assert.throws(() => run(['dismiss', 'feat/x', 'gate:silent-gap:a', '--by', '  '], { env }), /--by/);
+  const after = review.readLedger(dir, slug);
+  assert.deepStrictEqual(after.gate_dismissed, []);
+  assert.deepStrictEqual(after.gate_open.map((f) => f.id), ['gate:silent-gap:a']);
+});
+
+test('rerun archives each open follow-up candidate with its evidence and carries dismissals', () => {
+  const dir = tmpDir();
+  const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  review.writeLedger(dir, slug, { ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), status: 'clean', gate_open: [followUp('gate:silent-gap:a'), followUp('gate:cross-context:b', { releaseBlocking: ['security'] })] });
+  run(['dismiss', 'feat/x', 'gate:silent-gap:a', '--by', 'someone'], { env });
+  review.writeLedger(dir, slug, { ...review.readLedger(dir, slug), gate_open: [followUp('gate:cross-context:b', { releaseBlocking: ['security'] }), followUp('gate:silent-gap:c')] });
+  const out = JSON.parse(run(['rerun', 'feat/x'], { env }));
+  assert.deepStrictEqual(out.archived.gate_open.map((f) => f.id), ['gate:cross-context:b', 'gate:silent-gap:c']);
+  const [b, c] = out.archived.gate_open;
+  assert.deepStrictEqual({ file: c.file, summary: c.summary, rationale: c.rationale, releaseBlocking: c.releaseBlocking }, { file: 'a.js', summary: 'summary of gate:silent-gap:c', rationale: 'gate:silent-gap:c leaves the outcome correct', releaseBlocking: [] });
+  assert.deepStrictEqual(b.releaseBlocking, ['security']);
+  const next = review.readLedger(dir, slug);
+  assert.deepStrictEqual(next.gate_dismissed.map((f) => f.id), ['gate:silent-gap:a']);
+  const handoff = cli.renderHandoff({ ledger: next });
+  assert.match(handoff, /\[gate:cross-context:b\] a\.js: summary of gate:cross-context:b/);
+  assert.match(handoff, /\[gate:silent-gap:c\] a\.js: summary of gate:silent-gap:c/);
+});
+
+test('gate-verify findings keep their own classification and never overwrite the finder on a collided id', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/verifier-added';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', ref, base], { env, broadDefault: true })).round;
+  const classified = (id, extra = {}) => ({ id, file: 'a.txt', span: 'two', summary: `s ${id}`, requirement: 'r', releaseBlocking: [], rationale: `${id} stays correct`, ...extra });
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'gate', { status: 'ok', findings: [classified('gate:silent-gap:found')] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [], findings: [
+    classified('gate:silent-gap:found', { releaseBlocking: ['security'], rationale: 'verifier copy' }),
+    classified('gate:cross-context:added'),
+    { id: 'gate:threat-model:bare', file: 'a.txt', span: 'two', summary: 'unclassified', requirement: 'r' },
+  ] });
+  run(['plan-fixes', ref], { env });
+  const decision = JSON.parse(run(['record', ref], { env })).decision;
+  assert.strictEqual(decision.gatePending, true, 'the unclassified verifier-added finding stays release-blocking');
+  const open = Object.fromEntries(review.readLedger(dir, review.targetSlug(ref)).gate_open.map((f) => [f.id, f]));
+  assert.deepStrictEqual(open['gate:silent-gap:found'].releaseBlocking, []);
+  assert.strictEqual(open['gate:silent-gap:found'].rationale, 'gate:silent-gap:found stays correct');
+  assert.deepStrictEqual(open['gate:cross-context:added'].releaseBlocking, []);
+  assert.strictEqual(open['gate:threat-model:bare'].releaseBlocking, undefined);
+});
+
+test('review-cli dismiss: refuses an id that is neither open nor already dismissed', () => {
+  const dir = tmpDir();
+  const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  review.writeLedger(dir, slug, { ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), gate_open: [followUp('gate:silent-gap:a')] });
+  assert.throws(() => run(['dismiss', 'feat/x', 'gate:silent-gap:missing', '--by', 'someone'], { env }), /is not an open gate finding/);
+  assert.deepStrictEqual(review.readLedger(dir, slug).gate_dismissed, []);
 });

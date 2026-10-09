@@ -128,7 +128,7 @@ test('without tracker access the residual group is a pending packet, not an inve
   const record = lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...pr172Packet({ tickets: [{ rootCause: 'initiative-identity', url: ISSUE(174), readBack: true }] }) });
   assert.strictEqual(record.classification, 'blocked');
   assert.deepStrictEqual(record.reasons, ['rollover-pending:artifact-repair-admission']);
-  assert.deepStrictEqual(record.pending, [{ rootCause: 'artifact-repair-admission', findingIds: ['c-4192088461', 'c-4192088466', 'c-4192088470'], urls: [THREAD(4192088461), THREAD(4192088466), THREAD(4192088470)], rationales: pr172Packet().findings.slice(3, 6).map((f) => f.rationale) }]);
+  assert.deepStrictEqual(record.pending, [{ rootCause: 'artifact-repair-admission', findingIds: ['c-4192088461', 'c-4192088466', 'c-4192088470'], refs: [{ url: THREAD(4192088461) }, { url: THREAD(4192088466) }, { url: THREAD(4192088470) }], rationales: pr172Packet().findings.slice(3, 6).map((f) => f.rationale) }]);
   assert.deepStrictEqual(record.groups.map((g) => g.ticket), [null, ISSUE(174)]);
 });
 
@@ -263,7 +263,7 @@ test('a later review lifts the terminal record, a clean head reports delivery, a
   withActiveReview(stateDir);
   const record = lgtmState.recordDelivery({ ...input, now: 2000, packet: pr172Packet({ reviewIds: ['4192088400'] }) });
   assert.deepStrictEqual(record.reviewIds, ['4192088400']);
-  assert.deepStrictEqual(record.findings[3], { id: 'c-4192088461', url: THREAD(4192088461), disposition: 'follow-up', rootCause: 'artifact-repair-admission', releaseBlocking: [], rationale: pr172Packet().findings[3].rationale, acceptedBy: null, ticket: ISSUE(173) });
+  assert.deepStrictEqual(record.findings[3], { id: 'c-4192088461', url: THREAD(4192088461), local: null, disposition: 'follow-up', rootCause: 'artifact-repair-admission', releaseBlocking: [], rationale: pr172Packet().findings[3].rationale, acceptedBy: null, ticket: ISSUE(173) });
   assert.strictEqual(lgtmState.status(input).delivery.current, true);
 
   // A delayed exact-head review with findings arrives after the record.
@@ -331,4 +331,35 @@ test('status reopens the reconciliation packet when a waiver lifts a terminal de
   cli(stateDir, ['waive-fix-budget', String(PR), 'someone', '1']);
   assert.strictEqual(cli(stateDir, ['status', String(PR), HEAD]).reconciliation.action, 'verify-and-fix');
   assert.strictEqual(cli(stateDir, ['claim-fix-round', String(PR), HEAD]).claimed, true);
+});
+
+test('a finding from a local review ledger classifies by id with a local reference instead of a url', () => {
+  const packet = pr172Packet();
+  packet.findings[3] = { id: 'gate:silent-gap:a', local: { file: 'plugins/concord/core/x.js', span: 'old invariant' }, disposition: 'follow-up', rootCause: 'artifact-repair-admission', rationale: 'Admission hardening; the bounded retry outcome and its checks hold without it.' };
+  const record = lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...packet });
+  assert.strictEqual(record.classification, 'mergeable-with-follow-ups');
+  assert.deepStrictEqual(record.groups.find((g) => g.rootCause === 'artifact-repair-admission').findingIds, ['gate:silent-gap:a', 'c-4192088466', 'c-4192088470']);
+  const local = record.findings.find((f) => f.id === 'gate:silent-gap:a');
+  assert.deepStrictEqual({ url: local.url, local: local.local }, { url: null, local: { file: 'plugins/concord/core/x.js', span: 'old invariant' } });
+  assert.deepStrictEqual(record.findings.find((f) => f.id === 'c-4192088466').local, null);
+  const pending = lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...packet, tickets: [{ rootCause: 'initiative-identity', url: ISSUE(174), readBack: true }] }).pending[0];
+  assert.deepStrictEqual(pending.refs[0], { local: { file: 'plugins/concord/core/x.js', span: 'old invariant' } });
+  assert.deepStrictEqual(pending.refs[1], { url: THREAD(4192088466) });
+});
+
+test('a delivery finding needs exactly one valid reference', () => {
+  const withFinding = (finding) => { const packet = pr172Packet(); packet.findings[3] = { ...packet.findings[3], ...finding }; return () => lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...packet }); };
+  assert.throws(withFinding({ url: '' }), /needs exactly one of url or local/);
+  assert.throws(withFinding({ local: { file: 'a.js', span: 's' } }), /needs exactly one of url or local/);
+  assert.throws(withFinding({ url: undefined, local: { file: '/etc/passwd', span: 's' } }), /local needs a relative file/);
+  assert.throws(withFinding({ url: undefined, local: { file: 'a.js', span: 3 } }), /local span must be a string/);
+  assert.doesNotThrow(withFinding({ url: undefined, local: { file: 'a.js', span: '' } }));
+});
+
+test('the delivery digest separates a url reference from a local reference', () => {
+  const a = pr172Packet(); const b = pr172Packet();
+  b.findings[3] = { ...b.findings[3], url: undefined, local: { file: 'a.js', span: 's' } };
+  const digest = (packet) => JSON.stringify(lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...packet }).findings[3]);
+  assert.notStrictEqual(digest(a), digest(b));
+  assert.deepStrictEqual(lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...b }).findings[3].url, null);
 });

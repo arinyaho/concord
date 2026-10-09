@@ -81,7 +81,7 @@ function emptyLedger(target) {
     intentBytes: null,
     intent_parked: [],
     gate_open: [],
-    gate_dismissed: [],
+    gate_dismissed: [], // {id, file, span, summary, rationale, releaseBlocking, dismissedBy, dismissedAt}: the evidence and the human, kept so a delivery packet can reference them
     gate_panel: emptyGatePanel(),
     gateArmed: null, // unresolved: round-start resolves it from flag / target type, then it is sticky
     gate_rounds: [], // rounds the gate pair actually fired in (front pass: just the first)
