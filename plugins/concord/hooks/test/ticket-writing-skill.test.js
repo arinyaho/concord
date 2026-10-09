@@ -61,7 +61,7 @@ test('ticket-to-pr defines the table and tests required for stateful changes', (
     /group only combinations that have the same outcome and kind/,
     /zero, each limit and the value just past it a class of their own/,
     /everything an observer can distinguish after the event: the response, the resulting values of every state dimension including those expected to stay unchanged, and externally observable effects such as downstream calls\. The test asserts all of them/,
-    /A row is changed when its response or its resulting state values differ from the base, and every row of a new behavior is introduced/,
+    /A row is changed when its outcome differs from the base, and every row of a new behavior is introduced/,
     /still gets its own row, kind unreachable, naming the invariant that prevents it and where that invariant is enforced; when the change introduces that invariant, the row has a test or stand-in check that passes after the change and fails before it/,
     /Stage 6 fills the test or reason column/,
     /Each reachable row has a named test that passes after the change or, when no test can exercise the row, such as a crash between two writes, records why and the check that stands in/,
