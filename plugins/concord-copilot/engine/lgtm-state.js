@@ -202,6 +202,32 @@ function collectMinor({ stateDir, pr, headSha, id, url, reason, now = Date.now()
   return { collected: true, ...(created ? {} : { existing: true }), minor: collectedMinors({ stateDir, pr: key.pr }).find((minor) => minor.id === entry.id) };
 }
 
+// The merge gate of an AI agent merging at the user's explicit request. Live facts (CI, reviewer completion, LGTM)
+// arrive as evidence from the caller; the delivery record is read from the state. Every reason is reported.
+function mergeReady({ stateDir, pr, headSha, evidence }) {
+  const key = validate({ pr, headSha });
+  const list = (value, label) => { if (!Array.isArray(value)) throw new Error(`review-lgtm-state: merge-ready evidence ${label} must be an array`); return value; };
+  if (!evidence || typeof evidence !== 'object') throw new Error('review-lgtm-state: merge-ready evidence must be an object');
+  const checks = list(evidence.checks, 'checks');
+  const reviewers = list(evidence.reviewers, 'reviewers');
+  const reasons = [];
+  const live = String(evidence.headSha || '').toLowerCase();
+  if (live !== key.headSha) reasons.push(`head-mismatch:${live}`);
+  for (const check of checks) if (text(check?.conclusion) !== 'success') reasons.push(`check:${text(check?.name)}:${text(check?.conclusion)}`);
+  if (reviewers.length === 0) reasons.push('no-automated-review');
+  for (const reviewer of reviewers) {
+    const name = text(reviewer?.reviewer);
+    if (text(reviewer?.failure)) reasons.push(`reviewer-failure:${name}:${text(reviewer.failure)}`);
+    else if (reviewer?.terminal !== true) reasons.push(`reviewer-pending:${name}`);
+    else if (reviewer.lgtm !== true) reasons.push(`no-lgtm:${name}`);
+  }
+  const delivery = deliveryStatus({ stateDir, ...key });
+  if (!delivery) reasons.push('no-delivery');
+  else if (!delivery.current) reasons.push('delivery-stale');
+  else if (delivery.classification === 'blocked') reasons.push('delivery-blocked');
+  return { result: reasons.length === 0 ? 'ready' : 'blocked', reasons };
+}
+
 function reserveFixRound({ stateDir, pr, headSha }, now, owner) {
   const { max } = fixBudget({ stateDir, pr });
   for (let round = 1; round <= max; round += 1) {
@@ -754,11 +780,12 @@ function runMain(repoRoot = process.cwd()) {
   else if (verb === 'renew-fix-round') process.stdout.write(`${JSON.stringify(renewFixRound({ stateDir, pr, headSha, owner: argument }))}\n`);
   else if (verb === 'waive-fix-budget') process.stdout.write(`${JSON.stringify(waiveFixBudget({ stateDir, pr, person: headSha, count: Number(argument) }))}\n`);
   else if (verb === 'collect-minor') process.stdout.write(`${JSON.stringify(collectMinor({ stateDir, pr, headSha, ...JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
+  else if (verb === 'merge-ready') process.stdout.write(`${JSON.stringify(mergeReady({ stateDir, pr, headSha, evidence: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'self-feeding') { const [start, end] = process.argv.slice(6); process.stdout.write(`${JSON.stringify(selfFeeding({ repoRoot: worktreeRoot(repoRoot), stateDir, pr, headSha, file: argument, start: Number(start), end: Number(end === undefined ? start : end) }))}\n`); }
   else if (verb === 'record-review') process.stdout.write(`${JSON.stringify(recordReview({ stateDir, pr, headSha, observation: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'record-delivery') process.stdout.write(`${JSON.stringify(recordDelivery({ stateDir, pr, headSha, packet: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'reject-review-batch') process.stdout.write(`${JSON.stringify(rejectReviewBatch({ stateDir, pr, headSha, ...JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
-  else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, waive-fix-budget, collect-minor, self-feeding, record-review, reject-review-batch, or record-delivery');
+  else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, waive-fix-budget, collect-minor, self-feeding, merge-ready, record-review, reject-review-batch, or record-delivery');
 }
 
-module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, waiveFixBudget, collectMinor, selfFeeding, recordReview, rejectReviewBatch, classifyDelivery, recordDelivery, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, runMain };
+module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, waiveFixBudget, collectMinor, mergeReady, selfFeeding, recordReview, rejectReviewBatch, classifyDelivery, recordDelivery, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, runMain };

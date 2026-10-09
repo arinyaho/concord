@@ -11,7 +11,7 @@ An agent workflow plugin for **Claude Code**, **Codex**, and **GitHub Copilot** 
 | Workflow | What it does | Harnesses |
 |---|---|---|
 | `/review-and-fix` | Reviews a branch, PR, or file, fixes the findings, and re-reviews until a deterministic CLI decides to stop. Reviewer and fixer can each be Claude, Codex, or Copilot, with their own models. | All three |
-| `review-until-lgtm` | Collects automated GitHub PR reviews (for example from Codex or Copilot), fixes them in bounded batches, and pushes until the current head gets an explicit LGTM. It never merges. | All three |
+| `review-until-lgtm` | Collects automated GitHub PR reviews (for example from Codex or Copilot), fixes them in bounded batches, and pushes until the current head gets an explicit LGTM. It merges only at the user's explicit request, and only when `merge-ready` finds the live head's checks green, every configured reviewer's LGTM fresh, and a mergeable delivery record. | All three |
 | `deep-review` | Runs one bounded review of a fixed base/head pair with independent reviewers, verifies the pooled findings, and groups them by root cause. | All three |
 | `ticket-to-pr` | Takes one ticket through acceptance criteria, a failing check, a design note, implementation, review, a passing check, and a pull request. | All three |
 | `initiative-to-prs` | Turns a product brief, problem report, or set of incomplete tickets into implementation-ready tickets and drives each one to a verified PR. | All three |
