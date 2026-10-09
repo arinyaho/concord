@@ -4,7 +4,14 @@ const path = require('node:path');
 const { runReviewUntilGreen, acknowledgeContinuationPacket } = require('../engine/codex-review-runner');
 const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('../engine/spawn-cross-platform');
 
-const args = process.argv.slice(2);
+const rawArgs = process.argv.slice(2);
+const guidanceSeparator = rawArgs.indexOf('::');
+const args = guidanceSeparator === -1 ? rawArgs : rawArgs.slice(0, guidanceSeparator);
+const reviewerGuidance = guidanceSeparator === -1 ? null : rawArgs.slice(guidanceSeparator + 1).join(' ').trim();
+if (guidanceSeparator !== -1 && !reviewerGuidance) {
+  process.stderr.write('review-and-fix: :: requires non-empty reviewer guidance\n');
+  process.exit(1);
+}
 if (args.includes('--help') || args.includes('-h')) {
   process.stdout.write('Usage: review-and-fix [<branch> [<base>] | file:<path-or-glob> | resume <ref>] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--reasoning-effort <effort>] [--service-tier <tier>] [--initiative-run-key <key> --initiative-id <id> --initiative-state-dir <absolute-dir> --initiative-max-launches <n> --initiative-max-rounds <n> [--initiative-mode <base|lite>] [--initiative-finalise]] [--session-handoff <off|suggest|stop-at-checkpoint>] [--broad|--no-broad] [--no-dod] [--review-only] [--intent-file <path>]\n');
   process.exit(0);
@@ -26,6 +33,7 @@ const noDod = args.includes('--no-dod');
 // --review-only stops after verification and prints the verified findings; nothing is edited.
 const reviewOnly = args.includes('--review-only');
 const inference = {};
+if (reviewerGuidance) inference.reviewerGuidance = reviewerGuidance;
 const inferenceArgs = new Set();
 if (args.includes('--initiative-finalise')) { inference.initiativeFinalise = true; inferenceArgs.add(args.indexOf('--initiative-finalise')); }
 for (const [flag, field] of [['--session-handoff', 'sessionHandoff'], ['--reviewer', 'reviewer'], ['--reviewer-model', 'reviewerModel'], ['--fixer', 'fixer'], ['--fixer-model', 'fixerModel'], ['--reasoning-effort', 'reasoningEffort'], ['--service-tier', 'serviceTier'], ['--initiative-run-key', 'initiativeRunKey'], ['--initiative-id', 'initiativeId'], ['--initiative-state-dir', 'initiativeStateDir'], ['--initiative-max-launches', 'initiativeMaxLaunches'], ['--initiative-max-rounds', 'initiativeMaxRounds'], ['--initiative-mode', 'initiativeMode'], ['--intent-file', 'intentFile']]) {

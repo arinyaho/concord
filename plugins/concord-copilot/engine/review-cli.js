@@ -1701,6 +1701,16 @@ function runVerb(resolveFromCwd, args, initiative) {
     }
     const reviewRouting = ledger.reviewRouting || (Object.keys(requestedRouting).length ? requestedRouting : null);
 
+    const guidanceAt = rest.indexOf('--reviewer-guidance');
+    const requestedGuidance = guidanceAt === -1 ? null : rest[guidanceAt + 1];
+    if (guidanceAt !== -1 && (!requestedGuidance || !requestedGuidance.trim() || rest.indexOf('--reviewer-guidance', guidanceAt + 1) !== -1)) {
+      throw new Error('review-cli round-start: --reviewer-guidance requires exactly one non-empty value');
+    }
+    if (ledger.reviewerGuidance && requestedGuidance && ledger.reviewerGuidance !== requestedGuidance) {
+      throw new Error('review-cli round-start: reviewer guidance differs from the active run; rerun the target before changing it');
+    }
+    const reviewerGuidance = ledger.reviewerGuidance || requestedGuidance || null;
+
     // Captured before the clearing paths below wipe intent_parked. Handed to the
     // intent detector so the SAME objection keeps the SAME id across rounds --
     // nothing dedupes intent findings by id; the id is how a human re-reading the
@@ -1787,6 +1797,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       throw new Error('review-cli round-start: --intent-file requires exactly one value');
     }
     const positional = rest.filter((a, index) => !BROAD_FLAGS.has(a) && !NO_BROAD_FLAGS.has(a) && !NO_DOD_FLAGS.has(a) && a !== '--no-intent-command' && !routingIndexes.has(index)
+      && (guidanceAt === -1 || (index !== guidanceAt && index !== guidanceAt + 1))
       && (intentFileAt === -1 || (index !== intentFileAt && index !== intentFileAt + 1)));
     for (const tok of positional) {
       if (tok.startsWith('--')) throw new Error(`review-cli round-start: unknown flag "${tok}"`);
@@ -2188,6 +2199,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       gate_reviewed_head_sha: gateApplied && isGit ? headSha : ledger.gate_reviewed_head_sha,
       dodDeferred,
       reviewRouting,
+      reviewerGuidance,
       execution: {
         round: ledger.round,
         diffHash,
@@ -2210,7 +2222,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // The three fields are mutually descriptive: pending is the normal configured
     // gate waiting for convergence, deferred means no gate will run, and passed is
     // retained for file/no-op compatibility. Callers must not infer one from another.
-    process.stdout.write(JSON.stringify({ decision: 'work', mode: run ? runMode(run) : undefined, gateMode: lite ? 'design-conformance' : 'pair', ref: targetUpdate.ref, base: targetUpdate.base, head: targetUpdate.head_sha, attemptId: ledger.attemptId, round: ledger.round, budget: ledger.budget, dodPassed: dod.deferredBy === 'pending-final' ? false : dod.passed, dodDeferred: !!dod.deferred && dod.deferredBy !== 'pending-final', dodPending: dod.deferredBy === 'pending-final', intentApplied: !!intentCfg, intentHash: ledger.intentHash || null, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir, completedArtifacts, normalizedArtifacts, planRetry: ledger.execution?.planRetry || null, retryArtifacts, retryArtifact, repairArtifacts }) + '\n');
+    process.stdout.write(JSON.stringify({ decision: 'work', mode: run ? runMode(run) : undefined, gateMode: lite ? 'design-conformance' : 'pair', ref: targetUpdate.ref, base: targetUpdate.base, head: targetUpdate.head_sha, attemptId: ledger.attemptId, round: ledger.round, budget: ledger.budget, dodPassed: dod.deferredBy === 'pending-final' ? false : dod.passed, dodDeferred: !!dod.deferred && dod.deferredBy !== 'pending-final', dodPending: dod.deferredBy === 'pending-final', intentApplied: !!intentCfg, intentHash: ledger.intentHash || null, priorIntentIds, gateApplied, targetType, reviewRouting, reviewerGuidance, stateDir, completedArtifacts, normalizedArtifacts, planRetry: ledger.execution?.planRetry || null, retryArtifacts, retryArtifact, repairArtifacts }) + '\n');
     return;
   }
 

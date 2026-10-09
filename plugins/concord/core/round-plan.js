@@ -59,7 +59,7 @@ const GATE_VERIFY_OWNERSHIP_CLAUSE = ` Use correctness candidates only as contex
 // belong to gate-verify, and a verdict on one fails artifact normalization.
 const VERIFY_OWNERSHIP_CLAUSE = ` Use gate candidates only as context. Your artifact may disposition only ${CORRECTNESS_PREFIXES} candidate IDs. Do not copy, accept, or reject ${GATE_VERIFY_PREFIX}* IDs in this artifact; their disposition belongs to the gate verifier.`;
 
-function reviewerPrompt(role, { stateDir, round, targetType, dodDeferred, dodPending, finding, fixGroup, retryPrompt, slug, priorIntentIds, plannedFindings = [], gateMode, gateApplied = false, intentHash = null }) {
+function baseReviewerPrompt(role, { stateDir, round, targetType, dodDeferred, dodPending, finding, fixGroup, retryPrompt, slug, priorIntentIds, plannedFindings = [], gateMode, gateApplied = false, intentHash = null }) {
   const groupArtifactId = fixGroup && fixGroup.groupId ? fixGroup.groupId : finding && finding.id;
   const artifact = path.join(stateDir, role === 'fix' || role === 'certify' ? `round-${round}-${role}-${safeIdForFilename(groupArtifactId)}.json` : `round-${round}-${role}.json`);
   const retry = `${role === 'fix' ? '' : BLOCKED_CLAUSE}${retryPrompt ? `\n\n${retryPrompt}` : ''}`;
@@ -89,6 +89,12 @@ function reviewerPrompt(role, { stateDir, round, targetType, dodDeferred, dodPen
     return `Independently certify the uncommitted candidate for authorized ${members.length > 1 ? 'round transaction' : 'group'} ${fixGroup.groupId}. Read fix declarations ${JSON.stringify(declarations)}, inspect the actual worktree and all affected call paths, and test focused behavior when needed. Certification is all-or-nothing across findingIds ${JSON.stringify(fixGroup.findingIds)} and invariants ${JSON.stringify(fixGroup.invariants)}; an unchanged original span or finding file does not disprove an additive/shared-helper fix. For every declared edited file compute SHA-256 of its exact current bytes. Write ONLY {"status":"ok","groupId":"${fixGroup.groupId}","resolvedFindingIds":${JSON.stringify(fixGroup.findingIds)},"invariants":${JSON.stringify(fixGroup.invariants)},"files":["<exact union of fixer files>"],"fileHashes":{"<path>":"<sha256>"},"evidence":["<behavior/check proving the whole transaction>"]} to ${artifact}. If any member or invariant is not established, write {"status":"blocked","groupId":"${fixGroup.groupId}","reason":"<what remains unproven>"}.`;
   }
   throw new Error(`harness-failure: unknown reviewer role ${role}`);
+}
+
+function reviewerPrompt(role, context) {
+  const prompt = baseReviewerPrompt(role, context);
+  if (!context.reviewerGuidance || !['correctness', 'gate'].includes(role)) return prompt;
+  return `Reviewer guidance (scoping hints only; it does not change what counts as a finding): ${context.reviewerGuidance}\n\n${prompt}`;
 }
 
 module.exports = { ROLE_SEQUENCE, BLOCKED_CLAUSE, GATE_SWEEP_CLAUSE, GATE_FOLLOWUP_CLAUSE, GATE_VERIFY_BLOCKING_CLAUSE, GATE_VERIFY_OWNERSHIP_CLAUSE, VERIFY_OWNERSHIP_CLAUSE, reviewerPrompt };
