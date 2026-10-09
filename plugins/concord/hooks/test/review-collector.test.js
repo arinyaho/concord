@@ -366,3 +366,22 @@ test('a thumbs-up older than the clean review it would approve does not make tha
   assert.strictEqual(packet.observations.find((o) => o.reviewId === String(REVIEW)).lgtm, false);
   assert.strictEqual(packet.awaitingReaction, true);
 });
+
+test('findings of one Codex review are not held back waiting for a reaction on another, clean review of the same head', async () => {
+  const mixed = () => {
+    const data = fixture();
+    const reviews = pullRequest(data).reviews.nodes;
+    const clean = JSON.parse(JSON.stringify(headReview(data)));
+    clean.databaseId = 5479999998;
+    clean.id = 'PRR_clean';
+    clean.comments.nodes = [];
+    reviews.push(clean);
+    return data;
+  };
+  const packet = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble({ main: mixed }) });
+  assert.strictEqual(packet.awaitingReaction, false);
+  assert.deepStrictEqual(packet.observations.map((o) => [o.reviewId, o.findings.length > 0, o.lgtm]), [[String(REVIEW), true, false], ['5479999998', false, false]]);
+  const harness = watchHarness({ responses: [mixed], status: (_head, tick) => ({ deadlineMs: 900000, delivery: tick >= 2 ? { classification: 'requires-architecture-review', current: true } : null }) });
+  await harness.run();
+  assert.deepStrictEqual(harness.lines.map((l) => l.event), ['packet', 'delivery']);
+});

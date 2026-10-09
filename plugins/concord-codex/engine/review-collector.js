@@ -171,11 +171,12 @@ async function complete(analysis, { pr, graphql, reviewers = DEFAULT_REVIEWERS }
     const node = nodes[0];
     packet.reaction = { reviewer: loginOf(node.user.login), content: node.content, createdAt: node.createdAt, fresh: wholeSeconds(node.createdAt) >= wholeSeconds(summary.completedAt) };
   }
-  // A clean Codex review (no findings) is green once a fresh thumbs-up at least as new as the review itself arrives, and waits for it until then.
+  // A clean Codex review (no findings) is green once a fresh thumbs-up at least as new as the review itself arrives. Codex posts no thumbs-up when any review of the batch has findings, so the packet waits for it only when the whole batch is clean.
+  const batchClean = packet.observations.every((o) => o.findings.length === 0);
   for (const observation of packet.observations) {
     if (observation.reviewer !== CODEX_REVIEWER || observation.findings.length > 0 || observation.lgtm) continue;
     observation.lgtm = !!(packet.reaction && packet.reaction.fresh && (!observation.submittedAt || wholeSeconds(packet.reaction.createdAt) >= wholeSeconds(observation.submittedAt)));
-    if (!observation.lgtm) packet.awaitingReaction = true;
+    if (!observation.lgtm && batchClean) packet.awaitingReaction = true;
   }
   if (!packet.observations.some((o) => o.reviewer === CODEX_REVIEWER) && reviewers.includes(CODEX_REVIEWER)) {
     packet.observations.push({ reviewId: String(analysis.summaryId), reviewer: CODEX_REVIEWER, reviewUrl: summary.url, commitId: packet.head, reviewCommitId: packet.head, state: 'completed', lgtm: !!(packet.reaction && packet.reaction.fresh), findings: [] });
