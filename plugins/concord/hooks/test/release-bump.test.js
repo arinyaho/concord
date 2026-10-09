@@ -148,6 +148,18 @@ test('push counts only the merges after the last bump when a bump landed between
   assert.deepEqual(botVersions(tmp, remote), ['0.9.0-beta.10', '0.9.0-beta.11', '0.9.0-beta.12', '0.9.0-beta.13']);
 });
 
+test('push ignores a bot commit that is not a release bump and still bumps the merge before it', () => {
+  const { tmp, remote } = makeOrigin();
+  runBump(clone(remote, path.join(tmp, 'seed-run')), 'push', 'main');
+  merge(remote, tmp, 'human');
+  const docs = clone(remote, path.join(tmp, 'docs-bot'));
+  git(docs, '-c', 'user.name=github-actions[bot]', '-c', `user.email=${BOT_EMAIL}`, 'commit', '-q', '--allow-empty', '-m', 'docs: regenerate index');
+  git(docs, 'push', '-q', 'origin', 'main');
+  const result = runBump(clone(remote, path.join(tmp, 'run')), 'push', 'main');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(botVersions(tmp, remote).filter((v) => v.startsWith('0.')), ['0.9.0-beta.10', '0.9.0-beta.11']);
+});
+
 test('rerunning a finished run at its original checkout creates no commit', () => {
   const { tmp, remote } = makeOrigin();
   const original = clone(remote, path.join(tmp, 'original'));

@@ -41,12 +41,20 @@ function guard(baseRef, headRef) {
   return 1;
 }
 
-// Every first-parent commit after the newest bump commit is a merge that still needs its bump:
+const BUMP_SUBJECT = 'chore(release): bump Concord to ';
+
+// Every non-bot first-parent commit after the newest release bump is a merge that still needs its bump:
 // a bump push lands on the tip its run fetched and carries every merge before it.
+// Other commits by the Actions bot are neither a boundary nor a merge.
 function pendingMerges(branch) {
-  const authors = git('log', '--first-parent', '--format=%ae', `origin/${branch}`).split('\n').filter(Boolean);
-  const lastBump = authors.indexOf(BOT_EMAIL);
-  return lastBump === -1 ? authors.length : lastBump;
+  const commits = git('log', '--first-parent', '--format=%ae%x09%s', `origin/${branch}`).split('\n').filter(Boolean);
+  let pending = 0;
+  for (const commit of commits) {
+    const [author, subject] = commit.split('\t');
+    if (author === BOT_EMAIL && subject.startsWith(BUMP_SUBJECT)) break;
+    if (author !== BOT_EMAIL) pending += 1;
+  }
+  return pending;
 }
 
 function commitBump() {
@@ -54,7 +62,7 @@ function commitBump() {
   execFileSync(process.execPath, [path.join(root, 'scripts/release-version.mjs'), next], { cwd: root, stdio: 'inherit' });
   git('add', '--', ...VERSION_FILES);
   git('-c', `user.name=${BOT_NAME}`, '-c', `user.email=${BOT_EMAIL}`, 'commit', '-q', '--no-verify',
-    '-m', `chore(release): bump Concord to ${next}`);
+    '-m', `${BUMP_SUBJECT}${next}`);
   const committed = git('diff', '--name-only', 'HEAD~1', 'HEAD').split('\n').filter(Boolean);
   const stray = committed.filter((file) => !VERSION_FILES.includes(file));
   if (stray.length > 0) throw new Error(`Bump commit touches files outside the release set: ${stray.join(', ')}`);
