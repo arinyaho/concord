@@ -4,13 +4,13 @@ A change that persists state or adds a retry, recovery or replay path has bounda
 
 ## Decision
 
-Stage 3 of `ticket-to-pr` requires a table for a change that adds or alters persisted state or a retry, recovery or replay path. Each row is one combination of a state the change persists or branches on and an event that can reach it: first occurrence, repetition or replay, corrupt or missing evidence, base or head change, or interruption. Each row states the expected outcome. A change without persisted state or a retry path states that in one line instead.
+Stage 3 of `ticket-to-pr` requires a table for a change that adds or alters persisted state or a retry, recovery or replay path. Each row is one combination of a state the change persists or branches on and an event that can reach it: first occurrence, repetition or replay, corrupt or missing evidence, base or head change, or interruption. Each row states the expected outcome. A change with no persisted state and no retry, recovery or replay path states that in one line instead.
 
-Stage 6 requires every row to have a named test that fails before the change for the right reason, or a recorded reason no test is needed.
+Stage 6 requires every row to have a named test, or a recorded reason no test is needed. A row whose behavior is introduced or changed has a test that fails before the change for the right reason. A row whose behavior is unchanged names its existing passing test.
 
 ## Cost and residual exposure
 
-The design note is longer for stateful changes. A state or event the author does not think of is still found only by review, so the table lowers the number of review findings without replacing review.
+The design note is longer for stateful changes. The skill itself lists the event categories, because installed packages do not receive this note. A state or event the author does not think of is still found only by review, so the table lowers the number of review findings without replacing review.
 
 ## Evidence and executable gates
 
