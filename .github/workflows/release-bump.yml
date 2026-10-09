@@ -4,17 +4,14 @@ on:
   push:
     branches: [main]
 
-permissions:
-  contents: write
-
-concurrency:
-  group: release-bump
-  cancel-in-progress: false
+permissions: {}
 
 jobs:
   release-bump:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,6 +21,7 @@ jobs:
         with:
           node-version: 22
 
-      # A push made with GITHUB_TOKEN starts no workflow run; the script also skips when HEAD is its own bump commit.
+      # The script counts the merges after the newest bump on origin/main, so a canceled, replaced or rerun run changes nothing it should not.
+      # A push made with GITHUB_TOKEN starts no workflow run.
       - name: Raise the beta version on main
         run: node scripts/release-bump.mjs push main
