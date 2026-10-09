@@ -16,10 +16,16 @@ const WINDOW_SECONDS = 900;
 const DEFAULT_INTERVAL_MS = 30000;
 const MIN_INTERVAL_MS = 30000;
 
+const COMMENT_FIELDS = 'databaseId url body path line commit{oid} originalCommit{oid}';
+const CONTEXT_FIELDS = '__typename ... on CheckRun{name status conclusion} ... on StatusContext{context state}';
 const QUERY = `query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){headRefOid
-reviews(last:100){nodes{databaseId url state submittedAt author{login} commit{oid} comments(first:100){nodes{databaseId url body path line commit{oid} originalCommit{oid}}}}}
+reviews(last:100){nodes{id databaseId url state submittedAt body author{login} commit{oid} comments(first:100){pageInfo{hasNextPage endCursor} nodes{${COMMENT_FIELDS}}}}}
+reviewThreads(last:100){nodes{isResolved comments(first:100){nodes{databaseId}}}}
 comments(last:100){nodes{databaseId url body createdAt author{login}}}
-commits(last:1){nodes{commit{oid statusCheckRollup{contexts(first:100){nodes{__typename ... on CheckRun{name status conclusion} ... on StatusContext{context state}}}}}}}}}}`;
+commits(last:1){nodes{commit{oid statusCheckRollup{id contexts(first:100){pageInfo{hasNextPage endCursor} nodes{${CONTEXT_FIELDS}}}}}}}}}}`;
+// Follow-up pages for a review with more than 100 inline comments and a check rollup with more than 100 contexts.
+const COMMENTS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on PullRequestReview{comments(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${COMMENT_FIELDS}}}}}}`;
+const CONTEXTS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on StatusCheckRollup{contexts(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${CONTEXT_FIELDS}}}}}}`;
 const REACTIONS_QUERY = 'query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){reactions(first:100,content:THUMBS_UP){nodes{content createdAt user{login}}}}}}';
 
 // Reactions carry the bot account's login with a [bot] suffix; review and comment authors do not.
@@ -37,7 +43,7 @@ function suggestionsOf(body) {
 }
 
 function priorityOf(body) {
-  const match = /!\[P([12]) Badge\]/.exec(typeof body === 'string' ? body : '');
+  const match = /\[P([12])(?: Badge)?\]/.exec(typeof body === 'string' ? body : '');
   return match ? `P${match[1]}` : null;
 }
 
@@ -85,6 +91,24 @@ function pullRequestOf(response) {
   return pr;
 }
 
+// Fills `connection.nodes` with every following page. Read once per collection, so a huge review costs extra reads only when it exists.
+async function fillPages(connection, query, id, field, graphql) {
+  while (connection.pageInfo && connection.pageInfo.hasNextPage && connection.pageInfo.endCursor) {
+    const page = (await graphql(query, { id, cursor: connection.pageInfo.endCursor })).data.node[field];
+    connection.nodes.push(...page.nodes);
+    connection.pageInfo = page.pageInfo;
+  }
+}
+
+async function read(graphql, pr) {
+  const response = await graphql(QUERY, { pr });
+  const pull = pullRequestOf(response);
+  await Promise.all(pull.reviews.nodes.map((review) => fillPages(review.comments, COMMENTS_PAGE_QUERY, review.id, 'comments', graphql)));
+  const commit = pull.commits.nodes[0] && pull.commits.nodes[0].commit;
+  if (commit && commit.statusCheckRollup) await fillPages(commit.statusCheckRollup.contexts, CONTEXTS_PAGE_QUERY, commit.statusCheckRollup.id, 'contexts', graphql);
+  return response;
+}
+
 // A review belongs to the head when its own commit is the head or when any of
 // its inline comments was made on the head (originalCommit): GitHub moves a
 // comment's current commit to every later head, so `commit` says nothing about
@@ -95,6 +119,7 @@ function analyze(response, head, reviewers = DEFAULT_REVIEWERS) {
   if (live !== head) return { stale: true, head, liveHead: live };
   const comments = pr.comments.nodes.filter((c) => c.author).map((c) => ({ ...c, author: { login: loginOf(c.author.login) } }));
   const summary = reviewers.includes(CODEX_REVIEWER) ? summaryOf(comments, head) : null;
+  const resolved = new Set(pr.reviewThreads.nodes.filter((t) => t.isResolved).flatMap((t) => t.comments.nodes.map((c) => c.databaseId)));
   const observations = [];
   for (const review of pr.reviews.nodes) {
     const reviewer = review.author && loginOf(review.author.login);
@@ -103,9 +128,9 @@ function analyze(response, head, reviewers = DEFAULT_REVIEWERS) {
     const reviewCommit = review.commit ? review.commit.oid.toLowerCase() : null; // null once a force-push drops the commit
     const madeOnHead = (c) => c.originalCommit && c.originalCommit.oid.toLowerCase() === head;
     if (reviewCommit !== head && !inline.some(madeOnHead)) continue;
-    // A review on an older commit keeps only the comments it made on this head.
-    const own = inline.filter((c) => reviewCommit === head || madeOnHead(c));
-    observations.push({ reviewId: String(review.databaseId), reviewer, reviewUrl: review.url, commitId: head, reviewCommitId: reviewCommit, state: 'completed', lgtm: review.state === 'APPROVED', findings: own.map(finding) });
+    // Only comments made on this head count (a reply keeps its thread's older original commit), and a comment in a resolved thread is no longer a finding.
+    const own = inline.filter((c) => (c.originalCommit ? madeOnHead(c) : reviewCommit === head) && !resolved.has(c.databaseId));
+    observations.push({ reviewId: String(review.databaseId), reviewer, reviewUrl: review.url, commitId: head, reviewCommitId: reviewCommit, state: 'completed', lgtm: review.state === 'APPROVED', findings: own.map(finding), ...limited(review.body), untrusted: true });
   }
   const pending = reviewers.filter((reviewer) => {
     const hasReview = observations.some((o) => o.reviewer === reviewer);
@@ -146,6 +171,10 @@ async function complete(analysis, { pr, graphql, reviewers = DEFAULT_REVIEWERS }
     const node = nodes[0];
     packet.reaction = { reviewer: loginOf(node.user.login), content: node.content, createdAt: node.createdAt, fresh: wholeSeconds(node.createdAt) >= wholeSeconds(summary.completedAt) };
   }
+  // A clean Codex review (no findings) is green once its thumbs-up is fresh.
+  for (const observation of packet.observations) {
+    if (observation.reviewer === CODEX_REVIEWER && observation.findings.length === 0 && packet.reaction && packet.reaction.fresh) observation.lgtm = true;
+  }
   if (!packet.observations.some((o) => o.reviewer === CODEX_REVIEWER) && reviewers.includes(CODEX_REVIEWER)) {
     packet.observations.push({ reviewId: String(analysis.summaryId), reviewer: CODEX_REVIEWER, reviewUrl: summary.url, commitId: packet.head, reviewCommitId: packet.head, state: 'completed', lgtm: !!(packet.reaction && packet.reaction.fresh), findings: [] });
     packet.awaitingReaction = !(packet.reaction && packet.reaction.fresh);
@@ -155,7 +184,8 @@ async function complete(analysis, { pr, graphql, reviewers = DEFAULT_REVIEWERS }
 
 async function collect({ pr, head, graphql, reviewers = DEFAULT_REVIEWERS }) {
   const normalized = String(head).toLowerCase();
-  const analysis = analyze(await graphql(QUERY, { pr }), normalized, reviewers);
+  reviewers = reviewers.map(loginOf);
+  const analysis = analyze(await read(graphql, pr), normalized, reviewers);
   if (analysis.stale) return { stale: true, head: analysis.head, liveHead: analysis.liveHead };
   return complete(analysis, { pr, graphql, reviewers });
 }
@@ -178,12 +208,13 @@ function formatPacketLine(packet) { return JSON.stringify(packet); }
 // line per terminal head; the loop ends on a recorded delivery or the deadline.
 async function watch({ pr, graphql, state, now = Date.now, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), intervalMs = DEFAULT_INTERVAL_MS, write, reviewers = DEFAULT_REVIEWERS }) {
   if (intervalMs < MIN_INTERVAL_MS) throw new Error(`review-collector: the watch interval must be at least ${MIN_INTERVAL_MS} ms`);
+  reviewers = reviewers.map(loginOf);
   const printed = new Set();
   let awaitingReaction = false;
   const windowed = new Set();
   const since = new Map();
   for (;;) {
-    const response = await graphql(QUERY, { pr });
+    const response = await read(graphql, pr);
     const head = pullRequestOf(response).headRefOid.toLowerCase();
     if (!since.has(head)) since.set(head, now());
     const analysis = analyze(response, head, reviewers);
@@ -203,7 +234,7 @@ async function watch({ pr, graphql, state, now = Date.now, sleep = (ms) => new P
 
 function ghGraphql(cwd = process.cwd()) {
   const gh = crossPlatformCommand('gh', cwd);
-  return async (query, { pr }) => JSON.parse(execFileSync(gh, crossPlatformArgs(['api', 'graphql', '-F', 'owner={owner}', '-F', 'name={repo}', '-F', `pr=${pr}`, '-f', `query=${query}`], needsDoubleEscape('gh', cwd)), crossPlatformOpts({ cwd, encoding: 'utf8', maxBuffer: 64 << 20 })));
+  return async (query, variables) => JSON.parse(execFileSync(gh, crossPlatformArgs(['api', 'graphql', ...(variables.pr === undefined ? [] : ['-F', 'owner={owner}', '-F', 'name={repo}', '-F', `pr=${variables.pr}`]), ...['id', 'cursor'].filter((key) => variables[key] !== undefined).flatMap((key) => ['-f', `${key}=${variables[key]}`]), '-f', `query=${query}`], needsDoubleEscape('gh', cwd)), crossPlatformOpts({ cwd, encoding: 'utf8', maxBuffer: 64 << 20 })));
 }
 
 module.exports = { DEFAULT_REVIEWERS, reviewersFrom, MAX_BODY_CHARS, WINDOW_SECONDS, collect, watch, analyze, complete, formatPacketLine, ghGraphql };

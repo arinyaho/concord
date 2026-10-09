@@ -24,12 +24,14 @@ function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'review-collector
 
 // A graphql double that serves the main query from `main()` and the reaction
 // query from `reactions`, and counts the reaction reads.
-function graphqlDouble({ main = fixture, reactions = reactionsResponse([]) } = {}) {
-  const double = async (query) => {
+function graphqlDouble({ main = fixture, reactions = reactionsResponse([]), pages = null } = {}) {
+  const double = async (query, variables) => {
+    if (/node\(id:/.test(query)) { double.pageReads.push(variables); return pages(query, variables); }
     if (/reactions\(/.test(query) && !/reviews\(/.test(query)) { double.reactionReads += 1; return typeof reactions === 'function' ? reactions() : reactions; }
     return typeof main === 'function' ? main() : main;
   };
   double.reactionReads = 0;
+  double.pageReads = [];
   return double;
 }
 
@@ -250,4 +252,90 @@ test('earlier Codex reviews do not suppress the clean result of the head, and th
   const packet = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble({ main: onlyEarlier, reactions: reactionsResponse([thumbsUp('2026-10-09T13:47:56Z')]) }) });
   assert.deepStrictEqual(packet.observations.map((o) => [o.reviewId, o.lgtm, o.findings.length]), [['6081857394', true, 0]]);
   assert.strictEqual(packet.reaction.fresh, true);
+});
+
+const REVIEW = 5470929926;
+const FIRST_FINDING = '4230809063';
+const SECOND_FINDING = '4230809075';
+function headReview(data) { return pullRequest(data).reviews.nodes.find((r) => r.databaseId === REVIEW); }
+function findingIds(packet) { return packet.observations.find((o) => o.reviewId === String(REVIEW)).findings.map((f) => f.url.split('_r')[1]); }
+
+test('a comment in a resolved review thread is not a finding', async () => {
+  const data = fixture();
+  pullRequest(data).reviewThreads.nodes.find((t) => t.comments.nodes.some((c) => String(c.databaseId) === FIRST_FINDING)).isResolved = true;
+  const packet = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble({ main: () => data }) });
+  assert.deepStrictEqual(findingIds(packet), [SECOND_FINDING]);
+});
+
+test('a review body without inline comments is carried on the observation as untrusted, size-limited text', async () => {
+  const data = fixture();
+  const review = headReview(data);
+  review.comments.nodes = [];
+  review.body = `${'b'.repeat(collector.MAX_BODY_CHARS + 10)}`;
+  const packet = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble({ main: () => data }) });
+  const observation = packet.observations.find((o) => o.reviewId === String(REVIEW));
+  assert.deepStrictEqual(observation.findings, []);
+  assert.strictEqual(observation.body.length, collector.MAX_BODY_CHARS);
+  assert.strictEqual(observation.truncated, true);
+  assert.strictEqual(observation.untrusted, true);
+});
+
+test('inline comments past the first page of a review are fetched', async () => {
+  const data = fixture();
+  const review = headReview(data);
+  review.comments.pageInfo = { hasNextPage: true, endCursor: 'cursor-1' };
+  const extra = { ...review.comments.nodes[0], databaseId: 4239999999, url: `${review.comments.nodes[0].url.split('_r')[0]}_r4239999999` };
+  const pages = async () => ({ data: { node: { comments: { pageInfo: { hasNextPage: false, endCursor: 'cursor-2' }, nodes: [extra] } } } });
+  const double = graphqlDouble({ main: () => data, pages });
+  const packet = await collector.collect({ pr: 244, head: HEAD, graphql: double });
+  assert.deepStrictEqual(findingIds(packet), [FIRST_FINDING, SECOND_FINDING, '4239999999']);
+  assert.deepStrictEqual(double.pageReads, [{ id: review.id, cursor: 'cursor-1' }]);
+});
+
+test('status-check contexts past the first page are fetched', async () => {
+  const data = fixture();
+  const rollup = pullRequest(data).commits.nodes[0].commit.statusCheckRollup;
+  rollup.contexts.pageInfo = { hasNextPage: true, endCursor: 'cursor-1' };
+  const pages = async () => ({ data: { node: { contexts: { pageInfo: { hasNextPage: false, endCursor: 'cursor-2' }, nodes: [{ __typename: 'StatusContext', context: 'ci/extra', state: 'FAILURE' }] } } } });
+  const double = graphqlDouble({ main: () => data, pages });
+  const packet = await collector.collect({ pr: 244, head: HEAD, graphql: double });
+  assert.deepStrictEqual(packet.checks.map((c) => [c.name, c.conclusion]), [['plugin-tests', 'success'], ['agent-team-tests', 'success'], ['ci/extra', 'failure']]);
+  assert.deepStrictEqual(double.pageReads, [{ id: rollup.id, cursor: 'cursor-1' }]);
+});
+
+test('a textual [P1] marker sets the priority when there is no badge', async () => {
+  const data = fixture();
+  const comments = headReview(data).comments.nodes;
+  comments[0].body = '[P1] Bind the merge command to the validated head SHA';
+  comments[1].body = 'Looks fine, no priority.';
+  const packet = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble({ main: () => data }) });
+  assert.deepStrictEqual(packet.observations.find((o) => o.reviewId === String(REVIEW)).findings.map((f) => f.priority), ['P1', null]);
+});
+
+test('a clean COMMENTED review plus a fresh thumbs-up from Codex is lgtm', async () => {
+  const data = fixture();
+  headReview(data).comments.nodes = [];
+  const packet = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble({ main: () => data, reactions: reactionsResponse([thumbsUp('2026-10-09T13:47:56Z')]) }) });
+  const observation = packet.observations.find((o) => o.reviewId === String(REVIEW));
+  assert.strictEqual(observation.lgtm, true);
+  const stale = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble({ main: () => data, reactions: reactionsResponse([thumbsUp('2026-10-09T13:40:00Z')]) }) });
+  assert.strictEqual(stale.observations.find((o) => o.reviewId === String(REVIEW)).lgtm, false);
+});
+
+test('a review with findings stays not-lgtm even with a fresh thumbs-up', async () => {
+  const packet = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble({ reactions: reactionsResponse([thumbsUp('2026-10-09T13:47:56Z')]) }) });
+  assert.strictEqual(packet.observations.find((o) => o.reviewId === String(REVIEW)).lgtm, false);
+});
+
+test('a configured reviewer given with the [bot] suffix still matches its reviews', async () => {
+  const packet = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble(), reviewers: [`${CODEX}[bot]`] });
+  assert.deepStrictEqual(packet.observations.map((o) => o.reviewId), [String(REVIEW)]);
+  assert.deepStrictEqual(packet.pending, []);
+});
+
+test('a comment of a review made on the head that was originally made on an older commit is not attributed to the head', async () => {
+  const data = fixture();
+  headReview(data).comments.nodes[1].originalCommit = { oid: '7001631'.padEnd(40, '0') };
+  const packet = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble({ main: () => data }) });
+  assert.deepStrictEqual(findingIds(packet), [FIRST_FINDING]);
 });
