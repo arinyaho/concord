@@ -704,6 +704,17 @@ function selfFeeding({ repoRoot, stateDir, pr, headSha, file, start, end }) {
   return { selfFeeding: blamed.some((sha) => fixCommits.has(sha)), previousFixHead: previous.headSha };
 }
 
+// The finding's file is repository-relative, so git must run from the work tree root, not the caller's subdirectory.
+function worktreeRoot(cwd) {
+  const git = crossPlatformCommand('git', cwd);
+  try {
+    return execFileSync(git, crossPlatformArgs(['rev-parse', '--show-toplevel'], needsDoubleEscape('git', cwd)), crossPlatformOpts({ cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })).trim();
+  } catch (error) {
+    if (error.status === 128) return cwd; // a bare repository has no work tree; blame runs from where it is
+    throw error;
+  }
+}
+
 function runMain(repoRoot = process.cwd()) {
   const [verb, pr, headSha, argument] = process.argv.slice(2);
   const stateDir = defaultStateDir(repoRoot);
@@ -715,7 +726,7 @@ function runMain(repoRoot = process.cwd()) {
   else if (verb === 'claim-fix-round') process.stdout.write(`${JSON.stringify(claimFixRound({ stateDir, pr, headSha }))}\n`);
   else if (verb === 'renew-fix-round') process.stdout.write(`${JSON.stringify(renewFixRound({ stateDir, pr, headSha, owner: argument }))}\n`);
   else if (verb === 'waive-fix-budget') process.stdout.write(`${JSON.stringify(waiveFixBudget({ stateDir, pr, person: headSha, count: Number(argument) }))}\n`);
-  else if (verb === 'self-feeding') { const [start, end] = process.argv.slice(6); process.stdout.write(`${JSON.stringify(selfFeeding({ repoRoot, stateDir, pr, headSha, file: argument, start: Number(start), end: Number(end === undefined ? start : end) }))}\n`); }
+  else if (verb === 'self-feeding') { const [start, end] = process.argv.slice(6); process.stdout.write(`${JSON.stringify(selfFeeding({ repoRoot: worktreeRoot(repoRoot), stateDir, pr, headSha, file: argument, start: Number(start), end: Number(end === undefined ? start : end) }))}\n`); }
   else if (verb === 'record-review') process.stdout.write(`${JSON.stringify(recordReview({ stateDir, pr, headSha, observation: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'record-delivery') process.stdout.write(`${JSON.stringify(recordDelivery({ stateDir, pr, headSha, packet: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'reject-review-batch') process.stdout.write(`${JSON.stringify(rejectReviewBatch({ stateDir, pr, headSha, ...JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);

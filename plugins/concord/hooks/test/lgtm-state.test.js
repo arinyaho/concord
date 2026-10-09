@@ -1121,3 +1121,30 @@ test('self-feeding accepts a tracked path whose name contains a backslash', { sk
   claimFixHead(stateDir, reviewed, 1000);
   assert.strictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: name, start: 2, end: 2 }).selfFeeding, true);
 });
+
+test('self-feeding CLI resolves the repository root when run from a subdirectory', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-subdir-');
+  fs.mkdirSync(path.join(repo, 'src', 'nested'), { recursive: true });
+  write('src/x.md', '1\n');
+  const reviewed = commit('base');
+  write('src/x.md', '1\n2\n');
+  const head = commit('fix');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  const out = execFileSync('node', [CLI, 'self-feeding', '221', head, 'src/x.md', '2', '2'], { cwd: path.join(repo, 'src', 'nested'), encoding: 'utf8', env: { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir } });
+  assert.deepStrictEqual(JSON.parse(out), { selfFeeding: true, previousFixHead: reviewed });
+});
+
+test('self-feeding CLI works in a bare repository, which has no work tree root', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-bare-src-');
+  write('x.md', '1\n');
+  const reviewed = commit('base');
+  write('x.md', '1\n2\n');
+  const head = commit('fix');
+  const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'lgtm-self-bare-'));
+  execFileSync('git', ['clone', '-q', '--bare', repo, bare]);
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  const out = execFileSync('node', [CLI, 'self-feeding', '221', head, 'x.md', '2', '2'], { cwd: bare, encoding: 'utf8', env: { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir } });
+  assert.strictEqual(JSON.parse(out).selfFeeding, true);
+});
