@@ -299,7 +299,7 @@ function compareReviewIds(a, b) {
 function reconciliationPacket({ stateDir, pr, headSha }) {
   const records = activeReviewRecords({ stateDir, pr, headSha })
     .sort((a, b) => a.recordedAtMs - b.recordedAtMs || compareReviewIds(a.reviewId, b.reviewId));
-  const delivered = !fixRoundForHead({ stateDir, pr, headSha }) && deliveryTerminal({ stateDir, pr, headSha }, { fixClaim: false });
+  const delivered = !fixRoundForHead({ stateDir, pr, headSha }) && deliveryTerminal({ stateDir, pr, headSha });
   if (delivered) return { pr, headSha, reviews: records.map((record) => ({ id: record.reviewId, reviewer: record.reviewer || 'legacy/unknown', url: record.reviewUrl, findings: record.findings })), batchCount: records.length, classification: 'delivery-terminal', action: 'report-delivery', humanRequired: false, requires: `report the recorded ${delivered.classification} delivery disposition` };
   if (records.length === 0) return null;
   const reviews = records.map((record) => ({ id: record.reviewId, reviewer: record.reviewer || 'legacy/unknown', url: record.reviewUrl, findings: record.findings }));
@@ -382,7 +382,7 @@ function claimFixRound(input) {
   const owner = input.owner || crypto.randomUUID();
   if (typeof owner !== 'string' || !owner || owner.length > 200) throw new Error('review-lgtm-state: fix-round owner must be a non-empty string of at most 200 characters');
   return withTransitionLock({ stateDir, pr: key.pr }, () => {
-    const terminal = deliveryTerminal({ stateDir, ...key });
+    const terminal = deliveryTerminal({ stateDir, ...key }, { fixCap: true });
     if (terminal) return terminal;
     if (activeReviewRecords({ stateDir, ...key }).length === 0) return { claimed: false, reason: 'no-findings' };
     const slot = fixRoundForHead({ stateDir, ...key });
@@ -417,7 +417,7 @@ function claimRequest(input, kind) {
   const key = validate(input);
   const provider = normalizeProvider(input.provider);
   const markerKind = requestMarkerKind(kind, provider);
-  const terminal = deliveryTerminal({ stateDir, ...key }, { fixClaim: false });
+  const terminal = deliveryTerminal({ stateDir, ...key });
   if (terminal) return terminal;
   const currentBudget = requestBudget({ stateDir, pr: key.pr });
   if (currentBudget.remaining === 0) return { claimed: false, reason: 'request-budget-exhausted', budget: currentBudget };
@@ -428,7 +428,7 @@ function claimRequest(input, kind) {
     if (now < observed.eligibleAtMs) return { claimed: false, reason: 'auto-review-grace', eligibleAtMs: observed.eligibleAtMs };
   }
   return withTransitionLock({ stateDir, pr: key.pr }, () => {
-    const lockedTerminal = deliveryTerminal({ stateDir, ...key }, { fixClaim: false });
+    const lockedTerminal = deliveryTerminal({ stateDir, ...key });
     if (lockedTerminal) return lockedTerminal;
     const budget = requestBudget({ stateDir, pr: key.pr });
     if (budget.remaining === 0) return { claimed: false, reason: 'request-budget-exhausted', budget };
@@ -455,7 +455,7 @@ function recoverRequest(input, kind) {
   const provider = normalizeProvider(input.provider);
   const markerKind = requestMarkerKind(kind, provider);
   return withTransitionLock({ stateDir, pr: key.pr }, () => {
-    const terminal = deliveryTerminal({ stateDir, ...key }, { fixClaim: false });
+    const terminal = deliveryTerminal({ stateDir, ...key });
     if (terminal) return terminal;
     const claim = readMarker(markerPath({ stateDir, ...key }, `${markerKind}-claim`));
     const recovery = latestRecoveryClaim({ stateDir, ...key }, markerKind);
@@ -633,16 +633,17 @@ function activeReviewIds(input) {
 
 // A record covers only the review batch active when it was written; a review
 // recorded or rejected later is new evidence and lifts the terminal state.
-// A recorded fix cap that differs from the current one (a waiver) makes the record stale for fix claims only;
-// review-request claims depend on the review batch alone.
-function deliveryCurrent(input, record, { fixClaim = true } = {}) {
-  return !!record && JSON.stringify(record.reviewIds) === JSON.stringify(activeReviewIds(input))
-    && (!fixClaim || record.budgets?.fix?.max === fixBudget(input).max);
+function deliveryCurrent(input, record) {
+  return !!record && JSON.stringify(record.reviewIds) === JSON.stringify(activeReviewIds(input));
 }
 
-function deliveryTerminal(input, options) {
+// A fix claim also finds the delivery stale when a waiver changed the fix cap the record was written under;
+// review-request claims depend on the review batch alone.
+function deliveryTerminal(input, { fixCap = false } = {}) {
   const latest = latestDelivery(input);
-  return latest && latest.classification !== 'blocked' && deliveryCurrent(input, latest, options) ? { claimed: false, reason: 'delivery-terminal', classification: latest.classification } : null;
+  if (!latest || latest.classification === 'blocked' || !deliveryCurrent(input, latest)) return null;
+  if (fixCap && latest.budgets?.fix?.max !== fixBudget(input).max) return null;
+  return { claimed: false, reason: 'delivery-terminal', classification: latest.classification };
 }
 
 function recordDelivery(input) {
@@ -674,7 +675,7 @@ function selfFeeding({ repoRoot, stateDir, pr, headSha, file, start, end }) {
   let names;
   try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') names = []; else throw error; }
   const git = crossPlatformCommand('git', repoRoot);
-  const run = (args) => execFileSync(git, crossPlatformArgs(['--literal-pathspecs', ...args], needsDoubleEscape('git', repoRoot)), crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity }));
+  const run = (args) => execFileSync(git, crossPlatformArgs(['--literal-pathspecs', ...args], needsDoubleEscape('git', repoRoot)), crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20 }));
   // Only exit status 1 means "not an ancestor"; any other failure (missing object, bad repository) surfaces.
   const isAncestor = (sha) => {
     try { run(['merge-base', '--is-ancestor', sha, key.headSha]); return true; } catch (error) { if (error.status === 1) return false; throw error; }
@@ -690,7 +691,7 @@ function selfFeeding({ repoRoot, stateDir, pr, headSha, file, start, end }) {
   // A line is self-feeding when blame at the head attributes it to a commit made since the previous fix head.
   // Blame follows renames itself. git fails for a file missing at the head or a range starting past its end;
   // a range ending past the end is clamped by git to the last line.
-  const fixCommits = new Set(run(['rev-list', `${previous.headSha}..${key.headSha}`]).split('\n').filter(Boolean));
+  const fixCommits = new Set(run(['rev-list', '--first-parent', `${previous.headSha}..${key.headSha}`]).split('\n').filter(Boolean));
   const blamed = run(['blame', '--porcelain', '-L', `${start},${end}`, key.headSha, '--', file]).split('\n')
     .map((line) => /^([0-9a-f]{40}|[0-9a-f]{64}) \d+ \d+/.exec(line)).filter(Boolean).map((match) => match[1]);
   return { selfFeeding: blamed.some((sha) => fixCommits.has(sha)), previousFixHead: previous.headSha };

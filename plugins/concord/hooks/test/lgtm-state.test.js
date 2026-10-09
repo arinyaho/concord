@@ -994,3 +994,27 @@ test('self-feeding clamps a range ending past the file end and rejects one start
   assert.throws(() => check('a.md', 4, 4), /has only 3 lines/);
   assert.throws(() => check('gone.md', 1, 1), /no such path/);
 });
+
+test('self-feeding ignores lines that arrived by merging the base branch after the fix round', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-merge-');
+  write('a.md', 'one\ntwo\n');
+  write('b.md', 'x\ny\n');
+  const base = commit('base');
+  const trunk = git(repo, 'rev-parse', '--abbrev-ref', 'HEAD');
+  git(repo, 'checkout', '-q', '-b', 'pr');
+  write('b.md', 'x\ny\nfix\n');
+  const reviewed = commit('pr work');
+  git(repo, 'checkout', '-q', trunk);
+  write('a.md', 'one\ntwo\nmain-edit\n');
+  commit('main edits a.md');
+  git(repo, 'checkout', '-q', 'pr');
+  git(repo, 'merge', '-q', '--no-edit', trunk);
+  write('b.md', 'x\ny\nfix\nfix2\n');
+  const head = commit('fix round');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  const check = (file, start, end) => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file, start, end }).selfFeeding;
+  assert.strictEqual(check('a.md', 3, 3), false, 'a line the base branch added is not the fix round');
+  assert.strictEqual(check('b.md', 4, 4), true);
+  assert.ok(base);
+});
