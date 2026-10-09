@@ -108,6 +108,7 @@ test('ticket-to-pr and the review waiters wait once, run the full suite once, an
   assert.equal(read(path.join(REPO, 'plugins/concord-copilot/skills/review-until-lgtm/SKILL.md')), lgtm);
   assert.doesNotMatch(lgtm, /poll until `requestEligibleAtMs`/);
   assert.doesNotMatch(lgtm, /before polling/);
+  assert.match(lgtm, /Claim reviewers with no matching activity \(step 4\) before waiting on step 3/);
   for (const pattern of waitPhrases) assert.match(lgtm, pattern);
   for (const file of [
     'plugins/concord/core/review-driver.md',
