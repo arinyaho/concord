@@ -19,7 +19,7 @@ const SKILL = path.join(__dirname, '..', '..', 'skills', 'review-until-lgtm', 'S
 function fixture() { return JSON.parse(fs.readFileSync(FIXTURE, 'utf8')); }
 function pullRequest(data) { return data.data.repository.pullRequest; }
 function reactionsResponse(nodes) { return { data: { repository: { pullRequest: { reactions: { nodes } } } } }; }
-function thumbsUp(createdAt, login = CODEX) { return { content: 'THUMBS_UP', createdAt, user: { login } }; }
+function thumbsUp(createdAt, login = `${CODEX}[bot]`) { return { content: 'THUMBS_UP', createdAt, user: { login } }; }
 function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'review-collector-')); }
 
 // A graphql double that serves the main query from `main()` and the reaction
@@ -39,31 +39,33 @@ function withSummaryStatus(data, cell) {
   return data;
 }
 
-test('a review whose commit_id differs from its inline comments still lists every comment, and each observation records', async () => {
+test('only the review made on the head is a current-head observation, and it records', async () => {
   const packet = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble() });
   assert.strictEqual(packet.head, HEAD);
-  assert.deepStrictEqual(packet.observations.map((o) => o.reviewId), ['5470732672', '5470807189', '5470929926']);
-  // Review 5470732672 also holds a comment on the older commit 3bd6ab5; it is history, not a finding of this head.
-  assert.deepStrictEqual(packet.observations[0].findings.map((f) => f.url.split('_r')[1]), ['4230649091', '4230649100', '4230649108']);
-  const mismatched = packet.observations.find((o) => o.reviewId === '5470807189');
-  assert.strictEqual(mismatched.reviewCommitId.startsWith('7001631'), true);
-  assert.strictEqual(mismatched.commitId, HEAD);
-  assert.deepStrictEqual(mismatched.findings.map((f) => f.url), [
-    'https://github.com/arinyaho/concord/pull/244#discussion_r4230708697',
-    'https://github.com/arinyaho/concord/pull/244#discussion_r4230708714',
-    'https://github.com/arinyaho/concord/pull/244#discussion_r4230708724',
-  ]);
-  assert.deepStrictEqual(mismatched.findings.map((f) => f.priority), ['P1', 'P1', 'P1']);
-
+  // Reviews 5470732672 and 5470807189 were made on earlier commits; GitHub moved their comments' current commit to the head, but originalCommit says where they were made.
+  assert.deepStrictEqual(packet.observations.map((o) => o.reviewId), ['5470929926']);
+  assert.deepStrictEqual(packet.observations[0].findings.map((f) => f.url.split('_r')[1]), ['4230809063', '4230809075']);
+  assert.deepStrictEqual(packet.observations[0].findings.map((f) => f.priority), ['P1', 'P1']);
   const stateDir = temp();
-  for (const observation of packet.observations) {
-    const result = lgtmState.recordReview({ stateDir, pr: 244, headSha: HEAD, observation });
-    assert.deepStrictEqual({ outcome: result.outcome, recorded: result.recorded }, { outcome: 'needs-reconciliation', recorded: true });
-  }
+  const result = lgtmState.recordReview({ stateDir, pr: 244, headSha: HEAD, observation: packet.observations[0] });
+  assert.deepStrictEqual({ outcome: result.outcome, recorded: result.recorded }, { outcome: 'needs-reconciliation', recorded: true });
   assert.deepStrictEqual(packet.checks, [{ name: 'plugin-tests', conclusion: 'success' }, { name: 'agent-team-tests', conclusion: 'success' }]);
   assert.strictEqual(packet.summary.status, 'completed');
   assert.strictEqual(packet.summary.completedAt, COMPLETED_AT);
   assert.deepStrictEqual(packet.comments.map((c) => c.author), []);
+});
+
+test('a review whose own commit differs from its comments\' original commit still lists every comment made on the head', async () => {
+  const data = fixture();
+  const review = pullRequest(data).reviews.nodes.find((r) => r.databaseId === 5470807189);
+  review.commit.oid = '7001631'.padEnd(40, '0');
+  review.comments.nodes.forEach((c) => { c.originalCommit = { oid: HEAD }; });
+  const packet = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble({ main: () => data }) });
+  const attributed = packet.observations.find((o) => o.reviewId === '5470807189');
+  assert.strictEqual(attributed.commitId, HEAD);
+  assert.strictEqual(attributed.reviewCommitId, '7001631'.padEnd(40, '0'));
+  assert.strictEqual(attributed.findings.length, 3);
+  assert.strictEqual(lgtmState.recordReview({ stateDir: temp(), pr: 244, headSha: HEAD, observation: attributed }).recorded, true);
 });
 
 test('a Completed summary triggers exactly one reaction read and a later thumbs-up is reported', async () => {
@@ -228,18 +230,24 @@ test('the Codex clean result needs Codex\'s own reaction, not another configured
   assert.strictEqual(packet.observations.find((o) => o.reviewer === CODEX).lgtm, false);
 });
 
-test('a review whose commit is gone (null after a force-push) neither aborts collection nor hides its comments on the head', async () => {
+test('a review whose commit is gone (null after a force-push) neither aborts collection nor hides its comments made on the head', async () => {
   const data = fixture();
   const reviews = pullRequest(data).reviews.nodes;
-  reviews.find((r) => r.databaseId === 5470807189).commit = null;
-  const orphan = JSON.parse(JSON.stringify(reviews.find((r) => r.databaseId === 5470929926)));
+  reviews.find((r) => r.databaseId === 5470929926).commit = null;
+  const orphan = JSON.parse(JSON.stringify(reviews.find((r) => r.databaseId === 5470807189)));
   orphan.databaseId = 5470999999;
   orphan.commit = null;
   orphan.comments.nodes.forEach((c) => { c.commit = null; });
   reviews.push(orphan);
   const packet = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble({ main: () => data }) });
-  assert.deepStrictEqual(packet.observations.map((o) => o.reviewId), ['5470732672', '5470807189', '5470929926']);
-  const attributed = packet.observations.find((o) => o.reviewId === '5470807189');
-  assert.strictEqual(attributed.reviewCommitId, null);
-  assert.strictEqual(attributed.findings.length, 3);
+  assert.deepStrictEqual(packet.observations.map((o) => o.reviewId), ['5470929926']);
+  assert.strictEqual(packet.observations[0].reviewCommitId, null);
+  assert.strictEqual(packet.observations[0].findings.length, 2);
+});
+
+test('earlier Codex reviews do not suppress the clean result of the head, and the bot account\'s reaction counts', async () => {
+  const onlyEarlier = () => { const data = fixture(); pullRequest(data).reviews.nodes = pullRequest(data).reviews.nodes.filter((r) => r.databaseId !== 5470929926); return data; };
+  const packet = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble({ main: onlyEarlier, reactions: reactionsResponse([thumbsUp('2026-10-09T13:47:56Z')]) }) });
+  assert.deepStrictEqual(packet.observations.map((o) => [o.reviewId, o.lgtm, o.findings.length]), [['6081857394', true, 0]]);
+  assert.strictEqual(packet.reaction.fresh, true);
 });

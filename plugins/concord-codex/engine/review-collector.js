@@ -17,10 +17,13 @@ const DEFAULT_INTERVAL_MS = 30000;
 const MIN_INTERVAL_MS = 30000;
 
 const QUERY = `query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){headRefOid
-reviews(last:100){nodes{databaseId url state submittedAt author{login} commit{oid} comments(first:100){nodes{databaseId url body path line commit{oid}}}}}
+reviews(last:100){nodes{databaseId url state submittedAt author{login} commit{oid} comments(first:100){nodes{databaseId url body path line commit{oid} originalCommit{oid}}}}}
 comments(last:100){nodes{databaseId url body createdAt author{login}}}
 commits(last:1){nodes{commit{oid statusCheckRollup{contexts(first:100){nodes{__typename ... on CheckRun{name status conclusion} ... on StatusContext{context state}}}}}}}}}}`;
 const REACTIONS_QUERY = 'query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){reactions(first:100,content:THUMBS_UP){nodes{content createdAt user{login}}}}}}';
+
+// Reactions carry the bot account's login with a [bot] suffix; review and comment authors do not.
+function loginOf(login) { return typeof login === 'string' ? login.replace(/\[bot\]$/, '') : login; }
 
 function wholeSeconds(iso) { return Math.floor(Date.parse(iso) / 1000); }
 
@@ -57,7 +60,7 @@ function finding(comment) {
 // The Codex summary comment holds one table row per review kind; only rows for
 // this head count, and the summary is Completed only when every such row is.
 function summaryOf(comments, head) {
-  const comment = comments.find((c) => c.author && c.author.login === CODEX_REVIEWER && typeof c.body === 'string' && c.body.includes(SUMMARY_MARKER));
+  const comment = comments.find((c) => c.author && loginOf(c.author.login) === CODEX_REVIEWER && typeof c.body === 'string' && c.body.includes(SUMMARY_MARKER));
   if (!comment) return null;
   const rows = [...comment.body.matchAll(/^\|[^|\n]*\|([^|\n]*)\|\s*`([0-9a-f]{7,64})`\s*\|/gim)]
     .filter((row) => head.startsWith(row[2].toLowerCase()));
@@ -83,23 +86,25 @@ function pullRequestOf(response) {
 }
 
 // A review belongs to the head when its own commit is the head or when any of
-// its inline comments sits on the head: GitHub lets the two differ, and a
-// filter on the review's commit alone loses those comments.
+// its inline comments was made on the head (originalCommit): GitHub moves a
+// comment's current commit to every later head, so `commit` says nothing about
+// where the finding was made.
 function analyze(response, head, reviewers = DEFAULT_REVIEWERS) {
   const pr = pullRequestOf(response);
   const live = pr.headRefOid.toLowerCase();
   if (live !== head) return { stale: true, head, liveHead: live };
-  const comments = pr.comments.nodes.filter((c) => c.author);
+  const comments = pr.comments.nodes.filter((c) => c.author).map((c) => ({ ...c, author: { login: loginOf(c.author.login) } }));
   const summary = reviewers.includes(CODEX_REVIEWER) ? summaryOf(comments, head) : null;
   const observations = [];
   for (const review of pr.reviews.nodes) {
-    const reviewer = review.author && review.author.login;
+    const reviewer = review.author && loginOf(review.author.login);
     if (!reviewers.includes(reviewer) || review.state === 'PENDING') continue;
     const inline = review.comments.nodes;
     const reviewCommit = review.commit ? review.commit.oid.toLowerCase() : null; // null once a force-push drops the commit
-    if (reviewCommit !== head && !inline.some((c) => c.commit && c.commit.oid.toLowerCase() === head)) continue;
-    // A review on an older commit keeps only its comments on this head; the others belong to the older head.
-    const own = inline.filter((c) => reviewCommit === head || (c.commit && c.commit.oid.toLowerCase() === head));
+    const madeOnHead = (c) => c.originalCommit && c.originalCommit.oid.toLowerCase() === head;
+    if (reviewCommit !== head && !inline.some(madeOnHead)) continue;
+    // A review on an older commit keeps only the comments it made on this head.
+    const own = inline.filter((c) => reviewCommit === head || madeOnHead(c));
     observations.push({ reviewId: String(review.databaseId), reviewer, reviewUrl: review.url, commitId: head, reviewCommitId: reviewCommit, state: 'completed', lgtm: review.state === 'APPROVED', findings: own.map(finding) });
   }
   const pending = reviewers.filter((reviewer) => {
@@ -135,11 +140,11 @@ async function complete(analysis, { pr, graphql, reviewers = DEFAULT_REVIEWERS }
   const summary = packet.summary;
   if (!summary || summary.status !== 'completed' || !summary.completedAt) return packet;
   const nodes = pullRequestOf(await graphql(REACTIONS_QUERY, { pr })).reactions.nodes
-    .filter((node) => node.content === 'THUMBS_UP' && node.user && node.user.login === CODEX_REVIEWER)
+    .filter((node) => node.content === 'THUMBS_UP' && node.user && loginOf(node.user.login) === CODEX_REVIEWER)
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   if (nodes.length > 0) {
     const node = nodes[0];
-    packet.reaction = { reviewer: node.user.login, content: node.content, createdAt: node.createdAt, fresh: wholeSeconds(node.createdAt) >= wholeSeconds(summary.completedAt) };
+    packet.reaction = { reviewer: loginOf(node.user.login), content: node.content, createdAt: node.createdAt, fresh: wholeSeconds(node.createdAt) >= wholeSeconds(summary.completedAt) };
   }
   if (!packet.observations.some((o) => o.reviewer === CODEX_REVIEWER) && reviewers.includes(CODEX_REVIEWER)) {
     packet.observations.push({ reviewId: String(analysis.summaryId), reviewer: CODEX_REVIEWER, reviewUrl: summary.url, commitId: packet.head, reviewCommitId: packet.head, state: 'completed', lgtm: !!(packet.reaction && packet.reaction.fresh), findings: [] });
