@@ -50,6 +50,8 @@ Every target mutation, including standalone operations, holds the target lock. D
 
 A git target is reviewed as the range from the merge base of its base ref and the head to the head. Without a base the range is the head against itself, an empty diff that would be reviewed as work and converge clean, so `round-start` takes the base from its second argument and otherwise from the base the target's ledger recorded at its fresh start. It does not pick a default base itself: the review driver passes the remote main branch when the user names none, and a local branch used as a default can be behind its remote. File targets use no base.
 
+A ledger in a terminal status (`clean`, `parked`, `abandoned`) whose head the repository still reaches makes `round-start` print `decision: "terminal"` before the range is built, so a head that has since been merged into the recorded base still reports the stored decision. A fresh start or a resume of a non-terminal ledger whose base and head resolve to the same commit still fails with a harness failure.
+
 | State | Event | Outcome | Kind | Evidence |
 |---|---|---|---|---|
 | fresh git target, no ledger | `round-start <ref>` with no base | refused, message names the base argument; no ledger, artifact or lock is written | introduced | `round-start on a git ref with no base and no ledger refuses and names the base` |

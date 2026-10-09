@@ -21,7 +21,7 @@ function cli(stateDir, args, input) {
 function deliver(stateDir, headSha, overrides = {}) {
   return cli(stateDir, ['record-delivery', String(PR), headSha], JSON.stringify({
     baseSha: BASE, contractDigest: 'a'.repeat(64), reviewIds: [], acceptance: [{ id: 'AC1', met: true }],
-    requiredChecks: [{ name: 'plugin-tests', conclusion: 'success' }], reviewsTerminal: true, openChoices: [], findings: [], tickets: [], ...overrides,
+    requiredChecks: [{ name: 'plugin-tests', conclusion: 'success' }], reviewsTerminal: true, openChoices: [], findings: [], droppedMinors: [], tickets: [], ...overrides,
   }));
 }
 const evidence = (headSha, overrides = {}) => ({
@@ -129,7 +129,7 @@ test('a minor collected after the delivery record makes it stale until the deliv
   cli(stateDir, ['collect-minor', String(PR), HEAD_A], JSON.stringify({ id: 'c-1', url: 'https://github.com/arinyaho/concord/pull/165#discussion_r1', reason: 'late minor' }));
   assert.strictEqual(cli(stateDir, ['status', String(PR), HEAD_A]).delivery.current, false);
   assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A)).reasons, ['delivery-stale']);
-  deliver(stateDir, HEAD_A);
+  deliver(stateDir, HEAD_A, { droppedMinors: [{ id: 'c-1', reason: 'duplicate of an existing ticket' }] });
   assert.strictEqual(cli(stateDir, ['status', String(PR), HEAD_A]).delivery.current, true);
   assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A)), { result: 'ready', reasons: [] });
 });

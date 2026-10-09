@@ -268,6 +268,33 @@ test('a comment in a resolved review thread is not a finding', async () => {
   assert.deepStrictEqual(findingIds(packet), [SECOND_FINDING]);
 });
 
+// A resolved thread whose first page of comments (as the query returns it, with the thread id and pageInfo) holds none of the review's findings.
+function withLongResolvedThread(data) {
+  const firstId = headReview(data).comments.nodes.find((c) => String(c.databaseId) === FIRST_FINDING).id;
+  const thread = pullRequest(data).reviewThreads.nodes.find((t) => t.comments.nodes.some((c) => c.id === firstId));
+  thread.id = 'PRRT_kwDOTOEl9M4B6Q1x';
+  thread.isResolved = true;
+  thread.comments = { pageInfo: { hasNextPage: true, endCursor: 'thread-cursor-1' }, nodes: [{ id: 'PRRC_kwDOTOEl9M78Kzzz' }] };
+  return { thread, firstId };
+}
+
+test('a resolved thread with more than one page of comments leaves none of its later comments as findings', async () => {
+  const data = fixture();
+  const { thread, firstId } = withLongResolvedThread(data);
+  const pages = async () => ({ data: { node: { comments: { pageInfo: { hasNextPage: false, endCursor: 'thread-cursor-2' }, nodes: [{ id: firstId }] } } } });
+  const double = graphqlDouble({ main: () => data, pages });
+  const packet = await collector.collect({ pr: 244, head: HEAD, graphql: double });
+  assert.deepStrictEqual(findingIds(packet), [SECOND_FINDING]);
+  assert.deepStrictEqual(double.pageReads, [{ id: thread.id, cursor: 'thread-cursor-1' }]);
+});
+
+test('a thread whose comments never stop paging fails the collection instead of being truncated', async () => {
+  const data = fixture();
+  withLongResolvedThread(data);
+  const pages = async () => ({ data: { node: { comments: { pageInfo: { hasNextPage: true, endCursor: 'again' }, nodes: [{ id: 'PRRC_kwDOTOEl9M78Kyyy' }] } } } });
+  await assert.rejects(collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble({ main: () => data, pages }) }), /comments exceeds \d+ pages/);
+});
+
 test('a review body without inline comments is carried on the observation as untrusted, size-limited text', async () => {
   const data = fixture();
   const review = headReview(data);

@@ -42,6 +42,7 @@ function pr172Packet(overrides = {}) {
       { id: 'c-4192088470', url: THREAD(4192088470), disposition: 'follow-up', rootCause: 'artifact-repair-admission', rationale: 'Mixed-defect eligibility widens repair scope beyond the approved outcome.' },
       { id: 'c-4192088475', url: THREAD(4192088475), disposition: 'follow-up', rootCause: 'initiative-identity', rationale: 'Checkpoint identity binding is a separate initiative contract.' },
     ],
+    droppedMinors: [],
     tickets: [
       { rootCause: 'artifact-repair-admission', url: ISSUE(173), readBack: true },
       { rootCause: 'initiative-identity', url: ISSUE(174), readBack: true },
@@ -190,6 +191,7 @@ test('every distribution shares the delivery disposition contract', () => {
     assert.match(lgtm, /release-blocking finding blocks unless it is `fixed`, whatever the remaining budget/);
     assert.match(lgtm, /`rollover-pending`.*no ticket URL is invented/s);
     assert.match(lgtm, /never report `mergeable-with-follow-ups` as clean or green/);
+    assert.match(lgtm, /`droppedMinors`.*`minor-unaccounted:<id>`/s);
     assert.doesNotMatch(lgtm, /propose a single follow-up issue/);
     const ticket = read(`${pkg}/skills/ticket-to-pr/SKILL.md`);
     assert.match(ticket, /### Delivery disposition/);
@@ -404,4 +406,30 @@ test('a minor collected after the delivery makes it stale for merging but keeps 
   assert.strictEqual(status.delivery.current, false);
   assert.strictEqual(status.reconciliation.action, 'report-delivery');
   assert.deepStrictEqual(lgtmState.claimFixRound({ ...input, owner: 'fixer', now: 4000 }), { claimed: false, reason: 'delivery-terminal', classification: 'mergeable-with-follow-ups' });
+});
+
+test('a collected minor the packet does not account for blocks the delivery; a follow-up or a drop accounts for it', () => {
+  const stateDir = temp();
+  const input = { stateDir, pr: PR, headSha: HEAD };
+  lgtmState.collectMinor({ ...input, id: 'm1', url: THREAD(11), reason: 'Naming nit.', now: 1000 });
+  lgtmState.collectMinor({ ...input, id: 'm2', url: THREAD(12), reason: 'Obsolete after a rewrite.', now: 1001 });
+  const minorFinding = { id: 'm1', url: THREAD(11), disposition: 'follow-up', rootCause: 'naming', rationale: 'Naming nit; behavior holds without it.', releaseBlocking: [] };
+  const naming = { rootCause: 'naming', url: ISSUE(180), readBack: true };
+  const unaccounted = lgtmState.recordDelivery({ ...input, now: 2000, packet: pr172Packet({ findings: [], tickets: [] }) });
+  assert.strictEqual(unaccounted.classification, 'blocked');
+  assert.deepStrictEqual(unaccounted.reasons, ['minor-unaccounted:m1', 'minor-unaccounted:m2']);
+  const fixedOnly = lgtmState.recordDelivery({ ...input, now: 2001, packet: pr172Packet({ findings: [{ ...minorFinding, disposition: 'fixed' }], droppedMinors: [{ id: 'm2', reason: 'Obsolete.' }], tickets: [] }) });
+  assert.deepStrictEqual(fixedOnly.reasons, ['minor-unaccounted:m1']);
+  const accounted = pr172Packet({ findings: [minorFinding], droppedMinors: [{ id: 'm2', reason: 'Obsolete after a rewrite.' }], tickets: [naming] });
+  const record = lgtmState.recordDelivery({ ...input, now: 2002, packet: accounted });
+  assert.strictEqual(record.classification, 'mergeable-with-follow-ups');
+  assert.deepStrictEqual(record.reasons, []);
+  assert.deepStrictEqual(record.droppedMinors, [{ id: 'm2', reason: 'Obsolete after a rewrite.' }]);
+  assert.strictEqual(lgtmState.recordDelivery({ ...input, now: 2003, packet: accounted }).sequence, record.sequence);
+});
+
+test('a dropped minor needs a reason and cannot also be a finding', () => {
+  const finding = { id: 'm1', url: THREAD(11), disposition: 'fixed' };
+  assert.throws(() => lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...pr172Packet({ droppedMinors: [{ id: 'm1', reason: ' ' }] }) }), /dropped minor m1 needs a reason/);
+  assert.throws(() => lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...pr172Packet({ findings: [finding], droppedMinors: [{ id: 'm1', reason: 'r' }], tickets: [] }) }), /both a finding and a dropped minor/);
 });

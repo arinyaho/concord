@@ -1194,7 +1194,7 @@ test('review-until-lgtm pins late reviews, adjudication records, minor triage, m
     assert.match(skill, /review recorded later is history for that head, and its reviewer is collected again on the new head after the push/);
     assert.match(skill, /conceded finding whose fix a stop rule withholds stays out of the plan and enters the delivery disposition as `follow-up`/);
     assert.match(skill, /verdicts and reasons persist in the head's plan.*`reject-review-batch` evidence or the `collect-minor` reasons.*runs once/);
-    assert.match(skill, /obsolete or duplicate minor may be dropped with its reason stated in the handoff/);
+    assert.match(skill, /obsolete or a duplicate, as a `droppedMinors` entry with that id and the reason/);
     assert.match(skill, /same id with a different URL fails/);
     assert.match(skill, /collected minors is `mergeable-with-follow-ups`, never green/);
     for (const token of ['"baseSha","contractDigest"', '"expectedReviewers"', '`base-changed`', '`contract-changed`', '`check-missing:<name>`', '`fix-round-open`', '`reviewer-missing:<login>`', 'gh pr merge <pr> --match-head-commit']) {
