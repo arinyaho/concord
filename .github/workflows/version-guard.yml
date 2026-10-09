@@ -1,0 +1,28 @@
+name: version-guard
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  version-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # A --depth fetch would make the full clone shallow and drop the merge base the three-dot diff needs.
+      - name: Fail when the pull request edits version files
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "$BASE_REF"
+          node scripts/release-bump.mjs guard "origin/$BASE_REF"

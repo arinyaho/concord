@@ -22,13 +22,17 @@ The three plugin manifests and the GitHub Copilot marketplace still contain requ
 
 The script is idempotent: running it with the already-current version produces no file-content changes.
 
-## Per-PR bump
+## Post-merge bump
 
-Every PR, including a docs-only or test-only PR, ends with the commit `chore(release): bump Concord to <next>`, produced only by `node scripts/release-version.mjs <next>`. `<next>` is `main`'s `VERSION` at merge time plus one prerelease increment, for example `0.9.0-beta.8` to `0.9.0-beta.9`. When `main`'s `VERSION` changes after the branch was cut, the author rebases and runs the script again. A PR that is itself a release bump needs no second bump. Each merged change therefore ships under its own version, and an installed plugin's version identifies the change it contains.
+Every change that lands on `main` ships under its own beta version, raised by one automated commit on `main`; pull requests carry no bump. The plugin manager reports an installed plugin as current until `VERSION` changes, so each merge needs a new version, and raising it after the merge spares open pull requests a rebase and a re-review each time another one merges first.
 
-`plugins/concord/hooks/test/version-bump.test.js` enforces the rule. The pull-request workflow supplies the base branch's `VERSION` in `CONCORD_BASE_VERSION`; the test fails when the PR's `VERSION` equals it and passes when the PR's `VERSION` is higher, which includes a release-bump PR. Without `CONCORD_BASE_VERSION`, as in a local run, the test is skipped.
+The `release-bump` workflow runs on every push to `main` and calls `node scripts/release-bump.mjs push main`. The script fetches `main`, computes the next beta from its `VERSION` (for example `0.9.0-beta.9` to `0.9.0-beta.10`), runs `node scripts/release-version.mjs <next>`, stages only the files that script writes, verifies that the commit touches nothing else, and pushes `chore(release): bump Concord to <next>` as `github-actions[bot]`. The workflow's concurrency group queues runs one after another, and when a push still loses a race the script fetches again and recomputes, up to four attempts, so two merges in quick succession yield two consecutive versions.
 
-The rule costs one extra commit per PR. When parallel PRs conflict on `VERSION` and the manifests, the later one costs a rebase and one more script run.
+A push made with the repository token starts no workflow run. As a second guard, the script exits without a commit when the checked-out commit is authored by `github-actions[bot]`.
+
+The `version-guard` workflow runs `node scripts/release-bump.mjs guard origin/<base>` on every pull request and fails when the pull request changes `VERSION` or any file the release script writes.
+
+The rule costs one bot commit per merge, and `main` receives a push after each merge. The workflow needs only `contents: write` on the repository token and no stored credential.
 
 ## Guardrail and tests
 

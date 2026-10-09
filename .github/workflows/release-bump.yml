@@ -1,0 +1,29 @@
+name: release-bump
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-bump
+  cancel-in-progress: false
+
+jobs:
+  release-bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # A push made with GITHUB_TOKEN starts no workflow run; the script also skips when HEAD is its own bump commit.
+      - name: Raise the beta version on main
+        run: node scripts/release-bump.mjs push main

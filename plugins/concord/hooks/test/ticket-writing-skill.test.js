@@ -365,16 +365,6 @@ test('ticket-to-pr ends a standalone session at the delivery boundary and hands 
   }
 });
 
-test('ticket-to-pr stage 9 requires the version bump as the last commit', () => {
-  const skill = read(CLAUDE_TICKET_TO_PR);
-  const row = skill.split('\n').find((line) => line.startsWith('| 9 |')) ?? '';
-  assert.match(row, /its last commit is the version bump/);
-  assert.match(row, /a PR that is itself a release bump makes no second bump/);
-  const contributing = read(path.join(REPO, 'CONTRIBUTING.md'));
-  assert.match(contributing, /chore\(release\): bump Concord to <next>/);
-  assert.match(contributing, /node scripts\/release-version\.mjs <next>/);
-});
-
 test('initiative-to-prs delegation gates use the design-versus-apply rule, not importance', () => {
   for (const file of [
     'plugins/concord/skills/initiative-to-prs/references/model-routing.md',

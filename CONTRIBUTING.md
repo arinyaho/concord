@@ -21,11 +21,11 @@ find plugins -path '*/test/*.test.js' -type f -print0 | xargs -0 -r node --test
 (cd services/code-index && uv sync --extra dev && uv run pytest -v)
 ```
 
-Open a pull request against `main`; CI runs the same checks for changes under `plugins/`, `services/` (each service has its own workflow), `VERSION`, and the marketplace manifests; CI does not run the plugin-install end-to-end tests or cover `scripts/dod.mjs` and `review.config.json`, so run `node scripts/dod.mjs` locally for changes to those files, to `plugins/`, or to the marketplace manifests. Keep each PR to one coherent change, and end it with the version bump described under "Versioning".
+Open a pull request against `main`; CI runs the same checks for changes under `plugins/`, `services/` (each service has its own workflow), `VERSION`, and the marketplace manifests; CI does not run the plugin-install end-to-end tests or cover `scripts/dod.mjs` and `review.config.json`, so run `node scripts/dod.mjs` locally for changes to those files, to `plugins/`, or to the marketplace manifests. Keep each PR to one coherent change.
 
 ## Versioning
 
-Every PR, including a docs-only or test-only PR, ends with one commit, `chore(release): bump Concord to <next>`, produced only by `node scripts/release-version.mjs <next>`. `<next>` is `main`'s `VERSION` at merge time plus one prerelease increment, for example `0.9.0-beta.8` to `0.9.0-beta.9`. If `main`'s `VERSION` changes after you cut the branch, rebase and run the script again with the new `<next>`. A PR that is itself a release bump needs no second bump. CI fails a PR whose `VERSION` equals the base branch's.
+Pull requests never edit `VERSION` or the version fields derived from it. After each merge, the `release-bump` workflow on `main` raises the beta version in one commit, and the `version-guard` check fails a pull request that edits them.
 
 ## Review
 
