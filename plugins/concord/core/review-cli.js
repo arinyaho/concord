@@ -1901,7 +1901,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     let resumedNormalizedPlan = null;
     if (resumed) {
       const recoveryLedger = ledger;
-      const transportRecovery = ledger.execution?.planTransportRetry && ledger.execution.planRetry?.state !== 'accepted';
+      const transportRecovery = ledger.execution?.planTransportRetry;
       const stopTransportRecovery = (message) => {
         const execution = recoveryLedger.execution;
         const failure = { role: 'plan', kind: 'evidence-failure', message, retryable: false, nextAction: 'terminal-handoff', at: new Date().toISOString() };

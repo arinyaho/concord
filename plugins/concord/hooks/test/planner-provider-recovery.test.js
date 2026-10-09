@@ -129,12 +129,12 @@ for (const cliCopy of ['core', 'codex']) {
   }
 }
 
-for (const [cliCopy, corruption] of [['core', 'changed'], ['codex', 'deleted']]) {
+for (const [cliCopy, corruption] of ['core', 'codex', 'copilot'].flatMap((copy) =>
+  ['changed', 'deleted', 'repair', 'manifest', 'reviewer'].map((kind) => [copy, kind]))) {
   test(`${cliCopy}: ${corruption} accepted transport plan refuses resume durably without launching`, async (t) => {
     const h = fixture({ cliCopy, replacementResult: { status: 1, stderr: 'rate_limit_error' } });
     t.after(() => fs.rmSync(h.root, { recursive: true, force: true }));
     await initialIncomplete(h);
-    const before = sealed(h);
     await assert.rejects(h.resume(), /plan/);
     await assert.rejects(h.resume(), /fix/);
     assert.equal(h.ledger().execution.planRetry.state, 'accepted');
@@ -142,14 +142,22 @@ for (const [cliCopy, corruption] of [['core', 'changed'], ['codex', 'deleted']])
     const history = h.initiative().launches;
     const planFile = path.join(h.stateDir, 'round-1-plan.json');
     if (corruption === 'changed') fs.appendFileSync(planFile, '\n');
-    else fs.unlinkSync(planFile);
+    else if (corruption === 'deleted') fs.unlinkSync(planFile);
+    else if (corruption === 'repair') fs.writeFileSync(path.join(h.stateDir, 'round-1-plan.repair.json'), '{}');
+    else if (corruption === 'manifest') fs.appendFileSync(path.join(h.stateDir, 'round-1-changes.json'), '\n');
+    else fs.appendFileSync(path.join(h.stateDir, 'round-1-correctness.json'), '\n');
+    const before = sealed(h);
     let error;
     await assert.rejects(h.resume(), (value) => { error = value; return true; });
+    assert.match(error.message, /reconcile the existing evidence/);
     assert.equal(error.continuationPacket.nextAction, 'terminal-handoff');
     const ledger = h.ledger();
     assert.equal(ledger.execution.planRetry.state, 'exhausted');
     assert.equal(ledger.execution.planTransportRetry.state, 'exhausted');
     assert.equal(ledger.execution.failure.nextAction, 'terminal-handoff');
+    assert.equal(ledger.execution.failure.kind, 'evidence-failure');
+    assert.equal(ledger.execution.normalizedPlan, null);
+    assert.equal(ledger.execution.planRepairPending, false);
     assert.equal(ledger.execution.completed.includes('plan'), false);
     const report = require('../../core/review').renderReviewReport([{ ledger }]);
     assert.match(report, /terminal handoff/);
@@ -159,6 +167,8 @@ for (const [cliCopy, corruption] of [['core', 'changed'], ['codex', 'deleted']])
     assert.equal(ledger.round, 1);
     assert.deepEqual(h.launches, ['correctness', 'verify', 'plan', 'plan', 'plan', 'fix']);
     await assert.rejects(h.resume());
+    assert.equal(h.ledger().execution.planRetry.state, 'exhausted');
+    assert.equal(h.ledger().execution.planTransportRetry.state, 'exhausted');
     assert.deepEqual(h.initiative().launches, history);
     assert.equal(h.launches.length, 6);
   });
