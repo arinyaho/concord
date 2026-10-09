@@ -38,20 +38,31 @@ test('Claude and Codex source packages ship the same ticket-to-pr skill', () => 
   assert.equal(read(CODEX_TICKET_TO_PR), read(CLAUDE_TICKET_TO_PR));
 });
 
-test('ticket-to-pr requires a state-and-event table for stateful changes and a test per row', () => {
+test('ticket-to-pr defines the table and tests required for stateful changes', () => {
   const skill = read(CLAUDE_TICKET_TO_PR);
+  assert.equal(read(CODEX_TICKET_TO_PR), skill);
+  assert.equal(read(path.join(REPO, 'plugins/concord-copilot/skills/ticket-to-pr/SKILL.md')), skill);
   const rows = Object.fromEntries(
     skill.split('\n').filter((l) => /^\| \d \|/.test(l)).map((l) => [l.split('|')[1].trim(), l]),
   );
-  assert.match(rows['3'], /adds, alters, reads or branches on persisted state, or adds or alters a retry, recovery or replay path/);
-  assert.match(rows['3'], /one row per combination of a state and an event/);
-  assert.match(rows['3'], /neither reads nor writes persisted state and has no retry, recovery or replay path/);
-  assert.match(rows['3'], /every value of each persisted state/);
-  assert.match(rows['3'], /first occurrence, repetition or replay, corrupt or missing evidence, base or head change, and interruption/);
-  assert.match(rows['6'], /state-and-event row has a named test/);
-  assert.match(rows['6'], /recorded reason/);
-  assert.match(rows['6'], /introduced or changed/);
-  assert.match(rows['6'], /existing or newly written, that passes against the unchanged revision/);
+  assert.match(rows['3'], /table defined in "Stateful changes"; any other change gives the one-line statement defined there/);
+  assert.match(rows['6'], /"Stateful changes" requires/);
+  const section = skill.split('## Stateful changes\n')[1]?.split('\n## ')[0] ?? '';
+  assert.ok(section, 'missing "Stateful changes" section');
+  assert.match(section, /writes, reads or branches on data that carries state from one run or process to the next, such as a ledger, cache, git ref, or tracker or PR field/);
+  assert.match(section, /touches persisted state or adds or alters a retry, recovery or replay path, whether or not that path persists anything/);
+  assert.match(section, /Configuration or input that only the caller supplies is not state/);
+  assert.match(section, /one row per combination of a state and an event, and the columns outcome, kind \(introduced, changed, unchanged or unreachable\) and test or reason/);
+  assert.match(section, /for a retry, recovery or replay path, its progress/);
+  assert.match(section, /zero, each limit and the value just past it a class of their own/);
+  assert.match(section, /first occurrence, repetition or replay, corrupt or missing input or evidence, base or head change, and interruption/);
+  assert.match(section, /still gets its own row, kind unreachable, naming the invariant that prevents it and where that invariant is enforced/);
+  assert.match(section, /it touches no persisted state and adds or alters no retry, recovery or replay path/);
+  assert.match(section, /Stage 6 fills the test or reason column/);
+  assert.match(section, /Each reachable row has a named test that passes after the change\./);
+  assert.match(section, /A row that no test can exercise, for example a crash between two writes, records why and the check that stands in, in place of the test/);
+  assert.match(section, /kind is introduced or changed has a test that fails before the change for the right reason/);
+  assert.match(section, /kind is unchanged has a test that passes against the unchanged revision, which may be newly written/);
 });
 
 test('Claude and Codex source packages ship the same initiative-to-prs skill', () => {
