@@ -184,6 +184,7 @@ test('every distribution shares the delivery disposition contract', () => {
   for (const pkg of ['concord', 'concord-codex', 'concord-copilot']) {
     const lgtm = read(`${pkg}/skills/review-until-lgtm/SKILL.md`);
     assert.match(lgtm, /record-delivery <pr> <head-sha>/);
+    assert.match(lgtm, /"url" \| "local":\{"file","span"\}/);
     assert.match(lgtm, /`mergeable-clean`, `mergeable-with-follow-ups`, or `blocked`/);
     assert.match(lgtm, /release-blocking finding blocks unless it is `fixed`, whatever the remaining budget/);
     assert.match(lgtm, /`rollover-pending`.*no ticket URL is invented/s);
@@ -352,6 +353,7 @@ test('a delivery finding needs exactly one valid reference', () => {
   assert.throws(withFinding({ url: '' }), /needs exactly one of url or local/);
   assert.throws(withFinding({ local: { file: 'a.js', span: 's' } }), /needs exactly one of url or local/);
   assert.throws(withFinding({ url: undefined, local: { file: '/etc/passwd', span: 's' } }), /local needs a relative file/);
+  for (const file of ['../outside.js', 'a/../../outside.js', 'C:\\outside.js', '\\\\server\\share\\x.js']) assert.throws(withFinding({ url: undefined, local: { file, span: 's' } }), /local needs a relative file/, file);
   assert.throws(withFinding({ url: undefined, local: { file: 'a.js', span: 3 } }), /local span must be a string/);
   assert.doesNotThrow(withFinding({ url: undefined, local: { file: 'a.js', span: '' } }));
 });

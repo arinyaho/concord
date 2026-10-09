@@ -5174,3 +5174,28 @@ test('review-cli dismiss: refuses an id that is neither open nor already dismiss
   assert.throws(() => run(['dismiss', 'feat/x', 'gate:silent-gap:missing', '--by', 'someone'], { env }), /is not an open gate finding/);
   assert.deepStrictEqual(review.readLedger(dir, slug).gate_dismissed, []);
 });
+
+test('dismiss and rerun keep the span of a finding that went through foldGateFindings', () => {
+  const gateLib = require('../../core/gate');
+  const dir = tmpDir();
+  const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  const folded = (id) => gateLib.foldGateFindings({ gateFindings: [followUp(id)], verifyRejectedIds: [], dismissedIds: [] })[0];
+  assert.strictEqual(folded('gate:silent-gap:a').span, undefined, 'the folded shape stores the anchor as evidence');
+  review.writeLedger(dir, slug, { ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), status: 'clean', gate_open: [folded('gate:silent-gap:a'), folded('gate:silent-gap:b')] });
+  run(['dismiss', 'feat/x', 'gate:silent-gap:a', '--by', 'someone'], { env });
+  assert.strictEqual(review.readLedger(dir, slug).gate_dismissed[0].span, 'old invariant');
+  const out = JSON.parse(run(['rerun', 'feat/x'], { env }));
+  assert.strictEqual(out.archived.gate_open[0].span, 'old invariant');
+});
+
+test('the rerun handoff renders a malformed releaseBlocking value instead of crashing', () => {
+  const dir = tmpDir();
+  const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  review.writeLedger(dir, slug, { ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), status: 'clean', gate_open: [followUp('gate:silent-gap:a', { releaseBlocking: 'security' })] });
+  run(['rerun', 'feat/x'], { env });
+  const handoff = cli.renderHandoff({ ledger: review.readLedger(dir, slug) });
+  assert.match(handoff, /\[gate:silent-gap:a\] a\.js: summary of gate:silent-gap:a/);
+  assert.match(handoff, /release-blocking: security/);
+});

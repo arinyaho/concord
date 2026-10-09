@@ -261,7 +261,7 @@ function renderHandoff(result) {
     lines.push(`prior run #${r.run} (${r.engine || 'engine unrecorded'}): ${r.status} -- ${r.rounds} round(s), ${(r.fixed || []).length} fixed, ${(r.parked || []).length} parked, ${(r.killed || []).length} killed`);
   }
   for (const r of ledger.runs || []) {
-    for (const f of r.gate_open || []) lines.push(`  open in prior run #${r.run}: [${f.id}] ${f.file}: ${f.summary}${f.rationale ? ` -- rationale: ${f.rationale}` : ''}${(f.releaseBlocking || []).length ? ` -- release-blocking: ${f.releaseBlocking.join(', ')}` : ''}`);
+    for (const f of r.gate_open || []) lines.push(`  open in prior run #${r.run}: [${f.id}] ${f.file}: ${f.summary}${f.rationale ? ` -- rationale: ${f.rationale}` : ''}${[].concat(f.releaseBlocking || []).length ? ` -- release-blocking: ${[].concat(f.releaseBlocking).join(', ')}` : ''}`);
   }
   if (aborted) lines.push(`ABORTED (${aborted.kind}): ${aborted.message}`);
 
@@ -566,7 +566,7 @@ function dismissedIds(ledger) {
 }
 
 function findingEvidence(f, extra = {}) {
-  return { id: f.id, file: f.file, span: f.span, summary: f.summary, rationale: f.rationale, releaseBlocking: f.releaseBlocking, ...(f.blockingReason ? { blockingReason: f.blockingReason } : {}), ...extra };
+  return { id: f.id, file: f.file, span: f.span ?? f.evidence ?? '', summary: f.summary, rationale: f.rationale, releaseBlocking: f.releaseBlocking, ...(f.blockingReason ? { blockingReason: f.blockingReason } : {}), ...extra };
 }
 
 function rerunOptions(rest) {

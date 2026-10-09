@@ -526,7 +526,7 @@ function validatePacket(packet) {
     if (!!text(finding.url) === (finding.local != null)) throw new Error(`review-lgtm-state: delivery finding ${id} needs exactly one of url or local`);
     if (finding.local != null) {
       const file = text(finding.local.file);
-      if (!file || path.isAbsolute(file)) throw new Error(`review-lgtm-state: delivery finding ${id} local needs a relative file`);
+      if (!file || path.posix.isAbsolute(file) || path.win32.isAbsolute(file) || file.split(/[\\/]/).includes('..')) throw new Error(`review-lgtm-state: delivery finding ${id} local needs a relative file`);
       if (typeof finding.local.span !== 'string') throw new Error(`review-lgtm-state: delivery finding ${id} local span must be a string`);
     }
     if (finding.disposition != null && !DISPOSITIONS.has(finding.disposition)) throw new Error(`review-lgtm-state: unknown disposition ${JSON.stringify(finding.disposition)}`);

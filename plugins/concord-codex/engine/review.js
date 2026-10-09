@@ -610,7 +610,7 @@ function renderReviewReport(ledgers) {
     } else if (ledger.status === 'intent-review') {
       lines.push(`review-and-fix [${ref}]: ${roundInfo} -- stopped for a design-conformance (intent) finding, needs a human decision; re-run \`/review-and-fix ${ref}\` after fixing the code or the design source (a fixed contradiction converges, an unfixed one re-fetches the intent).`);
     } else if (ledger.status === 'gate-pending') {
-      lines.push(`review-and-fix [${ref}]: ${roundInfo} -- stopped for advisory broad review finding(s), needs a human decision; re-run \`/review-and-fix ${ref}\` (a fresh run re-evaluates broad review) or \`review-cli.js dismiss ${ref} <gateId>\` for a finding you accept as out-of-scope.`);
+      lines.push(`review-and-fix [${ref}]: ${roundInfo} -- stopped for advisory broad review finding(s), needs a human decision; re-run \`/review-and-fix ${ref}\` (a fresh run re-evaluates broad review) or \`review-cli.js dismiss ${ref} <gateId> --by <name>\` for a finding you accept as out-of-scope.`);
     } else if (ledger.status === 'dod-failed') {
       lines.push(`review-and-fix [${ref}]: ${roundInfo} -- final DoD failed; fix the failure, then re-run \`/review-and-fix ${ref}\` to review the changed diff before retrying DoD.`);
     } else if (ledger.status === 'gate-panel-pending') {
