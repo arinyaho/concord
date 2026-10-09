@@ -262,7 +262,8 @@ function findingIds(packet) { return packet.observations.find((o) => o.reviewId 
 
 test('a comment in a resolved review thread is not a finding', async () => {
   const data = fixture();
-  pullRequest(data).reviewThreads.nodes.find((t) => t.comments.nodes.some((c) => String(c.databaseId) === FIRST_FINDING)).isResolved = true;
+  const firstId = headReview(data).comments.nodes.find((c) => String(c.databaseId) === FIRST_FINDING).id;
+  pullRequest(data).reviewThreads.nodes.find((t) => t.comments.nodes.some((c) => c.id === firstId)).isResolved = true;
   const packet = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble({ main: () => data }) });
   assert.deepStrictEqual(findingIds(packet), [SECOND_FINDING]);
 });
@@ -444,4 +445,52 @@ test('awaitingReaction belongs to one head: the deadline line of a new head does
   });
   assert.strictEqual(await harness.run(), 'deadline');
   assert.deepStrictEqual(harness.lines.map((l) => [l.event, l.head, l.awaitingReaction]), [['deadline', NEXT, false]]);
+});
+
+test('a resolved thread is matched by node id, so a null databaseId does not hide it', async () => {
+  const data = fixture();
+  const firstId = headReview(data).comments.nodes.find((c) => String(c.databaseId) === FIRST_FINDING).id;
+  const thread = pullRequest(data).reviewThreads.nodes.find((t) => t.comments.nodes.some((c) => c.id === firstId));
+  thread.isResolved = true;
+  for (const c of thread.comments.nodes) c.databaseId = null;
+  const packet = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble({ main: () => data }) });
+  assert.deepStrictEqual(findingIds(packet), [SECOND_FINDING]);
+});
+
+test('review threads past the first page are fetched, so a resolved thread on a later page is not a finding', async () => {
+  const data = fixture();
+  const firstId = headReview(data).comments.nodes.find((c) => String(c.databaseId) === FIRST_FINDING).id;
+  const threads = pullRequest(data).reviewThreads;
+  const resolved = threads.nodes.find((t) => t.comments.nodes.some((c) => c.id === firstId));
+  threads.nodes = threads.nodes.filter((t) => t !== resolved);
+  threads.pageInfo = { hasNextPage: true, endCursor: 'cursor-1' };
+  const pages = async (query) => {
+    assert.match(query, /reviewThreads/);
+    return { data: { node: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: 'cursor-2' }, nodes: [{ ...resolved, isResolved: true }] } } } };
+  };
+  const double = graphqlDouble({ main: () => data, pages });
+  const packet = await collector.collect({ pr: 244, head: HEAD, graphql: double });
+  assert.deepStrictEqual(findingIds(packet), [SECOND_FINDING]);
+  assert.deepStrictEqual(double.pageReads, [{ id: pullRequest(data).id, cursor: 'cursor-1' }]);
+});
+
+test('inline comment pages are not read for a review of an unconfigured reviewer', async () => {
+  const data = fixture();
+  const other = pullRequest(data).reviews.nodes.find((r) => r.author.login === 'arinyaho');
+  other.comments.pageInfo = { hasNextPage: true, endCursor: 'cursor-1' };
+  const double = graphqlDouble({ main: () => data, pages: async () => { throw new Error('unexpected page read'); } });
+  await collector.collect({ pr: 244, head: HEAD, graphql: double });
+  assert.deepStrictEqual(double.pageReads, []);
+});
+
+test('watch prints a new packet when the Codex summary appears or completes again after the first packet', async () => {
+  const withoutSummary = () => { const data = fixture(); pullRequest(data).comments.nodes = pullRequest(data).comments.nodes.filter((c) => c.author.login !== CODEX); return data; };
+  const completedAgain = () => withSummaryStatus(fixture(), '✅ **Completed** <relative-time datetime="2026-10-09T14:10:00.000000Z">2026-10-09T14:10:00.000000Z</relative-time>');
+  const harness = watchHarness({
+    responses: [withoutSummary, fixture, completedAgain, completedAgain],
+    status: (_head, tick) => ({ deadlineMs: 900000, delivery: tick >= 6 ? { classification: 'mergeable-clean', current: true } : null }),
+  });
+  await harness.run();
+  const packets = harness.lines.filter((l) => l.event === 'packet');
+  assert.deepStrictEqual(packets.map((p) => p.summary && p.summary.completedAt), [null, COMPLETED_AT, '2026-10-09T14:10:00.000000Z']);
 });

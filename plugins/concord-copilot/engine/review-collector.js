@@ -16,14 +16,16 @@ const WINDOW_SECONDS = 900;
 const DEFAULT_INTERVAL_MS = 30000;
 const MIN_INTERVAL_MS = 30000;
 
-const COMMENT_FIELDS = 'databaseId url body path line commit{oid} originalCommit{oid}';
+const COMMENT_FIELDS = 'id databaseId url body path line commit{oid} originalCommit{oid}';
 const CONTEXT_FIELDS = '__typename ... on CheckRun{name status conclusion} ... on StatusContext{context state}';
-const QUERY = `query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){headRefOid
+const THREAD_FIELDS = 'isResolved comments(first:100){nodes{id}}';
+const QUERY = `query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){id headRefOid
 reviews(last:100){nodes{id databaseId url state submittedAt body author{login} commit{oid} comments(first:100){pageInfo{hasNextPage endCursor} nodes{${COMMENT_FIELDS}}}}}
-reviewThreads(last:100){nodes{isResolved comments(first:100){nodes{databaseId}}}}
+reviewThreads(first:100){pageInfo{hasNextPage endCursor} nodes{${THREAD_FIELDS}}}
 comments(last:100){nodes{databaseId url body createdAt author{login}}}
 commits(last:1){nodes{commit{oid statusCheckRollup{id contexts(first:100){pageInfo{hasNextPage endCursor} nodes{${CONTEXT_FIELDS}}}}}}}}}}`;
-// Follow-up pages for a review with more than 100 inline comments and a check rollup with more than 100 contexts.
+// Follow-up pages for a pull request with more than 100 review threads, a review with more than 100 inline comments and a check rollup with more than 100 contexts.
+const THREADS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on PullRequest{reviewThreads(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${THREAD_FIELDS}}}}}}`;
 const COMMENTS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on PullRequestReview{comments(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${COMMENT_FIELDS}}}}}}`;
 const CONTEXTS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on StatusCheckRollup{contexts(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${CONTEXT_FIELDS}}}}}}`;
 const REACTIONS_QUERY = 'query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){headRefOid reactions(first:100,content:THUMBS_UP){nodes{content createdAt user{login}}}}}}';
@@ -100,10 +102,12 @@ async function fillPages(connection, query, id, field, graphql) {
   }
 }
 
-async function read(graphql, pr) {
+// Only the configured reviewers' reviews are paged: no other review is ever read.
+async function read(graphql, pr, reviewers) {
   const response = await graphql(QUERY, { pr });
   const pull = pullRequestOf(response);
-  await Promise.all(pull.reviews.nodes.map((review) => fillPages(review.comments, COMMENTS_PAGE_QUERY, review.id, 'comments', graphql)));
+  await fillPages(pull.reviewThreads, THREADS_PAGE_QUERY, pull.id, 'reviewThreads', graphql);
+  await Promise.all(pull.reviews.nodes.filter((review) => review.author && reviewers.includes(loginOf(review.author.login))).map((review) => fillPages(review.comments, COMMENTS_PAGE_QUERY, review.id, 'comments', graphql)));
   const commit = pull.commits.nodes[0] && pull.commits.nodes[0].commit;
   if (commit && commit.statusCheckRollup) await fillPages(commit.statusCheckRollup.contexts, CONTEXTS_PAGE_QUERY, commit.statusCheckRollup.id, 'contexts', graphql);
   return response;
@@ -119,7 +123,7 @@ function analyze(response, head, reviewers = DEFAULT_REVIEWERS) {
   if (live !== head) return { stale: true, head, liveHead: live };
   const comments = pr.comments.nodes.filter((c) => c.author).map((c) => ({ ...c, author: { login: loginOf(c.author.login) } }));
   const summary = reviewers.includes(CODEX_REVIEWER) ? summaryOf(comments, head) : null;
-  const resolved = new Set(pr.reviewThreads.nodes.filter((t) => t.isResolved).flatMap((t) => t.comments.nodes.map((c) => c.databaseId)));
+  const resolved = new Set(pr.reviewThreads.nodes.filter((t) => t.isResolved).flatMap((t) => t.comments.nodes.map((c) => c.id)));
   const observations = [];
   for (const review of pr.reviews.nodes) {
     const reviewer = review.author && loginOf(review.author.login);
@@ -129,7 +133,7 @@ function analyze(response, head, reviewers = DEFAULT_REVIEWERS) {
     const madeOnHead = (c) => c.originalCommit && c.originalCommit.oid.toLowerCase() === head;
     if (reviewCommit !== head && !inline.some(madeOnHead)) continue;
     // Only comments made on this head count (a reply keeps its thread's older original commit), and a comment in a resolved thread is no longer a finding.
-    const own = inline.filter((c) => (c.originalCommit ? madeOnHead(c) : reviewCommit === head) && !resolved.has(c.databaseId));
+    const own = inline.filter((c) => (c.originalCommit ? madeOnHead(c) : reviewCommit === head) && !resolved.has(c.id));
     observations.push({ reviewId: String(review.databaseId), reviewer, reviewUrl: review.url, commitId: head, reviewCommitId: reviewCommit, submittedAt: review.submittedAt, state: 'completed', lgtm: review.state === 'APPROVED', findings: own.map(finding), ...limited(review.body), untrusted: true });
   }
   const pending = reviewers.filter((reviewer) => {
@@ -192,7 +196,7 @@ async function complete(analysis, { pr, graphql, reviewers = DEFAULT_REVIEWERS }
 async function collect({ pr, head, graphql, reviewers = DEFAULT_REVIEWERS }) {
   const normalized = String(head).toLowerCase();
   reviewers = reviewers.map(loginOf);
-  const analysis = analyze(await read(graphql, pr), normalized, reviewers);
+  const analysis = analyze(await read(graphql, pr, reviewers), normalized, reviewers);
   if (analysis.stale) return { stale: true, head: analysis.head, liveHead: analysis.liveHead };
   return complete(analysis, { pr, graphql, reviewers });
 }
@@ -221,7 +225,7 @@ async function watch({ pr, graphql, state, now = Date.now, sleep = (ms) => new P
   const windowed = new Set();
   const since = new Map();
   for (;;) {
-    const response = await read(graphql, pr);
+    const response = await read(graphql, pr, reviewers);
     const head = pullRequestOf(response).headRefOid.toLowerCase();
     if (!since.has(head)) since.set(head, now());
     const analysis = analyze(response, head, reviewers);
@@ -230,7 +234,9 @@ async function watch({ pr, graphql, state, now = Date.now, sleep = (ms) => new P
     if (status.delivery && status.delivery.current === true) { write(JSON.stringify({ event: 'delivery', pr: Number(pr), head, classification: status.delivery.classification })); return 'delivery'; }
     // The deadline bounds the wait for a first packet; once one was printed the watch runs on to catch later reviews until a delivery is recorded.
     if (!printed.has(head) && now() >= (status.deadlineMs ?? since.get(head) + WINDOW_SECONDS * 1000)) { write(JSON.stringify({ event: 'deadline', pr: Number(pr), head, pending: analysis.model.pending, awaitingReaction: awaitingReaction.get(head) === true })); return 'deadline'; }
-    const covered = analysis.model.observations.map((o) => o.reviewId).join(',');
+    // The summary joins the fingerprint: it can appear after the review, and a second clean result only moves its completion time.
+    const summary = analysis.model.summary;
+    const covered = `${analysis.model.observations.map((o) => o.reviewId).join(',')}|${summary ? `${summary.status}@${summary.completedAt}` : ''}`;
     if (analysis.model.terminal && printed.get(head) !== covered) {
       // A clean Codex result is final only with its reaction, which arrives after the summary: keep reading until it does or the deadline passes.
       const packet = await complete(analysis, { pr, graphql, reviewers });
