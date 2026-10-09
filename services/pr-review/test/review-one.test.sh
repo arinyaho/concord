@@ -40,9 +40,13 @@ done
 set -- "${args[@]}"
 out() { if [ -n "$jq_expr" ]; then jq -r "$jq_expr" <<<"$1"; else printf '%s\n' "$1"; fi; }
 case "$*" in
-  "auth setup-git") ;;
+  "auth setup-git")  # like the real command, writes the helper into the account's global Git configuration
+    git config --global --add credential.https://github.com.helper '!gh auth git-credential' ;;
   "api user") echo reviewbot ;;
-  "repo clone "*) git clone -q "$UPSTREAM" "$4" ;;
+  "repo clone "*)
+    { printf '%s=%s\n' count "${GIT_CONFIG_COUNT:-unset}"
+      git config --get-all credential.https://github.com.helper || true; } > "$LOG.clone-helpers"
+    git clone -q "$UPSTREAM" "$4" ;;
   *"--json headRefOid,baseRefOid,baseRefName,title,body,closingIssuesReferences"*)
     refs='{"closingIssuesReferences":[]}'
     case "${ISSUE_REF:-foreign}" in
@@ -142,7 +146,7 @@ fail=0
 check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
 run() {  # run <case> <engine result json>
   export LOG="$work/$1.log"; : > "$LOG"
-  PATH="$work/bin:$PATH" UPSTREAM="$repo" ENGINE_RESULT="$2" REPO=o/r PR=1 SHA="$SHA" MODE="${MODE_OVERRIDE-broad}" \
+  PATH="$work/bin:$PATH" HOME="${RUN_HOME-$HOME}" UPSTREAM="$repo" ENGINE_RESULT="$2" REPO=o/r PR=1 SHA="$SHA" MODE="${MODE_OVERRIDE-broad}" \
     GH_TOKEN=review-pat-secret CLAUDE_CODE_OAUTH_TOKEN=model-token-secret OPENAI_API_KEY=openai-key-secret \
     REVIEW_REPOS="${REVIEW_REPOS-o/other o/r}" ATTEMPT_ID="${ATTEMPT_ID_OVERRIDE-123e4567-e89b-42d3-a456-426614174000}" \
     bash "$SCRIPT" >"$LOG.out" 2>&1 &
@@ -165,6 +169,16 @@ check "foreign issue body cannot reach output" '! grep -q "FOREIGN_BODY_SENTINEL
 check "the reviewer runs with its own Claude configuration directory" '[ "$(cat "$LOG.config-dir")" != unset ] && [ "$(cat "$LOG.config-dir")" != "$HOME/.claude" ]'
 check "that directory holds no settings of the runner account" '[ ! -s "$LOG.config-files" ]'
 check "the pull request body reaches the intent" 'grep -q "must exist" "$LOG.intent"'
+
+# The runner account's Git configuration, with a helper of its own, must come out of a job as it went in.
+helper_home="$work/helper-home"; mkdir -p "$helper_home"
+printf '[credential]\n\thelper = store\n' > "$helper_home/.gitconfig"
+cp "$helper_home/.gitconfig" "$work/helper-gitconfig.before"
+RUN_HOME="$helper_home" run helper-success '{"decision":"review-only","round":1,"findings":[]}'
+check "a successful review leaves the runner's Git configuration unchanged" 'cmp -s "$work/helper-gitconfig.before" "$helper_home/.gitconfig"'
+check "the clone still authenticates through the GitHub credential helper" 'grep -qx "!gh auth git-credential" "$LOG.clone-helpers"'
+RUN_HOME="$helper_home" run helper-failure '{"decision":"review-only","round":1,"findings":[{"id":"correctness:x","category":"correctness","file":"a.txt","line":1,"span":"change","summary":"token is model-token-secret","requirement":""}]}'
+check "a failed review leaves the runner's Git configuration unchanged" 'cmp -s "$work/helper-gitconfig.before" "$helper_home/.gitconfig"'
 
 ATTEMPT_ID_OVERRIDE=invalid run bad-attempt '{"decision":"review-only","round":1,"findings":[]}'
 check "an invalid attempt is rejected before GitHub or model work" '[ -s "$LOG.exit" ] && [ ! -e "$LOG.review" ] && [ ! -e "$LOG.args" ]'
