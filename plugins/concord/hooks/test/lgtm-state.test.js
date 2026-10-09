@@ -1153,11 +1153,12 @@ test('review-until-lgtm adjudicates findings and escalates a PR that does not se
   for (const file of [CLAUDE_SKILL, CODEX_SKILL, COPILOT_SKILL]) {
     const skill = fs.readFileSync(file, 'utf8');
     assert.match(skill, /^### Adjudicate and escalate$/m);
-    for (const token of ['CONCEDE', 'REBUT', 'KEEP', 'REWRITE', 'self-feeding', 'waive-fix-budget', 'new agent', 'once per PR', 'mergeable-clean']) {
-      assert.ok(skill.includes(token), `${path.basename(path.dirname(file))} lacks ${token}`);
+    const section = skill.split('### Adjudicate and escalate\n')[1].split('\n## ')[0];
+    for (const token of ['CONCEDE', 'REBUT', 'KEEP', 'REWRITE', 'self-feeding', 'waive-fix-budget', 'new agent', 'once per PR', 'classifies as `mergeable-clean` without a clean review']) {
+      assert.ok(section.includes(token), `${path.basename(path.dirname(file))} lacks ${token}`);
     }
-    assert.match(skill, /rebutted finding[^.]*never enters the plan or the delivery packet/);
-    assert.match(skill, /stop for human reconciliation/);
+    assert.match(section, /rebutted finding[^.]*never enters the plan or the delivery packet/);
+    assert.match(section, /signal holds again after the escalation, stop for human reconciliation/);
   }
   assert.strictEqual(fs.readFileSync(CLAUDE_SKILL, 'utf8'), fs.readFileSync(CODEX_SKILL, 'utf8'));
   assert.strictEqual(fs.readFileSync(CLAUDE_SKILL, 'utf8'), fs.readFileSync(COPILOT_SKILL, 'utf8'));
