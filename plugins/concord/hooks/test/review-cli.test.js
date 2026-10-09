@@ -5199,3 +5199,14 @@ test('the rerun handoff renders a malformed releaseBlocking value instead of cra
   assert.match(handoff, /\[gate:silent-gap:a\] a\.js: summary of gate:silent-gap:a/);
   assert.match(handoff, /release-blocking: security/);
 });
+
+test('the handoff names every dismissed finding with its evidence, the dismissing human and the verifier judgement', () => {
+  const dir = tmpDir();
+  const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  review.writeLedger(dir, slug, { ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), status: 'gate-pending', gate_open: [followUp('gate:silent-gap:a', { blockingReason: 'touches the auth path' }), followUp('gate:silent-gap:b')] });
+  run(['dismiss', 'feat/x', 'gate:silent-gap:a', '--by', 'someone'], { env });
+  const handoff = cli.renderHandoff({ ledger: review.readLedger(dir, slug) });
+  assert.match(handoff, /dismissed by someone: \[gate:silent-gap:a\] a\.js: summary of gate:silent-gap:a -- rationale: gate:silent-gap:a leaves the outcome correct -- verifier: touches the auth path/);
+  assert.doesNotMatch(handoff, /dismissed by .*gate:silent-gap:b/);
+});

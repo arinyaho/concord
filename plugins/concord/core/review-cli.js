@@ -243,6 +243,12 @@ function roundCandidates(gc, cJson, vJson) {
   return Array.from(byId.values());
 }
 
+// One line per archived or dismissed finding: what a delivery packet needs to reference it.
+function evidenceLine(f) {
+  const blocking = [].concat(f.releaseBlocking || []);
+  return `[${f.id}] ${f.file}: ${f.summary}${f.rationale ? ` -- rationale: ${f.rationale}` : ''}${blocking.length ? ` -- release-blocking: ${blocking.join(', ')}` : ''}${f.blockingReason ? ` -- verifier: ${f.blockingReason}` : ''}`;
+}
+
 function renderHandoff(result) {
   const { ledger, aborted } = result;
   const lines = [];
@@ -261,8 +267,9 @@ function renderHandoff(result) {
     lines.push(`prior run #${r.run} (${r.engine || 'engine unrecorded'}): ${r.status} -- ${r.rounds} round(s), ${(r.fixed || []).length} fixed, ${(r.parked || []).length} parked, ${(r.killed || []).length} killed`);
   }
   for (const r of ledger.runs || []) {
-    for (const f of r.gate_open || []) lines.push(`  open in prior run #${r.run}: [${f.id}] ${f.file}: ${f.summary}${f.rationale ? ` -- rationale: ${f.rationale}` : ''}${[].concat(f.releaseBlocking || []).length ? ` -- release-blocking: ${[].concat(f.releaseBlocking).join(', ')}` : ''}`);
+    for (const f of r.gate_open || []) lines.push(`  open in prior run #${r.run}: ${evidenceLine(f)}`);
   }
+  for (const d of ledger.gate_dismissed || []) lines.push(`dismissed by ${d.dismissedBy}: ${evidenceLine(d)}`);
   if (aborted) lines.push(`ABORTED (${aborted.kind}): ${aborted.message}`);
 
   const dodLine = !ledger.dod
