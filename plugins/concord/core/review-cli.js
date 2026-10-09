@@ -153,6 +153,27 @@ function readReviewSource(repoRoot, file) {
   return null;
 }
 
+// True only when the path is provably absent inside the checkout: every
+// existing component is a real directory and the first missing one is ENOENT.
+// A symlink anywhere on the path (dangling or not), a path leaving the
+// checkout, or any other failure is not "missing" -- the evidence stays unknown.
+function reviewSourceMissing(repoRoot, file) {
+  if (typeof file !== 'string' || !file || path.isAbsolute(file)) return false;
+  try {
+    const root = fs.realpathSync(repoRoot);
+    const requested = path.resolve(root, file);
+    if (!pathWithin(requested, root) || requested === root) return false;
+    let current = root;
+    for (const part of path.relative(root, requested).split(path.sep)) {
+      current = path.join(current, part);
+      let stat;
+      try { stat = fs.lstatSync(current); } catch (e) { return e.code === 'ENOENT'; }
+      if (!stat.isDirectory()) return false;
+    }
+  } catch (_) { /* Unavailable evidence is not absence. */ }
+  return false;
+}
+
 function validateFixFiles(repoRoot, stateDir, files) {
   const repo = path.resolve(repoRoot);
   const artifacts = path.resolve(stateDir);
@@ -1021,7 +1042,8 @@ function verifiedRound(ref, stateDir, run, what) {
   const spanPresent = (file, span) => {
     if (!span) return true;
     const text = readReviewSource(repoRoot, file);
-    return text === null || text.includes(span);
+    if (text !== null) return text.includes(span);
+    return !reviewSourceMissing(repoRoot, file);
   };
   // A finding dedupeAgainstSeen marked `reopened: true` recurred after being
   // marked 'fixed' -- it is still present in `ledger.findings` with that

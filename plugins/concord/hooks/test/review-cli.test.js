@@ -5079,6 +5079,56 @@ test('plan-fixes: unsafe or oversized reviewer paths cannot become journal-prove
   }
 });
 
+// A journaled fix that deleted the file and crashed before recording convergence
+// leaves a path that is safely missing inside the checkout: that is a replay.
+// Any other unavailable evidence stays with the fixer.
+function planFixesWithJournal(kind, setup, afterSeed = () => {}) {
+  const repo = initRepo(); const dir = tmpDir(); const outside = path.join(tmpDir(), 'gone.txt');
+  const ref = `feat/missing-${kind}`;
+  const file = setup({ repo, outside });
+  const { env } = seedGatesRound(repo, dir, ref,
+    { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:gone', gate: 'correctness', file, span: 'removed span', summary: 'x' }] },
+    { status: 'ok', rejected: [] });
+  afterSeed({ repo, outside });
+  const slug = review.targetSlug(ref);
+  review.writeLedger(dir, slug, { ...review.readLedger(dir, slug), journal: [{ id: 'correctness:gone', sha: 'prior' }] });
+  seedV2Plan(ref, env);
+  const result = runCapture(['plan-fixes', ref], { env, timeout: 10000 });
+  assert.strictEqual(result.status, 0, `${kind}: ${result.stderr}`);
+  return { fixes: JSON.parse(result.stdout).fixes.map((f) => f.id), resolved: review.readLedger(dir, slug).resolved_absent };
+}
+
+test('plan-fixes: a journaled finding whose file was deleted inside the checkout is a replay', () => {
+  for (const kind of ['file', 'directory']) {
+    const { fixes, resolved } = planFixesWithJournal(`deleted-${kind}`, ({ repo }) => {
+      const file = kind === 'file' ? 'gone.txt' : 'pkg/gone.txt';
+      fs.mkdirSync(path.join(repo, 'pkg'));
+      fs.writeFileSync(path.join(repo, file), 'removed span\n');
+      execFileSync('git', ['add', file], { cwd: repo });
+      execFileSync('git', ['commit', '-qm', 'add'], { cwd: repo });
+      execFileSync('git', ['rm', '-rqf', kind === 'file' ? file : 'pkg'], { cwd: repo });
+      execFileSync('git', ['commit', '-qm', 'delete'], { cwd: repo });
+      return file;
+    });
+    assert.deepStrictEqual(fixes, [], kind);
+    assert.deepStrictEqual(resolved, ['correctness:gone'], kind);
+  }
+});
+
+test('plan-fixes: a missing path outside the checkout or behind a symlink is not a replay', () => {
+  for (const kind of ['outside', 'dangling-symlink', 'symlinked-directory', 'file-as-directory']) {
+    const { fixes, resolved } = planFixesWithJournal(kind, ({ repo, outside }) => {
+      if (kind === 'outside') return path.relative(repo, outside);
+      return { 'dangling-symlink': 'dangling.txt', 'symlinked-directory': 'linked/gone.txt', 'file-as-directory': 'a.txt/gone.txt' }[kind];
+    }, ({ repo, outside }) => {
+      if (kind === 'dangling-symlink') fs.symlinkSync(outside, path.join(repo, 'dangling.txt'));
+      if (kind === 'symlinked-directory') fs.symlinkSync(path.dirname(outside), path.join(repo, 'linked'));
+    });
+    assert.deepStrictEqual(fixes, ['correctness:gone'], kind);
+    assert.deepStrictEqual(resolved, [], kind);
+  }
+});
+
 test('findings: nonregular and oversized reviewer paths have no source line', () => {
   for (const kind of ['fifo', 'oversized']) {
     const repo = initRepo(); const dir = tmpDir(); const file = `${kind}.txt`;
