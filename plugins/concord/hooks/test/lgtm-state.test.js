@@ -1169,3 +1169,14 @@ test('review-until-lgtm adjudicates findings and escalates a PR that does not se
   assert.strictEqual(fs.readFileSync(CLAUDE_SKILL, 'utf8'), fs.readFileSync(CODEX_SKILL, 'utf8'));
   assert.strictEqual(fs.readFileSync(CLAUDE_SKILL, 'utf8'), fs.readFileSync(COPILOT_SKILL, 'utf8'));
 });
+
+test('review-until-lgtm merges only on explicit request and a ready merge-ready result', () => {
+  for (const file of [CLAUDE_SKILL, CODEX_SKILL, COPILOT_SKILL]) {
+    const skill = fs.readFileSync(file, 'utf8');
+    for (const token of ['merge-ready', 'no-automated-review', 'explicit request', '--match-head-commit']) {
+      assert.ok(skill.includes(token), `${path.basename(path.dirname(file))} lacks ${token}`);
+    }
+  }
+  assert.strictEqual(fs.readFileSync(CLAUDE_SKILL, 'utf8'), fs.readFileSync(CODEX_SKILL, 'utf8'));
+  assert.strictEqual(fs.readFileSync(CLAUDE_SKILL, 'utf8'), fs.readFileSync(COPILOT_SKILL, 'utf8'));
+});

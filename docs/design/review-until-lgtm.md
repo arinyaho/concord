@@ -57,6 +57,32 @@ The loop ends when no rollout blocker remains, the required checks are green, an
 - Human reconciliation: the request budget is exhausted, or an accepted finding changes product contract, PR scope, or unrelated architecture.
 - Delivery disposition: when collection is terminal and no fix round is open, including after the fix budget is exhausted, the skill records the delivery disposition (see the delivery disposition design). Release-blocking residuals keep the PR `blocked` for human reconciliation; collected minors and other follow-up-eligible residuals are grouped by root cause into read-back tickets within the tracker authorization.
 
+## Merge gate
+
+An agent merges a PR only at the user's explicit request naming it, and only after `merge-ready <pr> <head-sha>` prints `{"result":"ready"}`, merging with `gh pr merge --match-head-commit <head-sha>` so a push after the check makes the merge fail. A human merging by hand is not gated. The CLI cannot observe GitHub, so the caller reads the live facts immediately before merging and passes them on stdin:
+
+```json
+{
+  "headSha": "<live PR headRefOid>",
+  "checks": [{"name": "test", "conclusion": "success"}],
+  "reviewers": [{"reviewer": "chatgpt-codex-connector[bot]", "terminal": true, "lgtm": true, "failure": "<optional provider failure or timeout>"}]
+}
+```
+
+| Precondition | `blocked` reason when unmet |
+|---|---|
+| The live head equals the head asked about | `head-mismatch:<live>` |
+| Every check on that head concluded `success` | `check:<name>:<conclusion>` |
+| At least one automated reviewer is configured or observed | `no-automated-review` |
+| No reviewer reports a provider failure or timeout | `reviewer-failure:<reviewer>:<label>` |
+| Every reviewer is terminal for that head | `reviewer-pending:<reviewer>` |
+| Every reviewer gave a fresh LGTM for that head | `no-lgtm:<reviewer>` |
+| A delivery record exists for that head | `no-delivery` |
+| No review was recorded or rejected after that record | `delivery-stale` |
+| The record is `mergeable-clean` or `mergeable-with-follow-ups` | `delivery-blocked` |
+
+The verb merges nothing and posts nothing. With `no-automated-review` the agent merges only on the user's explicit instruction naming the PR and reports that no automated review exists. A timeout or provider failure is a human-reconciliation state, never approval. A push makes a new head, so the gate runs again after every push.
+
 ## Rationale
 
 The review state lives on GitHub, so the skill reads it there with the GitHub CLI; the local state engine (`core/lgtm-state.js`, exposed as `review-lgtm-state`) holds only what GitHub cannot: request and fix budgets, claims, recorded review batches, and delivery records. Collecting every configured reviewer before fixing prevents the first-arriving reviewer from driving a piecemeal fix and push, and a PR-wide budget that survives head changes and session replacement prevents a loop from recreating budget by pushing or restarting.
