@@ -453,6 +453,20 @@ function readChangeManifest(stateDir, ledger, ref, n) {
   }
   return manifest;
 }
+// Changed paths the reviewer did not examine. A path whose bytes at the
+// reviewed head equal those of an examined changed path is covered: the
+// generated bundle copies are byte copies of their source, which bundle-drift
+// tests enforce. A deleted path has no blob and must be listed by name.
+function unexaminedPaths(repoRoot, ledger, changed, examinedList) {
+  const examined = new Set(examinedList);
+  const head = ledger.target?.head_sha;
+  const blob = (file) => { try { return sh('git', ['rev-parse', '--verify', '-q', `${head}:${file}`], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch (_) { return null; } };
+  const missing = changed.filter((file) => !examined.has(file));
+  if (!missing.length || !head) return missing;
+  const covered = new Set(changed.filter((file) => examined.has(file)).map(blob).filter(Boolean));
+  return missing.filter((file) => !covered.has(blob(file)));
+}
+
 function readChangedPaths(stateDir, ledger, ref, n) {
   return readChangeManifest(stateDir, ledger, ref, n)?.paths || [];
 }
@@ -1062,8 +1076,7 @@ function verifiedRound(ref, stateDir, run, what) {
     // Use the changed-path manifest saved with this round's diff. Do not
     // re-run git against a mutable ref while folding reviewer evidence.
     changed = readChangedPaths(stateDir, ledger, ref, n);
-    const examined = new Set(Array.isArray(cJson.examined) ? cJson.examined : []);
-    const missing = changed.filter((f) => !examined.has(f));
+    const missing = unexaminedPaths(repoRoot, ledger, changed, Array.isArray(cJson.examined) ? cJson.examined : []);
     if (missing.length) throw new Error(`harness-failure: coverage -- changed file(s) never examined: ${missing.join(', ')}`);
   }
   const verdict = gc.parseVerifyVerdict(JSON.stringify({ rejected: vJson.rejected || [] }), candidates);
@@ -1449,13 +1462,8 @@ function runVerb(resolveFromCwd, args, initiative) {
       // contents, not a unified diff, so their examined list stays advisory.
       if (name === 'correctness' && (!ledger.target || ledger.target.type === 'git')) {
         const changed = readChangedPaths(stateDir, ledger, ref, n);
-        const examined = new Set(canonical.examined);
-        const missing = changed.filter((file) => !examined.has(file));
-        if (missing.length) {
-          const error = new artifactContract.ArtifactError('retry', `correctness coverage is incomplete; missing changed file(s): ${missing.join(', ')}`);
-          error.coveragePaths = changed;
-          throw error;
-        }
+        const missing = unexaminedPaths(process.env.REVIEW_REPO_ROOT || process.cwd(), ledger, changed, canonical.examined);
+        if (missing.length) throw new artifactContract.ArtifactError('retry', `correctness coverage is incomplete; missing changed file(s): ${missing.join(', ')}`);
       }
       const canonicalText = JSON.stringify(canonical) + '\n';
       // Only a candidate that passed preservation and strict normalization is
@@ -2402,6 +2410,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     };
     const fixedIds = [];
     const parkedIds = [];
+    const keptEditFiles = [];
     const fixCommits = {};
     const parkReasons = {};
     for (const id of ledger.planned || []) {
@@ -2429,7 +2438,9 @@ function runVerb(resolveFromCwd, args, initiative) {
         fixCommits[id] = 'file-edit';
       } else {
         parkedIds.push(id);
-        parkReasons[id] = gc.validateParkReason({ kind: 'needs-decision', text: fx ? 'fix reported no edit or the file was unchanged' : 'fix artifact missing' });
+        const keptEdit = isGit && fx && fx.edited === true && Array.isArray(fx.files) && fx.files.some((file) => gitIsDirtyForFile(repoRoot, file));
+        if (keptEdit) keptEditFiles.push(...fx.files);
+        parkReasons[id] = gc.validateParkReason({ kind: 'needs-decision', text: keptEdit ? `fix edited ${fx.files.join(', ')} but commit-fix did not commit it; edit kept in the working tree` : fx ? 'fix reported no edit or the file was unchanged' : 'fix artifact missing' });
       }
     }
     // Journal-proven idempotent replays (plan-fixes' ledger.resolved_absent):
@@ -2558,7 +2569,8 @@ function runVerb(resolveFromCwd, args, initiative) {
     }
     // Git only: clean any leftover uncommitted edit from a rejected/parked fixer.
     // File targets have no working tree to discard.
-    if (isGit) gitCheckoutTree(repoRoot);
+    // A fix that was edited but not committed stays for the person who decides (unpark/dismiss).
+    if (isGit && !keptEditFiles.length) gitCheckoutTree(repoRoot);
     const finalChecks = [{ name: 'definition-of-done', status: ledger.dod?.deferredBy === 'pending-final' ? 'not-run' : ledger.dod?.deferred ? 'deferred' : ledger.dod?.passed ? 'passed' : 'failed' }];
     const priorHistoryKeys = new Set((ledger.review_history || []).map((entry) => `${entry.planId}:${entry.groupId}`));
     const newHistory = (ledger.fix_plan?.groups || []).filter((group) => !priorHistoryKeys.has(`${ledger.fix_plan.planId}:${group.groupId}`)).map((group) => {
@@ -2919,10 +2931,9 @@ function runVerb(resolveFromCwd, args, initiative) {
     const files = Array.from(new Set(fixArtifacts.flatMap((artifact) => artifact.files)));
     validateFixFiles(repoRoot, stateDir, files);
     const cert = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-certify-${safeIdForFilename(transactionId)}.json`), 'utf8')); } catch (_) { return null; } })();
-    const invariants = Array.from(new Set(groups.flatMap((group) => group.invariants || [])));
     const sameSet = (left, right) => Array.isArray(left) && left.length === right.length && left.every((item) => right.includes(item));
     if (!cert || cert.status !== 'ok' || cert.groupId !== transactionId
-      || !sameSet(cert.resolvedFindingIds, findingIds) || !sameSet(cert.invariants, invariants)
+      || !sameSet(cert.resolvedFindingIds, findingIds)
       || !sameSet(cert.files, files) || !Array.isArray(cert.evidence) || !cert.evidence.length
       || !cert.fileHashes || typeof cert.fileHashes !== 'object') {
       throw new Error('harness-failure: commit-fix: complete group certification is required before commit');

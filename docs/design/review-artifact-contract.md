@@ -101,3 +101,13 @@ Normalization seals a plan as hash-bound pending evidence in `execution.normaliz
 A schema-valid plan that omits surviving findings has a separate bounded recovery path: the CLI invalidates only plan evidence, records the missing IDs, supersedes its launch, and supplies a corrective planner prompt. One replacement may run in the unchanged round, with a fresh initiative reservation when keyed. The CLI discards stale plan repair bindings before replacement, retains other sealed evidence and spent budgets, and stops after another incomplete result. This does not extend schema repair eligibility or permit manufacturing findings. See [incomplete-plan resume](incomplete-plan-resume.md).
 
 Execution failure of that replacement is distinct from a successfully produced invalid plan. Canonical provider diagnostics determine whether one separately reserved planner-only transport retry is actionable or a terminal handoff is required. Raw provider output is not durable evidence. See [failed planner provider recovery](planner-provider-recovery.md).
+
+## Coverage of generated copies
+
+A changed path counts as examined when it is listed in `examined`, or when its blob at the reviewed head equals the blob of a listed changed path. `bin/bundle.mjs` writes the Codex and Copilot copies byte for byte and the bundle-drift tests enforce that, so a reviewer who read the source has read its copies. Matching by content applies to any repository, since only Concord's own repository has bundle paths. A deleted path has no blob and must be listed by name. Two unrelated files with identical bytes cover each other; their content is the same, so the review of one is the review of the other. The same rule applies in `artifact-normalize` and in the `record` fold.
+
+## Certificate contents
+
+A certificate carries the group id, the exact set of resolved finding ids, the exact set of edited files with the SHA-256 of each file's current bytes, and evidence. `commit-fix` compares each of these with the plan, the fix artifact and the working tree. The invariants are not part of the certificate: the certifier is instructed to write `blocked` unless every planned invariant holds, so `ok` is the attestation, and a copy of the invariant text would only test transcription. The change is not stateful beyond this: `record` reads the same ledger and artifacts as before.
+
+When `commit-fix` rejects a fix that edited files, `record` parks the finding as `needs-decision` with the reason and leaves the edit in the working tree. `dismiss`, or `unpark` followed by the resumed round (which restores the committed tree), is the explicit decision that discards it.
