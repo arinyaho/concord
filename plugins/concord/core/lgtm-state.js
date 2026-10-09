@@ -680,19 +680,25 @@ function selfFeeding({ repoRoot, stateDir, pr, headSha, file, start, end }) {
   const isAncestor = (sha) => {
     try { run(['merge-base', '--is-ancestor', sha, key.headSha]); return true; } catch (error) { if (error.status === 1) return false; throw error; }
   };
+  // The fix round is measured along the first-parent history, so the earlier fix head must sit on it.
+  let firstParent = null;
+  const onFirstParent = (sha) => {
+    firstParent = firstParent || new Set(run(['rev-list', '--first-parent', key.headSha]).split('\n').filter(Boolean));
+    return firstParent.has(sha);
+  };
   const previous = names.map((name) => ({ slot: /^pr-(\d+)\.fix-round-slot-(\d+)\.json$/.exec(name), name }))
     .filter(({ slot }) => slot && Number(slot[1]) === key.pr)
     .map(({ slot, name }) => ({ round: Number(slot[2]), marker: readMarker(path.join(stateDir, name)) }))
     .filter(({ marker }) => marker && FULL_SHA.test(String(marker.headSha)) && marker.headSha !== key.headSha)
     .sort((a, b) => b.round - a.round)
     .map(({ marker }) => marker)
-    .find((marker) => isAncestor(marker.headSha));
+    .find((marker) => isAncestor(marker.headSha) && onFirstParent(marker.headSha));
   if (!previous) return { selfFeeding: false, previousFixHead: null };
   // A line is self-feeding when blame at the head attributes it to a commit made since the previous fix head.
   // Blame follows renames itself. git fails for a file missing at the head or a range starting past its end;
   // a range ending past the end is clamped by git to the last line.
   const fixCommits = new Set(run(['rev-list', '--first-parent', `${previous.headSha}..${key.headSha}`]).split('\n').filter(Boolean));
-  const blamed = run(['blame', '--porcelain', '-L', `${start},${end}`, key.headSha, '--', file]).split('\n')
+  const blamed = run(['blame', '--ignore-revs-file=', '--porcelain', '-L', `${start},${end}`, key.headSha, '--', file]).split('\n')
     .map((line) => /^([0-9a-f]{40}|[0-9a-f]{64}) \d+ \d+/.exec(line)).filter(Boolean).map((match) => match[1]);
   return { selfFeeding: blamed.some((sha) => fixCommits.has(sha)), previousFixHead: previous.headSha };
 }

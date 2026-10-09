@@ -1018,3 +1018,35 @@ test('self-feeding ignores lines that arrived by merging the base branch after t
   assert.strictEqual(check('b.md', 4, 4), true);
   assert.ok(base);
 });
+
+test('self-feeding requires the earlier fix head on the first-parent history of the checked head', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-reverse-merge-');
+  write('a.md', 'one\n');
+  write('b.md', 'x\n');
+  commit('base');
+  const trunk = git(repo, 'rev-parse', '--abbrev-ref', 'HEAD');
+  git(repo, 'checkout', '-q', '-b', 'pr');
+  write('b.md', 'x\ny\n');
+  const reviewed = commit('pr work');
+  git(repo, 'checkout', '-q', trunk);
+  write('a.md', 'one\ntrunk-edit\n');
+  commit('trunk edits a.md');
+  git(repo, 'merge', '-q', '--no-edit', 'pr');
+  const head = git(repo, 'rev-parse', 'HEAD');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  assert.deepStrictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'a.md', start: 2, end: 2 }), { selfFeeding: false, previousFixHead: null });
+});
+
+test('self-feeding ignores a configured blame ignore list', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-ignore-revs-');
+  write('a.md', 'a\n b\n');
+  const reviewed = commit('base');
+  write('a.md', 'a\n  b\n');
+  const head = commit('whitespace-only fix');
+  fs.writeFileSync(path.join(repo, 'ignore-revs'), `${head}\n`);
+  git(repo, 'config', 'blame.ignoreRevsFile', path.join(repo, 'ignore-revs'));
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  assert.strictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'a.md', start: 2, end: 2 }).selfFeeding, true);
+});
