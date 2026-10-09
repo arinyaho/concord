@@ -74,6 +74,7 @@ test('ticket-to-pr delegates by the kind of work, not by importance', () => {
     /excluding the responsible agent's reasoning/,
     /"Adjudicate and escalate" subsection of `review-until-lgtm`/,
     /when a PR review raised it, in a thread or in a review body; when local review raised it, the deep-capability agent rules on it/,
+    /A finding in a review body has no thread, so the reply that subsection posts on a thread goes instead to a PR comment that quotes the finding's URL, with the same disposition/,
   ]) {
     assert.match(section, pattern);
   }
@@ -357,6 +358,9 @@ test('ticket-to-pr ends a standalone session at the delivery boundary and hands 
     /50 tool calls/,
     /whichever comes first/,
     /ticket, the PR, the exact head and base, the delivery record, open follow-ups, decisions made, and what the next PR needs/,
+    /A handoff before delivery also records the active stage and the last completed stage, the gate evidence so far/,
+    /the exact next action, and states each field that does not exist yet, such as the PR or the delivery record, as absent/,
+    /finish the current stage step so no mutation is left half-done/,
     /never from the previous transcript/,
     /reads the current PR and ticket state again before acting/,
     /`initiative-to-prs`, its session handoff policy and checkpoints govern/,
@@ -381,5 +385,7 @@ test('initiative-to-prs delegation gates use the design-versus-apply rule, not i
   const routing = read(path.join(REPO, 'plugins/concord/skills/initiative-to-prs/references/model-routing.md'));
   assert.match(routing, /decides what something should be, the content or wording of a rule, contract, interface, schema, or architecture, is design work/);
   assert.match(routing, /Applying a decision already made stays with the active agent/);
+  assert.doesNotMatch(routing, /costly to reverse/);
+  assert.match(routing, /Escalation is a separate rule from the architecture decision gate/);
   assert.match(read(path.join(REPO, 'docs/design/delivery-disposition.md')), /no material ch/);
 });

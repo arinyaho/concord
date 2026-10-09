@@ -6,7 +6,7 @@ Choose a capability class for the work, then resolve an available model in the a
 |---|---|
 | Fast | Bounded extraction from a known source; no synthesis or product decision |
 | General | Orchestration, evidence reconciliation, settled implementation, routine independent review, and final mutations |
-| Deep | Design work, which decides what a rule, contract, interface, schema, or architecture should be, and implementation or review whose failure is costly to reverse |
+| Deep | Design work, which decides what a rule, contract, interface, schema, or architecture should be |
 
 Use a general model with medium effort for orchestration, high effort for readiness and review, and the effort needed to prove implementation red to green. Use a fast model only for narrow extraction. For Claude Code, request the current `haiku`, `sonnet`, or `opus` family alias when it matches the selected class; first check whether a newer available family better fits that class. For Codex and Copilot, select a callable model from the current catalog for the class and pass its actual ID only at invocation time. If the runtime cannot select models, inspect the active model and use it only for roles it can reliably perform.
 
@@ -26,7 +26,7 @@ Apply this gate throughout execution, including implementation and review. When 
 
 ## Escalation
 
-Use deep capability for implementation or independent review when work spans security, authorization, identity, cryptography, storage migration, or coordinated changes across repositories whose interfaces cannot be tested independently; also escalate after two failures of the same cause, an unstable discriminating red, or an implementer handing a task back as harder than its scope suggested. Mechanical cross-repository work with independent checks can remain general. Semantic reinterpretation during final mutations returns to the user and the architecture decision gate.
+Escalation is a separate rule from the architecture decision gate: in the cases below, implementation or review of a decision already made moves to deep capability, and that work stays implementation or review, never design work. Use deep capability for implementation or independent review when work spans security, authorization, identity, cryptography, storage migration, or coordinated changes across repositories whose interfaces cannot be tested independently; also escalate after two failures of the same cause, an unstable discriminating red, or an implementer handing a task back as harder than its scope suggested. Mechanical cross-repository work with independent checks can remain general. Semantic reinterpretation during final mutations returns to the user and the architecture decision gate.
 
 ## Delegation and evidence
 
