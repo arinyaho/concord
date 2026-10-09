@@ -376,6 +376,7 @@ test('ticket-to-pr ends a standalone session at the delivery boundary and hands 
     /ticket, the PR, the exact head and base, the delivery record, open follow-ups, decisions made, and what the next PR needs/,
     /A handoff before delivery also records the active stage and the last completed stage, the gate evidence so far/,
     /the exact next action, and states each field that does not exist yet, such as the PR or the delivery record, as absent/,
+    /the exact next action, and states each field that does not exist yet.*?`reviewerUnavailable` declaration when the task carries one/s,
     /finish the current stage step so no mutation is left half-done/,
     /never from the previous transcript/,
     /reads the current PR and ticket state again before acting/,
@@ -383,6 +384,7 @@ test('ticket-to-pr ends a standalone session at the delivery boundary and hands 
   ]) {
     assert.match(section, pattern);
   }
+  assert.match(read(path.join(REPO, 'docs/design/ticket-to-pr-session-handoff.md')), /`reviewerUnavailable` declaration when the task carries one/);
 });
 
 test('initiative-to-prs delegation gates use the design-versus-apply rule, not importance', () => {
