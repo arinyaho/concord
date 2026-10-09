@@ -114,7 +114,7 @@ In addition to every applicable template prompt, include only the following non-
 - The changed behavior
 - The checks actually run and their results
 - Compatibility, migration, security or other impacts that affect the review decision
-- One `Closes #n` line per issue the PR closes, because GitHub closes only the first issue of a list such as `Closes #1, #2`, and `Refs #n` or `Related: #n` for each related issue left open; this applies even when the template has its own issue prompt. After the merge, check that every issue meant to close is closed; for one still open, report which acceptance criterion is unmet or why the keyword did not apply, and leave the decision to close it to the user.
+- One `Closes #n` line per issue the PR closes, or `Closes OWNER/REPOSITORY#n` for an issue in another repository, because GitHub closes only the first issue of a list such as `Closes #1, #2`, and `Refs #n` or `Related: #n`, qualified the same way, for each related issue left open; this applies even when the template has its own issue prompt. After the merge, check that every issue meant to close is closed; for one still open, report which acceptance criterion is unmet or why the keyword did not apply, and leave the decision to close it to the user.
 
 Use terms already present in the code or existing documentation. Do not invent metaphors, personification or new labels. If an unavoidable specialist term is not already defined, define it once in plain language.
 
