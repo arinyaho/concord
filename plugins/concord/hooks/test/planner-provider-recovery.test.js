@@ -129,8 +129,56 @@ for (const cliCopy of ['core', 'codex']) {
   }
 }
 
+for (const cliCopy of ['core', 'codex', 'copilot']) {
+  test(`${cliCopy}: accepted transport recovery reviews a committed new HEAD with no prior-generation authority`, async (t) => {
+    const h = fixture({ cliCopy, replacementResult: { status: 1, stderr: 'rate_limit_error' } });
+    t.after(() => fs.rmSync(h.root, { recursive: true, force: true }));
+    await initialIncomplete(h);
+    await assert.rejects(h.resume(), /plan/);
+    await assert.rejects(h.resume(), /fix/);
+    assert.equal(h.ledger().execution.planRetry.state, 'accepted');
+    const prior = h.ledger();
+    const initiative = h.initiative();
+    fs.writeFileSync(path.join(h.options.repoRoot, 'a.txt'), 'fixed both defects\n');
+    execFileSync('git', ['commit', '-qam', 'legitimate fix'], { cwd: h.options.repoRoot });
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: h.options.repoRoot, encoding: 'utf8' }).trim();
+    assert.notEqual(head, prior.target.head_sha);
+    // These unused old-scope records must be discarded, never consumed as authority.
+    fs.writeFileSync(path.join(h.stateDir, 'round-1-plan.repair.json'), '{}');
+    fs.writeFileSync(path.join(h.stateDir, 'round-1-correctness.repair.json'), '{}');
+    fs.unlinkSync(path.join(h.stateDir, 'round-1-plan.json'));
+    const result = h.runCli(h.calls.findLast((args) => args[0] === 'round-start'));
+    assert.equal(result.decision, 'work');
+    assert.equal(result.head, head);
+    assert.deepEqual(result.completedArtifacts, []);
+    assert.deepEqual(result.normalizedArtifacts, []);
+    assert.deepEqual(result.repairArtifacts, {});
+    const current = h.ledger();
+    assert.equal(current.execution.planRetry, null);
+    assert.equal(current.execution.planTransportRetry, null);
+    assert.equal(current.execution.normalizedPlan, null);
+    assert.equal(current.execution.planRepairPending, false);
+    assert.deepEqual(current.execution.artifactHashes, {});
+    assert.deepEqual(current.budget, prior.budget);
+    assert.deepEqual(current.initiative_reserved, prior.initiative_reserved);
+    assert.deepEqual(current.initiative_launched, prior.initiative_launched);
+    assert.deepEqual(h.initiative(), initiative);
+    for (const role of ['correctness', 'verify', 'plan']) {
+      assert.equal(fs.existsSync(path.join(h.stateDir, `round-1-${role}.json`)), false);
+      assert.equal(fs.existsSync(path.join(h.stateDir, `round-1-${role}.repair.json`)), false);
+    }
+    await assert.rejects(h.resume(), /fix/);
+    assert.deepEqual(h.launches.slice(6), ['correctness', 'verify', 'plan', 'fix']);
+    const after = h.initiative();
+    assert.deepEqual(after.launches.slice(0, initiative.launches.length), initiative.launches);
+    assert.deepEqual(after.dispositions.slice(0, initiative.dispositions.length), initiative.dispositions);
+    assert.equal(after.launches.length, initiative.launches.length + 4);
+    assert.equal(after.rounds.length, initiative.rounds.length);
+  });
+}
+
 for (const [cliCopy, corruption] of ['core', 'codex', 'copilot'].flatMap((copy) =>
-  ['changed', 'deleted', 'repair', 'manifest', 'reviewer'].map((kind) => [copy, kind]))) {
+  ['changed', 'deleted', 'repair', 'manifest', 'diff', 'reviewer'].map((kind) => [copy, kind]))) {
   test(`${cliCopy}: ${corruption} accepted transport plan refuses resume durably without launching`, async (t) => {
     const h = fixture({ cliCopy, replacementResult: { status: 1, stderr: 'rate_limit_error' } });
     t.after(() => fs.rmSync(h.root, { recursive: true, force: true }));
@@ -145,6 +193,7 @@ for (const [cliCopy, corruption] of ['core', 'codex', 'copilot'].flatMap((copy) 
     else if (corruption === 'deleted') fs.unlinkSync(planFile);
     else if (corruption === 'repair') fs.writeFileSync(path.join(h.stateDir, 'round-1-plan.repair.json'), '{}');
     else if (corruption === 'manifest') fs.appendFileSync(path.join(h.stateDir, 'round-1-changes.json'), '\n');
+    else if (corruption === 'diff') fs.appendFileSync(path.join(h.stateDir, 'round-1-diff.txt'), '\n');
     else fs.appendFileSync(path.join(h.stateDir, 'round-1-correctness.json'), '\n');
     const before = sealed(h);
     let error;
@@ -172,6 +221,39 @@ for (const [cliCopy, corruption] of ['core', 'codex', 'copilot'].flatMap((copy) 
     assert.deepEqual(h.initiative().launches, history);
     assert.equal(h.launches.length, 6);
   });
+}
+
+for (const cliCopy of ['core', 'codex', 'copilot']) {
+  for (const accepted of [false, true]) {
+    for (const corruption of accepted ? ['manifest', 'diff'] : ['scope']) {
+      test(`${cliCopy}: ${accepted ? 'accepted' : 'pending'} transport recovery refuses ${corruption} at a new HEAD durably`, async (t) => {
+        const h = fixture({ cliCopy, replacementResult: { status: 1, stderr: 'rate_limit_error' } });
+        t.after(() => fs.rmSync(h.root, { recursive: true, force: true }));
+        await initialIncomplete(h);
+        await assert.rejects(h.resume(), /plan/);
+        if (accepted) await assert.rejects(h.resume(), /fix/);
+        const initiative = h.initiative();
+        const launches = [...h.launches];
+        fs.writeFileSync(path.join(h.options.repoRoot, 'a.txt'), 'fixed both defects\n');
+        execFileSync('git', ['commit', '-qam', 'legitimate fix'], { cwd: h.options.repoRoot });
+        if (corruption !== 'scope') fs.appendFileSync(path.join(h.stateDir, `round-1-${corruption === 'manifest' ? 'changes.json' : 'diff.txt'}`), '\n');
+        let refusal;
+        await assert.rejects(h.resume(), (error) => { refusal = error; return /reconcile the existing evidence/.test(error.message); });
+        assert.equal(refusal.continuationPacket.nextAction, 'terminal-handoff');
+        const execution = h.ledger().execution;
+        assert.equal(execution.planRetry.state, 'exhausted');
+        assert.equal(execution.planTransportRetry.state, 'exhausted');
+        assert.equal(execution.failure.kind, 'evidence-failure');
+        assert.equal(execution.failure.nextAction, 'terminal-handoff');
+        assert.equal(execution.normalizedPlan, null);
+        assert.equal(execution.planRepairPending, false);
+        assert.equal(execution.completed.includes('plan'), false);
+        assert.deepEqual(h.launches, launches);
+        assert.deepEqual(h.initiative().launches, initiative.launches);
+        assert.deepEqual(h.initiative().dispositions.slice(0, initiative.dispositions.length), initiative.dispositions);
+      });
+    }
+  }
 }
 
 test('nonzero replacement retains safe provider diagnostics and agrees with terminal continuation', async (t) => {

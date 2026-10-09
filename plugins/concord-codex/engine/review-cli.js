@@ -1925,7 +1925,9 @@ function runVerb(resolveFromCwd, args, initiative) {
         && JSON.stringify(priorManifest.paths) === JSON.stringify(snapshot.paths));
       const preserveArtifacts = ledger.execution && ledger.execution.round === resumeRound && ledger.execution.diffHash === diffHash
         && preserveScope;
-      if (transportRecovery && !preserveArtifacts) stopTransportRecovery('planner transport recovery scope changed; reconcile the existing evidence before continuing');
+      // Acceptance ends unchanged-scope transport recovery. Retain its history
+      // for evidence refusals, but let a committed fix invalidate the old generation.
+      if (transportRecovery && ledger.execution.planRetry?.state !== 'accepted' && !preserveArtifacts) stopTransportRecovery('planner transport recovery scope changed; reconcile the existing evidence before continuing');
       if (preserveArtifacts && ledger.execution.planRetry?.state === 'exhausted') throw new Error(`harness-failure: ${ledger.execution.planRetry.message}`);
       const completed = preserveArtifacts
         ? (ledger.execution.completed || []).filter((role) => ['correctness', 'verify', 'plan', 'intent', 'gate', 'gate-verify'].includes(role))
