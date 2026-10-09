@@ -47,7 +47,7 @@ Stages 1, 3 and 5 have no single owner here — use whatever the repository alre
 
 A change is stateful when it writes, reads or branches on data that outlives one run or process, such as a ledger, cache, git ref, or tracker or PR field, or when it adds or alters a retry, recovery or replay path. Input the caller supplies each time is not state. Any other change says in one line that it is not stateful.
 
-A stateful change carries a transition table in its design note: one row per state and event the change can affect, with the columns outcome, kind and evidence. The outcome names the resulting state and every external effect, including what stays unchanged. The kind is introduced, changed or unchanged against the base revision. Events include the first occurrence, a repeat or replay, two operations interleaved on the same state, and a state value or operation the change removes. Combinations an invariant rules out go in one line under the table naming the invariant, not in rows.
+A stateful change carries a transition table in its design note: one row per state and event the change can affect, with the columns outcome, kind and evidence. The outcome names the resulting state and every external effect, including what stays unchanged. The kind is introduced, changed or unchanged against the base revision. Events include the first occurrence, a repeat or replay, two operations interleaved on the same state, an interruption between two durable writes and the restart that recovers from it, and a state value or operation the change removes. Combinations an invariant rules out go in one line under the table naming the invariant, not in rows.
 
 | State | Event | Outcome | Kind | Evidence |
 |---|---|---|---|---|
@@ -56,7 +56,7 @@ A stateful change carries a transition table in its design note: one row per sta
 | pending | two approvals both read pending | one wins; the other is rejected; notifier called once | introduced | `concurrent_approve_single_winner` |
 | legacy `queued` record | any read | rejected with a migration error | introduced | `queued_record_rejected` |
 
-Stage 6 fills the evidence column; a row's evidence asserts its whole outcome, not only the response. An introduced or changed row has a test that fails before the change for the right reason and passes after it, or, when no test can exercise it, such as a crash between two durable writes, a recorded reason and the check that stands in. An unchanged row cites an existing test that passes after the change or says "untested, because" with the reason. A state or event found missing at any later stage, including PR review, is added to the table in the same PR with its evidence.
+Stage 6 fills the evidence column; a row's evidence asserts its whole outcome, not only the response. An introduced or changed row has a test that fails before the change for the right reason and passes after it, or, when no test can exercise it, such as a crash between two durable writes, a recorded reason and a stand-in check held to the same fail-before, pass-after bar. An unchanged row cites an existing test that passes after the change or says "untested, because" with the reason. A state or event found missing at any later stage, including PR review, is added to the table in the same PR with its evidence.
 
 ## Delegation
 
