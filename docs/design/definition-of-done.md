@@ -4,7 +4,7 @@ The repository's definition of done is the `dod` command list in `review.config.
 
 ## Decision
 
-The DoD is a single command, `node scripts/dod.mjs`. It runs only what the pull-request workflow does not: the plugin-install e2e tests. The pull-request workflow (`.github/workflows/pull-request.yml`) runs every other test, the plugin tests and the `services/agent-team` tests, so repeating them locally spends minutes on results CI produces anyway. The full suite is CI's gate; the DoD is the local gate for the one thing CI cannot check.
+The DoD is a single command, `node scripts/dod.mjs`. It runs only what the pull-request workflow does not: the plugin-install e2e tests. The pull-request workflow (`.github/workflows/pull-request.yml`) runs every other test, the plugin tests and the `services/agent-team` tests, so repeating them locally spends minutes on results CI produces anyway. The full suite is CI's gate; the DoD is the local gate for the one thing CI cannot check. `ticket-to-pr` runs the full suite once on the final PR head, outside the DoD; `scripts/dod.mjs` still runs only the e2e tests.
 
 The script does two things:
 

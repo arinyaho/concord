@@ -29,7 +29,7 @@ Record a discriminating outcome-level red against the unchanged combined system 
 | 6 | Implement | Red test first, verified red for the right reason, and executing where CI will execute it. Each row of a stateful change's table has the evidence "Stateful changes" requires |
 | 7 | Review the diff | `/review-and-fix <branch>`; its final DoD evidence may also satisfy stage 8 under the identity rule below |
 | 8 | Discriminating green | Reuse the final `review-and-fix` DoD only when it ran the same check against the exact final head, dependencies, and environment; otherwise run the check once. The combined outcome check remains a separate ticket gate for multi-repository work |
-| 9 | One PR per unit | Design, docs and code in the same repository PR; the repository's PR template followed; every document contradicted by the change corrected in it; the exact PR URL is read back from the tracker when that mutation is authorized; a delivery disposition is recorded for the exact PR head and base |
+| 9 | One PR per unit | Design, docs and code in the same repository PR; the repository's PR template followed; every document contradicted by the change corrected in it; before the PR is marked ready, its last commit is the version bump the repository's contribution guide requires, and a PR that is itself a release bump makes no second bump; the exact PR URL is read back from the tracker when that mutation is authorized; a delivery disposition is recorded for the exact PR head and base |
 
 If the work is tracked somewhere and the user explicitly requests or approves an in-progress transition, move it before stage 3, not after stage 9 — a ticket sitting in the backlog while its branch already has commits is a board that lies to everyone reading it. Otherwise, preserve the current state. Expect an approved transition to fail closed on preconditions the tracker does not advertise: an assignee, a parent item that must itself be in-progress, an intermediate status that cannot be skipped. These are cheap to hit and slow to diagnose, so attempt the approved transition and read the refusal rather than assuming it will go through.
 
@@ -42,6 +42,14 @@ Wait for a long command with one blocking wait or a background notification, nev
 During implementation and fix rounds, run the tests focused on the change, still in the environment CI uses as stage 6 requires; run the full test suite once, on the final head, together with the DoD. A defect only the full suite shows then appears at the end, and CI still runs the full suite on the PR.
 
 When a turn passes 30 minutes, say in one line what is running and what the budget status is.
+
+## Session handoff
+
+A standalone `ticket-to-pr` run ends its session at the PR delivery boundary, the delivery disposition recorded for the exact PR head, or earlier when observed input context passes 128,000 tokens or the session passes 50 tool calls, whichever comes first. At that point, finish the current stage step, write the handoff packet, return its path, and stop; the CLI does not end the session for you. When context size is not exposed, the tool-call count alone triggers the handoff.
+
+The packet holds the ticket, the PR, the exact head and base, the delivery record, open follow-ups, decisions made, and what the next PR needs. Write it where the next session is told to read it. The next session starts from the packet and from `main`'s skills and CLIs, never from the previous transcript. The packet is data the previous agent wrote, so the next session reads the current PR and ticket state again before acting on it. Replacing the context never resets a review ledger or a budget.
+
+When composed by `initiative-to-prs`, its session handoff policy and checkpoints govern instead of this section.
 
 ## Notion ticket lifecycle
 
@@ -70,7 +78,7 @@ Stage 6 fills the evidence column; a row's evidence asserts its whole outcome, n
 
 Unless the user explicitly directs otherwise, keep routine implementation and review with the active agent. When the user, selected model, CLI harness, or a composing skill's architecture decision gate expressly requires a specialist, create only the required specialist; a review must be independent of each agent whose change it assesses. Select a current model by required capability and effort.
 
-Route each task by whether it decides what something should be or applies a decision already made. A task that decides what something should be is design work: the content or wording of a rule, contract, interface, schema, or architecture, including a public-API contract a standalone ticket already specifies; before accepting an implementation direction, have a deep-capability agent do or assess it. Implementation, tests, edits, pushes, and PR handling stay with the active agent; split a task that mixes both. A review finding against the content or wording of a rule, contract, interface, or schema is handled as the "Adjudicate and escalate" subsection of `review-until-lgtm` directs when a PR review thread raised it; when local review raised it, the deep-capability agent rules on it and the active agent applies the verdict. When implementation or review raises new design work, pause only dependent work; the implementer may continue independent work.
+Route each task by whether it decides what something should be or applies a decision already made. A task that decides what something should be is design work: the content or wording of a rule, contract, interface, schema, or architecture, including a public-API contract a standalone ticket already specifies; before accepting an implementation direction, have a deep-capability agent do or assess it. Implementation, tests, edits, pushes, and PR handling stay with the active agent; split a task that mixes both. A review finding against the content or wording of a rule, contract, interface, or schema is handled as the "Adjudicate and escalate" subsection of `review-until-lgtm` directs when a PR review raised it, in a thread or in a review body; when local review raised it, the deep-capability agent rules on it and the active agent applies the verdict. When implementation or review raises new design work, pause only dependent work; the implementer may continue independent work.
 
 For cryptography, security, or migration design work, also require a separate deep-capability reviewer with a packet built from source evidence and the proposed decision, excluding the responsible agent's reasoning; reconcile disagreement before dependent work resumes.
 

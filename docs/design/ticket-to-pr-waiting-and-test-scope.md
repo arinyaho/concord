@@ -1,6 +1,6 @@
 # Waiting and test scope in ticket-to-pr
 
-A model that waits by calling `sleep` repeatedly pays for a full request on every call, and a model that runs the whole test suite after every fix pays for the suite each time. The "Waiting and test scope" section of the `ticket-to-pr` skill, the waiting steps of `review-until-lgtm` and the review driver therefore ask for one wait per long operation and one full run per PR head. The skill text is the authoritative statement; this note explains why it has that shape.
+A model that waits by calling `sleep` repeatedly pays for a full request on every call, and a model that runs the whole test suite after every fix pays for the suite each time. The "Waiting and test scope" section of the `ticket-to-pr` skill, the waiting steps of `review-until-lgtm` and the review driver therefore ask for one wait per long operation and one full run on the final PR head. The skill text is the authoritative statement; this note explains why it has that shape.
 
 ## Decision
 

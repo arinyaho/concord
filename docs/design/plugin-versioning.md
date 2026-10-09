@@ -22,6 +22,14 @@ The three plugin manifests and the GitHub Copilot marketplace still contain requ
 
 The script is idempotent: running it with the already-current version produces no file-content changes.
 
+## Per-PR bump
+
+Every PR, including a docs-only or test-only PR, ends with the commit `chore(release): bump Concord to <next>`, produced only by `node scripts/release-version.mjs <next>`. `<next>` is `main`'s `VERSION` at merge time plus one prerelease increment, for example `0.9.0-beta.8` to `0.9.0-beta.9`. When `main`'s `VERSION` changes after the branch was cut, the author rebases and runs the script again. A PR that is itself a release bump needs no second bump. Each merged change therefore ships under its own version, and an installed plugin's version identifies the change it contains.
+
+`plugins/concord/hooks/test/version-bump.test.js` enforces the rule. The pull-request workflow supplies the base branch's `VERSION` in `CONCORD_BASE_VERSION`; the test fails when the PR's `VERSION` equals it and passes when the PR's `VERSION` is higher, which includes a release-bump PR. Without `CONCORD_BASE_VERSION`, as in a local run, the test is skipped.
+
+The rule costs one extra commit per PR. When parallel PRs conflict on `VERSION` and the manifests, the later one costs a rebase and one more script run.
+
 ## Guardrail and tests
 
 A Node test reads `VERSION`, all three manifests, and both Copilot marketplace version fields, then asserts the six values are identical. The test uses the actual repository files, so a partial manual update fails the normal test suite.

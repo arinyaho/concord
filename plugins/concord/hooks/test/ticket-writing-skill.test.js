@@ -73,7 +73,7 @@ test('ticket-to-pr delegates by the kind of work, not by importance', () => {
     /separate deep-capability reviewer/,
     /excluding the responsible agent's reasoning/,
     /"Adjudicate and escalate" subsection of `review-until-lgtm`/,
-    /when a PR review thread raised it; when local review raised it, the deep-capability agent rules on it/,
+    /when a PR review raised it, in a thread or in a review body; when local review raised it, the deep-capability agent rules on it/,
   ]) {
     assert.match(section, pattern);
   }
@@ -343,4 +343,53 @@ test('maintained package metadata and docs advertise the shared capability set',
   assert.doesNotMatch(adapter, /Status: \*\*partially implemented/i);
   assert.doesNotMatch(adapter, /lifecycle.*not implemented|transcript.*not implemented/i);
   assert.doesNotMatch(gaps, /Deferred: `lifecycle` and `transcript`/i);
+});
+
+test('ticket-to-pr ends a standalone session at the delivery boundary and hands off a packet', () => {
+  const skill = read(CLAUDE_TICKET_TO_PR);
+  assert.equal(read(CODEX_TICKET_TO_PR), skill);
+  assert.equal(read(path.join(REPO, 'plugins/concord-copilot/skills/ticket-to-pr/SKILL.md')), skill);
+  const section = skill.split('## Session handoff\n')[1]?.split('\n## ')[0] ?? '';
+  assert.ok(section, 'missing "Session handoff" section');
+  for (const pattern of [
+    /delivery disposition recorded for the exact PR head/,
+    /128,000 tokens/,
+    /50 tool calls/,
+    /whichever comes first/,
+    /ticket, the PR, the exact head and base, the delivery record, open follow-ups, decisions made, and what the next PR needs/,
+    /never from the previous transcript/,
+    /reads the current PR and ticket state again before acting/,
+    /`initiative-to-prs`, its session handoff policy and checkpoints govern/,
+  ]) {
+    assert.match(section, pattern);
+  }
+});
+
+test('ticket-to-pr stage 9 requires the version bump as the last commit', () => {
+  const skill = read(CLAUDE_TICKET_TO_PR);
+  const row = skill.split('\n').find((line) => line.startsWith('| 9 |')) ?? '';
+  assert.match(row, /its last commit is the version bump/);
+  assert.match(row, /a PR that is itself a release bump makes no second bump/);
+  const contributing = read(path.join(REPO, 'CONTRIBUTING.md'));
+  assert.match(contributing, /chore\(release\): bump Concord to <next>/);
+  assert.match(contributing, /node scripts\/release-version\.mjs <next>/);
+});
+
+test('initiative-to-prs delegation gates use the design-versus-apply rule, not importance', () => {
+  for (const file of [
+    'plugins/concord/skills/initiative-to-prs/references/model-routing.md',
+    'plugins/concord/skills/initiative-to-prs/references/stages.md',
+    'plugins/concord-copilot/overrides/initiative-model-routing.md',
+    'docs/design/initiative-delivery-modes.md',
+  ]) {
+    const text = read(path.join(REPO, file));
+    const gate = file.endsWith('stages.md') ? text.split('## 3. Execute each repository unit\n')[1].split('\n## ')[0] : text;
+    const withoutCheckpointMeaning = gate.replace(/[Mm]aterial decisions/g, '');
+    assert.doesNotMatch(withoutCheckpointMeaning, /\bmaterial\b/i, file);
+    if (!file.endsWith('stages.md')) assert.match(text, /decides what/, file);
+  }
+  const routing = read(path.join(REPO, 'plugins/concord/skills/initiative-to-prs/references/model-routing.md'));
+  assert.match(routing, /decides what something should be, the content or wording of a rule, contract, interface, schema, or architecture, is design work/);
+  assert.match(routing, /Applying a decision already made stays with the active agent/);
+  assert.match(read(path.join(REPO, 'docs/design/delivery-disposition.md')), /no material ch/);
 });
