@@ -670,7 +670,7 @@ function recordDelivery(input) {
 // wrote any line in [start, end] of `file` as it stands at `headSha`. Uses only the path and line numbers, never the review text.
 function selfFeeding({ repoRoot, stateDir, pr, headSha, file, start, end }) {
   const key = validate({ pr, headSha });
-  if (typeof file !== 'string' || !file || file.includes('\0') || path.isAbsolute(file) || file.split(/[\\/]/).includes('..')) throw new Error('review-lgtm-state: file must be a relative path inside the repository');
+  if (typeof file !== 'string' || !file || file.includes('\0') || path.isAbsolute(file) || file.split(path.sep === '\\' ? /[\\/]/ : '/').includes('..')) throw new Error('review-lgtm-state: file must be a relative path inside the repository');
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start) throw new Error('review-lgtm-state: line range must be positive integers with start <= end');
   let names;
   try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') names = []; else throw error; }
@@ -699,7 +699,7 @@ function selfFeeding({ repoRoot, stateDir, pr, headSha, file, start, end }) {
   // ignore lists are switched off so line numbers and attribution are those of the file at the head. git fails for a file missing at the head or a range starting past its end;
   // a range ending past the end is clamped by git to the last line.
   const fixCommits = new Set(run(['rev-list', '--first-parent', `${previous.headSha}..${key.headSha}`]).split('\n').filter(Boolean));
-  const blamed = run(['blame', '-C', '--no-textconv', '--no-ignore-revs-file', '--porcelain', '-L', `${start},${end}`, key.headSha, '--', file]).split('\n')
+  const blamed = run(['blame', '-C', '-C', '--no-textconv', '--no-ignore-revs-file', '--porcelain', '-L', `${start},${end}`, key.headSha, '--', file]).split('\n')
     .map((line) => /^([0-9a-f]{40}|[0-9a-f]{64}) \d+ \d+/.exec(line)).filter(Boolean).map((match) => match[1]);
   return { selfFeeding: blamed.some((sha) => fixCommits.has(sha)), previousFixHead: previous.headSha };
 }

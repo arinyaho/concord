@@ -1094,3 +1094,30 @@ test('self-feeding keeps the inherited lines of a renamed and heavily rewritten 
   assert.strictEqual(check(80), false);
   assert.strictEqual(check(10), true);
 });
+
+test('self-feeding keeps the original attribution of lines copied from a file the fix did not modify', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-copy-unchanged-');
+  const line = (i) => `export function handleRequest${i}(request, response) { return respond(request.body, ${i}); }`;
+  const source = Array.from({ length: 20 }, (_, i) => line(i)).join('\n');
+  write('source.js', `${source}\n`);
+  const reviewed = commit('base');
+  write('copy.js', `${source}\nfresh line written by the fix, long enough to stay unique in the file\n`);
+  const head = commit('fix copies source.js into copy.js without touching it');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  const check = (start) => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'copy.js', start, end: start }).selfFeeding;
+  assert.strictEqual(check(5), false);
+  assert.strictEqual(check(21), true);
+});
+
+test('self-feeding accepts a tracked path whose name contains a backslash', { skip: process.platform === 'win32' }, () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-backslash-');
+  const name = 'foo\\..\\bar.md';
+  write(name, '1\n');
+  const reviewed = commit('base');
+  write(name, '1\n2\n');
+  const head = commit('fix');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  assert.strictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: name, start: 2, end: 2 }).selfFeeding, true);
+});
