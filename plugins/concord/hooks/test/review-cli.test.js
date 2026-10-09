@@ -5176,6 +5176,26 @@ test('record: a reopened finding sent to the fixer is parked without a fresh jou
   assert.strictEqual(recorded.status, 'parked');
 });
 
+test('plan-fixes: an unparked reopened finding with only pre-floor journal evidence reaches the fixer, not resolved_absent', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/reopened-unparked';
+  const slug = review.targetSlug(ref);
+  const finding = { id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'span absent from the file', summary: 'x' };
+  let ledger = review.emptyLedger({ kind: 'local', ref });
+  // State after park + unpark: the seen entry is gone (so the finding is no longer `reopened`), the floor from the reopened round stays.
+  ledger.findings = [{ id: finding.id, status: 'open', park_reason: null }];
+  ledger.seen = [];
+  ledger.journal = [{ id: finding.id, sha: 'earlier-fix' }];
+  ledger.journal_floor = { [finding.id]: { at: 1, round: 1 } };
+  review.writeLedger(dir, slug, ledger);
+  const { env } = seedGatesRound(repo, dir, ref,
+    { status: 'ok', examined: ['a.txt'], findings: [finding] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', ref], { env });
+  const planned = review.readLedger(dir, slug);
+  assert.deepStrictEqual(planned.resolved_absent, []);
+  assert.deepStrictEqual(planned.planned, [finding.id]);
+});
+
 test('plan-fixes: replanning a round keeps the journal floor, so the interrupted attempt\'s own commit still counts', () => {
   const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/reopened-resume';
   const slug = review.targetSlug(ref);
