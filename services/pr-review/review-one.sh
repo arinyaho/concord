@@ -47,7 +47,8 @@ if [[ ! "$ATTEMPT_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89a
 fi
 ATTEMPT_ID="${ATTEMPT_ID,,}"
 # git itself does not read GH_TOKEN. The clone and fetches below get the GitHub
-# credential helper through the environment of those commands only, so a
+# credential helper through the environment of those commands only, checkout
+# included because a smudge filter such as Git LFS downloads with it, so a
 # persistent runner account's Git configuration is never written.
 git_auth() {
   GIT_CONFIG_COUNT=2 \
@@ -153,7 +154,7 @@ rid=$(gh api -X POST "repos/$REPO/issues/$PR/reactions" -f content=eyes --jq .id
 git_auth gh repo clone "$REPO" "$work" -- --quiet
 git_auth git -C "$work" fetch --quiet origin "pull/$PR/head"
 # Review exactly the dispatched commit, even if the branch moved since.
-git -C "$work" checkout -q -B "concord-pr-$PR" "$SHA"
+git_auth git -C "$work" checkout -q -B "concord-pr-$PR" "$SHA"
 git_auth git -C "$work" fetch --quiet origin "$BASE_TIP"
 BASE=$(git -C "$work" merge-base "$BASE_TIP" HEAD)
 [ "$BASE" = "$REVIEW_BASE" ] || { echo "local merge base differs from review snapshot" >&2; exit 1; }

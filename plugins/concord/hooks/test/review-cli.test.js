@@ -1306,6 +1306,27 @@ test('plan-fixes: a finding reopened after being marked fixed is not silently dr
   assert.deepStrictEqual(l.planned, ['correctness:real']);
 });
 
+test('plan-fixes: a reopened finding is never resolved as a replay of its earlier journaled fix', () => {
+  for (const kind of ['span-removed', 'file-deleted']) {
+    const repo = initRepo(); const dir = tmpDir(); const ref = `feat/reopened-${kind}`;
+    const slug = review.targetSlug(ref);
+    const finding = { id: 'correctness:real', gate: 'correctness', file: kind === 'file-deleted' ? 'gone.txt' : 'a.txt', span: 'recurred span', summary: 'x' };
+    // A later round brought the problem back: the id is 'fixed' in the ledger and seen,
+    // the old fix is still journaled, and the evidence now is a missing span or file.
+    let ledger = review.emptyLedger({ kind: 'local', ref });
+    ledger.findings = [{ id: finding.id, status: 'fixed' }];
+    ledger.seen = [{ id: finding.id, status: 'fixed', hash: review.seenHash(finding) }];
+    ledger.journal = [{ id: finding.id, sha: 'earlier-fix' }];
+    review.writeLedger(dir, slug, ledger);
+    const { env } = seedGatesRound(repo, dir, ref,
+      { status: 'ok', examined: ['a.txt'], findings: [finding] },
+      { status: 'ok', rejected: [] });
+    const out = JSON.parse(run(['plan-fixes', ref], { env }));
+    assert.deepStrictEqual(out.fixes.map((f) => f.id), ['correctness:real'], kind);
+    assert.deepStrictEqual(review.readLedger(dir, slug).resolved_absent, [], kind);
+  }
+});
+
 test('plan-fixes: a missing correctness artifact is a harness-failure (never clean)', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };

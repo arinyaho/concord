@@ -227,11 +227,19 @@ const INVENTORY_MAX_ENTRIES = 250000;
 const INVENTORY_MAX_BYTES = 4 * 1024 * 1024 * 1024;
 const INVENTORY_BOUND_ERROR = 'harness-failure: tracked checkout exceeds the review-only inventory bound';
 const UNINITIALIZED_SUBMODULE_NAMES = 1000;
+// 250,000 entries of at most 4096-byte paths with their mode and object id.
+const INVENTORY_LISTING_BYTES = 1100 * 1024 * 1024;
+
+// True when a path.relative() result names a place outside its base, including
+// another Windows volume, where the result is absolute.
+function pathLeavesRoot(relative, pathModule = path) {
+  return relative === '..' || relative.startsWith(`..${pathModule.sep}`) || pathModule.isAbsolute(relative);
+}
 
 function trackedCheckoutInventory(repoRoot, commitSha, budget = { entries: 0, bytes: 0 }, prefix = '') {
   const realRepo = fs.realpathSync(repoRoot);
   const label = 'Git tracked-path inventory';
-  const raw = sh('git', ['ls-tree', '-r', '-z', '--full-tree', commitSha], { cwd: repoRoot, encoding: null });
+  const raw = sh('git', ['ls-tree', '-r', '-z', '--full-tree', commitSha], { cwd: repoRoot, encoding: null, maxBuffer: INVENTORY_LISTING_BYTES });
   const inventory = new Map();
   const parents = new Map();
   const parentOf = (abs) => {
@@ -239,7 +247,7 @@ function trackedCheckoutInventory(repoRoot, commitSha, budget = { entries: 0, by
     if (!parents.has(dir)) {
       let real = null;
       try { real = fs.realpathSync(dir); } catch (e) { if (e.code !== 'ENOENT' && e.code !== 'ENOTDIR') throw e; }
-      if (real !== null && path.relative(realRepo, real).split(path.sep)[0] === '..') throw new Error(`harness-failure: tracked path parent leaves the checkout: ${dir}`);
+      if (real !== null && pathLeavesRoot(path.relative(realRepo, real))) throw new Error(`harness-failure: tracked path parent leaves the checkout: ${dir}`);
       parents.set(dir, real === null ? null : { rel: path.relative(realRepo, real), root: captureArtifactRoot(dir) });
     }
     return parents.get(dir);
@@ -291,4 +299,4 @@ function changedTrackedPath(before, after) {
   return null;
 }
 
-module.exports = { acquireTarget, gitTarget, fileTarget, gitDiff, gitReviewSnapshot, gitHeadSha, gitDirty, trackedCheckoutInventory, changedTrackedPath };
+module.exports = { acquireTarget, gitTarget, fileTarget, gitDiff, gitReviewSnapshot, gitHeadSha, gitDirty, trackedCheckoutInventory, changedTrackedPath, pathLeavesRoot };

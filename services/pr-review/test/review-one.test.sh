@@ -180,6 +180,14 @@ check "the clone still authenticates through the GitHub credential helper" 'grep
 RUN_HOME="$helper_home" run helper-failure '{"decision":"review-only","round":1,"findings":[{"id":"correctness:x","category":"correctness","file":"a.txt","line":1,"span":"change","summary":"token is model-token-secret","requirement":""}]}'
 check "a failed review leaves the runner's Git configuration unchanged" 'cmp -s "$work/helper-gitconfig.before" "$helper_home/.gitconfig"'
 
+# The checkout of the pull request commit can run a smudge filter (Git LFS) that downloads with the same credentials.
+smudge_home="$work/smudge-home"; mkdir -p "$smudge_home"
+printf 'a.txt filter=probe\n' > "$smudge_home/attributes"
+printf '#!/bin/sh\ngit config --get-all credential.https://github.com.helper >> "$SMUDGE_LOG"\ncat\n' > "$smudge_home/smudge.sh"; chmod +x "$smudge_home/smudge.sh"
+printf '[core]\n\tattributesFile = %s/attributes\n[filter "probe"]\n\tsmudge = %s/smudge.sh\n' "$smudge_home" "$smudge_home" > "$smudge_home/.gitconfig"
+SMUDGE_LOG="$work/smudge.log" RUN_HOME="$smudge_home" run smudge '{"decision":"review-only","round":1,"findings":[]}'
+check "the checkout filter sees the GitHub credential helper" 'grep -qx "!gh auth git-credential" "$work/smudge.log"'
+
 ATTEMPT_ID_OVERRIDE=invalid run bad-attempt '{"decision":"review-only","round":1,"findings":[]}'
 check "an invalid attempt is rejected before GitHub or model work" '[ -s "$LOG.exit" ] && [ ! -e "$LOG.review" ] && [ ! -e "$LOG.args" ]'
 ATTEMPT_ID_OVERRIDE='' run direct-attempt '{"decision":"review-only","round":1,"findings":[]}'

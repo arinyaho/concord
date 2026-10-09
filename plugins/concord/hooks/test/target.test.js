@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { acquireTarget, fileTarget, gitDirty, trackedCheckoutInventory, changedTrackedPath } = require('../../core/target');
+const { acquireTarget, fileTarget, gitDirty, trackedCheckoutInventory, changedTrackedPath, pathLeavesRoot } = require('../../core/target');
 
 test('acquireTarget ignores only its own untracked review lock, keeping other dirty files visible', (t) => {
   const { dir } = makeGitRepo();
@@ -249,4 +249,25 @@ test('tracked inventory: files dropped into an uninitialized submodule directory
   fs.rmSync(path.join(dir, 'sub'), { recursive: true, force: true });
   fs.mkdirSync(path.join(dir, 'sub'));
   assert.strictEqual(changeAfter(dir, () => fs.writeFileSync(path.join(dir, 'sub', 'dropped.txt'), 'x\n')), 'sub');
+});
+
+test('tracked inventory: a tree listing larger than the default command buffer is read in full', (t) => {
+  const dir = inventoryRepo(t);
+  const blob = git(dir, 'rev-parse', 'HEAD:a.txt').trim();
+  const prefix = 'x'.repeat(70);
+  const lines = [];
+  for (let i = 0; i < 160000; i++) lines.push(`100644 ${blob}\t${prefix}${String(i).padStart(9, '0')}`);
+  execFileSync('git', ['update-index', '--index-info'], { cwd: dir, input: lines.join('\n') + '\n', maxBuffer: 1 << 28 });
+  const tree = git(dir, 'write-tree').trim();
+  const commit = git(dir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit-tree', '-m', 'many', tree).trim();
+  const listing = execFileSync('git', ['ls-tree', '-r', '-z', '--full-tree', commit], { cwd: dir, maxBuffer: 1 << 28 }).length;
+  assert.ok(listing > 20 * 1024 * 1024, `fixture listing is ${listing} bytes`);
+  assert.strictEqual(trackedCheckoutInventory(dir, commit).size, 160001);
+});
+
+test('tracked inventory: a parent on another Windows volume leaves the checkout', () => {
+  assert.strictEqual(pathLeavesRoot(path.win32.relative('C:\\repo', 'D:\\outside'), path.win32), true);
+  assert.strictEqual(pathLeavesRoot(path.win32.relative('C:\\repo', 'C:\\outside'), path.win32), true);
+  assert.strictEqual(pathLeavesRoot(path.win32.relative('C:\\repo', 'C:\\repo\\sub'), path.win32), false);
+  assert.strictEqual(pathLeavesRoot('..hidden'), false);
 });
