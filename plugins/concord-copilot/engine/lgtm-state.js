@@ -670,13 +670,16 @@ function selfFeeding({ repoRoot, stateDir, pr, headSha, file, start, end }) {
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start) throw new Error('review-lgtm-state: line range must be positive integers with start <= end');
   let names;
   try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') names = []; else throw error; }
+  const git = crossPlatformCommand('git', repoRoot);
+  const run = (args) => execFileSync(git, crossPlatformArgs(['--literal-pathspecs', ...args], needsDoubleEscape('git', repoRoot)), crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
+  const isAncestor = (sha) => { try { run(['merge-base', '--is-ancestor', sha, key.headSha]); return true; } catch (_) { return false; } };
   const previous = names.filter((name) => name.startsWith(`pr-${key.pr}.fix-round-slot-`) && name.endsWith('.json'))
     .map((name) => readMarker(path.join(stateDir, name)))
     .filter((marker) => marker && FULL_SHA.test(String(marker.headSha)) && marker.headSha !== key.headSha)
-    .sort((a, b) => (b.claimedAtMs || 0) - (a.claimedAtMs || 0))[0];
+    .sort((a, b) => (b.claimedAtMs || 0) - (a.claimedAtMs || 0))
+    .find((marker) => isAncestor(marker.headSha));
   if (!previous) return { selfFeeding: false, previousFixHead: null };
-  const git = crossPlatformCommand('git', repoRoot);
-  const diff = execFileSync(git, crossPlatformArgs(['diff', '-U0', '--no-color', '--no-ext-diff', `${previous.headSha}..${key.headSha}`, '--', file], needsDoubleEscape('git', repoRoot)), crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8' }));
+  const diff = run(['diff', '-U0', '--no-color', '--no-ext-diff', '--no-textconv', `${previous.headSha}..${key.headSha}`, '--', file]);
   const overlaps = diff.split('\n').some((line) => {
     const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
     if (!hunk) return false;

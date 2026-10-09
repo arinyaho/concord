@@ -823,3 +823,37 @@ test('self-feeding is false when no earlier fix round exists', () => {
   git(repo, 'init', '-q');
   assert.deepStrictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir: temp(), pr: 221, headSha: 'a'.repeat(40), file: 'x.md', start: 1, end: 1 }), { selfFeeding: false, previousFixHead: null });
 });
+
+test('self-feeding uses the latest earlier round on the head ancestry and matches the file literally', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'lgtm-self-anc-'));
+  git(repo, 'init', '-q');
+  git(repo, 'config', 'user.email', 't@example.com');
+  git(repo, 'config', 'user.name', 't');
+  const write = (file, text) => fs.writeFileSync(path.join(repo, file), text);
+  const commit = (message) => { git(repo, 'add', '-A'); git(repo, 'commit', '-qm', message); return git(repo, 'rev-parse', 'HEAD'); };
+  write('a.md', '1\n2\n3\n');
+  write('b.md', '1\n2\n3\n');
+  const first = commit('base');
+  write('a.md', '1\n2\n3\nA4\n');
+  const second = commit('fix one adds a.md line 4');
+  write('b.md', '1\n2\n3\nB4\n');
+  const third = commit('fix two adds b.md line 4');
+  git(repo, 'checkout', '-q', '-b', 'side', first);
+  write('a.md', 'side\n2\n3\n');
+  const side = commit('unrelated head');
+  git(repo, 'checkout', '-q', third);
+  const stateDir = temp();
+  const claim = (headSha, now) => {
+    lgtmState.recordReview({ stateDir, pr: 221, headSha, now, observation: observation({ reviewId: String(now), commitId: headSha }) });
+    assert.strictEqual(lgtmState.claimFixRound({ stateDir, pr: 221, headSha, now, owner: `w-${now}` }).claimed, true);
+  };
+  claim(second, 1000);
+  claim(side, 2000);
+  const check = (file, start, end) => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: third, file, start, end });
+  assert.deepStrictEqual(check('b.md', 4, 4), { selfFeeding: true, previousFixHead: second });
+  assert.strictEqual(check('a.md', 4, 4).selfFeeding, false);
+  assert.strictEqual(check(':(top)b.md', 4, 4).selfFeeding, false);
+  assert.strictEqual(check('*.md', 4, 4).selfFeeding, false);
+  const cli = execFileSync('node', [CLI, 'self-feeding', '221', third, 'b.md', '4', '4'], { cwd: repo, encoding: 'utf8', env: { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir } });
+  assert.strictEqual(JSON.parse(cli).selfFeeding, false);
+});
