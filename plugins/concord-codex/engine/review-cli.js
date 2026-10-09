@@ -2339,7 +2339,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     const isGit = !ledger.target || ledger.target.type === 'git';
     const journaled = ledger.journal || [];
     const journalEntryFor = (finding) => {
-      const entries = journaled.slice((ledger.journal_floor || {})[finding.id] || 0);
+      const entries = journaled.slice((ledger.journal_floor || {})[finding.id]?.at || 0);
       return entries.find((j) => (j.findingIds || []).includes(finding.id))
       || entries.find((j) => j.id === finding.id)
       || entries.find((j) => (j.resolutions || []).some((r) => r.id === finding.id && r.file === finding.file && r.span === finding.span)
@@ -2687,7 +2687,9 @@ function runVerb(resolveFromCwd, args, initiative) {
       planRetry: ledger.execution.planRetry ? { ...ledger.execution.planRetry, state: 'accepted', discardRepair: false } : null,
     } : ledger.execution;
     // A reopened finding's earlier fixes no longer prove it: only journal entries added after this plan count.
-    const journalFloor = { ...(ledger.journal_floor || {}), ...Object.fromEntries(reopenedIds.map((id) => [id, (ledger.journal || []).length])) };
+    // Planning the same round again after an interrupted attempt keeps its floor, so that attempt's own commit still counts.
+    const journalFloor = { ...(ledger.journal_floor || {}) };
+    for (const id of reopenedIds) if (journalFloor[id]?.round !== n) journalFloor[id] = { at: (ledger.journal || []).length, round: n };
     const next = { ...ledger, journal_floor: journalFloor, execution, planned: reconciliation ? [] : fixes.map((f) => f.id), fix_plan: fixPlan, resolved_absent: resolvedAbsent, intent_parked: intentParked, gate_open: gateOpen, reconciliation: reconciliationPacket, reconciliationPacket, phase: 'fixes' };
     writeLedger(stateDir, slug, next);
     process.stdout.write(JSON.stringify({ protocolVersion: 2, planId, transactionScope, fixes: reconciliation ? [] : fixes, fixGroups: reconciliation ? [] : fixGroups, avoidedLaunches: reconciliation ? fixes.length : 0, reconciliation: blockedGroups.length ? reconciliationPacket : reconciliation && { trigger: 'material-finding', finding: material[0].id, stage: 'plan-fixes', findings: material.reduce((counts, finding) => {

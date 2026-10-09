@@ -5176,6 +5176,28 @@ test('record: a reopened finding sent to the fixer is parked without a fresh jou
   assert.strictEqual(recorded.status, 'parked');
 });
 
+test('plan-fixes: replanning a round keeps the journal floor, so the interrupted attempt\'s own commit still counts', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/reopened-resume';
+  const slug = review.targetSlug(ref);
+  const finding = { id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'recurred span', summary: 'x' };
+  let ledger = review.emptyLedger({ kind: 'local', ref });
+  ledger.findings = [{ id: finding.id, status: 'fixed' }];
+  ledger.seen = [{ id: finding.id, status: 'fixed', hash: review.seenHash(finding) }];
+  ledger.journal = [{ id: finding.id, sha: 'earlier-fix' }];
+  review.writeLedger(dir, slug, ledger);
+  const { env } = seedGatesRound(repo, dir, ref,
+    { status: 'ok', examined: ['a.txt'], findings: [finding] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', ref], { env });
+  // The fixer committed, then the process died before record; the round is planned again.
+  const planned = review.readLedger(dir, slug);
+  review.writeLedger(dir, slug, { ...planned, phase: 'gates', planned: [], resolved_absent: [], journal: [...planned.journal, { id: finding.id, sha: 'current-fix' }] });
+  run(['plan-fixes', ref], { env });
+  run(['record', ref], { env });
+  const recorded = review.readLedger(dir, slug).findings.find((f) => f.id === finding.id);
+  assert.strictEqual(recorded.fix_commit, 'current-fix');
+});
+
 test('plan-fixes: a missing path outside the checkout or behind a symlink is not a replay', () => {
   for (const kind of ['outside', 'dangling-symlink', 'symlinked-directory', 'file-as-directory', 'internal-symlink']) {
     const { fixes, resolved } = planFixesWithJournal(kind, ({ repo, outside }) => {
