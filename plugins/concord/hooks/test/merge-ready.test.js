@@ -113,3 +113,23 @@ test('an open fix claim on the head blocks the merge even when the delivery reco
   assert.strictEqual(cli(stateDir, ['claim-fix-round', String(PR), HEAD_A]).claimed, true);
   assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A)).reasons, ['fix-round-open']);
 });
+
+test('a fix claim marker with no slot blocks merge-ready with fix-round-open', () => {
+  const stateDir = temp();
+  deliver(stateDir, HEAD_A);
+  const key = { stateDir, pr: PR, headSha: HEAD_A };
+  fs.writeFileSync(lgtmState.markerPath(key, 'fix-round-claim'), `${JSON.stringify({ pr: PR, headSha: HEAD_A, claimedAtMs: 1000 })}\n`);
+  assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A)), { result: 'blocked', reasons: ['fix-round-open'] });
+});
+
+test('a minor collected after the delivery record makes it stale until the delivery is recorded again', () => {
+  const stateDir = temp();
+  deliver(stateDir, HEAD_A);
+  assert.strictEqual(cli(stateDir, ['status', String(PR), HEAD_A]).delivery.current, true);
+  cli(stateDir, ['collect-minor', String(PR), HEAD_A], JSON.stringify({ id: 'c-1', url: 'https://github.com/arinyaho/concord/pull/165#discussion_r1', reason: 'late minor' }));
+  assert.strictEqual(cli(stateDir, ['status', String(PR), HEAD_A]).delivery.current, false);
+  assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A)).reasons, ['delivery-stale']);
+  deliver(stateDir, HEAD_A);
+  assert.strictEqual(cli(stateDir, ['status', String(PR), HEAD_A]).delivery.current, true);
+  assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A)), { result: 'ready', reasons: [] });
+});

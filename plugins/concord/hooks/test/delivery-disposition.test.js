@@ -393,3 +393,15 @@ test('collect-minor records a minor finding once per id and status lists the PR-
     assert.throws(() => cli(stateDir, ['collect-minor', String(PR), HEAD], JSON.stringify(bad)), /minor/);
   }
 });
+
+test('a minor collected after the delivery makes it stale for merging but keeps fix and request claims terminal', () => {
+  const stateDir = temp();
+  const input = { stateDir, pr: PR, headSha: HEAD };
+  withActiveReview(stateDir);
+  lgtmState.recordDelivery({ ...input, now: 2000, packet: pr172Packet({ reviewIds: ['4192088400'] }) });
+  lgtmState.collectMinor({ ...input, id: 'late', url: THREAD(9), reason: 'Late minor.', now: 3000 });
+  const status = lgtmState.status(input);
+  assert.strictEqual(status.delivery.current, false);
+  assert.strictEqual(status.reconciliation.action, 'report-delivery');
+  assert.deepStrictEqual(lgtmState.claimFixRound({ ...input, owner: 'fixer', now: 4000 }), { claimed: false, reason: 'delivery-terminal', classification: 'mergeable-with-follow-ups' });
+});

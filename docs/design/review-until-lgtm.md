@@ -83,7 +83,7 @@ An agent merges a PR only at the user's explicit request naming it, and only aft
 | Every reviewer is terminal for that head | `reviewer-pending:<reviewer>` |
 | Every reviewer gave a fresh LGTM for that head | `no-lgtm:<reviewer>` |
 | A delivery record exists for that head | `no-delivery` |
-| No review was recorded or rejected after that record | `delivery-stale` |
+| No review was recorded or rejected, and no minor collected, after that record | `delivery-stale` |
 | The record is `mergeable-clean` or `mergeable-with-follow-ups` | `delivery-blocked` |
 | The live base equals the record's base | `base-changed` |
 | The approved contract digest equals the record's | `contract-changed` |

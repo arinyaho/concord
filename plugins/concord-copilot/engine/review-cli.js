@@ -1085,7 +1085,9 @@ function verifiedRound(ref, stateDir, run, what) {
   // bug still live, so route them to the fixer instead (it adds the missing
   // code -> a real commit, or reports no-edit -> record parks it needs-decision).
   // A reopened finding recurred after its fix, so the journaled fix is not evidence that it holds.
-  const isReplay = (f) => !f.reopened && (ledger.journal || []).some((j) => (j.findingIds || []).includes(f.id) || j.id === f.id
+  // Only entries after the finding's journal floor count, the same slice `record` uses, so an unparked finding
+  // (its seen entry gone, so no longer `reopened`) is not resolved by a fix from before it recurred.
+  const isReplay = (f) => !f.reopened && (ledger.journal || []).slice((ledger.journal_floor || {})[f.id]?.at || 0).some((j) => (j.findingIds || []).includes(f.id) || j.id === f.id
     || (j.resolutions || []).some((r) => r.id === f.id && r.file === f.file && r.span === f.span)) && !spanPresent(f.file, f.span);
   const fixes = confirmedNonKilled
     .filter((f) => !isReplay(f))

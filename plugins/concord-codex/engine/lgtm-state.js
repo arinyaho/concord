@@ -239,7 +239,7 @@ function mergeReady({ stateDir, pr, headSha, evidence }) {
     if (lower(evidence.contractDigest) !== delivery.contractDigest) reasons.push('contract-changed');
     for (const { name } of delivery.requiredChecks || []) if (!checks.some((check) => text(check?.name) === name)) reasons.push(`check-missing:${name}`);
   }
-  if (fixRoundForHead({ stateDir, ...key })) reasons.push('fix-round-open');
+  if (fixRoundForHead({ stateDir, ...key }) || readMarker(markerPath({ stateDir, ...key }, 'fix-round-claim'))) reasons.push('fix-round-open');
   return { result: reasons.length === 0 ? 'ready' : 'blocked', reasons };
 }
 
@@ -699,17 +699,27 @@ function activeReviewIds(input) {
   return activeReviewRecords(input).map((record) => record.reviewId).sort(compareReviewIds);
 }
 
-// A record covers only the review batch active when it was written; a review
-// recorded or rejected later is new evidence and lifts the terminal state.
-function deliveryCurrent(input, record) {
+function collectedMinorIds(input) {
+  return collectedMinors(input).map((minor) => minor.id).sort();
+}
+
+// A record covers the review batch active when it was written; a review recorded or rejected later is new evidence
+// and lifts the terminal state.
+function deliveryBatchCurrent(input, record) {
   return !!record && JSON.stringify(record.reviewIds) === JSON.stringify(activeReviewIds(input));
+}
+
+// A merge also needs the record to cover the minors collected when it was written; a minor collected later only
+// blocks the merge until the delivery is recorded again, and leaves request and fix claims terminal.
+function deliveryCurrent(input, record) {
+  return deliveryBatchCurrent(input, record) && JSON.stringify(record.minorIds) === JSON.stringify(collectedMinorIds(input));
 }
 
 // A fix claim also finds the delivery stale when a waiver changed the fix cap the record was written under;
 // review-request claims depend on the review batch alone.
 function deliveryTerminal(input, { fixCap = false } = {}) {
   const latest = latestDelivery(input);
-  if (!latest || latest.classification === 'blocked' || !deliveryCurrent(input, latest)) return null;
+  if (!latest || latest.classification === 'blocked' || !deliveryBatchCurrent(input, latest)) return null;
   if (fixCap && latest.budgets?.fix?.max !== fixBudget(input).max) return null;
   return { claimed: false, reason: 'delivery-terminal', classification: latest.classification };
 }
@@ -728,7 +738,7 @@ function recordDelivery(input) {
     if (JSON.stringify(observed) !== JSON.stringify(reviewIds)) return { recorded: false, reason: 'review-batch-changed', reviewIds };
     if (latest && latest.digest === digest && deliveryCurrent({ stateDir, ...key }, latest)) return latest;
     const sequence = (latest ? latest.sequence : 0) + 1;
-    const record = { ...classified, reviewIds, digest, sequence, recordedAtMs: now, budgets: { request: requestBudget({ stateDir, pr: key.pr }), fix: fixBudget({ stateDir, pr: key.pr }) } };
+    const record = { ...classified, reviewIds, minorIds: collectedMinorIds({ stateDir, pr: key.pr }), digest, sequence, recordedAtMs: now, budgets: { request: requestBudget({ stateDir, pr: key.pr }), fix: fixBudget({ stateDir, pr: key.pr }) } };
     if (!writeExclusive(markerPath({ stateDir, ...key }, `delivery-${String(sequence).padStart(6, '0')}`), record)) throw new Error('review-lgtm-state: delivery record collided; retry');
     return record;
   }, { recorded: false, reason: 'transition-busy' });
