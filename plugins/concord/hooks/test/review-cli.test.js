@@ -5136,6 +5136,27 @@ test('plan-fixes: a journaled finding whose file was deleted inside the checkout
   }
 });
 
+test('record: a missing journaled file replaced before record is parked, not stamped fixed', () => {
+  for (const kind of ['symlink', 'fifo']) {
+    const repo = initRepo(); const dir = tmpDir(); const ref = `feat/replaced-${kind}`;
+    const slug = review.targetSlug(ref);
+    const outside = path.join(tmpDir(), 'other.txt'); fs.writeFileSync(outside, 'no such span here\n');
+    const { env } = seedGatesRound(repo, dir, ref,
+      { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:gone', gate: 'correctness', file: 'gone.txt', span: 'removed span', summary: 'x' }] },
+      { status: 'ok', rejected: [] });
+    review.writeLedger(dir, slug, { ...review.readLedger(dir, slug), journal: [{ id: 'correctness:gone', sha: 'prior' }] });
+    seedV2Plan(ref, env);
+    run(['plan-fixes', ref], { env });
+    assert.deepStrictEqual(review.readLedger(dir, slug).resolved_absent, ['correctness:gone'], kind);
+    if (kind === 'symlink') fs.symlinkSync(outside, path.join(repo, 'gone.txt'));
+    else execFileSync('mkfifo', [path.join(repo, 'gone.txt')]);
+    const result = runCapture(['record', ref], { env, timeout: 10000 });
+    assert.strictEqual(result.status, 0, `${kind}: ${result.stderr}`);
+    const finding = review.readLedger(dir, slug).findings.find((f) => f.id === 'correctness:gone');
+    assert.strictEqual(finding.status, 'parked', kind);
+  }
+});
+
 test('plan-fixes: a missing path outside the checkout or behind a symlink is not a replay', () => {
   for (const kind of ['outside', 'dangling-symlink', 'symlinked-directory', 'file-as-directory']) {
     const { fixes, resolved } = planFixesWithJournal(kind, ({ repo, outside }) => {

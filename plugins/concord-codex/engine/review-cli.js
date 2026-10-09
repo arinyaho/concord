@@ -108,13 +108,12 @@ function gitHeadFileContains(repoRoot, file, span) {
     return false;
   }
 }
+// Bounded and no-follow like readReviewSource: a path replaced by a symlink,
+// FIFO or other unreadable entry is not evidence that the span is gone.
 function gitWorktreeFileLacksSpan(repoRoot, file, span) {
-  try {
-    return !fs.readFileSync(path.join(repoRoot, file), 'utf8').includes(span);
-  } catch (e) {
-    if (e && e.code === 'ENOENT') return true;
-    throw e;
-  }
+  const text = readReviewSource(repoRoot, file);
+  if (text !== null) return !text.includes(span);
+  return reviewSourceMissing(repoRoot, file);
 }
 
 function pathWithin(child, parent) {

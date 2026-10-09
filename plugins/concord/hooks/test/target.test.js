@@ -271,3 +271,14 @@ test('tracked inventory: a parent on another Windows volume leaves the checkout'
   assert.strictEqual(pathLeavesRoot(path.win32.relative('C:\\repo', 'C:\\repo\\sub'), path.win32), false);
   assert.strictEqual(pathLeavesRoot('..hidden'), false);
 });
+
+test('tracked inventory: a mode change on a submodule directory is reported', (t) => {
+  if (process.platform === 'win32') return;
+  for (const initialized of [true, false]) {
+    const dir = inventoryRepo(t); const upstream = inventoryRepo(t);
+    git(dir, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', upstream, 'sub');
+    git(dir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'submodule');
+    if (!initialized) { fs.rmSync(path.join(dir, 'sub'), { recursive: true }); fs.mkdirSync(path.join(dir, 'sub')); }
+    assert.strictEqual(changeAfter(dir, () => fs.chmodSync(path.join(dir, 'sub'), 0o700)), 'sub', `initialized=${initialized}`);
+  }
+});

@@ -271,10 +271,10 @@ function trackedCheckoutInventory(repoRoot, commitSha, budget = { entries: 0, by
       if (!stat.isDirectory()) fingerprint = `other:${stat.mode}`;
       else if (fs.existsSync(path.join(abs, '.git'))) {
         const sha = sh('git', ['rev-parse', 'HEAD'], { cwd: abs }).trim();
-        fingerprint = `gitlink:${sha}`;
+        fingerprint = `gitlink:${stat.mode}:${sha}`;
         for (const [key, value] of trackedCheckoutInventory(abs, sha, budget, `${prefix}${rel}/`)) inventory.set(key, value);
       } else {
-        fingerprint = `gitlink-empty:${fs.readdirSync(abs).sort().slice(0, UNINITIALIZED_SUBMODULE_NAMES).join('\0')}`;
+        fingerprint = `gitlink-empty:${stat.mode}:${fs.readdirSync(abs).sort().slice(0, UNINITIALIZED_SUBMODULE_NAMES).join('\0')}`;
       }
     } else if (stat.isSymbolicLink()) fingerprint = `link:${fs.readlinkSync(abs, { encoding: 'buffer' }).toString('hex')}`;
     else if (stat.isDirectory()) fingerprint = `dir:${stat.mode}`;
