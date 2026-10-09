@@ -852,8 +852,8 @@ test('self-feeding uses the latest earlier round on the head ancestry and matche
   const check = (file, start, end) => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: third, file, start, end });
   assert.deepStrictEqual(check('b.md', 4, 4), { selfFeeding: true, previousFixHead: second });
   assert.strictEqual(check('a.md', 4, 4).selfFeeding, false);
-  assert.strictEqual(check(':(top)b.md', 4, 4).selfFeeding, false);
-  assert.strictEqual(check('*.md', 4, 4).selfFeeding, false);
+  assert.throws(() => check(':(top)b.md', 4, 4), /no such path/);
+  assert.throws(() => check('*.md', 4, 4), /no such path/);
   const cli = execFileSync('node', [CLI, 'self-feeding', '221', third, 'b.md', '4', '4'], { cwd: repo, encoding: 'utf8', env: { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir } });
   assert.deepStrictEqual(JSON.parse(cli), { selfFeeding: true, previousFixHead: second });
 });
@@ -877,9 +877,10 @@ function claimFixHead(stateDir, headSha, now) {
 
 test('self-feeding ignores unchanged content of a renamed file', () => {
   const { repo, write, commit } = selfFeedingRepo('lgtm-self-rename-');
-  write('old.md', 'one\ntwo\nthree\nfour\n');
+  for (const name of ['old', 'other1', 'other2', 'other3']) write(`${name}.md`, 'one\ntwo\nthree\nfour\n');
   const reviewed = commit('base');
-  git(repo, 'mv', 'old.md', 'new.md');
+  for (const name of ['old', 'other1', 'other2', 'other3']) git(repo, 'mv', `${name}.md`, `${name === 'old' ? 'new' : `${name}-moved`}.md`);
+  git(repo, 'config', 'diff.renameLimit', '1');
   const head = commit('rename only');
   const stateDir = temp();
   claimFixHead(stateDir, reviewed, 1000);
@@ -945,4 +946,51 @@ test('self-feeding does not depend on the configured diff path prefix', () => {
   const stateDir = temp();
   claimFixHead(stateDir, reviewed, 1000);
   assert.strictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'a.md', start: 3, end: 3 }).selfFeeding, true);
+});
+
+test('self-feeding reads paths, attributes and added lines literally', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-literal-');
+  write('q"x.md', '1\n2\n');
+  write('bin.md', '1\n2\n');
+  write('plus.md', '1\n2\n');
+  write('.gitattributes', 'bin.md -diff\n');
+  const reviewed = commit('base');
+  write('q"x.md', '1\n2\n3\n');
+  write('bin.md', '1\n2\n3\n');
+  write('plus.md', '1\n2\n++ b/plus.md\n');
+  const head = commit('fix');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  const check = (file, start) => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file, start, end: start }).selfFeeding;
+  for (const file of ['q"x.md', 'bin.md', 'plus.md']) {
+    assert.strictEqual(check(file, 3), true, file);
+    assert.strictEqual(check(file, 2), false, file);
+  }
+});
+
+test('self-feeding is unaffected by a large unrelated change in the fix round', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-large-');
+  write('a.md', '1\n2\n');
+  const reviewed = commit('base');
+  write('big.txt', `${'x'.repeat(100)}\n`.repeat(30000));
+  write('a.md', '1\n2\n3\n');
+  const head = commit('fix with a 3 MB unrelated file');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  assert.strictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'a.md', start: 3, end: 3 }).selfFeeding, true);
+});
+
+test('self-feeding clamps a range ending past the file end and rejects one starting past it or a missing file', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-eof-');
+  write('a.md', '1\n2\n');
+  const reviewed = commit('base');
+  write('a.md', '1\n2\n3\n');
+  const head = commit('fix');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  const check = (file, start, end) => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file, start, end }).selfFeeding;
+  assert.strictEqual(check('a.md', 3, 50), true);
+  assert.strictEqual(check('a.md', 1, 50), true);
+  assert.throws(() => check('a.md', 4, 4), /has only 3 lines/);
+  assert.throws(() => check('gone.md', 1, 1), /no such path/);
 });

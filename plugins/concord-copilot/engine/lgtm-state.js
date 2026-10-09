@@ -299,7 +299,7 @@ function compareReviewIds(a, b) {
 function reconciliationPacket({ stateDir, pr, headSha }) {
   const records = activeReviewRecords({ stateDir, pr, headSha })
     .sort((a, b) => a.recordedAtMs - b.recordedAtMs || compareReviewIds(a.reviewId, b.reviewId));
-  const delivered = !fixRoundForHead({ stateDir, pr, headSha }) && deliveryTerminal({ stateDir, pr, headSha });
+  const delivered = !fixRoundForHead({ stateDir, pr, headSha }) && deliveryTerminal({ stateDir, pr, headSha }, { fixClaim: false });
   if (delivered) return { pr, headSha, reviews: records.map((record) => ({ id: record.reviewId, reviewer: record.reviewer || 'legacy/unknown', url: record.reviewUrl, findings: record.findings })), batchCount: records.length, classification: 'delivery-terminal', action: 'report-delivery', humanRequired: false, requires: `report the recorded ${delivered.classification} delivery disposition` };
   if (records.length === 0) return null;
   const reviews = records.map((record) => ({ id: record.reviewId, reviewer: record.reviewer || 'legacy/unknown', url: record.reviewUrl, findings: record.findings }));
@@ -417,7 +417,7 @@ function claimRequest(input, kind) {
   const key = validate(input);
   const provider = normalizeProvider(input.provider);
   const markerKind = requestMarkerKind(kind, provider);
-  const terminal = deliveryTerminal({ stateDir, ...key });
+  const terminal = deliveryTerminal({ stateDir, ...key }, { fixClaim: false });
   if (terminal) return terminal;
   const currentBudget = requestBudget({ stateDir, pr: key.pr });
   if (currentBudget.remaining === 0) return { claimed: false, reason: 'request-budget-exhausted', budget: currentBudget };
@@ -428,7 +428,7 @@ function claimRequest(input, kind) {
     if (now < observed.eligibleAtMs) return { claimed: false, reason: 'auto-review-grace', eligibleAtMs: observed.eligibleAtMs };
   }
   return withTransitionLock({ stateDir, pr: key.pr }, () => {
-    const lockedTerminal = deliveryTerminal({ stateDir, ...key });
+    const lockedTerminal = deliveryTerminal({ stateDir, ...key }, { fixClaim: false });
     if (lockedTerminal) return lockedTerminal;
     const budget = requestBudget({ stateDir, pr: key.pr });
     if (budget.remaining === 0) return { claimed: false, reason: 'request-budget-exhausted', budget };
@@ -455,7 +455,7 @@ function recoverRequest(input, kind) {
   const provider = normalizeProvider(input.provider);
   const markerKind = requestMarkerKind(kind, provider);
   return withTransitionLock({ stateDir, pr: key.pr }, () => {
-    const terminal = deliveryTerminal({ stateDir, ...key });
+    const terminal = deliveryTerminal({ stateDir, ...key }, { fixClaim: false });
     if (terminal) return terminal;
     const claim = readMarker(markerPath({ stateDir, ...key }, `${markerKind}-claim`));
     const recovery = latestRecoveryClaim({ stateDir, ...key }, markerKind);
@@ -633,14 +633,16 @@ function activeReviewIds(input) {
 
 // A record covers only the review batch active when it was written; a review
 // recorded or rejected later is new evidence and lifts the terminal state.
-function deliveryCurrent(input, record) {
+// A recorded fix cap that differs from the current one (a waiver) makes the record stale for fix claims only;
+// review-request claims depend on the review batch alone.
+function deliveryCurrent(input, record, { fixClaim = true } = {}) {
   return !!record && JSON.stringify(record.reviewIds) === JSON.stringify(activeReviewIds(input))
-    && record.budgets?.fix?.max === fixBudget(input).max;
+    && (!fixClaim || record.budgets?.fix?.max === fixBudget(input).max);
 }
 
-function deliveryTerminal(input) {
+function deliveryTerminal(input, options) {
   const latest = latestDelivery(input);
-  return latest && latest.classification !== 'blocked' && deliveryCurrent(input, latest) ? { claimed: false, reason: 'delivery-terminal', classification: latest.classification } : null;
+  return latest && latest.classification !== 'blocked' && deliveryCurrent(input, latest, options) ? { claimed: false, reason: 'delivery-terminal', classification: latest.classification } : null;
 }
 
 function recordDelivery(input) {
@@ -664,7 +666,7 @@ function recordDelivery(input) {
 }
 
 // Answers whether the fix commit(s) between the head of the latest earlier fix round and `headSha`
-// added lines that overlap [start, end] of `file`. Uses only the path and line numbers, never the review text.
+// wrote any line in [start, end] of `file` as it stands at `headSha`. Uses only the path and line numbers, never the review text.
 function selfFeeding({ repoRoot, stateDir, pr, headSha, file, start, end }) {
   const key = validate({ pr, headSha });
   if (typeof file !== 'string' || !file || file.includes('\0') || path.isAbsolute(file) || file.split(/[\\/]/).includes('..')) throw new Error('review-lgtm-state: file must be a relative path inside the repository');
@@ -672,7 +674,7 @@ function selfFeeding({ repoRoot, stateDir, pr, headSha, file, start, end }) {
   let names;
   try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') names = []; else throw error; }
   const git = crossPlatformCommand('git', repoRoot);
-  const run = (args) => execFileSync(git, crossPlatformArgs(args, needsDoubleEscape('git', repoRoot)), crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+  const run = (args) => execFileSync(git, crossPlatformArgs(['--literal-pathspecs', ...args], needsDoubleEscape('git', repoRoot)), crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity }));
   // Only exit status 1 means "not an ancestor"; any other failure (missing object, bad repository) surfaces.
   const isAncestor = (sha) => {
     try { run(['merge-base', '--is-ancestor', sha, key.headSha]); return true; } catch (error) { if (error.status === 1) return false; throw error; }
@@ -685,22 +687,13 @@ function selfFeeding({ repoRoot, stateDir, pr, headSha, file, start, end }) {
     .map(({ marker }) => marker)
     .find((marker) => isAncestor(marker.headSha));
   if (!previous) return { selfFeeding: false, previousFixHead: null };
-  // The whole range is diffed with rename detection and matched by destination path, so the file never reaches git as an argument.
-  const diff = run(['-c', 'core.quotepath=off', 'diff', '-U0', '-M', '--inter-hunk-context=0', '--src-prefix=a/', '--dst-prefix=b/', '--no-color', '--no-ext-diff', '--no-textconv', `${previous.headSha}..${key.headSha}`]);
-  let inFile = false;
-  let overlaps = false;
-  for (const line of diff.split('\n')) {
-    if (line.startsWith('diff --git ')) inFile = false;
-    else if (line.startsWith('+++ ')) inFile = line === `+++ b/${file}`;
-    else if (inFile) {
-      const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
-      if (!hunk) continue;
-      const first = Number(hunk[1]);
-      const length = hunk[2] === undefined ? 1 : Number(hunk[2]);
-      if (length > 0 && first <= end && first + length - 1 >= start) overlaps = true;
-    }
-  }
-  return { selfFeeding: overlaps, previousFixHead: previous.headSha };
+  // A line is self-feeding when blame at the head attributes it to a commit made since the previous fix head.
+  // Blame follows renames itself. git fails for a file missing at the head or a range starting past its end;
+  // a range ending past the end is clamped by git to the last line.
+  const fixCommits = new Set(run(['rev-list', `${previous.headSha}..${key.headSha}`]).split('\n').filter(Boolean));
+  const blamed = run(['blame', '--porcelain', '-L', `${start},${end}`, key.headSha, '--', file]).split('\n')
+    .map((line) => /^([0-9a-f]{40}|[0-9a-f]{64}) \d+ \d+/.exec(line)).filter(Boolean).map((match) => match[1]);
+  return { selfFeeding: blamed.some((sha) => fixCommits.has(sha)), previousFixHead: previous.headSha };
 }
 
 function runMain(repoRoot = process.cwd()) {
