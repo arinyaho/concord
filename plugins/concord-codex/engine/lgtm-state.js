@@ -150,15 +150,41 @@ function reserveRequestSlot({ stateDir, pr, headSha }, kind, now, provider = nul
   return null;
 }
 
+function fixWaivers({ stateDir, pr }) {
+  let names;
+  try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') names = []; else throw error; }
+  return names.filter((name) => name.startsWith(`pr-${Number(pr)}.fix-waiver-`) && name.endsWith('.json'))
+    .map((name) => readMarker(path.join(stateDir, name)))
+    .filter((marker) => marker && typeof marker.person === 'string' && Number.isSafeInteger(marker.count) && Number.isSafeInteger(marker.atMs))
+    .map(({ person, count, atMs }) => ({ person, count, atMs }))
+    .sort((a, b) => a.atMs - b.atMs || a.person.localeCompare(b.person) || a.count - b.count);
+}
+
 function fixBudget({ stateDir, pr }) {
   let names;
   try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') names = []; else throw error; }
   const spent = names.filter((name) => name.startsWith(`pr-${Number(pr)}.fix-round-slot-`) && name.endsWith('.json')).length;
-  return { max: MAX_FIX_ROUNDS_PER_PR, spent, remaining: Math.max(0, MAX_FIX_ROUNDS_PER_PR - spent) };
+  const max = MAX_FIX_ROUNDS_PER_PR + fixWaivers({ stateDir, pr }).reduce((sum, waiver) => sum + waiver.count, 0);
+  return { max, spent, remaining: Math.max(0, max - spent) };
+}
+
+// A human's waiver raises the per-PR fix-round cap by `count`. The cap stays a hard stop for
+// automation; the waiver is the recorded decision that changes who may continue.
+function waiveFixBudget({ stateDir, pr, person, count, now = Date.now() }) {
+  if (!Number.isSafeInteger(Number(pr)) || Number(pr) < 1) throw new Error('review-lgtm-state: PR number must be a positive integer');
+  if (typeof person !== 'string' || !person.trim() || person.length > 200) throw new Error('review-lgtm-state: waiver person must be a non-empty string of at most 200 characters');
+  if (!Number.isSafeInteger(count) || count < 1) throw new Error('review-lgtm-state: waiver count must be a positive integer');
+  const who = person.trim();
+  const id = crypto.createHash('sha256').update(`${who}\0${count}`).digest('hex').slice(0, 16);
+  const file = path.join(stateDir, `pr-${Number(pr)}.fix-waiver-${id}.json`);
+  const created = writeExclusive(file, { pr: Number(pr), person: who, count, atMs: now });
+  const waiver = fixWaivers({ stateDir, pr }).find((entry) => entry.person === who && entry.count === count);
+  return { waived: true, ...(created ? {} : { existing: true }), waiver };
 }
 
 function reserveFixRound({ stateDir, pr, headSha }, now, owner) {
-  for (let round = 1; round <= MAX_FIX_ROUNDS_PER_PR; round += 1) {
+  const { max } = fixBudget({ stateDir, pr });
+  for (let round = 1; round <= max; round += 1) {
     const file = path.join(stateDir, `pr-${pr}.fix-round-slot-${round}.json`);
     if (writeExclusive(file, { pr, headSha, owner, claimedAtMs: now })) return round;
   }
@@ -347,7 +373,7 @@ function status(input) {
     }
   }
   const deadlines = [window, retryWindow].filter(Boolean).map((marker) => marker.deadlineMs);
-  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested, reconciliation: reconciliationPacket({ stateDir, ...key }), delivery: deliveryStatus({ stateDir, ...key }) };
+  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), waivers: fixWaivers({ stateDir, pr: key.pr }), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested, reconciliation: reconciliationPacket({ stateDir, ...key }), delivery: deliveryStatus({ stateDir, ...key }) };
 }
 
 function claimFixRound(input) {
@@ -636,6 +662,31 @@ function recordDelivery(input) {
   }, { recorded: false, reason: 'transition-busy' });
 }
 
+// Answers whether the fix commit(s) between the head of the latest earlier fix round and `headSha`
+// added lines that overlap [start, end] of `file`. Uses only the path and line numbers, never the review text.
+function selfFeeding({ repoRoot, stateDir, pr, headSha, file, start, end }) {
+  const key = validate({ pr, headSha });
+  if (typeof file !== 'string' || !file || file.startsWith('-') || file.includes('\0') || path.isAbsolute(file) || file.split(/[\\/]/).includes('..')) throw new Error('review-lgtm-state: file must be a relative path inside the repository');
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start) throw new Error('review-lgtm-state: line range must be positive integers with start <= end');
+  let names;
+  try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') names = []; else throw error; }
+  const previous = names.filter((name) => name.startsWith(`pr-${key.pr}.fix-round-slot-`) && name.endsWith('.json'))
+    .map((name) => readMarker(path.join(stateDir, name)))
+    .filter((marker) => marker && FULL_SHA.test(String(marker.headSha)) && marker.headSha !== key.headSha)
+    .sort((a, b) => (b.claimedAtMs || 0) - (a.claimedAtMs || 0))[0];
+  if (!previous) return { selfFeeding: false, previousFixHead: null };
+  const git = crossPlatformCommand('git', repoRoot);
+  const diff = execFileSync(git, crossPlatformArgs(['diff', '-U0', '--no-color', '--no-ext-diff', `${previous.headSha}..${key.headSha}`, '--', file], needsDoubleEscape('git', repoRoot)), crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8' }));
+  const overlaps = diff.split('\n').some((line) => {
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (!hunk) return false;
+    const first = Number(hunk[1]);
+    const length = hunk[2] === undefined ? 1 : Number(hunk[2]);
+    return length > 0 && first <= end && first + length - 1 >= start;
+  });
+  return { selfFeeding: overlaps, previousFixHead: previous.headSha };
+}
+
 function runMain(repoRoot = process.cwd()) {
   const [verb, pr, headSha, argument] = process.argv.slice(2);
   const stateDir = defaultStateDir(repoRoot);
@@ -646,10 +697,12 @@ function runMain(repoRoot = process.cwd()) {
   else if (verb === 'mark-initial-requested') process.stdout.write(`${JSON.stringify({ marked: markInitialRequested({ stateDir, pr, headSha, provider: argument }) })}\n`);
   else if (verb === 'claim-fix-round') process.stdout.write(`${JSON.stringify(claimFixRound({ stateDir, pr, headSha }))}\n`);
   else if (verb === 'renew-fix-round') process.stdout.write(`${JSON.stringify(renewFixRound({ stateDir, pr, headSha, owner: argument }))}\n`);
+  else if (verb === 'waive-fix-budget') process.stdout.write(`${JSON.stringify(waiveFixBudget({ stateDir, pr, person: headSha, count: Number(argument) }))}\n`);
+  else if (verb === 'self-feeding') { const [file, start, end] = process.argv.slice(6); process.stdout.write(`${JSON.stringify(selfFeeding({ repoRoot, stateDir, pr, headSha, file, start: Number(start), end: Number(end === undefined ? start : end) }))}\n`); }
   else if (verb === 'record-review') process.stdout.write(`${JSON.stringify(recordReview({ stateDir, pr, headSha, observation: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'record-delivery') process.stdout.write(`${JSON.stringify(recordDelivery({ stateDir, pr, headSha, packet: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'reject-review-batch') process.stdout.write(`${JSON.stringify(rejectReviewBatch({ stateDir, pr, headSha, ...JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
-  else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, record-review, reject-review-batch, or record-delivery');
+  else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, waive-fix-budget, self-feeding, record-review, reject-review-batch, or record-delivery');
 }
 
-module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, recordReview, rejectReviewBatch, classifyDelivery, recordDelivery, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, runMain };
+module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, waiveFixBudget, selfFeeding, recordReview, rejectReviewBatch, classifyDelivery, recordDelivery, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, runMain };

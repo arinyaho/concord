@@ -38,7 +38,7 @@ test('review-until-lgtm persists its monitoring window and request budget', () =
 
   // Simulates a process/session interruption: a new invocation reconstructs
   // the exact same deadline and cannot restart the bounded wait window.
-  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: 901000, requestEligibleAtMs: null, requestBudget: { max: 3, spent: 0, remaining: 3 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, initialClaimed: false, initialClaimedAtMs: null, initialRecoveryClaimed: false, initialRequested: false, reconciliation: null, delivery: null });
+  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: 901000, requestEligibleAtMs: null, requestBudget: { max: 3, spent: 0, remaining: 3 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, waivers: [], initialClaimed: false, initialClaimedAtMs: null, initialRecoveryClaimed: false, initialRequested: false, reconciliation: null, delivery: null });
   assert.deepStrictEqual(lgtmState.openWindow({ ...input, now: 2000, durationMs: 900000 }), { created: false, deadlineMs: 901000 });
 });
 
@@ -142,9 +142,9 @@ test('review requests distinguish a durable claim from a request that was sent',
   const input = { stateDir, pr: 116, headSha: '0123456789abcdef0123456789abcdef01234567' };
   lgtmState.claimInitialRequest({ ...input, now: 2000 });
   assert.strictEqual(lgtmState.claimInitialRequest({ ...input, now: 122000 }), true);
-  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, requestEligibleAtMs: 122000, requestBudget: { max: 3, spent: 1, remaining: 2 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, initialClaimed: true, initialClaimedAtMs: 122000, initialRecoveryClaimed: false, initialRequested: false, reconciliation: null, delivery: null });
+  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, requestEligibleAtMs: 122000, requestBudget: { max: 3, spent: 1, remaining: 2 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, waivers: [], initialClaimed: true, initialClaimedAtMs: 122000, initialRecoveryClaimed: false, initialRequested: false, reconciliation: null, delivery: null });
   assert.strictEqual(lgtmState.markInitialRequested(input), true);
-  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, requestEligibleAtMs: 122000, requestBudget: { max: 3, spent: 1, remaining: 2 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, initialClaimed: true, initialClaimedAtMs: 122000, initialRecoveryClaimed: false, initialRequested: true, reconciliation: null, delivery: null });
+  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, requestEligibleAtMs: 122000, requestBudget: { max: 3, spent: 1, remaining: 2 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, waivers: [], initialClaimed: true, initialClaimedAtMs: 122000, initialRecoveryClaimed: false, initialRequested: true, reconciliation: null, delivery: null });
 });
 
 test('status exposes a provider-specific sent request so resume can open its window', () => {
@@ -739,4 +739,87 @@ test('Claude, Codex, and Copilot review-until-lgtm skills pin bounded batch fixe
     assert.match(skill, /approved design.*uniquely determines.*one structural fix/is);
     assert.match(skill, /before editing.*human reconciliation/is);
   }
+});
+
+function claimRounds(stateDir, pr, count, first = 1) {
+  const results = [];
+  for (let index = first; index < first + count; index += 1) {
+    const headSha = String(index).repeat(40);
+    lgtmState.recordReview({ stateDir, pr, headSha, now: 1000 + index, observation: observation({ reviewId: String(index), commitId: headSha }) });
+    results.push(lgtmState.claimFixRound({ stateDir, pr, headSha, now: 2000 + index, owner: `worker-${index}` }));
+  }
+  return results;
+}
+
+test('waive-fix-budget records the waiver and allows the waived rounds only', () => {
+  const stateDir = temp();
+  assert.ok(claimRounds(stateDir, 221, 3).every((result) => result.claimed));
+  assert.strictEqual(claimRounds(stateDir, 221, 1, 4)[0].reason, 'fix-round-budget-exhausted');
+  assert.deepStrictEqual(lgtmState.waiveFixBudget({ stateDir, pr: 221, person: 'someone', count: 2, now: 9000 }), { waived: true, waiver: { person: 'someone', count: 2, atMs: 9000 } });
+  const headSha = '4'.repeat(40);
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: 221, headSha }).waivers, [{ person: 'someone', count: 2, atMs: 9000 }]);
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: 221, headSha }).fixBudget, { max: 5, spent: 3, remaining: 2 });
+  const more = claimRounds(stateDir, 221, 3, 4);
+  assert.deepStrictEqual(more.map((result) => result.claimed), [true, true, false]);
+  assert.deepStrictEqual(more[1].budget, { max: 5, spent: 5, remaining: 0 });
+  assert.strictEqual(more[2].reason, 'fix-round-budget-exhausted');
+});
+
+test('waive-fix-budget is idempotent and rejects invalid input without changing state', () => {
+  const stateDir = temp();
+  const input = { stateDir, pr: 221, person: 'someone', count: 2 };
+  lgtmState.waiveFixBudget({ ...input, now: 1000 });
+  lgtmState.waiveFixBudget({ ...input, now: 2000 });
+  const headSha = '1'.repeat(40);
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: 221, headSha }).waivers, [{ person: 'someone', count: 2, atMs: 1000 }]);
+  for (const bad of [{ person: '' }, { person: '  ' }, { count: 0 }, { count: -1 }, { count: 1.5 }, { count: '2' }]) {
+    assert.throws(() => lgtmState.waiveFixBudget({ ...input, ...bad }), /review-lgtm-state:/);
+  }
+  assert.strictEqual(lgtmState.status({ stateDir, pr: 221, headSha }).waivers.length, 1);
+  assert.strictEqual(lgtmState.status({ stateDir, pr: 221, headSha }).fixBudget.max, 5);
+});
+
+test('waive-fix-budget CLI exits non-zero for an empty person', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'lgtm-cli-'));
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  assert.throws(() => execFileSync('node', [CLI, 'waive-fix-budget', '221', '', '2'], { cwd: repo, stdio: 'pipe' }), /person/);
+  const out = execFileSync('node', [CLI, 'waive-fix-budget', '221', 'someone', '2'], { cwd: repo, encoding: 'utf8' });
+  assert.strictEqual(JSON.parse(out).waived, true);
+});
+
+function git(repo, ...args) { return execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim(); }
+
+test('self-feeding reports whether the previous fix commit added the finding lines', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'lgtm-self-'));
+  git(repo, 'init', '-q');
+  git(repo, 'config', 'user.email', 't@example.com');
+  git(repo, 'config', 'user.name', 't');
+  const lines = (n, prefix) => `${Array.from({ length: n }, (_, i) => `${prefix}${i + 1}`).join('\n')}\n`;
+  fs.writeFileSync(path.join(repo, 'rule.md'), lines(9, 'base'));
+  git(repo, 'add', 'rule.md');
+  git(repo, 'commit', '-qm', 'base');
+  const reviewed = git(repo, 'rev-parse', 'HEAD');
+  const added = Array.from({ length: 11 }, (_, i) => `fix${i + 1}`).join('\n');
+  const body = lines(9, 'base').split('\n');
+  body.splice(9, 0, added);
+  fs.writeFileSync(path.join(repo, 'rule.md'), `${body.join('\n')}`);
+  git(repo, 'commit', '-qam', 'fix');
+  const head = git(repo, 'rev-parse', 'HEAD');
+  const stateDir = temp();
+  lgtmState.recordReview({ stateDir, pr: 221, headSha: reviewed, now: 1000, observation: observation({ reviewId: '1', commitId: reviewed }) });
+  assert.strictEqual(lgtmState.claimFixRound({ stateDir, pr: 221, headSha: reviewed, now: 2000, owner: 'w' }).claimed, true);
+  const check = (file, start, end) => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file, start, end });
+  assert.deepStrictEqual(check('rule.md', 15, 15), { selfFeeding: true, previousFixHead: reviewed });
+  assert.strictEqual(check('rule.md', 10, 20).selfFeeding, true);
+  assert.strictEqual(check('rule.md', 5, 5).selfFeeding, false);
+  assert.strictEqual(check('rule.md', 1, 9).selfFeeding, false);
+  assert.throws(() => check('../outside.md', 1, 1), /file/);
+  assert.throws(() => check('/etc/passwd', 1, 1), /file/);
+  assert.throws(() => check('rule.md', 5, 3), /range/);
+});
+
+test('self-feeding is false when no earlier fix round exists', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'lgtm-self-none-'));
+  git(repo, 'init', '-q');
+  assert.deepStrictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir: temp(), pr: 221, headSha: 'a'.repeat(40), file: 'x.md', start: 1, end: 1 }), { selfFeeding: false, previousFixHead: null });
 });
