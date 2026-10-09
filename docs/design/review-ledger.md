@@ -60,7 +60,7 @@ A git target is reviewed as the range from the merge base of its base ref and th
 | DoD retry or rerun | head equals the earlier reviewed head | the empty range from the earlier head is reviewed; no failure | unchanged | `git target: repeated failed final DoD attempts consume and stop at the round budget` |
 | file target | any | no base is read | unchanged | `e2e-file-target.test.js` |
 
-The check runs before the intent-review and gate-pending resets, which delete cached artifacts. A branch whose commits net to an empty diff (a revert pair) has a merge base other than the head and still runs.
+Only the missing-base refusal runs before the intent-review and gate-pending resets, which delete the cached intent. The same-commit check runs where the range is built, after those resets, so a failure there leaves the cached intent deleted; the next fresh start fetches it again. A branch whose commits net to an empty diff (a revert pair) has a merge base other than the head and still runs.
 
 ## Trade-offs and residual exposure
 
