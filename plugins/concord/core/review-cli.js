@@ -247,7 +247,7 @@ function roundCandidates(gc, cJson, vJson) {
 function evidenceLine(f) {
   // [] is an explicit follow-up classification, an absent field is unclassified (fail closed), anything else is shown as claimed.
   const blocking = f.releaseBlocking == null ? 'unclassified' : [].concat(f.releaseBlocking).join(', ') || 'none';
-  return `[${f.id}] ${f.file}: ${f.summary}${f.rationale ? ` -- rationale: ${f.rationale}` : ''} -- release-blocking: ${blocking}${f.blockingReason ? ` -- verifier: ${f.blockingReason}` : ''}${f.span ? ` -- span: ${f.span}` : ''}`;
+  return `[${f.id}] ${f.file}: ${f.summary}${f.rationale ? ` -- rationale: ${f.rationale}` : ''} -- release-blocking: ${blocking}${f.blockingReason ? ` -- verifier: ${f.blockingReason}` : ''}${f.span ?? f.evidence ? ` -- span: ${f.span ?? f.evidence}` : ''}`;
 }
 
 function renderHandoff(result) {
@@ -339,7 +339,7 @@ function renderHandoff(result) {
   const followUps = ledger.status === 'clean' ? gateOpen.filter(gateFollowUpEligible) : [];
   if (followUps.length) {
     lines.push('', "Follow-up candidates (not fixed; roll over as root-cause tickets, then record the PR's delivery disposition):");
-    for (const f of followUps) lines.push(`  - [${f.id}] ${f.file}: ${f.summary}`, `    rationale: ${f.rationale}`);
+    for (const f of followUps) lines.push(`  - [${f.id}] ${f.file}: ${f.summary}`, `    rationale: ${f.rationale}`, ...(f.span ?? f.evidence ? [`    span: ${f.span ?? f.evidence}`] : []));
     lines.push('Note: `clean` here means the local loop converged; it is not the PR delivery disposition.');
   }
   if (gateOpen.length && !followUps.length) {

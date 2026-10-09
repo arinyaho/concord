@@ -44,6 +44,13 @@ test('handoff lists follow-up candidates and says clean is not the delivery disp
   assert.match(text, /not the PR delivery disposition/);
 });
 
+test('handoff follow-up candidates carry their anchor whether stored as evidence or span', () => {
+  const gateOpen = [{ ...eligible('gate:silent-gap:a'), evidence: 'const a = 1;' }, { ...eligible('gate:cross-context:b'), span: 'const b = 2;' }];
+  const text = cli.renderHandoff({ ledger: { ...review.emptyLedger({ ref: 'feat/x' }), status: 'clean', gate_open: gateOpen } });
+  assert.match(text, /- \[gate:silent-gap:a\] a\.txt: s\n {4}rationale: outcome and checks stay correct\n {4}span: const a = 1;/);
+  assert.match(text, /- \[gate:cross-context:b\] a\.txt: s\n {4}rationale: outcome and checks stay correct\n {4}span: const b = 2;/);
+});
+
 test('gate-verify blocking entries are validated by the artifact contract', () => {
   const base = { status: 'ok', rejected: [], findings: [] };
   assert.deepStrictEqual(normalizeArtifact('gate-verify', JSON.stringify({ ...base, blocking: [{ id: 'gate:silent-gap:a', reason: ' breaks AC ' }] })).blocking, [{ id: 'gate:silent-gap:a', reason: 'breaks AC' }]);
