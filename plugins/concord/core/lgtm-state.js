@@ -521,7 +521,14 @@ function validatePacket(packet) {
   if (!packet.reviewIds.every((id) => /^[0-9]+$/.test(String(id)))) throw new Error('review-lgtm-state: delivery reviewIds must be review ids');
   for (const finding of packet.findings) {
     if (finding.releaseBlocking != null && !Array.isArray(finding.releaseBlocking)) throw new Error(`review-lgtm-state: delivery finding ${text(finding.id)} releaseBlocking must be an array`);
-    if (!text(finding.url)) throw new Error('review-lgtm-state: delivery finding needs id and url');
+    const id = text(finding.id);
+    if (!id) throw new Error('review-lgtm-state: delivery finding needs an id');
+    if (!!text(finding.url) === (finding.local != null)) throw new Error(`review-lgtm-state: delivery finding ${id} needs exactly one of url or local`);
+    if (finding.local != null) {
+      const file = text(finding.local.file);
+      if (!file || path.posix.isAbsolute(file) || path.win32.isAbsolute(file) || file.split(/[\\/]/).includes('..')) throw new Error(`review-lgtm-state: delivery finding ${id} local needs a relative file`);
+      if (typeof finding.local.span !== 'string') throw new Error(`review-lgtm-state: delivery finding ${id} local span must be a string`);
+    }
     if (finding.disposition != null && !DISPOSITIONS.has(finding.disposition)) throw new Error(`review-lgtm-state: unknown disposition ${JSON.stringify(finding.disposition)}`);
     for (const category of finding.releaseBlocking || []) {
       if (!RELEASE_BLOCKING.has(category)) throw new Error(`review-lgtm-state: unknown release-blocking category ${JSON.stringify(category)}`);
@@ -573,7 +580,7 @@ function classifyDelivery(raw) {
     groups.push({ rootCause, ticket: ticket ? ticket.url : null, findingIds });
     if (!ticket) {
       reasons.push(`rollover-pending:${rootCause}`);
-      pending.push({ rootCause, findingIds, urls: members.map((finding) => finding.url), rationales: members.map((finding) => text(finding.rationale)) });
+      pending.push({ rootCause, findingIds, refs: members.map((finding) => (finding.url ? { url: finding.url } : { local: finding.local })), rationales: members.map((finding) => text(finding.rationale)) });
       continue;
     }
     if (ticket.readBack !== true) reasons.push(`ticket-unread:${rootCause}`);
@@ -583,7 +590,7 @@ function classifyDelivery(raw) {
   const residual = input.findings.some((finding) => finding.disposition !== 'fixed');
   const classification = reasons.length > 0 ? 'blocked' : residual ? 'mergeable-with-follow-ups' : 'mergeable-clean';
   const findings = input.findings.map((finding) => ({
-    id: finding.id, url: finding.url, disposition: finding.disposition || null,
+    id: finding.id, url: finding.url, local: finding.local, disposition: finding.disposition || null,
     rootCause: finding.rootCause || null, releaseBlocking: finding.releaseBlocking, rationale: finding.rationale || null, acceptedBy: finding.acceptedBy || null,
     ticket: finding.disposition === 'follow-up' ? tickets.get(text(finding.rootCause))?.url || null : null,
   }));
@@ -601,7 +608,7 @@ function canonicalPacket(packet) {
     requiredChecks: packet.requiredChecks.map((check) => ({ name: text(check.name), conclusion: text(check.conclusion) })),
     reviewsTerminal: packet.reviewsTerminal,
     openChoices: packet.openChoices.map(text),
-    findings: packet.findings.map((f) => ({ id: text(f.id), url: text(f.url), disposition: f.disposition || null, rootCause: text(f.rootCause), releaseBlocking: [...(f.releaseBlocking || [])].sort(), rationale: text(f.rationale), acceptedBy: text(f.acceptedBy) })),
+    findings: packet.findings.map((f) => ({ id: text(f.id), url: text(f.url) || null, local: f.local ? { file: text(f.local.file), span: f.local.span.trim() } : null, disposition: f.disposition || null, rootCause: text(f.rootCause), releaseBlocking: [...(f.releaseBlocking || [])].sort(), rationale: text(f.rationale), acceptedBy: text(f.acceptedBy) })),
     tickets: packet.tickets.map((t) => ({ rootCause: text(t.rootCause), url: text(t.url), readBack: t.readBack === true, reused: !!t.reused, duplicateCheck: text(t.duplicateCheck) })),
   };
 }

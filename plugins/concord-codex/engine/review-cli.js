@@ -243,6 +243,13 @@ function roundCandidates(gc, cJson, vJson) {
   return Array.from(byId.values());
 }
 
+// One line per archived or dismissed finding: what a delivery packet needs to reference it.
+function evidenceLine(f) {
+  // [] is an explicit follow-up classification, an absent field is unclassified (fail closed), anything else is shown as claimed.
+  const blocking = f.releaseBlocking == null ? 'unclassified' : [].concat(f.releaseBlocking).join(', ') || 'none';
+  return `[${f.id}] ${f.file}: ${f.summary}${f.rationale ? ` -- rationale: ${f.rationale}` : ''} -- release-blocking: ${blocking}${f.blockingReason ? ` -- verifier: ${f.blockingReason}` : ''}${f.span ?? f.evidence ? ` -- span: ${f.span ?? f.evidence}` : ''}`;
+}
+
 function renderHandoff(result) {
   const { ledger, aborted } = result;
   const lines = [];
@@ -260,6 +267,10 @@ function renderHandoff(result) {
   for (const r of ledger.runs || []) {
     lines.push(`prior run #${r.run} (${r.engine || 'engine unrecorded'}): ${r.status} -- ${r.rounds} round(s), ${(r.fixed || []).length} fixed, ${(r.parked || []).length} parked, ${(r.killed || []).length} killed`);
   }
+  for (const r of ledger.runs || []) {
+    for (const f of r.gate_open || []) lines.push(`  open in prior run #${r.run}: ${evidenceLine(f)}`);
+  }
+  for (const d of ledger.gate_dismissed || []) lines.push(`dismissed by ${d.dismissedBy}: ${evidenceLine(d)}`);
   if (aborted) lines.push(`ABORTED (${aborted.kind}): ${aborted.message}`);
 
   const dodLine = !ledger.dod
@@ -328,7 +339,7 @@ function renderHandoff(result) {
   const followUps = ledger.status === 'clean' ? gateOpen.filter(gateFollowUpEligible) : [];
   if (followUps.length) {
     lines.push('', "Follow-up candidates (not fixed; roll over as root-cause tickets, then record the PR's delivery disposition):");
-    for (const f of followUps) lines.push(`  - [${f.id}] ${f.file}: ${f.summary}`, `    rationale: ${f.rationale}`);
+    for (const f of followUps) lines.push(`  - [${f.id}] ${f.file}: ${f.summary}`, `    rationale: ${f.rationale}`, ...(f.span ?? f.evidence ? [`    span: ${f.span ?? f.evidence}`] : []));
     lines.push('Note: `clean` here means the local loop converged; it is not the PR delivery disposition.');
   }
   if (gateOpen.length && !followUps.length) {
@@ -554,6 +565,16 @@ function reserveOptions(rest) {
   const valid = Number.isInteger(count) && count >= 1 && (role === 'lens' ? count === GATE_PANEL_LENSES.length : role === 'vote' ? count % 3 === 0 : role === 'fix' || count === 1);
   if (!valid) throw new Error(`reserve: invalid --count ${count} for role "${role}" (lens: exactly ${GATE_PANEL_LENSES.length}; vote: a multiple of 3; fix: any positive count; others: 1)`);
   return { role, count };
+}
+
+// The fields of a broad-review finding that a delivery packet needs after the finding leaves gate_open
+// (rerun archive, dismissal): identity, location, summary and its follow-up classification.
+function dismissedIds(ledger) {
+  return (ledger.gate_dismissed || []).map((d) => d.id);
+}
+
+function findingEvidence(f, extra = {}) {
+  return { id: f.id, file: f.file, span: f.span ?? f.evidence ?? '', summary: f.summary, rationale: f.rationale, releaseBlocking: f.releaseBlocking, ...(f.blockingReason ? { blockingReason: f.blockingReason } : {}), ...extra };
 }
 
 function rerunOptions(rest) {
@@ -1089,7 +1110,7 @@ function verifiedRound(ref, stateDir, run, what) {
       if (!byId.has(b.id)) throw new Error(`harness-failure: gate-verify blocking id "${b.id}" is not a gate candidate`);
       blockingReasons.set(b.id, b.reason);
     }
-    const thisRound = gateLib.foldGateFindings({ gateFindings: mergedGateFindings, verifyRejectedIds: rejected, dismissedIds: ledger.gate_dismissed || [] })
+    const thisRound = gateLib.foldGateFindings({ gateFindings: mergedGateFindings, verifyRejectedIds: rejected, dismissedIds: dismissedIds(ledger) })
       .map((f) => (blockingReasons.has(f.id) ? { ...f, blockingReason: blockingReasons.get(f.id) } : f));
     // Cross-round persistence (spec decision 4): gate findings must PERSIST
     // across rounds, not be overwritten fresh each round -- a round where the
@@ -1104,7 +1125,7 @@ function verifiedRound(ref, stateDir, run, what) {
       priorGateOpen: ledger.gate_open || [],
       thisRoundIds: thisRound.map((f) => f.id),
       verifyRejectedIds: rejected,
-      dismissedIds: ledger.gate_dismissed || [],
+      dismissedIds: dismissedIds(ledger),
       changedFiles: changed,
     });
     gateOpen = thisRound.concat(carried);
@@ -1606,7 +1627,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // would otherwise silently reappear once the panel completes. Drop it here,
     // at the earliest point it's known, same as foldGateFindings/
     // carryForwardGateFindings already do for the lightweight GATE (lib/gate.js).
-    const dismissed = new Set(ledger.gate_dismissed || []);
+    const dismissed = new Set(dismissedIds(ledger));
     allCandidates = allCandidates.filter((f) => !dismissed.has(f.id));
 
     // The verify pass is the opposite lenience direction: missing/malformed
@@ -2059,7 +2080,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       priorGateOpen: broadReuse.gate_open || [],
       thisRoundIds: [],
       verifyRejectedIds: [],
-      dismissedIds: ledger.gate_dismissed || [],
+      dismissedIds: dismissedIds(ledger),
       changedFiles: reusedGateChangedPaths,
     }) : ledger.gate_open;
     let gateArmed = lite ? true : broadFlagPassed ? true
@@ -2286,7 +2307,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     const gateCfg = gateLib.loadGateConfig(repoRoot);
     let gateOpen = ledger.gate_open || [];
     if (ledger.gate_panel && ledger.gate_panel.status === 'done') {
-      gateOpen = gatePanelLib.mergePanelIntoGate(gateOpen, ledger.gate_panel.confirmed || [], ledger.gate_dismissed || []);
+      gateOpen = gatePanelLib.mergePanelIntoGate(gateOpen, ledger.gate_panel.confirmed || [], dismissedIds(ledger));
       ledger = { ...ledger, gate_open: gateOpen };
     }
 
@@ -2675,9 +2696,15 @@ function runVerb(resolveFromCwd, args, initiative) {
     const slug = targetSlug(ref);
     const ledger = readLedger(stateDir, slug);
     if (!ledger) throw new Error(`review-cli dismiss: no ledger for ref "${ref}" ${stateDirHint(stateDir)}`);
-    const dismissed = Array.from(new Set([...(ledger.gate_dismissed || []), gateId]));
-    const gateOpen = (ledger.gate_open || []).filter((f) => f.id !== gateId);
-    writeLedger(stateDir, slug, { ...ledger, gate_dismissed: dismissed, gate_open: gateOpen });
+    const byFlag = rest.indexOf('--by');
+    const by = byFlag >= 0 && rest[byFlag + 1] ? rest[byFlag + 1].trim() : '';
+    if (!by) throw new Error('review-cli dismiss: --by <name> is required; a dismissal records the human who made it');
+    const open = (ledger.gate_open || []).find((f) => f.id === gateId);
+    const already = (ledger.gate_dismissed || []).find((d) => d.id === gateId);
+    if (!open && !already) throw new Error(`review-cli dismiss: ${gateId} is not an open gate finding`);
+    if (!already) {
+      writeLedger(stateDir, slug, { ...ledger, gate_dismissed: (ledger.gate_dismissed || []).concat([findingEvidence(open, { dismissedBy: by, dismissedAt: new Date().toISOString() })]), gate_open: (ledger.gate_open || []).filter((f) => f.id !== gateId) });
+    }
     process.stdout.write(`dismissed ${gateId}; it will no longer surface or block for ref "${ref}".\n`);
     return;
   }
@@ -2743,7 +2770,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       fixed: (prior.findings || []).filter((f) => f.status === 'fixed').map((f) => ({ id: f.id, summary: f.summary, fix_commit: f.fix_commit })),
       parked: (prior.findings || []).filter((f) => f.status === 'parked').map((f) => f.id),
       killed: prior.killed_digest || [],
-      gate_open: (prior.gate_open || []).map((f) => f.id),
+      gate_open: (prior.gate_open || []).map((f) => findingEvidence(f)),
       telemetry: prior.telemetry || null,
       archive,
     }]);

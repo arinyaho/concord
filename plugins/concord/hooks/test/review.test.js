@@ -1091,3 +1091,9 @@ test('applyRoundOutcome + readLedger: a pre-existing ledger without dryStreak re
   assert.strictEqual(back.dryStreak, undefined); // absent -> read sites default it to 0
   assert.strictEqual(back.target.hasDoD, undefined); // absent -> derived as git/true
 });
+
+test('renderReviewReport: the gate-pending report advertises dismiss with the required --by', () => {
+  const l = { ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), status: 'gate-pending', round: 1, gate_open: [{ id: 'gate:silent-gap:a', file: 'a.js', summary: 's' }] };
+  const out = review.renderReviewReport([{ slug: 'feat-x', ledger: l }]);
+  assert.match(out, /dismiss feat\/x <gateId> --by <name>/);
+});
