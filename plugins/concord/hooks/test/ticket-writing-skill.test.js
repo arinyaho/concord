@@ -38,6 +38,18 @@ test('Claude and Codex source packages ship the same ticket-to-pr skill', () => 
   assert.equal(read(CODEX_TICKET_TO_PR), read(CLAUDE_TICKET_TO_PR));
 });
 
+test('ticket-to-pr requires a state-and-event table for stateful changes and a test per row', () => {
+  const skill = read(CLAUDE_TICKET_TO_PR);
+  const rows = Object.fromEntries(
+    skill.split('\n').filter((l) => /^\| \d \|/.test(l)).map((l) => [l.split('|')[1].trim(), l]),
+  );
+  assert.match(rows['3'], /persisted state or a retry, recovery or replay path/);
+  assert.match(rows['3'], /table of states and events/);
+  assert.match(rows['3'], /no persisted state/);
+  assert.match(rows['6'], /state-and-event row has a named test/);
+  assert.match(rows['6'], /recorded reason/);
+});
+
 test('Claude and Codex source packages ship the same initiative-to-prs skill', () => {
   for (const file of INITIATIVE_TO_PRS_FILES) {
     const claude = path.join(REPO, 'plugins/concord/skills/initiative-to-prs', file);
