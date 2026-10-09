@@ -634,7 +634,8 @@ function activeReviewIds(input) {
 // A record covers only the review batch active when it was written; a review
 // recorded or rejected later is new evidence and lifts the terminal state.
 function deliveryCurrent(input, record) {
-  return !!record && JSON.stringify(record.reviewIds) === JSON.stringify(activeReviewIds(input));
+  return !!record && JSON.stringify(record.reviewIds) === JSON.stringify(activeReviewIds(input))
+    && record.budgets?.fix?.max === fixBudget(input).max;
 }
 
 function deliveryTerminal(input) {
@@ -685,7 +686,7 @@ function selfFeeding({ repoRoot, stateDir, pr, headSha, file, start, end }) {
     .find((marker) => isAncestor(marker.headSha));
   if (!previous) return { selfFeeding: false, previousFixHead: null };
   // The whole range is diffed with rename detection and matched by destination path, so the file never reaches git as an argument.
-  const diff = run(['-c', 'core.quotepath=off', 'diff', '-U0', '-M', '--inter-hunk-context=0', '--no-color', '--no-ext-diff', '--no-textconv', `${previous.headSha}..${key.headSha}`]);
+  const diff = run(['-c', 'core.quotepath=off', 'diff', '-U0', '-M', '--inter-hunk-context=0', '--src-prefix=a/', '--dst-prefix=b/', '--no-color', '--no-ext-diff', '--no-textconv', `${previous.headSha}..${key.headSha}`]);
   let inFile = false;
   let overlaps = false;
   for (const line of diff.split('\n')) {

@@ -934,3 +934,15 @@ test('self-feeding surfaces git failures instead of reporting not self-feeding',
   claimFixHead(stateDir, 'b'.repeat(40), 1000);
   assert.throws(() => lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'a.md', start: 1, end: 1 }));
 });
+
+test('self-feeding does not depend on the configured diff path prefix', () => {
+  const { repo, write, commit } = selfFeedingRepo('lgtm-self-prefix-');
+  write('a.md', '1\n2\n');
+  const reviewed = commit('base');
+  git(repo, 'config', 'diff.noprefix', 'true');
+  write('a.md', '1\n2\n3\n');
+  const head = commit('fix');
+  const stateDir = temp();
+  claimFixHead(stateDir, reviewed, 1000);
+  assert.strictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: 221, headSha: head, file: 'a.md', start: 3, end: 3 }).selfFeeding, true);
+});
