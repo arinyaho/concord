@@ -35,6 +35,14 @@ If the work is tracked somewhere and the user explicitly requests or approves an
 
 Nothing here moves the outcome to `READY FOR TEST` or `Done`. Stage 9 ends at a PR URL with a recorded delivery disposition. Merge, release, deployment, combined QA, and the outcome ticket's final status are separate decisions.
 
+## Waiting and test scope
+
+Wait for a long command with one blocking wait or a background notification, never with repeated short sleeps.
+
+During implementation and fix rounds, run the tests focused on the change, still in the environment CI uses as stage 6 requires; run the full test suite once, on the final head, together with the DoD. A defect only the full suite shows then appears at the end, and CI still runs the full suite on the PR.
+
+When a turn passes 30 minutes, say in one line what is running and what the budget status is.
+
 ## Notion ticket lifecycle
 
 When the input work item is a Notion ticket, the `ticket-to-pr` request authorizes its lifecycle updates. At pipeline entry, before stage 3, read the ticket and its database schema. Resolve exactly one editable status property with one `In progress` and one `In review` option, and use that same property throughout; otherwise stop and report the blocker. A database that cannot expose this standard lifecycle is a blocker even when the current status needs no transition. If the current status is already `In review` or `Done`, preserve it and verify the readback. If it is `In progress`, preserve and verify it. Transition only an explicitly unambiguous pre-start status to `In progress`, then verify the readback; all other current statuses are blockers.
