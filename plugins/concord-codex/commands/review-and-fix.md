@@ -1,13 +1,17 @@
 ---
 description: Deterministically review, fix, commit, and repeat with independently selected Claude, Codex, or Copilot providers and models until Concord reaches a terminal decision.
-argument-hint: "[target | file:<path-or-glob> | resume <ref>] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--broad|--no-broad] [--no-dod] [--review-only] [--intent-file <path>]"
+argument-hint: "[target | file:<path-or-glob> | resume <ref>] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--broad|--no-broad] [--no-dod] [--review-only] [--intent-file <path>] [:: <reviewer guidance>]"
 ---
 
 Run the bundled deterministic runner once; do not manually orchestrate reviewers:
 
 ```sh
-node "${CLAUDE_PLUGIN_ROOT}/bin/review-and-fix.js" $ARGUMENTS
+node "${CLAUDE_PLUGIN_ROOT}/bin/review-and-fix.js" --arguments-stdin <<'CONCORD_REVIEW_ARGUMENTS'
+$ARGUMENTS
+CONCORD_REVIEW_ARGUMENTS
 ```
+
+`::` is a separator only when it is a standalone token. Everything after it is reviewer guidance, transported as literal text and never parsed as flags or natural-language options. Guidance is accepted only when a run starts; use `resume <ref>` without `::` to reuse the stored guidance. Guidance prioritizes attention but does not narrow the changed-file coverage requirement or alter what counts as a finding.
 
 `--review-only` stops after the finders and verifiers and prints the verified findings as JSON without planning, fixing, or recording; it treats the checkout as untrusted, so it runs none of the checkout's configuration, fails if a reviewer changes HEAD, the visible worktree, or any tracked path's type, mode or content, and accepts the `claude` and `codex` reviewers. `--intent-file <path>` supplies the review intent from a file in place of the repository's configured intent command. Both exist only in this runner; the Claude Code and Copilot drivers do not take them.
 

@@ -4,9 +4,59 @@ const path = require('node:path');
 const { snapshotRunEngine } = require('../engine/run-snapshot');
 const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('../engine/spawn-cross-platform');
 
-const args = process.argv.slice(2);
+function parseArgumentString(input) {
+  const args = [];
+  let index = 0;
+  while (index < input.length) {
+    while (/\s/.test(input[index] || '')) index++;
+    if (index >= input.length) break;
+    let value = '';
+    let quote = null;
+    while (index < input.length) {
+      const char = input[index];
+      if (!quote && /\s/.test(char)) break;
+      if (char === '\\' && quote !== "'") {
+        index++;
+        if (index < input.length) value += input[index++];
+        continue;
+      }
+      if (char === "'" || char === '"') {
+        if (!quote) quote = char;
+        else if (quote === char) quote = null;
+        else value += char;
+        index++;
+        continue;
+      }
+      value += char;
+      index++;
+    }
+    if (quote) throw new Error('review-and-fix: unterminated quote before reviewer guidance');
+    if (value === '::') return { args, reviewerGuidance: input.slice(index).trim() };
+    args.push(value);
+  }
+  return { args, reviewerGuidance: null };
+}
+
+let args;
+let reviewerGuidance;
+try {
+  if (process.argv[2] === '--arguments-stdin') ({ args, reviewerGuidance } = parseArgumentString(require('node:fs').readFileSync(0, 'utf8')));
+  else {
+    const rawArgs = process.argv.slice(2);
+    const guidanceSeparator = rawArgs.indexOf('::');
+    args = guidanceSeparator === -1 ? rawArgs : rawArgs.slice(0, guidanceSeparator);
+    reviewerGuidance = guidanceSeparator === -1 ? null : rawArgs.slice(guidanceSeparator + 1).join(' ').trim();
+  }
+} catch (error) {
+  process.stderr.write(`${error.message}\n`);
+  process.exit(1);
+}
+if (reviewerGuidance !== null && !reviewerGuidance) {
+  process.stderr.write('review-and-fix: :: requires non-empty reviewer guidance\n');
+  process.exit(1);
+}
 if (args.includes('--help') || args.includes('-h')) {
-  process.stdout.write('Usage: review-and-fix [<branch> [<base>] | file:<path-or-glob> | resume <ref>] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--reasoning-effort <effort>] [--service-tier <tier>] [--initiative-run-key <key> --initiative-id <id> --initiative-state-dir <absolute-dir> --initiative-max-launches <n> --initiative-max-rounds <n> [--initiative-mode <base|lite>] [--initiative-finalise]] [--session-handoff <off|suggest|stop-at-checkpoint>] [--broad|--no-broad] [--no-dod] [--review-only] [--intent-file <path>]\n');
+  process.stdout.write('Usage: review-and-fix [<branch> [<base>] | file:<path-or-glob> | resume <ref>] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--reasoning-effort <effort>] [--service-tier <tier>] [--initiative-run-key <key> --initiative-id <id> --initiative-state-dir <absolute-dir> --initiative-max-launches <n> --initiative-max-rounds <n> [--initiative-mode <base|lite>] [--initiative-finalise]] [--session-handoff <off|suggest|stop-at-checkpoint>] [--broad|--no-broad] [--no-dod] [--review-only] [--intent-file <path>] [:: <reviewer guidance>]\n');
   process.exit(0);
 }
 const broadPhraseArgs = new Set();
@@ -26,6 +76,7 @@ const noDod = args.includes('--no-dod');
 // --review-only stops after verification and prints the verified findings; nothing is edited.
 const reviewOnly = args.includes('--review-only');
 const inference = {};
+if (reviewerGuidance) inference.reviewerGuidance = reviewerGuidance;
 const inferenceArgs = new Set();
 if (args.includes('--initiative-finalise')) { inference.initiativeFinalise = true; inferenceArgs.add(args.indexOf('--initiative-finalise')); }
 for (const [flag, field] of [['--session-handoff', 'sessionHandoff'], ['--reviewer', 'reviewer'], ['--reviewer-model', 'reviewerModel'], ['--fixer', 'fixer'], ['--fixer-model', 'fixerModel'], ['--reasoning-effort', 'reasoningEffort'], ['--service-tier', 'serviceTier'], ['--initiative-run-key', 'initiativeRunKey'], ['--initiative-id', 'initiativeId'], ['--initiative-state-dir', 'initiativeStateDir'], ['--initiative-max-launches', 'initiativeMaxLaunches'], ['--initiative-max-rounds', 'initiativeMaxRounds'], ['--initiative-mode', 'initiativeMode'], ['--intent-file', 'intentFile']]) {

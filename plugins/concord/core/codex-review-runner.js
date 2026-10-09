@@ -20,7 +20,7 @@ const artifactContract = require('./artifact-contract');
 const { isValidFindingId } = require('./gate-contract');
 const { same } = require('./review-eval');
 const { PANEL_LENSES } = require('./report');
-const { BLOCKED_CLAUSE, cliClause, reviewerPrompt, reportedNoEdit } = require('./round-plan');
+const { BLOCKED_CLAUSE, cliClause, reviewerGuidancePrefix, reviewerPrompt, reportedNoEdit } = require('./round-plan');
 const { isWindows, crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
 const { providerFailure, normalizeProviderFailure, reviewContinuation } = require('./provider-failure');
 
@@ -493,6 +493,7 @@ async function runRounds(options) {
   // Copilot runs with every tool allowed and has no way to ignore the
   // checkout's own instruction files, so it cannot review an untrusted checkout.
   if (reviewOnly && resume) throw new Error('review-until-green: reviewOnly cannot resume; it keeps no ledger to recover the base from, so name the ref and base again');
+  if (resume && options.reviewerGuidance) throw new Error('review-until-green: reviewer guidance is fixed when a run starts; resume without `::` to reuse the stored guidance');
   if (reviewOnly && options.reviewer === 'copilot') throw new Error('review-until-green: reviewOnly supports the claude and codex reviewers; copilot cannot be kept from an untrusted checkout\'s configuration');
   const repoRoot = canonicalPath(configuredRepoRoot);
   const canonicalRepoRoot = repoRoot;
@@ -758,13 +759,17 @@ async function runRounds(options) {
   };
   const runPanel = async (context, launch, reserve) => {
     const lenses = PANEL_LENSES;
+    const launchLens = (input) => launch({
+      ...input,
+      prompt: `${reviewerGuidancePrefix(context.reviewerGuidance)}${input.prompt}`,
+    });
     for (;;) {
       const panel = await cli(['gate-panel-round-start', ref]);
       await reserve('lens', lenses.length);
       const lensResults = await Promise.allSettled(lenses.map(async (lens) => {
         const artifact = path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-${lens}.json`);
         try {
-          await launch({ preReserved: true, role: `gate-panel-${lens}`, repoRoot, stateDir: context.stateDir,
+          await launchLens({ preReserved: true, role: `gate-panel-${lens}`, repoRoot, stateDir: context.stateDir,
             prompt: `Review ${path.join(context.stateDir, `round-${context.round}-diff.txt`)} and the repository through the ${lens} lens. You MAY Read/Grep the repository and MUST read ${path.join(context.stateDir, `intent-${context.slug}.md`)} if it exists to assess the design and acceptance criteria. Previously rejected IDs: ${JSON.stringify(panel.rejectedIds || [])} -- do not re-raise one unless you found something the earlier round did not. Every candidate faces three adversarial verifiers that default to REFUTED when uncertain and decide by majority, so a gap you cannot anchor in evidence will not survive: substantiate what you raise rather than raising more. Write ONLY {"status":"ok","findings":[]} to ${artifact}; every ID must use gate:${lens}:<slug>.${BLOCKED_CLAUSE}${cliClause(cliPath)}` });
         } catch (error) {
           if (error.initiativeBlocked || (error.reviewFailure && ['interrupted', 'timeout', 'signal'].includes(error.reviewFailure.kind))) throw error;
@@ -859,6 +864,7 @@ async function runRounds(options) {
     return output;
   };
 
+  let pendingReviewerGuidance = options.reviewerGuidance || null;
   for (;;) {
     await throwIfAborted();
     const startArgs = ['round-start', ref];
@@ -867,6 +873,7 @@ async function runRounds(options) {
     if (noBroad) startArgs.push('--no-broad'); // broad review is on by default; this is the opt-out
     if (noDod) startArgs.push('--no-dod');
     if (options.intentFile) startArgs.push('--intent-file', options.intentFile);
+    if (pendingReviewerGuidance) startArgs.push('--reviewer-guidance', pendingReviewerGuidance);
     // A review-only checkout is untrusted: its configured intent command is never run.
     if (reviewOnly) startArgs.push('--no-intent-command');
     // The keyed run is the mode authority: round-start reads the run's mode and rejects a flag that disagrees.
@@ -879,7 +886,7 @@ async function runRounds(options) {
     if (options.reviewerModel) startArgs.push('--reviewer-model', options.reviewerModel);
     if (options.fixerModel) startArgs.push('--fixer-model', options.fixerModel);
     let started;
-    try { started = await cli(startArgs); }
+    try { started = await cli(startArgs); pendingReviewerGuidance = null; }
     catch (error) {
       // A refused round has not established executable recovery preconditions.
       // In particular, a failed durable refusal must not replay old pending state.
@@ -917,7 +924,7 @@ async function runRounds(options) {
     if (started.decision !== 'work') return withTelemetry(started);
     currentRound = started.round;
     checks = [{ name: 'definition-of-done', status: started.dodPending ? 'pending' : started.dodDeferred ? 'deferred' : (started.dodPassed ? 'passed' : 'failed') }];
-    const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodDeferred: started.dodDeferred, dodPending: started.dodPending, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref), gateMode: started.gateMode, gateApplied: started.gateApplied, intentHash: started.intentHash, cliPath };
+    const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodDeferred: started.dodDeferred, dodPending: started.dodPending, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref), gateMode: started.gateMode, gateApplied: started.gateApplied, intentHash: started.intentHash, cliPath, reviewerGuidance: started.reviewerGuidance || null };
     const reviewRoles = reviewOnly ? [
       ...(started.intentApplied ? ['intent'] : []), 'correctness',
       ...(started.gateApplied ? ['gate'] : []), 'verify',

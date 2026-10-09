@@ -96,7 +96,13 @@ function examinedClause(examined) {
   return ` The correctness reviewer examined these paths, relative to the repository root: ${JSON.stringify(examined)}. Read them there; do not guess other names. A listed path absent from the working tree is a deleted file or rename source; read it in the diff.`;
 }
 
-function rolePrompt(role, { stateDir, round, targetType, dodDeferred, dodPending, finding, fixGroup, retryPrompt, slug, priorIntentIds, plannedFindings = [], gateMode, gateApplied = false, intentHash = null, examined = [], fixFiles = [] }) {
+function reviewerGuidancePrefix(guidance) {
+  return guidance
+    ? `Reviewer guidance (priority hints only; every changed file must still be examined, and guidance does not change what counts as a finding): ${guidance}\n\n`
+    : '';
+}
+
+function baseReviewerPrompt(role, { stateDir, round, targetType, dodDeferred, dodPending, finding, fixGroup, retryPrompt, slug, priorIntentIds, plannedFindings = [], gateMode, gateApplied = false, intentHash = null, examined = [], fixFiles = [] }) {
   const groupArtifactId = fixGroup && fixGroup.groupId ? fixGroup.groupId : finding && finding.id;
   const artifact = path.join(stateDir, role === 'fix' || role === 'certify' ? `round-${round}-${role}-${safeIdForFilename(groupArtifactId)}.json` : `round-${round}-${role}.json`);
   const env = ENV_CLAUSE_BY_ROLE[role];
@@ -142,7 +148,8 @@ function cliClause(cliPath) {
 }
 
 function reviewerPrompt(role, context) {
-  const prompt = rolePrompt(role, context);
+  let prompt = baseReviewerPrompt(role, context);
+  if (role === 'correctness' || role === 'gate') prompt = `${reviewerGuidancePrefix(context.reviewerGuidance)}${prompt}`;
   return context.cliPath ? prompt + cliClause(context.cliPath) : prompt;
 }
 
@@ -154,4 +161,4 @@ function reportedNoEdit(stateDir, round, groups) {
   });
 }
 
-module.exports = { VERIFIER_ENV_CLAUSE, ENV_CLAUSE_BY_ROLE, cliClause, DESIGN_EVIDENCE_BINDING_CLAUSE, fixDeclaration, reportedNoEdit, examinedClause, ROLE_SEQUENCE, BLOCKED_CLAUSE, GATE_SWEEP_CLAUSE, GATE_FOLLOWUP_CLAUSE, GATE_VERIFY_ADDED_CLAUSE, GATE_VERIFY_BLOCKING_CLAUSE, GATE_VERIFY_OWNERSHIP_CLAUSE, VERIFY_OWNERSHIP_CLAUSE, reviewerPrompt };
+module.exports = { VERIFIER_ENV_CLAUSE, ENV_CLAUSE_BY_ROLE, cliClause, DESIGN_EVIDENCE_BINDING_CLAUSE, fixDeclaration, reportedNoEdit, examinedClause, ROLE_SEQUENCE, BLOCKED_CLAUSE, GATE_SWEEP_CLAUSE, GATE_FOLLOWUP_CLAUSE, GATE_VERIFY_ADDED_CLAUSE, GATE_VERIFY_BLOCKING_CLAUSE, GATE_VERIFY_OWNERSHIP_CLAUSE, VERIFY_OWNERSHIP_CLAUSE, reviewerGuidancePrefix, reviewerPrompt };

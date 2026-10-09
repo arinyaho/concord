@@ -1,6 +1,6 @@
 ---
 description: Repeatedly review a branch or PR, fix what the review finds, and re-check until the deterministic Concord CLI reaches a terminal decision. Reviewer and fixer providers and models may be selected independently.
-argument-hint: "[target | resume <ref>] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--no-broad] [--no-dod]"
+argument-hint: "[target | resume <ref>] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--no-broad] [--no-dod] [:: <reviewer guidance>]"
 ---
 
 <!-- Composed from plugins/concord/core/review-driver.md + plugins/concord/adapters/claude-code/spawn-include.md. Edit those sources, not this file, then recompose. -->
@@ -12,6 +12,12 @@ Concord IS the reviewer. The findings for every round come from the review subag
 A 30-second foreground wait or empty output is not a terminal result. While an owned driver process is alive, keep waiting in one shell command that exits when that process exits or the ledger turns terminal (a background watch where the host has one), not by repeated model-level sleep or status calls; a non-terminal ledger without a live driver is a stopped driver, so report it rather than waiting indefinitely. Report a terminal result only from a durable terminal disposition or the ledger's bounded no-progress decision. Before declaring a reviewer blocked because its skill cannot be found, resolve the installed skill path recursively to the actual `SKILL.md`; do not assume a flat install layout.
 
 Arguments: `$ARGUMENTS`
+
+The literal separator `::` introduces reviewer guidance.
+
+Never read that text as the target ref or base. Use it only in the correctness, gate-review, and gate-panel lens prompts. Do not include it in verify, gate-verify, intent, plan, fix, certify, record, or termination inputs.
+
+Treat `::` as the reviewer-guidance separator only when it is a standalone token. Parse targets, flags, and natural-language option inference exclusively from the tokens before it; text after it is literal reviewer guidance, so strings such as `--no-dod`, `quick pass`, or `::focus` there never change run options. Guidance is accepted only on the first `round-start`; later rounds and `resume` omit it and reuse the value returned by `round-start`. Prefix the correctness and broad gate finder prompts with that returned value as priority hints only: every changed file must still be examined, and guidance does not change what counts as a finding.
 
 Remove the recognized provider/model option-value pairs before determining the target ref: empty -> current branch (`git branch --show-current`); `resume <ref>` -> the ref after `resume`; else the first positional argument. The base ref is the second positional token. A fresh git start requires it and the CLI refuses one without it; when the user names none, pass the repo's remote main branch, `origin/<main>` (a local base can be stale, behind its remote, which sweeps unrelated merged changes into the diff). A resume passes no base and reuses the one recorded at the fresh start.
 

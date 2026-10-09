@@ -292,9 +292,10 @@ function renderHandoff(result) {
     lines.push(`routing: reviewer ${reviewer}; fixer ${fixer}`);
   }
   if (ledger.engine) lines.push(`reviewer engine: ${ledger.engine}`);
+  if (ledger.reviewerGuidance) lines.push(`reviewer guidance: ${JSON.stringify(ledger.reviewerGuidance)}`);
   if (ledger.telemetry) lines.push(`review usage: ${ledger.telemetry.totalTokens ?? 'unknown'} tokens across ${ledger.telemetry.calls} call(s), ${ledger.telemetry.partialCalls} partial${ledger.telemetry.missingCalls ? `, ${ledger.telemetry.missingCalls} missing` : ''}${ledger.telemetry.malformedCalls ? `, ${ledger.telemetry.malformedCalls} malformed` : ''}`);
   for (const r of ledger.runs || []) {
-    lines.push(`prior run #${r.run} (${r.engine || 'engine unrecorded'}): ${r.status} -- ${r.rounds} round(s), ${(r.fixed || []).length} fixed, ${(r.parked || []).length} parked, ${(r.killed || []).length} killed`);
+    lines.push(`prior run #${r.run} (${r.engine || 'engine unrecorded'}): ${r.status} -- ${r.rounds} round(s), ${(r.fixed || []).length} fixed, ${(r.parked || []).length} parked, ${(r.killed || []).length} killed${r.reviewerGuidance ? `; guidance ${JSON.stringify(r.reviewerGuidance)}` : ''}`);
   }
   for (const r of ledger.runs || []) {
     for (const f of r.gate_open || []) lines.push(`  open in prior run #${r.run}: ${evidenceLine(f)}`);
@@ -1844,11 +1845,25 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (ref === 'resume') {
       throw new Error('review-cli round-start: "resume" is not a valid ref -- round-start auto-detects resume from ledger state; call `round-start <ref>` directly, or use the review-until-green wrapper\'s `resume <ref>` syntax, which forwards correctly');
     }
-    // Rejected before any state is written: the intent-review and gate-pending resets below delete the cached intent.
-    requireRoundStartMode(run, rest);
     const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
     const slug = targetSlug(ref);
-    let ledger = readLedger(stateDir, slug) || emptyLedger({ kind: 'local', ref });
+    const storedLedger = readLedger(stateDir, slug);
+    const guidanceIndexes = [];
+    for (let index = 0; index < rest.length; index++) if (rest[index] === '--reviewer-guidance') guidanceIndexes.push(index);
+    if (guidanceIndexes.length > 1) throw new Error('review-cli round-start: --reviewer-guidance may be supplied only once');
+    const guidanceAt = guidanceIndexes[0] ?? -1;
+    const requestedGuidance = guidanceAt === -1 ? null : rest[guidanceAt + 1];
+    if (guidanceAt !== -1 && (requestedGuidance == null || !requestedGuidance.trim())) {
+      throw new Error('review-cli round-start: --reviewer-guidance requires exactly one non-empty value');
+    }
+    if (guidanceAt !== -1 && storedLedger) {
+      throw new Error('review-cli round-start: reviewer guidance is fixed when a run starts; resume without --reviewer-guidance to reuse the stored guidance');
+    }
+    const optionArgs = guidanceAt === -1 ? rest : rest.filter((_, index) => index !== guidanceAt && index !== guidanceAt + 1);
+    // Rejected before any state is written: the intent-review and gate-pending resets below delete the cached intent.
+    requireRoundStartMode(run, optionArgs);
+    let ledger = storedLedger || emptyLedger({ kind: 'local', ref });
+    const reviewerGuidance = storedLedger?.reviewerGuidance || requestedGuidance || null;
     const ROUTING_FLAGS = new Map([
       ['--reviewer', 'reviewer'],
       ['--reviewer-model', 'reviewerModel'],
@@ -1857,12 +1872,12 @@ function runVerb(resolveFromCwd, args, initiative) {
     ]);
     const routingIndexes = new Set();
     const requestedRouting = {};
-    for (let index = 0; index < rest.length; index++) {
-      const field = ROUTING_FLAGS.get(rest[index]);
+    for (let index = 0; index < optionArgs.length; index++) {
+      const field = ROUTING_FLAGS.get(optionArgs[index]);
       if (!field) continue;
-      const value = rest[index + 1];
+      const value = optionArgs[index + 1];
       if (!value || value.startsWith('--') || Object.hasOwn(requestedRouting, field)) {
-        throw new Error(`review-cli round-start: ${rest[index]} requires exactly one value`);
+        throw new Error(`review-cli round-start: ${optionArgs[index]} requires exactly one value`);
       }
       requestedRouting[field] = value;
       routingIndexes.add(index);
@@ -1890,9 +1905,9 @@ function runVerb(resolveFromCwd, args, initiative) {
     // a usage error rather than silently falling through to `base` (which would
     // produce a confusing downstream git error against a nonsense ref).
     const BROAD_FLAGS = new Set(['--broad', '--gate']);
-    const broadFlagPassed = rest.some((a) => BROAD_FLAGS.has(a));
+    const broadFlagPassed = optionArgs.some((a) => BROAD_FLAGS.has(a));
     const NO_BROAD_FLAGS = new Set(['--no-broad']);
-    const noBroadFlagPassed = rest.some((a) => NO_BROAD_FLAGS.has(a));
+    const noBroadFlagPassed = optionArgs.some((a) => NO_BROAD_FLAGS.has(a));
     const lite = !!run && runMode(run) === 'lite';
     // Executable-DoD opt-out (--no-dod): the same deferral `"dod": null` in
     // review.config.json declares, asked for per-run instead. It exists for a
@@ -1901,18 +1916,18 @@ function runVerb(resolveFromCwd, args, initiative) {
     // The review gates still run; the DoD is reported deferred and never faked
     // to a pass.
     const NO_DOD_FLAGS = new Set(['--no-dod']);
-    const noDodFlagPassed = rest.some((a) => NO_DOD_FLAGS.has(a));
+    const noDodFlagPassed = optionArgs.some((a) => NO_DOD_FLAGS.has(a));
     // --intent-file <path>: the caller supplies the intent text directly and the
     // repository's configured intent command, if any, is not run.
     // --no-intent-command: the checkout is untrusted, so its configured intent
     // command is not run; only an --intent-file supplies intent.
-    const noIntentCommand = rest.includes('--no-intent-command');
-    const intentFileAt = rest.indexOf('--intent-file');
-    const intentFile = intentFileAt === -1 ? null : rest[intentFileAt + 1];
-    if (intentFileAt !== -1 && (!intentFile || intentFile.startsWith('--') || rest.indexOf('--intent-file', intentFileAt + 1) !== -1)) {
+    const noIntentCommand = optionArgs.includes('--no-intent-command');
+    const intentFileAt = optionArgs.indexOf('--intent-file');
+    const intentFile = intentFileAt === -1 ? null : optionArgs[intentFileAt + 1];
+    if (intentFileAt !== -1 && (!intentFile || intentFile.startsWith('--') || optionArgs.indexOf('--intent-file', intentFileAt + 1) !== -1)) {
       throw new Error('review-cli round-start: --intent-file requires exactly one value');
     }
-    const positional = rest.filter((a, index) => !BROAD_FLAGS.has(a) && !NO_BROAD_FLAGS.has(a) && !NO_DOD_FLAGS.has(a) && a !== '--no-intent-command' && !routingIndexes.has(index)
+    const positional = optionArgs.filter((a, index) => !BROAD_FLAGS.has(a) && !NO_BROAD_FLAGS.has(a) && !NO_DOD_FLAGS.has(a) && a !== '--no-intent-command' && !routingIndexes.has(index)
       && (intentFileAt === -1 || (index !== intentFileAt && index !== intentFileAt + 1)));
     for (const tok of positional) {
       if (tok.startsWith('--')) throw new Error(`review-cli round-start: unknown flag "${tok}"`);
@@ -2101,7 +2116,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     const intentCfg = intentFile ? { file: path.resolve(intentFile) } : noIntentCommand ? null : intentLib.loadIntentConfig(repoRoot);
     const fetchIntentNow = () => (intentCfg.file ? intentLib.readIntentFile(intentCfg.file) : intentLib.fetchIntent({ command: intentCfg.command, cwd: repoRoot, ref, base }));
     const broadReuse = ledger.broad_reuse;
-    const reuseFrontPass = !!broadReuse && !broadFlagPassed && !noBroadFlagPassed && !isFileTarget && !intentCfg && !broadReuse.intentHash
+    const reuseFrontPass = !!broadReuse && !broadFlagPassed && !noBroadFlagPassed && !isFileTarget && !intentCfg && !broadReuse.intentHash && !broadReuse.reviewerGuidance
       && broadReuse.base_sha === baseSha
       && gitIsReachable(repoRoot, broadReuse.head_sha);
     const retryDiffBase = !isFileTarget && ledger.target?.base_sha === baseSha && ledger.retry_diff_base && gitIsReachable(repoRoot, ledger.retry_diff_base) ? ledger.retry_diff_base : null;
@@ -2401,6 +2416,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       gate_rounds: gateApplied && !gateRounds.includes(ledger.round) ? [...gateRounds, ledger.round] : gateRounds,
       gate_reviewed_head_sha: gateApplied && isGit ? headSha : ledger.gate_reviewed_head_sha,
       dodDeferred,
+      reviewerGuidance,
       reviewRouting,
       execution: {
         round: ledger.round,
@@ -2425,7 +2441,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // The three fields are mutually descriptive: pending is the normal configured
     // gate waiting for convergence, deferred means no gate will run, and passed is
     // retained for file/no-op compatibility. Callers must not infer one from another.
-    process.stdout.write(JSON.stringify({ decision: 'work', mode: run ? runMode(run) : undefined, gateMode: lite ? 'design-conformance' : 'pair', ref: targetUpdate.ref, base: targetUpdate.base, head: targetUpdate.head_sha, attemptId: ledger.attemptId, round: ledger.round, budget: ledger.budget, dodPassed: dod.deferredBy === 'pending-final' ? false : dod.passed, dodDeferred: !!dod.deferred && dod.deferredBy !== 'pending-final', dodPending: dod.deferredBy === 'pending-final', intentApplied: !!intentCfg, intentHash: ledger.intentHash || null, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir, completedArtifacts, normalizedArtifacts, planRetry: ledger.execution?.planRetry || null, retryArtifacts, retryArtifact, repairArtifacts }) + '\n');
+    process.stdout.write(JSON.stringify({ decision: 'work', mode: run ? runMode(run) : undefined, gateMode: lite ? 'design-conformance' : 'pair', ref: targetUpdate.ref, base: targetUpdate.base, head: targetUpdate.head_sha, attemptId: ledger.attemptId, round: ledger.round, budget: ledger.budget, dodPassed: dod.deferredBy === 'pending-final' ? false : dod.passed, dodDeferred: !!dod.deferred && dod.deferredBy !== 'pending-final', dodPending: dod.deferredBy === 'pending-final', intentApplied: !!intentCfg, intentHash: ledger.intentHash || null, reviewerGuidance: ledger.reviewerGuidance || null, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir, completedArtifacts, normalizedArtifacts, planRetry: ledger.execution?.planRetry || null, retryArtifacts, retryArtifact, repairArtifacts }) + '\n');
     return;
   }
 
@@ -3096,6 +3112,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       run: (prior.runs || []).length + 1,
       engine: prior.engine || null,
       reviewRouting: prior.reviewRouting || null,
+      reviewerGuidance: prior.reviewerGuidance || null,
       status: prior.status,
       rounds: prior.round || 0,
       fixed: (prior.findings || []).filter((f) => f.status === 'fixed').map((f) => findingEvidence(f, { fix_commit: f.fix_commit })).concat(currentGateFixed(prior)),
@@ -3113,8 +3130,8 @@ function runVerb(resolveFromCwd, args, initiative) {
       engine,
       gate_dismissed: prior.gate_dismissed || [],
       gate_cleared: prior.gate_cleared || [],
-      ...(completedFrontPass && !prior.intentHash && prior.target?.base_sha && prior.gate_reviewed_head_sha ? {
-        broad_reuse: { run: runs.length, base_sha: prior.target.base_sha, head_sha: prior.gate_reviewed_head_sha, intentHash: null, gate_open: prior.gate_open || [] },
+      ...(completedFrontPass && !prior.intentHash && !prior.reviewerGuidance && prior.target?.base_sha && prior.gate_reviewed_head_sha ? {
+        broad_reuse: { run: runs.length, base_sha: prior.target.base_sha, head_sha: prior.gate_reviewed_head_sha, intentHash: null, reviewerGuidance: prior.reviewerGuidance || null, gate_open: prior.gate_open || [] },
       } : {}),
       ...(prior.initiative_binding || initiative ? { initiative_binding: prior.initiative_binding || { key: initiative.key, stateDir: canonicalPath(initiative.stateDir) } } : {}),
     };
