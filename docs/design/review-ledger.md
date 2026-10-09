@@ -46,6 +46,22 @@ Every target mutation, including standalone operations, holds the target lock. D
 
 `rerun` archives the full diff, ledger, and role evidence of the finished run under `review-archives/<slug>/<id>`, content-addressed and hash-verified before the active copies are cleaned up. There is no automatic garbage collection, because active rerun cleanup, run-history pointers, and feedback proofs depend on those files and hashes. After retiring the target and initiative, an operator may move the whole state store to private offline storage, and delete it only after its dependent history and feedback records are retired and the loss of recovery and audit evidence is accepted. Referenced archives are never deleted selectively.
 
+## Review base
+
+A git target is reviewed as the range from the merge base of its base ref and the head to the head. Without a base the range is the head against itself, an empty diff that would be reviewed as work and converge clean, so `round-start` takes the base from its second argument and otherwise from the base the target's ledger recorded at its fresh start. It does not pick a default base itself: the review driver passes the remote main branch when the user names none, and a local branch used as a default can be behind its remote. File targets use no base.
+
+| State | Event | Outcome | Kind | Evidence |
+|---|---|---|---|---|
+| fresh git target, no ledger | `round-start <ref>` with no base | refused, message names the base argument; no ledger, artifact or lock is written | introduced | `round-start on a git ref with no base and no ledger refuses and names the base` |
+| ledger recording no base | `round-start <ref>` with no base | refused as above | introduced | covered by the same guard; tests seed a recorded base instead |
+| fresh git target | base resolves to the head | harness failure `review base and head resolve to the same commit`; no round starts | introduced | `round-start fails closed when the base and the head are the same commit` |
+| fresh git target | head already contained in the base (merge base is the head) | same harness failure | introduced | `round-start fails closed when the head is already contained in the base` |
+| resume | no base argument | recorded base is used; the same-commit check applies to that range | unchanged for the base, introduced for the check | resume tests in `review-cli.test.js` (unpark, fixes, DoD retry) |
+| DoD retry or rerun | head equals the earlier reviewed head | the empty range from the earlier head is reviewed; no failure | unchanged | `git target: repeated failed final DoD attempts consume and stop at the round budget` |
+| file target | any | no base is read | unchanged | `e2e-file-target.test.js` |
+
+The check runs before the intent-review and gate-pending resets, which delete cached artifacts. A branch whose commits net to an empty diff (a revert pair) has a merge base other than the head and still runs.
+
 ## Trade-offs and residual exposure
 
 - Rejected-candidate convergence rests on the verifier's judgement, not on the reviewer running out of candidates. A verifier that wrongly rejects a real finding yields a clean exit that misses it, though the ledger still records the killed finding.

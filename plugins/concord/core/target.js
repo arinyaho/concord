@@ -55,8 +55,11 @@ function parseNulPaths(raw, label) {
   return paths;
 }
 
-function gitReviewSnapshot(repoRoot, baseCommit, headCommit) {
+// distinct: the range is the review base against the head; when the merge base is the head itself there is nothing to review.
+// A range from an earlier reviewed head (DoD retry, rerun) may legitimately be empty.
+function gitReviewSnapshot(repoRoot, baseCommit, headCommit, { distinct = false } = {}) {
   const leftSha = baseCommit ? sh('git', ['merge-base', baseCommit, headCommit], { cwd: repoRoot }).trim() : headCommit;
+  if (distinct && leftSha === headCommit) throw new Error('harness-failure: review base and head resolve to the same commit; nothing to review');
   const reviewText = sh('git', ['diff', leftSha, headCommit, '--'], { cwd: repoRoot });
   const raw = sh('git', ['diff', '--name-only', '-z', '--no-renames', leftSha, headCommit, '--'], { cwd: repoRoot, encoding: null });
   const paths = parseNulPaths(raw, 'Git changed-path inventory');
@@ -92,7 +95,7 @@ function gitTarget(spec, repoRoot) {
   if (gitDirty(repoRoot, spec.reviewLock)) throw new Error('round-start: working tree is dirty; commit or stash before review-until-green');
   const identity = gitHeadSha(repoRoot);
   const baseCommit = spec.baseCommit || (spec.base ? sh('git', ['rev-parse', spec.base], { cwd: repoRoot }).trim() : null);
-  const snapshot = gitReviewSnapshot(repoRoot, baseCommit, identity);
+  const snapshot = gitReviewSnapshot(repoRoot, baseCommit, identity, { distinct: true });
   return { type: 'git', reviewText: snapshot.reviewText, identity, hasDoD: true, snapshot };
 }
 

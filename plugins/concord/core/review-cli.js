@@ -1770,6 +1770,56 @@ function runVerb(resolveFromCwd, args, initiative) {
     }
     const reviewRouting = ledger.reviewRouting || (Object.keys(requestedRouting).length ? requestedRouting : null);
 
+    // Broad review is ARMED BY DEFAULT; these flags are the per-invocation
+    // overrides. --broad/--gate re-arm a ledger that opted out; --no-broad opts
+    // out. Both live among round-start's trailing arguments, order-independent
+    // against the optional `base` token below. Any other "--"-prefixed token is
+    // a usage error rather than silently falling through to `base` (which would
+    // produce a confusing downstream git error against a nonsense ref).
+    const BROAD_FLAGS = new Set(['--broad', '--gate']);
+    const broadFlagPassed = rest.some((a) => BROAD_FLAGS.has(a));
+    const NO_BROAD_FLAGS = new Set(['--no-broad']);
+    const noBroadFlagPassed = rest.some((a) => NO_BROAD_FLAGS.has(a));
+    const lite = !!run && runMode(run) === 'lite';
+    // Executable-DoD opt-out (--no-dod): the same deferral `"dod": null` in
+    // review.config.json declares, asked for per-run instead. It exists for a
+    // repo that HAS a config with real `dod` commands but wants the executable
+    // gate skipped for this run (a config-less repo already defers on its own).
+    // The review gates still run; the DoD is reported deferred and never faked
+    // to a pass.
+    const NO_DOD_FLAGS = new Set(['--no-dod']);
+    const noDodFlagPassed = rest.some((a) => NO_DOD_FLAGS.has(a));
+    // --intent-file <path>: the caller supplies the intent text directly and the
+    // repository's configured intent command, if any, is not run.
+    // --no-intent-command: the checkout is untrusted, so its configured intent
+    // command is not run; only an --intent-file supplies intent.
+    const noIntentCommand = rest.includes('--no-intent-command');
+    const intentFileAt = rest.indexOf('--intent-file');
+    const intentFile = intentFileAt === -1 ? null : rest[intentFileAt + 1];
+    if (intentFileAt !== -1 && (!intentFile || intentFile.startsWith('--') || rest.indexOf('--intent-file', intentFileAt + 1) !== -1)) {
+      throw new Error('review-cli round-start: --intent-file requires exactly one value');
+    }
+    const positional = rest.filter((a, index) => !BROAD_FLAGS.has(a) && !NO_BROAD_FLAGS.has(a) && !NO_DOD_FLAGS.has(a) && a !== '--no-intent-command' && !routingIndexes.has(index)
+      && (intentFileAt === -1 || (index !== intentFileAt && index !== intentFileAt + 1)));
+    for (const tok of positional) {
+      if (tok.startsWith('--')) throw new Error(`review-cli round-start: unknown flag "${tok}"`);
+    }
+
+    // Detect a file target: the single file-target surface is `file:<arg>` in
+    // the ref slot, where <arg> is a literal path OR a simple single-'*' glob
+    // (e.g. `file:note.md`, `file:*.md`). The glob is resolved by fileTarget's
+    // resolveGlob against repoRoot, so both forms flow through one path. A file
+    // target carries hasDoD:false and does not use git at all.
+    const fileRefMatch = ref && ref.match(/^file:(.+)$/);
+    const fileSpec = fileRefMatch ? { files: [fileRefMatch[1]] } : null;
+    const isFileTarget = fileSpec !== null;
+
+    // A fresh git start needs a base: without one the review snapshot is HEAD..HEAD, an empty diff that would be reviewed as work and converge clean.
+    // Refused before the resets below delete cached artifacts. The base of a resume is the one persisted by its fresh start.
+    if (!isFileTarget && !positional[0] && !(ledger.target && ledger.target.base)) {
+      throw new Error(`review-cli round-start: missing base -- pass the base ref as the second argument, e.g. "round-start <ref> origin/main"; no base is recorded for "${ref}"`);
+    }
+
     // Captured before the clearing paths below wipe intent_parked. Handed to the
     // intent detector so the SAME objection keeps the SAME id across rounds --
     // nothing dedupes intent findings by id; the id is how a human re-reading the
@@ -1826,49 +1876,6 @@ function runVerb(resolveFromCwd, args, initiative) {
       ledger = { ...ledger, status: 'converging', diff_content_hash: null };
     }
 
-    // Broad review is ARMED BY DEFAULT; these flags are the per-invocation
-    // overrides. --broad/--gate re-arm a ledger that opted out; --no-broad opts
-    // out. Both live among round-start's trailing arguments, order-independent
-    // against the optional `base` token below. Any other "--"-prefixed token is
-    // a usage error rather than silently falling through to `base` (which would
-    // produce a confusing downstream git error against a nonsense ref).
-    const BROAD_FLAGS = new Set(['--broad', '--gate']);
-    const broadFlagPassed = rest.some((a) => BROAD_FLAGS.has(a));
-    const NO_BROAD_FLAGS = new Set(['--no-broad']);
-    const noBroadFlagPassed = rest.some((a) => NO_BROAD_FLAGS.has(a));
-    const lite = !!run && runMode(run) === 'lite';
-    // Executable-DoD opt-out (--no-dod): the same deferral `"dod": null` in
-    // review.config.json declares, asked for per-run instead. It exists for a
-    // repo that HAS a config with real `dod` commands but wants the executable
-    // gate skipped for this run (a config-less repo already defers on its own).
-    // The review gates still run; the DoD is reported deferred and never faked
-    // to a pass.
-    const NO_DOD_FLAGS = new Set(['--no-dod']);
-    const noDodFlagPassed = rest.some((a) => NO_DOD_FLAGS.has(a));
-    // --intent-file <path>: the caller supplies the intent text directly and the
-    // repository's configured intent command, if any, is not run.
-    // --no-intent-command: the checkout is untrusted, so its configured intent
-    // command is not run; only an --intent-file supplies intent.
-    const noIntentCommand = rest.includes('--no-intent-command');
-    const intentFileAt = rest.indexOf('--intent-file');
-    const intentFile = intentFileAt === -1 ? null : rest[intentFileAt + 1];
-    if (intentFileAt !== -1 && (!intentFile || intentFile.startsWith('--') || rest.indexOf('--intent-file', intentFileAt + 1) !== -1)) {
-      throw new Error('review-cli round-start: --intent-file requires exactly one value');
-    }
-    const positional = rest.filter((a, index) => !BROAD_FLAGS.has(a) && !NO_BROAD_FLAGS.has(a) && !NO_DOD_FLAGS.has(a) && a !== '--no-intent-command' && !routingIndexes.has(index)
-      && (intentFileAt === -1 || (index !== intentFileAt && index !== intentFileAt + 1)));
-    for (const tok of positional) {
-      if (tok.startsWith('--')) throw new Error(`review-cli round-start: unknown flag "${tok}"`);
-    }
-
-    // Detect a file target: the single file-target surface is `file:<arg>` in
-    // the ref slot, where <arg> is a literal path OR a simple single-'*' glob
-    // (e.g. `file:note.md`, `file:*.md`). The glob is resolved by fileTarget's
-    // resolveGlob against repoRoot, so both forms flow through one path. A file
-    // target carries hasDoD:false and does not use git at all.
-    const fileRefMatch = ref && ref.match(/^file:(.+)$/);
-    const fileSpec = fileRefMatch ? { files: [fileRefMatch[1]] } : null;
-    const isFileTarget = fileSpec !== null;
 
     // `resume <ref>` passes NO base token -- fall back to the base persisted
     // from the original fresh start (ledger.target.base). Without this, an
@@ -1939,7 +1946,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       diff = acquiredTarget.reviewText;
     } else if (resumed) {
       headSha = gitHeadSha(repoRoot); // no dirty-check on resume
-      snapshot = gitReviewSnapshot(repoRoot, baseSha, headSha);
+      snapshot = gitReviewSnapshot(repoRoot, baseSha, headSha, { distinct: true });
       diff = snapshot.reviewText;
     } else {
       const target = acquireTarget({ ref, base, baseCommit: baseSha, reviewLock: `${ledgerPath(stateDir, slug)}.lock` }, repoRoot); // ignore only our own untracked lock

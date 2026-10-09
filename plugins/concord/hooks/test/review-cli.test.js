@@ -160,6 +160,39 @@ test('round-start inventories quoted Unicode rename and deletion paths', () => {
     ['a.txt', 'é-gone.js', 'é-new.js', 'é-old.js']);
 });
 
+test('round-start on a git ref with no base and no ledger refuses and names the base', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/no-base';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const r = runCapture(['round-start', ref], { env });
+  assert.notStrictEqual(r.status, 0);
+  assert.match(r.stderr, /missing base/);
+  assert.match(r.stderr, /round-start <ref> origin\/main/);
+  assert.strictEqual(review.readLedger(dir, review.targetSlug(ref)), null);
+  assert.deepStrictEqual(fs.readdirSync(dir), []);
+});
+
+test('round-start fails closed when the base and the head are the same commit', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/same-commit';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const r = runCapture(['round-start', ref, 'HEAD'], { env });
+  assert.notStrictEqual(r.status, 0);
+  assert.match(r.stderr, /harness-failure: review base and head resolve to the same commit/);
+  assert.doesNotMatch(r.stdout, /"decision":"work"/);
+});
+
+test('round-start fails closed when the head is already contained in the base', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/merged-head';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'ahead'], { cwd: repo });
+  execFileSync('git', ['branch', 'ahead'], { cwd: repo });
+  execFileSync('git', ['checkout', '-q', 'HEAD~1'], { cwd: repo });
+  const r = runCapture(['round-start', ref, 'ahead'], { env });
+  assert.notStrictEqual(r.status, 0);
+  assert.match(r.stderr, /harness-failure: review base and head resolve to the same commit/);
+  assert.doesNotMatch(r.stdout, /"decision":"work"/);
+});
+
 test('round-start inventory ignores quoted header lookalikes in source hunks', () => {
   const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/hunk-inventory';
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
@@ -797,15 +830,19 @@ test('round-start: refuses a dirty working tree on a fresh start', () => {
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   fs.writeFileSync(path.join(repo, 'a.txt'), 'dirty\n'); // uncommitted
-  assert.throws(() => run(['round-start', 'feat/x'], { env }), /dirty/);
+  assert.throws(() => run(['round-start', 'feat/x', 'HEAD'], { env }), /dirty/);
 });
 
 test('round-start: resume from phase fixes discards uncommitted edits and re-drives the same round at same budget', () => {
   const repo = initRepo();
   const dir = tmpDir();
   const slug = review.targetSlug('feat/x');
+  const baseSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'branch work\n');
+  execFileSync('git', ['add', 'b.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'branch work'], { cwd: repo });
   // seed a ledger mid-round: phase fixes, round 1, a stale artifact, budget spent 1
-  let l = review.emptyLedger({ kind: 'local', ref: 'feat/x', head_sha: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim() });
+  let l = review.emptyLedger({ kind: 'local', ref: 'feat/x', base: baseSha, head_sha: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim() });
   l = review.beginRound(l, 'h').ledger; // round 1
   l.phase = 'fixes';
   l.budget.spent = 1;
@@ -877,6 +914,9 @@ test('round-start: after unpark, an ordinary round-start <ref> call updates phas
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   const baseSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'branch work\n');
+  execFileSync('git', ['add', 'b.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'branch work'], { cwd: repo });
   run(['round-start', 'feat/x', baseSha], { env }); // fresh round 1, base persisted as target.base
   const slug = review.targetSlug('feat/x');
   let l = review.readLedger(dir, slug);
@@ -2640,6 +2680,11 @@ test('round-start warns when the base branch is behind its upstream', () => {
   // Return to stalebase and declare up as its upstream.
   execFileSync('git', ['checkout', '-q', 'stalebase'], { cwd: repo });
   execFileSync('git', ['branch', '--set-upstream-to=up', 'stalebase'], { cwd: repo });
+  // The head under review is a commit on top of stalebase.
+  execFileSync('git', ['checkout', '-qb', 'work'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'c.txt'), 'work\n');
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'work on stalebase'], { cwd: repo });
   // stalebase@{upstream} = up; stalebase is now 1 commit behind up.
 
   const dir = tmpDir();
