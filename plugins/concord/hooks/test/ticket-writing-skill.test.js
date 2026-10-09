@@ -57,17 +57,17 @@ test('ticket-to-pr defines the table and tests required for stateful changes', (
     /one row per combination of a state and an event and the columns outcome, kind and test or reason/,
     /every operation the changed code handles, such as charging and notifying in a retried call, and every operation that reads or writes the persisted state the change touches, whether or not the change edits it, such as approve, cancel or polling/,
     /one combination of the values of every persisted dimension and every piece of retry, recovery or replay progress, recorded or not, that influences what any operation does, whether or not the change touches it/,
-    /one operation combined with how it occurs: first occurrence, repetition or replay, corrupt or missing input or evidence, base or head change, interruption/,
+    /one operation combined with how it occurs \(first occurrence, repetition or replay, corrupt or missing input or evidence, base or head change, interruption\) and with each class of input, result or signal that changes its outcome, such as success, decline or timeout/,
     /A way of occurring that does not apply to the domain is marked not applicable with the reason and gets no rows, but every operation gets rows/,
-    /everything an observer can distinguish after the event: the response, the resulting values of every state dimension including those expected to stay unchanged, and externally observable effects such as downstream calls\. The test asserts all of them/,
+    /everything an observer can distinguish after the event: the response, the resulting values of every state dimension including those expected to stay unchanged, and externally observable effects such as downstream calls\. The row's evidence asserts all of them/,
     /A row is changed when its outcome differs from the base, and every row of a new behavior is introduced/,
-    /still gets its own row, kind unreachable, naming the invariant that prevents it and where that invariant is enforced; its evidence checks that invariant/,
-    /group only combinations that have the same outcome and kind and whose test exercises every combination in the group/,
+    /still gets its own row, kind unreachable, naming the invariant that prevents it and where that invariant is enforced; its outcome is not applicable and its evidence checks only that invariant/,
+    /group only combinations that have the same outcome and kind and whose evidence exercises every combination in the group/,
     /zero, the value just below each limit, the limit and the value just past it a class of their own/,
     /Stage 6 fills the test or reason column/,
     /Each row's evidence is a named test or, when no test can exercise the row, such as a crash between two writes, a recorded reason and the check that stands in\. Every row's evidence passes after the change/,
     /Evidence for an introduced or changed row, or for an unreachable row whose invariant the change introduces, also fails before the change for the right reason; evidence for any other row also passes against the base revision and may be newly written/,
-    /A state or event found missing at any later stage, including PR review, is added to the table in the same PR with its test/,
+    /A state or event found missing at any later stage, including PR review, is added to the table in the same PR with its evidence/,
   ]) {
     assert.match(section, pattern);
   }
