@@ -1,6 +1,6 @@
 # Initiative delivery modes
 
-An initiative run has a delivery mode, `base` or `lite`, stored in its run ledger. `base` is the default and runs the full review: correctness, verify, and the gate pair. `lite` is opt-in per run and reduces only the cross-cutting gate to a design-conformance check, so work whose risk is local does not pay for the full gate on every round. The run ledger, budgets, and reservation contract are described in the initiative review runs design.
+An initiative run has a delivery mode, `base` or `lite`, stored in its run ledger. `base` is the default and runs the full review: correctness, verify, and the gate pair. `lite` is opt-in per run and reduces only the cross-cutting gate to a design-conformance check, so work whose risk is local does not pay for the full gate on every round. The run ledger, budgets, and reservation contract are described in the [initiative review runs design](initiative-review-runs.md).
 
 ## Ledger and mode
 

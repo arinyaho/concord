@@ -227,3 +227,12 @@ test('release script preserves manifest text except for the version value', () =
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('every plugin package carries a LICENSE identical to the root file', () => {
+  const root = fs.readFileSync(path.join(REPO, 'LICENSE'));
+  for (const plugin of ['concord', 'concord-codex', 'concord-copilot']) {
+    const copy = path.join(REPO, 'plugins', plugin, 'LICENSE');
+    assert.ok(fs.existsSync(copy), `plugins/${plugin}/LICENSE is missing`);
+    assert.ok(fs.readFileSync(copy).equals(root), `plugins/${plugin}/LICENSE differs from the root LICENSE`);
+  }
+});

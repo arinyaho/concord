@@ -826,7 +826,7 @@ function gatesNeeds(stateDir, n) {
 // target lock. Human/reconciliation step only: the round's completed artifacts
 // are reused, the new key is charged only for launches it makes itself, and the
 // old run keeps the round's history as a terminal `carried` disposition. See
-// docs/design/initiative-review-runs.md.
+// "Carrying a budget-blocked target" in docs/design/initiative-review-runs.md.
 function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey, repoRoot, writeLedger }) {
   const fail = (message) => { throw new Error(`review-cli carry: ${message}`); };
   if (fromRunKey === initiative.key) fail('--from-run-key must differ from --initiative-run-key');
