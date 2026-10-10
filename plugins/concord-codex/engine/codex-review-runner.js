@@ -178,7 +178,7 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
     // path for this value. Scoped to win32 only: the POSIX path (`prompt`
     // as the trailing positional arg) is unaffected by this class of bug
     // and stays exactly as tested.
-    const childEnv = untrustedCheckout ? { ...(env || process.env) } : env;
+    const childEnv = reviewerEnv(env);
     if (untrustedCheckout) {
       for (const key of Object.keys(childEnv)) {
         if (/KEY|SECRET|TOKEN/i.test(key)) delete childEnv[key];
@@ -291,6 +291,27 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
   });
 }
 
+// A string array field of a reviewer artifact, or [] when the artifact or field is absent.
+function artifactList(file, field) {
+  try {
+    const value = JSON.parse(fs.readFileSync(file, 'utf8'))[field];
+    return Array.isArray(value) ? value.filter((item) => typeof item === 'string') : [];
+  } catch (_) { return []; }
+}
+
+function declaredFixFiles(context, groups) {
+  const files = groups.flatMap((group) => artifactList(path.join(context.stateDir, `round-${context.round}-fix-${safeIdForFilename(group.groupId)}.json`), 'files'));
+  return [...new Set(files)];
+}
+
+// A reviewer's own test run must not reach the driver's provider CLI through
+// the driver's override; the reviewer's launch already resolved it.
+function reviewerEnv(env) {
+  const childEnv = { ...(env || process.env) };
+  delete childEnv[CODEX_BIN_ENV];
+  return childEnv;
+}
+
 function providerExec(input) {
   const { provider, role, prompt, repoRoot, stateDir, timeoutMs, abortSignal } = input;
   if (!PROVIDERS.has(provider)) throw new Error(`harness-failure: unsupported provider "${provider}"`);
@@ -334,7 +355,7 @@ function providerExec(input) {
   const truncate = (text) => (text.length > OUTPUT_LIMIT ? `${text.slice(0, OUTPUT_LIMIT)}\n...(truncated)` : text);
 
   return new Promise((resolve, reject) => {
-    const child = spawn(crossPlatformCommand(executable, repoRoot), crossPlatformArgs(args, needsDoubleEscape(executable, repoRoot)), crossPlatformOpts({ cwd: repoRoot, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'pipe'], detached: !isWindows }));
+    const child = spawn(crossPlatformCommand(executable, repoRoot), crossPlatformArgs(args, needsDoubleEscape(executable, repoRoot)), crossPlatformOpts({ cwd: repoRoot, env: reviewerEnv(input.env), stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'pipe'], detached: !isWindows }));
     if (input.untrustedCheckout) child.once('exit', () => terminateProcessTree(child, 'SIGKILL'));
     if (isWindows) {
       // See codexExec's identical stdin 'error' handling above -- the
@@ -1058,7 +1079,8 @@ async function runRounds(options) {
       try {
         let repair = started.repairArtifacts && started.repairArtifacts[role];
         if (!repair) {
-          await launch({ role, prompt: reviewerPrompt(role, context) + (started.retryArtifacts?.[role] ? `\n${started.retryArtifacts[role]}` : ''), repoRoot, stateDir: context.stateDir });
+          const roleContext = role === 'verify' ? { ...context, examined: artifactList(path.join(context.stateDir, `round-${context.round}-correctness.json`), 'examined') } : context;
+          await launch({ role, prompt: reviewerPrompt(role, roleContext) + (started.retryArtifacts?.[role] ? `\n${started.retryArtifacts[role]}` : ''), repoRoot, stateDir: context.stateDir });
           const normalized = await cli(['artifact-normalize', ref, role]);
           checkProtected(true, roleArtifacts.get(role));
           refreshLedger();
@@ -1193,13 +1215,13 @@ async function runRounds(options) {
           invariants: Array.from(new Set(fixGroups.flatMap((group) => group.invariants || []))),
           memberGroups: fixGroups,
         };
-        await launch({ role: 'certify', prompt: reviewerPrompt('certify', { ...context, finding: fixGroups[0].findings[0], fixGroup: transaction }), repoRoot, stateDir: context.stateDir });
+        await launch({ role: 'certify', prompt: reviewerPrompt('certify', { ...context, finding: fixGroups[0].findings[0], fixGroup: transaction, fixFiles: declaredFixFiles(context, fixGroups) }), repoRoot, stateDir: context.stateDir });
         const committed = await cli(['commit-fix', ref, planned.planId]);
         if (committed?.committed && committed.sha) initiativeRevision = { ...initiativeRevision, head_sha: committed.sha };
       }
     } else for (const fixGroup of fixGroups) {
       await runFix(fixGroup);
-      await launch({ role: 'certify', prompt: reviewerPrompt('certify', { ...context, finding: fixGroup.findings[0], fixGroup }), repoRoot, stateDir: context.stateDir });
+      await launch({ role: 'certify', prompt: reviewerPrompt('certify', { ...context, finding: fixGroup.findings[0], fixGroup, fixFiles: declaredFixFiles(context, [fixGroup]) }), repoRoot, stateDir: context.stateDir });
       if (started.targetType !== 'file') {
         const committed = await cli(['commit-fix', ref, fixGroup.groupId]);
         if (committed?.committed && committed.sha) initiativeRevision = { ...initiativeRevision, head_sha: committed.sha };

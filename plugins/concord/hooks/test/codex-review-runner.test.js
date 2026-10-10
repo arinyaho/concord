@@ -3233,3 +3233,22 @@ test('reviewOnly fails when a reviewer moved HEAD, even with a clean worktree', 
     /reviewer moved HEAD/,
   );
 });
+
+test('a reviewer subprocess does not inherit the driver\'s CONCORD_CODEX_BIN override', async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  const capture = path.join(binDir, 'env.json');
+  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.154.0\\n');\nelse require('node:fs').writeFileSync(${JSON.stringify(capture)}, JSON.stringify({ bin: process.env.CONCORD_CODEX_BIN || null }));\n`);
+  fs.chmodSync(codex, 0o755);
+  await codexExec({ role: 'verify', prompt: 'p', repoRoot: binDir, stateDir: binDir, env: { ...process.env, CONCORD_CODEX_BIN: codex } });
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(capture, 'utf8')), { bin: null });
+});
+
+test('the verify prompt lists the examined paths and the certify prompt lists the declared fix files', async () => {
+  const examined = ['src/examined-one.js', 'docs/examined-two.md'];
+  const h = harness({ correctnessArtifact: JSON.stringify({ status: 'ok', examined, findings: [] }) });
+  await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
+  const promptFor = (role) => h.calls.find((call) => call[0] === 'spawn' && call[1] === role)?.[2];
+  for (const file of examined) assert.ok(promptFor('verify').includes(`"${file}"`), `verify prompt does not list ${file}`);
+  assert.ok(promptFor('certify').includes('["a.txt"]'), 'certify prompt does not list the declared fix files');
+});

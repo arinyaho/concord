@@ -5924,3 +5924,33 @@ test('rerun keeps the record-fix evidence of a parked finding', () => {
   run(['rerun', 'feat/x'], { env: t.env });
   assert.strictEqual(review.readLedger(t.dir, t.slug).runs[0].fixed[0].fix_evidence.command, 'sh check.sh');
 });
+
+test('round-start refuses before any reservation when a DoD interpreter is missing from the reviewer environment', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/missing-interpreter';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['concord-absent-interpreter -m pytest'] }));
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'ahead'], { cwd: repo });
+  const r = runCapture(['round-start', ref, 'HEAD~1'], { env });
+  assert.notStrictEqual(r.status, 0);
+  assert.match(r.stderr, /concord-absent-interpreter/);
+  assert.doesNotMatch(r.stdout, /"decision":"work"/);
+  assert.strictEqual(review.readLedger(dir, review.targetSlug(ref)), null);
+  assert.deepStrictEqual(fs.readdirSync(dir), []);
+});
+
+test('round-start with --no-dod does not require the DoD interpreters it will not run', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/missing-interpreter-no-dod';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['concord-absent-interpreter -m pytest'] }));
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'ahead'], { cwd: repo });
+  const r = runCapture(['round-start', ref, 'HEAD~1', '--no-dod'], { env });
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.match(r.stdout, /"decision":"work"/);
+});
+
+test('commandExecutables names the leading program of each simple DoD command', () => {
+  const dodExec = require('../../core/dod-exec');
+  assert.deepStrictEqual(dodExec.commandExecutables(['cd plugins && FOO=1 node --test x', 'python -m pytest | tee log', 'true; ./scripts/check.sh']), ['node', 'python', 'tee', './scripts/check.sh']);
+});

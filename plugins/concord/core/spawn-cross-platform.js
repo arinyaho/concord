@@ -160,7 +160,8 @@ function resolveOnPath(bin, excludeDir) {
   };
   const dirs = String(process.env.PATH || process.env.Path || '').split(path.delimiter).filter(Boolean).map(unquotePathEntry);
   const hasExt = /\.[^.\\/]+$/.test(bin);
-  const exts = hasExt ? [''] : String(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
+  // POSIX has no PATHEXT: the bare name is the candidate and it must carry an execute bit.
+  const exts = hasExt || !isWindows ? [''] : String(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
   for (const dir of dirs) {
     for (const ext of exts) {
       // Always resolve to an absolute path, even when a PATH entry is
@@ -173,7 +174,10 @@ function resolveOnPath(bin, excludeDir) {
       // here.
       const candidate = path.resolve(path.join(dir, bin + ext));
       try {
-        if (fs.statSync(candidate).isFile() && !isExcluded(candidate)) return candidate;
+        if (fs.statSync(candidate).isFile() && !isExcluded(candidate)) {
+          if (!isWindows) fs.accessSync(candidate, fs.constants.X_OK);
+          return candidate;
+        }
       } catch {
         // Not present at this candidate -- keep searching.
       }

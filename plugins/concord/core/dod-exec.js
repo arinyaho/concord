@@ -73,10 +73,32 @@ function runDodExec({ cwd, commands, execFn }) {
 // Real execFn: a project-authored command string from review.config.json (not
 // untrusted runtime input) run through a shell so compound commands ("cd x &&
 // y") work the same way they would typed at a terminal.
+// The driver's provider executable override is not the DoD's: a test that
+// spawns a provider must not silently reach the driver's real CLI. A command
+// that needs it sets it inline (`CONCORD_CODEX_BIN=... node ...`).
 function defaultExecFn(cmd, cwd) {
   const { spawnSync } = require('node:child_process');
-  const r = spawnSync(cmd, { cwd, shell: true, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
+  const env = { ...process.env };
+  delete env.CONCORD_CODEX_BIN;
+  const r = spawnSync(cmd, { cwd, env, shell: true, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
   return { status: r.status == null ? 1 : r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
-module.exports = { CONFIG_FILENAME, loadDodConfig, runDodExec, defaultExecFn };
+// The executables a DoD command list starts: the leading word of each simple
+// command, after any `NAME=value` assignments, minus shell builtins. A program
+// reached only through another one (an npm script, a shell script) is not seen.
+const SHELL_BUILTINS = new Set(['cd', 'export', 'set', 'unset', 'test', '[', 'echo', 'true', 'false', 'exit', ':', '.', 'source', 'exec', 'env']);
+function commandExecutables(commands) {
+  const names = new Set();
+  for (const cmd of commands || []) {
+    for (const part of String(cmd).split(/&&|\|\||[;|]/)) {
+      const words = part.trim().replace(/^[({\s]+/, '').split(/\s+/).filter(Boolean);
+      const word = words.find((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
+      const name = word && word.replace(/^['"]|['"]$/g, '');
+      if (name && !SHELL_BUILTINS.has(name)) names.add(name);
+    }
+  }
+  return [...names];
+}
+
+module.exports = { CONFIG_FILENAME, loadDodConfig, runDodExec, defaultExecFn, commandExecutables };
