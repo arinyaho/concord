@@ -456,6 +456,20 @@ function applyRoundOutcome(ledger, outcome) {
     }
   }
 
+  // hasDoD is derived from the persisted target: an absent target, or any git
+  // target, is hasDoD=true (the existing DoD-gated path); only a target that
+  // explicitly set hasDoD:false (the file target) takes the dry-round branch.
+  const hasDoD = ledger.target ? ledger.target.hasDoD !== false : true;
+  // A no-DoD target is reviewed whole every round, so an open finding this
+  // round did not report (one reopened by unpark, say) is resolved. It gets no
+  // seen entry, so a later report of it counts as new again.
+  if (!hasDoD) {
+    const reported = new Set(survivors.map((f) => f.id));
+    for (const [id, f] of byId) {
+      if (f.status === 'open' && !reported.has(id)) byId.set(id, { ...f, status: 'resolved' });
+    }
+  }
+
   const findings = Array.from(byId.values());
   const openFindingsCount = findings.filter((f) => f.status === 'open').length;
   const currentOpenIds = new Set(findings.filter((f) => f.status === 'open').map((f) => f.id));
@@ -474,10 +488,6 @@ function applyRoundOutcome(ledger, outcome) {
   // resets to 0 on any new finding. Only decideTermination's no-DoD branch reads
   // it; a git target ignores it, so maintaining it here is inert for git runs.
   const dryStreak = newCount === 0 ? (ledger.dryStreak || 0) + 1 : 0;
-  // hasDoD is derived from the persisted target: an absent target, or any git
-  // target, is hasDoD=true (the existing DoD-gated path); only a target that
-  // explicitly set hasDoD:false (the file target) takes the dry-round branch.
-  const hasDoD = ledger.target ? ledger.target.hasDoD !== false : true;
 
   // The failing command/exit code for the no-progress reason, straight from
   // runDodExec's own `results` on the ledger (set by review-cli's `record`
