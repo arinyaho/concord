@@ -555,6 +555,36 @@ test('artifact-normalize fails closed when correctness coverage is still incompl
   assert.throws(() => run(['artifact-normalize', 'feat/x', 'correctness'], { env }), /harness-failure.*coverage/);
 });
 
+function seedCopyRound(ref, examined) {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.mkdirSync(path.join(repo, 'copy'));
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  fs.writeFileSync(path.join(repo, 'copy', 'a.txt'), 'two\n');
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'change a and its copy'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined, findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  return { env };
+}
+
+test('coverage: a changed copy whose bytes equal an examined changed file counts as examined', () => {
+  const { env } = seedCopyRound('feat/copy-ok', ['a.txt']);
+  assert.strictEqual(JSON.parse(run(['artifact-normalize', 'feat/copy-ok', 'correctness'], { env })).status, 'ok');
+  assert.doesNotThrow(() => run(['plan-fixes', 'feat/copy-ok'], { env }));
+});
+
+test('coverage: identical bytes cover in either direction', () => {
+  const { env } = seedCopyRound('feat/copy-rev', ['copy/a.txt']);
+  assert.doesNotThrow(() => run(['plan-fixes', 'feat/copy-rev'], { env }));
+});
+
+test('coverage: a changed file with no identical examined twin is still a harness-failure', () => {
+  const { env } = seedCopyRound('feat/copy-none', []);
+  assert.throws(() => run(['plan-fixes', 'feat/copy-none'], { env }), /harness-failure.*coverage.*a\.txt/);
+});
+
 test('artifact-normalize retries when a deleted path is not examined', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
@@ -1245,6 +1275,85 @@ test('commit-fix: v2 group cannot commit until every member is certified', () =>
   writeArtifact(dir, n, 'fix-shared', { status: 'ok', edited: true, groupId: 'shared', files: ['a.txt'] });
   writeArtifact(dir, n, 'certify-shared', { status: 'ok', groupId: 'shared', resolvedFindingIds: ['correctness:a'], invariants: ['one outcome'] });
   assert.throws(() => run(['commit-fix', 'feat/v2-partial', 'shared'], { env }), /complete group certification/i);
+});
+
+function seedCertifiedSingleGroup(ref, certOverrides) {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env, n } = seedGatesRound(repo, dir, ref,
+    { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:a', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'wrong' }] },
+    { status: 'ok', rejected: [], findings: [] });
+  fs.writeFileSync(path.join(dir, `round-${n}-plan.json`), JSON.stringify({ status: 'ok', protocolVersion: 2, groups: [{
+    groupId: 'doc-fix', findingIds: ['correctness:a'], rootCause: 'wrong', invariants: ['States the order', 'No code moves'], changeClass: 'local', structuralEffects: [], action: 'fix',
+  }] }));
+  run(['plan-fixes', ref], { env });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed a\n');
+  const hash = crypto.createHash('sha256').update(fs.readFileSync(path.join(repo, 'a.txt'))).digest('hex');
+  writeArtifact(dir, n, 'fix-doc-fix', { status: 'ok', edited: true, groupId: 'doc-fix', files: ['a.txt'] });
+  writeArtifact(dir, n, 'certify-doc-fix', {
+    status: 'ok', groupId: 'doc-fix', resolvedFindingIds: ['correctness:a'], files: ['a.txt'], fileHashes: { 'a.txt': hash },
+    evidence: ['read the diff'], invariants: ['(1) the doc states the order', '(2) no code moves'], ...certOverrides,
+  });
+  return { repo, env, dir, n };
+}
+
+test('commit-fix: a certificate that paraphrases the planned invariants but matches findings, files and hashes is committed', () => {
+  const { env } = seedCertifiedSingleGroup('feat/cert-paraphrase', {});
+  assert.strictEqual(JSON.parse(run(['commit-fix', 'feat/cert-paraphrase', 'doc-fix'], { env })).committed, true);
+});
+
+test('commit-fix: a certificate whose file hash does not match the worktree is still rejected', () => {
+  const { env } = seedCertifiedSingleGroup('feat/cert-badhash', { fileHashes: { 'a.txt': 'deadbeef' } });
+  assert.throws(() => run(['commit-fix', 'feat/cert-badhash', 'doc-fix'], { env }), /certified content changed/);
+});
+
+test('record keeps a rejected fix edit, restores every other path, and parks the run', () => {
+  const { repo, env } = seedCertifiedSingleGroup('feat/cert-kept', { fileHashes: { 'a.txt': 'deadbeef' } });
+  assert.throws(() => run(['commit-fix', 'feat/cert-kept', 'doc-fix'], { env }), /certified content changed/);
+  const STRAY = JSON.stringify({ dod: ['true'], stray: 'edit no fixer declared' });
+  fs.writeFileSync(path.join(repo, 'review.config.json'), STRAY);
+  const recorded = JSON.parse(run(['record', 'feat/cert-kept'], { env }));
+  assert.strictEqual(fs.readFileSync(path.join(repo, 'a.txt'), 'utf8'), 'fixed a\n', 'record must not discard the uncommitted edit');
+  assert.notStrictEqual(fs.readFileSync(path.join(repo, 'review.config.json'), 'utf8'), STRAY, 'record must restore paths no rejected fix declared');
+  assert.strictEqual(recorded.decision.continue, false);
+  assert.strictEqual(recorded.decision.parked, true);
+  assert.match(recorded.decision.reason, /a\.txt.*commit or discard/);
+  assert.strictEqual(review.readLedger(env.REVIEW_STATE_DIR, review.targetSlug('feat/cert-kept')).status, 'parked');
+});
+
+test('record matches a rejected fix\'s declared files literally, so a glob keeps no undeclared edit', () => {
+  const { repo, env, dir, n } = seedCertifiedSingleGroup('feat/cert-glob', { fileHashes: { 'a.txt': 'deadbeef' } });
+  assert.throws(() => run(['commit-fix', 'feat/cert-glob', 'doc-fix'], { env }), /certified content changed/);
+  writeArtifact(dir, n, 'fix-doc-fix', { status: 'ok', edited: true, groupId: 'doc-fix', files: ['a.txt', '*.json'] });
+  const STRAY = JSON.stringify({ dod: ['true'], stray: 'edit no fixer declared' });
+  fs.writeFileSync(path.join(repo, 'review.config.json'), STRAY);
+  run(['record', 'feat/cert-glob'], { env });
+  assert.strictEqual(fs.readFileSync(path.join(repo, 'a.txt'), 'utf8'), 'fixed a\n');
+  assert.notStrictEqual(fs.readFileSync(path.join(repo, 'review.config.json'), 'utf8'), STRAY, 'a declared glob must not keep an undeclared path');
+});
+
+test('record refuses a rejected fix that declares a file outside the repository', () => {
+  const { env, dir, n } = seedCertifiedSingleGroup('feat/cert-outside', { fileHashes: { 'a.txt': 'deadbeef' } });
+  assert.throws(() => run(['commit-fix', 'feat/cert-outside', 'doc-fix'], { env }), /certified content changed/);
+  writeArtifact(dir, n, 'fix-doc-fix', { status: 'ok', edited: true, groupId: 'doc-fix', files: ['a.txt', '../outside.txt'] });
+  assert.throws(() => run(['record', 'feat/cert-outside'], { env }), /harness-failure: record: declared file "\.\.\/outside\.txt" is outside the repository/);
+});
+
+test('record keeps the edit of a fix the certifier blocked and names the certificate status', () => {
+  const { repo, env } = seedCertifiedSingleGroup('feat/cert-blocked', { status: 'blocked' });
+  const recorded = JSON.parse(run(['record', 'feat/cert-blocked'], { env }));
+  assert.strictEqual(recorded.decision.parked, true);
+  assert.strictEqual(fs.readFileSync(path.join(repo, 'a.txt'), 'utf8'), 'fixed a\n');
+  assert.match(JSON.stringify(review.readLedger(env.REVIEW_STATE_DIR, review.targetSlug('feat/cert-blocked'))), /was not committed \(certificate: blocked\)/);
+});
+
+test('a kept fix edit blocks round-start until the person commits or discards it, then unpark resumes', () => {
+  const { repo, env } = seedCertifiedSingleGroup('feat/cert-decide', { fileHashes: { 'a.txt': 'deadbeef' } });
+  assert.throws(() => run(['commit-fix', 'feat/cert-decide', 'doc-fix'], { env }), /certified content changed/);
+  run(['record', 'feat/cert-decide'], { env });
+  run(['unpark', 'feat/cert-decide', 'correctness:a'], { env });
+  assert.throws(() => run(['round-start', 'feat/cert-decide'], { env }), /working tree is dirty/);
+  execFileSync('git', ['commit', '-qam', 'adopt the kept fix'], { cwd: repo });
+  assert.strictEqual(JSON.parse(run(['round-start', 'feat/cert-decide'], { env })).decision, 'work');
 });
 
 test('commit-fix: certified shared-helper fix atomically resolves the whole group', () => {
