@@ -569,7 +569,9 @@ function unparkFinding(ledger, findingId) {
   // finding's file (reopened_by_unpark marks it for that rule), and a git run still
   // runs its DoD before it is clean. A round that never examined the file parks.
   const seen = (ledger.seen || []).filter((s) => s.id !== findingId);
-  return { ...ledger, findings, seen, status: 'converging' };
+  // Null the diff hash so the next round-start opens a round even when no commit
+  // landed since the park; beginRound would otherwise see the same diff and no-op.
+  return { ...ledger, findings, seen, status: 'converging', diff_content_hash: null };
 }
 
 // ---------------------------------------------------------------------------
