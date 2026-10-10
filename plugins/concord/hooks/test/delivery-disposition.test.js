@@ -118,11 +118,18 @@ test('release blockers stay blocked even with the fix budget exhausted and never
   assert.strictEqual(record.classification, 'blocked');
   assert.deepStrictEqual(record.reasons, ['acceptance-unmet:AC1', 'required-check:test (windows):pending', 'open-choice:retry ownership semantics', 'release-blocker:c-4192088461:security']);
   assert.deepStrictEqual(record.budgets.fix, { max: 3, spent: 3, remaining: 0 });
-  for (const disposition of ['accepted', 'blocking']) {
-    const p = pr172Packet();
-    p.findings[3] = { ...p.findings[3], disposition, acceptedBy: 'arinyaho', releaseBlocking: ['data-integrity'] };
-    assert.ok(lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...p }).reasons.includes('release-blocker:c-4192088461:data-integrity'));
-  }
+  const p = pr172Packet();
+  p.findings[3] = { ...p.findings[3], disposition: 'blocking', releaseBlocking: ['data-integrity'] };
+  assert.ok(lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...p }).reasons.includes('release-blocker:c-4192088461:data-integrity'));
+});
+
+test('an accepted release-blocking finding blocks as accepted-release-blocker', () => {
+  const p = pr172Packet();
+  p.findings[3] = { ...p.findings[3], disposition: 'accepted', acceptedBy: 'arinyaho', releaseBlocking: ['data-integrity', 'serious-bug'] };
+  const result = lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...p });
+  assert.strictEqual(result.classification, 'blocked');
+  // Only the person's decision is outstanding, so no plain release-blocker reason remains.
+  assert.deepStrictEqual(result.reasons.filter((r) => r.includes('c-4192088461')), ['accepted-release-blocker:c-4192088461:data-integrity', 'accepted-release-blocker:c-4192088461:serious-bug']);
 });
 
 test('without tracker access the residual group is a pending packet, not an invented ticket', () => {

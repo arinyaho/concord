@@ -623,7 +623,8 @@ function classifyDelivery(raw, minorIds = []) {
     const { id, disposition } = finding;
     if (!disposition || (disposition === 'accepted' && !text(finding.acceptedBy))) reasons.push(`unowned:${id}`);
     else if (disposition === 'blocking') reasons.push(`blocking:${id}`);
-    if (disposition !== 'fixed') for (const category of finding.releaseBlocking || []) reasons.push(`release-blocker:${id}:${category}`);
+    // An acceptance never clears a release-blocking category; the reason only says the head waits on a person, not on work.
+    if (disposition !== 'fixed') for (const category of finding.releaseBlocking || []) reasons.push(`${disposition === 'accepted' && text(finding.acceptedBy) ? 'accepted-' : ''}release-blocker:${id}:${category}`);
     if (disposition !== 'follow-up') continue;
     const rootCause = text(finding.rootCause);
     if (!rootCause) { reasons.push(`unowned:${id}`); continue; }

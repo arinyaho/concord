@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 'use strict';
 const fs = require('node:fs');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 const path = require('node:path');
+const os = require('node:os');
 const { safeIdForFilename } = require('./artifact-name');
 const { writeFileAtomic, publishDirectoryAtomic } = require('./atomic-write');
 const { captureArtifactRoot, readArtifactBytes } = require('./bounded-artifact');
@@ -295,6 +296,7 @@ function renderHandoff(result) {
   for (const r of ledger.runs || []) {
     for (const f of (r.fixed || []).filter((fixed) => !reopened.has(fixed.id))) lines.push(`  fixed in prior run #${r.run}: ${evidenceLine(f)} -> commit ${f.fix_commit}`);
   }
+  for (const f of ledger.gate_fixed || []) lines.push(`fixed outside the loop: ${evidenceLine(f)} -> commit ${f.fix_commit} (test: ${f.fix_evidence.command})`);
   for (const d of ledger.gate_dismissed || []) lines.push(`dismissed by ${d.dismissedBy}: ${evidenceLine(d)}`);
   // A cleared finding is reported once: still open or dismissed ids show in their own section, and "not re-raised" needs a gate round whose verdict was recorded.
   const reported = new Set([...(ledger.gate_open || []).map((f) => f.id), ...dismissedIds(ledger)]);
@@ -594,7 +596,7 @@ function firstRetryArtifact(retries) {
 const INITIATIVE_FLAGS = [['--initiative-run-key', 'key'], ['--initiative-id', 'initiativeId'], ['--initiative-state-dir', 'stateDir'], ['--initiative-max-launches', 'maxLaunches'], ['--initiative-max-rounds', 'maxRounds']];
 const MODE_FLAG = '--initiative-mode';
 const RUN_VERBS = new Set(['finalise', 'consume', 'escalate', 'session-checkpoint']);
-const CLI_VERBS = ['show', 'round-start', 'telemetry-slot', 'findings', 'plan-fixes', 'plan-dispatch', 'commit-fix', 'record', 'round-failure', 'gate-panel-round-start', 'gate-panel-round-record', 'unpark', 'dismiss', 'reset', 'rerun', 'artifact-normalize', 'reserve', 'carry', 'finalise', 'consume', 'escalate', 'session-checkpoint', 'feedback'];
+const CLI_VERBS = ['show', 'round-start', 'telemetry-slot', 'findings', 'plan-fixes', 'plan-dispatch', 'commit-fix', 'record', 'round-failure', 'gate-panel-round-start', 'gate-panel-round-record', 'unpark', 'dismiss', 'record-fix', 'reset', 'rerun', 'artifact-normalize', 'reserve', 'carry', 'finalise', 'consume', 'escalate', 'session-checkpoint', 'feedback'];
 const RESERVE_ROLES = ['correctness', 'verify', 'plan', 'intent', 'gate-review', 'gate-verify', 'fix', 'certify', 'lens', 'vote'];
 const ARTIFACT_RESERVE_ROLE = { correctness: 'correctness', verify: 'verify', plan: 'plan', intent: 'intent', gate: 'gate-review', 'gate-verify': 'gate-verify' };
 
@@ -2822,6 +2824,71 @@ function runVerb(resolveFromCwd, args, initiative) {
     return;
   }
 
+  // A fix committed outside the loop is recorded only on a deterministic check (docs/design/delivery-disposition.md,
+  // "Fixes made outside the loop"): the test command fails at the commit's parent with the commit's test files
+  // checked out and passes at the commit, so the change from red to green comes from the fix.
+  if (verb === 'record-fix') {
+    requireRef(ref, 'record-fix');
+    const findingId = rest[0];
+    const flag = (name) => { const i = rest.indexOf(name); return i >= 0 && rest[i + 1] ? rest[i + 1].trim() : ''; };
+    const testFiles = rest.flatMap((a, i) => (a === '--test-file' && rest[i + 1] ? [rest[i + 1]] : []));
+    const commitArg = flag('--commit');
+    const command = flag('--test');
+    if (!findingId || findingId.startsWith('--')) throw new Error('review-cli record-fix: missing required <findingId> argument');
+    if (!commitArg || !command) throw new Error('review-cli record-fix: --commit <sha> and --test <command> are required; a fix outside the loop is recorded only with a test that fails before it and passes after it');
+    const slug = targetSlug(ref);
+    const ledger = readLedger(stateDir, slug);
+    if (!ledger) throw new Error(`review-cli record-fix: no ledger for ref "${ref}" ${stateDirHint(stateDir)}`);
+    if (ledger.status !== 'parked' && ledger.status !== 'gate-pending') throw new Error(`review-cli record-fix: the ledger is "${ledger.status}"; only a stopped run (parked or gate-pending) takes a fix made outside the loop`);
+    const parkedIdx = (ledger.findings || []).findIndex((f) => f.id === findingId && f.status === 'parked');
+    const gate = (ledger.gate_open || []).find((f) => f.id === findingId && !gateFollowUpEligible(f));
+    if (parkedIdx === -1 && !gate) throw new Error(`review-cli record-fix: ${findingId} is not a parked finding or a blocking gate finding of ref "${ref}"`);
+    const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
+    let commit;
+    try { commit = sh('git', ['rev-parse', '--verify', `${commitArg}^{commit}`], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { throw new Error(`review-cli record-fix: ${commitArg} is not a commit`); }
+    const reviewed = ledger.target && ledger.target.head_sha;
+    if (!reviewed || commit === reviewed || spawnSync('git', ['merge-base', '--is-ancestor', reviewed, commit], { cwd: repoRoot }).status !== 0) throw new Error(`review-cli record-fix: ${commit} does not follow the reviewed head ${reviewed || '(none recorded)'}; the fix must be a commit made after the finding was raised`);
+    const parents = sh('git', ['rev-list', '--parents', '-n', '1', commit], { cwd: repoRoot }).trim().split(' ').slice(1);
+    if (parents.length !== 1) throw new Error(`review-cli record-fix: ${commit} is a merge commit; name the single-parent commit that carries the fix`);
+    const parent = parents[0];
+    if (!gitIsReachable(repoRoot, commit)) throw new Error(`review-cli record-fix: ${commit} is not on HEAD`);
+    for (const file of testFiles) {
+      if (spawnSync('git', ['cat-file', '-e', `${commit}:${file}`], { cwd: repoRoot }).status !== 0) throw new Error(`review-cli record-fix: ${file} is not in ${commit}`);
+    }
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'record-fix-'));
+    const runAt = (sha, name, overlay) => {
+      const tree = path.join(scratch, name);
+      sh('git', ['worktree', 'add', '--detach', '-q', tree, sha], { cwd: repoRoot });
+      if (overlay.length) sh('git', ['checkout', commit, '--', ...overlay.map((f) => `:(literal)${f}`)], { cwd: tree });
+      return dodExec.defaultExecFn(command, tree).status;
+    };
+    try {
+      if (runAt(parent, 'red', testFiles) === 0) throw new Error(`review-cli record-fix: the test passes at ${parent} with the commit's test files; it does not show the finding`);
+      const green = runAt(commit, 'green', []);
+      if (green !== 0) throw new Error(`review-cli record-fix: the test fails at ${commit} (exit ${green})`);
+    } finally {
+      for (const name of ['red', 'green']) spawnSync('git', ['worktree', 'remove', '--force', path.join(scratch, name)], { cwd: repoRoot });
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+    const fixEvidence = { command, testFiles, parent, recordedAt: new Date().toISOString() };
+    let next;
+    if (parkedIdx >= 0) {
+      const findings = ledger.findings.slice();
+      findings[parkedIdx] = { ...findings[parkedIdx], status: 'fixed', fix_commit: commit, park_reason: null, fix_evidence: fixEvidence };
+      const seen = (ledger.seen || []).map((e) => (e.id === findingId ? { ...e, status: 'fixed' } : e));
+      next = { ...ledger, findings, seen };
+      if (!findings.some((f) => f.status === 'parked')) next = { ...clearIntentForFreshLook(stateDir, slug, next), status: 'converging' };
+    } else {
+      const gateOpen = ledger.gate_open.filter((f) => f.id !== findingId);
+      next = { ...ledger, gate_open: gateOpen, gate_fixed: (ledger.gate_fixed || []).concat([findingEvidence(gate, { fix_commit: commit, fix_evidence: fixEvidence })]) };
+      // The next round reviews only the commits after the reviewed head and decides convergence, as a DoD retry does.
+      if (ledger.status === 'gate-pending' && !gateOpen.some((f) => !gateFollowUpEligible(f))) next = { ...next, status: 'converging', diff_content_hash: null, retry_diff_base: reviewed };
+    }
+    writeLedger(stateDir, slug, next);
+    process.stdout.write(`recorded ${findingId} as fixed by ${commit}; ledger status is now "${next.status}".\n`);
+    return;
+  }
+
   // Discards a readable standalone ledger so round-start begins a fresh run.
   // The escape hatch for a ledger latched into a finding-less terminal state: a
   // no-progress or budget-exhausted park has zero parked findings, so `unpark`
@@ -2880,7 +2947,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       reviewRouting: prior.reviewRouting || null,
       status: prior.status,
       rounds: prior.round || 0,
-      fixed: (prior.findings || []).filter((f) => f.status === 'fixed').map((f) => findingEvidence(f, { fix_commit: f.fix_commit })),
+      fixed: (prior.findings || []).filter((f) => f.status === 'fixed').map((f) => findingEvidence(f, { fix_commit: f.fix_commit })).concat(prior.gate_fixed || []),
       parked: (prior.findings || []).filter((f) => f.status === 'parked').map((f) => f.id),
       killed: prior.killed_digest || [],
       gate_open: (prior.gate_open || []).map((f) => findingEvidence(f)),
