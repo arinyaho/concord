@@ -5823,6 +5823,44 @@ test('record-fix on the last blocking gate finding of a parked run resets the pa
   assert.deepStrictEqual(after.gate_panel, gatePanel.emptyGatePanel());
 });
 
+// The merge record runs on a done panel before it counts gate_open.
+const mergedGateIds = (l) => (l.gate_panel.status === 'done' ? require('../../core/gate-panel').mergePanelIntoGate(l.gate_open, l.gate_panel.confirmed || [], []) : l.gate_open).map((f) => f.id);
+const parkedWithConfirmedGate = () => ({ status: 'parked', findings: [{ id: 'correctness:p', file: 'a.txt', summary: 's', status: 'parked', park_reason: 'needs-decision' }], gate_open: [BLOCKING_GATE('gate:silent-gap:x')], gate_panel: { ...require('../../core/gate-panel').emptyGatePanel(), status: 'done', confirmed: [BLOCKING_GATE('gate:silent-gap:x')] } });
+
+test('record-fix on a gate finding of a run that stays parked resets the panel, so record-fix on the parked finding cannot merge it back', () => {
+  const t = recordFixRepo({ ledger: parkedWithConfirmedGate });
+  run(recordFixArgs(t.fix), { env: t.env });
+  const mid = review.readLedger(t.dir, t.slug);
+  assert.strictEqual(mid.status, 'parked');
+  assert.deepStrictEqual(mid.gate_panel, require('../../core/gate-panel').emptyGatePanel());
+  run(['record-fix', 'feat/x', 'correctness:p', '--commit', t.fix, '--test', 'sh check.sh', '--test-file', 'check.sh'], { env: t.env });
+  const after = review.readLedger(t.dir, t.slug);
+  assert.strictEqual(after.status, 'converging');
+  assert.deepStrictEqual(mergedGateIds(after), []);
+});
+
+test('record-fix on a gate finding of a run that stays parked resets the panel, so unpark cannot merge it back', () => {
+  const t = recordFixRepo({ ledger: parkedWithConfirmedGate });
+  run(recordFixArgs(t.fix), { env: t.env });
+  run(['unpark', 'feat/x', 'correctness:p'], { env: t.env });
+  assert.deepStrictEqual(mergedGateIds(review.readLedger(t.dir, t.slug)), []);
+});
+
+test('record-fix on one of two blocking gate findings keeps gate-pending and resets the panel, so the first cannot merge back', () => {
+  const gatePanel = require('../../core/gate-panel');
+  const g1 = BLOCKING_GATE('gate:silent-gap:x');
+  const g2 = BLOCKING_GATE('gate:silent-gap:y');
+  const t = recordFixRepo({ ledger: () => ({ status: 'gate-pending', gate_open: [g1, g2], gate_panel: { ...gatePanel.emptyGatePanel(), status: 'done', confirmed: [g1, g2] } }) });
+  run(recordFixArgs(t.fix), { env: t.env });
+  const mid = review.readLedger(t.dir, t.slug);
+  assert.strictEqual(mid.status, 'gate-pending');
+  assert.deepStrictEqual(mid.gate_panel, gatePanel.emptyGatePanel());
+  run(['record-fix', 'feat/x', 'gate:silent-gap:y', '--commit', t.fix, '--test', 'sh check.sh', '--test-file', 'check.sh'], { env: t.env });
+  const after = review.readLedger(t.dir, t.slug);
+  assert.strictEqual(after.status, 'converging');
+  assert.deepStrictEqual(mergedGateIds(after), []);
+});
+
 test('record-fix on a parked finding keeps the gate panel and sets no retry base, as unpark would', () => {
   const gatePanel = require('../../core/gate-panel');
   const parked = { id: 'correctness:x', file: 'a.txt', summary: 's', status: 'parked', park_reason: 'needs-decision' };

@@ -2881,16 +2881,16 @@ function runVerb(resolveFromCwd, args, initiative) {
       const seen = (ledger.seen || []).map((e) => (e.id === findingId ? { ...e, status: 'fixed' } : e));
       next = { ...ledger, findings, seen };
     } else {
-      next = { ...ledger, gate_open: ledger.gate_open.filter((f) => f.id !== findingId), gate_fixed: (ledger.gate_fixed || []).concat([findingEvidence(gate, { fix_commit: commit, fix_evidence: fixEvidence })]) };
+      // A done panel's confirmed list would merge the fixed finding back into gate_open on the next record, so the panel
+      // re-runs fresh whether or not the run leaves its stop now.
+      next = { ...ledger, gate_open: ledger.gate_open.filter((f) => f.id !== findingId), gate_fixed: (ledger.gate_fixed || []).concat([findingEvidence(gate, { fix_commit: commit, fix_evidence: fixEvidence })]), gate_panel: gatePanelLib.emptyGatePanel() };
     }
     // The run leaves its stop only when neither a parked finding nor a blocking gate finding is left.
     if (!next.findings?.some((f) => f.status === 'parked') && !(next.gate_open || []).some((f) => !gateFollowUpEligible(f))) {
       next = { ...clearIntentForFreshLook(stateDir, slug, next), status: 'converging' };
-      // As on a DoD retry, a gate-pending run's next round reviews only the commits after the reviewed head. Whenever a gate
-      // finding was fixed, from parked or gate-pending, the panel re-runs fresh, so its confirmed list cannot merge the fixed
-      // finding back into gate_open; a parked run left through a parked finding keeps its panel, as unpark would.
-      if (ledger.status === 'gate-pending') next = { ...next, diff_content_hash: null, retry_diff_base: reviewed };
-      if (gate || ledger.status === 'gate-pending') next = { ...next, gate_panel: gatePanelLib.emptyGatePanel() };
+      // As on a DoD retry, a gate-pending run's next round reviews only the commits after the reviewed head with a fresh panel;
+      // a parked run left through a parked finding keeps its panel, as unpark would.
+      if (ledger.status === 'gate-pending') next = { ...next, diff_content_hash: null, retry_diff_base: reviewed, gate_panel: gatePanelLib.emptyGatePanel() };
     }
     writeLedger(stateDir, slug, next);
     process.stdout.write(`recorded ${findingId} as fixed by ${commit}; ledger status is now "${next.status}".\n`);
