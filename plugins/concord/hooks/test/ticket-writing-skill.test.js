@@ -346,6 +346,23 @@ test('maintained package metadata and docs advertise the shared capability set',
   assert.doesNotMatch(gaps, /Deferred: `lifecycle` and `transcript`/i);
 });
 
+const { THRESHOLDS, HARD_LIMITS } = require('../../core/session-handoff.js');
+const n = (value) => value.toLocaleString('en-US');
+
+test('the soft and hard handoff limits are stated in the design note and read from session-handoff.js', () => {
+  const note = read(path.join(REPO, 'docs/design/ticket-to-pr-session-handoff.md'));
+  for (const text of [note, read(CLAUDE_TICKET_TO_PR)]) {
+    for (const value of [`${n(THRESHOLDS.inputTokens)} tokens`, `${THRESHOLDS.toolCalls} tool calls`, `${n(HARD_LIMITS.inputTokens)} tokens`, `${HARD_LIMITS.toolCalls} tool calls`]) {
+      assert.ok(text.includes(value), value);
+    }
+  }
+  const initiative = read(CLAUDE_INITIATIVE_TO_PRS);
+  for (const value of [`${n(THRESHOLDS.inputTokens)} input tokens`, `${THRESHOLDS.toolCalls} tool calls`, `${THRESHOLDS.noProgressCalls} consecutive calls`]) {
+    assert.ok(initiative.includes(value), value);
+  }
+  assert.ok(HARD_LIMITS.inputTokens > THRESHOLDS.inputTokens && HARD_LIMITS.toolCalls > THRESHOLDS.toolCalls);
+});
+
 test('ticket-to-pr ends a standalone session at the delivery boundary and hands off a packet', () => {
   const skill = read(CLAUDE_TICKET_TO_PR);
   assert.equal(read(CODEX_TICKET_TO_PR), skill);
@@ -354,12 +371,12 @@ test('ticket-to-pr ends a standalone session at the delivery boundary and hands 
   assert.ok(section, 'missing "Session handoff" section');
   for (const pattern of [
     /delivery disposition recorded for the exact PR head/,
-    /128,000 tokens/,
-    /50 tool calls/,
-    /whichever comes first/,
+    new RegExp(`soft limit.*${n(THRESHOLDS.inputTokens)} tokens.*${THRESHOLDS.toolCalls} tool calls.*finish the stage in progress, start no new stage`, 'is'),
+    new RegExp(`hard limit.*${n(HARD_LIMITS.inputTokens)} tokens.*${HARD_LIMITS.toolCalls} tool calls.*stop at the next safe step`, 'is'),
     /ticket, the PR, the exact head and base, the delivery record, open follow-ups, decisions made, and what the next PR needs/,
     /A handoff before delivery also records the active stage and the last completed stage, the gate evidence so far/,
     /the exact next action, and states each field that does not exist yet, such as the PR or the delivery record, as absent/,
+    /the exact next action, and states each field that does not exist yet.*?`reviewerUnavailable` declaration when the task carries one/s,
     /finish the current stage step so no mutation is left half-done/,
     /never from the previous transcript/,
     /reads the current PR and ticket state again before acting/,
@@ -367,6 +384,7 @@ test('ticket-to-pr ends a standalone session at the delivery boundary and hands 
   ]) {
     assert.match(section, pattern);
   }
+  assert.match(read(path.join(REPO, 'docs/design/ticket-to-pr-session-handoff.md')), /`reviewerUnavailable` declaration when the task carries one/);
 });
 
 test('initiative-to-prs delegation gates use the design-versus-apply rule, not importance', () => {

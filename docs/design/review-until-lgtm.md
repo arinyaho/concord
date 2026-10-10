@@ -76,20 +76,20 @@ An agent merges a PR only at the user's explicit request naming it, and only aft
 |---|---|
 | The live head equals the head asked about | `head-mismatch:<live>` |
 | Every check on that head concluded `success` | `check:<name>:<conclusion>` |
-| A reviewer is configured or observed | `no-automated-review` |
-| Every configured reviewer was observed | `reviewer-missing:<login>` |
+| A reviewer is configured or observed, and the delivery record is not `mergeable-without-review` | `no-automated-review` |
+| Every configured reviewer was observed (not checked for a `mergeable-without-review` record) | `reviewer-missing:<login>` |
 | Every required check of the delivery record is present | `check-missing:<name>` |
 | No reviewer reports a provider failure or timeout | `reviewer-failure:<reviewer>:<label>` |
 | Every reviewer is terminal for that head | `reviewer-pending:<reviewer>` |
 | Every reviewer gave a fresh LGTM for that head | `no-lgtm:<reviewer>` |
 | A delivery record exists for that head | `no-delivery` |
 | No review was recorded or rejected, and no minor collected, after that record | `delivery-stale` |
-| The record is `mergeable-clean` or `mergeable-with-follow-ups` | `delivery-blocked` |
+| The record is `mergeable-clean`, `mergeable-with-follow-ups` or `mergeable-without-review` | `delivery-blocked` |
 | The live base equals the record's base | `base-changed` |
 | The approved contract digest equals the record's | `contract-changed` |
 | No fix claim exists on that head | `fix-round-open` |
 
-The verb merges nothing and posts nothing. With `no-automated-review` (no reviewer configured and none observed) the agent merges only on the user's explicit instruction naming the PR and reports that no automated review exists; a configured reviewer that was not observed is `reviewer-missing`, which this exception never covers. A timeout or provider failure is a human-reconciliation state, never approval. A push makes a new head, so the gate runs again after every push.
+The verb merges nothing and posts nothing. With `no-automated-review` as the only reason (no reviewer configured and none observed, or a `mergeable-without-review` record) the agent merges only on the user's explicit instruction naming the PR and reports that no automated review exists; otherwise it reports the reason and does not merge. Outside a `mergeable-without-review` record, a configured reviewer that was not observed is `reviewer-missing`, which this exception never covers. A timeout or provider failure is a human-reconciliation state, never approval. A push makes a new head, so the gate runs again after every push.
 
 ## Rationale
 

@@ -8,7 +8,9 @@ const { canonicalPath, runPath, repositoryIdentity } = require('./initiative-rev
 const SESSION_MODES = ['off', 'suggest', 'stop-at-checkpoint'];
 const BOUNDARIES = ['stage-complete', 'batch-complete', 'round-complete'];
 const SCOPES = ['orchestrator', 'implementation', 'review'];
+// THRESHOLDS are the soft limits; HARD_LIMITS apply to a standalone ticket-to-pr run, which stops at the next safe step.
 const THRESHOLDS = { inputTokens: 128000, toolCalls: 50, noProgressCalls: 10 };
+const HARD_LIMITS = { inputTokens: 200000, toolCalls: 100 };
 const digest = (value) => crypto.createHash('sha256').update(value).digest('hex');
 const fail = (message) => { throw new Error(`session handoff: ${message}`); };
 
@@ -105,4 +107,4 @@ function createSessionHandoff({ packetPath, mode = 'suggest', initiative, reposi
   }
 }
 
-module.exports = { SESSION_MODES, THRESHOLDS, createSessionHandoff };
+module.exports = { SESSION_MODES, THRESHOLDS, HARD_LIMITS, createSessionHandoff };
