@@ -174,6 +174,11 @@ function reviewSourceMissing(repoRoot, file) {
   return false;
 }
 
+// A certificate lists exactly the expected members: no duplicate can stand in for a missing one.
+function sameMembers(actual, expected) {
+  return Array.isArray(actual) && new Set(actual).size === actual.length && actual.length === expected.length && expected.every((item) => actual.includes(item));
+}
+
 function validateFixFiles(repoRoot, stateDir, files, verb = 'commit-fix') {
   const repo = path.resolve(repoRoot);
   const artifacts = path.resolve(stateDir);
@@ -2445,8 +2450,8 @@ function runVerb(resolveFromCwd, args, initiative) {
       const finding = candidates.find((f) => f.id === id);
       const fixedByGit = isGit && finding && journalEntryFor(finding);
       const fixedByReport = !isGit && fx && fx.edited === true && cert?.status === 'ok' && cert.groupId === group?.groupId
-        && Array.isArray(cert.resolvedFindingIds) && cert.resolvedFindingIds.length === group.findingIds.length && group.findingIds.every((findingId) => cert.resolvedFindingIds.includes(findingId))
-        && Array.isArray(cert.files) && Array.isArray(fx.files) && cert.files.length === fx.files.length && fx.files.every((file) => cert.files.includes(file))
+        && sameMembers(cert.resolvedFindingIds, group.findingIds)
+        && Array.isArray(fx.files) && sameMembers(cert.files, fx.files)
         && cert.fileHashes && cert.files.every((file) => {
           const absolute = path.join(repoRoot, file);
           const actual = fs.existsSync(absolute) ? crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex') : null;
@@ -2615,8 +2620,9 @@ function runVerb(resolveFromCwd, args, initiative) {
     const finalChecks = [{ name: 'definition-of-done', status: ledger.dod?.deferredBy === 'pending-final' ? 'not-run' : ledger.dod?.deferred ? 'deferred' : ledger.dod?.passed ? 'passed' : 'failed' }];
     const priorHistoryKeys = new Set((ledger.review_history || []).map((entry) => `${entry.planId}:${entry.groupId}`));
     const newHistory = (ledger.fix_plan?.groups || []).filter((group) => !priorHistoryKeys.has(`${ledger.fix_plan.planId}:${group.groupId}`)).map((group) => {
-      const journal = (ledger.journal || []).find((entry) => (entry.groupIds || []).includes(group.groupId));
-      return { run: (ledger.runs || []).length + 1, round: n, planId: ledger.fix_plan.planId, transactionScope: ledger.fix_plan.transactionScope, ...group, outcome: journal ? 'fixed' : reconciliation ? 'reconcile' : 'unresolved', fixCommit: journal?.sha || null };
+      // The member dispositions above are the proof for both targets: a Git fix is fixed only through its journal entry.
+      const fixed = group.findingIds.every((id) => fixedIds.includes(id));
+      return { run: (ledger.runs || []).length + 1, round: n, planId: ledger.fix_plan.planId, transactionScope: ledger.fix_plan.transactionScope, ...group, outcome: fixed ? 'fixed' : reconciliation ? 'reconcile' : 'unresolved', fixCommit: fixed ? fixCommits[group.findingIds[0]] : null };
     });
     ledger = { ...ledger, review_history: [...(ledger.review_history || []), ...newHistory], phase: 'done', last_recorded_round: n, _lastDecision: decision, reconciliationPacket: reconciliation || null, finalChecks, ...(run ? { _lastInitiativeClaim: null } : {}) };
     let entry;
@@ -2720,16 +2726,32 @@ function runVerb(resolveFromCwd, args, initiative) {
       requireArtifactAfter(stateDir, n, 'verify', 'plan');
       if (ledger.intentHash) requireArtifactAfter(stateDir, n, 'intent', 'plan');
     }
+    // A structural fix is authorized only by the approved intent cached for this run: the
+    // evidence names that file, its hash is the run's, the bytes still hash to it, and every
+    // quoted requirement occurs in them (whitespace runs compared as one space).
+    let approvedDesign;
+    const requireApprovedDesign = (group, index) => {
+      const evidence = group.designEvidence || {};
+      const source = `intent-${slug}.md`;
+      if (!ledger.intentHash || evidence.source !== source || evidence.sourceHash !== ledger.intentHash) {
+        throw new Error(`harness-failure: plan group[${index}] structural fix is not bound to this run's approved design ${source} and its hash`);
+      }
+      if (approvedDesign === undefined) {
+        let text;
+        try { text = fs.readFileSync(path.join(stateDir, source), 'utf8'); } catch (_) { throw new Error(`harness-failure: approved design ${source} is missing`); }
+        if (contentHash(text) !== ledger.intentHash) throw new Error(`harness-failure: approved design ${source} changed after this run began (hash mismatch)`);
+        approvedDesign = text.replace(/\s+/g, ' ');
+      }
+      const missing = evidence.requirements.find((requirement) => !approvedDesign.includes(requirement.replace(/\s+/g, ' ')));
+      if (missing !== undefined) throw new Error(`harness-failure: plan group[${index}] quotes a requirement that ${source} does not contain: ${JSON.stringify(missing)}`);
+    };
     const fixGroups = planArtifact.groups.map((group, index) => {
       for (const id of group.findingIds) {
         if (!fixById.has(id)) throw new Error(`harness-failure: plan group[${index}] references finding "${id}" that is rejected, replayed, concluded, or absent`);
         if (groupedIds.has(id)) throw new Error(`harness-failure: plan finding "${id}" appears in more than one root-cause group`);
         groupedIds.add(id);
       }
-      if (group.changeClass === 'structural' && group.action === 'fix'
-        && (!ledger.intentHash || group.designEvidence?.sourceHash !== ledger.intentHash)) {
-        throw new Error(`harness-failure: plan group[${index}] structural fix is not bound to this run's approved design hash`);
-      }
+      if (group.changeClass === 'structural' && group.action === 'fix') requireApprovedDesign(group, index);
       return { ...group, findings: group.findingIds.map((id) => fixById.get(id)) };
     });
     const unclassified = fixes.filter((finding) => !groupedIds.has(finding.id)).map((finding) => finding.id);
@@ -2763,20 +2785,27 @@ function runVerb(resolveFromCwd, args, initiative) {
       }
       throw new Error(`harness-failure: ${message}`);
     }
-    const blockedGroups = fixGroups.filter((group) => group.action === 'reconcile');
     const structuralGroups = fixGroups.filter((group) => group.changeClass === 'structural' && group.action === 'fix');
     const invariantOwners = new Map();
+    const sharedInvariants = new Map();
     let transactionScope = 'group';
     for (const group of structuralGroups) for (const invariant of group.invariants) {
       const key = invariant.trim().toLowerCase();
-      if (invariantOwners.has(key) && invariantOwners.get(key) !== group.groupId) transactionScope = 'round';
-      else invariantOwners.set(key, group.groupId);
+      if (invariantOwners.has(key) && invariantOwners.get(key) !== group.groupId) {
+        transactionScope = 'round';
+        for (const groupId of [invariantOwners.get(key), group.groupId]) if (!sharedInvariants.has(groupId)) sharedInvariants.set(groupId, invariant);
+      } else invariantOwners.set(key, group.groupId);
     }
+    // A file target has no commit to make a round transaction atomic, so groups that share an
+    // invariant stop for a person before any fixer edits the file.
+    const roundOnFile = !isGit && transactionScope === 'round';
+    const blockedGroups = fixGroups.filter((group) => group.action === 'reconcile' || (roundOnFile && sharedInvariants.has(group.groupId)))
+      .map((group) => group.action === 'reconcile' ? group : { ...group, reason: `shares the invariant "${sharedInvariants.get(group.groupId)}" with another group` });
     const material = [...intentParked, ...gateOpen.filter((f) => /^gate:(?:design-conformance|ac-coverage):/.test(f.id) && !gateFollowUpEligible(f))];
     const reconciliationPacket = blockedGroups.length ? {
       trigger: 'group-reconcile', finding: blockedGroups[0].findingIds[0], stage: 'plan-fixes', avoidedLaunches: fixes.length,
       findings: blockedGroups.reduce((counts, group) => ({ ...counts, [group.changeClass]: (counts[group.changeClass] || 0) + group.findingIds.length }), {}),
-      reason: 'one or more groups require a human decision before editing',
+      reason: roundOnFile ? 'file targets cannot certify a round transaction; groups that share an invariant need a human decision before editing' : 'one or more groups require a human decision before editing',
       groups: blockedGroups.map(({ groupId, findingIds, rootCause, invariants, structuralEffects, reason }) => ({ groupId, findingIds, rootCause, invariants, structuralEffects, reason })),
     } : material.length ? { avoidedLaunches: fixes.length } : null;
     const reconciliation = !!reconciliationPacket;
@@ -3036,16 +3065,23 @@ function runVerb(resolveFromCwd, args, initiative) {
       try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-fix-${safeIdForFilename(group.groupId)}.json`), 'utf8')); }
       catch (_) { return null; }
     });
+    // A fixer that reported no edit is a parked outcome, not a harness fault: commit nothing and let record park it.
+    const notEdited = fixArtifacts.every((artifact) => artifact && artifact.status === 'ok')
+      ? groups.filter((group, index) => fixArtifacts[index].edited === false).map((group) => group.groupId) : [];
+    if (notEdited.length) {
+      const reason = notEdited.length === groups.length ? 'no edit' : `incomplete round transaction: no edit for ${notEdited.join(', ')}`;
+      process.stdout.write(JSON.stringify({ committed: false, reason }) + '\n');
+      return;
+    }
     if (fixArtifacts.some((artifact, index) => !artifact || artifact.status !== 'ok' || artifact.edited !== true || artifact.groupId !== groups[index].groupId || !Array.isArray(artifact.files) || !artifact.files.length)) {
       throw new Error('harness-failure: commit-fix: every authorized group requires one edited fix artifact');
     }
     const files = Array.from(new Set(fixArtifacts.flatMap((artifact) => artifact.files)));
     validateFixFiles(repoRoot, stateDir, files);
     const cert = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-certify-${safeIdForFilename(transactionId)}.json`), 'utf8')); } catch (_) { return null; } })();
-    const sameSet = (left, right) => Array.isArray(left) && left.length === right.length && left.every((item) => right.includes(item));
     if (!cert || cert.status !== 'ok' || cert.groupId !== transactionId
-      || !sameSet(cert.resolvedFindingIds, findingIds)
-      || !sameSet(cert.files, files) || !Array.isArray(cert.evidence) || !cert.evidence.length
+      || !sameMembers(cert.resolvedFindingIds, findingIds)
+      || !sameMembers(cert.files, files) || !Array.isArray(cert.evidence) || !cert.evidence.length
       || !cert.fileHashes || typeof cert.fileHashes !== 'object') {
       throw new Error('harness-failure: commit-fix: complete group certification is required before commit');
     }

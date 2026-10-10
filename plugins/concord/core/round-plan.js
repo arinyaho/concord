@@ -14,6 +14,7 @@
 // round-plan-sync.test.js enforces all three individually (see that file's
 // own tests, not a single blanket guarantee). The JS callers use
 // reviewerPrompt() to generate the prompt they actually send.
+const fs = require('node:fs');
 const path = require('node:path');
 const { safeIdForFilename } = require('./artifact-name');
 const { allowedFindingPrefixes } = require('./artifact-contract');
@@ -98,4 +99,17 @@ function reviewerPrompt(role, { stateDir, round, targetType, dodDeferred, dodPen
   throw new Error(`harness-failure: unknown reviewer role ${role}`);
 }
 
-module.exports = { examinedClause, ROLE_SEQUENCE, BLOCKED_CLAUSE, GATE_SWEEP_CLAUSE, GATE_FOLLOWUP_CLAUSE, GATE_VERIFY_ADDED_CLAUSE, GATE_VERIFY_BLOCKING_CLAUSE, GATE_VERIFY_OWNERSHIP_CLAUSE, VERIFY_OWNERSHIP_CLAUSE, reviewerPrompt };
+// A fixer's declaration for one group, or null when it is missing or unreadable.
+function fixDeclaration(stateDir, round, groupId) {
+  try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${round}-fix-${safeIdForFilename(groupId)}.json`), 'utf8')); } catch (_) { return null; }
+}
+
+// A group whose fixer reported no edit has nothing to certify or commit; record parks it.
+function reportedNoEdit(stateDir, round, groups) {
+  return groups.some((group) => {
+    const declaration = fixDeclaration(stateDir, round, group.groupId);
+    return declaration?.status === 'ok' && declaration.edited === false;
+  });
+}
+
+module.exports = { fixDeclaration, reportedNoEdit, examinedClause, ROLE_SEQUENCE, BLOCKED_CLAUSE, GATE_SWEEP_CLAUSE, GATE_FOLLOWUP_CLAUSE, GATE_VERIFY_ADDED_CLAUSE, GATE_VERIFY_BLOCKING_CLAUSE, GATE_VERIFY_OWNERSHIP_CLAUSE, VERIFY_OWNERSHIP_CLAUSE, reviewerPrompt };

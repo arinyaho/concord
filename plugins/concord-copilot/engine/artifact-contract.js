@@ -1,6 +1,7 @@
 'use strict';
 
 const { isValidFindingId } = require('./gate-contract');
+const { safeIdForFilename } = require('./artifact-name');
 
 const SHAPES = {
   correctness: { arrays: ['examined', 'findings'], prefixes: ['correctness:', 'docreview:'] },
@@ -224,6 +225,16 @@ function normalizeArtifact(name, raw) {
         ...(designEvidence ? { designEvidence } : {}), ...(group.action === 'reconcile' ? { reason: group.reason.trim() } : {}),
       };
     });
+    // Each group's fix and certificate artifacts are named by safeIdForFilename(groupId),
+    // so two groups whose names coincide there would overwrite each other's artifacts.
+    if (name === 'plan') {
+      const owners = new Map();
+      canonical.groups.forEach((group, index) => {
+        const key = safeIdForFilename(group.groupId);
+        if (owners.has(key)) throw new ArtifactError('retry', `plan group[${owners.get(key)}] and group[${index}] share the artifact name of groupId "${group.groupId}"; every groupId must be unique after ":" and other filename-illegal characters become "_"`);
+        owners.set(key, index);
+      });
+    }
   }
   return canonical;
 }

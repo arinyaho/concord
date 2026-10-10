@@ -178,3 +178,11 @@ test('gate-verify duplicates must pair a gate id with a correctness id, and not 
   assert.throws(() => normalizeArtifact('gate-verify', JSON.stringify({ status: 'ok', rejected: [], findings: [], duplicates: [{ id: 'gate:a:x', of: 'gate:b:y' }] })), ArtifactError);
   assert.throws(() => normalizeArtifact('gate-verify', JSON.stringify({ status: 'ok', rejected: [{ id: 'gate:a:x', reason: 'r' }], findings: [], duplicates: [{ id: 'gate:a:x', of: 'correctness:x' }] })), ArtifactError);
 });
+
+test('plan artifacts reject group ids that repeat or share an artifact file name', () => {
+  const group = (groupId, id) => ({ groupId, findingIds: [id], rootCause: 'r', invariants: ['i'], changeClass: 'local', structuralEffects: [], action: 'fix' });
+  for (const ids of [['same', 'same'], ['foo:bar', 'foo_bar']]) {
+    assert.throws(() => normalizeArtifact('plan', JSON.stringify({ status: 'ok', protocolVersion: 2, groups: [group(ids[0], 'correctness:a'), group(ids[1], 'correctness:b')] })),
+      (error) => error instanceof ArtifactError && error.kind === 'retry' && /group\[0\] and group\[1\]/.test(error.message));
+  }
+});

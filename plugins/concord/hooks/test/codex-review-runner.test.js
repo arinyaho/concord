@@ -3252,3 +3252,55 @@ test('the verify prompt lists the examined paths and the certify prompt lists th
   for (const file of examined) assert.ok(promptFor('verify').includes(`"${file}"`), `verify prompt does not list ${file}`);
   assert.ok(promptFor('certify').includes('["a.txt"]'), 'certify prompt does not list the declared fix files');
 });
+
+for (const targetType of ['git', 'file']) {
+  test(`codex runner: a ${targetType} group whose fixer reports no edit launches no certifier and no commit`, async () => {
+    const h = harness({ targetType });
+    const spawn = async (options) => {
+      const result = await h.spawn(options);
+      if (options.role === 'fix') fs.writeFileSync(path.join(h.stateDir, 'round-1-fix-correctness_bug.json'), JSON.stringify({ status: 'ok', edited: false }));
+      return result;
+    };
+    const repoRoot = temp();
+    fs.writeFileSync(path.join(repoRoot, 'a.txt'), 'bad\n');
+    await runReviewUntilGreen({ ref: targetType === 'file' ? 'file:a.txt' : 'feature/x', repoRoot, runCli: h.cli, spawn });
+    assert.ok(h.calls.some((call) => call[0] === 'spawn' && call[1] === 'fix'));
+    assert.strictEqual(h.calls.some((call) => call[0] === 'spawn' && call[1] === 'certify'), false);
+    assert.strictEqual(h.calls.some((call) => call[0] === 'cli' && call[1] === 'commit-fix'), false);
+    assert.ok(h.calls.some((call) => call[0] === 'cli' && call[1] === 'record'));
+    assert.strictEqual(fs.readFileSync(path.join(repoRoot, 'a.txt'), 'utf8'), 'bad\n');
+  });
+}
+
+test('codex runner: a round transaction with a no-edit member launches no certifier and no commit', async () => {
+  const h = harness();
+  const cli = (args) => {
+    if (args[0] !== 'plan-fixes') return h.cli(args);
+    h.calls.push(['cli', ...args]);
+    const fixGroups = ['a', 'b'].map((groupId) => {
+      const finding = { id: `correctness:${groupId}`, file: 'a.txt', span: 'bad', summary: `fix ${groupId}` };
+      return { groupId, findingIds: [finding.id], rootCause: finding.summary, invariants: ['shared invariant'], changeClass: 'structural', action: 'fix', findings: [finding] };
+    });
+    return { protocolVersion: 2, planId: 'plan-1', transactionScope: 'round', fixes: fixGroups.flatMap((group) => group.findings), fixGroups };
+  };
+  const spawn = async (options) => {
+    if (options.role !== 'fix') return h.spawn(options);
+    h.calls.push(['spawn', options.role, options.prompt, options.provider]);
+    const target = options.prompt.match(/write ONLY to (.+\.json): either/)?.[1];
+    if (!target) throw new Error('fix prompt did not name an artifact path');
+    const groupId = path.basename(target).match(/^round-1-fix-(.+)\.json$/)[1];
+    if (groupId === 'a') fs.writeFileSync(path.join(options.repoRoot, 'a.txt'), 'fixed by a\n');
+    fs.writeFileSync(target, JSON.stringify(groupId === 'a' ? { status: 'ok', edited: true, groupId: 'a', files: ['a.txt'] } : { status: 'ok', edited: false }));
+    return { status: 0 };
+  };
+  const repoRoot = temp();
+  fs.writeFileSync(path.join(repoRoot, 'a.txt'), 'bad\n');
+  await runReviewUntilGreen({ ref: 'feature/x', repoRoot, runCli: cli, spawn });
+  const fixTargets = h.calls.filter((call) => call[0] === 'spawn' && call[1] === 'fix').map((call) => path.basename(call[2].match(/write ONLY to (.+\.json): either/)[1]));
+  assert.deepStrictEqual(fixTargets, ['round-1-fix-a.json', 'round-1-fix-b.json']);
+  assert.strictEqual(h.calls.some((call) => call[0] === 'spawn' && call[1] === 'certify'), false);
+  assert.strictEqual(h.calls.some((call) => call[0] === 'cli' && call[1] === 'commit-fix'), false);
+  assert.ok(h.calls.some((call) => call[0] === 'cli' && call[1] === 'record'));
+  // The runner leaves A's uncommitted edit for record to park; parking itself is the CLI's decision.
+  assert.strictEqual(fs.readFileSync(path.join(repoRoot, 'a.txt'), 'utf8'), 'fixed by a\n');
+});

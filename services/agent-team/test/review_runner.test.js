@@ -59,7 +59,7 @@ test("applies fixes: spawns fix per finding and commit-fixes each", async () => 
   assert.equal(res.fixed, 2);
   const fixSpawns = sp.spawned.filter((s) => s[0] === "fix");
   assert.equal(fixSpawns.length, 2);
-  assert.equal(fixSpawns[0][1].findingId, "correctness:a");
+  assert.equal(fixSpawns[0][1].fixGroup.groupId, "correctness:a");
   assert.deepEqual(cli.calls.filter((c) => c[0] === "commit-fix"), [
     ["commit-fix", "b", "correctness:a"],
     ["commit-fix", "b", "correctness:b"],
@@ -246,4 +246,15 @@ test("intent kind spawned only when round-start signals intentApplied", async ()
   const sp = recordingSpawn();
   await runReviewUntilGreen({ target: TARGET, runCli: cli.runCli, spawn: sp.spawn, maxRounds: 5 });
   assert.ok(sp.spawned.some((s) => s[0] === "intent"));
+});
+
+test("a round with the gate applied spawns gate before verify and gate-verify before plan", async () => {
+  const cli = fakeCli({
+    "round-start": [{ decision: "work", round: 1, stateDir: "/s", dodPassed: true, gateApplied: true, gateMode: "pair" }],
+    "plan-fixes": [{ fixes: [] }],
+    "record": [{ decision: { continue: false, converged: true, parked: false } }],
+  });
+  const sp = recordingSpawn();
+  await runReviewUntilGreen({ target: TARGET, runCli: cli.runCli, spawn: sp.spawn, maxRounds: 1 });
+  assert.deepEqual(sp.spawned.map(([kind]) => kind), ["review", "gate", "verify", "gate-verify", "plan"]);
 });
