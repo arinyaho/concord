@@ -344,7 +344,7 @@ function resetUnreachable(ledger) {
   // gate_panel goes too: `record` re-merges a done panel's confirmed findings
   // into gate_open on every round, so leaving it would resurrect the very
   // findings this drop just retired -- against a tree that no longer has them.
-  return { ...ledger, findings, seen, status: 'converging', gate_open: [], gate_rounds: [], gate_panel: emptyGatePanel() };
+  return { ...ledger, findings, seen, status: 'converging', gate_open: [], gate_fixed: [], gate_rounds: [], gate_panel: emptyGatePanel() };
 }
 
 // ---------------------------------------------------------------------------
