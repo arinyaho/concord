@@ -2502,10 +2502,19 @@ function runVerb(resolveFromCwd, args, initiative) {
     const hasOpenCandidate = R.dedupeAgainstSeen(candidates, ledger.seen).some((f) => !concludedIds.has(f.id));
     const targetUnchanged = isGit || fixedIds.length > 0 || parkedIds.length > 0 || hasOpenCandidate
       || acquireTarget(ledger.target.spec, repoRoot).identity === ledger.target.head_sha;
+    // The listed files plus, on a git target, every changed path the coverage
+    // check counts as examined (a byte copy of a listed changed path).
+    const examinedForOutcome = () => {
+      const listed = Array.isArray(cJson.examined) ? cJson.examined : [];
+      if (!isGit) return listed;
+      const changed = readChangedPaths(stateDir, ledger, ref, n);
+      const missing = new Set(unexaminedPaths(repoRoot, ledger, changed, listed));
+      return [...new Set([...listed, ...changed.filter((file) => !missing.has(file))])];
+    };
     const outcome = {
       dodPassed: !!(ledger.dod && ledger.dod.passed), dodDeferred: !!(ledger.dod && ledger.dod.deferred), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons,
       targetUnchanged,
-      examined: Array.isArray(cJson.examined) ? cJson.examined : [],
+      examined: examinedForOutcome(),
       intentReviewCount: (ledger.intent_parked || []).length,
       ...R.splitGateOpen(gateOpen),
       // --no-broad opts the run out of broad review, and the panel IS broad
