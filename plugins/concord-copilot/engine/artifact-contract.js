@@ -186,24 +186,24 @@ function normalizeArtifact(name, raw) {
     canonical.protocolVersion = 2;
   }
   if ((name === 'verify' || name === 'plan') && parsed.groups !== undefined) {
-    if (!Array.isArray(parsed.groups)) throw new ArtifactError('fatal', 'verify artifact field "groups" must be an array');
+    if (!Array.isArray(parsed.groups)) throw new ArtifactError('fatal', `${name} artifact field "groups" must be an array`);
     canonical.groups = parsed.groups.map((group, index) => {
-      if (!group || typeof group !== 'object' || Array.isArray(group)) throw new ArtifactError('fatal', `verify group[${index}] is not an object`);
+      if (!group || typeof group !== 'object' || Array.isArray(group)) throw new ArtifactError('fatal', `${name} group[${index}] is not an object`);
       const findingIds = group.findingIds;
       if (!Array.isArray(findingIds) || !findingIds.length || new Set(findingIds).size !== findingIds.length
         || findingIds.some((id) => !isValidFindingId(id) || !shape.prefixes.some((prefix) => id.startsWith(prefix)))) {
-        throw new ArtifactError('retry', `verify group[${index}] has invalid or duplicate findingIds`);
+        throw new ArtifactError('retry', `${name} group[${index}] has invalid or duplicate findingIds`);
       }
-      if (typeof group.rootCause !== 'string' || !group.rootCause.trim()) throw new ArtifactError('retry', `verify group[${index}] is missing "rootCause"`);
+      if (typeof group.rootCause !== 'string' || !group.rootCause.trim()) throw new ArtifactError('retry', `${name} group[${index}] is missing "rootCause"`);
       if (!Array.isArray(group.invariants) || !group.invariants.length || group.invariants.some((item) => typeof item !== 'string' || !item.trim())) {
-        throw new ArtifactError('retry', `verify group[${index}] must name at least one invariant`);
+        throw new ArtifactError('retry', `${name} group[${index}] must name at least one invariant`);
       }
-      if (!['local', 'structural'].includes(group.changeClass)) throw new ArtifactError('retry', `verify group[${index}] has invalid "changeClass"`);
+      if (!['local', 'structural'].includes(group.changeClass)) throw new ArtifactError('retry', `${name} group[${index}] has invalid "changeClass"`);
       if (!['fix', 'reconcile'].includes(group.action)) {
-        throw new ArtifactError('retry', `verify group[${index}] has invalid "action": action must be "fix" or "reconcile"`);
+        throw new ArtifactError('retry', `${name} group[${index}] has invalid "action": action must be "fix" or "reconcile"`);
       }
       if (group.action === 'reconcile' && (typeof group.reason !== 'string' || !group.reason.trim())) {
-        throw new ArtifactError('retry', `verify group[${index}] must explain why human reconciliation is required`);
+        throw new ArtifactError('retry', `${name} group[${index}] must explain why human reconciliation is required`);
       }
       if (name === 'plan' && (typeof group.groupId !== 'string' || !/^[a-z0-9][a-z0-9:._-]*$/.test(group.groupId))) {
         throw new ArtifactError('retry', `plan group[${index}] has invalid "groupId"`);
