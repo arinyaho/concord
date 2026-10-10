@@ -5989,6 +5989,21 @@ test('round-start refuses a malformed review.config.json before anything is writ
   assert.deepStrictEqual(fs.readdirSync(dir), []);
 });
 
+test('round-start refuses a review.config.json whose dod is not a non-empty array of commands before anything is written', () => {
+  for (const config of [{}, { dod: 'npm test' }, { dod: [] }, { dod: [''] }, { dod: [1] }]) {
+    const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/invalid-dod';
+    const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+    fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify(config));
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+    execFileSync('git', ['add', '-A'], { cwd: repo });
+    execFileSync('git', ['commit', '-qm', 'ahead'], { cwd: repo });
+    const r = runCapture(['round-start', ref, 'HEAD~1'], { env });
+    assert.notStrictEqual(r.status, 0, JSON.stringify(config));
+    assert.match(r.stderr, /review\.config\.json/);
+    assert.deepStrictEqual(fs.readdirSync(dir), []);
+  }
+});
+
 test('commandExecutables names the leading program of each simple DoD command', () => {
   const dodExec = require('../../core/dod-exec');
   assert.deepStrictEqual(dodExec.commandExecutables(['cd plugins && FOO=1 node --test x', 'python -m pytest | tee log', 'true; ./scripts/check.sh']), ['cd', 'node', 'python', 'tee', 'true']);
