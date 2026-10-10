@@ -159,7 +159,7 @@ function sameKeys(actual, expected) {
   return actual.length === expected.length && [...actual].sort().every((key, index) => key === [...expected].sort()[index]);
 }
 
-function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoningEffort, serviceTier, timeoutMs, abortSignal, codexExecutable, env, untrustedCheckout = false }) {
+function codexExec({ role, prompt, repoRoot, stateDir, cliPath, requestedModel, reasoningEffort, serviceTier, timeoutMs, abortSignal, codexExecutable, env, untrustedCheckout = false }) {
   return new Promise((resolve, reject) => {
     const resolvedCodex = codexExecutable || resolveCodexExecutable(repoRoot, { env });
     const invocationId = crypto.randomUUID();
@@ -178,7 +178,7 @@ function codexExec({ role, prompt, repoRoot, stateDir, requestedModel, reasoning
     // path for this value. Scoped to win32 only: the POSIX path (`prompt`
     // as the trailing positional arg) is unaffected by this class of bug
     // and stays exactly as tested.
-    const childEnv = reviewerEnv(env);
+    const childEnv = reviewerEnv(env, cliPath);
     if (untrustedCheckout) {
       for (const key of Object.keys(childEnv)) {
         if (/KEY|SECRET|TOKEN/i.test(key)) delete childEnv[key];
@@ -306,9 +306,10 @@ function declaredFixFiles(context, groups) {
 
 // A reviewer's own test run must not reach the driver's provider CLI through
 // the driver's override; the reviewer's launch already resolved it.
-function reviewerEnv(env) {
+function reviewerEnv(env, cliPath) {
   const childEnv = { ...(env || process.env) };
   delete childEnv[CODEX_BIN_ENV];
+  if (cliPath) childEnv.CONCORD_REVIEW_CLI = cliPath;
   return childEnv;
 }
 
@@ -355,7 +356,7 @@ function providerExec(input) {
   const truncate = (text) => (text.length > OUTPUT_LIMIT ? `${text.slice(0, OUTPUT_LIMIT)}\n...(truncated)` : text);
 
   return new Promise((resolve, reject) => {
-    const child = spawn(crossPlatformCommand(executable, repoRoot), crossPlatformArgs(args, needsDoubleEscape(executable, repoRoot)), crossPlatformOpts({ cwd: repoRoot, env: reviewerEnv(input.env), stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'pipe'], detached: !isWindows }));
+    const child = spawn(crossPlatformCommand(executable, repoRoot), crossPlatformArgs(args, needsDoubleEscape(executable, repoRoot)), crossPlatformOpts({ cwd: repoRoot, env: reviewerEnv(input.env, input.cliPath), stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'pipe'], detached: !isWindows }));
     if (input.untrustedCheckout) child.once('exit', () => terminateProcessTree(child, 'SIGKILL'));
     if (isWindows) {
       // See codexExec's identical stdin 'error' handling above -- the
@@ -933,7 +934,7 @@ async function runRounds(options) {
     if (started.decision !== 'work') return withTelemetry(started);
     currentRound = started.round;
     checks = [{ name: 'definition-of-done', status: started.dodPending ? 'pending' : started.dodDeferred ? 'deferred' : (started.dodPassed ? 'passed' : 'failed') }];
-    const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodDeferred: started.dodDeferred, dodPending: started.dodPending, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref), gateMode: started.gateMode, gateApplied: started.gateApplied, intentHash: started.intentHash };
+    const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodDeferred: started.dodDeferred, dodPending: started.dodPending, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref), gateMode: started.gateMode, gateApplied: started.gateApplied, intentHash: started.intentHash, cliPath };
     const reviewRoles = reviewOnly ? [
       ...(started.intentApplied ? ['intent'] : []), 'correctness',
       ...(started.gateApplied ? ['gate'] : []), 'verify',
@@ -1061,6 +1062,7 @@ async function runRounds(options) {
       const result = await invoke(spawn, {
         ...input,
         provider,
+        cliPath,
         ...(requestedModel ? { requestedModel } : {}),
         ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
         ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),

@@ -4,11 +4,15 @@ A review run executes the code version it started with. The Codex updater remove
 
 ## Decision
 
-`plugins/concord-codex/bin/review-and-fix.js` calls `snapshotRunEngine` (`plugins/concord/core/run-snapshot.js`) before it loads the runner. The snapshot is a directory `concord-run-<pid>-<random>` under `os.tmpdir()` (mode 0700, falling back to `/tmp` when the temp directory is inside the repository) holding every regular `.js` file of the plugin's `engine/` directory, `bin/review-cli.js`, and a `package.json` of type `commonjs`. The driver loads `codex-review-runner` from the snapshot and passes `cliPath: snapshot.cliPath`, so the runner's `cliPath` binding is the one path every in-run CLI call uses. Reviewer subagents that need the path (#310) read that binding.
+`plugins/concord-codex/bin/review-and-fix.js` calls `snapshotRunEngine` (`plugins/concord/core/run-snapshot.js`) before it loads the runner. The snapshot is a directory `concord-run-<pid>-<random>` under `os.tmpdir()` (mode 0700, falling back to `/tmp` when the temp directory is inside the repository) holding every regular `.js` file of the plugin's `engine/` directory, `bin/review-cli.js`, and a `package.json` of type `commonjs`. The driver loads `codex-review-runner` from the snapshot and passes `cliPath: snapshot.cliPath`, so the runner's `cliPath` binding is the one path every in-run CLI call uses. Reviewer subagents receive that binding (#310): see "Path handed to reviewers".
 
 Copying the whole `engine/` directory includes modules loaded lazily, such as `initiative-report`, without a list that could drift. The copy source is the driver's own plugin directory, never a path from the repository, the state directory or the environment. Files are written with `wx` and mode 0400, so nothing is overwritten and nothing is written in the repository.
 
 `nextStep.cliPath` and `carryCommand` are read by a person or a later session after the run has ended and its snapshot was deleted. They use `publicCliPath`, the plugin's own `bin/review-cli.js`. That path works until the next update and then fails with `MODULE_NOT_FOUND` without side effects; running the driver again snapshots the installed version. The Copilot package has no driver; it carries the same runner through `engine/`, and its CLI is driven one verb at a time by the skill.
+
+## Path handed to reviewers
+
+Every role prompt built by `reviewerPrompt` ends with one sentence naming the run's `cliPath` and forbidding any other `review-cli.js` path, so repository guidance never needs to name one. The runner also exports the same value to each reviewer child process as `CONCORD_REVIEW_CLI`. The prompt is the primary channel because native Claude subagents do not inherit the runner's environment; the native driver (`review-driver.md`, `commands/review-and-fix.md`) appends the same sentence with `${CLAUDE_PLUGIN_ROOT}/hooks/review-cli.js`. The value is the snapshot path, never the installed plugin directory, so it stays valid after an update.
 
 ## Cleanup
 
