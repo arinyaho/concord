@@ -1098,7 +1098,7 @@ function verifiedRound(ref, stateDir, run, what) {
   const verdict = gc.parseVerifyVerdict(JSON.stringify({ rejected: vJson.rejected || [] }), candidates);
   const killed = new Set(verdict.rejectedIds);
   const survivors = require('./review').dedupeAgainstSeen(candidates, ledger.seen);
-  const concluded = new Set((ledger.findings || []).filter((f) => f.status !== 'open').map((f) => f.id));
+  const concluded = new Set((ledger.findings || []).filter((f) => f.status !== 'open' && f.status !== 'resolved').map((f) => f.id));
   const spanPresent = (file, span) => {
     if (!span) return true;
     const text = readReviewSource(repoRoot, file);

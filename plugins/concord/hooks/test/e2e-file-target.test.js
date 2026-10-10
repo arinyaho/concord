@@ -392,3 +392,43 @@ test('e2e: a dry round converges when an unparked finding is no longer reported'
   assert.strictEqual(ledger.status, 'clean');
   assert.strictEqual(ledger.findings.find((f) => f.id === finding.id).status, 'resolved');
 });
+
+test('e2e: a resolved file-target finding that a later round reports again goes to the fixer', () => {
+  const fileDir = tempDir('ruit-e2e-file-');
+  const stateDir = tmpDir();
+  const ref = 'file:note.md';
+  const env = { ...process.env, REVIEW_STATE_DIR: stateDir, REVIEW_REPO_ROOT: fileDir };
+  const notePath = path.join(fileDir, 'note.md');
+  fs.writeFileSync(notePath, '# Design Note\nThe cache is always warm. The queue never fills.\n');
+  const warm = { id: 'docreview:warm-cache', gate: 'correctness', file: 'note.md', span: 'always warm', summary: 'Unsupported.' };
+  const queue = { id: 'docreview:queue-bound', gate: 'correctness', file: 'note.md', span: 'never fills', summary: 'Unsupported.' };
+
+  // Round 1: `warm` is parked (no edit), then unparked, so it is open.
+  const n1 = JSON.parse(run(['round-start', ref], { env })).round;
+  writeArtifact(stateDir, n1, 'correctness', { status: 'ok', examined: ['note.md'], findings: [warm] });
+  writeArtifact(stateDir, n1, 'verify', { status: 'ok', rejected: [], findings: [] });
+  writePlan(stateDir, n1, warm);
+  run(['plan-fixes', ref], { env });
+  writeArtifact(stateDir, n1, 'fix-docreview_warm-cache', { status: 'ok', edited: false });
+  run(['record', ref], { env });
+  run(['unpark', ref, warm.id], { env });
+
+  // Round 2: only `queue` is reported, so `warm` is resolved; `queue` is fixed.
+  const n2 = JSON.parse(run(['round-start', ref], { env })).round;
+  writeArtifact(stateDir, n2, 'correctness', { status: 'ok', examined: ['note.md'], findings: [queue] });
+  writeArtifact(stateDir, n2, 'verify', { status: 'ok', rejected: [], findings: [] });
+  writePlan(stateDir, n2, queue);
+  run(['plan-fixes', ref], { env });
+  fs.writeFileSync(notePath, '# Design Note\nThe cache is always warm. The queue is bounded at 100.\n');
+  writeArtifact(stateDir, n2, 'fix-docreview_queue-bound', { status: 'ok', edited: true, groupId: queue.id, files: ['note.md'] });
+  writeFileCertificate(stateDir, n2, queue.id, 'note.md', notePath);
+  assert.strictEqual(JSON.parse(run(['record', ref], { env })).decision.continue, true);
+  assert.strictEqual(review.readLedger(stateDir, review.targetSlug(ref)).findings.find((f) => f.id === warm.id).status, 'resolved');
+
+  // Round 3: `warm` is reported again and reaches the fixer.
+  const n3 = JSON.parse(run(['round-start', ref], { env })).round;
+  writeArtifact(stateDir, n3, 'correctness', { status: 'ok', examined: ['note.md'], findings: [warm] });
+  writeArtifact(stateDir, n3, 'verify', { status: 'ok', rejected: [], findings: [] });
+  writePlan(stateDir, n3, warm);
+  assert.deepStrictEqual(JSON.parse(run(['plan-fixes', ref], { env })).fixes.map((f) => f.id), [warm.id]);
+});
