@@ -36,8 +36,13 @@ function retryPrompt(name) {
   return `Rewrite only round artifact ${name} as JSON: {"status":"ok",${name === 'plan' ? '"protocolVersion":2,' : ''}${fields}}. Findings require id, file, and summary; ids must use ${prefixes}<stable-slug>.${rejectedRule}${groupsRule}${ownershipRule} Do not add prose or other extra top-level fields, with one exception: if you could not run the method you were assigned, keep (or add) "blocked":["<tool>: <what failed>"] -- never drop it to make this artifact validate.`;
 }
 
+// verify and gate-verify may list a kept candidate in a verdict shape; such an
+// entry has no evidence of its own, so a repair may delete it (and only it).
+const dropsInvalidFindings = (name) => !!SHAPES[name] && SHAPES[name].arrays.includes('rejected');
+const lacksFindingFields = (item) => !!item && typeof item === 'object' && !Array.isArray(item) && ['id', 'file', 'summary'].some((field) => typeof item[field] !== 'string' || !item[field]);
+
 function repairPrompt(packetPath, snapshotPath, candidatePath) {
-  return `You are performing artifact-repair, not a review. Read only ${JSON.stringify(packetPath)} and its immutable snapshot ${JSON.stringify(snapshotPath)}. Do not inspect a repository, diff, history, design, or other artifacts. Write only a JSON candidate to ${JSON.stringify(candidatePath)}. Preserve every established item by identity; do not add, remove, relabel, or infer evidence.`;
+  return `You are performing artifact-repair, not a review. Read only ${JSON.stringify(packetPath)} and its immutable snapshot ${JSON.stringify(snapshotPath)}. Do not inspect a repository, diff, history, design, or other artifacts. Write only a JSON candidate to ${JSON.stringify(candidatePath)}. Preserve every established item by identity; do not add, remove, relabel, or infer evidence. The one exception: delete each entry of "findings" named in the packet's invalidFindings, which has no evidence to preserve.`;
 }
 
 function repairPacket(name, error, original) {
@@ -46,8 +51,10 @@ function repairPacket(name, error, original) {
   let parsed;
   try { parsed = JSON.parse(original); } catch (_) { throw new Error('repair packet requires JSON original'); }
   const foreign = (value) => typeof value === 'string' && !shape.prefixes.some((prefix) => value.startsWith(prefix));
-  const candidateIds = [...new Set(shape.arrays.flatMap((key) => Array.isArray(parsed[key]) ? parsed[key].map((item) => typeof item === 'string' ? item : item && item.id).filter((id) => typeof id === 'string' && !foreign(id)) : []))];
-  return { role: name, error, schema: { requiredArrays: shape.arrays, ...(name === 'plan' ? { protocolVersion: 2 } : {}) }, allowedPrefixes: [...shape.prefixes], candidateIds };
+  const dropped = (key, item) => key === 'findings' && dropsInvalidFindings(name) && lacksFindingFields(item);
+  const candidateIds = [...new Set(shape.arrays.flatMap((key) => Array.isArray(parsed[key]) ? parsed[key].filter((item) => !dropped(key, item)).map((item) => typeof item === 'string' ? item : item && item.id).filter((id) => typeof id === 'string' && !foreign(id)) : []))];
+  const invalidFindings = Array.isArray(parsed.findings) ? parsed.findings.map((item, index) => ({ item, index })).filter(({ item }) => dropped('findings', item)).map(({ item, index }) => ({ index, id: typeof item.id === 'string' ? item.id : null })) : [];
+  return { role: name, error, ...(invalidFindings.length ? { invalidFindings } : {}), schema: { requiredArrays: shape.arrays, ...(name === 'plan' ? { protocolVersion: 2 } : {}) }, allowedPrefixes: [...shape.prefixes], candidateIds };
 }
 
 function preservesArtifact(name, raw, candidate) {
@@ -74,7 +81,7 @@ function preservesArtifact(name, raw, candidate) {
         if (!Array.isArray(candidate[key]) || comparable(original[key]) !== comparable(candidate[key])) return false;
         continue;
       }
-      const owned = original[key].filter(owns);
+      const owned = original[key].filter((item) => owns(item) && !(key === 'findings' && dropsInvalidFindings(name) && lacksFindingFields(item)));
       if (owned.length !== original[key].length) {
         if (!Array.isArray(candidate[key]) || comparable(owned) !== comparable(candidate[key])) return false;
         continue;
@@ -120,7 +127,8 @@ function normalizeArtifact(name, raw) {
     for (const [index, finding] of canonical[key].entries()) {
       if (!finding || typeof finding !== 'object' || Array.isArray(finding)) throw new ArtifactError('fatal', `${name} finding[${index}] is not an object`);
       for (const required of ['id', 'file', 'summary']) {
-        if (typeof finding[required] !== 'string' || !finding[required]) throw new ArtifactError('fatal', `${name} finding[${index}] is missing "${required}"`);
+        // verify and gate-verify list kept candidates in a verdict shape (no file), so a missing field is a representation slip; the primary reviewers' prompts spell the fields out and keep it fatal.
+        if (typeof finding[required] !== 'string' || !finding[required]) throw new ArtifactError(shape.arrays.includes('rejected') ? 'retry' : 'fatal', `${name} finding[${index}] is missing "${required}"`);
       }
       if (!isValidFindingId(finding.id) || !shape.prefixes.some((prefix) => finding.id.startsWith(prefix))) throw new ArtifactError('retry', `${name} finding[${index}] has invalid id "${finding.id}"`);
     }
@@ -239,4 +247,4 @@ function normalizeArtifact(name, raw) {
   return canonical;
 }
 
-module.exports = { ArtifactError, normalizeArtifact, retryPrompt, repairPrompt, repairPacket, preservesArtifact, allowedFindingPrefixes, ARTIFACT_ROLES: Object.keys(SHAPES) };
+module.exports = { ArtifactError, dropsInvalidFindings, normalizeArtifact, retryPrompt, repairPrompt, repairPacket, preservesArtifact, allowedFindingPrefixes, ARTIFACT_ROLES: Object.keys(SHAPES) };

@@ -6392,3 +6392,22 @@ test('#308 control: an open git finding that no unpark reopened stays open when 
   assert.match(out.decision.reason, /no progress/);
   assert.strictEqual(review.readLedger(dir, slug).findings.find((f) => f.id === UNPARKED.id).status, 'open');
 });
+
+test('artifact-normalize repairs a gate-verify artifact that lists a kept candidate in findings by dropping only that entry (#314)', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n'); execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/kept', 'HEAD~1', '--broad'], { env, broadDefault: true })).round;
+  const file = path.join(dir, `round-${n}-gate-verify.json`);
+  const rejected = [{ id: 'gate:cross-context:a', reason: 'ran it' }];
+  const original = { status: 'ok', rejected, findings: [{ id: 'gate:silent-gap:kept', rationale: 'kept', releaseBlocking: [] }] };
+  fs.writeFileSync(file, JSON.stringify(original));
+  const repair = JSON.parse(run(['artifact-normalize', 'feat/kept', 'gate-verify'], { env, broadDefault: true }));
+  assert.strictEqual(repair.status, 'repair');
+  assert.ok(!JSON.parse(fs.readFileSync(repair.repair.packetPath, 'utf8')).candidateIds.includes('gate:silent-gap:kept'));
+  // a candidate that keeps the entry, or changes the verdict, is not a preserving repair
+  for (const bad of [original, { ...original, rejected: [] }]) {
+    fs.writeFileSync(repair.repair.candidatePath, JSON.stringify(bad));
+    assert.throws(() => run(['artifact-normalize', 'feat/kept', 'gate-verify', '--candidate', repair.repair.candidatePath], { env, broadDefault: true }), /harness-failure/);
+  }
+});
