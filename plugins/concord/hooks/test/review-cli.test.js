@@ -5964,21 +5964,37 @@ test('a resumed round-start on a ledger with sticky --no-dod still does not requ
   assert.match(resumed.stdout, /"decision":"work"/);
 });
 
-test('commandExecutables names the leading program of each simple DoD command', () => {
-  const dodExec = require('../../core/dod-exec');
-  assert.deepStrictEqual(dodExec.commandExecutables(['cd plugins && FOO=1 node --test x', 'python -m pytest | tee log', 'true; ./scripts/check.sh']), ['node', 'python', 'tee']);
+test('round-start accepts a DoD that starts with shell builtins the parser cannot tell from programs', { skip: process.platform === 'win32' }, () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/builtin-dod';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['command -v node && ulimit -n; node -e 0'] }));
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'ahead'], { cwd: repo });
+  const r = runCapture(['round-start', ref, 'HEAD~1'], { env });
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.match(r.stdout, /"decision":"work"/);
 });
 
-test('commandExecutables never names a word that is not a program: quoted separators, substitutions, keywords, redirects and paths', () => {
+test('commandExecutables names the leading program of each simple DoD command', () => {
+  const dodExec = require('../../core/dod-exec');
+  assert.deepStrictEqual(dodExec.commandExecutables(['cd plugins && FOO=1 node --test x', 'python -m pytest | tee log', 'true; ./scripts/check.sh']), ['cd', 'node', 'python', 'tee', 'true']);
+});
+
+test('commandExecutables never names a word inside quotes, a substitution, a redirect or a path', () => {
   const dodExec = require('../../core/dod-exec');
   assert.deepStrictEqual(dodExec.commandExecutables([
     'node -e "1 || absent_a; absent_b | absent_c"',
     "node -e 'x && absent_d'",
     'REV=$(git rev-parse HEAD) node x',
-    'if npm test; then echo ok; fi',
     'node x 2>&1 | tee out.log',
     'cd sub && ./run.sh',
-  ]), ['node', 'tee']);
+  ]), ['node', 'tee', 'cd']);
+});
+
+test('missingPrograms counts the DoD shell\'s builtins and keywords as present and reports an absent program', { skip: process.platform === 'win32' }, () => {
+  const dodExec = require('../../core/dod-exec');
+  assert.deepStrictEqual(dodExec.missingPrograms(['command', 'ulimit', 'if', 'cd', 'node', 'concord-absent-program'], process.cwd()), ['concord-absent-program']);
 });
 
 test('round-start accepts a DoD whose quoted script contains a shell separator', () => {

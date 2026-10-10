@@ -1859,9 +1859,10 @@ function runVerb(resolveFromCwd, args, initiative) {
     // a role mid-run after its launch was charged. The DoD names are skipped
     // when this run executes no DoD.
     const dodCommands = isFileTarget || noDodFlagPassed || ledger.dodDeferred ? [] : (dodExec.loadDodConfig(repoRoot).dod || []);
-    const missingExecutables = ['git', 'node', ...dodExec.commandExecutables(dodCommands)]
-      .filter((name, index, all) => all.indexOf(name) === index)
-      .filter((name) => resolveOnPath(name) === null);
+    const missingExecutables = [
+      ...['git', 'node'].filter((name) => resolveOnPath(name) === null),
+      ...dodExec.missingPrograms(dodExec.commandExecutables(dodCommands), repoRoot),
+    ].filter((name, index, all) => all.indexOf(name) === index);
     if (missingExecutables.length) {
       throw new Error(`review-cli round-start: the reviewer environment has no ${missingExecutables.map((name) => `"${name}"`).join(', ')} on PATH; install it or run the review where it is available (DoD commands: ${JSON.stringify(dodCommands)})`);
     }

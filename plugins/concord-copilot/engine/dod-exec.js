@@ -84,16 +84,15 @@ function defaultExecFn(cmd, cwd) {
   return { status: r.status == null ? 1 : r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
-// The programs a DoD command list starts on PATH: the leading word of each
-// simple command, after any `NAME=value` assignments. A false name would make
+// The words a DoD command list starts: the leading word of each simple
+// command, after any `NAME=value` assignments. A false name would make
 // round-start refuse a DoD that runs fine, while a missed name only fails later
 // where the reviewer's blocked clause catches it, so anything uncertain is left
-// out: a part with a command substitution, a word that is not a plain name
-// (a path, a redirect, a quoted word), shell builtins and keywords, and the
-// program after `env` or `exec`. A program reached only through another one
-// (an npm script, a shell script) is not seen.
-const SHELL_WORDS = new Set(['cd', 'export', 'set', 'unset', 'test', '[', '[[', 'echo', 'true', 'false', 'exit', ':', '.', 'source', 'exec', 'env',
-  'if', 'then', 'else', 'elif', 'fi', 'for', 'while', 'until', 'do', 'done', 'case', 'esac', 'function', '!', '{', '}']);
+// out: a part with a command substitution and a word that is not a plain name
+// (a path, a redirect, a quoted word). Builtins and keywords are named here and
+// resolved by the shell in missingPrograms. A program reached only through
+// another one (an npm script, a shell script, the command after `env`, `exec`
+// or a keyword) is not seen.
 // Splits on `;`, `|`, `||`, `&&` and newlines outside quotes. A lone `&` (as in
 // `2>&1`) stays inside its part.
 function simpleCommands(cmd) {
@@ -122,10 +121,27 @@ function commandExecutables(commands) {
       if (/\$\(|`/.test(part)) continue;
       const words = part.trim().replace(/^[({\s]+/, '').split(/\s+/).filter(Boolean);
       const name = words.find((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
-      if (name && /^[A-Za-z0-9_][A-Za-z0-9._+-]*$/.test(name) && !SHELL_WORDS.has(name)) names.add(name);
+      if (name && /^[A-Za-z0-9_][A-Za-z0-9._+-]*$/.test(name)) names.add(name);
     }
   }
   return [...names];
 }
 
-module.exports = { CONFIG_FILENAME, loadDodConfig, runDodExec, defaultExecFn, commandExecutables };
+// The names the DoD's shell cannot run, asked of the shell `shell: true` uses so
+// its builtins and keywords count as present: `/bin/sh` answers with
+// `command -v`; cmd.exe's internal commands are a fixed set.
+const CMD_BUILTINS = new Set(['assoc', 'break', 'call', 'cd', 'chdir', 'cls', 'color', 'copy', 'date', 'del', 'dir', 'echo', 'endlocal', 'erase', 'exit', 'for', 'ftype', 'goto', 'if',
+  'md', 'mkdir', 'mklink', 'move', 'path', 'pause', 'popd', 'prompt', 'pushd', 'rd', 'rem', 'ren', 'rename', 'rmdir', 'set', 'setlocal', 'shift', 'start', 'time', 'title', 'type', 'ver', 'verify', 'vol']);
+function missingPrograms(names, cwd) {
+  if (!names.length) return [];
+  if (process.platform === 'win32') {
+    const { resolveOnPath } = require('./spawn-cross-platform');
+    return names.filter((name) => !CMD_BUILTINS.has(name.toLowerCase()) && resolveOnPath(name) === null);
+  }
+  const { spawnSync } = require('node:child_process');
+  const r = spawnSync('/bin/sh', ['-c', 'for n do command -v "$n" >/dev/null 2>&1 || printf "%s\\n" "$n"; done', 'sh', ...names], { cwd, encoding: 'utf8' });
+  if (r.error || r.status !== 0) throw new Error(`dod-exec: could not ask /bin/sh which DoD programs exist: ${r.error ? r.error.message : `exit ${r.status}`}`);
+  return r.stdout.split('\n').filter(Boolean);
+}
+
+module.exports = { CONFIG_FILENAME, loadDodConfig, runDodExec, defaultExecFn, commandExecutables, missingPrograms };
