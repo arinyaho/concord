@@ -5773,6 +5773,13 @@ test('record-fix refuses a commit that does not follow the reviewed head', () =>
   assertRefused(t, recordFixArgs(other), /is not on HEAD/);
 });
 
+test('record-fix refuses a merge commit that follows the reviewed head', () => {
+  const t = recordFixRepo({ ledger: gatePending });
+  const merge = execFileSync('git', ['commit-tree', `${t.fix}^{tree}`, '-p', t.fix, '-p', t.reviewed, '-m', 'merge'], { cwd: t.repo, encoding: 'utf8' }).trim();
+  execFileSync('git', ['merge', '-q', '--ff-only', merge], { cwd: t.repo });
+  assertRefused(t, recordFixArgs(merge), /is a merge commit/);
+});
+
 test('record-fix refuses a ledger that is not stopped', () => {
   const t = recordFixRepo({ ledger: () => ({ status: 'converging', gate_open: [BLOCKING_GATE('gate:silent-gap:x')] }) });
   assertRefused(t, recordFixArgs(t.fix), /only a stopped run/);
