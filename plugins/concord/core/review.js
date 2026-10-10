@@ -558,8 +558,10 @@ function unparkFinding(ledger, findingId) {
   // so a still-present unparked finding would never re-surface to be re-processed
   // (and a resolved one would linger 'open'). Dropping it lets the gate re-arbitrate:
   // still-broken -> re-reported and re-processed; resolved -> silent -> stops
-  // blocking convergence. Keeps status 'open' (fail-closed) rather than deleting the
-  // finding, so a gate that flakes on a still-open finding parks, never false-greens.
+  // blocking convergence. On a DoD target it keeps status 'open' (fail-closed) rather
+  // than deleting the finding, so a gate that flakes on a still-open finding parks,
+  // never false-greens. A no-DoD target is reviewed whole each round, so
+  // applyRoundOutcome marks it 'resolved' when the next round does not report it.
   const seen = (ledger.seen || []).filter((s) => s.id !== findingId);
   return { ...ledger, findings, seen, status: 'converging' };
 }
