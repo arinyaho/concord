@@ -6,7 +6,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { tempDir } = require('./temp-dir');
 
-// These three files move to temp-dir.js in a follow-up PR after #285 merges, because #285 edits them at the same time; that PR deletes this list.
+// #288 moves these three files to temp-dir.js after #285 merges, because #285 edits them at the same time, and deletes this list.
 const NOT_YET_CONVERTED = new Set(['review-cli.test.js', 'lgtm-state.test.js', 'delivery-disposition.test.js']);
 
 const DIRECT_CALL = /\bmkdtemp(Sync)?\s*\(/;
