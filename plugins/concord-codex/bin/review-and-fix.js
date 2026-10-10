@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 const path = require('node:path');
-const { runReviewUntilGreen, acknowledgeContinuationPacket } = require('../engine/codex-review-runner');
+const { snapshotRunEngine } = require('../engine/run-snapshot');
 const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('../engine/spawn-cross-platform');
 
 const args = process.argv.slice(2);
@@ -62,7 +62,11 @@ const positional = args.filter((arg, index) => arg !== '--broad' && arg !== '--g
 const resumed = positional[0] === 'resume';
 const ref = (resumed ? positional[1] : positional[0]) || (inference.initiativeFinalise ? undefined : require('node:child_process').execFileSync(crossPlatformCommand('git', process.cwd()), crossPlatformArgs(['branch', '--show-current'], needsDoubleEscape('git', process.cwd())), crossPlatformOpts({ encoding: 'utf8' })).trim());
 const base = resumed ? positional[2] : positional[1];
-const runnerOptions = { ref, base, broad, noBroad, noDod, reviewOnly, ...inference, resume: resumed, handleSignals: true, repoRoot: process.cwd(), cliPath: path.join(__dirname, 'review-cli.js') };
+// Run only from a copy of this version, so a plugin update mid-run cannot remove files the run needs.
+const snapshot = snapshotRunEngine(path.join(__dirname, '..'), process.cwd());
+process.once('exit', snapshot.remove);
+const { runReviewUntilGreen, acknowledgeContinuationPacket } = require(path.join(snapshot.root, 'engine', 'codex-review-runner'));
+const runnerOptions = { ref, base, broad, noBroad, noDod, reviewOnly, ...inference, resume: resumed, handleSignals: true, repoRoot: process.cwd(), cliPath: snapshot.cliPath, publicCliPath: path.join(__dirname, 'review-cli.js') };
 const write = (stream, text) => new Promise((resolve, reject) => stream.write(text, (error) => error ? reject(error) : resolve()));
 const deliver = async (stream, packet) => {
   // Write before acknowledging: the packet must actually reach the caller
