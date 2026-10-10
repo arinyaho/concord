@@ -25,6 +25,7 @@ The caller supplies one JSON evidence packet for the exact PR number and head SH
 | `acceptance[]` | `{id, met}` for each approved acceptance criterion |
 | `requiredChecks[]` | `{name, conclusion}` for each required check on the exact head; only `success` passes. An empty list asserts that the repository requires no check on this head |
 | `reviewsTerminal` | Every configured reviewer finished for this head |
+| `reviewerUnavailable` | Optional; `true` declares the PR reviewer unavailable for this head. A packet that declares it with a review id is refused, and without `reviewsTerminal: true` the head stays `blocked` (`reviews-not-terminal`). Absent and `false` are equivalent; the digest includes the field only when `true` |
 | `openChoices[]` | Unsettled product, contract or architecture choices |
 | `findings[]` | Every accepted finding: `{id, url \| local, disposition, rootCause, releaseBlocking[], rationale, acceptedBy}`. A finding names exactly one reference: the review-thread `url`, or for a finding that exists only in a local review ledger `local: {file, span}` (a relative path and a possibly empty span, read against the record's head) |
 | `droppedMinors[]` | `{id, reason}` for each collected minor that is obsolete or a duplicate and gets no ticket. Pass `[]` when none is dropped |
