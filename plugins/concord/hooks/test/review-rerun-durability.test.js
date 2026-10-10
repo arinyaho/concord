@@ -2,14 +2,14 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawnSync, execFileSync } = require('node:child_process');
 const review = require('../../core/review');
 const { runPath } = require('../../core/initiative-review-run');
+const { tempDir } = require('./temp-dir');
 const providers = { canonical: path.resolve(__dirname, '../../hooks/review-cli.js'), copilot: path.resolve(__dirname, '../../../concord-copilot/bin/review-cli.js') };
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'rerun-durable-'));
+const tmp = () => tempDir('rerun-durable-');
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 function fixture(provider, mode = 'base') {
   const repo = tmp(), dir = tmp(), initDir = tmp(), slug = review.targetSlug('feat/rerun');

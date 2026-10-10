@@ -2,9 +2,9 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { tempDir } = require('./temp-dir');
 
 const REPO = path.join(__dirname, '..', '..', '..', '..');
 const SCRIPT = path.join(REPO, 'scripts/release-version.mjs');
@@ -49,7 +49,7 @@ test('README installs the Codex marketplace and plugin source through sparse che
 });
 
 test('release script updates an isolated canonical version and all release metadata', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concord-version-'));
+  const root = tempDir('concord-version-');
   const claude = path.join(root, 'plugins/concord/.claude-plugin');
   const codex = path.join(root, 'plugins/concord-codex/.codex-plugin');
   const copilot = path.join(root, 'plugins/concord-copilot');
@@ -93,7 +93,7 @@ test('release script updates an isolated canonical version and all release metad
 });
 
 test('release script leaves existing files unchanged when a manifest is missing', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concord-version-'));
+  const root = tempDir('concord-version-');
   const claude = path.join(root, 'plugins/concord/.claude-plugin');
   const versionFile = path.join(root, 'VERSION');
   const claudeManifest = path.join(claude, 'plugin.json');
@@ -124,7 +124,7 @@ test('release script leaves existing files unchanged when a manifest is missing'
 });
 
 test('release script leaves existing files unchanged when a later manifest is unwritable', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concord-version-'));
+  const root = tempDir('concord-version-');
   const claude = path.join(root, 'plugins/concord/.claude-plugin');
   const codex = path.join(root, 'plugins/concord-codex/.codex-plugin');
   const copilot = path.join(root, 'plugins/concord-copilot');
@@ -177,7 +177,7 @@ test('release script leaves existing files unchanged when a later manifest is un
 });
 
 test('release script preserves manifest text except for the version value', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concord-version-'));
+  const root = tempDir('concord-version-');
   const claude = path.join(root, 'plugins/concord/.claude-plugin');
   const codex = path.join(root, 'plugins/concord-codex/.codex-plugin');
   const copilot = path.join(root, 'plugins/concord-copilot');

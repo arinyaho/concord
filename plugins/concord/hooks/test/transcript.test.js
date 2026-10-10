@@ -2,12 +2,12 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { readDelta } = require('../../adapters/claude-code/transcript');
+const { tempDir } = require('./temp-dir');
 
 function tmpFile(contents) {
-  const p = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tx-')), 't.jsonl');
+  const p = path.join(tempDir('tx-'), 't.jsonl');
   fs.writeFileSync(p, contents);
   return p;
 }

@@ -2,6 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');
+const { tempDir } = require('./temp-dir');
 
 // Load the module fresh under a forced process.platform so both branches are
 // exercised regardless of which OS actually runs this test.
@@ -114,7 +115,7 @@ test('win32: crossPlatformCommand resolves via PATH, then escapes', () => {
   const os = require('node:os');
   const fs = require('node:fs');
   const pathMod = require('node:path');
-  const pathDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'cross-platform-command-'));
+  const pathDir = tempDir('cross-platform-command-');
   const target = pathMod.join(pathDir, 'codex.CMD');
   fs.writeFileSync(target, '');
   const originalPath = process.env.PATH;
@@ -167,7 +168,7 @@ test('win32: resolveOnPath finds a binary on PATH, trying each PATHEXT extension
   const os = require('node:os');
   const fs = require('node:fs');
   const pathMod = require('node:path');
-  const pathDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'resolve-on-path-'));
+  const pathDir = tempDir('resolve-on-path-');
   const target = pathMod.join(pathDir, 'mytool.CMD');
   fs.writeFileSync(target, '');
   const originalPath = process.env.PATH;
@@ -191,9 +192,9 @@ test('win32: resolveOnPath never resolves from the current working directory, on
   // Simulate "an untrusted checkout, cwd, contains a planted binary" --
   // resolveOnPath must not find this, even though a naive PATH-unaware
   // resolver (or cmd.exe's own default search) would.
-  const cwdDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'untrusted-cwd-'));
+  const cwdDir = tempDir('untrusted-cwd-');
   fs.writeFileSync(pathMod.join(cwdDir, 'planted.CMD'), '');
-  const pathDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'resolve-on-path-empty-'));
+  const pathDir = tempDir('resolve-on-path-empty-');
   const originalPath = process.env.PATH;
   const originalPathExt = process.env.PATHEXT;
   const originalCwd = process.cwd();
@@ -252,7 +253,7 @@ test('win32: needsDoubleEscape resolves the binary and checks the shim pattern',
   const os = require('node:os');
   const fs = require('node:fs');
   const pathMod = require('node:path');
-  const repoDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'needs-double-escape-'));
+  const repoDir = tempDir('needs-double-escape-');
   const binDir = pathMod.join(repoDir, 'node_modules', '.bin');
   fs.mkdirSync(binDir, { recursive: true });
   fs.writeFileSync(pathMod.join(binDir, 'codex.CMD'), '');
@@ -274,7 +275,7 @@ test('win32: needsDoubleEscape is false for a global (non-shim) install', () => 
   const os = require('node:os');
   const fs = require('node:fs');
   const pathMod = require('node:path');
-  const pathDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'needs-double-escape-global-'));
+  const pathDir = tempDir('needs-double-escape-global-');
   fs.writeFileSync(pathMod.join(pathDir, 'codex.CMD'), '');
   const originalPath = process.env.PATH;
   const originalPathExt = process.env.PATHEXT;
@@ -334,11 +335,11 @@ test('win32: resolveOnPath skips a candidate inside excludeDir even though it is
   // Simulate: Concord launched via an npm/pnpm script inside the reviewed
   // repo, which prepended that repo's own node_modules/.bin to PATH ahead
   // of a legitimate, separate global install.
-  const repoDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'reviewed-repo-'));
+  const repoDir = tempDir('reviewed-repo-');
   const repoBinDir = pathMod.join(repoDir, 'node_modules', '.bin');
   fs.mkdirSync(repoBinDir, { recursive: true });
   fs.writeFileSync(pathMod.join(repoBinDir, 'git.CMD'), '');
-  const globalBinDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'global-bin-'));
+  const globalBinDir = tempDir('global-bin-');
   const trustedTarget = pathMod.join(globalBinDir, 'git.CMD');
   fs.writeFileSync(trustedTarget, '');
   const originalPath = process.env.PATH;
@@ -360,7 +361,7 @@ test('win32: resolveOnPath returns null when the ONLY match is inside excludeDir
   const os = require('node:os');
   const fs = require('node:fs');
   const pathMod = require('node:path');
-  const repoDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'reviewed-repo-onlymatch-'));
+  const repoDir = tempDir('reviewed-repo-onlymatch-');
   const repoBinDir = pathMod.join(repoDir, 'node_modules', '.bin');
   fs.mkdirSync(repoBinDir, { recursive: true });
   fs.writeFileSync(pathMod.join(repoBinDir, 'claude.CMD'), '');
@@ -382,7 +383,7 @@ test('win32: crossPlatformCommand and needsDoubleEscape thread excludeDir throug
   const os = require('node:os');
   const fs = require('node:fs');
   const pathMod = require('node:path');
-  const repoDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'reviewed-repo-thread-'));
+  const repoDir = tempDir('reviewed-repo-thread-');
   const repoBinDir = pathMod.join(repoDir, 'node_modules', '.bin');
   fs.mkdirSync(repoBinDir, { recursive: true });
   fs.writeFileSync(pathMod.join(repoBinDir, 'codex.CMD'), '');
@@ -417,7 +418,7 @@ test('win32: resolveOnPath returns an absolute path even from a relative PATH en
   const os = require('node:os');
   const fs = require('node:fs');
   const pathMod = require('node:path');
-  const parentDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'relative-path-entry-'));
+  const parentDir = tempDir('relative-path-entry-');
   const binDirName = 'bin';
   fs.mkdirSync(pathMod.join(parentDir, binDirName));
   const target = pathMod.join(parentDir, binDirName, 'mytool.CMD');
@@ -449,7 +450,7 @@ test('win32: resolveOnPath strips a matching quote pair from a PATH entry before
   const os = require('node:os');
   const fs = require('node:fs');
   const pathMod = require('node:path');
-  const pathDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'quoted path entry '));
+  const pathDir = tempDir('quoted path entry ');
   const target = pathMod.join(pathDir, 'git.EXE');
   fs.writeFileSync(target, '');
   const originalPath = process.env.PATH;

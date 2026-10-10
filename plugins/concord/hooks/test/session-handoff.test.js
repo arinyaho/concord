@@ -2,10 +2,10 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { openInitiativeRun, reserveLaunch } = require('../../core/initiative-review-run');
+const { tempDir } = require('./temp-dir');
 
 const plugins = path.resolve(__dirname, '../../..');
 const providers = {
@@ -13,7 +13,7 @@ const providers = {
   copilot: path.join(plugins, 'concord-copilot/bin/review-cli.js'),
 };
 function setup(t, provider) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'session-handoff-'));
+  const root = tempDir('session-handoff-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const stateDir = path.join(root, 'initiative');
   const run = openInitiativeRun({ stateDir, key: 'stable-key', repository: root, maxLaunches: 2, maxRounds: 5 });

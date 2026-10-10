@@ -3,9 +3,9 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const childProcess = require('node:child_process');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const INITIATIVE_TO_PRS_FILES = require('./initiative-to-prs-files.json');
+const { tempDir } = require('./temp-dir');
 
 const REPO = path.join(__dirname, '..', '..', '..', '..');
 const CLAUDE_SKILL = path.join(REPO, 'plugins/concord/skills/ticket-writing/SKILL.md');
@@ -180,7 +180,7 @@ test('ticket-to-pr keeps Notion lifecycle transitions bounded and unambiguous', 
 });
 
 pluginInstallE2ETest('plugin-install e2e: clean Claude and Codex installs discover the same shared skills', (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concord-ticket-writing-'));
+  const root = tempDir('concord-ticket-writing-');
   const home = path.join(root, 'home');
   const claudeConfig = path.join(root, 'claude');
   const codexHome = path.join(root, 'codex');

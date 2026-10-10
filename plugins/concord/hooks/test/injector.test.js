@@ -2,14 +2,14 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { tempDir } = require('./temp-dir');
 
 const INJECTOR = path.join(__dirname, '..', 'session-state-injector.js');
 
 function setup() {
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'proj-'));
+  const proj = tempDir('proj-');
   const stateDir = path.join(proj, 'state');
   fs.mkdirSync(stateDir);
   return { transcript: path.join(proj, 'sess.jsonl'), stateDir, id: 'sess' };
@@ -58,7 +58,7 @@ function runInjector(input) {
 }
 
 test('injector startup: emits north-star + merged decisions, not _latest.md', () => {
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'iproj-'));
+  const proj = tempDir('iproj-');
   const dir = path.join(proj, 'state');
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'charter.md'), 'preserve founding context');
@@ -71,7 +71,7 @@ test('injector startup: emits north-star + merged decisions, not _latest.md', ()
 });
 
 test('injector resume: includes the resuming session own decisions (P1 regression guard)', () => {
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'iproj2-'));
+  const proj = tempDir('iproj2-');
   const dir = path.join(proj, 'state');
   fs.mkdirSync(dir, { recursive: true });
   const sid = 'selfSess';

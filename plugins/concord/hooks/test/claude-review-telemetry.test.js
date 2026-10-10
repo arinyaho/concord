@@ -2,16 +2,16 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
 
 const core = require('../../adapters/claude-code/review-telemetry');
 const reviewTelemetry = require('../../core/review-telemetry');
+const { tempDir } = require('./temp-dir');
 const HOOK = path.join(__dirname, '..', 'review-telemetry.js');
 
 function setup(round = 2) {
-  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-review-telemetry-'));
+  const project = tempDir('claude-review-telemetry-');
   const transcript = path.join(project, 'session.jsonl');
   const stateDir = path.join(project, 'state');
   fs.mkdirSync(stateDir);
@@ -823,7 +823,7 @@ test('hook writes one atomic record per tool-use identity and emits no output', 
 
 test('hook writes telemetry to an explicit REVIEW_STATE_DIR override', () => {
   const { transcript, stateDir: transcriptStateDir } = setup();
-  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-review-override-'));
+  const stateDir = tempDir('claude-review-override-');
   fs.copyFileSync(path.join(transcriptStateDir, 'review-feat-x.json'), path.join(stateDir, 'review-feat-x.json'));
   const prompt = `Write ONLY to ${path.join(stateDir, 'round-2-correctness.json')}`;
 

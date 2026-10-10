@@ -2,18 +2,18 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { runReviewUntilGreen } = require('../../core/codex-review-runner');
 const { artifactDestinationFromPrompt } = require('../../core/review-artifact');
 const { readLedger, targetSlug, ledgerPath } = require('../../core/review');
 const { runPath } = require('../../core/initiative-review-run');
+const { tempDir } = require('./temp-dir');
 
 const ref = 'feature/plan-resume';
 const ids = ['correctness:first', 'correctness:second'];
 function fixture({ maxLaunches = 12, incompleteReplacement = false, acceptedInitially = false, repairInitialPlan = false, replacementError = null, cliCopy = 'core', broadIntent = false, keyed = true, failReplacement = false } = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-resume-'));
+  const root = tempDir('plan-resume-');
   const repo = path.join(root, 'repo');
   const stateDir = path.join(root, 'review');
   const initiativeDir = path.join(root, 'initiative');

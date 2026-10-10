@@ -3,10 +3,10 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const url = require('node:url');
 const SKILL_FILES = require('./initiative-to-prs-files.json');
+const { tempDir } = require('./temp-dir');
 
 const REPO = path.join(__dirname, '..', '..', '..', '..');
 const COPILOT = path.join(REPO, 'plugins/concord-copilot');
@@ -144,7 +144,7 @@ test('Copilot-specific orchestration uses native clean-context agents and explic
 });
 
 test('Copilot CLI entrypoints run against isolated project state', () => {
-  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'concord-copilot-cli-'));
+  const temporary = tempDir('concord-copilot-cli-');
   const project = path.join(temporary, 'project');
   const home = path.join(temporary, 'home');
   fs.mkdirSync(project);
@@ -169,7 +169,7 @@ test('Copilot ships an LGTM state CLI and its skill resolves it from the plugin 
 });
 
 pluginInstallE2ETest('plugin-install e2e: clean Copilot config installs, updates, and removes the plugin', (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concord-copilot-install-'));
+  const root = tempDir('concord-copilot-install-');
   const config = path.join(root, 'config');
   const home = path.join(root, 'home');
   fs.mkdirSync(config);

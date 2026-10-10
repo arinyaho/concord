@@ -22,11 +22,11 @@
 // PATH entry for the binary under test.
 const { test } = require('node:test');
 const assert = require('node:assert');
-const os = require('node:os');
 const fs = require('node:fs');
 const pathMod = require('node:path');
 const { EventEmitter } = require('node:events');
 const childProcess = require('node:child_process');
+const { tempDir } = require('./temp-dir');
 
 function loadRunnerWithPlatform(platform) {
   const runnerPath = require.resolve('../../core/codex-review-runner.js');
@@ -49,7 +49,7 @@ function loadRunnerWithPlatform(platform) {
 // own convention. Returns the resolved absolute path (escaped the same way
 // crossPlatformCommand would) so assertions can check calls[0].bin against it.
 function withFakeOnPath(name, fn) {
-  const pathDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), `fake-path-${name}-`));
+  const pathDir = tempDir(`fake-path-${name}-`);
   const target = pathMod.join(pathDir, `${name}.CMD`);
   fs.writeFileSync(target, '');
   const originalPath = process.env.PATH;

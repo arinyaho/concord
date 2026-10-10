@@ -8,14 +8,14 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { tempDir } = require('./temp-dir');
 
 const HOOK = path.join(__dirname, '..', 'grep-sweep-reminder.js');
 
 function setup() {
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'gsr-'));
+  const proj = tempDir('gsr-');
   return { transcript: path.join(proj, 'sess.jsonl'), sessionId: 'sess-1' };
 }
 
@@ -74,7 +74,7 @@ test('grep-sweep-reminder: a non-sweep Bash command is never counted or reminded
 });
 
 test('grep-sweep-reminder: separate sessions get independent counters', () => {
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'gsr-'));
+  const proj = tempDir('gsr-');
   const transcriptA = path.join(proj, 'sess-a.jsonl');
   const transcriptB = path.join(proj, 'sess-b.jsonl');
   for (let i = 0; i < 9; i += 1) run(bashEvent('sess-a', transcriptA, 'grep foo .'));

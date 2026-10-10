@@ -2,10 +2,10 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const collector = require('../../core/review-collector');
 const lgtmState = require('../../core/lgtm-state');
+const { tempDir } = require('./temp-dir');
 
 // Recorded GraphQL response of PR #244 at its head: three Codex reviews (one
 // whose commit_id is older than its inline comments' commit), the Codex
@@ -20,7 +20,7 @@ function fixture() { return JSON.parse(fs.readFileSync(FIXTURE, 'utf8')); }
 function pullRequest(data) { return data.data.repository.pullRequest; }
 function reactionsResponse(nodes, headRefOid = HEAD) { return { data: { repository: { pullRequest: { headRefOid, reactions: { nodes } } } } }; }
 function thumbsUp(createdAt, login = `${CODEX}[bot]`) { return { content: 'THUMBS_UP', createdAt, user: { login } }; }
-function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'review-collector-')); }
+function temp() { return tempDir('review-collector-'); }
 
 // A graphql double that serves the main query from `main()` and the reaction
 // query from `reactions`, and counts the reaction reads.
