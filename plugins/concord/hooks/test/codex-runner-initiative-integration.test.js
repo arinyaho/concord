@@ -51,7 +51,7 @@ test('keyed runner propagates complete options, reserves every review role and d
 });
 test('launcher parses session policy anywhere and rejects missing, duplicate and invalid policies', () => {
   const dir = tmp(), capture = path.join(dir, 'options.json'), preload = path.join(dir, 'preload.cjs');
-  fs.writeFileSync(preload, `const fs=require('node:fs'),Module=require('node:module'),load=Module._load;Module._load=function(request){if(request==='../engine/codex-review-runner')return{runReviewUntilGreen:async o=>{fs.writeFileSync(process.env.CAPTURE,JSON.stringify(o));return{handoff:'ok'};}};return load.apply(this,arguments);};`);
+  fs.writeFileSync(preload, `const fs=require('node:fs'),Module=require('node:module'),load=Module._load;Module._load=function(request){if(request.endsWith('/engine/codex-review-runner'))return{runReviewUntilGreen:async o=>{fs.writeFileSync(process.env.CAPTURE,JSON.stringify(o));return{handoff:'ok'};}};return load.apply(this,arguments);};`);
   const bin = path.resolve(__dirname, '../../../concord-codex/bin/review-until-green.js');
   for (const args of [['--session-handoff', 'off', 'branch', 'main'], ['branch', '--session-handoff', 'suggest', 'main'], ['resume', 'branch', '--session-handoff', 'stop-at-checkpoint']]) {
     const out = spawnSync('node', ['--require', preload, bin, ...args], { encoding: 'utf8', env: { ...process.env, CAPTURE: capture } });
@@ -88,7 +88,7 @@ test('default suggestions publish once while later progress continues to termina
 });
 test('native launcher prints a checkpoint even with a continuation packet, exactly once', () => {
   const dir = tmp(), preload = path.join(dir, 'preload.cjs');
-  fs.writeFileSync(preload, `const Module=require('node:module'),load=Module._load;Module._load=function(request){if(request==='../engine/codex-review-runner')return{runReviewUntilGreen:async o=>{const h={promptPath:'/private/resume.md',prompt:'CONTINUE'};await o.onSessionHandoff(h);return{decision:{converged:true},sessionHandoff:h,continuationPacket:{packet:'terminal'}};}};return load.apply(this,arguments);};`);
+  fs.writeFileSync(preload, `const Module=require('node:module'),load=Module._load;Module._load=function(request){if(request.endsWith('/engine/codex-review-runner'))return{runReviewUntilGreen:async o=>{const h={promptPath:'/private/resume.md',prompt:'CONTINUE'};await o.onSessionHandoff(h);return{decision:{converged:true},sessionHandoff:h,continuationPacket:{packet:'terminal'}};}};return load.apply(this,arguments);};`);
   const bin = path.resolve(__dirname, '../../../concord-codex/bin/review-until-green.js');
   const out = spawnSync('node', ['--require', preload, bin, 'branch'], { encoding: 'utf8' });
   assert.equal(out.status, 0, out.stderr);
@@ -236,7 +236,7 @@ test('failed stop checkpoint preserves a continuing decision and launches no nex
 });
 test('native launcher signals an incomplete session handoff with exit code 1', () => {
   const dir = tmp(), preload = path.join(dir, 'preload.cjs');
-  fs.writeFileSync(preload, `const Module=require('node:module'),load=Module._load;Module._load=function(request){if(request==='../engine/codex-review-runner')return{runReviewUntilGreen:async()=>({decision:'session-handoff',reviewDecision:{continue:true},sessionHandoff:{action:'stop',promptPath:'/private/resume.md',prompt:'CONTINUE'}})};return load.apply(this,arguments);};`);
+  fs.writeFileSync(preload, `const Module=require('node:module'),load=Module._load;Module._load=function(request){if(request.endsWith('/engine/codex-review-runner'))return{runReviewUntilGreen:async()=>({decision:'session-handoff',reviewDecision:{continue:true},sessionHandoff:{action:'stop',promptPath:'/private/resume.md',prompt:'CONTINUE'}})};return load.apply(this,arguments);};`);
   const out = spawnSync('node', ['--require', preload, path.resolve(__dirname, '../../../concord-codex/bin/review-until-green.js'), 'branch'], { encoding: 'utf8' });
   assert.equal(out.status, 1, out.stderr);
   assert.match(out.stdout, /session-handoff/);
@@ -311,7 +311,7 @@ test('a lite run\'s budget-exhausted block names --initiative-mode lite, and pas
 
 test('native launcher keeps exit 0 for a clean review with a failed stop checkpoint', () => {
   const dir = tmp(), preload = path.join(dir, 'preload.cjs');
-  fs.writeFileSync(preload, `const Module=require('node:module'),load=Module._load;Module._load=function(request){if(request==='../engine/codex-review-runner')return{runReviewUntilGreen:async()=>({decision:{continue:false,converged:true},sessionHandoff:{action:'failed',mode:'stop-at-checkpoint',error:'checkpoint failed'}})};return load.apply(this,arguments);};`);
+  fs.writeFileSync(preload, `const Module=require('node:module'),load=Module._load;Module._load=function(request){if(request.endsWith('/engine/codex-review-runner'))return{runReviewUntilGreen:async()=>({decision:{continue:false,converged:true},sessionHandoff:{action:'failed',mode:'stop-at-checkpoint',error:'checkpoint failed'}})};return load.apply(this,arguments);};`);
   const out = spawnSync('node', ['--require', preload, path.resolve(__dirname, '../../../concord-codex/bin/review-until-green.js'), 'branch'], { encoding: 'utf8' });
   assert.equal(out.status, 0, out.stderr);
   assert.match(out.stdout, /converged/);
