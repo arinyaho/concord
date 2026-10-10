@@ -5793,3 +5793,27 @@ test('rerun archives gate_fixed as fixed', () => {
   assert.deepStrictEqual(after.runs[0].fixed.map((f) => [f.id, f.fix_commit]), [['gate:silent-gap:x', t.fix]]);
   assert.strictEqual(after.gate_fixed, undefined);
 });
+
+test('record-fix keeps a stop while the other kind of stopping finding remains', () => {
+  const parked = { id: 'correctness:p', file: 'a.txt', summary: 's', status: 'parked', park_reason: 'needs-decision' };
+  const g = recordFixRepo({ ledger: () => ({ status: 'gate-pending', findings: [parked], gate_open: [BLOCKING_GATE('gate:silent-gap:x')] }) });
+  run(recordFixArgs(g.fix), { env: g.env });
+  assert.strictEqual(review.readLedger(g.dir, g.slug).status, 'gate-pending');
+  const p = recordFixRepo({ ledger: () => ({ status: 'parked', findings: [{ ...parked, id: 'correctness:x' }], gate_open: [BLOCKING_GATE('gate:silent-gap:y')] }) });
+  run(['record-fix', 'feat/x', 'correctness:x', '--commit', p.fix, '--test', 'sh check.sh', '--test-file', 'check.sh'], { env: p.env });
+  assert.strictEqual(review.readLedger(p.dir, p.slug).status, 'parked');
+});
+
+test('record-fix resets a gate panel that could merge the fixed finding back', () => {
+  const t = recordFixRepo({ ledger: () => ({ status: 'gate-pending', gate_open: [BLOCKING_GATE('gate:silent-gap:x')], gate_panel: { ...require('../../core/gate-panel').emptyGatePanel(), confirmed: [BLOCKING_GATE('gate:silent-gap:x')] } }) });
+  run(recordFixArgs(t.fix), { env: t.env });
+  assert.deepStrictEqual(review.readLedger(t.dir, t.slug).gate_panel, require('../../core/gate-panel').emptyGatePanel());
+});
+
+test('rerun keeps the record-fix evidence of a parked finding', () => {
+  const parked = { id: 'correctness:x', file: 'a.txt', summary: 's', status: 'parked', park_reason: 'needs-decision' };
+  const t = recordFixRepo({ ledger: () => ({ status: 'parked', findings: [parked] }) });
+  run(['record-fix', 'feat/x', 'correctness:x', '--commit', t.fix, '--test', 'sh check.sh', '--test-file', 'check.sh'], { env: t.env });
+  run(['rerun', 'feat/x'], { env: t.env });
+  assert.strictEqual(review.readLedger(t.dir, t.slug).runs[0].fixed[0].fix_evidence.command, 'sh check.sh');
+});

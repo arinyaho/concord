@@ -271,6 +271,9 @@ function evidenceLine(f) {
   return `[${f.id}] ${f.file}: ${f.summary}${f.rationale ? ` -- rationale: ${f.rationale}` : ''} -- release-blocking: ${blocking}${f.blockingReason ? ` -- verifier: ${f.blockingReason}` : ''}${f.span ?? f.evidence ? ` -- span: ${f.span ?? f.evidence}` : ''}`;
 }
 
+// A fix recorded by record-fix names the test that showed it.
+const fixTest = (f) => (f.fix_evidence ? ` (record-fix test: ${f.fix_evidence.command})` : '');
+
 function renderHandoff(result) {
   const { ledger, aborted } = result;
   const lines = [];
@@ -294,9 +297,9 @@ function renderHandoff(result) {
   // A finding fixed in a prior run and open, parked, dismissed or killed now is reported once, in its current state.
   const reopened = new Set([...(ledger.findings || []).filter((f) => f.status === 'parked').map((f) => f.id), ...(ledger.gate_open || []).map((f) => f.id), ...dismissedIds(ledger), ...(ledger.killed_digest || []).map((k) => k.id)]);
   for (const r of ledger.runs || []) {
-    for (const f of (r.fixed || []).filter((fixed) => !reopened.has(fixed.id))) lines.push(`  fixed in prior run #${r.run}: ${evidenceLine(f)} -> commit ${f.fix_commit}`);
+    for (const f of (r.fixed || []).filter((fixed) => !reopened.has(fixed.id))) lines.push(`  fixed in prior run #${r.run}: ${evidenceLine(f)} -> commit ${f.fix_commit}${fixTest(f)}`);
   }
-  for (const f of ledger.gate_fixed || []) lines.push(`fixed outside the loop: ${evidenceLine(f)} -> commit ${f.fix_commit} (test: ${f.fix_evidence.command})`);
+  for (const f of ledger.gate_fixed || []) lines.push(`fixed outside the loop: ${evidenceLine(f)} -> commit ${f.fix_commit}${fixTest(f)}`);
   for (const d of ledger.gate_dismissed || []) lines.push(`dismissed by ${d.dismissedBy}: ${evidenceLine(d)}`);
   // A cleared finding is reported once: still open or dismissed ids show in their own section, and "not re-raised" needs a gate round whose verdict was recorded.
   const reported = new Set([...(ledger.gate_open || []).map((f) => f.id), ...dismissedIds(ledger)]);
@@ -331,7 +334,7 @@ function renderHandoff(result) {
   if (fixed.length) {
     const conf = ledger.status === 'intent-review' ? ' (pending confirmation)' : '';
     lines.push('', `Fix digest${conf}:`);
-    for (const f of fixed) lines.push(`  - ${evidenceLine(findingEvidence(f))} -> commit ${f.fix_commit}`);
+    for (const f of fixed) lines.push(`  - ${evidenceLine(findingEvidence(f))} -> commit ${f.fix_commit}${fixTest(f)}`);
   }
   // A killed finding is a real finding a reviewer talked the loop out of. Show
   // the basis it gave, so a rejection can be audited from the handoff alone.
@@ -621,7 +624,7 @@ function dismissedIds(ledger) {
 }
 
 function findingEvidence(f, extra = {}) {
-  return { id: f.id, file: f.file, span: f.span ?? f.evidence ?? '', summary: f.summary, rationale: f.rationale, releaseBlocking: f.releaseBlocking, ...(f.blockingReason ? { blockingReason: f.blockingReason } : {}), ...extra };
+  return { id: f.id, file: f.file, span: f.span ?? f.evidence ?? '', summary: f.summary, rationale: f.rationale, releaseBlocking: f.releaseBlocking, ...(f.blockingReason ? { blockingReason: f.blockingReason } : {}), ...(f.fix_evidence ? { fix_evidence: f.fix_evidence } : {}), ...extra };
 }
 
 // Open findings a gate-pending restart clears keep their evidence here; nothing reads this list back into gate_open.
@@ -2877,12 +2880,15 @@ function runVerb(resolveFromCwd, args, initiative) {
       findings[parkedIdx] = { ...findings[parkedIdx], status: 'fixed', fix_commit: commit, park_reason: null, fix_evidence: fixEvidence };
       const seen = (ledger.seen || []).map((e) => (e.id === findingId ? { ...e, status: 'fixed' } : e));
       next = { ...ledger, findings, seen };
-      if (!findings.some((f) => f.status === 'parked')) next = { ...clearIntentForFreshLook(stateDir, slug, next), status: 'converging' };
     } else {
-      const gateOpen = ledger.gate_open.filter((f) => f.id !== findingId);
-      next = { ...ledger, gate_open: gateOpen, gate_fixed: (ledger.gate_fixed || []).concat([findingEvidence(gate, { fix_commit: commit, fix_evidence: fixEvidence })]) };
-      // The next round reviews only the commits after the reviewed head and decides convergence, as a DoD retry does.
-      if (ledger.status === 'gate-pending' && !gateOpen.some((f) => !gateFollowUpEligible(f))) next = { ...next, status: 'converging', diff_content_hash: null, retry_diff_base: reviewed };
+      next = { ...ledger, gate_open: ledger.gate_open.filter((f) => f.id !== findingId), gate_fixed: (ledger.gate_fixed || []).concat([findingEvidence(gate, { fix_commit: commit, fix_evidence: fixEvidence })]) };
+    }
+    // The run leaves its stop only when neither a parked finding nor a blocking gate finding is left.
+    if (!next.findings?.some((f) => f.status === 'parked') && !(next.gate_open || []).some((f) => !gateFollowUpEligible(f))) {
+      next = { ...clearIntentForFreshLook(stateDir, slug, next), status: 'converging' };
+      // As on a DoD retry, the next round reviews only the commits after the reviewed head; the panel re-runs fresh, so its
+      // confirmed list cannot merge the fixed finding back into gate_open.
+      if (ledger.status === 'gate-pending') next = { ...next, diff_content_hash: null, retry_diff_base: reviewed, gate_panel: gatePanelLib.emptyGatePanel() };
     }
     writeLedger(stateDir, slug, next);
     process.stdout.write(`recorded ${findingId} as fixed by ${commit}; ledger status is now "${next.status}".\n`);
