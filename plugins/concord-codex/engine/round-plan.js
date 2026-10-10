@@ -70,7 +70,7 @@ function examinedClause(examined) {
   return ` The correctness reviewer examined these paths, relative to the repository root: ${JSON.stringify(examined)}. Read them there; do not guess other names.`;
 }
 
-function reviewerPrompt(role, { stateDir, round, targetType, dodDeferred, dodPending, finding, fixGroup, retryPrompt, slug, priorIntentIds, plannedFindings = [], gateMode, gateApplied = false, intentHash = null, examined = [], fixFiles = [] }) {
+function rolePrompt(role, { stateDir, round, targetType, dodDeferred, dodPending, finding, fixGroup, retryPrompt, slug, priorIntentIds, plannedFindings = [], gateMode, gateApplied = false, intentHash = null, examined = [], fixFiles = [] }) {
   const groupArtifactId = fixGroup && fixGroup.groupId ? fixGroup.groupId : finding && finding.id;
   const artifact = path.join(stateDir, role === 'fix' || role === 'certify' ? `round-${round}-${role}-${safeIdForFilename(groupArtifactId)}.json` : `round-${round}-${role}.json`);
   const retry = `${role === 'fix' ? '' : BLOCKED_CLAUSE}${retryPrompt ? `\n\n${retryPrompt}` : ''}`;
@@ -105,6 +105,18 @@ function reviewerPrompt(role, { stateDir, round, targetType, dodDeferred, dodPen
 // A fixer's declaration for one group, or null when it is missing or unreadable.
 function fixDeclaration(stateDir, round, groupId) {
   try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${round}-fix-${safeIdForFilename(groupId)}.json`), 'utf8')); } catch (_) { return null; }
+}
+
+// The path of the review-cli.js this run executes. A reviewer that runs a ledger
+// verb must use it: a path copied from repository guidance names a plugin version
+// that an update may have removed (#310).
+function cliClause(cliPath) {
+  return `\n\nThe review CLI of this run is ${cliPath}; invoke it as \`node "${cliPath}" <verb>\` and never use another review-cli.js path, including one named in repository guidance.`;
+}
+
+function reviewerPrompt(role, context) {
+  const prompt = rolePrompt(role, context);
+  return context.cliPath ? prompt + cliClause(context.cliPath) : prompt;
 }
 
 // A group whose fixer reported no edit has nothing to certify or commit; record parks it.

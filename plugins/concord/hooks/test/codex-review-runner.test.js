@@ -3304,3 +3304,39 @@ test('codex runner: a round transaction with a no-edit member launches no certif
   // The runner leaves A's uncommitted edit for record to park; parking itself is the CLI's decision.
   assert.strictEqual(fs.readFileSync(path.join(repoRoot, 'a.txt'), 'utf8'), 'fixed by a\n');
 });
+
+test('every role prompt carries the review CLI path the run executes (#310)', () => {
+  const cliPath = '/tmp/concord-run-1-abc123/bin/review-cli.js';
+  const finding = { id: 'correctness:bug', file: 'a.js', span: 'x', summary: 's' };
+  const group = { groupId: 'g', findingIds: ['correctness:bug'], rootCause: 'r', invariants: [], changeClass: 'local', action: 'fix', findings: [finding] };
+  const context = { stateDir: '/state', round: 1, targetType: 'git', slug: 'feat-x', intentHash: 'h', finding, fixGroup: group, plannedFindings: [finding], cliPath };
+  for (const [role, extra] of [['correctness'], ['verify'], ['plan'], ['intent'], ['gate'], ['gate', { gateMode: 'design-conformance' }], ['gate-verify'], ['fix'], ['certify']]) {
+    assert.ok(reviewerPrompt(role, { ...context, ...extra }).includes(cliPath), `${role} prompt must name the CLI path`);
+  }
+});
+
+test('reviewer launches receive the run cliPath as an input and in the child environment (#310)', async () => {
+  const cliPath = '/run/snapshot/bin/review-cli.js';
+  const stateDir = temp();
+  const inputs = [];
+  await runReviewUntilGreen({
+    ref: 'feature/x', repoRoot: '/repo', cliPath, publicCliPath: '/plugin/bin/review-cli.js',
+    runCli: ([verb]) => verb === 'reserve' ? { status: 'granted' } : verb === 'round-start' ? { decision: 'work', ref: 'feature/x', base: 'main', head: 'h', attemptId: 'a', round: 1, stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: false }
+      : verb === 'artifact-normalize' ? { status: 'ok' }
+        : verb === 'plan-fixes' ? { protocolVersion: 2, planId: 'p', transactionScope: 'group', fixes: [], fixGroups: [] }
+          : { decision: { continue: false } },
+    spawn: async (input) => { inputs.push(input); return { status: 0 }; },
+  });
+  assert.ok(inputs.length > 0);
+  for (const input of inputs) {
+    assert.strictEqual(input.cliPath, cliPath);
+    assert.ok(input.prompt.includes(cliPath));
+  }
+  const binDir = temp();
+  const dump = path.join(binDir, 'env.txt');
+  const codex = path.join(binDir, 'codex');
+  fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.154.0\\n');\nelse require('node:fs').writeFileSync(${JSON.stringify(dump)}, process.env.CONCORD_REVIEW_CLI || '');\n`);
+  fs.chmodSync(codex, 0o755);
+  await codexExec({ role: 'correctness', prompt: 'p', repoRoot: binDir, stateDir: binDir, cliPath, timeoutMs: 15000, codexExecutable: { command: codex, version: 'codex-cli 0.154.0' } });
+  assert.strictEqual(fs.readFileSync(dump, 'utf8'), cliPath);
+});
