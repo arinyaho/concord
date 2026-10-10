@@ -6264,3 +6264,107 @@ test('record: a journaled Git group writes fixed review history with its commit 
   const history = review.readLedger(dir, slug).review_history;
   assert.deepStrictEqual(history.map((entry) => [entry.groupId, entry.outcome, entry.fixCommit]), [['shared', 'fixed', committed.sha]]);
 });
+
+// #308: on a git target an unparked finding stayed `open` when the next round
+// no longer reported it, so the run parked on "no progress" and the final DoD
+// never ran. Round 1 parks the finding because the fixer reports no edit (the
+// reviewed head already carries the fix); `unpark` reopens it.
+const UNPARKED = { id: 'correctness:already-fixed', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'the fix is already in the head' };
+function parkedThenUnparked({ unpark = true, finding = UNPARKED, copyChanges = true } = {}) {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/unparked';
+  const slug = review.targetSlug(ref);
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  // c.txt is a byte copy of a.txt, like a generated bundle copy of its source.
+  if (finding.file === 'c.txt') { fs.writeFileSync(path.join(repo, 'c.txt'), 'two\n'); execFileSync('git', ['add', 'c.txt'], { cwd: repo }); }
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n1 = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n1, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [finding] });
+  writeArtifact(dir, n1, 'verify', { status: 'ok', rejected: [], findings: [] });
+  run(['plan-fixes', ref], { env });
+  writeArtifact(dir, n1, `fix-${finding.id}`, { status: 'ok', edited: false });
+  assert.strictEqual(JSON.parse(run(['record', ref], { env })).decision.parked, true);
+  if (unpark) run(['unpark', ref, finding.id], { env });
+  else {
+    // An open finding that no unpark reopened: the same ledger without the unpark step.
+    const l = review.readLedger(dir, slug);
+    review.writeLedger(dir, slug, { ...l, status: 'converging', findings: l.findings.map((f) => (f.id === finding.id ? { ...f, status: 'open', park_reason: null } : f)), seen: l.seen.filter((s) => s.id !== finding.id) });
+  }
+  assert.strictEqual(review.readLedger(dir, slug).findings.find((f) => f.id === finding.id).status, 'open');
+  // A later commit changes the diff, so the next round-start reviews again.
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'test\n');
+  // The round reviews only the later commit, so the copy changes again together with its source.
+  if (finding.file === 'c.txt' && copyChanges) for (const f of ['a.txt', 'c.txt']) fs.writeFileSync(path.join(repo, f), 'two\nmore\n');
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'later'], { cwd: repo });
+  const n2 = JSON.parse(run(['round-start', ref], { env })).round;
+  return { repo, dir, ref, slug, env, n2 };
+}
+
+test('#308: a git round that no longer reports an unparked finding resolves it, converges and runs the final DoD', () => {
+  const { dir, ref, slug, env, n2 } = parkedThenUnparked();
+  const before = review.readLedger(dir, slug);
+  writeArtifact(dir, n2, 'correctness', { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [] });
+  writeArtifact(dir, n2, 'verify', { status: 'ok', rejected: [], findings: [] });
+  run(['plan-fixes', ref], { env });
+  const out = JSON.parse(run(['record', ref], { env }));
+  assert.strictEqual(out.decision.converged, true, out.decision.reason);
+  assert.strictEqual(out.decision.parked, false);
+  assert.deepStrictEqual(out.checks, [{ name: 'definition-of-done', status: 'passed' }]);
+  const after = review.readLedger(dir, slug);
+  assert.strictEqual(after.status, 'clean');
+  assert.strictEqual(after.findings.find((f) => f.id === UNPARKED.id).status, 'resolved');
+  // Finding ids, journal and both budgets are untouched by the resolution.
+  assert.deepStrictEqual(after.findings.map((f) => f.id), before.findings.map((f) => f.id));
+  assert.deepStrictEqual(after.journal || [], before.journal || []);
+  assert.strictEqual(after.budget.max_rounds, before.budget.max_rounds);
+  assert.deepStrictEqual(after.run_budget, before.run_budget);
+  assert.ok(!after.seen.some((s) => s.id === UNPARKED.id));
+});
+
+test('#308: an unparked finding on a byte copy of an examined file resolves the way coverage counts the copy as examined', () => {
+  const copy = { ...UNPARKED, file: 'c.txt' };
+  const { dir, ref, slug, env, n2 } = parkedThenUnparked({ finding: copy });
+  writeArtifact(dir, n2, 'correctness', { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [] });
+  writeArtifact(dir, n2, 'verify', { status: 'ok', rejected: [], findings: [] });
+  run(['plan-fixes', ref], { env });
+  const out = JSON.parse(run(['record', ref], { env }));
+  assert.strictEqual(out.decision.converged, true, out.decision.reason);
+  assert.strictEqual(review.readLedger(dir, slug).findings.find((f) => f.id === copy.id).status, 'resolved');
+});
+
+test('#308 control: an unparked finding on a file the round neither listed nor saw change stays open and the run parks', () => {
+  const copy = { ...UNPARKED, file: 'c.txt' };
+  const { dir, ref, slug, env, n2 } = parkedThenUnparked({ finding: copy, copyChanges: false });
+  writeArtifact(dir, n2, 'correctness', { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [] });
+  writeArtifact(dir, n2, 'verify', { status: 'ok', rejected: [], findings: [] });
+  run(['plan-fixes', ref], { env });
+  const out = JSON.parse(run(['record', ref], { env }));
+  assert.strictEqual(out.decision.parked, true);
+  assert.match(out.decision.reason, /no progress/);
+  assert.strictEqual(review.readLedger(dir, slug).findings.find((f) => f.id === copy.id).status, 'open');
+});
+
+test('#308 control: an unparked finding the round reports again goes to the fixer and the run does not converge', () => {
+  const { dir, ref, slug, env, n2 } = parkedThenUnparked();
+  writeArtifact(dir, n2, 'correctness', { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [UNPARKED] });
+  writeArtifact(dir, n2, 'verify', { status: 'ok', rejected: [], findings: [] });
+  assert.deepStrictEqual(JSON.parse(run(['plan-fixes', ref], { env })).fixes.map((f) => f.id), [UNPARKED.id]);
+  assert.strictEqual(review.readLedger(dir, slug).findings.find((f) => f.id === UNPARKED.id).status, 'open');
+  writeArtifact(dir, n2, `fix-${UNPARKED.id}`, { status: 'ok', edited: false });
+  const out = JSON.parse(run(['record', ref], { env }));
+  assert.strictEqual(out.decision.converged, false);
+  assert.notStrictEqual(review.readLedger(dir, slug).findings.find((f) => f.id === UNPARKED.id).status, 'resolved');
+});
+
+test('#308 control: an open git finding that no unpark reopened stays open when a round does not report it', () => {
+  const { dir, ref, slug, env, n2 } = parkedThenUnparked({ unpark: false });
+  writeArtifact(dir, n2, 'correctness', { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [] });
+  writeArtifact(dir, n2, 'verify', { status: 'ok', rejected: [], findings: [] });
+  run(['plan-fixes', ref], { env });
+  const out = JSON.parse(run(['record', ref], { env }));
+  assert.strictEqual(out.decision.converged, false);
+  assert.strictEqual(out.decision.parked, true);
+  assert.match(out.decision.reason, /no progress/);
+  assert.strictEqual(review.readLedger(dir, slug).findings.find((f) => f.id === UNPARKED.id).status, 'open');
+});

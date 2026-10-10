@@ -460,13 +460,18 @@ function applyRoundOutcome(ledger, outcome) {
   // target, is hasDoD=true (the existing DoD-gated path); only a target that
   // explicitly set hasDoD:false (the file target) takes the dry-round branch.
   const hasDoD = ledger.target ? ledger.target.hasDoD !== false : true;
-  // A no-DoD target is reviewed whole every round, so an open finding this
-  // round did not report (one reopened by unpark, say) is resolved. It gets no
-  // seen entry, so a later report of it counts as new again.
-  if (!hasDoD) {
-    const reported = new Set(survivors.map((f) => f.id));
-    for (const [id, f] of byId) {
-      if (f.status === 'open' && !reported.has(id)) byId.set(id, { ...f, status: 'resolved' });
+  // An open finding this round did not report is resolved when the round's
+  // silence covers it: a no-DoD target is reviewed whole every round, and on a
+  // git target only a finding reopened by unpark whose file this round examined
+  // qualifies, so a reviewer that merely fails to repeat an ordinary finding
+  // never closes it. It gets no seen entry, so a later report of it is new again.
+  const reported = new Set(survivors.map((f) => f.id));
+  const examined = new Set(outcome.examined || []);
+  for (const [id, f] of byId) {
+    if (f.status !== 'open' || reported.has(id)) continue;
+    if (!hasDoD || (f.reopened_by_unpark && examined.has(f.file))) {
+      const { reopened_by_unpark, ...rest } = f;
+      byId.set(id, { ...rest, status: 'resolved' });
     }
   }
 
@@ -552,16 +557,17 @@ function unparkFinding(ledger, findingId) {
   const idx = (ledger.findings || []).findIndex((f) => f.id === findingId);
   if (idx === -1) throw new Error(`unparkFinding: no such finding id "${findingId}"`);
   const findings = ledger.findings.slice();
-  findings[idx] = { ...findings[idx], status: 'open', park_reason: null };
+  findings[idx] = { ...findings[idx], status: 'open', park_reason: null, reopened_by_unpark: true };
   // Drop the finding's seen entry too. A leftover 'parked' seen entry makes
   // dedupeAgainstSeen suppress the finding if the gate re-reports it next round,
   // so a still-present unparked finding would never re-surface to be re-processed
   // (and a resolved one would linger 'open'). Dropping it lets the gate re-arbitrate:
   // still-broken -> re-reported and re-processed; resolved -> silent -> stops
-  // blocking convergence. On a DoD target it keeps status 'open' (fail-closed) rather
-  // than deleting the finding, so a gate that flakes on a still-open finding parks,
-  // never false-greens. A no-DoD target is reviewed whole each round, so
-  // applyRoundOutcome marks it 'resolved' when the next round does not report it.
+  // blocking convergence. The finding stays 'open' rather than being deleted, and
+  // applyRoundOutcome marks it 'resolved' only when the next round does not report
+  // it: on a no-DoD target always, on a git target only when that round examined the
+  // finding's file (reopened_by_unpark marks it for that rule), and a git run still
+  // runs its DoD before it is clean. A round that never examined the file parks.
   const seen = (ledger.seen || []).filter((s) => s.id !== findingId);
   return { ...ledger, findings, seen, status: 'converging' };
 }
