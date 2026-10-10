@@ -5801,10 +5801,21 @@ test('rerun archives gate_fixed as fixed', () => {
   assert.strictEqual(after.gate_fixed, undefined);
 });
 
+const fixedOutsideLine = (fix) => new RegExp(`^fixed outside the loop: \\[gate:silent-gap:x\\] .* -> commit ${fix} \\(record-fix test: sh check\\.sh\\)$`, 'm');
+
+test('the handoff lists a gate finding record-fix fixed with its commit and test command', () => {
+  const t = recordFixRepo({ ledger: gatePending });
+  run(recordFixArgs(t.fix), { env: t.env });
+  const fixed = review.readLedger(t.dir, t.slug);
+  assert.deepStrictEqual([fixed.gate_fixed.map((f) => f.id), fixed.gate_open, fixed.gate_dismissed || []], [['gate:silent-gap:x'], [], []]);
+  assert.match(cli.renderHandoff({ ledger: fixed }), fixedOutsideLine(t.fix));
+});
+
 test('a gate_fixed finding raised again or dismissed is reported once, in its current state', () => {
   const t = recordFixRepo({ ledger: gatePending });
   run(recordFixArgs(t.fix), { env: t.env });
   const fixed = review.readLedger(t.dir, t.slug);
+  assert.match(cli.renderHandoff({ ledger: fixed }), fixedOutsideLine(t.fix));
   const reraised = { ...fixed, status: 'gate-pending', gate_open: [BLOCKING_GATE('gate:silent-gap:x')] };
   assert.doesNotMatch(cli.renderHandoff({ ledger: reraised }), /fixed outside the loop: \[gate:silent-gap:x\]/);
   const dismissed = { ...fixed, gate_dismissed: [{ ...BLOCKING_GATE('gate:silent-gap:x'), dismissedBy: 'user' }] };

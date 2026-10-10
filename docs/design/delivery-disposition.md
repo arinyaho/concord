@@ -71,6 +71,7 @@ The change is stateful (it writes the review-and-fix ledger):
 | `parked` with a gate panel, one parked finding | `record-fix` on the parked finding leaves the stop | panel kept; no retry base | introduced | `record-fix on a parked finding keeps the gate panel and sets no retry base, as unpark would` |
 | `converging` or `clean` | `record-fix` | refused; ledger unchanged | introduced | `record-fix refuses a ledger that is not stopped` |
 | `gate-pending` | id unknown, dismissed or follow-up eligible | refused; ledger unchanged | introduced | `record-fix refuses a finding it does not own` |
+| ledger with a `gate_fixed` id not open or dismissed | handoff | listed as fixed outside the loop with its commit and test command | introduced | `the handoff lists a gate finding record-fix fixed with its commit and test command` |
 | ledger with `gate_fixed` | `rerun` | the archived run lists it as fixed; the new run has no `gate_fixed` | introduced | `rerun archives gate_fixed as fixed` |
 | ledger with a `gate_fixed` id also in `gate_open` or dismissed | handoff, `rerun` | reported once, as open or dismissed; the archived run does not list it as fixed | introduced | `a gate_fixed finding raised again or dismissed is reported once, in its current state` |
 | `gate-pending`, a blocking gate finding already in `gate_fixed` | `record-fix` | its `gate_fixed` entry replaced, not duplicated | introduced | `record-fix on a gate finding fixed before replaces its gate_fixed entry` |
