@@ -6047,6 +6047,13 @@ test('commandExecutables never names a word inside a comment, which ends at a ne
   assert.deepStrictEqual(dodExec.commandExecutables(['npm test # lint; fmt', 'node x # c; absent_a\nmake', 'echo a#b; tee', 'echo "#"; cat']), ['npm', 'node', 'make', 'echo', 'tee', 'cat']);
 });
 
+test('commandExecutables starts a comment after an operator but not after an escaped blank, as the shell does', () => {
+  const dodExec = require('../../core/dod-exec');
+  assert.ok(!dodExec.commandExecutables(['(#c; fmt']).includes('fmt'));
+  assert.ok(!dodExec.commandExecutables(['true&#c; fmt']).includes('fmt'));
+  assert.deepStrictEqual(dodExec.commandExecutables(['echo a\\ #b; fmt']), ['echo', 'fmt']);
+});
+
 test('missingPrograms counts the DoD shell\'s builtins and keywords as present and reports an absent program', { skip: process.platform === 'win32' }, () => {
   const dodExec = require('../../core/dod-exec');
   assert.deepStrictEqual(dodExec.missingPrograms(['command', 'ulimit', 'if', 'cd', 'node', 'concord-absent-program'], process.cwd()), ['concord-absent-program']);

@@ -94,25 +94,29 @@ function defaultExecFn(cmd, cwd) {
 // another one (an npm script, a shell script, the command after `env`, `exec`
 // or a keyword) is not seen.
 // Splits on `;`, `|`, `||`, `&&` and newlines outside quotes, and drops a
-// comment (an unquoted `#` that starts a word) up to the newline. A lone `&`
-// (as in `2>&1`) stays inside its part. Words are split on whitespace outside
-// quotes, so a quoted assignment value such as `GOFLAGS="-mod mod"` is one word.
+// comment up to the newline: an unquoted, unescaped `#` at the start of a word,
+// meaning at the start of a part, after a blank, or after one of `(`, `)`, `&`,
+// `<` or `>`. A lone `&` (as in `2>&1`) stays inside its part. Words are split
+// on whitespace outside quotes, so a quoted assignment value such as
+// `GOFLAGS="-mod mod"` is one word.
 function simpleCommands(cmd) {
   const parts = [];
   let cur = '';
   let quote = null;
+  let wordStart = true;
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i];
-    if (c === '\\' && quote !== "'") { cur += c + (cmd[i + 1] || ''); i++; continue; }
+    if (c === '\\' && quote !== "'") { cur += c + (cmd[i + 1] || ''); i++; wordStart = false; continue; }
     if (quote) { if (c === quote) quote = null; cur += c; continue; }
-    if (c === "'" || c === '"') { quote = c; cur += c; continue; }
-    if (c === '#' && /(^|\s)$/.test(cur)) { while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++; continue; }
+    if (c === "'" || c === '"') { quote = c; cur += c; wordStart = false; continue; }
+    if (c === '#' && wordStart) { while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++; continue; }
     if (c === ';' || c === '|' || c === '\n' || (c === '&' && cmd[i + 1] === '&')) {
-      parts.push(cur); cur = '';
+      parts.push(cur); cur = ''; wordStart = true;
       if (c !== ';' && c !== '\n' && cmd[i + 1] === c) i++;
       continue;
     }
     cur += c;
+    wordStart = /[\s()&<>]/.test(c);
   }
   parts.push(cur);
   return parts;
