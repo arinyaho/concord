@@ -5950,6 +5950,20 @@ test('round-start with --no-dod does not require the DoD interpreters it will no
   assert.match(r.stdout, /"decision":"work"/);
 });
 
+test('a resumed round-start on a ledger with sticky --no-dod still does not require the DoD interpreters', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/missing-interpreter-sticky-no-dod';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['concord-absent-interpreter -m pytest'] }));
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'ahead'], { cwd: repo });
+  const first = runCapture(['round-start', ref, 'HEAD~1', '--no-dod'], { env });
+  assert.strictEqual(first.status, 0, first.stderr);
+  assert.strictEqual(review.readLedger(dir, review.targetSlug(ref)).dodDeferred, true);
+  const resumed = runCapture(['round-start', ref], { env });
+  assert.strictEqual(resumed.status, 0, resumed.stderr);
+  assert.match(resumed.stdout, /"decision":"work"/);
+});
+
 test('commandExecutables names the leading program of each simple DoD command', () => {
   const dodExec = require('../../core/dod-exec');
   assert.deepStrictEqual(dodExec.commandExecutables(['cd plugins && FOO=1 node --test x', 'python -m pytest | tee log', 'true; ./scripts/check.sh']), ['node', 'python', 'tee']);
