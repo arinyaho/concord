@@ -45,7 +45,7 @@ A representation failure in an artifact is handled by at most one isolated `arti
 
 ### Eligibility
 
-Only two failures are eligible: a status spelling that differs from an accepted value only by case, and a mixed-namespace artifact that contains both role-owned and foreign IDs. Every other schema-validation failure, including malformed JSON, structurally incomplete findings, declared blocked checks, a bare rejection ID without a reason, missing correctness coverage, absent structural-plan evidence, and a missing artifact, is a terminal `harness-failure`. The error can identify an omission, but nothing may supply the omitted evidence by inventing observations.
+Only three failures are eligible: a status spelling that differs from an accepted value only by case, a mixed-namespace artifact that contains both role-owned and foreign IDs, and, in `verify` and `gate-verify`, a `findings` entry that lacks `id`, `file` or `summary` (a kept candidate written in a verdict shape). The repair deletes exactly the entries the packet names in `invalidFindings` and keeps every other item, so no evidence is supplied. Every other schema-validation failure, including malformed JSON, structurally incomplete findings in the other roles, declared blocked checks, a bare rejection ID without a reason, missing correctness coverage, absent structural-plan evidence, and a missing artifact, is a terminal `harness-failure`. The error can identify an omission, but nothing may supply the omitted evidence by inventing observations.
 
 ### Packet and isolation
 
