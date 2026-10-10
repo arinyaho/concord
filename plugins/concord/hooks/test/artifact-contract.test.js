@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { normalizeArtifact, ArtifactError, retryPrompt, allowedFindingPrefixes, preservesArtifact } = require('../../core/artifact-contract');
+const { normalizeArtifact, ArtifactError, retryPrompt, allowedFindingPrefixes, preservesArtifact, repairPacket } = require('../../core/artifact-contract');
 
 test('repair preservation accepts plan findingIds, clean verdicts, and reordered object keys', () => {
   const plan = { status: 'OK', protocolVersion: 2, groups: [{ groupId: 'g', findingIds: ['correctness:x'], rootCause: 'one', invariants: [], changeClass: 'local', structuralEffects: [], action: 'fix' }] };
@@ -198,4 +198,9 @@ test('a missing finding field is retried for verify and gate-verify but stays fa
   for (const [name, id] of [['correctness', 'correctness:x'], ['gate', 'gate:cross-context:x'], ['intent', 'intent:x']]) {
     assert.throws(() => normalizeArtifact(name, raw(id)), (error) => error.kind === 'fatal', name);
   }
+});
+
+test('repair packet names an evidence-less finding by its index in the original findings array', () => {
+  const raw = JSON.stringify({ status: 'ok', rejected: [], findings: [{ id: 'gate:cross-context:new', file: 'a', summary: 's' }, { id: 'gate:silent-gap:kept', rationale: 'kept' }] });
+  assert.deepStrictEqual(repairPacket('gate-verify', 'e', raw).invalidFindings, [{ index: 1, id: 'gate:silent-gap:kept' }]);
 });

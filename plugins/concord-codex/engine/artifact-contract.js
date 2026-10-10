@@ -53,7 +53,7 @@ function repairPacket(name, error, original) {
   const foreign = (value) => typeof value === 'string' && !shape.prefixes.some((prefix) => value.startsWith(prefix));
   const dropped = (key, item) => key === 'findings' && dropsInvalidFindings(name) && lacksFindingFields(item);
   const candidateIds = [...new Set(shape.arrays.flatMap((key) => Array.isArray(parsed[key]) ? parsed[key].filter((item) => !dropped(key, item)).map((item) => typeof item === 'string' ? item : item && item.id).filter((id) => typeof id === 'string' && !foreign(id)) : []))];
-  const invalidFindings = Array.isArray(parsed.findings) ? parsed.findings.filter((item) => dropped('findings', item)).map((item, index) => ({ index, id: typeof item.id === 'string' ? item.id : null })) : [];
+  const invalidFindings = Array.isArray(parsed.findings) ? parsed.findings.map((item, index) => ({ item, index })).filter(({ item }) => dropped('findings', item)).map(({ item, index }) => ({ index, id: typeof item.id === 'string' ? item.id : null })) : [];
   return { role: name, error, ...(invalidFindings.length ? { invalidFindings } : {}), schema: { requiredArrays: shape.arrays, ...(name === 'plan' ? { protocolVersion: 2 } : {}) }, allowedPrefixes: [...shape.prefixes], candidateIds };
 }
 
