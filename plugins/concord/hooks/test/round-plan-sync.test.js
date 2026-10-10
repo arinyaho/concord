@@ -211,3 +211,9 @@ test('every native driver copy and the packaged plan prompt state the structural
   }
   assert.ok(reviewerPrompt('plan', { stateDir: '/state', round: 1, slug: 'feat-x', intentHash: 'h' }).includes(DESIGN_EVIDENCE_BINDING_CLAUSE));
 });
+
+test('the plan prompt says gate: findings are never planned and only verify/correctness ids are listed', () => {
+  const prompt = reviewerPrompt('plan', { stateDir: '/state', round: 3, targetType: 'git', slug: 'feat-x' });
+  assert.match(prompt, /`?gate:`? findings are never planned/);
+  assert.match(prompt, /only (?:the )?(?:correctness|docreview)/i);
+});

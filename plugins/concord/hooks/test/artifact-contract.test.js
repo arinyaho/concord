@@ -204,3 +204,11 @@ test('repair packet names an evidence-less finding by its index in the original 
   const raw = JSON.stringify({ status: 'ok', rejected: [], findings: [{ id: 'gate:cross-context:new', file: 'a', summary: 's' }, { id: 'gate:silent-gap:kept', rationale: 'kept' }] });
   assert.deepStrictEqual(repairPacket('gate-verify', 'e', raw).invalidFindings, [{ index: 1, id: 'gate:silent-gap:kept' }]);
 });
+
+test('group validation messages name the artifact role, not a literal "verify"', () => {
+  const group = { groupId: 'g', findingIds: ['gate:cross-context:x'], rootCause: 'one', invariants: ['i'], changeClass: 'local', action: 'fix' };
+  const planErr = () => normalizeArtifact('plan', JSON.stringify({ status: 'ok', protocolVersion: 2, groups: [group] }));
+  assert.throws(planErr, (error) => error.kind === 'retry' && /^plan group\[0\]/.test(error.message));
+  assert.throws(() => normalizeArtifact('plan', JSON.stringify({ status: 'ok', protocolVersion: 2, groups: [null] })), /plan group\[0\] is not an object/);
+  assert.throws(() => normalizeArtifact('verify', JSON.stringify({ status: 'ok', rejected: [], findings: [], groups: [{ ...group, findingIds: ['gate:cross-context:x'] }] })), /verify group\[0\]/);
+});
