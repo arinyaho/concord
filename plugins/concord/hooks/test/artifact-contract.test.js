@@ -186,3 +186,16 @@ test('plan artifacts reject group ids that repeat or share an artifact file name
       (error) => error instanceof ArtifactError && error.kind === 'retry' && /group\[0\] and group\[1\]/.test(error.message));
   }
 });
+
+test('gate-verify finding in the verdict shape (kept candidate listed in findings) is retried, naming the missing file', () => {
+  const raw = JSON.stringify({ status: 'ok', rejected: [], findings: [{ id: 'gate:cross-context:x', rationale: 'kept', releaseBlocking: [] }] });
+  assert.throws(() => normalizeArtifact('gate-verify', raw), (error) => error instanceof ArtifactError && error.kind === 'retry' && /finding\[0\] is missing "file"/.test(error.message));
+});
+
+test('a missing finding field is retried for verify and gate-verify but stays fatal for the primary reviewers', () => {
+  const raw = (id) => JSON.stringify({ status: 'ok', rejected: [], examined: [], findings: [{ id, summary: 's' }] });
+  assert.throws(() => normalizeArtifact('verify', raw('correctness:x')), (error) => error.kind === 'retry');
+  for (const [name, id] of [['correctness', 'correctness:x'], ['gate', 'gate:cross-context:x'], ['intent', 'intent:x']]) {
+    assert.throws(() => normalizeArtifact(name, raw(id)), (error) => error.kind === 'fatal', name);
+  }
+});

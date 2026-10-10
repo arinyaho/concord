@@ -120,7 +120,8 @@ function normalizeArtifact(name, raw) {
     for (const [index, finding] of canonical[key].entries()) {
       if (!finding || typeof finding !== 'object' || Array.isArray(finding)) throw new ArtifactError('fatal', `${name} finding[${index}] is not an object`);
       for (const required of ['id', 'file', 'summary']) {
-        if (typeof finding[required] !== 'string' || !finding[required]) throw new ArtifactError('fatal', `${name} finding[${index}] is missing "${required}"`);
+        // verify and gate-verify list kept candidates in a verdict shape (no file), so a missing field is a representation slip; the primary reviewers' prompts spell the fields out and keep it fatal.
+        if (typeof finding[required] !== 'string' || !finding[required]) throw new ArtifactError(shape.arrays.includes('rejected') ? 'retry' : 'fatal', `${name} finding[${index}] is missing "${required}"`);
       }
       if (!isValidFindingId(finding.id) || !shape.prefixes.some((prefix) => finding.id.startsWith(prefix))) throw new ArtifactError('retry', `${name} finding[${index}] has invalid id "${finding.id}"`);
     }
