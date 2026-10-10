@@ -1515,7 +1515,9 @@ function runVerb(resolveFromCwd, args, initiative) {
         const mixedNamespaces = /invalid id/.test(e.message)
           && items.flatMap(idOf).some((id) => typeof id === 'string' && prefixes.some((prefix) => id.startsWith(prefix)))
           && items.flatMap(idOf).some((id) => typeof id === 'string' && !prefixes.some((prefix) => id.startsWith(prefix)));
-        if (!statusSpelling && !mixedNamespaces) throw new Error(`harness-failure: ${e.message}`);
+        // A verify/gate-verify finding without evidence fields (a kept candidate in verdict shape) is repaired by deleting it.
+        const invalidFinding = artifactContract.dropsInvalidFindings(name) && /finding\[\d+\] is missing "/.test(e.message);
+        if (!statusSpelling && !mixedNamespaces && !invalidFinding) throw new Error(`harness-failure: ${e.message}`);
         const retryArtifacts = retryArtifactMap(ledger.execution);
         // The pending semantic prompt requests a new plan, not a representation
         // repair. Durable repair bindings still bound that replacement to one repair.
