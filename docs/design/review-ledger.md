@@ -46,6 +46,21 @@ Every target mutation, including standalone operations, holds the target lock. D
 
 `rerun` archives the full diff, ledger, and role evidence of the finished run under `review-archives/<slug>/<id>`, content-addressed and hash-verified before the active copies are cleaned up. There is no automatic garbage collection, because active rerun cleanup, run-history pointers, and feedback proofs depend on those files and hashes. After retiring the target and initiative, an operator may move the whole state store to private offline storage, and delete it only after its dependent history and feedback records are retired and the loss of recovery and audit evidence is accepted. Referenced archives are never deleted selectively.
 
+## Unparked findings
+
+`unpark` reopens a parked finding, drops its seen entry and marks it `reopened_by_unpark`. If the next round reports it again, it is processed like any other finding and the mark is dropped. If that round does not report it and the correctness reviewer listed the finding's file in `examined`, `record` marks it `resolved` with no seen entry, so the run can converge and, on a git target, run its final DoD. A round that did not examine the file leaves it open, and the run parks on no progress as before. Only findings reopened by `unpark` get this rule on a git target, because a git round reviews a diff and a reviewer that merely fails to repeat an ordinary finding must not close it. A no-DoD target resolves every unreported open finding, as described under the dry streak.
+
+A separate `resolve` verb that a person runs with the same evidence was rejected: the evidence it would check is the round `record` already folds, and the target would still park first and wait for a manual step. Previous rejections, finding ids, the journal and both budgets are untouched by the resolution.
+
+| State | Event | Outcome | Kind | Evidence |
+|---|---|---|---|---|
+| git, finding parked | `unpark` | finding `open` with `reopened_by_unpark`, seen entry dropped, ledger `converging` | changed | `applyRoundOutcome: an unparked git finding resolves only when the round examined its file` |
+| git, unparked finding open | next round does not report it; its file in `examined` | finding `resolved`, no seen entry; run converges and the final DoD runs | introduced | `#308: a git round that no longer reports an unparked finding resolves it, converges and runs the final DoD` |
+| git, unparked finding open | next round does not report it; its file not in `examined` | finding stays `open`; run parks on no progress | introduced | `applyRoundOutcome: an unparked git finding resolves only when the round examined its file` |
+| git, unparked finding open | next round reports it | mark dropped; finding goes to the fixer; no convergence that round | unchanged | `#308 control: an unparked finding the round reports again goes to the fixer and the run does not converge` |
+| git, finding open without the mark | round does not report it | stays `open`; run parks on no progress | unchanged | `#308 control: an open git finding that no unpark reopened stays open when a round does not report it` |
+| git, unparked finding open | verification rejects its re-report | finding `killed` with a seen entry, as for any rejected candidate | unchanged | existing rejection tests in `review-cli.test.js` |
+
 ## Review base
 
 A git target is reviewed as the range from the merge base of its base ref and the head to the head. Without a base the range is the head against itself, an empty diff that would be reviewed as work and converge clean, so `round-start` takes the base from its second argument and otherwise from the base the target's ledger recorded at its fresh start. It does not pick a default base itself: the review driver passes the remote main branch when the user names none, and a local branch used as a default can be behind its remote. File targets use no base.
@@ -72,6 +87,8 @@ Only the missing-base refusal runs before the intent-review and gate-pending res
 - Retry is bounded, so a rename blocked longer than the backoff window still fails the write, with the previous file intact. Retry behavior is verified only with injected rename failures, not on Windows.
 - The atomic-write helper does not `fsync`. Readers see the old or the new file, but a write may not survive a crash or power loss, which can also leave a stray temporary file.
 - Archives grow without bound for long initiatives; disk usage needs monitoring.
+- An unparked git finding whose file no later round examines still parks the run on no progress, and the recovery verbs stay refused.
+- `examined` is the reviewer's own claim. A reviewer that lists a file but misses a defect still present in it resolves an unparked finding wrongly; on a git target only the final DoD can catch that.
 
 ## Pending plan and bounded semantic retry
 

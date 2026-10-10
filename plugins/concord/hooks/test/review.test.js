@@ -1115,3 +1115,19 @@ test('applyRoundOutcome: a fixed finding keeps the anchor the reviewer reported'
   assert.strictEqual(f1.status, 'fixed');
   assert.strictEqual(f1.span, 'const a = 1;');
 });
+
+// #308: a git round resolves an unparked finding it did not report only when
+// it examined the finding's file; silence about an unexamined file says nothing.
+test('applyRoundOutcome: an unparked git finding resolves only when the round examined its file', () => {
+  const parked = { id: 'correctness:u', gate: 'correctness', file: 'a.js', span: 'x', summary: 's', status: 'parked', park_reason: { kind: 'needs-decision', text: 't' } };
+  const base = { ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), target: { type: 'git', hasDoD: true }, findings: [parked] };
+  const unparked = review.beginRound(review.unparkFinding(base, parked.id), 'h2').ledger;
+  const outcome = (examined) => ({ dodPassed: true, findings: [], fixedIds: [], parkedIds: [], killedIds: [], specDoubtScope: 'none', examined });
+  const seen = review.applyRoundOutcome(unparked, outcome(['a.js']));
+  assert.strictEqual(seen.ledger.findings[0].status, 'resolved');
+  assert.strictEqual(seen.ledger.findings[0].reopened_by_unpark, undefined);
+  assert.strictEqual(seen.decision.converged, true);
+  const unexamined = review.applyRoundOutcome(unparked, outcome(['b.js']));
+  assert.strictEqual(unexamined.ledger.findings[0].status, 'open');
+  assert.strictEqual(unexamined.decision.parked, true);
+});

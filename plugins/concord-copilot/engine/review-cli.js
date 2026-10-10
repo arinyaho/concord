@@ -2505,6 +2505,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     const outcome = {
       dodPassed: !!(ledger.dod && ledger.dod.passed), dodDeferred: !!(ledger.dod && ledger.dod.deferred), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons,
       targetUnchanged,
+      examined: Array.isArray(cJson.examined) ? cJson.examined : [],
       intentReviewCount: (ledger.intent_parked || []).length,
       ...R.splitGateOpen(gateOpen),
       // --no-broad opts the run out of broad review, and the panel IS broad
