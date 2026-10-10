@@ -2683,6 +2683,16 @@ test('renderHandoff: no intent config -> "intent: not configured"', () => {
   assert.match(out.handoff, /intent: not configured/);
 });
 
+test('renderHandoff: findings a file-target round resolved are counted and listed', () => {
+  const base = { ...review.emptyLedger({ ref: 'feat/x' }), status: 'clean', findings: [{ id: 'docreview:a', file: 'n.md', summary: 'a', status: 'resolved' }, { id: 'docreview:b', file: 'n.md', summary: 'b', status: 'resolved' }] };
+  const handoff = cli.renderHandoff({ ledger: base });
+  assert.match(handoff, /findings: 0 fixed, 0 killed \(false-positive\), 0 parked, 2 resolved/);
+  assert.match(handoff, /Resolved \(a later round no longer reported them\):\n {2}- \[docreview:a\] n\.md: a\n {2}- \[docreview:b\] n\.md: b/);
+  const none = cli.renderHandoff({ ledger: { ...review.emptyLedger({ ref: 'feat/x' }), status: 'clean' } });
+  assert.match(none, /findings: 0 fixed, 0 killed \(false-positive\), 0 parked$/m);
+  assert.doesNotMatch(none, /Resolved/);
+});
+
 test('renderHandoff: a FAILED DoD surfaces the failing command, exit code, and output tail', () => {
   const repo = initRepo();
   const dir = tmpDir();

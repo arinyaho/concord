@@ -334,7 +334,8 @@ function renderHandoff(result) {
   const fixed = (ledger.findings || []).filter((f) => f.status === 'fixed');
   const killedCount = (ledger.seen || []).filter((s) => s.status === 'killed').length;
   const parked = (ledger.findings || []).filter((f) => f.status === 'parked');
-  lines.push(`findings: ${fixed.length} fixed, ${killedCount} killed (false-positive), ${parked.length} parked`);
+  const resolved = (ledger.findings || []).filter((f) => f.status === 'resolved');
+  lines.push(`findings: ${fixed.length} fixed, ${killedCount} killed (false-positive), ${parked.length} parked${resolved.length ? `, ${resolved.length} resolved` : ''}`);
 
   if (fixed.length) {
     const conf = ledger.status === 'intent-review' ? ' (pending confirmation)' : '';
@@ -390,6 +391,10 @@ function renderHandoff(result) {
       if (f.requirement) lines.push(`    requirement: ${f.requirement}`);
       if (f.evidence) lines.push(`    anchor: ${f.evidence}`);
     }
+  }
+  if (resolved.length) {
+    lines.push('', 'Resolved (a later round no longer reported them):');
+    for (const f of resolved) lines.push(`  - [${f.id}] ${f.file}: ${f.summary}`);
   }
   if (parked.length) {
     lines.push('', 'Needs-decision packets:');
