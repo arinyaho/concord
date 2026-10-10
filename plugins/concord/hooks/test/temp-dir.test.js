@@ -17,11 +17,12 @@ function filesCallingMkdtemp(dir) {
     .filter((name) => DIRECT_CALL.test(fs.readFileSync(path.join(dir, name), 'utf8')));
 }
 
-test('a test run leaves no directory behind in the temp directory', () => {
+// native-driver-initiative.test.js left the most directories in #280 (native-init-*); its run takes about two minutes.
+test('a run of native-driver-initiative.test.js leaves no directory behind in the temp directory', () => {
   const tmp = tempDir('temp-dir-run-');
   const env = { ...process.env, TMPDIR: tmp, TEMP: tmp, TMP: tmp };
   delete env.NODE_TEST_CONTEXT; // set by an enclosing `node --test`; it would make the child report to the parent instead of running the files
-  const run = spawnSync(process.execPath, ['--test', 'charter.test.js', 'writer.test.js'], { cwd: __dirname, env, encoding: 'utf8' });
+  const run = spawnSync(process.execPath, ['--test', 'native-driver-initiative.test.js'], { cwd: __dirname, env, encoding: 'utf8' });
   assert.strictEqual(run.status, 0, run.stdout + run.stderr);
   assert.deepStrictEqual(fs.readdirSync(tmp), []);
 });
