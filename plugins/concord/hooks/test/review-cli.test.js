@@ -5956,6 +5956,22 @@ test('round-start refuses before anything is written when git is missing or not 
   }
 });
 
+test('round-start refuses before anything is written when node is missing from the reviewer environment', { skip: process.platform === 'win32' }, () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/missing-node';
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'ahead'], { cwd: repo });
+  // PATH holds only git; the CLI is spawned through process.execPath so it runs without node on PATH.
+  const git = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  const bin = tmpDir();
+  fs.symlinkSync(git, path.join(bin, 'git'));
+  const env = { ...process.env, PATH: bin, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const r = spawnSync(process.execPath, [CLI, ...withBroadDefault(['round-start', ref, 'HEAD~1'], {})], { encoding: 'utf8', env });
+  assert.notStrictEqual(r.status, 0);
+  assert.match(r.stderr, /no "node" on PATH/);
+  assert.doesNotMatch(r.stderr, /no "git" on PATH/);
+  assert.deepStrictEqual(fs.readdirSync(dir), []);
+});
+
 test('round-start with --no-dod does not require the DoD interpreters it will not run', () => {
   const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/missing-interpreter-no-dod';
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
