@@ -6284,6 +6284,7 @@ function parkedThenUnparked({ unpark = true, finding = UNPARKED, copyChanges = t
   run(['plan-fixes', ref], { env });
   writeArtifact(dir, n1, `fix-${finding.id}`, { status: 'ok', edited: false });
   assert.strictEqual(JSON.parse(run(['record', ref], { env })).decision.parked, true);
+  const parked = review.readLedger(dir, slug);
   if (unpark) run(['unpark', ref, finding.id], { env });
   else {
     // An open finding that no unpark reopened: the same ledger without the unpark step.
@@ -6300,17 +6301,22 @@ function parkedThenUnparked({ unpark = true, finding = UNPARKED, copyChanges = t
     execFileSync('git', ['commit', '-qm', 'later'], { cwd: repo });
   }
   const start = JSON.parse(run(['round-start', ref], { env }));
-  return { repo, dir, ref, slug, env, n2: start.round, start };
+  return { repo, dir, ref, slug, env, n2: start.round, start, parked };
 }
 
 // #312: with no commit between the park and the unpark, round-start printed
 // no-op because the diff hash was unchanged, so no round re-examined the finding.
 test('#312: round-start after unpark starts a round although no commit landed since the park', () => {
-  const { dir, ref, slug, env, start } = parkedThenUnparked({});
+  const { dir, ref, slug, env, start, parked } = parkedThenUnparked();
   assert.strictEqual(start.decision, 'work');
   assert.strictEqual(start.round, 2);
   const after = review.readLedger(dir, slug);
   assert.strictEqual(after.round, 2);
+  // Unpark leaves the finding ids, the journal and both budgets as the park left them.
+  assert.deepStrictEqual(after.findings.map((f) => f.id), parked.findings.map((f) => f.id));
+  assert.deepStrictEqual(after.journal || [], parked.journal || []);
+  assert.deepStrictEqual(after.run_budget, parked.run_budget);
+  assert.strictEqual(after.budget.max_rounds, parked.budget.max_rounds);
   writeArtifact(dir, 2, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
   writeArtifact(dir, 2, 'verify', { status: 'ok', rejected: [], findings: [] });
   run(['plan-fixes', ref], { env });
