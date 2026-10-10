@@ -98,7 +98,8 @@ function defaultExecFn(cmd, cwd) {
 // meaning at the start of a part, after a blank, or after one of `(`, `)`, `&`,
 // `<` or `>`. A lone `&` (as in `2>&1`) stays inside its part. Words are split
 // on whitespace outside quotes, so a quoted assignment value such as
-// `GOFLAGS="-mod mod"` is one word.
+// `GOFLAGS="-mod mod"` is one word, and a backslash escape, including a
+// backslash-newline continuation, stays inside its word.
 function simpleCommands(cmd) {
   const parts = [];
   let cur = '';
@@ -126,7 +127,7 @@ function commandExecutables(commands) {
   for (const cmd of commands || []) {
     for (const part of simpleCommands(String(cmd))) {
       if (/\$\(|`/.test(part)) continue;
-      const words = part.trim().replace(/^[({\s]+/, '').match(/(?:[^\s'"\\]|\\.|'[^']*'|"(?:[^"\\]|\\.)*")+/g) || [];
+      const words = part.trim().replace(/^[({\s]+/, '').match(/(?:[^\s'"\\]|\\[\s\S]|'[^']*'|"(?:[^"\\]|\\[\s\S])*")+/g) || [];
       const name = words.find((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
       if (name && /^[A-Za-z0-9_][A-Za-z0-9._+-]*$/.test(name)) names.add(name);
     }
