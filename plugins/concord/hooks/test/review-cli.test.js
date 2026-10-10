@@ -6270,7 +6270,7 @@ test('record: a journaled Git group writes fixed review history with its commit 
 // never ran. Round 1 parks the finding because the fixer reports no edit (the
 // reviewed head already carries the fix); `unpark` reopens it.
 const UNPARKED = { id: 'correctness:already-fixed', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'the fix is already in the head' };
-function parkedThenUnparked({ unpark = true, finding = UNPARKED, copyChanges = true } = {}) {
+function parkedThenUnparked({ unpark = true, finding = UNPARKED, copyChanges = true, laterCommit = false } = {}) {
   const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/unparked';
   const slug = review.targetSlug(ref);
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
@@ -6284,6 +6284,7 @@ function parkedThenUnparked({ unpark = true, finding = UNPARKED, copyChanges = t
   run(['plan-fixes', ref], { env });
   writeArtifact(dir, n1, `fix-${finding.id}`, { status: 'ok', edited: false });
   assert.strictEqual(JSON.parse(run(['record', ref], { env })).decision.parked, true);
+  const parked = review.readLedger(dir, slug);
   if (unpark) run(['unpark', ref, finding.id], { env });
   else {
     // An open finding that no unpark reopened: the same ledger without the unpark step.
@@ -6291,15 +6292,38 @@ function parkedThenUnparked({ unpark = true, finding = UNPARKED, copyChanges = t
     review.writeLedger(dir, slug, { ...l, status: 'converging', findings: l.findings.map((f) => (f.id === finding.id ? { ...f, status: 'open', park_reason: null } : f)), seen: l.seen.filter((s) => s.id !== finding.id) });
   }
   assert.strictEqual(review.readLedger(dir, slug).findings.find((f) => f.id === finding.id).status, 'open');
-  // A later commit changes the diff, so the next round-start reviews again.
-  fs.writeFileSync(path.join(repo, 'b.txt'), 'test\n');
+  // Without an unpark, or to leave a file out of the second round's diff, a later commit changes the diff.
+  if (laterCommit) fs.writeFileSync(path.join(repo, 'b.txt'), 'test\n');
   // The round reviews only the later commit, so the copy changes again together with its source.
-  if (finding.file === 'c.txt' && copyChanges) for (const f of ['a.txt', 'c.txt']) fs.writeFileSync(path.join(repo, f), 'two\nmore\n');
-  execFileSync('git', ['add', '-A'], { cwd: repo });
-  execFileSync('git', ['commit', '-qm', 'later'], { cwd: repo });
-  const n2 = JSON.parse(run(['round-start', ref], { env })).round;
-  return { repo, dir, ref, slug, env, n2 };
+  if (laterCommit && finding.file === 'c.txt' && copyChanges) for (const f of ['a.txt', 'c.txt']) fs.writeFileSync(path.join(repo, f), 'two\nmore\n');
+  if (laterCommit) {
+    execFileSync('git', ['add', '-A'], { cwd: repo });
+    execFileSync('git', ['commit', '-qm', 'later'], { cwd: repo });
+  }
+  const start = JSON.parse(run(['round-start', ref], { env }));
+  return { repo, dir, ref, slug, env, n2: start.round, start, parked };
 }
+
+// #312: with no commit between the park and the unpark, round-start printed
+// no-op because the diff hash was unchanged, so no round re-examined the finding.
+test('#312: round-start after unpark starts a round although no commit landed since the park', () => {
+  const { dir, ref, slug, env, start, parked } = parkedThenUnparked();
+  assert.strictEqual(start.decision, 'work');
+  assert.strictEqual(start.round, 2);
+  const after = review.readLedger(dir, slug);
+  assert.strictEqual(after.round, 2);
+  // Unpark leaves the finding ids, the journal and both budgets as the park left them.
+  assert.deepStrictEqual(after.findings.map((f) => f.id), parked.findings.map((f) => f.id));
+  assert.deepStrictEqual(after.journal || [], parked.journal || []);
+  assert.deepStrictEqual(after.run_budget, parked.run_budget);
+  assert.strictEqual(after.budget.max_rounds, parked.budget.max_rounds);
+  writeArtifact(dir, 2, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, 2, 'verify', { status: 'ok', rejected: [], findings: [] });
+  run(['plan-fixes', ref], { env });
+  const out = JSON.parse(run(['record', ref], { env }));
+  assert.strictEqual(out.decision.converged, true, out.decision.reason);
+  assert.strictEqual(review.readLedger(dir, slug).findings.find((f) => f.id === UNPARKED.id).status, 'resolved');
+});
 
 test('#308: a git round that no longer reports an unparked finding resolves it, converges and runs the final DoD', () => {
   const { dir, ref, slug, env, n2 } = parkedThenUnparked();
@@ -6335,7 +6359,7 @@ test('#308: an unparked finding on a byte copy of an examined file resolves the 
 
 test('#308 control: an unparked finding on a file the round neither listed nor saw change stays open and the run parks', () => {
   const copy = { ...UNPARKED, file: 'c.txt' };
-  const { dir, ref, slug, env, n2 } = parkedThenUnparked({ finding: copy, copyChanges: false });
+  const { dir, ref, slug, env, n2 } = parkedThenUnparked({ finding: copy, copyChanges: false, laterCommit: true });
   writeArtifact(dir, n2, 'correctness', { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [] });
   writeArtifact(dir, n2, 'verify', { status: 'ok', rejected: [], findings: [] });
   run(['plan-fixes', ref], { env });
@@ -6358,7 +6382,7 @@ test('#308 control: an unparked finding the round reports again goes to the fixe
 });
 
 test('#308 control: an open git finding that no unpark reopened stays open when a round does not report it', () => {
-  const { dir, ref, slug, env, n2 } = parkedThenUnparked({ unpark: false });
+  const { dir, ref, slug, env, n2 } = parkedThenUnparked({ unpark: false, laterCommit: true });
   writeArtifact(dir, n2, 'correctness', { status: 'ok', examined: ['a.txt', 'b.txt'], findings: [] });
   writeArtifact(dir, n2, 'verify', { status: 'ok', rejected: [], findings: [] });
   run(['plan-fixes', ref], { env });
