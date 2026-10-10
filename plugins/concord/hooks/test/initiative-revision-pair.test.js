@@ -4,13 +4,13 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
-const os = require('node:os');
 const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 const { openInitiativeRun, reserveLaunch, reserveLaunchBatch, recordDisposition, publicInitiativeSummary, terminalTarget, denialReason } = require('../../core/initiative-review-run');
 const { runReviewUntilGreen } = require('../../core/codex-review-runner');
+const { tempDir } = require('./temp-dir');
 
-const temp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'revision-pair-'));
+const temp = () => tempDir('revision-pair-');
 const open = (options) => openInitiativeRun({ repository: '/repo', ...options });
 const rev = (head_sha, base = 'main') => ({ ref: 'feature/x', base, head_sha });
 const terminal = (run, revision, result = { decision: { converged: true } }) => recordDisposition(run, { target: 'feature/x', revision, result });

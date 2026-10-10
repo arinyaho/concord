@@ -2,12 +2,12 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const charter = require('../../core/charter');
+const { tempDir } = require('./temp-dir');
 
 function tmpStateDir() {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'charter-'));
+  const d = tempDir('charter-');
   return d;
 }
 
@@ -143,7 +143,7 @@ test('renderCharter: null north-star renders a placeholder line', () => {
 });
 
 test('catchUpSessions: harvests an abandoned session un-watermarked tail; idempotent', () => {
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'proj-'));
+  const proj = tempDir('proj-');
   const dir = path.join(proj, 'state');
   fs.mkdirSync(dir, { recursive: true });
   // abandoned session: transcript has a tagged decision past the model offset
@@ -170,7 +170,7 @@ test('catchUpSessions: harvests an abandoned session un-watermarked tail; idempo
 });
 
 test('catchUpSessions: skips a recently-active session (race guard)', () => {
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'proj-'));
+  const proj = tempDir('proj-');
   const dir = path.join(proj, 'state');
   fs.mkdirSync(dir, { recursive: true });
   const sid = 'live1';
@@ -183,7 +183,7 @@ test('catchUpSessions: skips a recently-active session (race guard)', () => {
 });
 
 test('catchUpSessions: a malformed model file does not abort the whole scan', () => {
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'proj-'));
+  const proj = tempDir('proj-');
   const dir = path.join(proj, 'state');
   fs.mkdirSync(dir, { recursive: true });
   const old = Date.now() - 60 * 60 * 1000;

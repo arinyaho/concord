@@ -2,15 +2,15 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const review = require('../../core/review');
+const { tempDir } = require('./temp-dir');
 
 const INJECTOR = path.join(__dirname, '..', 'review-injector.js');
 
 function setup() {
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'rproj-'));
+  const proj = tempDir('rproj-');
   const stateDir = path.join(proj, 'state');
   fs.mkdirSync(stateDir);
   return { transcript: path.join(proj, 'sess.jsonl'), stateDir, id: 'sess' };

@@ -2,17 +2,17 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 const review = require('../../core/review');
 const { openInitiativeRun } = require('../../core/initiative-review-run');
+const { tempDir } = require('./temp-dir');
 
 const CORE = path.join(__dirname, '..', '..', 'core');
 const CLI = path.join(__dirname, '..', 'review-cli.js');
 const INJECTOR = path.join(__dirname, '..', 'review-injector.js');
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ledger-safety-'));
+const tmp = () => tempDir('ledger-safety-');
 const tmpFiles = (dir) => fs.readdirSync(dir).filter((f) => f.endsWith('.tmp'));
 
 // Fails the first `failures` renames with `code`; Infinity fails every rename.

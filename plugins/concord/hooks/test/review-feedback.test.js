@@ -2,15 +2,15 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { emptyLedger } = require(path.resolve(__dirname, '../../core/review'));
 const { openInitiativeRun, runPath } = require(path.resolve(__dirname, '../../core/initiative-review-run'));
+const { tempDir } = require('./temp-dir');
 const plugins = path.resolve(__dirname, '../../..');
 const providers = { claude: path.join(plugins, 'concord/hooks/review-cli.js'), copilot: path.join(plugins, 'concord-copilot/bin/review-cli.js') };
 function setup(t, provider) {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'review-feedback-')));
+  const root = fs.realpathSync(tempDir('review-feedback-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const store = path.join(root, 'feedback');
   const ledgerPath = path.join(root, 'target.json');

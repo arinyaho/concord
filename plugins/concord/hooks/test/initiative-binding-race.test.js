@@ -3,10 +3,10 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawn } = require('node:child_process');
 const review = require('../../core/review');
+const { tempDir } = require('./temp-dir');
 
 const plugins = path.resolve(__dirname, '../../..');
 const providers = {
@@ -58,7 +58,7 @@ for (const [provider, entry] of Object.entries(providers)) {
   // process spawns can approach the sibling test's 15s cap on an otherwise
   // passing run, so this one gets more headroom.
   test(`${provider}: concurrent carries from the same blocked target -- exactly one succeeds (AC4)`, { timeout: 30000 }, async (t) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'carry-race-'));
+    const root = tempDir('carry-race-');
     const repo = path.join(root, 'repo');
     const state = path.join(root, 'state');
     const runs = path.join(root, 'runs');
@@ -102,7 +102,7 @@ for (const [provider, entry] of Object.entries(providers)) {
   });
 
   test(`${provider}: first initiative binding survives an overlapping unkeyed mutation`, { timeout: 15000 }, async (t) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'initiative-binding-race-'));
+    const root = tempDir('initiative-binding-race-');
     const repo = path.join(root, 'repo');
     const state = path.join(root, 'state');
     const runs = path.join(root, 'runs');

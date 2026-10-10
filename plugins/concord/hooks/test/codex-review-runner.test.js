@@ -14,8 +14,9 @@ const { fileTarget } = require('../../core/target');
 // integration test while exercising the real artifact contract at the boundary.
 const { runReviewUntilGreen, reviewerPrompt, codexExec, providerExec, resolveCodexExecutable, resolveDefaultBase } = require('../../core/codex-review-runner');
 const { reviewerPrompt: packagedReviewerPrompt } = require('../../../concord-codex/engine/codex-review-runner');
+const { tempDir } = require('./temp-dir');
 
-function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'codex-runner-')); }
+function temp() { return tempDir('codex-runner-'); }
 function v2Plan(fixes, groups) {
   const fixGroups = (groups || fixes.map((finding) => ({ findingIds: [finding.id], rootCause: finding.summary, invariants: ['fixed behavior'], changeClass: 'local', action: 'fix', findings: [finding] })))
     .map((group) => ({ groupId: group.groupId || group.findingIds[0], ...group }));
@@ -2299,7 +2300,7 @@ for (const [label, raw] of [
 }
 
 test('real review-cli keeps the correctness-to-verify mtime guard active', () => {
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-mtime-repo-'));
+  const repo = tempDir('runner-mtime-repo-');
   const stateDir = temp();
   execFileSync('git', ['init', '-q'], { cwd: repo });
   execFileSync('git', ['config', 'user.email', 'runner@test'], { cwd: repo });

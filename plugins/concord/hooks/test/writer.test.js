@@ -2,14 +2,14 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { tempDir } = require('./temp-dir');
 
 const WRITER = path.join(__dirname, '..', 'session-state-writer.js');
 
 function setup() {
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'proj-'));
+  const proj = tempDir('proj-');
   const transcript = path.join(proj, 'sess.jsonl');
   return { proj, transcript, id: 'sess' };
 }
@@ -72,7 +72,7 @@ test('harvests tags from last_assistant_message and dedups against the transcrip
 });
 
 test('writer: drafts north-star from first substantive user message when charter.md absent', () => {
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'wproj-'));
+  const proj = tempDir('wproj-');
   const sid = 'wsess1';
   const tpath = path.join(proj, `${sid}.jsonl`);
   const L = (o) => JSON.stringify(o) + '\n';

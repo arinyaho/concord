@@ -2,10 +2,10 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { acquireTarget, fileTarget, gitDirty, trackedCheckoutInventory, changedTrackedPath, pathLeavesRoot } = require('../../core/target');
+const { tempDir } = require('./temp-dir');
 
 test('acquireTarget ignores only its own untracked review lock, keeping other dirty files visible', (t) => {
   const { dir } = makeGitRepo();
@@ -26,14 +26,14 @@ test('acquireTarget ignores only its own untracked review lock, keeping other di
 // Non-git temp directory helper: a plain temp dir with NO git init. Used to
 // verify the file target performs zero git operations.
 function mkdtempNonGit() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-'));
+  return tempDir('ruit-file-');
 }
 
 // Inline git-repo helper mirroring review-cli.test.js: init a temp repo with a
 // committed change against a base, leaving a CLEAN working tree (so the git
 // target's dirty-check passes) while `git diff base...HEAD` is non-empty.
 function makeGitRepo() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-repo-'));
+  const dir = tempDir('ruit-repo-');
   execFileSync('git', ['init', '-q'], { cwd: dir });
   execFileSync('git', ['config', 'user.email', 't@t'], { cwd: dir });
   execFileSync('git', ['config', 'user.name', 't'], { cwd: dir });
@@ -204,7 +204,7 @@ test('tracked inventory: a parent directory swapped for an outside symlink fails
   fs.mkdirSync(path.join(dir, 'sub'));
   fs.writeFileSync(path.join(dir, 'sub', 'f.txt'), 'same\n');
   git(dir, 'add', '-A'); git(dir, 'commit', '-qm', 'sub');
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-outside-'));
+  const outside = tempDir('ruit-outside-');
   t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
   fs.writeFileSync(path.join(outside, 'f.txt'), 'same\n');
   const before = inventoryOf(dir);

@@ -2,16 +2,16 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { openInitiativeRun, claimBroadSweep, reserveLaunch, reserveLaunchBatch, denialReason, recordDisposition, normalizeDisposition, consumeDispositionDelivery, finaliseInitiativeRun, publicInitiativeSummary, terminalTarget } = require('../../core/initiative-review-run');
+const { tempDir } = require('./temp-dir');
 const RUNTIMES = [
   require('../../core/initiative-review-run'),
   require('../../../concord-codex/engine/initiative-review-run'),
   require('../../../concord-copilot/engine/initiative-review-run'),
 ];
 
-function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'initiative-review-run-')); }
+function temp() { return tempDir('initiative-review-run-'); }
 function open(options) { return openInitiativeRun({ repository: '/repo', ...options }); }
 
 test('keyed runs use a hashed separate ledger and atomically consume launch budget', () => {

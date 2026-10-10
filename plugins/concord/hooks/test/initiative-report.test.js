@@ -6,11 +6,11 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 const review = require('../../core/review');
 const { safeIdForFilename } = require('../../core/artifact-name');
+const { tempDir } = require('./temp-dir');
 
 const PLUGINS = path.join(__dirname, '..', '..', '..');
 const RUNTIMES = [
@@ -24,7 +24,7 @@ const CLIS = {
   copilot: path.join(PLUGINS, 'concord-copilot', 'bin', 'review-cli.js'),
 };
 
-const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p));
+const tmp = (p) => tempDir(p);
 const sha = (value) => crypto.createHash('sha256').update(value).digest('hex');
 const readLedger = (run) => JSON.parse(fs.readFileSync(run.path, 'utf8'));
 const writeLedger = (run, ledger) => fs.writeFileSync(run.path, `${JSON.stringify(ledger)}\n`);

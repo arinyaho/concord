@@ -2,20 +2,20 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 
 const copilotEvent = require('../../adapters/copilot/event');
 const copilotStateDir = require('../../adapters/copilot/statedir');
 const { handleSessionStart } = require('../../../concord-copilot/hooks/session-start');
 const { handleUserPromptSubmit } = require('../../../concord-copilot/hooks/user-prompt-submit');
+const { tempDir } = require('./temp-dir');
 
 function temporaryProject() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'concord-copilot-project-'));
+  return tempDir('concord-copilot-project-');
 }
 
 function temporaryData() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'concord-copilot-data-'));
+  return tempDir('concord-copilot-data-');
 }
 
 test('Copilot event adapter uses documented hook fields only', () => {

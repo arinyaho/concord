@@ -9,10 +9,10 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const review = require('../../core/review');
+const { tempDir } = require('./temp-dir');
 
 const CLI = path.join(__dirname, '..', 'review-cli.js');
 
@@ -21,7 +21,7 @@ function run(args, opts = {}) {
 }
 
 function tmpDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'review-cli-'));
+  return tempDir('review-cli-');
 }
 
 // ---------------------------------------------------------------------------
@@ -51,7 +51,7 @@ function writeFileCertificate(stateDir, n, groupId, file, absolute) {
 
 test('e2e: file target converges in 2 rounds with zero git operations in the file directory', () => {
   // --- Setup: a temp dir with NO git init ---
-  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-e2e-file-'));
+  const fileDir = tempDir('ruit-e2e-file-');
   const stateDir = tmpDir();
   const ref = 'file:note.md';
   const slug = review.targetSlug(ref);
@@ -182,7 +182,7 @@ test('e2e: file target converges in 2 rounds with zero git operations in the fil
 // even look.
 test('e2e: a file-target run spawns ZERO git processes (PATH-shim git-exec spy)', () => {
   // A parent git repo so any stray git call would find an ancestor .git.
-  const parentRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-e2e-gitspy-'));
+  const parentRepo = tempDir('ruit-e2e-gitspy-');
   execFileSync('git', ['init', '-q'], { cwd: parentRepo });
   execFileSync('git', ['config', 'user.email', 't@t'], { cwd: parentRepo });
   execFileSync('git', ['config', 'user.name', 't'], { cwd: parentRepo });
@@ -195,7 +195,7 @@ test('e2e: a file-target run spawns ZERO git processes (PATH-shim git-exec spy)'
   // PATH shim: a bin dir whose `git` records every invocation to a marker file,
   // then exits 0 (so even if something tried git, it would not crash the run --
   // we detect the attempt via the marker, not via a failure).
-  const shimBin = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-gitshim-'));
+  const shimBin = tempDir('ruit-gitshim-');
   const marker = path.join(shimBin, 'git-invocations.log');
   const gitShim = path.join(shimBin, 'git');
   fs.writeFileSync(gitShim, `#!/bin/sh\nprintf '%s\\n' "git $*" >> ${JSON.stringify(marker)}\nexit 0\n`);

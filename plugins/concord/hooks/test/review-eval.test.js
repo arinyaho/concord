@@ -2,10 +2,10 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { compareReviewMatrix, compareReviewStage } = require('../../core/review-eval');
+const { tempDir } = require('./temp-dir');
 
 function scenario({ defects = [], confirmed = [], nonDefects = [], fixes = [], allowed = ['clean'], executable = true } = {}) {
   const defectIds = [...new Set([...defects, ...confirmed, ...fixes])];
@@ -420,7 +420,7 @@ test('PR1 validates a separately recorded deterministic replay', () => {
 });
 
 test('review-eval CLI requires stage', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-eval-'));
+  const dir = tempDir('review-eval-');
   const pr1Revision = 'a'.repeat(40);
   const pr4Revision = 'd'.repeat(40);
   for (const [name, value] of [['pr1', matrix('baseline', pr1Revision, 100)], ['pr1-replay', matrix('candidate', pr1Revision, 100)], ['pr4', matrix('baseline', pr4Revision, 65)], ['pr5', matrix('candidate', 'e'.repeat(40), 60, pr4Revision)]]) fs.writeFileSync(path.join(dir, `${name}.json`), JSON.stringify(value));

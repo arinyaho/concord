@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
+const { tempDir } = require('./temp-dir');
 
 const REPO = path.join(__dirname, '..', '..', '..', '..');
 const BUMP = path.join(REPO, 'scripts/release-bump.mjs');
@@ -45,7 +46,7 @@ function runBump(cwd, ...args) {
 
 // A bare origin plus a seed commit holding copies of the release script, the bump script, and the version files.
 function makeOrigin() {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'release-bump-'));
+  const tmp = tempDir('release-bump-');
   const remote = path.join(tmp, 'origin.git');
   execFileSync('git', ['init', '-q', '--bare', '-b', 'main', remote], { env: ENV });
   const seed = path.join(tmp, 'seed');

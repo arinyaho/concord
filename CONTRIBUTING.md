@@ -21,6 +21,8 @@ find plugins -path '*/test/*.test.js' -type f -print0 | xargs -0 -r node --test
 (cd services/code-index && uv sync --extra dev && uv run pytest -v)
 ```
 
+A plugin test creates a temporary directory with `tempDir(prefix)` from `plugins/concord/hooks/test/temp-dir.js`, which removes it when the test file's process exits; `temp-dir.test.js` fails on a test file that calls `mkdtemp` directly.
+
 Open a pull request against `main`; CI runs the same checks for changes under `plugins/`, `services/` (each service has its own workflow), `VERSION`, and the marketplace manifests; CI does not run the plugin-install end-to-end tests or cover `scripts/dod.mjs` and `review.config.json`, so run `node scripts/dod.mjs` locally for changes to those files, to `plugins/`, or to the marketplace manifests. Keep each PR to one coherent change.
 
 ## Versioning

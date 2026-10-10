@@ -6,7 +6,6 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync, spawn } = require('node:child_process');
 const { openInitiativeRun, reserveLaunch, recordDisposition, publicInitiativeSummary, runPath, canonicalPath } = require('../../core/initiative-review-run');
@@ -14,6 +13,7 @@ const review = require('../../core/review');
 const { normalizeArtifact } = require('../../core/artifact-contract');
 const { safeIdForFilename } = require('../../core/artifact-name');
 const { PANEL_LENSES } = require('../../core/report');
+const { tempDir } = require('./temp-dir');
 
 const PLUGINS = path.join(__dirname, '..', '..', '..');
 const PROVIDERS = {
@@ -21,7 +21,7 @@ const PROVIDERS = {
   copilot: path.join(PLUGINS, 'concord-copilot', 'bin', 'review-cli.js'),
 };
 
-const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p));
+const tmp = (p) => tempDir(p);
 
 function initRepo(config = { dod: ['true'] }) {
   const repo = tmp('native-init-repo-');
@@ -1124,7 +1124,7 @@ for (const provider of Object.keys(PROVIDERS)) {
     // and before recordDisposition's own fresh read, finalise the old run in
     // that window, then let carry proceed.
     const t = blockedSetup(provider);
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'carry-finalise-race-'));
+    const root = tempDir('carry-finalise-race-');
     const hook = path.join(root, 'pause-lock.cjs');
     const paused = path.join(root, 'paused');
     const release = path.join(root, 'release');

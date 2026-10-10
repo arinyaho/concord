@@ -2,10 +2,10 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { toNeutralEvent } = require('../../adapters/codex/event');
+const { tempDir } = require('./temp-dir');
 
 const CODEX_PLUGIN = path.join(__dirname, '..', '..', '..', 'concord-codex');
 const CODEX_HOOKS = path.join(CODEX_PLUGIN, 'hooks.json');
@@ -40,12 +40,6 @@ function runCodexStopLauncher(options) {
 
 function codexStateDir(codexHome, cwd) {
   return path.join(codexHome, 'concord', 'projects', fs.realpathSync(cwd).replace(/[\\/:.]/g, '-'), 'state');
-}
-
-function tempDir(t, prefix) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  return dir;
 }
 
 test('toNeutralEvent maps a Codex SessionStart payload', () => {
@@ -106,8 +100,8 @@ for (const [hookEvent, hookIndex, label] of [
   ['SessionStart', 1, 'SessionStart review injector'],
 ]) {
 test(`Codex ${label} launcher uses PLUGIN_ROOT when provided`, (t) => {
-  const project = tempDir(t, 'concord-codex-launcher-project-');
-  const codexHome = tempDir(t, 'concord-codex-launcher-home-');
+  const project = tempDir('concord-codex-launcher-project-');
+  const codexHome = tempDir('concord-codex-launcher-home-');
   const result = runCodexLauncher({
     hookEvent,
     hookIndex,
@@ -121,8 +115,8 @@ test(`Codex ${label} launcher uses PLUGIN_ROOT when provided`, (t) => {
 });
 
 test(`Codex ${label} launcher falls back to CLAUDE_PLUGIN_ROOT`, (t) => {
-  const project = tempDir(t, 'concord-codex-launcher-project-');
-  const codexHome = tempDir(t, 'concord-codex-launcher-home-');
+  const project = tempDir('concord-codex-launcher-project-');
+  const codexHome = tempDir('concord-codex-launcher-home-');
   const result = runCodexLauncher({
     hookEvent,
     hookIndex,
@@ -136,8 +130,8 @@ test(`Codex ${label} launcher falls back to CLAUDE_PLUGIN_ROOT`, (t) => {
 });
 
 test(`Codex ${label} launcher prioritizes PLUGIN_ROOT over CLAUDE_PLUGIN_ROOT`, (t) => {
-  const project = tempDir(t, 'concord-codex-launcher-project-');
-  const codexHome = tempDir(t, 'concord-codex-launcher-home-');
+  const project = tempDir('concord-codex-launcher-project-');
+  const codexHome = tempDir('concord-codex-launcher-home-');
   const invalidRoot = path.join(project, 'missing-plugin-root');
   const result = runCodexLauncher({
     hookEvent,
@@ -154,7 +148,7 @@ test(`Codex ${label} launcher prioritizes PLUGIN_ROOT over CLAUDE_PLUGIN_ROOT`, 
 });
 
 test(`Codex ${label} launcher preserves a node failure for an invalid sole root`, (t) => {
-  const project = tempDir(t, 'concord-codex-launcher-project-');
+  const project = tempDir('concord-codex-launcher-project-');
   const invalidRoot = path.join(project, 'missing-plugin-root');
   const result = runCodexLauncher({
     hookEvent,
@@ -167,7 +161,7 @@ test(`Codex ${label} launcher preserves a node failure for an invalid sole root`
 });
 
 test(`Codex ${label} launcher successfully no-ops without a plugin root`, (t) => {
-  const project = tempDir(t, 'concord-codex-launcher-project-');
+  const project = tempDir('concord-codex-launcher-project-');
   const result = runCodexLauncher({ hookEvent, hookIndex, cwd: project, env: {} });
 
   assert.strictEqual(result.status, 0);
@@ -181,7 +175,7 @@ test(`Codex ${label} launcher successfully no-ops without a plugin root`, (t) =>
 // $HOME/.nvm tree (never on PATH) -- the exact condition a bare-`node` command form cannot
 // survive, which is why SessionStart hooks reported "exited with code 1" on Codex resume.
 function fakeNvmHome(t) {
-  const home = tempDir(t, 'concord-codex-scrubbed-home-');
+  const home = tempDir('concord-codex-scrubbed-home-');
   const binDir = path.join(home, '.nvm', 'versions', 'node', 'v-test', 'bin');
   fs.mkdirSync(binDir, { recursive: true });
   fs.symlinkSync(process.execPath, path.join(binDir, 'node'));
@@ -205,8 +199,8 @@ for (const [hookEvent, hookIndex, label] of [
   ['SessionStart', 1, 'SessionStart review injector'],
 ]) {
 test(`Codex ${label} launcher discovers node off a scrubbed PATH`, (t) => {
-  const project = tempDir(t, 'concord-codex-scrubbed-project-');
-  const codexHome = tempDir(t, 'concord-codex-scrubbed-codexhome-');
+  const project = tempDir('concord-codex-scrubbed-project-');
+  const codexHome = tempDir('concord-codex-scrubbed-codexhome-');
   const home = fakeNvmHome(t);
   const result = runCodexLauncherScrubbed({
     hookEvent, hookIndex, cwd: project, home,
@@ -217,8 +211,8 @@ test(`Codex ${label} launcher discovers node off a scrubbed PATH`, (t) => {
 }
 
 test('Codex Stop launcher actually runs the writer when node is only reachable off a scrubbed PATH', (t) => {
-  const project = tempDir(t, 'concord-codex-scrubbed-run-project-');
-  const codexHome = tempDir(t, 'concord-codex-scrubbed-run-home-');
+  const project = tempDir('concord-codex-scrubbed-run-project-');
+  const codexHome = tempDir('concord-codex-scrubbed-run-home-');
   const home = fakeNvmHome(t);
   const transcript = path.join(project, 'rollout.jsonl');
   fs.writeFileSync(transcript, `${JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'DECISION: [scope] discovered off PATH' }] } })}\n`);
@@ -237,8 +231,8 @@ test('Codex Stop launcher actually runs the writer when node is only reachable o
 });
 
 test('Codex launcher fails soft (exit 0) when node cannot be found anywhere', (t) => {
-  const project = tempDir(t, 'concord-codex-nonode-project-');
-  const home = tempDir(t, 'concord-codex-nonode-home-'); // no .nvm tree inside
+  const project = tempDir('concord-codex-nonode-project-');
+  const home = tempDir('concord-codex-nonode-home-'); // no .nvm tree inside
   const manifest = JSON.parse(fs.readFileSync(CODEX_HOOKS, 'utf8'));
   const command = manifest.hooks.SessionStart[0].hooks[0].command;
   const result = spawnSync('sh', ['-c', command], {
@@ -252,8 +246,8 @@ test('Codex launcher fails soft (exit 0) when node cannot be found anywhere', (t
 });
 
 test('vendored Codex writer persists a normal Stop event in the cwd-derived CODEX_HOME state directory', (t) => {
-  const project = tempDir(t, 'concord-codex-project-');
-  const codexHome = tempDir(t, 'concord-codex-home-');
+  const project = tempDir('concord-codex-project-');
+  const codexHome = tempDir('concord-codex-home-');
   const transcript = path.join(project, 'rollout.jsonl');
   fs.writeFileSync(transcript, `${JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'DECISION: [scope] retain state' }] } })}\n`);
 
@@ -273,8 +267,8 @@ test('vendored Codex writer persists a normal Stop event in the cwd-derived CODE
 
 test('vendored Codex writer successfully no-ops when Stop event persistence fields are absent', (t) => {
   for (const event of [{ transcript_path: '/unused' }, { session_id: 'session-1' }]) {
-    const project = tempDir(t, 'concord-codex-noop-project-');
-    const codexHome = tempDir(t, 'concord-codex-noop-home-');
+    const project = tempDir('concord-codex-noop-project-');
+    const codexHome = tempDir('concord-codex-noop-home-');
     const result = runCodexWriter({ cwd: project, codexHome, event });
 
     assert.strictEqual(result.status, 0);
@@ -287,7 +281,7 @@ test('vendored Codex writer successfully no-ops when Stop event persistence fiel
 const codexE2ETest = process.env.CONCORD_RUN_CODEX_HOOK_E2E === '1' ? test : test.skip;
 
 codexE2ETest('project-hook host-runner contract runs explicit PLUGIN_ROOT without Stop hook failure', (t) => {
-  const project = tempDir(t, 'concord-codex-hook-e2e-');
+  const project = tempDir('concord-codex-hook-e2e-');
   const codexDir = path.join(project, '.codex');
   const trustConfig = `projects.${JSON.stringify(project)}.trust_level="trusted"`;
   fs.mkdirSync(codexDir);

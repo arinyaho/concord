@@ -2,15 +2,15 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 const review = require('../../core/review');
 const { runPath } = require('../../core/initiative-review-run');
+const { tempDir } = require('./temp-dir');
 const plugins = path.resolve(__dirname, '../../..');
 const providers = { claude: path.join(plugins, 'concord/hooks/review-cli.js'), copilot: path.join(plugins, 'concord-copilot/bin/review-cli.js') };
 function setup(t, provider, mode = 'base', keyed = true) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-ledger-recovery-'));
+  const root = tempDir('native-ledger-recovery-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const repo = path.join(root, 'repo'); fs.mkdirSync(repo);
   const stateDir = path.join(root, 'target'); const initiativeDir = path.join(root, 'initiative');

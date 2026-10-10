@@ -2,7 +2,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { emptyModel, mergeModel } = require('../../core/state');
 // The review-until-green LEDGER (distinct from the session-state model above) is
@@ -10,13 +9,14 @@ const { emptyModel, mergeModel } = require('../../core/state');
 // adds two persisted fields -- ledger.dryStreak and the extended ledger.target
 // ({type,hasDoD,...}) -- so the ledger's state round-trip is asserted here.
 const review = require('../../core/review');
+const { tempDir } = require('./temp-dir');
 
 function delta(over) {
   return { decisions: [], openLoops: [], nexts: [], resolved: [], facts: [], ...over };
 }
 
 function tmpStateDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'state-ledger-'));
+  return tempDir('state-ledger-');
 }
 
 test('decisions keep the latest per topic', () => {

@@ -2,11 +2,11 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { publishDirectoryAtomic } = require('../../core/atomic-write');
+const { tempDir } = require('./temp-dir');
 function fixture() {
-  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'atomic-archive-'));
+  const parent = tempDir('atomic-archive-');
   const staging = path.join(parent, 'archive.pending'), destination = path.join(parent, 'archive');
   fs.mkdirSync(staging, { mode: 0o700 });
   fs.writeFileSync(path.join(staging, 'manifest.json'), '{"complete":true}\n', { mode: 0o600 });
@@ -27,7 +27,7 @@ test('private directory publication refuses an existing destination without repl
   assert.equal(fs.existsSync(path.join(f.staging, 'manifest.json')), true);
 });
 test('directory publication rejects a non-sibling destination before touching evidence', () => {
-  const f = fixture(), elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'atomic-elsewhere-'));
+  const f = fixture(), elsewhere = tempDir('atomic-elsewhere-');
   assert.throws(() => publishDirectoryAtomic(f.staging, path.join(elsewhere, 'archive')), /same parent/);
   assert.equal(fs.existsSync(path.join(f.staging, 'manifest.json')), true);
   assert.deepEqual(fs.readdirSync(elsewhere), []);

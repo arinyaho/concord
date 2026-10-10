@@ -2,10 +2,10 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const lgtmState = require('../../core/lgtm-state');
+const { tempDir } = require('./temp-dir');
 
 const CLI = path.join(__dirname, '..', 'review-lgtm-state.js');
 const PR = 165;
@@ -14,7 +14,7 @@ const HEAD_B = '0123456789abcdef0123456789abcdef01234567';
 const BASE = 'a00dc8c9eaee93a7462bb819bd4ac81320b22528';
 const CODEX = 'chatgpt-codex-connector[bot]';
 
-function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'merge-ready-')); }
+function temp() { return tempDir('merge-ready-'); }
 function cli(stateDir, args, input) {
   return JSON.parse(execFileSync('node', [CLI, ...args], { encoding: 'utf8', env: { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir }, input }));
 }

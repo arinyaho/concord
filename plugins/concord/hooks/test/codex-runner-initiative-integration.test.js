@@ -3,14 +3,14 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 const { runReviewUntilGreen } = require('../../core/codex-review-runner');
 const { runPath } = require('../../core/initiative-review-run');
 const review = require('../../core/review');
+const { tempDir } = require('./temp-dir');
 const cliPath = path.resolve(__dirname, '../../hooks/review-cli.js');
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'runner-bound-'));
+const tmp = () => tempDir('runner-bound-');
 const emptyPlan = { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] };
 function fixture({ maxLaunches = 30, mode } = {}) {
   const repoRoot = tmp(), stateDir = tmp(), initiativeStateDir = tmp();
