@@ -203,9 +203,11 @@ test('every distribution shares the delivery disposition contract', () => {
     const ticket = read(`${pkg}/skills/ticket-to-pr/SKILL.md`);
     assert.match(ticket, /### Delivery disposition/);
     assert.match(ticket, /never becomes follow-up work/);
+    assert.match(ticket, /After the merge, the coordinating session or the user who merges checks that every issue meant to close is closed/);
     assert.match(read(`${pkg}/skills/initiative-to-prs/references/stages.md`), /`rollover-pending`.*leaves the unit `BLOCKED`/s);
     assert.match(read(`${pkg}/skills/initiative-to-prs/SKILL.md`), /each PR's delivery disposition/);
   }
+  assert.match(fs.readFileSync(path.join(__dirname, '../../../../CONTRIBUTING.md'), 'utf8'), /After the merge, the coordinating session or the user who merges checks that every issue meant to close is closed/);
   for (const file of ['concord/core/review-driver.md', 'concord/commands/review-and-fix.md', 'concord-codex/commands/review-and-fix.md', 'concord-copilot/skills/review-and-fix/references/review-driver.md']) {
     assert.match(read(file), /A `clean` ledger means this loop's own rounds converged; it is not the PR's delivery disposition/, file);
   }
