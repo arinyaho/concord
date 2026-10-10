@@ -299,7 +299,7 @@ function renderHandoff(result) {
   for (const r of ledger.runs || []) {
     for (const f of (r.fixed || []).filter((fixed) => !reopened.has(fixed.id))) lines.push(`  fixed in prior run #${r.run}: ${evidenceLine(f)} -> commit ${f.fix_commit}${fixTest(f)}`);
   }
-  for (const f of ledger.gate_fixed || []) lines.push(`fixed outside the loop: ${evidenceLine(f)} -> commit ${f.fix_commit}${fixTest(f)}`);
+  for (const f of currentGateFixed(ledger)) lines.push(`fixed outside the loop: ${evidenceLine(f)} -> commit ${f.fix_commit}${fixTest(f)}`);
   for (const d of ledger.gate_dismissed || []) lines.push(`dismissed by ${d.dismissedBy}: ${evidenceLine(d)}`);
   // A cleared finding is reported once: still open or dismissed ids show in their own section, and "not re-raised" needs a gate round whose verdict was recorded.
   const reported = new Set([...(ledger.gate_open || []).map((f) => f.id), ...dismissedIds(ledger)]);
@@ -621,6 +621,12 @@ function reserveOptions(rest) {
 // (rerun archive, dismissal): identity, location, summary and its follow-up classification.
 function dismissedIds(ledger) {
   return (ledger.gate_dismissed || []).map((d) => d.id);
+}
+
+// A gate finding fixed by record-fix and raised again or dismissed since is reported once, in its current state.
+function currentGateFixed(ledger) {
+  const current = new Set([...(ledger.gate_open || []).map((f) => f.id), ...dismissedIds(ledger)]);
+  return (ledger.gate_fixed || []).filter((f) => !current.has(f.id));
 }
 
 function findingEvidence(f, extra = {}) {
@@ -2883,7 +2889,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     } else {
       // A done panel's confirmed list would merge the fixed finding back into gate_open on the next record, so the panel
       // re-runs fresh whether or not the run leaves its stop now.
-      next = { ...ledger, gate_open: ledger.gate_open.filter((f) => f.id !== findingId), gate_fixed: (ledger.gate_fixed || []).concat([findingEvidence(gate, { fix_commit: commit, fix_evidence: fixEvidence })]), gate_panel: gatePanelLib.emptyGatePanel() };
+      next = { ...ledger, gate_open: ledger.gate_open.filter((f) => f.id !== findingId), gate_fixed: (ledger.gate_fixed || []).filter((f) => f.id !== findingId).concat([findingEvidence(gate, { fix_commit: commit, fix_evidence: fixEvidence })]), gate_panel: gatePanelLib.emptyGatePanel() };
     }
     // The run leaves its stop only when neither a parked finding nor a blocking gate finding is left.
     if (!next.findings?.some((f) => f.status === 'parked') && !(next.gate_open || []).some((f) => !gateFollowUpEligible(f))) {
@@ -2955,7 +2961,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       reviewRouting: prior.reviewRouting || null,
       status: prior.status,
       rounds: prior.round || 0,
-      fixed: (prior.findings || []).filter((f) => f.status === 'fixed').map((f) => findingEvidence(f, { fix_commit: f.fix_commit })).concat(prior.gate_fixed || []),
+      fixed: (prior.findings || []).filter((f) => f.status === 'fixed').map((f) => findingEvidence(f, { fix_commit: f.fix_commit })).concat(currentGateFixed(prior)),
       parked: (prior.findings || []).filter((f) => f.status === 'parked').map((f) => f.id),
       killed: prior.killed_digest || [],
       gate_open: (prior.gate_open || []).map((f) => findingEvidence(f)),

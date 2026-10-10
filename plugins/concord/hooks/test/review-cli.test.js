@@ -5794,6 +5794,32 @@ test('rerun archives gate_fixed as fixed', () => {
   assert.strictEqual(after.gate_fixed, undefined);
 });
 
+test('a gate_fixed finding raised again or dismissed is reported once, in its current state', () => {
+  const t = recordFixRepo({ ledger: gatePending });
+  run(recordFixArgs(t.fix), { env: t.env });
+  const fixed = review.readLedger(t.dir, t.slug);
+  const reraised = { ...fixed, status: 'gate-pending', gate_open: [BLOCKING_GATE('gate:silent-gap:x')] };
+  assert.doesNotMatch(cli.renderHandoff({ ledger: reraised }), /fixed outside the loop: \[gate:silent-gap:x\]/);
+  const dismissed = { ...fixed, gate_dismissed: [{ ...BLOCKING_GATE('gate:silent-gap:x'), dismissedBy: 'user' }] };
+  const text = cli.renderHandoff({ ledger: dismissed });
+  assert.doesNotMatch(text, /fixed outside the loop: \[gate:silent-gap:x\]/);
+  assert.match(text, /dismissed by user: \[gate:silent-gap:x\]/);
+  review.writeLedger(t.dir, t.slug, reraised);
+  run(['rerun', 'feat/x'], { env: t.env });
+  const after = review.readLedger(t.dir, t.slug);
+  assert.deepStrictEqual(after.runs[0].gate_open.map((f) => f.id), ['gate:silent-gap:x']);
+  assert.deepStrictEqual(after.runs[0].fixed, []);
+});
+
+test('record-fix on a gate finding fixed before replaces its gate_fixed entry', () => {
+  const t = recordFixRepo({ ledger: gatePending });
+  run(recordFixArgs(t.fix), { env: t.env });
+  const fixed = review.readLedger(t.dir, t.slug);
+  review.writeLedger(t.dir, t.slug, { ...fixed, status: 'gate-pending', gate_open: [BLOCKING_GATE('gate:silent-gap:x')] });
+  run(recordFixArgs(t.fix), { env: t.env });
+  assert.deepStrictEqual(review.readLedger(t.dir, t.slug).gate_fixed.map((f) => [f.id, f.fix_commit]), [['gate:silent-gap:x', t.fix]]);
+});
+
 test('record-fix keeps a stop while the other kind of stopping finding remains', () => {
   const parked = { id: 'correctness:p', file: 'a.txt', summary: 's', status: 'parked', park_reason: 'needs-decision' };
   const g = recordFixRepo({ ledger: () => ({ status: 'gate-pending', findings: [parked], gate_open: [BLOCKING_GATE('gate:silent-gap:x')] }) });
