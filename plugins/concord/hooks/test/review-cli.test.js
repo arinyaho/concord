@@ -1293,7 +1293,7 @@ function seedCertifiedSingleGroup(ref, certOverrides) {
     status: 'ok', groupId: 'doc-fix', resolvedFindingIds: ['correctness:a'], files: ['a.txt'], fileHashes: { 'a.txt': hash },
     evidence: ['read the diff'], invariants: ['(1) the doc states the order', '(2) no code moves'], ...certOverrides,
   });
-  return { repo, env };
+  return { repo, env, dir, n };
 }
 
 test('commit-fix: a certificate that paraphrases the planned invariants but matches findings, files and hashes is committed', () => {
@@ -1318,6 +1318,32 @@ test('record keeps a rejected fix edit, restores every other path, and parks the
   assert.strictEqual(recorded.decision.parked, true);
   assert.match(recorded.decision.reason, /a\.txt.*commit or discard/);
   assert.strictEqual(review.readLedger(env.REVIEW_STATE_DIR, review.targetSlug('feat/cert-kept')).status, 'parked');
+});
+
+test('record matches a rejected fix\'s declared files literally, so a glob keeps no undeclared edit', () => {
+  const { repo, env, dir, n } = seedCertifiedSingleGroup('feat/cert-glob', { fileHashes: { 'a.txt': 'deadbeef' } });
+  assert.throws(() => run(['commit-fix', 'feat/cert-glob', 'doc-fix'], { env }), /certified content changed/);
+  writeArtifact(dir, n, 'fix-doc-fix', { status: 'ok', edited: true, groupId: 'doc-fix', files: ['a.txt', '*.json'] });
+  const STRAY = JSON.stringify({ dod: ['true'], stray: 'edit no fixer declared' });
+  fs.writeFileSync(path.join(repo, 'review.config.json'), STRAY);
+  run(['record', 'feat/cert-glob'], { env });
+  assert.strictEqual(fs.readFileSync(path.join(repo, 'a.txt'), 'utf8'), 'fixed a\n');
+  assert.notStrictEqual(fs.readFileSync(path.join(repo, 'review.config.json'), 'utf8'), STRAY, 'a declared glob must not keep an undeclared path');
+});
+
+test('record refuses a rejected fix that declares a file outside the repository', () => {
+  const { env, dir, n } = seedCertifiedSingleGroup('feat/cert-outside', { fileHashes: { 'a.txt': 'deadbeef' } });
+  assert.throws(() => run(['commit-fix', 'feat/cert-outside', 'doc-fix'], { env }), /certified content changed/);
+  writeArtifact(dir, n, 'fix-doc-fix', { status: 'ok', edited: true, groupId: 'doc-fix', files: ['a.txt', '../outside.txt'] });
+  assert.throws(() => run(['record', 'feat/cert-outside'], { env }), /harness-failure: record: declared file "\.\.\/outside\.txt" is outside the repository/);
+});
+
+test('record keeps the edit of a fix the certifier blocked and names the certificate status', () => {
+  const { repo, env } = seedCertifiedSingleGroup('feat/cert-blocked', { status: 'blocked' });
+  const recorded = JSON.parse(run(['record', 'feat/cert-blocked'], { env }));
+  assert.strictEqual(recorded.decision.parked, true);
+  assert.strictEqual(fs.readFileSync(path.join(repo, 'a.txt'), 'utf8'), 'fixed a\n');
+  assert.match(JSON.stringify(review.readLedger(env.REVIEW_STATE_DIR, review.targetSlug('feat/cert-blocked'))), /was not committed \(certificate: blocked\)/);
 });
 
 test('a kept fix edit blocks round-start until the person commits or discards it, then unpark resumes', () => {

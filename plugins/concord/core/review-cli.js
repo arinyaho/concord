@@ -99,7 +99,7 @@ function gitIsReachable(repoRoot, sha) {
 // unchanged by the extract.
 const gitIsDirty = gitDirty;
 function gitIsDirtyForFile(repoRoot, file) {
-  return sh('git', ['status', '--porcelain', '--', file], { cwd: repoRoot }).trim().length > 0;
+  return sh('git', ['status', '--porcelain', '--', `:(literal)${file}`], { cwd: repoRoot }).trim().length > 0;
 }
 function gitHeadFileContains(repoRoot, file, span) {
   try {
@@ -173,24 +173,24 @@ function reviewSourceMissing(repoRoot, file) {
   return false;
 }
 
-function validateFixFiles(repoRoot, stateDir, files) {
+function validateFixFiles(repoRoot, stateDir, files, verb = 'commit-fix') {
   const repo = path.resolve(repoRoot);
   const artifacts = path.resolve(stateDir);
   for (const file of files) {
     if (typeof file !== 'string' || file.length === 0) {
-      throw new Error('harness-failure: commit-fix: declared files must be non-empty repository-relative paths');
+      throw new Error(`harness-failure: ${verb}: declared files must be non-empty repository-relative paths`);
     }
     const resolved = path.resolve(repo, file);
     if (path.isAbsolute(file) || !pathWithin(resolved, repo)) {
-      throw new Error(`harness-failure: commit-fix: declared file "${file}" is outside the repository`);
+      throw new Error(`harness-failure: ${verb}: declared file "${file}" is outside the repository`);
     }
     if (pathWithin(resolved, artifacts)) {
-      throw new Error(`harness-failure: commit-fix: declared file "${file}" is a stateDir artifact`);
+      throw new Error(`harness-failure: ${verb}: declared file "${file}" is a stateDir artifact`);
     }
   }
 }
 function gitCheckoutTree(repoRoot, keep = []) {
-  sh('git', ['checkout', 'HEAD', '--', '.', ...keep.map((file) => `:(exclude)${file}`)], { cwd: repoRoot });
+  sh('git', ['checkout', 'HEAD', '--', '.', ...keep.map((file) => `:(exclude,literal)${file}`)], { cwd: repoRoot });
 }
 function runDod(repoRoot) {
   const cfg = dodExec.loadDodConfig(repoRoot);
@@ -2438,9 +2438,13 @@ function runVerb(resolveFromCwd, args, initiative) {
         fixCommits[id] = 'file-edit';
       } else {
         parkedIds.push(id);
-        const keptEdit = isGit && fx && fx.edited === true && Array.isArray(fx.files) && fx.files.some((file) => gitIsDirtyForFile(repoRoot, file));
-        if (keptEdit) keptEditFiles.push(...fx.files);
-        parkReasons[id] = gc.validateParkReason({ kind: 'needs-decision', text: keptEdit ? `fix edited ${fx.files.join(', ')} but commit-fix did not commit it; edit kept in the working tree` : fx ? 'fix reported no edit or the file was unchanged' : 'fix artifact missing' });
+        // Declared paths become git pathspecs below, so they get the same check commit-fix applies.
+        if (isGit && fx && fx.edited === true && Array.isArray(fx.files)) validateFixFiles(repoRoot, stateDir, fx.files, 'record');
+        // Any edited fix that was not committed keeps its changed files, whether the
+        // certifier blocked it, commit-fix rejected it, or commit-fix never ran.
+        const dirty = isGit && fx && fx.edited === true && Array.isArray(fx.files) ? fx.files.filter((file) => gitIsDirtyForFile(repoRoot, file)) : [];
+        keptEditFiles.push(...dirty);
+        parkReasons[id] = gc.validateParkReason({ kind: 'needs-decision', text: dirty.length ? `fix edited ${dirty.join(', ')} but was not committed (certificate: ${cert?.status || 'missing'}); edit kept in the working tree` : fx ? 'fix reported no edit or the file was unchanged' : 'fix artifact missing' });
       }
     }
     // Journal-proven idempotent replays (plan-fixes' ledger.resolved_absent):
@@ -2509,9 +2513,14 @@ function runVerb(resolveFromCwd, args, initiative) {
     }
     // A kept edit makes the tree dirty, so no later round can start until the
     // person commits or discards it; end the run here instead of continuing.
+    // A reconciliation stop already waits for the person, so it stands and only
+    // names the kept files. plan-fixes launches no fixer when it reconciles, so
+    // this guards the ledger rather than a path the verbs reach today.
     const keptFiles = [...new Set(keptEditFiles)];
-    if (keptFiles.length) {
-      decision = { continue: false, converged: false, parked: true, abandoned: false, dodFailed: false, intentReview: false, gatePending: false, reason: `a rejected fix left an uncommitted edit in ${keptFiles.join(', ')}; commit or discard it, then unpark` };
+    if (keptFiles.length && (decision.gatePending || decision.intentReview)) {
+      decision = { ...decision, reason: `${decision.reason}; an uncommitted fix edit is kept in ${keptFiles.join(', ')}` };
+    } else if (keptFiles.length) {
+      decision = { continue: false, converged: false, parked: true, abandoned: false, dodFailed: false, intentReview: false, gatePending: false, reason: `an uncommitted fix edit is kept in ${keptFiles.join(', ')}; commit or discard it, then unpark` };
       applied = { ...applied, status: 'parked' };
     }
     if (isGit && decision.converged && !ledger.dodDeferred) {
