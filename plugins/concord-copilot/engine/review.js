@@ -456,6 +456,20 @@ function applyRoundOutcome(ledger, outcome) {
     }
   }
 
+  // hasDoD is derived from the persisted target: an absent target, or any git
+  // target, is hasDoD=true (the existing DoD-gated path); only a target that
+  // explicitly set hasDoD:false (the file target) takes the dry-round branch.
+  const hasDoD = ledger.target ? ledger.target.hasDoD !== false : true;
+  // A no-DoD target is reviewed whole every round, so an open finding this
+  // round did not report (one reopened by unpark, say) is resolved. It gets no
+  // seen entry, so a later report of it counts as new again.
+  if (!hasDoD) {
+    const reported = new Set(survivors.map((f) => f.id));
+    for (const [id, f] of byId) {
+      if (f.status === 'open' && !reported.has(id)) byId.set(id, { ...f, status: 'resolved' });
+    }
+  }
+
   const findings = Array.from(byId.values());
   const openFindingsCount = findings.filter((f) => f.status === 'open').length;
   const currentOpenIds = new Set(findings.filter((f) => f.status === 'open').map((f) => f.id));
@@ -474,10 +488,6 @@ function applyRoundOutcome(ledger, outcome) {
   // resets to 0 on any new finding. Only decideTermination's no-DoD branch reads
   // it; a git target ignores it, so maintaining it here is inert for git runs.
   const dryStreak = newCount === 0 ? (ledger.dryStreak || 0) + 1 : 0;
-  // hasDoD is derived from the persisted target: an absent target, or any git
-  // target, is hasDoD=true (the existing DoD-gated path); only a target that
-  // explicitly set hasDoD:false (the file target) takes the dry-round branch.
-  const hasDoD = ledger.target ? ledger.target.hasDoD !== false : true;
 
   // The failing command/exit code for the no-progress reason, straight from
   // runDodExec's own `results` on the ledger (set by review-cli's `record`
@@ -548,8 +558,10 @@ function unparkFinding(ledger, findingId) {
   // so a still-present unparked finding would never re-surface to be re-processed
   // (and a resolved one would linger 'open'). Dropping it lets the gate re-arbitrate:
   // still-broken -> re-reported and re-processed; resolved -> silent -> stops
-  // blocking convergence. Keeps status 'open' (fail-closed) rather than deleting the
-  // finding, so a gate that flakes on a still-open finding parks, never false-greens.
+  // blocking convergence. On a DoD target it keeps status 'open' (fail-closed) rather
+  // than deleting the finding, so a gate that flakes on a still-open finding parks,
+  // never false-greens. A no-DoD target is reviewed whole each round, so
+  // applyRoundOutcome marks it 'resolved' when the next round does not report it.
   const seen = (ledger.seen || []).filter((s) => s.id !== findingId);
   return { ...ledger, findings, seen, status: 'converging' };
 }
