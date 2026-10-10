@@ -5939,6 +5939,23 @@ test('round-start refuses before any reservation when a DoD interpreter is missi
   assert.deepStrictEqual(fs.readdirSync(dir), []);
 });
 
+test('round-start refuses before anything is written when git is missing or not executable in the reviewer environment', { skip: process.platform === 'win32' }, () => {
+  for (const gitFile of [null, 'not executable']) {
+    const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/missing-git';
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+    execFileSync('git', ['commit', '-aqm', 'ahead'], { cwd: repo });
+    // PATH holds only node, and a git without the execute bit in the second case.
+    const bin = tmpDir();
+    fs.symlinkSync(process.execPath, path.join(bin, 'node'));
+    if (gitFile) fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\n', { mode: 0o644 });
+    const env = { ...process.env, PATH: bin, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+    const r = runCapture(['round-start', ref, 'HEAD~1'], { env });
+    assert.notStrictEqual(r.status, 0, String(gitFile));
+    assert.match(r.stderr, /no "git" on PATH/);
+    assert.deepStrictEqual(fs.readdirSync(dir), []);
+  }
+});
+
 test('round-start with --no-dod does not require the DoD interpreters it will not run', () => {
   const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/missing-interpreter-no-dod';
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
@@ -6018,6 +6035,16 @@ test('commandExecutables never names a word inside quotes, a substitution, a red
     'node x 2>&1 | tee out.log',
     'cd sub && ./run.sh',
   ]), ['node', 'tee', 'cd']);
+});
+
+test('commandExecutables reads a quoted assignment value as one word, as the shell does', () => {
+  const dodExec = require('../../core/dod-exec');
+  assert.deepStrictEqual(dodExec.commandExecutables(['GOFLAGS="-mod mod -v" go test ./...', "A='x y' npm test"]), ['go', 'npm']);
+});
+
+test('commandExecutables never names a word inside a comment, which ends at a newline', () => {
+  const dodExec = require('../../core/dod-exec');
+  assert.deepStrictEqual(dodExec.commandExecutables(['npm test # lint; fmt', 'node x # c; absent_a\nmake', 'echo a#b; tee', 'echo "#"; cat']), ['npm', 'node', 'make', 'echo', 'tee', 'cat']);
 });
 
 test('missingPrograms counts the DoD shell\'s builtins and keywords as present and reports an absent program', { skip: process.platform === 'win32' }, () => {

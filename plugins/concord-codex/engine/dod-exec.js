@@ -93,8 +93,10 @@ function defaultExecFn(cmd, cwd) {
 // resolved by the shell in missingPrograms. A program reached only through
 // another one (an npm script, a shell script, the command after `env`, `exec`
 // or a keyword) is not seen.
-// Splits on `;`, `|`, `||`, `&&` and newlines outside quotes. A lone `&` (as in
-// `2>&1`) stays inside its part.
+// Splits on `;`, `|`, `||`, `&&` and newlines outside quotes, and drops a
+// comment (an unquoted `#` that starts a word) up to the newline. A lone `&`
+// (as in `2>&1`) stays inside its part. Words are split on whitespace outside
+// quotes, so a quoted assignment value such as `GOFLAGS="-mod mod"` is one word.
 function simpleCommands(cmd) {
   const parts = [];
   let cur = '';
@@ -104,6 +106,7 @@ function simpleCommands(cmd) {
     if (c === '\\' && quote !== "'") { cur += c + (cmd[i + 1] || ''); i++; continue; }
     if (quote) { if (c === quote) quote = null; cur += c; continue; }
     if (c === "'" || c === '"') { quote = c; cur += c; continue; }
+    if (c === '#' && /(^|\s)$/.test(cur)) { while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++; continue; }
     if (c === ';' || c === '|' || c === '\n' || (c === '&' && cmd[i + 1] === '&')) {
       parts.push(cur); cur = '';
       if (c !== ';' && c !== '\n' && cmd[i + 1] === c) i++;
@@ -119,7 +122,7 @@ function commandExecutables(commands) {
   for (const cmd of commands || []) {
     for (const part of simpleCommands(String(cmd))) {
       if (/\$\(|`/.test(part)) continue;
-      const words = part.trim().replace(/^[({\s]+/, '').split(/\s+/).filter(Boolean);
+      const words = part.trim().replace(/^[({\s]+/, '').match(/(?:[^\s'"\\]|\\.|'[^']*'|"(?:[^"\\]|\\.)*")+/g) || [];
       const name = words.find((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
       if (name && /^[A-Za-z0-9_][A-Za-z0-9._+-]*$/.test(name)) names.add(name);
     }
