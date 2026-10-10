@@ -87,3 +87,19 @@ test('reapStale removes only old, dead-pid, own, real snapshot directories', () 
   assert.equal(fs.existsSync(dead), false);
   for (const dir of [live, fresh, other, target, path.join(parent, 'concord-run-999999997-abcdef')]) assert.ok(fs.existsSync(dir), dir);
 });
+
+test('the Codex launcher runs from a snapshot, tells later readers the plugin path, and removes the snapshot on exit (#309)', () => {
+  const plugin = tempDir('plugin-update-launcher-'), work = tempDir('plugin-update-work-');
+  installPlugin(plugin, 'A', path.join(work, 'calls.log'));
+  const preload = path.join(work, 'preload.cjs');
+  fs.writeFileSync(preload, `const fs=require('node:fs'),Module=require('node:module'),load=Module._load;Module._load=function(request,parent){if(request.endsWith('/engine/codex-review-runner')){const real=load.apply(this,arguments);return{...real,runReviewUntilGreen:async o=>{fs.rmSync(process.env.PLUGIN,{recursive:true,force:true});fs.writeFileSync(process.env.CAPTURE,JSON.stringify({...o,cliExists:fs.existsSync(o.cliPath),runnerFrom:require.resolve(request,{paths:[parent.path]})}));return{handoff:'ok'};}};}return load.apply(this,arguments);};`);
+  const capture = path.join(work, 'options.json');
+  const out = require('node:child_process').spawnSync('node', ['--require', preload, path.join(plugin, 'bin', 'review-and-fix.js'), 'feature/x', 'main'], { encoding: 'utf8', cwd: work, env: { ...process.env, PLUGIN: plugin, CAPTURE: capture } });
+  assert.equal(out.status, 0, out.stderr);
+  const options = JSON.parse(fs.readFileSync(capture, 'utf8'));
+  assert.equal(options.cliExists, true, 'the run CLI survives removal of the plugin directory');
+  assert.ok(!options.cliPath.startsWith(plugin) && path.basename(path.dirname(path.dirname(options.cliPath))).startsWith('concord-run-'));
+  assert.ok(options.runnerFrom.startsWith(path.dirname(path.dirname(options.cliPath))), 'the runner is loaded from the snapshot');
+  assert.equal(options.publicCliPath, path.join(plugin, 'bin', 'review-cli.js'));
+  assert.equal(fs.existsSync(path.dirname(path.dirname(options.cliPath))), false, 'the snapshot is removed when the driver exits');
+});

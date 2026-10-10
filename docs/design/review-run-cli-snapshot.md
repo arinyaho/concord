@@ -22,7 +22,7 @@ The driver removes the snapshot on `exit`; `handleSignals` turns SIGINT and SIGT
 | plugin directory removed | driver loads a lazily required module | module found in the snapshot | introduced | `the driver loads every engine module from its snapshot after the plugin directory is gone (#309)` |
 | temp directory inside the repository | snapshot | placed in `/tmp`; repository unchanged | introduced | `a snapshot is never placed inside the repository, even when TMPDIR points there` |
 | snapshot of a killed run | next driver start | removed only when dead pid, own, old, real directory; live, fresh, symlinked or differently named entries kept | introduced | `reapStale removes only old, dead-pid, own, real snapshot directories` |
-| run ends or is signalled | exit | snapshot removed | introduced | `the driver loads every engine module from its snapshot ...` (removal assertion); signal path untested, because it needs a real driver run |
+| run ends | driver exit | snapshot removed | introduced | `the Codex launcher runs from a snapshot, tells later readers the plugin path, and removes the snapshot on exit (#309)`; a signal ends the run through the runner's handlers, untested, because it needs a real driver run |
 | update installs a new version, new run starts | driver start | snapshots the new version | unchanged in effect | untested, because a new process always copies the installed directory |
 | two runs at once | both start | separate directories, no shared state | introduced | name carries the pid and a random suffix; untested, because `mkdtemp` guarantees it |
 
