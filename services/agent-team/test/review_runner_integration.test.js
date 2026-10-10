@@ -44,11 +44,12 @@ function artifactOf(prompt) {
   return { file, round: Number(file.match(/round-(\d+)-/)[1]), role };
 }
 
-function fakeAgent({ repo, calls, findings, fixer, planGroups }) {
+function fakeAgent({ repo, calls, findings, fixer, planGroups, rejectIds = [], prompts = {} }) {
   // review-cli orders roles by artifact mtime; a real agent takes far longer than the clock's resolution.
   let clock = Date.now();
   return function query({ prompt }) {
     const { file, round, role } = artifactOf(prompt);
+    prompts[`${round}:${role}`] = prompt;
     const write = (value) => {
       writeFileSync(file, JSON.stringify(value));
       clock += 1000;
@@ -57,7 +58,12 @@ function fakeAgent({ repo, calls, findings, fixer, planGroups }) {
     if (role === "correctness") {
       write({ status: "ok", examined: ["a.txt"], findings: round === 1 ? findings : [] });
       calls.push("review");
-    } else if (role === "verify" || role === "gate-verify") {
+    } else if (role === "verify") {
+      // An obedient verifier writes rejections in the shape its prompt asks for.
+      const bare = prompt.includes('"rejected":["<id>"');
+      write({ status: "ok", rejected: round === 1 ? rejectIds.map((id) => (bare ? id : { id, reason: "read a.txt" })) : [], findings: [] });
+      calls.push(role);
+    } else if (role === "gate-verify") {
       write({ status: "ok", rejected: [], findings: [] });
       calls.push(role);
     } else if (role === "gate" || role === "intent") {
@@ -67,7 +73,7 @@ function fakeAgent({ repo, calls, findings, fixer, planGroups }) {
       write({ status: "ok", protocolVersion: 2, groups: planGroups(file) });
       calls.push("plan");
     } else if (role === "plan") {
-      write({ status: "ok", protocolVersion: 2, groups: round === 1 ? findings.map((finding) => ({
+      write({ status: "ok", protocolVersion: 2, groups: round === 1 ? findings.filter((finding) => !rejectIds.includes(finding.id)).map((finding) => ({
         groupId: finding.id.replace("correctness:", "g-"), findingIds: [finding.id], rootCause: finding.summary,
         invariants: ["the reported behavior is corrected"], changeClass: "local", structuralEffects: [], action: "fix",
       })) : [] });
@@ -89,20 +95,21 @@ function fakeAgent({ repo, calls, findings, fixer, planGroups }) {
   };
 }
 
-function setup({ findings, fixer, planGroups, config }) {
+function setup({ findings, fixer, planGroups, config, rejectIds }) {
   const repo = initRepo(config);
   const stateDir = mkdtempSync(join(tmpdir(), "agent-team-int-state-"));
   const calls = [];
+  const prompts = {};
   const cli = makeRunCli({ repoRoot: repo, stateDir, cliPath: CLI_PATH, timeoutMs: 60000 });
   const runCli = async (verb, args) => {
     const out = await cli(verb, args);
     if (verb === "commit-fix") calls.push(`commit(${args[1]})`);
     return out;
   };
-  const spawn = makeSpawn({ repoRoot: repo, query: fakeAgent({ repo, calls, findings, planGroups, fixer: (groupId) => fixer(repo, groupId) }) });
+  const spawn = makeSpawn({ repoRoot: repo, query: fakeAgent({ repo, calls, findings, planGroups, rejectIds, prompts, fixer: (groupId) => fixer(repo, groupId) }) });
   const events = [];
   const logger = { event: (name, data) => events.push({ name, ...data }) };
-  return { repo, stateDir, calls, run: async () => ({ ...(await runReviewUntilGreen({ target: { ref: "feat", base: "main" }, runCli, spawn, maxRounds: 3, logger })), errors: events.filter((event) => event.name === "error") }) };
+  return { repo, stateDir, calls, prompts, run: async () => ({ ...(await runReviewUntilGreen({ target: { ref: "feat", base: "main" }, runCli, spawn, maxRounds: 3, logger })), errors: events.filter((event) => event.name === "error") }) };
 }
 
 const TWO_FINDINGS = [
@@ -140,6 +147,22 @@ test("production spawn adapter: a fixer that reports no edit parks the finding w
   assert.equal(result.parkedFindings[0].park_reason.kind, "needs-decision");
   assert.equal(git(env.repo, "rev-parse", "HEAD"), before);
   assert.equal(env.calls.some((call) => call.startsWith("certify") || call.startsWith("commit")), false);
+});
+
+test("production spawn adapter: the verifier sees the gate batch and its rejection kills the finding", async () => {
+  const env = setup({
+    findings: TWO_FINDINGS,
+    rejectIds: ["correctness:b"],
+    fixer: (repo, groupId) => {
+      appendFileSync(join(repo, "a.txt"), `fixed by ${groupId}\n`);
+      return { status: "ok", edited: true, groupId, files: ["a.txt"] };
+    },
+  });
+  const result = await env.run();
+  assert.equal(result.outcome, "converged", JSON.stringify(result));
+  assert.equal(env.calls.includes("fix(g-b)"), false, JSON.stringify(env.calls));
+  assert.match(env.prompts["1:verify"], /round-1-gate\.json/);
+  assert.match(env.prompts["1:verify"], /\["a\.txt"\]/);
 });
 
 const INTENT = "Exactly one owner decides the result.";

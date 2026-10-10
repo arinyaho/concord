@@ -1,8 +1,9 @@
 import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import { settingSourcesFromEnv } from "../settings_sources.mjs";
 
-// The gate, plan, fix and certify prompts are the packaged runner's own, so their
+// The verify, gate, plan, fix and certify prompts are the packaged runner's own, so their
 // artifact names and JSON shapes are the ones review-cli reads.
 const require = createRequire(import.meta.url);
 const { reviewerPrompt, fixDeclaration } = require("../../../../plugins/concord/core/round-plan.js");
@@ -10,7 +11,7 @@ const { targetSlug } = require("../../../../plugins/concord/core/review.js");
 
 // Per-kind prompt for a review-cli subagent. Each tells the subagent the EXACT
 // absolute artifact path to write, and the exact JSON schema review-cli reads.
-function promptFor(kind, { stateDir, round, diffPath, ref, intentHash, fixGroup, gateMode }) {
+function promptFor(kind, { stateDir, round, diffPath, ref, intentHash, fixGroup, gateMode, gateApplied = false }) {
   const art = (name) => `${stateDir}/round-${round}-${name}.json`;
   if (kind === "review") {
     return `Read the diff at ${diffPath}. Review it for correctness bugs, reuse/simplification, and ` +
@@ -20,8 +21,8 @@ function promptFor(kind, { stateDir, round, diffPath, ref, intentHash, fixGroup,
       `Empty findings array if clean. Every changed file in the diff MUST appear in "examined".`;
   }
   if (kind === "verify") {
-    return `Read the diff at ${diffPath} and the candidate findings at ${art("correctness")}. Reject false ` +
-      `positives. Write ONLY this JSON to ${art("verify")}: {"status":"ok","rejected":["<id>",...]}.`;
+    const { examined = [] } = JSON.parse(readFileSync(art("correctness"), "utf8"));
+    return reviewerPrompt("verify", { stateDir, round, gateMode, gateApplied, examined });
   }
   if (kind === "intent") {
     return `Read the diff at ${diffPath} and the intent source for this review. Write ONLY this JSON to ` +

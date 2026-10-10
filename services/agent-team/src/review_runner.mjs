@@ -44,7 +44,7 @@ export async function runReviewUntilGreen({ target, runCli, spawn, maxRounds = 5
       if (start.intentApplied) await spawn("intent", { stateDir, round, diffPath });
       // The verifiers read the complete candidate sets, so both finders finish first.
       if (start.gateApplied) await spawn("gate", { stateDir, round, ref, gateMode: start.gateMode });
-      await spawn("verify", { stateDir, round, diffPath });
+      await spawn("verify", { stateDir, round, diffPath, gateApplied: Boolean(start.gateApplied), gateMode: start.gateMode });
       logger.event("verify", { round });
       if (start.gateApplied) await spawn("gate-verify", { stateDir, round, ref, gateMode: start.gateMode });
       await spawn("plan", { stateDir, round, diffPath, ref, intentHash: start.intentHash || null });
