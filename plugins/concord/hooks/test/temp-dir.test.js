@@ -6,9 +6,6 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { tempDir } = require('./temp-dir');
 
-// #288 moves these three files to temp-dir.js after #285 merges, because #285 edits them at the same time, and deletes this list.
-const NOT_YET_CONVERTED = new Set(['review-cli.test.js', 'lgtm-state.test.js', 'delivery-disposition.test.js']);
-
 const DIRECT_CALL = /\bmkdtemp(Sync)?\s*\(/;
 
 function filesCallingMkdtemp(dir) {
@@ -36,6 +33,6 @@ test('the check flags a test file that calls mkdtemp directly', () => {
 });
 
 test('no test file calls mkdtemp outside temp-dir.js', () => {
-  const offenders = filesCallingMkdtemp(__dirname).filter((name) => !NOT_YET_CONVERTED.has(name));
+  const offenders = filesCallingMkdtemp(__dirname);
   assert.deepStrictEqual(offenders, [], 'create temporary directories with tempDir() from ./temp-dir.js');
 });

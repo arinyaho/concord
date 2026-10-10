@@ -8,8 +8,6 @@ Tests create temporary directories with `tempDir(prefix)` from `plugins/concord/
 
 `temp-dir.test.js` holds the check: it fails when a `*.test.js` file in that directory calls `mkdtemp` or `mkdtempSync` directly, and it runs `native-driver-initiative.test.js`, the largest source of leaked directories in #280, with `TMPDIR` set to an empty directory and asserts that the directory is still empty afterwards; that run adds about two minutes to the suite.
 
-`review-cli.test.js`, `lgtm-state.test.js` and `delivery-disposition.test.js` are exempt from the check through a list in `temp-dir.test.js`, because #285 edits them at the same time. #288 converts them after #285 merges and deletes the list.
-
 This change is not stateful: each directory exists only for the life of one test process.
 
 ## Cost and residual exposure
@@ -18,4 +16,4 @@ A directory is removed when its test file ends, not when its test ends, so a lon
 
 The exit handler does not run when the process ends on a signal, such as Ctrl-C, `SIGTERM` or `SIGKILL`, so those runs still leave their directories. Removing directories left by earlier runs is outside #280.
 
-Directories that the code under test creates by itself in the temp directory are not covered; the check only sees calls in test files.
+Directories that the code under test creates by itself in the temp directory are not covered, nor a path a test builds next to one of its directories instead of inside it; the check only sees `mkdtemp` calls in test files.

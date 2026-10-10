@@ -2,7 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
-const os = require('node:os');
+const { tempDir } = require('./temp-dir');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const lgtmState = require('../../core/lgtm-state');
@@ -17,7 +17,7 @@ const CONTRACT = 'a'.repeat(64);
 const THREAD = (id) => `https://github.com/arinyaho/concord/pull/172#discussion_r${id}`;
 const ISSUE = (n) => `https://github.com/arinyaho/concord/issues/${n}`;
 
-function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'delivery-disposition-')); }
+function temp() { return tempDir('delivery-disposition-'); }
 function cli(stateDir, args, input) {
   return JSON.parse(execFileSync('node', [CLI, ...args], { encoding: 'utf8', env: { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir }, input }));
 }

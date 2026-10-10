@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
-const os = require('node:os');
+const { tempDir } = require('./temp-dir');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 const review = require('../../core/review');
@@ -14,7 +14,7 @@ const cli = require('../review-cli'); // must be requirable without running main
 const CLI = path.join(__dirname, '..', 'review-cli.js');
 
 function tmpDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'review-cli-'));
+  return tempDir('review-cli-');
 }
 
 // Broad review is ON by default (round-1 gate pair), which makes the round-1
@@ -128,7 +128,7 @@ function runCapture(args, opts = {}) {
 }
 
 function initRepo() {
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-repo-'));
+  const repo = tempDir('ruit-repo-');
   execFileSync('git', ['init', '-q'], { cwd: repo });
   execFileSync('git', ['config', 'user.email', 't@t'], { cwd: repo });
   execFileSync('git', ['config', 'user.name', 't'], { cwd: repo });
@@ -242,7 +242,7 @@ test('round-start preserves unusual Git paths and rejects a declared NUL path', 
 });
 
 test('a SHA-256 Git repository binds and folds its 64-digit changed-path manifest', () => {
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-sha256-'));
+  const repo = tempDir('ruit-sha256-');
   execFileSync('git', ['init', '-q', '--object-format=sha256'], { cwd: repo });
   execFileSync('git', ['config', 'user.email', 't@t'], { cwd: repo });
   execFileSync('git', ['config', 'user.name', 't'], { cwd: repo });
@@ -597,7 +597,7 @@ test('artifact-normalize retries when a deleted path is not examined', () => {
 });
 
 test('git helpers operate on a real temp repo', () => {
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-git-'));
+  const repo = tempDir('ruit-git-');
   execFileSync('git', ['init', '-q'], { cwd: repo });
   execFileSync('git', ['config', 'user.email', 't@t'], { cwd: repo });
   execFileSync('git', ['config', 'user.name', 't'], { cwd: repo });
@@ -2207,7 +2207,7 @@ test('journal-proven absent-span finding is stamped fixed with the real commit s
 // --- end phantom-fix regression lock ---
 
 function initRepoWithIntent(intentCmd) {
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-intent-'));
+  const repo = tempDir('ruit-intent-');
   execFileSync('git', ['init', '-q'], { cwd: repo });
   execFileSync('git', ['config', 'user.email', 't@t'], { cwd: repo });
   execFileSync('git', ['config', 'user.name', 't'], { cwd: repo });
@@ -2278,7 +2278,7 @@ test('round-start: intent-review re-entry re-fetches and advances a round', () =
 // counts its own invocations, so the drift tests can both mutate the source and
 // assert the per-round fetch cost.
 function intentSource(text) {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-src-'));
+  const d = tempDir('ruit-src-');
   const file = path.join(d, 'intent.md');
   const counter = path.join(d, 'count');
   fs.writeFileSync(file, text);
@@ -2784,7 +2784,7 @@ test('e2e: no intent config -> the same diff does NOT surface an intent finding 
 test('round-start warns when the base branch is behind its upstream', () => {
   // Set up a repo where local branch `stalebase` is 1 commit behind its
   // upstream `up`, without a real remote (simpler + deterministic).
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-stale-'));
+  const repo = tempDir('ruit-stale-');
   execFileSync('git', ['init', '-q'], { cwd: repo });
   execFileSync('git', ['config', 'user.email', 't@t'], { cwd: repo });
   execFileSync('git', ['config', 'user.name', 't'], { cwd: repo });
@@ -2845,7 +2845,7 @@ test('a review.config.json with "dod": null converges with the DoD reported DEFE
   // Infra/VTL/CDK repos have no honest executable DoD (validated only by
   // post-deploy e2e). dod:null is the explicit opt-out: the review gates still
   // run; the executable DoD is skipped and labeled deferred, never faked.
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-dod-defer-'));
+  const repo = tempDir('ruit-dod-defer-');
   execFileSync('git', ['init', '-q'], { cwd: repo });
   execFileSync('git', ['config', 'user.email', 't@t'], { cwd: repo });
   execFileSync('git', ['config', 'user.name', 't'], { cwd: repo });
@@ -3050,7 +3050,7 @@ test('round-start: --no-broad disarms the front pass, and the opt-out is sticky'
 
 
 test('round-start file: a file target is broad-disarmed by default, and --broad still forces the sweep', () => {
-  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-broad-')); // NOT a git repo
+  const fileDir = tempDir('ruit-file-broad-'); // NOT a git repo
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
   fs.writeFileSync(path.join(fileDir, 'note.md'), '# note\n\nsome prose.\n');
@@ -3069,7 +3069,7 @@ test('round-start file: a file target is broad-disarmed by default, and --broad 
 });
 
 test('renderHandoff file: a disarmed file target does not blame --no-broad for a flag nobody passed', () => {
-  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-handoff-'));
+  const fileDir = tempDir('ruit-file-handoff-');
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
   fs.writeFileSync(path.join(fileDir, 'note.md'), '# note\n\nsome prose.\n');
@@ -3118,7 +3118,7 @@ test('round-start: --broad re-arms a ledger that opted out earlier', () => {
 // would manufacture a false clean. The --no-dod tests below cover the explicit
 // opt-out flag on top of that.
 function initRepoWithoutDodConfig() {
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-no-dod-'));
+  const repo = tempDir('ruit-no-dod-');
   execFileSync('git', ['init', '-q'], { cwd: repo });
   execFileSync('git', ['config', 'user.email', 't@t'], { cwd: repo });
   execFileSync('git', ['config', 'user.name', 't'], { cwd: repo });
@@ -4512,7 +4512,7 @@ test('review-cli: unknown verb error message lists the two new gate-panel verbs'
 test('round-start file: file:<path> target produces decision work, targetType file, writes file content as diff', () => {
   const dir = tmpDir();
   // Use a temp directory with NO git init (the whole point of a file target).
-  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-'));
+  const fileDir = tempDir('ruit-file-');
   fs.writeFileSync(path.join(fileDir, 'note.md'), '# Design\nclaim without evidence\n');
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
   const out = JSON.parse(run(['round-start', 'file:note.md'], { env }));
@@ -4534,7 +4534,7 @@ test('round-start file: file:<path> target produces decision work, targetType fi
 
 test('round-start terminal returns the persisted target head_sha', () => {
   const dir = tmpDir();
-  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-'));
+  const fileDir = tempDir('ruit-file-');
   fs.writeFileSync(path.join(fileDir, 'note.md'), '# Design\n');
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
   const first = JSON.parse(run(['round-start', 'file:note.md'], { env }));
@@ -4552,7 +4552,7 @@ test('round-start terminal returns the persisted target head_sha', () => {
 // passed BOTH file:note.md AND --files note.md so --files was inert.)
 test('round-start file:<glob> resolves ALL matching files (sorted) into the review text', () => {
   const dir = tmpDir();
-  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-'));
+  const fileDir = tempDir('ruit-file-');
   // Two .md files (write z before a to prove sort, not FS order) + a non-match.
   fs.writeFileSync(path.join(fileDir, 'zeta.md'), 'ZETA doc body\n');
   fs.writeFileSync(path.join(fileDir, 'alpha.md'), 'ALPHA doc body\n');
@@ -4578,7 +4578,7 @@ test('round-start file:<glob> resolves ALL matching files (sorted) into the revi
 
 test('round-start file:<literal> resolves a single literal path into the review text', () => {
   const dir = tmpDir();
-  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-'));
+  const fileDir = tempDir('ruit-file-');
   fs.writeFileSync(path.join(fileDir, 'note.md'), 'literal path body\n');
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
   const out = JSON.parse(run(['round-start', 'file:note.md'], { env }));
@@ -4591,7 +4591,7 @@ test('round-start file:<literal> resolves a single literal path into the review 
 
 test('round-start file:<glob> that matches nothing errors clearly (never silently converges on empty)', () => {
   const dir = tmpDir();
-  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-'));
+  const fileDir = tempDir('ruit-file-');
   fs.writeFileSync(path.join(fileDir, 'note.txt'), 'only a txt here\n'); // no .md to match
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
   const { stderr, status } = runCapture(['round-start', 'file:*.md'], { env });
@@ -4608,7 +4608,7 @@ test('round-start file:<glob> that matches nothing errors clearly (never silentl
 // feature exists for. The coverage check must be skipped for a file target.
 test('plan-fixes file target: doc content quoting a `+++ b/` diff line does NOT trigger a coverage harness-failure', () => {
   const dir = tmpDir();
-  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-'));
+  const fileDir = tempDir('ruit-file-');
   // A design doc that legitimately quotes a unified diff -- the `+++ b/...`
   // line is the trap: a git target would read it as a changed file.
   const noteBody = [
@@ -4648,7 +4648,7 @@ test('plan-fixes file target: doc content quoting a `+++ b/` diff line does NOT 
 
 test('round-start file: persists target.type, target.hasDoD, target.spec in the ledger', () => {
   const dir = tmpDir();
-  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-'));
+  const fileDir = tempDir('ruit-file-');
   fs.writeFileSync(path.join(fileDir, 'doc.md'), 'hello\n');
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
   run(['round-start', 'file:doc.md'], { env });
@@ -4764,7 +4764,7 @@ test('record file target: missing fix artifact parks needs-decision', () => {
 // a second `round-start file:X` after an interruption sees resumed=true.
 test('round-start file target resume: a stale fix artifact from the interrupted round is purged (cannot false-signal)', () => {
   const dir = tmpDir();
-  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-'));
+  const fileDir = tempDir('ruit-file-');
   const notePath = path.join(fileDir, 'note.md');
   fs.writeFileSync(notePath, '# Note\nan unsupported claim\n');
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
@@ -5003,7 +5003,7 @@ function newFindingRound(ref, env, dir, extra, i) {
 }
 
 test('no-DoD target converges clean after one round in which verification rejects every candidate', () => {
-  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-allkilled-'));
+  const fileDir = tempDir('ruit-file-allkilled-');
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
   fs.writeFileSync(path.join(fileDir, 'note.md'), '# note\n');
@@ -5021,7 +5021,7 @@ test('no-DoD target converges clean after one round in which verification reject
 });
 
 test('no-DoD target changed after round-start cannot converge from stale clean evidence', () => {
-  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-race-'));
+  const fileDir = tempDir('ruit-file-race-');
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
   fs.writeFileSync(path.join(fileDir, 'note.md'), '# reviewed\n');
@@ -5037,7 +5037,7 @@ test('no-DoD target changed after round-start cannot converge from stale clean e
 });
 
 test('no-DoD target rechecks identity when every reported candidate was previously killed', () => {
-  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-suppressed-race-'));
+  const fileDir = tempDir('ruit-file-suppressed-race-');
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
   fs.writeFileSync(path.join(fileDir, 'note.md'), '# reviewed\n');
@@ -5061,7 +5061,7 @@ test('no-DoD target rechecks identity when every reported candidate was previous
 });
 
 test('no-DoD target parks when the round budget is spent and round-start never opens a round past it', () => {
-  const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruit-file-budget-'));
+  const fileDir = tempDir('ruit-file-budget-');
   const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: fileDir };
   let last;
