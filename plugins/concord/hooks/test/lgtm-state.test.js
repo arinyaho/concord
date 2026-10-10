@@ -2,13 +2,13 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
-const os = require('node:os');
+const { tempDir } = require('./temp-dir');
 const path = require('node:path');
 const CORE_STATE = path.join(__dirname, '..', '..', 'core', 'lgtm-state.js');
 const { execFileSync } = require('node:child_process');
 const lgtmState = require('../../core/lgtm-state');
 
-function temp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'lgtm-state-')); }
+function temp() { return tempDir('lgtm-state-'); }
 const CLI = path.join(__dirname, '..', 'review-lgtm-state.js');
 const CLAUDE_SKILL = path.join(__dirname, '..', '..', 'skills', 'review-until-lgtm', 'SKILL.md');
 const CODEX_SKILL = path.join(__dirname, '..', '..', '..', 'concord-codex', 'skills', 'review-until-lgtm', 'SKILL.md');
@@ -226,8 +226,8 @@ test('an initial request cannot be recovered without an original claim', () => {
 });
 
 test('default state directory is shared by linked worktrees and resolves Git outside the checkout', () => {
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'lgtm-worktree-'));
-  const linked = `${repo}-linked`;
+  const repo = tempDir('lgtm-worktree-');
+  const linked = path.join(tempDir('lgtm-worktree-linked-'), 'linked');
   execFileSync('git', ['init', '-q'], { cwd: repo });
   execFileSync('git', ['config', 'user.email', 't@t'], { cwd: repo });
   execFileSync('git', ['config', 'user.name', 't'], { cwd: repo });
@@ -780,7 +780,7 @@ test('waive-fix-budget is idempotent and rejects invalid input without changing 
 });
 
 test('waive-fix-budget CLI exits non-zero for an empty person', () => {
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'lgtm-cli-'));
+  const repo = tempDir('lgtm-cli-');
   execFileSync('git', ['init', '-q'], { cwd: repo });
   assert.throws(() => execFileSync('node', [CLI, 'waive-fix-budget', '221', '', '2'], { cwd: repo, stdio: 'pipe' }), /person/);
   const out = execFileSync('node', [CLI, 'waive-fix-budget', '221', 'someone', '2'], { cwd: repo, encoding: 'utf8' });
@@ -790,7 +790,7 @@ test('waive-fix-budget CLI exits non-zero for an empty person', () => {
 function git(repo, ...args) { return execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim(); }
 
 test('self-feeding reports whether the previous fix commit added the finding lines', () => {
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'lgtm-self-'));
+  const repo = tempDir('lgtm-self-');
   git(repo, 'init', '-q');
   git(repo, 'config', 'user.email', 't@example.com');
   git(repo, 'config', 'user.name', 't');
@@ -819,13 +819,13 @@ test('self-feeding reports whether the previous fix commit added the finding lin
 });
 
 test('self-feeding is false when no earlier fix round exists', () => {
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'lgtm-self-none-'));
+  const repo = tempDir('lgtm-self-none-');
   git(repo, 'init', '-q');
   assert.deepStrictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir: temp(), pr: 221, headSha: 'a'.repeat(40), file: 'x.md', start: 1, end: 1 }), { selfFeeding: false, previousFixHead: null });
 });
 
 test('self-feeding uses the latest earlier round on the head ancestry and matches the file literally', () => {
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'lgtm-self-anc-'));
+  const repo = tempDir('lgtm-self-anc-');
   git(repo, 'init', '-q');
   git(repo, 'config', 'user.email', 't@example.com');
   git(repo, 'config', 'user.name', 't');
@@ -859,7 +859,7 @@ test('self-feeding uses the latest earlier round on the head ancestry and matche
 });
 
 function selfFeedingRepo(prefix) {
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const repo = tempDir(prefix);
   git(repo, 'init', '-q');
   git(repo, 'config', 'user.email', 't@example.com');
   git(repo, 'config', 'user.name', 't');
@@ -1148,7 +1148,7 @@ test('self-feeding CLI works in a bare repository, which has no work tree root',
   const reviewed = commit('base');
   write('x.md', '1\n2\n');
   const head = commit('fix');
-  const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'lgtm-self-bare-'));
+  const bare = tempDir('lgtm-self-bare-');
   execFileSync('git', ['clone', '-q', '--bare', repo, bare]);
   const stateDir = temp();
   claimFixHead(stateDir, reviewed, 1000);
