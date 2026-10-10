@@ -1,10 +1,10 @@
 # Reviewer environment preflight
 
-A review run checks, before its first reservation, that `git`, `node`, and the DoD program names its parser can identify with certainty are on `PATH` (what it leaves unchecked is listed under the DoD parser below and in the residual exposure); verifiers are handed the exact paths they must read; and the reviewer subprocesses the Codex runner starts and the DoD commands do not inherit the driver's provider executable override.
+A review run checks, before its first reservation, that `git`, `node`, and the DoD program names its parser can identify with certainty can run (what it leaves unchecked is listed under the DoD parser below and in the residual exposure); verifiers are handed the exact paths they must read; and the reviewer subprocesses the Codex runner starts and the DoD commands do not inherit the driver's provider executable override.
 
 ## Preflight in `round-start`
 
-`review-cli round-start` checks that `git`, `node`, and the leading word of every DoD command can run, after argument validation and before it writes the ledger, reserves a launch, or writes a round artifact. A missing name fails the call non-zero with a message naming it and the DoD commands. The check runs on every `round-start`, including a resume.
+`review-cli round-start` checks that `git`, `node`, and the DoD program names its parser can identify with certainty can run, after argument validation and before it writes the ledger, reserves a launch, or writes a round artifact. A missing name fails the call non-zero with a message naming it and the DoD commands. The check runs on every `round-start`, including a resume.
 
 The check lives in the CLI verb and not in a driver step because both engines call `round-start`: the Codex runner (`core/codex-review-runner.js`) and the Claude Code and Copilot markdown drivers. A driver step would be prose an agent can skip, and the Codex runner would need its own copy. The CLI process inherits the driver's environment in both engines, and so do the reviewers: Claude and Copilot subagents run in the same host shell, and the Codex runner hands its own environment to `codex exec`. The one exception is the runner's artifact-repair launch, which runs with `repairEnvironment` (`core/codex-review-runner.js`) and drops every `PATH` entry inside the repository or the state directory; a name the preflight finds only through such an entry is missing for that launch and fails there at use time.
 
