@@ -132,11 +132,17 @@ function commandExecutables(commands) {
 // `command -v`; cmd.exe's internal commands are a fixed set.
 const CMD_BUILTINS = new Set(['assoc', 'break', 'call', 'cd', 'chdir', 'cls', 'color', 'copy', 'date', 'del', 'dir', 'echo', 'endlocal', 'erase', 'exit', 'for', 'ftype', 'goto', 'if',
   'md', 'mkdir', 'mklink', 'move', 'path', 'pause', 'popd', 'prompt', 'pushd', 'rd', 'rem', 'ren', 'rename', 'rmdir', 'set', 'setlocal', 'shift', 'start', 'time', 'title', 'type', 'ver', 'verify', 'vol']);
-function missingPrograms(names, cwd) {
+function missingPrograms(names, cwd, platform = process.platform) {
   if (!names.length) return [];
-  if (process.platform === 'win32') {
+  if (platform === 'win32') {
+    // cmd.exe looks in the working directory before PATH (a `gradlew.bat` in the repository root runs as `gradlew`).
     const { resolveOnPath } = require('./spawn-cross-platform');
-    return names.filter((name) => !CMD_BUILTINS.has(name.toLowerCase()) && resolveOnPath(name) === null);
+    // Lower-case variants too: win32 matches names case-insensitively, and the tests run this branch on Linux.
+    const exts = String(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean).flatMap((e) => [e, e.toLowerCase()]);
+    const inCwd = (name) => (/\.[^.\\/]+$/.test(name) ? [''] : exts).some((ext) => {
+      try { return fs.statSync(path.join(cwd, name + ext)).isFile(); } catch { return false; }
+    });
+    return names.filter((name) => !CMD_BUILTINS.has(name.toLowerCase()) && !inCwd(name) && resolveOnPath(name) === null);
   }
   const { spawnSync } = require('node:child_process');
   const r = spawnSync('/bin/sh', ['-c', 'for n do command -v "$n" >/dev/null 2>&1 || printf "%s\\n" "$n"; done', 'sh', ...names], { cwd, encoding: 'utf8' });

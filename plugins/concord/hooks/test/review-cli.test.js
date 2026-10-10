@@ -6025,6 +6025,13 @@ test('missingPrograms counts the DoD shell\'s builtins and keywords as present a
   assert.deepStrictEqual(dodExec.missingPrograms(['command', 'ulimit', 'if', 'cd', 'node', 'concord-absent-program'], process.cwd()), ['concord-absent-program']);
 });
 
+test('missingPrograms on win32 counts a program in the DoD working directory as present, as cmd.exe does', () => {
+  const dodExec = require('../../core/dod-exec');
+  const dir = tmpDir();
+  fs.writeFileSync(path.join(dir, 'gradlew.bat'), '@echo off\r\n');
+  assert.deepStrictEqual(dodExec.missingPrograms(['gradlew', 'concord-absent-program'], dir, 'win32'), ['concord-absent-program']);
+});
+
 test('round-start accepts a DoD whose quoted script contains a shell separator', () => {
   const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/quoted-separator-dod';
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
