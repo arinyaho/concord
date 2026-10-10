@@ -5810,6 +5810,31 @@ test('record-fix resets a gate panel that could merge the fixed finding back', (
   assert.deepStrictEqual(review.readLedger(t.dir, t.slug).gate_panel, require('../../core/gate-panel').emptyGatePanel());
 });
 
+test('record-fix on the last blocking gate finding of a parked run resets the panel so record cannot merge it back', () => {
+  const gatePanel = require('../../core/gate-panel');
+  const fixedParked = { id: 'correctness:y', file: 'a.txt', summary: 's', status: 'fixed' };
+  const t = recordFixRepo({ ledger: () => ({ status: 'parked', findings: [fixedParked], gate_open: [BLOCKING_GATE('gate:silent-gap:x')], gate_panel: { ...gatePanel.emptyGatePanel(), status: 'done', confirmed: [BLOCKING_GATE('gate:silent-gap:x')] } }) });
+  run(recordFixArgs(t.fix), { env: t.env });
+  const after = review.readLedger(t.dir, t.slug);
+  assert.strictEqual(after.status, 'converging');
+  // The merge record runs on a done panel before it counts gate_open.
+  const merged = after.gate_panel.status === 'done' ? gatePanel.mergePanelIntoGate(after.gate_open, after.gate_panel.confirmed || [], []) : after.gate_open;
+  assert.deepStrictEqual(merged.map((f) => f.id), []);
+  assert.deepStrictEqual(after.gate_panel, gatePanel.emptyGatePanel());
+});
+
+test('record-fix on a parked finding keeps the gate panel and sets no retry base, as unpark would', () => {
+  const gatePanel = require('../../core/gate-panel');
+  const parked = { id: 'correctness:x', file: 'a.txt', summary: 's', status: 'parked', park_reason: 'needs-decision' };
+  const panel = { ...gatePanel.emptyGatePanel(), status: 'done', confirmed: [] };
+  const t = recordFixRepo({ ledger: () => ({ status: 'parked', findings: [parked], gate_panel: panel }) });
+  run(['record-fix', 'feat/x', 'correctness:x', '--commit', t.fix, '--test', 'sh check.sh', '--test-file', 'check.sh'], { env: t.env });
+  const after = review.readLedger(t.dir, t.slug);
+  assert.strictEqual(after.status, 'converging');
+  assert.deepStrictEqual(after.gate_panel, panel);
+  assert.ok(!after.retry_diff_base);
+});
+
 test('rerun keeps the record-fix evidence of a parked finding', () => {
   const parked = { id: 'correctness:x', file: 'a.txt', summary: 's', status: 'parked', park_reason: 'needs-decision' };
   const t = recordFixRepo({ ledger: () => ({ status: 'parked', findings: [parked] }) });
