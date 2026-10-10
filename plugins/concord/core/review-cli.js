@@ -1861,7 +1861,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     const dodCommands = isFileTarget || noDodFlagPassed || ledger.dodDeferred ? [] : (dodExec.loadDodConfig(repoRoot).dod || []);
     const missingExecutables = ['git', 'node', ...dodExec.commandExecutables(dodCommands)]
       .filter((name, index, all) => all.indexOf(name) === index)
-      .filter((name) => (/[\\/]/.test(name) ? !fs.existsSync(path.resolve(repoRoot, name)) : resolveOnPath(name) === null));
+      .filter((name) => resolveOnPath(name) === null);
     if (missingExecutables.length) {
       throw new Error(`review-cli round-start: the reviewer environment has no ${missingExecutables.map((name) => `"${name}"`).join(', ')} on PATH; install it or run the review where it is available (DoD commands: ${JSON.stringify(dodCommands)})`);
     }

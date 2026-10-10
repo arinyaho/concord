@@ -84,18 +84,45 @@ function defaultExecFn(cmd, cwd) {
   return { status: r.status == null ? 1 : r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
-// The executables a DoD command list starts: the leading word of each simple
-// command, after any `NAME=value` assignments, minus shell builtins. A program
-// reached only through another one (an npm script, a shell script) is not seen.
-const SHELL_BUILTINS = new Set(['cd', 'export', 'set', 'unset', 'test', '[', 'echo', 'true', 'false', 'exit', ':', '.', 'source', 'exec', 'env']);
+// The programs a DoD command list starts on PATH: the leading word of each
+// simple command, after any `NAME=value` assignments. A false name would make
+// round-start refuse a DoD that runs fine, while a missed name only fails later
+// where the reviewer's blocked clause catches it, so anything uncertain is left
+// out: a part with a command substitution, a word that is not a plain name
+// (a path, a redirect, a quoted word), shell builtins and keywords, and the
+// program after `env` or `exec`. A program reached only through another one
+// (an npm script, a shell script) is not seen.
+const SHELL_WORDS = new Set(['cd', 'export', 'set', 'unset', 'test', '[', '[[', 'echo', 'true', 'false', 'exit', ':', '.', 'source', 'exec', 'env',
+  'if', 'then', 'else', 'elif', 'fi', 'for', 'while', 'until', 'do', 'done', 'case', 'esac', 'function', '!', '{', '}']);
+// Splits on `;`, `|`, `||`, `&&` and newlines outside quotes. A lone `&` (as in
+// `2>&1`) stays inside its part.
+function simpleCommands(cmd) {
+  const parts = [];
+  let cur = '';
+  let quote = null;
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (c === '\\' && quote !== "'") { cur += c + (cmd[i + 1] || ''); i++; continue; }
+    if (quote) { if (c === quote) quote = null; cur += c; continue; }
+    if (c === "'" || c === '"') { quote = c; cur += c; continue; }
+    if (c === ';' || c === '|' || c === '\n' || (c === '&' && cmd[i + 1] === '&')) {
+      parts.push(cur); cur = '';
+      if (c !== ';' && c !== '\n' && cmd[i + 1] === c) i++;
+      continue;
+    }
+    cur += c;
+  }
+  parts.push(cur);
+  return parts;
+}
 function commandExecutables(commands) {
   const names = new Set();
   for (const cmd of commands || []) {
-    for (const part of String(cmd).split(/&&|\|\||[;|]/)) {
+    for (const part of simpleCommands(String(cmd))) {
+      if (/\$\(|`/.test(part)) continue;
       const words = part.trim().replace(/^[({\s]+/, '').split(/\s+/).filter(Boolean);
-      const word = words.find((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
-      const name = word && word.replace(/^['"]|['"]$/g, '');
-      if (name && !SHELL_BUILTINS.has(name)) names.add(name);
+      const name = words.find((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
+      if (name && /^[A-Za-z0-9_][A-Za-z0-9._+-]*$/.test(name) && !SHELL_WORDS.has(name)) names.add(name);
     }
   }
   return [...names];

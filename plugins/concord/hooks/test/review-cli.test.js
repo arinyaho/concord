@@ -5952,5 +5952,29 @@ test('round-start with --no-dod does not require the DoD interpreters it will no
 
 test('commandExecutables names the leading program of each simple DoD command', () => {
   const dodExec = require('../../core/dod-exec');
-  assert.deepStrictEqual(dodExec.commandExecutables(['cd plugins && FOO=1 node --test x', 'python -m pytest | tee log', 'true; ./scripts/check.sh']), ['node', 'python', 'tee', './scripts/check.sh']);
+  assert.deepStrictEqual(dodExec.commandExecutables(['cd plugins && FOO=1 node --test x', 'python -m pytest | tee log', 'true; ./scripts/check.sh']), ['node', 'python', 'tee']);
+});
+
+test('commandExecutables never names a word that is not a program: quoted separators, substitutions, keywords, redirects and paths', () => {
+  const dodExec = require('../../core/dod-exec');
+  assert.deepStrictEqual(dodExec.commandExecutables([
+    'node -e "1 || absent_a; absent_b | absent_c"',
+    "node -e 'x && absent_d'",
+    'REV=$(git rev-parse HEAD) node x',
+    'if npm test; then echo ok; fi',
+    'node x 2>&1 | tee out.log',
+    'cd sub && ./run.sh',
+  ]), ['node', 'tee']);
+});
+
+test('round-start accepts a DoD whose quoted script contains a shell separator', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/quoted-separator-dod';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['node -e "process.exitCode = 0 || concord_absent_word"'] }));
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'ahead'], { cwd: repo });
+  const r = runCapture(['round-start', ref, 'HEAD~1'], { env });
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.match(r.stdout, /"decision":"work"/);
 });
