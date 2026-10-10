@@ -33,7 +33,7 @@ const {
 const crypto = require('node:crypto');
 const { canonicalPath, openInitiativeRun, claimBroadSweep, reserveLaunchBatch, denialReason, recordDisposition, finaliseInitiativeRun, consumeDispositionDelivery, escalateInitiativeRun, lockDiagnosis, resolveBaseCommit, repositoryIdentity, runPath, terminalDispositionInLedger } = require('./initiative-review-run');
 const { acquireTarget, gitDiff, gitReviewSnapshot, gitHeadSha, gitDirty } = require('./target');
-const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
+const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape, resolveOnPath } = require('./spawn-cross-platform');
 
 function resolveStateDir(resolveFromCwd) {
   if (process.env.REVIEW_STATE_DIR) return process.env.REVIEW_STATE_DIR;
@@ -1851,6 +1851,20 @@ function runVerb(resolveFromCwd, args, initiative) {
     // Refused before the resets below delete cached artifacts. The base of a resume is the one persisted by its fresh start.
     if (!isFileTarget && !positional[0] && !(ledger.target && ledger.target.base)) {
       throw new Error(`review-cli round-start: missing base -- pass the base ref as the second argument, e.g. "round-start <ref> origin/main"; no base is recorded for "${ref}"`);
+    }
+
+    // Reviewer environment preflight, before any reservation or round artifact:
+    // reviewers run Git and Node, and the DoD runs its commands, from the
+    // environment that launched this CLI. A missing executable otherwise stops
+    // a role mid-run after its launch was charged. The DoD names are skipped
+    // when this run executes no DoD.
+    const dodCommands = isFileTarget || noDodFlagPassed || ledger.dodDeferred ? [] : (dodExec.loadDodConfig(repoRoot).dod || []);
+    const missingExecutables = [
+      ...['git', 'node'].filter((name) => resolveOnPath(name) === null),
+      ...dodExec.missingPrograms(dodExec.commandExecutables(dodCommands), repoRoot),
+    ].filter((name, index, all) => all.indexOf(name) === index);
+    if (missingExecutables.length) {
+      throw new Error(`review-cli round-start: the reviewer environment has no ${missingExecutables.map((name) => `"${name}"`).join(', ')} on PATH; install it or run the review where it is available (DoD commands: ${JSON.stringify(dodCommands)})`);
     }
 
     // Captured before the clearing paths below wipe intent_parked. Handed to the

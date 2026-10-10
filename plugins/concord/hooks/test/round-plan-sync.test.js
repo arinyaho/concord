@@ -192,3 +192,10 @@ test('every gate verifier prompt asks an added finding for its follow-up classif
     assert.ok(text.includes(GATE_VERIFY_ADDED_CLAUSE.trim()), `${name} gate-verify prompt has drifted from round-plan.js`);
   }
 });
+
+test('every manual review driver hands verify the examined paths and certify the declared fix files', () => {
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
+    assert.match(text, /Paste the correctness artifact's `examined` array verbatim into the verify prompt/, `${name} does not hand verify the examined paths`);
+    assert.match(text, /paste the `files` arrays of the group's fix declarations verbatim into its prompt/, `${name} does not hand certify the declared fix files`);
+  }
+});

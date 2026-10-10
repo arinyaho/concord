@@ -73,10 +73,89 @@ function runDodExec({ cwd, commands, execFn }) {
 // Real execFn: a project-authored command string from review.config.json (not
 // untrusted runtime input) run through a shell so compound commands ("cd x &&
 // y") work the same way they would typed at a terminal.
+// The driver's provider executable override is not the DoD's: a test that
+// spawns a provider must not silently reach the driver's real CLI. A command
+// that needs it sets it inline (`CONCORD_CODEX_BIN=... node ...`).
 function defaultExecFn(cmd, cwd) {
   const { spawnSync } = require('node:child_process');
-  const r = spawnSync(cmd, { cwd, shell: true, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
+  const env = { ...process.env };
+  delete env.CONCORD_CODEX_BIN;
+  const r = spawnSync(cmd, { cwd, env, shell: true, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
   return { status: r.status == null ? 1 : r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
-module.exports = { CONFIG_FILENAME, loadDodConfig, runDodExec, defaultExecFn };
+// The words a DoD command list starts: the leading word of each simple
+// command, after any `NAME=value` assignments. A false name would make
+// round-start refuse a DoD that runs fine, while a missed name only fails later
+// where the reviewer's blocked clause catches it, so anything uncertain is left
+// out: a part with a command substitution and a word that is not a plain name
+// (a path, a redirect, a quoted word). Builtins and keywords are named here and
+// resolved by the shell in missingPrograms. A program reached only through
+// another one (an npm script, a shell script, the command after `env`, `exec`
+// or a keyword) is not seen.
+// Splits on `;`, `|`, `||`, `&&` and newlines outside quotes, and drops a
+// comment up to the newline: an unquoted, unescaped `#` at the start of a word,
+// meaning at the start of a part, after a blank, or after one of `(`, `)`, `&`,
+// `<` or `>`. A lone `&` (as in `2>&1`) stays inside its part. Words are split
+// on whitespace outside quotes, so a quoted assignment value such as
+// `GOFLAGS="-mod mod"` is one word, and a backslash escape, including a
+// backslash-newline continuation, stays inside its word.
+function simpleCommands(cmd) {
+  const parts = [];
+  let cur = '';
+  let quote = null;
+  let wordStart = true;
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (c === '\\' && quote !== "'") { cur += c + (cmd[i + 1] || ''); i++; wordStart = false; continue; }
+    if (quote) { if (c === quote) quote = null; cur += c; continue; }
+    if (c === "'" || c === '"') { quote = c; cur += c; wordStart = false; continue; }
+    if (c === '#' && wordStart) { while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++; continue; }
+    if (c === ';' || c === '|' || c === '\n' || (c === '&' && cmd[i + 1] === '&')) {
+      parts.push(cur); cur = ''; wordStart = true;
+      if (c !== ';' && c !== '\n' && cmd[i + 1] === c) i++;
+      continue;
+    }
+    cur += c;
+    wordStart = /[\s()&<>]/.test(c);
+  }
+  parts.push(cur);
+  return parts;
+}
+function commandExecutables(commands) {
+  const names = new Set();
+  for (const cmd of commands || []) {
+    for (const part of simpleCommands(String(cmd))) {
+      if (/\$\(|`/.test(part)) continue;
+      const words = part.trim().replace(/^[({\s]+/, '').match(/(?:[^\s'"\\]|\\[\s\S]|'[^']*'|"(?:[^"\\]|\\[\s\S])*")+/g) || [];
+      const name = words.find((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
+      if (name && /^[A-Za-z0-9_][A-Za-z0-9._+-]*$/.test(name)) names.add(name);
+    }
+  }
+  return [...names];
+}
+
+// The names the DoD's shell cannot run, asked of the shell `shell: true` uses so
+// its builtins and keywords count as present: `/bin/sh` answers with
+// `command -v`; cmd.exe's internal commands are a fixed set.
+const CMD_BUILTINS = new Set(['assoc', 'break', 'call', 'cd', 'chdir', 'cls', 'color', 'copy', 'date', 'del', 'dir', 'echo', 'endlocal', 'erase', 'exit', 'for', 'ftype', 'goto', 'if',
+  'md', 'mkdir', 'mklink', 'move', 'path', 'pause', 'popd', 'prompt', 'pushd', 'rd', 'rem', 'ren', 'rename', 'rmdir', 'set', 'setlocal', 'shift', 'start', 'time', 'title', 'type', 'ver', 'verify', 'vol']);
+function missingPrograms(names, cwd, platform = process.platform) {
+  if (!names.length) return [];
+  if (platform === 'win32') {
+    // cmd.exe looks in the working directory before PATH (a `gradlew.bat` in the repository root runs as `gradlew`).
+    const { resolveOnPath } = require('./spawn-cross-platform');
+    // Lower-case variants too: win32 matches names case-insensitively, and the tests run this branch on Linux.
+    const exts = String(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean).flatMap((e) => [e, e.toLowerCase()]);
+    const inCwd = (name) => (/\.[^.\\/]+$/.test(name) ? [''] : exts).some((ext) => {
+      try { return fs.statSync(path.join(cwd, name + ext)).isFile(); } catch { return false; }
+    });
+    return names.filter((name) => !CMD_BUILTINS.has(name.toLowerCase()) && !inCwd(name) && resolveOnPath(name) === null);
+  }
+  const { spawnSync } = require('node:child_process');
+  const r = spawnSync('/bin/sh', ['-c', 'for n do command -v "$n" >/dev/null 2>&1 || printf "%s\\n" "$n"; done', 'sh', ...names], { cwd, encoding: 'utf8' });
+  if (r.error || r.status !== 0) throw new Error(`dod-exec: could not ask /bin/sh which DoD programs exist: ${r.error ? r.error.message : `exit ${r.status}`}`);
+  return r.stdout.split('\n').filter(Boolean);
+}
+
+module.exports = { CONFIG_FILENAME, loadDodConfig, runDodExec, defaultExecFn, commandExecutables, missingPrograms };

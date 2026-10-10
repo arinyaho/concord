@@ -5924,3 +5924,178 @@ test('rerun keeps the record-fix evidence of a parked finding', () => {
   run(['rerun', 'feat/x'], { env: t.env });
   assert.strictEqual(review.readLedger(t.dir, t.slug).runs[0].fixed[0].fix_evidence.command, 'sh check.sh');
 });
+
+test('round-start refuses before any reservation when a DoD interpreter is missing from the reviewer environment', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/missing-interpreter';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['concord-absent-interpreter -m pytest'] }));
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'ahead'], { cwd: repo });
+  const r = runCapture(['round-start', ref, 'HEAD~1'], { env });
+  assert.notStrictEqual(r.status, 0);
+  assert.match(r.stderr, /concord-absent-interpreter/);
+  assert.doesNotMatch(r.stdout, /"decision":"work"/);
+  assert.strictEqual(review.readLedger(dir, review.targetSlug(ref)), null);
+  assert.deepStrictEqual(fs.readdirSync(dir), []);
+});
+
+test('round-start refuses before anything is written when git is missing or not executable in the reviewer environment', { skip: process.platform === 'win32' }, () => {
+  for (const gitFile of [null, 'not executable']) {
+    const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/missing-git';
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+    execFileSync('git', ['commit', '-aqm', 'ahead'], { cwd: repo });
+    // PATH holds only node, and a git without the execute bit in the second case.
+    const bin = tmpDir();
+    fs.symlinkSync(process.execPath, path.join(bin, 'node'));
+    if (gitFile) fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\n', { mode: 0o644 });
+    const env = { ...process.env, PATH: bin, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+    const r = runCapture(['round-start', ref, 'HEAD~1'], { env });
+    assert.notStrictEqual(r.status, 0, String(gitFile));
+    assert.match(r.stderr, /no "git" on PATH/);
+    assert.deepStrictEqual(fs.readdirSync(dir), []);
+  }
+});
+
+test('round-start refuses before anything is written when node is missing from the reviewer environment', { skip: process.platform === 'win32' }, () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/missing-node';
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'ahead'], { cwd: repo });
+  // PATH holds only git; the CLI is spawned through process.execPath so it runs without node on PATH.
+  const git = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  const bin = tmpDir();
+  fs.symlinkSync(git, path.join(bin, 'git'));
+  const env = { ...process.env, PATH: bin, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  const r = spawnSync(process.execPath, [CLI, ...withBroadDefault(['round-start', ref, 'HEAD~1'], {})], { encoding: 'utf8', env });
+  assert.notStrictEqual(r.status, 0);
+  assert.match(r.stderr, /no "node" on PATH/);
+  assert.doesNotMatch(r.stderr, /no "git" on PATH/);
+  assert.deepStrictEqual(fs.readdirSync(dir), []);
+});
+
+test('round-start with --no-dod does not require the DoD interpreters it will not run', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/missing-interpreter-no-dod';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['concord-absent-interpreter -m pytest'] }));
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'ahead'], { cwd: repo });
+  const r = runCapture(['round-start', ref, 'HEAD~1', '--no-dod'], { env });
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.match(r.stdout, /"decision":"work"/);
+});
+
+test('a resumed round-start on a ledger with sticky --no-dod still does not require the DoD interpreters', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/missing-interpreter-sticky-no-dod';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['concord-absent-interpreter -m pytest'] }));
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'ahead'], { cwd: repo });
+  const first = runCapture(['round-start', ref, 'HEAD~1', '--no-dod'], { env });
+  assert.strictEqual(first.status, 0, first.stderr);
+  assert.strictEqual(review.readLedger(dir, review.targetSlug(ref)).dodDeferred, true);
+  const resumed = runCapture(['round-start', ref], { env });
+  assert.strictEqual(resumed.status, 0, resumed.stderr);
+  assert.match(resumed.stdout, /"decision":"work"/);
+});
+
+test('round-start accepts a DoD that starts with shell builtins the parser cannot tell from programs', { skip: process.platform === 'win32' }, () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/builtin-dod';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['command -v node && ulimit -n; node -e 0'] }));
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'ahead'], { cwd: repo });
+  const r = runCapture(['round-start', ref, 'HEAD~1'], { env });
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.match(r.stdout, /"decision":"work"/);
+});
+
+test('round-start refuses a malformed review.config.json before anything is written', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/malformed-config';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), '{ "dod": [');
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'ahead'], { cwd: repo });
+  const r = runCapture(['round-start', ref, 'HEAD~1'], { env });
+  assert.notStrictEqual(r.status, 0);
+  assert.match(r.stderr, /review\.config\.json/);
+  assert.deepStrictEqual(fs.readdirSync(dir), []);
+});
+
+test('round-start refuses a review.config.json whose dod is not a non-empty array of commands before anything is written', () => {
+  for (const config of [{}, { dod: 'npm test' }, { dod: [] }, { dod: [''] }, { dod: [1] }]) {
+    const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/invalid-dod';
+    const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+    fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify(config));
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+    execFileSync('git', ['add', '-A'], { cwd: repo });
+    execFileSync('git', ['commit', '-qm', 'ahead'], { cwd: repo });
+    const r = runCapture(['round-start', ref, 'HEAD~1'], { env });
+    assert.notStrictEqual(r.status, 0, JSON.stringify(config));
+    assert.match(r.stderr, /review\.config\.json/);
+    assert.deepStrictEqual(fs.readdirSync(dir), []);
+  }
+});
+
+test('commandExecutables names the leading program of each simple DoD command', () => {
+  const dodExec = require('../../core/dod-exec');
+  assert.deepStrictEqual(dodExec.commandExecutables(['cd plugins && FOO=1 node --test x', 'python -m pytest | tee log', 'true; ./scripts/check.sh']), ['cd', 'node', 'python', 'tee', 'true']);
+});
+
+test('commandExecutables never names a word inside quotes, a substitution, a redirect or a path', () => {
+  const dodExec = require('../../core/dod-exec');
+  assert.deepStrictEqual(dodExec.commandExecutables([
+    'node -e "1 || absent_a; absent_b | absent_c"',
+    "node -e 'x && absent_d'",
+    'REV=$(git rev-parse HEAD) node x',
+    'node x 2>&1 | tee out.log',
+    'cd sub && ./run.sh',
+  ]), ['node', 'tee', 'cd']);
+});
+
+test('commandExecutables reads a quoted assignment value as one word, as the shell does', () => {
+  const dodExec = require('../../core/dod-exec');
+  assert.deepStrictEqual(dodExec.commandExecutables(['GOFLAGS="-mod mod -v" go test ./...', "A='x y' npm test"]), ['go', 'npm']);
+});
+
+test('commandExecutables never names a word inside a comment, which ends at a newline', () => {
+  const dodExec = require('../../core/dod-exec');
+  assert.deepStrictEqual(dodExec.commandExecutables(['npm test # lint; fmt', 'node x # c; absent_a\nmake', 'echo a#b; tee', 'echo "#"; cat']), ['npm', 'node', 'make', 'echo', 'tee', 'cat']);
+});
+
+test('commandExecutables starts a comment after an operator but not after an escaped blank, as the shell does', () => {
+  const dodExec = require('../../core/dod-exec');
+  assert.ok(!dodExec.commandExecutables(['(#c; fmt']).includes('fmt'));
+  assert.ok(!dodExec.commandExecutables(['true&#c; fmt']).includes('fmt'));
+  assert.deepStrictEqual(dodExec.commandExecutables(['echo a\\ #b; fmt']), ['echo', 'fmt']);
+});
+
+test('commandExecutables keeps a backslash-newline inside its word and never names a continued word', () => {
+  const dodExec = require('../../core/dod-exec');
+  assert.deepStrictEqual(dodExec.commandExecutables(['FOO="a\\\nb" go test']), ['go']);
+  assert.deepStrictEqual(dodExec.commandExecutables(['np\\\nm test']), []);
+});
+
+test('missingPrograms counts the DoD shell\'s builtins and keywords as present and reports an absent program', { skip: process.platform === 'win32' }, () => {
+  const dodExec = require('../../core/dod-exec');
+  assert.deepStrictEqual(dodExec.missingPrograms(['command', 'ulimit', 'if', 'cd', 'node', 'concord-absent-program'], process.cwd()), ['concord-absent-program']);
+});
+
+test('missingPrograms on win32 counts a program in the DoD working directory as present, as cmd.exe does', () => {
+  const dodExec = require('../../core/dod-exec');
+  const dir = tmpDir();
+  fs.writeFileSync(path.join(dir, 'gradlew.bat'), '@echo off\r\n');
+  assert.deepStrictEqual(dodExec.missingPrograms(['gradlew', 'concord-absent-program'], dir, 'win32'), ['concord-absent-program']);
+});
+
+test('round-start accepts a DoD whose quoted script contains a shell separator', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/quoted-separator-dod';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['node -e "process.exitCode = 0 || concord_absent_word"'] }));
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'ahead'], { cwd: repo });
+  const r = runCapture(['round-start', ref, 'HEAD~1'], { env });
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.match(r.stdout, /"decision":"work"/);
+});

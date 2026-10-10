@@ -135,3 +135,16 @@ test('loadDodConfig guard: {} (dod absent/undefined, not null) still throws harn
   const readFileFn = () => JSON.stringify({});
   assert.throws(() => dodExec.loadDodConfig('/repo', readFileFn), /harness-failure/);
 });
+
+test('a DoD command does not inherit the driver\'s CONCORD_CODEX_BIN override', () => {
+  const previous = process.env.CONCORD_CODEX_BIN;
+  process.env.CONCORD_CODEX_BIN = '/driver/codex';
+  try {
+    const r = dodExec.defaultExecFn(`node -e "process.exit(process.env.CONCORD_CODEX_BIN ? 3 : 0)"`, process.cwd());
+    assert.strictEqual(r.status, 0);
+    const named = dodExec.defaultExecFn(`CONCORD_CODEX_BIN=/named node -e "process.exit(process.env.CONCORD_CODEX_BIN === '/named' ? 0 : 3)"`, process.cwd());
+    assert.strictEqual(named.status, 0);
+  } finally {
+    if (previous === undefined) delete process.env.CONCORD_CODEX_BIN; else process.env.CONCORD_CODEX_BIN = previous;
+  }
+});
