@@ -6,7 +6,7 @@ The `STATE_CLI` locator in review-until-lgtm searches the installed plugin cache
 
 At each ancestor of a candidate script the locator reads, in order, `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json` and `plugin.json`. The first that parses decides that candidate: it is kept when its `name` is `concord` and its `version` is a string, and skipped otherwise. The newest version across the Claude, Codex and Copilot caches wins, whichever host the session runs in. The state CLI reads and writes one state directory format in every host, so a newer copy from another host's cache is safer than an older copy from the session's own host, which is the failure #291 records.
 
-The command stays a single `node -e` line, identical in the three packages because `bin/bundle.mjs` copies the shared skill. `plugins/concord/hooks/test/state-cli-locator.test.js` extracts the command from each package's skill and runs it with `HOME` and `USERPROFILE` pointing at a temporary home that holds fixture caches.
+The command stays a single `node -e` line, identical in the three packages because `plugins/concord-codex/bin/bundle.mjs` and `plugins/concord-copilot/bin/bundle.mjs` copy the shared skill. `plugins/concord/hooks/test/state-cli-locator.test.js` extracts the command from each package's skill and runs it with `HOME` and `USERPROFILE` pointing at a temporary home that holds fixture caches.
 
 ## Transition table
 

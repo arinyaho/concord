@@ -94,3 +94,11 @@ test('the three packages ship the same locator command', () => {
   const [claude, ...others] = SKILLS.map(locatorScript);
   for (const other of others) assert.strictEqual(other, claude);
 });
+
+test('every script path the design note names exists in the repository', () => {
+  const repo = path.join(PLUGINS, '..');
+  const note = fs.readFileSync(path.join(repo, 'docs', 'design', 'state-cli-locator.md'), 'utf8');
+  const scripts = [...note.matchAll(/`([^`\s]+\/[^`\s]+\.m?js)`/g)].map((m) => m[1]);
+  assert.ok(scripts.length > 0);
+  for (const script of scripts) assert.ok(fs.existsSync(path.join(repo, script)), `${script} does not exist`);
+});
