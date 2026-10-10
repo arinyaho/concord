@@ -20,7 +20,7 @@ const artifactContract = require('./artifact-contract');
 const { isValidFindingId } = require('./gate-contract');
 const { same } = require('./review-eval');
 const { PANEL_LENSES } = require('./report');
-const { BLOCKED_CLAUSE, reviewerPrompt } = require('./round-plan');
+const { BLOCKED_CLAUSE, reviewerPrompt, reportedNoEdit } = require('./round-plan');
 const { isWindows, crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
 const { providerFailure, normalizeProviderFailure, reviewContinuation } = require('./provider-failure');
 
@@ -1206,9 +1206,10 @@ async function runRounds(options) {
         throw error;
       }
     };
+    // plan-fixes never gives a file target a round transaction, so only Git reaches it.
     if (planned.transactionScope === 'round' && fixGroups.length) {
       for (const fixGroup of fixGroups) await runFix(fixGroup);
-      if (started.targetType !== 'file') {
+      if (!reportedNoEdit(context.stateDir, context.round, fixGroups)) {
         const transaction = {
           groupId: planned.planId,
           findingIds: fixGroups.flatMap((group) => group.findingIds),
@@ -1221,6 +1222,7 @@ async function runRounds(options) {
       }
     } else for (const fixGroup of fixGroups) {
       await runFix(fixGroup);
+      if (reportedNoEdit(context.stateDir, context.round, [fixGroup])) continue;
       await launch({ role: 'certify', prompt: reviewerPrompt('certify', { ...context, finding: fixGroup.findings[0], fixGroup, fixFiles: declaredFixFiles(context, [fixGroup]) }), repoRoot, stateDir: context.stateDir });
       if (started.targetType !== 'file') {
         const committed = await cli(['commit-fix', ref, fixGroup.groupId]);

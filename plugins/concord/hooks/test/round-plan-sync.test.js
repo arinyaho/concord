@@ -199,3 +199,14 @@ test('every manual review driver hands verify the examined paths and certify the
     assert.match(text, /paste the `files` arrays of the group's fix declarations verbatim into its prompt/, `${name} does not hand certify the declared fix files`);
   }
 });
+
+test('every native driver copy and the packaged plan prompt state the structural evidence binding plan-fixes enforces', () => {
+  const { DESIGN_EVIDENCE_BINDING_CLAUSE } = require(path.join(CORE, 'round-plan'));
+  assert.equal(typeof DESIGN_EVIDENCE_BINDING_CLAUSE, 'string');
+  assert.match(DESIGN_EVIDENCE_BINDING_CLAUSE, /exactly `intent-<slug>\.md`/);
+  assert.match(DESIGN_EVIDENCE_BINDING_CLAUSE, /verbatim/);
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
+    assert.ok(text.includes(DESIGN_EVIDENCE_BINDING_CLAUSE), `${name} step 4 does not state the structural evidence binding byte-for-byte`);
+  }
+  assert.ok(reviewerPrompt('plan', { stateDir: '/state', round: 1, slug: 'feat-x', intentHash: 'h' }).includes(DESIGN_EVIDENCE_BINDING_CLAUSE));
+});

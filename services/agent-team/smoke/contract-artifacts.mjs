@@ -4,7 +4,10 @@
 import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { makeSpawn, fixArtifactPath } from "../src/adapters/spawn_subagent.mjs";
+import { createRequire } from "node:module";
+import { makeSpawn } from "../src/adapters/spawn_subagent.mjs";
+
+const { fixDeclaration } = createRequire(import.meta.url)("../../../plugins/concord/core/round-plan.js");
 
 const stateDir = mkdtempSync(join(tmpdir(), "contract-"));
 const round = 1;
@@ -31,14 +34,16 @@ const reviewOk =
   Array.isArray(reviewArt.findings) &&
   reviewArt.findings.every((f) => typeof f.id === "string" && !f.id.startsWith("intent:"));
 
-// --- fix kind: fix-<id> artifact (only exercised if review actually found something) ---
+// --- fix kind: fix-<safe-group-id> artifact (only exercised if review actually found something) ---
 let fixOk = true;
 let fixArt = null;
-const findingId = reviewArt.findings && reviewArt.findings[0] && reviewArt.findings[0].id;
+const finding = reviewArt.findings && reviewArt.findings[0];
+const findingId = finding && finding.id;
 if (findingId) {
-  await spawn("fix", { stateDir, round, findingId });
-  const fixRaw = readFileSync(fixArtifactPath(stateDir, round, findingId), "utf8");
-  try { fixArt = JSON.parse(fixRaw); } catch (e) { console.error("FAIL: non-JSON fix artifact:", fixRaw.slice(0, 200)); process.exit(1); }
+  const fixGroup = { groupId: findingId, findingIds: [findingId], rootCause: finding.summary, invariants: ["the reported behavior is corrected"], changeClass: "local", structuralEffects: [], action: "fix", findings: [finding] };
+  await spawn("fix", { stateDir, round, ref: "smoke", fixGroup });
+  fixArt = fixDeclaration(stateDir, round, findingId);
+  if (!fixArt) { console.error("FAIL: missing or non-JSON fix artifact"); process.exit(1); }
   fixOk = fixArt.status === "ok" && typeof fixArt.edited === "boolean" && (!fixArt.edited || Array.isArray(fixArt.files));
 }
 

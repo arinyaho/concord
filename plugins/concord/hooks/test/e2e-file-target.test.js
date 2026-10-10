@@ -237,3 +237,115 @@ test('e2e: a file-target run spawns ZERO git processes (PATH-shim git-exec spy)'
 
   void slug;
 });
+
+function startFileRound(fileDir, stateDir, ref, findings) {
+  const env = { ...process.env, REVIEW_STATE_DIR: stateDir, REVIEW_REPO_ROOT: fileDir };
+  const n = JSON.parse(run(['round-start', ref], { env })).round;
+  writeArtifact(stateDir, n, 'correctness', { status: 'ok', examined: ['note.md'], findings });
+  writeArtifact(stateDir, n, 'verify', { status: 'ok', rejected: [], findings: [] });
+  return { env, n };
+}
+
+test('file target: two certified groups are recorded fixed in finding state and review history, and the next round sees fixed history', () => {
+  const fileDir = tempDir('ruit-file-history-');
+  const stateDir = tmpDir();
+  const ref = 'file:note.md';
+  const notePath = path.join(fileDir, 'note.md');
+  fs.writeFileSync(notePath, '# Note\nFirst claim is proven.\nSecond claim is proven.\n');
+  const findings = [
+    { id: 'docreview:first', gate: 'correctness', file: 'note.md', span: 'First claim is proven.', summary: 'unsupported first claim' },
+    { id: 'docreview:second', gate: 'correctness', file: 'note.md', span: 'Second claim is proven.', summary: 'unsupported second claim' },
+  ];
+  const { env, n } = startFileRound(fileDir, stateDir, ref, findings);
+  writeArtifact(stateDir, n, 'plan', { status: 'ok', protocolVersion: 2, groups: findings.map((finding) => ({
+    groupId: finding.id.replace('docreview:', ''), findingIds: [finding.id], rootCause: finding.summary,
+    invariants: ['the document claim is supported'], changeClass: 'local', structuralEffects: [], action: 'fix',
+  })) });
+  const planned = JSON.parse(run(['plan-fixes', ref], { env }));
+  assert.strictEqual(planned.transactionScope, 'group');
+  for (const [groupId, text] of [['first', 'First claim is cited [1].'], ['second', 'Second claim is cited [2].']]) {
+    fs.writeFileSync(notePath, fs.readFileSync(notePath, 'utf8').replace(new RegExp(`${text.split(' ')[0]} claim is proven\\.`), text));
+    writeArtifact(stateDir, n, `fix-${groupId}`, { status: 'ok', edited: true, groupId, files: ['note.md'] });
+  }
+  for (const groupId of ['first', 'second']) writeArtifact(stateDir, n, `certify-${groupId}`, {
+    status: 'ok', groupId, resolvedFindingIds: [`docreview:${groupId}`], files: ['note.md'],
+    fileHashes: { 'note.md': crypto.createHash('sha256').update(fs.readFileSync(notePath)).digest('hex') }, evidence: ['claim now cited'],
+  });
+  run(['record', ref], { env });
+  const ledger = review.readLedger(stateDir, review.targetSlug(ref));
+  for (const finding of findings) {
+    const recorded = ledger.findings.find((candidate) => candidate.id === finding.id);
+    assert.strictEqual(recorded.status, 'fixed');
+    assert.strictEqual(recorded.fix_commit, 'file-edit');
+  }
+  assert.deepStrictEqual(ledger.review_history.map((entry) => [entry.groupId, entry.outcome]), [['first', 'fixed'], ['second', 'fixed']]);
+  const n2 = JSON.parse(run(['round-start', ref], { env })).round;
+  const history = JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n2}-history.json`), 'utf8'));
+  assert.deepStrictEqual(history.groups.map((entry) => [entry.groupId, entry.outcome]), [['first', 'fixed'], ['second', 'fixed']]);
+});
+
+for (const [name, certificate] of [
+  ['missing', null],
+  ['blocked', { status: 'blocked', reason: 'claim still unsupported' }],
+  ['repeating one member in place of another', 'duplicate'],
+]) {
+  test(`record file target: an edit whose certificate is ${name} stays parked and unresolved in history`, () => {
+    const fileDir = tempDir('ruit-file-nocert-');
+    const stateDir = tmpDir();
+    const ref = 'file:note.md';
+    const notePath = path.join(fileDir, 'note.md');
+    fs.writeFileSync(notePath, '# Note\nFirst claim is proven.\nSecond claim is proven.\n');
+    const findings = ['first', 'second'].map((id) => ({ id: `docreview:${id}`, gate: 'correctness', file: 'note.md', span: `${id[0].toUpperCase()}${id.slice(1)} claim is proven.`, summary: 'unsupported claim' }));
+    const { env, n } = startFileRound(fileDir, stateDir, ref, findings);
+    writeArtifact(stateDir, n, 'plan', { status: 'ok', protocolVersion: 2, groups: [{
+      groupId: 'claims', findingIds: findings.map((finding) => finding.id), rootCause: 'unsupported claims',
+      invariants: ['the document claims are supported'], changeClass: 'local', structuralEffects: [], action: 'fix',
+    }] });
+    run(['plan-fixes', ref], { env });
+    fs.writeFileSync(notePath, '# Note\nFirst claim is cited [1].\nSecond claim is cited [2].\n');
+    writeArtifact(stateDir, n, 'fix-claims', { status: 'ok', edited: true, groupId: 'claims', files: ['note.md'] });
+    const fileHashes = { 'note.md': crypto.createHash('sha256').update(fs.readFileSync(notePath)).digest('hex') };
+    if (certificate === 'duplicate') writeArtifact(stateDir, n, 'certify-claims', { status: 'ok', groupId: 'claims', resolvedFindingIds: ['docreview:first', 'docreview:first'], files: ['note.md'], fileHashes, evidence: ['checked'] });
+    else if (certificate) writeArtifact(stateDir, n, 'certify-claims', certificate);
+    run(['record', ref], { env });
+    const ledger = review.readLedger(stateDir, review.targetSlug(ref));
+    for (const finding of findings) assert.strictEqual(ledger.findings.find((candidate) => candidate.id === finding.id).status, 'parked');
+    assert.deepStrictEqual(ledger.review_history.map((entry) => entry.outcome), ['unresolved']);
+  });
+}
+
+test('file target: structural groups that would need one round transaction stop for reconciliation before any fixer runs', () => {
+  const fileDir = tempDir('ruit-file-round-');
+  const stateDir = tmpDir();
+  const ref = 'file:note.md';
+  const notePath = path.join(fileDir, 'note.md');
+  const original = '# Note\nOwner A runs the job.\nOwner B runs the job.\n';
+  fs.writeFileSync(notePath, original);
+  const findings = [
+    { id: 'docreview:owner-a', gate: 'correctness', file: 'note.md', span: 'Owner A runs the job.', summary: 'two owners' },
+    { id: 'docreview:owner-b', gate: 'correctness', file: 'note.md', span: 'Owner B runs the job.', summary: 'two owners' },
+  ];
+  const { env, n } = startFileRound(fileDir, stateDir, ref, findings);
+  const slug = review.targetSlug(ref);
+  const intent = '# Intent\nExactly one owner runs the job.\n';
+  fs.writeFileSync(path.join(stateDir, `intent-${slug}.md`), intent);
+  review.writeLedger(stateDir, slug, { ...review.readLedger(stateDir, slug), intentHash: review.contentHash(intent) });
+  writeArtifact(stateDir, n, 'intent', { status: 'ok', findings: [] });
+  const evidence = { source: `intent-${slug}.md`, sourceHash: review.contentHash(intent), requirements: ['Exactly one owner runs the job.'], uniqueness: 'one owner is required' };
+  writeArtifact(stateDir, n, 'plan', { status: 'ok', protocolVersion: 2, groups: findings.map((finding) => ({
+    groupId: finding.id.replace('docreview:', ''), findingIds: [finding.id], rootCause: finding.summary,
+    invariants: ['Exactly one owner runs the job'], changeClass: 'structural', structuralEffects: ['ownership'], action: 'fix', designEvidence: evidence,
+  })) });
+  const planned = JSON.parse(run(['plan-fixes', ref], { env }));
+  assert.deepStrictEqual(planned.fixGroups, []);
+  assert.strictEqual(planned.reconciliation?.trigger, 'group-reconcile', 'a file target cannot certify a round transaction, so it must stop for a person');
+  assert.strictEqual(planned.reconciliation.reason, 'file targets cannot certify a round transaction; groups that share an invariant need a human decision before editing');
+  assert.strictEqual(planned.reconciliation.avoidedLaunches, 2);
+  assert.deepStrictEqual(planned.reconciliation.groups.map((group) => group.groupId), ['owner-a', 'owner-b']);
+  assert.deepStrictEqual(review.readLedger(stateDir, slug).planned, []);
+  const recorded = JSON.parse(run(['record', ref], { env }));
+  assert.strictEqual(recorded.decision.continue, false);
+  assert.strictEqual(recorded.decision.gatePending, true);
+  assert.deepStrictEqual(review.readLedger(stateDir, slug).review_history.map((entry) => entry.outcome), ['reconcile', 'reconcile']);
+  assert.strictEqual(fs.readFileSync(notePath, 'utf8'), original);
+});

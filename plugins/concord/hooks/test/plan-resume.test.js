@@ -12,7 +12,7 @@ const { tempDir } = require('./temp-dir');
 
 const ref = 'feature/plan-resume';
 const ids = ['correctness:first', 'correctness:second'];
-function fixture({ maxLaunches = 12, incompleteReplacement = false, acceptedInitially = false, repairInitialPlan = false, replacementError = null, cliCopy = 'core', broadIntent = false, keyed = true, failReplacement = false } = {}) {
+function fixture({ maxLaunches = 12, incompleteReplacement = false, acceptedInitially = false, repairInitialPlan = false, replacementError = null, cliCopy = 'core', broadIntent = false, keyed = true, failReplacement = false, duplicateGroupIds = null } = {}) {
   const root = tempDir('plan-resume-');
   const repo = path.join(root, 'repo');
   const stateDir = path.join(root, 'review');
@@ -65,6 +65,7 @@ function fixture({ maxLaunches = 12, incompleteReplacement = false, acceptedInit
     else if (input.role === 'plan') {
       const complete = acceptedInitially || (!incompleteReplacement && launches.filter((role) => role === 'plan').length > 1);
       artifact = { status: repairInitialPlan && launches.filter((role) => role === 'plan').length === 1 ? 'OK' : 'ok', protocolVersion: 2, groups: complete ? [{ groupId: 'shared', findingIds: ids, rootCause: 'shared local defect', invariants: ['both findings fixed'], changeClass: 'local', structuralEffects: [], action: 'fix' }] : [] };
+      if (duplicateGroupIds) artifact.groups = ids.map((id, i) => ({ groupId: duplicateGroupIds[i], findingIds: [id], rootCause: id, invariants: ['fixed'], changeClass: 'local', structuralEffects: [], action: 'fix' }));
       if (launches.filter((role) => role === 'plan').length > 1) {
         if (replacementError === 'status') artifact.status = 'OK';
         // Status case makes this mixed-namespace plan eligible under the existing repair contract.
@@ -91,6 +92,19 @@ async function initialIncomplete(h) {
 function sealed(h) {
   return Object.fromEntries((h.broadIntent ? ['correctness', 'verify', 'intent', 'gate', 'gate-verify'] : ['correctness', 'verify']).map((role) => [role, { hash: h.ledger().execution.artifactHashes[role], bytes: fs.readFileSync(path.join(h.stateDir, `round-1-${role}.json`), 'utf8') }]));
 }
+
+for (const [label, groupIds] of [['repeated', ['same', 'same']], ['filename-colliding', ['foo:bar', 'foo_bar']]]) test(`a plan with a ${label} groupId is a harness failure: no repair, no accepted plan, no fix reservation`, async (t) => {
+  const h = fixture({ duplicateGroupIds: groupIds }); t.after(() => fs.rmSync(h.root, { recursive: true, force: true }));
+  await assert.rejects(runReviewUntilGreen(h.options), /harness-failure: .*group\[0\] and group\[1\]/);
+  assert.deepEqual(h.launches, ['correctness', 'verify', 'plan']);
+  assert.equal(h.calls.some((args) => args[0] === 'plan-fixes'), false);
+  assert.equal(h.calls.some((args) => args[0] === 'reserve' && args[2] === 'fix'), false);
+  assert.equal(h.ledger().fix_plan, undefined);
+  assert.equal(h.ledger().execution.artifactHashes.plan, undefined);
+  assert.equal(fs.existsSync(path.join(h.stateDir, 'round-1-plan.retry')), false);
+  assert.equal(fs.existsSync(path.join(h.stateDir, 'round-1-plan.repair.json')), false);
+  assert.deepEqual(h.initiative().launches.map((launch) => launch.role), ['correctness', 'verify', 'plan']);
+});
 
 test('incomplete v2 plan resume reserves only a new planner, preserves sealed evidence and exact findings', async (t) => {
   const h = fixture(); t.after(() => fs.rmSync(h.root, { recursive: true, force: true }));
