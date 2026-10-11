@@ -5703,6 +5703,26 @@ test('plan-fixes does not stamp a cleared finding the gate raised again and gate
   assert.doesNotMatch(text, /not re-raised/);
 });
 
+test('plan-fixes does not stamp a cleared finding the gate raised again but the fold dropped as dismissed as not re-raised (#283)', () => {
+  const repo = initRepo();
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
+  execFileSync('git', ['commit', '-aqm', 'enable gate'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true })).round;
+  const slug = review.targetSlug('feat/x');
+  const cleared = { id: 'gate:cross-context:dismissed', file: 'a.txt', span: 'two', summary: 'a real gap', rationale: 'r', releaseBlocking: ['serious-bug'], clearedAt: '2026-10-09T00:00:00.000Z' };
+  review.writeLedger(dir, slug, { ...review.readLedger(dir, slug), gate_cleared: [cleared], gate_dismissed: [{ ...cleared, dismissedBy: 'user' }] });
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [{ id: cleared.id, file: 'a.txt', span: 'two', summary: 'a real gap' }] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  run(['plan-fixes', 'feat/x'], { env });
+  assert.strictEqual(review.readLedger(dir, slug).gate_cleared[0].notRaisedRound ?? null, null);
+});
+
 test('plan-fixes does not read a cleared finding dropped as a duplicate of a correctness finding as rejected by gate-verify', () => {
   const repo = initRepo();
   const dir = tmpDir();
@@ -6549,4 +6569,26 @@ test('artifact-normalize repairs a gate-verify artifact that lists a kept candid
   const done = JSON.parse(run(['artifact-repair-candidate', 'feat/kept', 'gate-verify'], { env, broadDefault: true }));
   assert.strictEqual(JSON.parse(run(['artifact-normalize', 'feat/kept', 'gate-verify', '--candidate', done.candidatePath], { env, broadDefault: true })).status, 'ok');
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { status: 'ok', rejected, findings: [] });
+});
+
+test('unexaminedPaths resolves every changed path with one git call and keeps its result (#286)', { skip: process.platform === 'win32' }, () => {
+  const repo = initRepo();
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'same\n');
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'same\n');
+  fs.writeFileSync(path.join(repo, 'c.txt'), 'other\n');
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'files'], { cwd: repo });
+  const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  const log = path.join(tmpDir(), 'git.log');
+  const bin = tmpDir();
+  const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\necho "$1" >> '${log}'\nexec '${realGit}' "$@"\n`, { mode: 0o755 });
+  const pathBefore = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${pathBefore}`;
+  try {
+    // b.txt shares a blob with the examined a.txt; c.txt differs; gone.txt is absent at head.
+    const missing = cli.unexaminedPaths(repo, { target: { head_sha: head } }, ['a.txt', 'b.txt', 'c.txt', 'gone.txt'], ['a.txt']);
+    assert.deepStrictEqual(missing, ['c.txt', 'gone.txt']);
+  } finally { process.env.PATH = pathBefore; }
+  assert.strictEqual(fs.readFileSync(log, 'utf8').trim().split('\n').length, 1);
 });

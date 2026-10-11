@@ -475,11 +475,15 @@ function readChangeManifest(stateDir, ledger, ref, n) {
 function unexaminedPaths(repoRoot, ledger, changed, examinedList) {
   const examined = new Set(examinedList);
   const head = ledger.target?.head_sha;
-  const blob = (file) => { try { return sh('git', ['rev-parse', '--verify', '-q', `${head}:${file}`], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch (_) { return null; } };
   const missing = changed.filter((file) => !examined.has(file));
   if (!missing.length || !head) return missing;
-  const covered = new Set(changed.filter((file) => examined.has(file)).map(blob).filter(Boolean));
-  return missing.filter((file) => !covered.has(blob(file)));
+  // One batched call resolves every path's blob at head; a path absent at head has none.
+  const files = [...new Set(changed)];
+  let out;
+  try { out = sh('git', ['cat-file', '--batch-check'], { cwd: repoRoot, input: files.map((file) => `${head}:${file}\n`).join(''), stdio: ['pipe', 'pipe', 'ignore'] }).split('\n'); } catch (_) { return missing; }
+  const blobs = new Map(files.map((file, i) => [file, /^[0-9a-f]+ blob /.test(out[i] || '') ? out[i].split(' ')[0] : null]));
+  const covered = new Set(changed.filter((file) => examined.has(file)).map((file) => blobs.get(file)).filter(Boolean));
+  return missing.filter((file) => !covered.has(blobs.get(file)));
 }
 
 function readChangedPaths(stateDir, ledger, ref, n) {
@@ -693,14 +697,16 @@ function clearedFindings(ledger, clearedAt = new Date().toISOString()) {
 }
 
 // A gate round that ran stamps its verdict on each cleared finding it did not leave open, so the verdict survives a rerun:
-// `rejectedRound` when gate-verify rejected it, `duplicateRound` when it was dropped as a duplicate of a correctness finding, `notRaisedRound` otherwise.
-function stampNotRaised(cleared, gateApplied, gateOpen, gateRejectedIds, gateDuplicateIds, round) {
+// `rejectedRound` when gate-verify rejected it, `duplicateRound` when it was dropped as a duplicate of a correctness finding, `notRaisedRound` when the gate did not raise it, and no stamp when it raised it again and the fold dropped it.
+function stampNotRaised(cleared, gateApplied, gateOpen, gateRejectedIds, gateDuplicateIds, gateRaisedIds, round) {
   if (!gateApplied) return cleared;
   const open = new Set(gateOpen.map((f) => f.id));
   const rejected = new Set(gateRejectedIds);
   const duplicate = new Set(gateDuplicateIds);
+  const raised = new Set(gateRaisedIds);
   return cleared.map((c) => {
-    if (open.has(c.id) || c.notRaisedRound != null || c.rejectedRound != null || c.duplicateRound != null) return c;
+    // An id the gate raised again but the fold dropped (a dismissed one) was raised, so it is never stamped as not re-raised.
+    if (open.has(c.id) || raised.has(c.id) && !rejected.has(c.id) && !duplicate.has(c.id) || c.notRaisedRound != null || c.rejectedRound != null || c.duplicateRound != null) return c;
     if (rejected.has(c.id)) return { ...c, rejectedRound: round };
     return duplicate.has(c.id) ? { ...c, duplicateRound: round } : { ...c, notRaisedRound: round };
   });
@@ -1205,6 +1211,7 @@ function verifiedRound(ref, stateDir, run, what) {
   // letting the run converge clean over them.
   let gateOpen = ledger.gate_open || [];
   let gateRejectedIds = [];
+  let gateRaisedIds = [];
   let gateDuplicateIds = [];
   if (gateApplied) { // the fold below replaces gateOpen wholesale
     const gJson = readArtifact(stateDir, n, 'gate'); // fail-closed
@@ -1233,6 +1240,7 @@ function verifiedRound(ref, stateDir, run, what) {
     for (const f of verifyFindings) byId.set(f.id, f);
     for (const f of gFindings) byId.set(f.id, f);
     const mergedGateFindings = Array.from(byId.values());
+    gateRaisedIds = mergedGateFindings.map((f) => f.id);
     // A gate duplicate of a correctness finding drops out only while that
     // correctness finding survives its own verifier; otherwise it stands.
     const survivingCorrectness = new Set(candidates.filter((f) => !killed.has(f.id)).map((f) => f.id));
@@ -1268,7 +1276,7 @@ function verifiedRound(ref, stateDir, run, what) {
     gateOpen = thisRound.concat(carried);
   }
   const reopenedIds = confirmedNonKilled.filter((f) => f.reopened).map((f) => f.id);
-  return { repoRoot, slug, ledger, n, isGit, changed, fixes, resolvedAbsent, reopenedIds, intentParked, gateOpen, gateRejectedIds, gateDuplicateIds, gateApplied };
+  return { repoRoot, slug, ledger, n, isGit, changed, fixes, resolvedAbsent, reopenedIds, intentParked, gateOpen, gateRejectedIds, gateDuplicateIds, gateRaisedIds, gateApplied };
 }
 
 // Every mutating target verb takes the same lock, including an unkeyed call
@@ -2765,7 +2773,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       && contentHash(readReviewArtifact(priorPlan, stateDir, 'utf8')) === priorRejection.rejectedHash) {
       throw new Error(`harness-failure: ${priorRejection.message}`);
     }
-    const { repoRoot, slug, ledger, n, isGit, fixes, resolvedAbsent, reopenedIds, intentParked, gateOpen, gateRejectedIds, gateDuplicateIds, gateApplied } = verifiedRound(ref, stateDir, run, 'plan-fixes');
+    const { repoRoot, slug, ledger, n, isGit, fixes, resolvedAbsent, reopenedIds, intentParked, gateOpen, gateRejectedIds, gateDuplicateIds, gateRaisedIds, gateApplied } = verifiedRound(ref, stateDir, run, 'plan-fixes');
     if (ledger.execution?.planRetry?.state === 'exhausted') throw new Error(`harness-failure: ${ledger.execution.planRetry.message}`);
     requirePlanDispatch(ledger);
     const fixById = new Map(fixes.map((finding) => [finding.id, finding]));
@@ -2885,7 +2893,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // Planning the same round again after an interrupted attempt keeps its floor, so that attempt's own commit still counts.
     const journalFloor = { ...(ledger.journal_floor || {}) };
     for (const id of reopenedIds) if (journalFloor[id]?.round !== n) journalFloor[id] = { at: (ledger.journal || []).length, round: n };
-    const next = { ...ledger, journal_floor: journalFloor, execution, planned: reconciliation ? [] : fixes.map((f) => f.id), fix_plan: fixPlan, resolved_absent: resolvedAbsent, intent_parked: intentParked, gate_open: gateOpen, gate_cleared: stampNotRaised(ledger.gate_cleared || [], gateApplied, gateOpen, gateRejectedIds, gateDuplicateIds, n), reconciliation: reconciliationPacket, reconciliationPacket, phase: 'fixes' };
+    const next = { ...ledger, journal_floor: journalFloor, execution, planned: reconciliation ? [] : fixes.map((f) => f.id), fix_plan: fixPlan, resolved_absent: resolvedAbsent, intent_parked: intentParked, gate_open: gateOpen, gate_cleared: stampNotRaised(ledger.gate_cleared || [], gateApplied, gateOpen, gateRejectedIds, gateDuplicateIds, gateRaisedIds, n), reconciliation: reconciliationPacket, reconciliationPacket, phase: 'fixes' };
     writeLedger(stateDir, slug, next);
     process.stdout.write(JSON.stringify({ protocolVersion: 2, planId, transactionScope, fixes: reconciliation ? [] : fixes, fixGroups: reconciliation ? [] : fixGroups, avoidedLaunches: reconciliation ? fixes.length : 0, reconciliation: blockedGroups.length ? reconciliationPacket : reconciliation && { trigger: 'material-finding', finding: material[0].id, stage: 'plan-fixes', findings: material.reduce((counts, finding) => {
       const kind = finding.id.startsWith('gate:design-conformance:') ? 'design-conformance' : finding.id.startsWith('gate:ac-coverage:') ? 'ac-coverage' : finding.id.split(':', 1)[0];
@@ -3184,4 +3192,4 @@ function runMain(resolveFromCwd) {
   }
 }
 
-module.exports = { renderHandoff, gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitCheckoutTree, runDod, main, runMain, withTargetLock };
+module.exports = { unexaminedPaths, renderHandoff, gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitCheckoutTree, runDod, main, runMain, withTargetLock };
