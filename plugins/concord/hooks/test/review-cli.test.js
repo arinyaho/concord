@@ -2433,7 +2433,7 @@ test('manual review drivers restore pending retry prompts and skip completed art
   }
 });
 
-test('manual repair instructions stage only the packet and immutable snapshot', () => {
+test('manual repair instructions run the CLI-built repair without launching a model', () => {
   const root = path.join(__dirname, '..', '..');
   for (const rel of [
     ['core', 'review-driver.md'],
@@ -2441,11 +2441,9 @@ test('manual repair instructions stage only the packet and immutable snapshot', 
     ['..', 'concord-copilot', 'skills', 'review-and-fix', 'references', 'review-driver.md'],
   ]) {
     const md = fs.readFileSync(path.join(root, ...rel), 'utf8');
-    assert.match(md, /artifact-repair-dispatch <ref> <role>.*one-attempt durable state/i, rel.join('/'));
-    assert.match(md, /mktemp -d/, rel.join('/'));
-    assert.match(md, /packet\.json/, rel.join('/'));
-    assert.match(md, /original\.json/, rel.join('/'));
-    assert.match(md, /Never pass a state-directory path to the repair launch/i, rel.join('/'));
+    assert.match(md, /artifact-repair-dispatch <ref> <role>.*builds the candidate from the snapshot without a model/i, rel.join('/'));
+    assert.match(md, /Never launch a model for the repair/i, rel.join('/'));
+    assert.doesNotMatch(md, /mktemp -d/, rel.join('/'));
   }
 });
 
@@ -6420,4 +6418,9 @@ test('artifact-normalize repairs a gate-verify artifact that lists a kept candid
     fs.writeFileSync(repair.repair.candidatePath, JSON.stringify(bad));
     assert.throws(() => run(['artifact-normalize', 'feat/kept', 'gate-verify', '--candidate', repair.repair.candidatePath], { env, broadDefault: true }), /harness-failure/);
   }
+  // the CLI builds the preserving candidate itself, so no model launch is involved (#318)
+  run(['artifact-repair-dispatch', 'feat/kept', 'gate-verify'], { env, broadDefault: true });
+  const done = JSON.parse(run(['artifact-repair-candidate', 'feat/kept', 'gate-verify'], { env, broadDefault: true }));
+  assert.strictEqual(JSON.parse(run(['artifact-normalize', 'feat/kept', 'gate-verify', '--candidate', done.candidatePath], { env, broadDefault: true })).status, 'ok');
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { status: 'ok', rejected, findings: [] });
 });

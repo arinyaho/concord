@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { normalizeArtifact, ArtifactError, retryPrompt, allowedFindingPrefixes, preservesArtifact, repairPacket } = require('../../core/artifact-contract');
+const { normalizeArtifact, ArtifactError, retryPrompt, allowedFindingPrefixes, preservesArtifact, repairPacket, repairCandidate } = require('../../core/artifact-contract');
 
 test('repair preservation accepts plan findingIds, clean verdicts, and reordered object keys', () => {
   const plan = { status: 'OK', protocolVersion: 2, groups: [{ groupId: 'g', findingIds: ['correctness:x'], rootCause: 'one', invariants: [], changeClass: 'local', structuralEffects: [], action: 'fix' }] };
@@ -211,4 +211,18 @@ test('group validation messages name the artifact role, not a literal "verify"',
   assert.throws(planErr, (error) => error.kind === 'retry' && /^plan group\[0\]/.test(error.message));
   assert.throws(() => normalizeArtifact('plan', JSON.stringify({ status: 'ok', protocolVersion: 2, groups: [null] })), /plan group\[0\] is not an object/);
   assert.throws(() => normalizeArtifact('verify', JSON.stringify({ status: 'ok', rejected: [], findings: [], groups: [{ ...group, findingIds: ['gate:cross-context:x'] }] })), /verify group\[0\]/);
+});
+
+test('repairCandidate builds exactly the preserving candidate for each eligible failure (#318)', () => {
+  const cases = [
+    ['correctness', { status: 'OK', examined: ['a.txt'], findings: [] }, { status: 'ok', examined: ['a.txt'], findings: [] }],
+    ['verify', { status: 'ok', rejected: [{ id: 'correctness:a', reason: 'ran it' }, { id: 'gate:cross-context:b', reason: 'foreign' }] }, { status: 'ok', rejected: [{ id: 'correctness:a', reason: 'ran it' }] }],
+    ['gate-verify', { status: 'ok', rejected: [{ id: 'gate:cross-context:a', reason: 'ran it' }], findings: [{ id: 'gate:silent-gap:kept', rationale: 'kept' }] }, { status: 'ok', rejected: [{ id: 'gate:cross-context:a', reason: 'ran it' }], findings: [] }],
+  ];
+  for (const [name, original, expected] of cases) {
+    const candidate = repairCandidate(name, JSON.stringify(original));
+    assert.deepStrictEqual(candidate, expected, name);
+    assert.ok(preservesArtifact(name, JSON.stringify(original), candidate), name);
+    assert.doesNotThrow(() => normalizeArtifact(name, JSON.stringify(candidate)), name);
+  }
 });

@@ -41,8 +41,24 @@ function retryPrompt(name) {
 const dropsInvalidFindings = (name) => !!SHAPES[name] && SHAPES[name].arrays.includes('rejected');
 const lacksFindingFields = (item) => !!item && typeof item === 'object' && !Array.isArray(item) && ['id', 'file', 'summary'].some((field) => typeof item[field] !== 'string' || !item[field]);
 
-function repairPrompt(packetPath, snapshotPath, candidatePath) {
-  return `You are performing artifact-repair, not a review. Read only ${JSON.stringify(packetPath)} and its immutable snapshot ${JSON.stringify(snapshotPath)}. Do not inspect a repository, diff, history, design, or other artifacts. Write only a JSON candidate to ${JSON.stringify(candidatePath)}. Preserve every established item by identity; do not add, remove, relabel, or infer evidence. The one exception: delete each entry of "findings" named in the packet's invalidFindings, which has no evidence to preserve.`;
+function ownsItem(name, item) {
+  const ids = name === 'plan' && item && typeof item === 'object' ? item.findingIds : [typeof item === 'string' ? item : item && item.id];
+  return Array.isArray(ids) && ids.some((id) => typeof id === 'string' && SHAPES[name].prefixes.some((prefix) => id.startsWith(prefix)));
+}
+
+// The only candidate preservesArtifact accepts: the original with its status
+// spelling lowercased, foreign dispositions omitted and invalid findings deleted.
+function repairCandidate(name, raw) {
+  const shape = SHAPES[name];
+  if (!shape) throw new Error(`unknown artifact role: ${name}`);
+  const original = JSON.parse(raw);
+  const candidate = { ...original };
+  if (typeof original.status === 'string') candidate.status = original.status.toLowerCase();
+  for (const key of shape.arrays) {
+    if (key === 'examined' || !Array.isArray(original[key])) continue;
+    candidate[key] = original[key].filter((item) => ownsItem(name, item) && !(key === 'findings' && dropsInvalidFindings(name) && lacksFindingFields(item)));
+  }
+  return candidate;
 }
 
 function repairPacket(name, error, original) {
@@ -66,10 +82,7 @@ function preservesArtifact(name, raw, candidate) {
     : Array.isArray(value) ? `[${value.map(comparable).join(',')}]` : JSON.stringify(value);
   const shape = SHAPES[name];
   if (!shape) return false;
-  const owns = (item) => {
-    const ids = name === 'plan' && item && typeof item === 'object' ? item.findingIds : [typeof item === 'string' ? item : item && item.id];
-    return Array.isArray(ids) && ids.some((id) => typeof id === 'string' && shape.prefixes.some((prefix) => id.startsWith(prefix)));
-  };
+  const owns = (item) => ownsItem(name, item);
   const ownedEvidence = shape.arrays.flatMap((key) => key === 'examined' ? (original[key] || []) : (Array.isArray(original[key]) ? original[key].filter(owns) : []));
   if (!ownedEvidence.length && !shape.arrays.every((key) => Array.isArray(original[key]) && original[key].length === 0)) return false;
   for (const key of Object.keys(original)) {
@@ -247,4 +260,4 @@ function normalizeArtifact(name, raw) {
   return canonical;
 }
 
-module.exports = { ArtifactError, dropsInvalidFindings, normalizeArtifact, retryPrompt, repairPrompt, repairPacket, preservesArtifact, allowedFindingPrefixes, ARTIFACT_ROLES: Object.keys(SHAPES) };
+module.exports = { ArtifactError, dropsInvalidFindings, normalizeArtifact, retryPrompt, repairCandidate, repairPacket, preservesArtifact, allowedFindingPrefixes, ARTIFACT_ROLES: Object.keys(SHAPES) };

@@ -986,7 +986,10 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
       }
       return { status: 'ok' };
     }
-    if (verb === 'artifact-repair-dispatch') return { state: 'dispatched', snapshotPath: path.join(stateDir, `round-${round}-${role}.original`), packetPath: path.join(stateDir, `round-${round}-${role}.packet.json`), candidatePath: path.join(stateDir, `round-${round}-${role}.candidate.json`), originalHash: 'test' };
+    if (verb === 'artifact-repair-dispatch') {
+      fs.copyFileSync(path.join(stateDir, `round-${round}-${role}.original`), path.join(stateDir, `round-${round}-${role}.candidate.json`));
+      return { state: 'dispatched', snapshotPath: path.join(stateDir, `round-${round}-${role}.original`), packetPath: path.join(stateDir, `round-${round}-${role}.packet.json`), candidatePath: path.join(stateDir, `round-${round}-${role}.candidate.json`), originalHash: 'test' };
+    }
     if (verb === 'artifact-repair-candidate') return { state: 'candidate-ready', snapshotPath: path.join(stateDir, `round-${round}-${role}.original`), packetPath: path.join(stateDir, `round-${round}-${role}.packet.json`), candidatePath: path.join(stateDir, `round-${round}-${role}.candidate.json`), originalHash: 'test', candidateHash: 'test' };
     if (verb === 'telemetry-slot') {
       const artifactPath = role;
@@ -1008,11 +1011,6 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
     if (role === failingRole) return { status: 1 };
     const n = round;
     if (role === 'correctness') fs.writeFileSync(path.join(stateDir, `round-${n}-correctness.json`), correctnessArtifact || JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
-    if (role === 'artifact-repair') {
-      const target = prompt.match(/candidate\.json/) && path.join(repoRoot, 'candidate.json');
-      if (!target) throw new Error('repair prompt did not name candidate');
-      fs.copyFileSync(path.join(repoRoot, 'original.json'), target);
-    }
     if (role === 'verify') fs.writeFileSync(path.join(stateDir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
     if (role === 'plan') fs.writeFileSync(path.join(stateDir, `round-${n}-plan.json`), JSON.stringify({ status: 'ok', protocolVersion: 2, groups: [] }));
     if (role === 'gate') fs.writeFileSync(path.join(stateDir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [] }));
@@ -2328,41 +2326,29 @@ test('runner dispatches one artifact repair after a normalization failure', asyn
   const h = harness({ retry: true });
   await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
   assert.strictEqual(h.calls.filter((c) => c[0] === 'spawn' && c[1] === 'correctness').length, 1);
-  assert.strictEqual(h.calls.filter((c) => c[0] === 'spawn' && c[1] === 'artifact-repair').length, 1);
+  assert.strictEqual(h.calls.filter((c) => c[0] === 'cli' && c[1] === 'artifact-repair-dispatch').length, 1);
 });
 
-test('normalization retry is an isolated artifact-repair operation, never a second reviewer launch', async () => {
+test('normalization retry is a CLI-built artifact repair, never a second reviewer launch', async () => {
   const h = harness({ retry: true });
   await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
   const launches = h.calls.filter((call) => call[0] === 'spawn' && call[1] === 'correctness');
   assert.strictEqual(launches.length, 1, 'a substantive reviewer may launch only once');
-  const repair = h.calls.find((call) => call[0] === 'spawn' && call[1] === 'artifact-repair');
-  assert.ok(repair, 'retry must launch artifact-repair');
-  assert.doesNotMatch(repair[2], /Review the diff|REWRITE ARTIFACT/, 'repair receives no substantive reviewer context');
-});
-
-test('artifact repair prompt names the staged packet, immutable snapshot, and candidate paths', async () => {
-  const h = harness({ retry: true });
-  let repairRoot;
-  const spawn = (input) => { if (input.role === 'artifact-repair') repairRoot = input.repoRoot; return h.spawn(input); };
-  await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn });
-  const repair = h.calls.find((call) => call[0] === 'spawn' && call[1] === 'artifact-repair');
-  for (const name of ['packet.json', 'original.json', 'candidate.json']) {
-    assert.ok(repair[2].includes(JSON.stringify(path.join(repairRoot, name))), `repair prompt omitted the staged ${name} path`);
-  }
+  assert.strictEqual(h.calls.filter((call) => call[0] === 'cli' && call[1] === 'artifact-repair-dispatch').length, 1);
+  assert.ok(!h.calls.some((call) => call[0] === 'spawn' && call[1] === 'artifact-repair'), 'repair is built by the CLI, not launched');
 });
 
 test('runner resumes an artifact repair from its retained snapshot', async () => {
   const h = harness({ retryArtifact: { role: 'correctness', prompt: 'RESUME ARTIFACT RETRY' } });
   await runReviewUntilGreen({ ref: 'feature/x', resume: true, repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
   assert.strictEqual(h.calls.filter((call) => call[0] === 'spawn' && call[1] === 'correctness').length, 0);
-  assert.strictEqual(h.calls.filter((call) => call[0] === 'spawn' && call[1] === 'artifact-repair').length, 1);
+  assert.strictEqual(h.calls.filter((call) => call[0] === 'cli' && call[1] === 'artifact-repair-dispatch').length, 1);
 });
 
 test('runner resumes every persisted artifact repair', async () => {
   const h = harness({ gateApplied: true, retryArtifacts: { correctness: 'RESUME CORRECTNESS RETRY', gate: 'RESUME GATE RETRY' } });
   await runReviewUntilGreen({ ref: 'feature/x', resume: true, repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
-  assert.strictEqual(h.calls.filter((call) => call[0] === 'spawn' && call[1] === 'artifact-repair').length, 2);
+  assert.strictEqual(h.calls.filter((call) => call[0] === 'cli' && call[1] === 'artifact-repair-dispatch').length, 2);
 });
 
 test('runner fail-closes a malformed reviewer artifact before verify', async () => {
@@ -2374,7 +2360,7 @@ test('runner fail-closes a malformed reviewer artifact before verify', async () 
 test('runner fails closed when the retry artifact is still invalid', async () => {
   const h = harness({ retry: true, retryForever: true });
   await assert.rejects(runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn }), /artifact repair exhausted/);
-  assert.strictEqual(h.calls.filter((c) => c[0] === 'spawn' && c[1] === 'artifact-repair').length, 1);
+  assert.strictEqual(h.calls.filter((c) => c[0] === 'cli' && c[1] === 'artifact-repair-dispatch').length, 1);
 });
 
 test('runner loops through record continuation and file targets never commit', async () => {
@@ -2917,36 +2903,7 @@ test('reviewOnly preserves its artifact guard during an isolated artifact repair
   };
   const result = await runReviewUntilGreen({ ref: 'feature/repair', base: 'main', repoRoot: repo, runCli: cli, spawn: h.spawn, reviewOnly: true, reviewer: 'codex', noBroad: true });
   assert.deepStrictEqual(result.findings, []);
-  assert.strictEqual(h.calls.filter((c) => c[0] === 'spawn' && c[1] === 'artifact-repair').length, 1);
-});
-
-test('reviewOnly rejects a repair worker that rewrites the trusted source snapshot and descriptor', async () => {
-  const repo = cleanRepo();
-  const stateDir = temp();
-  const h = harness({ stateDir, retry: true });
-  const stem = path.join(stateDir, 'round-1-correctness');
-  const descriptor = `${stem}.repair.json`;
-  let reported = false;
-  const cli = (args) => {
-    if (args[0] === 'findings') return (reported = true, { findings: [] });
-    const result = h.cli(args);
-    if (args[0] === 'artifact-normalize' && result.status === 'repair') fs.writeFileSync(descriptor, JSON.stringify(result.repair));
-    if (args[0] === 'artifact-repair-dispatch' || args[0] === 'artifact-repair-candidate') fs.writeFileSync(descriptor, JSON.stringify(result));
-    return result;
-  };
-  const spawn = (input) => {
-    const result = h.spawn(input);
-    if (input.role === 'artifact-repair') {
-      fs.writeFileSync(`${stem}.original`, '{"status":"ok","examined":[],"findings":[]}');
-      fs.writeFileSync(descriptor, JSON.stringify({ ...JSON.parse(fs.readFileSync(descriptor, 'utf8')), originalHash: 'forged' }));
-    }
-    return result;
-  };
-  await assert.rejects(
-    runReviewUntilGreen({ ref: 'feature/repair-tamper', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'codex', noBroad: true }),
-    /protected review artifact changed/,
-  );
-  assert.strictEqual(reported, false);
+  assert.strictEqual(h.calls.filter((c) => c[0] === 'cli' && c[1] === 'artifact-repair-dispatch').length, 1);
 });
 
 for (const [name, target, action] of [
@@ -3339,4 +3296,31 @@ test('reviewer launches receive the run cliPath as an input and in the child env
   fs.chmodSync(codex, 0o755);
   await codexExec({ role: 'correctness', prompt: 'p', repoRoot: binDir, stateDir: binDir, cliPath, timeoutMs: 15000, codexExecutable: { command: codex, version: 'codex-cli 0.154.0' } });
   assert.strictEqual(fs.readFileSync(dump, 'utf8'), cliPath);
+});
+
+test('a non-Codex reviewer under the Codex driver has a gate-verify kept candidate without file repaired (#318)', async () => {
+  const repo = tempDir('runner-nonCodex-repair-');
+  const stateDir = temp();
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  execFileSync('git', ['config', 'user.email', 'runner@test'], { cwd: repo });
+  execFileSync('git', ['config', 'user.name', 'runner'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n');
+  execFileSync('git', ['add', '.'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'init'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-qam', 'change'], { cwd: repo });
+  const spawned = [];
+  const spawn = (input) => {
+    spawned.push(input.role);
+    const round = Number(input.prompt.match(/round-(\d+)-/)?.[1] || 1);
+    const write = (role, body) => fs.writeFileSync(path.join(input.stateDir, `round-${round}-${role}.json`), JSON.stringify(body));
+    if (input.role === 'correctness') write('correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+    if (input.role === 'verify') write('verify', { status: 'ok', rejected: [] });
+    if (input.role === 'gate') write('gate', { status: 'ok', findings: [{ id: 'gate:silent-gap:kept', file: 'a.txt', span: 'line 1', summary: 'gap' }] });
+    if (input.role === 'gate-verify') write('gate-verify', { status: 'ok', rejected: [], findings: [{ id: 'gate:silent-gap:kept', rationale: 'kept', releaseBlocking: [] }] });
+    return { status: 0 };
+  };
+  await runReviewUntilGreen({ ref: 'feature/x', base: 'HEAD~1', repoRoot: repo, reviewStateDir: stateDir, cliPath: path.join(__dirname, '..', 'review-cli.js'), spawn, reviewer: 'claude', noDod: true, broad: true, reviewOnly: true });
+  assert.ok(spawned.includes('gate-verify'), `gate-verify must run: ${spawned}`);
+  assert.ok(!spawned.includes('artifact-repair'), 'a non-Codex reviewer needs no repair launch');
 });

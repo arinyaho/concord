@@ -1387,14 +1387,6 @@ function runVerb(resolveFromCwd, args, initiative) {
         return reason === 'reconciliation-required' ? { status: reason, role, count, round: ledger.round } : { status: 'denied', role, count, round: ledger.round, ...(reason ? { reason } : {}), ...(diagnosis ? { lockDiagnosis: diagnosis } : {}) };
       }
       const token = crypto.randomBytes(16).toString('hex');
-      const artifact = Object.entries(ARTIFACT_RESERVE_ROLE).find(([, mapped]) => mapped === role)?.[0];
-      if (artifact) {
-        const repairPath = path.join(stateDir, `round-${ledger.round}-${artifact}.repair.json`);
-        try {
-          const repair = JSON.parse(readReviewArtifact(repairPath, stateDir, 'utf8'));
-          if (repair.state === 'prepared' && repair.target?.ref === ref && repair.round === ledger.round) fs.writeFileSync(repairPath, JSON.stringify({ ...repair, state: 'reserved', reservationToken: token }) + '\n');
-        } catch (_) { /* ordinary reviewer reservation */ }
-      }
       const panel = role === 'lens' || role === 'vote' ? (ledger.gate_panel?.round || 0) + 1 : undefined;
       writeLedger(stateDir, slug, { ...ledger, initiative_reservations: [...(ledger.initiative_reservations || []), { token, role, round: ledger.round, ...(panel ? { panel } : {}), count }] });
       return { status: 'granted', role, count, round: ledger.round, token };
@@ -1547,8 +1539,6 @@ function runVerb(resolveFromCwd, args, initiative) {
             const preparedLedger = readLedger(stateDir, slug);
             writeLedger(stateDir, slug, { ...preparedLedger, execution: { ...preparedLedger.execution, planRepairPending: true } });
           }
-          // A retry is a new launch: it must be reserved again before its evidence is accepted.
-          if (run && ARTIFACT_RESERVE_ROLE[name]) writeLedger(stateDir, slug, withSupersededLaunch(readLedger(stateDir, slug), ARTIFACT_RESERVE_ROLE[name], n));
           process.stdout.write(JSON.stringify({ status: 'repair', artifact: name, repair }) + '\n');
           return;
         }
@@ -1565,7 +1555,9 @@ function runVerb(resolveFromCwd, args, initiative) {
     const repairPath = path.join(stateDir, `round-${n}-${name}.repair.json`);
     const repair = JSON.parse(readReviewArtifact(repairPath, stateDir, 'utf8'));
     if (repair.state === 'dispatched') { process.stdout.write(JSON.stringify(repair) + '\n'); return; }
-    if (!['prepared', 'reserved'].includes(repair.state) || repair.target?.ref !== ref || repair.round !== n) throw new Error(`${name} repair binding changed`);
+    if (repair.state !== 'prepared' || repair.target?.ref !== ref || repair.round !== n) throw new Error(`${name} repair binding changed`);
+    const candidate = artifactContract.repairCandidate(name, readReviewArtifact(repair.snapshotPath, stateDir, 'utf8'));
+    writeReviewArtifact(repair.candidatePath, JSON.stringify(candidate) + '\n');
     const dispatched = { ...repair, state: 'dispatched' };
     writeReviewArtifact(repairPath, JSON.stringify(dispatched) + '\n');
     process.stdout.write(JSON.stringify(dispatched) + '\n');
@@ -1618,7 +1610,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       } });
     }
     const execution = ledger.execution || { round: ledger.round, completed: [], pending: [] };
-    const replacement = (failure.role === 'plan' || (failure.role === 'artifact-repair' && execution.planRepairPending)) && execution.planRetry?.launched && execution.planRetry.state !== 'accepted';
+    const replacement = failure.role === 'plan' && execution.planRetry?.launched && execution.planRetry.state !== 'accepted';
     const transport = execution.planTransportRetry;
     const retryable = replacement ? failure.role === 'plan' && failure.retryable === true && (!transport || (transport.state === 'pending' && transport.attempts === 0)) : true;
     const entry = { role: failure.role, kind: failure.kind, message: failure.message, ...(failure.exitCode !== undefined ? { exitCode: failure.exitCode } : {}), ...(failure.signal ? { signal: failure.signal } : {}),

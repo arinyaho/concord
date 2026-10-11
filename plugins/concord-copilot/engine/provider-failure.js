@@ -16,7 +16,7 @@ const MESSAGES = {
 };
 const KINDS = new Set(['subprocess-exit', 'timeout', 'signal', 'interrupted', 'provider-error']);
 const SIGNALS = new Set(['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGABRT', 'SIGSEGV', 'SIGHUP', 'SIGQUIT', 'SIGPIPE', 'SIGBUS', 'SIGILL', 'SIGFPE']);
-const ROLES = new Set(['plan', 'correctness', 'verify', 'intent', 'gate', 'gate-verify', 'gate-review', 'fix', 'certify', 'artifact-repair', 'gate-panel-ac-coverage', 'gate-panel-design-conformance', 'gate-panel-silent-gap', 'gate-panel-threat-model', 'gate-panel-cross-context', 'gate-panel-verify']);
+const ROLES = new Set(['plan', 'correctness', 'verify', 'intent', 'gate', 'gate-verify', 'gate-review', 'fix', 'certify', 'gate-panel-ac-coverage', 'gate-panel-design-conformance', 'gate-panel-silent-gap', 'gate-panel-threat-model', 'gate-panel-cross-context', 'gate-panel-verify']);
 
 function normalizeProviderFailure(failure) {
   const role = ROLES.has(failure.role) ? failure.role : 'provider';
