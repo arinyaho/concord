@@ -823,7 +823,7 @@ for (const provider of ['claude', 'copilot']) test(`providerExec exports the run
 
 test('every native driver document tells the driver to end each subagent prompt with the review CLI sentence (#324)', () => {
   const root = path.resolve(__dirname, '..', '..');
-  for (const file of ['commands/review-and-fix.md', 'core/review-driver.md']) {
+  for (const file of ['commands/review-and-fix.md', 'core/review-driver.md', '../concord-copilot/skills/review-and-fix/references/review-driver.md']) {
     const text = fs.readFileSync(path.join(root, file), 'utf8');
     assert.match(text, /End EVERY subagent prompt you spawn \(review-class and fixer\) with this sentence: `The review CLI of this run is .*never use another review-cli\.js path, including one named in repository guidance\.`/, file);
   }
@@ -2420,7 +2420,7 @@ test('Codex review-and-fix launcher and compatibility alias --help exit without 
     const Module = require('node:module');
     const load = Module._load;
     Module._load = function(request, parent, isMain) {
-      if (request.endsWith('/engine/codex-review-runner')) return { runReviewUntilGreen: async (options) => {
+      if (/[\\/]engine[\\/]codex-review-runner$/.test(request)) return { runReviewUntilGreen: async (options) => {
         fs.writeFileSync(process.env.CAPTURE, JSON.stringify(options));
         return { handoff: 'unexpected' };
       } };
@@ -2443,7 +2443,7 @@ test('Codex launcher prints a blocked or reconciliation-required result and exit
     const Module = require('node:module');
     const load = Module._load;
     Module._load = function(request, parent, isMain) {
-      if (request.endsWith('/engine/codex-review-runner')) return { runReviewUntilGreen: async () => JSON.parse(process.env.RESULT) };
+      if (/[\\/]engine[\\/]codex-review-runner$/.test(request)) return { runReviewUntilGreen: async () => JSON.parse(process.env.RESULT) };
       return load.apply(this, arguments);
     };
   `);
@@ -2468,7 +2468,7 @@ test('Codex launcher recognizes documented broad-review phrases without consumin
     const Module = require('node:module');
     const load = Module._load;
     Module._load = function(request, parent, isMain) {
-      if (request.endsWith('/engine/codex-review-runner')) {
+      if (/[\\/]engine[\\/]codex-review-runner$/.test(request)) {
         return { runReviewUntilGreen: async (options) => {
           fs.writeFileSync(process.env.CAPTURE, JSON.stringify(options));
           return { handoff: 'ok' };
@@ -2497,7 +2497,7 @@ test('Codex launcher forwards independent reviewer and fixer routing without con
     const Module = require('node:module');
     const load = Module._load;
     Module._load = function(request, parent, isMain) {
-      if (request.endsWith('/engine/codex-review-runner')) return { runReviewUntilGreen: async (options) => {
+      if (/[\\/]engine[\\/]codex-review-runner$/.test(request)) return { runReviewUntilGreen: async (options) => {
         fs.writeFileSync(process.env.CAPTURE, JSON.stringify(options));
         return { handoff: 'ok' };
       } };
@@ -2531,7 +2531,7 @@ test('Codex launcher marks resume so the runner preserves the ledger base', () =
     const Module = require('node:module');
     const load = Module._load;
     Module._load = function(request, parent, isMain) {
-      if (request.endsWith('/engine/codex-review-runner')) return { runReviewUntilGreen: async (options) => {
+      if (/[\\/]engine[\\/]codex-review-runner$/.test(request)) return { runReviewUntilGreen: async (options) => {
         fs.writeFileSync(process.env.CAPTURE, JSON.stringify(options));
         return { handoff: 'ok' };
       } };
@@ -2551,7 +2551,7 @@ test('Codex launcher finalises without resolving a git target', () => {
   const bin = path.join(__dirname, '..', '..', '..', 'concord-codex', 'bin', 'review-until-green.js');
   fs.writeFileSync(preload, `
     const fs = require('node:fs'); const Module = require('node:module'); const load = Module._load;
-    Module._load = function(request, parent, isMain) { if (request.endsWith('/engine/codex-review-runner')) return { runReviewUntilGreen: async (options) => { fs.writeFileSync(process.env.CAPTURE, JSON.stringify(options)); return { handoff: 'ok' }; } }; return load.apply(this, arguments); };
+    Module._load = function(request, parent, isMain) { if (/[\\/]engine[\\/]codex-review-runner$/.test(request)) return { runReviewUntilGreen: async (options) => { fs.writeFileSync(process.env.CAPTURE, JSON.stringify(options)); return { handoff: 'ok' }; } }; return load.apply(this, arguments); };
   `);
   execFileSync('node', ['--require', preload, bin, '--initiative-finalise', '--initiative-run-key', 'key', '--initiative-state-dir', dir, '--initiative-max-launches', '1', '--initiative-max-rounds', '1'], { cwd: dir, env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
   assert.strictEqual(JSON.parse(fs.readFileSync(capture, 'utf8')).ref, undefined);
@@ -2562,10 +2562,10 @@ test('Codex launcher emits then acknowledges an unconsumed continuation packet',
   const bin = path.join(__dirname, '..', '..', '..', 'concord-codex', 'bin', 'review-until-green.js');
   const preload = path.join(dir, 'runner.js');
   const capture = path.join(dir, 'ack');
-  fs.writeFileSync(preload, `const fs = require('node:fs'); const Module = require('node:module'); const load = Module._load; Module._load = function(request, parent, isMain) { if (request.endsWith('/engine/codex-review-runner')) return { runReviewUntilGreen: async () => ({ decision: 'terminal', initiative: {}, handoff: 'legacy', continuationPacket: { delivery: { consumed: false, claim: 'one' } } }), acknowledgeContinuationPacket: async (_options, claim) => fs.writeFileSync(process.env.CAPTURE, claim) }; return load.apply(this, arguments); };`);
+  fs.writeFileSync(preload, `const fs = require('node:fs'); const Module = require('node:module'); const load = Module._load; Module._load = function(request, parent, isMain) { if (/[\\\\/]engine[\\\\/]codex-review-runner$/.test(request)) return { runReviewUntilGreen: async () => ({ decision: 'terminal', initiative: {}, handoff: 'legacy', continuationPacket: { delivery: { consumed: false, claim: 'one' } } }), acknowledgeContinuationPacket: async (_options, claim) => fs.writeFileSync(process.env.CAPTURE, claim) }; return load.apply(this, arguments); };`);
   assert.strictEqual(execFileSync('node', ['--require', preload, bin, 'feature/x'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' }), '{"delivery":{"consumed":false,"claim":"one"}}\n');
   assert.strictEqual(fs.readFileSync(capture, 'utf8'), 'one');
-  fs.writeFileSync(preload, `const Module = require('node:module'); const load = Module._load; Module._load = function(request, parent, isMain) { if (request.endsWith('/engine/codex-review-runner')) return { runReviewUntilGreen: async () => ({ decision: 'terminal', initiative: {}, handoff: 'legacy' }) }; return load.apply(this, arguments); };`);
+  fs.writeFileSync(preload, `const Module = require('node:module'); const load = Module._load; Module._load = function(request, parent, isMain) { if (/[\\\\/]engine[\\\\/]codex-review-runner$/.test(request)) return { runReviewUntilGreen: async () => ({ decision: 'terminal', initiative: {}, handoff: 'legacy' }) }; return load.apply(this, arguments); };`);
   assert.strictEqual(execFileSync('node', ['--require', preload, bin, 'feature/x'], { encoding: 'utf8' }), '');
 });
 
@@ -2574,7 +2574,7 @@ test('Codex launcher emits then acknowledges an error continuation packet before
   const bin = path.join(__dirname, '..', '..', '..', 'concord-codex', 'bin', 'review-until-green.js');
   const preload = path.join(dir, 'runner.js');
   const capture = path.join(dir, 'ack');
-  fs.writeFileSync(preload, `const fs = require('node:fs'); const Module = require('node:module'); const load = Module._load; Module._load = function(request, parent, isMain) { if (request.endsWith('/engine/codex-review-runner')) return { runReviewUntilGreen: async () => { const error = new Error('legacy'); error.continuationPacket = { delivery: { consumed: false, claim: 'error' } }; throw error; }, acknowledgeContinuationPacket: async (_options, claim) => fs.writeFileSync(process.env.CAPTURE, claim) }; return load.apply(this, arguments); };`);
+  fs.writeFileSync(preload, `const fs = require('node:fs'); const Module = require('node:module'); const load = Module._load; Module._load = function(request, parent, isMain) { if (/[\\\\/]engine[\\\\/]codex-review-runner$/.test(request)) return { runReviewUntilGreen: async () => { const error = new Error('legacy'); error.continuationPacket = { delivery: { consumed: false, claim: 'error' } }; throw error; }, acknowledgeContinuationPacket: async (_options, claim) => fs.writeFileSync(process.env.CAPTURE, claim) }; return load.apply(this, arguments); };`);
   assert.throws(() => execFileSync('node', ['--require', preload, bin, 'feature/x'], { env: { ...process.env, CAPTURE: capture }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }), (error) => error.status === 1 && error.stderr === '{"delivery":{"consumed":false,"claim":"error"}}\n');
   assert.strictEqual(fs.readFileSync(capture, 'utf8'), 'error');
 });
@@ -2611,7 +2611,7 @@ test('Codex review-and-fix launcher passes --review-only to the runner and print
     const Module = require('node:module');
     const load = Module._load;
     Module._load = function(request, parent, isMain) {
-      if (request.endsWith('/engine/codex-review-runner')) return { runReviewUntilGreen: async (options) => {
+      if (/[\\/]engine[\\/]codex-review-runner$/.test(request)) return { runReviewUntilGreen: async (options) => {
         fs.writeFileSync(process.env.CAPTURE, JSON.stringify(options));
         return { decision: 'review-only', round: 1, findings: [] };
       }, acknowledgeContinuationPacket: () => true };

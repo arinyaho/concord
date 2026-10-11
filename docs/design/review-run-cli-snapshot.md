@@ -16,11 +16,11 @@ Every role prompt built by `reviewerPrompt` ends with one sentence naming the ru
 
 ## Cleanup
 
-The driver removes the snapshot on `exit`; `handleSignals` turns SIGINT and SIGTERM into exits. Each `snapshotRunEngine` call first removes snapshots of killed runs: a direct child of the temp directory whose name matches `^concord-run-(\d+)-[A-Za-z0-9]{6}$`, is a real directory (not a symlink) owned by the current user, whose pid is not running, and whose mtime is over 24 hours old. Deletion targets come only from `mkdtemp` in the same process or that match, never from the ledger, state directory or environment. `resume <ref>` starts a new process and takes a new snapshot of the installed version.
+The driver removes the snapshot on `exit`; `handleSignals` turns SIGINT, SIGTERM and SIGHUP into exits. Each `snapshotRunEngine` call first removes snapshots of killed runs: a direct child of the temp directory whose name matches `^concord-run-(\d+)-[A-Za-z0-9]{6}$`, is a real directory (not a symlink) owned by the current user, whose pid is not running, and whose mtime is over 24 hours old. Deletion targets come only from `mkdtemp` in the same process or that match, never from the ledger, state directory or environment. `resume <ref>` starts a new process and takes a new snapshot of the installed version.
 
-The runner also turns SIGHUP into an exit. A failure while creating the snapshot, including the case where neither the temp directory nor `/tmp` is outside the repository, ends the driver with `review-and-fix: <message>` and exit status 1. A failing removal on `exit` is ignored so it cannot change the run's exit status; the reaper removes the directory later.
+A failure while creating the snapshot, including the case where neither the temp directory nor `/tmp` is outside the repository, ends the driver with `review-and-fix: <message>` and exit status 1. A failing removal on `exit` is ignored so it cannot change the run's exit status; the reaper removes the directory later.
 
-The reaper assumes one pid namespace per temp directory: it judges liveness by pid alone and age by the directory's creation time. A run older than 24 hours in another namespace sharing the temp directory can lose its snapshot, and a reused pid keeps a stale snapshot until that pid ends. A signal during argument parsing or snapshot creation ends the process before the runner's handlers exist and leaves the snapshot to the reaper.
+The reaper assumes one pid namespace per temp directory: it judges liveness by pid alone and age by the directory's modification time. A run older than 24 hours in another namespace sharing the temp directory can lose its snapshot, and a reused pid keeps a stale snapshot until that pid ends. A signal during argument parsing or snapshot creation ends the process before the runner's handlers exist and leaves the snapshot to the reaper.
 
 ## Stateful change
 
