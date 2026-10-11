@@ -628,11 +628,11 @@ function renderReviewReport(ledgers) {
       const action = continuation.retryable ? `resume with \`/review-and-fix resume ${ref}\`` : 'terminal handoff; reconcile the failed planner before continuing';
       lines.push(`review-and-fix [${ref}]: ${roundInfo}${ph}, ${open} open finding(s) -- converging${retry}; ${action}.`);
     } else if (ledger.status === 'parked') {
-      lines.push(`review-and-fix [${ref}]: ${roundInfo}, ${open} open finding(s) -- parked, needs a human decision; see \`review-cli.js show ${ref}\` (unpark a finding with \`review-cli.js unpark ${ref} <findingId>\`).`);
+      lines.push(`review-and-fix [${ref}]: ${roundInfo}, ${open} open finding(s) -- parked, needs a human decision; see \`review-cli.js show ${ref}\` (unpark a finding with \`review-cli.js unpark ${ref} <findingId>\`, or record a fix committed outside the loop with \`review-cli.js record-fix ${ref} <findingId> --commit <sha> --test "<command>"\`).`);
     } else if (ledger.status === 'intent-review') {
       lines.push(`review-and-fix [${ref}]: ${roundInfo} -- stopped for a design-conformance (intent) finding, needs a human decision; re-run \`/review-and-fix ${ref}\` after fixing the code or the design source (a fixed contradiction converges, an unfixed one re-fetches the intent).`);
     } else if (ledger.status === 'gate-pending') {
-      lines.push(`review-and-fix [${ref}]: ${roundInfo} -- stopped for advisory broad review finding(s), needs a human decision; re-run \`/review-and-fix ${ref}\` (a fresh run re-evaluates broad review) or \`review-cli.js dismiss ${ref} <gateId> --by <name>\` for a finding you accept as out-of-scope.`);
+      lines.push(`review-and-fix [${ref}]: ${roundInfo} -- stopped for advisory broad review finding(s), needs a human decision; re-run \`/review-and-fix ${ref}\` (a fresh run re-evaluates broad review), record a fix committed outside the loop with \`review-cli.js record-fix ${ref} <gateId> --commit <sha> --test "<command>"\`, or \`review-cli.js dismiss ${ref} <gateId> --by <name>\` for a finding you accept as out-of-scope.`);
     } else if (ledger.status === 'dod-failed') {
       lines.push(`review-and-fix [${ref}]: ${roundInfo} -- final DoD failed; fix the failure, then re-run \`/review-and-fix ${ref}\` to review the changed diff before retrying DoD.`);
     } else if (ledger.status === 'gate-panel-pending') {

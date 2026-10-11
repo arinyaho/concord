@@ -299,8 +299,8 @@ function renderHandoff(result) {
   for (const r of ledger.runs || []) {
     for (const f of r.gate_open || []) lines.push(`  open in prior run #${r.run}: ${evidenceLine(f)}`);
   }
-  // A finding fixed in a prior run and open, parked, dismissed or killed now is reported once, in its current state.
-  const reopened = new Set([...(ledger.findings || []).filter((f) => f.status === 'parked').map((f) => f.id), ...(ledger.gate_open || []).map((f) => f.id), ...dismissedIds(ledger), ...(ledger.killed_digest || []).map((k) => k.id)]);
+  // A finding fixed in a prior run and open, parked, dismissed, cleared at a restart or killed now is reported once, in its current state.
+  const reopened = new Set([...(ledger.findings || []).filter((f) => f.status === 'parked').map((f) => f.id), ...(ledger.gate_open || []).map((f) => f.id), ...dismissedIds(ledger), ...(ledger.gate_cleared || []).map((c) => c.id), ...(ledger.killed_digest || []).map((k) => k.id)]);
   for (const r of ledger.runs || []) {
     for (const f of (r.fixed || []).filter((fixed) => !reopened.has(fixed.id))) lines.push(`  fixed in prior run #${r.run}: ${evidenceLine(f)} -> commit ${f.fix_commit}${fixTest(f)}`);
   }
@@ -609,7 +609,40 @@ function firstRetryArtifact(retries) {
 const INITIATIVE_FLAGS = [['--initiative-run-key', 'key'], ['--initiative-id', 'initiativeId'], ['--initiative-state-dir', 'stateDir'], ['--initiative-max-launches', 'maxLaunches'], ['--initiative-max-rounds', 'maxRounds']];
 const MODE_FLAG = '--initiative-mode';
 const RUN_VERBS = new Set(['finalise', 'consume', 'escalate', 'session-checkpoint']);
-const CLI_VERBS = ['show', 'round-start', 'telemetry-slot', 'findings', 'plan-fixes', 'plan-dispatch', 'commit-fix', 'record', 'round-failure', 'gate-panel-round-start', 'gate-panel-round-record', 'unpark', 'dismiss', 'record-fix', 'reset', 'rerun', 'artifact-normalize', 'reserve', 'carry', 'finalise', 'consume', 'escalate', 'session-checkpoint', 'feedback'];
+const VERB_HELP = {
+  show: 'print the ledger, handoff and next action for <ref> (read-only)',
+  'round-start': 'start or resume a review round and print the work to do',
+  'telemetry-slot': 'bind a reviewer artifact path to a telemetry slot',
+  findings: 'list the findings the fixer works on, with file excerpts',
+  'plan-fixes': 'turn the verified findings into fix groups',
+  'plan-dispatch': 'grant the planner launch for the round',
+  'commit-fix': 'commit a certified fix transaction',
+  record: 'record the round result and decide: converged, continue or stop',
+  'round-failure': 'record a failed reviewer, planner or fixer launch',
+  'gate-panel-round-start': 'start a gate panel round',
+  'gate-panel-round-record': 'record a gate panel round result',
+  unpark: 'return a parked finding to open',
+  dismiss: 'dismiss a finding with a rationale',
+  'record-fix': 'record a fix committed outside the loop, with red-to-green evidence',
+  reset: 'discard the target ledger',
+  rerun: 'archive the ledger history and start the target over',
+  'artifact-normalize': 'validate a round artifact and print its canonical form, or a repair',
+  'artifact-repair-dispatch': 'build the repair candidate for a rejected artifact',
+  'artifact-repair-candidate': 'mark the repair candidate ready for normalization',
+  reserve: 'reserve initiative launches before a launch',
+  carry: 'carry a budget-blocked round to a new initiative run',
+  finalise: 'finalise the initiative run',
+  consume: 'consume a delivery claim from the initiative run',
+  escalate: 'escalate the initiative run to base review',
+  'session-checkpoint': 'write the session handoff for a packet',
+  feedback: 'record, decide, select, observe or report review feedback',
+};
+const CLI_VERBS = Object.keys(VERB_HELP);
+const HELP_WORDS = ['--help', '-h', 'help'];
+function helpText() {
+  const width = Math.max(...CLI_VERBS.map((verb) => verb.length));
+  return `usage: review-cli.js <verb> <ref> [args]\n\n${CLI_VERBS.map((verb) => `  ${verb.padEnd(width)}  ${VERB_HELP[verb]}`).join('\n')}\n`;
+}
 const RESERVE_ROLES = ['correctness', 'verify', 'plan', 'intent', 'gate-review', 'gate-verify', 'fix', 'certify', 'lens', 'vote'];
 const ARTIFACT_RESERVE_ROLE = { correctness: 'correctness', verify: 'verify', plan: 'plan', intent: 'intent', gate: 'gate-review', 'gate-verify': 'gate-verify' };
 
@@ -637,6 +670,15 @@ function dismissedIds(ledger) {
 function currentGateFixed(ledger) {
   const current = new Set([...(ledger.gate_open || []).map((f) => f.id), ...dismissedIds(ledger)]);
   return (ledger.gate_fixed || []).filter((f) => !current.has(f.id));
+}
+
+// A stopped run (parked or gate-pending) leaves its stop only when neither a parked finding nor a blocking gate finding is left.
+// Every verb that removes a stopping finding (record-fix, dismiss) leaves through here. As on a DoD retry, a gate-pending run's
+// next round reviews only the commits after the reviewed head with a fresh panel; a parked run leaves as unpark would.
+function leaveStopIfClear(stateDir, slug, prior, next) {
+  if (next.findings?.some((f) => f.status === 'parked') || (next.gate_open || []).some((f) => !gateFollowUpEligible(f))) return next;
+  const left = { ...clearIntentForFreshLook(stateDir, slug, next), status: 'converging' };
+  return prior.status === 'gate-pending' ? { ...left, diff_content_hash: null, retry_diff_base: prior.target?.head_sha, gate_panel: gatePanelLib.emptyGatePanel() } : left;
 }
 
 function findingEvidence(f, extra = {}) {
@@ -1233,6 +1275,7 @@ function verifiedRound(ref, stateDir, run, what) {
 // racing the target's first initiative binding. `show` only reads.
 function main(resolveFromCwd) {
   const { args, initiative } = extractInitiative(process.argv.slice(2));
+  if (HELP_WORDS.includes(args[0])) { process.stdout.write(helpText()); return; }
   if (args[0] === 'feedback') {
     if (initiative) throw new Error('feedback: use the project store without initiative mutation flags');
     const result = require('./review-feedback').runFeedback(args.slice(1), process.env.REVIEW_REPO_ROOT || process.cwd());
@@ -1556,7 +1599,11 @@ function runVerb(resolveFromCwd, args, initiative) {
     const repair = JSON.parse(readReviewArtifact(repairPath, stateDir, 'utf8'));
     if (repair.state === 'dispatched') { process.stdout.write(JSON.stringify(repair) + '\n'); return; }
     if (repair.state !== 'prepared' || repair.target?.ref !== ref || repair.round !== n) throw new Error(`${name} repair binding changed`);
-    const candidate = artifactContract.repairCandidate(name, readReviewArtifact(repair.snapshotPath, stateDir, 'utf8'));
+    // The descriptor is editable: write only to the state-directory path, and only from the snapshot it hashed.
+    if (path.resolve(repair.candidatePath) !== path.join(stateDir, `round-${n}-${name}.candidate.json`)) throw new Error(`${name} repair binding changed`);
+    const snapshot = readReviewArtifact(repair.snapshotPath, stateDir);
+    if (contentHash(snapshot) !== repair.originalHash) throw new Error(`${name} repair binding changed`);
+    const candidate = artifactContract.repairCandidate(name, snapshot.toString('utf8'));
     writeReviewArtifact(repair.candidatePath, JSON.stringify(candidate) + '\n');
     const dispatched = { ...repair, state: 'dispatched' };
     writeReviewArtifact(repairPath, JSON.stringify(dispatched) + '\n');
@@ -1907,7 +1954,9 @@ function runVerb(resolveFromCwd, args, initiative) {
     // possibly-new requirements and must re-fetch rather than trip the drift check.
     if (ledger.status === 'gate-pending') {
       ledger = clearIntentForFreshLook(stateDir, slug, ledger);
-      ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_cleared: clearedFindings(ledger), gate_open: [], gate_panel: gatePanelLib.emptyGatePanel(), gate_rounds: [] };
+      // A finding recorded as fixed and raised again is no longer fixed: only the cleared evidence stays.
+      const raised = new Set((ledger.gate_open || []).map((f) => f.id));
+      ledger = { ...ledger, status: 'converging', diff_content_hash: null, gate_cleared: clearedFindings(ledger), gate_fixed: (ledger.gate_fixed || []).filter((f) => !raised.has(f.id)), gate_open: [], gate_panel: gatePanelLib.emptyGatePanel(), gate_rounds: [] };
     }
 
     // gate-panel-pending is also re-runnable: a session may have crashed or been
@@ -2559,7 +2608,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (keptFiles.length && (decision.gatePending || decision.intentReview)) {
       decision = { ...decision, reason: `${decision.reason}; an uncommitted fix edit is kept in ${keptFiles.join(', ')}` };
     } else if (keptFiles.length) {
-      decision = { continue: false, converged: false, parked: true, abandoned: false, dodFailed: false, intentReview: false, gatePending: false, reason: `an uncommitted fix edit is kept in ${keptFiles.join(', ')}; commit or discard it, then unpark` };
+      decision = { continue: false, converged: false, parked: true, abandoned: false, dodFailed: false, intentReview: false, gatePending: false, reason: `an uncommitted fix edit is kept in ${keptFiles.join(', ')}; commit or discard it, then unpark the finding or record the commit with record-fix` };
       applied = { ...applied, status: 'parked' };
     }
     if (isGit && decision.converged && !ledger.dodDeferred) {
@@ -2878,10 +2927,15 @@ function runVerb(resolveFromCwd, args, initiative) {
     const open = (ledger.gate_open || []).find((f) => f.id === gateId);
     const already = (ledger.gate_dismissed || []).find((d) => d.id === gateId);
     if (!open && !already) throw new Error(`review-cli dismiss: ${gateId} is not an open gate finding`);
+    let status = ledger.status;
     if (!already) {
-      writeLedger(stateDir, slug, { ...ledger, gate_dismissed: (ledger.gate_dismissed || []).concat([findingEvidence(open, { dismissedBy: by, dismissedAt: new Date().toISOString() })]), gate_open: (ledger.gate_open || []).filter((f) => f.id !== gateId) });
+      let next = { ...ledger, gate_dismissed: (ledger.gate_dismissed || []).concat([findingEvidence(open, { dismissedBy: by, dismissedAt: new Date().toISOString() })]), gate_open: (ledger.gate_open || []).filter((f) => f.id !== gateId) };
+      // Only dismissing a blocking finding of a stopped run can end its stop.
+      if ((ledger.status === 'parked' || ledger.status === 'gate-pending') && !gateFollowUpEligible(open)) next = leaveStopIfClear(stateDir, slug, ledger, next);
+      writeLedger(stateDir, slug, next);
+      status = next.status;
     }
-    process.stdout.write(`dismissed ${gateId}; it will no longer surface or block for ref "${ref}".\n`);
+    process.stdout.write(`dismissed ${gateId}; it will no longer surface or block for ref "${ref}"; ledger status is "${status}".\n`);
     return;
   }
 
@@ -2941,15 +2995,9 @@ function runVerb(resolveFromCwd, args, initiative) {
     } else {
       // A done panel's confirmed list would merge the fixed finding back into gate_open on the next record, so the panel
       // re-runs fresh whether or not the run leaves its stop now.
-      next = { ...ledger, gate_open: ledger.gate_open.filter((f) => f.id !== findingId), gate_fixed: (ledger.gate_fixed || []).filter((f) => f.id !== findingId).concat([findingEvidence(gate, { fix_commit: commit, fix_evidence: fixEvidence })]), gate_panel: gatePanelLib.emptyGatePanel() };
+      next = { ...ledger, gate_open: ledger.gate_open.filter((f) => f.id !== findingId), gate_cleared: (ledger.gate_cleared || []).filter((f) => f.id !== findingId), gate_fixed: (ledger.gate_fixed || []).filter((f) => f.id !== findingId).concat([findingEvidence(gate, { fix_commit: commit, fix_evidence: fixEvidence })]), gate_panel: gatePanelLib.emptyGatePanel() };
     }
-    // The run leaves its stop only when neither a parked finding nor a blocking gate finding is left.
-    if (!next.findings?.some((f) => f.status === 'parked') && !(next.gate_open || []).some((f) => !gateFollowUpEligible(f))) {
-      next = { ...clearIntentForFreshLook(stateDir, slug, next), status: 'converging' };
-      // As on a DoD retry, a gate-pending run's next round reviews only the commits after the reviewed head with a fresh panel;
-      // a parked run left through a parked finding keeps its panel, as unpark would.
-      if (ledger.status === 'gate-pending') next = { ...next, diff_content_hash: null, retry_diff_base: reviewed, gate_panel: gatePanelLib.emptyGatePanel() };
-    }
+    next = leaveStopIfClear(stateDir, slug, ledger, next);
     writeLedger(stateDir, slug, next);
     process.stdout.write(`recorded ${findingId} as fixed by ${commit}; ledger status is now "${next.status}".\n`);
     return;

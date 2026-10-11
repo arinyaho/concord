@@ -226,3 +226,32 @@ test('repairCandidate builds exactly the preserving candidate for each eligible 
     assert.doesNotThrow(() => normalizeArtifact(name, JSON.stringify(candidate)), name);
   }
 });
+
+test('a verify/gate-verify artifact whose only finding lacks id is repaired by deleting it (#319)', () => {
+  const raw = JSON.stringify({ status: 'ok', rejected: [], findings: [{ file: 'a', summary: 's' }] });
+  const candidate = { status: 'ok', rejected: [], findings: [] };
+  for (const name of ['verify', 'gate-verify']) {
+    assert.ok(preservesArtifact(name, raw, candidate), name);
+    assert.deepStrictEqual(repairCandidate(name, raw), candidate, name);
+  }
+});
+
+test('repairCandidate deletes only entries proven foreign or explicitly invalid and leaves malformed ones for normalization (#329)', () => {
+  const group = { groupId: 'g', rootCause: 'one', invariants: ['i'], changeClass: 'local', action: 'fix' };
+  const cases = [
+    ['verify', { status: 'ok', rejected: [{ id: 'correctness:a', reason: 'r' }, null], findings: [] }],
+    ['verify', { status: 'ok', rejected: [], findings: [], groups: [group] }],
+    ['plan', { status: 'ok', protocolVersion: 2, groups: [group] }],
+    ['correctness', { status: 'ok', examined: [], findings: [null] }],
+  ];
+  for (const [name, original] of cases) {
+    const raw = JSON.stringify(original);
+    const candidate = repairCandidate(name, raw);
+    assert.deepStrictEqual(candidate, original, name);
+    assert.throws(() => normalizeArtifact(name, JSON.stringify(candidate)), ArtifactError, name);
+  }
+  const foreign = { status: 'ok', protocolVersion: 2, groups: [{ ...group, findingIds: ['gate:cross-context:x'] }] };
+  assert.deepStrictEqual(repairCandidate('plan', JSON.stringify(foreign)).groups, []);
+  const tampered = { status: 'ok', rejected: [{ id: 'correctness:a', reason: 'r' }, null], findings: [] };
+  assert.equal(preservesArtifact('verify', JSON.stringify(tampered), { ...tampered, rejected: [{ id: 'correctness:a', reason: 'r' }] }), false);
+});

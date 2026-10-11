@@ -311,7 +311,7 @@ test('replacement repair survives interruption without consuming a second semant
   assert.equal(h.ledger().execution.planRetry.state, 'exhausted');
 });
 
-test('replacement repair requires a separate budgeted reservation', async (t) => {
+test('replacement plan repair stops at budget-exhausted when the launch budget is spent', async (t) => {
   const h = fixture({ replacementError: 'status', maxLaunches: 4 });
   t.after(() => fs.rmSync(h.root, { recursive: true, force: true }));
   await initialIncomplete(h);

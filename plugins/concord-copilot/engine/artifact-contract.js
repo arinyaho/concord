@@ -41,10 +41,14 @@ function retryPrompt(name) {
 const dropsInvalidFindings = (name) => !!SHAPES[name] && SHAPES[name].arrays.includes('rejected');
 const lacksFindingFields = (item) => !!item && typeof item === 'object' && !Array.isArray(item) && ['id', 'file', 'summary'].some((field) => typeof item[field] !== 'string' || !item[field]);
 
-function ownsItem(name, item) {
+// An entry is foreign only when it names ids and none carries an allowed prefix;
+// a malformed entry (null, no id, no findingIds) is the reviewer's own and is left for normalization to reject.
+function isForeign(name, item) {
   const ids = name === 'plan' && item && typeof item === 'object' ? item.findingIds : [typeof item === 'string' ? item : item && item.id];
-  return Array.isArray(ids) && ids.some((id) => typeof id === 'string' && SHAPES[name].prefixes.some((prefix) => id.startsWith(prefix)));
+  return Array.isArray(ids) && ids.length > 0 && ids.every((id) => typeof id === 'string') && !ids.some((id) => SHAPES[name].prefixes.some((prefix) => id.startsWith(prefix)));
 }
+// What a repair may delete from `key`: a foreign entry, or an evidence-less verdict-shape finding.
+const removable = (name, key, item) => isForeign(name, item) || (key === 'findings' && dropsInvalidFindings(name) && lacksFindingFields(item));
 
 // The only candidate preservesArtifact accepts: the original with its status
 // spelling lowercased, foreign dispositions omitted and invalid findings deleted.
@@ -56,7 +60,7 @@ function repairCandidate(name, raw) {
   if (typeof original.status === 'string') candidate.status = original.status.toLowerCase();
   for (const key of shape.arrays) {
     if (key === 'examined' || !Array.isArray(original[key])) continue;
-    candidate[key] = original[key].filter((item) => ownsItem(name, item) && !(key === 'findings' && dropsInvalidFindings(name) && lacksFindingFields(item)));
+    candidate[key] = original[key].filter((item) => !removable(name, key, item));
   }
   return candidate;
 }
@@ -82,8 +86,7 @@ function preservesArtifact(name, raw, candidate) {
     : Array.isArray(value) ? `[${value.map(comparable).join(',')}]` : JSON.stringify(value);
   const shape = SHAPES[name];
   if (!shape) return false;
-  const owns = (item) => ownsItem(name, item);
-  const ownedEvidence = shape.arrays.flatMap((key) => key === 'examined' ? (original[key] || []) : (Array.isArray(original[key]) ? original[key].filter(owns) : []));
+  const ownedEvidence = shape.arrays.flatMap((key) => key === 'examined' ? (original[key] || []) : (Array.isArray(original[key]) ? original[key].filter((item) => !isForeign(name, item)) : []));
   if (!ownedEvidence.length && !shape.arrays.every((key) => Array.isArray(original[key]) && original[key].length === 0)) return false;
   for (const key of Object.keys(original)) {
     if (key === 'status') continue;
@@ -94,7 +97,7 @@ function preservesArtifact(name, raw, candidate) {
         if (!Array.isArray(candidate[key]) || comparable(original[key]) !== comparable(candidate[key])) return false;
         continue;
       }
-      const owned = original[key].filter((item) => owns(item) && !(key === 'findings' && dropsInvalidFindings(name) && lacksFindingFields(item)));
+      const owned = original[key].filter((item) => !removable(name, key, item));
       if (owned.length !== original[key].length) {
         if (!Array.isArray(candidate[key]) || comparable(owned) !== comparable(candidate[key])) return false;
         continue;
