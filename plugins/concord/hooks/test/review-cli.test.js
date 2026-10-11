@@ -6087,10 +6087,10 @@ test('commandExecutables starts a comment after an operator but not after an esc
   assert.deepStrictEqual(dodExec.commandExecutables(['echo a\\ #b; fmt']), ['echo', 'fmt']);
 });
 
-test('commandExecutables keeps a backslash-newline inside its word and never names a continued word', () => {
+test('commandExecutables joins a word continued by a backslash-newline, as the shell does', () => {
   const dodExec = require('../../core/dod-exec');
   assert.deepStrictEqual(dodExec.commandExecutables(['FOO="a\\\nb" go test']), ['go']);
-  assert.deepStrictEqual(dodExec.commandExecutables(['np\\\nm test']), []);
+  assert.deepStrictEqual(dodExec.commandExecutables(['np\\\nm test']), ['npm']);
 });
 
 test('missingPrograms counts the DoD shell\'s builtins and keywords as present and reports an absent program', { skip: process.platform === 'win32' }, () => {
