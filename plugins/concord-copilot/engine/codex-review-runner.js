@@ -651,7 +651,7 @@ async function runRounds(options) {
     }
     telemetry.invocations.push({
       ...(input.telemetrySlot || {}),
-      role, operation: input.operation || 'substantive-review', ...(input.artifactRole ? { launchRole: input.role } : {}), round: currentRound, model: input.requestedModel || result?.requestedModel || null, resolvedModel: result?.resolvedModel || null,
+      role, ...(input.artifactRole ? { launchRole: input.role } : {}), round: currentRound, model: input.requestedModel || result?.requestedModel || null, resolvedModel: result?.resolvedModel || null,
       reasoningEffort: input.reasoningEffort || result?.reasoningEffort || null, serviceTier: input.serviceTier || result?.serviceTier || null,
       status: result && (Number.isInteger(result.status) || result.status === 'failed') ? result.status : null,
       usagePartial: partial, ...values,
@@ -732,7 +732,7 @@ async function runRounds(options) {
         avoidedLaunches: reconciliation?.avoidedLaunches || 0,
         findings: reconciliation?.findings || {},
         checks: result?.checks || checks,
-        telemetry: (output.telemetry?.invocations || []).map(({ role, operation, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, operation, stage: 'review', revision: initiativeRevision, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens })),
+        telemetry: (output.telemetry?.invocations || []).map(({ role, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, stage: 'review', revision: initiativeRevision, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens })),
       });
       // includeConsumed only for 'terminal': its dedup matches regardless of
       // consumption, so a consumed match here is a legitimate concurrent
@@ -986,7 +986,7 @@ async function runRounds(options) {
     };
     const repairPaths = (role) => {
       const stem = path.join(context.stateDir, `round-${context.round}-${role}`);
-      return { snapshot: `${stem}.original`, packet: `${stem}.packet.json`, descriptor: `${stem}.repair.json` };
+      return { snapshot: `${stem}.original`, descriptor: `${stem}.repair.json` };
     };
     const sealRepair = (role) => {
       if (!protectedReviewFiles) return;

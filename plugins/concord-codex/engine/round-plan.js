@@ -46,7 +46,7 @@ const ROLE_SEQUENCE = Object.freeze(['correctness', 'verify', 'intent', 'gate', 
 // that as `blocked` fails the round with no verdict, and a retry reproduces
 // it; `unverifiable` keeps the candidate alive and records why it was not
 // refuted.
-const VERIFIER_ENV_CLAUSE = ' You run in a user namespace: host owners you cannot map, root included, appear as uid 65534. If a probe ran but its result is decided by this environment rather than by the code (an ownership or uid check), do not reject the candidate on it and do not declare blocked; list it in "unverifiable" as {"id":"<candidate id>","reason":"<the probe you ran and the environment property that decided its result>"}. Reject only on evidence you actually ran or read.';
+const VERIFIER_ENV_CLAUSE = ' If your sandbox is a user namespace (the Codex reviewer sandbox is one), host owners it cannot map, root included, appear as uid 65534. If a probe ran but its result is decided by that uid mapping rather than by the code (an ownership or uid check), do not reject the candidate on it and do not declare blocked; list it in "unverifiable" as {"id":"<candidate id>","reason":"<the probe you ran and the environment property that decided its result>"}. Reject only on evidence you actually ran or read.';
 
 const BLOCKED_CLAUSE = ' If you cannot run a tool this task requires (missing, denied by sandbox or permissions, crashed, timed out), do NOT substitute a weaker method and do NOT stay silent: write {"status":"ok","blocked":["<tool>: <what failed>"]} and stop.';
 

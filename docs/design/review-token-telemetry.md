@@ -15,7 +15,7 @@ The measured quantity is a proxy: the sum of provider-reported tokens for review
 
 Both adapters emit one normalized record per review or fix invocation:
 
-- engine, provider, provider-schema version, role, operation, round, invocation ID, requested model, reasoning effort, service tier, and exposed resolved model;
+- engine, provider, provider-schema version, role, round, invocation ID, requested model, reasoning effort, service tier, and exposed resolved model;
 - fresh input, cache-write input, cached input, reasoning output when exposed separately, visible or aggregate output, and total tokens;
 - elapsed milliseconds, terminal status, and `usagePartial`; and
 - the non-negative provider usage numbers used for normalization.

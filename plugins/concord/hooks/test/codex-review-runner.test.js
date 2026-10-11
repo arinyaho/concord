@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
-const { normalizeArtifact } = require('../../core/artifact-contract');
+const { normalizeArtifact, repairCandidate } = require('../../core/artifact-contract');
 const { foldTelemetry } = require('../../core/review-telemetry');
 const { runPath, openInitiativeRun, recordDisposition } = require('../../core/initiative-review-run');
 const { fileTarget } = require('../../core/target');
@@ -980,11 +980,9 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
       const pending = retryArtifacts || (retryArtifact ? { [retryArtifact.role]: retryArtifact.prompt } : {});
       const repairs = Object.fromEntries(Object.keys(pending).map((role) => {
         const snapshotPath = path.join(stateDir, `round-${round}-${role}.original`);
-        const packetPath = path.join(stateDir, `round-${round}-${role}.packet.json`);
         const candidatePath = path.join(stateDir, `round-${round}-${role}.candidate.json`);
         fs.writeFileSync(snapshotPath, JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
-        fs.writeFileSync(packetPath, JSON.stringify({ role }));
-        return [role, { snapshotPath, packetPath, candidatePath, originalHash: 'test', error: 'invalid representation', state: 'prepared' }];
+        return [role, { snapshotPath, candidatePath, originalHash: 'test', error: 'invalid representation', state: 'prepared' }];
       }));
       return { decision: 'work', round, stateDir, targetType, dodPassed: true, dodDeferred, intentApplied: false, gateApplied, retryArtifact, retryArtifacts, repairArtifacts: repairs };
     }
@@ -1001,19 +999,18 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
       if (retry && role === 'correctness' && (!retried || retryForever)) {
         retried = true;
         const snapshotPath = path.join(stateDir, `round-${round}-correctness.original`);
-        const packetPath = path.join(stateDir, `round-${round}-correctness.packet.json`);
         const candidatePath = path.join(stateDir, `round-${round}-correctness.candidate.json`);
         fs.writeFileSync(snapshotPath, fs.readFileSync(path.join(stateDir, `round-${round}-correctness.json`)));
-        fs.writeFileSync(packetPath, JSON.stringify({ role: 'correctness' }));
-        return { status: 'repair', repair: { snapshotPath, packetPath, candidatePath, originalHash: 'test', error: 'invalid representation', state: 'prepared' } };
+        return { status: 'repair', repair: { snapshotPath, candidatePath, originalHash: 'test', error: 'invalid representation', state: 'prepared' } };
       }
       return { status: 'ok' };
     }
     if (verb === 'artifact-repair-dispatch') {
-      fs.copyFileSync(path.join(stateDir, `round-${round}-${role}.original`), path.join(stateDir, `round-${round}-${role}.candidate.json`));
-      return { state: 'dispatched', snapshotPath: path.join(stateDir, `round-${round}-${role}.original`), packetPath: path.join(stateDir, `round-${round}-${role}.packet.json`), candidatePath: path.join(stateDir, `round-${round}-${role}.candidate.json`), originalHash: 'test' };
+      const candidate = repairCandidate(role, fs.readFileSync(path.join(stateDir, `round-${round}-${role}.original`), 'utf8'));
+      fs.writeFileSync(path.join(stateDir, `round-${round}-${role}.candidate.json`), `${JSON.stringify(candidate)}\n`);
+      return { state: 'dispatched', snapshotPath: path.join(stateDir, `round-${round}-${role}.original`), candidatePath: path.join(stateDir, `round-${round}-${role}.candidate.json`), originalHash: 'test' };
     }
-    if (verb === 'artifact-repair-candidate') return { state: 'candidate-ready', snapshotPath: path.join(stateDir, `round-${round}-${role}.original`), packetPath: path.join(stateDir, `round-${round}-${role}.packet.json`), candidatePath: path.join(stateDir, `round-${round}-${role}.candidate.json`), originalHash: 'test', candidateHash: 'test' };
+    if (verb === 'artifact-repair-candidate') return { state: 'candidate-ready', snapshotPath: path.join(stateDir, `round-${round}-${role}.original`), candidatePath: path.join(stateDir, `round-${round}-${role}.candidate.json`), originalHash: 'test', candidateHash: 'test' };
     if (verb === 'telemetry-slot') {
       const artifactPath = role;
       return { engine: 'codex', provider: 'openai', artifactPath, attempt: calls.filter((call) => call[0] === 'cli' && call[1] === 'telemetry-slot' && call[3] === artifactPath).length, role: path.basename(artifactPath).includes('-fix-') ? 'fix' : path.basename(artifactPath).match(/^round-\d+-(.+)\.json$/)?.[1], round, ...slotIdentity };
@@ -1325,11 +1322,11 @@ test('runner reports aggregate and per-role subprocess telemetry', async () => {
       certify: { calls: 1, partialCalls: 0, ...usageByRole.certify, elapsedMs: 30 },
     },
     invocations: [
-      { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-correctness', role: 'correctness', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, operation: 'substantive-review', ...usageByRole.correctness, elapsedMs: 10, artifactPath: path.join(h.stateDir, 'round-1-correctness.json'), attempt: 1 },
-      { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-verify', role: 'verify', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, operation: 'substantive-review', ...usageByRole.verify, elapsedMs: 20, artifactPath: path.join(h.stateDir, 'round-1-verify.json'), attempt: 1 },
-      { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-plan', role: 'plan', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, operation: 'substantive-review', ...usageByRole.plan, elapsedMs: 30, artifactPath: path.join(h.stateDir, 'round-1-plan.json'), attempt: 1 },
-      { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-fix', role: 'fix', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, operation: 'substantive-review', ...usageByRole.fix, elapsedMs: 30, artifactPath: path.join(h.stateDir, 'round-1-fix-correctness_bug.json'), attempt: 1 },
-      { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-certify', role: 'certify', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, operation: 'substantive-review', ...usageByRole.certify, elapsedMs: 30, artifactPath: path.join(h.stateDir, 'round-1-certify-correctness_bug.json'), attempt: 1 },
+      { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-correctness', role: 'correctness', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.correctness, elapsedMs: 10, artifactPath: path.join(h.stateDir, 'round-1-correctness.json'), attempt: 1 },
+      { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-verify', role: 'verify', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.verify, elapsedMs: 20, artifactPath: path.join(h.stateDir, 'round-1-verify.json'), attempt: 1 },
+      { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-plan', role: 'plan', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.plan, elapsedMs: 30, artifactPath: path.join(h.stateDir, 'round-1-plan.json'), attempt: 1 },
+      { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-fix', role: 'fix', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.fix, elapsedMs: 30, artifactPath: path.join(h.stateDir, 'round-1-fix-correctness_bug.json'), attempt: 1 },
+      { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId: 'invocation-certify', role: 'certify', round: 1, model: 'gpt-5.1-codex', resolvedModel: null, reasoningEffort: 'high', serviceTier: 'priority', status: 0, usagePartial: false, ...usageByRole.certify, elapsedMs: 30, artifactPath: path.join(h.stateDir, 'round-1-certify-correctness_bug.json'), attempt: 1 },
     ],
   });
   assert.strictEqual(out.handoff, 'LGTM');
@@ -2943,7 +2940,7 @@ test('normal review keeps its parallel broad worker pool', async () => {
   assert.ok(maximum > 1, 'normal broad reviewers still overlap');
 });
 
-test('reviewOnly preserves its artifact guard during an isolated artifact repair', async () => {
+test('reviewOnly keeps the CLI-written repair descriptor protected after dispatch', async () => {
   const repo = cleanRepo();
   const stateDir = temp();
   const h = harness({ stateDir, retry: true });
@@ -2963,6 +2960,24 @@ test('reviewOnly preserves its artifact guard during an isolated artifact repair
   const result = await runReviewUntilGreen({ ref: 'feature/repair', base: 'main', repoRoot: repo, runCli: cli, spawn: h.spawn, reviewOnly: true, reviewer: 'codex', noBroad: true });
   assert.deepStrictEqual(result.findings, []);
   assert.strictEqual(h.calls.filter((c) => c[0] === 'cli' && c[1] === 'artifact-repair-dispatch').length, 1);
+});
+
+test('reviewOnly rejects a repair descriptor edited after the CLI wrote it', async () => {
+  const stateDir = temp();
+  const h = harness({ stateDir, retry: true });
+  const descriptor = path.join(stateDir, 'round-1-correctness.repair.json');
+  const cli = (args) => {
+    if (args[0] === 'findings') return { findings: [] };
+    if (args[0] === 'artifact-normalize' && args.includes('--candidate')) fs.writeFileSync(descriptor, '{"edited":true}');
+    const result = h.cli(args);
+    if (args[0] === 'artifact-normalize' && result.status === 'repair') fs.writeFileSync(descriptor, JSON.stringify(result.repair));
+    if (args[0] === 'artifact-repair-dispatch' || args[0] === 'artifact-repair-candidate') fs.writeFileSync(descriptor, JSON.stringify(result));
+    return result;
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/repair-edit', base: 'main', repoRoot: cleanRepo(), runCli: cli, spawn: h.spawn, reviewOnly: true, reviewer: 'codex', noBroad: true }),
+    /protected review artifact changed: round-1-correctness\.repair\.json/,
+  );
 });
 
 for (const [name, target, action] of [
@@ -3379,7 +3394,7 @@ test('a non-Codex reviewer under the Codex driver has a gate-verify kept candida
     if (input.role === 'gate-verify') write('gate-verify', { status: 'ok', rejected: [], findings: [{ id: 'gate:silent-gap:kept', rationale: 'kept', releaseBlocking: [] }] });
     return { status: 0 };
   };
-  await runReviewUntilGreen({ ref: 'feature/x', base: 'HEAD~1', repoRoot: repo, reviewStateDir: stateDir, cliPath: path.join(__dirname, '..', 'review-cli.js'), spawn, reviewer: 'claude', noDod: true, broad: true, reviewOnly: true });
-  assert.ok(spawned.includes('gate-verify'), `gate-verify must run: ${spawned}`);
-  assert.ok(!spawned.includes('artifact-repair'), 'a non-Codex reviewer needs no repair launch');
+  const result = await runReviewUntilGreen({ ref: 'feature/x', base: 'HEAD~1', repoRoot: repo, reviewStateDir: stateDir, cliPath: path.join(__dirname, '..', 'review-cli.js'), spawn, reviewer: 'claude', noDod: true, broad: true, reviewOnly: true });
+  assert.deepStrictEqual(spawned, ['correctness', 'gate', 'verify', 'gate-verify'], 'the repair is built by the CLI, so each reviewer role launches once and nothing else');
+  assert.deepStrictEqual(result.findings.map((f) => f.id), ['gate:silent-gap:kept'], 'the kept candidate survives the repair');
 });

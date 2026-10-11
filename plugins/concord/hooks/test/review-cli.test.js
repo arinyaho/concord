@@ -1160,6 +1160,61 @@ test('plan-fixes: a candidate the verifier marks unverifiable in its sandbox sta
   assert.ok(handoff.includes(`[correctness:ownership] ${reason}`));
 });
 
+test('record keeps only unverifiable entries that name a raised candidate, once per id, and the latest round wins (#335)', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env } = seedGatesRound(repo, dir, 'feat/unv-filter',
+    { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:ownership', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' }] },
+    { status: 'ok', rejected: [], findings: [], unverifiable: [
+      { id: 'correctness:ownership', reason: 'new reason' }, { id: 'correctness:ownership', reason: 'new reason' }, { id: 'correctness:never-raised', reason: 'r' }] });
+  const slug = review.targetSlug('feat/unv-filter');
+  review.writeLedger(dir, slug, { ...review.readLedger(dir, slug), unverifiable_digest: [{ id: 'correctness:ownership', round: 0, reason: 'old reason' }] });
+  run(['plan-fixes', 'feat/unv-filter'], { env });
+  run(['record', 'feat/unv-filter'], { env });
+  const l = review.readLedger(dir, slug);
+  assert.deepStrictEqual(l.unverifiable_digest, [{ id: 'correctness:ownership', round: l.round, reason: 'new reason' }]);
+});
+
+test('record surfaces a gate-verify unverifiable entry for a gate finding (#335)', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'], gate: {} }));
+  execFileSync('git', ['commit', '-aqm', 'enable gate'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/unv-gate', 'HEAD~1'], { env, broadDefault: true })).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate.json`), JSON.stringify({ status: 'ok', findings: [{ id: 'gate:cross-context:keep', file: 'other.js', span: 'x', summary: 's', requirement: 'r' }] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [] }));
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [], unverifiable: [{ id: 'gate:cross-context:keep', reason: 'uid probe' }] }));
+  run(['plan-fixes', 'feat/unv-gate'], { env });
+  run(['record', 'feat/unv-gate'], { env });
+  const l = review.readLedger(dir, review.targetSlug('feat/unv-gate'));
+  assert.deepStrictEqual(l.unverifiable_digest, [{ id: 'gate:cross-context:keep', round: l.round, reason: 'uid probe' }]);
+  assert.ok(cli.renderHandoff({ ledger: l }).includes('[gate:cross-context:keep] uid probe'));
+});
+
+test('renderHandoff lists an unverifiable entry only while its finding is unresolved (#335)', () => {
+  const base = { budget: { spent: 1, max_rounds: 5 }, round: 1, status: 'parked', unverifiable_digest: [{ id: 'correctness:a', round: 1, reason: 'ra' }, { id: 'correctness:b', round: 1, reason: 'rb' }, { id: 'correctness:c', round: 1, reason: 'rc' }] };
+  const handoff = cli.renderHandoff({ ledger: { ...base, findings: [{ id: 'correctness:a', status: 'fixed' }], seen: [{ id: 'correctness:b', status: 'killed' }] } });
+  assert.ok(!handoff.includes('[correctness:a] ra') && !handoff.includes('[correctness:b] rb'));
+  assert.ok(handoff.includes('[correctness:c] rc'));
+});
+
+test('artifact-normalize repairs a foreign-namespace id in unverifiable and keeps the verdict (#335)', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n'); execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/unv-mixed', 'HEAD~1', '--broad'], { env, broadDefault: true })).round;
+  const original = { status: 'ok', rejected: [{ id: 'gate:real', reason: 'ran gate' }], findings: [], unverifiable: [{ id: 'gate:ok', reason: 'uid' }, { id: 'correctness:context', reason: 'uid' }] };
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify(original));
+  const repair = JSON.parse(run(['artifact-normalize', 'feat/unv-mixed', 'gate-verify'], { env, broadDefault: true })).repair;
+  run(['artifact-repair-dispatch', 'feat/unv-mixed', 'gate-verify'], { env, broadDefault: true });
+  const done = JSON.parse(run(['artifact-repair-candidate', 'feat/unv-mixed', 'gate-verify'], { env, broadDefault: true }));
+  assert.strictEqual(JSON.parse(run(['artifact-normalize', 'feat/unv-mixed', 'gate-verify', '--candidate', done.candidatePath], { env, broadDefault: true })).status, 'ok');
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(dir, `round-${n}-gate-verify.json`), 'utf8')).unverifiable, [{ id: 'gate:ok', reason: 'uid' }]);
+  assert.ok(repair.candidatePath);
+});
+
 test('plan-fixes: preserves verifier root-cause groups as one atomic fix group', () => {
   const repo = initRepo(); const dir = tmpDir();
   fs.writeFileSync(path.join(repo, 'b.txt'), 'bad b\n');
@@ -6575,7 +6630,6 @@ test('artifact-normalize repairs a gate-verify artifact that lists a kept candid
   fs.writeFileSync(file, JSON.stringify(original));
   const repair = JSON.parse(run(['artifact-normalize', 'feat/kept', 'gate-verify'], { env, broadDefault: true }));
   assert.strictEqual(repair.status, 'repair');
-  assert.ok(!JSON.parse(fs.readFileSync(repair.repair.packetPath, 'utf8')).candidateIds.includes('gate:silent-gap:kept'));
   // a candidate that keeps the entry, or changes the verdict, is not a preserving repair
   for (const bad of [original, { ...original, rejected: [] }]) {
     fs.writeFileSync(repair.repair.candidatePath, JSON.stringify(bad));

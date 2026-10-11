@@ -349,7 +349,9 @@ function renderHandoff(result) {
     lines.push('', 'Killed (rejected as false-positive) -- the reviewer\'s stated basis:');
     for (const k of killedDigest) lines.push(`  - [${k.id}] ${k.reason || '(no basis recorded -- pre-contract artifact)'}`);
   }
-  const unverifiableDigest = ledger.unverifiable_digest || [];
+  // Only a candidate that is still unresolved: a fixed or dismissed finding no longer needs the reviewer's environment.
+  const closedIds = new Set([...(ledger.findings || []).filter((f) => f.status === 'fixed' || f.status === 'resolved'), ...(ledger.seen || []).filter((s) => s.status === 'killed' || s.status === 'fixed')].map((f) => f.id));
+  const unverifiableDigest = (ledger.unverifiable_digest || []).filter((u) => !closedIds.has(u.id));
   if (unverifiableDigest.length) {
     lines.push('', 'Kept unverified in the reviewer environment (the verifier\'s probe depends on its sandbox, so it could not refute these):');
     for (const u of unverifiableDigest) lines.push(`  - [${u.id}] ${u.reason}`);
@@ -1562,7 +1564,7 @@ function runVerb(resolveFromCwd, args, initiative) {
         const statusSpelling = parsed && typeof parsed.status === 'string' && ['ok', 'findings', 'clean'].includes(parsed.status.toLowerCase()) && parsed.status !== parsed.status.toLowerCase();
         const prefixes = artifactContract.allowedFindingPrefixes(name);
         const items = parsed && artifactContract.ARTIFACT_ROLES.includes(name)
-          ? ['rejected', 'findings', 'groups'].flatMap((key) => Array.isArray(parsed[key]) ? parsed[key] : [])
+          ? ['rejected', 'findings', 'groups', 'unverifiable'].flatMap((key) => Array.isArray(parsed[key]) ? parsed[key] : [])
           : [];
         const idOf = (item) => typeof item === 'string' ? item : item && (item.id || item.findingIds);
         const mixedNamespaces = /invalid id/.test(e.message)
@@ -1586,10 +1588,7 @@ function runVerb(resolveFromCwd, args, initiative) {
           const bytes = Buffer.from(raw);
           fs.writeFileSync(snapshotPath, bytes, { flag: 'wx' });
           const candidatePath = path.join(stateDir, `round-${n}-${name}.candidate.json`);
-          const packetPath = path.join(stateDir, `round-${n}-${name}.packet.json`);
-          const packet = artifactContract.repairPacket(name, e.message, raw);
-          fs.writeFileSync(packetPath, JSON.stringify(packet) + '\n', { flag: 'wx', mode: 0o600 });
-          const repair = { target: ledger.target || { ref }, role: name, round: n, diffHash: contentHash(readReviewArtifact(path.join(stateDir, `round-${n}-diff.txt`), stateDir, 'utf8')), originalHash: contentHash(bytes), error: e.message, snapshotPath, packetPath, packetHash: contentHash(readReviewArtifact(packetPath, stateDir)), candidatePath, candidateHash: null, state: 'prepared' };
+          const repair = { target: ledger.target || { ref }, role: name, round: n, diffHash: contentHash(readReviewArtifact(path.join(stateDir, `round-${n}-diff.txt`), stateDir, 'utf8')), originalHash: contentHash(bytes), error: e.message, snapshotPath, candidatePath, candidateHash: null, state: 'prepared' };
           fs.writeFileSync(repairPath, JSON.stringify(repair) + '\n', { flag: 'wx' });
           if (name === 'plan') {
             const preparedLedger = readLedger(stateDir, slug);
@@ -2152,11 +2151,10 @@ function runVerb(resolveFromCwd, args, initiative) {
         if (!fs.existsSync(repairFile)) continue;
         try {
           const repair = JSON.parse(fs.readFileSync(repairFile, 'utf8'));
-          if (repair.round !== resumeRound || repair.target?.ref !== ref || repair.diffHash !== diffHash || !repair.snapshotPath || !repair.packetPath || !repair.candidatePath
+          if (repair.round !== resumeRound || repair.target?.ref !== ref || repair.diffHash !== diffHash || !repair.snapshotPath || !repair.candidatePath
             || contentHash(readReviewArtifact(repair.snapshotPath, stateDir)) !== repair.originalHash
-            || contentHash(readReviewArtifact(repair.packetPath, stateDir)) !== repair.packetHash
             || (repair.candidateHash && contentHash(readReviewArtifact(repair.candidatePath, stateDir)) !== repair.candidateHash)) throw new Error('repair binding invalid');
-          for (const p of [repair.snapshotPath, repair.packetPath, repair.candidatePath, repairFile]) {
+          for (const p of [repair.snapshotPath, repair.candidatePath, repairFile]) {
             if (fs.existsSync(p)) preserved.add(path.basename(p));
           }
         } catch (_) {
@@ -2654,16 +2652,18 @@ function runVerb(resolveFromCwd, args, initiative) {
     ledger = { ...applied, gate_panel_configured: false };
     // Deduped by id: a re-driven round (resume) records the same kills again.
     const priorKilled = new Set((ledger.killed_digest || []).map((k) => k.id));
-    const priorUnverifiable = new Set((ledger.unverifiable_digest || []).map((u) => u.id));
+    // Verifier entries that name a raised candidate (broad or gate); the latest round's reason replaces an earlier one for the same id.
+    const gateJson = readJson('gate'); const gateVerifyJson = readJson('gate-verify');
+    const raisedIds = new Set([...candidates, ...(gateJson?.findings || []), ...(gateVerifyJson?.findings || [])].map((f) => f.id));
+    const unverifiable = new Map((ledger.unverifiable_digest || []).map((u) => [u.id, u]));
+    for (const u of [...(vJson.unverifiable || []), ...(gateVerifyJson?.unverifiable || [])]) if (raisedIds.has(u.id)) unverifiable.set(u.id, { id: u.id, round: n, reason: u.reason });
     ledger = {
       ...ledger,
       killed_digest: (ledger.killed_digest || []).concat(
         killedIds.filter((id) => !priorKilled.has(id)).map((id) => ({ id, round: n, reason: rejectionReasons.get(id) || '' })),
       ),
       // Candidates the verifier could not refute because its sandbox decided the probe; they stay open.
-      unverifiable_digest: (ledger.unverifiable_digest || []).concat(
-        (vJson.unverifiable || []).filter((u) => !priorUnverifiable.has(u.id)).map((u) => ({ id: u.id, round: n, reason: u.reason })),
-      ),
+      unverifiable_digest: [...unverifiable.values()],
     };
     // Park-budget override BEFORE the charge below, so a forced terminus doesn't burn a round.
     if (R.parkBudgetExceeded(ledger, REVIEW_PARK_BUDGET_DEFAULT)) {
@@ -2855,7 +2855,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       writeLedger(stateDir, slug, run ? withSupersededLaunch(rejected, 'plan', n) : rejected);
       // Publish semantic accounting before discarding only the rejected plan's
       // representation bindings. discardRepair covers interruption during cleanup.
-      for (const suffix of ['repair.json', 'original', 'packet.json', 'candidate.json', 'retry']) {
+      for (const suffix of ['repair.json', 'original', 'candidate.json', 'retry']) {
         try { fs.unlinkSync(path.join(stateDir, `round-${n}-plan.${suffix}`)); }
         catch (error) { if (error.code !== 'ENOENT') throw error; }
       }

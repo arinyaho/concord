@@ -51,6 +51,7 @@ function isForeign(name, item) {
   return Array.isArray(ids) && ids.length > 0 && ids.every((id) => typeof id === 'string') && !ids.some((id) => SHAPES[name].prefixes.some((prefix) => id.startsWith(prefix)));
 }
 // What a repair may delete from `key`: a foreign entry, or an evidence-less verdict-shape finding.
+const repairKeys = (name) => dropsInvalidFindings(name) ? [...SHAPES[name].arrays, 'unverifiable'] : SHAPES[name].arrays;
 const removable = (name, key, item) => isForeign(name, item) || (key === 'findings' && dropsInvalidFindings(name) && lacksFindingFields(item));
 
 // The only candidate preservesArtifact accepts: the original with its status
@@ -61,23 +62,11 @@ function repairCandidate(name, raw) {
   const original = JSON.parse(raw);
   const candidate = { ...original };
   if (typeof original.status === 'string') candidate.status = original.status.toLowerCase();
-  for (const key of shape.arrays) {
+  for (const key of repairKeys(name)) {
     if (key === 'examined' || !Array.isArray(original[key])) continue;
     candidate[key] = original[key].filter((item) => !removable(name, key, item));
   }
   return candidate;
-}
-
-function repairPacket(name, error, original) {
-  const shape = SHAPES[name];
-  if (!shape) throw new Error(`unknown artifact role: ${name}`);
-  let parsed;
-  try { parsed = JSON.parse(original); } catch (_) { throw new Error('repair packet requires JSON original'); }
-  const foreign = (value) => typeof value === 'string' && !shape.prefixes.some((prefix) => value.startsWith(prefix));
-  const dropped = (key, item) => key === 'findings' && dropsInvalidFindings(name) && lacksFindingFields(item);
-  const candidateIds = [...new Set(shape.arrays.flatMap((key) => Array.isArray(parsed[key]) ? parsed[key].filter((item) => !dropped(key, item)).map((item) => typeof item === 'string' ? item : item && item.id).filter((id) => typeof id === 'string' && !foreign(id)) : []))];
-  const invalidFindings = Array.isArray(parsed.findings) ? parsed.findings.map((item, index) => ({ item, index })).filter(({ item }) => dropped('findings', item)).map(({ item, index }) => ({ index, id: typeof item.id === 'string' ? item.id : null })) : [];
-  return { role: name, error, ...(invalidFindings.length ? { invalidFindings } : {}), schema: { requiredArrays: shape.arrays, ...(name === 'plan' ? { protocolVersion: 2 } : {}) }, allowedPrefixes: [...shape.prefixes], candidateIds };
 }
 
 function preservesArtifact(name, raw, candidate) {
@@ -95,7 +84,7 @@ function preservesArtifact(name, raw, candidate) {
     if (key === 'status') continue;
     // A repair may omit foreign dispositions only when its role-owned evidence
     // remains complete. The immutable original stays audited.
-    if (shape.arrays.includes(key) && Array.isArray(original[key])) {
+    if (repairKeys(name).includes(key) && Array.isArray(original[key])) {
       if (key === 'examined') {
         if (!Array.isArray(candidate[key]) || comparable(original[key]) !== comparable(candidate[key])) return false;
         continue;
@@ -289,4 +278,4 @@ function normalizeArtifact(name, raw) {
   return canonical;
 }
 
-module.exports = { ArtifactError, dropsInvalidFindings, normalizeArtifact, retryPrompt, repairCandidate, repairPacket, preservesArtifact, allowedFindingPrefixes, ARTIFACT_ROLES: Object.keys(SHAPES) };
+module.exports = { ArtifactError, dropsInvalidFindings, normalizeArtifact, retryPrompt, repairCandidate, preservesArtifact, allowedFindingPrefixes, ARTIFACT_ROLES: Object.keys(SHAPES) };
