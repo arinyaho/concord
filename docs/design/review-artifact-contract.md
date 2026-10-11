@@ -17,6 +17,27 @@ Every fail-closed reviewer in a review round writes one JSON artifact for its ro
 
 Strict normalization rejects IDs outside a role's prefixes, malformed JSON, structurally incomplete findings, and declared blocked checks. It never silently filters cross-namespace entries to make an artifact pass.
 
+### Unverifiable candidates
+
+`verify` and `gate-verify` accept an optional `unverifiable` array of `{"id","reason"}` entries. The id uses the role's prefixes, the reason names the probe that ran and the environment property that decided its result, and an id never appears in both `rejected` and `unverifiable`. An invalid entry retries; a non-array field is fatal.
+
+The Codex reviewer sandbox is a user namespace, so a host owner it cannot map, root included, appears as uid 65534. A probe that checks ownership therefore fails there although the code passes on the host. The verifier lists such a candidate in `unverifiable` instead of declaring `blocked`. An `unverifiable` entry is not a rejection: the candidate survives into planning like any finding the verifier did not refute, so the field can keep a finding but never remove one and cannot produce a clean verdict. `record` stores the entries in the ledger's `unverifiable_digest`, deduplicated by id, and the handoff lists them under "Kept unverified in the reviewer environment". `gate-verify` entries stay in the round artifact only.
+
+`blocked` stays fatal for a tool that is missing, denied, crashed or timed out. The verify and gate-verify prompts tell the reviewer about the user namespace.
+
+The sandbox is not relaxed. A project-level setting that runs probes outside the sandbox is a permissions change for the reviewer subprocess and is not part of this contract. A kept candidate that the fixer finds nothing to change ends in a `needs-decision` park for a human.
+
+The change is stateful through `unverifiable_digest`:
+
+| State | Event | Outcome | Kind | Evidence |
+|---|---|---|---|---|
+| verify artifact with `blocked` and a sandbox-decided probe | normalize | fatal, round has no verdict | unchanged | `blocked stays fatal for a missing or crashed probe tool even when unverifiable is present` |
+| verify artifact with `unverifiable` and no `blocked` | normalize | canonical artifact keeps the entries | introduced | `a verify probe decided by the reviewer sandbox is recorded as unverifiable` |
+| id in both `rejected` and `unverifiable` | normalize | retry; nothing recorded | introduced | `an unverifiable entry with a candidate that is also rejected retries` |
+| unverifiable candidate, first `record` | record | candidate stays open; entry added to `unverifiable_digest` with its round | introduced | `plan-fixes: a candidate the verifier marks unverifiable in its sandbox stays open and is shown in the handoff` |
+| same round re-recorded on resume | record | no second entry for the id | introduced | the id filter in `record`, untested because it mirrors `killed_digest` |
+| ledger without `unverifiable_digest` | record, handoff | treated as empty | introduced | `plan-fixes: a candidate the verifier marks unverifiable in its sandbox stays open and is shown in the handoff` starts from a ledger without the field |
+
 ### Git review scope
 
 A Git round captures its patch and changed-path manifest from the same fixed comparison endpoints. Manifest object IDs accept both Git SHA-1 and SHA-256 formats. The path inventory uses NUL-delimited Git output with rename detection disabled, so both rename paths, deletions, binary changes, empty additions and mode-only changes participate in correctness coverage. Patch display headers do not define the coverage set.

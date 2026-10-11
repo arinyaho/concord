@@ -29,11 +29,14 @@ function retryPrompt(name) {
   const rejectedRule = shape.arrays.includes('rejected')
     ? ` Each "rejected" entry is an object {"id":"<finding id>","reason":"<one line naming what you actually ran, measured, or read to reject it>"} -- a bare id string is not accepted.`
     : '';
+  const unverifiableRule = name === 'verify' || name === 'gate-verify'
+    ? ' An optional "unverifiable" array holds {"id":"<candidate id>","reason":"<the probe you ran and the environment property that decided its result>"} entries for candidates whose probe result depends on your sandbox rather than the code; keep it, and never list an id both there and in "rejected".'
+    : '';
   const groupsRule = name === 'plan' ? ' A v2 plan must classify every surviving finding into exactly one group; never invent an implicit singleton.' : name === 'verify' ? ' The optional "groups" array is legacy evidence only and cannot authorize edits.' : '';
   const ownershipRule = name === 'gate-verify'
     ? ` This artifact role is gate-verify. The only allowed finding ID prefix is ${prefixes}. ${allowedFindingPrefixes('verify').map((prefix) => `${prefix}*`).join(' and ')} candidates are context only and must not be dispositioned in this artifact; their disposition belongs to the correctness verifier. The optional "blocking" array holds {"id":"<gate id>","reason":"<one line>"} entries for gate candidates you judge release-blocking despite a follow-up claim. The optional "duplicates" array holds {"id":"<gate id>","of":"<correctness id>"} entries for gate candidates that restate a correctness candidate. Rewrite only the gate candidates' verdict, preserve the original evidence, and do not delete evidence merely to manufacture a clean verdict.`
     : '';
-  return `Rewrite only round artifact ${name} as JSON: {"status":"ok",${name === 'plan' ? '"protocolVersion":2,' : ''}${fields}}. Findings require id, file, and summary; ids must use ${prefixes}<stable-slug>.${rejectedRule}${groupsRule}${ownershipRule} Do not add prose or other extra top-level fields, with one exception: if you could not run the method you were assigned, keep (or add) "blocked":["<tool>: <what failed>"] -- never drop it to make this artifact validate.`;
+  return `Rewrite only round artifact ${name} as JSON: {"status":"ok",${name === 'plan' ? '"protocolVersion":2,' : ''}${fields}}. Findings require id, file, and summary; ids must use ${prefixes}<stable-slug>.${rejectedRule}${unverifiableRule}${groupsRule}${ownershipRule} Do not add prose or other extra top-level fields, with one exception: if you could not run the method you were assigned, keep (or add) "blocked":["<tool>: <what failed>"] -- never drop it to make this artifact validate.`;
 }
 
 // verify and gate-verify may list a kept candidate in a verdict shape; such an
@@ -163,6 +166,29 @@ function normalizeArtifact(name, raw) {
       if (typeof reason !== 'string' || !reason.trim()) throw new ArtifactError('retry', `${name} rejected[${index}] ("${id}") has no "reason" -- every rejection must state in one line what was actually run, measured, or read to reject it`);
       return { id, reason: reason.trim() };
     });
+  }
+  // A verifier whose probe ran but whose result is decided by the reviewer's
+  // own environment (the Codex sandbox's user namespace shows unmapped host
+  // owners as uid 65534) lists the candidate here instead of declaring
+  // `blocked`. The candidate is not rejected, so it survives like any
+  // unrefuted finding: this field can only keep a finding alive, never kill
+  // one, and cannot manufacture a clean verdict. `blocked` stays fatal for a
+  // tool that was missing, denied, crashed, or timed out.
+  if (name === 'verify' || name === 'gate-verify') {
+    if (parsed.unverifiable !== undefined) {
+      if (!Array.isArray(parsed.unverifiable)) throw new ArtifactError('fatal', `${name} artifact field "unverifiable" must be an array`);
+      canonical.unverifiable = parsed.unverifiable.map((entry, index) => {
+        const id = entry && typeof entry === 'object' ? entry.id : undefined;
+        if (typeof id !== 'string' || !isValidFindingId(id) || !shape.prefixes.some((prefix) => id.startsWith(prefix))) throw new ArtifactError('retry', `${name} unverifiable[${index}] has invalid id "${typeof entry === 'string' ? entry : id}"`);
+        const reason = entry.reason;
+        if (typeof reason !== 'string' || !reason.trim()) throw new ArtifactError('retry', `${name} unverifiable[${index}] ("${id}") has no "reason" -- name the probe you ran and the environment property that decided its result`);
+        return { id, reason: reason.trim() };
+      });
+      const rejectedIds = new Set(canonical.rejected.map((entry) => entry.id));
+      for (const entry of canonical.unverifiable) {
+        if (rejectedIds.has(entry.id)) throw new ArtifactError('retry', `${name} lists "${entry.id}" as both rejected and unverifiable; a candidate is either rejected on evidence or unverifiable in this environment`);
+      }
+    }
   }
   if (name === 'gate-verify' && parsed.blocking !== undefined) {
     if (!Array.isArray(parsed.blocking)) throw new ArtifactError('fatal', 'gate-verify artifact field "blocking" must be an array');

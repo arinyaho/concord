@@ -1143,6 +1143,23 @@ test('plan-fixes: returns confirmed, non-killed, still-open findings and sets ph
   assert.deepStrictEqual(l.planned, ['correctness:real']);
 });
 
+test('plan-fixes: a candidate the verifier marks unverifiable in its sandbox stays open and is shown in the handoff (#332)', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const reason = 'python probe: ValueError unsafe root ancestor (uid 65534 in the sandbox user namespace)';
+  const { env } = seedGatesRound(repo, dir, 'feat/unverifiable',
+    { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:ownership', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' }] },
+    { status: 'ok', rejected: [], findings: [], unverifiable: [{ id: 'correctness:ownership', reason }] });
+  const out = JSON.parse(run(['plan-fixes', 'feat/unverifiable'], { env }));
+  assert.deepStrictEqual(out.fixes.map((f) => f.id), ['correctness:ownership']);
+  run(['record', 'feat/unverifiable'], { env });
+  const l = review.readLedger(dir, review.targetSlug('feat/unverifiable'));
+  assert.deepStrictEqual(l.unverifiable_digest, [{ id: 'correctness:ownership', round: l.round, reason }]);
+  assert.strictEqual((l.killed_digest || []).length, 0);
+  const handoff = cli.renderHandoff({ ledger: l });
+  assert.match(handoff, /Kept unverified in the reviewer environment/);
+  assert.ok(handoff.includes(`[correctness:ownership] ${reason}`));
+});
+
 test('plan-fixes: preserves verifier root-cause groups as one atomic fix group', () => {
   const repo = initRepo(); const dir = tmpDir();
   fs.writeFileSync(path.join(repo, 'b.txt'), 'bad b\n');

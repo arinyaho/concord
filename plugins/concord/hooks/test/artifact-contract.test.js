@@ -136,6 +136,40 @@ test('a reviewer that reports a blocked tool fails the round instead of producin
   assert.throws(() => normalizeArtifact('verify', raw), (e) => e instanceof ArtifactError && e.kind === 'fatal' && /browser launch denied/.test(e.message));
 });
 
+test('a verify probe decided by the reviewer sandbox is recorded as unverifiable, not as a failed round (#332)', () => {
+  const entry = { id: 'correctness:x', reason: 'python probe: ValueError unsafe root ancestor (uid 65534 in the sandbox user namespace)' };
+  const out = normalizeArtifact('verify', JSON.stringify({ status: 'ok', rejected: [], findings: [], unverifiable: [{ ...entry, reason: `  ${entry.reason}  ` }] }));
+  assert.deepStrictEqual(out, { status: 'ok', rejected: [], findings: [], unverifiable: [entry] });
+});
+
+test('unverifiable is accepted from gate-verify only for gate ids', () => {
+  const ok = normalizeArtifact('gate-verify', '{"status":"ok","rejected":[],"findings":[],"unverifiable":[{"id":"gate:y","reason":"ownership probe"}]}');
+  assert.deepStrictEqual(ok.unverifiable, [{ id: 'gate:y', reason: 'ownership probe' }]);
+  assert.throws(() => normalizeArtifact('gate-verify', '{"status":"ok","unverifiable":[{"id":"correctness:x","reason":"r"}]}'), (e) => e instanceof ArtifactError && e.kind === 'retry');
+});
+
+for (const [label, raw] of [
+  ['a candidate that is also rejected', '{"status":"ok","rejected":[{"id":"correctness:x","reason":"ran it"}],"unverifiable":[{"id":"correctness:x","reason":"env"}]}'],
+  ['a foreign id prefix', '{"status":"ok","unverifiable":[{"id":"gate:x","reason":"env"}]}'],
+  ['an empty reason', '{"status":"ok","unverifiable":[{"id":"correctness:x","reason":" "}]}'],
+  ['a bare id string', '{"status":"ok","unverifiable":["correctness:x"]}'],
+]) test(`an unverifiable entry with ${label} retries`, () => {
+  assert.throws(() => normalizeArtifact('verify', raw), (e) => e instanceof ArtifactError && e.kind === 'retry');
+});
+
+test('a non-array unverifiable field is fatal, like the other verdict arrays', () => {
+  assert.throws(() => normalizeArtifact('verify', '{"status":"ok","unverifiable":"x"}'), (e) => e instanceof ArtifactError && e.kind === 'fatal');
+});
+
+test('blocked stays fatal for a missing or crashed probe tool even when unverifiable is present (#332)', () => {
+  const raw = '{"status":"ok","rejected":[],"blocked":["python probe: ValueError unsafe root ancestor"],"unverifiable":[{"id":"correctness:x","reason":"env"}]}';
+  assert.throws(() => normalizeArtifact('verify', raw), (e) => e instanceof ArtifactError && e.kind === 'fatal' && /could not run/.test(e.message));
+});
+
+test('only the verifiers accept unverifiable; other roles drop it as an unsupported field', () => {
+  assert.deepStrictEqual(normalizeArtifact('correctness', '{"status":"ok","examined":[],"findings":[],"unverifiable":[{"id":"correctness:x","reason":"r"}]}'), { status: 'ok', examined: [], findings: [] });
+});
+
 test('an empty blocked array is a clean reviewer, not a failure', () => {
   assert.deepStrictEqual(normalizeArtifact('verify', '{"status":"ok","rejected":[],"blocked":[]}'), { status: 'ok', rejected: [], findings: [] });
 });
@@ -254,4 +288,15 @@ test('repairCandidate deletes only entries proven foreign or explicitly invalid 
   assert.deepStrictEqual(repairCandidate('plan', JSON.stringify(foreign)).groups, []);
   const tampered = { status: 'ok', rejected: [{ id: 'correctness:a', reason: 'r' }, null], findings: [] };
   assert.equal(preservesArtifact('verify', JSON.stringify(tampered), { ...tampered, rejected: [{ id: 'correctness:a', reason: 'r' }] }), false);
+});
+
+test('verify and gate-verify prompts and retry prompts tell the reviewer about the sandbox user namespace and "unverifiable" (#332)', () => {
+  const { reviewerPrompt } = require('../../core/round-plan');
+  for (const role of ['verify', 'gate-verify']) {
+    const prompt = reviewerPrompt(role, { stateDir: '/state', round: 1, targetType: 'git', slug: 'feat-x' });
+    assert.match(prompt, /user namespace/);
+    assert.match(prompt, /"unverifiable"/);
+    assert.match(retryPrompt(role), /"unverifiable"/);
+  }
+  assert.doesNotMatch(retryPrompt('correctness'), /unverifiable/);
 });

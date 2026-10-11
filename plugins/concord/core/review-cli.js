@@ -349,6 +349,11 @@ function renderHandoff(result) {
     lines.push('', 'Killed (rejected as false-positive) -- the reviewer\'s stated basis:');
     for (const k of killedDigest) lines.push(`  - [${k.id}] ${k.reason || '(no basis recorded -- pre-contract artifact)'}`);
   }
+  const unverifiableDigest = ledger.unverifiable_digest || [];
+  if (unverifiableDigest.length) {
+    lines.push('', 'Kept unverified in the reviewer environment (the verifier\'s probe depends on its sandbox, so it could not refute these):');
+    for (const u of unverifiableDigest) lines.push(`  - [${u.id}] ${u.reason}`);
+  }
   const intentParked = ledger.intent_parked || [];
   if (intentParked.length) {
     lines.push('', 'Intent findings (design conformance -- your decision; fix code or source, then re-run):');
@@ -2649,10 +2654,15 @@ function runVerb(resolveFromCwd, args, initiative) {
     ledger = { ...applied, gate_panel_configured: false };
     // Deduped by id: a re-driven round (resume) records the same kills again.
     const priorKilled = new Set((ledger.killed_digest || []).map((k) => k.id));
+    const priorUnverifiable = new Set((ledger.unverifiable_digest || []).map((u) => u.id));
     ledger = {
       ...ledger,
       killed_digest: (ledger.killed_digest || []).concat(
         killedIds.filter((id) => !priorKilled.has(id)).map((id) => ({ id, round: n, reason: rejectionReasons.get(id) || '' })),
+      ),
+      // Candidates the verifier could not refute because its sandbox decided the probe; they stay open.
+      unverifiable_digest: (ledger.unverifiable_digest || []).concat(
+        (vJson.unverifiable || []).filter((u) => !priorUnverifiable.has(u.id)).map((u) => ({ id: u.id, round: n, reason: u.reason })),
       ),
     };
     // Park-budget override BEFORE the charge below, so a forced terminus doesn't burn a round.
