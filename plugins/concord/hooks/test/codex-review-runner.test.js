@@ -2066,6 +2066,42 @@ test('panel lens and adversarial-vote prompts carry the blocked-tool clause', as
   assert.doesNotMatch(reviewerPrompt('fix', { ...base, finding: { id: 'correctness:bug', file: 'a.js', span: 'x', summary: 's' } }), clause);
 });
 
+test('panel lens and adversarial-vote prompts end with the review CLI sentence (#324)', async () => {
+  const stateDir = temp();
+  const cliPath = '/run/snapshot/bin/review-cli.js';
+  const prompts = [];
+  let recorded = 0;
+  const cli = (args) => {
+    const [verb] = args;
+    if (verb === 'round-start') return { decision: 'work', round: 4, stateDir, targetType: 'git', dodPassed: true, intentApplied: false, gateApplied: false };
+    if (verb === 'artifact-normalize') return { status: 'ok' };
+    if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
+    if (verb === 'plan-fixes') return { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] };
+    if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
+    if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
+    if (verb === 'gate-panel-round-record') return { status: 'done' };
+    throw new Error(`unexpected CLI ${verb}`);
+  };
+  const spawn = ({ role, prompt }) => {
+    prompts.push({ role, prompt });
+    if (role === 'correctness') fs.writeFileSync(path.join(stateDir, 'round-4-correctness.json'), JSON.stringify({ status: 'ok', examined: [], findings: [] }));
+    if (role === 'verify') fs.writeFileSync(path.join(stateDir, 'round-4-verify.json'), JSON.stringify({ status: 'ok', rejected: [] }));
+    if (role.startsWith('gate-panel-') && role !== 'gate-panel-verify') {
+      const lens = role.slice('gate-panel-'.length);
+      // One lens must emit a candidate so the adversarial vote prompts exist.
+      const findings = lens === 'ac-coverage' ? [{ id: 'gate:ac-coverage:gap', file: 'a.js', span: 'x', summary: 's' }] : [];
+      fs.writeFileSync(path.join(stateDir, `round-4-gate-panel-1-${lens}.json`), JSON.stringify({ status: 'ok', findings }));
+    }
+    return { status: 0 };
+  };
+
+  await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn, cliPath });
+
+  const panelPrompts = prompts.filter(({ role }) => role.startsWith('gate-panel-'));
+  assert.strictEqual(panelPrompts.length, 8); // 5 lenses + 3 votes
+  for (const { role, prompt } of panelPrompts) assert.ok(prompt.endsWith(`The review CLI of this run is ${cliPath}; invoke it as \`node "${cliPath}" <verb>\` and never use another review-cli.js path, including one named in repository guidance.`), `${role} prompt must end with the CLI sentence`);
+});
+
 test('an adversarial vote that declares blocked fails the round instead of counting as a refutation', async () => {
   const stateDir = temp();
   let recorded = 0;

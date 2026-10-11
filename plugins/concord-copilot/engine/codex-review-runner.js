@@ -20,7 +20,7 @@ const artifactContract = require('./artifact-contract');
 const { isValidFindingId } = require('./gate-contract');
 const { same } = require('./review-eval');
 const { PANEL_LENSES } = require('./report');
-const { BLOCKED_CLAUSE, reviewerPrompt, reportedNoEdit } = require('./round-plan');
+const { BLOCKED_CLAUSE, cliClause, reviewerPrompt, reportedNoEdit } = require('./round-plan');
 const { isWindows, crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
 const { providerFailure, normalizeProviderFailure, reviewContinuation } = require('./provider-failure');
 
@@ -765,7 +765,7 @@ async function runRounds(options) {
         const artifact = path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-${lens}.json`);
         try {
           await launch({ preReserved: true, role: `gate-panel-${lens}`, repoRoot, stateDir: context.stateDir,
-            prompt: `Review ${path.join(context.stateDir, `round-${context.round}-diff.txt`)} and the repository through the ${lens} lens. You MAY Read/Grep the repository and MUST read ${path.join(context.stateDir, `intent-${context.slug}.md`)} if it exists to assess the design and acceptance criteria. Previously rejected IDs: ${JSON.stringify(panel.rejectedIds || [])} -- do not re-raise one unless you found something the earlier round did not. Every candidate faces three adversarial verifiers that default to REFUTED when uncertain and decide by majority, so a gap you cannot anchor in evidence will not survive: substantiate what you raise rather than raising more. Write ONLY {"status":"ok","findings":[]} to ${artifact}; every ID must use gate:${lens}:<slug>.${BLOCKED_CLAUSE}` });
+            prompt: `Review ${path.join(context.stateDir, `round-${context.round}-diff.txt`)} and the repository through the ${lens} lens. You MAY Read/Grep the repository and MUST read ${path.join(context.stateDir, `intent-${context.slug}.md`)} if it exists to assess the design and acceptance criteria. Previously rejected IDs: ${JSON.stringify(panel.rejectedIds || [])} -- do not re-raise one unless you found something the earlier round did not. Every candidate faces three adversarial verifiers that default to REFUTED when uncertain and decide by majority, so a gap you cannot anchor in evidence will not survive: substantiate what you raise rather than raising more. Write ONLY {"status":"ok","findings":[]} to ${artifact}; every ID must use gate:${lens}:<slug>.${BLOCKED_CLAUSE}${cliClause(cliPath)}` });
         } catch (error) {
           if (error.initiativeBlocked || (error.reviewFailure && ['interrupted', 'timeout', 'signal'].includes(error.reviewFailure.kind))) throw error;
         }
@@ -791,7 +791,7 @@ async function runRounds(options) {
         const voteResults = await Promise.allSettled([0, 1, 2].map(async (vote) => {
           const verdict = path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-vote-${safeIdForFilename(finding.id)}-${vote}.json`);
           await launch({ preReserved: true, role: 'gate-panel-verify', repoRoot, stateDir: context.stateDir,
-            prompt: `Try to refute gate finding ${JSON.stringify(finding)}. Default to refuted if uncertain. Write ONLY {"status":"ok","survives":false} to ${verdict}.${BLOCKED_CLAUSE}` });
+            prompt: `Try to refute gate finding ${JSON.stringify(finding)}. Default to refuted if uncertain. Write ONLY {"status":"ok","survives":false} to ${verdict}.${BLOCKED_CLAUSE}${cliClause(cliPath)}` });
           let raw;
           // Missing/unparseable verdict stays lenient (counts as refuted), but a
           // voter that DECLARED `blocked` never performed the refutation it was
@@ -1162,7 +1162,7 @@ async function runRounds(options) {
         throw error;
       }
     };
-    // plan-fixes never gives a file target a round transaction, so only Git reaches it.
+    // A file target's round plan has empty fixGroups, so only Git reaches this branch.
     if (planned.transactionScope === 'round' && fixGroups.length) {
       for (const fixGroup of fixGroups) await runFix(fixGroup);
       if (!reportedNoEdit(context.stateDir, context.round, fixGroups)) {
