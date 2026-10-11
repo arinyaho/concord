@@ -47,13 +47,6 @@ function fixture({ maxLaunches = 12, incompleteReplacement = false, acceptedInit
   };
   const spawn = (input) => {
     launches.push(input.role);
-    if (input.role === 'artifact-repair') {
-      const artifact = JSON.parse(fs.readFileSync(path.join(input.repoRoot, 'original.json'), 'utf8'));
-      artifact.status = 'ok';
-      if (artifact.groups) artifact.groups = artifact.groups.filter((group) => group.findingIds.some((id) => id.startsWith('correctness:')));
-      fs.writeFileSync(path.join(input.repoRoot, 'candidate.json'), JSON.stringify(artifact));
-      return { status: 0 };
-    }
     if (failReplacement && input.role === 'plan' && launches.filter((role) => role === 'plan').length === 2) return { status: 1 };
     if (input.role === 'fix') return { status: 1 }; // Halt after the real CLI authorizes the exact group; never edit the fixture.
     const destination = artifactDestinationFromPrompt(input.prompt, input.stateDir);
@@ -181,13 +174,13 @@ test('interruption after normalization reuses the pending plan without a new pla
 test('semantic rejection after schema repair requests a fresh planner rather than replaying its repair candidate', async (t) => {
   const h = fixture({ repairInitialPlan: true }); t.after(() => fs.rmSync(h.root, { recursive: true, force: true }));
   await assert.rejects(runReviewUntilGreen(h.options), /classification is incomplete.*correctness:first.*correctness:second/);
-  assert.deepEqual(h.launches, ['correctness', 'verify', 'plan', 'artifact-repair']);
+  assert.deepEqual(h.launches, ['correctness', 'verify', 'plan']);
   const before = sealed(h);
   await assert.rejects(h.resume(), /fix.*(?:exit|failed)|(?:exit|failed).*fix/);
-  assert.deepEqual(h.launches, ['correctness', 'verify', 'plan', 'artifact-repair', 'plan', 'fix']);
+  assert.deepEqual(h.launches, ['correctness', 'verify', 'plan', 'plan', 'fix']);
   assert.deepEqual(sealed(h), before);
   assert.deepEqual(h.plans[0].fixGroups[0].findingIds, ids);
-  assert.equal(h.initiative().launches.filter((launch) => launch.role === 'plan').length, 3);
+  assert.equal(h.initiative().launches.filter((launch) => launch.role === 'plan').length, 2);
 });
 
 test('native CLI refuses to normalize replacement plan evidence without a fresh keyed reservation', async (t) => {
@@ -290,10 +283,10 @@ for (const cliCopy of ['core', 'codex', 'copilot']) for (const replacementError 
       assert.equal(fs.existsSync(path.join(h.stateDir, `round-1-plan.${suffix}`)), false, `stale ${suffix}`);
     }
     await assert.rejects(h.resume(), /fix.*(?:exit|failed)|(?:exit|failed).*fix/);
-    assert.deepEqual(h.launches, ['correctness', 'verify', 'plan', ...(replacementError === 'namespace' ? ['artifact-repair'] : []), 'plan', 'artifact-repair', 'fix']);
+    assert.deepEqual(h.launches, ['correctness', 'verify', 'plan', 'plan', 'fix']);
     assert.deepEqual(sealed(h), before);
     assert.deepEqual(h.plans[0].fixGroups[0].findingIds, ids);
-    assert.equal(h.initiative().launches.filter((launch) => launch.role === 'plan').length, replacementError === 'namespace' ? 4 : 3);
+    assert.equal(h.initiative().launches.filter((launch) => launch.role === 'plan').length, 2);
   });
 }
 
@@ -311,7 +304,7 @@ test('replacement repair survives interruption without consuming a second semant
   assert.equal(repair.status, 'repair');
   const snapshot = fs.readFileSync(path.join(h.stateDir, 'round-1-plan.original'), 'utf8');
   await assert.rejects(h.resume(), /planner retry exhausted/);
-  assert.deepEqual(h.launches, ['correctness', 'verify', 'plan', 'artifact-repair']);
+  assert.deepEqual(h.launches, ['correctness', 'verify', 'plan']);
   assert.equal(JSON.parse(snapshot).status, 'OK');
   assert.deepEqual(sealed(h), before);
   await assert.rejects(h.resume(), /planner retry exhausted/);
@@ -396,7 +389,7 @@ for (const invalidation of ['missing', 'hash-invalid', 'missing-after-repair']) 
     assert.deepEqual(after, before);
     assert.equal(h.ledger().round, 1);
     assert.equal(h.initiative().rounds.length, 1);
-    assert.equal(h.initiative().launches.filter((launch) => launch.role === 'plan').length, invalidation === 'missing-after-repair' ? 3 : 2);
+    assert.equal(h.initiative().launches.filter((launch) => launch.role === 'plan').length, 2);
     assert.equal(h.initiative().launches.filter((launch) => launch.role === 'intent').length, 2);
   });
 }

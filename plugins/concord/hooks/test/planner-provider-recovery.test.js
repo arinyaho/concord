@@ -49,13 +49,6 @@ function fixture({ maxLaunches = 12, incompleteReplacement = false, acceptedInit
   const spawn = (input) => {
     launches.push(input.role);
     if (initialPlanFailure && input.role === 'plan') return typeof initialPlanFailure === 'function' ? initialPlanFailure(input) : initialPlanFailure;
-    if (input.role === 'artifact-repair') {
-      const artifact = JSON.parse(fs.readFileSync(path.join(input.repoRoot, 'original.json'), 'utf8'));
-      artifact.status = 'ok';
-      if (artifact.groups) artifact.groups = artifact.groups.filter((group) => group.findingIds.some((id) => id.startsWith('correctness:')));
-      fs.writeFileSync(path.join(input.repoRoot, 'candidate.json'), JSON.stringify(artifact));
-      return { status: 0 };
-    }
     if (transportResult && input.role === 'plan' && launches.filter((role) => role === 'plan').length === 3) return transportResult;
     if (replacementResult && input.role === 'plan' && launches.filter((role) => role === 'plan').length === 2) return typeof replacementResult === 'function' ? replacementResult(input) : replacementResult;
     if (input.role === 'fix') return fixResult ? (typeof fixResult === 'function' ? fixResult(input) : fixResult) : { status: 1 }; // Halt after the real CLI authorizes the exact group; never edit the fixture.
