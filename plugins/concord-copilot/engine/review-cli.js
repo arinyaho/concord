@@ -1600,7 +1600,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (repair.state === 'dispatched') { process.stdout.write(JSON.stringify(repair) + '\n'); return; }
     if (repair.state !== 'prepared' || repair.target?.ref !== ref || repair.round !== n) throw new Error(`${name} repair binding changed`);
     // The descriptor is editable: write only to the state-directory path, and only from the snapshot it hashed.
-    if (path.resolve(repair.candidatePath) !== path.join(stateDir, `round-${n}-${name}.candidate.json`)) throw new Error(`${name} repair binding changed`);
+    if (path.resolve(repair.candidatePath) !== path.resolve(stateDir, `round-${n}-${name}.candidate.json`)) throw new Error(`${name} repair binding changed`);
     const snapshot = readReviewArtifact(repair.snapshotPath, stateDir);
     if (contentHash(snapshot) !== repair.originalHash) throw new Error(`${name} repair binding changed`);
     const candidate = artifactContract.repairCandidate(name, snapshot.toString('utf8'));

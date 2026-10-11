@@ -6513,6 +6513,11 @@ test('artifact-repair-dispatch refuses a descriptor whose candidate path or snap
   const n = JSON.parse(run(['round-start', 'feat/kept', 'HEAD~1', '--broad'], { env, broadDefault: true })).round;
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [{ id: 'gate:cross-context:a', reason: 'ran it' }], findings: [{ id: 'gate:silent-gap:kept', rationale: 'kept' }] }));
   const { repair } = JSON.parse(run(['artifact-normalize', 'feat/kept', 'gate-verify'], { env, broadDefault: true }));
+  // a relative REVIEW_STATE_DIR names the same state directory
+  const relEnv = { ...env, REVIEW_STATE_DIR: path.relative(process.cwd(), dir) };
+  assert.strictEqual(JSON.parse(run(['artifact-repair-dispatch', 'feat/kept', 'gate-verify'], { env: relEnv, broadDefault: true })).state, 'dispatched');
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.repair.json`), JSON.stringify(repair));
+  fs.rmSync(repair.candidatePath);
   const descriptor = path.join(dir, `round-${n}-gate-verify.repair.json`);
   const outside = path.join(tmpDir(), 'elsewhere.json');
   for (const edit of [{ candidatePath: outside }, { originalHash: '0'.repeat(64) }]) {
