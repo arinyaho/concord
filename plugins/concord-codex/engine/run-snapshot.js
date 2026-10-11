@@ -50,7 +50,8 @@ function snapshotRunEngine(pluginRoot, repoRoot) {
   const parent = tempParent(repoRoot);
   reapStale(parent);
   const root = fs.mkdtempSync(path.join(parent, `${PREFIX}${process.pid}-`));
-  const remove = () => { fs.rmSync(root, { recursive: true, force: true }); };
+  // Runs in an `exit` handler, where a throw would replace the run's exit status.
+  const remove = () => { try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) { /* the reaper removes it later */ } };
   try {
     fs.mkdirSync(path.join(root, 'engine')); fs.mkdirSync(path.join(root, 'bin'));
     // The whole engine directory, so a module loaded lazily is present by construction.

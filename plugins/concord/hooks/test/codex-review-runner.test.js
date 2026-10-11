@@ -806,6 +806,29 @@ for (const [provider, executable, expectedArgs] of [
   }
 });
 
+for (const provider of ['claude', 'copilot']) test(`providerExec exports the run cliPath to a ${provider} reviewer as CONCORD_REVIEW_CLI (#324)`, async () => {
+  const binDir = temp();
+  const dump = path.join(binDir, 'env.txt');
+  fs.writeFileSync(path.join(binDir, provider), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(dump)}, process.env.CONCORD_REVIEW_CLI || '');\n`);
+  fs.chmodSync(path.join(binDir, provider), 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  try {
+    await providerExec({ provider, role: 'correctness', prompt: 'p', repoRoot: binDir, stateDir: binDir, cliPath: '/run/snapshot/bin/review-cli.js' });
+    assert.strictEqual(fs.readFileSync(dump, 'utf8'), '/run/snapshot/bin/review-cli.js');
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
+test('every native driver document tells the driver to end each subagent prompt with the review CLI sentence (#324)', () => {
+  const root = path.resolve(__dirname, '..', '..');
+  for (const file of ['commands/review-and-fix.md', 'core/review-driver.md']) {
+    const text = fs.readFileSync(path.join(root, file), 'utf8');
+    assert.match(text, /End EVERY subagent prompt you spawn \(review-class and fixer\) with this sentence: `The review CLI of this run is .*never use another review-cli\.js path, including one named in repository guidance\.`/, file);
+  }
+});
+
 test('providerExec keeps the Claude prompt separate from the variadic --add-dir option', async () => {
   const binDir = temp();
   const claude = path.join(binDir, 'claude');

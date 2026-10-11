@@ -92,7 +92,7 @@ test('the Codex launcher runs from a snapshot, tells later readers the plugin pa
   const plugin = tempDir('plugin-update-launcher-'), work = tempDir('plugin-update-work-');
   installPlugin(plugin, 'A', path.join(work, 'calls.log'));
   const preload = path.join(work, 'preload.cjs');
-  fs.writeFileSync(preload, `const fs=require('node:fs'),Module=require('node:module'),load=Module._load;Module._load=function(request,parent){if(request.endsWith('/engine/codex-review-runner')){const real=load.apply(this,arguments);return{...real,runReviewUntilGreen:async o=>{fs.rmSync(process.env.PLUGIN,{recursive:true,force:true});fs.writeFileSync(process.env.CAPTURE,JSON.stringify({...o,cliExists:fs.existsSync(o.cliPath),runnerFrom:require.resolve(request,{paths:[parent.path]})}));return{handoff:'ok'};}};}return load.apply(this,arguments);};`);
+  fs.writeFileSync(preload, `const fs=require('node:fs'),Module=require('node:module'),load=Module._load;Module._load=function(request,parent){if(/[\\\\/]engine[\\\\/]codex-review-runner$/.test(request)){const real=load.apply(this,arguments);return{...real,runReviewUntilGreen:async o=>{fs.rmSync(process.env.PLUGIN,{recursive:true,force:true});fs.writeFileSync(process.env.CAPTURE,JSON.stringify({...o,cliExists:fs.existsSync(o.cliPath),runnerFrom:require.resolve(request,{paths:[parent.path]})}));return{handoff:'ok'};}};}return load.apply(this,arguments);};`);
   const capture = path.join(work, 'options.json');
   const out = require('node:child_process').spawnSync('node', ['--require', preload, path.join(plugin, 'bin', 'review-and-fix.js'), 'feature/x', 'main'], { encoding: 'utf8', cwd: work, env: { ...process.env, PLUGIN: plugin, CAPTURE: capture } });
   assert.equal(out.status, 0, out.stderr);
@@ -102,4 +102,28 @@ test('the Codex launcher runs from a snapshot, tells later readers the plugin pa
   assert.ok(options.runnerFrom.startsWith(path.dirname(path.dirname(options.cliPath))), 'the runner is loaded from the snapshot');
   assert.equal(options.publicCliPath, path.join(plugin, 'bin', 'review-cli.js'));
   assert.equal(fs.existsSync(path.dirname(path.dirname(options.cliPath))), false, 'the snapshot is removed when the driver exits');
+});
+
+test('reapStale keeps an old dead-pid snapshot owned by another user', { skip: typeof process.getuid !== 'function' }, () => {
+  const parent = tempDir('plugin-update-foreign-');
+  const dir = path.join(parent, 'concord-run-999999999-abcdef'); fs.mkdirSync(dir);
+  const old = new Date(Date.now() - 48 * 3600 * 1000); fs.utimesSync(dir, old, old);
+  const lstat = fs.lstatSync;
+  fs.lstatSync = (target, ...rest) => { const stat = lstat(target, ...rest); return target === dir ? Object.create(stat, { uid: { value: process.getuid() + 1 } }) : stat; };
+  try { reapStale(parent); } finally { fs.lstatSync = lstat; }
+  assert.ok(fs.existsSync(dir));
+});
+
+test('a failing snapshot removal on exit does not throw', () => {
+  const snapshot = snapshotRunEngine(codexRoot, tempDir('plugin-update-remove-'));
+  const rm = fs.rmSync;
+  fs.rmSync = () => { throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' }); };
+  try { assert.doesNotThrow(() => snapshot.remove()); } finally { fs.rmSync = rm; snapshot.remove(); }
+});
+
+test('the Codex launcher reports a snapshot failure as a one-line error with exit 1', { skip: process.platform === 'win32' }, () => {
+  // From the filesystem root every temp directory is inside the "repository", so snapshotting refuses.
+  const out = require('node:child_process').spawnSync('node', [path.join(codexRoot, 'bin', 'review-and-fix.js'), 'feature/x', 'main'], { encoding: 'utf8', cwd: '/' });
+  assert.equal(out.status, 1);
+  assert.match(out.stderr, /^review-and-fix: harness-failure: no temporary directory exists outside the reviewed repository\n$/);
 });

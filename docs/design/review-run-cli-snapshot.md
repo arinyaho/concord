@@ -18,6 +18,10 @@ Every role prompt built by `reviewerPrompt` ends with one sentence naming the ru
 
 The driver removes the snapshot on `exit`; `handleSignals` turns SIGINT and SIGTERM into exits. Each `snapshotRunEngine` call first removes snapshots of killed runs: a direct child of the temp directory whose name matches `^concord-run-(\d+)-[A-Za-z0-9]{6}$`, is a real directory (not a symlink) owned by the current user, whose pid is not running, and whose mtime is over 24 hours old. Deletion targets come only from `mkdtemp` in the same process or that match, never from the ledger, state directory or environment. `resume <ref>` starts a new process and takes a new snapshot of the installed version.
 
+The runner also turns SIGHUP into an exit. A failure while creating the snapshot, including the case where neither the temp directory nor `/tmp` is outside the repository, ends the driver with `review-and-fix: <message>` and exit status 1. A failing removal on `exit` is ignored so it cannot change the run's exit status; the reaper removes the directory later.
+
+The reaper assumes one pid namespace per temp directory: it judges liveness by pid alone and age by the directory's creation time. A run older than 24 hours in another namespace sharing the temp directory can lose its snapshot, and a reused pid keeps a stale snapshot until that pid ends. A signal during argument parsing or snapshot creation ends the process before the runner's handlers exist and leaves the snapshot to the reaper.
+
 ## Stateful change
 
 | State | Event | Outcome | Kind | Evidence |
@@ -25,9 +29,11 @@ The driver removes the snapshot on `exit`; `handleSignals` turns SIGINT and SIGT
 | plugin directory removed mid-run | next CLI verb | runs from the snapshot; every call reports the starting version | introduced | `a plugin update that removes the starting version directory mid-run does not break the run (#309)` |
 | plugin directory removed | driver loads a lazily required module | module found in the snapshot | introduced | `the driver loads every engine module from its snapshot after the plugin directory is gone (#309)` |
 | temp directory inside the repository | snapshot | placed in `/tmp`; repository unchanged | introduced | `a snapshot is never placed inside the repository, even when TMPDIR points there` |
-| snapshot of a killed run | next driver start | removed only when dead pid, own, old, real directory; live, fresh, symlinked or differently named entries kept | introduced | `reapStale removes only old, dead-pid, own, real snapshot directories` |
+| snapshot of a killed run | next driver start | removed only when dead pid, own, old, real directory; live, fresh, symlinked or differently named entries kept | introduced | `reapStale removes only old, dead-pid, own, real snapshot directories`, `reapStale keeps an old dead-pid snapshot owned by another user` |
 | run ends | driver exit | snapshot removed | introduced | `the Codex launcher runs from a snapshot, tells later readers the plugin path, and removes the snapshot on exit (#309)`; a signal ends the run through the runner's handlers, untested, because it needs a real driver run |
 | update installs a new version, new run starts | driver start | snapshots the new version | unchanged in effect | untested, because a new process always copies the installed directory |
+| removal fails (for example EBUSY) | driver exit | error ignored; exit status unchanged; snapshot left to the reaper | introduced | `a failing snapshot removal on exit does not throw` |
+| snapshot creation fails | driver start | `review-and-fix: <message>` on stderr, exit 1 | introduced | `the Codex launcher reports a snapshot failure as a one-line error with exit 1` |
 | two runs at once | both start | separate directories, no shared state | introduced | name carries the pid and a random suffix; untested, because `mkdtemp` guarantees it |
 
 ## Residual exposure
