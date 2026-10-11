@@ -88,6 +88,25 @@ for (const skillPath of SKILLS) {
     assert.strictEqual(none.status, 1);
     assert.strictEqual(none.stdout, '');
   });
+
+  test(`${pkg}: the locator never selects a newer copy whose root plugin.json names another plugin`, () => {
+    const home = tempDir('state-cli-locator-');
+    const codex = codexCopy(home, '0.9.0-beta.19');
+    install(path.join(home, '.copilot', 'installed-plugins', 'other', 'impostor'), '', 'impostor', '9.9.9', 'bin');
+    const result = locate(skillPath, home);
+    assert.strictEqual(result.status, 0, result.stderr);
+    assert.strictEqual(result.stdout.trim(), codex);
+  });
+
+  test(`${pkg}: the first manifest that parses decides a candidate`, () => {
+    const home = tempDir('state-cli-locator-');
+    const root = path.join(home, '.claude', 'plugins', 'cache', 'arinyaho-concord', 'concord', '9.9.9');
+    install(root, '.claude-plugin', 'impostor', '9.9.9', 'hooks');
+    fs.writeFileSync(path.join(root, 'plugin.json'), JSON.stringify({ name: 'concord', version: '9.9.9' }));
+    const result = locate(skillPath, home);
+    assert.strictEqual(result.status, 1);
+    assert.strictEqual(result.stdout, '');
+  });
 }
 
 test('the three packages ship the same locator command', () => {

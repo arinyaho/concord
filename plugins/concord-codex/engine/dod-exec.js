@@ -98,8 +98,9 @@ function defaultExecFn(cmd, cwd) {
 // meaning at the start of a part, after a blank, or after one of `(`, `)`, `&`,
 // `<` or `>`. A lone `&` (as in `2>&1`) stays inside its part. Words are split
 // on whitespace outside quotes, so a quoted assignment value such as
-// `GOFLAGS="-mod mod"` is one word, and a backslash escape, including a
-// backslash-newline continuation, stays inside its word.
+// `GOFLAGS="-mod mod"` is one word, and a backslash escape stays inside its
+// word. A backslash-newline continuation outside single quotes is deleted, as
+// `/bin/sh` does, before the words are read.
 function simpleCommands(cmd) {
   const parts = [];
   let cur = '';
@@ -107,6 +108,7 @@ function simpleCommands(cmd) {
   let wordStart = true;
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i];
+    if (c === '\\' && quote !== "'" && cmd[i + 1] === '\n') { i++; continue; }
     if (c === '\\' && quote !== "'") { cur += c + (cmd[i + 1] || ''); i++; wordStart = false; continue; }
     if (quote) { if (c === quote) quote = null; cur += c; continue; }
     if (c === "'" || c === '"') { quote = c; cur += c; wordStart = false; continue; }

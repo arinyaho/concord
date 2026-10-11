@@ -148,3 +148,8 @@ test('a DoD command does not inherit the driver\'s CONCORD_CODEX_BIN override', 
     if (previous === undefined) delete process.env.CONCORD_CODEX_BIN; else process.env.CONCORD_CODEX_BIN = previous;
   }
 });
+
+test('commandExecutables removes a backslash-newline continuation before reading words, as the shell does', () => {
+  assert.deepStrictEqual(dodExec.commandExecutables(['FOO=1 \\\n  go test']), ['go']);
+  assert.ok(!dodExec.commandExecutables(['true \\\n#c; fmt']).includes('fmt'));
+});
