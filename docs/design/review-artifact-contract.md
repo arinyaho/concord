@@ -23,7 +23,14 @@ Strict normalization rejects IDs outside a role's prefixes, malformed JSON, stru
 
 The Codex reviewer sandbox is a user namespace, so a host owner it cannot map, root included, appears as uid 65534. A probe that checks ownership therefore fails there although the code passes on the host. The verifier lists such a candidate in `unverifiable` instead of declaring `blocked`. An `unverifiable` entry is not a rejection: the candidate survives into planning like any finding the verifier did not refute, so the field can keep a finding but never remove one and cannot produce a clean verdict. `record` stores the entries of `verify` and `gate-verify` in the ledger's `unverifiable_digest`, only for an id that names a candidate raised in the round, one entry per id, and a later round replaces the earlier entry for the same id. The handoff lists the entries whose finding is still unresolved under "Kept unverified in the reviewer environment". A foreign-namespace id in `unverifiable` is repaired like one in `rejected`.
 
-`blocked` stays fatal for a tool that is missing, denied, crashed or timed out. The verify and gate-verify prompts tell the reviewer about the user namespace.
+`blocked` stays fatal for a tool that is missing, denied, crashed or timed out. Every role that can run a probe is told about the user namespace; `ENV_CLAUSE_BY_ROLE` in `round-plan.js` names a clause (or an empty string) for each role in `ROLE_SEQUENCE`, so a new role must decide.
+
+| Role | Sandbox note |
+|---|---|
+| `verify`, `gate-verify` | the `unverifiable` rule above |
+| `correctness`, `gate` | a sandbox-decided probe is not a failed method; raise the gap as a normal finding that names the probe, and the verifier re-checks it. These artifacts have no `unverifiable` field: a detector has nothing to refute, and a second path into `unverifiable_digest` would skip the verifier |
+| `certify` | the uid explanation only; a probe the sandbox decided cannot prove a fix, so the certifier still reports `blocked` |
+| `intent`, `plan`, `fix` | none; they run no probe |
 
 The sandbox is not relaxed. A project-level setting that runs probes outside the sandbox is a permissions change for the reviewer subprocess and is not part of this contract. A kept candidate that the fixer finds nothing to change ends in a `needs-decision` park for a human.
 
@@ -40,6 +47,9 @@ The change is stateful through `unverifiable_digest`:
 | `gate-verify` entry for a gate finding | record, handoff | entry recorded and listed | introduced | `record surfaces a gate-verify unverifiable entry for a gate finding` |
 | finding fixed, resolved or killed | handoff | entry not listed | introduced | `renderHandoff lists an unverifiable entry only while its finding is unresolved` |
 | foreign-namespace id in `unverifiable` | normalize | mixed-namespace repair offered; owned entries kept | introduced | `artifact-normalize repairs a foreign-namespace id in unverifiable and keeps the verdict` |
+| `gate` or `correctness` probe decided by the sandbox uid mapping | prompt | the reviewer is told to raise a finding naming the probe, not to declare `blocked` | introduced | `gate and correctness prompts keep uid-65534 probes from ending as blocked, without an unverifiable field` |
+| `certify` probe decided by the sandbox uid mapping | prompt | the reviewer is told to report `blocked` naming the probe | introduced | `certify prompt explains uid 65534 and still reports blocked for an unproven fix` |
+| a role added to `ROLE_SEQUENCE` | test | CI fails until `ENV_CLAUSE_BY_ROLE` names it | introduced | `every role in ROLE_SEQUENCE has an explicit sandbox uid decision` |
 | ledger without `unverifiable_digest` | record, handoff | treated as empty | introduced | `plan-fixes: a candidate the verifier marks unverifiable in its sandbox stays open and is shown in the handoff` starts from a ledger without the field |
 
 ### Git review scope

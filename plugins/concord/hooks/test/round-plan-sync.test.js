@@ -217,3 +217,31 @@ test('the plan prompt says gate: findings are never planned and only verify/corr
   assert.match(prompt, /`?gate:`? findings are never planned/);
   assert.match(prompt, /only (?:the )?(?:correctness|docreview)/i);
 });
+
+// #342: every role that can run a probe in the reviewer sandbox is told that a uid-65534 result is not a failed method.
+const ENV_CTX = { stateDir: '/state', round: 1, targetType: 'git', slug: 'feat-x', gateApplied: true, gateMode: 'pair', fixGroup: { groupId: 'g1', findingIds: ['correctness:a'], invariants: [], rootCause: 'r' }, fixFiles: [], finding: { id: 'correctness:a', summary: 's' } };
+
+test('every role in ROLE_SEQUENCE has an explicit sandbox uid decision', () => {
+  const { ROLE_SEQUENCE, ENV_CLAUSE_BY_ROLE } = require(path.join(CORE, 'round-plan'));
+  assert.deepEqual(Object.keys(ENV_CLAUSE_BY_ROLE || {}).sort(), [...ROLE_SEQUENCE].sort());
+});
+
+test('gate and correctness prompts keep uid-65534 probes from ending as blocked, without an unverifiable field', () => {
+  for (const role of ['gate', 'correctness']) {
+    const prompt = reviewerPrompt(role, ENV_CTX);
+    assert.match(prompt, /uid 65534/, role);
+    assert.match(prompt, /do not declare blocked/, role);
+    assert.doesNotMatch(prompt, /"unverifiable"/, role);
+  }
+});
+
+test('certify prompt explains uid 65534 and still reports blocked for an unproven fix', () => {
+  const prompt = reviewerPrompt('certify', ENV_CTX);
+  assert.match(prompt, /uid 65534/);
+  assert.match(prompt, /"status":"blocked"/);
+});
+
+test('verify and gate-verify keep the unverifiable clause; intent, plan and fix carry no uid clause', () => {
+  for (const role of ['verify', 'gate-verify']) assert.match(reviewerPrompt(role, ENV_CTX), /"unverifiable"/, role);
+  for (const role of ['intent', 'plan', 'fix']) assert.doesNotMatch(reviewerPrompt(role, ENV_CTX), /65534/, role);
+});
