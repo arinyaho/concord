@@ -107,19 +107,28 @@ function fixingWorker(f) {
     fs.writeFileSync(artifact, JSON.stringify(data)); return { status: 0 };
   };
 }
-test('missing correctness coverage fails closed without a second reviewer launch', async () => {
+test('missing correctness coverage relaunches the correctness reviewer once, with a second reservation', async () => {
   const f = fixture(); let correctness = 0;
-  await assert.rejects(runReviewUntilGreen({ ...f.options, spawn: async ({ role, prompt }) => {
+  const result = await runReviewUntilGreen({ ...f.options, spawn: async ({ role, prompt }) => {
     f.workers.push(role); if (role === 'correctness') correctness++;
     const artifact = role === 'plan'
       ? { status: 'ok', protocolVersion: 2, groups: [] }
       : { status: 'ok', examined: correctness === 1 && role === 'correctness' ? [] : ['a.txt'], findings: [], rejected: [] };
     fs.writeFileSync(destination(prompt, f.stateDir), JSON.stringify(artifact)); return { status: 0 };
-  } }), /coverage is incomplete/);
-  assert.deepEqual(f.workers, ['correctness']);
-  assert.equal(f.ledger().launches.length, 1);
+  } });
+  assert.equal(result.decision.converged, true);
+  assert.equal(f.workers.filter(x => x === 'correctness').length, 2);
   const reservations = review.readLedger(f.stateDir, review.targetSlug(f.options.ref)).initiative_reservations;
-  assert.equal(reservations.filter(x => x.role === 'correctness').length, 1);
+  assert.equal(reservations.filter(x => x.role === 'correctness').length, 2);
+});
+test('a second incomplete correctness artifact fails closed after exactly one re-run', async () => {
+  const f = fixture(); let correctness = 0;
+  await assert.rejects(runReviewUntilGreen({ ...f.options, spawn: async ({ role, prompt }) => {
+    f.workers.push(role); if (role === 'correctness') correctness++;
+    fs.writeFileSync(destination(prompt, f.stateDir), JSON.stringify({ status: 'ok', examined: [], findings: [], rejected: [] })); return { status: 0 };
+  } }), /coverage is incomplete/);
+  assert.deepEqual(f.workers, ['correctness', 'correctness']);
+  assert.equal(correctness, 2);
 });
 test('stop-at-checkpoint stops after the committed fix and resume preserves the same budget and completed round', async () => {
   const f = fixture(); const spawn = fixingWorker(f);
