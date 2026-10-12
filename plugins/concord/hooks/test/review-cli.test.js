@@ -532,34 +532,65 @@ test('artifact-normalize repairs a verify artifact with foreign gate rejections 
   assert.strictEqual(review.readLedger(dir, review.targetSlug('feat/mixed-verify')).execution.retryArtifacts.verify, undefined);
 });
 
-test('artifact-normalize fails closed on missing correctness coverage', () => {
+function seedTwoFileRound(ref) {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
   fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
   fs.writeFileSync(path.join(repo, 'b.txt'), 'new\n');
   execFileSync('git', ['add', '-A'], { cwd: repo });
   execFileSync('git', ['commit', '-qm', 'change two files'], { cwd: repo });
-  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
-  const artifact = path.join(dir, `round-${n}-correctness.json`);
+  const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+  return { repo, dir, env, n, artifact: path.join(dir, `round-${n}-correctness.json`) };
+}
+
+test('artifact-normalize grants one correctness re-run naming the missing paths', () => {
+  const { dir, env, n, artifact } = seedTwoFileRound('feat/x');
   const raw = JSON.stringify({ status: 'findings', examined: ['a.txt'], findings: [] });
   fs.writeFileSync(artifact, raw);
 
-  assert.throws(() => run(['artifact-normalize', 'feat/x', 'correctness'], { env }), /coverage is incomplete/);
+  assert.throws(() => run(['artifact-normalize', 'feat/x', 'correctness'], { env }), /harness-failure: correctness coverage is incomplete; missing changed file\(s\): b\.txt; resume the same round/);
   assert.strictEqual(fs.readFileSync(artifact, 'utf8'), raw, 'coverage failure must not infer or rewrite examined');
+  const execution = review.readLedger(dir, review.targetSlug('feat/x')).execution;
+  assert.match(execution.retryArtifacts.correctness, /b\.txt/);
+  assert.strictEqual(execution.coverageRetry.state, 'pending');
+  assert.ok(!(execution.completed || []).includes('correctness'));
+
+  const resumed = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env }));
+  assert.strictEqual(resumed.round, n);
+  assert.match(resumed.retryArtifacts.correctness, /b\.txt/);
+  assert.ok(!resumed.completedArtifacts.includes('correctness'));
+  fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', examined: ['a.txt', 'b.txt'], findings: [] }));
+  assert.strictEqual(JSON.parse(run(['artifact-normalize', 'feat/x', 'correctness'], { env })).status, 'ok');
+  assert.strictEqual(review.readLedger(dir, review.targetSlug('feat/x')).execution.retryArtifacts.correctness, undefined);
 });
 
-test('artifact-normalize fails closed when correctness coverage is still incomplete after its retry', () => {
-  const repo = initRepo(); const dir = tmpDir();
-  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
-  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
-  fs.writeFileSync(path.join(repo, 'b.txt'), 'new\n');
-  execFileSync('git', ['add', '-A'], { cwd: repo });
-  execFileSync('git', ['commit', '-qm', 'change two files'], { cwd: repo });
-  const n = JSON.parse(run(['round-start', 'feat/x', 'HEAD~1'], { env })).round;
-  const artifact = path.join(dir, `round-${n}-correctness.json`);
+test('artifact-normalize fails closed when correctness coverage is still incomplete after its re-run', () => {
+  const { dir, env, artifact } = seedTwoFileRound('feat/x');
+  fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  assert.throws(() => run(['artifact-normalize', 'feat/x', 'correctness'], { env }), /resume the same round/);
+  run(['round-start', 'feat/x', 'HEAD~1'], { env });
   fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
 
-  assert.throws(() => run(['artifact-normalize', 'feat/x', 'correctness'], { env }), /harness-failure.*coverage/);
+  assert.throws(() => run(['artifact-normalize', 'feat/x', 'correctness'], { env }), /harness-failure.*coverage.*retry exhausted/);
+  assert.strictEqual(review.readLedger(dir, review.targetSlug('feat/x')).execution.coverageRetry.state, 'exhausted');
+  assert.throws(() => run(['round-start', 'feat/x', 'HEAD~1'], { env }), /harness-failure.*coverage.*retry exhausted/);
+});
+
+test('correctness prompt requires rename sources and deleted paths, and a rename source is accepted once listed', () => {
+  const { reviewerPrompt } = require('../../core/round-plan.js');
+  assert.match(reviewerPrompt('correctness', { stateDir: '/s', round: 1, targetType: 'git' }), /including the old path of every renamed file and every deleted file/);
+
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  execFileSync('git', ['mv', 'a.txt', 'renamed.txt'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'rename a'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/rename', 'HEAD~1'], { env })).round;
+  const artifact = path.join(dir, `round-${n}-correctness.json`);
+  fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', examined: ['renamed.txt'], findings: [] }));
+  assert.throws(() => run(['artifact-normalize', 'feat/rename', 'correctness'], { env }), /missing changed file\(s\): a\.txt/);
+  run(['round-start', 'feat/rename', 'HEAD~1'], { env });
+  fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', examined: ['renamed.txt', 'a.txt'], findings: [] }));
+  assert.strictEqual(JSON.parse(run(['artifact-normalize', 'feat/rename', 'correctness'], { env })).status, 'ok');
 });
 
 function seedCopyRound(ref, examined) {

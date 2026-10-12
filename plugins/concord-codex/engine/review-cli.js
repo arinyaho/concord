@@ -1534,7 +1534,24 @@ function runVerb(resolveFromCwd, args, initiative) {
       if (name === 'correctness' && (!ledger.target || ledger.target.type === 'git')) {
         const changed = readChangedPaths(stateDir, ledger, ref, n);
         const missing = unexaminedPaths(process.env.REVIEW_REPO_ROOT || process.cwd(), ledger, changed, canonical.examined);
-        if (missing.length) throw new artifactContract.ArtifactError('retry', `correctness coverage is incomplete; missing changed file(s): ${missing.join(', ')}`);
+        if (missing.length) {
+          // Only the reviewer can say it read a file, so the CLI cannot repair this: record one corrective re-run
+          // for the resumed round (the reviewer's incomplete artifact is deleted there) and end this attempt.
+          const list = missing.join(', ');
+          const execution = ledger.execution;
+          const exhausted = execution?.coverageRetry?.state === 'pending';
+          if (execution && execution.round === n) {
+            const retryArtifacts = retryArtifactMap(execution);
+            if (exhausted) delete retryArtifacts.correctness;
+            else retryArtifacts.correctness = `The previous correctness artifact omitted changed path(s): ${list}. Examine them and list every changed path in "examined", including the old path of every renamed file and every deleted file.`;
+            const failure = { role: 'correctness', kind: 'incomplete-coverage', message: `correctness coverage is incomplete; missing changed file(s): ${list}`, retryable: !exhausted, nextAction: exhausted ? 'terminal-handoff' : 'resume', at: new Date().toISOString() };
+            const superseded = exhausted ? ledger : withSupersededLaunch(ledger, 'correctness', n);
+            writeLedger(stateDir, slug, { ...superseded, execution: { ...execution, retryArtifacts, retryArtifact: firstRetryArtifact(retryArtifacts),
+              coverageRetry: { state: exhausted ? 'exhausted' : 'pending', missing },
+              failures: [...(execution.failures || []), failure].slice(-5), failure } });
+          }
+          throw new Error(`correctness coverage is incomplete; missing changed file(s): ${list}; ${exhausted ? 'correctness coverage retry exhausted for this round' : 'resume the same round to re-run the correctness reviewer once'}`);
+        }
       }
       const canonicalText = JSON.stringify(canonical) + '\n';
       // Only a candidate that passed preservation and strict normalization is
@@ -2126,6 +2143,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       // for evidence refusals, but let a committed fix invalidate the old generation.
       if (transportRecovery && ledger.execution.planRetry?.state !== 'accepted' && !preserveArtifacts) stopTransportRecovery('planner transport recovery scope changed; reconcile the existing evidence before continuing');
       if (preserveArtifacts && ledger.execution.planRetry?.state === 'exhausted') throw new Error(`harness-failure: ${ledger.execution.planRetry.message}`);
+      if (preserveArtifacts && ledger.execution.coverageRetry?.state === 'exhausted') throw new Error(`harness-failure: ${ledger.execution.failure?.message || 'correctness coverage is incomplete'}; correctness coverage retry exhausted for this round`);
       const completed = preserveArtifacts
         ? (ledger.execution.completed || []).filter((role) => ['correctness', 'verify', 'plan', 'intent', 'gate', 'gate-verify'].includes(role))
         : [];
@@ -2392,6 +2410,7 @@ function runVerb(resolveFromCwd, args, initiative) {
         normalizedPlan: resumedNormalizedPlan,
         planRetry: resumed && ledger.execution?.planRetry ? { ...ledger.execution.planRetry, discardRepair: false } : null,
         planTransportRetry: resumed ? ledger.execution?.planTransportRetry || null : null,
+        coverageRetry: resumed ? ledger.execution?.coverageRetry || null : null,
         planRepairPending: resumed && !!ledger.execution?.planRepairPending,
         artifactHashes: Object.fromEntries([...completedArtifacts, ...normalizedArtifacts].map((role) => [role, ledger.execution && ledger.execution.artifactHashes && ledger.execution.artifactHashes[role]]).filter(([, hash]) => typeof hash === 'string')),
         pending: expectedArtifacts.filter((role) => !completedArtifacts.includes(role)),
