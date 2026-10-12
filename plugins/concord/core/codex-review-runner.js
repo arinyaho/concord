@@ -1068,6 +1068,7 @@ async function runRounds(options) {
             // Missing correctness coverage grants one reviewer re-run with the missing paths named; a second miss is terminal.
             const granted = role === 'correctness' && /correctness coverage is incomplete/.test(String(error.message)) && (await cli(['show', ref])).execution?.coverageRetry?.state === 'pending';
             if (!granted) throw error;
+            refreshLedger();
             const prompt = (await cli(['show', ref])).execution.retryArtifacts?.correctness;
             await launch({ role, prompt: `${reviewerPrompt(role, roleContext)}\n${prompt}`, repoRoot, stateDir: context.stateDir });
             normalized = await cli(['artifact-normalize', ref, role]);

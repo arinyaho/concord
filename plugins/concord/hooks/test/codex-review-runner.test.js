@@ -3426,3 +3426,34 @@ test('a correctness coverage miss relaunches the reviewer once with the missing 
     assert.ok(correctness[1].includes('RETRY-NAMES-b.txt'), 'the relaunch carries the missing paths');
   }
 });
+
+test('reviewOnly: the coverage re-run survives the CLI rewriting the protected ledger', async () => {
+  const repo = cleanRepo();
+  const stateDir = temp();
+  const h = harness({ stateDir });
+  const review = require('../../core/review');
+  const slug = review.targetSlug('feature/coverage-protected');
+  let normalizes = 0;
+  const cli = (args) => {
+    if (args[0] === 'findings') return { findings: [] };
+    if (args[0] === 'show') return { round: 1, execution: { coverageRetry: { state: 'pending' }, retryArtifacts: { correctness: 'RETRY-NAMES-b.txt' } } };
+    if (args[0] === 'artifact-normalize' && args[2] === 'correctness' && ++normalizes === 1) {
+      fs.writeFileSync(review.ledgerPath(stateDir, slug), '{"coverageRetry":"pending"}\n');
+      throw new Error('harness-failure: correctness coverage is incomplete; missing changed file(s): b.txt; resume the same round to re-run the correctness reviewer once');
+    }
+    const result = h.cli(args);
+    if (args[0] === 'round-start') {
+      fs.writeFileSync(path.join(stateDir, 'round-1-diff.txt'), 'original diff\n');
+      fs.writeFileSync(path.join(stateDir, 'round-1-changes.json'), '{"paths":[]}\n');
+      fs.writeFileSync(path.join(stateDir, 'round-1-history.json'), '{}\n');
+      fs.writeFileSync(review.ledgerPath(stateDir, slug), '{}\n');
+    }
+    return result;
+  };
+  try {
+    await runReviewUntilGreen({ ref: 'feature/coverage-protected', base: 'main', repoRoot: repo, runCli: cli, spawn: h.spawn, reviewOnly: true, reviewer: 'claude', noBroad: true });
+  } catch (error) {
+    assert.doesNotMatch(error.message, /protected review artifact changed/);
+  }
+  assert.ok(normalizes >= 2, 'the re-run must reach its second normalize');
+});
