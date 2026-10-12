@@ -3420,5 +3420,9 @@ test('a correctness coverage miss relaunches the reviewer once with the missing 
       spawn: async (input) => { prompts.push(String(input.prompt || input.args || '')); return { status: 0 }; } };
     await assert.rejects(runReviewUntilGreen(options), (error) => secondMiss ? /retry exhausted/.test(error.message) : true);
     assert.ok(normalizes >= 2, 'the coverage miss must trigger a second correctness launch and normalize');
+    const correctness = prompts.filter((p) => p.startsWith('Review the diff and surrounding code'));
+    assert.strictEqual(correctness.length, 2, 'the correctness reviewer launches exactly twice');
+    assert.ok(!correctness[0].includes('RETRY-NAMES-b.txt'), 'the first launch carries no retry names');
+    assert.ok(correctness[1].includes('RETRY-NAMES-b.txt'), 'the relaunch carries the missing paths');
   }
 });
