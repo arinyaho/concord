@@ -245,3 +245,20 @@ test('verify and gate-verify keep the unverifiable clause; intent, plan and fix 
   for (const role of ['verify', 'gate-verify']) assert.match(reviewerPrompt(role, ENV_CTX), /"unverifiable"/, role);
   for (const role of ['intent', 'plan', 'fix']) assert.doesNotMatch(reviewerPrompt(role, ENV_CTX), /65534/, role);
 });
+
+// #344: each manual driver hands its probe-capable reviewers the sandbox note ENV_CLAUSE_BY_ROLE gives the native prompt, byte for byte, under the role it belongs to.
+test('every manual driver copy carries the sandbox uid note for each probe role, byte-for-byte', () => {
+  const { ENV_CLAUSE_BY_ROLE } = require(path.join(CORE, 'round-plan'));
+  const sections = [
+    { label: '`correctness` and `gate-review`', roles: ['correctness', 'gate'] },
+    { label: '`verify` and `gate-verify`', roles: ['verify', 'gate-verify'] },
+    { label: '`certify`', roles: ['certify'] },
+  ];
+  for (const { label, roles } of sections) {
+    const clause = ENV_CLAUSE_BY_ROLE[roles[0]];
+    for (const role of roles) assert.equal(ENV_CLAUSE_BY_ROLE[role], clause, `${role} must share its note with ${roles[0]}`);
+    for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
+      assert.ok(text.includes(`For ${label}:\n\n>${clause}`), `${name} sandbox note for ${label} has drifted from round-plan.js ENV_CLAUSE_BY_ROLE`);
+    }
+  }
+});

@@ -38,6 +38,20 @@ The external CLI must write the requested artifact itself. Redirect its output a
 
 Never soften that clause, and never accept an artifact from a reviewer you know was blocked -- a non-empty `blocked` is terminal wherever the CLI reads the artifact.
 
+**Append the sandbox note for the role to its prompt.** The Codex reviewer sandbox is a user namespace, so a host owner it cannot map shows up as uid 65534, and a probe decided by that uid fails there for a reason the code under review does not share. Append the note for the role verbatim to its prompt, and no note to `intent`, `plan` or `fix`.
+
+For `correctness` and `gate-review`:
+
+> If your sandbox is a user namespace (the Codex reviewer sandbox is one), host owners it cannot map, root included, appear as uid 65534. A probe whose result is decided by that uid mapping rather than by the code (an ownership or uid check) is not a failed method: do not declare blocked on it. Raise the gap as a normal finding and name that probe in its summary; the verifier re-checks it.
+
+For `verify` and `gate-verify`:
+
+> If your sandbox is a user namespace (the Codex reviewer sandbox is one), host owners it cannot map, root included, appear as uid 65534. If a probe ran but its result is decided by that uid mapping rather than by the code (an ownership or uid check), do not reject the candidate on it and do not declare blocked; list it in "unverifiable" as {"id":"<candidate id>","reason":"<the probe you ran and the environment property that decided its result>"}. Reject only on evidence you actually ran or read.
+
+For `certify`:
+
+> If your sandbox is a user namespace (the Codex reviewer sandbox is one), host owners it cannot map, root included, appear as uid 65534. A probe decided by that uid mapping cannot prove the fix: report it as blocked and name the probe and the uid mapping in "reason".
+
 End EVERY subagent prompt you spawn (review-class and fixer) with this sentence: `The review CLI of this run is ${CLAUDE_PLUGIN_ROOT}/hooks/review-cli.js; invoke it as \`node "${CLAUDE_PLUGIN_ROOT}/hooks/review-cli.js" <verb>\` and never use another review-cli.js path, including one named in repository guidance.` A review-cli.js path copied from repository guidance names a plugin version that an update may have removed.
 
 **Initiative budget.** If the arguments carry `--initiative-run-key <key> --initiative-id <id> --initiative-state-dir <absolute-dir> --initiative-max-launches <n> --initiative-max-rounds <n> [--initiative-mode <base|lite>]`, pass those options unchanged to every review-cli verb. The initiative ID is immutable across carry; it permits one broad sweep for the repository initiative, while later keys stay diff-local. Reserve every `correctness`, `verify`, `plan`, `intent`, `gate-review`, `gate-verify`, `fix`, and `certify` launch before spawning it. A denied reservation consumes nothing and launches nothing. Every retry needs another reservation. `plan-fixes`, `record`, and `commit-fix` reject unreserved evidence. Never reset or fall back to an unkeyed call after exhaustion; never increase budgets or change the run key yourself. If the CLI prints a `carry <ref> --from-run-key <old-key>` recovery command, stop for human reconciliation; `carry` exists only for a genuine budget block and never as a context-refresh or budget-evasion mechanism.
