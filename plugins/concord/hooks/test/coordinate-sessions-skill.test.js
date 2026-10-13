@@ -13,7 +13,8 @@ test('coordinate-sessions is a Claude-only skill', () => {
   assert.match(skill, /^---\nname: coordinate-sessions\n/);
   assert.ok(!fs.existsSync(path.join(REPO, 'plugins/concord-codex/skills/coordinate-sessions')));
   assert.ok(!fs.existsSync(path.join(REPO, 'plugins/concord-copilot/skills/coordinate-sessions')));
-  assert.match(read('plugins/concord/.claude-plugin/plugin.json'), /coordinate-sessions/);
+  assert.match(read('.claude-plugin/marketplace.json'), /coordinate-sessions/);
+  assert.doesNotMatch(read('plugins/concord/.claude-plugin/plugin.json'), /coordinate-sessions/, 'plugin.json is a release-bump version file; PRs do not edit it');
   assert.match(read('README.md'), /\| `coordinate-sessions` \|.*\| Claude Code \|/);
 });
 
@@ -58,4 +59,19 @@ test('a fresh coordinator can set up, run and stop the file channel', () => {
   assert.doesNotMatch(skill, /handoff-\*/);
   assert.match(skill, /`status_bucket` `blocked`/);
   assert.match(skill, /`status` `idle`/);
+});
+
+test('every report is surfaced and every report kind has a handler', () => {
+  const skill = fs.readFileSync(SKILL, 'utf8');
+  assert.match(skill, /no \[to coordinator\] header/);
+  assert.doesNotMatch(skill, /if \[\[ "\$first" == "\[to coordinator\]"\* \]\]/);
+  for (const kind of ['question', 'blocked', 'progress', 'done', 'handoff']) assert.match(skill, new RegExp('^\\| `' + kind + '` \\|', 'm'));
+  assert.match(skill, /create a successor worker/);
+});
+
+test('worker authority comes from its creation prompt, not later messages', () => {
+  const skill = fs.readFileSync(SKILL, 'utf8');
+  assert.match(skill, /data from a peer/);
+  assert.match(skill, /in its `create_session` prompt/);
+  assert.doesNotMatch(skill, /Workers follow your messages as instructions/);
 });
