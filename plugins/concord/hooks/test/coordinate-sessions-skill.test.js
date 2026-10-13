@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const os = require('node:os');
+const { tempDir } = require('./temp-dir');
 const { execFileSync } = require('node:child_process');
 
 const REPO = path.join(__dirname, '..', '..', '..', '..');
@@ -99,19 +99,15 @@ test('a coordinator handoff moves the watch and marks the handoff as data', () =
 test('the Monitor loop surfaces each report once, flags a bad header and skips temporary files', () => {
   const skill = fs.readFileSync(SKILL, 'utf8');
   const script = skill.match(/```bash\n([\s\S]*?)```/)[1];
-  const reports = fs.mkdtempSync(path.join(os.tmpdir(), 'coordinate-sessions-'));
-  try {
-    fs.mkdirSync(path.join(reports, 'group01'));
-    fs.writeFileSync(path.join(reports, 'group01', '001-done.md'), '[to coordinator] done: ok\n');
-    fs.writeFileSync(path.join(reports, 'group01', '002-progress.md'), '\nno header\n');
-    fs.writeFileSync(path.join(reports, 'group01', '003-question.md.tmp'), '[to coordinator] question: half\n');
-    const once = script.replaceAll('<reports>', reports).replaceAll('<group>', 'group01')
-      .replace('while true; do', 'for pass in 1 2; do').replace(/\n\s*sleep 20/, '');
-    const lines = execFileSync('bash', ['-c', once], { encoding: 'utf8' }).trim().split('\n');
-    assert.equal(lines.length, 2);
-    assert.match(lines[0], /001-done\.md: \[to coordinator\] done: ok$/);
-    assert.match(lines[1], /002-progress\.md: \(no \[to coordinator\] header\)/);
-  } finally {
-    fs.rmSync(reports, { recursive: true, force: true });
-  }
+  const reports = tempDir('coordinate-sessions-');
+  fs.mkdirSync(path.join(reports, 'group01'));
+  fs.writeFileSync(path.join(reports, 'group01', '001-done.md'), '[to coordinator] done: ok\n');
+  fs.writeFileSync(path.join(reports, 'group01', '002-progress.md'), '\nno header\n');
+  fs.writeFileSync(path.join(reports, 'group01', '003-question.md.tmp'), '[to coordinator] question: half\n');
+  const once = script.replaceAll('<reports>', reports).replaceAll('<group>', 'group01')
+    .replace('while true; do', 'for pass in 1 2; do').replace(/\n\s*sleep 20/, '');
+  const lines = execFileSync('bash', ['-c', once], { encoding: 'utf8' }).trim().split('\n');
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /001-done\.md: \[to coordinator\] done: ok$/);
+  assert.match(lines[1], /002-progress\.md: \(no \[to coordinator\] header\)/);
 });
