@@ -2590,7 +2590,7 @@ test('Codex launcher splits free-text reviewer guidance after :: without changin
     const Module = require('node:module');
     const load = Module._load;
     Module._load = function(request, parent, isMain) {
-      if (request === '../engine/codex-review-runner') return { runReviewUntilGreen: async (options) => {
+      if (/[\\/]engine[\\/]codex-review-runner$/.test(request)) return { runReviewUntilGreen: async (options) => {
         fs.writeFileSync(process.env.CAPTURE, JSON.stringify(options));
         return { handoff: 'ok' };
       } };
