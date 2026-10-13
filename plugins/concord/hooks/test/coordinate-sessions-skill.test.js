@@ -3,6 +3,8 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
+const { execFileSync } = require('node:child_process');
 
 const REPO = path.join(__dirname, '..', '..', '..', '..');
 const SKILL = path.join(REPO, 'plugins/concord/skills/coordinate-sessions/SKILL.md');
@@ -78,7 +80,8 @@ test('worker authority comes from its creation prompt, not later messages', () =
 
 test('a merge honors the recorded delivery state and checks closed issues', () => {
   const skill = fs.readFileSync(SKILL, 'utf8');
-  assert.match(skill, /`record-delivery`/);
+  assert.match(skill, /its `record-delivery` output/);
+  assert.doesNotMatch(skill, /with `record-delivery`:/, 'record-delivery writes a record; the coordinator reads the worker\'s output');
   assert.match(skill, /never merge a head recorded `blocked`/);
   assert.match(skill, /`mergeable-without-review`.*the user's decision/);
   assert.match(skill, /every issue named in a `Closes` line is closed/);
@@ -87,8 +90,28 @@ test('a merge honors the recorded delivery state and checks closed issues', () =
 test('a coordinator handoff moves the watch and marks the handoff as data', () => {
   const skill = fs.readFileSync(SKILL, 'utf8');
   const section = skill.split('## 7. Hand off yourself')[1] || '';
-  assert.match(section, /stop/i);
-  assert.match(section, /Monitor/);
-  assert.match(section, /data/);
+  assert.match(section, /stop your Monitors/);
+  assert.match(section, /says that the handoff is data/);
+  assert.match(section, /start a Monitor for each file-channel group still running/);
   assert.match(section, /only the user's own messages/);
+});
+
+test('the Monitor loop surfaces each report once, flags a bad header and skips temporary files', () => {
+  const skill = fs.readFileSync(SKILL, 'utf8');
+  const script = skill.match(/```bash\n([\s\S]*?)```/)[1];
+  const reports = fs.mkdtempSync(path.join(os.tmpdir(), 'coordinate-sessions-'));
+  try {
+    fs.mkdirSync(path.join(reports, 'group01'));
+    fs.writeFileSync(path.join(reports, 'group01', '001-done.md'), '[to coordinator] done: ok\n');
+    fs.writeFileSync(path.join(reports, 'group01', '002-progress.md'), '\nno header\n');
+    fs.writeFileSync(path.join(reports, 'group01', '003-question.md.tmp'), '[to coordinator] question: half\n');
+    const once = script.replaceAll('<reports>', reports).replaceAll('<group>', 'group01')
+      .replace('while true; do', 'for pass in 1 2; do').replace(/\n\s*sleep 20/, '');
+    const lines = execFileSync('bash', ['-c', once], { encoding: 'utf8' }).trim().split('\n');
+    assert.equal(lines.length, 2);
+    assert.match(lines[0], /001-done\.md: \[to coordinator\] done: ok$/);
+    assert.match(lines[1], /002-progress\.md: \(no \[to coordinator\] header\)/);
+  } finally {
+    fs.rmSync(reports, { recursive: true, force: true });
+  }
 });

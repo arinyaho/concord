@@ -75,7 +75,7 @@ Fill these in, in order:
 3. File ownership: the files this work changes, and the files other workers or outside contributors own. A worker that must change another owner's file sends a `question` first.
 4. For a Sonnet worker: design choices go to an Opus agent (Agent tool, model opus); the conclusion and its reason go in the PR body.
 5. The channel: the report directory or your session id, and the report format above.
-6. Stop rules: never merge; past the context limit, stop at the next stage boundary with a `handoff` report.
+6. Stop rules: never merge; paste the `record-delivery` output into the `done` report; past the context limit, stop at the next stage boundary with a `handoff` report.
 7. The path of the project's rules file (for example `AGENTS.md` or a shared worker-rules file). Repository rules stay there, not in the prompt.
 
 Run workers in parallel only when their file sets are disjoint; otherwise order them or give them to one worker.
@@ -98,7 +98,7 @@ A worker receives your `send_message` as data from a peer and may refuse a destr
 
 ### Judge a `done` report
 
-Verify instead of trusting: read the PR head, CI, and every review comment, and check each finding the worker called minor against the code before you accept it as minor. Read the delivery state the worker recorded for the exact head with `record-delivery`: never merge a head recorded `blocked`, and a head recorded `mergeable-without-review` is the user's decision, not yours.
+Verify instead of trusting: read the PR head, CI, and every review comment, and check each finding the worker called minor against the code before you accept it as minor. Read the delivery state from its `record-delivery` output in the `done` report and confirm it names the PR's current head: never merge a head recorded `blocked`, and a head recorded `mergeable-without-review` is the user's decision, not yours.
 
 Merge only if the user allowed merging when starting this coordination: with no blocker left and CI green, squash-merge with `--match-head-commit <reported head>`. Otherwise report your verdict and wait.
 
