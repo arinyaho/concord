@@ -47,3 +47,15 @@ test('decisions, verification and merging follow the design', () => {
   assert.match(skill, /disjoint/);
   for (const forbidden of [/mien exec/, /arinyaho/, /release-bump/, /claude plugin update/]) assert.doesNotMatch(skill, forbidden);
 });
+
+test('a fresh coordinator can set up, run and stop the file channel', () => {
+  const skill = fs.readFileSync(SKILL, 'utf8');
+  assert.match(skill, /mkdir -p <reports>\/<group>/);
+  assert.match(skill, /`group01`/);
+  assert.match(skill, /## 0\. Start/);
+  assert.match(skill, /Stop the Monitor when no worker is active/);
+  assert.match(skill, /`NNN-<kind>\.md\.tmp`/);
+  assert.doesNotMatch(skill, /handoff-\*/);
+  assert.match(skill, /`status_bucket` `blocked`/);
+  assert.match(skill, /`status` `idle`/);
+});

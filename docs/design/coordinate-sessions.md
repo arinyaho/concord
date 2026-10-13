@@ -26,7 +26,7 @@ The coordinator sends to a worker with `send_message` on both channels. The chan
 | | File channel | Direct channel |
 |---|---|---|
 | Default when | the environment shares a filesystem | it does not |
-| Worker report | `<reports>/<group>/NNN-<kind>.md`, written to a temporary name and then renamed | `send_message` to the coordinator's session id |
+| Worker report | `<reports>/<group>/NNN-<kind>.md`, written as `NNN-<kind>.md.tmp` and then renamed | `send_message` to the coordinator's session id |
 | First line | `[to coordinator] <kind>: <summary>` | same |
 | Coordinator receives | a Monitor over the group directory, deduplicated against `<reports>/.emitted`, re-armed when it expires | a new turn; no watch needed |
 
@@ -34,7 +34,7 @@ The report kinds are `question`, `blocked`, `progress`, `done` and `handoff`. Th
 
 A worker in a cloud environment reaches the coordinator with `send_message` as well, so the direct channel works across environments.
 
-On either channel, a worker that has gone quiet is checked with `get_session`: `status_bucket` reads `failed` when its last turn errored, and an `idle` worker with no report has stopped without reporting.
+On either channel, a worker that has gone quiet is checked with `get_session`: `status_bucket` `failed` means its last turn errored, `status_bucket` `blocked` means it waits on something only the user can give, and `status` `idle` with no report means it stopped without reporting.
 
 ## Worker prompt
 

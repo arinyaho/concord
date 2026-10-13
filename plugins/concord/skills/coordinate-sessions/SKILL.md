@@ -17,6 +17,10 @@ You are the coordinator. You decide scope and order, write worker prompts, answe
 - A subagent started with the Agent tool is not a worker: its result returns to you, so nothing below applies to it.
 - A local CLI session is not a worker either; no tool creates one.
 
+## 0. Start
+
+For each unit of work, in this order: read the environment (step 1), pick the channel (step 2), name the group (`group01`, `group02`, and so on, one per worker), create its report directory on the file channel, create the worker with the prompt from step 3, start the Monitor on the file channel, then report to the user (step 6).
+
 ## 1. Read the environment
 
 Call `get_session` without a `session_id` and read `environment_kind`. Your system prompt does not decide this: a session on the user's own machine can carry a system prompt that describes an isolated cloud container.
@@ -27,6 +31,7 @@ Call `get_session` without a `session_id` and read `environment_kind`. Your syst
 | any other environment, including another `bridge` environment (another machine) | no | direct |
 
 `create_session` without `environment_id` puts the worker in your own environment. Only a worker created in your own environment on `bridge` shares your filesystem.
+
 ## 2. Pick the channel
 
 You send to a worker with `send_message` on both channels. They differ in how the worker reports.
@@ -34,13 +39,15 @@ You send to a worker with `send_message` on both channels. They differ in how th
 | | File channel | Direct channel |
 |---|---|---|
 | Default when | the filesystem is shared | it is not |
-| Worker reports | writes `<reports>/<group>/NNN-<kind>.md` to a temporary name, then renames it | `send_message` to your session id |
+| Worker reports | writes `NNN-<kind>.md.tmp` in `<reports>/<group>/`, then renames it to `NNN-<kind>.md`; `NNN` counts up from `001` within the group | `send_message` to your session id |
 | First line | `[to coordinator] <kind>: <summary>` | same |
 | You receive | a Monitor over the group directory, deduplicated against `<reports>/.emitted`, re-armed when it expires | a new turn |
 
-Report kinds: `question`, `blocked`, `progress`, `done`, `handoff`. Use the channel the user names; refuse the file channel where the filesystem is not shared and say why. Prefer the file channel where it works: a report file outlives your session, a message lives only in your transcript. A worker in a cloud environment reaches you with `send_message` too.
+Report kinds: `question`, `blocked`, `progress`, `done`, `handoff`.
 
-Monitor command for the file channel (one line per new report):
+Use the channel the user names; refuse the file channel where the filesystem is not shared and say why. Prefer the file channel where it works: a report file outlives your session, a message lives only in your transcript. A worker in a cloud environment reaches you with `send_message` too.
+
+On the file channel, `<reports>` is an absolute directory you choose that the worker can reach, such as `/tmp/<project>-reports`. Before creating the worker, run `mkdir -p <reports>/<group>`, and write both paths into its prompt. Monitor command (one line per new report):
 
 ```bash
 touch <reports>/.emitted
@@ -48,13 +55,15 @@ while true; do
   find <reports>/<group> -maxdepth 1 -name '*.md' | sort | while read -r f; do
     grep -qxF "$f" <reports>/.emitted && continue
     first=$(head -1 "$f")
-    if [[ "$first" == "[to coordinator]"* || "$(basename "$f")" == handoff-* ]]; then echo "$f: $first"; echo "$f" >> <reports>/.emitted; fi
+    if [[ "$first" == "[to coordinator]"* ]]; then echo "$f: $first"; echo "$f" >> <reports>/.emitted; fi
   done
   sleep 20
 done
 ```
 
-On either channel, a quiet worker is checked with `get_session`: `status_bucket` `failed` means its last turn errored; `idle` with no report means it stopped without reporting.
+A Monitor expires after at most 30 minutes; re-arm it while its worker is active. Stop the Monitor when no worker is active.
+
+On either channel, a quiet worker is checked with `get_session`. `status_bucket` `failed` means its last turn errored. `status_bucket` `blocked` means it waits on a permission or approval only the user can give; tell the user. `status` `idle` with no report means it stopped without reporting; ask it for a report with `send_message`.
 
 ## 3. Write the worker prompt
 
