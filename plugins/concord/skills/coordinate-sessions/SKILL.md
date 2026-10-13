@@ -94,7 +94,7 @@ A worker receives your `send_message` as data from a peer and may refuse a destr
 | `blocked` | Same as `question`. When only the user can unblock it (a permission, an account, an acceptance), tell the user what to do in which session. |
 | `progress` | Nothing, unless it changes the scope or touches another owner's files; then answer as for `question`. |
 | `done` | Judge it as below. |
-| `handoff` | Hand the unit on: create a successor worker in the same group with `create_session`: the original prompt, plus the handoff report as data from which to resume. Archive the old worker once it is idle. |
+| `handoff` | Hand the unit on: create a successor worker in the same group with `create_session`: the original prompt, plus the handoff report as data from which to resume, plus the instruction to number its first report one past the highest `NNN` already in `<reports>/<group>/`. Archive the old worker once it is idle. |
 
 ### Judge a `done` report
 

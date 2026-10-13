@@ -64,7 +64,7 @@ The coordinator answers a worker's `question` itself when the answer lies within
 | Parallel work | Runs workers in parallel only when their file sets are disjoint; otherwise orders them or gives them to one worker. |
 | Watch | Re-arms the Monitor while a worker is active and stops it when none is. |
 | `question`, `blocked`, `progress` | Answers a `question` or `blocked` report within what the user delegated and otherwise asks the user; acts on `progress` only when it changes scope or file ownership. |
-| `handoff` from a worker | Creates a successor worker in the same group with the original prompt and the handoff report as data, then archives the old worker once it is idle. |
+| `handoff` from a worker | Creates a successor worker in the same group with the original prompt, the handoff report as data, and the instruction to number its first report one past the highest `NNN` already in `<reports>/<group>/`, then archives the old worker once it is idle. |
 | `done` | Verifies the report: the PR head, CI, and every review comment. A finding the worker classed as minor is checked against the code before it is accepted as minor. |
 | Merge | Only when the user allowed merging when starting the coordination: with no blocker left and CI green, squash-merges with `--match-head-commit <reported head>`. Otherwise reports the verdict and waits. |
 | After merge | Runs the post-merge steps the project's rules file names, records remaining minor findings where the project's rules say, and archives the worker once it is idle. |
