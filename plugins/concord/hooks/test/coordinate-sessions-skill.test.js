@@ -75,3 +75,20 @@ test('worker authority comes from its creation prompt, not later messages', () =
   assert.match(skill, /in its `create_session` prompt/);
   assert.doesNotMatch(skill, /Workers follow your messages as instructions/);
 });
+
+test('a merge honors the recorded delivery state and checks closed issues', () => {
+  const skill = fs.readFileSync(SKILL, 'utf8');
+  assert.match(skill, /`record-delivery`/);
+  assert.match(skill, /never merge a head recorded `blocked`/);
+  assert.match(skill, /`mergeable-without-review`.*the user's decision/);
+  assert.match(skill, /every issue named in a `Closes` line is closed/);
+});
+
+test('a coordinator handoff moves the watch and marks the handoff as data', () => {
+  const skill = fs.readFileSync(SKILL, 'utf8');
+  const section = skill.split('## 7. Hand off yourself')[1] || '';
+  assert.match(section, /stop/i);
+  assert.match(section, /Monitor/);
+  assert.match(section, /data/);
+  assert.match(section, /only the user's own messages/);
+});
