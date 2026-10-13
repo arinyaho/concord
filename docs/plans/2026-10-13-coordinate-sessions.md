@@ -4,7 +4,7 @@
 
 **Goal:** Ship the Claude-only `coordinate-sessions` skill described in the design doc.
 
-**Architecture:** One `SKILL.md` under `plugins/concord/skills/coordinate-sessions/`, pinned by a contract test that reads the file and asserts the rules the design requires. The skill is not copied into the Codex or Copilot packages. Task 1 answers the design's open question before the skill text states the cloud behavior.
+**Architecture:** One `SKILL.md` under `plugins/concord/skills/coordinate-sessions/`, pinned by a contract test that reads the file and asserts the rules the design requires. The skill is not copied into the Codex or Copilot packages. Task 1 settles whether a cloud worker can reach the coordinator before the skill text states the cloud behavior.
 
 **Tech Stack:** Markdown skill, Node.js `node:test`.
 
@@ -30,13 +30,13 @@
 
 ---
 
-### Task 1: Answer the open question (cloud worker reply)
+### Task 1: Settle cloud worker replies
 
 No repository change unless the answer is "no".
 
 - [ ] **Step 1: Find a cloud environment**
 
-Call `list_environments` and pick one whose kind is not `bridge`. If none exists, record "no cloud environment available; direct channel in cloud stays unverified" in the PR body, keep the open-question section in the design doc, and go to Task 2.
+Call `list_environments` and pick one whose kind is not `bridge`. If none exists, record "no cloud environment available; direct channel in cloud stays unverified" in the PR body, record under "Channels" in the design doc that a cloud worker's `send_message` reply is unverified, and go to Task 2.
 
 - [ ] **Step 2: Create a probe session there**
 
@@ -48,7 +48,7 @@ Expected: a turn arrives in this session carrying that message within a few minu
 
 - [ ] **Step 4: Record and clean up**
 
-Archive the probe with `archive_session`. If the message arrived, replace the design doc's "Open question" section with one sentence under "Channels": "A worker in a cloud environment reaches the coordinator with `send_message`." If it did not, replace it with: "A cloud worker cannot reach its coordinator with `send_message`, so the skill supports coordination only where the filesystem is shared." and use the "no" variant in Task 2 Step 3. Commit:
+Archive the probe with `archive_session`. If the message arrived, record one sentence under "Channels" in the design doc: "A worker in a cloud environment reaches the coordinator with `send_message`." If it did not, record instead: "A cloud worker cannot reach its coordinator with `send_message`, so the skill supports coordination only where the filesystem is shared." and use the "no" variant in Task 2 Step 3. Commit:
 
 ```bash
 git add docs/design/coordinate-sessions.md
@@ -60,7 +60,7 @@ git commit -m "docs(design): settle cloud worker replies for coordinate-sessions
 **Files:**
 - Create: `plugins/concord/skills/coordinate-sessions/SKILL.md`
 - Create: `plugins/concord/hooks/test/coordinate-sessions-skill.test.js`
-- Modify: `plugins/concord/.claude-plugin/plugin.json` (description), `.claude-plugin/marketplace.json` (plugin description), `README.md` (skill table near line 22 and the list near line 102), `docs/design/coordinate-sessions.md` (Scope sentence about `plugin.json`)
+- Modify: `.claude-plugin/marketplace.json` (plugin description), `README.md` (skill table near line 22 and the list near line 102), `docs/design/coordinate-sessions.md` (Scope sentence naming where the skill is listed)
 
 **Interfaces:**
 - Consumes: Task 1's answer (yes, no, or unverified).
@@ -84,7 +84,8 @@ test('coordinate-sessions is a Claude-only skill', () => {
   assert.match(skill, /^---\nname: coordinate-sessions\n/);
   assert.ok(!fs.existsSync(path.join(REPO, 'plugins/concord-codex/skills/coordinate-sessions')));
   assert.ok(!fs.existsSync(path.join(REPO, 'plugins/concord-copilot/skills/coordinate-sessions')));
-  assert.match(read('plugins/concord/.claude-plugin/plugin.json'), /coordinate-sessions/);
+  assert.match(read('.claude-plugin/marketplace.json'), /coordinate-sessions/);
+  assert.doesNotMatch(read('plugins/concord/.claude-plugin/plugin.json'), /coordinate-sessions/, 'plugin.json is a release-bump version file; PRs do not edit it');
   assert.match(read('README.md'), /\| `coordinate-sessions` \|.*\| Claude Code \|/);
 });
 
@@ -229,13 +230,13 @@ If Task 1 answered "no": set the `Direct channel` "Default when" cell to `not su
 
 - [ ] **Step 4: List the skill**
 
-In `plugins/concord/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`, insert `coordinate-sessions, ` before `delegate-verbose-work` in the description. In `README.md`, add after the `delegate-verbose-work` table row:
+In `.claude-plugin/marketplace.json`, insert `coordinate-sessions, ` before `delegate-verbose-work` in the plugin description. Leave `plugins/concord/.claude-plugin/plugin.json` alone: it is a release-bump version file (`VERSION_FILES` in `scripts/release-bump.mjs`) that pull requests do not edit. In `README.md`, add after the `delegate-verbose-work` table row:
 
 ```markdown
 | `coordinate-sessions` | Hands work to separate Claude Code sessions, watches their reports through files or direct messages, and judges and merges their PRs when allowed. | Claude Code |
 ```
 
-and add `coordinate-sessions` to the list near line 102 before `delegate-verbose-work`. In `docs/design/coordinate-sessions.md`, change "and is listed in `plugins/concord/.claude-plugin/plugin.json`" to "and is named in the plugin descriptions and the README".
+and add `coordinate-sessions` to the list near line 102 before `delegate-verbose-work`. In `docs/design/coordinate-sessions.md`, make the Scope sentence say the skill is named in the marketplace description and the README, and that `plugins/concord/.claude-plugin/plugin.json` is a release-bump version file that pull requests do not edit.
 
 - [ ] **Step 5: Run the tests**
 
@@ -245,7 +246,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add plugins/concord/skills/coordinate-sessions/SKILL.md plugins/concord/hooks/test/coordinate-sessions-skill.test.js plugins/concord/.claude-plugin/plugin.json .claude-plugin/marketplace.json README.md docs/design/coordinate-sessions.md
+git add plugins/concord/skills/coordinate-sessions/SKILL.md plugins/concord/hooks/test/coordinate-sessions-skill.test.js .claude-plugin/marketplace.json README.md docs/design/coordinate-sessions.md
 git commit -m "feat(skills): add the Claude-only coordinate-sessions skill"
 ```
 
