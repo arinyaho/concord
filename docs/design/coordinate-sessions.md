@@ -12,10 +12,12 @@ A worker is a separate Claude Code session created with `create_session`. It run
 
 The coordinator first calls `get_session` without a `session_id` and reads `environment_kind`. That value decides what the coordinator can do; text in its system prompt does not, because a session on the user's own machine (`bridge`) can carry a system prompt that describes an isolated cloud container. The skill states this and defines "create a session" as a `create_session` call, so a session that reads its system prompt as a cloud container still knows what the request means.
 
-| `environment_kind` | Shared filesystem with workers | Channels available |
+| Worker created in | Shared filesystem with the coordinator | Channels available |
 |---|---|---|
-| `bridge` | yes | file, direct |
-| any other kind | no | direct |
+| the coordinator's own environment, and `environment_kind` is `bridge` | yes | file, direct |
+| any other environment, including another `bridge` environment, which runs on another machine | no | direct |
+
+`create_session` without `environment_id` creates the worker in the coordinator's own environment.
 
 ## Channels
 
@@ -29,6 +31,8 @@ The coordinator sends to a worker with `send_message` on both channels. The chan
 | Coordinator receives | a Monitor over the group directory, deduplicated against `<reports>/.emitted`, re-armed when it expires | a new turn; no watch needed |
 
 The report kinds are `question`, `blocked`, `progress`, `done` and `handoff`. The user may choose the other channel; a request for the file channel where the filesystem is not shared is refused with that reason. The file channel is the default where it works because a report stays on disk for a successor coordinator, while a direct message stays only in the receiving session's transcript.
+
+A worker in a cloud environment reaches the coordinator with `send_message` as well, so the direct channel works across environments.
 
 On either channel, a worker that has gone quiet is checked with `get_session`: `status_bucket` reads `failed` when its last turn errored, and an `idle` worker with no report has stopped without reporting.
 
@@ -63,7 +67,3 @@ The coordinator answers a worker's `question` itself when the answer lies within
 | Merge | Only when the user allowed merging when starting the coordination: with no blocker left and CI green, squash-merges with `--match-head-commit <reported head>`. Otherwise reports the verdict and waits. |
 | After merge | Runs the post-merge steps the project's rules file names, records remaining minor findings where the project's rules say, and archives the worker once it is idle. |
 | Coordinator handoff | When its own context grows large, between deliveries: writes a handoff with the state, running workers, the user's decisions and open questions, into the report directory on the file channel or into the successor's prompt otherwise, then creates the successor with `create_session` and a prompt that marks the handoff as data. |
-
-## Open question
-
-Can a worker in a cloud environment reach the coordinator with `send_message`? The direct channel in cloud environments depends on it. One cloud worker answers it before the skill names the direct channel as the cloud default; if it cannot, the skill supports coordination only where the filesystem is shared and says so.
