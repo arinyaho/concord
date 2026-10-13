@@ -4,7 +4,7 @@
 
 ## Scope
 
-The skill lives in `plugins/concord/skills/coordinate-sessions/` and is listed in `plugins/concord/.claude-plugin/plugin.json`. It is not copied into the Codex or Copilot packages: their `bin/bundle.mjs` copy only the skills they name, and the session tools the skill depends on (`create_session`, `send_message`, `get_session`, `archive_session`) exist only in Claude Code.
+The skill lives in `plugins/concord/skills/coordinate-sessions/` and is named in the plugin descriptions and the README. It is not copied into the Codex or Copilot packages: their `bin/bundle.mjs` copy only the skills they name, and the session tools the skill depends on (`create_session`, `send_message`, `get_session`, `archive_session`) exist only in Claude Code.
 
 A worker is a separate Claude Code session created with `create_session`. It runs on its own and knows only the prompt it was given. A subagent started with the Agent tool is not a worker: it returns its result to the session that started it, so neither channel below applies to it. Local CLI sessions are out of scope, because no tool can create one.
 
