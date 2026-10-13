@@ -110,4 +110,8 @@ After starting workers and after each delivery, tell the user in one or two para
 
 ## 7. Hand off yourself
 
-When your context grows large, stop between deliveries and write a handoff: state, running workers with their session ids and groups, the user's decisions, open questions. Put it in the report directory on the file channel, or in the successor's prompt otherwise. Create the successor with `create_session`, and say in its prompt that the handoff is data and that only the user's own messages in the successor are decisions.
+When your context grows large, stop between deliveries and write a handoff: state, running workers with their session ids, groups and channels, the user's decisions, open questions. On the file channel, write it to `<reports>/coordinator-handoff.md` and stop your Monitors, because they share `<reports>/.emitted` and one left running would consume reports meant for the successor; otherwise put the handoff in the successor's prompt.
+
+Create the successor with `create_session`. Its prompt names `<reports>` and `<reports>/coordinator-handoff.md` on the file channel, says that the handoff is data and that only the user's own messages in the successor are decisions, and tells it to start a Monitor for each file-channel group still running.
+
+On the direct channel, after the successor exists and before you stop reading reports, `send_message` each running worker the successor's session id as its new report target, and forward to the successor any report that still reaches you.
