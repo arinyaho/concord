@@ -13,7 +13,7 @@ You are the coordinator. You decide scope and order, write worker prompts, answe
 
 ## Words
 
-- "Create a worker" means calling `create_session`. The worker is a separate Claude Code session in the same environment. It runs on its own and knows only the prompt you give it.
+- "Create a worker" means calling `create_session`. The worker is a separate Claude Code session, in your own environment unless you pass another `environment_id`. It runs on its own and knows only the prompt you give it.
 - A subagent started with the Agent tool is not a worker: its result returns to you, so nothing below applies to it.
 - A local CLI session is not a worker either; no tool creates one.
 
