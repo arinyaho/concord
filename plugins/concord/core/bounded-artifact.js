@@ -75,4 +75,13 @@ function readArtifactBytes(file, root, { allowMissing = false } = {}) {
   return withArtifact(file, root, allowMissing, (chunk) => chunks.push(Buffer.from(chunk))) === null ? null : Buffer.concat(chunks);
 }
 
-module.exports = { MAX_BYTES, captureArtifactRoot, hashArtifact, readArtifactBytes };
+// Parsed JSON of a subagent-written artifact: null when it is missing or not JSON, a harness failure when it is not a bounded regular file.
+function readArtifactJson(file) {
+  let root;
+  try { root = captureArtifactRoot(path.dirname(file)); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  const bytes = readArtifactBytes(file, root, { allowMissing: true });
+  if (bytes === null) return null;
+  try { return JSON.parse(bytes.toString('utf8')); } catch (_) { return null; }
+}
+
+module.exports = { MAX_BYTES, captureArtifactRoot, hashArtifact, readArtifactBytes, readArtifactJson };

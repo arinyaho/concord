@@ -1,5 +1,4 @@
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import { settingSourcesFromEnv } from "../settings_sources.mjs";
 
@@ -8,6 +7,7 @@ import { settingSourcesFromEnv } from "../settings_sources.mjs";
 const require = createRequire(import.meta.url);
 const { reviewerPrompt, fixDeclaration } = require("../../../../plugins/concord/core/round-plan.js");
 const { targetSlug } = require("../../../../plugins/concord/core/review.js");
+const { readArtifactJson } = require("../../../../plugins/concord/core/bounded-artifact.js");
 
 // Per-kind prompt for a review-cli subagent. Each tells the subagent the EXACT
 // absolute artifact path to write, and the exact JSON schema review-cli reads.
@@ -21,7 +21,9 @@ function promptFor(kind, { stateDir, round, diffPath, ref, intentHash, fixGroup,
       `Empty findings array if clean. Every changed file in the diff MUST appear in "examined".`;
   }
   if (kind === "verify") {
-    const { examined = [] } = JSON.parse(readFileSync(art("correctness"), "utf8"));
+    // A missing or malformed artifact leaves `examined` empty, as in the packaged runner; an unsafe or oversized one is a harness failure.
+    const listed = readArtifactJson(art("correctness"))?.examined;
+    const examined = Array.isArray(listed) ? listed.filter((item) => typeof item === "string") : [];
     return reviewerPrompt("verify", { stateDir, round, gateMode, gateApplied, examined });
   }
   if (kind === "intent") {

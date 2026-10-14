@@ -12,7 +12,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { safeIdForFilename } = require('./artifact-name');
 const { writeFileAtomic } = require('./atomic-write');
-const { captureArtifactRoot, hashArtifact, readArtifactBytes } = require('./bounded-artifact');
+const { captureArtifactRoot, hashArtifact, readArtifactBytes, readArtifactJson } = require('./bounded-artifact');
 const { targetSlug, ledgerPath } = require('./review');
 const { SESSION_MODES, THRESHOLDS } = require('./session-handoff');
 const { artifactDestinationFromPrompt } = require('./review-artifact');
@@ -276,10 +276,8 @@ function codexExec({ role, prompt, repoRoot, stateDir, cliPath, requestedModel, 
 
 // A string array field of a reviewer artifact, or [] when the artifact or field is absent.
 function artifactList(file, field) {
-  try {
-    const value = JSON.parse(fs.readFileSync(file, 'utf8'))[field];
-    return Array.isArray(value) ? value.filter((item) => typeof item === 'string') : [];
-  } catch (_) { return []; }
+  const value = readArtifactJson(file)?.[field];
+  return Array.isArray(value) ? value.filter((item) => typeof item === 'string') : [];
 }
 
 function declaredFixFiles(context, groups) {
@@ -774,8 +772,9 @@ async function runRounds(options) {
       if (lensFailure) throw lensFailure.reason;
       const candidates = [];
       for (const lens of lenses) {
+        // A missing or malformed lens artifact is lenient; an unsafe or oversized one is a harness failure.
+        const raw = readArtifactJson(path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-${lens}.json`));
         try {
-          const raw = JSON.parse(fs.readFileSync(path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-${lens}.json`), 'utf8'));
           for (const finding of raw.findings || []) {
             // Candidate IDs are interpolated into verdict artifact names below.
             // Panel output is advisory and lenient, so an invalid candidate is
@@ -798,7 +797,7 @@ async function runRounds(options) {
           // assigned -- tallying that as a refutation is the false clean the
           // field exists to prevent, so it fails the round like every other
           // panel read path (review-cli.js requireNotBlocked).
-          try { raw = JSON.parse(fs.readFileSync(verdict, 'utf8')); } catch (_) { return false; }
+          raw = readArtifactJson(verdict);
           const blocked = raw ? raw.blocked : undefined;
           if (blocked !== undefined && !(Array.isArray(blocked) && !blocked.length)) {
             const detail = Array.isArray(blocked) ? blocked.map((b) => String(b)).join('; ') : String(blocked);
