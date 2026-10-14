@@ -14,7 +14,6 @@
 // round-plan-sync.test.js enforces all three individually (see that file's
 // own tests, not a single blanket guarantee). The JS callers use
 // reviewerPrompt() to generate the prompt they actually send.
-const fs = require('node:fs');
 const path = require('node:path');
 const { safeIdForFilename } = require('./artifact-name');
 const { allowedFindingPrefixes } = require('./artifact-contract');

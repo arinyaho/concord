@@ -833,9 +833,10 @@ async function runRounds(options) {
     const authoritativeSources = [...new Set(sourcePaths)].filter(source => fs.existsSync(source)).map(source => ({ path: canonicalPath(source), sha256: crypto.createHash('sha256').update(fs.readFileSync(source)).digest('hex') }));
     const nextArgs = result.decision?.continue ? ['round-start', ref, ...(initialBase ? [initialBase] : []), ...(broad ? ['--broad'] : []), ...(noBroad ? ['--no-broad'] : []), ...(noDod ? ['--no-dod'] : []), ...(options.intentFile ? ['--intent-file', options.intentFile] : [])] : ['show', ref];
     const nextStep = { executable: process.execPath, cliPath: path.resolve(publicCliPath), args: [...nextArgs, ...initiativeFlags] };
+    const artifactRoot = captureArtifactRoot(started.stateDir);
     const completedArtifacts = fs.readdirSync(started.stateDir).filter(name => new RegExp(`^round-${started.round}-.*\\.json$`).test(name)).map(name => {
       const artifactPath = path.join(started.stateDir, name);
-      return { path: artifactPath, sha256: crypto.createHash('sha256').update(fs.readFileSync(artifactPath)).digest('hex') };
+      return { path: artifactPath, sha256: hashArtifact(artifactPath, artifactRoot) };
     });
     const stem = path.join(started.stateDir, `session-review-${targetSlug(ref)}`);
     const statePath = `${stem}-state.json`, handoffPath = `${stem}-handoff.json`, packetPath = `${stem}-packet.json`;

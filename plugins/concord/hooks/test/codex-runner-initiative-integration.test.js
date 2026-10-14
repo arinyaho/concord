@@ -86,6 +86,27 @@ test('default suggestions publish once while later progress continues to termina
   assert.equal(fs.readFileSync(checkpoint.sources.state.path, 'utf8').includes('RAW_TRANSCRIPT_NEVER_COPY'), false);
   assert.equal(fs.readFileSync(checkpoint.sources.handoff.path, 'utf8').includes('RAW_TRANSCRIPT_NEVER_COPY'), false);
 });
+test('session handoff reports an oversized round artifact as a failed handoff instead of hashing it (#339)', async () => {
+  const f = fixture(); const original = f.options.runCli;
+  const runCli = (args) => {
+    if (args[0] === 'round-start') return { decision: 'work', stateDir: f.stateDir, round: 1, head: f.git('rev-parse', 'HEAD'), base: f.options.base, targetType: 'git', dodPassed: true };
+    if (args[0] === 'record') return { decision: { converged: true } };
+    if (args[0] === 'reserve') return { status: 'granted' };
+    if (args[0] === 'artifact-normalize') return { status: 'ok' };
+    if (args[0] === 'plan-fixes') return emptyPlan;
+    if (args[0] === 'telemetry-slot') return {};
+    return original(args);
+  };
+  const spawn = async (input) => {
+    const fd = fs.openSync(path.join(f.stateDir, 'round-1-stray.json'), 'w');
+    fs.ftruncateSync(fd, 20 * 1024 * 1024 + 1); fs.closeSync(fd);
+    return f.options.spawn(input);
+  };
+  // The review disposition is already durable, so a refused artifact fails the handoff, not the review.
+  const result = await runReviewUntilGreen({ ...f.options, runCli, spawn, getInputContextTokens: () => 128000 });
+  assert.equal(result.sessionHandoff.action, 'failed');
+  assert.match(result.sessionHandoff.error, /harness-failure: unsafe or oversized review artifact: round-1-stray\.json/);
+});
 test('native launcher prints a checkpoint even with a continuation packet, exactly once', () => {
   const dir = tmp(), preload = path.join(dir, 'preload.cjs');
   fs.writeFileSync(preload, `const Module=require('node:module'),load=Module._load;Module._load=function(request){if(/[\\\\/]engine[\\\\/]codex-review-runner$/.test(request))return{runReviewUntilGreen:async o=>{const h={promptPath:'/private/resume.md',prompt:'CONTINUE'};await o.onSessionHandoff(h);return{decision:{converged:true},sessionHandoff:h,continuationPacket:{packet:'terminal'}};}};return load.apply(this,arguments);};`);
