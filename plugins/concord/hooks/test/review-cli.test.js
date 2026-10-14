@@ -6726,3 +6726,95 @@ test('unexaminedPaths resolves every changed path with one git call and keeps it
   } finally { process.env.PATH = pathBefore; }
   assert.strictEqual(fs.readFileSync(log, 'utf8').trim().split('\n').length, 1);
 });
+
+// #341: a correctness finding stopped for a human decision (group-reconcile) is closed with `defer`.
+function seedReconcileStop(ref, ids) {
+  const repo = initRepo(); const dir = tmpDir();
+  const { env } = seedGatesRound(repo, dir, ref,
+    { status: 'ok', examined: ['a.txt'], findings: ids.map((id) => ({ id, gate: 'correctness', file: 'a.txt', span: 'two', summary: `${id} summary` })) },
+    { status: 'ok', rejected: [], groups: [{
+      findingIds: ids, rootCause: 'out of scope for this target', invariants: ['a human decides scope'], changeClass: 'local', action: 'reconcile',
+      reason: 'whether this belongs to the target is a product decision',
+    }] });
+  run(['plan-fixes', ref], { env });
+  run(['record', ref], { env });
+  return { repo, dir, env, slug: review.targetSlug(ref) };
+}
+const deferArgs = (ref, id, by = 'jane') => ['defer', ref, id, '--by', by, '--reason', 'out of scope here', '--ref', 'https://github.com/o/r/issues/9'];
+
+test('review-cli defer: closes a finding stopped for reconciliation, records who decided, and leaves the stop', () => {
+  const { dir, env, slug } = seedReconcileStop('feat/defer', ['correctness:scope']);
+  const before = review.readLedger(dir, slug);
+  assert.strictEqual(before.status, 'gate-pending');
+  assert.strictEqual(before.reconciliation.trigger, 'group-reconcile');
+  const out = run(deferArgs('feat/defer', 'correctness:scope'), { env });
+  assert.match(out, /deferred correctness:scope/);
+  const after = review.readLedger(dir, slug);
+  const f = after.findings.find((x) => x.id === 'correctness:scope');
+  assert.strictEqual(f.status, 'deferred');
+  assert.deepStrictEqual({ ...f.deferral, deferredAt: typeof f.deferral.deferredAt }, { deferredBy: 'jane', deferredAt: 'string', reason: 'out of scope here', ref: 'https://github.com/o/r/issues/9' });
+  assert.ok(after.seen.some((s) => s.id === 'correctness:scope' && s.status === 'deferred'));
+  assert.strictEqual(after.reconciliation, null);
+  assert.strictEqual(after.reconciliationPacket, null);
+  assert.strictEqual(after.status, 'converging');
+  for (const k of ['budget', 'run_budget', 'journal', 'round', 'runs']) assert.deepStrictEqual(after[k], before[k], k);
+  assert.match(cli.renderHandoff({ ledger: review.readLedger(dir, slug) }), /deferred by jane -> https:\/\/github\.com\/o\/r\/issues\/9: \[correctness:scope\]/);
+  // a repeat keeps the first record
+  run(deferArgs('feat/defer', 'correctness:scope', 'someone-else'), { env });
+  assert.strictEqual(review.readLedger(dir, slug).findings.find((x) => x.id === 'correctness:scope').deferral.deferredBy, 'jane');
+});
+
+test('review-cli defer: a group with another open member keeps the stop and shrinks', () => {
+  const { dir, env, slug } = seedReconcileStop('feat/defer2', ['correctness:a', 'correctness:b']);
+  run(deferArgs('feat/defer2', 'correctness:a'), { env });
+  let l = review.readLedger(dir, slug);
+  assert.strictEqual(l.status, 'gate-pending');
+  assert.deepStrictEqual(l.reconciliation.groups[0].findingIds, ['correctness:b']);
+  assert.deepStrictEqual(l.reconciliationPacket.groups[0].findingIds, ['correctness:b']);
+  run(deferArgs('feat/defer2', 'correctness:b'), { env });
+  l = review.readLedger(dir, slug);
+  assert.strictEqual(l.status, 'converging');
+  assert.strictEqual(l.reconciliation, null);
+});
+
+test('review-cli defer: refusals leave the ledger unchanged', () => {
+  const { dir, env, slug } = seedReconcileStop('feat/defer3', ['correctness:scope']);
+  const snapshot = fs.readFileSync(path.join(dir, fs.readdirSync(dir).find((n) => n.includes(slug) && n.endsWith('.json'))), 'utf8');
+  assert.throws(() => run(['defer', 'feat/defer3', 'correctness:scope', '--reason', 'r', '--ref', 'x'], { env }), /--by/);
+  assert.throws(() => run(['defer', 'feat/defer3', 'correctness:scope', '--by', 'j', '--ref', 'x'], { env }), /--reason/);
+  assert.throws(() => run(['defer', 'feat/defer3', 'correctness:scope', '--by', 'j', '--reason', 'r'], { env }), /--ref/);
+  assert.throws(() => run(deferArgs('feat/defer3', 'correctness:unknown'), { env }), /unknown finding/);
+  assert.throws(() => run(deferArgs('feat/defer3', 'gate:cross-context:x'), { env }), /use dismiss/);
+  assert.strictEqual(review.readLedger(dir, slug).status, 'gate-pending');
+  assert.deepStrictEqual(JSON.parse(snapshot), JSON.parse(fs.readFileSync(path.join(dir, fs.readdirSync(dir).find((n) => n.includes(slug) && n.endsWith('.json'))), 'utf8')));
+});
+
+test('review-cli defer: a deferred id re-raised by a later round is not re-planned', () => {
+  const { dir, env, slug } = seedReconcileStop('feat/defer4', ['correctness:scope']);
+  run(deferArgs('feat/defer4', 'correctness:scope'), { env });
+  const seen = review.readLedger(dir, slug).seen;
+  assert.deepStrictEqual(review.dedupeAgainstSeen([{ id: 'correctness:scope', file: 'a.txt', span: 'two', summary: 's' }], seen), []);
+});
+
+test('review-cli dismiss: the help text says it takes only a gate finding, and defer is listed', () => {
+  const help = run(['--help'], { env: process.env, allowFail: true });
+  assert.match(help, /dismiss\s+dismiss an open gate finding \(gate: id\)/);
+  assert.match(help, /defer\s+defer an open finding of a reconcile group/);
+});
+
+test('review-cli dismiss: dismissing a gate finding does not leave a group-reconcile stop that is still unresolved', () => {
+  const { dir, env, slug } = seedReconcileStop('feat/defer5', ['correctness:scope']);
+  review.writeLedger(dir, slug, { ...review.readLedger(dir, slug), gate_open: [{ id: 'gate:cross-context:x', file: 'a.txt', summary: 's', releaseBlocking: ['serious-bug'] }] });
+  run(['dismiss', 'feat/defer5', 'gate:cross-context:x', '--by', 'jane'], { env });
+  assert.strictEqual(review.readLedger(dir, slug).status, 'gate-pending');
+});
+
+test('review-cli rerun: a deferred finding stays deferred in the fresh ledger and is archived', () => {
+  const { dir, env, slug } = seedReconcileStop('feat/defer6', ['correctness:scope']);
+  run(deferArgs('feat/defer6', 'correctness:scope'), { env });
+  run(['rerun', 'feat/defer6'], { env });
+  const after = review.readLedger(dir, slug);
+  assert.strictEqual(after.findings.find((f) => f.id === 'correctness:scope').status, 'deferred');
+  assert.ok(after.seen.some((s) => s.id === 'correctness:scope' && s.status === 'deferred'));
+  assert.deepStrictEqual(after.runs[0].deferred.map((f) => [f.id, f.ref]), [['correctness:scope', 'https://github.com/o/r/issues/9']]);
+});

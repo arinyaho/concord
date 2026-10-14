@@ -161,7 +161,7 @@ function dedupeAgainstSeen(findings, seen) {
       survivors.push(f);
       continue;
     }
-    if (entry.status === 'killed' || entry.status === 'parked') continue;
+    if (entry.status === 'killed' || entry.status === 'parked' || entry.status === 'deferred') continue;
     if (entry.status === 'fixed') {
       survivors.push(Object.assign({}, f, { reopened: true, contentChanged: entry.hash !== seenHash(f) }));
       continue;
@@ -632,7 +632,7 @@ function renderReviewReport(ledgers) {
     } else if (ledger.status === 'intent-review') {
       lines.push(`review-and-fix [${ref}]: ${roundInfo} -- stopped for a design-conformance (intent) finding, needs a human decision; re-run \`/review-and-fix ${ref}\` after fixing the code or the design source (a fixed contradiction converges, an unfixed one re-fetches the intent).`);
     } else if (ledger.status === 'gate-pending') {
-      lines.push(`review-and-fix [${ref}]: ${roundInfo} -- stopped for advisory broad review finding(s), needs a human decision; re-run \`/review-and-fix ${ref}\` (a fresh run re-evaluates broad review), record a fix committed outside the loop with \`review-cli.js record-fix ${ref} <gateId> --commit <sha> --test "<command>"\`, or \`review-cli.js dismiss ${ref} <gateId> --by <name>\` for a finding you accept as out-of-scope.`);
+      lines.push(`review-and-fix [${ref}]: ${roundInfo} -- stopped for advisory broad review finding(s), needs a human decision; re-run \`/review-and-fix ${ref}\` (a fresh run re-evaluates broad review), record a fix committed outside the loop with \`review-cli.js record-fix ${ref} <gateId> --commit <sha> --test "<command>"\`, or \`review-cli.js dismiss ${ref} <gateId> --by <name>\` for a finding you accept as out-of-scope, or \`review-cli.js defer ${ref} <findingId> --by <name> --reason <text> --ref <issue>\` for a correctness finding waiting on a group decision.`);
     } else if (ledger.status === 'dod-failed') {
       lines.push(`review-and-fix [${ref}]: ${roundInfo} -- final DoD failed; fix the failure, then re-run \`/review-and-fix ${ref}\` to review the changed diff before retrying DoD.`);
     } else if (ledger.status === 'gate-panel-pending') {

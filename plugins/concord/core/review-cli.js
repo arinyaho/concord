@@ -300,12 +300,13 @@ function renderHandoff(result) {
     for (const f of r.gate_open || []) lines.push(`  open in prior run #${r.run}: ${evidenceLine(f)}`);
   }
   // A finding fixed in a prior run and open, parked, dismissed, cleared at a restart or killed now is reported once, in its current state.
-  const reopened = new Set([...(ledger.findings || []).filter((f) => f.status === 'parked').map((f) => f.id), ...(ledger.gate_open || []).map((f) => f.id), ...dismissedIds(ledger), ...(ledger.gate_cleared || []).map((c) => c.id), ...(ledger.killed_digest || []).map((k) => k.id)]);
+  const reopened = new Set([...(ledger.findings || []).filter((f) => f.status === 'parked' || f.status === 'deferred').map((f) => f.id), ...(ledger.gate_open || []).map((f) => f.id), ...dismissedIds(ledger), ...(ledger.gate_cleared || []).map((c) => c.id), ...(ledger.killed_digest || []).map((k) => k.id)]);
   for (const r of ledger.runs || []) {
     for (const f of (r.fixed || []).filter((fixed) => !reopened.has(fixed.id))) lines.push(`  fixed in prior run #${r.run}: ${evidenceLine(f)} -> commit ${f.fix_commit}${fixTest(f)}`);
   }
   for (const f of currentGateFixed(ledger)) lines.push(`fixed outside the loop: ${evidenceLine(f)} -> commit ${f.fix_commit}${fixTest(f)}`);
   for (const d of ledger.gate_dismissed || []) lines.push(`dismissed by ${d.dismissedBy}: ${evidenceLine(d)}`);
+  for (const f of (ledger.findings || []).filter((x) => x.status === 'deferred')) lines.push(`deferred by ${f.deferral.deferredBy} -> ${f.deferral.ref}: ${evidenceLine(f)} -- reason: ${f.deferral.reason}`);
   // A cleared finding is reported once: still open or dismissed ids show in their own section, and "not re-raised" needs a gate round whose verdict was recorded.
   const reported = new Set([...(ledger.gate_open || []).map((f) => f.id), ...dismissedIds(ledger)]);
   const gateRan = (ledger.gate_rounds || []).some((round) => (ledger.history || []).some((h) => h.round === round));
@@ -633,7 +634,8 @@ const VERB_HELP = {
   'gate-panel-round-start': 'start a gate panel round',
   'gate-panel-round-record': 'record a gate panel round result',
   unpark: 'return a parked finding to open',
-  dismiss: 'dismiss a finding with a rationale',
+  dismiss: 'dismiss an open gate finding (gate: id)',
+  defer: 'defer an open finding of a reconcile group to a tracked follow-up',
   'record-fix': 'record a fix committed outside the loop, with red-to-green evidence',
   reset: 'discard the target ledger',
   rerun: 'archive the ledger history and start the target over',
@@ -687,7 +689,7 @@ function currentGateFixed(ledger) {
 // Every verb that removes a stopping finding (record-fix, dismiss) leaves through here. As on a DoD retry, a gate-pending run's
 // next round reviews only the commits after the reviewed head with a fresh panel; a parked run leaves as unpark would.
 function leaveStopIfClear(stateDir, slug, prior, next) {
-  if (next.findings?.some((f) => f.status === 'parked') || (next.gate_open || []).some((f) => !gateFollowUpEligible(f))) return next;
+  if (next.findings?.some((f) => f.status === 'parked') || (next.gate_open || []).some((f) => !gateFollowUpEligible(f)) || next.reconciliation?.groups?.length) return next;
   const left = { ...clearIntentForFreshLook(stateDir, slug, next), status: 'converging' };
   return prior.status === 'gate-pending' ? { ...left, diff_content_hash: null, retry_diff_base: prior.target?.head_sha, gate_panel: gatePanelLib.emptyGatePanel() } : left;
 }
@@ -2989,6 +2991,50 @@ function runVerb(resolveFromCwd, args, initiative) {
     return;
   }
 
+  // A correctness finding that plan-fixes sent to a human decision (group-reconcile) is closed here: the human tracks it
+  // elsewhere, and the ledger keeps who decided, why and where (docs/design/delivery-disposition.md, "Deferred findings").
+  if (verb === 'defer') {
+    requireRef(ref, 'defer');
+    const findingId = rest[0];
+    if (!findingId) throw new Error('review-cli defer: missing required <findingId> argument');
+    if (findingId.startsWith('gate:')) throw new Error(`review-cli defer: ${findingId} is a gate finding; use dismiss`);
+    const flag = (name) => { const i = rest.indexOf(name); return i >= 0 && rest[i + 1] ? rest[i + 1].trim() : ''; };
+    const slug = targetSlug(ref);
+    const ledger = readLedger(stateDir, slug);
+    if (!ledger) throw new Error(`review-cli defer: no ledger for ref "${ref}" ${stateDirHint(stateDir)}`);
+    const [by, reason, tracker] = [flag('--by'), flag('--reason'), flag('--ref')];
+    if (!by) throw new Error('review-cli defer: --by <name> is required; a deferral records the human who made it');
+    if (!reason) throw new Error('review-cli defer: --reason <text> is required');
+    if (!tracker) throw new Error('review-cli defer: --ref <issue url or key> is required; a deferred finding is tracked elsewhere');
+    const finding = (ledger.findings || []).find((f) => f.id === findingId);
+    if (!finding) throw new Error(`review-cli defer: unknown finding ${findingId}`);
+    if (finding.status !== 'deferred') {
+      if (finding.status === 'parked') throw new Error(`review-cli defer: ${findingId} is parked; use unpark or record-fix`);
+      if (finding.status !== 'open') throw new Error(`review-cli defer: ${findingId} is ${finding.status}, not open`);
+      if (ledger.status !== 'gate-pending' || ledger.reconciliation?.trigger !== 'group-reconcile') throw new Error('review-cli defer: the run is not stopped for a group decision');
+      if (!ledger.reconciliation.groups?.some((g) => g.findingIds.includes(findingId))) throw new Error(`review-cli defer: ${findingId} is not in a reconcile group`);
+      // The packet's per-class counts come from the sealed plan, which knows each group's changeClass.
+      const classOf = new Map((ledger.fix_plan?.groups || []).map((g) => [g.groupId, g.changeClass]));
+      const shrink = (packet) => {
+        const groups = packet.groups.map((g) => ({ ...g, findingIds: g.findingIds.filter((id) => id !== findingId) })).filter((g) => g.findingIds.length);
+        return groups.length ? { ...packet, finding: groups[0].findingIds[0], groups, findings: groups.reduce((counts, g) => ({ ...counts, [classOf.get(g.groupId)]: (counts[classOf.get(g.groupId)] || 0) + g.findingIds.length }), {}) } : null;
+      };
+      const reconciliation = shrink(ledger.reconciliation);
+      const at = new Date().toISOString();
+      const seenEntry = (ledger.seen || []).find((e) => e.id === findingId);
+      let next = {
+        ...ledger,
+        findings: ledger.findings.map((f) => (f.id === findingId ? { ...f, status: 'deferred', deferral: { deferredBy: by, deferredAt: at, reason, ref: tracker } } : f)),
+        seen: (ledger.seen || []).filter((e) => e.id !== findingId).concat([{ id: findingId, hash: seenEntry?.hash ?? require('./review').seenHash(finding), status: 'deferred' }]),
+        reconciliation, reconciliationPacket: reconciliation,
+      };
+      next = leaveStopIfClear(stateDir, slug, ledger, next);
+      writeLedger(stateDir, slug, next);
+    }
+    process.stdout.write(`deferred ${findingId}; it will no longer be planned or block for ref "${ref}"; ledger status is "${readLedger(stateDir, slug).status}".\n`);
+    return;
+  }
+
   // A fix committed outside the loop is recorded only on a deterministic check (docs/design/delivery-disposition.md,
   // "Fixes made outside the loop"): the test command fails at the commit's parent with the commit's test files
   // checked out and passes at the commit, so the change from red to green comes from the fix.
@@ -3113,6 +3159,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       rounds: prior.round || 0,
       fixed: (prior.findings || []).filter((f) => f.status === 'fixed').map((f) => findingEvidence(f, { fix_commit: f.fix_commit })).concat(currentGateFixed(prior)),
       parked: (prior.findings || []).filter((f) => f.status === 'parked').map((f) => f.id),
+      deferred: (prior.findings || []).filter((f) => f.status === 'deferred').map((f) => findingEvidence(f, f.deferral)),
       killed: prior.killed_digest || [],
       gate_open: (prior.gate_open || []).map((f) => findingEvidence(f)),
       telemetry: prior.telemetry || null,
@@ -3125,6 +3172,8 @@ function runVerb(resolveFromCwd, args, initiative) {
       run_budget: { max_runs: maxRuns },
       engine,
       gate_dismissed: prior.gate_dismissed || [],
+      findings: (prior.findings || []).filter((f) => f.status === 'deferred'),
+      seen: (prior.seen || []).filter((e) => e.status === 'deferred'),
       gate_cleared: prior.gate_cleared || [],
       ...(completedFrontPass && !prior.intentHash && prior.target?.base_sha && prior.gate_reviewed_head_sha ? {
         broad_reuse: { run: runs.length, base_sha: prior.target.base_sha, head_sha: prior.gate_reviewed_head_sha, intentHash: null, gate_open: prior.gate_open || [] },
