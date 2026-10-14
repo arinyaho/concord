@@ -6790,6 +6790,22 @@ test('review-cli defer: refusals leave the ledger unchanged', () => {
   assert.deepStrictEqual(JSON.parse(snapshot), JSON.parse(fs.readFileSync(path.join(dir, fs.readdirSync(dir).find((n) => n.includes(slug) && n.endsWith('.json'))), 'utf8')));
 });
 
+test('review-cli defer: parked, closed and ungrouped findings and a run not stopped for a group decision are refused', () => {
+  const { dir, env, slug } = seedReconcileStop('feat/defer7', ['correctness:scope']);
+  const base = review.readLedger(dir, slug);
+  const withFinding = (id, status) => ({ ...base, findings: base.findings.concat([{ id, gate: 'correctness', file: 'a.txt', line: 1, summary: 's', status }]) });
+  const refuse = (ledger, id, message) => {
+    review.writeLedger(dir, slug, ledger);
+    const before = JSON.stringify(review.readLedger(dir, slug));
+    assert.throws(() => run(deferArgs('feat/defer7', id), { env }), message);
+    assert.strictEqual(JSON.stringify(review.readLedger(dir, slug)), before);
+  };
+  refuse(withFinding('correctness:p', 'parked'), 'correctness:p', /parked; use unpark or record-fix/);
+  refuse(withFinding('correctness:f', 'fixed'), 'correctness:f', /is fixed, not open/);
+  refuse(withFinding('correctness:o', 'open'), 'correctness:o', /not in a reconcile group/);
+  refuse({ ...base, status: 'converging' }, 'correctness:scope', /not stopped for a group decision/);
+});
+
 test('review-cli defer: a deferred id re-raised by a later round is not re-planned', () => {
   const { dir, env, slug } = seedReconcileStop('feat/defer4', ['correctness:scope']);
   run(deferArgs('feat/defer4', 'correctness:scope'), { env });
