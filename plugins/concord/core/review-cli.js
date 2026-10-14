@@ -1856,7 +1856,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (guidanceAt !== -1 && (requestedGuidance == null || !requestedGuidance.trim())) {
       throw new Error('review-cli round-start: --reviewer-guidance requires exactly one non-empty value');
     }
-    if (guidanceAt !== -1 && storedLedger) {
+    if (guidanceAt !== -1 && storedLedger?.round > 0) {
       throw new Error('review-cli round-start: reviewer guidance is fixed when a run starts; resume without --reviewer-guidance to reuse the stored guidance');
     }
     const optionArgs = guidanceAt === -1 ? rest : rest.filter((_, index) => index !== guidanceAt && index !== guidanceAt + 1);
@@ -2116,7 +2116,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     const intentCfg = intentFile ? { file: path.resolve(intentFile) } : noIntentCommand ? null : intentLib.loadIntentConfig(repoRoot);
     const fetchIntentNow = () => (intentCfg.file ? intentLib.readIntentFile(intentCfg.file) : intentLib.fetchIntent({ command: intentCfg.command, cwd: repoRoot, ref, base }));
     const broadReuse = ledger.broad_reuse;
-    const reuseFrontPass = !!broadReuse && !broadFlagPassed && !noBroadFlagPassed && !isFileTarget && !intentCfg && !broadReuse.intentHash && !broadReuse.reviewerGuidance
+    const reuseFrontPass = !!broadReuse && !broadFlagPassed && !noBroadFlagPassed && !isFileTarget && !intentCfg && !reviewerGuidance && !broadReuse.intentHash && !broadReuse.reviewerGuidance
       && broadReuse.base_sha === baseSha
       && gitIsReachable(repoRoot, broadReuse.head_sha);
     const retryDiffBase = !isFileTarget && ledger.target?.base_sha === baseSha && ledger.retry_diff_base && gitIsReachable(repoRoot, ledger.retry_diff_base) ? ledger.retry_diff_base : null;
@@ -3130,7 +3130,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       engine,
       gate_dismissed: prior.gate_dismissed || [],
       gate_cleared: prior.gate_cleared || [],
-      ...(completedFrontPass && !prior.intentHash && !prior.reviewerGuidance && prior.target?.base_sha && prior.gate_reviewed_head_sha ? {
+      ...(completedFrontPass && !prior.intentHash && prior.target?.base_sha && prior.gate_reviewed_head_sha ? {
         broad_reuse: { run: runs.length, base_sha: prior.target.base_sha, head_sha: prior.gate_reviewed_head_sha, intentHash: null, reviewerGuidance: prior.reviewerGuidance || null, gate_open: prior.gate_open || [] },
       } : {}),
       ...(prior.initiative_binding || initiative ? { initiative_binding: prior.initiative_binding || { key: initiative.key, stateDir: canonicalPath(initiative.stateDir) } } : {}),
