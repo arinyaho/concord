@@ -6759,6 +6759,7 @@ test('review-cli defer: closes a finding stopped for reconciliation, records who
   assert.strictEqual(after.status, 'converging');
   for (const k of ['budget', 'run_budget', 'journal', 'round', 'runs']) assert.deepStrictEqual(after[k], before[k], k);
   assert.match(cli.renderHandoff({ ledger: review.readLedger(dir, slug) }), /deferred by jane -> https:\/\/github\.com\/o\/r\/issues\/9: \[correctness:scope\]/);
+  assert.match(cli.renderHandoff({ ledger: review.readLedger(dir, slug) }), /findings: 0 fixed, 0 killed \(false-positive\), 0 parked, 1 deferred/);
   // a repeat keeps the first record
   run(deferArgs('feat/defer', 'correctness:scope', 'someone-else'), { env });
   assert.strictEqual(review.readLedger(dir, slug).findings.find((x) => x.id === 'correctness:scope').deferral.deferredBy, 'jane');

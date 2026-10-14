@@ -335,8 +335,9 @@ function renderHandoff(result) {
   const fixed = (ledger.findings || []).filter((f) => f.status === 'fixed');
   const killedCount = (ledger.seen || []).filter((s) => s.status === 'killed').length;
   const parked = (ledger.findings || []).filter((f) => f.status === 'parked');
+  const deferred = (ledger.findings || []).filter((f) => f.status === 'deferred');
   const resolved = (ledger.findings || []).filter((f) => f.status === 'resolved');
-  lines.push(`findings: ${fixed.length} fixed, ${killedCount} killed (false-positive), ${parked.length} parked${resolved.length ? `, ${resolved.length} resolved` : ''}`);
+  lines.push(`findings: ${fixed.length} fixed, ${killedCount} killed (false-positive), ${parked.length} parked${deferred.length ? `, ${deferred.length} deferred` : ''}${resolved.length ? `, ${resolved.length} resolved` : ''}`);
 
   if (fixed.length) {
     const conf = ledger.status === 'intent-review' ? ' (pending confirmation)' : '';
@@ -351,7 +352,7 @@ function renderHandoff(result) {
     for (const k of killedDigest) lines.push(`  - [${k.id}] ${k.reason || '(no basis recorded -- pre-contract artifact)'}`);
   }
   // Only a candidate that is still unresolved: a fixed or dismissed finding no longer needs the reviewer's environment.
-  const closedIds = new Set([...(ledger.findings || []).filter((f) => f.status === 'fixed' || f.status === 'resolved'), ...(ledger.seen || []).filter((s) => s.status === 'killed' || s.status === 'fixed')].map((f) => f.id));
+  const closedIds = new Set([...(ledger.findings || []).filter((f) => f.status === 'fixed' || f.status === 'resolved' || f.status === 'deferred'), ...(ledger.seen || []).filter((s) => s.status === 'killed' || s.status === 'fixed')].map((f) => f.id));
   const unverifiableDigest = (ledger.unverifiable_digest || []).filter((u) => !closedIds.has(u.id));
   if (unverifiableDigest.length) {
     lines.push('', 'Kept unverified in the reviewer environment (the verifier\'s probe depends on its sandbox, so it could not refute these):');
