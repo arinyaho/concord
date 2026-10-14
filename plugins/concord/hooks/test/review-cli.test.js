@@ -1174,6 +1174,38 @@ test('plan-fixes: returns confirmed, non-killed, still-open findings and sets ph
   assert.deepStrictEqual(l.planned, ['correctness:real']);
 });
 
+test('plan-fixes: a killed id re-raised in a later round is left out of the plan and does not end the round (#349)', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const killed = { id: 'correctness:killed-earlier', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'objection a prior round rejected' };
+  const { env } = seedGatesRound(repo, dir, 'feat/reraised',
+    { status: 'ok', examined: ['a.txt'], findings: [killed, { id: 'correctness:live', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'real' }] },
+    { status: 'ok', rejected: [] });
+  const slug = review.targetSlug('feat/reraised');
+  const ledger = review.readLedger(dir, slug);
+  review.writeLedger(dir, slug, { ...ledger, seen: [{ id: killed.id, hash: review.seenHash(killed), status: 'killed' }] });
+  const out = JSON.parse(run(['plan-fixes', 'feat/reraised'], { env }));
+  assert.deepStrictEqual(out.fixes.map((f) => f.id), ['correctness:live']);
+  const l = review.readLedger(dir, slug);
+  assert.deepStrictEqual(l.planned, ['correctness:live']);
+  assert.deepStrictEqual(l.fix_plan.groups.map((g) => g.findingIds), [['correctness:live']]);
+  assert.deepStrictEqual(out.suppressed, ['correctness:killed-earlier']);
+  assert.deepStrictEqual(l.seen, [{ id: killed.id, hash: review.seenHash(killed), status: 'killed' }]);
+});
+
+test('plan-fixes: a group mixing a parked id with a live id keeps only the live id (#349)', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const parked = { id: 'correctness:parked-earlier', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'waits on a person' };
+  const live = { id: 'correctness:live', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'real' };
+  const { env } = seedGatesRound(repo, dir, 'feat/mixed',
+    { status: 'ok', examined: ['a.txt'], findings: [parked, live] },
+    { status: 'ok', rejected: [], groups: [{ groupId: 'mixed', findingIds: [parked.id, live.id], rootCause: 'shared', invariants: ['fixed'], changeClass: 'local', action: 'fix' }] });
+  const slug = review.targetSlug('feat/mixed');
+  review.writeLedger(dir, slug, { ...review.readLedger(dir, slug), seen: [{ id: parked.id, hash: review.seenHash(parked), status: 'parked' }] });
+  const out = JSON.parse(run(['plan-fixes', 'feat/mixed'], { env }));
+  assert.deepStrictEqual(out.fixGroups.map((g) => g.findingIds), [[live.id]]);
+  assert.deepStrictEqual(out.suppressed, [parked.id]);
+});
+
 test('plan-fixes: a candidate the verifier marks unverifiable in its sandbox stays open and is shown in the handoff (#332)', () => {
   const repo = initRepo(); const dir = tmpDir();
   const reason = 'python probe: ValueError unsafe root ancestor (uid 65534 in the sandbox user namespace)';

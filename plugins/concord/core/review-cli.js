@@ -1191,6 +1191,10 @@ function verifiedRound(ref, stateDir, run, what) {
   const resolvedAbsent = confirmedNonKilled
     .filter((f) => isReplay(f))
     .map((f) => f.id);
+  // Candidates this round's verifier kept that the ledger still withholds from a fixer (killed or
+  // parked earlier, concluded, or replayed). The verifier ignores history, so the planner may group them.
+  const fixIds = new Set(fixes.map((f) => f.id));
+  const suppressedIds = candidates.filter((c) => !killed.has(c.id) && !fixIds.has(c.id)).map((c) => c.id);
   // Intent fold: report-only, never routed into fixes/resolved_absent. If
   // intent was fetched this round (ledger.intentHash set), the detector
   // artifact is mandatory -- a skipped/missing detector is fail-closed
@@ -1283,7 +1287,7 @@ function verifiedRound(ref, stateDir, run, what) {
     gateOpen = thisRound.concat(carried);
   }
   const reopenedIds = confirmedNonKilled.filter((f) => f.reopened).map((f) => f.id);
-  return { repoRoot, slug, ledger, n, isGit, changed, fixes, resolvedAbsent, reopenedIds, intentParked, gateOpen, gateRejectedIds, gateDuplicateIds, gateRaisedIds, gateApplied };
+  return { repoRoot, slug, ledger, n, isGit, changed, fixes, suppressedIds, resolvedAbsent, reopenedIds, intentParked, gateOpen, gateRejectedIds, gateDuplicateIds, gateRaisedIds, gateApplied };
 }
 
 // Every mutating target verb takes the same lock, including an unkeyed call
@@ -2802,7 +2806,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       && contentHash(readReviewArtifact(priorPlan, stateDir, 'utf8')) === priorRejection.rejectedHash) {
       throw new Error(`harness-failure: ${priorRejection.message}`);
     }
-    const { repoRoot, slug, ledger, n, isGit, fixes, resolvedAbsent, reopenedIds, intentParked, gateOpen, gateRejectedIds, gateDuplicateIds, gateRaisedIds, gateApplied } = verifiedRound(ref, stateDir, run, 'plan-fixes');
+    const { repoRoot, slug, ledger, n, isGit, fixes, suppressedIds, resolvedAbsent, reopenedIds, intentParked, gateOpen, gateRejectedIds, gateDuplicateIds, gateRaisedIds, gateApplied } = verifiedRound(ref, stateDir, run, 'plan-fixes');
     if (ledger.execution?.planRetry?.state === 'exhausted') throw new Error(`harness-failure: ${ledger.execution.planRetry.message}`);
     requirePlanDispatch(ledger);
     const fixById = new Map(fixes.map((finding) => [finding.id, finding]));
@@ -2840,14 +2844,23 @@ function runVerb(resolveFromCwd, args, initiative) {
       const missing = evidence.requirements.find((requirement) => !approvedDesign.includes(requirement.replace(/\s+/g, ' ')));
       if (missing !== undefined) throw new Error(`harness-failure: plan group[${index}] quotes a requirement that ${source} does not contain: ${JSON.stringify(missing)}`);
     };
-    const fixGroups = planArtifact.groups.map((group, index) => {
-      for (const id of group.findingIds) {
-        if (!fixById.has(id)) throw new Error(`harness-failure: plan group[${index}] references finding "${id}" that is rejected, replayed, concluded, or absent`);
+    // An id the ledger withholds from fixers (see verifiedRound) is dropped from its group; a group left
+    // empty is dropped. Any other id outside `fixes` is a planner error. The sealed plan bytes stay as written.
+    const suppressed = new Set(suppressedIds);
+    const droppedIds = new Set();
+    const fixGroups = planArtifact.groups.flatMap((group, index) => {
+      const findingIds = group.findingIds.filter((id) => {
+        if (suppressed.has(id)) { droppedIds.add(id); return false; }
+        return true;
+      });
+      for (const id of findingIds) {
+        if (!fixById.has(id)) throw new Error(`harness-failure: plan group[${index}] references finding "${id}" that is rejected or absent`);
         if (groupedIds.has(id)) throw new Error(`harness-failure: plan finding "${id}" appears in more than one root-cause group`);
         groupedIds.add(id);
       }
+      if (!findingIds.length) return [];
       if (group.changeClass === 'structural' && group.action === 'fix') requireApprovedDesign(group, index);
-      return { ...group, findings: group.findingIds.map((id) => fixById.get(id)) };
+      return [{ ...group, findingIds, findings: findingIds.map((id) => fixById.get(id)) }];
     });
     const unclassified = fixes.filter((finding) => !groupedIds.has(finding.id)).map((finding) => finding.id);
     if (unclassified.length) {
@@ -2924,7 +2937,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     for (const id of reopenedIds) if (journalFloor[id]?.round !== n) journalFloor[id] = { at: (ledger.journal || []).length, round: n };
     const next = { ...ledger, journal_floor: journalFloor, execution, planned: reconciliation ? [] : fixes.map((f) => f.id), fix_plan: fixPlan, resolved_absent: resolvedAbsent, intent_parked: intentParked, gate_open: gateOpen, gate_cleared: stampNotRaised(ledger.gate_cleared || [], gateApplied, gateOpen, gateRejectedIds, gateDuplicateIds, gateRaisedIds, n), reconciliation: reconciliationPacket, reconciliationPacket, phase: 'fixes' };
     writeLedger(stateDir, slug, next);
-    process.stdout.write(JSON.stringify({ protocolVersion: 2, planId, transactionScope, fixes: reconciliation ? [] : fixes, fixGroups: reconciliation ? [] : fixGroups, avoidedLaunches: reconciliation ? fixes.length : 0, reconciliation: blockedGroups.length ? reconciliationPacket : reconciliation && { trigger: 'material-finding', finding: material[0].id, stage: 'plan-fixes', findings: material.reduce((counts, finding) => {
+    process.stdout.write(JSON.stringify({ protocolVersion: 2, planId, transactionScope, fixes: reconciliation ? [] : fixes, fixGroups: reconciliation ? [] : fixGroups, suppressed: [...droppedIds], avoidedLaunches: reconciliation ? fixes.length : 0, reconciliation: blockedGroups.length ? reconciliationPacket : reconciliation && { trigger: 'material-finding', finding: material[0].id, stage: 'plan-fixes', findings: material.reduce((counts, finding) => {
       const kind = finding.id.startsWith('gate:design-conformance:') ? 'design-conformance' : finding.id.startsWith('gate:ac-coverage:') ? 'ac-coverage' : finding.id.split(':', 1)[0];
       return { ...counts, [kind]: (counts[kind] || 0) + 1 };
     }, {}) } }) + '\n');
