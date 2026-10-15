@@ -65,6 +65,34 @@ for (const skillPath of SKILLS) {
     assert.strictEqual(result.stdout.trim(), copilot);
   });
 
+  test(`${pkg}: the locator ranks a release above its own prereleases`, () => {
+    const home = tempDir('state-cli-locator-');
+    claudeCopy(home, '0.9.0-beta.27');
+    const release = codexCopy(home, '0.9.0');
+    const result = locate(skillPath, home);
+    assert.strictEqual(result.status, 0, result.stderr);
+    assert.strictEqual(result.stdout.trim(), release);
+  });
+
+  test(`${pkg}: the locator compares numeric prerelease identifiers as numbers and the rest lexically`, () => {
+    const cases = [
+      ['0.9.0-beta.9', '0.9.0-beta.10'],
+      ['0.9.0-beta.2', '0.9.0-beta.11'],
+      ['0.9.0-alpha.1', '0.9.0-beta.1'],
+      ['0.9.0-beta', '0.9.0-beta.1'],
+      ['0.9.0-1', '0.9.0-alpha'],
+      ['0.9.0-rc.1', '0.10.0-alpha.1'],
+    ];
+    for (const [older, newer] of cases) {
+      const home = tempDir('state-cli-locator-');
+      claudeCopy(home, older);
+      const expected = codexCopy(home, newer);
+      const result = locate(skillPath, home);
+      assert.strictEqual(result.status, 0, result.stderr);
+      assert.strictEqual(result.stdout.trim(), expected, `${newer} must outrank ${older}`);
+    }
+  });
+
   test(`${pkg}: the locator selects a Codex cache copy when it is the only one installed`, () => {
     const home = tempDir('state-cli-locator-');
     const codex = codexCopy(home, '0.9.0-beta.19');
