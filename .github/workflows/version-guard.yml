@@ -21,7 +21,7 @@ jobs:
           node-version: 22
 
       # A --depth fetch would make the full clone shallow and drop the merge base the three-dot diff needs.
-      - name: Fail when the pull request edits version files
+      - name: Fail when the pull request edits version files other than a stable release
         env:
           BASE_REF: ${{ github.base_ref }}
           PR: ${{ github.event.pull_request.number }}

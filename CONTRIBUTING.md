@@ -27,7 +27,7 @@ Open a pull request against `main`; CI runs the same checks for changes under `p
 
 ## Versioning
 
-Pull requests never edit `VERSION` or the version fields derived from it. After each merge, the `release-bump` workflow on `main` raises the beta version in one commit, and the `version-guard` check fails a pull request that edits them.
+Pull requests never edit `VERSION` or the version fields derived from it. After each merge, the `release-bump` workflow on `main` raises the beta version in one commit, and the `version-guard` check fails a pull request that edits them. The one exception is a maintainer's release pull request that sets a higher stable version; see [docs/design/plugin-versioning.md](docs/design/plugin-versioning.md).
 
 ## Review
 

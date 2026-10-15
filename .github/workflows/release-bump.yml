@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: 22
 
-      # The script counts the merges after the newest bump on origin/main, so a canceled, replaced or rerun run changes nothing it should not.
+      # The script counts the merges after the newest bump or stable release on origin/main, so a canceled, replaced or rerun run changes nothing it should not.
       # A push made with GITHUB_TOKEN starts no workflow run.
-      - name: Raise the beta version on main
+      - name: Raise the version on main
         run: node scripts/release-bump.mjs push main
