@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -51,6 +52,21 @@ function git(...args) {
   return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 }
 
+// The release is exactly what the base's release script writes for the head version: no other manifest field changes and all five files agree.
+function matchesReleaseScript(baseRef, headRef, version) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'release-guard-'));
+  try {
+    for (const file of VERSION_FILES) {
+      fs.mkdirSync(path.dirname(path.join(tmp, file)), { recursive: true });
+      fs.writeFileSync(path.join(tmp, file), execFileSync('git', ['show', `${baseRef}:${file}`], { cwd: root, encoding: 'utf8' }));
+    }
+    execFileSync(process.execPath, [path.join(root, 'scripts/release-version.mjs'), version], { cwd: root, env: { ...process.env, CONCORD_VERSION_ROOT: tmp }, stdio: 'ignore' });
+    return VERSION_FILES.every((file) => fs.readFileSync(path.join(tmp, file), 'utf8') === execFileSync('git', ['show', `${headRef}:${file}`], { cwd: root, encoding: 'utf8' }));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 function guard(baseRef, headRef) {
   const changed = git('diff', '--name-only', `${baseRef}...${headRef}`).split('\n').filter(Boolean);
   const touched = touchedVersionFiles(changed);
@@ -58,9 +74,13 @@ function guard(baseRef, headRef) {
   // The one pull request allowed to edit version files is a release: only version files change, and VERSION becomes a higher stable version.
   // The head is read as data with git show; its scripts never run.
   if (touched.length === changed.length && touched.includes('VERSION')) {
-    const base = git('show', `${baseRef}:VERSION`).trim();
-    const head = git('show', `${headRef}:VERSION`).trim();
-    if (isStableUpgrade(base, head)) return 0;
+    try {
+      const base = git('show', `${baseRef}:VERSION`).trim();
+      const head = git('show', `${headRef}:VERSION`).trim();
+      if (isStableUpgrade(base, head) && matchesReleaseScript(baseRef, headRef, head)) return 0;
+    } catch {
+      // A missing VERSION or an unrunnable release script is not a release; fall through to the failure.
+    }
   }
   console.error(`Pull requests do not edit version files except a release that sets a higher stable VERSION; main's release-bump workflow raises the version after merge:\n${touched.join('\n')}`);
   return 1;

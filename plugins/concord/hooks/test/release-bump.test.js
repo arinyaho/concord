@@ -256,7 +256,7 @@ test('push does not bump the stable release commit and bumps the next merge to t
   assert.deepEqual(botVersions(tmp, remote).slice(-2), ['0.10.0-beta.1', '0.10.0-beta.2']);
 });
 
-test('push counts a merge that lands between the last bump and the release commit', () => {
+test('push gives no bump to a merge that lands between the last bump and the release commit', () => {
   const { tmp, remote } = makeOrigin();
   runBump(clone(remote, path.join(tmp, 'seed-run')), 'push', 'main');
   merge(remote, tmp, 'before-release');
@@ -266,10 +266,11 @@ test('push counts a merge that lands between the last bump and the release commi
   assert.equal(originLog(tmp, remote).version, '0.9.0', 'the merge before the release is not bumped past it');
 });
 
-function releasePr(remote, tmp, name, version, extra) {
+function releasePr(remote, tmp, name, version, extra, tamper) {
   const dir = clone(remote, path.join(tmp, `pr-${name}`));
   execFileSync(process.execPath, ['scripts/release-version.mjs', version], { cwd: dir, env: ENV });
   if (extra) fs.writeFileSync(path.join(dir, extra), 'x\n');
+  if (tamper) tamper(dir);
   git(dir, 'add', '--', ...RELEASE_FILES, ...(extra ? [extra] : []));
   git(dir, 'commit', '-q', '-m', `Release ${version}`);
   git(dir, 'push', '-q', 'origin', `HEAD:refs/pull/${name}/head`);
@@ -289,6 +290,13 @@ test('guard still fails a release-shaped pull request that is not a plain stable
   assert.equal(releasePr(remote, tmp, '1', '0.9.0', 'README.md').status, 1, 'extra file');
   assert.equal(releasePr(remote, tmp, '2', '0.9.0-beta.10').status, 1, 'beta');
   assert.equal(releasePr(remote, tmp, '3', '0.8.0').status, 1, 'downgrade');
+  const edit = (file, change) => (dir) => {
+    const target = path.join(dir, file);
+    fs.writeFileSync(target, change(fs.readFileSync(target, 'utf8')));
+  };
+  assert.equal(releasePr(remote, tmp, '5', '0.9.0', null, edit('plugins/concord/.claude-plugin/plugin.json', (text) => text.replace(/"name": "concord"/, '"name": "other"'))).status, 1, 'manifest field other than version');
+  assert.equal(releasePr(remote, tmp, '6', '0.9.0', null, edit('plugins/concord-copilot/plugin.json', (text) => text.replace(/"version": "0\.9\.0"/, '"version": "0.9.1"'))).status, 1, 'manifest version differing from VERSION');
+  assert.equal(releasePr(remote, tmp, '7', '0.9.0', null, (dir) => fs.rmSync(path.join(dir, 'VERSION'))).status, 1, 'VERSION deleted');
 });
 
 test('isStableUpgrade accepts only a stable version above the base by SemVer precedence', async () => {
