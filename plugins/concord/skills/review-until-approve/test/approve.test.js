@@ -316,3 +316,20 @@ test('a finding raised again with a different span is neither listed fixed nor p
   assert.deepEqual([r2.new, r2.fixed, r2.stillOpen], [0, 0, 1]);
   assert.equal(w.ledger().findings.length, 1);
 });
+
+test('a finding whose file path leaves the checkout, or runs through a symlink, is not kept open by what that path reads', () => {
+  const w = world();
+  // The runner writes intent.md next to the clone; the span below occurs there, not in the checkout.
+  w.write('findings.json', [{ ...finding, id: 'x:out', file: '../intent.md', span: '# T' }, { ...finding, id: 'x:link', file: 'link.txt', span: 'bad' }]);
+  fs.symlinkSync('a.js', path.join(w.src, 'link.txt'));
+  push(w, { 'a.js': 'one\nbad\nthree\nfour\n' }, 'c1b');
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  // A rewrite of the history, so the next round reviews the whole PR diff and the files count as untouched.
+  sh(w.src, 'commit', '-q', '--amend', '-m', 'rewritten');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD') });
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  const r2 = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r2.fixed, r2.stillOpen], [2, 0]);
+});

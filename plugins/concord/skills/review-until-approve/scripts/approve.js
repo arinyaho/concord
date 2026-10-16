@@ -173,7 +173,15 @@ function attempt(repo, pr, ledger, file) {
       try { for (const [from, to] of lib.parseNameStatus(git(work, ['diff', '-z', '--name-status', '-M', prior.head, 'HEAD'])).renames) renames.set(from, to); } catch (_) { /* the prior head is gone after a rewrite */ }
     }
     const collapse = (t) => String(t || '').replace(/\s+/g, ' ').trim();
-    const spanAtHead = (f, span) => { try { return !collapse(span) || collapse(fs.readFileSync(path.join(work, f), 'utf8')).includes(collapse(span)); } catch (_) { return false; } };
+    // A reviewer-supplied path is evidence only as a regular file inside the checkout, with no symlink on the way.
+    const spanAtHead = (f, span) => {
+      if (!collapse(span)) return true;
+      try {
+        const root = fs.realpathSync(work), requested = path.resolve(root, f), real = fs.realpathSync(requested);
+        if (real !== requested || !real.startsWith(root + path.sep) || !fs.lstatSync(real).isFile()) return false;
+        return collapse(fs.readFileSync(real, 'utf8')).includes(collapse(span));
+      } catch (_) { return false; }
+    };
     const open = ledger.findings.filter((f) => f.status === 'open');
     const verdict = lib.classifyPrior(open, reviewed.findings, changed, spanAtHead, renames, { incremental: prior ? range.base === prior.head : false, evaluated: new Set(shown.map((f) => f.id)) });
     const next = JSON.parse(JSON.stringify(ledger));
