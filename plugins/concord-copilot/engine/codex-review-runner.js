@@ -441,6 +441,81 @@ async function invoke(spawn, input) {
 // directory's .codex/config.toml, which can start MCP servers; an entry that
 // marks the checkout untrusted before Codex starts keeps that configuration
 // out. The account's own configuration stays out too; only its login is copied.
+// The entries under `root` that a reviewer must not read, leaving every path in `keep` (and the
+// directories on the way to it) reachable. A whole-root deny would also hide the checkout when it
+// lies under the home, and Codex cannot mount a path below a denied parent.
+function denyAround(root, keep) {
+  const denied = [];
+  const walk = (dir) => {
+    let names;
+    try { names = fs.readdirSync(dir); } catch (_) { return; }
+    for (const name of names) {
+      const full = path.join(dir, name);
+      if (keep.some((k) => k === full)) continue;
+      // A link is not mounted over (its target would be masked twice): the target is denied by its own entry, or here when it lies outside the root.
+      let link = false;
+      try { link = fs.lstatSync(full).isSymbolicLink(); } catch (_) { continue; } // gone since the listing
+      if (link) {
+        try {
+          const target = fs.realpathSync(full);
+          const reachable = keep.some((k) => k === target || k.startsWith(target + path.sep) || target.startsWith(k + path.sep));
+          if (target !== root && !target.startsWith(root + path.sep) && !reachable && path.dirname(target) !== path.parse(target).root) denied.push(target);
+        } catch (_) { /* a dangling link reads nothing */ }
+        continue;
+      }
+      if (keep.some((k) => k.startsWith(full + path.sep))) walk(full); else denied.push(full);
+    }
+  };
+  walk(root);
+  return denied;
+}
+
+// Codex starts its own binary again inside the sandbox, so the directory it is installed in must stay readable.
+function codexInstallDir() {
+  const candidates = [process.env[CODEX_BIN_ENV], ...String(process.env.PATH || '').split(path.delimiter).map((dir) => dir && path.join(dir, 'codex'))].filter(Boolean);
+  for (const candidate of candidates) {
+    try {
+      const real = fs.realpathSync(candidate);
+      return real.match(/^(.*[\\/]node_modules[\\/]@openai[\\/]codex)[\\/]/)?.[1] || real;
+    } catch (_) { /* not installed here */ }
+  }
+  return null;
+}
+
+// The CODEX_HOME configuration of a review-only Codex reviewer. The reviewer reads an untrusted checkout,
+// so it must not reach the account's credential files (gh, ssh, cloud, Claude, Codex) by absolute path,
+// whatever HOME says: every entry of the real home is denied, except the way to the checkout and to the
+// review's own directories.
+function reviewCodexConfig({ home, sourceAuth, checkout, stateDir, denyRead, realHome: accountHome = os.homedir() }) {
+  const installed = codexInstallDir();
+  const keep = [checkout, canonicalPath(home), ...(stateDir ? [canonicalPath(stateDir)] : []), ...(installed ? [installed] : [])];
+  const realHome = canonicalPath(accountHome);
+  // A path inside the home is already denied by its entry; a nested deny would stop Codex from mounting it.
+  const named = denyRead.filter((p) => fs.existsSync(p) && !canonicalPath(p).startsWith(realHome + path.sep) && !keep.some((k) => k === p || k.startsWith(p + path.sep)));
+  const around = [...denyAround(realHome, keep), ...named];
+  const covered = around.some((p) => sourceAuth === p || sourceAuth.startsWith(p + path.sep));
+  const denied = [...(covered ? [] : [sourceAuth]), path.join(home, 'auth.json'), ...around];
+  return `default_permissions = "concord-review"
+approval_policy = "never"
+
+[shell_environment_policy]
+inherit = "core"
+ignore_default_excludes = false
+
+[permissions.concord-review]
+extends = ":workspace"
+
+[permissions.concord-review.filesystem]
+${[...new Set(denied)].map((p) => `${JSON.stringify(p)} = "deny"`).join('\n')}
+
+[permissions.concord-review.network]
+enabled = false
+
+[projects.${JSON.stringify(checkout)}]
+trust_level = "untrusted"
+`;
+}
+
 async function runReviewUntilGreen(options) {
   if (!options.reviewOnly) return runRounds(options);
   const made = [];
@@ -452,27 +527,7 @@ async function runReviewUntilGreen(options) {
       const home = temp('concord-review-codex-home-');
       const sourceAuth = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'auth.json');
       if (fs.existsSync(sourceAuth)) fs.copyFileSync(sourceAuth, path.join(home, 'auth.json'));
-      const checkout = canonicalPath(options.repoRoot || process.cwd());
-      fs.writeFileSync(path.join(home, 'config.toml'), `default_permissions = "concord-review"
-approval_policy = "never"
-
-[shell_environment_policy]
-inherit = "core"
-ignore_default_excludes = false
-
-[permissions.concord-review]
-extends = ":workspace"
-
-[permissions.concord-review.filesystem]
-${JSON.stringify(sourceAuth)} = "deny"
-${JSON.stringify(path.join(home, 'auth.json'))} = "deny"
-
-[permissions.concord-review.network]
-enabled = false
-
-[projects.${JSON.stringify(checkout)}]
-trust_level = "untrusted"
-`);
+      fs.writeFileSync(path.join(home, 'config.toml'), reviewCodexConfig({ home, sourceAuth, checkout: canonicalPath(options.repoRoot || process.cwd()), stateDir: extra.reviewStateDir, denyRead: options.reviewDenyRead || [], realHome: options.reviewRealHome || undefined }));
       extra.reviewCodexHome = home;
     }
     return await runRounds({ ...options, ...extra });
@@ -1299,4 +1354,4 @@ async function runRounds(options) {
   }
 }
 
-module.exports = { runReviewUntilGreen, acknowledgeContinuationPacket, reviewerPrompt, codexExec, providerExec, jsonCli, resolveCodexExecutable, resolveDefaultBase };
+module.exports = { runReviewUntilGreen, reviewCodexConfig, acknowledgeContinuationPacket, reviewerPrompt, codexExec, providerExec, jsonCli, resolveCodexExecutable, resolveDefaultBase };
