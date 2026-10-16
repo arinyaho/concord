@@ -1,0 +1,214 @@
+#!/usr/bin/env node
+'use strict';
+// Round runner of review-until-approve. Every verb prints one JSON line.
+//   start <owner/repo> <pr> [--reviewer codex|claude] [--model <m>]   check identity, open or resume the ledger, say what to do next
+//   round <owner/repo> <pr>                                           review, publish, approve when clean
+//   approve <owner/repo> <pr>                                         approve the reviewed head if the approval condition holds
+//   waive <owner/repo> <pr> <finding-id>                              the user dismisses a finding, then approve if possible
+//   stop <owner/repo> <pr>                                            record a user stop
+// Run under `mien exec <profile> --` when the reviewing account is not the ambient gh account.
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+const lib = require('./lib');
+const publish = require('./publish');
+const { core } = require('./locate');
+const { writeFileAtomic } = require(path.join(core, 'atomic-write'));
+const { reclaimStaleLock } = require(path.join(core, 'run-lock'));
+
+const MAX_ROUNDS = 10;
+const MAX_DISCARDS = 3;
+const GUIDANCE_FINDINGS = 20;
+const die = (message, code = 1) => { process.stderr.write(`review-until-approve: ${message}\n`); process.exit(code); };
+const out = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
+
+function run(command, args, { input, cwd, env } = {}) {
+  const r = spawnSync(command, args, { input, cwd, env, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+  if (r.status !== 0) throw new Error(`${command} ${args[0]} failed: ${(r.stderr || '').slice(0, 300)}`);
+  return r.stdout;
+}
+const gh = (args, input) => run('gh', args, { input });
+const ghJson = (args, input) => JSON.parse(gh(args, input));
+const git = (cwd, args, env) => run('git', args, { cwd, env: env ? { ...process.env, ...env } : undefined });
+// The credential helper is given to the clone and fetches only, never written to configuration.
+const GIT_AUTH = { GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'credential.https://github.com.helper', GIT_CONFIG_VALUE_0: '', GIT_CONFIG_KEY_1: 'credential.https://github.com.helper', GIT_CONFIG_VALUE_1: '!gh auth git-credential' };
+
+const stateDir = () => process.env.REVIEW_APPROVE_STATE_DIR || path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'concord', 'review-until-approve');
+const ledgerFile = (repo, pr, login) => path.join(stateDir(), `${repo.replace('/', '__')}__${pr}__${login}.json`);
+const load = (file) => fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
+const save = (file, ledger) => { fs.mkdirSync(path.dirname(file), { recursive: true }); writeFileAtomic(file, `${JSON.stringify(ledger, null, 2)}\n`); };
+
+const held = new Set();
+function lock(file) {
+  if (held.has(file)) return;
+  const dir = `${file}.lock`;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      fs.mkdirSync(dir);
+      fs.writeFileSync(path.join(dir, 'owner'), String(process.pid));
+      process.once('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
+      held.add(file);
+      return;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      if (!reclaimStaleLock(dir)) die('another session is already reviewing this pull request');
+    }
+  }
+  die('could not take the ledger lock');
+}
+
+function snapshot(repo, pr) {
+  const v = ghJson(['pr', 'view', pr, '--repo', repo, '--json', 'headRefOid,baseRefOid,title,body,state,isDraft,author']);
+  const mergeBase = gh(['api', `repos/${repo}/compare/${v.baseRefOid}...${v.headRefOid}`, '--jq', '.merge_base_commit.sha']).trim();
+  return { head: v.headRefOid, baseTip: v.baseRefOid, mergeBase, intent: lib.sha(`${v.title}\n\n${v.body}`), title: v.title, body: v.body, state: v.state, isDraft: v.isDraft, author: v.author.login };
+}
+
+const secrets = () => [process.env.GH_TOKEN, process.env.CLAUDE_CODE_OAUTH_TOKEN, process.env.OPENAI_API_KEY, (() => { try { return gh(['auth', 'token']).trim(); } catch (_) { return ''; } })()];
+
+function post(repo, pr, payload) {
+  const text = JSON.stringify(payload);
+  if (publish.containsSecret(text, secrets())) die('the review text holds a credential; nothing was posted');
+  return ghJson(['api', '-X', 'POST', `repos/${repo}/pulls/${pr}/reviews`, '--input', '-'], text);
+}
+
+function identify(repo, pr, args) {
+  const reviewer = gh(['api', 'user', '--jq', '.login']).trim();
+  const file = ledgerFile(repo, pr, reviewer);
+  const ledger = load(file);
+  if (ledger && ledger.reviewer !== reviewer) die(`the ledger belongs to ${ledger.reviewer}, not ${reviewer}`);
+  return { reviewer, file, ledger, args };
+}
+
+const opt = (args, name) => { const i = args.indexOf(name); return i === -1 ? undefined : args[i + 1]; };
+const lastRound = (ledger) => ledger.rounds[ledger.rounds.length - 1];
+
+function start(repo, pr, args) {
+  const { reviewer, file, ledger: found } = identify(repo, pr, args);
+  const snap = snapshot(repo, pr);
+  if (snap.state !== 'OPEN') die(`the pull request is ${snap.state}`);
+  if (snap.author === reviewer) die(`${reviewer} is the author; GitHub rejects self-approval`);
+  const provider = opt(args, '--reviewer') || found?.provider || 'codex';
+  if (!['codex', 'claude'].includes(provider)) die('--reviewer must be codex or claude');
+  if (provider === 'claude' && !process.env.CLAUDE_CODE_OAUTH_TOKEN) die('the claude reviewer needs CLAUDE_CODE_OAUTH_TOKEN; use codex otherwise');
+  const ledger = found || { version: 1, repo, pr, reviewer, provider, model: opt(args, '--model') || null, author: snap.author, startedAt: new Date().toISOString(), rounds: [], findings: [], nudged: null, approval: null, stopped: null };
+  ledger.stopped = null;
+  save(file, ledger);
+  const viewer = gh(['repo', 'view', repo, '--json', 'viewerPermission', '--jq', '.viewerPermission']).trim();
+  const warning = ['ADMIN', 'MAINTAIN', 'WRITE'].includes(viewer) ? undefined : `permission ${viewer}: an approval will not satisfy branch protection`;
+  let action = 'watch';
+  if (ledger.rounds.length === 0 || snap.head !== lastRound(ledger).head) action = 'round';
+  else if (lib.evaluateApproval(ledger, snap, lastRound(ledger).head).approve) action = 'approve';
+  out({ ledger: file, action, round: ledger.rounds.length + 1, ...(warning && { warning }) });
+}
+
+function guidance(ledger) {
+  const open = ledger.findings.filter((f) => f.status === 'open').slice(0, GUIDANCE_FINDINGS);
+  if (!open.length) return undefined;
+  return `Earlier findings on this pull request. If one is still present at this head, raise it again with the same id: ${open.map((f) => `${f.id} (${f.file}): ${f.summary.slice(0, 200)}`).join('; ')}`;
+}
+
+function reviewRound(repo, pr, args) {
+  const { file, ledger } = identify(repo, pr, args);
+  if (!ledger) die('no ledger; run start first');
+  lock(file);
+  if (ledger.rounds.length >= MAX_ROUNDS) return out({ event: 'round-limit', rounds: ledger.rounds.length });
+  for (let discards = 0; discards < MAX_DISCARDS; discards++) {
+    const result = attempt(repo, pr, ledger, file);
+    if (result) return out(result);
+  }
+  out({ event: 'head-keeps-moving' });
+}
+
+// One round against the live head. Returns the summary, or null when the head moved and the result is discarded.
+function attempt(repo, pr, ledger, file) {
+  const snap = snapshot(repo, pr);
+  if (snap.state !== 'OPEN') return { event: snap.state.toLowerCase() };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-until-approve-'));
+  const work = path.join(dir, 'work');
+  const remote = `${process.env.REVIEW_APPROVE_REMOTE || 'https://github.com'}/${repo}.git`;
+  try {
+    git(dir, ['clone', '--quiet', remote, work], GIT_AUTH);
+    git(work, ['fetch', '--quiet', 'origin', `pull/${pr}/head`], GIT_AUTH);
+    git(work, ['checkout', '-q', '-B', `concord-pr-${pr}`, snap.head], GIT_AUTH);
+    git(work, ['fetch', '--quiet', 'origin', snap.baseTip], GIT_AUTH);
+    if (git(work, ['merge-base', snap.baseTip, 'HEAD']).trim() !== snap.mergeBase) throw new Error('the local merge base differs from the snapshot');
+    const prior = ledger.rounds.length ? lastRound(ledger) : null;
+    const isAncestor = (a, b) => spawnSync('git', ['merge-base', '--is-ancestor', a, b], { cwd: work }).status === 0;
+    const range = prior ? lib.chooseRange(prior, snap, isAncestor) : { base: snap.mergeBase, broad: true };
+
+    const intentFile = path.join(dir, 'intent.md');
+    fs.writeFileSync(intentFile, `# ${snap.title}\n\n${snap.body}`);
+    const claudeConfig = fs.mkdtempSync(path.join(dir, 'claude-'));
+    const runnerOptions = { ref: `concord-pr-${pr}`, base: range.base, broad: range.broad, noBroad: !range.broad, reviewer: ledger.provider, reviewerModel: ledger.model || undefined, reviewerGuidance: guidance(ledger), intentFile: range.broad ? intentFile : undefined };
+    const env = { ...process.env, CLAUDE_CONFIG_DIR: claudeConfig };
+    for (const name of ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'OPENAI_API_KEY']) delete env[name];
+    const runner = process.env.REVIEW_APPROVE_RUNNER || path.join(__dirname, 'run-review.js');
+    const reviewed = JSON.parse(run('node', [runner, JSON.stringify(runnerOptions)], { cwd: work, env }).trim().split('\n').pop());
+    if (reviewed.decision !== 'review-only' || !Array.isArray(reviewed.findings)) throw new Error(`the review did not complete: ${JSON.stringify(reviewed).slice(0, 200)}`);
+
+    const n = ledger.rounds.length + 1;
+    const changed = new Set(git(work, ['diff', '--name-only', range.base, 'HEAD']).split('\n').filter(Boolean));
+    const collapse = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+    const spanAtHead = (f, span) => { try { return !collapse(span) || collapse(fs.readFileSync(path.join(work, f), 'utf8')).includes(collapse(span)); } catch (_) { return false; } };
+    const open = ledger.findings.filter((f) => f.status === 'open');
+    const verdict = lib.classifyPrior(open, reviewed.findings, changed, spanAtHead);
+    const fresh = reviewed.findings.filter((f) => !lib.isPublished(ledger, f));
+    const next = JSON.parse(JSON.stringify(ledger));
+    for (const f of next.findings) if (f.status === 'open' && verdict.fixed.includes(f.id)) Object.assign(f, { status: 'fixed', fixedRound: n });
+    for (const f of fresh) next.findings.push({ key: lib.findingKey(f), id: f.id, category: f.category, file: f.file, line: f.line, span: f.span, summary: f.summary, requirement: f.requirement || '', status: 'open', firstRound: n });
+
+    const diff = git(work, ['diff', '-U3', range.base, 'HEAD']);
+    const verdictNow = lib.evaluateApproval(next, snapshot(repo, pr), snap.head);
+    const input = { head: snap.head, round: n, rangeBase: range.base, reviewer: ledger.provider, hunks: publish.hunksOf(diff), findings: fresh, fixed: verdict.fixed, stillOpen: verdict.open, previousHead: prior ? prior.head : snap.head, approve: verdictNow.approve };
+    if (verdictNow.reason === 'head-moved') return null;
+    let review;
+    try { review = post(repo, pr, publish.renderReview(input, 'inline')); } catch (error) {
+      if (snapshot(repo, pr).head !== snap.head) return null;
+      review = post(repo, pr, publish.renderReview(input, 'body'));
+    }
+    const commentIds = ghJson(['api', '--paginate', '--slurp', `repos/${repo}/pulls/${pr}/reviews/${review.id}/comments`]).flat().map((c) => c.id);
+    next.rounds.push({ n, head: snap.head, base: range.base, mergeBase: snap.mergeBase, intent: snap.intent, mode: range.broad ? 'broad' : 'diff', reviewId: review.id, submittedAt: review.submitted_at || new Date().toISOString(), commentIds, event: input.approve ? 'APPROVE' : 'COMMENT' });
+    if (input.approve) next.approval = { head: snap.head, reviewId: review.id, at: next.rounds[next.rounds.length - 1].submittedAt };
+    save(file, next);
+    return { event: 'published', round: n, mode: range.broad ? 'broad' : 'diff', review: input.approve ? 'APPROVE' : 'COMMENT', new: fresh.length, fixed: verdict.fixed.length, stillOpen: verdict.open.length, ...(verdictNow.approve ? {} : { notApproved: verdictNow.reason }) };
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+function approve(repo, pr, args) {
+  const { file, ledger } = identify(repo, pr, args);
+  if (!ledger || !ledger.rounds.length) die('no reviewed round to approve');
+  lock(file);
+  const reviewed = lastRound(ledger);
+  const verdict = lib.evaluateApproval(ledger, snapshot(repo, pr), reviewed.head);
+  if (!verdict.approve) return out({ event: 'not-approved', reason: verdict.reason });
+  const review = post(repo, pr, publish.renderReview({ head: reviewed.head, round: reviewed.n, rangeBase: reviewed.base, reviewer: ledger.provider, hunks: [], findings: [], fixed: [], stillOpen: [], previousHead: reviewed.head, approve: true }, 'body'));
+  ledger.approval = { head: reviewed.head, reviewId: review.id, at: new Date().toISOString() };
+  save(file, ledger);
+  out({ event: 'approved', head: reviewed.head });
+}
+
+function waive(repo, pr, id, args) {
+  const { file, ledger } = identify(repo, pr, args);
+  const finding = ledger?.findings.find((f) => f.id === id && f.status === 'open');
+  if (!finding) die(`no open finding ${id}`);
+  lock(file);
+  Object.assign(finding, { status: 'waived', waivedAt: new Date().toISOString() });
+  save(file, ledger);
+  approve(repo, pr, args);
+}
+
+function stop(repo, pr, args) {
+  const { file, ledger } = identify(repo, pr, args);
+  if (!ledger) die('no ledger');
+  ledger.stopped = { reason: 'user', at: new Date().toISOString() };
+  save(file, ledger);
+  out({ event: 'stopped' });
+}
+
+const [verb, repo, pr, ...rest] = process.argv.slice(2);
+if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '') || !/^\d+$/.test(pr || '')) die('usage: approve.js <start|round|approve|waive|stop> <owner/repo> <pr> [...]', 2);
+const verbs = { start, round: reviewRound, approve, stop, waive: (r, p, a) => waive(r, p, a[0], a) };
+if (!verbs[verb]) die(`unknown verb ${verb}`, 2);
+try { verbs[verb](repo, pr, rest); } catch (error) { die(error.message); }

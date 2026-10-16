@@ -69,5 +69,12 @@ The loop can later run unattended, with GitHub Actions or `services/pr-review` r
 | finding with a renamed id | next round | recognized by span, not posted twice | introduced | `isPublished` test |
 | open findings, head changed | next round | file touched and not raised again is fixed | introduced | `classifyPrior` test |
 | clean round, draft, self-review, moved head, open or waived findings | approval check | approve only when every condition holds | introduced | `evaluateApproval` test |
+| any round | review engine fails or prints no `review-only` result | no review posted, ledger unchanged | introduced | untested, because the guard throws before any `gh` write and the credential test already pins the no-post path |
+| first round | publish | broad review against the merge base, `COMMENT` with inline findings, ledger gains round 1 and open findings | introduced | `round 1 reviews broad against the merge base` |
+| open findings, author fixed and pushed | next round | diff review from the last head, fixed findings marked, clean round posts `APPROVE` pinned to the head | introduced | `round 1 reviews broad against the merge base` |
+| open findings, user waives one | `waive` | finding waived; `APPROVE` posted if nothing else blocks | introduced | `a waived finding lets the unchanged head be approved` |
+| reviewing account is the author | `start` | refused before any round | introduced | `start refuses when the reviewing account is the author` |
+| review text holds a credential | publish | nothing posted, exit status 1 | introduced | `a review containing a credential is never posted` |
+| another session holds the ledger lock | `round`, `approve`, `waive` | refused | introduced | untested, because it needs two live processes; the lock reuses `core/run-lock.js` |
 
 Combinations the ledger lock rules out (two sessions interleaving on one pull request) are refused at start.

@@ -21,6 +21,7 @@ An agent workflow plugin for **Claude Code**, **Codex**, and **GitHub Copilot** 
 | Session-state checkpoint | Saves per-session state from the transcript when a session stops and restores it on start, resume, or compaction. | Claude Code, Codex |
 | `delegate-verbose-work` | Sends broad repository-wide searches to a subagent and keeps only the conclusion in the main conversation. | Claude Code |
 | `coordinate-sessions` | Hands work to separate Claude Code sessions, watches their reports through files or direct messages, and judges and merges their PRs when allowed. | Claude Code |
+| `review-until-approve` | Reviews someone else's pull request in a loop: publishes the verified findings, waits without spending tokens until the author pushes and replies, reviews what changed, and approves the reviewed head once a round is clean. | Claude Code |
 
 A personal, vendor-neutral project: one core runs on all three harnesses, and it is not tied to any product codebase.
 
@@ -100,7 +101,7 @@ Back up `CONCORD_COPILOT_HOME` or `~/.copilot/concord` first when persistent Con
 
 - A per-session state checkpoint and a cross-session task charter (`/charter`).
 - `review-and-fix`: reviews a branch or PR, fixes what the review finds, and re-checks until a deterministic CLI reaches a terminal decision. `review-until-green` is a compatibility alias.
-- `review-until-lgtm`, `deep-review`, `initiative-to-prs`, `ticket-to-pr`, `ticket-writing`, `proposal-package-authoring`, `coordinate-sessions`, and `delegate-verbose-work`.
+- `review-until-lgtm`, `deep-review`, `initiative-to-prs`, `ticket-to-pr`, `ticket-writing`, `proposal-package-authoring`, `coordinate-sessions`, `review-until-approve`, and `delegate-verbose-work`.
 
 The Harnesses column above shows where each workflow ships; the install sections list what each package contains.
 
