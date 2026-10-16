@@ -47,3 +47,16 @@ test('codex engine has exactly the expected file set (no stale/missing)', async 
   const actual = new Set(fs.readdirSync(ENGINE).filter((f) => f.endsWith('.js')));
   assert.deepStrictEqual([...actual].sort(), [...expected].sort());
 });
+
+test('codex review-until-approve is the shared skill without its tests and finds the Codex engine', () => {
+  const src = path.join(REPO, 'plugins/concord/skills/review-until-approve');
+  const bundled = path.join(REPO, 'plugins/concord-codex/skills/review-until-approve');
+  const list = (root) => fs.readdirSync(root, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => path.relative(root, path.join(e.parentPath, e.name))).filter((f) => !f.startsWith('test' + path.sep)).sort();
+  assert.deepStrictEqual(list(bundled), list(src));
+  for (const f of list(src)) assert.ok(fs.readFileSync(path.join(src, f)).equals(fs.readFileSync(path.join(bundled, f))), `${f} drifted — re-run node plugins/concord-codex/bin/bundle.mjs`);
+  assert.ok(!fs.existsSync(path.join(bundled, 'test')));
+  const located = require(path.join(bundled, 'scripts/locate.js'));
+  assert.strictEqual(located.core, path.join(REPO, 'plugins/concord-codex/engine'));
+  assert.strictEqual(located.cli, path.join(REPO, 'plugins/concord-codex/bin/review-cli.js'));
+  assert.strictEqual(typeof require(path.join(located.core, 'codex-review-runner')).runReviewUntilGreen, 'function');
+});

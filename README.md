@@ -21,7 +21,7 @@ An agent workflow plugin for **Claude Code**, **Codex**, and **GitHub Copilot** 
 | Session-state checkpoint | Saves per-session state from the transcript when a session stops and restores it on start, resume, or compaction. | Claude Code, Codex |
 | `delegate-verbose-work` | Sends broad repository-wide searches to a subagent and keeps only the conclusion in the main conversation. | Claude Code |
 | `coordinate-sessions` | Hands work to separate Claude Code sessions, watches their reports through files or direct messages, and judges and merges their PRs when allowed. | Claude Code |
-| `review-until-approve` | Reviews someone else's pull request in a loop: publishes the verified findings, waits without spending tokens until the author pushes and replies, reviews what changed, and approves the reviewed head once a round is clean. | Claude Code |
+| `review-until-approve` | Reviews someone else's pull request in a loop: publishes the verified findings, waits until the author pushes and replies (no model calls on Claude Code, one small call per bounded window on Codex), reviews what changed, and approves the reviewed head once a round is clean. | Claude Code, Codex |
 
 A personal, vendor-neutral project: one core runs on all three harnesses, and it is not tied to any product codebase.
 
@@ -51,7 +51,7 @@ codex plugin add concord@arinyaho-concord
 
 Run those commands in a shell, then start or restart Codex. Use `initiative-to-prs`, `ticket-writing`, `ticket-to-pr`, `proposal-package-authoring`, and `review-until-lgtm` in a Codex conversation; they are skills, not shell commands.
 
-The Codex plugin ships the session-state checkpoint, `/charter`, `/review-and-fix`, `review-until-lgtm`, `deep-review`, provider-neutral `initiative-to-prs`, `ticket-writing`, `ticket-to-pr`, and `proposal-package-authoring`. `/review-until-green` remains a compatibility alias. Reviewers and fixers run as `codex exec` subprocesses.
+The Codex plugin ships the session-state checkpoint, `/charter`, `/review-and-fix`, `review-until-lgtm`, `review-until-approve`, `deep-review`, provider-neutral `initiative-to-prs`, `ticket-writing`, `ticket-to-pr`, and `proposal-package-authoring`. `/review-until-green` remains a compatibility alias. Reviewers and fixers run as `codex exec` subprocesses.
 
 ### GitHub Copilot
 

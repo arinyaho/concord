@@ -30,9 +30,10 @@ for (const f of ['statedir.js', 'transcript.js', 'event.js']) {
   n++;
 }
 
-for (const skill of ['ticket-writing', 'ticket-to-pr', 'proposal-package-authoring', 'review-until-lgtm', 'initiative-to-prs', 'deep-review']) {
+for (const skill of ['ticket-writing', 'ticket-to-pr', 'proposal-package-authoring', 'review-until-lgtm', 'initiative-to-prs', 'deep-review', 'review-until-approve']) {
   fs.rmSync(path.join(packagedSkillsDir, skill), { recursive: true, force: true });
-  fs.cpSync(path.join(sharedSkillsDir, skill), path.join(packagedSkillsDir, skill), { recursive: true });
+  // A skill's tests need the Claude plugin's test helpers, which the Codex package does not carry.
+  fs.cpSync(path.join(sharedSkillsDir, skill), path.join(packagedSkillsDir, skill), { recursive: true, filter: (src) => path.basename(src) !== 'test' || path.dirname(src) !== path.join(sharedSkillsDir, skill) });
   n++;
 }
 

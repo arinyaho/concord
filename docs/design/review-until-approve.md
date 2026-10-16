@@ -1,10 +1,10 @@
 # review-until-approve
 
-`review-until-approve` reviews someone else's pull request the way `/review-and-fix` reviews a branch, publishes the verified findings, waits at no token cost until the author pushes and replies, reviews what changed, and approves the pull request once a round is clean. It is `/review-and-fix` that never fixes. It never requests changes, merges, pushes to the branch, or posts outside the pull request, and it runs only for a pull request the user named.
+`review-until-approve` reviews someone else's pull request the way `/review-and-fix` reviews a branch, publishes the verified findings, waits (see Wait for the cost per harness) until the author pushes and replies, reviews what changed, and approves the pull request once a round is clean. It is `/review-and-fix` that never fixes. It never requests changes, merges, pushes to the branch, or posts outside the pull request, and it runs only for a pull request the user named.
 
 ## Scope
 
-The skill is Claude-only. It lives in `plugins/concord/skills/review-until-approve/` and is not copied into the Codex or Copilot packages, because its wait needs the Monitor tool and can last days. It runs the review through `runReviewUntilGreen` in `plugins/concord/core/codex-review-runner.js` with `reviewOnly: true`, the same runner `services/pr-review` uses, so there is no second reviewer implementation. `services/` is not part of the installed plugin, so the skill re-implements the publication contract of `services/pr-review/review-one.sh` (finding format, inline-only-in-hunk rule, body fallback, head re-check, credential refusal) instead of sourcing it.
+The skill runs on Claude Code and Codex. It lives in `plugins/concord/skills/review-until-approve/` and is bundled into the Codex package with `plugins/concord-codex/bin/bundle.mjs`, without its `test/` directory, whose helpers the Codex package does not carry. It is not in the Copilot package (tracked in #363). The review runner and the review CLI are found by `scripts/locate.js` in `core/` and `hooks/` (Claude Code) or `engine/` and `bin/` (Codex); `scripts/run-review.js` calls `runReviewUntilGreen` directly, so the Codex bin wrapper needs no `reviewOnly` entry point. It runs the review through `runReviewUntilGreen` in `plugins/concord/core/codex-review-runner.js` with `reviewOnly: true`, the same runner `services/pr-review` uses, so there is no second reviewer implementation. `services/` is not part of the installed plugin, so the skill re-implements the publication contract of `services/pr-review/review-one.sh` (finding format, inline-only-in-hunk rule, body fallback, head re-check, credential refusal) instead of sourcing it.
 
 The decisions below are the conclusions of the Opus design pass.
 
@@ -30,7 +30,14 @@ Required checks are not part of the condition. Approval is a code-review verdict
 
 ## Wait
 
-`scripts/watch.js` reads the ledger without writing it, polls `gh` every 60 seconds, prints one JSON event line, and exits. It is run under Monitor, under `mien exec <profile> --` where the reviewing account is not the ambient one. It spends no model tokens.
+`scripts/watch.js` reads the ledger without writing it, polls `gh` every 60 seconds, prints one JSON event line, and exits. It runs under `mien exec <profile> --` where the reviewing account is not the ambient one.
+
+| Harness | How the session waits | Model cost |
+|---|---|---|
+| Claude Code | `watch.js` under Monitor, which wakes the session on its one output line | none until the event |
+| Codex | `watch.js --max-wait <seconds>` in the foreground; after that many seconds without an event it prints `{"event":"idle"}`, and the session runs it again | about one small model call per window; a window is bounded by the shell tool's command timeout (540 seconds by default in the skill) |
+
+Codex has no background process that wakes a conversation, so the wait there is not zero-token; the skill says so and tells the user after six idle windows in a row. `<ledger>.watch.json` carries the head seen and the nudge shown from one run to the next, so a new window does not restart the two-poll head stability check or repeat a nudge. The ledger stays the session's and `approve.js`'s alone.
 
 | Event | Fires when |
 |---|---|
@@ -38,9 +45,10 @@ Required checks are not part of the condition. Approval is a code-review verdict
 | `merged`, `closed` | The pull request reached that state |
 | `nudge` | Only a push, or only a reply, has arrived and 24 hours have passed since the last review. It repeats only for a new head or reply, and posts nothing; the session tells the user |
 | `timeout` | 7 days since the last review |
+| `idle` | Only with `--max-wait`: the window ended without an event (exit status 0) |
 | `error` | Ten consecutive failed polls (exit status 1) |
 
-A reply is a comment by the pull request author after the last review, either in a thread of a review the skill published (`in_reply_to_id` is one of its comment ids) or on the pull request conversation, which is the only way to answer a finding posted in a review body. Who pushed does not matter. A push or reply alone, a CI change, a label, or a comment by anyone but the author wakes nothing. A user stop ends the Monitor and is recorded in the ledger. At most 10 rounds run per pull request, and nothing is posted on any stop.
+A reply is a comment by the pull request author after the last review, either in a thread of a review the skill published (`in_reply_to_id` is one of its comment ids) or on the pull request conversation, which is the only way to answer a finding posted in a review body. Who pushed does not matter. A push or reply alone, a CI change, a label, or a comment by anyone but the author wakes nothing. A user stop ends the watch and is recorded in the ledger. At most 10 rounds run per pull request, and nothing is posted on any stop.
 
 ## State
 
@@ -65,6 +73,10 @@ The loop can later run unattended, with GitHub Actions or `services/pr-review` r
 | one side only for 24 hours | poll | one `nudge` per head and reply; later polls silent | introduced | `wakeDecision: one side alone nudges once`, `nudged records the nudge` |
 | no activity for 7 days | poll | `timeout` event, ledger resumable | introduced | `wakeDecision: one side alone nudges once` |
 | GitHub unreachable | ten consecutive polls | `error` event, exit status 1 | introduced | `watch: ten failed polls end with an error event` |
+| silent wait, `--max-wait` given | window ends | `idle` event, exit status 0 | introduced | `watch: --max-wait ends a silent wait with an idle event` |
+| nudge shown, session restarts the watch | next bounded run | no second nudge, even when the session did not record it | introduced | `watch: a nudge is not repeated by the next bounded run` |
+| head seen in one bounded run | next bounded run | the head counts toward the two-poll stability | introduced | `watch: the head seen by one bounded run counts toward the next run's two-poll stability` |
+| sidecar file unreadable or missing | start | treated as empty; at worst a notice repeats | introduced | untested, because the read falls back to an empty object |
 | force push, merged-in base, changed requirement | next round | whole-PR range, gate only when the requirement changed | introduced | `chooseRange` tests |
 | finding with a renamed id | next round | recognized by span, not posted twice | introduced | `isPublished` test |
 | open findings, head changed | next round | file touched and not raised again is fixed | introduced | `classifyPrior` test |

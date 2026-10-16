@@ -60,3 +60,30 @@ test('watch: ten failed polls end with an error event and exit status 1', () => 
   assert.equal(out[0].event, 'error');
   assert.equal(code, 1);
 });
+
+function runIn(dir, extraArgs) {
+  const r = spawnSync('node', [WATCH, path.join(dir, 'ledger.json'), 'o/r', '5', '--interval', '0.01', ...extraArgs], { encoding: 'utf8', env: { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}` }, timeout: 20000 });
+  return { out: r.stdout.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)), code: r.status };
+}
+
+test('watch: --max-wait ends a silent wait with an idle event and exit status 0', () => {
+  const dir = setup([{ head: 'h1' }], ledger);
+  const { out, code } = runIn(dir, ['--max-wait', '0.2']);
+  assert.deepEqual(out, [{ event: 'idle' }]);
+  assert.equal(code, 0);
+});
+
+test('watch: a nudge is not repeated by the next bounded run, with or without the session recording it', () => {
+  const old = { ...ledger, rounds: [{ ...ledger.rounds[0], submittedAt: new Date(Date.now() - 25 * 3600 * 1000).toISOString() }] };
+  const dir = setup([{ head: 'h2' }], old);
+  assert.deepEqual(runIn(dir, ['--max-wait', '5']).out, [{ event: 'nudge', kind: 'push-only', head: 'h2', replyAt: null }]);
+  assert.deepEqual(runIn(dir, ['--max-wait', '0.2']).out, [{ event: 'idle' }]);
+});
+
+test('watch: the head seen by one bounded run counts toward the next run\'s two-poll stability', () => {
+  const dir = setup([{ head: 'h2', pulls: [reply()] }], ledger);
+  fs.writeFileSync(path.join(dir, 'ledger.json.watch.json'), JSON.stringify({ previousHead: 'h2' }));
+  assert.deepEqual(runIn(dir, ['--max-wait', '5']).out, [{ event: 'round', head: 'h2' }]);
+  const fresh = setup([{ head: 'h2', pulls: [reply()] }], ledger);
+  assert.deepEqual(runIn(fresh, ['--max-wait', '0.01']).out, [{ event: 'idle' }]);
+});

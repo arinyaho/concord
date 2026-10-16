@@ -30,13 +30,17 @@ The decisions behind each step are in `docs/design/review-until-approve.md`.
    - `round-limit`, `merged`, `closed`, `head-keeps-moving`: tell the user and stop.
 3. `action: "watch"`: the head was already reviewed and nothing blocks or approves it yet; go to step 4.
    `action: "approve"`: the reviewed head is clean but was not approved (it was a draft). Run `node "$SCRIPTS/approve.js" approve <owner/repo> <pr>`; it posts the approval only if the condition holds; otherwise it prints `{"event":"not-approved","reason":...}`, which you relay to the user.
-4. Wait: start `node "$SCRIPTS/watch.js" <ledger> <owner/repo> <pr>` with Monitor and do nothing else; it spends no model tokens. It prints one JSON line and exits. On that line:
+4. Wait, by harness (the ledger path is in `start`'s output):
+   - Claude Code: start `node "$SCRIPTS/watch.js" <ledger> <owner/repo> <pr>` with Monitor and do nothing else; it spends no model tokens.
+   - Codex: there is no background watch that wakes the conversation, so wait in the foreground in bounded windows. Run `node "$SCRIPTS/watch.js" <ledger> <owner/repo> <pr> --max-wait 540` (shorter if the shell tool times out earlier) and read its one JSON line. `idle` means nothing happened in the window: run the same command again, and say nothing to the user between windows. Each window costs one small model call, so this wait is cheap but not free; after 6 windows in a row (about an hour) tell the user in one line that the wait continues, and keep going unless they stop it. A host that cannot run a foreground command this long cannot run this skill to completion: tell the user and stop after the first review.
+   The watch prints one JSON line and exits. On that line:
    - `round`: go to step 2 (`start` first, so the ledger and account are re-checked).
    - `merged` or `closed`: tell the user and stop.
    - `nudge`: only a push or only a reply arrived in 24 hours. Run `node "$SCRIPTS/approve.js" nudged <owner/repo> <pr> '<the nudge line>'` first, so a restarted watch stays silent until a new head or reply. Tell the user which, and ask whether to keep waiting or `waive` a finding they consider answered. Restart the watch if they want to keep waiting.
+   - `idle` (Codex only): see above.
    - `timeout`: 7 days passed since the last review. Tell the user; the ledger stays resumable.
    - `error`: tell the user the detail and stop.
-5. A stop request from the user: stop the Monitor, run `node "$SCRIPTS/approve.js" stop <owner/repo> <pr>`, and post nothing.
+5. A stop request from the user: stop the Monitor (Claude Code), run `node "$SCRIPTS/approve.js" stop <owner/repo> <pr>`, and post nothing.
 
 ## Findings the user disputes
 

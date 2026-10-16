@@ -3,17 +3,25 @@
 // Token-free wait for review-until-approve. Reads the ledger (never writes it), polls
 // GitHub through `gh`, prints exactly one JSON event line, then exits. Run it under
 // the host's background watch (Monitor) and under `mien exec <profile> --` where the
-// reviewing account is not the ambient one.
-// usage: watch.js <ledger.json> <owner/repo> <pr> [--interval <seconds>]
+// reviewing account is not the ambient one. With --max-wait it prints {"event":"idle"}
+// after that many seconds without an event, so a host without a background watch can
+// run it in the foreground and call it again. `<ledger>.watch.json` carries the head
+// seen and the nudge shown from one run to the next; the ledger itself is never written.
+// usage: watch.js <ledger.json> <owner/repo> <pr> [--interval <seconds>] [--max-wait <seconds>]
 const fs = require('node:fs');
 const { spawnSync } = require('node:child_process');
 const lib = require('./lib');
 
 const MAX_FAILURES = 10;
 const [ledgerPath, repo, pr, ...rest] = process.argv.slice(2);
-if (!ledgerPath || !repo || !pr) { process.stderr.write('usage: watch.js <ledger.json> <owner/repo> <pr> [--interval <seconds>]\n'); process.exit(2); }
+if (!ledgerPath || !repo || !pr) { process.stderr.write('usage: watch.js <ledger.json> <owner/repo> <pr> [--interval <seconds>] [--max-wait <seconds>]\n'); process.exit(2); }
 const intervalFlag = rest.indexOf('--interval');
 const intervalMs = (intervalFlag === -1 ? 60 : Number(rest[intervalFlag + 1])) * 1000;
+const maxWaitFlag = rest.indexOf('--max-wait');
+const deadline = maxWaitFlag === -1 ? Infinity : Date.now() + Number(rest[maxWaitFlag + 1]) * 1000;
+const sidecarPath = `${ledgerPath}.watch.json`;
+const readSidecar = () => { try { return JSON.parse(fs.readFileSync(sidecarPath, 'utf8')); } catch (_) { return {}; } };
+const writeSidecar = (data) => { try { fs.writeFileSync(sidecarPath, JSON.stringify(data)); } catch (_) { /* the next run only repeats a notice */ } };
 
 function gh(args) {
   const r = spawnSync('gh', args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
@@ -27,7 +35,8 @@ const emit = (event, code = 0) => { process.stdout.write(`${JSON.stringify(event
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 (async () => {
-  let previousHead = null;
+  const sidecar = readSidecar();
+  let previousHead = sidecar.previousHead ?? null;
   let failures = 0;
   for (;;) {
     try {
@@ -35,12 +44,16 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
       const view = gh(['pr', 'view', pr, '--repo', repo, '--json', 'headRefOid,state,isDraft,author']);
       const live = { head: view.headRefOid, state: view.state, isDraft: view.isDraft, author: view.author.login };
       const replies = lib.repliesSince(ledger, pages(`repos/${repo}/pulls/${pr}/comments`), pages(`repos/${repo}/issues/${pr}/comments`), live.author);
-      const event = lib.wakeDecision({ ledger, live, replies, now: Date.now(), stable: previousHead === live.head });
+      const event = lib.wakeDecision({ ledger: { ...ledger, nudged: ledger.nudged || sidecar.nudged || null }, live, replies, now: Date.now(), stable: previousHead === live.head });
       previousHead = live.head;
       failures = 0;
+      if (event && event.event === 'nudge') sidecar.nudged = { kind: event.kind, head: event.head, replyAt: event.replyAt };
+      writeSidecar({ ...sidecar, previousHead });
       if (event) return emit(event);
+      if (Date.now() >= deadline) return emit({ event: 'idle' });
     } catch (error) {
       if (++failures >= MAX_FAILURES) return emit({ event: 'error', detail: String(error.message) }, 1);
+      if (Date.now() >= deadline) return emit({ event: 'idle' });
     }
     await sleep(intervalMs * Math.min(2 ** failures, 8));
   }
