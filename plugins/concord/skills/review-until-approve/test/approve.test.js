@@ -60,6 +60,8 @@ else if (a[0] === 'api') j([[{ id: 7 }]]);
   fs.writeFileSync(path.join(dir, 'runner.js'), `const fs = require('node:fs');
 fs.appendFileSync(${JSON.stringify(path.join(dir, 'runner-calls.jsonl'))}, JSON.stringify({ ...JSON.parse(process.argv[2]), envKeys: Object.keys(process.env), home: process.env.HOME, homeEntries: fs.readdirSync(process.env.HOME), codexHome: process.env.CODEX_HOME }) + '\\n');
 const findings = JSON.parse(fs.readFileSync(${JSON.stringify(path.join(dir, 'findings.json'))}, 'utf8'));
+const edit = ${JSON.stringify(path.join(dir, 'edit.json'))};
+if (fs.existsSync(edit)) for (const [file, text] of Object.entries(JSON.parse(fs.readFileSync(edit, 'utf8')))) fs.writeFileSync(file, text);
 console.log(JSON.stringify({ decision: 'review-only', round: 1, findings }));
 `);
   const env = { ...process.env, CLAUDECODE: '', PATH: `${path.join(dir, 'bin')}${path.delimiter}${process.env.PATH}`, REVIEW_APPROVE_STATE_DIR: path.join(dir, 'ledgers'), REVIEW_APPROVE_REMOTE: path.join(dir, 'remote'), REVIEW_APPROVE_RUNNER: path.join(dir, 'runner.js') };
@@ -226,10 +228,10 @@ test('a push that only renames the file keeps the finding open at the new path a
   assert.deepEqual([w.ledger().findings[0].status, w.ledger().findings[0].file], ['open', 'b.js']);
 });
 
-// A push that only renames the file shows the reviewer a rename header; its silence about a finding whose span is not verbatim fixes nothing.
-function renamePush(edit) {
+// A push that only renames the file (and edits it when `edit` is set).
+function renamePush(span, edit) {
   const w = world();
-  w.write('findings.json', [{ ...finding, span: 'not verbatim in the file' }]);
+  w.write('findings.json', [{ ...finding, span }]);
   w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
   sh(w.src, 'mv', 'a.js', 'b.js');
   if (edit) fs.writeFileSync(path.join(w.src, 'b.js'), 'one\ngood\nthree\nfour\n');
@@ -241,17 +243,26 @@ function renamePush(edit) {
   return { w, r: JSON.parse(w.approve('round', 'o/r', '5').stdout) };
 }
 
-test('a pure rename (R100) does not fix a finding whose span is not verbatim, is not approved, and the reviewer is told the new path', () => {
-  const { w, r } = renamePush(false);
+test('a pure rename (R100) with the span still present keeps the finding open at the new path and is not approved', () => {
+  const { w, r } = renamePush('bad', false);
   assert.deepEqual([r.review, r.fixed, r.stillOpen], ['COMMENT', 0, 1]);
-  assert.deepEqual([w.ledger().findings[0].status, w.ledger().findings[0].file], ['open', 'b.js']);
-  assert.match(w.calls().pop().reviewerGuidance, /b\.js, renamed from a\.js/);
+  assert.deepEqual([w.ledger().findings[0].status, w.ledger().findings[0].file, w.ledger().findings[0].openReason], ['open', 'b.js', 'span-present']);
 });
 
-test('a rename with edits is judged by the span at the new path: an unverifiable span there leaves the finding fixed', () => {
-  const { w, r } = renamePush(true);
-  assert.deepEqual([r.fixed, r.stillOpen], [1, 0]);
-  assert.equal(w.ledger().findings[0].status, 'fixed');
+test('a pure rename (R100) does not fix a finding whose span is not verbatim: it stays open, unverified, and the round names it', () => {
+  const { w, r } = renamePush('not verbatim in the file', false);
+  assert.deepEqual([r.review, r.fixed, r.stillOpen], ['COMMENT', 0, 1]);
+  assert.deepEqual(r.held, [{ id: 'correctness:bad', file: 'a.js', reason: 'unverified' }]);
+  assert.match(r.hint, /waive/);
+  assert.equal(w.ledger().findings[0].status, 'open');
+});
+
+test('a rename with edits that removes the verified span fixes the finding; an unverified span does not', () => {
+  const fixed = renamePush('bad', true);
+  assert.deepEqual([fixed.r.fixed, fixed.r.stillOpen, fixed.r.review], [1, 0, 'APPROVE']);
+  assert.equal(fixed.w.ledger().findings[0].status, 'fixed');
+  const unverified = renamePush('not verbatim in the file', true);
+  assert.deepEqual([unverified.r.fixed, unverified.r.stillOpen], [0, 1]);
 });
 
 test('round refuses a claude ledger that never took the opt-in', () => {
@@ -372,17 +383,16 @@ test('a push to another file does not fix a finding whose span the file does not
   assert.deepEqual(w.posts().map((p) => p.event), ['COMMENT', 'COMMENT']);
 });
 
-test('a finding the reviewer was not told about (past the twenty listed) is not fixed by its silence', () => {
+test('every verified finding is judged, however many there are: twenty-one fixed by one push are all fixed', () => {
   const w = world();
-  const many = Array.from({ length: 21 }, (_, i) => ({ ...finding, id: `c:${i}`, span: `bad${i}` }));
-  w.write('findings.json', many);
+  push(w, { 'a.js': Array.from({ length: 21 }, (_, i) => `bad${i}`).join('\n') + '\n' }, 'c1b');
+  w.write('findings.json', Array.from({ length: 21 }, (_, i) => ({ ...finding, id: `c:${i}`, span: `bad${i}` })));
   w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
   push(w, { 'a.js': 'rewritten\n' }, 'c2');
   w.write('findings.json', []);
   w.approve('start', 'o/r', '5');
   const r2 = JSON.parse(w.approve('round', 'o/r', '5').stdout);
-  assert.deepEqual([r2.fixed, r2.stillOpen, r2.review], [20, 1, 'COMMENT']);
-  assert.deepEqual(w.ledger().findings.filter((f) => f.status === 'open').map((f) => f.id), ['c:20']);
+  assert.deepEqual([r2.fixed, r2.stillOpen, r2.review], [21, 0, 'APPROVE']);
 });
 
 test('a finding raised again with a different span is neither listed fixed nor posted as new', () => {
@@ -397,7 +407,7 @@ test('a finding raised again with a different span is neither listed fixed nor p
   assert.equal(w.ledger().findings.length, 1);
 });
 
-test('a finding whose file path leaves the checkout, or runs through a symlink, is not kept open by what that path reads', () => {
+test('a finding whose file path leaves the checkout, or runs through a symlink, is never verified, so it stays open', () => {
   const w = world();
   // The runner writes intent.md next to the clone; the span below occurs there, not in the checkout.
   w.write('findings.json', [{ ...finding, id: 'x:out', file: '../intent.md', span: '# T' }, { ...finding, id: 'x:link', file: 'link.txt', span: 'bad' }]);
@@ -411,7 +421,111 @@ test('a finding whose file path leaves the checkout, or runs through a symlink, 
   w.write('findings.json', []);
   w.approve('start', 'o/r', '5');
   const r2 = JSON.parse(w.approve('round', 'o/r', '5').stdout);
-  assert.deepEqual([r2.fixed, r2.stillOpen], [2, 0]);
+  assert.deepEqual([r2.fixed, r2.stillOpen], [0, 2]);
+});
+
+test('a mode-only push (chmod +x) fixes nothing: the span is still at the new head, verified or not, and the PR is not approved', () => {
+  for (const span of ['bad', 'not verbatim in the file']) {
+    const w = world();
+    w.write('findings.json', [{ ...finding, span }]);
+    w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+    sh(w.src, 'update-index', '--chmod=+x', 'a.js');
+    sh(w.src, 'commit', '-q', '-m', 'chmod');
+    sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+    w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD') });
+    w.write('findings.json', []);
+    w.approve('start', 'o/r', '5');
+    const r = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+    assert.deepEqual([r.review, r.fixed, r.stillOpen, r.notApproved], ['COMMENT', 0, 1, 'open-findings']);
+    assert.equal(w.ledger().findings[0].status, 'open');
+  }
+});
+
+test('a reviewer that edits the checkout during the review cannot fix a finding: the span is read from git objects', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  push(w, { 'a.js': 'one\nbad\nthree\nfour\nfive\n' }, 'c2');
+  w.write('findings.json', []);
+  w.write('edit.json', { 'a.js': 'one\nthree\n' });
+  w.approve('start', 'o/r', '5');
+  const r = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r.review, r.fixed, r.stillOpen], ['COMMENT', 0, 1]);
+  assert.equal(w.ledger().findings[0].status, 'open');
+});
+
+test('a ledger finding recorded without spanVerified is unverified: it stays open until waived, and the round says how to clear it', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  const file = path.join(w.dir, 'ledgers', 'o__r__5__bot.json');
+  const ledger = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete ledger.findings[0].spanVerified;
+  fs.writeFileSync(file, JSON.stringify(ledger));
+  push(w, { 'a.js': 'one\ngood\nthree\nfour\n' }, 'c2');
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  const r = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r.fixed, r.stillOpen, r.held[0].reason], [0, 1, 'unverified']);
+  assert.equal(JSON.parse(w.approve('waive', 'o/r', '5', 'correctness:bad').stdout).event, 'approved');
+});
+
+test('a span that moved to another file keeps the finding open at the new path', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  push(w, { 'a.js': 'one\nthree\nfour\n', 'moved.js': 'x\nbad\n' }, 'c2');
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  const r = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r.fixed, r.stillOpen], [0, 1]);
+  assert.deepEqual([w.ledger().findings[0].file, w.ledger().findings[0].openReason], ['moved.js', 'span-present']);
+});
+
+test('deleting the file fixes a verified finding and leaves an unverified one open', () => {
+  const w = world();
+  w.write('findings.json', [finding, { ...finding, id: 'correctness:other', span: 'not verbatim in the file' }]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  sh(w.src, 'rm', '-q', 'a.js');
+  sh(w.src, 'commit', '-q', '-m', 'delete');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD') });
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  const r = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r.fixed, r.stillOpen], [1, 1]);
+  assert.deepEqual(w.ledger().findings.map((f) => f.status), ['fixed', 'open']);
+});
+
+test('a fixed finding that the reviewer raises again with the span present reopens under the same entry', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  push(w, { 'a.js': 'one\ngood\nthree\nfour\n' }, 'c2');
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  assert.equal(w.ledger().findings[0].status, 'fixed');
+  push(w, { 'a.js': 'one\nbad\nthree\nfour\n' }, 'c3');
+  w.write('findings.json', [finding]);
+  w.approve('start', 'o/r', '5');
+  const r = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r.review, r.new], ['COMMENT', 1]);
+  assert.deepEqual([w.ledger().findings.length, w.ledger().findings[0].status], [1, 'open']);
+});
+
+test('a verbatim re-raise verifies an unverified finding', () => {
+  const w = world();
+  w.write('findings.json', [{ ...finding, span: 'bad\n' }]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  assert.equal(w.ledger().findings[0].spanVerified, w.c1);
+  const file = path.join(w.dir, 'ledgers', 'o__r__5__bot.json');
+  const ledger = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete ledger.findings[0].spanVerified;
+  fs.writeFileSync(file, JSON.stringify(ledger));
+  push(w, { 'a.js': 'one\nbad\nthree\nfour\nfive\n' }, 'c2');
+  w.write('findings.json', [{ ...finding, span: 'bad\n' }]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  assert.equal(w.ledger().findings[0].spanVerified, sh(w.src, 'rev-parse', 'HEAD'));
 });
 
 test('an approval GitHub accepted but the call reported as failed is not posted a second time', () => {
