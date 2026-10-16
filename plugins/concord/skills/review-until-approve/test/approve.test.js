@@ -31,7 +31,7 @@ function world(extraEnv = {}) {
   write('state.json', state);
   fs.writeFileSync(path.join(dir, 'bin-gh'), '');
   fs.mkdirSync(path.join(dir, 'bin'));
-  fs.writeFileSync(path.join(dir, 'bin', 'gh'), `#!/usr/bin/env node
+  fs.writeFileSync(path.join(dir, 'bin', 'gh'), `#!${process.execPath}
 const fs = require('node:fs');
 const dir = ${JSON.stringify(dir)};
 const a = process.argv.slice(2);
@@ -71,8 +71,14 @@ if (fs.existsSync(${JSON.stringify(path.join(dir, 'replace'))})) {
 if (fs.existsSync(edit)) for (const [file, text] of Object.entries(JSON.parse(fs.readFileSync(edit, 'utf8')))) fs.writeFileSync(file, text);
 console.log(JSON.stringify({ decision: 'review-only', round: 1, findings }));
 `);
-  const env = { ...process.env, CLAUDECODE: '', PATH: `${path.join(dir, 'bin')}${path.delimiter}${process.env.PATH}`, REVIEW_APPROVE_STATE_DIR: path.join(dir, 'ledgers'), REVIEW_APPROVE_REMOTE: path.join(dir, 'remote'), REVIEW_APPROVE_RUNNER: path.join(dir, 'runner.js') };
-  const approve = (...args) => spawnSync('node', [APPROVE, ...args], { env: { ...env, ...extraEnv }, encoding: 'utf8' });
+  // Both reviewers are installed and Codex is logged in; the Claude token is absent unless a test sets it. PATH names only system directories, so a codex or claude of the machine running the tests is never found.
+  for (const name of ['codex', 'claude']) fs.writeFileSync(path.join(dir, 'bin', name), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  fs.symlinkSync(process.execPath, path.join(dir, 'bin', 'node'));
+  const codexHome = path.join(dir, 'codex-home');
+  fs.mkdirSync(codexHome);
+  fs.writeFileSync(path.join(codexHome, 'auth.json'), '{}');
+  const env = { ...process.env, CLAUDECODE: '', CLAUDE_CODE_OAUTH_TOKEN: '', CODEX_HOME: codexHome, PATH: ['/usr/bin', '/bin'].reduce((p, d) => `${p}${path.delimiter}${d}`, path.join(dir, 'bin')), REVIEW_APPROVE_STATE_DIR: path.join(dir, 'ledgers'), REVIEW_APPROVE_REMOTE: path.join(dir, 'remote'), REVIEW_APPROVE_RUNNER: path.join(dir, 'runner.js') };
+  const approve = (...args) => spawnSync(process.execPath, [APPROVE, ...args], { env: { ...env, ...extraEnv }, encoding: 'utf8' });
   const lines = (name) => fs.existsSync(path.join(dir, name)) ? fs.readFileSync(path.join(dir, name), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
   return { dir, src, bare, c1, state, write, approve, posts: () => lines('posts.jsonl'), calls: () => lines('runner-calls.jsonl'), ledger: () => JSON.parse(fs.readFileSync(path.join(dir, 'ledgers', 'o__r__5__bot.json'), 'utf8')) };
 }
@@ -174,16 +180,12 @@ test('a refused post leaves no temporary clone behind', () => {
 
 const UNRESTRICTED = '--allow-unrestricted-home';
 
-test('start refuses the claude reviewer without the opt-in flag, whether asked for or chosen as the harness default, and names the flag', () => {
+test('start refuses a claude reviewer that was asked for without the opt-in flag, and names the flag', () => {
   const asked = world({ CLAUDE_CODE_OAUTH_TOKEN: 't' });
   const r = asked.approve('start', 'o/r', '5', '--reviewer', 'claude');
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /--allow-unrestricted-home/);
   assert.equal(fs.existsSync(path.join(asked.dir, 'ledgers', 'o__r__5__bot.json')), false);
-  const inClaude = world({ CLAUDE_CODE_OAUTH_TOKEN: 't', CLAUDECODE: '1' });
-  const d = inClaude.approve('start', 'o/r', '5');
-  assert.notEqual(d.status, 0);
-  assert.match(d.stderr, /--allow-unrestricted-home/);
   const inCodex = world({ CLAUDECODE: '' });
   inCodex.approve('start', 'o/r', '5');
   assert.equal(inCodex.ledger().provider, 'codex');
@@ -305,13 +307,13 @@ test('a file with a special character in its name is matched by its real name', 
 });
 
 test('the review process gets an empty HOME, and the real Codex home for its auth', () => {
-  const w = world({ CODEX_HOME: '/real/codex' });
+  const w = world();
   w.write('findings.json', []);
   w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
   const call = w.calls()[0];
   assert.notEqual(call.home, process.env.HOME);
   assert.deepEqual(call.homeEntries, []);
-  assert.equal(call.codexHome, '/real/codex');
+  assert.equal(call.codexHome, path.join(w.dir, 'codex-home'));
 });
 
 test('a claude reviewer does not get the Codex home', () => {
@@ -647,4 +649,70 @@ test('a comment review on the pending head is not taken for the approval', () =>
   w.write('reviews.json', [{ id: 77, user: { login: 'bot' }, commit_id: w.c1, state: 'COMMENTED', submitted_at: '2026-01-01T00:00:00Z' }]);
   assert.equal(JSON.parse(w.approve('start', 'o/r', '5').stdout).action, 'round');
   assert.equal(w.ledger().approval, null);
+});
+
+// A harness whose own reviewer is unusable still starts in one call, on the other reviewer, and says so in one line.
+const startOut = (r) => JSON.parse(r.stdout);
+
+test('under Claude Code without a Claude token, start runs on codex in one call and names why', () => {
+  const w = world({ CLAUDECODE: '1' });
+  const r = w.approve('start', 'o/r', '5');
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(w.ledger().provider, 'codex');
+  const o = startOut(r);
+  assert.equal(o.reviewer, 'codex');
+  assert.match(o.note, /^reviewer: codex \(claude: .*CLAUDE_CODE_OAUTH_TOKEN/);
+  assert.equal(o.note.includes('\n'), false);
+});
+
+test('under Claude Code with a token but no opt-in, start still runs on codex and names the flag', () => {
+  const w = world({ CLAUDECODE: '1', CLAUDE_CODE_OAUTH_TOKEN: 't' });
+  const r = w.approve('start', 'o/r', '5');
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(w.ledger().provider, 'codex');
+  assert.equal(w.ledger().unrestrictedHome, false);
+  assert.match(startOut(r).note, /--allow-unrestricted-home/);
+});
+
+test('under Claude Code with a token and the opt-in, the harness reviewer is chosen and no note is printed', () => {
+  const w = world({ CLAUDECODE: '1', CLAUDE_CODE_OAUTH_TOKEN: 't' });
+  const o = startOut(w.approve('start', 'o/r', '5', UNRESTRICTED));
+  assert.equal(o.reviewer, 'claude');
+  assert.equal(o.note, undefined);
+});
+
+test('under Codex with codex logged out, start runs on claude only when the token and the opt-in are there', () => {
+  const w = world({ CLAUDE_CODE_OAUTH_TOKEN: 't' });
+  fs.rmSync(path.join(w.dir, 'codex-home', 'auth.json'));
+  const refused = w.approve('start', 'o/r', '5');
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /codex: .*codex login/);
+  assert.match(refused.stderr, /claude: .*--allow-unrestricted-home/);
+  const ok = w.approve('start', 'o/r', '5', UNRESTRICTED);
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.match(startOut(ok).note, /^reviewer: claude \(codex: .*codex login/);
+});
+
+test('when no reviewer is usable, start exits non-zero with one line per reviewer naming what is missing, and creates no ledger', () => {
+  const w = world({ CLAUDECODE: '1' });
+  fs.rmSync(path.join(w.dir, 'bin', 'codex'));
+  fs.rmSync(path.join(w.dir, 'bin', 'claude'));
+  const r = w.approve('start', 'o/r', '5');
+  assert.notEqual(r.status, 0);
+  const lines = r.stderr.trim().split('\n').filter((l) => /^\s*(codex|claude):/.test(l));
+  assert.equal(lines.length, 2, r.stderr);
+  assert.match(lines.find((l) => /codex:/.test(l)), /install codex/);
+  assert.match(lines.find((l) => /claude:/.test(l)), /install claude.*CLAUDE_CODE_OAUTH_TOKEN.*setup-token.*--allow-unrestricted-home/);
+  assert.equal(fs.existsSync(path.join(w.dir, 'ledgers', 'o__r__5__bot.json')), false);
+});
+
+test('an explicit reviewer is never replaced: --reviewer codex with codex missing exits non-zero, and --reviewer claude without the opt-in is refused', () => {
+  const w = world({ CLAUDECODE: '1', CLAUDE_CODE_OAUTH_TOKEN: 't' });
+  fs.rmSync(path.join(w.dir, 'bin', 'codex'));
+  const noCodex = w.approve('start', 'o/r', '5', '--reviewer', 'codex');
+  assert.notEqual(noCodex.status, 0);
+  assert.match(noCodex.stderr, /install codex/);
+  const claude = w.approve('start', 'o/r', '5', '--reviewer', 'claude');
+  assert.notEqual(claude.status, 0);
+  assert.match(claude.stderr, /--allow-unrestricted-home/);
 });

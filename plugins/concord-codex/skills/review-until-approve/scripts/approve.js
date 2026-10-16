@@ -130,6 +130,29 @@ function identify(repo, pr, args) {
   return { reviewer, file, ledger, args };
 }
 
+const onPath = (name) => (process.env.PATH || '').split(path.delimiter).some((dir) => (process.platform === 'win32' ? (process.env.PATHEXT || '.EXE;.CMD').split(';') : ['']).some((ext) => { try { fs.accessSync(path.join(dir, name + ext), fs.constants.X_OK); return true; } catch (_) { return false; } }));
+// What a reviewer still needs from the user, in the words that fix it. An empty list means it is ready.
+function missing(provider, optedIn) {
+  if (provider === 'codex') return [!onPath('codex') ? 'install codex' : !fs.existsSync(path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'auth.json')) && 'run `codex login`'].filter(Boolean);
+  // The Claude reviewer cannot yet be kept from the account's home directory (tracked in its own issue), so it runs only on an explicit opt-in.
+  return [!onPath('claude') && 'install claude', !process.env.CLAUDE_CODE_OAUTH_TOKEN && 'export CLAUDE_CODE_OAUTH_TOKEN (create one with `claude setup-token`)', !optedIn && `pass ${UNRESTRICTED} (the claude reviewer can read your real home directory, and a malicious pull request could publish what it reads)`].filter(Boolean);
+}
+// An explicit choice or a resumed ledger is kept or refused. Without one, the harness's own reviewer runs when it is ready, otherwise the other one; the note says why.
+function chooseReviewer(asked, optedIn) {
+  if (asked) {
+    if (!['codex', 'claude'].includes(asked)) die('--reviewer must be codex or claude');
+    const need = missing(asked, optedIn);
+    if (need.length) die(`the ${asked} reviewer is not ready: ${need.join('; ')}`);
+    return { provider: asked };
+  }
+  const first = process.env.CLAUDECODE ? 'claude' : 'codex';
+  const order = [first, first === 'claude' ? 'codex' : 'claude'];
+  const need = Object.fromEntries(order.map((p) => [p, missing(p, optedIn)]));
+  const provider = order.find((p) => !need[p].length);
+  if (!provider) die(`no reviewer is ready:\n${order.map((p) => `  ${p}: ${need[p].join('; ')}`).join('\n')}`);
+  return { provider, note: provider === first ? undefined : `reviewer: ${provider} (${first}: ${need[first].join('; ')})` };
+}
+
 const opt = (args, name) => { const i = args.indexOf(name); return i === -1 ? undefined : args[i + 1]; };
 const lastRound = (ledger) => ledger.rounds[ledger.rounds.length - 1];
 
@@ -138,11 +161,7 @@ function start(repo, pr, args) {
   const snap = snapshot(repo, pr);
   if (snap.state !== 'OPEN') die(`the pull request is ${snap.state}`);
   if (snap.author === reviewer) die(`${reviewer} is the author; GitHub rejects self-approval`);
-  const provider = opt(args, '--reviewer') || found?.provider || (process.env.CLAUDECODE ? 'claude' : 'codex');
-  if (!['codex', 'claude'].includes(provider)) die('--reviewer must be codex or claude');
-  if (provider === 'claude' && !process.env.CLAUDE_CODE_OAUTH_TOKEN) die('the claude reviewer needs CLAUDE_CODE_OAUTH_TOKEN; use codex otherwise');
-  // The Claude reviewer cannot yet be kept from the account's home directory (tracked in its own issue), so it runs only on an explicit opt-in.
-  if (provider === 'claude' && !args.includes(UNRESTRICTED)) die(`the claude reviewer can read the real home directory, and a malicious pull request could publish what it reads; pass ${UNRESTRICTED} to accept that, or use --reviewer codex`);
+  const { provider, note } = chooseReviewer(opt(args, '--reviewer') || found?.provider, args.includes(UNRESTRICTED));
   const ledger = found || { version: 1, repo, pr, reviewer, provider, model: opt(args, '--model') || null, author: snap.author, startedAt: new Date().toISOString(), rounds: [], findings: [], nudged: null, approval: null, stopped: null };
   ledger.provider = provider;
   ledger.unrestrictedHome = provider === 'claude';
@@ -154,7 +173,7 @@ function start(repo, pr, args) {
   let action = 'watch';
   if (ledger.rounds.length === 0 || snap.head !== lastRound(ledger).head) action = 'round';
   else if (lib.evaluateApproval(ledger, snap, lastRound(ledger).head).approve) action = 'approve';
-  outFor(ledger, { ledger: file, action, round: ledger.rounds.length + 1, ...(warning && { warning }) });
+  outFor(ledger, { ledger: file, action, round: ledger.rounds.length + 1, reviewer: provider, ...(note && { note }), ...(warning && { warning }) });
 }
 
 // The findings the reviewer is told about. Telling it decides nothing: a finding is fixed by the code, never by the reviewer's silence.
