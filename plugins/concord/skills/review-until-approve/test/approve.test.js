@@ -162,12 +162,12 @@ test('a refused post leaves no temporary clone behind', () => {
   assert.deepEqual(fs.readdirSync(tmp).filter((n) => n.startsWith('review-until-approve-')), []);
 });
 
-test('start with --reviewer on an existing ledger switches the provider for later rounds', () => {
+test('start refuses the claude reviewer: it cannot be kept from the real home, so only codex runs', () => {
   const w = world({ CLAUDE_CODE_OAUTH_TOKEN: 't' });
-  w.approve('start', 'o/r', '5');
-  assert.equal(w.ledger().provider, 'codex');
-  w.approve('start', 'o/r', '5', '--reviewer', 'claude', '--model', 'm');
-  assert.deepEqual([w.ledger().provider, w.ledger().model], ['claude', 'm']);
+  const r = w.approve('start', 'o/r', '5', '--reviewer', 'claude');
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /codex/);
+  assert.equal(fs.existsSync(path.join(w.dir, 'ledgers')), false);
 });
 
 test('two open findings sharing an id are closed by their own key: the unfixed one keeps blocking approval', () => {
@@ -230,11 +230,11 @@ test('the review process gets an empty HOME, and the real Codex home for its aut
   assert.equal(call.codexHome, '/real/codex');
 });
 
-test('a claude reviewer does not get the Codex home', () => {
-  const w = world({ CODEX_HOME: '/real/codex', CLAUDE_CODE_OAUTH_TOKEN: 't' });
+test('the Codex review is told to deny the real Claude configuration directory', () => {
+  const w = world({ CLAUDE_CONFIG_DIR: '/real/claude' });
   w.write('findings.json', []);
-  w.approve('start', 'o/r', '5', '--reviewer', 'claude'); w.approve('round', 'o/r', '5');
-  assert.equal(w.calls()[0].codexHome, undefined);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  assert.deepEqual(w.calls()[0].reviewDenyRead, ['/real/claude']);
 });
 
 test('nudged records the nudge so a restarted watch does not repeat it', () => {
