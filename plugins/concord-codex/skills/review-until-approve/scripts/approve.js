@@ -154,14 +154,32 @@ function start(repo, pr, args) {
   outFor(ledger, { ledger: file, action, round: ledger.rounds.length + 1, ...(warning && { warning }) });
 }
 
-// The findings the reviewer is told about; only those can be judged fixed from its silence.
-const shownFindings = (ledger) => ledger.findings.filter((f) => f.status === 'open').slice(0, GUIDANCE_FINDINGS);
-
-function guidance(open, renames) {
+// The findings the reviewer is told about. Telling it decides nothing: a finding is fixed by the code, never by the reviewer's silence.
+function guidance(open) {
   if (!open.length) return undefined;
-  const where = (f) => renames.has(f.file) ? `${renames.get(f.file)}, renamed from ${f.file}` : f.file;
-  return `Earlier findings on this pull request. If one is still present at this head, raise it again with the same id and the current path: ${open.map((f) => `${f.id} (${where(f)}): ${f.summary.slice(0, 200)}`).join('; ')}`;
+  return `Earlier findings on this pull request. If one is still present at this head, raise it again with the same id and the current path: ${open.slice(0, GUIDANCE_FINDINGS).map((f) => `${f.id} (${f.file}): ${f.summary.slice(0, 200)}`).join('; ')}`;
 }
+
+const MAX_SPAN_FILE_BYTES = 20 * 1024 * 1024;
+// A file as stored in the git object of `rev`, never from the working tree: a Buffer, null when the path is
+// absent, 'other' when it is not a regular file (symlink, submodule, directory, or a path git rejects), 'big' when too large.
+function gitBlob(cwd, rev, file) {
+  const ls = spawnSync('git', ['ls-tree', '-z', '--full-tree', rev, '--', file], { cwd, encoding: 'utf8' });
+  if (ls.status !== 0) return 'other';
+  const entry = ls.stdout.split('\0').find((e) => e.slice(e.indexOf('\t') + 1) === file && e.includes('\t'));
+  if (!entry) return null;
+  const [mode, , oid] = entry.slice(0, entry.indexOf('\t')).split(' ');
+  if (mode !== '100644' && mode !== '100755') return 'other';
+  const size = spawnSync('git', ['cat-file', '-s', oid], { cwd, encoding: 'utf8' });
+  if (size.status !== 0 || Number(size.stdout) > MAX_SPAN_FILE_BYTES) return 'big';
+  const blob = spawnSync('git', ['cat-file', 'blob', oid], { cwd, maxBuffer: MAX_SPAN_FILE_BYTES + 1024 });
+  return blob.status === 0 ? blob.stdout : 'big';
+}
+// A finding is verified when its span occurs byte for byte in the file at the head it was recorded against.
+const verifiedAt = (cwd, head, f) => {
+  const blob = f.span ? gitBlob(cwd, head, f.file) : null;
+  return Buffer.isBuffer(blob) && blob.includes(Buffer.from(f.span, 'utf8'));
+};
 
 function reviewRound(repo, pr, args) {
   const { file, ledger } = identify(repo, pr, args);
@@ -192,50 +210,70 @@ function attempt(repo, pr, ledger, file) {
     const isAncestor = (a, b) => spawnSync('git', ['merge-base', '--is-ancestor', a, b], { cwd: work }).status === 0;
     const range = prior ? lib.chooseRange(prior, snap, isAncestor) : { base: snap.mergeBase, broad: true };
 
-    const { changed, renames, edited } = lib.parseNameStatus(git(work, ['diff', '-z', '--name-status', '-M', range.base, 'HEAD']));
-    // A merge-base range cannot see a rename of a file the PR itself added, so renames since the last reviewed head count too.
-    if (prior && range.base !== prior.head) {
-      try {
-        const since = lib.parseNameStatus(git(work, ['diff', '-z', '--name-status', '-M', prior.head, 'HEAD']));
-        for (const [from, to] of since.renames) renames.set(from, to);
-        for (const f of since.edited) edited.add(f);
-      } catch (_) { /* the prior head is gone after a rewrite */ }
-    }
+    // The delta from the head where each open finding's span was last verified to this head; a head that is gone is fetched, else the finding stays open.
+    const deltas = new Map();
+    const resolve = (p) => {
+      if (!deltas.has(p.spanVerified)) {
+        let delta = null;
+        try {
+          if (spawnSync('git', ['cat-file', '-e', `${p.spanVerified}^{commit}`], { cwd: work }).status !== 0) git(work, ['fetch', '--quiet', 'origin', p.spanVerified], GIT_AUTH);
+          delta = lib.parseNameStatus(git(work, ['diff', '-z', '--name-status', '-M', p.spanVerified, snap.head]));
+        } catch (_) { /* unreachable head: its findings stay open */ }
+        deltas.set(p.spanVerified, delta);
+      }
+      return deltas.get(p.spanVerified);
+    };
+    const open = ledger.findings.filter((f) => f.status === 'open');
+    const shown = open.map((p) => { const d = typeof p.spanVerified === 'string' && p.span ? resolve(p) : null; return { ...p, file: d?.renames.get(p.file) || p.file }; });
 
-    const shown = shownFindings(ledger);
     const intentFile = path.join(dir, 'intent.md');
     fs.writeFileSync(intentFile, `# ${snap.title}\n\n${snap.body}`);
     const realClaudeConfig = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
     const claudeConfig = fs.mkdtempSync(path.join(dir, 'claude-'));
     const reviewerHome = fs.mkdtempSync(path.join(dir, 'home-'));
-    const runnerOptions = { ref: `concord-pr-${pr}`, base: range.base, broad: range.broad, noBroad: !range.broad, reviewer: ledger.provider, reviewerModel: ledger.model || undefined, reviewDenyRead: [realClaudeConfig], reviewRealHome: os.homedir(), reviewerGuidance: guidance(shown, renames), intentFile: range.broad ? intentFile : undefined };
+    const runnerOptions = { ref: `concord-pr-${pr}`, base: range.base, broad: range.broad, noBroad: !range.broad, reviewer: ledger.provider, reviewerModel: ledger.model || undefined, reviewDenyRead: [realClaudeConfig], reviewRealHome: os.homedir(), reviewerGuidance: guidance(shown), intentFile: range.broad ? intentFile : undefined };
     const env = reviewerEnv(ledger.provider, claudeConfig, reviewerHome);
     const runner = process.env.REVIEW_APPROVE_RUNNER || path.join(__dirname, 'run-review.js');
     const reviewed = JSON.parse(run('node', [runner, JSON.stringify(runnerOptions)], { cwd: work, env }).trim().split('\n').pop());
     if (reviewed.decision !== 'review-only' || !Array.isArray(reviewed.findings)) throw new Error(`the review did not complete: ${JSON.stringify(reviewed).slice(0, 200)}`);
 
     const n = ledger.rounds.length + 1;
-    const collapse = (t) => String(t || '').replace(/\s+/g, ' ').trim();
-    // A reviewer-supplied path is evidence only as a regular file inside the checkout, with no symlink on the way.
-    const spanAtHead = (f, span) => {
-      if (!collapse(span)) return true;
-      try {
-        const root = fs.realpathSync(work), requested = path.resolve(root, f), real = fs.realpathSync(requested);
-        if (real !== requested || !real.startsWith(root + path.sep) || !fs.lstatSync(real).isFile()) return false;
-        return collapse(fs.readFileSync(real, 'utf8')).includes(collapse(span));
-      } catch (_) { return false; }
-    };
-    const open = ledger.findings.filter((f) => f.status === 'open');
-    const verdict = lib.classifyPrior(open, reviewed.findings, changed, spanAtHead, renames, { incremental: prior ? range.base === prior.head : false, evaluated: new Set(shown.map((f) => lib.findingKey(f))), edited });
+    const verdict = lib.classifyPrior(open, reviewed.findings, resolve, (file) => gitBlob(work, snap.head, file), snap.head);
     const next = JSON.parse(JSON.stringify(ledger));
-    for (const m of verdict.moved) for (const f of next.findings) if (f.key === m.key) Object.assign(f, { file: m.file, key: lib.findingKey({ ...f, file: m.file }) });
+    const inNext = (key, status) => next.findings.find((f) => f.key === key && f.status === status);
+    for (const r of verdict) {
+      const f = inNext(r.key, 'open');
+      if (r.status === 'fixed') Object.assign(f, { status: 'fixed', fixedRound: n });
+      else {
+        Object.assign(f, { openReason: r.reason });
+        if (r.file && (r.file !== f.file || r.spanVerified !== f.spanVerified)) Object.assign(f, { file: r.file, spanVerified: r.spanVerified, key: lib.findingKey({ ...f, file: r.file }) });
+      }
+    }
+    // A raised finding is posted when new; one whose span is verbatim at this head also verifies an unverified finding of the same file and span, and reopens a fixed one (same file and span only).
     const fresh = reviewed.findings.filter((f, i, all) => !lib.isPublished(next, f) && all.findIndex((g) => lib.findingKey(g) === lib.findingKey(f)) === i);
-    for (const f of next.findings) if (f.status === 'open' && verdict.fixedKeys.includes(f.key)) Object.assign(f, { status: 'fixed', fixedRound: n });
-    for (const f of fresh) next.findings.push({ key: lib.findingKey(f), id: f.id, category: f.category, file: f.file, line: f.line, span: f.span, summary: f.summary, requirement: f.requirement || '', status: 'open', firstRound: n });
+    const verified = (f) => typeof f.spanVerified === 'string' && f.span;
+    const reopened = new Set();
+    for (const f of reviewed.findings.filter((g) => verifiedAt(work, snap.head, g))) {
+      const unverified = next.findings.find((g) => g.status === 'open' && !verified(g) && lib.findingKey(g) === lib.findingKey(f));
+      const fixed = unverified ? null : next.findings.find((g) => g.status === 'fixed' && lib.findingKey(g) === lib.findingKey(f));
+      const known = unverified || fixed;
+      if (!known) continue;
+      Object.assign(known, { status: 'open', span: f.span, file: f.file, spanVerified: snap.head });
+      delete known.fixedRound;
+      known.key = lib.findingKey(known);
+      reopened.add(lib.findingKey(f));
+    }
+    for (const f of fresh.filter((g) => !reopened.has(lib.findingKey(g)))) {
+      next.findings.push({ key: lib.findingKey(f), id: f.id, category: f.category, file: f.file, line: f.line, span: f.span, summary: f.summary, requirement: f.requirement || '', status: 'open', firstRound: n, ...(verifiedAt(work, snap.head, f) && { spanVerified: snap.head }) });
+    }
+    for (const f of next.findings) if (f.status === 'open' && !verified(f)) f.openReason = 'unverified';
+    const fixedIds = verdict.filter((r) => r.status === 'fixed').map((r) => r.id);
+    const openIds = verdict.filter((r) => r.status === 'open').map((r) => r.id);
+    const held = next.findings.filter((f) => f.status === 'open' && ['unverified', 'path-unresolved'].includes(f.openReason)).map((f) => ({ id: f.id, file: f.file, reason: f.openReason }));
 
     const diff = git(work, ['diff', '-U3', range.base, 'HEAD']);
     const verdictNow = lib.evaluateApproval(next, snapshot(repo, pr), snap.head);
-    const input = { head: snap.head, round: n, rangeBase: range.base, reviewer: ledger.provider, hunks: publish.hunksOf(diff), findings: fresh, fixed: verdict.fixed, stillOpen: verdict.open, previousHead: prior ? prior.head : snap.head, approve: verdictNow.approve };
+    const input = { head: snap.head, round: n, rangeBase: range.base, reviewer: ledger.provider, hunks: publish.hunksOf(diff), findings: fresh, fixed: fixedIds, stillOpen: openIds, previousHead: prior ? prior.head : snap.head, approve: verdictNow.approve };
     if (verdictNow.reason === 'head-moved') return null;
     const known = newestId(reviewsOf(repo, pr));
     const entry = (review) => ({ n, head: snap.head, base: range.base, mergeBase: snap.mergeBase, intent: snap.intent, mode: range.broad ? 'broad' : 'diff', reviewId: review.id, submittedAt: review.submitted_at || new Date().toISOString(), commentIds: [], event: input.approve ? 'APPROVE' : 'COMMENT' });
@@ -257,7 +295,7 @@ function attempt(repo, pr, ledger, file) {
       next.rounds[next.rounds.length - 1].commentIds = ghJson(['api', '--paginate', '--slurp', `repos/${repo}/pulls/${pr}/reviews/${review.id}/comments`]).flat().map((c) => c.id);
       save(file, next);
     } catch (_) { /* ponytail: ids stay empty; thread replies are then missed until the next round */ }
-    return { event: 'published', round: n, mode: range.broad ? 'broad' : 'diff', review: input.approve ? 'APPROVE' : 'COMMENT', new: fresh.length, fixed: verdict.fixed.length, stillOpen: verdict.open.length, ...(verdictNow.approve ? {} : { notApproved: verdictNow.reason }) };
+    return { event: 'published', round: n, mode: range.broad ? 'broad' : 'diff', review: input.approve ? 'APPROVE' : 'COMMENT', new: fresh.length, fixed: fixedIds.length, stillOpen: openIds.length, ...(verdictNow.approve ? {} : { notApproved: verdictNow.reason }), ...(held.length && { held, hint: 'These findings cannot be settled from the code; run waive <id> to clear one you accept.' }) };
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
 

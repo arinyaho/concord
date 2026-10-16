@@ -25,7 +25,7 @@ The decisions behind each step are in `docs/design/review-until-approve.md`.
 1. `node "$SCRIPTS/approve.js" start <owner/repo> <pr> [--reviewer codex|claude [--allow-unrestricted-home]] [--model <m>]` checks the account, opens or resumes the ledger, and prints `{ledger, action}`. It refuses a pull request that is not open and an account that is the author. Relay a `warning` to the user.
 2. `action: "round"`: run `node "$SCRIPTS/approve.js" round <owner/repo> <pr>` in the foreground; it takes minutes. It clones the exact head into a temporary directory, runs the review-only engine without your GitHub token, publishes one review, and approves in the same review when the round is clean. Its last line is the outcome:
    - `published` with `review: "APPROVE"`: tell the user the head is approved and stop.
-   - `published` with `review: "COMMENT"`: tell the user the finding counts in one line, then wait (step 4). `notApproved: "draft"` means a clean round on a draft pull request: the watch does not see a draft turning ready, so tell the user to re-invoke the skill once the pull request is ready (`start` then answers `action: "approve"`) and stop instead of waiting.
+   - `published` with `review: "COMMENT"`: tell the user the finding counts in one line, then wait (step 4). A `held` list names open findings that no code change can settle (`unverified`: the reviewer's quote is not verbatim in the file; `path-unresolved`: the file cannot be read at the new head); relay it with its `hint`, because only `waive` clears them and the PR is never approved while they are open. `notApproved: "draft"` means a clean round on a draft pull request: the watch does not see a draft turning ready, so tell the user to re-invoke the skill once the pull request is ready (`start` then answers `action: "approve"`) and stop instead of waiting.
    - A non-zero exit: the message is on stderr (another session holds the ledger, a credential was found in the review text and nothing was posted, the runner failed). Tell the user and stop; do not retry in a loop.
    - `round-limit`, `merged`, `closed`, `head-keeps-moving`: tell the user and stop.
 3. `action: "watch"`: the head was already reviewed and nothing blocks or approves it yet; go to step 4.
@@ -44,7 +44,7 @@ The decisions behind each step are in `docs/design/review-until-approve.md`.
 
 ## Findings the user disputes
 
-Every verified finding blocks approval, because the review engine emits no severity. When the user decides a finding does not block, run `node "$SCRIPTS/approve.js" waive <owner/repo> <pr> <finding-id>`: it records the waiver and approves the reviewed head if nothing else blocks. Never waive on your own judgment.
+Every verified finding blocks approval, because the review engine emits no severity. A finding is fixed only when its quoted span occurred verbatim in the file at the head it was recorded against and no longer occurs at the new head, read from git objects; the reviewer's silence never fixes one. A finding the code cannot settle stays open until the user waives it. When the user decides a finding does not block, run `node "$SCRIPTS/approve.js" waive <owner/repo> <pr> <finding-id>`: it records the waiver and approves the reviewed head if nothing else blocks. Never waive on your own judgment.
 
 ## What a round publishes
 
