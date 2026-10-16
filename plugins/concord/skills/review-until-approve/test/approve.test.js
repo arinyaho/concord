@@ -44,9 +44,16 @@ else if (a[0] === 'pr') j({ headRefOid: s.head, baseRefOid: s.baseTip, title: s.
 else if (a[0] === 'api' && /compare/.test(a[1])) console.log(s.mergeBase);
 else if (a[0] === 'api' && a.includes('-X')) {
   const posts = fs.existsSync(dir + '/posts.jsonl') ? fs.readFileSync(dir + '/posts.jsonl', 'utf8').split('\\n').filter(Boolean) : [];
-  fs.appendFileSync(dir + '/posts.jsonl', fs.readFileSync(0, 'utf8') + '\\n');
+  const body = fs.readFileSync(0, 'utf8');
+  fs.appendFileSync(dir + '/posts.jsonl', body + '\\n');
+  const posted = JSON.parse(body);
+  const reviews = fs.existsSync(dir + '/reviews.json') ? JSON.parse(fs.readFileSync(dir + '/reviews.json', 'utf8')) : [];
+  reviews.push({ id: 100 + posts.length, user: { login: 'bot' }, commit_id: posted.commit_id, state: posted.event === 'APPROVE' ? 'APPROVED' : 'COMMENTED', submitted_at: new Date().toISOString() });
+  fs.writeFileSync(dir + '/reviews.json', JSON.stringify(reviews));
+  if (fs.existsSync(dir + '/crash-after-post')) { console.error('timeout after GitHub accepted the review'); process.exit(1); }
   j({ id: 100 + posts.length, submitted_at: new Date().toISOString() });
-} else if (a[0] === 'api' && fs.existsSync(dir + '/fail-comments')) { console.error('boom'); process.exit(1); }
+} else if (a[0] === 'api' && /\\/reviews$/.test(a[a.length - 1])) j([fs.existsSync(dir + '/reviews.json') ? JSON.parse(fs.readFileSync(dir + '/reviews.json', 'utf8')) : []]);
+else if (a[0] === 'api' && fs.existsSync(dir + '/fail-comments')) { console.error('boom'); process.exit(1); }
 else if (a[0] === 'api') j([[{ id: 7 }]]);
 `, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, 'runner.js'), `const fs = require('node:fs');
@@ -332,4 +339,44 @@ test('a finding whose file path leaves the checkout, or runs through a symlink, 
   w.approve('start', 'o/r', '5');
   const r2 = JSON.parse(w.approve('round', 'o/r', '5').stdout);
   assert.deepEqual([r2.fixed, r2.stillOpen], [2, 0]);
+});
+
+test('an approval GitHub accepted but the call reported as failed is not posted a second time', () => {
+  const w = world();
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  fs.writeFileSync(path.join(w.dir, 'crash-after-post'), '');
+  const r1 = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.equal(r1.review, 'APPROVE');
+  assert.equal(w.posts().length, 1);
+  assert.equal(w.ledger().approval.head, w.c1);
+  assert.equal(w.ledger().rounds.length, 1);
+});
+
+test('start after a crash between the approval post and the ledger save finds the posted review and does not review again', () => {
+  const w = world();
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  // The pending marker the round saved before posting, and the review GitHub holds for that head.
+  const file = path.join(w.dir, 'ledgers', 'o__r__5__bot.json');
+  const ledger = w.ledger();
+  ledger.pending = { head: w.c1, after: 50, round: { n: 1, head: w.c1, base: w.state.mergeBase, mergeBase: w.state.mergeBase, intent: 'x', mode: 'broad', commentIds: [], event: 'APPROVE' } };
+  fs.writeFileSync(file, JSON.stringify(ledger));
+  w.write('reviews.json', [{ id: 77, user: { login: 'bot' }, commit_id: w.c1, state: 'APPROVED', submitted_at: '2026-01-01T00:00:00Z' }]);
+  assert.equal(JSON.parse(w.approve('start', 'o/r', '5').stdout).action, 'watch');
+  assert.deepEqual([w.ledger().approval.reviewId, w.ledger().rounds.length, w.ledger().pending], [77, 1, undefined]);
+  assert.equal(w.posts().length, 0);
+});
+
+test('start after a crash before GitHub accepted the approval drops the marker and reviews again', () => {
+  const w = world();
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  const file = path.join(w.dir, 'ledgers', 'o__r__5__bot.json');
+  const ledger = w.ledger();
+  ledger.pending = { head: w.c1, after: 50, round: { n: 1 } };
+  fs.writeFileSync(file, JSON.stringify(ledger));
+  w.write('reviews.json', [{ id: 40, user: { login: 'bot' }, commit_id: w.c1, state: 'APPROVED', submitted_at: '2026-01-01T00:00:00Z' }]);
+  assert.equal(JSON.parse(w.approve('start', 'o/r', '5').stdout).action, 'round');
+  assert.equal(w.ledger().pending, undefined);
 });
