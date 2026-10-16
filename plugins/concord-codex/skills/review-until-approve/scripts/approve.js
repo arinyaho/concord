@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 // Round runner of review-until-approve. Every verb prints one JSON line.
-//   start <owner/repo> <pr> [--reviewer codex|claude] [--model <m>]   check identity, open or resume the ledger, say what to do next
+//   start <owner/repo> <pr> [--model <m>]   check identity, open or resume the ledger, say what to do next
 //   round <owner/repo> <pr>                                           review, publish, approve when clean
 //   approve <owner/repo> <pr>                                         approve the reviewed head if the approval condition holds
 //   waive <owner/repo> <pr> <finding-id>                              the user dismisses a finding, then approve if possible
@@ -64,12 +64,9 @@ function lock(file) {
 const ENV_ALLOWED = /^(PATH|USER|LOGNAME|LANG|LC_\w+|TERM|TMPDIR|TZ|(HTTPS?|NO|ALL)_PROXY|(https?|no|all)_proxy|SSL_CERT_(FILE|DIR)|NODE_EXTRA_CA_CERTS)$/;
 // HOME is an empty directory, so the user's credential files (gh, ssh, cloud) are out of reach. The Codex
 // engine copies auth.json from CODEX_HOME into a home of its own, so that path stays the real one.
-function reviewerEnv(provider, claudeConfig, home) {
+function reviewerEnv(claudeConfig, home) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => ENV_ALLOWED.test(name)));
-  env.HOME = home;
-  if (provider === 'codex') env.CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
-  if (provider === 'claude' && process.env.CLAUDE_CODE_OAUTH_TOKEN) env.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
-  return { ...env, CLAUDE_CONFIG_DIR: claudeConfig };
+  return { ...env, HOME: home, CODEX_HOME: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), CLAUDE_CONFIG_DIR: claudeConfig };
 }
 
 function snapshot(repo, pr) {
@@ -86,26 +83,49 @@ function post(repo, pr, payload) {
   return ghJson(['api', '-X', 'POST', `repos/${repo}/pulls/${pr}/reviews`, '--input', '-'], text);
 }
 
+// GitHub may accept a review and still fail the call (a timeout, a crash before the ledger is saved). A review
+// by this account on this head with an id above `after` (the newest id before the post) is that review.
+const reviewsOf = (repo, pr) => ghJson(['api', '--paginate', '--slurp', `repos/${repo}/pulls/${pr}/reviews`]).flat();
+const newestId = (reviews) => reviews.reduce((m, r) => Math.max(m, r.id), 0);
+const landed = (reviews, login, head, after) => reviews.find((r) => r.user?.login === login && r.commit_id === head && r.id > after);
+
+// A pending marker is written before an APPROVE is posted. Settle it before anything else posts: when the
+// review reached GitHub, record the round and the approval it stands for; otherwise drop the marker.
+function settlePending(repo, pr, ledger, file, reviewer) {
+  if (!ledger?.pending) return;
+  const { head, after, round } = ledger.pending;
+  const review = landed(reviewsOf(repo, pr), reviewer, head, after);
+  if (review) {
+    const at = review.submitted_at || new Date().toISOString();
+    if (round && round.n === ledger.rounds.length + 1) ledger.rounds.push({ ...round, reviewId: review.id, submittedAt: at });
+    ledger.approval = { head, reviewId: review.id, at };
+  }
+  delete ledger.pending;
+  save(file, ledger);
+}
+
 // The ledger is read under the lock, so a session that waited for it sees the other session's saved state.
 // The file name carries the login: another account reviewing the same pull request has its own ledger.
 function identify(repo, pr, args) {
   const reviewer = gh(['api', 'user', '--jq', '.login']).trim();
   const file = ledgerFile(repo, pr, reviewer);
   lock(file);
-  return { reviewer, file, ledger: load(file), args };
+  const ledger = load(file);
+  settlePending(repo, pr, ledger, file, reviewer);
+  return { reviewer, file, ledger, args };
 }
 
 const opt = (args, name) => { const i = args.indexOf(name); return i === -1 ? undefined : args[i + 1]; };
 const lastRound = (ledger) => ledger.rounds[ledger.rounds.length - 1];
 
 function start(repo, pr, args) {
+  // The Claude reviewer cannot be kept from reading the account's credential files by absolute path, so only Codex runs.
+  if ((opt(args, '--reviewer') || 'codex') !== 'codex') die('the reviewer must be codex: the claude reviewer cannot be kept from the real home directory');
   const { reviewer, file, ledger: found } = identify(repo, pr, args);
   const snap = snapshot(repo, pr);
   if (snap.state !== 'OPEN') die(`the pull request is ${snap.state}`);
   if (snap.author === reviewer) die(`${reviewer} is the author; GitHub rejects self-approval`);
-  const provider = opt(args, '--reviewer') || found?.provider || 'codex';
-  if (!['codex', 'claude'].includes(provider)) die('--reviewer must be codex or claude');
-  if (provider === 'claude' && !process.env.CLAUDE_CODE_OAUTH_TOKEN) die('the claude reviewer needs CLAUDE_CODE_OAUTH_TOKEN; use codex otherwise');
+  const provider = 'codex';
   const ledger = found || { version: 1, repo, pr, reviewer, provider, model: opt(args, '--model') || null, author: snap.author, startedAt: new Date().toISOString(), rounds: [], findings: [], nudged: null, approval: null, stopped: null };
   ledger.provider = provider;
   if (opt(args, '--model')) ledger.model = opt(args, '--model');
@@ -119,8 +139,10 @@ function start(repo, pr, args) {
   out({ ledger: file, action, round: ledger.rounds.length + 1, ...(warning && { warning }) });
 }
 
-function guidance(ledger) {
-  const open = ledger.findings.filter((f) => f.status === 'open').slice(0, GUIDANCE_FINDINGS);
+// The findings the reviewer is told about; only those can be judged fixed from its silence.
+const shownFindings = (ledger) => ledger.findings.filter((f) => f.status === 'open').slice(0, GUIDANCE_FINDINGS);
+
+function guidance(open) {
   if (!open.length) return undefined;
   return `Earlier findings on this pull request. If one is still present at this head, raise it again with the same id: ${open.map((f) => `${f.id} (${f.file}): ${f.summary.slice(0, 200)}`).join('; ')}`;
 }
@@ -153,12 +175,14 @@ function attempt(repo, pr, ledger, file) {
     const isAncestor = (a, b) => spawnSync('git', ['merge-base', '--is-ancestor', a, b], { cwd: work }).status === 0;
     const range = prior ? lib.chooseRange(prior, snap, isAncestor) : { base: snap.mergeBase, broad: true };
 
+    const shown = shownFindings(ledger);
     const intentFile = path.join(dir, 'intent.md');
     fs.writeFileSync(intentFile, `# ${snap.title}\n\n${snap.body}`);
+    const realClaudeConfig = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
     const claudeConfig = fs.mkdtempSync(path.join(dir, 'claude-'));
-    const runnerOptions = { ref: `concord-pr-${pr}`, base: range.base, broad: range.broad, noBroad: !range.broad, reviewer: ledger.provider, reviewerModel: ledger.model || undefined, reviewerGuidance: guidance(ledger), intentFile: range.broad ? intentFile : undefined };
+    const runnerOptions = { ref: `concord-pr-${pr}`, base: range.base, broad: range.broad, noBroad: !range.broad, reviewer: ledger.provider, reviewerModel: ledger.model || undefined, reviewDenyRead: [realClaudeConfig], reviewerGuidance: guidance(shown), intentFile: range.broad ? intentFile : undefined };
     const reviewerHome = fs.mkdtempSync(path.join(dir, 'home-'));
-    const env = reviewerEnv(ledger.provider, claudeConfig, reviewerHome);
+    const env = reviewerEnv(claudeConfig, reviewerHome);
     const runner = process.env.REVIEW_APPROVE_RUNNER || path.join(__dirname, 'run-review.js');
     const reviewed = JSON.parse(run('node', [runner, JSON.stringify(runnerOptions)], { cwd: work, env }).trim().split('\n').pop());
     if (reviewed.decision !== 'review-only' || !Array.isArray(reviewed.findings)) throw new Error(`the review did not complete: ${JSON.stringify(reviewed).slice(0, 200)}`);
@@ -170,9 +194,17 @@ function attempt(repo, pr, ledger, file) {
       try { for (const [from, to] of lib.parseNameStatus(git(work, ['diff', '-z', '--name-status', '-M', prior.head, 'HEAD'])).renames) renames.set(from, to); } catch (_) { /* the prior head is gone after a rewrite */ }
     }
     const collapse = (t) => String(t || '').replace(/\s+/g, ' ').trim();
-    const spanAtHead = (f, span) => { try { return !collapse(span) || collapse(fs.readFileSync(path.join(work, f), 'utf8')).includes(collapse(span)); } catch (_) { return false; } };
+    // A reviewer-supplied path is evidence only as a regular file inside the checkout, with no symlink on the way.
+    const spanAtHead = (f, span) => {
+      if (!collapse(span)) return true;
+      try {
+        const root = fs.realpathSync(work), requested = path.resolve(root, f), real = fs.realpathSync(requested);
+        if (real !== requested || !real.startsWith(root + path.sep) || !fs.lstatSync(real).isFile()) return false;
+        return collapse(fs.readFileSync(real, 'utf8')).includes(collapse(span));
+      } catch (_) { return false; }
+    };
     const open = ledger.findings.filter((f) => f.status === 'open');
-    const verdict = lib.classifyPrior(open, reviewed.findings, changed, spanAtHead, renames);
+    const verdict = lib.classifyPrior(open, reviewed.findings, changed, spanAtHead, renames, { incremental: prior ? range.base === prior.head : false, evaluated: new Set(shown.map((f) => f.id)) });
     const next = JSON.parse(JSON.stringify(ledger));
     for (const m of verdict.moved) for (const f of next.findings) if (f.key === m.key) Object.assign(f, { file: m.file, key: lib.findingKey({ ...f, file: m.file }) });
     const fresh = reviewed.findings.filter((f, i, all) => !lib.isPublished(next, f) && all.findIndex((g) => lib.findingKey(g) === lib.findingKey(f)) === i);
@@ -183,13 +215,18 @@ function attempt(repo, pr, ledger, file) {
     const verdictNow = lib.evaluateApproval(next, snapshot(repo, pr), snap.head);
     const input = { head: snap.head, round: n, rangeBase: range.base, reviewer: ledger.provider, hunks: publish.hunksOf(diff), findings: fresh, fixed: verdict.fixed, stillOpen: verdict.open, previousHead: prior ? prior.head : snap.head, approve: verdictNow.approve };
     if (verdictNow.reason === 'head-moved') return null;
+    const known = newestId(reviewsOf(repo, pr));
+    const entry = (review) => ({ n, head: snap.head, base: range.base, mergeBase: snap.mergeBase, intent: snap.intent, mode: range.broad ? 'broad' : 'diff', reviewId: review.id, submittedAt: review.submitted_at || new Date().toISOString(), commentIds: [], event: input.approve ? 'APPROVE' : 'COMMENT' });
+    // Saved before an APPROVE is posted, so a crash after GitHub accepts it is recovered by the next start.
+    if (input.approve) { next.pending = { head: snap.head, after: known, round: entry({}) }; save(file, next); }
     let review;
     try { review = post(repo, pr, publish.renderReview(input, 'inline')); } catch (error) {
       if (snapshot(repo, pr).head !== snap.head) return null;
-      review = post(repo, pr, publish.renderReview(input, 'body'));
+      review = landed(reviewsOf(repo, pr), ledger.reviewer, snap.head, known) || post(repo, pr, publish.renderReview(input, 'body'));
     }
     // Saved before anything else can fail, so a posted review (an APPROVE above all) is never forgotten.
-    next.rounds.push({ n, head: snap.head, base: range.base, mergeBase: snap.mergeBase, intent: snap.intent, mode: range.broad ? 'broad' : 'diff', reviewId: review.id, submittedAt: review.submitted_at || new Date().toISOString(), commentIds: [], event: input.approve ? 'APPROVE' : 'COMMENT' });
+    next.rounds.push(entry(review));
+    delete next.pending;
     if (input.approve) next.approval = { head: snap.head, reviewId: review.id, at: next.rounds[next.rounds.length - 1].submittedAt };
     save(file, next);
     // Best effort: replies to a thread are recognized by these ids; without them only conversation replies count.
@@ -207,7 +244,17 @@ function approve(repo, pr, args) {
   const reviewed = lastRound(ledger);
   const verdict = lib.evaluateApproval(ledger, snapshot(repo, pr), reviewed.head);
   if (!verdict.approve) return out({ event: 'not-approved', reason: verdict.reason });
-  const review = post(repo, pr, publish.renderReview({ head: reviewed.head, round: reviewed.n, rangeBase: reviewed.base, reviewer: ledger.provider, hunks: [], findings: [], fixed: [], stillOpen: [], previousHead: reviewed.head, approve: true }, 'body'));
+  const after = newestId(reviewsOf(repo, pr));
+  ledger.pending = { head: reviewed.head, after, round: null };
+  save(file, ledger);
+  let review;
+  try {
+    review = post(repo, pr, publish.renderReview({ head: reviewed.head, round: reviewed.n, rangeBase: reviewed.base, reviewer: ledger.provider, hunks: [], findings: [], fixed: [], stillOpen: [], previousHead: reviewed.head, approve: true }, 'body'));
+  } catch (error) {
+    review = landed(reviewsOf(repo, pr), ledger.reviewer, reviewed.head, after);
+    if (!review) { delete ledger.pending; save(file, ledger); throw error; }
+  }
+  delete ledger.pending;
   ledger.approval = { head: reviewed.head, reviewId: review.id, at: new Date().toISOString() };
   save(file, ledger);
   out({ event: 'approved', head: reviewed.head });
