@@ -45,6 +45,7 @@ else if (a[0] === 'api' && /compare/.test(a[1])) console.log(s.mergeBase);
 else if (a[0] === 'api' && a.includes('-X')) {
   const posts = fs.existsSync(dir + '/posts.jsonl') ? fs.readFileSync(dir + '/posts.jsonl', 'utf8').split('\\n').filter(Boolean) : [];
   const body = fs.readFileSync(0, 'utf8');
+  if (fs.existsSync(dir + '/fail-posts')) { console.error('GitHub unreachable'); process.exit(1); }
   fs.appendFileSync(dir + '/posts.jsonl', body + '\\n');
   const posted = JSON.parse(body);
   const reviews = fs.existsSync(dir + '/reviews.json') ? JSON.parse(fs.readFileSync(dir + '/reviews.json', 'utf8')) : [];
@@ -379,4 +380,32 @@ test('start after a crash before GitHub accepted the approval drops the marker a
   w.write('reviews.json', [{ id: 40, user: { login: 'bot' }, commit_id: w.c1, state: 'APPROVED', submitted_at: '2026-01-01T00:00:00Z' }]);
   assert.equal(JSON.parse(w.approve('start', 'o/r', '5').stdout).action, 'round');
   assert.equal(w.ledger().pending, undefined);
+});
+
+test('an APPROVE whose post fails outright leaves the findings as they were, not marked fixed', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  push(w, { 'a.js': 'one\ngood\nthree\nfour\n' }, 'c2');
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  fs.writeFileSync(path.join(w.dir, 'fail-posts'), '');
+  assert.notEqual(w.approve('round', 'o/r', '5').status, 0);
+  assert.deepEqual([w.ledger().findings[0].status, w.ledger().rounds.length], ['open', 1]);
+  fs.rmSync(path.join(w.dir, 'fail-posts'));
+  // The next start drops the marker; the round runs again and approves.
+  assert.equal(JSON.parse(w.approve('start', 'o/r', '5').stdout).action, 'round');
+  assert.equal(JSON.parse(w.approve('round', 'o/r', '5').stdout).review, 'APPROVE');
+});
+
+test('a comment review on the pending head is not taken for the approval', () => {
+  const w = world();
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  const ledger = w.ledger();
+  ledger.pending = { head: w.c1, after: 50, round: { n: 1 } };
+  fs.writeFileSync(path.join(w.dir, 'ledgers', 'o__r__5__bot.json'), JSON.stringify(ledger));
+  w.write('reviews.json', [{ id: 77, user: { login: 'bot' }, commit_id: w.c1, state: 'COMMENTED', submitted_at: '2026-01-01T00:00:00Z' }]);
+  assert.equal(JSON.parse(w.approve('start', 'o/r', '5').stdout).action, 'round');
+  assert.equal(w.ledger().approval, null);
 });

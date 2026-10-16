@@ -64,10 +64,11 @@ test('classifyPrior: in a push-only round an untouched file keeps its finding op
   assert.deepEqual([verdict.open, verdict.fixed], [['a'], []]);
 });
 
-test('classifyPrior: a finding the reviewer was not told about is never fixed by its silence', () => {
-  const open = [{ ...finding('shown', 'a.js', 'one'), status: 'open' }, { ...finding('cut', 'b.js', 'two'), status: 'open' }];
-  const verdict = lib.classifyPrior(open, [], new Set(['a.js', 'b.js']), () => false, new Map(), { incremental: true, evaluated: new Set(['shown']) });
-  assert.deepEqual([verdict.open, verdict.fixed], [['cut'], ['shown']]);
+test('classifyPrior: a finding the reviewer was not told about is never fixed by its silence, even when it shares an id with one it was told about', () => {
+  const open = [{ ...finding('shown', 'a.js', 'one'), status: 'open' }, { ...finding('shown', 'a.js', 'two'), status: 'open' }];
+  const verdict = lib.classifyPrior(open, [], new Set(['a.js', 'b.js']), () => false, new Map(), { incremental: true, evaluated: new Set([lib.findingKey(open[0])]) });
+  assert.deepEqual([verdict.open, verdict.fixed], [['shown'], ['shown']]);
+  assert.deepEqual(verdict.fixedKeys, [lib.findingKey(open[0])]);
 });
 
 test('classifyPrior: raised again with the same id and file but a different span stays open', () => {

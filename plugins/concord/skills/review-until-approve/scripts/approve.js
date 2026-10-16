@@ -87,17 +87,18 @@ function post(repo, pr, payload) {
 // by this account on this head with an id above `after` (the newest id before the post) is that review.
 const reviewsOf = (repo, pr) => ghJson(['api', '--paginate', '--slurp', `repos/${repo}/pulls/${pr}/reviews`]).flat();
 const newestId = (reviews) => reviews.reduce((m, r) => Math.max(m, r.id), 0);
-const landed = (reviews, login, head, after) => reviews.find((r) => r.user?.login === login && r.commit_id === head && r.id > after);
+const landed = (reviews, login, head, after, state) => reviews.find((r) => r.user?.login === login && r.commit_id === head && r.id > after && r.state === state);
 
 // A pending marker is written before an APPROVE is posted. Settle it before anything else posts: when the
 // review reached GitHub, record the round and the approval it stands for; otherwise drop the marker.
 function settlePending(repo, pr, ledger, file, reviewer) {
   if (!ledger?.pending) return;
-  const { head, after, round } = ledger.pending;
-  const review = landed(reviewsOf(repo, pr), reviewer, head, after);
+  const { head, after, round, findings } = ledger.pending;
+  const review = landed(reviewsOf(repo, pr), reviewer, head, after, 'APPROVED');
   if (review) {
     const at = review.submitted_at || new Date().toISOString();
     if (round && round.n === ledger.rounds.length + 1) ledger.rounds.push({ ...round, reviewId: review.id, submittedAt: at });
+    if (findings) ledger.findings = findings;
     ledger.approval = { head, reviewId: review.id, at };
   }
   delete ledger.pending;
@@ -204,7 +205,7 @@ function attempt(repo, pr, ledger, file) {
       } catch (_) { return false; }
     };
     const open = ledger.findings.filter((f) => f.status === 'open');
-    const verdict = lib.classifyPrior(open, reviewed.findings, changed, spanAtHead, renames, { incremental: prior ? range.base === prior.head : false, evaluated: new Set(shown.map((f) => f.id)) });
+    const verdict = lib.classifyPrior(open, reviewed.findings, changed, spanAtHead, renames, { incremental: prior ? range.base === prior.head : false, evaluated: new Set(shown.map((f) => lib.findingKey(f))) });
     const next = JSON.parse(JSON.stringify(ledger));
     for (const m of verdict.moved) for (const f of next.findings) if (f.key === m.key) Object.assign(f, { file: m.file, key: lib.findingKey({ ...f, file: m.file }) });
     const fresh = reviewed.findings.filter((f, i, all) => !lib.isPublished(next, f) && all.findIndex((g) => lib.findingKey(g) === lib.findingKey(f)) === i);
@@ -218,11 +219,12 @@ function attempt(repo, pr, ledger, file) {
     const known = newestId(reviewsOf(repo, pr));
     const entry = (review) => ({ n, head: snap.head, base: range.base, mergeBase: snap.mergeBase, intent: snap.intent, mode: range.broad ? 'broad' : 'diff', reviewId: review.id, submittedAt: review.submitted_at || new Date().toISOString(), commentIds: [], event: input.approve ? 'APPROVE' : 'COMMENT' });
     // Saved before an APPROVE is posted, so a crash after GitHub accepts it is recovered by the next start.
-    if (input.approve) { next.pending = { head: snap.head, after: known, round: entry({}) }; save(file, next); }
+    // Only the marker is saved: the verdict's findings travel inside it and apply when the review is found.
+    if (input.approve) { save(file, { ...ledger, pending: { head: snap.head, after: known, round: entry({}), findings: next.findings } }); }
     let review;
     try { review = post(repo, pr, publish.renderReview(input, 'inline')); } catch (error) {
       if (snapshot(repo, pr).head !== snap.head) return null;
-      review = landed(reviewsOf(repo, pr), ledger.reviewer, snap.head, known) || post(repo, pr, publish.renderReview(input, 'body'));
+      review = landed(reviewsOf(repo, pr), ledger.reviewer, snap.head, known, input.approve ? 'APPROVED' : 'COMMENTED') || post(repo, pr, publish.renderReview(input, 'body'));
     }
     // Saved before anything else can fail, so a posted review (an APPROVE above all) is never forgotten.
     next.rounds.push(entry(review));
@@ -251,7 +253,7 @@ function approve(repo, pr, args) {
   try {
     review = post(repo, pr, publish.renderReview({ head: reviewed.head, round: reviewed.n, rangeBase: reviewed.base, reviewer: ledger.provider, hunks: [], findings: [], fixed: [], stillOpen: [], previousHead: reviewed.head, approve: true }, 'body'));
   } catch (error) {
-    review = landed(reviewsOf(repo, pr), ledger.reviewer, reviewed.head, after);
+    review = landed(reviewsOf(repo, pr), ledger.reviewer, reviewed.head, after, 'APPROVED');
     if (!review) { delete ledger.pending; save(file, ledger); throw error; }
   }
   delete ledger.pending;
