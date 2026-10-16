@@ -24,7 +24,7 @@ The decisions below are the conclusions of the Opus design pass.
 
 ## Approval condition
 
-`evaluateApproval` approves exactly when all of these hold: the reviewed head is the live head, the pull request is open and not a draft, the reviewing account is not the author, no approval was already given for this head, and no finding in the ledger is open. The review engine emits no severity, so every verified finding blocks until it is fixed or the user waives it with the `waive` verb. A waived finding is recorded in the ledger and does not block. A finding the code cannot settle (`unverified`, `path-unresolved`) is cleared only by `waive`.
+`evaluateApproval` approves exactly when all of these hold: the reviewed head is the live head, the pull request is open and not a draft, the reviewing account is not the author, no approval was already given for this head, and no finding in the ledger is open. The review engine emits no severity, so every verified finding blocks until it is fixed or the user waives it with the `waive` verb. A waived finding is recorded in the ledger and does not block. A finding the code cannot settle (`unverified`, `path-unresolved`) is cleared only by `waive`, by finding id or, when several open findings share an id, by key.
 
 Required checks are not part of the condition. Approval is a code-review verdict; merge gating belongs to branch protection. A draft is never approved: the skill tells the user, and invoking it again after the pull request is ready approves the unchanged head without a new round.
 
@@ -86,7 +86,9 @@ The loop can later run unattended, with GitHub Actions or `services/pr-review` r
 | span moved to another file | next round | open at the new path | introduced | `a span that moved to another file keeps the finding open` |
 | file deleted: verified finding; unverified finding | next round | fixed; open | introduced | `deleting the file fixes a verified finding and leaves an unverified one open` |
 | old head cannot be fetched, or the path is a symlink, submodule or over 20 MiB at the new head | next round | open, `path-unresolved`, named in `held` | introduced | `classifyPrior: a delta that cannot be computed, or a path that is no regular file, keeps the finding open` |
-| reviewer edits the checkout during the review | next round | no effect, evidence comes from git objects | introduced | `a reviewer that edits the checkout cannot fix a finding` |
+| Codex reviewer edits the checkout during the review | next round | no effect: evidence comes from git objects, and the Codex profile keeps `.git` read-only | introduced | `a reviewer that edits the checkout cannot fix a finding` |
+| Claude opt-in reviewer plants `refs/replace/*` in the review clone | next round | no effect: every git call runs with `GIT_NO_REPLACE_OBJECTS=1`; beyond that an unconfined reviewer is not trusted to leave the clone intact (#366) | introduced | `a replace ref planted in the review clone does not change what the head contains` |
+| `waive <id>` where two open findings share the id | `waive` | refused, the message lists the keys; `waive <key>` waives exactly one | introduced | `waive refuses an id shared by two open findings` |
 | ledger finding without `spanVerified` | next round | open, `unverified`, until waived | introduced | `a ledger finding recorded without spanVerified is unverified` |
 | fixed finding raised again, span verbatim at the head | next round | reopened in place and posted | changed | `a fixed finding that the reviewer raises again with the span present reopens` |
 | more than 20 open findings | next round | all are judged by the code; only 20 are listed to the reviewer | changed | `every verified finding is judged, however many there are` |
@@ -107,4 +109,4 @@ Combinations the ledger lock rules out (two sessions interleaving on one pull re
 - Fixed means the quoted text no longer occurs, not that the defect is gone; a trivial edit inside the span fixes the finding, and the next diff review is what catches a defect that remains. A fix that is later undone is noticed only when the reviewer raises the finding again. A reformat that changes the quoted bytes (re-indent, CRLF) fixes the finding for the same reason.
 - A finding without a verbatim span (an empty one, or one the engine reflowed) can only be waived, so a reviewer that quotes loosely makes the user waive more. A reviewer that withholds a finding at round 1 is not detectable.
 - The review-only state directory is writable by the reviewer (it is the artifact channel); the runner pins and hashes the files it later trusts, so a later role cannot change them unnoticed, but the directory is not read-only.
-- The Claude reviewer is not confined (`--allow-unrestricted-home`); the confinement is tracked in issue #366.
+- The Claude reviewer is not confined (`--allow-unrestricted-home`) and is not trusted to leave the review clone intact beyond the `GIT_NO_REPLACE_OBJECTS` setting; the confinement is tracked in issue #366.
