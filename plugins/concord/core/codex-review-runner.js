@@ -494,10 +494,11 @@ function reviewCodexConfig({ home, sourceAuth, checkout, stateDir, denyRead, rea
   // A path inside the home is already denied by its entry; a nested deny would stop Codex from mounting it.
   const named = denyRead.filter((p) => fs.existsSync(p) && !canonicalPath(p).startsWith(realHome + path.sep) && !keep.some((k) => k === p || k.startsWith(p + path.sep)));
   const around = [...denyAround(realHome, keep), ...named];
-  const covered = around.some((p) => sourceAuth === p || sourceAuth.startsWith(p + path.sep));
+  const source = canonicalPath(sourceAuth);
+  const covered = around.some((p) => source === p || source.startsWith(p + path.sep));
   // The home is read-only inside the sandbox, so a missing auth.json cannot appear there and needs no entry (a deny over a missing file cannot be mounted).
   const homeAuth = path.join(home, 'auth.json');
-  const denied = [...(covered ? [] : [sourceAuth]), ...(fs.existsSync(homeAuth) ? [homeAuth] : []), ...around];
+  const denied = [...(covered ? [] : [source]), ...(fs.existsSync(homeAuth) ? [homeAuth] : []), ...around];
   return `default_permissions = "concord-review"
 approval_policy = "never"
 
