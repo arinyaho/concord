@@ -35,14 +35,18 @@ function isPublished(ledger, f) {
   return matches(ledger.findings.filter((p) => p.status !== 'fixed'), f).length > 0;
 }
 
-// The changed paths and the renames (old path -> new path) of `git diff -z --name-status -M`.
+// The changed paths, the renames (old path -> new path) and the renamed paths whose content also changed (similarity below 100%) of `git diff -z --name-status -M`.
 function parseNameStatus(raw) {
   const t = raw.split('\0');
-  const changed = new Set(), renames = new Map();
+  const changed = new Set(), renames = new Map(), edited = new Set();
   for (let i = 0; i + 1 < t.length; i += 2) {
-    if (/^[RC]/.test(t[i])) { changed.add(t[i + 2]); if (t[i][0] === 'R') renames.set(t[i + 1], t[i + 2]); i++; } else changed.add(t[i + 1]);
+    if (/^[RC]/.test(t[i])) {
+      changed.add(t[i + 2]);
+      if (t[i][0] === 'R') { renames.set(t[i + 1], t[i + 2]); if (Number(t[i].slice(1)) < 100) edited.add(t[i + 2]); }
+      i++;
+    } else changed.add(t[i + 1]);
   }
-  return { changed, renames };
+  return { changed, renames, edited };
 }
 
 // An earlier open finding stays open when this round raised it again, when the reviewer was not told
@@ -51,14 +55,15 @@ function parseNameStatus(raw) {
 // like: the reviewer never saw that file, and a span the engine could not quote verbatim is not
 // evidence. A round over the whole PR diff keeps a finding on an untouched file open only while its
 // span occurs. A finding on a renamed file follows the rename: it stays open while the span occurs at
-// the new path, and `moved` lists the new path for the ledger.
-function classifyPrior(open, raised, changedFiles, spanAtHead, renames = new Map(), { incremental = false, evaluated } = {}) {
+// the new path, and `moved` lists the new path for the ledger. In a push-only round a pure rename
+// (a path not in `edited`) shows the reviewer only a rename header, so it fixes nothing.
+function classifyPrior(open, raised, changedFiles, spanAtHead, renames = new Map(), { incremental = false, evaluated, edited = new Set() } = {}) {
   const out = { open: [], fixed: [], fixedKeys: [], moved: [] };
   const moved = open.map((p) => ({ ...p, file: renames.get(p.file) || p.file }));
   for (const [i, p] of open.entries()) {
     const q = moved[i], file = q.file;
     const stays = raised.some((f) => matches(moved, f).includes(q)) || (evaluated && !evaluated.has(findingKey(p)))
-      || (file !== p.file ? spanAtHead(file, p.span) : !changedFiles.has(p.file) && (incremental || spanAtHead(p.file, p.span)));
+      || (file !== p.file ? (incremental && !edited.has(file)) || spanAtHead(file, p.span) : !changedFiles.has(p.file) && (incremental || spanAtHead(p.file, p.span)));
     if (stays) {
       out.open.push(p.id);
       if (file !== p.file) out.moved.push({ key: p.key, file });
