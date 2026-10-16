@@ -4,7 +4,7 @@
 //   start <owner/repo> <pr> [--reviewer codex|claude] [--model <m>]   check identity, open or resume the ledger, say what to do next
 //   round <owner/repo> <pr>                                           review, publish, approve when clean
 //   approve <owner/repo> <pr>                                         approve the reviewed head if the approval condition holds
-//   waive <owner/repo> <pr> <finding-id>                              the user dismisses a finding, then approve if possible
+//   waive <owner/repo> <pr> <finding-id|key>                          the user dismisses a finding, then approve if possible
 //   stop <owner/repo> <pr>                                            record a user stop
 //   nudged <owner/repo> <pr> '<nudge event json>'                     record that the user was told, so the watch stays silent until a new head or reply
 // Run under `mien exec <profile> --` when the reviewing account is not the ambient gh account.
@@ -18,11 +18,14 @@ const { core } = require('./locate');
 const { writeFileAtomic } = require(path.join(core, 'atomic-write'));
 const { reclaimStaleLock } = require(path.join(core, 'run-lock'));
 
+// The review clone's .git is writable for an unconfined reviewer, which could plant refs/replace/* to make a head read differently; evidence is read as stored.
+process.env.GIT_NO_REPLACE_OBJECTS = '1';
+
 const MAX_ROUNDS = 10;
 const MAX_DISCARDS = 3;
 const GUIDANCE_FINDINGS = 20;
 const UNRESTRICTED = '--allow-unrestricted-home';
-const WARNING = 'the claude reviewer can read your real home directory (gh, ssh and cloud credentials); a malicious pull request could make it publish their contents. Use the codex reviewer to avoid this.';
+const WARNING = 'the claude reviewer can read your real home directory (gh, ssh and cloud credentials); a malicious pull request could make it publish their contents, and it is not trusted to leave the review clone intact. Use the codex reviewer to avoid this.';
 const die = (message, code = 1) => { process.stderr.write(`review-until-approve: ${message}\n`); process.exit(code); };
 const out = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 // An unrestricted-home run says so in every result, and on stderr where the user sees it.
@@ -272,7 +275,8 @@ function attempt(repo, pr, ledger, file) {
     for (const f of next.findings) if (f.status === 'open' && verified(f) && f.openReason === 'unverified') delete f.openReason;
     const fixedIds = verdict.filter((r) => r.status === 'fixed').map((r) => r.id);
     const openIds = verdict.filter((r) => r.status === 'open').map((r) => r.id);
-    const held = next.findings.filter((f) => f.status === 'open' && ['unverified', 'path-unresolved'].includes(f.openReason)).map((f) => ({ id: f.id, file: f.file, reason: f.openReason }));
+    const held = next.findings.filter((f) => f.status === 'open' && ['unverified', 'path-unresolved'].includes(f.openReason)).map((f) => ({ id: f.id, key: f.key, file: f.file, reason: f.openReason }));
+    const openNow = next.findings.filter((f) => f.status === 'open').map((f) => ({ id: f.id, key: f.key, file: f.file }));
 
     const diff = git(work, ['diff', '-U3', range.base, 'HEAD']);
     const verdictNow = lib.evaluateApproval(next, snapshot(repo, pr), snap.head);
@@ -298,7 +302,7 @@ function attempt(repo, pr, ledger, file) {
       next.rounds[next.rounds.length - 1].commentIds = ghJson(['api', '--paginate', '--slurp', `repos/${repo}/pulls/${pr}/reviews/${review.id}/comments`]).flat().map((c) => c.id);
       save(file, next);
     } catch (_) { /* ponytail: ids stay empty; thread replies are then missed until the next round */ }
-    return { event: 'published', round: n, mode: range.broad ? 'broad' : 'diff', review: input.approve ? 'APPROVE' : 'COMMENT', new: fresh.length, fixed: fixedIds.length, stillOpen: openIds.length, ...(verdictNow.approve ? {} : { notApproved: verdictNow.reason }), ...(held.length && { held, hint: 'These findings cannot be settled from the code; run waive <id> to clear one you accept.' }) };
+    return { event: 'published', round: n, mode: range.broad ? 'broad' : 'diff', review: input.approve ? 'APPROVE' : 'COMMENT', new: fresh.length, fixed: fixedIds.length, stillOpen: openIds.length, open: openNow, ...(verdictNow.approve ? {} : { notApproved: verdictNow.reason }), ...(held.length && { held, hint: 'These findings cannot be settled from the code; run waive <key> (or waive <id> when the id is unique) to clear one you accept.' }) };
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
@@ -326,8 +330,10 @@ function approve(repo, pr, args) {
 
 function waive(repo, pr, id, args) {
   const { file, ledger } = identify(repo, pr, args);
-  const finding = ledger?.findings.find((f) => f.id === id && f.status === 'open');
-  if (!finding) die(`no open finding ${id}`);
+  const matching = (ledger?.findings || []).filter((f) => (f.id === id || f.key === id) && f.status === 'open');
+  if (!matching.length) die(`no open finding ${id}`);
+  if (matching.length > 1) die(`${id} matches more than one open finding; pass the key of one: ${matching.map((f) => `${f.key} (${f.file})`).join(', ')}`);
+  const [finding] = matching;
   Object.assign(finding, { status: 'waived', waivedAt: new Date().toISOString() });
   save(file, ledger);
   approve(repo, pr, args);

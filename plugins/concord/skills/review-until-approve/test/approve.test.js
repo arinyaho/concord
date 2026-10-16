@@ -61,6 +61,13 @@ else if (a[0] === 'api') j([[{ id: 7 }]]);
 fs.appendFileSync(${JSON.stringify(path.join(dir, 'runner-calls.jsonl'))}, JSON.stringify({ ...JSON.parse(process.argv[2]), envKeys: Object.keys(process.env), home: process.env.HOME, homeEntries: fs.readdirSync(process.env.HOME), codexHome: process.env.CODEX_HOME }) + '\\n');
 const findings = JSON.parse(fs.readFileSync(${JSON.stringify(path.join(dir, 'findings.json'))}, 'utf8'));
 const edit = ${JSON.stringify(path.join(dir, 'edit.json'))};
+if (fs.existsSync(${JSON.stringify(path.join(dir, 'replace'))})) {
+  const { execFileSync } = require('node:child_process');
+  const git = (args, input) => execFileSync('git', args, { encoding: 'utf8', input, env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } }).trim();
+  const blob = git(['hash-object', '-w', '--stdin'], 'nothing\\n');
+  const tree = git(['mktree'], '100644 blob ' + blob + '\\ta.js\\n');
+  git(['replace', '-f', git(['rev-parse', 'HEAD']), git(['commit-tree', tree, '-m', 'fake'])]);
+}
 if (fs.existsSync(edit)) for (const [file, text] of Object.entries(JSON.parse(fs.readFileSync(edit, 'utf8')))) fs.writeFileSync(file, text);
 console.log(JSON.stringify({ decision: 'review-only', round: 1, findings }));
 `);
@@ -252,7 +259,7 @@ test('a pure rename (R100) with the span still present keeps the finding open at
 test('a pure rename (R100) does not fix a finding whose span is not verbatim: it stays open, unverified, and the round names it', () => {
   const { w, r } = renamePush('not verbatim in the file', false);
   assert.deepEqual([r.review, r.fixed, r.stillOpen], ['COMMENT', 0, 1]);
-  assert.deepEqual(r.held, [{ id: 'correctness:bad', file: 'a.js', reason: 'unverified' }]);
+  assert.deepEqual(r.held, [{ id: 'correctness:bad', key: w.ledger().findings[0].key, file: 'a.js', reason: 'unverified' }]);
   assert.match(r.hint, /waive/);
   assert.equal(w.ledger().findings[0].status, 'open');
 });
@@ -452,6 +459,36 @@ test('a reviewer that edits the checkout during the review cannot fix a finding:
   const r = JSON.parse(w.approve('round', 'o/r', '5').stdout);
   assert.deepEqual([r.review, r.fixed, r.stillOpen], ['COMMENT', 0, 1]);
   assert.equal(w.ledger().findings[0].status, 'open');
+});
+
+test('a replace ref planted in the review clone does not change what the head contains', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  push(w, { 'a.js': 'one\nbad\nthree\nfour\nfive\n' }, 'c2');
+  w.write('findings.json', []);
+  fs.writeFileSync(path.join(w.dir, 'replace'), '');
+  w.approve('start', 'o/r', '5');
+  const r = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r.review, r.fixed, r.stillOpen], ['COMMENT', 0, 1]);
+});
+
+test('waive refuses an id shared by two open findings, names their keys, and waives exactly the one whose key is given', () => {
+  const w = world();
+  fs.writeFileSync(path.join(w.src, 'b.js'), 'bad\n');
+  push(w, {}, 'c1b');
+  w.write('findings.json', [finding, { ...finding, file: 'b.js', line: 1 }]);
+  w.approve('start', 'o/r', '5');
+  const round = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.equal(round.open.length, 2);
+  const refused = w.approve('waive', 'o/r', '5', 'correctness:bad');
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /more than one/);
+  assert.deepEqual(w.ledger().findings.map((f) => f.status), ['open', 'open']);
+  const [a, b] = w.ledger().findings;
+  assert.equal(JSON.parse(w.approve('waive', 'o/r', '5', a.key).stdout).event, 'not-approved');
+  assert.deepEqual(w.ledger().findings.map((f) => f.status), ['waived', 'open']);
+  assert.equal(JSON.parse(w.approve('waive', 'o/r', '5', b.key).stdout).event, 'approved');
 });
 
 test('a ledger finding recorded without spanVerified is unverified: it stays open until waived, and the round says how to clear it', () => {
