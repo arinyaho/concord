@@ -223,6 +223,13 @@ test('the review process gets an empty HOME, and the real Codex home for its aut
   assert.equal(call.codexHome, '/real/codex');
 });
 
+test('a claude reviewer does not get the Codex home', () => {
+  const w = world({ CODEX_HOME: '/real/codex', CLAUDE_CODE_OAUTH_TOKEN: 't' });
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5', '--reviewer', 'claude'); w.approve('round', 'o/r', '5');
+  assert.equal(w.calls()[0].codexHome, undefined);
+});
+
 test('nudged records the nudge so a restarted watch does not repeat it', () => {
   const w = world();
   w.write('findings.json', []);

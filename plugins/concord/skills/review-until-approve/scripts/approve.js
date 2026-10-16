@@ -61,7 +61,7 @@ function lock(file) {
 }
 
 // The reviewer reads attacker-controlled files, so it gets an allowlist, not the whole environment.
-const ENV_ALLOWED = /^(PATH|USER|LOGNAME|LANG|LC_\w+|TERM|TMPDIR|TZ|CODEX_HOME|(HTTPS?|NO|ALL)_PROXY|(https?|no|all)_proxy|SSL_CERT_(FILE|DIR)|NODE_EXTRA_CA_CERTS)$/;
+const ENV_ALLOWED = /^(PATH|USER|LOGNAME|LANG|LC_\w+|TERM|TMPDIR|TZ|(HTTPS?|NO|ALL)_PROXY|(https?|no|all)_proxy|SSL_CERT_(FILE|DIR)|NODE_EXTRA_CA_CERTS)$/;
 // HOME is an empty directory, so the user's credential files (gh, ssh, cloud) are out of reach. The Codex
 // engine copies auth.json from CODEX_HOME into a home of its own, so that path stays the real one.
 function reviewerEnv(provider, claudeConfig, home) {
