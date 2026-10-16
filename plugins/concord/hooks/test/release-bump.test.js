@@ -45,7 +45,7 @@ function runBump(cwd, ...args) {
 }
 
 // A bare origin plus a seed commit holding copies of the release script, the bump script, and the version files.
-function makeOrigin() {
+function makeOrigin(seedVersion = '0.9.0-beta.9') {
   const tmp = tempDir('release-bump-');
   const remote = path.join(tmp, 'origin.git');
   execFileSync('git', ['init', '-q', '--bare', '-b', 'main', remote], { env: ENV });
@@ -56,8 +56,8 @@ function makeOrigin() {
     fs.mkdirSync(path.dirname(path.join(seed, file)), { recursive: true });
     fs.copyFileSync(path.join(REPO, file), path.join(seed, file));
   }
-  fs.writeFileSync(path.join(seed, 'VERSION'), '0.9.0-beta.9\n');
-  execFileSync(process.execPath, ['scripts/release-version.mjs', '0.9.0-beta.9'], { cwd: seed, env: ENV });
+  fs.writeFileSync(path.join(seed, 'VERSION'), `${seedVersion}\n`);
+  execFileSync(process.execPath, ['scripts/release-version.mjs', seedVersion], { cwd: seed, env: ENV });
   git(seed, 'add', '-A');
   git(seed, 'commit', '-q', '-m', 'seed');
   git(seed, 'remote', 'add', 'origin', remote);
@@ -81,9 +81,9 @@ test('nextVersion raises the trailing beta number and rejects other versions', a
   const { nextVersion } = await loadBump();
   assert.equal(nextVersion('0.9.0-beta.9'), '0.9.0-beta.10');
   assert.equal(nextVersion('1.2.3-beta.0'), '1.2.3-beta.1');
-  assert.equal(nextVersion('0.9.0'), '0.10.0-beta.1');
-  assert.equal(nextVersion('0.10.0-beta.1'), '0.10.0-beta.2');
-  assert.equal(nextVersion('1.2.3'), '1.3.0-beta.1');
+  assert.equal(nextVersion('0.9.0'), '0.9.1-beta.1');
+  assert.equal(nextVersion('0.9.1-beta.1'), '0.9.1-beta.2');
+  assert.equal(nextVersion('1.2.3'), '1.2.4-beta.1');
   for (const bad of ['0.9.0-rc.1', '0.9.0+build', '01.9.0', '0.9', 'v0.9.0', '0.9.0-beta', '0.9.0-beta.x', '']) {
     assert.throws(() => nextVersion(bad), undefined, bad);
   }
@@ -239,7 +239,7 @@ function releaseCommit(remote, tmp, name, version) {
   git(dir, 'push', '-q', 'origin', 'main');
 }
 
-test('push does not bump the stable release commit and bumps the next merge to the next minor beta', () => {
+test('push does not bump the stable release commit and bumps the next merge to the next patch beta', () => {
   const { tmp, remote } = makeOrigin();
   runBump(clone(remote, path.join(tmp, 'seed-run')), 'push', 'main');
   releaseCommit(remote, tmp, 'stable', '0.9.0');
@@ -253,7 +253,7 @@ test('push does not bump the stable release commit and bumps the next merge to t
   merge(remote, tmp, 'second-after-release');
   result = runBump(clone(remote, path.join(tmp, 'after-merges')), 'push', 'main');
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(botVersions(tmp, remote).slice(-2), ['0.10.0-beta.1', '0.10.0-beta.2']);
+  assert.deepEqual(botVersions(tmp, remote).slice(-2), ['0.9.1-beta.1', '0.9.1-beta.2']);
 });
 
 test('push gives no bump to a merge that lands between the last bump and the release commit', () => {
@@ -285,6 +285,12 @@ test('guard passes a pull request that only sets a higher stable version in the 
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('guard passes a patch release against a base at the patch beta and a new minor release against the same base', () => {
+  const { tmp, remote } = makeOrigin('0.9.1-beta.3');
+  assert.equal(releasePr(remote, tmp, '1', '0.9.1').status, 0, 'patch release');
+  assert.equal(releasePr(remote, tmp, '2', '0.10.0').status, 0, 'new minor release');
+});
+
 test('guard still fails a release-shaped pull request that is not a plain stable release', () => {
   const { tmp, remote } = makeOrigin();
   assert.equal(releasePr(remote, tmp, '1', '0.9.0', 'README.md').status, 1, 'extra file');
@@ -302,8 +308,10 @@ test('guard still fails a release-shaped pull request that is not a plain stable
 test('isStableUpgrade accepts only a stable version above the base by SemVer precedence', async () => {
   const { isStableUpgrade } = await loadBump();
   assert.equal(isStableUpgrade('0.9.0-beta.9', '0.9.0'), true);
-  assert.equal(isStableUpgrade('0.9.0', '0.9.1'), true, 'a patch release from a maintenance branch');
-  assert.equal(isStableUpgrade('0.10.0-beta.3', '0.9.1'), false, 'a patch release from main');
+  assert.equal(isStableUpgrade('0.9.0', '0.9.1'), true, 'a patch release above the previous stable');
+  assert.equal(isStableUpgrade('0.9.1-beta.3', '0.9.1'), true, 'a patch release from main');
+  assert.equal(isStableUpgrade('0.9.1-beta.3', '0.10.0'), true, 'a new minor release from main');
+  assert.equal(isStableUpgrade('0.9.1-beta.3', '0.9.0'), false, 'a release below the beta line');
   for (const [base, head] of [['0.9.0', '0.9.0'], ['0.9.0', '0.8.9'], ['0.9.0-beta.9', '0.9.0-beta.10'], ['0.9.0', '1.0.0-rc.1'], ['0.9.0', '1.0.0+b'], ['0.9.0', '']]) {
     assert.equal(isStableUpgrade(base, head), false, `${base} -> ${head}`);
   }

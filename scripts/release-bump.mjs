@@ -22,10 +22,10 @@ const NUM = '(0|[1-9]\\d*)';
 const STABLE = new RegExp(`^${NUM}\\.${NUM}\\.${NUM}$`);
 const BETA = new RegExp(`^${NUM}\\.${NUM}\\.${NUM}-beta\\.${NUM}$`);
 
-// A stable release goes to the next minor's first beta; a beta goes to its next number.
+// A stable release goes to the next patch's first beta; a beta goes to its next number.
 export function nextVersion(version) {
   const stable = STABLE.exec(version);
-  if (stable) return `${stable[1]}.${Number(stable[2]) + 1}.0-beta.1`;
+  if (stable) return `${stable[1]}.${stable[2]}.${Number(stable[3]) + 1}-beta.1`;
   const beta = BETA.exec(version);
   if (beta) return `${beta[1]}.${beta[2]}.${beta[3]}-beta.${Number(beta[4]) + 1}`;
   throw new Error(`Version ${JSON.stringify(version)} is neither a stable X.Y.Z nor an X.Y.Z-beta.N version`);
