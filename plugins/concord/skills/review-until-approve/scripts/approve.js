@@ -131,7 +131,7 @@ function start(repo, pr, args) {
   if (!['codex', 'claude'].includes(provider)) die('--reviewer must be codex or claude');
   if (provider === 'claude' && !process.env.CLAUDE_CODE_OAUTH_TOKEN) die('the claude reviewer needs CLAUDE_CODE_OAUTH_TOKEN; use codex otherwise');
   // The engine confines the Claude reviewer with bubblewrap so it cannot read the account's home; refuse before round 1 where that cannot run.
-  if (provider === 'claude' && (process.platform !== 'linux' || spawnSync('bwrap', ['--ro-bind', '/', '/', 'true']).status !== 0)) die('the claude reviewer needs Linux with a working bubblewrap (bwrap) to be kept from the real home directory; use codex otherwise');
+  if (provider === 'claude' && (process.platform !== 'linux' || spawnSync(process.env.REVIEW_APPROVE_BWRAP || 'bwrap', ['--ro-bind', '/', '/', 'true']).status !== 0)) die('the claude reviewer needs Linux with a working bubblewrap (bwrap) to be kept from the real home directory; use codex otherwise');
   const ledger = found || { version: 1, repo, pr, reviewer, provider, model: opt(args, '--model') || null, author: snap.author, startedAt: new Date().toISOString(), rounds: [], findings: [], nudged: null, approval: null, stopped: null };
   ledger.provider = provider;
   if (opt(args, '--model')) ledger.model = opt(args, '--model');
