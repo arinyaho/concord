@@ -108,6 +108,15 @@ test('a waived finding lets the unchanged head be approved; the waiver is record
   assert.equal(w.posts()[1].event, 'APPROVE');
 });
 
+test('two findings with the same key in one round are recorded and posted once', () => {
+  const w = world();
+  w.write('findings.json', [finding, { ...finding, id: 'style:bad', category: 'style' }]);
+  w.approve('start', 'o/r', '5');
+  assert.equal(JSON.parse(w.approve('round', 'o/r', '5').stdout).new, 1);
+  assert.equal(w.ledger().findings.length, 1);
+  assert.equal(w.posts()[0].comments.length, 1);
+});
+
 test('a review containing a credential is never posted', () => {
   const w = world();
   w.write('findings.json', [{ ...finding, summary: 'leaked ghp_secret here' }]);

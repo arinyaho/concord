@@ -165,7 +165,7 @@ function attempt(repo, pr, ledger, file) {
     const verdict = lib.classifyPrior(open, reviewed.findings, changed, spanAtHead, renames);
     const next = JSON.parse(JSON.stringify(ledger));
     for (const m of verdict.moved) for (const f of next.findings) if (f.key === m.key) Object.assign(f, { file: m.file, key: lib.findingKey({ ...f, file: m.file }) });
-    const fresh = reviewed.findings.filter((f) => !lib.isPublished(next, f));
+    const fresh = reviewed.findings.filter((f, i, all) => !lib.isPublished(next, f) && all.findIndex((g) => lib.findingKey(g) === lib.findingKey(f)) === i);
     for (const f of next.findings) if (f.status === 'open' && verdict.fixedKeys.includes(f.key)) Object.assign(f, { status: 'fixed', fixedRound: n });
     for (const f of fresh) next.findings.push({ key: lib.findingKey(f), id: f.id, category: f.category, file: f.file, line: f.line, span: f.span, summary: f.summary, requirement: f.requirement || '', status: 'open', firstRound: n });
 
