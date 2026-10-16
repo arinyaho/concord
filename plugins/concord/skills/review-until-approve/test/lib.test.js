@@ -137,3 +137,23 @@ test('repliesSince: compares instants, not strings, and tolerates a comment with
   const issue = [{ user: { login: 'dev' }, created_at: '2026-01-01T00:00:01Z' }, { user: { login: 'dev' }, created_at: '2026-01-01T00:00:00Z' }, { user: null, created_at: '2026-01-01T00:00:02Z' }];
   assert.deepEqual(lib.repliesSince(l, [], issue, 'dev'), ['2026-01-01T00:00:01Z']);
 });
+
+test('parseNameStatus: a rename below 100% similarity is edited, an R100 is not', () => {
+  const raw = ['R100', 'src/a.js', 'src/a2.js', 'R087', 'src/b.js', 'src/b2.js', 'M', 'src/c.js', ''].join('\0');
+  const { changed, renames, edited } = lib.parseNameStatus(raw);
+  assert.deepEqual([...renames], [['src/a.js', 'src/a2.js'], ['src/b.js', 'src/b2.js']]);
+  assert.deepEqual([...changed].sort(), ['src/a2.js', 'src/b2.js', 'src/c.js']);
+  assert.deepEqual([...edited], ['src/b2.js']);
+});
+
+test('classifyPrior: in a push-only round a pure rename does not fix a finding the reviewer could not see', () => {
+  const open = [{ ...finding('c1', 'src/a.js', 'not verbatim in the file'), status: 'open' }];
+  const verdict = lib.classifyPrior(open, [], new Set(['src/a2.js']), () => false, new Map([['src/a.js', 'src/a2.js']]), { incremental: true, edited: new Set() });
+  assert.deepEqual([verdict.open, verdict.fixed, verdict.moved], [['c1'], [], [{ key: open[0].key, file: 'src/a2.js' }]]);
+});
+
+test('classifyPrior: in a push-only round a rename with edits is judged by the span at the new path', () => {
+  const open = [{ ...finding('c1', 'src/a.js', 'gone'), status: 'open' }];
+  const verdict = lib.classifyPrior(open, [], new Set(['src/a2.js']), () => false, new Map([['src/a.js', 'src/a2.js']]), { incremental: true, edited: new Set(['src/a2.js']) });
+  assert.deepEqual([verdict.open, verdict.fixed], [[], ['c1']]);
+});

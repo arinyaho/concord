@@ -226,6 +226,48 @@ test('a push that only renames the file keeps the finding open at the new path a
   assert.deepEqual([w.ledger().findings[0].status, w.ledger().findings[0].file], ['open', 'b.js']);
 });
 
+// A push that only renames the file shows the reviewer a rename header; its silence about a finding whose span is not verbatim fixes nothing.
+function renamePush(edit) {
+  const w = world();
+  w.write('findings.json', [{ ...finding, span: 'not verbatim in the file' }]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  sh(w.src, 'mv', 'a.js', 'b.js');
+  if (edit) fs.writeFileSync(path.join(w.src, 'b.js'), 'one\ngood\nthree\nfour\n');
+  sh(w.src, 'commit', '-q', '-am', 'c2');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD') });
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  return { w, r: JSON.parse(w.approve('round', 'o/r', '5').stdout) };
+}
+
+test('a pure rename (R100) does not fix a finding whose span is not verbatim, is not approved, and the reviewer is told the new path', () => {
+  const { w, r } = renamePush(false);
+  assert.deepEqual([r.review, r.fixed, r.stillOpen], ['COMMENT', 0, 1]);
+  assert.deepEqual([w.ledger().findings[0].status, w.ledger().findings[0].file], ['open', 'b.js']);
+  assert.match(w.calls().pop().reviewerGuidance, /b\.js, renamed from a\.js/);
+});
+
+test('a rename with edits is judged by the span at the new path: an unverifiable span there leaves the finding fixed', () => {
+  const { w, r } = renamePush(true);
+  assert.deepEqual([r.fixed, r.stillOpen], [1, 0]);
+  assert.equal(w.ledger().findings[0].status, 'fixed');
+});
+
+test('round refuses a claude ledger that never took the opt-in', () => {
+  const w = world({ CLAUDE_CODE_OAUTH_TOKEN: 't' });
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5', '--reviewer', 'claude', UNRESTRICTED);
+  const file = path.join(w.dir, 'ledgers', 'o__r__5__bot.json');
+  const ledger = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete ledger.unrestrictedHome;
+  fs.writeFileSync(file, JSON.stringify(ledger));
+  const r = w.approve('round', 'o/r', '5');
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /--allow-unrestricted-home/);
+  assert.equal(w.calls().length, 0);
+});
+
 test('a file with a special character in its name is matched by its real name', () => {
   const w = world();
   const f = { ...finding, file: 'é.js' };
