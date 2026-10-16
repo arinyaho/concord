@@ -25,9 +25,11 @@ The decisions behind each step are in `docs/design/review-until-approve.md`.
 1. `node "$SCRIPTS/approve.js" start <owner/repo> <pr> [--reviewer codex|claude] [--model <m>]` checks the account, opens or resumes the ledger, and prints `{ledger, action}`. It refuses a pull request that is not open and an account that is the author. Relay a `warning` to the user.
 2. `action: "round"`: run `node "$SCRIPTS/approve.js" round <owner/repo> <pr>` in the foreground; it takes minutes. It clones the exact head into a temporary directory, runs the review-only engine without your GitHub token, publishes one review, and approves in the same review when the round is clean. Its last line is the outcome:
    - `published` with `review: "APPROVE"`: tell the user the head is approved and stop.
-   - `published` with `review: "COMMENT"`: tell the user the finding counts in one line, then wait (step 4). `notApproved: "draft"` means a clean round on a draft pull request; say so.
+   - `published` with `review: "COMMENT"`: tell the user the finding counts in one line, then wait (step 4). `notApproved: "draft"` means a clean round on a draft pull request: the watch does not see a draft turning ready, so tell the user to re-invoke the skill once the pull request is ready (`start` then answers `action: "approve"`) and stop instead of waiting.
+   - A non-zero exit: the message is on stderr (another session holds the ledger, a credential was found in the review text and nothing was posted, the runner failed). Tell the user and stop; do not retry in a loop.
    - `round-limit`, `merged`, `closed`, `head-keeps-moving`: tell the user and stop.
-3. `action: "approve"`: the reviewed head is clean but was not approved (it was a draft). Run `node "$SCRIPTS/approve.js" approve <owner/repo> <pr>`; it posts the approval only if the condition holds.
+3. `action: "watch"`: the head was already reviewed and nothing blocks or approves it yet; go to step 4.
+   `action: "approve"`: the reviewed head is clean but was not approved (it was a draft). Run `node "$SCRIPTS/approve.js" approve <owner/repo> <pr>`; it posts the approval only if the condition holds; otherwise it prints `{"event":"not-approved","reason":...}`, which you relay to the user.
 4. Wait: start `node "$SCRIPTS/watch.js" <ledger> <owner/repo> <pr>` with Monitor and do nothing else; it spends no model tokens. It prints one JSON line and exits. On that line:
    - `round`: go to step 2 (`start` first, so the ledger and account are re-checked).
    - `merged` or `closed`: tell the user and stop.

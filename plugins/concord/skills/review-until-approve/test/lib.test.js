@@ -52,7 +52,9 @@ test('classifyPrior: raised again or untouched with the span still present stays
   const raised = [finding('raised', 'a.js', 'one')];
   const changed = new Set(['a.js', 'c.js']);
   const spanAtHead = (file, span) => file === 'b.js' || file === 'c.js' ? true : false;
-  assert.deepEqual(lib.classifyPrior(open, raised, changed, spanAtHead), { open: ['raised', 'untouched'], fixed: ['touched', 'gone'] });
+  const verdict = lib.classifyPrior(open, raised, changed, spanAtHead);
+  assert.deepEqual([verdict.open, verdict.fixed], [['raised', 'untouched'], ['touched', 'gone']]);
+  assert.deepEqual(verdict.fixedKeys, [lib.findingKey(open[2]), lib.findingKey(open[3])]);
 });
 
 test('evaluateApproval: approves only a reviewed, open, non-draft head with no open blocking finding', () => {

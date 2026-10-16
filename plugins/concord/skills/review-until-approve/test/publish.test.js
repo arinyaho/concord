@@ -19,6 +19,11 @@ test('hunksOf: lists the new-side line ranges per file', () => {
   assert.deepEqual(publish.hunksOf(DIFF), [{ file: 'a.js', from: 1, to: 3 }, { file: 'a.js', from: 12, to: 13 }]);
 });
 
+test('hunksOf: an added line that looks like a file header does not change the file', () => {
+  const diff = DIFF + '@@ -20,0 +30,1 @@\n+++ b/evil.js\n@@ -40,0 +50,1 @@\n+x\n';
+  assert.deepEqual(publish.hunksOf(diff).slice(-1), [{ file: 'a.js', from: 50, to: 50 }]);
+});
+
 const f = (id, file, line, extra = {}) => ({ id, category: 'correctness', file, line, span: 's', summary: `sum ${id}`, requirement: '', ...extra });
 const base = { head: 'abcdef1234', round: 2, rangeBase: 'b0', reviewer: 'codex', hunks: publish.hunksOf(DIFF), fixed: [], stillOpen: [], previousHead: '1111111222' };
 

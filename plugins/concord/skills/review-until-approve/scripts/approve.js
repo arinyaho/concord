@@ -59,6 +59,14 @@ function lock(file) {
   die('could not take the ledger lock');
 }
 
+// The reviewer reads attacker-controlled files, so it gets an allowlist, not the whole environment.
+const ENV_ALLOWED = /^(PATH|HOME|USER|LOGNAME|LANG|LC_\w+|TERM|TMPDIR|TZ|CODEX_HOME|(HTTPS?|NO|ALL)_PROXY|(https?|no|all)_proxy|SSL_CERT_(FILE|DIR)|NODE_EXTRA_CA_CERTS)$/;
+function reviewerEnv(provider, claudeConfig) {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => ENV_ALLOWED.test(name)));
+  if (provider === 'claude' && process.env.CLAUDE_CODE_OAUTH_TOKEN) env.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  return { ...env, CLAUDE_CONFIG_DIR: claudeConfig };
+}
+
 function snapshot(repo, pr) {
   const v = ghJson(['pr', 'view', pr, '--repo', repo, '--json', 'headRefOid,baseRefOid,title,body,state,isDraft,author']);
   const mergeBase = gh(['api', `repos/${repo}/compare/${v.baseRefOid}...${v.headRefOid}`, '--jq', '.merge_base_commit.sha']).trim();
@@ -69,16 +77,17 @@ const secrets = () => [process.env.GH_TOKEN, process.env.CLAUDE_CODE_OAUTH_TOKEN
 
 function post(repo, pr, payload) {
   const text = JSON.stringify(payload);
-  if (publish.containsSecret(text, secrets())) die('the review text holds a credential; nothing was posted');
+  if (publish.containsSecret(text, secrets())) throw new Error('the review text holds a credential; nothing was posted');
   return ghJson(['api', '-X', 'POST', `repos/${repo}/pulls/${pr}/reviews`, '--input', '-'], text);
 }
 
+// The ledger is read under the lock, so a session that waited for it sees the other session's saved state.
+// The file name carries the login: another account reviewing the same pull request has its own ledger.
 function identify(repo, pr, args) {
   const reviewer = gh(['api', 'user', '--jq', '.login']).trim();
   const file = ledgerFile(repo, pr, reviewer);
-  const ledger = load(file);
-  if (ledger && ledger.reviewer !== reviewer) die(`the ledger belongs to ${ledger.reviewer}, not ${reviewer}`);
-  return { reviewer, file, ledger, args };
+  lock(file);
+  return { reviewer, file, ledger: load(file), args };
 }
 
 const opt = (args, name) => { const i = args.indexOf(name); return i === -1 ? undefined : args[i + 1]; };
@@ -93,6 +102,8 @@ function start(repo, pr, args) {
   if (!['codex', 'claude'].includes(provider)) die('--reviewer must be codex or claude');
   if (provider === 'claude' && !process.env.CLAUDE_CODE_OAUTH_TOKEN) die('the claude reviewer needs CLAUDE_CODE_OAUTH_TOKEN; use codex otherwise');
   const ledger = found || { version: 1, repo, pr, reviewer, provider, model: opt(args, '--model') || null, author: snap.author, startedAt: new Date().toISOString(), rounds: [], findings: [], nudged: null, approval: null, stopped: null };
+  ledger.provider = provider;
+  if (opt(args, '--model')) ledger.model = opt(args, '--model');
   ledger.stopped = null;
   save(file, ledger);
   const viewer = gh(['repo', 'view', repo, '--json', 'viewerPermission', '--jq', '.viewerPermission']).trim();
@@ -112,7 +123,6 @@ function guidance(ledger) {
 function reviewRound(repo, pr, args) {
   const { file, ledger } = identify(repo, pr, args);
   if (!ledger) die('no ledger; run start first');
-  lock(file);
   if (ledger.rounds.length >= MAX_ROUNDS) return out({ event: 'round-limit', rounds: ledger.rounds.length });
   for (let discards = 0; discards < MAX_DISCARDS; discards++) {
     const result = attempt(repo, pr, ledger, file);
@@ -142,8 +152,7 @@ function attempt(repo, pr, ledger, file) {
     fs.writeFileSync(intentFile, `# ${snap.title}\n\n${snap.body}`);
     const claudeConfig = fs.mkdtempSync(path.join(dir, 'claude-'));
     const runnerOptions = { ref: `concord-pr-${pr}`, base: range.base, broad: range.broad, noBroad: !range.broad, reviewer: ledger.provider, reviewerModel: ledger.model || undefined, reviewerGuidance: guidance(ledger), intentFile: range.broad ? intentFile : undefined };
-    const env = { ...process.env, CLAUDE_CONFIG_DIR: claudeConfig };
-    for (const name of ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'OPENAI_API_KEY']) delete env[name];
+    const env = reviewerEnv(ledger.provider, claudeConfig);
     const runner = process.env.REVIEW_APPROVE_RUNNER || path.join(__dirname, 'run-review.js');
     const reviewed = JSON.parse(run('node', [runner, JSON.stringify(runnerOptions)], { cwd: work, env }).trim().split('\n').pop());
     if (reviewed.decision !== 'review-only' || !Array.isArray(reviewed.findings)) throw new Error(`the review did not complete: ${JSON.stringify(reviewed).slice(0, 200)}`);
@@ -156,7 +165,7 @@ function attempt(repo, pr, ledger, file) {
     const verdict = lib.classifyPrior(open, reviewed.findings, changed, spanAtHead);
     const fresh = reviewed.findings.filter((f) => !lib.isPublished(ledger, f));
     const next = JSON.parse(JSON.stringify(ledger));
-    for (const f of next.findings) if (f.status === 'open' && verdict.fixed.includes(f.id)) Object.assign(f, { status: 'fixed', fixedRound: n });
+    for (const f of next.findings) if (f.status === 'open' && verdict.fixedKeys.includes(f.key)) Object.assign(f, { status: 'fixed', fixedRound: n });
     for (const f of fresh) next.findings.push({ key: lib.findingKey(f), id: f.id, category: f.category, file: f.file, line: f.line, span: f.span, summary: f.summary, requirement: f.requirement || '', status: 'open', firstRound: n });
 
     const diff = git(work, ['diff', '-U3', range.base, 'HEAD']);
@@ -168,10 +177,15 @@ function attempt(repo, pr, ledger, file) {
       if (snapshot(repo, pr).head !== snap.head) return null;
       review = post(repo, pr, publish.renderReview(input, 'body'));
     }
-    const commentIds = ghJson(['api', '--paginate', '--slurp', `repos/${repo}/pulls/${pr}/reviews/${review.id}/comments`]).flat().map((c) => c.id);
-    next.rounds.push({ n, head: snap.head, base: range.base, mergeBase: snap.mergeBase, intent: snap.intent, mode: range.broad ? 'broad' : 'diff', reviewId: review.id, submittedAt: review.submitted_at || new Date().toISOString(), commentIds, event: input.approve ? 'APPROVE' : 'COMMENT' });
+    // Saved before anything else can fail, so a posted review (an APPROVE above all) is never forgotten.
+    next.rounds.push({ n, head: snap.head, base: range.base, mergeBase: snap.mergeBase, intent: snap.intent, mode: range.broad ? 'broad' : 'diff', reviewId: review.id, submittedAt: review.submitted_at || new Date().toISOString(), commentIds: [], event: input.approve ? 'APPROVE' : 'COMMENT' });
     if (input.approve) next.approval = { head: snap.head, reviewId: review.id, at: next.rounds[next.rounds.length - 1].submittedAt };
     save(file, next);
+    // Best effort: replies to a thread are recognized by these ids; without them only conversation replies count.
+    try {
+      next.rounds[next.rounds.length - 1].commentIds = ghJson(['api', '--paginate', '--slurp', `repos/${repo}/pulls/${pr}/reviews/${review.id}/comments`]).flat().map((c) => c.id);
+      save(file, next);
+    } catch (_) { /* ponytail: ids stay empty; thread replies are then missed until the next round */ }
     return { event: 'published', round: n, mode: range.broad ? 'broad' : 'diff', review: input.approve ? 'APPROVE' : 'COMMENT', new: fresh.length, fixed: verdict.fixed.length, stillOpen: verdict.open.length, ...(verdictNow.approve ? {} : { notApproved: verdictNow.reason }) };
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
@@ -179,7 +193,6 @@ function attempt(repo, pr, ledger, file) {
 function approve(repo, pr, args) {
   const { file, ledger } = identify(repo, pr, args);
   if (!ledger || !ledger.rounds.length) die('no reviewed round to approve');
-  lock(file);
   const reviewed = lastRound(ledger);
   const verdict = lib.evaluateApproval(ledger, snapshot(repo, pr), reviewed.head);
   if (!verdict.approve) return out({ event: 'not-approved', reason: verdict.reason });
@@ -193,7 +206,6 @@ function waive(repo, pr, id, args) {
   const { file, ledger } = identify(repo, pr, args);
   const finding = ledger?.findings.find((f) => f.id === id && f.status === 'open');
   if (!finding) die(`no open finding ${id}`);
-  lock(file);
   Object.assign(finding, { status: 'waived', waivedAt: new Date().toISOString() });
   save(file, ledger);
   approve(repo, pr, args);

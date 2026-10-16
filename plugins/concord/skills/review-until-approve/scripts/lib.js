@@ -32,10 +32,11 @@ function isPublished(ledger, f) {
 // An earlier open finding stays open when this round raised it again, or when its
 // file is untouched and the span still occurs at the new head.
 function classifyPrior(open, raised, changedFiles, spanAtHead) {
-  const out = { open: [], fixed: [] };
+  const out = { open: [], fixed: [], fixedKeys: [] };
   for (const p of open) {
     const again = raised.some((f) => findingKey(f) === findingKey(p));
-    (again || (!changedFiles.has(p.file) && spanAtHead(p.file, p.span)) ? out.open : out.fixed).push(p.id);
+    if (again || (!changedFiles.has(p.file) && spanAtHead(p.file, p.span))) out.open.push(p.id);
+    else { out.fixed.push(p.id); out.fixedKeys.push(findingKey(p)); }
   }
   return out;
 }

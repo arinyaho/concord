@@ -10,7 +10,7 @@ const APPROVE = path.join(__dirname, '..', 'scripts', 'approve.js');
 const sh = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
 
 // A local remote with refs/pull/5/head, a fake gh, and a fake runner that reports FAKE_FINDINGS.
-function world() {
+function world(extraEnv = {}) {
   const dir = tempDir('rua-approve-');
   const src = path.join(dir, 'src');
   fs.mkdirSync(src);
@@ -46,15 +46,16 @@ else if (a[0] === 'api' && a.includes('-X')) {
   const posts = fs.existsSync(dir + '/posts.jsonl') ? fs.readFileSync(dir + '/posts.jsonl', 'utf8').split('\\n').filter(Boolean) : [];
   fs.appendFileSync(dir + '/posts.jsonl', fs.readFileSync(0, 'utf8') + '\\n');
   j({ id: 100 + posts.length, submitted_at: new Date().toISOString() });
-} else if (a[0] === 'api') j([[{ id: 7 }]]);
+} else if (a[0] === 'api' && fs.existsSync(dir + '/fail-comments')) { console.error('boom'); process.exit(1); }
+else if (a[0] === 'api') j([[{ id: 7 }]]);
 `, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, 'runner.js'), `const fs = require('node:fs');
-fs.appendFileSync(${JSON.stringify(path.join(dir, 'runner-calls.jsonl'))}, process.argv[2] + '\\n');
+fs.appendFileSync(${JSON.stringify(path.join(dir, 'runner-calls.jsonl'))}, JSON.stringify({ ...JSON.parse(process.argv[2]), envKeys: Object.keys(process.env) }) + '\\n');
 const findings = JSON.parse(fs.readFileSync(${JSON.stringify(path.join(dir, 'findings.json'))}, 'utf8'));
 console.log(JSON.stringify({ decision: 'review-only', round: 1, findings }));
 `);
   const env = { ...process.env, PATH: `${path.join(dir, 'bin')}${path.delimiter}${process.env.PATH}`, REVIEW_APPROVE_STATE_DIR: path.join(dir, 'ledgers'), REVIEW_APPROVE_REMOTE: path.join(dir, 'remote'), REVIEW_APPROVE_RUNNER: path.join(dir, 'runner.js') };
-  const approve = (...args) => spawnSync('node', [APPROVE, ...args], { env, encoding: 'utf8' });
+  const approve = (...args) => spawnSync('node', [APPROVE, ...args], { env: { ...env, ...extraEnv }, encoding: 'utf8' });
   const lines = (name) => fs.existsSync(path.join(dir, name)) ? fs.readFileSync(path.join(dir, name), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
   return { dir, src, bare, c1, state, write, approve, posts: () => lines('posts.jsonl'), calls: () => lines('runner-calls.jsonl'), ledger: () => JSON.parse(fs.readFileSync(path.join(dir, 'ledgers', 'o__r__5__bot.json'), 'utf8')) };
 }
@@ -98,7 +99,7 @@ test('start refuses when the reviewing account is the author', () => {
   assert.match(r.stderr, /author/);
 });
 
-test('a waived finding lets the unchanged head be approved; a returning fixed finding is published again', () => {
+test('a waived finding lets the unchanged head be approved; the waiver is recorded and approval follows', () => {
   const w = world();
   w.write('findings.json', [finding]);
   w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
@@ -114,4 +115,58 @@ test('a review containing a credential is never posted', () => {
   const r = w.approve('round', 'o/r', '5');
   assert.notEqual(r.status, 0);
   assert.equal(w.posts().length, 0);
+});
+
+test('the review process gets an allowlisted environment: no GitHub or unrelated credential reaches the untrusted checkout', () => {
+  const w = world({ GH_TOKEN: 'x', GITHUB_TOKEN: 'x', NPM_TOKEN: 'x', AWS_SECRET_ACCESS_KEY: 'x', GH_CONFIG_DIR: '/x' });
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  const keys = w.calls()[0].envKeys;
+  for (const name of ['GH_TOKEN', 'GITHUB_TOKEN', 'NPM_TOKEN', 'AWS_SECRET_ACCESS_KEY', 'GH_CONFIG_DIR']) assert.ok(!keys.includes(name), name);
+  assert.ok(keys.includes('PATH') && keys.includes('CLAUDE_CONFIG_DIR'));
+});
+
+test('the ledger is saved even when the comment-id fetch after a successful post fails', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  fs.writeFileSync(path.join(w.dir, 'fail-comments'), '');
+  w.approve('start', 'o/r', '5');
+  assert.equal(JSON.parse(w.approve('round', 'o/r', '5').stdout).event, 'published');
+  assert.equal(w.posts().length, 1);
+  assert.equal(w.ledger().rounds.length, 1);
+  assert.equal(w.ledger().findings.length, 1);
+});
+
+test('a refused post leaves no temporary clone behind', () => {
+  const tmp = tempDir('rua-tmp-');
+  const w = world({ TMPDIR: tmp });
+  w.write('findings.json', [{ ...finding, summary: 'leaked ghp_secret here' }]);
+  w.approve('start', 'o/r', '5');
+  assert.notEqual(w.approve('round', 'o/r', '5').status, 0);
+  assert.deepEqual(fs.readdirSync(tmp).filter((n) => n.startsWith('review-until-approve-')), []);
+});
+
+test('start with --reviewer on an existing ledger switches the provider for later rounds', () => {
+  const w = world({ CLAUDE_CODE_OAUTH_TOKEN: 't' });
+  w.approve('start', 'o/r', '5');
+  assert.equal(w.ledger().provider, 'codex');
+  w.approve('start', 'o/r', '5', '--reviewer', 'claude', '--model', 'm');
+  assert.deepEqual([w.ledger().provider, w.ledger().model], ['claude', 'm']);
+});
+
+test('two open findings sharing an id are closed by their own key: the unfixed one keeps blocking approval', () => {
+  const w = world();
+  const a = { ...finding, id: 'correctness:x', span: 'bad', line: 2 };
+  const b = { ...finding, id: 'correctness:x', span: 'three', line: 3 };
+  w.write('findings.json', [a, b]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  fs.writeFileSync(path.join(w.src, 'a.js'), 'one\ngood\nthree\nfour\n');
+  sh(w.src, 'commit', '-q', '-am', 'c2');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD') });
+  w.write('findings.json', [b]);
+  w.approve('start', 'o/r', '5');
+  const r = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r.review, r.fixed, r.stillOpen], ['COMMENT', 1, 1]);
+  assert.deepEqual(w.ledger().findings.map((f) => f.status), ['fixed', 'open']);
 });

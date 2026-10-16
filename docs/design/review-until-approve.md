@@ -13,7 +13,7 @@ The decisions below are the conclusions of the Opus design pass.
 | Step | Rule | Reason |
 |---|---|---|
 | Round 1 | Broad review of the PR head against the merge base, requirements from the PR title and body | Same procedure as `/review-and-fix` |
-| Checkout | Fresh full clone in a temporary directory, exact head SHA, review run with `GH_TOKEN` and `GITHUB_TOKEN` removed from the environment | The checkout is untrusted; the reviewer never holds the token |
+| Checkout | Fresh full clone in a temporary directory, exact head SHA, review run with an allowlisted environment (`PATH`, `HOME`, locale, proxy and certificate variables, `CODEX_HOME`, and for `claude` the OAuth token); no GitHub or other credential is passed | The checkout is untrusted; the reviewer holds no credential it does not need |
 | Reviewer | `codex` by default; `claude` only with an empty `CLAUDE_CONFIG_DIR` and `CLAUDE_CODE_OAUTH_TOKEN` set | The Codex reviewer is isolated by the engine; a Claude reviewer would otherwise load the user's own allow-lists and hooks |
 | Later round range | `chooseRange`: same merge base and the last head an ancestor of the new head gives `last head..head`; otherwise `merge base..head`; a changed PR title or body gives `merge base..head` with the broad gate | A force push or a merged-in base branch has no isolatable delta; a changed requirement needs the gate again |
 | Earlier findings | Open findings are passed as reviewer guidance ("raise it again with the same id if still present"). `classifyPrior` keeps one open when it was raised again, or when its file is untouched and its span still occurs at the new head; otherwise it is fixed | An unchanged span alone does not disprove an additive fix, so a touched file needs the reviewer to raise it again |
@@ -48,7 +48,7 @@ One JSON file per repository, pull request and reviewing account at `${REVIEW_AP
 
 ## Identity
 
-Every `gh` call, read and write, runs as the account the user names (`mien exec <profile> -- gh`, else the ambient account), recorded as the reviewer. A later round under a different account stops. If the account is the pull request author, the skill refuses before round 1, because GitHub rejects self-approval. Approval is `POST repos/{o}/{r}/pulls/{n}/reviews` with `event=APPROVE` and `commit_id`, because `gh pr review --approve` cannot pin the commit and races with a push. An account below write permission is warned that its approval will not satisfy branch protection.
+Every `gh` call, read and write, runs as the account the user names (`mien exec <profile> -- gh`, else the ambient account), recorded as the reviewer. A different account has its own ledger (the login is in the file name) and starts at round 1. If the account is the pull request author, the skill refuses before round 1, because GitHub rejects self-approval. Approval is `POST repos/{o}/{r}/pulls/{n}/reviews` with `event=APPROVE` and `commit_id`, because `gh pr review --approve` cannot pin the commit and races with a push. An account below write permission is warned that its approval will not satisfy branch protection.
 
 ## Unattended deployment
 
