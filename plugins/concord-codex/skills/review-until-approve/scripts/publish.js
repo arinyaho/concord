@@ -44,7 +44,7 @@ function renderReview({ head, round, rangeBase, reviewer, hunks, findings, fixed
   const lines = [
     `<!-- concord-approve: ${head} round:${round} base:${rangeBase} -->`,
     `reviewed by ${reviewer}`,
-    findings.length === 0 && stillOpen.length === 0 ? 'LGTM — no finding survived verification.' : `${findings.length} new finding(s), ${stillOpen.length} still open.`,
+    findings.length === 0 && stillOpen.length === 0 ? (approve ? 'LGTM — no finding survived verification.' : 'No finding survived verification; this review does not approve.') : `${findings.length} new finding(s), ${stillOpen.length} still open.`,
   ];
   if (fixed.length) lines.push(`Fixed since \`${previousHead.slice(0, 7)}\`: ${ids(fixed)}`);
   if (stillOpen.length) lines.push(`Still open: ${ids(stillOpen)}`);
