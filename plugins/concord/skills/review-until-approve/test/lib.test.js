@@ -35,9 +35,10 @@ test('isPublished: matches by span despite a renamed id, by id+file when the spa
   assert.equal(lib.isPublished(l, finding('c:3', 'x.js', 'other')), false);
 });
 
-test('isPublished: a reused id on a different span is a new finding, and a fixed finding that returns is not published', () => {
+test('isPublished: a reused id in the same file is the same finding, and a fixed finding that returns is not published', () => {
   const l = ledger({ findings: [{ ...finding('a:1', 'x.js', 'foo'), status: 'open' }, { ...finding('b:2', 'y.js', 'bar'), status: 'fixed' }, { ...finding('c:3', 'z.js', 'baz'), status: 'waived' }] });
-  assert.equal(lib.isPublished(l, finding('a:1', 'x.js', 'different span')), false);
+  assert.equal(lib.isPublished(l, finding('a:1', 'x.js', 'different span')), true);
+  assert.equal(lib.isPublished(l, finding('a:1', 'other.js', 'different span')), false);
   assert.equal(lib.isPublished(l, finding('b:2', 'y.js', 'bar')), false);
   assert.equal(lib.isPublished(l, finding('c:3', 'z.js', 'baz')), true);
 });
