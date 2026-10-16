@@ -13,7 +13,7 @@ The decisions below are the conclusions of the Opus design pass.
 | Step | Rule | Reason |
 |---|---|---|
 | Round 1 | Broad review of the PR head against the merge base, requirements from the PR title and body | Same procedure as `/review-and-fix` |
-| Checkout | Fresh full clone in a temporary directory, exact head SHA, review run with an allowlisted environment (`PATH`, `HOME`, locale, proxy and certificate variables, `CODEX_HOME`, and for `claude` the OAuth token); no GitHub or other credential is passed | The checkout is untrusted; the reviewer holds no credential it does not need |
+| Checkout | Fresh full clone in a temporary directory, exact head SHA, review run with an allowlisted environment (`PATH`, locale, proxy and certificate variables, the Codex home for its auth, and for `claude` the OAuth token) and an empty `HOME`; no GitHub or other credential, and none of the user's credential files, is reachable | The checkout is untrusted; the reviewer holds no credential it does not need |
 | Reviewer | `codex` by default; `claude` only with an empty `CLAUDE_CONFIG_DIR` and `CLAUDE_CODE_OAUTH_TOKEN` set | The Codex reviewer is isolated by the engine; a Claude reviewer would otherwise load the user's own allow-lists and hooks |
 | Later round range | `chooseRange`: same merge base and the last head an ancestor of the new head gives `last head..head`; otherwise `merge base..head`; a changed PR title or body gives `merge base..head` with the broad gate | A force push or a merged-in base branch has no isolatable delta; a changed requirement needs the gate again |
 | Earlier findings | Open findings are passed as reviewer guidance ("raise it again with the same id if still present"). `classifyPrior` keeps one open when it was raised again, or when its file is untouched and its span still occurs at the new head; otherwise it is fixed | An unchanged span alone does not disprove an additive fix, so a touched file needs the reviewer to raise it again |
@@ -62,7 +62,7 @@ The loop can later run unattended, with GitHub Actions or `services/pr-review` r
 | reviewed head, no push | author replies | no wake, no round | introduced | `watch: a push alone and a reply alone stay silent` |
 | reviewed head | push and reply, head stable for two polls | one `round` event for the live head; a burst of pushes wakes once | introduced | `watch: a push plus a reply wakes once` |
 | any open pull request | merged or closed | `merged` or `closed` event, ledger unchanged | introduced | `watch: a reply on the PR conversation counts, a closed PR wakes` |
-| one side only for 24 hours | poll | one `nudge` per head and reply; later polls silent | introduced | `wakeDecision: one side alone nudges once` |
+| one side only for 24 hours | poll | one `nudge` per head and reply; later polls silent | introduced | `wakeDecision: one side alone nudges once`, `nudged records the nudge` |
 | no activity for 7 days | poll | `timeout` event, ledger resumable | introduced | `wakeDecision: one side alone nudges once` |
 | GitHub unreachable | ten consecutive polls | `error` event, exit status 1 | introduced | `watch: ten failed polls end with an error event` |
 | force push, merged-in base, changed requirement | next round | whole-PR range, gate only when the requirement changed | introduced | `chooseRange` tests |

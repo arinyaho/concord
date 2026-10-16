@@ -50,7 +50,7 @@ else if (a[0] === 'api' && a.includes('-X')) {
 else if (a[0] === 'api') j([[{ id: 7 }]]);
 `, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, 'runner.js'), `const fs = require('node:fs');
-fs.appendFileSync(${JSON.stringify(path.join(dir, 'runner-calls.jsonl'))}, JSON.stringify({ ...JSON.parse(process.argv[2]), envKeys: Object.keys(process.env) }) + '\\n');
+fs.appendFileSync(${JSON.stringify(path.join(dir, 'runner-calls.jsonl'))}, JSON.stringify({ ...JSON.parse(process.argv[2]), envKeys: Object.keys(process.env), home: process.env.HOME, homeEntries: fs.readdirSync(process.env.HOME), codexHome: process.env.CODEX_HOME }) + '\\n');
 const findings = JSON.parse(fs.readFileSync(${JSON.stringify(path.join(dir, 'findings.json'))}, 'utf8'));
 console.log(JSON.stringify({ decision: 'review-only', round: 1, findings }));
 `);
@@ -211,4 +211,23 @@ test('a file with a special character in its name is matched by its real name', 
   w.write('findings.json', []);
   w.approve('start', 'o/r', '5');
   assert.equal(JSON.parse(w.approve('round', 'o/r', '5').stdout).fixed, 1);
+});
+
+test('the review process gets an empty HOME, and the real Codex home for its auth', () => {
+  const w = world({ CODEX_HOME: '/real/codex' });
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  const call = w.calls()[0];
+  assert.notEqual(call.home, process.env.HOME);
+  assert.deepEqual(call.homeEntries, []);
+  assert.equal(call.codexHome, '/real/codex');
+});
+
+test('nudged records the nudge so a restarted watch does not repeat it', () => {
+  const w = world();
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  const event = { event: 'nudge', kind: 'push-only', head: 'h2', replyAt: null };
+  assert.equal(JSON.parse(w.approve('nudged', 'o/r', '5', JSON.stringify(event)).stdout).event, 'nudge-recorded');
+  assert.deepEqual(w.ledger().nudged, { kind: 'push-only', head: 'h2', replyAt: null });
 });

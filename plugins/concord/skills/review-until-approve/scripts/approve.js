@@ -6,6 +6,7 @@
 //   approve <owner/repo> <pr>                                         approve the reviewed head if the approval condition holds
 //   waive <owner/repo> <pr> <finding-id>                              the user dismisses a finding, then approve if possible
 //   stop <owner/repo> <pr>                                            record a user stop
+//   nudged <owner/repo> <pr> '<nudge event json>'                     record that the user was told, so the watch stays silent until a new head or reply
 // Run under `mien exec <profile> --` when the reviewing account is not the ambient gh account.
 const fs = require('node:fs');
 const os = require('node:os');
@@ -60,9 +61,13 @@ function lock(file) {
 }
 
 // The reviewer reads attacker-controlled files, so it gets an allowlist, not the whole environment.
-const ENV_ALLOWED = /^(PATH|HOME|USER|LOGNAME|LANG|LC_\w+|TERM|TMPDIR|TZ|CODEX_HOME|(HTTPS?|NO|ALL)_PROXY|(https?|no|all)_proxy|SSL_CERT_(FILE|DIR)|NODE_EXTRA_CA_CERTS)$/;
-function reviewerEnv(provider, claudeConfig) {
+const ENV_ALLOWED = /^(PATH|USER|LOGNAME|LANG|LC_\w+|TERM|TMPDIR|TZ|CODEX_HOME|(HTTPS?|NO|ALL)_PROXY|(https?|no|all)_proxy|SSL_CERT_(FILE|DIR)|NODE_EXTRA_CA_CERTS)$/;
+// HOME is an empty directory, so the user's credential files (gh, ssh, cloud) are out of reach. The Codex
+// engine copies auth.json from CODEX_HOME into a home of its own, so that path stays the real one.
+function reviewerEnv(provider, claudeConfig, home) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => ENV_ALLOWED.test(name)));
+  env.HOME = home;
+  if (provider === 'codex') env.CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
   if (provider === 'claude' && process.env.CLAUDE_CODE_OAUTH_TOKEN) env.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
   return { ...env, CLAUDE_CONFIG_DIR: claudeConfig };
 }
@@ -152,7 +157,8 @@ function attempt(repo, pr, ledger, file) {
     fs.writeFileSync(intentFile, `# ${snap.title}\n\n${snap.body}`);
     const claudeConfig = fs.mkdtempSync(path.join(dir, 'claude-'));
     const runnerOptions = { ref: `concord-pr-${pr}`, base: range.base, broad: range.broad, noBroad: !range.broad, reviewer: ledger.provider, reviewerModel: ledger.model || undefined, reviewerGuidance: guidance(ledger), intentFile: range.broad ? intentFile : undefined };
-    const env = reviewerEnv(ledger.provider, claudeConfig);
+    const reviewerHome = fs.mkdtempSync(path.join(dir, 'home-'));
+    const env = reviewerEnv(ledger.provider, claudeConfig, reviewerHome);
     const runner = process.env.REVIEW_APPROVE_RUNNER || path.join(__dirname, 'run-review.js');
     const reviewed = JSON.parse(run('node', [runner, JSON.stringify(runnerOptions)], { cwd: work, env }).trim().split('\n').pop());
     if (reviewed.decision !== 'review-only' || !Array.isArray(reviewed.findings)) throw new Error(`the review did not complete: ${JSON.stringify(reviewed).slice(0, 200)}`);
@@ -220,8 +226,18 @@ function stop(repo, pr, args) {
   out({ event: 'stopped' });
 }
 
+function nudged(repo, pr, event, args) {
+  const { file, ledger } = identify(repo, pr, args);
+  if (!ledger) die('no ledger');
+  const { kind, head, replyAt } = JSON.parse(event || '{}');
+  if (!kind || !head) die('usage: nudged <owner/repo> <pr> <nudge event json>', 2);
+  ledger.nudged = { kind, head, replyAt: replyAt ?? null };
+  save(file, ledger);
+  out({ event: 'nudge-recorded' });
+}
+
 const [verb, repo, pr, ...rest] = process.argv.slice(2);
-if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '') || !/^\d+$/.test(pr || '')) die('usage: approve.js <start|round|approve|waive|stop> <owner/repo> <pr> [...]', 2);
-const verbs = { start, round: reviewRound, approve, stop, waive: (r, p, a) => waive(r, p, a[0], a) };
+if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '') || !/^\d+$/.test(pr || '')) die('usage: approve.js <start|round|approve|waive|stop|nudged> <owner/repo> <pr> [...]', 2);
+const verbs = { start, round: reviewRound, approve, stop, waive: (r, p, a) => waive(r, p, a[0], a), nudged: (r, p, a) => nudged(r, p, a[0], a) };
 if (!verbs[verb]) die(`unknown verb ${verb}`, 2);
 try { verbs[verb](repo, pr, rest); } catch (error) { die(error.message); }

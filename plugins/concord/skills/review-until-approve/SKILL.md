@@ -33,7 +33,7 @@ The decisions behind each step are in `docs/design/review-until-approve.md`.
 4. Wait: start `node "$SCRIPTS/watch.js" <ledger> <owner/repo> <pr>` with Monitor and do nothing else; it spends no model tokens. It prints one JSON line and exits. On that line:
    - `round`: go to step 2 (`start` first, so the ledger and account are re-checked).
    - `merged` or `closed`: tell the user and stop.
-   - `nudge`: only a push or only a reply arrived in 24 hours. Tell the user which, and ask whether to keep waiting or `waive` a finding they consider answered. Restart the watch if they want to keep waiting.
+   - `nudge`: only a push or only a reply arrived in 24 hours. Run `node "$SCRIPTS/approve.js" nudged <owner/repo> <pr> '<the nudge line>'` first, so a restarted watch stays silent until a new head or reply. Tell the user which, and ask whether to keep waiting or `waive` a finding they consider answered. Restart the watch if they want to keep waiting.
    - `timeout`: 7 days passed since the last review. Tell the user; the ledger stays resumable.
    - `error`: tell the user the detail and stop.
 5. A stop request from the user: stop the Monitor, run `node "$SCRIPTS/approve.js" stop <owner/repo> <pr>`, and post nothing.
