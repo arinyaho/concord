@@ -3318,6 +3318,40 @@ test('reviewOnly runs a Codex reviewer from its own CODEX_HOME, which marks the 
   assert.ok(!fs.existsSync(seen[0].home), 'the review-only CODEX_HOME is removed when the run ends');
 });
 
+test('reviewOnly denies the reviewer every entry of the real home except the way to its checkout, plus the paths named in reviewDenyRead', async () => {
+  const fakeHome = fs.realpathSync(temp());
+  const outside = fs.realpathSync(temp());
+  for (const dir of ['.ssh', '.config/gh', 'proj/other', 'proj/repo']) fs.mkdirSync(path.join(fakeHome, dir), { recursive: true });
+  fs.writeFileSync(path.join(fakeHome, '.bashrc'), 'x');
+  const repo = path.join(fakeHome, 'proj', 'repo');
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: repo });
+  const sourceHome = path.join(fakeHome, '.codex');
+  fs.mkdirSync(sourceHome);
+  fs.writeFileSync(path.join(sourceHome, 'auth.json'), '{}');
+  const h = harness();
+  const seen = [];
+  const cli = (args) => (args[0] === 'findings' ? { findings: [] } : h.cli(args));
+  const spawn = (input) => { const home = input.env && input.env.CODEX_HOME; seen.push(home && fs.readFileSync(path.join(home, 'config.toml'), 'utf8')); return h.spawn(input); };
+  fs.mkdirSync(path.join(fakeHome, '.local', 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(fakeHome, '.local', 'bin', 'codex'), '');
+  const saved = { HOME: process.env.HOME, CODEX_HOME: process.env.CODEX_HOME, PATH: process.env.PATH };
+  process.env.HOME = fakeHome; process.env.CODEX_HOME = sourceHome; process.env.PATH = `${path.join(fakeHome, '.local', 'bin')}${path.delimiter}${saved.PATH}`;
+  try {
+    await runReviewUntilGreen({ ref: 'feature/codex', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'codex', noBroad: true, reviewDenyRead: [outside] });
+  } finally {
+    for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
+  assert.ok(seen.length);
+  const denied = (config) => [...config.matchAll(/^"([^"]+)" = "deny"$/gm)].map((m) => m[1]);
+  for (const config of seen) {
+    const list = denied(config);
+    for (const must of ['.ssh', '.config', '.bashrc', 'proj/other', '.codex']) assert.ok(list.includes(path.join(fakeHome, must)), `${must} denied: ${list}`);
+    for (const never of ['', 'proj', 'proj/repo', '.local', '.local/bin']) assert.ok(!list.includes(path.join(fakeHome, never)) && !list.includes(path.join(fakeHome, never) + path.sep), `${never || 'the home itself'} stays reachable`);
+    assert.ok(list.includes(outside), 'a path named in reviewDenyRead is denied');
+  }
+});
+
 test('reviewOnly fails when a reviewer moved HEAD, even with a clean worktree', async () => {
   const repo = cleanRepo();
   const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();

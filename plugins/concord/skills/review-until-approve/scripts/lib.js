@@ -23,10 +23,16 @@ function chooseRange(lastRound, live, isAncestor) {
 // A renamed id does not hide a published finding: the span identifies it.
 const findingKey = (f) => collapse(f.span) ? sha(`${f.file}\0${collapse(f.span)}`) : `${f.file}\0${f.id}`;
 
+// The reviewer is told to raise a still-present finding again with the same id, so a raised finding
+// that matches no known one by span is the known finding of the same file and id, quoting another span.
+const matches = (known, f) => {
+  const bySpan = known.filter((p) => findingKey(p) === findingKey(f));
+  return bySpan.length ? bySpan : known.filter((p) => p.file === f.file && p.id === f.id);
+};
+
 // A fixed finding that comes back is a new finding; a waived one stays dismissed.
 function isPublished(ledger, f) {
-  const key = findingKey(f);
-  return ledger.findings.some((p) => p.status !== 'fixed' && findingKey(p) === key);
+  return matches(ledger.findings.filter((p) => p.status !== 'fixed'), f).length > 0;
 }
 
 // The changed paths and the renames (old path -> new path) of `git diff -z --name-status -M`.
@@ -39,17 +45,21 @@ function parseNameStatus(raw) {
   return { changed, renames };
 }
 
-// An earlier open finding stays open when this round raised it again, or when its
-// file is untouched and the span still occurs at the new head. A finding on a renamed
-// file follows the rename: it stays open while the span occurs at the new path, and
-// `moved` lists the new path for the ledger.
-function classifyPrior(open, raised, changedFiles, spanAtHead, renames = new Map()) {
+// An earlier open finding stays open when this round raised it again, when the reviewer was not told
+// about it (`evaluated` lists the ids it was told), or when nothing could have fixed it. In a push-only
+// round (`incremental`) a file the push left alone keeps its findings open, whatever the span looks
+// like: the reviewer never saw that file, and a span the engine could not quote verbatim is not
+// evidence. A round over the whole PR diff keeps a finding on an untouched file open only while its
+// span occurs. A finding on a renamed file follows the rename: it stays open while the span occurs at
+// the new path, and `moved` lists the new path for the ledger.
+function classifyPrior(open, raised, changedFiles, spanAtHead, renames = new Map(), { incremental = false, evaluated } = {}) {
   const out = { open: [], fixed: [], fixedKeys: [], moved: [] };
-  for (const p of open) {
-    const file = renames.get(p.file) || p.file;
-    const q = { ...p, file };
-    const again = raised.some((f) => findingKey(f) === findingKey(q));
-    if (again || (file !== p.file ? spanAtHead(file, p.span) : !changedFiles.has(p.file) && spanAtHead(p.file, p.span))) {
+  const moved = open.map((p) => ({ ...p, file: renames.get(p.file) || p.file }));
+  for (const [i, p] of open.entries()) {
+    const q = moved[i], file = q.file;
+    const stays = raised.some((f) => matches(moved, f).includes(q)) || (evaluated && !evaluated.has(p.id))
+      || (file !== p.file ? spanAtHead(file, p.span) : !changedFiles.has(p.file) && (incremental || spanAtHead(p.file, p.span)));
+    if (stays) {
       out.open.push(p.id);
       if (file !== p.file) out.moved.push({ key: p.key, file });
     } else { out.fixed.push(p.id); out.fixedKeys.push(findingKey(p)); }

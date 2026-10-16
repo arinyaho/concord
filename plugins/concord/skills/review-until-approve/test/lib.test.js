@@ -35,9 +35,10 @@ test('isPublished: matches by span despite a renamed id, by id+file when the spa
   assert.equal(lib.isPublished(l, finding('c:3', 'x.js', 'other')), false);
 });
 
-test('isPublished: a reused id on a different span is a new finding, and a fixed finding that returns is not published', () => {
+test('isPublished: a reused id in the same file is the same finding, and a fixed finding that returns is not published', () => {
   const l = ledger({ findings: [{ ...finding('a:1', 'x.js', 'foo'), status: 'open' }, { ...finding('b:2', 'y.js', 'bar'), status: 'fixed' }, { ...finding('c:3', 'z.js', 'baz'), status: 'waived' }] });
-  assert.equal(lib.isPublished(l, finding('a:1', 'x.js', 'different span')), false);
+  assert.equal(lib.isPublished(l, finding('a:1', 'x.js', 'different span')), true);
+  assert.equal(lib.isPublished(l, finding('a:1', 'other.js', 'different span')), false);
   assert.equal(lib.isPublished(l, finding('b:2', 'y.js', 'bar')), false);
   assert.equal(lib.isPublished(l, finding('c:3', 'z.js', 'baz')), true);
 });
@@ -55,6 +56,24 @@ test('classifyPrior: raised again or untouched with the span still present stays
   const verdict = lib.classifyPrior(open, raised, changed, spanAtHead);
   assert.deepEqual([verdict.open, verdict.fixed], [['raised', 'untouched'], ['touched', 'gone']]);
   assert.deepEqual(verdict.fixedKeys, [lib.findingKey(open[2]), lib.findingKey(open[3])]);
+});
+
+test('classifyPrior: in a push-only round an untouched file keeps its finding open even when the span cannot be found', () => {
+  const open = [{ ...finding('a', 'src/a.js', 'not verbatim in the file'), status: 'open' }];
+  const verdict = lib.classifyPrior(open, [], new Set(['src/b.js']), () => false, new Map(), { incremental: true });
+  assert.deepEqual([verdict.open, verdict.fixed], [['a'], []]);
+});
+
+test('classifyPrior: a finding the reviewer was not told about is never fixed by its silence', () => {
+  const open = [{ ...finding('shown', 'a.js', 'one'), status: 'open' }, { ...finding('cut', 'b.js', 'two'), status: 'open' }];
+  const verdict = lib.classifyPrior(open, [], new Set(['a.js', 'b.js']), () => false, new Map(), { incremental: true, evaluated: new Set(['shown']) });
+  assert.deepEqual([verdict.open, verdict.fixed], [['cut'], ['shown']]);
+});
+
+test('classifyPrior: raised again with the same id and file but a different span stays open', () => {
+  const open = [{ ...finding('a', 'a.js', 'old span'), status: 'open' }];
+  const verdict = lib.classifyPrior(open, [finding('a', 'a.js', 'new span')], new Set(['a.js']), () => false, new Map(), { incremental: true });
+  assert.deepEqual([verdict.open, verdict.fixed], [['a'], []]);
 });
 
 test('evaluateApproval: approves only a reviewed, open, non-draft head with no open blocking finding', () => {

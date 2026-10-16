@@ -44,9 +44,16 @@ else if (a[0] === 'pr') j({ headRefOid: s.head, baseRefOid: s.baseTip, title: s.
 else if (a[0] === 'api' && /compare/.test(a[1])) console.log(s.mergeBase);
 else if (a[0] === 'api' && a.includes('-X')) {
   const posts = fs.existsSync(dir + '/posts.jsonl') ? fs.readFileSync(dir + '/posts.jsonl', 'utf8').split('\\n').filter(Boolean) : [];
-  fs.appendFileSync(dir + '/posts.jsonl', fs.readFileSync(0, 'utf8') + '\\n');
+  const body = fs.readFileSync(0, 'utf8');
+  fs.appendFileSync(dir + '/posts.jsonl', body + '\\n');
+  const posted = JSON.parse(body);
+  const reviews = fs.existsSync(dir + '/reviews.json') ? JSON.parse(fs.readFileSync(dir + '/reviews.json', 'utf8')) : [];
+  reviews.push({ id: 100 + posts.length, user: { login: 'bot' }, commit_id: posted.commit_id, state: posted.event === 'APPROVE' ? 'APPROVED' : 'COMMENTED', submitted_at: new Date().toISOString() });
+  fs.writeFileSync(dir + '/reviews.json', JSON.stringify(reviews));
+  if (fs.existsSync(dir + '/crash-after-post')) { console.error('timeout after GitHub accepted the review'); process.exit(1); }
   j({ id: 100 + posts.length, submitted_at: new Date().toISOString() });
-} else if (a[0] === 'api' && fs.existsSync(dir + '/fail-comments')) { console.error('boom'); process.exit(1); }
+} else if (a[0] === 'api' && /\\/reviews$/.test(a[a.length - 1])) j([fs.existsSync(dir + '/reviews.json') ? JSON.parse(fs.readFileSync(dir + '/reviews.json', 'utf8')) : []]);
+else if (a[0] === 'api' && fs.existsSync(dir + '/fail-comments')) { console.error('boom'); process.exit(1); }
 else if (a[0] === 'api') j([[{ id: 7 }]]);
 `, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, 'runner.js'), `const fs = require('node:fs');
@@ -155,12 +162,12 @@ test('a refused post leaves no temporary clone behind', () => {
   assert.deepEqual(fs.readdirSync(tmp).filter((n) => n.startsWith('review-until-approve-')), []);
 });
 
-test('start with --reviewer on an existing ledger switches the provider for later rounds', () => {
+test('start refuses the claude reviewer: it cannot be kept from the real home, so only codex runs', () => {
   const w = world({ CLAUDE_CODE_OAUTH_TOKEN: 't' });
-  w.approve('start', 'o/r', '5');
-  assert.equal(w.ledger().provider, 'codex');
-  w.approve('start', 'o/r', '5', '--reviewer', 'claude', '--model', 'm');
-  assert.deepEqual([w.ledger().provider, w.ledger().model], ['claude', 'm']);
+  const r = w.approve('start', 'o/r', '5', '--reviewer', 'claude');
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /codex/);
+  assert.equal(fs.existsSync(path.join(w.dir, 'ledgers')), false);
 });
 
 test('two open findings sharing an id are closed by their own key: the unfixed one keeps blocking approval', () => {
@@ -223,11 +230,11 @@ test('the review process gets an empty HOME, and the real Codex home for its aut
   assert.equal(call.codexHome, '/real/codex');
 });
 
-test('a claude reviewer does not get the Codex home', () => {
-  const w = world({ CODEX_HOME: '/real/codex', CLAUDE_CODE_OAUTH_TOKEN: 't' });
+test('the Codex review is told to deny the real Claude configuration directory', () => {
+  const w = world({ CLAUDE_CONFIG_DIR: '/real/claude' });
   w.write('findings.json', []);
-  w.approve('start', 'o/r', '5', '--reviewer', 'claude'); w.approve('round', 'o/r', '5');
-  assert.equal(w.calls()[0].codexHome, undefined);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  assert.deepEqual(w.calls()[0].reviewDenyRead, ['/real/claude']);
 });
 
 test('nudged records the nudge so a restarted watch does not repeat it', () => {
@@ -267,4 +274,109 @@ test('a file added and renamed inside the PR keeps its finding open when the ran
   const r = JSON.parse(w.approve('round', 'o/r', '5').stdout);
   assert.deepEqual([r.mode, r.fixed, r.stillOpen], ['broad', 0, 1]);
   assert.deepEqual([w.ledger().findings[0].status, w.ledger().findings[0].file], ['open', 'm.js']);
+});
+
+// A push by the author: write files, commit, publish as the new PR head.
+function push(w, files, message) {
+  for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(w.src, name), text);
+  sh(w.src, 'add', '.'); sh(w.src, 'commit', '-q', '-m', message);
+  const head = sh(w.src, 'rev-parse', 'HEAD');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head });
+  return head;
+}
+
+test('a push to another file does not fix a finding whose span the file does not contain verbatim, and the PR is not approved', () => {
+  const w = world();
+  w.write('findings.json', [{ ...finding, span: 'text the engine paraphrased' }]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  push(w, { 'b.js': 'unrelated\n' }, 'c2');
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  const r2 = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r2.review, r2.fixed, r2.stillOpen, r2.notApproved], ['COMMENT', 0, 1, 'open-findings']);
+  assert.equal(w.ledger().findings[0].status, 'open');
+  assert.deepEqual(w.posts().map((p) => p.event), ['COMMENT', 'COMMENT']);
+});
+
+test('a finding the reviewer was not told about (past the twenty listed) is not fixed by its silence', () => {
+  const w = world();
+  const many = Array.from({ length: 21 }, (_, i) => ({ ...finding, id: `c:${i}`, span: `bad${i}` }));
+  w.write('findings.json', many);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  push(w, { 'a.js': 'rewritten\n' }, 'c2');
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  const r2 = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r2.fixed, r2.stillOpen, r2.review], [20, 1, 'COMMENT']);
+  assert.deepEqual(w.ledger().findings.filter((f) => f.status === 'open').map((f) => f.id), ['c:20']);
+});
+
+test('a finding raised again with a different span is neither listed fixed nor posted as new', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  push(w, { 'a.js': 'one\nbad2\nthree\nfour\n' }, 'c2');
+  w.write('findings.json', [{ ...finding, span: 'bad2' }]);
+  w.approve('start', 'o/r', '5');
+  const r2 = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r2.new, r2.fixed, r2.stillOpen], [0, 0, 1]);
+  assert.equal(w.ledger().findings.length, 1);
+});
+
+test('a finding whose file path leaves the checkout, or runs through a symlink, is not kept open by what that path reads', () => {
+  const w = world();
+  // The runner writes intent.md next to the clone; the span below occurs there, not in the checkout.
+  w.write('findings.json', [{ ...finding, id: 'x:out', file: '../intent.md', span: '# T' }, { ...finding, id: 'x:link', file: 'link.txt', span: 'bad' }]);
+  fs.symlinkSync('a.js', path.join(w.src, 'link.txt'));
+  push(w, { 'a.js': 'one\nbad\nthree\nfour\n' }, 'c1b');
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  // A rewrite of the history, so the next round reviews the whole PR diff and the files count as untouched.
+  sh(w.src, 'commit', '-q', '--amend', '-m', 'rewritten');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD') });
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  const r2 = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r2.fixed, r2.stillOpen], [2, 0]);
+});
+
+test('an approval GitHub accepted but the call reported as failed is not posted a second time', () => {
+  const w = world();
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  fs.writeFileSync(path.join(w.dir, 'crash-after-post'), '');
+  const r1 = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.equal(r1.review, 'APPROVE');
+  assert.equal(w.posts().length, 1);
+  assert.equal(w.ledger().approval.head, w.c1);
+  assert.equal(w.ledger().rounds.length, 1);
+});
+
+test('start after a crash between the approval post and the ledger save finds the posted review and does not review again', () => {
+  const w = world();
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  // The pending marker the round saved before posting, and the review GitHub holds for that head.
+  const file = path.join(w.dir, 'ledgers', 'o__r__5__bot.json');
+  const ledger = w.ledger();
+  ledger.pending = { head: w.c1, after: 50, round: { n: 1, head: w.c1, base: w.state.mergeBase, mergeBase: w.state.mergeBase, intent: 'x', mode: 'broad', commentIds: [], event: 'APPROVE' } };
+  fs.writeFileSync(file, JSON.stringify(ledger));
+  w.write('reviews.json', [{ id: 77, user: { login: 'bot' }, commit_id: w.c1, state: 'APPROVED', submitted_at: '2026-01-01T00:00:00Z' }]);
+  assert.equal(JSON.parse(w.approve('start', 'o/r', '5').stdout).action, 'watch');
+  assert.deepEqual([w.ledger().approval.reviewId, w.ledger().rounds.length, w.ledger().pending], [77, 1, undefined]);
+  assert.equal(w.posts().length, 0);
+});
+
+test('start after a crash before GitHub accepted the approval drops the marker and reviews again', () => {
+  const w = world();
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  const file = path.join(w.dir, 'ledgers', 'o__r__5__bot.json');
+  const ledger = w.ledger();
+  ledger.pending = { head: w.c1, after: 50, round: { n: 1 } };
+  fs.writeFileSync(file, JSON.stringify(ledger));
+  w.write('reviews.json', [{ id: 40, user: { login: 'bot' }, commit_id: w.c1, state: 'APPROVED', submitted_at: '2026-01-01T00:00:00Z' }]);
+  assert.equal(JSON.parse(w.approve('start', 'o/r', '5').stdout).action, 'round');
+  assert.equal(w.ledger().pending, undefined);
 });
