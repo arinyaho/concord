@@ -35,6 +35,13 @@ test('isPublished: matches by span despite a renamed id, by id+file when the spa
   assert.equal(lib.isPublished(l, finding('c:3', 'x.js', 'other')), false);
 });
 
+test('isPublished: a reused id on a different span is a new finding, and a fixed finding that returns is not published', () => {
+  const l = ledger({ findings: [{ ...finding('a:1', 'x.js', 'foo'), status: 'open' }, { ...finding('b:2', 'y.js', 'bar'), status: 'fixed' }, { ...finding('c:3', 'z.js', 'baz'), status: 'waived' }] });
+  assert.equal(lib.isPublished(l, finding('a:1', 'x.js', 'different span')), false);
+  assert.equal(lib.isPublished(l, finding('b:2', 'y.js', 'bar')), false);
+  assert.equal(lib.isPublished(l, finding('c:3', 'z.js', 'baz')), true);
+});
+
 test('classifyPrior: raised again or untouched with the span still present stays open, otherwise fixed', () => {
   const open = [
     { ...finding('raised', 'a.js', 'one'), status: 'open' },
@@ -101,4 +108,10 @@ test('repliesSince: counts only the author, after the last review, in our thread
   ];
   const issue = [{ user: { login: 'dev' }, created_at: '2026-01-01T00:20:00Z' }, { user: { login: 'other' }, created_at: '2026-01-01T00:21:00Z' }];
   assert.deepEqual(lib.repliesSince(l, pull, issue, 'dev'), ['2026-01-01T00:10:00Z', '2026-01-01T00:20:00Z']);
+});
+
+test('repliesSince: compares instants, not strings, and tolerates a comment without a user', () => {
+  const l = ledger({ rounds: [round(1, 'h1', { submittedAt: '2026-01-01T00:00:00.500Z' })] });
+  const issue = [{ user: { login: 'dev' }, created_at: '2026-01-01T00:00:01Z' }, { user: { login: 'dev' }, created_at: '2026-01-01T00:00:00Z' }, { user: null, created_at: '2026-01-01T00:00:02Z' }];
+  assert.deepEqual(lib.repliesSince(l, [], issue, 'dev'), ['2026-01-01T00:00:01Z']);
 });

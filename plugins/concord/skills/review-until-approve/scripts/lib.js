@@ -23,9 +23,10 @@ function chooseRange(lastRound, live, isAncestor) {
 // A renamed id does not hide a published finding: the span identifies it.
 const findingKey = (f) => collapse(f.span) ? sha(`${f.file}\0${collapse(f.span)}`) : `${f.file}\0${f.id}`;
 
+// A fixed finding that comes back is a new finding; a waived one stays dismissed.
 function isPublished(ledger, f) {
   const key = findingKey(f);
-  return ledger.findings.some((p) => findingKey(p) === key || (p.id === f.id && p.file === f.file));
+  return ledger.findings.some((p) => p.status !== 'fixed' && findingKey(p) === key);
 }
 
 // An earlier open finding stays open when this round raised it again, or when its
@@ -33,7 +34,7 @@ function isPublished(ledger, f) {
 function classifyPrior(open, raised, changedFiles, spanAtHead) {
   const out = { open: [], fixed: [] };
   for (const p of open) {
-    const again = raised.some((f) => findingKey(f) === findingKey(p) || (f.id === p.id && f.file === p.file));
+    const again = raised.some((f) => findingKey(f) === findingKey(p));
     (again || (!changedFiles.has(p.file) && spanAtHead(p.file, p.span)) ? out.open : out.fixed).push(p.id);
   }
   return out;
@@ -56,11 +57,11 @@ function evaluateApproval(ledger, live, reviewedHead) {
 // on the PR conversation (the only way to answer a finding posted in a review body).
 function repliesSince(ledger, pullComments, issueComments, author) {
   const ours = new Set(ledger.rounds.flatMap((r) => r.commentIds));
-  const since = last(ledger).submittedAt;
+  const since = Date.parse(last(ledger).submittedAt);
   return [
     ...pullComments.filter((c) => ours.has(c.in_reply_to_id)),
     ...issueComments,
-  ].filter((c) => c.user.login === author && c.created_at > since).map((c) => c.created_at).sort();
+  ].filter((c) => c.user?.login === author && Date.parse(c.created_at) > since).map((c) => c.created_at).sort();
 }
 
 // The one event the watch prints, or null to keep waiting. `stable` means the head
