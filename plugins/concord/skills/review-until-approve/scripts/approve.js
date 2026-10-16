@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 // Round runner of review-until-approve. Every verb prints one JSON line.
-//   start <owner/repo> <pr> [--model <m>]   check identity, open or resume the ledger, say what to do next
+//   start <owner/repo> <pr> [--reviewer codex|claude] [--model <m>]   check identity, open or resume the ledger, say what to do next
 //   round <owner/repo> <pr>                                           review, publish, approve when clean
 //   approve <owner/repo> <pr>                                         approve the reviewed head if the approval condition holds
 //   waive <owner/repo> <pr> <finding-id>                              the user dismisses a finding, then approve if possible
@@ -62,11 +62,14 @@ function lock(file) {
 
 // The reviewer reads attacker-controlled files, so it gets an allowlist, not the whole environment.
 const ENV_ALLOWED = /^(PATH|USER|LOGNAME|LANG|LC_\w+|TERM|TMPDIR|TZ|(HTTPS?|NO|ALL)_PROXY|(https?|no|all)_proxy|SSL_CERT_(FILE|DIR)|NODE_EXTRA_CA_CERTS)$/;
-// HOME is an empty directory, so the user's credential files (gh, ssh, cloud) are out of reach. The Codex
-// engine copies auth.json from CODEX_HOME into a home of its own, so that path stays the real one.
-function reviewerEnv(claudeConfig, home) {
+// HOME is an empty directory; the engine keeps the reviewer from the real home (`reviewRealHome`) with a Codex
+// file-system profile or a bubblewrap wrapper. The Codex engine copies auth.json from CODEX_HOME into a home of its own.
+function reviewerEnv(provider, claudeConfig, home) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => ENV_ALLOWED.test(name)));
-  return { ...env, HOME: home, CODEX_HOME: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), CLAUDE_CONFIG_DIR: claudeConfig };
+  env.HOME = home;
+  if (provider === 'codex') env.CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+  if (provider === 'claude' && process.env.CLAUDE_CODE_OAUTH_TOKEN) env.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  return { ...env, CLAUDE_CONFIG_DIR: claudeConfig };
 }
 
 function snapshot(repo, pr) {
@@ -120,13 +123,15 @@ const opt = (args, name) => { const i = args.indexOf(name); return i === -1 ? un
 const lastRound = (ledger) => ledger.rounds[ledger.rounds.length - 1];
 
 function start(repo, pr, args) {
-  // The Claude reviewer cannot be kept from reading the account's credential files by absolute path, so only Codex runs.
-  if ((opt(args, '--reviewer') || 'codex') !== 'codex') die('the reviewer must be codex: the claude reviewer cannot be kept from the real home directory');
   const { reviewer, file, ledger: found } = identify(repo, pr, args);
   const snap = snapshot(repo, pr);
   if (snap.state !== 'OPEN') die(`the pull request is ${snap.state}`);
   if (snap.author === reviewer) die(`${reviewer} is the author; GitHub rejects self-approval`);
-  const provider = 'codex';
+  const provider = opt(args, '--reviewer') || found?.provider || (process.env.CLAUDECODE ? 'claude' : 'codex');
+  if (!['codex', 'claude'].includes(provider)) die('--reviewer must be codex or claude');
+  if (provider === 'claude' && !process.env.CLAUDE_CODE_OAUTH_TOKEN) die('the claude reviewer needs CLAUDE_CODE_OAUTH_TOKEN; use codex otherwise');
+  // The engine confines the Claude reviewer with bubblewrap so it cannot read the account's home; refuse before round 1 where that cannot run.
+  if (provider === 'claude' && (process.platform !== 'linux' || spawnSync('bwrap', ['--ro-bind', '/', '/', 'true']).status !== 0)) die('the claude reviewer needs Linux with a working bubblewrap (bwrap) to be kept from the real home directory; use codex otherwise');
   const ledger = found || { version: 1, repo, pr, reviewer, provider, model: opt(args, '--model') || null, author: snap.author, startedAt: new Date().toISOString(), rounds: [], findings: [], nudged: null, approval: null, stopped: null };
   ledger.provider = provider;
   if (opt(args, '--model')) ledger.model = opt(args, '--model');
@@ -181,9 +186,9 @@ function attempt(repo, pr, ledger, file) {
     fs.writeFileSync(intentFile, `# ${snap.title}\n\n${snap.body}`);
     const realClaudeConfig = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
     const claudeConfig = fs.mkdtempSync(path.join(dir, 'claude-'));
-    const runnerOptions = { ref: `concord-pr-${pr}`, base: range.base, broad: range.broad, noBroad: !range.broad, reviewer: ledger.provider, reviewerModel: ledger.model || undefined, reviewDenyRead: [realClaudeConfig], reviewerGuidance: guidance(shown), intentFile: range.broad ? intentFile : undefined };
+    const runnerOptions = { ref: `concord-pr-${pr}`, base: range.base, broad: range.broad, noBroad: !range.broad, reviewer: ledger.provider, reviewerModel: ledger.model || undefined, reviewDenyRead: [realClaudeConfig], reviewRealHome: os.homedir(), reviewerGuidance: guidance(shown), intentFile: range.broad ? intentFile : undefined };
     const reviewerHome = fs.mkdtempSync(path.join(dir, 'home-'));
-    const env = reviewerEnv(claudeConfig, reviewerHome);
+    const env = reviewerEnv(ledger.provider, claudeConfig, reviewerHome);
     const runner = process.env.REVIEW_APPROVE_RUNNER || path.join(__dirname, 'run-review.js');
     const reviewed = JSON.parse(run('node', [runner, JSON.stringify(runnerOptions)], { cwd: work, env }).trim().split('\n').pop());
     if (reviewed.decision !== 'review-only' || !Array.isArray(reviewed.findings)) throw new Error(`the review did not complete: ${JSON.stringify(reviewed).slice(0, 200)}`);
