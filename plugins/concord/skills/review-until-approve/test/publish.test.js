@@ -52,3 +52,8 @@ test('containsSecret: refuses text holding a credential', () => {
   assert.equal(publish.containsSecret('xx tok123 yy', ['tok123']), true);
   assert.equal(publish.containsSecret('clean', ['tok123', '']), false);
 });
+
+test('hunksOf: a path with spaces and non-ASCII characters keeps its real name', () => {
+  const diff = 'diff --git a/dir name/é.js b/dir name/é.js\n--- a/dir name/é.js\t\n+++ b/dir name/é.js\t\n@@ -1,0 +1,1 @@\n+x\n';
+  assert.deepEqual(publish.hunksOf(diff), [{ file: 'dir name/é.js', from: 1, to: 1 }]);
+});

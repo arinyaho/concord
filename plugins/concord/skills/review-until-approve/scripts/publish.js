@@ -11,7 +11,7 @@ function hunksOf(diff) {
   for (const line of diff.split('\n')) {
     if (line.startsWith('diff --git ')) header = true;
     else if (line.startsWith('@@')) header = false;
-    if (header && line.startsWith('+++ b/')) file = line.slice(6);
+    if (header && line.startsWith('+++ b/')) file = line.slice(6).replace(/\t$/, '');
     const m = /^@@ -\S+ \+(\d+)(?:,(\d+))? @@/.exec(line);
     if (m && (m[2] === undefined || Number(m[2]) > 0)) hunks.push({ file, from: Number(m[1]), to: Number(m[1]) + (m[2] === undefined ? 1 : Number(m[2])) - 1 });
   }
