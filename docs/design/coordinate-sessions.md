@@ -36,6 +36,10 @@ A worker in a cloud environment reaches the coordinator with `send_message` as w
 
 On either channel, a worker that has gone quiet is checked with `get_session`: `status_bucket` `failed` means its last turn errored, `status_bucket` `blocked` means it waits on something only the user can give, and `status` `idle` with no report means it stopped without reporting.
 
+`status_bucket` `working` does not show that a worker has started: in a stalled bridge environment it read `working` while the worker stayed `PENDING` and `disconnected`. Three minutes is long enough for a normal sandbox allocation, and the start check still reaches the user well before a missing report would. The start check depends on `connection_status` alone, so it holds whatever `status` and `status_bucket` read.
+
+`create_session` takes no effort setting, so the worker prompt names the effort and cannot enforce it. The coordinator lists its workers with `list_sessions` using `mine: true` and a small `limit`, because an unfiltered call can overflow the tool result.
+
 ## Worker prompt
 
 The skill carries a template the coordinator fills in, in this order:
@@ -60,7 +64,8 @@ The coordinator answers a worker's `question` itself when the answer lies within
 
 | Step | What the coordinator does |
 |---|---|
-| Start | Reads the environment, picks the channel, names the group (`groupNN`), creates the worker, starts the watch on the file channel, and reports to the user in one or two paragraphs. |
+| Start | Loads the skill before the first `create_session`, reads the environment, picks the channel, names the group (`groupNN`), creates the worker, confirms that it started, starts the watch on the file channel, and reports to the user in one or two paragraphs. |
+| Start check | Polls `get_session` every 30 seconds until `connection_status` reads `connected`. A worker not connected within three minutes of `create_session` is stalled in sandbox allocation: the coordinator starts no watch, archives it, tells the user to check or restart the bridge for that environment, and offers an Agent-tool subagent as the fallback. It sends the worker no message before it has started. |
 | Parallel work | Runs workers in parallel only when their file sets are disjoint; otherwise orders them or gives them to one worker. |
 | Watch | Re-arms the Monitor while a worker is active and stops it when none is. |
 | `question`, `blocked`, `progress` | Answers a `question` or `blocked` report within what the user delegated and otherwise asks the user; acts on `progress` only when it changes scope or file ownership. |

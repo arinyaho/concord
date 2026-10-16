@@ -111,3 +111,23 @@ test('the Monitor loop surfaces each report once, flags a bad header and skips t
   assert.match(lines[0], /001-done\.md: \[to coordinator\] done: ok$/);
   assert.match(lines[1], /002-progress\.md: \(no \[to coordinator\] header\)/);
 });
+
+test('a worker that never starts is detected, archived and reported instead of awaited', () => {
+  const skill = fs.readFileSync(SKILL, 'utf8');
+  assert.match(skill, /before your first `create_session`/);
+  assert.match(skill, /confirm that it started, start the Monitor/);
+  assert.match(skill, /until its `connection_status` reads `connected`/);
+  assert.match(skill, /within three minutes of `create_session` is stalled in sandbox allocation/);
+  assert.match(skill, /Send a worker no message before it has started/);
+  assert.match(skill, /archive it with `archive_session`/);
+  assert.match(skill, /restart the bridge for that environment/);
+  assert.match(skill, /Agent-tool subagent/);
+  assert.match(skill, /`status_bucket` `working` does not show that a worker has started/);
+});
+
+test('effort goes in the worker prompt and list_sessions is filtered', () => {
+  const skill = fs.readFileSync(SKILL, 'utf8');
+  assert.match(skill, /takes no effort setting/);
+  assert.match(skill, /the prompt cannot enforce/);
+  assert.match(skill, /`list_sessions` with `mine: true`/);
+});

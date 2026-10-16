@@ -19,7 +19,11 @@ You are the coordinator. You decide scope and order, write worker prompts, answe
 
 ## 0. Start
 
-For each unit of work, in this order: read the environment (step 1), pick the channel (step 2), name the group (`group01`, `group02`, and so on, one per worker), create its report directory on the file channel, create the worker with the prompt from step 3, start the Monitor on the file channel, then report to the user (step 6).
+Run this skill before your first `create_session`; a worker created earlier got a prompt without the channel, report format and stop rules from step 3.
+
+For each unit of work, in this order: read the environment (step 1), pick the channel (step 2), name the group (`group01`, `group02`, and so on, one per worker), create its report directory on the file channel, create the worker with the prompt from step 3, confirm that it started, start the Monitor on the file channel, then report to the user (step 6).
+
+To confirm a start, call `get_session` on the worker every 30 seconds until its `connection_status` reads `connected`. A worker whose `connection_status` has not read `connected` within three minutes of `create_session` is stalled in sandbox allocation, whatever its `status` and `status_bucket` read. Send a worker no message before it has started. For a stalled worker, start no Monitor: archive it with `archive_session`, tell the user to check or restart the bridge for that environment, and offer to run the unit as an Agent-tool subagent instead.
 
 ## 1. Read the environment
 
@@ -64,7 +68,9 @@ done
 
 A Monitor expires after at most 30 minutes; re-arm it while its worker is active. Stop the Monitor when no worker is active.
 
-On either channel, a quiet worker is checked with `get_session`. `status_bucket` `failed` means its last turn errored. `status_bucket` `blocked` means it waits on a permission or approval only the user can give; tell the user. `status` `idle` with no report means it stopped without reporting; ask it for a report with `send_message`.
+On either channel, a quiet worker is checked with `get_session`. `status_bucket` `working` does not show that a worker has started; `connection_status` does, as in step 0. `status_bucket` `failed` means its last turn errored. `status_bucket` `blocked` means it waits on a permission or approval only the user can give; tell the user. `status` `idle` with no report means it stopped without reporting; ask it for a report with `send_message`.
+
+To list your workers, call `list_sessions` with `mine: true` and a `limit` of 20 or less; an unfiltered call can overflow the tool result.
 
 ## 3. Write the worker prompt
 
@@ -77,6 +83,8 @@ Fill these in, in order:
 5. The channel: the report directory or your session id, and the report format above.
 6. Stop rules: never merge; paste the `record-delivery` output into the `done` report; past the context limit, stop at the next stage boundary with a `handoff` report.
 7. The path of the project's rules file (for example `AGENTS.md` or a shared worker-rules file). Repository rules stay there, not in the prompt.
+
+`create_session` takes no effort setting. Name the effort in the worker prompt; the prompt cannot enforce it.
 
 Run workers in parallel only when their file sets are disjoint; otherwise order them or give them to one worker.
 
