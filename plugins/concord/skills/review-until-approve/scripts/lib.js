@@ -23,13 +23,16 @@ function chooseRange(lastRound, live, isAncestor) {
 // A renamed id does not hide a published finding: the span identifies it.
 const findingKey = (f) => collapse(f.span) ? sha(`${f.file}\0${collapse(f.span)}`) : `${f.file}\0${f.id}`;
 
-// The reviewer is told to raise a still-present finding again with the same id, so the same
-// file and id is the same finding even when it quotes another span.
-const sameFinding = (a, b) => findingKey(a) === findingKey(b) || (a.file === b.file && a.id === b.id);
+// The reviewer is told to raise a still-present finding again with the same id, so a raised finding
+// that matches no known one by span is the known finding of the same file and id, quoting another span.
+const matches = (known, f) => {
+  const bySpan = known.filter((p) => findingKey(p) === findingKey(f));
+  return bySpan.length ? bySpan : known.filter((p) => p.file === f.file && p.id === f.id);
+};
 
 // A fixed finding that comes back is a new finding; a waived one stays dismissed.
 function isPublished(ledger, f) {
-  return ledger.findings.some((p) => p.status !== 'fixed' && sameFinding(p, f));
+  return matches(ledger.findings.filter((p) => p.status !== 'fixed'), f).length > 0;
 }
 
 // An earlier open finding stays open when this round raised it again, or when its
@@ -37,7 +40,7 @@ function isPublished(ledger, f) {
 function classifyPrior(open, raised, changedFiles, spanAtHead) {
   const out = { open: [], fixed: [] };
   for (const p of open) {
-    const again = raised.some((f) => sameFinding(f, p));
+    const again = raised.some((f) => matches(open, f).includes(p));
     (again || (!changedFiles.has(p.file) && spanAtHead(p.file, p.span)) ? out.open : out.fixed).push(p.id);
   }
   return out;
