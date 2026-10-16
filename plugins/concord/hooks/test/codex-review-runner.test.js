@@ -2769,7 +2769,7 @@ for (const provider of ['codex', 'claude']) test(`an untrusted ${provider} revie
   process.env.PATH = `${binDir}${path.delimiter}${oldPath}`;
   try {
     if (provider === 'codex') await codexExec({ role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir, untrustedCheckout: true, codexExecutable: { command: executable, version: 'codex-cli 0.154.0' } });
-    else await providerExec({ provider, role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir, untrustedCheckout: true });
+    else await providerExec({ provider, role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir, untrustedCheckout: true, confineClaude: unconfined });
     await new Promise((resolve) => setTimeout(resolve, 800));
     assert.strictEqual(fs.existsSync(marker), false, 'a reviewer descendant must not write after the top-level CLI exits');
     if (provider === 'codex') await codexExec({ role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir, codexExecutable: { command: executable, version: 'codex-cli 0.154.0' } });
@@ -3361,6 +3361,8 @@ test('reviewOnly denies the reviewer every entry of the real home except the way
   }
 });
 
+// These tests check the arguments and the process handling of the reviewer, not the confinement, which the bubblewrap tests below cover.
+const unconfined = (command, args) => ({ command, args });
 const bwrapWorks = process.platform === 'linux' && spawnSync('bwrap', ['--ro-bind', '/', '/', 'true']).status === 0;
 
 test('the Claude reviewer of an untrusted checkout runs under bubblewrap with the account home and the temporary directory hidden', { skip: process.platform !== 'linux' }, () => {

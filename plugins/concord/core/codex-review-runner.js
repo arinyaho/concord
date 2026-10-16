@@ -297,16 +297,17 @@ function reviewerEnv(env, cliPath) {
 // The Claude reviewer reads an untrusted checkout and has Bash, so settings cannot keep it from the
 // account's credential files; the operating system does. On Linux the reviewer runs under bubblewrap with
 // the real home and the temporary directory hidden behind empty file systems, then only what the review
-// needs put back: the checkout and the run's own directories (writable), the review CLI's plugin, the Node
+// needs put back: the checkout, the state directory and the directories the caller names in `writable` (the
+// reviewer's own home and configuration directory), the review CLI's plugin, the Node
 // runtime and the Claude installation (read-only). A new process namespace also hides the parent's
 // environment. Anywhere else, or when bubblewrap cannot start, the reviewer is refused.
-function confineClaude(command, args, { repoRoot, stateDir, cliPath, denyRead = [], realHome = os.homedir() }) {
+function confineClaude(command, args, { repoRoot, stateDir, cliPath, denyRead = [], writable = [], realHome = os.homedir() }) {
   if (process.platform !== 'linux') throw new Error('review-until-green: the Claude reviewer of an untrusted checkout is confined with bubblewrap, which needs Linux; use the codex reviewer here');
   const exists = (p) => p && fs.existsSync(p);
   const real = (p) => { try { return fs.realpathSync(p); } catch (_) { return null; } };
   const onPath = (name) => String(process.env.PATH || '').split(path.delimiter).map((dir) => dir && path.join(dir, name)).find((candidate) => exists(candidate));
   const installDir = (file) => { const r = real(file); return r && (r.match(/^(.*[\\/]node_modules[\\/]@[^\\/]+[\\/][^\\/]+)[\\/]/)?.[1] || r); };
-  const own = [repoRoot, stateDir, process.env.HOME, process.env.CLAUDE_CONFIG_DIR, process.env.TMPDIR].map((p) => p && real(p)).filter(Boolean);
+  const own = [repoRoot, stateDir, ...writable].map((p) => p && real(p)).filter(Boolean);
   const readonly = [cliPath && path.resolve(cliPath, '..', '..'), process.execPath, onPath(command), onPath('claude'), command].map((p) => p && installDir(p)).filter(Boolean);
   const hidden = [realHome, os.tmpdir(), ...denyRead].map((p) => real(p)).filter(Boolean);
   const flags = ['--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--unshare-pid', '--die-with-parent'];
@@ -359,8 +360,9 @@ function providerExec(input) {
   const truncate = (text) => (text.length > OUTPUT_LIMIT ? `${text.slice(0, OUTPUT_LIMIT)}\n...(truncated)` : text);
 
   return new Promise((resolve, reject) => {
+    // `input.confineClaude` lets a test stand in for the wrapper; the engine never sets it.
     const launch = input.untrustedCheckout && provider === 'claude'
-      ? confineClaude(crossPlatformCommand(executable, repoRoot), crossPlatformArgs(args, needsDoubleEscape(executable, repoRoot)), { repoRoot, stateDir, cliPath: input.cliPath, denyRead: input.reviewDenyRead, realHome: input.reviewRealHome || undefined })
+      ? (input.confineClaude || confineClaude)(crossPlatformCommand(executable, repoRoot), crossPlatformArgs(args, needsDoubleEscape(executable, repoRoot)), { repoRoot, stateDir, cliPath: input.cliPath, denyRead: input.reviewDenyRead, writable: input.reviewWritable, realHome: input.reviewRealHome || undefined })
       : { command: crossPlatformCommand(executable, repoRoot), args: crossPlatformArgs(args, needsDoubleEscape(executable, repoRoot)) };
     const child = spawn(launch.command, launch.args, crossPlatformOpts({ cwd: repoRoot, env: reviewerEnv(input.env, input.cliPath), stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'pipe'], detached: !isWindows }));
     if (input.untrustedCheckout) child.once('exit', () => terminateProcessTree(child, 'SIGKILL'));
@@ -1133,7 +1135,7 @@ async function runRounds(options) {
         ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
         ...(options.subprocessTimeoutMs ? { timeoutMs: options.subprocessTimeoutMs } : {}),
         ...(abortController ? { abortSignal: abortController.signal } : {}),
-        ...(reviewOnly ? { untrustedCheckout: true, reviewDenyRead: options.reviewDenyRead || [], reviewRealHome: options.reviewRealHome } : {}),
+        ...(reviewOnly ? { untrustedCheckout: true, reviewDenyRead: options.reviewDenyRead || [], reviewWritable: options.reviewWritable || [], reviewRealHome: options.reviewRealHome } : {}),
         ...(options.reviewCodexHome && provider === 'codex' ? { env: { ...process.env, CODEX_HOME: options.reviewCodexHome } } : {}),
         ...(telemetrySlot ? { telemetrySlot } : {}),
       });
