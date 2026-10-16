@@ -44,7 +44,7 @@ The decisions behind each step are in `docs/design/review-until-approve.md`.
 
 ## Findings the user disputes
 
-Every verified finding blocks approval, because the review engine emits no severity. A finding is fixed only when its quoted span occurred verbatim in the file at the head it was recorded against and no longer occurs at the new head, read from git objects; the reviewer's silence never fixes one. A finding the code cannot settle stays open until the user waives it. When the user decides a finding does not block, run `node "$SCRIPTS/approve.js" waive <owner/repo> <pr> <finding-id>`: it records the waiver and approves the reviewed head if nothing else blocks. Never waive on your own judgment.
+Every verified finding blocks approval, because the review engine emits no severity. A finding is fixed only when its quoted span occurred verbatim in the file at the head it was recorded against and no longer occurs at the new head, read from git objects; the reviewer's silence never fixes one. A finding the code cannot settle stays open until the user waives it. When the user decides a finding does not block, run `node "$SCRIPTS/approve.js" waive <owner/repo> <pr> <finding-id>` (the `key` from the `open` or `held` list when the id belongs to more than one open finding; the command refuses an ambiguous id): it records the waiver and approves the reviewed head if nothing else blocks. Never waive on your own judgment.
 
 ## What a round publishes
 
