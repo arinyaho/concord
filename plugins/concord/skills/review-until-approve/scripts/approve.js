@@ -21,8 +21,16 @@ const { reclaimStaleLock } = require(path.join(core, 'run-lock'));
 const MAX_ROUNDS = 10;
 const MAX_DISCARDS = 3;
 const GUIDANCE_FINDINGS = 20;
+const UNRESTRICTED = '--allow-unrestricted-home';
+const WARNING = 'the claude reviewer can read your real home directory (gh, ssh and cloud credentials); a malicious pull request could make it publish their contents. Use the codex reviewer to avoid this.';
 const die = (message, code = 1) => { process.stderr.write(`review-until-approve: ${message}\n`); process.exit(code); };
 const out = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
+// An unrestricted-home run says so in every result, and on stderr where the user sees it.
+const outFor = (ledger, value) => {
+  if (!ledger.unrestrictedHome) return out(value);
+  process.stderr.write(`review-until-approve: WARNING: ${WARNING}\n`);
+  out({ ...value, warning: [value.warning, WARNING].filter(Boolean).join(' ') });
+};
 
 function run(command, args, { input, cwd, env } = {}) {
   const r = spawnSync(command, args, { input, cwd, env, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
@@ -63,7 +71,7 @@ function lock(file) {
 // The reviewer reads attacker-controlled files, so it gets an allowlist, not the whole environment.
 const ENV_ALLOWED = /^(PATH|USER|LOGNAME|LANG|LC_\w+|TERM|TMPDIR|TZ|(HTTPS?|NO|ALL)_PROXY|(https?|no|all)_proxy|SSL_CERT_(FILE|DIR)|NODE_EXTRA_CA_CERTS)$/;
 // HOME is an empty directory; the engine keeps the reviewer from the real home (`reviewRealHome`) with a Codex
-// file-system profile or a bubblewrap wrapper. The Codex engine copies auth.json from CODEX_HOME into a home of its own.
+// file-system profile (Codex only). The Codex engine copies auth.json from CODEX_HOME into a home of its own.
 function reviewerEnv(provider, claudeConfig, home) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => ENV_ALLOWED.test(name)));
   env.HOME = home;
@@ -130,10 +138,11 @@ function start(repo, pr, args) {
   const provider = opt(args, '--reviewer') || found?.provider || (process.env.CLAUDECODE ? 'claude' : 'codex');
   if (!['codex', 'claude'].includes(provider)) die('--reviewer must be codex or claude');
   if (provider === 'claude' && !process.env.CLAUDE_CODE_OAUTH_TOKEN) die('the claude reviewer needs CLAUDE_CODE_OAUTH_TOKEN; use codex otherwise');
-  // The engine confines the Claude reviewer with bubblewrap so it cannot read the account's home; refuse before round 1 where that cannot run.
-  if (provider === 'claude' && (process.platform !== 'linux' || spawnSync(process.env.REVIEW_APPROVE_BWRAP || 'bwrap', ['--ro-bind', '/', '/', 'true']).status !== 0)) die('the claude reviewer needs Linux with a working bubblewrap (bwrap) to be kept from the real home directory; use codex otherwise');
+  // The Claude reviewer cannot yet be kept from the account's home directory (tracked in its own issue), so it runs only on an explicit opt-in.
+  if (provider === 'claude' && !args.includes(UNRESTRICTED)) die(`the claude reviewer can read the real home directory, and a malicious pull request could publish what it reads; pass ${UNRESTRICTED} to accept that, or use --reviewer codex`);
   const ledger = found || { version: 1, repo, pr, reviewer, provider, model: opt(args, '--model') || null, author: snap.author, startedAt: new Date().toISOString(), rounds: [], findings: [], nudged: null, approval: null, stopped: null };
   ledger.provider = provider;
+  ledger.unrestrictedHome = provider === 'claude';
   if (opt(args, '--model')) ledger.model = opt(args, '--model');
   ledger.stopped = null;
   save(file, ledger);
@@ -142,7 +151,7 @@ function start(repo, pr, args) {
   let action = 'watch';
   if (ledger.rounds.length === 0 || snap.head !== lastRound(ledger).head) action = 'round';
   else if (lib.evaluateApproval(ledger, snap, lastRound(ledger).head).approve) action = 'approve';
-  out({ ledger: file, action, round: ledger.rounds.length + 1, ...(warning && { warning }) });
+  outFor(ledger, { ledger: file, action, round: ledger.rounds.length + 1, ...(warning && { warning }) });
 }
 
 // The findings the reviewer is told about; only those can be judged fixed from its silence.
@@ -159,7 +168,7 @@ function reviewRound(repo, pr, args) {
   if (ledger.rounds.length >= MAX_ROUNDS) return out({ event: 'round-limit', rounds: ledger.rounds.length });
   for (let discards = 0; discards < MAX_DISCARDS; discards++) {
     const result = attempt(repo, pr, ledger, file);
-    if (result) return out(result);
+    if (result) return outFor(ledger, result);
   }
   out({ event: 'head-keeps-moving' });
 }
@@ -187,7 +196,7 @@ function attempt(repo, pr, ledger, file) {
     const realClaudeConfig = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
     const claudeConfig = fs.mkdtempSync(path.join(dir, 'claude-'));
     const reviewerHome = fs.mkdtempSync(path.join(dir, 'home-'));
-    const runnerOptions = { ref: `concord-pr-${pr}`, base: range.base, broad: range.broad, noBroad: !range.broad, reviewer: ledger.provider, reviewerModel: ledger.model || undefined, reviewDenyRead: [realClaudeConfig], reviewRealHome: os.homedir(), reviewWritable: [reviewerHome, claudeConfig], reviewerGuidance: guidance(shown), intentFile: range.broad ? intentFile : undefined };
+    const runnerOptions = { ref: `concord-pr-${pr}`, base: range.base, broad: range.broad, noBroad: !range.broad, reviewer: ledger.provider, reviewerModel: ledger.model || undefined, reviewDenyRead: [realClaudeConfig], reviewRealHome: os.homedir(), reviewerGuidance: guidance(shown), intentFile: range.broad ? intentFile : undefined };
     const env = reviewerEnv(ledger.provider, claudeConfig, reviewerHome);
     const runner = process.env.REVIEW_APPROVE_RUNNER || path.join(__dirname, 'run-review.js');
     const reviewed = JSON.parse(run('node', [runner, JSON.stringify(runnerOptions)], { cwd: work, env }).trim().split('\n').pop());

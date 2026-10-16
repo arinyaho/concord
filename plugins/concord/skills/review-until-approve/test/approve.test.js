@@ -62,7 +62,7 @@ fs.appendFileSync(${JSON.stringify(path.join(dir, 'runner-calls.jsonl'))}, JSON.
 const findings = JSON.parse(fs.readFileSync(${JSON.stringify(path.join(dir, 'findings.json'))}, 'utf8'));
 console.log(JSON.stringify({ decision: 'review-only', round: 1, findings }));
 `);
-  const env = { ...process.env, CLAUDECODE: '', REVIEW_APPROVE_BWRAP: '/bin/true', PATH: `${path.join(dir, 'bin')}${path.delimiter}${process.env.PATH}`, REVIEW_APPROVE_STATE_DIR: path.join(dir, 'ledgers'), REVIEW_APPROVE_REMOTE: path.join(dir, 'remote'), REVIEW_APPROVE_RUNNER: path.join(dir, 'runner.js') };
+  const env = { ...process.env, CLAUDECODE: '', PATH: `${path.join(dir, 'bin')}${path.delimiter}${process.env.PATH}`, REVIEW_APPROVE_STATE_DIR: path.join(dir, 'ledgers'), REVIEW_APPROVE_REMOTE: path.join(dir, 'remote'), REVIEW_APPROVE_RUNNER: path.join(dir, 'runner.js') };
   const approve = (...args) => spawnSync('node', [APPROVE, ...args], { env: { ...env, ...extraEnv }, encoding: 'utf8' });
   const lines = (name) => fs.existsSync(path.join(dir, name)) ? fs.readFileSync(path.join(dir, name), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
   return { dir, src, bare, c1, state, write, approve, posts: () => lines('posts.jsonl'), calls: () => lines('runner-calls.jsonl'), ledger: () => JSON.parse(fs.readFileSync(path.join(dir, 'ledgers', 'o__r__5__bot.json'), 'utf8')) };
@@ -163,15 +163,35 @@ test('a refused post leaves no temporary clone behind', () => {
   assert.deepEqual(fs.readdirSync(tmp).filter((n) => n.startsWith('review-until-approve-')), []);
 });
 
-test('start with --reviewer on an existing ledger switches the provider for later rounds, and the default is the harness\'s own', () => {
-  const w = world({ CLAUDE_CODE_OAUTH_TOKEN: 't', CLAUDECODE: '' });
-  w.approve('start', 'o/r', '5');
-  assert.equal(w.ledger().provider, 'codex');
-  w.approve('start', 'o/r', '5', '--reviewer', 'claude', '--model', 'm');
-  assert.deepEqual([w.ledger().provider, w.ledger().model], ['claude', 'm']);
+const UNRESTRICTED = '--allow-unrestricted-home';
+
+test('start refuses the claude reviewer without the opt-in flag, whether asked for or chosen as the harness default, and names the flag', () => {
+  const asked = world({ CLAUDE_CODE_OAUTH_TOKEN: 't' });
+  const r = asked.approve('start', 'o/r', '5', '--reviewer', 'claude');
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /--allow-unrestricted-home/);
+  assert.equal(fs.existsSync(path.join(asked.dir, 'ledgers', 'o__r__5__bot.json')), false);
   const inClaude = world({ CLAUDE_CODE_OAUTH_TOKEN: 't', CLAUDECODE: '1' });
-  inClaude.approve('start', 'o/r', '5');
-  assert.equal(inClaude.ledger().provider, 'claude');
+  const d = inClaude.approve('start', 'o/r', '5');
+  assert.notEqual(d.status, 0);
+  assert.match(d.stderr, /--allow-unrestricted-home/);
+  const inCodex = world({ CLAUDECODE: '' });
+  inCodex.approve('start', 'o/r', '5');
+  assert.equal(inCodex.ledger().provider, 'codex');
+});
+
+test('with the opt-in flag the claude reviewer runs, and start and every round print the warning that it can read the real home', () => {
+  const w = world({ CLAUDE_CODE_OAUTH_TOKEN: 'oauth-token-abcdef' });
+  w.write('findings.json', []);
+  const started = w.approve('start', 'o/r', '5', '--reviewer', 'claude', UNRESTRICTED, '--model', 'm');
+  assert.deepEqual([w.ledger().provider, w.ledger().model], ['claude', 'm']);
+  assert.match(JSON.parse(started.stdout).warning, /real home/);
+  assert.match(started.stderr, /real home/);
+  const round = w.approve('round', 'o/r', '5');
+  assert.match(JSON.parse(round.stdout).warning, /real home/);
+  assert.match(round.stderr, /real home/);
+  // A later start without the flag is refused again.
+  assert.notEqual(w.approve('start', 'o/r', '5').status, 0);
 });
 
 test('two open findings sharing an id are closed by their own key: the unfixed one keeps blocking approval', () => {
@@ -237,7 +257,7 @@ test('the review process gets an empty HOME, and the real Codex home for its aut
 test('a claude reviewer does not get the Codex home', () => {
   const w = world({ CODEX_HOME: '/real/codex', CLAUDE_CODE_OAUTH_TOKEN: 't' });
   w.write('findings.json', []);
-  w.approve('start', 'o/r', '5', '--reviewer', 'claude'); w.approve('round', 'o/r', '5');
+  w.approve('start', 'o/r', '5', '--reviewer', 'claude', UNRESTRICTED); w.approve('round', 'o/r', '5');
   assert.equal(w.calls()[0].codexHome, undefined);
 });
 
@@ -247,7 +267,6 @@ test('the engine is told the real home and the real Claude configuration directo
   w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
   assert.deepEqual([w.calls()[0].reviewDenyRead, w.calls()[0].reviewRealHome], [['/real/claude'], require('node:os').homedir()]);
   assert.notEqual(w.calls()[0].home, w.calls()[0].reviewRealHome);
-  assert.ok(w.calls()[0].reviewWritable.includes(w.calls()[0].home), 'the reviewer\'s own home is writable');
 });
 test('nudged records the nudge so a restarted watch does not repeat it', () => {
   const w = world();
@@ -419,12 +438,4 @@ test('a comment review on the pending head is not taken for the approval', () =>
   w.write('reviews.json', [{ id: 77, user: { login: 'bot' }, commit_id: w.c1, state: 'COMMENTED', submitted_at: '2026-01-01T00:00:00Z' }]);
   assert.equal(JSON.parse(w.approve('start', 'o/r', '5').stdout).action, 'round');
   assert.equal(w.ledger().approval, null);
-});
-
-test('start refuses the claude reviewer where bubblewrap cannot confine it', () => {
-  const w = world({ CLAUDE_CODE_OAUTH_TOKEN: 't' });
-  const env = { ...process.env, CLAUDECODE: '', CLAUDE_CODE_OAUTH_TOKEN: 't', PATH: `${path.join(w.dir, 'bin')}${path.delimiter}${path.dirname(process.execPath)}`, REVIEW_APPROVE_STATE_DIR: path.join(w.dir, 'ledgers'), REVIEW_APPROVE_REMOTE: path.join(w.dir, 'remote') };
-  const r = spawnSync(process.execPath, [APPROVE, 'start', 'o/r', '5', '--reviewer', 'claude'], { env, encoding: 'utf8' });
-  assert.notEqual(r.status, 0);
-  assert.match(r.stderr, /bubblewrap/);
 });
