@@ -57,3 +57,10 @@ test('hunksOf: a path with spaces and non-ASCII characters keeps its real name',
   const diff = 'diff --git a/dir name/é.js b/dir name/é.js\n--- a/dir name/é.js\t\n+++ b/dir name/é.js\t\n@@ -1,0 +1,1 @@\n+x\n';
   assert.deepEqual(publish.hunksOf(diff), [{ file: 'dir name/é.js', from: 1, to: 1 }]);
 });
+
+test('hunksOf: a git-quoted header names its real file and an unparseable one never inherits the previous file', () => {
+  const quoted = 'diff --git "a/d\\303\\251 \\"q\\".js" "b/d\\303\\251 \\"q\\".js"\n--- "a/d\\303\\251 \\"q\\".js"\n+++ "b/d\\303\\251 \\"q\\".js"\n@@ -1,0 +1,1 @@\n+x\n';
+  assert.deepEqual(publish.hunksOf(quoted), [{ file: 'dé "q".js', from: 1, to: 1 }]);
+  const bad = 'diff --git a/a.js b/a.js\n+++ b/a.js\n@@ -1,0 +1,1 @@\n+x\ndiff --git x y\n+++ "weird\n@@ -1,0 +5,1 @@\n+y\n';
+  assert.deepEqual(publish.hunksOf(bad), [{ file: 'a.js', from: 1, to: 1 }]);
+});

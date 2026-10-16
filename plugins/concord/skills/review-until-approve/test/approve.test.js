@@ -231,3 +231,33 @@ test('nudged records the nudge so a restarted watch does not repeat it', () => {
   assert.equal(JSON.parse(w.approve('nudged', 'o/r', '5', JSON.stringify(event)).stdout).event, 'nudge-recorded');
   assert.deepEqual(w.ledger().nudged, { kind: 'push-only', head: 'h2', replyAt: null });
 });
+
+test('a file with a special character in its name gets its finding posted inline', () => {
+  const w = world();
+  fs.writeFileSync(path.join(w.src, 'é.js'), 'one\nbad\n');
+  sh(w.src, 'add', '.'); sh(w.src, 'commit', '-q', '-m', 'c1b');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD') });
+  w.write('findings.json', [{ ...finding, file: 'é.js' }]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  assert.equal(w.posts()[0].comments[0].path, 'é.js');
+});
+
+test('a file added and renamed inside the PR keeps its finding open when the range falls back to the merge base', () => {
+  const w = world();
+  fs.writeFileSync(path.join(w.src, 'n.js'), 'one\nbad\n');
+  sh(w.src, 'add', '.'); sh(w.src, 'commit', '-q', '-m', 'c1b');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD') });
+  w.write('findings.json', [{ ...finding, file: 'n.js' }]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  sh(w.src, 'mv', 'n.js', 'm.js');
+  sh(w.src, 'commit', '-q', '-am', 'c2');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD'), title: 'T2' });
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  const r = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r.mode, r.fixed, r.stillOpen], ['broad', 0, 1]);
+  assert.deepEqual([w.ledger().findings[0].status, w.ledger().findings[0].file], ['open', 'm.js']);
+});

@@ -4,16 +4,31 @@
 // inline only where its line is inside a diff hunk (GitHub rejects the whole
 // review otherwise), the rest go in the body, and `body` mode puts them all there.
 
+// The path of a `+++ ` header: git quotes one with special characters as "b/..." with C escapes.
+function headerPath(raw) {
+  const m = /^"b\/((?:[^"\\]|\\.)*)"$/.exec(raw);
+  if (!m) return raw.startsWith('b/') ? raw.slice(2) : '';
+  const bytes = [];
+  const esc = { t: 9, n: 10, r: 13, a: 7, b: 8, f: 12, v: 11 };
+  for (let i = 0; i < m[1].length; i++) {
+    const c = m[1][i];
+    if (c !== '\\') bytes.push(...Buffer.from(c));
+    else if (/[0-7]/.test(m[1][i + 1])) { bytes.push(parseInt(m[1].slice(i + 1, i + 4), 8)); i += 3; }
+    else { i++; bytes.push(m[1][i] in esc ? esc[m[1][i]] : m[1].charCodeAt(i)); }
+  }
+  return Buffer.from(bytes).toString('utf8');
+}
+
 function hunksOf(diff) {
   const hunks = [];
   let file = '';
   let header = false;
   for (const line of diff.split('\n')) {
-    if (line.startsWith('diff --git ')) header = true;
+    if (line.startsWith('diff --git ')) { header = true; file = ''; }
     else if (line.startsWith('@@')) header = false;
-    if (header && line.startsWith('+++ b/')) file = line.slice(6).replace(/\t$/, '');
+    if (header && line.startsWith('+++ ')) file = headerPath(line.slice(4).replace(/\t$/, ''));
     const m = /^@@ -\S+ \+(\d+)(?:,(\d+))? @@/.exec(line);
-    if (m && (m[2] === undefined || Number(m[2]) > 0)) hunks.push({ file, from: Number(m[1]), to: Number(m[1]) + (m[2] === undefined ? 1 : Number(m[2])) - 1 });
+    if (m && file && (m[2] === undefined || Number(m[2]) > 0)) hunks.push({ file, from: Number(m[1]), to: Number(m[1]) + (m[2] === undefined ? 1 : Number(m[2])) - 1 });
   }
   return hunks;
 }

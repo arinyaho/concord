@@ -165,6 +165,10 @@ function attempt(repo, pr, ledger, file) {
 
     const n = ledger.rounds.length + 1;
     const { changed, renames } = lib.parseNameStatus(git(work, ['diff', '-z', '--name-status', '-M', range.base, 'HEAD']));
+    // A merge-base range cannot see a rename of a file the PR itself added, so renames since the last reviewed head count too.
+    if (prior && range.base !== prior.head) {
+      try { for (const [from, to] of lib.parseNameStatus(git(work, ['diff', '-z', '--name-status', '-M', prior.head, 'HEAD'])).renames) renames.set(from, to); } catch (_) { /* the prior head is gone after a rewrite */ }
+    }
     const collapse = (t) => String(t || '').replace(/\s+/g, ' ').trim();
     const spanAtHead = (f, span) => { try { return !collapse(span) || collapse(fs.readFileSync(path.join(work, f), 'utf8')).includes(collapse(span)); } catch (_) { return false; } };
     const open = ledger.findings.filter((f) => f.status === 'open');
@@ -175,7 +179,7 @@ function attempt(repo, pr, ledger, file) {
     for (const f of next.findings) if (f.status === 'open' && verdict.fixedKeys.includes(f.key)) Object.assign(f, { status: 'fixed', fixedRound: n });
     for (const f of fresh) next.findings.push({ key: lib.findingKey(f), id: f.id, category: f.category, file: f.file, line: f.line, span: f.span, summary: f.summary, requirement: f.requirement || '', status: 'open', firstRound: n });
 
-    const diff = git(work, ['-c', 'core.quotePath=false', 'diff', '-U3', range.base, 'HEAD']);
+    const diff = git(work, ['diff', '-U3', range.base, 'HEAD']);
     const verdictNow = lib.evaluateApproval(next, snapshot(repo, pr), snap.head);
     const input = { head: snap.head, round: n, rangeBase: range.base, reviewer: ledger.provider, hunks: publish.hunksOf(diff), findings: fresh, fixed: verdict.fixed, stillOpen: verdict.open, previousHead: prior ? prior.head : snap.head, approve: verdictNow.approve };
     if (verdictNow.reason === 'head-moved') return null;
