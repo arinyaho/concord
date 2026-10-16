@@ -117,7 +117,7 @@ Combinations the ledger lock rules out (two sessions interleaving on one pull re
 
 - If the `APPROVE` post errors and the head then moves, the pending marker is not settled against GitHub's review list until a later `start`, `round`, `approve` or `waive` reads it; an approval GitHub accepted for the old head stays recorded only on GitHub until then.
 - A body-mode retry after a timed-out post can post a second review when GitHub's review list lags behind the first.
-- Fixed means the quoted text no longer occurs, not that the defect is gone; a trivial edit inside the span fixes the finding, and the next diff review is what catches a defect that remains. A fix that is later undone is noticed only when the reviewer raises the finding again.
+- Fixed means the quoted text no longer occurs, not that the defect is gone; a trivial edit inside the span fixes the finding, and the next diff review is what catches a defect that remains. A fix that is later undone is noticed only when the reviewer raises the finding again. A reformat that changes the quoted bytes (re-indent, CRLF) fixes the finding for the same reason.
 - A finding without a verbatim span (an empty one, or one the engine reflowed) can only be waived, so a reviewer that quotes loosely makes the user waive more. A reviewer that withholds a finding at round 1 is not detectable.
 - The review-only state directory is writable by the reviewer (it is the artifact channel); the runner pins and hashes the files it later trusts, so a later role cannot change them unnoticed, but the directory is not read-only.
 - The Claude reviewer is not confined (`--allow-unrestricted-home`); the confinement is tracked in issue #366.

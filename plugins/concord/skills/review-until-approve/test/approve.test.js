@@ -470,6 +470,21 @@ test('a ledger finding recorded without spanVerified is unverified: it stays ope
   assert.equal(JSON.parse(w.approve('waive', 'o/r', '5', 'correctness:bad').stdout).event, 'approved');
 });
 
+test('a pure rename to a name git would read as pathspec magic (":a.js") keeps the finding open, not fixed', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  sh(w.src, 'mv', 'a.js', ':a.js');
+  sh(w.src, 'commit', '-q', '-am', 'rename');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD') });
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  const r = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r.fixed, r.stillOpen], [0, 1]);
+  assert.deepEqual([w.ledger().findings[0].status, w.ledger().findings[0].file], ['open', ':a.js']);
+});
+
 test('a span that moved to another file keeps the finding open at the new path', () => {
   const w = world();
   w.write('findings.json', [finding]);
@@ -524,7 +539,8 @@ test('a verbatim re-raise verifies an unverified finding', () => {
   fs.writeFileSync(file, JSON.stringify(ledger));
   push(w, { 'a.js': 'one\nbad\nthree\nfour\nfive\n' }, 'c2');
   w.write('findings.json', [{ ...finding, span: 'bad\n' }]);
-  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  w.approve('start', 'o/r', '5');
+  assert.equal(JSON.parse(w.approve('round', 'o/r', '5').stdout).held, undefined);
   assert.equal(w.ledger().findings[0].spanVerified, sh(w.src, 'rev-parse', 'HEAD'));
 });
 

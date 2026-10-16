@@ -162,9 +162,10 @@ function guidance(open) {
 
 const MAX_SPAN_FILE_BYTES = 20 * 1024 * 1024;
 // A file as stored in the git object of `rev`, never from the working tree: a Buffer, null when the path is
-// absent, 'other' when it is not a regular file (symlink, submodule, directory, or a path git rejects), 'big' when too large.
+// absent, 'other' when it is not a regular file (symlink, submodule, directory, or a path git rejects), 'big' when too large or the name does not survive decoding as UTF-8.
 function gitBlob(cwd, rev, file) {
-  const ls = spawnSync('git', ['ls-tree', '-z', '--full-tree', rev, '--', file], { cwd, encoding: 'utf8' });
+  if (file.includes('\uFFFD')) return 'big';
+  const ls = spawnSync('git', ['--literal-pathspecs', 'ls-tree', '-z', '--full-tree', rev, '--', file], { cwd, encoding: 'utf8' });
   if (ls.status !== 0) return 'other';
   const entry = ls.stdout.split('\0').find((e) => e.slice(e.indexOf('\t') + 1) === file && e.includes('\t'));
   if (!entry) return null;
@@ -255,11 +256,12 @@ function attempt(repo, pr, ledger, file) {
     const reopened = new Set();
     for (const f of reviewed.findings.filter((g) => verifiedAt(work, snap.head, g))) {
       const unverified = next.findings.find((g) => g.status === 'open' && !verified(g) && lib.findingKey(g) === lib.findingKey(f));
-      const fixed = unverified ? null : next.findings.find((g) => g.status === 'fixed' && lib.findingKey(g) === lib.findingKey(f));
+      const fixed = unverified || next.findings.some((g) => g.status === 'open' && lib.findingKey(g) === lib.findingKey(f)) ? null : next.findings.find((g) => g.status === 'fixed' && lib.findingKey(g) === lib.findingKey(f));
       const known = unverified || fixed;
       if (!known) continue;
       Object.assign(known, { status: 'open', span: f.span, file: f.file, spanVerified: snap.head });
       delete known.fixedRound;
+      delete known.openReason;
       known.key = lib.findingKey(known);
       reopened.add(lib.findingKey(f));
     }
@@ -267,6 +269,7 @@ function attempt(repo, pr, ledger, file) {
       next.findings.push({ key: lib.findingKey(f), id: f.id, category: f.category, file: f.file, line: f.line, span: f.span, summary: f.summary, requirement: f.requirement || '', status: 'open', firstRound: n, ...(verifiedAt(work, snap.head, f) && { spanVerified: snap.head }) });
     }
     for (const f of next.findings) if (f.status === 'open' && !verified(f)) f.openReason = 'unverified';
+    for (const f of next.findings) if (f.status === 'open' && verified(f) && f.openReason === 'unverified') delete f.openReason;
     const fixedIds = verdict.filter((r) => r.status === 'fixed').map((r) => r.id);
     const openIds = verdict.filter((r) => r.status === 'open').map((r) => r.id);
     const held = next.findings.filter((f) => f.status === 'open' && ['unverified', 'path-unresolved'].includes(f.openReason)).map((f) => ({ id: f.id, file: f.file, reason: f.openReason }));
