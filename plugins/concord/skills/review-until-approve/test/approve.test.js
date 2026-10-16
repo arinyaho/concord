@@ -247,6 +247,7 @@ test('the engine is told the real home and the real Claude configuration directo
   w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
   assert.deepEqual([w.calls()[0].reviewDenyRead, w.calls()[0].reviewRealHome], [['/real/claude'], require('node:os').homedir()]);
   assert.notEqual(w.calls()[0].home, w.calls()[0].reviewRealHome);
+  assert.ok(w.calls()[0].reviewWritable.includes(w.calls()[0].home), 'the reviewer\'s own home is writable');
 });
 test('nudged records the nudge so a restarted watch does not repeat it', () => {
   const w = world();
