@@ -2748,7 +2748,7 @@ test('providerExec keeps project settings out of a Claude reviewer on an untrust
   const previousPath = process.env.PATH;
   process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
   try {
-    await providerExec({ provider: 'claude', role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir, untrustedCheckout: true });
+    await providerExec({ provider: 'claude', role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir, untrustedCheckout: true, confineClaude: unconfined });
     const args = JSON.parse(fs.readFileSync(capture, 'utf8'));
     assert.strictEqual(args[args.indexOf('--setting-sources') + 1], 'user');
     await providerExec({ provider: 'claude', role: 'correctness', prompt: 'review', repoRoot: binDir, stateDir: binDir });
