@@ -157,20 +157,22 @@ function start(repo, pr, args) {
 // The findings the reviewer is told about; only those can be judged fixed from its silence.
 const shownFindings = (ledger) => ledger.findings.filter((f) => f.status === 'open').slice(0, GUIDANCE_FINDINGS);
 
-function guidance(open) {
+function guidance(open, renames) {
   if (!open.length) return undefined;
-  return `Earlier findings on this pull request. If one is still present at this head, raise it again with the same id: ${open.map((f) => `${f.id} (${f.file}): ${f.summary.slice(0, 200)}`).join('; ')}`;
+  const where = (f) => renames.has(f.file) ? `${renames.get(f.file)}, renamed from ${f.file}` : f.file;
+  return `Earlier findings on this pull request. If one is still present at this head, raise it again with the same id and the current path: ${open.map((f) => `${f.id} (${where(f)}): ${f.summary.slice(0, 200)}`).join('; ')}`;
 }
 
 function reviewRound(repo, pr, args) {
   const { file, ledger } = identify(repo, pr, args);
   if (!ledger) die('no ledger; run start first');
-  if (ledger.rounds.length >= MAX_ROUNDS) return out({ event: 'round-limit', rounds: ledger.rounds.length });
+  if (ledger.provider === 'claude' && !ledger.unrestrictedHome) die(`the ledger runs the claude reviewer without the opt-in; run start with ${UNRESTRICTED} first`);
+  if (ledger.rounds.length >= MAX_ROUNDS) return outFor(ledger, { event: 'round-limit', rounds: ledger.rounds.length });
   for (let discards = 0; discards < MAX_DISCARDS; discards++) {
     const result = attempt(repo, pr, ledger, file);
     if (result) return outFor(ledger, result);
   }
-  out({ event: 'head-keeps-moving' });
+  outFor(ledger, { event: 'head-keeps-moving' });
 }
 
 // One round against the live head. Returns the summary, or null when the head moved and the result is discarded.
@@ -190,24 +192,29 @@ function attempt(repo, pr, ledger, file) {
     const isAncestor = (a, b) => spawnSync('git', ['merge-base', '--is-ancestor', a, b], { cwd: work }).status === 0;
     const range = prior ? lib.chooseRange(prior, snap, isAncestor) : { base: snap.mergeBase, broad: true };
 
+    const { changed, renames, edited } = lib.parseNameStatus(git(work, ['diff', '-z', '--name-status', '-M', range.base, 'HEAD']));
+    // A merge-base range cannot see a rename of a file the PR itself added, so renames since the last reviewed head count too.
+    if (prior && range.base !== prior.head) {
+      try {
+        const since = lib.parseNameStatus(git(work, ['diff', '-z', '--name-status', '-M', prior.head, 'HEAD']));
+        for (const [from, to] of since.renames) renames.set(from, to);
+        for (const f of since.edited) edited.add(f);
+      } catch (_) { /* the prior head is gone after a rewrite */ }
+    }
+
     const shown = shownFindings(ledger);
     const intentFile = path.join(dir, 'intent.md');
     fs.writeFileSync(intentFile, `# ${snap.title}\n\n${snap.body}`);
     const realClaudeConfig = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
     const claudeConfig = fs.mkdtempSync(path.join(dir, 'claude-'));
     const reviewerHome = fs.mkdtempSync(path.join(dir, 'home-'));
-    const runnerOptions = { ref: `concord-pr-${pr}`, base: range.base, broad: range.broad, noBroad: !range.broad, reviewer: ledger.provider, reviewerModel: ledger.model || undefined, reviewDenyRead: [realClaudeConfig], reviewRealHome: os.homedir(), reviewerGuidance: guidance(shown), intentFile: range.broad ? intentFile : undefined };
+    const runnerOptions = { ref: `concord-pr-${pr}`, base: range.base, broad: range.broad, noBroad: !range.broad, reviewer: ledger.provider, reviewerModel: ledger.model || undefined, reviewDenyRead: [realClaudeConfig], reviewRealHome: os.homedir(), reviewerGuidance: guidance(shown, renames), intentFile: range.broad ? intentFile : undefined };
     const env = reviewerEnv(ledger.provider, claudeConfig, reviewerHome);
     const runner = process.env.REVIEW_APPROVE_RUNNER || path.join(__dirname, 'run-review.js');
     const reviewed = JSON.parse(run('node', [runner, JSON.stringify(runnerOptions)], { cwd: work, env }).trim().split('\n').pop());
     if (reviewed.decision !== 'review-only' || !Array.isArray(reviewed.findings)) throw new Error(`the review did not complete: ${JSON.stringify(reviewed).slice(0, 200)}`);
 
     const n = ledger.rounds.length + 1;
-    const { changed, renames } = lib.parseNameStatus(git(work, ['diff', '-z', '--name-status', '-M', range.base, 'HEAD']));
-    // A merge-base range cannot see a rename of a file the PR itself added, so renames since the last reviewed head count too.
-    if (prior && range.base !== prior.head) {
-      try { for (const [from, to] of lib.parseNameStatus(git(work, ['diff', '-z', '--name-status', '-M', prior.head, 'HEAD'])).renames) renames.set(from, to); } catch (_) { /* the prior head is gone after a rewrite */ }
-    }
     const collapse = (t) => String(t || '').replace(/\s+/g, ' ').trim();
     // A reviewer-supplied path is evidence only as a regular file inside the checkout, with no symlink on the way.
     const spanAtHead = (f, span) => {
@@ -219,7 +226,7 @@ function attempt(repo, pr, ledger, file) {
       } catch (_) { return false; }
     };
     const open = ledger.findings.filter((f) => f.status === 'open');
-    const verdict = lib.classifyPrior(open, reviewed.findings, changed, spanAtHead, renames, { incremental: prior ? range.base === prior.head : false, evaluated: new Set(shown.map((f) => lib.findingKey(f))) });
+    const verdict = lib.classifyPrior(open, reviewed.findings, changed, spanAtHead, renames, { incremental: prior ? range.base === prior.head : false, evaluated: new Set(shown.map((f) => lib.findingKey(f))), edited });
     const next = JSON.parse(JSON.stringify(ledger));
     for (const m of verdict.moved) for (const f of next.findings) if (f.key === m.key) Object.assign(f, { file: m.file, key: lib.findingKey({ ...f, file: m.file }) });
     const fresh = reviewed.findings.filter((f, i, all) => !lib.isPublished(next, f) && all.findIndex((g) => lib.findingKey(g) === lib.findingKey(f)) === i);
