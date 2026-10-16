@@ -453,8 +453,14 @@ function denyAround(root, keep) {
       const full = path.join(dir, name);
       if (keep.some((k) => k === full)) continue;
       // A link is not mounted over (its target would be masked twice): the target is denied by its own entry, or here when it lies outside the root.
-      if (fs.lstatSync(full).isSymbolicLink()) {
-        try { const target = fs.realpathSync(full); if (target !== root && !target.startsWith(root + path.sep)) denied.push(target); } catch (_) { /* a dangling link reads nothing */ }
+      let link = false;
+      try { link = fs.lstatSync(full).isSymbolicLink(); } catch (_) { continue; } // gone since the listing
+      if (link) {
+        try {
+          const target = fs.realpathSync(full);
+          const reachable = keep.some((k) => k === target || k.startsWith(target + path.sep) || target.startsWith(k + path.sep));
+          if (target !== root && !target.startsWith(root + path.sep) && !reachable && path.dirname(target) !== path.parse(target).root) denied.push(target);
+        } catch (_) { /* a dangling link reads nothing */ }
         continue;
       }
       if (keep.some((k) => k.startsWith(full + path.sep))) walk(full); else denied.push(full);
@@ -470,7 +476,7 @@ function codexInstallDir() {
   for (const candidate of candidates) {
     try {
       const real = fs.realpathSync(candidate);
-      return real.match(/^(.*[\\/]node_modules[\\/]@openai[\\/]codex)[\\/]/)?.[1] || path.dirname(real);
+      return real.match(/^(.*[\\/]node_modules[\\/]@openai[\\/]codex)[\\/]/)?.[1] || real;
     } catch (_) { /* not installed here */ }
   }
   return null;

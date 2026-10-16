@@ -46,7 +46,7 @@ function parseNameStatus(raw) {
 }
 
 // An earlier open finding stays open when this round raised it again, when the reviewer was not told
-// about it (`evaluated` lists the ids it was told), or when nothing could have fixed it. In a push-only
+// about it (`evaluated` lists the keys it was told), or when nothing could have fixed it. In a push-only
 // round (`incremental`) a file the push left alone keeps its findings open, whatever the span looks
 // like: the reviewer never saw that file, and a span the engine could not quote verbatim is not
 // evidence. A round over the whole PR diff keeps a finding on an untouched file open only while its
@@ -57,7 +57,7 @@ function classifyPrior(open, raised, changedFiles, spanAtHead, renames = new Map
   const moved = open.map((p) => ({ ...p, file: renames.get(p.file) || p.file }));
   for (const [i, p] of open.entries()) {
     const q = moved[i], file = q.file;
-    const stays = raised.some((f) => matches(moved, f).includes(q)) || (evaluated && !evaluated.has(p.id))
+    const stays = raised.some((f) => matches(moved, f).includes(q)) || (evaluated && !evaluated.has(findingKey(p)))
       || (file !== p.file ? spanAtHead(file, p.span) : !changedFiles.has(p.file) && (incremental || spanAtHead(p.file, p.span)));
     if (stays) {
       out.open.push(p.id);

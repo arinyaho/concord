@@ -3334,6 +3334,11 @@ test('reviewOnly denies the reviewer every entry of the real home except the way
   const cli = (args) => (args[0] === 'findings' ? { findings: [] } : h.cli(args));
   const spawn = (input) => { const home = input.env && input.env.CODEX_HOME; seen.push(home && fs.readFileSync(path.join(home, 'config.toml'), 'utf8')); return h.spawn(input); };
   fs.mkdirSync(path.join(fakeHome, '.local', 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(fakeHome, '.local', 'bin', 'other-tool'), '');
+  const linked = fs.realpathSync(temp());
+  fs.symlinkSync(linked, path.join(fakeHome, 'link-out'));
+  fs.symlinkSync('/usr', path.join(fakeHome, 'link-system'));
+  fs.symlinkSync(path.join(fakeHome, '.ssh'), path.join(fakeHome, 'link-in'));
   fs.writeFileSync(path.join(fakeHome, '.local', 'bin', 'codex'), '');
   const saved = { HOME: process.env.HOME, CODEX_HOME: process.env.CODEX_HOME, PATH: process.env.PATH };
   process.env.HOME = fakeHome; process.env.CODEX_HOME = sourceHome; process.env.PATH = `${path.join(fakeHome, '.local', 'bin')}${path.delimiter}${saved.PATH}`;
@@ -3349,6 +3354,9 @@ test('reviewOnly denies the reviewer every entry of the real home except the way
     for (const must of ['.ssh', '.config', '.bashrc', 'proj/other', '.codex']) assert.ok(list.includes(path.join(fakeHome, must)), `${must} denied: ${list}`);
     for (const never of ['', 'proj', 'proj/repo', '.local', '.local/bin']) assert.ok(!list.includes(path.join(fakeHome, never)) && !list.includes(path.join(fakeHome, never) + path.sep), `${never || 'the home itself'} stays reachable`);
     assert.ok(list.includes(outside), 'a path named in reviewDenyRead is denied');
+    assert.ok(list.includes(linked), 'the target of a link that leaves the home is denied');
+    assert.ok(list.includes(path.join(fakeHome, '.local', 'bin', 'other-tool')), 'only the Codex binary stays readable in its directory');
+    for (const skipped of [path.join(fakeHome, 'link-out'), path.join(fakeHome, 'link-in'), '/usr']) assert.ok(!list.includes(skipped), `${skipped} is not mounted over`);
   }
 });
 
