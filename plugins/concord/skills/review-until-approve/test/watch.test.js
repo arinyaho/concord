@@ -87,3 +87,26 @@ test('watch: the head seen by one bounded run counts toward the next run\'s two-
   const fresh = setup([{ head: 'h2', pulls: [reply()] }], ledger);
   assert.deepEqual(runIn(fresh, ['--max-wait', '0.01']).out, [{ event: 'idle' }]);
 });
+
+test('watch: a nudge in the ledger does not hide a later nudge the sidecar already showed', () => {
+  const old = { ...ledger, nudged: { kind: 'push-only', head: 'h0', replyAt: null }, rounds: [{ ...ledger.rounds[0], submittedAt: new Date(Date.now() - 25 * 3600 * 1000).toISOString() }] };
+  const dir = setup([{ head: 'h2' }], old);
+  assert.equal(runIn(dir, ['--max-wait', '5']).out[0].event, 'nudge');
+  assert.deepEqual(runIn(dir, ['--max-wait', '0.2']).out, [{ event: 'idle' }]);
+});
+
+test('watch: --max-wait ends at the deadline, not at the end of the next poll interval', () => {
+  const dir = setup([{ head: 'h1' }], ledger);
+  const started = Date.now();
+  const r = spawnSync('node', [WATCH, path.join(dir, 'ledger.json'), 'o/r', '5', '--interval', '10', '--max-wait', '0.3'], { encoding: 'utf8', env: { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}` }, timeout: 20000 });
+  assert.deepEqual(JSON.parse(r.stdout), { event: 'idle' });
+  assert.ok(Date.now() - started < 5000, `took ${Date.now() - started} ms`);
+});
+
+test('watch: failed polls add up across bounded runs until the error event', () => {
+  const dir = setup([{ fail: true }], ledger);
+  for (let i = 1; i < 10; i++) assert.deepEqual(runIn(dir, ['--max-wait', '0.01']).out, [{ event: 'idle' }], `run ${i}`);
+  const last = runIn(dir, ['--max-wait', '0.01']);
+  assert.equal(last.out[0].event, 'error');
+  assert.equal(last.code, 1);
+});

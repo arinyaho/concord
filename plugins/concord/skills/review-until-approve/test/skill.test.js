@@ -13,3 +13,9 @@ test('SKILL.md names the skill and instructs the whole loop with scripts that ex
   for (const file of ['approve.js', 'watch.js']) assert.ok(fs.existsSync(path.join(__dirname, '..', 'scripts', file)));
   assert.match(skill, /never request changes, merge, push/i);
 });
+
+test('the description does not promise a wait without model calls on every harness', () => {
+  const description = skill.slice(0, skill.indexOf('\n---', 4));
+  assert.doesNotMatch(description, /without spending tokens/);
+  assert.match(description, /Codex/);
+});

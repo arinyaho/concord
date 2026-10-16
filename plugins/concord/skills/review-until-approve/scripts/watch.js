@@ -6,7 +6,7 @@
 // reviewing account is not the ambient one. With --max-wait it prints {"event":"idle"}
 // after that many seconds without an event, so a host without a background watch can
 // run it in the foreground and call it again. `<ledger>.watch.json` carries the head
-// seen and the nudge shown from one run to the next; the ledger itself is never written.
+// seen, the nudge shown and the failed polls in a row from one run to the next; the ledger itself is never written.
 // usage: watch.js <ledger.json> <owner/repo> <pr> [--interval <seconds>] [--max-wait <seconds>]
 const fs = require('node:fs');
 const { spawnSync } = require('node:child_process');
@@ -34,27 +34,32 @@ const pages = (path) => gh(['api', '--paginate', '--slurp', path]).flat();
 const emit = (event, code = 0) => { process.stdout.write(`${JSON.stringify(event)}\n`, () => process.exit(code)); };
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const sameNudge = (a, b) => a && b && a.kind === b.kind && a.head === b.head && a.replyAt === b.replyAt;
+
 (async () => {
   const sidecar = readSidecar();
   let previousHead = sidecar.previousHead ?? null;
-  let failures = 0;
+  let failures = sidecar.failures ?? 0;
   for (;;) {
     try {
       const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
       const view = gh(['pr', 'view', pr, '--repo', repo, '--json', 'headRefOid,state,isDraft,author']);
       const live = { head: view.headRefOid, state: view.state, isDraft: view.isDraft, author: view.author.login };
       const replies = lib.repliesSince(ledger, pages(`repos/${repo}/pulls/${pr}/comments`), pages(`repos/${repo}/issues/${pr}/comments`), live.author);
-      const event = lib.wakeDecision({ ledger: { ...ledger, nudged: ledger.nudged || sidecar.nudged || null }, live, replies, now: Date.now(), stable: previousHead === live.head });
+      let event = lib.wakeDecision({ ledger, live, replies, now: Date.now(), stable: previousHead === live.head });
+      if (event && event.event === 'nudge' && sameNudge(event, sidecar.nudged)) event = null;
       previousHead = live.head;
       failures = 0;
       if (event && event.event === 'nudge') sidecar.nudged = { kind: event.kind, head: event.head, replyAt: event.replyAt };
-      writeSidecar({ ...sidecar, previousHead });
+      writeSidecar({ ...sidecar, previousHead, failures });
       if (event) return emit(event);
-      if (Date.now() >= deadline) return emit({ event: 'idle' });
     } catch (error) {
-      if (++failures >= MAX_FAILURES) return emit({ event: 'error', detail: String(error.message) }, 1);
-      if (Date.now() >= deadline) return emit({ event: 'idle' });
+      writeSidecar({ ...sidecar, previousHead, failures: ++failures });
+      if (failures >= MAX_FAILURES) return emit({ event: 'error', detail: String(error.message) }, 1);
     }
-    await sleep(intervalMs * Math.min(2 ** failures, 8));
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return emit({ event: 'idle' });
+    await sleep(Math.min(intervalMs * Math.min(2 ** failures, 8), remaining));
+    if (Date.now() >= deadline) return emit({ event: 'idle' });
   }
 })();

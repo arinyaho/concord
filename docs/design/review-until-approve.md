@@ -37,7 +37,7 @@ Required checks are not part of the condition. Approval is a code-review verdict
 | Claude Code | `watch.js` under Monitor, which wakes the session on its one output line | none until the event |
 | Codex | `watch.js --max-wait <seconds>` in the foreground; after that many seconds without an event it prints `{"event":"idle"}`, and the session runs it again | about one small model call per window; a window is bounded by the shell tool's command timeout (540 seconds by default in the skill) |
 
-Codex has no background process that wakes a conversation, so the wait there is not zero-token; the skill says so and tells the user after six idle windows in a row. `<ledger>.watch.json` carries the head seen and the nudge shown from one run to the next, so a new window does not restart the two-poll head stability check or repeat a nudge. The ledger stays the session's and `approve.js`'s alone.
+Codex has no background process that wakes a conversation, so the wait there is not zero-token; the skill says so and tells the user after six idle windows in a row. `<ledger>.watch.json` carries the head seen, the nudge shown and the failed polls in a row from one run to the next, so a new window does not restart the two-poll head stability check, repeat a nudge or hide an outage behind `idle`. A window ends at its deadline: the sleep between polls is cut to the time left. The ledger stays the session's and `approve.js`'s alone.
 
 | Event | Fires when |
 |---|---|
@@ -46,7 +46,7 @@ Codex has no background process that wakes a conversation, so the wait there is 
 | `nudge` | Only a push, or only a reply, has arrived and 24 hours have passed since the last review. It repeats only for a new head or reply, and posts nothing; the session tells the user |
 | `timeout` | 7 days since the last review |
 | `idle` | Only with `--max-wait`: the window ended without an event (exit status 0) |
-| `error` | Ten consecutive failed polls (exit status 1) |
+| `error` | Ten consecutive failed polls, counted across bounded runs (exit status 1) |
 
 A reply is a comment by the pull request author after the last review, either in a thread of a review the skill published (`in_reply_to_id` is one of its comment ids) or on the pull request conversation, which is the only way to answer a finding posted in a review body. Who pushed does not matter. A push or reply alone, a CI change, a label, or a comment by anyone but the author wakes nothing. A user stop ends the watch and is recorded in the ledger. At most 10 rounds run per pull request, and nothing is posted on any stop.
 
@@ -73,8 +73,9 @@ The loop can later run unattended, with GitHub Actions or `services/pr-review` r
 | one side only for 24 hours | poll | one `nudge` per head and reply; later polls silent | introduced | `wakeDecision: one side alone nudges once`, `nudged records the nudge` |
 | no activity for 7 days | poll | `timeout` event, ledger resumable | introduced | `wakeDecision: one side alone nudges once` |
 | GitHub unreachable | ten consecutive polls | `error` event, exit status 1 | introduced | `watch: ten failed polls end with an error event` |
+| GitHub unreachable, `--max-wait` given | window ends before ten failures | `idle`; the failure count carries to the next run, whose tenth failed poll gives `error` | introduced | `watch: failed polls add up across bounded runs until the error event` |
 | silent wait, `--max-wait` given | window ends | `idle` event, exit status 0 | introduced | `watch: --max-wait ends a silent wait with an idle event` |
-| nudge shown, session restarts the watch | next bounded run | no second nudge, even when the session did not record it | introduced | `watch: a nudge is not repeated by the next bounded run` |
+| nudge shown, session restarts the watch | next bounded run | no second nudge, even when the session did not record it or recorded an earlier one | introduced | `watch: a nudge is not repeated by the next bounded run` |
 | head seen in one bounded run | next bounded run | the head counts toward the two-poll stability | introduced | `watch: the head seen by one bounded run counts toward the next run's two-poll stability` |
 | sidecar file unreadable or missing | start | treated as empty; at worst a notice repeats | introduced | untested, because the read falls back to an empty object |
 | force push, merged-in base, changed requirement | next round | whole-PR range, gate only when the requirement changed | introduced | `chooseRange` tests |
