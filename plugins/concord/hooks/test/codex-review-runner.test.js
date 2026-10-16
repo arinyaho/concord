@@ -3319,6 +3319,19 @@ test('reviewOnly runs a Codex reviewer from its own CODEX_HOME, which marks the 
   assert.ok(!fs.existsSync(seen[0].home), 'the review-only CODEX_HOME is removed when the run ends');
 });
 
+test('a CODEX_HOME reached through a symlinked home is covered by the home entry and gets no nested deny', () => {
+  const real = fs.realpathSync(temp());
+  fs.mkdirSync(path.join(real, '.codex'));
+  const link = path.join(fs.realpathSync(temp()), 'home-link');
+  fs.symlinkSync(real, link);
+  const home = fs.realpathSync(temp());
+  const checkout = fs.realpathSync(temp());
+  const sourceAuth = path.join(link, '.codex', 'auth.json');
+  const config = reviewCodexConfig({ home, sourceAuth, checkout, denyRead: [], realHome: link });
+  assert.ok(config.includes(`${JSON.stringify(path.join(real, '.codex'))} = "deny"`), config);
+  assert.ok(!config.includes(JSON.stringify(sourceAuth)), 'the auth file inside a denied directory has no entry of its own');
+});
+
 // The review-only CODEX_HOME sits under /tmp, which the :workspace profile makes writable. A reviewer that could rewrite its config.toml
 // would lift the deny list for every later launch of the same run. Runs the real Codex sandbox, so it stands down where that cannot run.
 test('a command inside the review sandbox cannot rewrite the CODEX_HOME configuration, so a later launch is still denied', (t) => {

@@ -64,3 +64,11 @@ test('hunksOf: a git-quoted header names its real file and an unparseable one ne
   const bad = 'diff --git a/a.js b/a.js\n+++ b/a.js\n@@ -1,0 +1,1 @@\n+x\ndiff --git x y\n+++ "weird\n@@ -1,0 +5,1 @@\n+y\n';
   assert.deepEqual(publish.hunksOf(bad), [{ file: 'a.js', from: 1, to: 1 }]);
 });
+
+test('renderReview: LGTM only on an approving review; a clean round that does not approve says approval is withheld', () => {
+  const round = { head: 'h', round: 1, rangeBase: 'b', reviewer: 'bot', hunks: [], findings: [], fixed: [], stillOpen: [], previousHead: 'h' };
+  assert.match(publish.renderReview({ ...round, approve: true }, 'body').body, /LGTM/);
+  const held = publish.renderReview({ ...round, approve: false }, 'body');
+  assert.equal(held.event, 'COMMENT');
+  assert.doesNotMatch(held.body, /LGTM/);
+});
