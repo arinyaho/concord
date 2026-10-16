@@ -158,13 +158,14 @@ function attempt(repo, pr, ledger, file) {
     if (reviewed.decision !== 'review-only' || !Array.isArray(reviewed.findings)) throw new Error(`the review did not complete: ${JSON.stringify(reviewed).slice(0, 200)}`);
 
     const n = ledger.rounds.length + 1;
-    const changed = new Set(git(work, ['diff', '--name-only', range.base, 'HEAD']).split('\n').filter(Boolean));
+    const { changed, renames } = lib.parseNameStatus(git(work, ['diff', '-z', '--name-status', '-M', range.base, 'HEAD']));
     const collapse = (t) => String(t || '').replace(/\s+/g, ' ').trim();
     const spanAtHead = (f, span) => { try { return !collapse(span) || collapse(fs.readFileSync(path.join(work, f), 'utf8')).includes(collapse(span)); } catch (_) { return false; } };
     const open = ledger.findings.filter((f) => f.status === 'open');
-    const verdict = lib.classifyPrior(open, reviewed.findings, changed, spanAtHead);
-    const fresh = reviewed.findings.filter((f) => !lib.isPublished(ledger, f));
+    const verdict = lib.classifyPrior(open, reviewed.findings, changed, spanAtHead, renames);
     const next = JSON.parse(JSON.stringify(ledger));
+    for (const m of verdict.moved) for (const f of next.findings) if (f.key === m.key) Object.assign(f, { file: m.file, key: lib.findingKey({ ...f, file: m.file }) });
+    const fresh = reviewed.findings.filter((f) => !lib.isPublished(next, f));
     for (const f of next.findings) if (f.status === 'open' && verdict.fixedKeys.includes(f.key)) Object.assign(f, { status: 'fixed', fixedRound: n });
     for (const f of fresh) next.findings.push({ key: lib.findingKey(f), id: f.id, category: f.category, file: f.file, line: f.line, span: f.span, summary: f.summary, requirement: f.requirement || '', status: 'open', firstRound: n });
 

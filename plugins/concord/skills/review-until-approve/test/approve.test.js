@@ -170,3 +170,36 @@ test('two open findings sharing an id are closed by their own key: the unfixed o
   assert.deepEqual([r.review, r.fixed, r.stillOpen], ['COMMENT', 1, 1]);
   assert.deepEqual(w.ledger().findings.map((f) => f.status), ['fixed', 'open']);
 });
+
+test('a push that only renames the file keeps the finding open at the new path and the round is a COMMENT', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  sh(w.src, 'mv', 'a.js', 'b.js');
+  sh(w.src, 'commit', '-q', '-am', 'c2');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD') });
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  const r = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r.review, r.fixed, r.stillOpen], ['COMMENT', 0, 1]);
+  assert.deepEqual([w.ledger().findings[0].status, w.ledger().findings[0].file], ['open', 'b.js']);
+});
+
+test('a file with a special character in its name is matched by its real name', () => {
+  const w = world();
+  const f = { ...finding, file: 'é.js' };
+  fs.writeFileSync(path.join(w.src, 'é.js'), 'one\nbad\n');
+  sh(w.src, 'add', '.'); sh(w.src, 'commit', '-q', '-m', 'c1b');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD') });
+  w.write('findings.json', [f]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  fs.writeFileSync(path.join(w.src, 'é.js'), 'one\ngood\n');
+  sh(w.src, 'commit', '-q', '-am', 'c2');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD') });
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  assert.equal(JSON.parse(w.approve('round', 'o/r', '5').stdout).fixed, 1);
+});

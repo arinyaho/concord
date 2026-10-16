@@ -29,14 +29,30 @@ function isPublished(ledger, f) {
   return ledger.findings.some((p) => p.status !== 'fixed' && findingKey(p) === key);
 }
 
+// The changed paths and the renames (old path -> new path) of `git diff -z --name-status -M`.
+function parseNameStatus(raw) {
+  const t = raw.split('\0');
+  const changed = new Set(), renames = new Map();
+  for (let i = 0; i + 1 < t.length; i += 2) {
+    if (/^[RC]/.test(t[i])) { changed.add(t[i + 2]); if (t[i][0] === 'R') renames.set(t[i + 1], t[i + 2]); i++; } else changed.add(t[i + 1]);
+  }
+  return { changed, renames };
+}
+
 // An earlier open finding stays open when this round raised it again, or when its
-// file is untouched and the span still occurs at the new head.
-function classifyPrior(open, raised, changedFiles, spanAtHead) {
-  const out = { open: [], fixed: [], fixedKeys: [] };
+// file is untouched and the span still occurs at the new head. A finding on a renamed
+// file follows the rename: it stays open while the span occurs at the new path, and
+// `moved` lists the new path for the ledger.
+function classifyPrior(open, raised, changedFiles, spanAtHead, renames = new Map()) {
+  const out = { open: [], fixed: [], fixedKeys: [], moved: [] };
   for (const p of open) {
-    const again = raised.some((f) => findingKey(f) === findingKey(p));
-    if (again || (!changedFiles.has(p.file) && spanAtHead(p.file, p.span))) out.open.push(p.id);
-    else { out.fixed.push(p.id); out.fixedKeys.push(findingKey(p)); }
+    const file = renames.get(p.file) || p.file;
+    const q = { ...p, file };
+    const again = raised.some((f) => findingKey(f) === findingKey(q));
+    if (again || (file !== p.file ? spanAtHead(file, p.span) : !changedFiles.has(p.file) && spanAtHead(p.file, p.span))) {
+      out.open.push(p.id);
+      if (file !== p.file) out.moved.push({ key: p.key, file });
+    } else { out.fixed.push(p.id); out.fixedKeys.push(findingKey(p)); }
   }
   return out;
 }
@@ -84,4 +100,4 @@ function wakeDecision({ ledger, live, replies, now, stable }) {
   return { event: 'nudge', kind, head: live.head, replyAt };
 }
 
-module.exports = { chooseRange, findingKey, isPublished, classifyPrior, evaluateApproval, repliesSince, wakeDecision, sha, NUDGE_AFTER_MS, TIMEOUT_MS };
+module.exports = { chooseRange, findingKey, isPublished, parseNameStatus, classifyPrior, evaluateApproval, repliesSince, wakeDecision, sha, NUDGE_AFTER_MS, TIMEOUT_MS };
