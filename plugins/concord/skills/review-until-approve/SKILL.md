@@ -18,11 +18,11 @@ The decisions behind each step are in `docs/design/review-until-approve.md`.
 - `SCRIPTS` is the `scripts/` directory next to this file. Resolve the installed path first; do not assume a layout.
 - Every command below runs as the reviewing account: prefix it with `mien exec <profile> --` when the user names a profile, otherwise the ambient `gh` account reviews. The account must not be the pull request's author.
 - `round` and `watch` call GitHub and, with the default Codex reviewer, start `codex exec`; give them network access.
-- The reviewer is `codex`. `start` refuses `--reviewer claude`: that reviewer cannot be kept from reading the account's credential files. `codex` must be installed and logged in.
+- The reviewer is the harness's own: `claude` under Claude Code, `codex` under Codex; `--reviewer` overrides. `claude` needs `CLAUDE_CODE_OAUTH_TOKEN` in the environment and Linux with `bwrap` (bubblewrap), which keeps it from reading the account's home directory; `start` refuses it otherwise. `codex` must be installed and logged in.
 
 ## Loop
 
-1. `node "$SCRIPTS/approve.js" start <owner/repo> <pr> [--model <m>]` checks the account, opens or resumes the ledger, and prints `{ledger, action}`. It refuses a pull request that is not open and an account that is the author. Relay a `warning` to the user.
+1. `node "$SCRIPTS/approve.js" start <owner/repo> <pr> [--reviewer codex|claude] [--model <m>]` checks the account, opens or resumes the ledger, and prints `{ledger, action}`. It refuses a pull request that is not open and an account that is the author. Relay a `warning` to the user.
 2. `action: "round"`: run `node "$SCRIPTS/approve.js" round <owner/repo> <pr>` in the foreground; it takes minutes. It clones the exact head into a temporary directory, runs the review-only engine without your GitHub token, publishes one review, and approves in the same review when the round is clean. Its last line is the outcome:
    - `published` with `review: "APPROVE"`: tell the user the head is approved and stop.
    - `published` with `review: "COMMENT"`: tell the user the finding counts in one line, then wait (step 4). `notApproved: "draft"` means a clean round on a draft pull request: the watch does not see a draft turning ready, so tell the user to re-invoke the skill once the pull request is ready (`start` then answers `action: "approve"`) and stop instead of waiting.

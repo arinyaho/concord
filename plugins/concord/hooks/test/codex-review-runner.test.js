@@ -12,7 +12,7 @@ const { fileTarget } = require('../../core/target');
 
 // The runner owns all sequencing. Its subprocess seam makes this a no-network
 // integration test while exercising the real artifact contract at the boundary.
-const { runReviewUntilGreen, reviewerPrompt, codexExec, providerExec, resolveCodexExecutable, resolveDefaultBase } = require('../../core/codex-review-runner');
+const { runReviewUntilGreen, reviewerPrompt, codexExec, providerExec, confineClaude, resolveCodexExecutable, resolveDefaultBase } = require('../../core/codex-review-runner');
 const { reviewerPrompt: packagedReviewerPrompt } = require('../../../concord-codex/engine/codex-review-runner');
 const { tempDir } = require('./temp-dir');
 
@@ -3341,9 +3341,10 @@ test('reviewOnly denies the reviewer every entry of the real home except the way
   fs.symlinkSync(path.join(fakeHome, '.ssh'), path.join(fakeHome, 'link-in'));
   fs.writeFileSync(path.join(fakeHome, '.local', 'bin', 'codex'), '');
   const saved = { HOME: process.env.HOME, CODEX_HOME: process.env.CODEX_HOME, PATH: process.env.PATH };
-  process.env.HOME = fakeHome; process.env.CODEX_HOME = sourceHome; process.env.PATH = `${path.join(fakeHome, '.local', 'bin')}${path.delimiter}${saved.PATH}`;
+  // The runner itself runs with the reviewer's empty HOME, so the real home comes in as an option.
+  process.env.HOME = fs.realpathSync(temp()); process.env.CODEX_HOME = sourceHome; process.env.PATH = `${path.join(fakeHome, '.local', 'bin')}${path.delimiter}${saved.PATH}`;
   try {
-    await runReviewUntilGreen({ ref: 'feature/codex', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'codex', noBroad: true, reviewDenyRead: [outside] });
+    await runReviewUntilGreen({ ref: 'feature/codex', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'codex', noBroad: true, reviewDenyRead: [outside], reviewRealHome: fakeHome });
   } finally {
     for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
   }
@@ -3357,6 +3358,45 @@ test('reviewOnly denies the reviewer every entry of the real home except the way
     assert.ok(list.includes(linked), 'the target of a link that leaves the home is denied');
     assert.ok(list.includes(path.join(fakeHome, '.local', 'bin', 'other-tool')), 'only the Codex binary stays readable in its directory');
     for (const skipped of [path.join(fakeHome, 'link-out'), path.join(fakeHome, 'link-in'), '/usr']) assert.ok(!list.includes(skipped), `${skipped} is not mounted over`);
+  }
+});
+
+const bwrapWorks = process.platform === 'linux' && spawnSync('bwrap', ['--ro-bind', '/', '/', 'true']).status === 0;
+
+test('the Claude reviewer of an untrusted checkout runs under bubblewrap with the account home and the temporary directory hidden', { skip: process.platform !== 'linux' }, () => {
+  const repo = fs.realpathSync(temp());
+  const stateDir = fs.realpathSync(temp());
+  const confined = confineClaude('claude', ['-p', 'x'], { repoRoot: repo, stateDir, cliPath: path.join(repo, 'hooks', 'review-cli.js'), denyRead: [], realHome: '/' + 'nonexistent-home' });
+  assert.strictEqual(confined.command, 'bwrap');
+  const args = confined.args;
+  assert.deepStrictEqual(args.slice(0, 3), ['--ro-bind', '/', '/']);
+  assert.ok(args.includes('--unshare-pid'));
+  assert.ok(args.join(' ').includes(`--tmpfs ${fs.realpathSync(os.tmpdir())}`), 'the temporary directory is hidden');
+  assert.ok(args.join(' ').includes(`--bind ${repo} ${repo}`) && args.join(' ').includes(`--bind ${stateDir} ${stateDir}`), 'the checkout and the state directory come back writable');
+  assert.deepStrictEqual(args.slice(-4), ['--', 'claude', '-p', 'x']);
+});
+
+test('a Claude reviewer cannot read a decoy file in the account home, through cat, and still runs git and writes its state', { skip: !bwrapWorks }, async () => {
+  const root = fs.realpathSync(temp());
+  const fakeHome = path.join(root, 'account-home');
+  const scratch = path.join(root, 'scratch');
+  const bin = path.join(root, 'bin');
+  const repo = cleanRepo();
+  const stateDir = fs.realpathSync(temp());
+  for (const dir of [fakeHome, scratch, bin]) fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(fakeHome, 'decoy'), 'DECOY-VALUE');
+  fs.writeFileSync(path.join(bin, 'claude'), `#!/bin/sh\ncat ${path.join(fakeHome, 'decoy')} 2>&1\ngit --version\necho state > ${path.join(stateDir, 'out')} && echo wrote\n`, { mode: 0o755 });
+  const saved = { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR };
+  process.env.PATH = `${bin}${path.delimiter}${saved.PATH}`; process.env.TMPDIR = scratch;
+  try {
+    const run = (extra) => providerExec({ provider: 'claude', role: 'correctness', prompt: 'p', repoRoot: repo, stateDir, cliPath: path.join(repo, 'x', 'review-cli.js'), reviewRealHome: fakeHome, ...extra });
+    const open = await run({});
+    assert.ok(open.stdout.includes('DECOY-VALUE'), `unconfined, the decoy is readable: ${open.stdout}`);
+    const confined = await run({ untrustedCheckout: true });
+    assert.ok(!confined.stdout.includes('DECOY-VALUE'), confined.stdout);
+    assert.ok(confined.stdout.includes('git version') && confined.stdout.includes('wrote'), confined.stdout);
+  } finally {
+    for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
   }
 });
 
