@@ -268,3 +268,51 @@ test('a file added and renamed inside the PR keeps its finding open when the ran
   assert.deepEqual([r.mode, r.fixed, r.stillOpen], ['broad', 0, 1]);
   assert.deepEqual([w.ledger().findings[0].status, w.ledger().findings[0].file], ['open', 'm.js']);
 });
+
+// A push by the author: write files, commit, publish as the new PR head.
+function push(w, files, message) {
+  for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(w.src, name), text);
+  sh(w.src, 'add', '.'); sh(w.src, 'commit', '-q', '-m', message);
+  const head = sh(w.src, 'rev-parse', 'HEAD');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head });
+  return head;
+}
+
+test('a push to another file does not fix a finding whose span the file does not contain verbatim, and the PR is not approved', () => {
+  const w = world();
+  w.write('findings.json', [{ ...finding, span: 'text the engine paraphrased' }]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  push(w, { 'b.js': 'unrelated\n' }, 'c2');
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  const r2 = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r2.review, r2.fixed, r2.stillOpen, r2.notApproved], ['COMMENT', 0, 1, 'open-findings']);
+  assert.equal(w.ledger().findings[0].status, 'open');
+  assert.deepEqual(w.posts().map((p) => p.event), ['COMMENT', 'COMMENT']);
+});
+
+test('a finding the reviewer was not told about (past the twenty listed) is not fixed by its silence', () => {
+  const w = world();
+  const many = Array.from({ length: 21 }, (_, i) => ({ ...finding, id: `c:${i}`, span: `bad${i}` }));
+  w.write('findings.json', many);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  push(w, { 'a.js': 'rewritten\n' }, 'c2');
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  const r2 = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r2.fixed, r2.stillOpen, r2.review], [20, 1, 'COMMENT']);
+  assert.deepEqual(w.ledger().findings.filter((f) => f.status === 'open').map((f) => f.id), ['c:20']);
+});
+
+test('a finding raised again with a different span is neither listed fixed nor posted as new', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  push(w, { 'a.js': 'one\nbad2\nthree\nfour\n' }, 'c2');
+  w.write('findings.json', [{ ...finding, span: 'bad2' }]);
+  w.approve('start', 'o/r', '5');
+  const r2 = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r2.new, r2.fixed, r2.stillOpen], [0, 0, 1]);
+  assert.equal(w.ledger().findings.length, 1);
+});

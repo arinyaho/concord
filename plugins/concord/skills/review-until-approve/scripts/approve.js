@@ -119,8 +119,10 @@ function start(repo, pr, args) {
   out({ ledger: file, action, round: ledger.rounds.length + 1, ...(warning && { warning }) });
 }
 
-function guidance(ledger) {
-  const open = ledger.findings.filter((f) => f.status === 'open').slice(0, GUIDANCE_FINDINGS);
+// The findings the reviewer is told about; only those can be judged fixed from its silence.
+const shownFindings = (ledger) => ledger.findings.filter((f) => f.status === 'open').slice(0, GUIDANCE_FINDINGS);
+
+function guidance(open) {
   if (!open.length) return undefined;
   return `Earlier findings on this pull request. If one is still present at this head, raise it again with the same id: ${open.map((f) => `${f.id} (${f.file}): ${f.summary.slice(0, 200)}`).join('; ')}`;
 }
@@ -153,10 +155,11 @@ function attempt(repo, pr, ledger, file) {
     const isAncestor = (a, b) => spawnSync('git', ['merge-base', '--is-ancestor', a, b], { cwd: work }).status === 0;
     const range = prior ? lib.chooseRange(prior, snap, isAncestor) : { base: snap.mergeBase, broad: true };
 
+    const shown = shownFindings(ledger);
     const intentFile = path.join(dir, 'intent.md');
     fs.writeFileSync(intentFile, `# ${snap.title}\n\n${snap.body}`);
     const claudeConfig = fs.mkdtempSync(path.join(dir, 'claude-'));
-    const runnerOptions = { ref: `concord-pr-${pr}`, base: range.base, broad: range.broad, noBroad: !range.broad, reviewer: ledger.provider, reviewerModel: ledger.model || undefined, reviewerGuidance: guidance(ledger), intentFile: range.broad ? intentFile : undefined };
+    const runnerOptions = { ref: `concord-pr-${pr}`, base: range.base, broad: range.broad, noBroad: !range.broad, reviewer: ledger.provider, reviewerModel: ledger.model || undefined, reviewerGuidance: guidance(shown), intentFile: range.broad ? intentFile : undefined };
     const reviewerHome = fs.mkdtempSync(path.join(dir, 'home-'));
     const env = reviewerEnv(ledger.provider, claudeConfig, reviewerHome);
     const runner = process.env.REVIEW_APPROVE_RUNNER || path.join(__dirname, 'run-review.js');
@@ -172,7 +175,7 @@ function attempt(repo, pr, ledger, file) {
     const collapse = (t) => String(t || '').replace(/\s+/g, ' ').trim();
     const spanAtHead = (f, span) => { try { return !collapse(span) || collapse(fs.readFileSync(path.join(work, f), 'utf8')).includes(collapse(span)); } catch (_) { return false; } };
     const open = ledger.findings.filter((f) => f.status === 'open');
-    const verdict = lib.classifyPrior(open, reviewed.findings, changed, spanAtHead, renames);
+    const verdict = lib.classifyPrior(open, reviewed.findings, changed, spanAtHead, renames, { incremental: prior ? range.base === prior.head : false, evaluated: new Set(shown.map((f) => f.id)) });
     const next = JSON.parse(JSON.stringify(ledger));
     for (const m of verdict.moved) for (const f of next.findings) if (f.key === m.key) Object.assign(f, { file: m.file, key: lib.findingKey({ ...f, file: m.file }) });
     const fresh = reviewed.findings.filter((f, i, all) => !lib.isPublished(next, f) && all.findIndex((g) => lib.findingKey(g) === lib.findingKey(f)) === i);
