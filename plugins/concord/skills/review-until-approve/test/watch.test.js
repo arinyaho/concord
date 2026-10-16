@@ -110,3 +110,19 @@ test('watch: failed polls add up across bounded runs until the error event', () 
   assert.equal(last.out[0].event, 'error');
   assert.equal(last.code, 1);
 });
+
+test('watch: a run started after an error event does not error on its first failed poll', () => {
+  const dir = setup([{ fail: true }], ledger);
+  for (let i = 1; i < 10; i++) runIn(dir, ['--max-wait', '0.01']);
+  assert.equal(runIn(dir, ['--max-wait', '0.01']).out[0].event, 'error');
+  assert.deepEqual(runIn(dir, ['--max-wait', '0.01']).out, [{ event: 'idle' }]);
+});
+
+test('watch: a non-numeric or non-positive --max-wait or --interval is refused with exit status 2', () => {
+  const dir = setup([{ head: 'h1' }], ledger);
+  for (const args of [['--max-wait', 'soon'], ['--max-wait', '0'], ['--max-wait'], ['--interval', 'x']]) {
+    const r = spawnSync('node', [WATCH, path.join(dir, 'ledger.json'), 'o/r', '5', ...args], { encoding: 'utf8', env: { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}` }, timeout: 5000 });
+    assert.equal(r.status, 2, args.join(' '));
+    assert.match(r.stderr, /usage/);
+  }
+});

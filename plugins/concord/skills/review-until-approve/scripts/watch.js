@@ -14,11 +14,17 @@ const lib = require('./lib');
 
 const MAX_FAILURES = 10;
 const [ledgerPath, repo, pr, ...rest] = process.argv.slice(2);
-if (!ledgerPath || !repo || !pr) { process.stderr.write('usage: watch.js <ledger.json> <owner/repo> <pr> [--interval <seconds>] [--max-wait <seconds>]\n'); process.exit(2); }
-const intervalFlag = rest.indexOf('--interval');
-const intervalMs = (intervalFlag === -1 ? 60 : Number(rest[intervalFlag + 1])) * 1000;
-const maxWaitFlag = rest.indexOf('--max-wait');
-const deadline = maxWaitFlag === -1 ? Infinity : Date.now() + Number(rest[maxWaitFlag + 1]) * 1000;
+const usage = () => { process.stderr.write('usage: watch.js <ledger.json> <owner/repo> <pr> [--interval <seconds>] [--max-wait <seconds>]\n'); process.exit(2); };
+if (!ledgerPath || !repo || !pr) usage();
+// A flag's value must be a positive number of seconds; anything else would make a timer fire at once.
+function seconds(flag, fallback) {
+  const at = rest.indexOf(flag);
+  if (at === -1) return fallback;
+  const value = Number(rest[at + 1]);
+  return value > 0 && Number.isFinite(value) ? value : usage();
+}
+const intervalMs = seconds('--interval', 60) * 1000;
+const deadline = Date.now() + seconds('--max-wait', Infinity) * 1000;
 const sidecarPath = `${ledgerPath}.watch.json`;
 const readSidecar = () => { try { return JSON.parse(fs.readFileSync(sidecarPath, 'utf8')); } catch (_) { return {}; } };
 const writeSidecar = (data) => { try { fs.writeFileSync(sidecarPath, JSON.stringify(data)); } catch (_) { /* the next run only repeats a notice */ } };
@@ -54,7 +60,7 @@ const sameNudge = (a, b) => a && b && a.kind === b.kind && a.head === b.head && 
       writeSidecar({ ...sidecar, previousHead, failures });
       if (event) return emit(event);
     } catch (error) {
-      writeSidecar({ ...sidecar, previousHead, failures: ++failures });
+      writeSidecar({ ...sidecar, previousHead, failures: ++failures % MAX_FAILURES });
       if (failures >= MAX_FAILURES) return emit({ event: 'error', detail: String(error.message) }, 1);
     }
     const remaining = deadline - Date.now();
