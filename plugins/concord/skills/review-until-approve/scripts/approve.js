@@ -75,12 +75,21 @@ function lock(file) {
 const ENV_ALLOWED = /^(PATH|USER|LOGNAME|LANG|LC_\w+|TERM|TMPDIR|TZ|(HTTPS?|NO|ALL)_PROXY|(https?|no|all)_proxy|SSL_CERT_(FILE|DIR)|NODE_EXTRA_CA_CERTS)$/;
 // HOME is an empty directory; the engine keeps the reviewer from the real home (`reviewRealHome`) with a Codex
 // file-system profile (Codex only). The Codex engine copies auth.json from CODEX_HOME into a home of its own.
-function reviewerEnv(provider, claudeConfig, home) {
+function reviewerEnv(provider, claudeConfig, home, realClaudeConfig) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => ENV_ALLOWED.test(name)));
   env.HOME = home;
+  env.CLAUDE_CONFIG_DIR = claudeConfig;
   if (provider === 'codex') env.CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
-  if (provider === 'claude' && process.env.CLAUDE_CODE_OAUTH_TOKEN) env.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
-  return { ...env, CLAUDE_CONFIG_DIR: claudeConfig };
+  if (provider === 'claude') {
+    // The opted-in Claude reviewer can already read the whole home, so it authenticates as the user: the token when set, else the
+    // real credentials file copied into its own config directory (the user's settings, hooks and plugins stay out of the review),
+    // else the real configuration and home, for hosts that keep the login elsewhere.
+    const credentials = path.join(realClaudeConfig, '.credentials.json');
+    if (process.env.CLAUDE_CODE_OAUTH_TOKEN) env.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    else if (fs.existsSync(credentials)) fs.copyFileSync(credentials, path.join(claudeConfig, '.credentials.json'));
+    else { env.CLAUDE_CONFIG_DIR = realClaudeConfig; env.HOME = os.homedir(); }
+  }
+  return env;
 }
 
 function snapshot(repo, pr) {
@@ -135,7 +144,7 @@ const onPath = (name) => (process.env.PATH || '').split(path.delimiter).some((di
 function missing(provider, optedIn) {
   if (provider === 'codex') return [!onPath('codex') ? 'install codex' : !fs.existsSync(path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'auth.json')) && 'run `codex login`'].filter(Boolean);
   // The Claude reviewer cannot yet be kept from the account's home directory (tracked in its own issue), so it runs only on an explicit opt-in.
-  return [!onPath('claude') && 'install claude', !process.env.CLAUDE_CODE_OAUTH_TOKEN && 'export CLAUDE_CODE_OAUTH_TOKEN (create one with `claude setup-token`)', !optedIn && `pass ${UNRESTRICTED} (the claude reviewer can read your real home directory, and a malicious pull request could publish what it reads)`].filter(Boolean);
+  return [!onPath('claude') && 'install claude', !optedIn && `pass ${UNRESTRICTED} (the claude reviewer can read your real home directory, and a malicious pull request could publish what it reads)`].filter(Boolean);
 }
 // An explicit choice or a resumed ledger is kept or refused. Without one, the harness's own reviewer runs when it is ready, otherwise the other one; the note says why.
 function chooseReviewer(asked, optedIn) {
@@ -255,7 +264,7 @@ function attempt(repo, pr, ledger, file) {
     const claudeConfig = fs.mkdtempSync(path.join(dir, 'claude-'));
     const reviewerHome = fs.mkdtempSync(path.join(dir, 'home-'));
     const runnerOptions = { ref: `concord-pr-${pr}`, base: range.base, broad: range.broad, noBroad: !range.broad, reviewer: ledger.provider, reviewerModel: ledger.model || undefined, reviewDenyRead: [realClaudeConfig], reviewRealHome: os.homedir(), reviewerGuidance: guidance(shown), intentFile: range.broad ? intentFile : undefined };
-    const env = reviewerEnv(ledger.provider, claudeConfig, reviewerHome);
+    const env = reviewerEnv(ledger.provider, claudeConfig, reviewerHome, realClaudeConfig);
     const runner = process.env.REVIEW_APPROVE_RUNNER || path.join(__dirname, 'run-review.js');
     const reviewed = JSON.parse(run('node', [runner, JSON.stringify(runnerOptions)], { cwd: work, env }).trim().split('\n').pop());
     if (reviewed.decision !== 'review-only' || !Array.isArray(reviewed.findings)) throw new Error(`the review did not complete: ${JSON.stringify(reviewed).slice(0, 200)}`);
