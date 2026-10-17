@@ -415,7 +415,15 @@ function attempt(repo, pr, ledger, file) {
 
     const diff = git(work, ['diff', '-U3', '--submodule=short', range.base, 'HEAD']);
     const verdictNow = lib.evaluateApproval({ ...next, rounds: [...next.rounds, { head: snap.head, unreviewed }] }, snapshot(repo, pr), snap.head);
-    const input = { head: snap.head, round: n, rangeBase: range.base, reviewer: ledger.provider, hunks: publish.hunksOf(diff), findings: fresh, fixed: fixedIds, stillOpen: openIds, previousHead: prior ? prior.head : snap.head, approve: verdictNow.approve };
+    const hunks = publish.hunksOf(diff);
+    // The engine's line is kept whether or not it is in the diff; only a finding without one is looked up by span in the file at the head.
+    const placed = (f) => {
+      if (f.line != null) return f;
+      const blob = f.span ? gitBlob(work, snap.head, f.file) : null;
+      const line = Buffer.isBuffer(blob) ? publish.placeLine(blob.toString('utf8'), f.span, f.file, hunks) : null;
+      return line == null ? f : { ...f, line };
+    };
+    const input = { head: snap.head, round: n, rangeBase: range.base, reviewer: ledger.provider, hunks, findings: fresh.map(placed), fixed: fixedIds, stillOpen: openIds, previousHead: prior ? prior.head : snap.head, approve: verdictNow.approve };
     if (verdictNow.reason === 'head-moved') return null;
     // A submodule range that could not be read is said in the review, which then does not approve.
     const render = (i, how) => {

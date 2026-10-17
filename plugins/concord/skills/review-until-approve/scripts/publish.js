@@ -33,6 +33,22 @@ function hunksOf(diff) {
   return hunks;
 }
 
+// The line a finding's span starts on, for the occurrence that lies inside a hunk of its file: the engine gives none for a
+// span that occurs more than once, and an inline comment needs one. A multi-line span takes its first line inside a hunk.
+function placeLine(content, span, file, hunks) {
+  const body = (span || '').replace(/^\n+|\n+$/g, '');
+  if (!body) return null;
+  const mine = hunks.filter((h) => h.file === file);
+  const rows = body.split('\n').length;
+  let line = 1;
+  let seen = 0;
+  for (let at = content.indexOf(body); at !== -1; at = content.indexOf(body, at + 1)) {
+    for (; seen < at; seen++) if (content.charCodeAt(seen) === 10) line++;
+    for (let l = line; l < line + rows; l++) if (mine.some((h) => l >= h.from && l <= h.to)) return l;
+  }
+  return null;
+}
+
 const text = (f) => `**${f.category}** ${f.summary}${f.requirement ? `\n\n> ${f.requirement}` : ''}\n\n\`${f.id}\``;
 const ids = (list) => list.map((id) => `\`${id}\``).join(', ');
 
@@ -43,7 +59,7 @@ function renderReview({ head, round, rangeBase, reviewer, hunks, findings, fixed
   const rest = findings.filter((f) => !inline.includes(f));
   const lines = [
     `<!-- concord-approve: ${head} round:${round} base:${rangeBase} -->`,
-    `reviewed by ${reviewer}`,
+    `reviewed by concord (${reviewer})`,
     findings.length === 0 && stillOpen.length === 0 ? (approve ? 'LGTM — no finding survived verification.' : 'No finding survived verification; this review does not approve.') : `${findings.length} new finding(s), ${stillOpen.length} still open.`,
   ];
   if (fixed.length) lines.push(`Fixed since \`${previousHead.slice(0, 7)}\`: ${ids(fixed)}`);
@@ -59,4 +75,4 @@ function renderReview({ head, round, rangeBase, reviewer, hunks, findings, fixed
 
 const containsSecret = (payload, secrets) => secrets.some((s) => s && payload.includes(s));
 
-module.exports = { hunksOf, renderReview, containsSecret };
+module.exports = { hunksOf, placeLine, renderReview, containsSecret };

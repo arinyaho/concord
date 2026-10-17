@@ -72,3 +72,35 @@ test('renderReview: LGTM only on an approving review; a clean round that does no
   assert.equal(held.event, 'COMMENT');
   assert.doesNotMatch(held.body, /LGTM/);
 });
+
+const hunks = [{ file: 'a.js', from: 5, to: 8 }];
+
+test('placeLine: a span repeated in the file is placed at the occurrence inside a hunk', () => {
+  const text = 'x\nbad\nx\nx\nbad\nx\nx\nx\n';
+  assert.equal(publish.placeLine(text, 'bad', 'a.js', hunks), 5);
+});
+
+test('placeLine: a multi-line span is placed at its first line inside a hunk; one outside every hunk gets no line', () => {
+  const text = 'a\nb\nc\nd\ne\nfoo(\n  1)\ng\nh\n';
+  assert.equal(publish.placeLine(text, 'foo(\n  1)', 'a.js', hunks), 6);
+  assert.equal(publish.placeLine(text, 'a', 'a.js', hunks), null);
+  assert.equal(publish.placeLine(text, 'missing', 'a.js', hunks), null);
+  assert.equal(publish.placeLine(text, 'foo(', 'b.js', hunks), null);
+});
+
+test('renderReview: the header signs the review as concord and names the engine', () => {
+  const r = publish.renderReview({ ...base, reviewer: 'codex', findings: [], approve: false }, 'inline');
+  assert.equal(r.body.split('\n\n')[1], 'reviewed by concord (codex)');
+});
+
+test('placeLine: a trailing or leading newline in the span does not move the line', () => {
+  assert.equal(publish.placeLine('x\nbad\nok\n', 'bad\n', 'a.js', [{ file: 'a.js', from: 3, to: 3 }]), null);
+  assert.equal(publish.placeLine('x\nbad\nok\n', '\nbad', 'a.js', [{ file: 'a.js', from: 1, to: 1 }]), null);
+  assert.equal(publish.placeLine('x\nbad\nok\n', 'bad\n', 'a.js', [{ file: 'a.js', from: 2, to: 2 }]), 2);
+});
+
+test('placeLine: a common span in a large file outside every hunk returns quickly', () => {
+  const t = Date.now();
+  assert.equal(publish.placeLine('}\n'.repeat(200000), '}', 'a.js', [{ file: 'a.js', from: 999999, to: 999999 }]), null);
+  assert.ok(Date.now() - t < 2000);
+});
