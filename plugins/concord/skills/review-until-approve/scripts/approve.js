@@ -82,12 +82,15 @@ function reviewerEnv(provider, claudeConfig, home, realClaudeConfig) {
   if (provider === 'codex') env.CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
   if (provider === 'claude') {
     // The opted-in Claude reviewer can already read the whole home, so it authenticates as the user: the token when set, else the
-    // real credentials file copied into its own config directory (the user's settings, hooks and plugins stay out of the review),
-    // else the real configuration and home, for hosts that keep the login elsewhere.
+    // real credentials file copied into its own config directory. The user's settings, hooks, plugins and MCP servers never load
+    // into the review: its allow rules and a logged-in gh would go beyond what the opt-in accepts.
     const credentials = path.join(realClaudeConfig, '.credentials.json');
     if (process.env.CLAUDE_CODE_OAUTH_TOKEN) env.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
-    else if (fs.existsSync(credentials)) fs.copyFileSync(credentials, path.join(claudeConfig, '.credentials.json'));
-    else { env.CLAUDE_CONFIG_DIR = realClaudeConfig; env.HOME = os.homedir(); }
+    else if (fs.existsSync(credentials)) {
+      const copy = path.join(claudeConfig, '.credentials.json');
+      fs.copyFileSync(credentials, copy);
+      credentialCopies.push(copy);
+    }
   }
   return env;
 }
@@ -98,7 +101,17 @@ function snapshot(repo, pr) {
   return { head: v.headRefOid, baseTip: v.baseRefOid, mergeBase, intent: lib.sha(`${v.title}\n\n${v.body}`), title: v.title, body: v.body, state: v.state, isDraft: v.isDraft, author: v.author.login };
 }
 
-const secrets = () => [process.env.GH_TOKEN, process.env.CLAUDE_CODE_OAUTH_TOKEN, process.env.OPENAI_API_KEY, (() => { try { return gh(['auth', 'token']).trim(); } catch (_) { return ''; } })()];
+const claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+// Every long string of a credentials file (access and refresh tokens): a copy of it sits where the opted-in Claude reviewer can read it.
+const credentialCopies = [];
+function credentialStrings(file) {
+  const found = [];
+  const walk = (value) => { if (typeof value === 'string') { if (value.length >= 20) found.push(value); } else if (value && typeof value === 'object') Object.values(value).forEach(walk); };
+  try { walk(JSON.parse(fs.readFileSync(file, 'utf8'))); } catch (_) { /* absent or not JSON: nothing to check */ }
+  return found;
+}
+const secrets = () => [process.env.GH_TOKEN, process.env.CLAUDE_CODE_OAUTH_TOKEN, process.env.OPENAI_API_KEY, (() => { try { return gh(['auth', 'token']).trim(); } catch (_) { return ''; } })(),
+  ...credentialStrings(path.join(claudeConfigDir(), '.credentials.json')), ...credentialCopies.flatMap(credentialStrings)];
 
 function post(repo, pr, payload) {
   const text = JSON.stringify(payload);
@@ -144,7 +157,7 @@ const onPath = (name) => (process.env.PATH || '').split(path.delimiter).some((di
 function missing(provider, optedIn) {
   if (provider === 'codex') return [!onPath('codex') ? 'install codex' : !fs.existsSync(path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'auth.json')) && 'run `codex login`'].filter(Boolean);
   // The Claude reviewer cannot yet be kept from the account's home directory (tracked in its own issue), so it runs only on an explicit opt-in.
-  return [!onPath('claude') && 'install claude', !optedIn && `pass ${UNRESTRICTED} (the claude reviewer can read your real home directory, and a malicious pull request could publish what it reads)`].filter(Boolean);
+  return [!onPath('claude') && 'install claude', !process.env.CLAUDE_CODE_OAUTH_TOKEN && !fs.existsSync(path.join(claudeConfigDir(), '.credentials.json')) && `log in with claude (no \`.credentials.json\` in ${claudeConfigDir()}) or export CLAUDE_CODE_OAUTH_TOKEN (create one with \`claude setup-token\`)`, !optedIn && `pass ${UNRESTRICTED} (the claude reviewer can read your real home directory, and a malicious pull request could publish what it reads)`].filter(Boolean);
 }
 // An explicit choice or a resumed ledger is kept or refused. Without one, the harness's own reviewer runs when it is ready, otherwise the other one; the note says why.
 function chooseReviewer(asked, optedIn) {
@@ -260,7 +273,7 @@ function attempt(repo, pr, ledger, file) {
 
     const intentFile = path.join(dir, 'intent.md');
     fs.writeFileSync(intentFile, `# ${snap.title}\n\n${snap.body}`);
-    const realClaudeConfig = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+    const realClaudeConfig = claudeConfigDir();
     const claudeConfig = fs.mkdtempSync(path.join(dir, 'claude-'));
     const reviewerHome = fs.mkdtempSync(path.join(dir, 'home-'));
     const runnerOptions = { ref: `concord-pr-${pr}`, base: range.base, broad: range.broad, noBroad: !range.broad, reviewer: ledger.provider, reviewerModel: ledger.model || undefined, reviewDenyRead: [realClaudeConfig], reviewRealHome: os.homedir(), reviewerGuidance: guidance(shown), intentFile: range.broad ? intentFile : undefined };
