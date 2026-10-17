@@ -267,6 +267,7 @@ const submoduleUrls = (work) => {
 const submoduleRemote = (sr) => `${process.env.REVIEW_APPROVE_REMOTE || 'https://github.com'}/${sr}.git`;
 const fetchSubmodule = (dir, remote, shas) => git(dir, ['fetch', '--quiet', '--depth=1', '--no-tags', '--no-recurse-submodules', remote, ...[...new Set(shas)].map((sha) => `${sha}:refs/concord/${sha}`)], GIT_AUTH);
 
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 function prepareSubmodules(work, repo, snap, range, subs) {
   const urls = submoduleUrls(work);
   const info = new Map();
@@ -282,14 +283,15 @@ function prepareSubmodules(work, repo, snap, range, subs) {
     if (!underClone(work, change.path) || !fs.lstatSync(path.join(work, change.path)).isDirectory() || fs.readdirSync(path.join(work, change.path)).length) { fail('path'); continue; }
     const target = visibility(sr);
     if (!target) { fail('unreadable'); continue; }
-    if (target.private && !(visibility(repo)?.private === true && sr.split('/')[0] === repo.split('/')[0])) { fail('audience'); continue; }
+    // A private repository has its own readers (collaborators are per repository), so only the pull request's own repository, by the name GitHub resolves, may be quoted into its review.
+    if (target.private && String(target.full_name).toLowerCase() !== repo.toLowerCase()) { fail('audience'); continue; }
     const dir = path.join(work, change.path);
     try {
       git(work, ['init', '--quiet', '--template=', dir]);
       fetchSubmodule(dir, submoduleRemote(sr), [change.newSha, change.oldSha].filter(Boolean));
       git(dir, ['checkout', '--quiet', '--detach', change.newSha]);
     } catch (_) { fail('fetch'); fs.rmSync(path.join(dir, '.git'), { recursive: true, force: true }); continue; }
-    if (change.oldSha && gitlinkChanges(dir, change.oldSha).length) { fail('nested'); continue; }
+    if (gitlinkChanges(dir, change.oldSha || EMPTY_TREE).length) { fail('nested'); continue; }
     subs.set(change.path, { dir, remote: submoduleRemote(sr) });
   }
   return unreviewed;

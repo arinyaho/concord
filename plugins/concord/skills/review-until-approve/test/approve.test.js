@@ -26,7 +26,9 @@ function world(extraEnv = {}, { sub } = {}) {
     sh(lib, 'add', '.'); sh(lib, 'commit', '-q', '-m', 'A');
     const A = sh(lib, 'rev-parse', 'HEAD');
     fs.writeFileSync(path.join(lib, 'f.c'), 'a\nb\n');
-    sh(lib, 'commit', '-q', '-am', 'B');
+    if (sub.nested) sh(lib, 'update-index', '--add', '--cacheinfo', `160000,${A},inner`);
+    sh(lib, 'add', 'f.c');
+    sh(lib, 'commit', '-q', '-m', 'B');
     libShas = { A, B: sh(lib, 'rev-parse', 'HEAD') };
     fs.mkdirSync(path.join(dir, 'remote', 'o'), { recursive: true });
     sh(dir, 'clone', '-q', '--bare', lib, path.join(dir, 'remote', 'o', 'lib.git'));
@@ -896,16 +898,34 @@ test('a .gitmodules url that is not a GitHub repository is never fetched: the ra
   }
 });
 
-test('a private submodule is not quoted into a public pull request, but is reviewed for a private pull request of the same owner', () => {
-  const w = world({}, { sub: {} });
-  w.write('repos.json', { 'o/r': { private: false }, 'o/lib': { private: true } });
+test('a private submodule is reviewed only when it is the pull request repository itself: same owner, even a private pull request, is not the same readers', () => {
+  for (const repos of [{ 'o/r': { private: false }, 'o/lib': { private: true, full_name: 'o/lib' } }, { 'o/r': { private: true }, 'o/lib': { private: true, full_name: 'o/lib' } }, { 'o/r': { private: true }, 'o/lib': { private: true, full_name: 'o/renamed' } }]) {
+    const w = world({}, { sub: {} });
+    w.write('repos.json', repos);
+    w.write('findings.json', []);
+    assert.equal(startRound(w).unreviewed[0].reason, 'audience');
+    assert.equal(w.calls()[0].subGit, false);
+  }
+  const same = world({}, { sub: { url: 'https://github.com/o/r' } });
+  same.write('repos.json', { 'o/r': { private: true, full_name: 'o/r' } });
+  same.write('findings.json', []);
+  // The submodule is the pull request repository: it is fetched (here the fixture remote lacks the commit), not refused as audience.
+  assert.equal(startRound(same).unreviewed[0].reason, 'fetch');
+});
+
+test('a submodule the pull request adds is checked for nested submodules too', () => {
+  const w = world({}, { sub: { nested: true } });
+  libInfo(w, { private: false });
+  fs.appendFileSync(path.join(w.src, '.gitmodules'), '[submodule "lib2"]\n\tpath = lib2\n\turl = https://github.com/o/lib\n');
+  sh(w.src, 'add', '.gitmodules');
+  sh(w.src, 'update-index', '--add', '--cacheinfo', `160000,${sh(path.join(w.dir, 'libsrc'), 'rev-parse', 'HEAD')},lib2`);
+  sh(w.src, 'commit', '-q', '-m', 'add lib2');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD') });
   w.write('findings.json', []);
-  assert.equal(startRound(w).unreviewed[0].reason, 'audience');
-  assert.equal(w.calls()[0].subGit, false);
-  const p = world({}, { sub: {} });
-  p.write('repos.json', { 'o/r': { private: true }, 'o/lib': { private: true } });
-  p.write('findings.json', []);
-  assert.equal(startRound(p).review, 'APPROVE');
+  const r = startRound(w);
+  assert.deepEqual(r.unreviewed.filter((u) => u.path === 'lib2').map((u) => u.reason), ['nested']);
+  assert.equal(r.notApproved, 'unreviewed-submodule');
 });
 
 test('a removed submodule needs nothing fetched and does not block approval', () => {
