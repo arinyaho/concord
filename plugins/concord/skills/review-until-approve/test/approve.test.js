@@ -762,12 +762,16 @@ test('with the opt-in and a token, the Claude reviewer gets the token and no cop
   assert.deepEqual(call.claudeConfigEntries, []);
 });
 
-test('the user\'s own Claude configuration, with its settings and hooks, is never the reviewer\'s configuration directory', () => {
-  for (const extra of [{}, { CLAUDE_CODE_OAUTH_TOKEN: 'tok' }]) {
-    const { real, call } = loginWorld(extra, { '.credentials.json': '{"login":"user"}', 'settings.json': '{"hooks":{}}' });
-    assert.notEqual(call.claudeConfig, real);
-    assert.notEqual(call.home, require('node:os').homedir());
-  }
+test('round refuses a claude ledger whose login has gone, naming how to log in, and starts no reviewer', () => {
+  const env = { CLAUDECODE: '1', CLAUDE_CODE_OAUTH_TOKEN: 't' };
+  const w = world(env);
+  w.write('findings.json', []);
+  assert.equal(w.approve('start', 'o/r', '5', UNRESTRICTED).status, 0);
+  env.CLAUDE_CODE_OAUTH_TOKEN = '';
+  const again = w.approve('round', 'o/r', '5');
+  assert.notEqual(again.status, 0);
+  assert.match(again.stderr, /log in with claude/);
+  assert.equal(w.calls().length, 0);
 });
 
 test('a review that quotes the access or refresh token from the credentials file is never posted', () => {

@@ -230,6 +230,7 @@ function reviewRound(repo, pr, args) {
   const { file, ledger } = identify(repo, pr, args);
   if (!ledger) die('no ledger; run start first');
   if (ledger.provider === 'claude' && !ledger.unrestrictedHome) die(`the ledger runs the claude reviewer without the opt-in; run start with ${UNRESTRICTED} first`);
+  if (ledger.provider === 'claude') { const need = missing('claude', true); if (need.length) die(`the claude reviewer is not ready: ${need.join('; ')}`); }
   if (ledger.rounds.length >= MAX_ROUNDS) return outFor(ledger, { event: 'round-limit', rounds: ledger.rounds.length });
   for (let discards = 0; discards < MAX_DISCARDS; discards++) {
     const result = attempt(repo, pr, ledger, file);
