@@ -162,3 +162,16 @@ test('parseNameStatus: renames and the paths still present; a deletion is not pr
   assert.deepEqual([...renames], [['src/a.js', 'src/a2.js'], ['src/b.js', 'src/b2.js']]);
   assert.deepEqual([...live].sort(), ['src/a2.js', 'src/b2.js', 'src/c.js', 'src/e.js']);
 });
+
+test('submoduleRepo accepts only GitHub repositories in the known forms and rejects anything else', () => {
+  const ok = { 'https://github.com/o/lib': 'o/lib', 'https://github.com/o/lib.git/': 'o/lib', 'git@github.com:o/lib.git': 'o/lib', 'ssh://git@github.com/o/lib': 'o/lib', '../lib.git': 'p/lib', '../../q/lib': 'q/lib' };
+  for (const [url, repo] of Object.entries(ok)) assert.equal(lib.submoduleRepo(url, 'p/r'), repo, url);
+  for (const url of ['file:///x/o/lib.git', 'ext::sh -c id', '../../../../etc', 'https://github.com.evil.com/o/lib', 'https://github.com/o/../lib', 'https://github.com/o/..', 'https://u@github.com/o/lib', 'https://github.com/o/lib?x=1', 'https://github.com/o/%6Cib', '--upload-pack=id', '/abs/o/lib.git', 'git@github.com:o/lib\n', 'ssh://git@evil.com/o/lib', 'lib']) assert.equal(lib.submoduleRepo(url, 'p/r'), null, url);
+});
+
+test('an unreviewed submodule range keeps the round from approving its head and widens the next range', () => {
+  const ledger = { reviewer: 'bot', findings: [], rounds: [{ head: 'h1', mergeBase: 'm', intent: 'i', unreviewed: [{ path: 'lib', reason: 'fetch' }] }] };
+  assert.equal(lib.evaluateApproval(ledger, { head: 'h1', state: 'OPEN', isDraft: false, author: 'dev' }, 'h1').reason, 'unreviewed-submodule');
+  assert.equal(lib.evaluateApproval({ ...ledger, rounds: [{ ...ledger.rounds[0], head: 'h0' }] }, { head: 'h1', state: 'OPEN', isDraft: false, author: 'dev' }, 'h1').approve, true);
+  assert.deepEqual(lib.chooseRange(ledger.rounds[0], { head: 'h2', mergeBase: 'm', intent: 'i' }, () => true), { base: 'm', broad: false });
+});
