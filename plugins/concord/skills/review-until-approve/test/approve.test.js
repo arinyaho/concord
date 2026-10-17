@@ -10,17 +10,38 @@ const APPROVE = path.join(__dirname, '..', 'scripts', 'approve.js');
 const sh = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
 
 // A local remote with refs/pull/5/head, a fake gh, and a fake runner that reports FAKE_FINDINGS.
-function world(extraEnv = {}) {
+function world(extraEnv = {}, { sub } = {}) {
   const dir = tempDir('rua-approve-');
   const src = path.join(dir, 'src');
   fs.mkdirSync(src);
   sh(src, 'init', '-q', '-b', 'main');
   fs.writeFileSync(path.join(src, 'a.js'), 'one\nbad\nthree\n');
-  sh(src, 'add', '.'); sh(src, 'commit', '-q', '-m', 'c0');
+  let libShas = null;
+  if (sub) {
+    // A submodule `lib` served by a second local remote: commit A holds f.c = "a", commit B adds "b".
+    const lib = path.join(dir, 'libsrc');
+    fs.mkdirSync(lib);
+    sh(lib, 'init', '-q', '-b', 'main');
+    fs.writeFileSync(path.join(lib, 'f.c'), 'a\n');
+    sh(lib, 'add', '.'); sh(lib, 'commit', '-q', '-m', 'A');
+    const A = sh(lib, 'rev-parse', 'HEAD');
+    fs.writeFileSync(path.join(lib, 'f.c'), 'a\nb\n');
+    if (sub.nested) sh(lib, 'update-index', '--add', '--cacheinfo', `160000,${A},inner`);
+    sh(lib, 'add', 'f.c');
+    sh(lib, 'commit', '-q', '-m', 'B');
+    libShas = { A, B: sh(lib, 'rev-parse', 'HEAD') };
+    fs.mkdirSync(path.join(dir, 'remote', 'o'), { recursive: true });
+    sh(dir, 'clone', '-q', '--bare', lib, path.join(dir, 'remote', 'o', 'lib.git'));
+    fs.writeFileSync(path.join(src, '.gitmodules'), `[submodule "lib"]\n\tpath = lib\n\turl = ${sub.url || 'https://github.com/o/lib'}\n`);
+    sh(src, 'add', '.gitmodules');
+    sh(src, 'update-index', '--add', '--cacheinfo', `160000,${libShas.A},lib`);
+  }
+  sh(src, 'add', 'a.js'); sh(src, 'commit', '-q', '-m', 'c0');
   const c0 = sh(src, 'rev-parse', 'HEAD');
   sh(src, 'checkout', '-q', '-b', 'pr');
   fs.writeFileSync(path.join(src, 'a.js'), 'one\nbad\nthree\nfour\n');
-  sh(src, 'commit', '-q', '-am', 'c1');
+  if (sub) sh(src, 'update-index', '--cacheinfo', `160000,${libShas.B},lib`);
+  sh(src, 'add', 'a.js'); sh(src, 'commit', '-q', '-m', 'c1');
   const bare = path.join(dir, 'remote', 'o', 'r.git');
   fs.mkdirSync(path.dirname(bare), { recursive: true });
   sh(dir, 'clone', '-q', '--bare', src, bare);
@@ -42,6 +63,12 @@ else if (a[0] === 'api' && a[1] === 'user') console.log('bot');
 else if (a[0] === 'repo') console.log('WRITE');
 else if (a[0] === 'pr') j({ headRefOid: s.head, baseRefOid: s.baseTip, title: s.title, body: s.body, state: s.state, isDraft: s.isDraft, author: { login: s.author } });
 else if (a[0] === 'api' && /compare/.test(a[1])) console.log(s.mergeBase);
+else if (a[0] === 'api' && /^repos\\/[^/]+\\/[^/]+$/.test(a[1])) {
+  const known = fs.existsSync(dir + '/repos.json') ? JSON.parse(fs.readFileSync(dir + '/repos.json', 'utf8')) : {};
+  const info = known[a[1].slice(6)];
+  if (!info) { console.error('HTTP 404'); process.exit(1); }
+  j(info);
+}
 else if (a[0] === 'api' && a.includes('-X')) {
   const posts = fs.existsSync(dir + '/posts.jsonl') ? fs.readFileSync(dir + '/posts.jsonl', 'utf8').split('\\n').filter(Boolean) : [];
   const body = fs.readFileSync(0, 'utf8');
@@ -58,7 +85,7 @@ else if (a[0] === 'api' && fs.existsSync(dir + '/fail-comments')) { console.erro
 else if (a[0] === 'api') j([[{ id: 7 }]]);
 `, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, 'runner.js'), `const fs = require('node:fs');
-fs.appendFileSync(${JSON.stringify(path.join(dir, 'runner-calls.jsonl'))}, JSON.stringify({ ...JSON.parse(process.argv[2]), envKeys: Object.keys(process.env), home: process.env.HOME, homeEntries: fs.readdirSync(process.env.HOME), codexHome: process.env.CODEX_HOME, claudeConfig: process.env.CLAUDE_CONFIG_DIR, claudeConfigEntries: fs.existsSync(process.env.CLAUDE_CONFIG_DIR) ? fs.readdirSync(process.env.CLAUDE_CONFIG_DIR) : null, claudeCredentials: fs.existsSync(process.env.CLAUDE_CONFIG_DIR + '/.credentials.json') ? fs.readFileSync(process.env.CLAUDE_CONFIG_DIR + '/.credentials.json', 'utf8') : null, claudeToken: process.env.CLAUDE_CODE_OAUTH_TOKEN }) + '\\n');
+fs.appendFileSync(${JSON.stringify(path.join(dir, 'runner-calls.jsonl'))}, JSON.stringify({ ...JSON.parse(process.argv[2]), diff: require('node:child_process').spawnSync('git', ['diff', JSON.parse(process.argv[2]).base, 'HEAD'], { encoding: 'utf8' }).stdout, subGit: fs.existsSync('lib/.git'), envKeys: Object.keys(process.env), home: process.env.HOME, homeEntries: fs.readdirSync(process.env.HOME), codexHome: process.env.CODEX_HOME, claudeConfig: process.env.CLAUDE_CONFIG_DIR, claudeConfigEntries: fs.existsSync(process.env.CLAUDE_CONFIG_DIR) ? fs.readdirSync(process.env.CLAUDE_CONFIG_DIR) : null, claudeCredentials: fs.existsSync(process.env.CLAUDE_CONFIG_DIR + '/.credentials.json') ? fs.readFileSync(process.env.CLAUDE_CONFIG_DIR + '/.credentials.json', 'utf8') : null, claudeToken: process.env.CLAUDE_CODE_OAUTH_TOKEN }) + '\\n');
 const findings = JSON.parse(fs.readFileSync(${JSON.stringify(path.join(dir, 'findings.json'))}, 'utf8'));
 const edit = ${JSON.stringify(path.join(dir, 'edit.json'))};
 if (fs.existsSync(${JSON.stringify(path.join(dir, 'replace'))})) {
@@ -804,4 +831,126 @@ test('a review that quotes the access or refresh token from the credentials file
     assert.match(r.stderr, /holds a credential/);
     assert.equal(w.posts().length, 0);
   }
+});
+
+// A pull request that bumps a submodule is reviewed on the submodule's own diff.
+const libInfo = (w, lib) => w.write('repos.json', { 'o/r': { private: false }, 'o/lib': lib });
+
+test('a submodule bump is reviewed on the submodule diff: the reviewer sees lib/f.c, not a pointer line', () => {
+  const w = world({}, { sub: {} });
+  libInfo(w, { private: false });
+  w.write('findings.json', []);
+  JSON.parse(w.approve('start', 'o/r', '5').stdout);
+  const r = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.match(w.calls()[0].diff, /\+\+\+ b\/lib\/f\.c/);
+  assert.match(w.calls()[0].diff, /\+b\n/);
+  assert.deepEqual([r.review, r.notApproved], ['APPROVE', undefined]);
+});
+
+const startRound = (w) => { w.approve('start', 'o/r', '5'); return JSON.parse(w.approve('round', 'o/r', '5').stdout); };
+
+test('a finding inside the submodule lands in the review body, is verified, and is fixed by a bump that drops the span', () => {
+  const w = world({}, { sub: {} });
+  libInfo(w, { private: false });
+  w.write('findings.json', [{ id: 'correctness:b', category: 'correctness', file: 'lib/f.c', line: 2, span: 'b', summary: 'bad b', requirement: '' }]);
+  const r1 = startRound(w);
+  assert.equal(r1.review, 'COMMENT');
+  assert.deepEqual(w.posts()[0].comments, []);
+  assert.match(w.posts()[0].body, /`lib\/f\.c:2`/);
+  assert.equal(w.ledger().findings[0].status, 'open');
+  assert.equal(w.ledger().findings[0].openReason, undefined);
+
+  // The submodule moves to a commit without the span.
+  const lib = path.join(w.dir, 'libsrc');
+  fs.writeFileSync(path.join(lib, 'f.c'), 'a\n');
+  sh(lib, 'commit', '-q', '-am', 'C');
+  sh(lib, 'push', '-q', path.join(w.dir, 'remote', 'o', 'lib.git'), 'HEAD:refs/heads/main');
+  sh(w.src, 'update-index', '--cacheinfo', `160000,${sh(lib, 'rev-parse', 'HEAD')},lib`);
+  sh(w.src, 'commit', '-q', '-m', 'c2');
+  const c2 = sh(w.src, 'rev-parse', 'HEAD');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: c2 });
+  w.write('findings.json', []);
+  const r2 = startRound(w);
+  assert.deepEqual([r2.review, r2.fixed], ['APPROVE', 1]);
+});
+
+test('a submodule the account cannot read is reported as not reviewed, and the round does not approve, now or on a later push', () => {
+  const w = world({}, { sub: {} });
+  w.write('repos.json', { 'o/r': { private: false } });
+  w.write('findings.json', []);
+  const r1 = startRound(w);
+  assert.equal(r1.review, 'COMMENT');
+  assert.equal(r1.notApproved, 'unreviewed-submodule');
+  assert.equal(r1.unreviewed[0].path, 'lib');
+  assert.equal(r1.unreviewed[0].reason, 'unreadable');
+  assert.match(w.posts()[0].body, /Not reviewed, so this review does not approve: submodule `lib` [0-9a-f]{7}\.\.[0-9a-f]{7} \(unreadable\)/);
+  assert.deepEqual(JSON.parse(w.approve('approve', 'o/r', '5').stdout), { event: 'not-approved', reason: 'unreviewed-submodule' });
+
+  // A push that leaves the submodule alone reviews the whole pull request again and still does not approve.
+  fs.writeFileSync(path.join(w.src, 'a.js'), 'one\nbad\nthree\nfour\nfive\n');
+  sh(w.src, 'add', 'a.js'); sh(w.src, 'commit', '-q', '-m', 'c2');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD') });
+  const r2 = startRound(w);
+  assert.equal(w.calls()[1].base, w.state.mergeBase);
+  assert.deepEqual([r2.review, r2.notApproved], ['COMMENT', 'unreviewed-submodule']);
+});
+
+test('a .gitmodules url that is not a GitHub repository is never fetched: the range is unreviewed with reason url', () => {
+  for (const url of ['file://__DIR__/remote/o/lib.git', 'ext::sh -c touch% __DIR__/pwned', '../../../../etc', 'https://github.com.evil.com/o/lib', 'https://github.com/o/../lib', '--upload-pack=touch __DIR__/pwned', '__DIR__/remote/o/lib.git']) {
+    const w = world({}, { sub: { url: 'placeholder' } });
+    const real = url.replaceAll('__DIR__', w.dir);
+    fs.writeFileSync(path.join(w.src, '.gitmodules'), `[submodule "lib"]\n\tpath = lib\n\turl = ${real}\n`);
+    sh(w.src, 'add', '.gitmodules'); sh(w.src, 'commit', '-q', '-m', 'urls');
+    sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+    w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD') });
+    libInfo(w, { private: false });
+    w.write('findings.json', []);
+    const r = startRound(w);
+    assert.equal(r.unreviewed?.[0]?.reason, 'url', url);
+    assert.equal(w.calls()[0].subGit, false, url);
+    assert.equal(fs.existsSync(path.join(w.dir, 'pwned')), false, url);
+  }
+});
+
+test('a private submodule is reviewed only when it is the pull request repository itself: same owner, even a private pull request, is not the same readers', () => {
+  for (const repos of [{ 'o/r': { private: false }, 'o/lib': { private: true, full_name: 'o/lib' } }, { 'o/r': { private: true }, 'o/lib': { private: true, full_name: 'o/lib' } }, { 'o/r': { private: true }, 'o/lib': { private: true, full_name: 'o/renamed' } }]) {
+    const w = world({}, { sub: {} });
+    w.write('repos.json', repos);
+    w.write('findings.json', []);
+    assert.equal(startRound(w).unreviewed[0].reason, 'audience');
+    assert.equal(w.calls()[0].subGit, false);
+  }
+  const same = world({}, { sub: { url: 'https://github.com/o/r' } });
+  same.write('repos.json', { 'o/r': { private: true, full_name: 'o/r' } });
+  same.write('findings.json', []);
+  // The submodule is the pull request repository: it is fetched (here the fixture remote lacks the commit), not refused as audience.
+  assert.equal(startRound(same).unreviewed[0].reason, 'fetch');
+});
+
+test('a submodule the pull request adds is checked for nested submodules too', () => {
+  const w = world({}, { sub: { nested: true } });
+  libInfo(w, { private: false });
+  fs.appendFileSync(path.join(w.src, '.gitmodules'), '[submodule "lib2"]\n\tpath = lib2\n\turl = https://github.com/o/lib\n');
+  sh(w.src, 'add', '.gitmodules');
+  sh(w.src, 'update-index', '--add', '--cacheinfo', `160000,${sh(path.join(w.dir, 'libsrc'), 'rev-parse', 'HEAD')},lib2`);
+  sh(w.src, 'commit', '-q', '-m', 'add lib2');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD') });
+  w.write('findings.json', []);
+  const r = startRound(w);
+  assert.deepEqual(r.unreviewed.filter((u) => u.path === 'lib2').map((u) => u.reason), ['nested']);
+  assert.equal(r.notApproved, 'unreviewed-submodule');
+});
+
+test('a removed submodule needs nothing fetched and does not block approval', () => {
+  const w = world({}, { sub: {} });
+  sh(w.src, 'rm', '-q', '--cached', 'lib');
+  sh(w.src, 'commit', '-q', '-m', 'drop lib');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD') });
+  w.write('findings.json', []);
+  const r = startRound(w);
+  assert.deepEqual([r.review, r.unreviewed], ['APPROVE', undefined]);
 });
