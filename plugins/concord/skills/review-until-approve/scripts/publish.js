@@ -36,12 +36,15 @@ function hunksOf(diff) {
 // The line a finding's span starts on, for the occurrence that lies inside a hunk of its file: the engine gives none for a
 // span that occurs more than once, and an inline comment needs one. A multi-line span takes its first line inside a hunk.
 function placeLine(content, span, file, hunks) {
-  if (!span) return null;
+  const body = (span || '').replace(/^\n+|\n+$/g, '');
+  if (!body) return null;
   const mine = hunks.filter((h) => h.file === file);
-  const rows = span.split('\n').length;
-  for (let at = content.indexOf(span); at !== -1; at = content.indexOf(span, at + 1)) {
-    const start = content.slice(0, at).split('\n').length;
-    for (let line = start; line < start + rows; line++) if (mine.some((h) => line >= h.from && line <= h.to)) return line;
+  const rows = body.split('\n').length;
+  let line = 1;
+  let seen = 0;
+  for (let at = content.indexOf(body); at !== -1; at = content.indexOf(body, at + 1)) {
+    for (; seen < at; seen++) if (content.charCodeAt(seen) === 10) line++;
+    for (let l = line; l < line + rows; l++) if (mine.some((h) => l >= h.from && l <= h.to)) return l;
   }
   return null;
 }

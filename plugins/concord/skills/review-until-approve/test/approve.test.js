@@ -485,6 +485,14 @@ test('a finding whose engine line is missing is still posted inline, at the span
   assert.match(w.posts()[0].body.split('\n\n')[1], /^reviewed by concord \(codex\)$/);
 });
 
+test('a finding whose engine line is outside the diff stays in the body even when its span occurs inside it', () => {
+  const w = world();
+  w.write('findings.json', [{ ...finding, line: 99 }]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  assert.deepEqual(w.posts()[0].comments, []);
+  assert.match(w.posts()[0].body, /`a\.js:99`/);
+});
+
 test('waive refuses an id shared by two open findings, names their keys, and waives exactly the one whose key is given', () => {
   const w = world();
   fs.writeFileSync(path.join(w.src, 'b.js'), 'bad\n');

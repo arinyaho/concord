@@ -92,3 +92,15 @@ test('renderReview: the header signs the review as concord and names the engine'
   const r = publish.renderReview({ ...base, reviewer: 'codex', findings: [], approve: false }, 'inline');
   assert.equal(r.body.split('\n\n')[1], 'reviewed by concord (codex)');
 });
+
+test('placeLine: a trailing or leading newline in the span does not move the line', () => {
+  assert.equal(publish.placeLine('x\nbad\nok\n', 'bad\n', 'a.js', [{ file: 'a.js', from: 3, to: 3 }]), null);
+  assert.equal(publish.placeLine('x\nbad\nok\n', '\nbad', 'a.js', [{ file: 'a.js', from: 1, to: 1 }]), null);
+  assert.equal(publish.placeLine('x\nbad\nok\n', 'bad\n', 'a.js', [{ file: 'a.js', from: 2, to: 2 }]), 2);
+});
+
+test('placeLine: a common span in a large file outside every hunk returns quickly', () => {
+  const t = Date.now();
+  assert.equal(publish.placeLine('}\n'.repeat(200000), '}', 'a.js', [{ file: 'a.js', from: 999999, to: 999999 }]), null);
+  assert.ok(Date.now() - t < 2000);
+});

@@ -323,10 +323,9 @@ function attempt(repo, pr, ledger, file) {
     const diff = git(work, ['diff', '-U3', range.base, 'HEAD']);
     const verdictNow = lib.evaluateApproval(next, snapshot(repo, pr), snap.head);
     const hunks = publish.hunksOf(diff);
-    const inDiff = (f) => f.line != null && hunks.some((h) => h.file === f.file && f.line >= h.from && f.line <= h.to);
-    // The engine's line is kept when it is in the diff; otherwise the span is looked up in the file at the head.
+    // The engine's line is kept whether or not it is in the diff; only a finding without one is looked up by span in the file at the head.
     const placed = (f) => {
-      if (inDiff(f)) return f;
+      if (f.line != null) return f;
       const blob = f.span ? gitBlob(work, snap.head, f.file) : null;
       const line = Buffer.isBuffer(blob) ? publish.placeLine(blob.toString('utf8'), f.span, f.file, hunks) : null;
       return line == null ? f : { ...f, line };
