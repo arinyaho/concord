@@ -16,6 +16,8 @@ const last = (ledger) => ledger.rounds[ledger.rounds.length - 1];
 // diff, and only a changed title or body re-runs the broad gate.
 function chooseRange(lastRound, live, isAncestor) {
   if (live.intent !== lastRound.intent) return { base: live.mergeBase, broad: true };
+  // A submodule range that could not be read is tried again, with the rest of the pull request, until it can.
+  if (lastRound.unreviewed?.length) return { base: live.mergeBase, broad: false };
   if (live.mergeBase === lastRound.mergeBase && isAncestor(lastRound.head, live.head)) return { base: lastRound.head, broad: false };
   return { base: live.mergeBase, broad: false };
 }
@@ -79,6 +81,27 @@ function classifyPrior(open, raised, resolve, read, head) {
   });
 }
 
+// The `owner/repo` on GitHub that a `.gitmodules` url names, or null. Only GitHub urls qualify, in the forms
+// below; the caller builds the fetch url from the result, so the url string itself never reaches git.
+// `prRepo` is the pull request's `owner/repo`, the base of a relative url.
+function submoduleRepo(url, prRepo) {
+  const [prOwner] = prRepo.split('/');
+  const forms = [
+    [/^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/, (m) => [m[1], m[2]]],
+    [/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/, (m) => [m[1], m[2]]],
+    [/^ssh:\/\/git@github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/, (m) => [m[1], m[2]]],
+    [/^\.\.\/([^/]+?)(?:\.git)?$/, (m) => [prOwner, m[1]]],
+    [/^\.\.\/\.\.\/([^/]+)\/([^/]+?)(?:\.git)?$/, (m) => [m[1], m[2]]],
+  ];
+  for (const [re, pick] of forms) {
+    const m = re.exec(url);
+    if (!m) continue;
+    const [owner, name] = pick(m);
+    return /^[A-Za-z0-9-]+$/.test(owner) && /^[A-Za-z0-9._-]+$/.test(name) && name !== '.' && name !== '..' ? `${owner}/${name}` : null;
+  }
+  return null;
+}
+
 // Every verified finding blocks: the review engine emits no severity. A user
 // waives a disputed one with the `waive` verb.
 function evaluateApproval(ledger, live, reviewedHead) {
@@ -88,6 +111,8 @@ function evaluateApproval(ledger, live, reviewedHead) {
   if (live.isDraft) return no('draft');
   if (live.author === ledger.reviewer) return no('self-review');
   if (ledger.approval?.head === live.head) return no('already-approved');
+  const round = last(ledger);
+  if (round?.head === reviewedHead && round.unreviewed?.length) return no('unreviewed-submodule');
   if (ledger.findings.some((f) => f.status === 'open')) return no('open-findings');
   return { approve: true };
 }
@@ -122,4 +147,4 @@ function wakeDecision({ ledger, live, replies, now, stable }) {
   return { event: 'nudge', kind, head: live.head, replyAt };
 }
 
-module.exports = { chooseRange, findingKey, matches, isPublished, parseNameStatus, classifyPrior, evaluateApproval, repliesSince, wakeDecision, sha, NUDGE_AFTER_MS, TIMEOUT_MS };
+module.exports = { submoduleRepo, chooseRange, findingKey, matches, isPublished, parseNameStatus, classifyPrior, evaluateApproval, repliesSince, wakeDecision, sha, NUDGE_AFTER_MS, TIMEOUT_MS };

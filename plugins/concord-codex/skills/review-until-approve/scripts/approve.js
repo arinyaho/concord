@@ -212,7 +212,7 @@ function gitBlob(cwd, rev, file) {
   const ls = spawnSync('git', ['--literal-pathspecs', 'ls-tree', '-z', '--full-tree', rev, '--', file], { cwd, encoding: 'utf8' });
   if (ls.status !== 0) return 'other';
   const entry = ls.stdout.split('\0').find((e) => e.slice(e.indexOf('\t') + 1) === file && e.includes('\t'));
-  if (!entry) return null;
+  if (!entry) return inGitlink(cwd, rev, file);
   const [mode, , oid] = entry.slice(0, entry.indexOf('\t')).split(' ');
   if (mode !== '100644' && mode !== '100755') return 'other';
   const size = spawnSync('git', ['cat-file', '-s', oid], { cwd, encoding: 'utf8' });
@@ -220,11 +220,96 @@ function gitBlob(cwd, rev, file) {
   const blob = spawnSync('git', ['cat-file', 'blob', oid], { cwd, maxBuffer: MAX_SPAN_FILE_BYTES + 1024 });
   return blob.status === 0 ? blob.stdout : 'big';
 }
+// A path below a gitlink at `rev` is read from the submodule checkout prepared for the round, at the commit the gitlink names; null when no gitlink is a prefix of it.
+function inGitlink(cwd, rev, file) {
+  const parts = file.split('/');
+  for (let i = parts.length - 1; i > 0; i--) {
+    const prefix = parts.slice(0, i).join('/');
+    const ls = spawnSync('git', ['--literal-pathspecs', 'ls-tree', '-z', '--full-tree', rev, '--', prefix], { cwd, encoding: 'utf8' });
+    const entry = ls.status === 0 ? ls.stdout.split('\0').find((e) => e.slice(e.indexOf('\t') + 1) === prefix && e.includes('\t')) : null;
+    if (!entry) continue;
+    const [mode, , oid] = entry.slice(0, entry.indexOf('\t')).split(' ');
+    if (mode !== '160000') return null;
+    const sub = path.join(cwd, prefix);
+    return underClone(cwd, prefix) && fs.existsSync(path.join(sub, '.git')) ? gitBlob(sub, oid, parts.slice(i).join('/')) : 'other';
+  }
+  return null;
+}
 // A finding is verified when its span occurs byte for byte in the file at the head it was recorded against.
 const verifiedAt = (cwd, head, f) => {
   const blob = f.span ? gitBlob(cwd, head, f.file) : null;
   return Buffer.isBuffer(blob) && blob.includes(Buffer.from(f.span, 'utf8'));
 };
+
+// A submodule change is reviewed on the submodule's own diff. Each gitlink the pull request changes is checked out at its own path in the
+// review clone, in a fresh .git with no hooks or configuration from the pull request, from a url built here out of the `owner/repo` that
+// `.gitmodules` names (never the .gitmodules string); `git submodule` is never run. A range that cannot be read is returned as `unreviewed`.
+const underClone = (work, rel) => { try { return fs.realpathSync(path.join(work, rel)) === path.join(fs.realpathSync(work), rel); } catch (_) { return false; } };
+// The gitlinks that differ between `from` and HEAD: { path, oldSha, newSha }, a side null when it is not a gitlink there.
+function gitlinkChanges(cwd, from) {
+  const raw = git(cwd, ['diff', '--raw', '-z', '--no-renames', '--no-abbrev', from, 'HEAD']).split('\0');
+  const found = [];
+  for (let i = 0; i + 1 < raw.length; i += 2) {
+    const [oldMode, newMode, oldSha, newSha] = raw[i].slice(1).split(' ');
+    if (oldMode === '160000' || newMode === '160000') found.push({ path: raw[i + 1], oldSha: oldMode === '160000' ? oldSha : null, newSha: newMode === '160000' ? newSha : null });
+  }
+  return found;
+}
+const submoduleUrls = (work) => {
+  const urls = new Map(), paths = new Map();
+  const r = spawnSync('git', ['config', '--blob', 'HEAD:.gitmodules', '-z', '--get-regexp', '^submodule\\..*\\.(path|url)$'], { cwd: work, encoding: 'utf8' });
+  for (const entry of r.status === 0 ? r.stdout.split('\0').filter(Boolean) : []) {
+    const nl = entry.indexOf('\n'), key = entry.slice(0, nl), dot = key.lastIndexOf('.');
+    (key.slice(dot + 1) === 'path' ? paths : urls).set(key.slice(10, dot), entry.slice(nl + 1));
+  }
+  return new Map([...paths].filter(([name]) => urls.has(name)).map(([name, p]) => [p, urls.get(name)]));
+};
+const submoduleRemote = (sr) => `${process.env.REVIEW_APPROVE_REMOTE || 'https://github.com'}/${sr}.git`;
+const fetchSubmodule = (dir, remote, shas) => git(dir, ['fetch', '--quiet', '--depth=1', '--no-tags', '--no-recurse-submodules', remote, ...[...new Set(shas)].map((sha) => `${sha}:refs/concord/${sha}`)], GIT_AUTH);
+
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+function prepareSubmodules(work, repo, snap, range, subs) {
+  const urls = submoduleUrls(work);
+  const info = new Map();
+  const visibility = (sr) => { if (!info.has(sr)) { try { info.set(sr, ghJson(['api', `repos/${sr}`])); } catch (_) { info.set(sr, null); } } return info.get(sr); };
+  const inRange = gitlinkChanges(work, range.base);
+  const seen = new Set(inRange.map((c) => c.path));
+  const unreviewed = [];
+  for (const change of [...inRange.map((c) => ({ ...c, inRange: true })), ...gitlinkChanges(work, snap.mergeBase).filter((c) => !seen.has(c.path))]) {
+    if (!change.newSha) continue;
+    const fail = (reason) => { if (change.inRange) unreviewed.push({ path: change.path, from: change.oldSha && change.oldSha.slice(0, 7), to: change.newSha.slice(0, 7), reason }); };
+    const sr = urls.has(change.path) ? lib.submoduleRepo(urls.get(change.path), repo) : null;
+    if (!sr) { fail('url'); continue; }
+    if (!underClone(work, change.path) || !fs.lstatSync(path.join(work, change.path)).isDirectory() || fs.readdirSync(path.join(work, change.path)).length) { fail('path'); continue; }
+    const target = visibility(sr);
+    if (!target) { fail('unreadable'); continue; }
+    // A private repository has its own readers (collaborators are per repository), so only the pull request's own repository, by the name GitHub resolves, may be quoted into its review.
+    if (target.private && String(target.full_name).toLowerCase() !== repo.toLowerCase()) { fail('audience'); continue; }
+    const dir = path.join(work, change.path);
+    try {
+      git(work, ['init', '--quiet', '--template=', dir]);
+      fetchSubmodule(dir, submoduleRemote(sr), [change.newSha, change.oldSha].filter(Boolean));
+      git(dir, ['checkout', '--quiet', '--detach', change.newSha]);
+    } catch (_) { fail('fetch'); fs.rmSync(path.join(dir, '.git'), { recursive: true, force: true }); continue; }
+    if (gitlinkChanges(dir, change.oldSha || EMPTY_TREE).length) { fail('nested'); continue; }
+    subs.set(change.path, { dir, remote: submoduleRemote(sr) });
+  }
+  return unreviewed;
+}
+
+// The name-status delta below one gitlink between two heads, for a finding in the submodule; null when it cannot be computed.
+function submoduleDelta(work, from, subs, file) {
+  const change = gitlinkChanges(work, from).find((c) => c.oldSha && c.newSha && file.startsWith(`${c.path}/`));
+  if (!change) return undefined;
+  const sub = subs.get(change.path);
+  if (!sub) return null;
+  try {
+    if (spawnSync('git', ['cat-file', '-e', `${change.oldSha}^{commit}`], { cwd: sub.dir }).status !== 0) fetchSubmodule(sub.dir, sub.remote, [change.oldSha]);
+    const d = lib.parseNameStatus(git(sub.dir, ['diff', '-z', '--name-status', '-M', change.oldSha, change.newSha]));
+    const at = (f) => `${change.path}/${f}`;
+    return { renames: new Map([...d.renames].map(([a, b]) => [at(a), at(b)])), live: new Set([...d.live].map(at)) };
+  } catch (_) { return null; }
+}
 
 function reviewRound(repo, pr, args) {
   const { file, ledger } = identify(repo, pr, args);
@@ -248,13 +333,17 @@ function attempt(repo, pr, ledger, file) {
   const remote = `${process.env.REVIEW_APPROVE_REMOTE || 'https://github.com'}/${repo}.git`;
   try {
     git(dir, ['clone', '--quiet', remote, work], GIT_AUTH);
-    git(work, ['fetch', '--quiet', 'origin', `pull/${pr}/head`], GIT_AUTH);
+    git(work, ['fetch', '--quiet', '--no-recurse-submodules', 'origin', `pull/${pr}/head`], GIT_AUTH);
     git(work, ['checkout', '-q', '-B', `concord-pr-${pr}`, snap.head], GIT_AUTH);
-    git(work, ['fetch', '--quiet', 'origin', snap.baseTip], GIT_AUTH);
+    git(work, ['fetch', '--quiet', '--no-recurse-submodules', 'origin', snap.baseTip], GIT_AUTH);
     if (git(work, ['merge-base', snap.baseTip, 'HEAD']).trim() !== snap.mergeBase) throw new Error('the local merge base differs from the snapshot');
     const prior = ledger.rounds.length ? lastRound(ledger) : null;
     const isAncestor = (a, b) => spawnSync('git', ['merge-base', '--is-ancestor', a, b], { cwd: work }).status === 0;
     const range = prior ? lib.chooseRange(prior, snap, isAncestor) : { base: snap.mergeBase, broad: true };
+    const subs = new Map();
+    const unreviewed = prepareSubmodules(work, repo, snap, range, subs);
+    // The engine's diff of a gitlink then holds the submodule's own hunks.
+    git(work, ['config', 'diff.submodule', 'diff']);
 
     // The delta from the head where each open finding's span was last verified to this head; a head that is gone is fetched, else the finding stays open.
     const deltas = new Map();
@@ -262,12 +351,16 @@ function attempt(repo, pr, ledger, file) {
       if (!deltas.has(p.spanVerified)) {
         let delta = null;
         try {
-          if (spawnSync('git', ['cat-file', '-e', `${p.spanVerified}^{commit}`], { cwd: work }).status !== 0) git(work, ['fetch', '--quiet', 'origin', p.spanVerified], GIT_AUTH);
+          if (spawnSync('git', ['cat-file', '-e', `${p.spanVerified}^{commit}`], { cwd: work }).status !== 0) git(work, ['fetch', '--quiet', '--no-recurse-submodules', 'origin', p.spanVerified], GIT_AUTH);
           delta = lib.parseNameStatus(git(work, ['diff', '-z', '--name-status', '-M', p.spanVerified, snap.head]));
         } catch (_) { /* unreachable head: its findings stay open */ }
         deltas.set(p.spanVerified, delta);
       }
-      return deltas.get(p.spanVerified);
+      const delta = deltas.get(p.spanVerified);
+      if (!delta) return delta;
+      // A finding below a gitlink follows the submodule's own renames; when they cannot be read, the finding stays open.
+      const inSub = submoduleDelta(work, p.spanVerified, subs, p.file);
+      return inSub === undefined ? delta : inSub && { renames: new Map([...delta.renames, ...inSub.renames]), live: new Set([...delta.live, ...inSub.live]) };
     };
     const open = ledger.findings.filter((f) => f.status === 'open');
     const shown = open.map((p) => { const d = typeof p.spanVerified === 'string' && p.span ? resolve(p) : null; return { ...p, file: d?.renames.get(p.file) || p.file }; });
@@ -320,8 +413,8 @@ function attempt(repo, pr, ledger, file) {
     const held = next.findings.filter((f) => f.status === 'open' && ['unverified', 'path-unresolved'].includes(f.openReason)).map((f) => ({ id: f.id, key: f.key, file: f.file, reason: f.openReason }));
     const openNow = next.findings.filter((f) => f.status === 'open').map((f) => ({ id: f.id, key: f.key, file: f.file }));
 
-    const diff = git(work, ['diff', '-U3', range.base, 'HEAD']);
-    const verdictNow = lib.evaluateApproval(next, snapshot(repo, pr), snap.head);
+    const diff = git(work, ['diff', '-U3', '--submodule=short', range.base, 'HEAD']);
+    const verdictNow = lib.evaluateApproval({ ...next, rounds: [...next.rounds, { head: snap.head, unreviewed }] }, snapshot(repo, pr), snap.head);
     const hunks = publish.hunksOf(diff);
     // The engine's line is kept whether or not it is in the diff; only a finding without one is looked up by span in the file at the head.
     const placed = (f) => {
@@ -332,15 +425,20 @@ function attempt(repo, pr, ledger, file) {
     };
     const input = { head: snap.head, round: n, rangeBase: range.base, reviewer: ledger.provider, hunks, findings: fresh.map(placed), fixed: fixedIds, stillOpen: openIds, previousHead: prior ? prior.head : snap.head, approve: verdictNow.approve };
     if (verdictNow.reason === 'head-moved') return null;
+    // A submodule range that could not be read is said in the review, which then does not approve.
+    const render = (i, how) => {
+      const r = publish.renderReview(i, how);
+      return unreviewed.length ? { ...r, body: `${r.body}\n\nNot reviewed, so this review does not approve: ${unreviewed.map((u) => `submodule \`${u.path}\` ${u.from ? `${u.from}..` : ''}${u.to} (${u.reason})`).join('; ')}` } : r;
+    };
     const known = newestId(reviewsOf(repo, pr));
-    const entry = (review) => ({ n, head: snap.head, base: range.base, mergeBase: snap.mergeBase, intent: snap.intent, mode: range.broad ? 'broad' : 'diff', reviewId: review.id, submittedAt: review.submitted_at || new Date().toISOString(), commentIds: [], event: input.approve ? 'APPROVE' : 'COMMENT' });
+    const entry = (review) => ({ n, head: snap.head, ...(unreviewed.length && { unreviewed }), base: range.base, mergeBase: snap.mergeBase, intent: snap.intent, mode: range.broad ? 'broad' : 'diff', reviewId: review.id, submittedAt: review.submitted_at || new Date().toISOString(), commentIds: [], event: input.approve ? 'APPROVE' : 'COMMENT' });
     // Saved before an APPROVE is posted, so a crash after GitHub accepts it is recovered by the next start.
     // Only the marker is saved: the verdict's findings travel inside it and apply when the review is found.
     if (input.approve) { save(file, { ...ledger, pending: { head: snap.head, after: known, round: entry({}), findings: next.findings } }); }
     let review;
-    try { review = post(repo, pr, publish.renderReview(input, 'inline')); } catch (error) {
+    try { review = post(repo, pr, render(input, 'inline')); } catch (error) {
       if (snapshot(repo, pr).head !== snap.head) return null;
-      review = landed(reviewsOf(repo, pr), ledger.reviewer, snap.head, known, input.approve ? 'APPROVED' : 'COMMENTED') || post(repo, pr, publish.renderReview(input, 'body'));
+      review = landed(reviewsOf(repo, pr), ledger.reviewer, snap.head, known, input.approve ? 'APPROVED' : 'COMMENTED') || post(repo, pr, render(input, 'body'));
     }
     // Saved before anything else can fail, so a posted review (an APPROVE above all) is never forgotten.
     next.rounds.push(entry(review));
@@ -352,7 +450,7 @@ function attempt(repo, pr, ledger, file) {
       next.rounds[next.rounds.length - 1].commentIds = ghJson(['api', '--paginate', '--slurp', `repos/${repo}/pulls/${pr}/reviews/${review.id}/comments`]).flat().map((c) => c.id);
       save(file, next);
     } catch (_) { /* ponytail: ids stay empty; thread replies are then missed until the next round */ }
-    return { event: 'published', round: n, mode: range.broad ? 'broad' : 'diff', review: input.approve ? 'APPROVE' : 'COMMENT', new: fresh.length, fixed: fixedIds.length, stillOpen: openIds.length, open: openNow, ...(verdictNow.approve ? {} : { notApproved: verdictNow.reason }), ...(held.length && { held, hint: 'These findings cannot be settled from the code; run waive <key> (or waive <id> when the id is unique) to clear one you accept.' }) };
+    return { event: 'published', round: n, mode: range.broad ? 'broad' : 'diff', review: input.approve ? 'APPROVE' : 'COMMENT', new: fresh.length, fixed: fixedIds.length, stillOpen: openIds.length, open: openNow, ...(unreviewed.length && { unreviewed }), ...(verdictNow.approve ? {} : { notApproved: verdictNow.reason }), ...(held.length && { held, hint: 'These findings cannot be settled from the code; run waive <key> (or waive <id> when the id is unique) to clear one you accept.' }) };
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
