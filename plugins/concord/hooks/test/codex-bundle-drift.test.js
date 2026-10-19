@@ -60,3 +60,26 @@ test('codex review-until-approve is the shared skill without its tests and finds
   assert.strictEqual(located.cli, path.join(REPO, 'plugins/concord-codex/bin/review-cli.js'));
   assert.strictEqual(typeof require(path.join(located.core, 'codex-review-runner')).runReviewUntilGreen, 'function');
 });
+
+test('codex work-report package has the exact shared file set and bytes', () => {
+  const src = path.join(REPO, 'plugins/concord/skills/work-report');
+  const bundled = path.join(REPO, 'plugins/concord-codex/skills/work-report');
+  const list = (root, relative = '') => fs.readdirSync(path.join(root, relative), { withFileTypes: true })
+    .flatMap((entry) => {
+      const child = path.join(relative, entry.name);
+      return entry.isDirectory() ? list(root, child) : entry.isFile() ? [child] : [];
+    })
+    .sort();
+  const srcFiles = list(src).filter((file) => !file.startsWith(`test${path.sep}`));
+  const bundledFiles = list(bundled);
+  const rerun = 're-run node plugins/concord-codex/bin/bundle.mjs';
+
+  assert.deepStrictEqual(bundledFiles, srcFiles, `work-report package file set drifted — ${rerun}`);
+  assert.ok(!fs.existsSync(path.join(bundled, 'test')), `work-report package must omit its top-level test directory — ${rerun}`);
+  for (const file of srcFiles) {
+    assert.ok(
+      fs.readFileSync(path.join(src, file)).equals(fs.readFileSync(path.join(bundled, file))),
+      `work-report/${file} drifted — ${rerun}`,
+    );
+  }
+});
