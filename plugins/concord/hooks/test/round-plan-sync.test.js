@@ -29,6 +29,31 @@ const copilotDriverText = fs.readFileSync(
   'utf8',
 );
 
+test('finding-producing prompts require continuous verbatim spans and preserve source formatting', () => {
+  const context = {
+    stateDir: '/state', round: 1, targetType: 'git', slug: 'feat-x',
+    fixGroup: { groupId: 'g1', findingIds: ['correctness:a'], rootCause: 'r', invariants: [] },
+    finding: { id: 'correctness:a', summary: 's' }, fixFiles: [],
+  };
+  const prompts = [
+    reviewerPrompt('correctness', context),
+    reviewerPrompt('verify', context),
+    reviewerPrompt('intent', context),
+    reviewerPrompt('gate', { ...context, gateMode: 'pair' }),
+    reviewerPrompt('gate', { ...context, gateMode: 'design-conformance' }),
+    reviewerPrompt('gate-verify', context),
+  ];
+  for (const prompt of prompts) {
+    assert.match(prompt, /continuous verbatim source snippet/i);
+    assert.match(prompt, /preserve whitespace/i);
+    assert.match(prompt, /no explanatory ellipses/i);
+  }
+  for (const role of ['plan', 'fix', 'certify']) {
+    const prompt = reviewerPrompt(role, context);
+    assert.doesNotMatch(prompt, /continuous verbatim source snippet/i, `${role} prompt should not carry finding-anchor guidance`);
+  }
+});
+
 test('GATE_SWEEP_CLAUSE is non-trivial and role-agnostic text', () => {
   assert.equal(typeof GATE_SWEEP_CLAUSE, 'string');
   assert.ok(GATE_SWEEP_CLAUSE.length > 40, 'GATE_SWEEP_CLAUSE should be a real instruction, not a stub');

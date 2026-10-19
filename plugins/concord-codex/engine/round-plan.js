@@ -68,6 +68,8 @@ const ENV_CLAUSE_BY_ROLE = Object.freeze({
 
 const BLOCKED_CLAUSE = ' If you cannot run a tool this task requires (missing, denied by sandbox or permissions, crashed, timed out), do NOT substitute a weaker method and do NOT stay silent: write {"status":"ok","blocked":["<tool>: <what failed>"]} and stop.';
 
+const FINDING_SPAN_CLAUSE = ' Each finding MUST include a continuous verbatim source snippet as its span or evidence anchor; preserve whitespace exactly and use no explanatory ellipses (literal ellipses are valid only when present in the source).';
+
 // gate-review found the SAME defect class (a skill name missing from a
 // metadata-mirror file) three separate times, one file per round, across
 // three review-until-green rounds -- plugin.json, then marketplace.json, then
@@ -106,7 +108,8 @@ function baseReviewerPrompt(role, { stateDir, round, targetType, dodDeferred, do
   const groupArtifactId = fixGroup && fixGroup.groupId ? fixGroup.groupId : finding && finding.id;
   const artifact = path.join(stateDir, role === 'fix' || role === 'certify' ? `round-${round}-${role}-${safeIdForFilename(groupArtifactId)}.json` : `round-${round}-${role}.json`);
   const env = ENV_CLAUSE_BY_ROLE[role];
-  const retry = `${role === 'fix' ? '' : BLOCKED_CLAUSE}${retryPrompt ? `\n\n${retryPrompt}` : ''}`;
+  const anchorRoles = ['correctness', 'verify', 'intent', 'gate', 'gate-verify'];
+  const retry = `${role === 'fix' ? '' : BLOCKED_CLAUSE}${anchorRoles.includes(role) ? FINDING_SPAN_CLAUSE : ''}${retryPrompt ? `\n\n${retryPrompt}` : ''}`;
   if (role === 'correctness') {
     const doc = targetType === 'file';
     const dodNote = dodPending

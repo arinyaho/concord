@@ -805,3 +805,25 @@ test('a review that quotes the access or refresh token from the credentials file
     assert.equal(w.posts().length, 0);
   }
 });
+
+
+test('a repaired multiline span crossing into a diff hunk is published at the first overlapping line', () => {
+  const { prepareAnchors, applyAnchors } = require('../../../core/review-anchors');
+  const w = world();
+  const rows = Array.from({ length: 30 }, (_, index) => `context ${index + 1}`);
+  const base = push(w, { 'a.js': rows.join('\n') + '\n' }, 'long base');
+  w.state.baseTip = base;
+  w.state.mergeBase = base;
+  rows[19] = 'changed line';
+  const text = rows.join('\n') + '\n';
+  push(w, { 'a.js': text }, 'change');
+  const original = { ...finding, span: 'context 10 ... changed line', line: null };
+  const request = prepareAnchors([original], () => text);
+  const corrected = applyAnchors([original], request, { anchors: [{ index: 0, span: rows.slice(9, 21).join('\n') }] });
+  w.write('findings.json', corrected);
+  assert.equal(w.approve('start', 'o/r', '5').status, 0);
+  const round = w.approve('round', 'o/r', '5');
+  assert.equal(round.status, 0, round.stderr);
+  assert.deepEqual(w.posts()[0].comments.map((comment) => comment.line), [17]);
+  assert.equal(w.ledger().findings[0].spanVerified, sh(w.src, 'rev-parse', 'HEAD'));
+});

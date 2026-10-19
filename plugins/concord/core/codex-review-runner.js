@@ -18,6 +18,7 @@ const { SESSION_MODES, THRESHOLDS } = require('./session-handoff');
 const { artifactDestinationFromPrompt } = require('./review-artifact');
 const artifactContract = require('./artifact-contract');
 const { isValidFindingId } = require('./gate-contract');
+const { readCommittedSource, prepareAnchors, applyAnchors } = require('./review-anchors');
 const { same } = require('./review-eval');
 const { PANEL_LENSES } = require('./report');
 const { BLOCKED_CLAUSE, cliClause, reviewerGuidancePrefix, reviewerPrompt, reportedNoEdit } = require('./round-plan');
@@ -1013,6 +1014,9 @@ async function runRounds(options) {
       }
     };
     const roleArtifacts = new Map(reviewRoles.map((role) => [role, artifactDestinationFromPrompt(reviewerPrompt(role, context), context.stateDir)]));
+    const anchorArtifact = reviewOnly && options.repairFindingAnchors && started.targetType !== 'file'
+      ? path.join(context.stateDir, `round-${context.round}-anchors.json`) : null;
+    if (anchorArtifact) roleArtifacts.set('anchors', anchorArtifact);
     if (reviewOnly && [...roleArtifacts.values()].some((file) => !file)) throw new Error('harness-failure: review artifact destination is missing');
     const protectedReviewFiles = reviewOnly ? new Map() : null;
     const protectedRoots = reviewOnly ? new Map() : null;
@@ -1215,7 +1219,33 @@ async function runRounds(options) {
       // so a tree a reviewer modified is not one to report on.
       checkReviewCheckout(true);
       const reported = await cli(['findings', ref]);
-      return { decision: 'review-only', round: currentRound, findings: reported.findings };
+      let findings = reported.findings;
+      if (anchorArtifact) {
+        const head = started.head || gitHeadSha(canonicalRepoRoot);
+        const request = prepareAnchors(findings, (file) => readCommittedSource(canonicalRepoRoot, head, file));
+        if (request.candidates.length) {
+          let failed;
+          try {
+            await launch({ role: 'anchors', prompt: `${request.prompt}\nWrite ONLY JSON to ${anchorArtifact}.`, repoRoot, stateDir: context.stateDir });
+          } catch (error) { failed = error; }
+          // Optional extraction can fail without losing the original findings.
+          // Checkout/artifact integrity, cancellation and budget denial still fail closed.
+          checkReviewCheckout(true);
+          checkProtected(false, anchorArtifact);
+          fileHash(anchorArtifact);
+          await throwIfAborted(true);
+          if (failed?.initiativeBlocked) throw failed;
+          if (!failed) {
+            const bytes = readArtifactBytes(anchorArtifact, protectedRoots.get(path.dirname(anchorArtifact)), { allowMissing: true });
+            let response = null;
+            try { response = bytes === null ? null : JSON.parse(bytes.toString('utf8')); } catch (_) { /* malformed evidence keeps the originals */ }
+            findings = applyAnchors(findings, request, response);
+          }
+          protect(anchorArtifact);
+          checkProtected();
+        }
+      }
+      return { decision: 'review-only', round: currentRound, findings };
     }
 
     await runArtifactReviewer('plan');

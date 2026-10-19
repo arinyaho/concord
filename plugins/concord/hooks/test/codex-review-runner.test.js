@@ -2691,6 +2691,14 @@ function cleanRepo() {
   return repo;
 }
 
+function repoWithCommittedSource(source, file = 'a.txt') {
+  const repo = cleanRepo();
+  fs.writeFileSync(path.join(repo, file), source);
+  execFileSync('git', ['add', file], { cwd: repo });
+  execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'source'], { cwd: repo });
+  return repo;
+}
+
 test('reviewOnly stops after verification, reports the verified findings, and never plans, fixes, or records', async () => {
   const h = harness({ gateApplied: true });
   const verified = [{ id: 'correctness:bug', category: 'correctness', file: 'a.txt', line: 1, span: 'bad', summary: 'fix it', requirement: '' }];
@@ -2704,6 +2712,166 @@ test('reviewOnly stops after verification, reports the verified findings, and ne
   for (const verb of ['plan-fixes', 'commit-fix', 'record']) assert.ok(!verbs.includes(verb), `${verb} must not run in review-only mode`);
   const start = h.calls.find((c) => c[0] === 'cli' && c[1] === 'round-start');
   assert.ok(start.includes('--no-dod'), 'a review that never edits has no definition of done to run');
+});
+
+test('review-only anchor repair skips findings whose spans already occur exactly in committed source', async () => {
+  const source = 'const existing = specific existing text;\n';
+  const repo = repoWithCommittedSource(source);
+  const h = harness();
+  const findings = [{ id: 'correctness:existing', category: 'correctness', file: 'a.txt', line: 99, span: 'specific existing text', summary: 'existing issue', requirement: '' }];
+  const cli = (args) => args[0] === 'findings' ? { findings } : h.cli(args);
+  const result = await runReviewUntilGreen({ ref: 'feature/anchor-valid', base: 'main', repoRoot: repo, runCli: cli, spawn: h.spawn, reviewOnly: true, noBroad: true, reviewer: 'claude', repairFindingAnchors: true });
+  assert.deepStrictEqual(result.findings, findings);
+  assert.ok(!h.calls.some((call) => call[0] === 'spawn' && call[1] === 'anchors'));
+});
+
+test('review-only anchor repair replaces one pseudo-span and preserves valid finding metadata', async () => {
+  const source = 'const existing = specific existing text;\nconst other = keep this valid anchor;\n';
+  const repo = repoWithCommittedSource(source);
+  const h = harness();
+  const original = [
+    { id: 'correctness:pseudo', category: 'correctness', file: 'a.txt', line: null, span: 'const existing = ...;', summary: 'pseudo summary', requirement: '' },
+    { id: 'correctness:valid', category: 'correctness', file: 'a.txt', line: 2, span: 'keep this valid anchor', summary: 'valid summary', requirement: '' },
+  ];
+  const cli = (args) => args[0] === 'findings' ? { findings: original } : h.cli(args);
+  const spawn = (input) => {
+    if (input.role === 'anchors') {
+      h.calls.push(['spawn', input.role, input.prompt, input.provider]);
+      fs.writeFileSync(path.join(h.stateDir, 'round-1-anchors.json'), JSON.stringify({ anchors: [{ index: 0, span: 'specific existing text' }] }));
+      return { status: 0 };
+    }
+    return h.spawn(input);
+  };
+  const result = await runReviewUntilGreen({ ref: 'feature/anchor-repair', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, noBroad: true, reviewer: 'claude', repairFindingAnchors: true });
+  assert.deepStrictEqual(result.findings, [
+    { ...original[0], line: 1, span: 'specific existing text' },
+    original[1],
+  ]);
+  assert.strictEqual(h.calls.filter((call) => call[0] === 'spawn' && call[1] === 'anchors').length, 1);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(h.stateDir, 'round-1-anchors.json'), 'utf8')), { anchors: [{ index: 0, span: 'specific existing text' }] });
+});
+
+for (const reviewer of ['codex', 'claude']) test(`review-only anchor repair uses the selected ${reviewer} reviewer and model`, async () => {
+  const repo = repoWithCommittedSource('const existing = specific existing text;\n');
+  const h = harness();
+  const original = [{ id: 'correctness:pseudo', category: 'correctness', file: 'a.txt', line: null, span: 'const existing = ...;', summary: 'pseudo summary', requirement: '' }];
+  const cli = (args) => args[0] === 'findings' ? { findings: original } : h.cli(args);
+  const anchors = [];
+  const spawn = (input) => {
+    if (input.role === 'anchors') {
+      anchors.push(input);
+      h.calls.push(['spawn', input.role, input.prompt, input.provider]);
+      fs.writeFileSync(path.join(h.stateDir, 'round-1-anchors.json'), JSON.stringify({ anchors: [{ index: 0, span: 'specific existing text' }] }));
+      return { status: 0 };
+    }
+    return h.spawn(input);
+  };
+  const result = await runReviewUntilGreen({ ref: `feature/anchor-provider-${reviewer}`, base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, noBroad: true, reviewer, reviewerModel: 'test-review-model', repairFindingAnchors: true });
+  assert.deepStrictEqual(result.findings, [{ ...original[0], line: 1, span: 'specific existing text' }]);
+  assert.strictEqual(anchors.length, 1);
+  assert.strictEqual(anchors[0].provider, reviewer);
+  assert.strictEqual(anchors[0].requestedModel, 'test-review-model');
+});
+
+test('review-only anchor repair keeps originals for missing or ambiguous candidates without rerunning', async () => {
+  const source = 'const first = duplicate text;\nconst second = duplicate text;\n';
+  const repo = repoWithCommittedSource(source);
+  const h = harness();
+  const original = [
+    { id: 'correctness:missing', category: 'correctness', file: 'a.txt', line: null, span: 'missing pseudo span ...', summary: 'missing summary', requirement: '' },
+    { id: 'correctness:ambiguous', category: 'correctness', file: 'a.txt', line: null, span: 'other pseudo span ...', summary: 'ambiguous summary', requirement: '' },
+  ];
+  const cli = (args) => args[0] === 'findings' ? { findings: original } : h.cli(args);
+  const spawn = (input) => {
+    if (input.role === 'anchors') {
+      h.calls.push(['spawn', input.role, input.prompt, input.provider]);
+      fs.writeFileSync(path.join(h.stateDir, 'round-1-anchors.json'), JSON.stringify({ anchors: [
+        { index: 0, span: 'does not occur in source' },
+        { index: 1, span: 'duplicate text' },
+      ] }));
+      return { status: 0 };
+    }
+    return h.spawn(input);
+  };
+  const result = await runReviewUntilGreen({ ref: 'feature/anchor-invalid', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, noBroad: true, reviewer: 'claude', repairFindingAnchors: true });
+  assert.deepStrictEqual(result.findings, original);
+  assert.strictEqual(h.calls.filter((call) => call[0] === 'spawn' && call[1] === 'anchors').length, 1);
+});
+
+test('review-only anchor repair rejects a provider that modifies a sealed verifier artifact', async () => {
+  const repo = repoWithCommittedSource('const existing = specific existing text;\n');
+  const h = harness();
+  let reported = false;
+  const findings = [{ id: 'correctness:pseudo', category: 'correctness', file: 'a.txt', line: null, span: 'const existing = ...;', summary: 'pseudo summary', requirement: '' }];
+  const cli = (args) => args[0] === 'findings' ? (reported = true, { findings }) : h.cli(args);
+  const spawn = (input) => {
+    if (input.role === 'anchors') {
+      h.calls.push(['spawn', input.role, input.prompt, input.provider]);
+      fs.writeFileSync(path.join(h.stateDir, 'round-1-anchors.json'), JSON.stringify({ anchors: [] }));
+      fs.writeFileSync(path.join(h.stateDir, 'round-1-verify.json'), '{"tampered":true}\n');
+      return { status: 0 };
+    }
+    return h.spawn(input);
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/anchor-tamper', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, noBroad: true, reviewer: 'claude', repairFindingAnchors: true }),
+    /protected review artifact changed: round-1-verify\.json/,
+  );
+  assert.strictEqual(reported, true);
+  assert.strictEqual(h.calls.filter((call) => call[0] === 'spawn' && call[1] === 'anchors').length, 1);
+});
+
+test('review-only anchor repair keeps originals after malformed extraction output without rerunning', async () => {
+  const repo = repoWithCommittedSource('const existing = specific existing text;\n');
+  const h = harness();
+  const original = [{ id: 'correctness:pseudo', category: 'correctness', file: 'a.txt', line: null, span: 'const existing = ...;', summary: 'pseudo summary', requirement: '' }];
+  const cli = (args) => args[0] === 'findings' ? { findings: original } : h.cli(args);
+  const spawn = (input) => {
+    if (input.role === 'anchors') {
+      h.calls.push(['spawn', input.role, input.prompt, input.provider]);
+      fs.writeFileSync(path.join(h.stateDir, 'round-1-anchors.json'), '{ malformed json');
+      return { status: 0 };
+    }
+    return h.spawn(input);
+  };
+  const result = await runReviewUntilGreen({ ref: 'feature/anchor-malformed', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, noBroad: true, reviewer: 'claude', repairFindingAnchors: true });
+  assert.deepStrictEqual(result.findings, original);
+  assert.strictEqual(h.calls.filter((call) => call[0] === 'spawn' && call[1] === 'anchors').length, 1);
+});
+
+test('review-only anchor repair keeps originals after provider launch failure without rerunning', async () => {
+  const repo = repoWithCommittedSource('const existing = specific existing text;\n');
+  const h = harness();
+  const original = [{ id: 'correctness:pseudo', category: 'correctness', file: 'a.txt', line: null, span: 'const existing = ...;', summary: 'pseudo summary', requirement: '' }];
+  const cli = (args) => args[0] === 'findings' ? { findings: original } : h.cli(args);
+  const spawn = (input) => {
+    if (input.role === 'anchors') {
+      h.calls.push(['spawn', input.role, input.prompt, input.provider]);
+      throw new Error('synthetic anchor provider launch failure');
+    }
+    return h.spawn(input);
+  };
+  const result = await runReviewUntilGreen({ ref: 'feature/anchor-provider-failure', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, noBroad: true, reviewer: 'claude', repairFindingAnchors: true });
+  assert.deepStrictEqual(result.findings, original);
+  assert.strictEqual(h.calls.filter((call) => call[0] === 'spawn' && call[1] === 'anchors').length, 1);
+});
+
+test('reviewOnly rejects a finder that plants the future anchors artifact', async () => {
+  const repo = repoWithCommittedSource('const existing = specific existing text;\n');
+  const h = harness();
+  let reported = false;
+  const cli = (args) => args[0] === 'findings' ? (reported = true, { findings: [] }) : h.cli(args);
+  const spawn = (input) => {
+    const result = h.spawn(input);
+    if (input.role === 'correctness') fs.writeFileSync(path.join(h.stateDir, 'round-1-anchors.json'), '{"anchors":[]}\n');
+    return result;
+  };
+  await assert.rejects(
+    runReviewUntilGreen({ ref: 'feature/anchor-forge', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, noBroad: true, reviewer: 'claude', repairFindingAnchors: true }),
+    /protected review artifact changed: round-1-anchors\.json/,
+  );
+  assert.strictEqual(reported, false);
+  assert.strictEqual(h.calls.some((call) => call[0] === 'spawn' && call[1] === 'anchors'), false);
 });
 
 test('Codex review-and-fix launcher passes --review-only to the runner and prints its findings as JSON', () => {

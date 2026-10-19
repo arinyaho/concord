@@ -7,6 +7,6 @@ const path = require('node:path');
 const { core, cli: hook } = require('./locate');
 const options = JSON.parse(process.argv[2]);
 require(path.join(core, 'codex-review-runner')).runReviewUntilGreen({
-  ...options, reviewOnly: true, handleSignals: true, repoRoot: process.cwd(), cliPath: hook, publicCliPath: hook,
+  ...options, reviewOnly: true, repairFindingAnchors: true, handleSignals: true, repoRoot: process.cwd(), cliPath: hook, publicCliPath: hook,
 }).then((result) => process.stdout.write(`${JSON.stringify(result)}\n`))
   .catch((error) => { process.stderr.write(`review-until-approve: ${error.message}\n`); process.exit(1); });
