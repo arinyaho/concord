@@ -71,6 +71,7 @@ function classify(result, engine) {
   const evidence = `${records.join('\n')}\n${stderr}`;
   if (/authentication_error|unauthorized|invalid[ _-]api[ _-]key|authentication failed|invalid[_ -]?(?:token|credentials)|\bHTTP\s*401\b/i.test(evidence)) return 'authentication';
   if (/rate_limit_error|rate[ _-]limit(?:ed| exceeded)|too many requests|\bHTTP\s*429\b/i.test(evidence)) return 'rate-limit';
+  if (engine === 'codex' && records.includes('Selected model is at capacity. Please try a different model.')) return 'transient';
   if (result?.timedOut || ['ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN'].includes(result?.code)
     || /overloaded_error|server_error|service unavailable|temporarily unavailable|connection (?:reset|timed out)|\b(?:HTTP|API Error:|status(?: code)?[:=]?)\s*50[234]\b/i.test(evidence)) return 'transient';
   if (malformed || /invalid json|malformed (?:provider )?response|invalid provider response/i.test(evidence)) return 'malformed-response';

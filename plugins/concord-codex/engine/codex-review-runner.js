@@ -486,12 +486,13 @@ function codexInstallDir() {
 // The CODEX_HOME configuration of a review-only Codex reviewer. The reviewer reads an untrusted checkout,
 // so it must not reach the account's credential files (gh, ssh, cloud, Claude, Codex) by absolute path,
 // whatever HOME says: every entry of the real home is denied, except the way to the checkout and to the
-// review's own directories. The CODEX_HOME itself is read-only: it sits under the writable /tmp, and a
-// reviewer that could rewrite its config.toml would lift the restrictions for every later launch.
-function reviewCodexConfig({ home, sourceAuth, checkout, stateDir, denyRead, realHome: accountHome = os.homedir() }) {
+// review's own directories. The CODEX_HOME itself is read-only, so a reviewer that could rewrite its
+// config.toml cannot lift the restrictions for every later launch.
+function reviewCodexConfig({ home, sourceAuth, checkout, stateDir, denyRead, runtimeDir, realHome: accountHome = os.homedir() }) {
   const installed = codexInstallDir();
-  const keep = [checkout, canonicalPath(home), ...(stateDir ? [canonicalPath(stateDir)] : []), ...(installed ? [installed] : [])];
   const realHome = canonicalPath(accountHome);
+  const runtime = runtimeDir ? canonicalPath(runtimeDir) : null;
+  const keep = [checkout, canonicalPath(home), ...(stateDir ? [canonicalPath(stateDir)] : []), ...(runtime ? [runtime] : []), ...(installed ? [installed] : [])];
   // A path inside the home is already denied by its entry; a nested deny would stop Codex from mounting it.
   const named = denyRead.filter((p) => fs.existsSync(p) && !canonicalPath(p).startsWith(realHome + path.sep) && !keep.some((k) => k === p || k.startsWith(p + path.sep)));
   const around = [...denyAround(realHome, keep), ...named];
@@ -512,7 +513,7 @@ extends = ":workspace"
 
 [permissions.concord-review.filesystem]
 ${[...new Set(denied)].map((p) => `${JSON.stringify(p)} = "deny"`).join('\n')}
-${JSON.stringify(canonicalPath(home))} = "read"
+${[canonicalPath(home), ...(runtime ? [runtime] : [])].map((p) => `${JSON.stringify(p)} = "read"`).join('\n')}
 
 [permissions.concord-review.network]
 enabled = false
@@ -530,10 +531,12 @@ async function runReviewUntilGreen(options) {
     const extra = {};
     if (!options.runCli) extra.reviewStateDir = temp('concord-review-only-');
     if ((options.reviewer || 'codex') === 'codex') {
-      const home = temp('concord-review-codex-home-');
+      const accountHome = canonicalPath(options.reviewRealHome || os.homedir());
+      const home = fs.mkdtempSync(path.join(accountHome, '.concord-review-codex-home-'));
+      made.push(home);
       const sourceAuth = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'auth.json');
       if (fs.existsSync(sourceAuth)) fs.copyFileSync(sourceAuth, path.join(home, 'auth.json'));
-      fs.writeFileSync(path.join(home, 'config.toml'), reviewCodexConfig({ home, sourceAuth, checkout: canonicalPath(options.repoRoot || process.cwd()), stateDir: extra.reviewStateDir, denyRead: options.reviewDenyRead || [], realHome: options.reviewRealHome || undefined }));
+      fs.writeFileSync(path.join(home, 'config.toml'), reviewCodexConfig({ home, sourceAuth, checkout: canonicalPath(options.repoRoot || process.cwd()), stateDir: extra.reviewStateDir, denyRead: options.reviewDenyRead || [], runtimeDir: options.reviewRuntimeDir, realHome: accountHome }));
       extra.reviewCodexHome = home;
     }
     return await runRounds({ ...options, ...extra });

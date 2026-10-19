@@ -3479,12 +3479,32 @@ test('reviewOnly runs a Codex reviewer from its own CODEX_HOME, which marks the 
     assert.ok(launch.config.includes('[permissions.concord-review]\nextends = ":workspace"'), launch.config);
     assert.ok(launch.config.includes(`[permissions.concord-review.filesystem]\n${JSON.stringify(path.join(sourceHome, 'auth.json'))} = "deny"`), launch.config);
     assert.ok(launch.config.includes(`${JSON.stringify(path.join(launch.home, 'auth.json'))} = "deny"`), launch.config);
-    assert.ok(launch.config.includes(`${JSON.stringify(path.join(fs.realpathSync(path.dirname(launch.home)), path.basename(launch.home)))} = "read"\n\n[permissions.concord-review.network]`), 'the CODEX_HOME is read-only inside the sandbox');
+    assert.ok(launch.config.includes(`${JSON.stringify(launch.home)} = "read"\n`), 'the CODEX_HOME is read-only inside the sandbox');
     assert.ok(launch.config.includes('[permissions.concord-review.network]\nenabled = false'), launch.config);
     assert.ok(!launch.config.includes('mcp_servers'), 'the account\'s own Codex configuration stays out');
     assert.strictEqual(launch.auth, '{"OPENAI_API_KEY":"sk-test"}');
   }
   assert.ok(!fs.existsSync(seen[0].home), 'the review-only CODEX_HOME is removed when the run ends');
+});
+
+test('reviewOnly creates its isolated CODEX_HOME under the explicit real account home, regardless of HOME', async () => {
+  const realHome = fs.realpathSync(temp());
+  const inheritedHome = fs.realpathSync(temp());
+  const repo = cleanRepo();
+  const h = harness();
+  let home;
+  const cli = (args) => (args[0] === 'findings' ? { findings: [] } : h.cli(args));
+  const spawn = (input) => { home = input.env && input.env.CODEX_HOME; return h.spawn(input); };
+  const savedHome = process.env.HOME;
+  process.env.HOME = inheritedHome;
+  try {
+    await runReviewUntilGreen({ ref: 'feature/codex-home-location', base: 'main', repoRoot: repo, runCli: cli, spawn, reviewOnly: true, reviewer: 'codex', noBroad: true, reviewRealHome: realHome });
+  } finally {
+    if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+  }
+  assert.ok(home.startsWith(`${realHome}${path.sep}.concord-review-codex-home-`), home);
+  assert.ok(!home.startsWith(`${inheritedHome}${path.sep}`), home);
+  assert.ok(!fs.existsSync(home), 'the isolated CODEX_HOME is removed when the run ends');
 });
 
 test('a CODEX_HOME reached through a symlinked home is covered by the home entry and gets no nested deny', () => {
@@ -3500,8 +3520,37 @@ test('a CODEX_HOME reached through a symlinked home is covered by the home entry
   assert.ok(!config.includes(JSON.stringify(sourceAuth)), 'the auth file inside a denied directory has no entry of its own');
 });
 
-// The review-only CODEX_HOME sits under /tmp, which the :workspace profile makes writable. A reviewer that could rewrite its config.toml
-// would lift the deny list for every later launch of the same run. Runs the real Codex sandbox, so it stands down where that cannot run.
+test('reviewCodexConfig reads the runtime snapshot and denies the volatile account .codex directory as a whole', () => {
+  const accountHome = fs.realpathSync(temp());
+  const codexHome = path.join(accountHome, '.codex');
+  fs.mkdirSync(codexHome);
+  fs.writeFileSync(path.join(codexHome, 'state.sqlite'), 'db');
+  fs.writeFileSync(path.join(codexHome, 'state.sqlite-shm'), 'volatile');
+  fs.writeFileSync(path.join(codexHome, 'state.sqlite-wal'), 'volatile');
+  const runtimeDir = fs.realpathSync(temp());
+  const fakeBin = fs.realpathSync(temp());
+  const fakeCli = path.join(fakeBin, 'codex');
+  fs.writeFileSync(fakeCli, '#!/bin/sh\nexit 0\n');
+  fs.chmodSync(fakeCli, 0o755);
+  const savedPath = process.env.PATH;
+  const savedCodexBin = process.env.CONCORD_CODEX_BIN;
+  process.env.PATH = `${fakeBin}${path.delimiter}${savedPath || ''}`;
+  process.env.CONCORD_CODEX_BIN = fakeCli;
+  try {
+    const config = reviewCodexConfig({ home: fs.realpathSync(temp()), sourceAuth: path.join(codexHome, 'auth.json'), checkout: fs.realpathSync(temp()), denyRead: [], realHome: accountHome, runtimeDir });
+    const permissions = config.split('[permissions.concord-review.network]')[0];
+    assert.ok(permissions.includes(`${JSON.stringify(runtimeDir)} = "read"`), config);
+    assert.ok(permissions.includes(`${JSON.stringify(codexHome)} = "deny"`), config);
+    assert.ok(!permissions.includes('state.sqlite-shm'), 'volatile SQLite children are not individually enumerated');
+    assert.ok(!permissions.includes(`${JSON.stringify(fakeCli)} = "deny"`), 'the installed Codex binary stays readable');
+  } finally {
+    if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+    if (savedCodexBin === undefined) delete process.env.CONCORD_CODEX_BIN; else process.env.CONCORD_CODEX_BIN = savedCodexBin;
+  }
+});
+
+// The review-only CODEX_HOME is explicitly mounted read-only. A reviewer that could rewrite its config.toml would lift the deny list
+// for every later launch of the same run. Runs the real Codex sandbox, so it stands down where that cannot run.
 test('a command inside the review sandbox cannot rewrite the CODEX_HOME configuration, so a later launch is still denied', (t) => {
   const probe = spawnSync('codex', ['sandbox', 'true'], { encoding: 'utf8' });
   if (probe.error || probe.status !== 0) return t.skip('codex sandbox is not usable here');

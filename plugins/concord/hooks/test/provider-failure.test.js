@@ -69,6 +69,39 @@ test('model-authored JSON with an error property is not a provider error envelop
   assert.equal(failure.retryable, false);
 });
 
+test('structured Codex capacity failures permit transport recovery without exposing provider text', () => {
+  const codexInput = { role: 'correctness', provider: 'codex' };
+  for (const diagnosticText of [
+    JSON.stringify({ type: 'error', message: 'Selected model is at capacity. Please try a different model.', error: { code: secret } }),
+    JSON.stringify({ type: 'turn.failed', error: { message: 'Selected model is at capacity. Please try a different model.', code: secret } }),
+  ]) {
+    const failure = safe(providerFailure(codexInput, { status: 1, diagnosticText }));
+    assert.equal(failure.kind, 'subprocess-exit');
+    assert.equal(failure.diagnostic.classification, 'transient');
+    assert.equal(failure.diagnostic.message, 'Provider execution failed temporarily.');
+    assert.equal(failure.message, 'correctness subprocess exited 1; Provider execution failed temporarily.');
+    assert.equal(failure.retryable, true);
+  }
+});
+
+test('structured Codex authentication failure still takes precedence over model capacity', () => {
+  const failure = safe(providerFailure({ role: 'correctness', provider: 'codex' }, {
+    status: 1,
+    diagnosticText: JSON.stringify({ type: 'error', message: `Selected model is at capacity. authentication_error invalid API key ${secret}` }),
+  }));
+  assert.equal(failure.diagnostic.classification, 'authentication');
+  assert.equal(failure.retryable, false);
+});
+
+test('Codex model prose mentioning capacity does not authorize transport retry', () => {
+  const failure = safe(providerFailure({ role: 'correctness', provider: 'codex' }, {
+    status: 1,
+    diagnosticText: JSON.stringify({ type: 'agent_message', message: `Selected model is at capacity. ${secret}` }),
+  }));
+  assert.equal(failure.diagnostic.classification, 'unknown');
+  assert.equal(failure.retryable, false);
+});
+
 for (const [engine, implementation] of [
   ['core', providerFailure],
   ['codex bundle', require('../../../concord-codex/engine/provider-failure').providerFailure],

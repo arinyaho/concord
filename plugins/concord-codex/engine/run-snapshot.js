@@ -54,11 +54,17 @@ function snapshotRunEngine(pluginRoot, repoRoot) {
   const remove = () => { try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) { /* the reaper removes it later */ } };
   try {
     fs.mkdirSync(path.join(root, 'engine')); fs.mkdirSync(path.join(root, 'bin'));
+    const packaged = fs.existsSync(path.join(pluginRoot, 'engine'));
+    const source = path.join(pluginRoot, packaged ? 'engine' : 'core');
     // The whole engine directory, so a module loaded lazily is present by construction.
-    for (const entry of fs.readdirSync(path.join(pluginRoot, 'engine'), { withFileTypes: true })) {
-      if (entry.isFile() && entry.name.endsWith('.js')) copyFile(path.join(pluginRoot, 'engine', entry.name), path.join(root, 'engine', entry.name));
+    for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+      if (entry.isFile() && entry.name.endsWith('.js')) copyFile(path.join(source, entry.name), path.join(root, 'engine', entry.name));
     }
-    copyFile(path.join(pluginRoot, 'bin', 'review-cli.js'), path.join(root, 'bin', 'review-cli.js'));
+    if (packaged) copyFile(path.join(pluginRoot, 'bin', 'review-cli.js'), path.join(root, 'bin', 'review-cli.js'));
+    else {
+      copyFile(path.join(pluginRoot, 'adapters', 'claude-code', 'statedir.js'), path.join(root, 'engine', 'statedir.js'));
+      fs.writeFileSync(path.join(root, 'bin', 'review-cli.js'), "'use strict';\nconst path = require('node:path');\nconst engine = path.join(__dirname, '..', 'engine');\nconst cli = require(path.join(engine, 'review-cli'));\nmodule.exports = cli;\nif (require.main === module) cli.runMain(require(path.join(engine, 'statedir')).resolveStateDirFromCwd);\n", { flag: 'wx', mode: 0o400 });
+    }
     // A package.json in a parent of the temp directory must not change how the copy loads.
     fs.writeFileSync(path.join(root, 'package.json'), '{"type":"commonjs"}\n', { flag: 'wx', mode: 0o400 });
   } catch (error) { remove(); throw error; }
