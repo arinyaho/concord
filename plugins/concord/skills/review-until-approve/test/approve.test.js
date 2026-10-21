@@ -107,9 +107,16 @@ console.log(JSON.stringify({ decision: 'review-only', round: 1, findings }));
   fs.mkdirSync(codexHome);
   fs.writeFileSync(path.join(codexHome, 'auth.json'), '{}');
   const env = { ...process.env, CLAUDECODE: '', CLAUDE_CODE_OAUTH_TOKEN: '', CLAUDE_CONFIG_DIR: realClaude, CODEX_HOME: codexHome, PATH: ['/usr/bin', '/bin'].reduce((p, d) => `${p}${path.delimiter}${d}`, path.join(dir, 'bin')), REVIEW_APPROVE_STATE_DIR: path.join(dir, 'ledgers'), REVIEW_APPROVE_REMOTE: path.join(dir, 'remote'), REVIEW_APPROVE_RUNNER: path.join(dir, 'runner.js') };
+  // The opt-in is read from the account's own home (os.userInfo), which the model cannot redirect with HOME; the tests redirect it with a preload.
+  const userHome = path.join(dir, 'user-home');
+  fs.mkdirSync(path.join(userHome, '.claude'), { recursive: true });
+  const preload = path.join(dir, 'user-info.js');
+  fs.writeFileSync(preload, `const os = require('node:os'); const real = os.userInfo; os.userInfo = (...a) => ({ ...real.apply(os, a), homedir: ${JSON.stringify(userHome)} });`);
+  env.NODE_OPTIONS = `--require ${preload}`;
+  const optIn = (settings = { env: { CONCORD_REVIEW_UNCONFINED_CLAUDE: '1' } }) => fs.writeFileSync(path.join(userHome, '.claude', 'settings.json'), typeof settings === 'string' ? settings : JSON.stringify(settings));
   const approve = (...args) => spawnSync(process.execPath, [APPROVE, ...args], { env: { ...env, ...extraEnv }, encoding: 'utf8' });
   const lines = (name) => fs.existsSync(path.join(dir, name)) ? fs.readFileSync(path.join(dir, name), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
-  return { dir, src, bare, c1, state, write, approve, posts: () => lines('posts.jsonl'), calls: () => lines('runner-calls.jsonl'), ledger: () => JSON.parse(fs.readFileSync(path.join(dir, 'ledgers', 'o__r__5__bot.json'), 'utf8')) };
+  return { dir, src, bare, c1, state, write, approve, optIn, userHome, posts: () => lines('posts.jsonl'), calls: () => lines('runner-calls.jsonl'), ledger: () => JSON.parse(fs.readFileSync(path.join(dir, 'ledgers', 'o__r__5__bot.json'), 'utf8')) };
 }
 
 const finding = { id: 'correctness:bad', category: 'correctness', file: 'a.js', line: 2, span: 'bad', summary: 'bad line', requirement: '' };
@@ -207,31 +214,60 @@ test('a refused post leaves no temporary clone behind', () => {
   assert.deepEqual(fs.readdirSync(tmp).filter((n) => n.startsWith('review-until-approve-')), []);
 });
 
-const UNRESTRICTED = '--allow-unrestricted-home';
+const SETTING = 'CONCORD_REVIEW_UNCONFINED_CLAUDE';
 
-test('start refuses a claude reviewer that was asked for without the opt-in flag, and names the flag', () => {
+test('start refuses a claude reviewer that was asked for without the user setting, and names the setting and who sets it', () => {
   const asked = world({ CLAUDE_CODE_OAUTH_TOKEN: 't' });
   const r = asked.approve('start', 'o/r', '5', '--reviewer', 'claude');
   assert.notEqual(r.status, 0);
-  assert.match(r.stderr, /--allow-unrestricted-home/);
+  assert.match(r.stderr, new RegExp(SETTING));
+  assert.match(r.stderr, /the user adds/);
+  assert.equal(r.stderr.includes('--allow-unrestricted-home'), false);
   assert.equal(fs.existsSync(path.join(asked.dir, 'ledgers', 'o__r__5__bot.json')), false);
   const inCodex = world({ CLAUDECODE: '' });
   inCodex.approve('start', 'o/r', '5');
   assert.equal(inCodex.ledger().provider, 'codex');
 });
 
-test('with the opt-in flag the claude reviewer runs, and start and every round print the warning that it can read the real home', () => {
+test('with the user setting the claude reviewer runs with no flag, and start and every round print the warning that it can read the real home', () => {
   const w = world({ CLAUDE_CODE_OAUTH_TOKEN: 'oauth-token-abcdef' });
+  w.optIn();
   w.write('findings.json', []);
-  const started = w.approve('start', 'o/r', '5', '--reviewer', 'claude', UNRESTRICTED, '--model', 'm');
+  const started = w.approve('start', 'o/r', '5', '--reviewer', 'claude', '--model', 'm');
   assert.deepEqual([w.ledger().provider, w.ledger().model], ['claude', 'm']);
   assert.match(JSON.parse(started.stdout).warning, /real home/);
   assert.match(started.stderr, /real home/);
   const round = w.approve('round', 'o/r', '5');
   assert.match(JSON.parse(round.stdout).warning, /real home/);
   assert.match(round.stderr, /real home/);
-  // A later start without the flag is refused again.
-  assert.notEqual(w.approve('start', 'o/r', '5').status, 0);
+});
+
+test('the old --allow-unrestricted-home flag no longer enables anything, and a variable the model can set does not either', () => {
+  const w = world({ CLAUDE_CODE_OAUTH_TOKEN: 't', [SETTING]: '1' });
+  const r = w.approve('start', 'o/r', '5', '--reviewer', 'claude', '--allow-unrestricted-home');
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, new RegExp(SETTING));
+});
+
+test('only the key with the value 1 under env in the user settings file enables it, and project settings and HOME do not', () => {
+  for (const settings of ['{', '{"env":{}}', `{"env":{"${SETTING}":"0"}}`, `{"${SETTING}":"1"}`, `{"env":{"${SETTING}":1}}`]) {
+    const w = world({ CLAUDE_CODE_OAUTH_TOKEN: 't' });
+    w.optIn(settings);
+    assert.notEqual(w.approve('start', 'o/r', '5', '--reviewer', 'claude').status, 0, settings);
+  }
+  const w = world({ CLAUDE_CODE_OAUTH_TOKEN: 't' });
+  const enabled = JSON.stringify({ env: { [SETTING]: '1' } });
+  fs.mkdirSync(path.join(w.src, '.claude'));
+  fs.writeFileSync(path.join(w.src, '.claude', 'settings.json'), enabled);
+  const fakeHome = path.join(w.dir, 'fake-home');
+  fs.mkdirSync(path.join(fakeHome, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(fakeHome, '.claude', 'settings.json'), enabled);
+  // The model sets HOME and CLAUDE_CONFIG_DIR to a directory it wrote; the account's own home (os.userInfo) holds no setting.
+  const r = w.approve('start', 'o/r', '5', '--reviewer', 'claude');
+  assert.notEqual(r.status, 0);
+  const moved = spawnSync(process.execPath, [APPROVE, 'start', 'o/r', '5', '--reviewer', 'claude'], { cwd: w.src, env: { ...process.env, HOME: fakeHome, CLAUDE_CONFIG_DIR: path.join(fakeHome, '.claude'), CLAUDE_CODE_OAUTH_TOKEN: 't', NODE_OPTIONS: `--require ${path.join(w.dir, 'user-info.js')}`, PATH: `${path.join(w.dir, 'bin')}:/usr/bin:/bin`, REVIEW_APPROVE_STATE_DIR: path.join(w.dir, 'ledgers'), REVIEW_APPROVE_REMOTE: path.join(w.dir, 'remote') }, encoding: 'utf8' });
+  assert.notEqual(moved.status, 0);
+  assert.match(moved.stderr, new RegExp(SETTING));
 });
 
 test('two open findings sharing an id are closed by their own key: the unfixed one keeps blocking approval', () => {
@@ -303,18 +339,23 @@ test('a rename with edits that removes the verified span fixes the finding; an u
   assert.deepEqual([unverified.r.fixed, unverified.r.stillOpen], [0, 1]);
 });
 
-test('round refuses a claude ledger that never took the opt-in', () => {
-  const w = world({ CLAUDE_CODE_OAUTH_TOKEN: 't' });
+test('round re-reads the user setting: once it is removed, no later round runs the claude reviewer, and a refused start does not keep it standing', () => {
+  const w = world({ CLAUDE_CODE_OAUTH_TOKEN: 'oauth-token-abcdef' });
+  w.optIn();
   w.write('findings.json', []);
-  w.approve('start', 'o/r', '5', '--reviewer', 'claude', UNRESTRICTED);
-  const file = path.join(w.dir, 'ledgers', 'o__r__5__bot.json');
-  const ledger = JSON.parse(fs.readFileSync(file, 'utf8'));
-  delete ledger.unrestrictedHome;
-  fs.writeFileSync(file, JSON.stringify(ledger));
+  assert.equal(w.approve('start', 'o/r', '5', '--reviewer', 'claude').status, 0);
+  assert.equal('unrestrictedHome' in w.ledger(), false);
+  fs.rmSync(path.join(w.userHome, '.claude', 'settings.json'));
+  assert.notEqual(w.approve('start', 'o/r', '5').status, 0);
   const r = w.approve('round', 'o/r', '5');
   assert.notEqual(r.status, 0);
-  assert.match(r.stderr, /--allow-unrestricted-home/);
+  assert.match(r.stderr, new RegExp(SETTING));
   assert.equal(w.calls().length, 0);
+  // The user puts it back: the same run resumes.
+  w.optIn();
+  const again = w.approve('round', 'o/r', '5');
+  assert.equal(again.status, 0, again.stderr);
+  assert.equal(w.calls().length, 1);
 });
 
 test('a file with a special character in its name is matched by its real name', () => {
@@ -348,7 +389,7 @@ test('the review process gets an empty HOME, and the real Codex home for its aut
 test('a claude reviewer does not get the Codex home', () => {
   const w = world({ CODEX_HOME: '/real/codex', CLAUDE_CODE_OAUTH_TOKEN: 't' });
   w.write('findings.json', []);
-  w.approve('start', 'o/r', '5', '--reviewer', 'claude', UNRESTRICTED); w.approve('round', 'o/r', '5');
+  w.optIn(); w.approve('start', 'o/r', '5', '--reviewer', 'claude'); w.approve('round', 'o/r', '5');
   assert.equal(w.calls()[0].codexHome, undefined);
 });
 
@@ -699,7 +740,7 @@ test('a comment review on the pending head is not taken for the approval', () =>
 // A harness whose own reviewer is unusable still starts in one call, on the other reviewer, and says so in one line.
 const startOut = (r) => JSON.parse(r.stdout);
 
-test('under Claude Code with a login but without the opt-in, start runs on codex in one call and names the flag, not a token', () => {
+test('under Claude Code with a login but without the user setting, start runs on codex in one call and says why and how to turn Claude on, not a token', () => {
   const w = world({ CLAUDECODE: '1' });
   fs.writeFileSync(path.join(w.dir, 'real-claude', '.credentials.json'), '{}');
   const r = w.approve('start', 'o/r', '5');
@@ -707,7 +748,7 @@ test('under Claude Code with a login but without the opt-in, start runs on codex
   assert.equal(w.ledger().provider, 'codex');
   const o = startOut(r);
   assert.equal(o.reviewer, 'codex');
-  assert.match(o.note, /^reviewer: codex \(claude: pass --allow-unrestricted-home/);
+  assert.match(o.note, /^reviewer: codex \(claude: off by default because it can read your real home directory.*; the user adds CONCORD_REVIEW_UNCONFINED_CLAUDE=1 under "env" in ~\/\.claude\/settings\.json/);
   assert.equal(o.note.includes('CLAUDE_CODE_OAUTH_TOKEN'), false);
   assert.equal(o.note.includes('\n'), false);
 });
@@ -717,15 +758,15 @@ test('under Claude Code with a token but no opt-in, start still runs on codex an
   const r = w.approve('start', 'o/r', '5');
   assert.equal(r.status, 0, r.stderr);
   assert.equal(w.ledger().provider, 'codex');
-  assert.equal(w.ledger().unrestrictedHome, false);
-  assert.match(startOut(r).note, /--allow-unrestricted-home/);
+  assert.match(startOut(r).note, new RegExp(SETTING));
 });
 
 test('under Claude Code with the opt-in, the harness reviewer is chosen with a token or with a login file, and no note is printed', () => {
   for (const login of ['token', 'file']) {
     const w = world({ CLAUDECODE: '1', ...(login === 'token' ? { CLAUDE_CODE_OAUTH_TOKEN: 't' } : {}) });
     if (login === 'file') fs.writeFileSync(path.join(w.dir, 'real-claude', '.credentials.json'), '{}');
-    const o = startOut(w.approve('start', 'o/r', '5', UNRESTRICTED));
+    w.optIn();
+    const o = startOut(w.approve('start', 'o/r', '5'));
     assert.equal(o.reviewer, 'claude');
     assert.equal(o.note, undefined);
   }
@@ -733,10 +774,11 @@ test('under Claude Code with the opt-in, the harness reviewer is chosen with a t
 
 test('under Claude Code with the opt-in but no Claude login, start runs on codex and names how to log in', () => {
   const w = world({ CLAUDECODE: '1' });
-  const o = startOut(w.approve('start', 'o/r', '5', UNRESTRICTED));
+  w.optIn();
+  const o = startOut(w.approve('start', 'o/r', '5'));
   assert.equal(o.reviewer, 'codex');
   assert.match(o.note, /^reviewer: codex \(claude: log in with claude .*setup-token/);
-  const explicit = w.approve('start', 'o/r', '5', '--reviewer', 'claude', UNRESTRICTED);
+  const explicit = w.approve('start', 'o/r', '5', '--reviewer', 'claude');
   assert.notEqual(explicit.status, 0);
   assert.match(explicit.stderr, /log in with claude/);
 });
@@ -747,9 +789,10 @@ test('under Codex with codex logged out, start runs on claude only with the opt-
   const refused = w.approve('start', 'o/r', '5');
   assert.notEqual(refused.status, 0);
   assert.match(refused.stderr, /codex: .*codex login/);
-  assert.match(refused.stderr, /claude: .*--allow-unrestricted-home/);
+  assert.match(refused.stderr, new RegExp(`claude: .*${SETTING}`));
   assert.equal(refused.stderr.includes('CLAUDE_CODE_OAUTH_TOKEN'), false);
-  const ok = w.approve('start', 'o/r', '5', UNRESTRICTED);
+  w.optIn();
+  const ok = w.approve('start', 'o/r', '5');
   assert.equal(ok.status, 0, ok.stderr);
   assert.match(startOut(ok).note, /^reviewer: claude \(codex: .*codex login/);
 });
@@ -763,7 +806,7 @@ test('when no reviewer is usable, start exits non-zero with one line per reviewe
   const lines = r.stderr.trim().split('\n').filter((l) => /^\s*(codex|claude):/.test(l));
   assert.equal(lines.length, 2, r.stderr);
   assert.match(lines.find((l) => /codex:/.test(l)), /install codex/);
-  assert.match(lines.find((l) => /claude:/.test(l)), /install claude.*--allow-unrestricted-home/);
+  assert.match(lines.find((l) => /claude:/.test(l)), new RegExp(`install claude.*${SETTING}`));
   assert.equal(fs.existsSync(path.join(w.dir, 'ledgers', 'o__r__5__bot.json')), false);
 });
 
@@ -775,7 +818,7 @@ test('an explicit reviewer is never replaced: --reviewer codex with codex missin
   assert.match(noCodex.stderr, /install codex/);
   const claude = w.approve('start', 'o/r', '5', '--reviewer', 'claude');
   assert.notEqual(claude.status, 0);
-  assert.match(claude.stderr, /--allow-unrestricted-home/);
+  assert.match(claude.stderr, new RegExp(SETTING));
 });
 
 // The opted-in Claude reviewer authenticates as the user: the token when set, else the real credentials file copied into the reviewer's own config directory, else the real configuration.
@@ -784,7 +827,8 @@ const loginWorld = (extra, files) => {
   for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(real, name), text);
   const w = world({ CLAUDECODE: '1', CLAUDE_CONFIG_DIR: real, ...extra });
   w.write('findings.json', []);
-  const started = w.approve('start', 'o/r', '5', UNRESTRICTED);
+  w.optIn();
+  const started = w.approve('start', 'o/r', '5');
   assert.equal(started.status, 0, started.stderr);
   const round = w.approve('round', 'o/r', '5');
   assert.equal(round.status, 0, round.stderr);
@@ -809,7 +853,8 @@ test('round refuses a claude ledger whose login has gone, naming how to log in, 
   const env = { CLAUDECODE: '1', CLAUDE_CODE_OAUTH_TOKEN: 't' };
   const w = world(env);
   w.write('findings.json', []);
-  assert.equal(w.approve('start', 'o/r', '5', UNRESTRICTED).status, 0);
+  w.optIn();
+  assert.equal(w.approve('start', 'o/r', '5').status, 0);
   env.CLAUDE_CODE_OAUTH_TOKEN = '';
   const again = w.approve('round', 'o/r', '5');
   assert.notEqual(again.status, 0);
@@ -825,7 +870,8 @@ test('a review that quotes the access or refresh token from the credentials file
     fs.writeFileSync(path.join(real, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: access, refreshToken: refresh, expiresAt: 1 } }));
     const w = world({ CLAUDECODE: '1', CLAUDE_CONFIG_DIR: real });
     w.write('findings.json', [{ ...finding, summary: `quoted ${leaked} here` }]);
-    assert.equal(w.approve('start', 'o/r', '5', UNRESTRICTED).status, 0);
+    w.optIn();
+    assert.equal(w.approve('start', 'o/r', '5').status, 0);
     const r = w.approve('round', 'o/r', '5');
     assert.notEqual(r.status, 0);
     assert.match(r.stderr, /holds a credential/);

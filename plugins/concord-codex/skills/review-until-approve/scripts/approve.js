@@ -24,13 +24,19 @@ process.env.GIT_NO_REPLACE_OBJECTS = '1';
 const MAX_ROUNDS = 10;
 const MAX_DISCARDS = 3;
 const GUIDANCE_FINDINGS = 20;
-const UNRESTRICTED = '--allow-unrestricted-home';
-const WARNING = 'the claude reviewer can read your real home directory (gh, ssh and cloud credentials); a malicious pull request could make it publish their contents, and it is not trusted to leave the review clone intact. Use the codex reviewer to avoid this.';
+// The Claude reviewer is unconfined, so only the user may turn it on: a key in their own settings file, which the model has no business writing.
+// It is read from the account's home as the passwd entry gives it, never from HOME, CLAUDE_CONFIG_DIR, the environment or a project file, which the model or a pull request can set.
+const OPT_IN = 'CONCORD_REVIEW_UNCONFINED_CLAUDE';
+const OPT_IN_HOW = `the user adds ${OPT_IN}=1 under "env" in ~/.claude/settings.json; the model must not pass a flag, set a variable or edit a settings file for this`;
+function userOptedIn() {
+  try { return JSON.parse(fs.readFileSync(path.join(os.userInfo().homedir, '.claude', 'settings.json'), 'utf8'))?.env?.[OPT_IN] === '1'; } catch (_) { return false; }
+}
+const WARNING = 'the claude reviewer can read your real home directory (gh, ssh and cloud credentials); a malicious pull request could make it publish their contents, and it is not trusted to leave the review clone intact. To avoid this, remove CONCORD_REVIEW_UNCONFINED_CLAUDE from your Claude settings (the codex reviewer stays confined).';
 const die = (message, code = 1) => { process.stderr.write(`review-until-approve: ${message}\n`); process.exit(code); };
 const out = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
-// An unrestricted-home run says so in every result, and on stderr where the user sees it.
+// A Claude run says so in every result, and on stderr where the user sees it.
 const outFor = (ledger, value) => {
-  if (!ledger.unrestrictedHome) return out(value);
+  if (ledger.provider !== 'claude') return out(value);
   process.stderr.write(`review-until-approve: WARNING: ${WARNING}\n`);
   out({ ...value, warning: [value.warning, WARNING].filter(Boolean).join(' ') });
 };
@@ -154,22 +160,22 @@ function identify(repo, pr, args) {
 
 const onPath = (name) => (process.env.PATH || '').split(path.delimiter).some((dir) => (process.platform === 'win32' ? (process.env.PATHEXT || '.EXE;.CMD').split(';') : ['']).some((ext) => { try { fs.accessSync(path.join(dir, name + ext), fs.constants.X_OK); return true; } catch (_) { return false; } }));
 // What a reviewer still needs from the user, in the words that fix it. An empty list means it is ready.
-function missing(provider, optedIn) {
+function missing(provider) {
   if (provider === 'codex') return [!onPath('codex') ? 'install codex' : !fs.existsSync(path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'auth.json')) && 'run `codex login`'].filter(Boolean);
-  // The Claude reviewer cannot yet be kept from the account's home directory (tracked in its own issue), so it runs only on an explicit opt-in.
-  return [!onPath('claude') && 'install claude', !process.env.CLAUDE_CODE_OAUTH_TOKEN && !fs.existsSync(path.join(claudeConfigDir(), '.credentials.json')) && `log in with claude (no \`.credentials.json\` in ${claudeConfigDir()}) or export CLAUDE_CODE_OAUTH_TOKEN (create one with \`claude setup-token\`)`, !optedIn && `pass ${UNRESTRICTED} (the claude reviewer can read your real home directory, and a malicious pull request could publish what it reads)`].filter(Boolean);
+  // The Claude reviewer cannot yet be kept from the account's home directory (#366), so it runs only while the user's setting is present.
+  return [!onPath('claude') && 'install claude', !process.env.CLAUDE_CODE_OAUTH_TOKEN && !fs.existsSync(path.join(claudeConfigDir(), '.credentials.json')) && `log in with claude (no \`.credentials.json\` in ${claudeConfigDir()}) or export CLAUDE_CODE_OAUTH_TOKEN (create one with \`claude setup-token\`)`, !userOptedIn() && `off by default because it can read your real home directory and a malicious pull request could publish what it reads; ${OPT_IN_HOW}`].filter(Boolean);
 }
 // An explicit choice or a resumed ledger is kept or refused. Without one, the harness's own reviewer runs when it is ready, otherwise the other one; the note says why.
-function chooseReviewer(asked, optedIn) {
+function chooseReviewer(asked) {
   if (asked) {
     if (!['codex', 'claude'].includes(asked)) die('--reviewer must be codex or claude');
-    const need = missing(asked, optedIn);
+    const need = missing(asked);
     if (need.length) die(`the ${asked} reviewer is not ready: ${need.join('; ')}`);
     return { provider: asked };
   }
   const first = process.env.CLAUDECODE ? 'claude' : 'codex';
   const order = [first, first === 'claude' ? 'codex' : 'claude'];
-  const need = Object.fromEntries(order.map((p) => [p, missing(p, optedIn)]));
+  const need = Object.fromEntries(order.map((p) => [p, missing(p)]));
   const provider = order.find((p) => !need[p].length);
   if (!provider) die(`no reviewer is ready:\n${order.map((p) => `  ${p}: ${need[p].join('; ')}`).join('\n')}`);
   return { provider, note: provider === first ? undefined : `reviewer: ${provider} (${first}: ${need[first].join('; ')})` };
@@ -183,10 +189,9 @@ function start(repo, pr, args) {
   const snap = snapshot(repo, pr);
   if (snap.state !== 'OPEN') die(`the pull request is ${snap.state}`);
   if (snap.author === reviewer) die(`${reviewer} is the author; GitHub rejects self-approval`);
-  const { provider, note } = chooseReviewer(opt(args, '--reviewer') || found?.provider, args.includes(UNRESTRICTED));
+  const { provider, note } = chooseReviewer(opt(args, '--reviewer') || found?.provider);
   const ledger = found || { version: 1, repo, pr, reviewer, provider, model: opt(args, '--model') || null, author: snap.author, startedAt: new Date().toISOString(), rounds: [], findings: [], nudged: null, approval: null, stopped: null };
   ledger.provider = provider;
-  ledger.unrestrictedHome = provider === 'claude';
   if (opt(args, '--model')) ledger.model = opt(args, '--model');
   ledger.stopped = null;
   save(file, ledger);
@@ -314,8 +319,7 @@ function submoduleDelta(work, from, subs, file) {
 function reviewRound(repo, pr, args) {
   const { file, ledger } = identify(repo, pr, args);
   if (!ledger) die('no ledger; run start first');
-  if (ledger.provider === 'claude' && !ledger.unrestrictedHome) die(`the ledger runs the claude reviewer without the opt-in; run start with ${UNRESTRICTED} first`);
-  if (ledger.provider === 'claude') { const need = missing('claude', true); if (need.length) die(`the claude reviewer is not ready: ${need.join('; ')}`); }
+  if (ledger.provider === 'claude') { const need = missing('claude'); if (need.length) die(`the claude reviewer is not ready: ${need.join('; ')}`); }
   if (ledger.rounds.length >= MAX_ROUNDS) return outFor(ledger, { event: 'round-limit', rounds: ledger.rounds.length });
   for (let discards = 0; discards < MAX_DISCARDS; discards++) {
     const result = attempt(repo, pr, ledger, file);
