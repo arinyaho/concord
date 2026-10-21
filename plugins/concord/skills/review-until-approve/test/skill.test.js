@@ -19,3 +19,28 @@ test('the description does not promise a wait without model calls on every harne
   assert.doesNotMatch(description, /without spending tokens/);
   assert.match(description, /Codex/);
 });
+
+// The Claude Code wait must outlast Monitor's 30 minutes: a background Bash command (up to 2 hours)
+// with --max-wait below that cap, re-armed silently on idle or a killed run, never ended by the model.
+const claudeWait = (() => {
+  const from = skill.indexOf('- Claude Code:');
+  return skill.slice(from, skill.indexOf('- Codex:', from));
+})();
+
+test('the Claude Code wait uses a background Bash command whose --max-wait fits under the 2 hour cap', () => {
+  assert.match(claudeWait, /run_in_background/);
+  assert.doesNotMatch(claudeWait, /Monitor/);
+  const maxWait = Number(claudeWait.match(/--max-wait (\d+)/)?.[1]);
+  assert.ok(maxWait > 1800 && maxWait <= 7200 - 600, `--max-wait ${maxWait}`);
+});
+
+test('the Claude Code wait re-arms silently on idle or a killed run and never ends on its own', () => {
+  assert.match(claudeWait, /idle/);
+  assert.match(claudeWait, /killed/);
+  assert.match(claudeWait, /same command/i);
+  assert.match(claudeWait, /nothing to the user/i);
+  assert.match(claudeWait, /only `timeout` or a user stop ends/i);
+  assert.match(claudeWait, /never (edit|wrap|replace)/i);
+  assert.match(skill, /TaskStop/);
+  assert.doesNotMatch(skill, /spends no model tokens/);
+});

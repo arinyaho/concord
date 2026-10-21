@@ -43,10 +43,10 @@ Required checks are not part of the condition. Approval is a code-review verdict
 
 | Harness | How the session waits | Model cost |
 |---|---|---|
-| Claude Code | `watch.js` under Monitor, which wakes the session on its one output line | none until the event |
+| Claude Code | `watch.js --max-wait 6600` as a Bash `run_in_background` command, which wakes the session when it exits; on `idle` or a killed run the session runs the same command again | one small model call per window, about 13 a day; the 7-day wait is about 92 windows |
 | Codex | `watch.js --max-wait <seconds>` in the foreground; after that many seconds without an event it prints `{"event":"idle"}`, and the session runs it again | about one small model call per window; a window is bounded by the shell tool's command timeout (540 seconds by default in the skill) |
 
-Codex has no background process that wakes a conversation, so the wait there is not zero-token; the skill says so and tells the user after six idle windows in a row. `<ledger>.watch.json` carries the head seen, the nudge shown and the failed polls in a row from one run to the next, so a new window does not restart the two-poll head stability check, repeat a nudge or hide an outage behind `idle`. A window ends at its deadline: the sleep between polls is cut to the time left. The ledger stays the session's and `approve.js`'s alone.
+Monitor is not used on Claude Code: it stops after 30 minutes, while a background Bash command runs up to 7200 seconds. 6600 leaves 10 minutes for a poll, `gh` latency and startup, so `idle` is printed before the host kills the command; a killed run is treated like `idle` and a non-zero exit with no JSON line is reported, so a crash is not re-armed in a loop. The session re-runs the identical command it built once with absolute paths and never edits, wraps or replaces `watch.js`. A user stop calls TaskStop on the recorded task id. Codex has no background process that wakes a conversation, so its wait costs the same per window but windows are 540 seconds; the skill tells the user after six idle windows in a row. `<ledger>.watch.json` carries the head seen, the nudge shown and the failed polls in a row from one run to the next, so a new window does not restart the two-poll head stability check, repeat a nudge or hide an outage behind `idle`. A window ends at its deadline: the sleep between polls is cut to the time left. The ledger stays the session's and `approve.js`'s alone.
 
 | Event | Fires when |
 |---|---|
@@ -54,7 +54,7 @@ Codex has no background process that wakes a conversation, so the wait there is 
 | `merged`, `closed` | The pull request reached that state |
 | `nudge` | Only a push, or only a reply, has arrived and 24 hours have passed since the last review. It repeats only for a new head or reply, and posts nothing; the session tells the user |
 | `timeout` | 7 days since the last review |
-| `idle` | Only with `--max-wait`: the window ended without an event (exit status 0) |
+| `idle` | Only with `--max-wait`: the window ended without an event (exit status 0); the session runs the same command again |
 | `error` | Ten consecutive failed polls, counted across bounded runs (exit status 1) |
 
 A reply is a comment by the pull request author after the last review, either in a thread of a review the skill published (`in_reply_to_id` is one of its comment ids) or on the pull request conversation, which is the only way to answer a finding posted in a review body. Who pushed does not matter. A push or reply alone, a CI change, a label, or a comment by anyone but the author wakes nothing. A user stop ends the watch and is recorded in the ledger. At most 10 rounds run per pull request, and nothing is posted on any stop.

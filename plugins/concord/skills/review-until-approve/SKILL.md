@@ -2,14 +2,14 @@
 name: review-until-approve
 description: >-
   Use when the user names someone else's pull request and wants it reviewed in a loop: review it, publish the findings,
-  wait for the author to push and reply (no model calls on Claude Code, bounded foreground windows on Codex), review what changed, and approve once a round is clean —
+  wait for the author to push and reply (one small model call per two-hour window on Claude Code, bounded foreground windows on Codex), review what changed, and approve once a round is clean —
   "이 PR 승인될 때까지 리뷰해줘", "review this PR until it is approvable", "watch the PR and approve when clean".
   Do NOT use for your own branch (use review-and-fix) or to collect other reviewers' comments on your own PR (use review-until-lgtm).
 ---
 
 # Review until approve
 
-`/review-and-fix` that never fixes. You review a pull request you did not write, publish the verified findings as one review per round, wait for the author, review the delta, and approve the reviewed head when nothing blocks. You never request changes, merge, push to the branch, run a command the pull request provides, or post anywhere but that pull request. Use this skill only for a pull request the user named. Keep what you say to one line per phase: the reviewer note, each round's outcome, the final verdict. Say nothing between watch windows and do not repeat a warning you already relayed in this run.
+`/review-and-fix` that never fixes. You review a pull request you did not write, publish the verified findings as one review per round, wait for the author, review the delta, and approve the reviewed head when nothing blocks. You never request changes, merge, push to the branch, run a command the pull request provides, or post anywhere but that pull request. Use this skill only for a pull request the user named. Keep what you say to one line per phase: the reviewer note, each round's outcome, the final verdict. Say nothing between watch windows (a window that ends with `idle` or a killed run is not an event) and do not repeat a warning you already relayed in this run.
 
 The decisions behind each step are in `docs/design/review-until-approve.md`.
 
@@ -31,16 +31,16 @@ The decisions behind each step are in `docs/design/review-until-approve.md`.
 3. `action: "watch"`: the head was already reviewed and nothing blocks or approves it yet; go to step 4.
    `action: "approve"`: the reviewed head is clean but was not approved (it was a draft). Run `node "$SCRIPTS/approve.js" approve <owner/repo> <pr>`; it posts the approval only if the condition holds; otherwise it prints `{"event":"not-approved","reason":...}`, which you relay to the user.
 4. Wait, by harness (the ledger path is in `start`'s output):
-   - Claude Code: start `node "$SCRIPTS/watch.js" <ledger> <owner/repo> <pr>` with Monitor and do nothing else; it spends no model tokens.
+   - Claude Code: build this command once, with absolute paths, and run it with Bash `run_in_background`: `node "$SCRIPTS/watch.js" <ledger> <owner/repo> <pr> --max-wait 6600`. Note the background task id and do nothing else until it exits; each exit wakes you with one small model turn. When a window ends, run the same command again, verbatim, and say nothing to the user: `idle` is a window, and so is a run with no JSON line that was killed (host timeout, exit 137 or 143). A run with no JSON line that exited on its own with another non-zero code is a failure: tell the user and stop. Only `timeout` or a user stop ends the wait; never end it on your own because time passed. Never edit, wrap or replace `watch.js`, and never write your own polling loop.
    - Codex: there is no background watch that wakes the conversation, so wait in the foreground in bounded windows. Run `node "$SCRIPTS/watch.js" <ledger> <owner/repo> <pr> --max-wait 540` (shorter if the shell tool times out earlier) and read its one JSON line. `idle` means nothing happened in the window: run the same command again, and say nothing to the user between windows. Each window costs one small model call, so this wait is cheap but not free; after 6 windows in a row (about an hour) tell the user in one line that the wait continues, and keep going unless they stop it. A host that cannot run a foreground command this long cannot run this skill to completion: tell the user and stop after the first review.
    The watch prints one JSON line and exits. On that line:
    - `round`: go to step 2 (`start` first, so the ledger and account are re-checked).
    - `merged` or `closed`: tell the user and stop.
    - `nudge`: only a push or only a reply arrived in 24 hours. Run `node "$SCRIPTS/approve.js" nudged <owner/repo> <pr> '<the nudge line>'` first, so a restarted watch stays silent until a new head or reply. Tell the user which, and ask whether to keep waiting or `waive` a finding they consider answered. Restart the watch if they want to keep waiting.
-   - `idle` (Codex only): see above.
+   - `idle`: a window ended with no event; run the same command again, as described for each harness above.
    - `timeout`: 7 days passed since the last review. Tell the user; the ledger stays resumable.
    - `error`: tell the user the detail and stop.
-5. A stop request from the user: stop the Monitor (Claude Code), run `node "$SCRIPTS/approve.js" stop <owner/repo> <pr>`, and post nothing.
+5. A stop request from the user: stop the background task with TaskStop (Claude Code), run `node "$SCRIPTS/approve.js" stop <owner/repo> <pr>`, and post nothing.
 
 ## Findings the user disputes
 
