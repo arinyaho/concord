@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 'use strict';
-// Token-free wait for review-until-approve. Reads the ledger (never writes it), polls
-// GitHub through `gh`, prints exactly one JSON event line, then exits. Run it under
-// the host's background watch (Monitor) and under `mien exec <profile> --` where the
+// Wait for review-until-approve that makes no model call while it polls. Reads the ledger (never writes it), polls
+// GitHub through `gh`, prints exactly one JSON event line, then exits. Run it as
+// a background command (Bash run_in_background) and under `mien exec <profile> --` where the
 // reviewing account is not the ambient one. With --max-wait it prints {"event":"idle"}
 // after that many seconds without an event, so a host without a background watch can
 // run it in the foreground and call it again. `<ledger>.watch.json` carries the head

@@ -32,6 +32,8 @@ test('the Claude Code wait uses a background Bash command whose --max-wait fits 
   assert.doesNotMatch(claudeWait, /Monitor/);
   const maxWait = Number(claudeWait.match(/--max-wait (\d+)/)?.[1]);
   assert.ok(maxWait > 1800 && maxWait <= 7200 - 600, `--max-wait ${maxWait}`);
+  const timeoutMs = Number(claudeWait.match(/`timeout: (\d+)`/)?.[1]);
+  assert.ok(timeoutMs / 1000 - maxWait >= 600, `timeout ${timeoutMs} ms vs --max-wait ${maxWait}`);
 });
 
 test('the Claude Code wait re-arms silently on idle or a killed run and never ends on its own', () => {
@@ -43,4 +45,12 @@ test('the Claude Code wait re-arms silently on idle or a killed run and never en
   assert.match(claudeWait, /never (edit|wrap|replace)/i);
   assert.match(skill, /TaskStop/);
   assert.doesNotMatch(skill, /spends no model tokens/);
+});
+
+test('no doc or script comment describes the Claude Code wait as Monitor-based or free of model calls', () => {
+  const root = path.join(__dirname, '..', '..', '..', '..', '..');
+  const watchHeader = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'watch.js'), 'utf8').split('\n').slice(0, 12).join('\n');
+  const readmeRow = fs.readFileSync(path.join(root, 'README.md'), 'utf8').split('\n').find((line) => line.includes('`review-until-approve`'));
+  assert.doesNotMatch(watchHeader, /Token-free|Monitor/);
+  assert.doesNotMatch(readmeRow, /no model calls/);
 });
