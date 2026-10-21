@@ -319,9 +319,10 @@ function submoduleDelta(work, from, subs, file) {
 function reviewRound(repo, pr, args) {
   const { file, ledger } = identify(repo, pr, args);
   if (!ledger) die('no ledger; run start first');
-  if (ledger.provider === 'claude') { const need = missing('claude'); if (need.length) die(`the claude reviewer is not ready: ${need.join('; ')}`); }
   if (ledger.rounds.length >= MAX_ROUNDS) return outFor(ledger, { event: 'round-limit', rounds: ledger.rounds.length });
   for (let discards = 0; discards < MAX_DISCARDS; discards++) {
+    // Read again before every launch: a discarded attempt takes minutes, and the user may have removed the setting meanwhile.
+    if (ledger.provider === 'claude') { const need = missing('claude'); if (need.length) die(`the claude reviewer is not ready: ${need.join('; ')}`); }
     const result = attempt(repo, pr, ledger, file);
     if (result) return outFor(ledger, result);
   }
