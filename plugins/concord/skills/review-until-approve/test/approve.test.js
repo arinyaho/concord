@@ -753,7 +753,7 @@ test('under Claude Code with a login but without the user setting, start runs on
   assert.equal(o.note.includes('\n'), false);
 });
 
-test('under Claude Code with a token but no opt-in, start still runs on codex and names the flag', () => {
+test('under Claude Code with a token but without the user setting, start still runs on codex and names the setting', () => {
   const w = world({ CLAUDECODE: '1', CLAUDE_CODE_OAUTH_TOKEN: 't' });
   const r = w.approve('start', 'o/r', '5');
   assert.equal(r.status, 0, r.stderr);
