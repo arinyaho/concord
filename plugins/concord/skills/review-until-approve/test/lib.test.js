@@ -122,6 +122,15 @@ test('wakeDecision: push plus reply starts a round once the head is stable', () 
   assert.equal(wake({ ...args, stable: false }), null);
 });
 
+test('wakeDecision: after a failed round at h2, h2 with no newer reply waits; h3 or a newer reply wakes (#391)', () => {
+  const attempt = { head: 'h2', at: '2026-01-01T00:40:00Z' };
+  const old = ['2026-01-01T00:30:00Z'];
+  const args = { ledger: ledger({ attempt }), live: live({ head: 'h2' }), replies: old };
+  assert.equal(wake(args), null);
+  assert.deepEqual(wake({ ...args, live: live({ head: 'h3' }) }), { event: 'round', head: 'h3' });
+  assert.deepEqual(wake({ ...args, replies: [...old, '2026-01-01T00:50:00Z'] }), { event: 'round', head: 'h2' });
+});
+
 test('wakeDecision: merge and close wake the loop regardless of replies', () => {
   assert.deepEqual(wake({ live: live({ state: 'MERGED' }) }), { event: 'merged' });
   assert.deepEqual(wake({ live: live({ state: 'CLOSED' }) }), { event: 'closed' });

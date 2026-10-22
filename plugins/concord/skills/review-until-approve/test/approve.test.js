@@ -6,6 +6,8 @@ const path = require('node:path');
 const { spawn, spawnSync, execFileSync } = require('node:child_process');
 const { artifactDestinationFromPrompt } = require('../../../core/review-artifact');
 const { tempDir } = require('../../../hooks/test/temp-dir');
+const { reviewerPrompt } = require('../../../core/round-plan');
+const { normalizeArtifact } = require('../../../core/artifact-contract');
 
 const APPROVE = path.join(__dirname, '..', 'scripts', 'approve.js');
 const sh = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
@@ -87,6 +89,7 @@ else if (a[0] === 'api') j([[{ id: 7 }]]);
 `, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, 'runner.js'), `const fs = require('node:fs');
 fs.appendFileSync(${JSON.stringify(path.join(dir, 'runner-calls.jsonl'))}, JSON.stringify({ ...JSON.parse(process.argv[2]), diff: require('node:child_process').spawnSync('git', ['diff', JSON.parse(process.argv[2]).base, 'HEAD'], { encoding: 'utf8' }).stdout, subGit: fs.existsSync('lib/.git'), envKeys: Object.keys(process.env), home: process.env.HOME, homeEntries: fs.readdirSync(process.env.HOME), codexHome: process.env.CODEX_HOME, claudeConfig: process.env.CLAUDE_CONFIG_DIR, claudeConfigEntries: fs.existsSync(process.env.CLAUDE_CONFIG_DIR) ? fs.readdirSync(process.env.CLAUDE_CONFIG_DIR) : null, claudeCredentials: fs.existsSync(process.env.CLAUDE_CONFIG_DIR + '/.credentials.json') ? fs.readFileSync(process.env.CLAUDE_CONFIG_DIR + '/.credentials.json', 'utf8') : null, claudeToken: process.env.CLAUDE_CODE_OAUTH_TOKEN }) + '\\n');
+if (fs.existsSync(${JSON.stringify(path.join(dir, 'fail-runner'))})) { console.error('harness-failure'); process.exit(1); }
 const findings = JSON.parse(fs.readFileSync(${JSON.stringify(path.join(dir, 'findings.json'))}, 'utf8'));
 const edit = ${JSON.stringify(path.join(dir, 'edit.json'))};
 if (fs.existsSync(${JSON.stringify(path.join(dir, 'replace'))})) {
@@ -1363,4 +1366,47 @@ test('subagent transport: when the round is killed, the runner it started ends t
   for (let i = 0; i < 60 && (fs.existsSync(attemptDir) || running()); i++) await new Promise((r) => setTimeout(r, 250));
   assert.equal(fs.existsSync(attemptDir), false);
   assert.equal(running(), false);
+});
+
+const gateFinding = { id: 'gate:design-conformance:pg-readme-disabled-release-path', category: 'design', file: 'a.js', line: 4, span: 'four', summary: 'release path disabled', requirement: '' };
+
+test('a follow-up round gives each reviewer role only the prior findings of its own artifact namespace (#386)', () => {
+  const w = world();
+  w.write('findings.json', [finding, gateFinding]);
+  w.approve('start', 'o/r', '5');
+  w.approve('round', 'o/r', '5');
+  push(w, { 'b.js': 'unrelated\n' }, 'c2');
+  w.approve('start', 'o/r', '5');
+  w.approve('round', 'o/r', '5');
+  const options = w.calls()[1];
+  const context = { stateDir: '/s', round: 2, targetType: 'git', slug: 'concord-pr-5', gateMode: 'design-conformance', reviewerGuidance: options.reviewerGuidance ?? null, priorFindings: options.priorFindings ?? [] };
+  const correctness = reviewerPrompt('correctness', context);
+  const gate = reviewerPrompt('gate', context);
+  // A reviewer that follows the prompt raises again every prior id it is told about.
+  const raised = (prompt, ids) => ids.filter((id) => prompt.includes(id)).map((id) => ({ ...finding, id }));
+  const ids = [finding.id, gateFinding.id];
+  assert.doesNotThrow(() => normalizeArtifact('correctness', JSON.stringify({ status: 'ok', examined: ['a.js'], findings: raised(correctness, ids) })));
+  assert.ok(correctness.includes(finding.id));
+  assert.ok(!correctness.includes(gateFinding.id));
+  assert.ok(gate.includes(gateFinding.id));
+  assert.ok(!gate.includes(finding.id));
+});
+
+test('a round whose runner fails records the head it attempted and leaves the rounds alone; a published round clears it (#391)', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  w.approve('start', 'o/r', '5');
+  w.approve('round', 'o/r', '5');
+  const head2 = push(w, { 'b.js': 'unrelated\n' }, 'c2');
+  w.approve('start', 'o/r', '5');
+  fs.writeFileSync(path.join(w.dir, 'fail-runner'), '');
+  assert.notEqual(w.approve('round', 'o/r', '5').status, 0);
+  const failed = w.ledger();
+  assert.equal(failed.rounds.length, 1);
+  assert.equal(failed.attempt.head, head2);
+  assert.ok(Date.parse(failed.attempt.at) > 0);
+  fs.rmSync(path.join(w.dir, 'fail-runner'));
+  w.approve('round', 'o/r', '5');
+  assert.equal(w.ledger().attempt, undefined);
+  assert.equal(w.ledger().rounds.length, 2);
 });

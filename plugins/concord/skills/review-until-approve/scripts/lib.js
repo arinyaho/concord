@@ -137,6 +137,9 @@ function wakeDecision({ ledger, live, replies, now, stable }) {
   const age = now - Date.parse(lastRound.submittedAt);
   if (age >= TIMEOUT_MS) return { event: 'timeout' };
   const pushed = live.head !== lastRound.head;
+  // A round that failed at this head used every reply up to its time: only a newer head or reply asks for another.
+  const attempt = ledger.attempt;
+  if (attempt && live.head === attempt.head && !replies.some((at) => Date.parse(at) > Date.parse(attempt.at))) return null;
   const replied = replies.length > 0;
   if (pushed && replied) return stable ? { event: 'round', head: live.head } : null;
   if (!pushed && !replied) return null;

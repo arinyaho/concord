@@ -104,6 +104,15 @@ function reviewerGuidancePrefix(guidance) {
     : '';
 }
 
+// Earlier findings of a pull request, told to a role as ids it may raise again. A role is told only the ids its artifact accepts: it cannot copy another role's id, and none is renamed for it.
+const PRIOR_FINDINGS_PER_ROLE = 20;
+function priorFindingsClause(role, findings) {
+  const prefixes = allowedFindingPrefixes(role);
+  const own = (findings || []).filter((f) => prefixes.some((prefix) => f.id.startsWith(prefix))).slice(0, PRIOR_FINDINGS_PER_ROLE);
+  if (!own.length) return '';
+  return `Earlier findings of this pull request in your artifact (ids starting ${prefixes.map((prefix) => `\`${prefix}\``).join(' or ')}). If one is still present at this head, raise it again with the same id and the current path: ${own.map((f) => `${f.id} (${f.file}): ${f.summary.slice(0, 200)}`).join('; ')}\n\n`;
+}
+
 function reviewLanguageClause(language) {
   return language ? ` Write \`summary\` and \`requirement\` in the language with BCP 47 tag \`${language}\`. Copy \`span\`, \`file\`, \`id\`, \`category\` and every code identifier exactly as they appear in the source; never translate them.` : '';
 }
@@ -156,7 +165,7 @@ function cliClause(cliPath) {
 
 function reviewerPrompt(role, context) {
   let prompt = baseReviewerPrompt(role, context);
-  if (role === 'correctness' || role === 'gate') prompt = `${reviewerGuidancePrefix(context.reviewerGuidance)}${prompt}`;
+  if (role === 'correctness' || role === 'gate') prompt = `${reviewerGuidancePrefix(context.reviewerGuidance)}${priorFindingsClause(role, context.priorFindings)}${prompt}`;
   return context.cliPath ? prompt + cliClause(context.cliPath) : prompt;
 }
 
@@ -168,4 +177,4 @@ function reportedNoEdit(stateDir, round, groups) {
   });
 }
 
-module.exports = { reviewLanguageClause, VERIFIER_ENV_CLAUSE, ENV_CLAUSE_BY_ROLE, cliClause, DESIGN_EVIDENCE_BINDING_CLAUSE, fixDeclaration, reportedNoEdit, examinedClause, ROLE_SEQUENCE, BLOCKED_CLAUSE, GATE_SWEEP_CLAUSE, GATE_FOLLOWUP_CLAUSE, GATE_VERIFY_ADDED_CLAUSE, GATE_VERIFY_BLOCKING_CLAUSE, GATE_VERIFY_OWNERSHIP_CLAUSE, VERIFY_OWNERSHIP_CLAUSE, reviewerGuidancePrefix, reviewerPrompt };
+module.exports = { reviewLanguageClause, VERIFIER_ENV_CLAUSE, ENV_CLAUSE_BY_ROLE, cliClause, DESIGN_EVIDENCE_BINDING_CLAUSE, fixDeclaration, reportedNoEdit, examinedClause, ROLE_SEQUENCE, BLOCKED_CLAUSE, GATE_SWEEP_CLAUSE, GATE_FOLLOWUP_CLAUSE, GATE_VERIFY_ADDED_CLAUSE, GATE_VERIFY_BLOCKING_CLAUSE, GATE_VERIFY_OWNERSHIP_CLAUSE, VERIFY_OWNERSHIP_CLAUSE, reviewerGuidancePrefix, priorFindingsClause, reviewerPrompt };

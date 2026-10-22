@@ -21,7 +21,7 @@ const { isValidFindingId } = require('./gate-contract');
 const { readCommittedSource, prepareAnchors, applyAnchors } = require('./review-anchors');
 const { same } = require('./review-eval');
 const { PANEL_LENSES } = require('./report');
-const { reviewLanguageClause, BLOCKED_CLAUSE, cliClause, reviewerGuidancePrefix, reviewerPrompt, reportedNoEdit } = require('./round-plan');
+const { reviewLanguageClause, BLOCKED_CLAUSE, cliClause, reviewerGuidancePrefix, priorFindingsClause, reviewerPrompt, reportedNoEdit } = require('./round-plan');
 const { isWindows, crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
 const { providerFailure, normalizeProviderFailure, reviewContinuation } = require('./provider-failure');
 
@@ -556,6 +556,7 @@ async function runRounds(options) {
   // Copilot runs with every tool allowed and has no way to ignore the
   // checkout's own instruction files, so it cannot review an untrusted checkout.
   if (reviewOnly && resume) throw new Error('review-until-green: reviewOnly cannot resume; it keeps no ledger to recover the base from, so name the ref and base again');
+  if (resume && options.priorFindings?.length) throw new Error('review-until-green: prior findings are fixed when a run starts; resume without them');
   if (resume && options.reviewerGuidance) throw new Error('review-until-green: reviewer guidance is fixed when a run starts; resume without `::` to reuse the stored guidance');
   if (reviewOnly && options.reviewer === 'copilot') throw new Error('review-until-green: reviewOnly supports the claude and codex reviewers; copilot cannot be kept from an untrusted checkout\'s configuration');
   const repoRoot = canonicalPath(configuredRepoRoot);
@@ -824,7 +825,7 @@ async function runRounds(options) {
     const lenses = PANEL_LENSES;
     const launchLens = (input) => launch({
       ...input,
-      prompt: `${reviewerGuidancePrefix(context.reviewerGuidance)}${input.prompt}`,
+      prompt: `${reviewerGuidancePrefix(context.reviewerGuidance)}${priorFindingsClause('gate', context.priorFindings)}${input.prompt}`,
     });
     for (;;) {
       const panel = await cli(['gate-panel-round-start', ref]);
@@ -989,7 +990,7 @@ async function runRounds(options) {
     if (started.decision !== 'work') return withTelemetry(started);
     currentRound = started.round;
     checks = [{ name: 'definition-of-done', status: started.dodPending ? 'pending' : started.dodDeferred ? 'deferred' : (started.dodPassed ? 'passed' : 'failed') }];
-    const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodDeferred: started.dodDeferred, dodPending: started.dodPending, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref), gateMode: started.gateMode, gateApplied: started.gateApplied, intentHash: started.intentHash, cliPath, reviewerGuidance: started.reviewerGuidance || null, reviewLanguage: options.reviewLanguage || null };
+    const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodDeferred: started.dodDeferred, dodPending: started.dodPending, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref), gateMode: started.gateMode, gateApplied: started.gateApplied, intentHash: started.intentHash, cliPath, reviewerGuidance: started.reviewerGuidance || null, priorFindings: options.priorFindings || [], reviewLanguage: options.reviewLanguage || null };
     const reviewRoles = reviewOnly ? [
       ...(started.intentApplied ? ['intent'] : []), 'correctness',
       ...(started.gateApplied ? ['gate'] : []), 'verify',
