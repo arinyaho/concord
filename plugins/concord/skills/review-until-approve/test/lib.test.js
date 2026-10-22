@@ -158,6 +158,12 @@ test('classifyPrior: an addressed finding is re-checked every round: it stays cl
   assert.deepEqual(addressedOf(lib.classifyPrior([closed('c')], [], same, files({ 'a.js': 'big' }), 'h3')), [['c', 'addressed', undefined, undefined]]);
 });
 
+test('classifyPrior: an addressed finding whose evidence file was renamed keeps its closure (#395)', () => {
+  const closed = { ...held('c', 'a.js', 'bad()'), status: 'addressed', addressedEvidence: { file: 'a.js', span: 'ok()', reason: 'r' } };
+  const resolve = () => ({ renames: new Map([['a.js', 'b.js']]), live: new Set(['b.js']) });
+  assert.deepEqual(addressedOf(lib.classifyPrior([closed], [], resolve, files({ 'b.js': Buffer.from('ok()\nbad()') }), 'h3')), [['c', 'addressed', undefined, undefined]]);
+});
+
 test('evaluateApproval: an addressed finding no longer blocks (#395)', () => {
   const live = { head: 'h1', state: 'OPEN', isDraft: false, author: 'someone' };
   assert.deepEqual(lib.evaluateApproval(ledger({ findings: [{ ...finding('a', 'a.js', 'x'), status: 'addressed' }] }), live, 'h1'), { approve: true });

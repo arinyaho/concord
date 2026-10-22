@@ -529,6 +529,7 @@ function attempt(repo, pr, ledger, file) {
       const f = inNext(r.key);
       if (r.status === 'fixed') Object.assign(f, { status: 'fixed', fixedRound: n });
       else if (r.status === 'addressed') {
+        if (r.evidenceFile && f.addressedEvidence && r.evidenceFile !== f.addressedEvidence.file) f.addressedEvidence = { ...f.addressedEvidence, file: r.evidenceFile };
         if (r.evidence) { Object.assign(f, { status: 'addressed', addressedRound: n, addressedHead: snap.head, addressedEvidence: r.evidence }); delete f.openReason; }
         if (r.file && (r.file !== f.file || r.spanVerified !== f.spanVerified)) Object.assign(f, { file: r.file, spanVerified: r.spanVerified, key: lib.findingKey({ ...f, file: r.file }) });
       } else {

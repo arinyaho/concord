@@ -79,8 +79,8 @@ function judgeEvidence(p, entries, read) {
   return { evidence: { file: ev.file, span: ev.span, reason: collapse(ev.reason) } };
 }
 // An addressed finding's stored evidence still stands: the quote occurs once; null when the file cannot be read, so nothing is decided.
-function evidenceStands(p, read) {
-  const ev = p.addressedEvidence, blob = ev && read(ev.file);
+function evidenceStands(p, read, file) {
+  const ev = p.addressedEvidence, blob = ev && read(file || ev.file);
   if (!ev) return false;
   if (!Buffer.isBuffer(blob)) return blob === 'big' || blob === 'other' ? null : false;
   const span = Buffer.from(ev.span, 'utf8'), at = blob.indexOf(span);
@@ -94,8 +94,10 @@ function classifyPrior(open, raised, resolve, read, head, addressed = []) {
     const keep = (reason, extra = {}) => closed && reason === 'path-unresolved' ? { key: p.key, id: p.id, status: 'addressed' } : { key: p.key, id: p.id, status: 'open', reason, ...extra };
     const present = (file) => {
       if (closed) {
-        const stands = evidenceStands(p, read);
-        return stands === false ? keep('evidence-gone', { file, spanVerified: head }) : { key: p.key, id: p.id, status: 'addressed', file, spanVerified: head };
+        // The evidence file follows a rename like the finding's own file.
+        const evidenceFile = ctx[i]?.renames.get(p.addressedEvidence?.file) || p.addressedEvidence?.file;
+        const stands = evidenceStands(p, read, evidenceFile);
+        return stands === false ? keep('evidence-gone', { file, spanVerified: head }) : { key: p.key, id: p.id, status: 'addressed', file, spanVerified: head, evidenceFile };
       }
       if (!entries.length) return keep('span-present', { file, spanVerified: head });
       // A verdict names an id only; when several open findings share it, it cannot say which one it answers, so none is closed.
