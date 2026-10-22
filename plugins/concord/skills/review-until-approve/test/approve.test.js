@@ -333,6 +333,24 @@ test('the former user setting, as an environment variable or in the user setting
   assert.equal(fs.readFileSync(APPROVE, 'utf8').includes(SETTING), false);
 });
 
+test('a file with a special character in its name is matched by its real name', () => {
+  const w = world();
+  const f = { ...finding, file: 'é.js' };
+  fs.writeFileSync(path.join(w.src, 'é.js'), 'one\nbad\n');
+  sh(w.src, 'add', '.'); sh(w.src, 'commit', '-q', '-m', 'c1b');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD') });
+  w.write('findings.json', [f]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  fs.writeFileSync(path.join(w.src, 'é.js'), 'one\ngood\n');
+  sh(w.src, 'commit', '-q', '-am', 'c2');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD') });
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  assert.equal(JSON.parse(w.approve('round', 'o/r', '5').stdout).fixed, 1);
+});
+
 test('two open findings sharing an id are closed by their own key: the unfixed one keeps blocking approval', () => {
   const w = world();
   const a = { ...finding, id: 'correctness:x', span: 'bad', line: 2 };
@@ -417,6 +435,16 @@ test('round re-reads the declaration: once it is revoked, no later round runs th
   const again = w.approve('round', 'o/r', '5');
   assert.equal(again.status, 0, again.stderr);
   assert.equal(w.calls().length, 1);
+});
+
+test('the review process gets an empty HOME, and the real Codex home for its auth', () => {
+  const w = world();
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  const call = w.calls()[0];
+  assert.notEqual(call.home, process.env.HOME);
+  assert.deepEqual(call.homeEntries, []);
+  assert.equal(call.codexHome, path.join(w.dir, 'codex-home'));
 });
 
 test('a claude reviewer does not get the Codex home', () => {
