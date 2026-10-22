@@ -190,7 +190,7 @@ function settleThreads(repo, pr, ledger, file) {
       else if (!mine) f.threadSkipped = 'not-ours';
       else if (fixing && t.isResolved) f.threadSkipped = 'resolved';
       else if (fixing) {
-        if (!f.threadReplied) { threadCall('addPullRequestReviewThreadReply', 'reply', f.threadId, guard(f.status === 'addressed' ? `Addressed at \`${short(f.addressedHead)}\`: ${f.addressedEvidence.reason} (\`${f.addressedEvidence.file}\`).` : `Fixed in \`${short(ledger.rounds[f.fixedRound - 1].head)}\`.`)); f.threadReplied = true; save(file, ledger); }
+        if (!f.threadReplied) { threadCall('addPullRequestReviewThreadReply', 'reply', f.threadId, guard(f.status === 'addressed' ? `Addressed at \`${short(f.addressedHead)}\`: ${f.addressedEvidence.reason} (\`${f.addressedEvidence.file}\`).` : `Fixed in \`${short(ledger.rounds.find((r) => r.n === f.fixedRound && r.mode !== 'base-merge').head)}\`.`)); f.threadReplied = true; save(file, ledger); }
         threadCall('resolveReviewThread', 'id', f.threadId);
         f.threadResolved = true;
       } else {
@@ -433,8 +433,8 @@ function submoduleDelta(work, from, subs, file) {
 
 // Whether the head only merges the base branch into the last reviewed head over an unchanged pull request diff (see lib.baseMergeOnly).
 const fingerprint = (work, mergeBase, head) => {
-  const diff = git(work, ['diff', '--binary', '--full-index', '--no-renames', '--no-ext-diff', '--no-textconv', '--no-color', '--submodule=short', mergeBase, head]);
-  return lib.sha(diff.split('\n').map((l) => l.replace(/^@@ -\S+ \+\S+ @@/, '@@')).join('\n'));
+  const diff = git(work, ['diff', '--binary', '--no-renames', '--no-ext-diff', '--no-textconv', '--no-color', '--submodule=short', mergeBase, head]);
+  return lib.sha(diff.split('\n').filter((l) => !l.startsWith('index ')).map((l) => l.replace(/^@@ -\S+ \+\S+ @@/, '@@')).join('\n'));
 };
 function baseMergeOnly(work, repo, pr, ledger, snap, prior, isAncestor) {
   try {
@@ -489,6 +489,7 @@ function attempt(repo, pr, ledger, file) {
       if (snapshot(repo, pr).head !== snap.head) return null;
       // Saved before the approval is posted, so the recorded head is what `approve` and the watch see.
       ledger.rounds.push({ n: prior.n, head: snap.head, base: prior.base, mergeBase: snap.mergeBase, intent: snap.intent, mode: 'base-merge', reviewedHead: prior.reviewedHead || prior.head, reviewId: null, submittedAt: prior.submittedAt, commentIds: [], event: 'SKIP' });
+      delete ledger.attempt;
       save(file, ledger);
       const v = approveHead(repo, pr, file, ledger);
       return { event: 'base-merge', head: snap.head, ...(v.event === 'approved' ? { approved: true } : { notApproved: v.reason }) };

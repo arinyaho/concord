@@ -1833,10 +1833,10 @@ test('a reopened thread whose reply failed is answered on the next round (#394)'
 });
 
 // The base branch gains a commit and the pull request merges it; `edit` runs inside the merge, before it is committed.
-function mergeBase(w, edit) {
+function mergeBase(w, edit, [file, text] = ['b.js', 'base\n']) {
   sh(w.src, 'checkout', '-q', 'main');
-  fs.writeFileSync(path.join(w.src, 'b.js'), 'base\n');
-  sh(w.src, 'add', 'b.js'); sh(w.src, 'commit', '-q', '-m', 'base moves');
+  fs.writeFileSync(path.join(w.src, file), text);
+  sh(w.src, 'add', file); sh(w.src, 'commit', '-q', '-m', 'base moves');
   const tip = sh(w.src, 'rev-parse', 'HEAD');
   sh(w.src, 'checkout', '-q', 'pr');
   sh(w.src, 'merge', '-q', '--no-ff', '--no-commit', tip);
@@ -1844,7 +1844,8 @@ function mergeBase(w, edit) {
   sh(w.src, 'commit', '-q', '-m', 'merge main');
   const head = sh(w.src, 'rev-parse', 'HEAD');
   sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
-  w.write('state.json', { ...w.state, head, baseTip: tip, mergeBase: tip });
+  Object.assign(w.state, { head, baseTip: tip, mergeBase: tip });
+  w.write('state.json', w.state);
   return head;
 }
 
@@ -1906,4 +1907,40 @@ test('base-merge rounds do not count toward the round limit or the round number 
   l.rounds = Array.from({ length: 10 }, (_, i) => ({ ...l.rounds[0], n: 1, mode: i ? 'base-merge' : 'broad' }));
   fs.writeFileSync(path.join(w.dir, 'ledgers', 'o__r__5__bot.json'), JSON.stringify(l));
   assert.notEqual(JSON.parse(w.approve('round', 'o/r', '5').stdout).event, 'round-limit');
+});
+
+test('a thread is answered with the head of the round that fixed the finding when a base-merge entry precedes it (#422)', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  mergeBase(w);
+  assert.equal(JSON.parse(w.approve('round', 'o/r', '5').stdout).event, 'base-merge');
+  const c3 = push(w, { 'a.js': 'one\ngood\nthree\nfour\n' }, 'fix');
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  assert.equal(JSON.parse(w.approve('round', 'o/r', '5').stdout).fixed, 1);
+  assert.ok(w.bodies().some((b) => JSON.stringify(b).includes(`Fixed in \`${c3.slice(0, 7)}\``)), JSON.stringify(w.bodies()));
+});
+
+test('a base edit far from the pull request hunk still skips the round, and a recorded base-merge supersedes a failed attempt (#422)', () => {
+  const w = world();
+  const rows = Array.from({ length: 30 }, (_, i) => `row ${i + 1}`);
+  const at = (edits) => rows.map((r, i) => edits[i] ?? r).join('\n') + '\n';
+  sh(w.src, 'checkout', '-q', 'main');
+  fs.writeFileSync(path.join(w.src, 'long.js'), at({}));
+  sh(w.src, 'add', 'long.js'); sh(w.src, 'commit', '-q', '-m', 'long');
+  sh(w.src, 'checkout', '-q', 'pr');
+  sh(w.src, 'merge', '-q', '--no-ff', '-m', 'merge long', 'main');
+  Object.assign(w.state, { baseTip: sh(w.src, 'rev-parse', 'main'), mergeBase: sh(w.src, 'rev-parse', 'main') });
+  push(w, { 'long.js': at({ 4: 'row 5 by the pull request' }) }, 'pr edit');
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  assert.equal(JSON.parse(w.approve('round', 'o/r', '5').stdout).review, 'APPROVE');
+  const l = w.ledger();
+  l.attempt = { head: w.state.head, at: '2000-01-01T00:00:00Z' };
+  fs.writeFileSync(path.join(w.dir, 'ledgers', 'o__r__5__bot.json'), JSON.stringify(l));
+  mergeBase(w, null, ['long.js', at({ 24: 'row 25 by the base' })]);
+  assert.equal(JSON.parse(w.approve('round', 'o/r', '5').stdout).event, 'base-merge');
+  assert.equal(w.calls().length, 1);
+  assert.equal(w.ledger().attempt, undefined);
 });
