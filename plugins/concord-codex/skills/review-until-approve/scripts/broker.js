@@ -26,7 +26,7 @@ function requester(dir, { timeoutMs = 3600000, parentPid } = {}) {
   return async (input) => {
     const id = ++counter;
     const promptFile = path.join(dir, `prompt-${id}.md`);
-    const text = `${input.prompt}${NO_SHELL}`;
+    const text = `${input.prompt}${NO_SHELL}\n\nThe pull request is checked out at ${input.repoRoot}: read the code there, not in your own working directory.`;
     write(promptFile, text);
     write(path.join(dir, 'request.json'), JSON.stringify({ id, role: input.role, promptFile, sha: sha(text), ...(input.requestedModel && { model: input.requestedModel }) }));
     const done = path.join(dir, `done-${id}`);

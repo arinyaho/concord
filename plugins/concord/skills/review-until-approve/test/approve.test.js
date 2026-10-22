@@ -1146,13 +1146,25 @@ test('subagent transport: a subagent that wrote no artifact fails the round: not
   assert.equal(w.ledger().rounds.length, 0);
 });
 
-test('subagent transport: --done for a request that is not open is refused, and next with no round running says finished', () => {
+test('subagent transport: next with no round running says finished and refuses --done; with a round waiting, --done for another id or with no id is refused and the request stays open', async () => {
   const w = claudeCodeWorld();
   spawnSync(process.execPath, [APPROVE, 'start', 'o/r', '5'], { env: w.env });
-  const idle = spawnSync(process.execPath, [APPROVE, 'next', 'o/r', '5'], { env: w.env, encoding: 'utf8' });
-  assert.equal(JSON.parse(idle.stdout).event, 'finished');
-  const stale = spawnSync(process.execPath, [APPROVE, 'next', 'o/r', '5', '--done', '3'], { env: w.env, encoding: 'utf8' });
-  assert.notEqual(stale.status, 0);
+  assert.equal(JSON.parse(spawnSync(process.execPath, [APPROVE, 'next', 'o/r', '5'], { env: w.env, encoding: 'utf8' }).stdout).event, 'finished');
+  assert.notEqual(spawnSync(process.execPath, [APPROVE, 'next', 'o/r', '5', '--done', '1'], { env: w.env, encoding: 'utf8' }).status, 0);
+  const round = spawn(process.execPath, [APPROVE, 'round', 'o/r', '5'], { env: w.env });
+  let request;
+  for (let i = 0; i < 100 && !request; i++) {
+    const out = spawnSync(process.execPath, [APPROVE, 'next', 'o/r', '5'], { env: w.env, encoding: 'utf8' }).stdout.trim().split('\n').pop();
+    if (out && JSON.parse(out).event === 'subagent-request') request = JSON.parse(out);
+  }
+  assert.ok(request, 'no request');
+  const wrong = spawnSync(process.execPath, [APPROVE, 'next', 'o/r', '5', '--done', String(request.id + 7)], { env: w.env, encoding: 'utf8' });
+  assert.notEqual(wrong.status, 0);
+  assert.match(wrong.stderr, /not open/);
+  const bare = spawnSync(process.execPath, [APPROVE, 'next', 'o/r', '5', '--done'], { env: w.env, encoding: 'utf8' });
+  assert.notEqual(bare.status, 0);
+  assert.equal(JSON.parse(spawnSync(process.execPath, [APPROVE, 'next', 'o/r', '5'], { env: w.env, encoding: 'utf8' }).stdout).id, request.id);
+  round.kill('SIGKILL');
 });
 
 test('subagent transport: start refuses a --model that the Agent tool cannot take', () => {
@@ -1189,6 +1201,8 @@ test('subagent transport: every role prompt tells a subagent without a shell to 
     assert.match(prompt, /cannot run any command/, role);
     assert.match(prompt, /judge by reading/, role);
     assert.match(prompt, /write "blocked" only for a file you must read and cannot/, role);
+    // The subagent runs in the session's own directory, so the prompt must say where the pull request is checked out.
+    assert.ok(prompt.includes(`${path.sep}work`), `${role}: no checkout path`);
   }
 });
 

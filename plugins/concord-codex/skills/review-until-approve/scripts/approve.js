@@ -347,16 +347,16 @@ function attempt(repo, pr, ledger, file) {
   if (snap.state !== 'OPEN') return { event: snap.state.toLowerCase() };
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-until-approve-'));
   const work = path.join(dir, 'work');
-  // Written before anything slow, so `next` never finds no round while this one is still setting up; it is removed when the process ends, and a pid that is gone is not a running round.
-  const brokerDir = ledger.provider === 'claude' && subagents() ? path.join(dir, 'broker') : null;
-  if (brokerDir) {
-    fs.mkdirSync(brokerDir);
-    fs.writeFileSync(`${runFile(file)}.tmp`, JSON.stringify({ pid: process.pid, dir: brokerDir }));
-    fs.renameSync(`${runFile(file)}.tmp`, runFile(file));
-    process.once('exit', () => fs.rmSync(runFile(file), { force: true }));
-  }
   const remote = `${process.env.REVIEW_APPROVE_REMOTE || 'https://github.com'}/${repo}.git`;
   try {
+    // Written before anything slow, so `next` never finds no round while this one is still setting up; it is removed when the process ends, and a pid that is gone is not a running round.
+    const brokerDir = ledger.provider === 'claude' && subagents() ? path.join(dir, 'broker') : null;
+    if (brokerDir) {
+      fs.mkdirSync(brokerDir);
+      fs.writeFileSync(`${runFile(file)}.tmp`, JSON.stringify({ pid: process.pid, dir: brokerDir }));
+      fs.renameSync(`${runFile(file)}.tmp`, runFile(file));
+      process.once('exit', () => fs.rmSync(runFile(file), { force: true }));
+    }
     git(dir, ['clone', '--quiet', remote, work], GIT_AUTH);
     git(work, ['fetch', '--quiet', '--no-recurse-submodules', 'origin', `pull/${pr}/head`], GIT_AUTH);
     git(work, ['checkout', '-q', '-B', `concord-pr-${pr}`, snap.head], GIT_AUTH);
@@ -493,6 +493,7 @@ function next(repo, pr, args) {
   const file = ledgerFile(repo, pr, gh(['api', 'user', '--jq', '.login']).trim());
   const running = () => { const run = load(runFile(file)); return run && pidAlive(run.pid) ? run : null; };
   const done = opt(args, '--done');
+  if (args.includes('--done') && !done) die('--done needs the id of the request');
   if (done !== undefined) {
     const run = running();
     if (!run) die('no round is running');
