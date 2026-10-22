@@ -107,6 +107,13 @@ test('classifyPrior: a span-present finding the reviewer lists as addressed with
   assert.equal(v[0].spanVerified, 'h2');
 });
 
+test('classifyPrior: a verdict for an id shared by several open findings closes none of them and is reported as ambiguous-id', () => {
+  const open = [held('dup', 'a.js', 'bad()'), held('dup', 'b.js', 'worse()')];
+  const read = files({ 'a.js': Buffer.from('if (ok) {\n bad()\n}\n'), 'b.js': Buffer.from('worse()') });
+  const v = lib.classifyPrior(open, [], same, read, 'h2', [answer('dup', 'a.js', 'if (ok) {')]);
+  assert.deepEqual(addressedOf(v), [['dup', 'open', 'span-present', 'ambiguous-id'], ['dup', 'open', 'span-present', 'ambiguous-id']]);
+});
+
 test('classifyPrior: an addressed verdict is refused unless it is raised by no one, offered, unique and backed by a quote that exists once and is not the span itself (#395)', () => {
   const read = files({ 'a.js': Buffer.from('x\nx\nbad()\nok()\n') });
   const run = (verdict, raised = []) => addressedOf(lib.classifyPrior([held('f', 'a.js', 'bad()')], raised, same, read, 'h2', verdict));

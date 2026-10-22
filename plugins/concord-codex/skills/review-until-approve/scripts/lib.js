@@ -97,6 +97,8 @@ function classifyPrior(open, raised, resolve, read, head, addressed = []) {
         return stands === false ? keep('evidence-gone', { file, spanVerified: head }) : { key: p.key, id: p.id, status: 'addressed', file, spanVerified: head };
       }
       if (!entries.length) return keep('span-present', { file, spanVerified: head });
+      // A verdict names an id only; when several open findings share it, it cannot say which one it answers, so none is closed.
+      if (open.some((o) => o !== p && o.id === p.id && o.status !== 'addressed')) return keep('span-present', { file, spanVerified: head, why: 'ambiguous-id' });
       const judged = judgeEvidence(p, entries, read);
       return judged.evidence ? { key: p.key, id: p.id, status: 'addressed', evidence: judged.evidence, file, spanVerified: head } : keep('span-present', { file, spanVerified: head, why: judged.why });
     };
