@@ -275,6 +275,20 @@ test('a verdict the reviewer does not give leaves the span-present finding open 
   assert.deepEqual([r2.review, r2.addressedRejected], ['COMMENT', [{ id: 'correctness:bad', why: 'evidence-absent' }]]);
 });
 
+test('a finding whose span is gone at the head is not offered and takes no slot of the cap', () => {
+  const w = world();
+  const lines = Array.from({ length: 21 }, (_, i) => `bad-${String(i).padStart(2, '0')}-x`);
+  push(w, { 'a.js': lines.join('\n') + '\n' }, 'c1');
+  w.write('findings.json', lines.map((span, i) => ({ ...finding, id: `correctness:f${i}`, line: i + 1, span, summary: `bad ${i}` })));
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  push(w, { 'a.js': lines.slice(1).join('\n') + '\n' }, 'c2');
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  const sent = w.calls().at(-1).addressable.map((f) => f.id);
+  assert.equal(sent.includes('correctness:f0'), false);
+  assert.equal(sent.length, 20);
+});
+
 test('a verdict for a finding past the offered cap leaves it open and is reported not-offered', () => {
   const w = world();
   const lines = Array.from({ length: 21 }, (_, i) => `bad-${String(i).padStart(2, '0')}-x`);

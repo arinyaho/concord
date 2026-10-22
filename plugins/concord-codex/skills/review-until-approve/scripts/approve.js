@@ -493,7 +493,9 @@ function attempt(repo, pr, ledger, file) {
     const open = ledger.findings.filter((f) => f.status === 'open');
     const shown = open.map((p) => { const d = typeof p.spanVerified === 'string' && p.span ? resolve(p) : null; return { ...p, file: d?.renames.get(p.file) || p.file }; });
 
-    const addressableNow = addressable(repo, pr, ledger, shown);
+    // A finding whose span is gone at this head is about to be fixed: it is not offered, and does not take a slot of the cap.
+    const gone = new Set(lib.classifyPrior(open, [], resolve, (file) => gitBlob(work, snap.head, file), snap.head).filter((r) => r.status === 'fixed').map((r) => r.key));
+    const addressableNow = addressable(repo, pr, ledger, shown.filter((f) => !gone.has(f.key)));
     const intentFile = path.join(dir, 'intent.md');
     fs.writeFileSync(intentFile, `# ${snap.title}\n\n${snap.body}`);
     const realClaudeConfig = claudeConfigDir();
