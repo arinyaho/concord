@@ -12,6 +12,9 @@ const SHAPES = {
   'gate-verify': { arrays: ['rejected', 'findings'], prefixes: ['gate:'] },
 };
 
+// Earlier findings a verify pass may find answered: the verify prefixes, and the findings of the gate and the intent review.
+const ADDRESSABLE_PREFIXES = [...SHAPES.verify.prefixes, ...SHAPES.gate.prefixes, ...SHAPES.intent.prefixes];
+
 class ArtifactError extends Error {
   constructor(kind, message) { super(message); this.kind = kind; }
 }
@@ -107,7 +110,7 @@ function normalizeAddressed(name, list) {
   return list.map((entry, index) => {
     const ev = entry && typeof entry === 'object' ? entry.evidence : undefined;
     const bad = (why) => new ArtifactError('retry', `${name} addressed[${index}] ${why}`);
-    if (!entry || typeof entry.id !== 'string' || !isValidFindingId(entry.id) || !SHAPES[name].prefixes.some((prefix) => entry.id.startsWith(prefix))) throw bad('has an invalid id');
+    if (!entry || typeof entry.id !== 'string' || !isValidFindingId(entry.id) || !ADDRESSABLE_PREFIXES.some((prefix) => entry.id.startsWith(prefix))) throw bad('has an invalid id');
     if (!ev || typeof ev !== 'object' || typeof ev.file !== 'string' || !ev.file || typeof ev.span !== 'string' || !ev.span || typeof ev.reason !== 'string' || !ev.reason.trim()) throw bad(`("${entry.id}") needs evidence {file, span, reason}: the file, an exact quote of code at this head, and why that code answers the finding`);
     if (ev.reason.trim().length > 500) throw bad(`("${entry.id}") has a reason over 500 characters`);
     return { id: entry.id, evidence: { file: ev.file, span: ev.span, reason: ev.reason.trim() } };
@@ -292,4 +295,4 @@ function normalizeArtifact(name, raw, { addressed = false } = {}) {
   return canonical;
 }
 
-module.exports = { ArtifactError, dropsInvalidFindings, normalizeArtifact, retryPrompt, repairCandidate, preservesArtifact, allowedFindingPrefixes, ARTIFACT_ROLES: Object.keys(SHAPES) };
+module.exports = { ArtifactError, dropsInvalidFindings, normalizeArtifact, retryPrompt, repairCandidate, preservesArtifact, allowedFindingPrefixes, ADDRESSABLE_PREFIXES, ARTIFACT_ROLES: Object.keys(SHAPES) };

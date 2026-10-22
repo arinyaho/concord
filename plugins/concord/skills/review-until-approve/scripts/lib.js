@@ -9,6 +9,9 @@ const TIMEOUT_MS = 7 * DAY;
 
 const sha = (text) => crypto.createHash('sha256').update(text).digest('hex');
 const collapse = (text) => String(text || '').replace(/\s+/g, ' ').trim();
+// The `file` of a finding about the pull request description: not a git path, since a path never starts with a slash.
+const DESC = '/pr-description';
+const intentOf = (title, body) => sha(`${title}\n\n${body}`);
 const last = (ledger) => ledger.rounds[ledger.rounds.length - 1];
 
 // The diff a new round reviews. Only a plain push on the same merge base has an
@@ -74,9 +77,14 @@ function parseNameStatus(raw) {
 // a refused verdict leaves the finding open with `why`. An addressed finding (`status: 'addressed'`) is judged again every round by the
 // same rules: its span gone is `fixed`, its evidence gone or no longer unique reopens it, the reviewer raising it reopens it.
 const MAX_REASON = 500, MAX_EVIDENCE_BYTES = 8192;
+// The prompt shows the description with its slashes and backslashes replaced; a quote from it is matched against the raw text.
+const unfang = (text) => typeof text === 'string' ? text.replace(/\u2215/g, '/').replace(/\u29f5/g, '\\') : text;
 function judgeEvidence(p, entries, read) {
   if (entries.length > 1) return { why: 'duplicate' };
-  const ev = entries[0].evidence;
+  const given = entries[0].evidence;
+  const ev = given?.file === DESC ? { ...given, span: unfang(given.span) } : given;
+  // A description finding is answered by the description alone, and the description answers nothing else.
+  if ((ev?.file === DESC) !== (p.file === DESC)) return { why: 'evidence-absent' };
   if (typeof ev?.reason !== 'string' || !collapse(ev.reason) || collapse(ev.reason).length > MAX_REASON) return { why: 'no-reason' };
   if (typeof ev.file !== 'string' || typeof ev.span !== 'string' || !ev.span || Buffer.byteLength(ev.span) > MAX_EVIDENCE_BYTES) return { why: 'evidence-absent' };
   const evSpan = collapse(ev.span), span = collapse(p.span);
@@ -193,6 +201,14 @@ function repliesSince(ledger, pullComments, issueComments, author) {
   ].filter((c) => c.user?.login === author && Date.parse(c.created_at) > since).map((c) => c.created_at).sort();
 }
 
+// An edited description asks for a round while a finding about it is open, since only a new round can settle that finding. A round that failed on
+// this head with this description used it already.
+function descriptionEdited(ledger, live) {
+  const lastRound = last(ledger), attempt = ledger.attempt;
+  return Boolean(lastRound && live.intent && live.intent !== lastRound.intent && ledger.findings.some((f) => f.status === 'open' && f.file === DESC)
+    && !(attempt && attempt.head === live.head && attempt.intent === live.intent));
+}
+
 // The one event the watch prints, or null to keep waiting. `stable` means the head
 // was the same on two consecutive polls, so a burst of pushes wakes the session once.
 function wakeDecision({ ledger, live, replies, now, stable }) {
@@ -204,6 +220,7 @@ function wakeDecision({ ledger, live, replies, now, stable }) {
   const age = now - Date.parse(lastRound.submittedAt);
   if (age >= TIMEOUT_MS) return { event: 'timeout' };
   const pushed = live.head !== lastRound.head;
+  if (descriptionEdited(ledger, live)) return stable ? { event: 'round', head: live.head } : null;
   // A round that failed at this head used every reply up to its time: only a newer head or reply asks for another.
   const attempt = ledger.attempt;
   if (attempt && live.head === attempt.head && !replies.some((at) => Date.parse(at) > Date.parse(attempt.at))) return null;
@@ -226,4 +243,4 @@ function wakeDecision({ ledger, live, replies, now, stable }) {
 // Rounds that reviewed code; a base-merge entry only moves the reviewed head.
 const reviewedCount = (ledger) => ledger.rounds.filter((r) => r.mode !== 'base-merge').length;
 
-module.exports = { submoduleRepo, chooseRange, baseMergeOnly, reviewedCount, findingKey, matches, isPublished, parseNameStatus, classifyPrior, isBlocker, classOf, strictest, evaluateApproval, repliesSince, wakeDecision, sha, NUDGE_AFTER_MS, TIMEOUT_MS };
+module.exports = { submoduleRepo, chooseRange, baseMergeOnly, reviewedCount, findingKey, matches, isPublished, parseNameStatus, classifyPrior, isBlocker, classOf, strictest, evaluateApproval, repliesSince, wakeDecision, descriptionEdited, intentOf, DESC, sha, NUDGE_AFTER_MS, TIMEOUT_MS };

@@ -318,3 +318,24 @@ test('baseMergeOnly: only merges of the base branch over an unchanged pull reque
   };
   for (const [why, extra] of Object.entries(no)) assert.equal(lib.baseMergeOnly(facts(extra)), false, why);
 });
+
+const descOpen = { ...finding('gate:d', '/pr-description', 'x'), status: 'open' };
+test('wakeDecision: an edited description wakes a round only while a description finding is open, once the head and description are stable (#423)', () => {
+  const edited = { live: live({ intent: 'i2' }), ledger: waiting({ findings: [descOpen], rounds: [{ n: 1, head: 'h1', intent: 'i1', submittedAt: '2026-01-01T00:00:00Z' }] }) };
+  assert.deepEqual(wake({ ...edited }), { event: 'round', head: 'h1' });
+  assert.equal(wake({ ...edited, stable: false }), null);
+  assert.equal(wake({ ...edited, live: live({ intent: 'i1' }) }), null);
+  // With no description finding open the edit wakes no round: the unchanged head is ready for approval instead.
+  assert.deepEqual(wake({ ...edited, ledger: waiting({ findings: [{ ...descOpen, status: 'addressed' }], rounds: edited.ledger.rounds }) }), { event: 'ready', head: 'h1' });
+  assert.equal(wake({ ...edited, ledger: waiting({ findings: [{ ...finding('c', 'a.js', 's'), status: 'open' }], rounds: edited.ledger.rounds }) }), null);
+});
+
+test('wakeDecision: a failed round at an unchanged head and description waits; a newer description asks again (#423)', () => {
+  const l = waiting({ findings: [descOpen], rounds: [{ n: 1, head: 'h1', intent: 'i1', submittedAt: '2026-01-01T00:00:00Z' }], attempt: { head: 'h1', intent: 'i2', at: '2026-01-01T00:30:00Z' } });
+  assert.equal(wake({ ledger: l, live: live({ intent: 'i2' }) }), null);
+  assert.deepEqual(wake({ ledger: l, live: live({ intent: 'i3' }) }), { event: 'round', head: 'h1' });
+});
+
+test('intentOf is the hash of the title and body that snapshot records', () => {
+  assert.equal(lib.intentOf('T', 'B'), lib.sha('T\n\nB'));
+});

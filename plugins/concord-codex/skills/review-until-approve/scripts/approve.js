@@ -19,7 +19,7 @@ const publish = require('./publish');
 const { core } = require('./locate');
 const { writeFileAtomic } = require(path.join(core, 'atomic-write'));
 const { reclaimStaleLock } = require(path.join(core, 'run-lock'));
-const { allowedFindingPrefixes } = require(path.join(core, 'artifact-contract'));
+const { ADDRESSABLE_PREFIXES } = require(path.join(core, 'artifact-contract'));
 const broker = require('./broker');
 
 // The review clone's .git is writable for an unconfined reviewer, which could plant refs/replace/* to make a head read differently; evidence is read as stored.
@@ -108,7 +108,7 @@ function reviewerEnv(provider, claudeConfig, home, realClaudeConfig) {
 function snapshot(repo, pr) {
   const v = ghJson(['pr', 'view', pr, '--repo', repo, '--json', 'headRefOid,baseRefOid,title,body,state,isDraft,author']);
   const mergeBase = gh(['api', `repos/${repo}/compare/${v.baseRefOid}...${v.headRefOid}`, '--jq', '.merge_base_commit.sha']).trim();
-  return { head: v.headRefOid, baseTip: v.baseRefOid, mergeBase, intent: lib.sha(`${v.title}\n\n${v.body}`), title: v.title, body: v.body, state: v.state, isDraft: v.isDraft, author: v.author.login };
+  return { head: v.headRefOid, baseTip: v.baseRefOid, mergeBase, intent: lib.intentOf(v.title, v.body), title: v.title, body: v.body, state: v.state, isDraft: v.isDraft, author: v.author.login };
 }
 
 const claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
@@ -290,7 +290,7 @@ function start(repo, pr, args) {
   const viewer = gh(['repo', 'view', repo, '--json', 'viewerPermission', '--jq', '.viewerPermission']).trim();
   const warning = ['ADMIN', 'MAINTAIN', 'WRITE'].includes(viewer) ? undefined : `permission ${viewer}: an approval will not satisfy branch protection`;
   let action = 'watch';
-  if (ledger.rounds.length === 0 || snap.head !== lastRound(ledger).head) action = 'round';
+  if (ledger.rounds.length === 0 || snap.head !== lastRound(ledger).head || lib.descriptionEdited(ledger, snap)) action = 'round';
   else if (lib.evaluateApproval(ledger, snap, lastRound(ledger).head).approve) action = 'approve';
   outFor(ledger, { ledger: file, action, round: lib.reviewedCount(ledger) + 1, reviewer: provider, ...(ledger.model && { model: ledger.model }), ...(ledger.language && { language: ledger.language }), ...(ledger.effort && { effort: ledger.effort }), ...(warning && { warning }) });
 }
@@ -304,7 +304,7 @@ const cut = (text, max) => text.length > max ? `${text.slice(0, max)} [truncated
 function addressable(repo, pr, ledger, shown) {
   const rank = (f) => lib.isBlocker(f) ? 0 : 1;
   // Only ids the verify artifact can list: a verdict for any other prefix would fail normalizeAddressed and the whole artifact.
-  const listable = allowedFindingPrefixes('verify');
+  const listable = ADDRESSABLE_PREFIXES;
   return shown.filter((f) => typeof f.spanVerified === 'string' && f.span && listable.some((p) => f.id.startsWith(p))).sort((a, b) => rank(a) - rank(b)).slice(0, 20).map((f) => {
     const entry = { id: f.id, file: f.file, class: f.class || 'blocker', summary: f.summary, requirement: f.requirement || '', span: cut(f.span, 2048) };
     if (!f.threadId) return entry;
@@ -356,8 +356,8 @@ function inGitlink(cwd, rev, file) {
   return null;
 }
 // A finding is verified when its span occurs byte for byte in the file at the head it was recorded against.
-const verifiedAt = (cwd, head, f) => {
-  const blob = f.span ? gitBlob(cwd, head, f.file) : null;
+const verifiedAt = (read, f) => {
+  const blob = f.span ? read(f.file) : null;
   return Buffer.isBuffer(blob) && blob.includes(Buffer.from(f.span, 'utf8'));
 };
 
@@ -502,8 +502,12 @@ function attempt(repo, pr, ledger, file) {
     git(work, ['config', 'diff.submodule', 'diff']);
 
     // The delta from the head where each open finding's span was last verified to this head; a head that is gone is fetched, else the finding stays open.
+    const description = `# ${snap.title}\n\n${snap.body}`;
+    // The description is read from the snapshot, never from a path; every other file from the git object of the head.
+    const read = (file) => file === lib.DESC ? Buffer.from(description) : gitBlob(work, snap.head, file);
     const deltas = new Map();
     const resolve = (p) => {
+      if (p.file === lib.DESC) return { renames: new Map(), live: new Set() };
       if (!deltas.has(p.spanVerified)) {
         let delta = null;
         try {
@@ -522,14 +526,14 @@ function attempt(repo, pr, ledger, file) {
     const shown = open.map((p) => { const d = typeof p.spanVerified === 'string' && p.span ? resolve(p) : null; return { ...p, file: d?.renames.get(p.file) || p.file }; });
 
     // A finding whose span is gone at this head is about to be fixed: it is not offered, and does not take a slot of the cap.
-    const gone = new Set(lib.classifyPrior(open, [], resolve, (file) => gitBlob(work, snap.head, file), snap.head).filter((r) => r.status === 'fixed').map((r) => r.key));
+    const gone = new Set(lib.classifyPrior(open, [], resolve, read, snap.head).filter((r) => r.status === 'fixed').map((r) => r.key));
     const addressableNow = addressable(repo, pr, ledger, shown.filter((f) => !gone.has(f.key)));
     const intentFile = path.join(dir, 'intent.md');
     fs.writeFileSync(intentFile, `# ${snap.title}\n\n${snap.body}`);
     const realClaudeConfig = claudeConfigDir();
     const claudeConfig = fs.mkdtempSync(path.join(dir, 'claude-'));
     const reviewerHome = fs.mkdtempSync(path.join(dir, 'home-'));
-    const runnerOptions = { ref: `concord-pr-${pr}`, base: range.base, broad: range.broad, noBroad: !range.broad, reviewer: ledger.provider, reviewerModel: ledger.model || undefined, reasoningEffort: ledger.effort || undefined, reviewLanguage: ledger.language || undefined, reviewDenyRead: [realClaudeConfig], reviewRealHome: os.homedir(), priorFindings: priorFindings(shown), ...(addressableNow.length && { addressable: addressableNow }), intentFile: range.broad ? intentFile : undefined };
+    const runnerOptions = { ref: `concord-pr-${pr}`, base: range.base, broad: range.broad, noBroad: !range.broad, reviewer: ledger.provider, reviewerModel: ledger.model || undefined, reasoningEffort: ledger.effort || undefined, reviewLanguage: ledger.language || undefined, reviewDenyRead: [realClaudeConfig], reviewRealHome: os.homedir(), priorFindings: priorFindings(shown), ...(addressableNow.length && { addressable: addressableNow }), ...(addressableNow.some((f) => f.file === lib.DESC) && { description }), intentFile: range.broad ? intentFile : undefined };
     const env = reviewerEnv(ledger.provider, claudeConfig, reviewerHome, realClaudeConfig);
     const runner = process.env.REVIEW_APPROVE_RUNNER || path.join(__dirname, 'run-review.js');
     // The runner waits in `dir/broker` for the session to answer each request; `next` finds that directory through the run file.
@@ -539,6 +543,9 @@ function attempt(repo, pr, ledger, file) {
     }
     const reviewed = JSON.parse(run('node', [runner, JSON.stringify(runnerOptions)], { cwd: work, env }).trim().split('\n').pop());
     if (reviewed.decision !== 'review-only' || !Array.isArray(reviewed.findings)) throw new Error(`the review did not complete: ${JSON.stringify(reviewed).slice(0, 200)}`);
+    // The reviewer names the description by the copy of it in its state directory, which is no file of the head: from here on the finding is about the description.
+    const copy = new RegExp(`(^|/)(intent-concord-pr-${pr}|intent)\\.md$`);
+    reviewed.findings = reviewed.findings.map((f) => copy.test(f.file) && !Buffer.isBuffer(gitBlob(work, snap.head, f.file)) ? { ...f, file: lib.DESC, line: undefined } : f);
 
     const n = lib.reviewedCount(ledger) + 1;
     // An addressed finding is judged again every round with the open ones.
@@ -546,7 +553,7 @@ function attempt(repo, pr, ledger, file) {
     // Only a finding offered this round can be closed by a verdict; any other verdict is reported as not-offered below.
     const offered = new Set(addressableNow.map((f) => f.id));
     const verdicts = (Array.isArray(reviewed.addressed) ? reviewed.addressed : []).filter((a) => offered.has(a?.id));
-    const verdict = lib.classifyPrior(tracked, reviewed.findings, resolve, (file) => gitBlob(work, snap.head, file), snap.head, verdicts);
+    const verdict = lib.classifyPrior(tracked, reviewed.findings, resolve, read, snap.head, verdicts);
     const addressedRejected = [...verdict.filter((r) => r.why).map((r) => ({ id: r.id, why: r.why })), ...(Array.isArray(reviewed.addressed) ? reviewed.addressed : []).filter((a) => !offered.has(a?.id)).map((a) => ({ id: String(a?.id), why: 'not-offered' }))];
     const next = JSON.parse(JSON.stringify(ledger));
     const stillOpenFindings = [];
@@ -569,7 +576,7 @@ function attempt(repo, pr, ledger, file) {
     const fresh = reviewed.findings.filter((f, i, all) => !lib.isPublished(next, f) && all.findIndex((g) => lib.findingKey(g) === lib.findingKey(f)) === i);
     const verified = (f) => typeof f.spanVerified === 'string' && f.span;
     const reopened = new Set();
-    for (const f of reviewed.findings.filter((g) => verifiedAt(work, snap.head, g))) {
+    for (const f of reviewed.findings.filter((g) => verifiedAt(read, g))) {
       const unverified = next.findings.find((g) => g.status === 'open' && !verified(g) && lib.findingKey(g) === lib.findingKey(f));
       const fixed = unverified || next.findings.some((g) => g.status === 'open' && lib.findingKey(g) === lib.findingKey(f)) ? null : next.findings.find((g) => g.status === 'fixed' && lib.findingKey(g) === lib.findingKey(f));
       const known = unverified || fixed;
@@ -582,7 +589,7 @@ function attempt(repo, pr, ledger, file) {
       reopened.add(lib.findingKey(f));
     }
     for (const f of fresh.filter((g) => !reopened.has(lib.findingKey(g)))) {
-      next.findings.push({ key: lib.findingKey(f), id: f.id, category: f.category, file: f.file, line: f.line, span: f.span, summary: f.summary, requirement: f.requirement || '', ...lib.strictest(reviewed.findings.filter((g) => lib.findingKey(g) === lib.findingKey(f))), status: 'open', firstRound: n, ...(verifiedAt(work, snap.head, f) && { spanVerified: snap.head }) });
+      next.findings.push({ key: lib.findingKey(f), id: f.id, category: f.category, file: f.file, line: f.line, span: f.span, summary: f.summary, requirement: f.requirement || '', ...lib.strictest(reviewed.findings.filter((g) => lib.findingKey(g) === lib.findingKey(f))), status: 'open', firstRound: n, ...(verifiedAt(read, f) && { spanVerified: snap.head }) });
     }
     for (const f of next.findings) if (f.status === 'open' && !verified(f)) f.openReason = 'unverified';
     for (const f of next.findings) if (f.status === 'open' && verified(f) && f.openReason === 'unverified') delete f.openReason;
@@ -599,8 +606,8 @@ function attempt(repo, pr, ledger, file) {
     const entryOf = (f) => next.findings.find((g) => g.status === 'open' && lib.findingKey(g) === lib.findingKey(f)) || f;
     const placed = (f0) => {
       const f = { ...f0, ...pick(entryOf(f0)) };
-      if (f.line != null) return f;
-      const blob = f.span ? gitBlob(work, snap.head, f.file) : null;
+      if (f.line != null || f.file === lib.DESC) return f;
+      const blob = f.span ? read(f.file) : null;
       const line = Buffer.isBuffer(blob) ? publish.placeLine(blob.toString('utf8'), f.span, f.file, hunks) : null;
       return line == null ? f : { ...f, line };
     };
@@ -640,7 +647,7 @@ function attempt(repo, pr, ledger, file) {
     return { event: 'published', round: n, mode: range.broad ? 'broad' : 'diff', review: input.approve ? 'APPROVE' : 'COMMENT', new: fresh.length, fixed: fixedIds.length, ...(addressedIds.length && { addressed: addressedIds.length }), ...(addressedRejected.length && { addressedRejected }), stillOpen: openIds.length, open: openNow, ...(unreviewed.length && { unreviewed }), ...(verdictNow.approve ? {} : { notApproved: verdictNow.reason }), ...(held.length && { held, hint: 'These findings cannot be settled from the code; run waive <key> (or waive <id> when the id is unique) to dismiss one you accept, or reclass <key> minor --reason <line> if it should not block.' }) };
   } catch (error) {
     // Any failure after the head snapshot is recorded with the head it tried, so the watch waits for a newer head or reply; the ledger is read again because a pending approval marker may have been saved meanwhile.
-    save(file, { ...load(file), attempt: { head: snap.head, at: new Date().toISOString() } });
+    save(file, { ...load(file), attempt: { head: snap.head, intent: snap.intent, at: new Date().toISOString() } });
     throw error;
   } finally { if (dir) fs.rmSync(dir, { recursive: true, force: true }); }
 }

@@ -249,14 +249,14 @@ test('the reviewer is shown the author reply and the resolved state of a span-pr
   assert.equal(w.posts().at(-1).body.includes('Addressed since'), true);
 });
 
-test('a finding whose id prefix the verify artifact cannot list is not offered for a verdict', () => {
+test('a finding whose id prefix no verdict can name is not offered, while gate and intent findings are (#423)', () => {
   const w = world();
-  w.write('findings.json', [finding, { ...finding, id: 'intent:bad', line: 3, span: 'three', summary: 'intent line' }]);
+  w.write('findings.json', [finding, { ...finding, id: 'other:bad', line: 3, span: 'three', summary: 'other line' }, { ...finding, id: 'gate:bad', line: 1, span: 'one', summary: 'gate line' }, { ...finding, id: 'intent:bad', line: 4, span: 'four', summary: 'intent line' }]);
   w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
   push(w, { 'a.js': 'one\nif (ok) {\nbad\n}\nthree\nfour\n' }, 'c2');
   w.write('findings.json', []);
   w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
-  assert.deepEqual(w.calls().at(-1).addressable.map((f) => f.id), ['correctness:bad']);
+  assert.deepEqual(w.calls().at(-1).addressable.map((f) => f.id).sort(), ['correctness:bad', 'gate:bad', 'intent:bad']);
 });
 
 test('the thread starter and the newest replies are read even when the thread is longer than the comment window', () => {
@@ -1943,4 +1943,118 @@ test('a base edit far from the pull request hunk still skips the round, and a re
   assert.equal(JSON.parse(w.approve('round', 'o/r', '5').stdout).event, 'base-merge');
   assert.equal(w.calls().length, 1);
   assert.equal(w.ledger().attempt, undefined);
+});
+
+// A finding about the pull request description (#423): the reviewer reports it against its copy of the description, which is not a file of the head.
+const DESC = '/pr-description';
+const descFinding = { id: 'gate:desc-claim', category: 'gate', file: 'intent-concord-pr-5.md', line: 3, span: 'never touches the ledger', summary: 'the description claims what the code does not do', requirement: '' };
+const BODY = 'Adds the retry path.\nIt never touches the ledger directly.';
+const EDITED = 'Adds the retry path.\nIt never touches the ledger directly. A retry is recorded in the ledger by the caller.';
+const descEvidence = { id: 'gate:desc-claim', evidence: { file: DESC, span: 'recorded in the ledger by the caller', reason: 'the new description states who records the retry' } };
+function descRound1(w) {
+  w.write('state.json', { ...w.state, body: BODY });
+  w.state.body = BODY;
+  w.write('findings.json', [descFinding]);
+  w.approve('start', 'o/r', '5');
+  return JSON.parse(w.approve('round', 'o/r', '5').stdout);
+}
+const edit = (w, body) => { const now = JSON.parse(fs.readFileSync(path.join(w.dir, 'state.json'), 'utf8')); w.write('state.json', { ...now, body }); };
+
+test('a finding about the description is anchored to the description text, so it is verified and has a stable key (#423)', () => {
+  const w = world();
+  descRound1(w);
+  const f = w.ledger().findings[0];
+  assert.deepEqual([f.file, f.spanVerified, f.openReason], [DESC, w.c1, undefined]);
+});
+
+test('an edited description is passed to the reviewer with the open description finding, and a verdict quoting the new text closes it (#423)', () => {
+  const w = world();
+  descRound1(w);
+  edit(w, EDITED);
+  w.write('findings.json', []);
+  w.write('addressed.json', [descEvidence]);
+  assert.equal(JSON.parse(w.approve('start', 'o/r', '5').stdout).action, 'round');
+  const r = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  const call = w.calls().at(-1);
+  assert.deepEqual([r.event, r.addressed, r.review], ['published', 1, 'APPROVE']);
+  assert.deepEqual(call.addressable.map((f) => [f.id, f.file]), [['gate:desc-claim', DESC]]);
+  assert.equal(call.description, `# T\n\n${EDITED}`);
+  const f = w.ledger().findings[0];
+  assert.deepEqual([f.status, f.addressedEvidence.file], ['addressed', DESC]);
+});
+
+test('the same edit with no verdict leaves the description finding open and blocking (#423)', () => {
+  const w = world();
+  descRound1(w);
+  edit(w, EDITED);
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  const r = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r.review, r.stillOpen], ['COMMENT', 1]);
+  assert.equal(w.ledger().findings[0].status, 'open');
+});
+
+test('a verdict whose quote is not in the new description is refused, and a description finding whose quote is gone from the description is fixed (#423)', () => {
+  const w = world();
+  descRound1(w);
+  edit(w, EDITED);
+  w.write('findings.json', []);
+  w.write('addressed.json', [{ ...descEvidence, evidence: { ...descEvidence.evidence, span: 'the ledger is never read' } }]);
+  w.approve('start', 'o/r', '5');
+  const r = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual(r.addressedRejected, [{ id: 'gate:desc-claim', why: 'evidence-absent' }]);
+  edit(w, 'Adds the retry path.\nA retry is recorded in the ledger by the caller.');
+  w.write('addressed.json', []);
+  w.approve('start', 'o/r', '5');
+  const r2 = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r2.fixed, w.ledger().findings[0].status], [1, 'fixed']);
+});
+
+test('a description edit alone starts a round only when a description finding is open (#423)', () => {
+  const w = world();
+  descRound1(w);
+  edit(w, EDITED);
+  assert.equal(JSON.parse(w.approve('start', 'o/r', '5').stdout).action, 'round');
+  const code = world();
+  code.write('findings.json', [finding]);
+  code.approve('start', 'o/r', '5'); code.approve('round', 'o/r', '5');
+  edit(code, 'a new description');
+  assert.equal(JSON.parse(code.approve('start', 'o/r', '5').stdout).action, 'watch');
+});
+
+test('a description finding carries its quote in the verdict through the prompt escaping: a slash in the quote still matches (#423)', () => {
+  const w = world();
+  w.write('state.json', { ...w.state, body: 'It calls src/db.js first.' });
+  w.state.body = 'It calls src/db.js first.';
+  w.write('findings.json', [{ ...descFinding, span: 'calls src/db.js first' }]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  edit(w, 'It calls src/db.js first. Then src/log.js runs.');
+  w.write('findings.json', []);
+  w.write('addressed.json', [{ id: descEvidence.id, evidence: { file: DESC, span: 'Then src\u2215log.js runs.', reason: 'the order is stated' } }]);
+  w.approve('start', 'o/r', '5');
+  JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  const f = w.ledger().findings[0];
+  assert.deepEqual([f.status, f.addressedEvidence.span], ['addressed', 'Then src/log.js runs.']);
+});
+
+test('a repository file named like the description marker is read as a file, and the description answers no code finding (#423)', () => {
+  const w = world();
+  const real = ':pr-description';
+  fs.writeFileSync(path.join(w.src, real), 'alpha\nbeta\n');
+  push(w, {}, 'c1b');
+  w.write('findings.json', [{ id: 'correctness:real', category: 'correctness', file: real, line: 1, span: 'alpha', summary: 's', requirement: '' }]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  assert.deepEqual([w.ledger().findings[0].file, w.ledger().findings[0].openReason], [real, undefined]);
+  push(w, { [real]: 'alpha\nbeta\nguard\n' }, 'c2');
+  edit(w, 'the body mentions guard too');
+  w.write('findings.json', []);
+  w.write('addressed.json', [{ id: 'correctness:real', evidence: { file: DESC, span: 'mentions guard too', reason: 'the description says so' } }]);
+  w.approve('start', 'o/r', '5');
+  const r = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual(r.addressedRejected, [{ id: 'correctness:real', why: 'evidence-absent' }]);
+  w.write('addressed.json', [{ id: 'correctness:real', evidence: { file: real, span: 'guard', reason: 'the file now guards' } }]);
+  push(w, { 'a.js': 'one\nbad\nthree\nfour\nfive\n' }, 'c3');
+  w.approve('start', 'o/r', '5');
+  JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.equal(w.ledger().findings[0].status, 'addressed');
 });
