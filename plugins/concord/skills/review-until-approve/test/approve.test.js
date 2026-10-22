@@ -85,7 +85,7 @@ else if (a[0] === 'api' && a[1] === 'graphql') {
     if (fs.existsSync(dir + '/gql-fail-' + name)) { console.error('boom'); process.exit(1); }
     const states = fs.existsSync(dir + '/thread-state.json') ? JSON.parse(fs.readFileSync(dir + '/thread-state.json', 'utf8')) : {};
     const t = { isResolved: false, author: 'bot', repo: 'o/r', pr: 5, ...states[id] };
-    if (name === 'thread') return j({ data: { node: t.gone ? null : { isResolved: t.isResolved, pullRequest: { number: t.pr, repository: { nameWithOwner: t.repo } }, resolvedBy: t.resolvedBy ? { login: t.resolvedBy } : null, comments: { nodes: t.comments || [{ author: { login: t.author } }] } } } });
+    if (name === 'thread') return j({ data: { node: t.gone ? null : { isResolved: t.isResolved, pullRequest: { number: t.pr, repository: { nameWithOwner: t.repo } }, resolvedBy: t.resolvedBy ? { login: t.resolvedBy } : null, root: { nodes: [t.root || (t.comments || [{ author: { login: t.author } }])[0]] }, comments: { nodes: t.comments || [{ author: { login: t.author } }] } } } });
     return j({ data: {} });
   }
   const rejected = fs.existsSync(dir + '/reject-paths') ? JSON.parse(fs.readFileSync(dir + '/reject-paths', 'utf8')) : [];
@@ -245,6 +245,13 @@ test('the reviewer is shown the author reply and the resolved state of a span-pr
   assert.equal(sent.length, 1);
   assert.deepEqual([sent[0].id, sent[0].authorReply, sent[0].threadResolved], ['correctness:bad', 'the guard on the line above makes this unreachable', undefined]);
   assert.equal(w.posts().at(-1).body.includes('Addressed since'), true);
+});
+
+test('the thread starter and the newest replies are read even when the thread is longer than the comment window', () => {
+  const w = world();
+  guardedRound(w, { root: mine, comments: [reply] }, []);
+  const sent = w.calls().at(-1).addressable;
+  assert.equal(sent[0].authorReply, 'the guard on the line above makes this unreachable');
 });
 
 test('a verdict the reviewer does not give leaves the span-present finding open and blocking, and a refused one is reported (#395)', () => {

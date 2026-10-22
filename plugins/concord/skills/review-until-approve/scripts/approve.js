@@ -167,7 +167,8 @@ function publishReview({ repo, pr, reviewer, head, after, state, input, render, 
 
 // A finding that is fixed has its own thread answered and resolved; one reopened has it unresolved. Each thread is checked when acted on:
 // still on this pull request, started by this account, not resolved by anyone else. A failure that may pass (network) records nothing, so the next round retries.
-const THREAD_STATE = 'query($id:ID!){node(id:$id){... on PullRequestReviewThread{isResolved resolvedBy{login} pullRequest{number repository{nameWithOwner}} comments(first:100){nodes{author{login} body createdAt}}}}}';
+const THREAD_STATE = 'query($id:ID!){node(id:$id){... on PullRequestReviewThread{isResolved resolvedBy{login} pullRequest{number repository{nameWithOwner}} root:comments(first:1){nodes{author{login}}} comments(last:100){nodes{author{login} body createdAt}}}}}';
+// ponytail: the thread's starter is read apart from the newest 100 comments, which are what the author-reply and last-comment checks need.
 const threadMutation = (name, field) => `mutation($id:ID!${field === 'reply' ? ',$b:String!' : ''}){${name}(input:{${field === 'reply' ? 'pullRequestReviewThreadId:$id,body:$b' : 'threadId:$id'}}){clientMutationId}}`;
 const threadCall = (name, field, id, body) => ghJson(['api', 'graphql', '-f', `query=${threadMutation(name, field)}`, '-f', `id=${id}`, ...(body ? ['-f', `b=${body}`] : [])]);
 function settleThreads(repo, pr, ledger, file) {
@@ -181,7 +182,7 @@ function settleThreads(repo, pr, ledger, file) {
     if (!fixing && !reopened) continue;
     try {
       const t = ghJson(['api', 'graphql', '-f', `query=${THREAD_STATE}`, '-f', `id=${f.threadId}`]).data?.node;
-      const mine = t && t.pullRequest?.number === Number(pr) && t.pullRequest?.repository?.nameWithOwner?.toLowerCase() === repo.toLowerCase() && t.comments?.nodes?.[0]?.author?.login === ledger.reviewer;
+      const mine = t && t.pullRequest?.number === Number(pr) && t.pullRequest?.repository?.nameWithOwner?.toLowerCase() === repo.toLowerCase() && t.root?.nodes?.[0]?.author?.login === ledger.reviewer;
       if (!t) f.threadSkipped = 'gone';
       else if (!mine) f.threadSkipped = 'not-ours';
       else if (fixing && t.isResolved) f.threadSkipped = 'resolved';
@@ -305,7 +306,7 @@ function addressable(repo, pr, ledger, shown) {
     try {
       const t = ghJson(['api', 'graphql', '-f', `query=${THREAD_STATE}`, '-f', `id=${f.threadId}`]).data?.node;
       const comments = t?.comments?.nodes || [];
-      if (!t || t.pullRequest?.number !== Number(pr) || t.pullRequest?.repository?.nameWithOwner?.toLowerCase() !== repo.toLowerCase() || comments[0]?.author?.login !== ledger.reviewer) return entry;
+      if (!t || t.pullRequest?.number !== Number(pr) || t.pullRequest?.repository?.nameWithOwner?.toLowerCase() !== repo.toLowerCase() || t.root?.nodes?.[0]?.author?.login !== ledger.reviewer) return entry;
       const lastMine = comments.map((c) => c.author?.login).lastIndexOf(ledger.reviewer);
       let budget = 4000;
       const replies = comments.slice(lastMine + 1).filter((c) => c.author?.login === ledger.author).slice(-3).reverse().map((c) => cut(String(c.body || ''), 1500)).map((text) => { text = text.slice(0, Math.max(0, budget)); budget -= text.length; return text; }).reverse().filter(Boolean);
