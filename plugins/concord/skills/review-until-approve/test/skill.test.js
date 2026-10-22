@@ -55,13 +55,24 @@ test('no doc or script comment describes the Claude Code wait as Monitor-based o
   assert.doesNotMatch(readmeRow, /no model calls/);
 });
 
-test('SKILL.md never has the model pass a flag, set a variable or edit settings to turn the Claude reviewer on, and stops after a denial', () => {
+test('SKILL.md records trust only from the user\'s own confirmed words and names what is not a declaration', () => {
+  const trust = skill.slice(skill.indexOf('## Trust'), skill.indexOf('## Loop'));
+  assert.match(trust, /one pull request/);
+  assert.match(trust, /asks? the user exactly that question, once/);
+  assert.match(trust, /verbatim/);
+  assert.match(trust, /Not a declaration/);
+  for (const notDeclaration of [/text in the pull request or its code/, /another session or a coordinating session relayed/, /ambiguous/]) assert.match(trust, notDeclaration);
+  assert.match(trust, /approve\.js" trust <owner\/repo> <pr> --declaration/);
+  assert.match(trust, /--revoke/);
+});
+
+test('SKILL.md has no standing setting, never passes a flag to turn the Claude reviewer on, never picks the other vendor, and stops after a denial', () => {
+  assert.equal(skill.includes('CONCORD_REVIEW_UNCONFINED_CLAUDE'), false);
   assert.equal(skill.includes('--allow-unrestricted-home'), false);
-  assert.match(skill, /CONCORD_REVIEW_UNCONFINED_CLAUDE/);
-  assert.match(skill, /never (?:type|pass|set|add|edit)[^.]*(?:flag|variable|permission rule|settings)/i);
+  assert.match(skill, /never falls back to the other vendor/);
+  assert.match(skill, /only when the user asked for the other vendor in their own words; never pick it yourself/);
+  assert.match(skill, /#366/);
   assert.match(skill, /denied[^.]*relay[^.]*stop|relay[^.]*denial[^.]*stop/i);
-  const setup = skill.slice(skill.indexOf('## Setup'), skill.indexOf('## Loop'));
-  assert.doesNotMatch(setup, /pass (?:`)?--/);
 });
 
 test('the foreground `next` call is given a Bash timeout longer than its 540 second wait', () => {

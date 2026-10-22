@@ -53,13 +53,14 @@ const text = (f) => `**${f.category}** ${f.summary}${f.requirement ? `\n\n> ${f.
 const ids = (list) => list.map((id) => `\`${id}\``).join(', ');
 
 // `how` is "inline" or "body". Event is APPROVE only for a clean round, never REQUEST_CHANGES.
-function renderReview({ head, round, rangeBase, reviewer, hunks, findings, fixed, stillOpen, previousHead, approve }, how) {
+function renderReview({ unconfined, head, round, rangeBase, reviewer, hunks, findings, fixed, stillOpen, previousHead, approve }, how) {
   const inDiff = (f) => f.line != null && hunks.some((h) => h.file === f.file && f.line >= h.from && f.line <= h.to);
   const inline = how === 'inline' ? findings.filter(inDiff) : [];
   const rest = findings.filter((f) => !inline.includes(f));
   const lines = [
     `<!-- concord-approve: ${head} round:${round} base:${rangeBase} -->`,
     `reviewed by concord (${reviewer})`,
+    ...(unconfined ? [`reviewed unconfined on the reviewing account's trust declaration (recorded ${unconfined})`] : []),
     findings.length === 0 && stillOpen.length === 0 ? (approve ? 'LGTM — no finding survived verification.' : 'No finding survived verification; this review does not approve.') : `${findings.length} new finding(s), ${stillOpen.length} still open.`,
   ];
   if (fixed.length) lines.push(`Fixed since \`${previousHead.slice(0, 7)}\`: ${ids(fixed)}`);

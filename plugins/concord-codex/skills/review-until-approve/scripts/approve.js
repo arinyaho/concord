@@ -2,6 +2,7 @@
 'use strict';
 // Round runner of review-until-approve. Every verb prints one JSON line.
 //   start <owner/repo> <pr> [--reviewer codex|claude] [--model <m>]   check identity, open or resume the ledger, say what to do next
+//   trust <owner/repo> <pr> [--declaration '<words>' --confirmation '<reply>' | --revoke]   print the question, record the user's trust declaration for this pull request, or withdraw it
 //   round <owner/repo> <pr>                                           review, publish, approve when clean
 //   approve <owner/repo> <pr>                                         approve the reviewed head if the approval condition holds
 //   waive <owner/repo> <pr> <finding-id|key>                          the user dismisses a finding, then approve if possible
@@ -25,24 +26,19 @@ process.env.GIT_NO_REPLACE_OBJECTS = '1';
 const MAX_ROUNDS = 10;
 const MAX_DISCARDS = 3;
 const GUIDANCE_FINDINGS = 20;
-// The Claude reviewer is unconfined, so only the user may turn it on: a key in their own settings file, which the model has no business writing.
-// It is read from the account's home as the passwd entry gives it, never from HOME, CLAUDE_CONFIG_DIR, the environment or a project file, which the model or a pull request can set.
-const OPT_IN = 'CONCORD_REVIEW_UNCONFINED_CLAUDE';
-const OPT_IN_HOW = `the user adds ${OPT_IN}=1 under "env" in ~/.claude/settings.json; the model must not pass a flag, set a variable or edit a settings file for this`;
-function userOptedIn() {
-  try { return JSON.parse(fs.readFileSync(path.join(os.userInfo().homedir, '.claude', 'settings.json'), 'utf8'))?.env?.[OPT_IN] === '1'; } catch (_) { return false; }
-}
+// The Claude reviewer is unconfined (#366), so it runs only on a pull request the user declared trusted: `trust` records the user's own confirming words in that pull request's ledger.
 // Under Claude Code the Claude reviewer runs as subagents of the session that drives the skill, with the session's own login, so it needs no `claude` binary and no credentials of its own.
 const subagents = () => !!process.env.CLAUDECODE;
 const MODEL_ALIASES = ['sonnet', 'opus', 'haiku'];
-const WARNING = 'the claude reviewer can read your real home directory (gh, ssh and cloud credentials); a malicious pull request could make it publish their contents, and it is not trusted to leave the review clone intact. To avoid this, remove CONCORD_REVIEW_UNCONFINED_CLAUDE from your Claude settings (the codex reviewer stays confined).';
+const warningFor = (ledger) => `the claude reviewer runs unconfined on your trust declaration${ledger.trust ? ` (recorded ${ledger.trust.recordedAt})` : ''}: it can read your real home directory (gh, ssh and cloud credentials); a malicious pull request could make it publish their contents, and it is not trusted to leave the review clone intact. To withdraw the declaration, run trust --revoke for this pull request (the codex reviewer stays confined).`;
 const die = (message, code = 1) => { process.stderr.write(`review-until-approve: ${message}\n`); process.exit(code); };
 const out = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 // A Claude run says so in every result, and on stderr where the user sees it.
 const outFor = (ledger, value) => {
   if (ledger.provider !== 'claude') return out(value);
-  process.stderr.write(`review-until-approve: WARNING: ${WARNING}\n`);
-  out({ ...value, warning: [value.warning, WARNING].filter(Boolean).join(' ') });
+  const warning = warningFor(ledger);
+  process.stderr.write(`review-until-approve: WARNING: ${warning}\n`);
+  out({ ...value, warning: [value.warning, warning].filter(Boolean).join(' ') });
 };
 
 function run(command, args, { input, cwd, env } = {}) {
@@ -164,26 +160,20 @@ function identify(repo, pr, args) {
 
 const onPath = (name) => (process.env.PATH || '').split(path.delimiter).some((dir) => (process.platform === 'win32' ? (process.env.PATHEXT || '.EXE;.CMD').split(';') : ['']).some((ext) => { try { fs.accessSync(path.join(dir, name + ext), fs.constants.X_OK); return true; } catch (_) { return false; } }));
 // What a reviewer still needs from the user, in the words that fix it. An empty list means it is ready.
-function missing(provider) {
+function missing(provider, repo, pr, trust) {
   if (provider === 'codex') return [!onPath('codex') ? 'install codex' : !fs.existsSync(path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'auth.json')) && 'run `codex login`'].filter(Boolean);
-  // The Claude reviewer cannot yet be kept from the account's home directory (#366), so it runs only while the user's setting is present.
-  if (subagents()) return [!userOptedIn() && `off by default because it can read your real home directory and a malicious pull request could publish what it reads; ${OPT_IN_HOW}`].filter(Boolean);
-  return [!onPath('claude') && 'install claude', !process.env.CLAUDE_CODE_OAUTH_TOKEN && !fs.existsSync(path.join(claudeConfigDir(), '.credentials.json')) && `log in with claude (no \`.credentials.json\` in ${claudeConfigDir()}) or export CLAUDE_CODE_OAUTH_TOKEN (create one with \`claude setup-token\`)`, !userOptedIn() && `off by default because it can read your real home directory and a malicious pull request could publish what it reads; ${OPT_IN_HOW}`].filter(Boolean);
+  // The Claude reviewer cannot yet be kept from the account's home directory (#366), so it runs only on a pull request the user declared trusted.
+  const untrusted = !trust && `it cannot be confined yet (#366), so ${repo}#${pr} is reviewed by it only after you declare that you trust its author${process.env.CLAUDECODE ? '; or ask explicitly for the confined Codex reviewer (--reviewer codex)' : ''}`;
+  if (subagents()) return [untrusted].filter(Boolean);
+  return [!onPath('claude') && 'install claude', !process.env.CLAUDE_CODE_OAUTH_TOKEN && !fs.existsSync(path.join(claudeConfigDir(), '.credentials.json')) && `log in with claude (no \`.credentials.json\` in ${claudeConfigDir()}) or export CLAUDE_CODE_OAUTH_TOKEN (create one with \`claude setup-token\`)`, untrusted].filter(Boolean);
 }
-// An explicit choice or a resumed ledger is kept or refused. Without one, the harness's own reviewer runs when it is ready, otherwise the other one; the note says why.
-function chooseReviewer(asked) {
-  if (asked) {
-    if (!['codex', 'claude'].includes(asked)) die('--reviewer must be codex or claude');
-    const need = missing(asked);
-    if (need.length) die(`the ${asked} reviewer is not ready: ${need.join('; ')}`);
-    return { provider: asked };
-  }
-  const first = process.env.CLAUDECODE ? 'claude' : 'codex';
-  const order = [first, first === 'claude' ? 'codex' : 'claude'];
-  const need = Object.fromEntries(order.map((p) => [p, missing(p)]));
-  const provider = order.find((p) => !need[p].length);
-  if (!provider) die(`no reviewer is ready:\n${order.map((p) => `  ${p}: ${need[p].join('; ')}`).join('\n')}`);
-  return { provider, note: provider === first ? undefined : `reviewer: ${provider} (${first}: ${need[first].join('; ')})` };
+// The reviewer is the one asked for, the resumed ledger's, or the harness's own; the other vendor is never substituted.
+function chooseReviewer(asked, repo, pr, trust) {
+  if (asked && !['codex', 'claude'].includes(asked)) die('--reviewer must be codex or claude');
+  const provider = asked || (process.env.CLAUDECODE ? 'claude' : 'codex');
+  const need = missing(provider, repo, pr, trust);
+  if (need.length) die(`the ${provider} reviewer is not ready: ${need.join('; ')}${asked ? '' : `. No other reviewer is substituted${provider === 'codex' ? '; ask explicitly for --reviewer claude if you want it' : ''}`}`);
+  return { provider };
 }
 
 // The Agent tool takes only these model names.
@@ -191,6 +181,7 @@ function checkModel(ledger) {
   if (ledger.provider === 'claude' && subagents() && ledger.model && !MODEL_ALIASES.includes(ledger.model)) die(`under Claude Code the Claude reviewer runs as subagents, which take only the model names ${MODEL_ALIASES.slice(0, 2).join(', ')} or ${MODEL_ALIASES[2]}; --model ${ledger.model} cannot be used (run start with --model sonnet, opus or haiku)`);
 }
 
+const newLedger = (repo, pr, reviewer, author) => ({ version: 1, repo, pr, reviewer, provider: null, model: null, author, startedAt: new Date().toISOString(), rounds: [], findings: [], nudged: null, approval: null, stopped: null });
 const opt = (args, name) => { const i = args.indexOf(name); return i === -1 ? undefined : args[i + 1]; };
 const lastRound = (ledger) => ledger.rounds[ledger.rounds.length - 1];
 
@@ -199,8 +190,8 @@ function start(repo, pr, args) {
   const snap = snapshot(repo, pr);
   if (snap.state !== 'OPEN') die(`the pull request is ${snap.state}`);
   if (snap.author === reviewer) die(`${reviewer} is the author; GitHub rejects self-approval`);
-  const { provider, note } = chooseReviewer(opt(args, '--reviewer') || found?.provider);
-  const ledger = found || { version: 1, repo, pr, reviewer, provider, model: opt(args, '--model') || null, author: snap.author, startedAt: new Date().toISOString(), rounds: [], findings: [], nudged: null, approval: null, stopped: null };
+  const { provider } = chooseReviewer(opt(args, '--reviewer') || found?.provider, repo, pr, found?.trust);
+  const ledger = found || newLedger(repo, pr, reviewer, snap.author);
   ledger.provider = provider;
   if (opt(args, '--model')) ledger.model = opt(args, '--model');
   checkModel(ledger);
@@ -211,7 +202,7 @@ function start(repo, pr, args) {
   let action = 'watch';
   if (ledger.rounds.length === 0 || snap.head !== lastRound(ledger).head) action = 'round';
   else if (lib.evaluateApproval(ledger, snap, lastRound(ledger).head).approve) action = 'approve';
-  outFor(ledger, { ledger: file, action, round: ledger.rounds.length + 1, reviewer: provider, ...(note && { note }), ...(warning && { warning }) });
+  outFor(ledger, { ledger: file, action, round: ledger.rounds.length + 1, reviewer: provider, ...(warning && { warning }) });
 }
 
 // The findings the reviewer is told about. Telling it decides nothing: a finding is fixed by the code, never by the reviewer's silence.
@@ -332,8 +323,8 @@ function reviewRound(repo, pr, args) {
   if (!ledger) die('no ledger; run start first');
   if (ledger.rounds.length >= MAX_ROUNDS) return outFor(ledger, { event: 'round-limit', rounds: ledger.rounds.length });
   for (let discards = 0; discards < MAX_DISCARDS; discards++) {
-    // Read again before every launch: a discarded attempt takes minutes, and the user may have removed the setting meanwhile.
-    if (ledger.provider === 'claude') { const need = missing('claude'); if (need.length) die(`the claude reviewer is not ready: ${need.join('; ')}`); }
+    // Read again before every launch: a discarded attempt takes minutes, and the user may have revoked the declaration meanwhile.
+    if (ledger.provider === 'claude') { const need = missing('claude', repo, pr, ledger.trust); if (need.length) die(`the claude reviewer is not ready: ${need.join('; ')}`); }
     checkModel(ledger);
     const result = attempt(repo, pr, ledger, file);
     if (result) return outFor(ledger, result);
@@ -453,7 +444,7 @@ function attempt(repo, pr, ledger, file) {
       const line = Buffer.isBuffer(blob) ? publish.placeLine(blob.toString('utf8'), f.span, f.file, hunks) : null;
       return line == null ? f : { ...f, line };
     };
-    const input = { head: snap.head, round: n, rangeBase: range.base, reviewer: ledger.provider, hunks, findings: fresh.map(placed), fixed: fixedIds, stillOpen: openIds, previousHead: prior ? prior.head : snap.head, approve: verdictNow.approve };
+    const input = { unconfined: ledger.provider === 'claude' && ledger.trust ? ledger.trust.recordedAt : undefined, head: snap.head, round: n, rangeBase: range.base, reviewer: ledger.provider, hunks, findings: fresh.map(placed), fixed: fixedIds, stillOpen: openIds, previousHead: prior ? prior.head : snap.head, approve: verdictNow.approve };
     if (verdictNow.reason === 'head-moved') return null;
     // A submodule range that could not be read is said in the review, which then does not approve.
     const render = (i, how) => {
@@ -543,6 +534,28 @@ function waive(repo, pr, id, args) {
   approve(repo, pr, args);
 }
 
+// The user's own confirming words for this pull request, kept in its ledger. The script cannot know who typed them; they stay in the ledger and the local output, and a published review states only that the declaration exists.
+function trust(repo, pr, args) {
+  const question = `Record that you trust the author of ${repo}#${pr} for this review? The Claude reviewer then runs without isolation: it can read your home directory, and this pull request could make it publish what it reads.`;
+  const declaration = (opt(args, '--declaration') || '').trim();
+  const confirmation = (opt(args, '--confirmation') || '').trim();
+  if (!args.includes('--revoke') && !declaration && !confirmation) return out({ event: 'trust-question', question });
+  const { reviewer, file, ledger: found } = identify(repo, pr, args);
+  if (args.includes('--revoke')) {
+    if (found?.trust) { delete found.trust; save(file, found); }
+    return out({ event: 'trust-revoked' });
+  }
+  if (!declaration || !confirmation) die('trust needs --declaration (the user\'s words) and --confirmation (the user\'s reply to the question), both non-empty; run trust with no options to get the question', 2);
+  const snap = snapshot(repo, pr);
+  if (snap.state !== 'OPEN') die(`the pull request is ${snap.state}`);
+  if (snap.author === reviewer) die(`${reviewer} is the author; the author cannot declare trust in their own pull request`);
+  if (`${snap.title}\n${snap.body}`.includes(declaration)) die('the declaration occurs in the pull request text; text from the pull request is never the user\'s declaration');
+  const ledger = found || newLedger(repo, pr, reviewer, snap.author);
+  ledger.trust = { declaration, confirmation, question, recordedAt: new Date().toISOString(), account: reviewer };
+  save(file, ledger);
+  out({ event: 'trust-recorded', trust: ledger.trust });
+}
+
 function stop(repo, pr, args) {
   const { file, ledger } = identify(repo, pr, args);
   if (!ledger) die('no ledger');
@@ -562,7 +575,7 @@ function nudged(repo, pr, event, args) {
 }
 
 const [verb, repo, pr, ...rest] = process.argv.slice(2);
-if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '') || !/^\d+$/.test(pr || '')) die('usage: approve.js <start|round|next|approve|waive|stop|nudged> <owner/repo> <pr> [...]', 2);
-const verbs = { start, round: reviewRound, next, approve, stop, waive: (r, p, a) => waive(r, p, a[0], a), nudged: (r, p, a) => nudged(r, p, a[0], a) };
+if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '') || !/^\d+$/.test(pr || '')) die('usage: approve.js <start|trust|round|next|approve|waive|stop|nudged> <owner/repo> <pr> [...]', 2);
+const verbs = { start, trust, round: reviewRound, next, approve, stop, waive: (r, p, a) => waive(r, p, a[0], a), nudged: (r, p, a) => nudged(r, p, a[0], a) };
 if (!verbs[verb]) die(`unknown verb ${verb}`, 2);
 try { verbs[verb](repo, pr, rest); } catch (error) { die(error.message); }
