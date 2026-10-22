@@ -21,6 +21,7 @@ An agent workflow plugin for **Claude Code**, **Codex**, and **GitHub Copilot** 
 | Session-state checkpoint | Saves per-session state from the transcript when a session stops and restores it on start, resume, or compaction. | Claude Code, Codex |
 | `delegate-verbose-work` | Sends broad repository-wide searches to a subagent and keeps only the conclusion in the main conversation. | Claude Code |
 | `coordinate-sessions` | Hands work to separate Claude Code sessions, watches their reports through files or direct messages, and judges and merges their PRs when allowed. | Claude Code |
+| `project-manager` agent | Runs a rollout that spans several PRs and repositories: re-queries the real state from a handoff file, sets the merge order and gates, hands work to worker sessions and subagents, verifies their delivery, and writes the next handoff. Uses `coordinate-sessions`. | Claude Code |
 | `review-until-approve` | Reviews someone else's pull request in a loop: publishes the verified findings, waits until the author pushes and replies (one small model call per bounded window: two hours on Claude Code, nine minutes on Codex), reviews what changed, and approves the reviewed head once a round is clean. | Claude Code, Codex |
 
 A personal, vendor-neutral project: one core runs on all three harnesses, and it is not tied to any product codebase.
