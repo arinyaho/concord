@@ -1257,7 +1257,9 @@ test('subagent transport: when the round is killed, the runner it started ends t
   const attemptDir = path.dirname(path.dirname(request.promptFile));
   const runner = Number(execFileSync('pgrep', ['-P', String(round.pid)], { encoding: 'utf8' }).trim().split('\n')[0]);
   process.kill(round.pid, 'SIGKILL');
-  for (let i = 0; i < 60 && (fs.existsSync(attemptDir) || (() => { try { process.kill(runner, 0); return true; } catch (_) { return false; } })()); i++) await new Promise((r) => setTimeout(r, 250));
+  // A PID 1 that does not reap children leaves the ended runner as a zombie, which `kill -0` still finds; a zombie is not running.
+  const running = () => { try { process.kill(runner, 0); return !/^\d+ \(.*\) Z/.test(fs.readFileSync(`/proc/${runner}/stat`, 'utf8')); } catch (_) { return false; } };
+  for (let i = 0; i < 60 && (fs.existsSync(attemptDir) || running()); i++) await new Promise((r) => setTimeout(r, 250));
   assert.equal(fs.existsSync(attemptDir), false);
-  assert.throws(() => process.kill(runner, 0));
+  assert.equal(running(), false);
 });
