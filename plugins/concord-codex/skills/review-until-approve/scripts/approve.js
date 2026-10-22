@@ -137,12 +137,12 @@ function postThread(nodeId, t) {
   guard(t.body);
   try {
     const args = ['api', 'graphql', '-f', `query=${THREAD}`, '-f', `r=${nodeId}`, '-f', `p=${t.path}`, '-f', `b=${t.body}`, '-f', `t=${t.subject}`, ...(t.subject === 'LINE' ? ['-F', `l=${t.line}`] : [])];
-    return Boolean(ghJson(args).data?.addPullRequestReviewThread?.thread);
-  } catch (_) { return false; }
+    return ghJson(args).data?.addPullRequestReviewThread?.thread?.id || null;
+  } catch (_) { return null; }
 }
 // Returns the submitted review, or null when the head moved before the submission (the pending review is deleted).
 // A comment GitHub refuses moves only its finding to the body. A pending review left by a crash carries the marker and is deleted first; one without it is the user's own draft and is never touched.
-function publishReview({ repo, pr, reviewer, head, after, state, input, render, headMoved }) {
+function publishReview({ repo, pr, reviewer, head, after, state, input, render, headMoved, onThread }) {
   const drop = (id) => gh(['api', '-X', 'DELETE', `repos/${repo}/pulls/${pr}/reviews/${id}`]);
   for (const r of reviewsOf(repo, pr)) {
     if (r.user?.login !== reviewer || r.state !== 'PENDING') continue;
@@ -151,13 +151,50 @@ function publishReview({ repo, pr, reviewer, head, after, state, input, render, 
   }
   const first = render(input, 'inline');
   const pending = post(repo, pr, { commit_id: head, body: first.body.split('\n')[0] });
-  const rejected = first.threads.filter((t) => !postThread(pending.node_id, t)).map((t) => t.finding);
+  const rejected = first.threads.filter((t) => {
+    const id = postThread(pending.node_id, t);
+    if (id) onThread(t.finding, id);
+    return !id;
+  }).map((t) => t.finding);
   if (headMoved()) { drop(pending.id); return null; }
   const final = render({ ...input, rejected }, 'inline');
   const submit = () => ghJson(['api', '-X', 'POST', `repos/${repo}/pulls/${pr}/reviews/${pending.id}/events`, '--input', '-'], guard(JSON.stringify({ event: final.event, body: final.body })));
   try { return submit(); } catch (error) {
     // Accepted although the call failed: take that review; otherwise the pending review still exists, so submit once more.
     return landed(reviewsOf(repo, pr), reviewer, head, after, state) || submit();
+  }
+}
+
+// A finding that is fixed has its own thread answered and resolved; one reopened has it unresolved. Each thread is checked when acted on:
+// still on this pull request, started by this account, not resolved by anyone else. A failure that may pass (network) records nothing, so the next round retries.
+const THREAD_STATE = 'query($id:ID!){node(id:$id){... on PullRequestReviewThread{isResolved pullRequest{number repository{nameWithOwner}} comments(first:1){nodes{author{login}}}}}}';
+const threadMutation = (name, field) => `mutation($id:ID!${field === 'reply' ? ',$b:String!' : ''}){${name}(input:{${field === 'reply' ? 'pullRequestReviewThreadId:$id,body:$b' : 'threadId:$id'}}){clientMutationId}}`;
+const threadCall = (name, field, id, body) => ghJson(['api', 'graphql', '-f', `query=${threadMutation(name, field)}`, '-f', `id=${id}`, ...(body ? ['-f', `b=${body}`] : [])]);
+function settleThreads(repo, pr, ledger, file) {
+  const head = (ledger.rounds[ledger.rounds.length - 1] || {}).head;
+  if (!head) return;
+  const short = (sha) => sha.slice(0, 7);
+  for (const f of ledger.findings) {
+    if (!f.threadId) continue;
+    const fixing = f.status === 'fixed' && !f.threadSkipped && !f.threadResolved;
+    const reopened = f.status === 'open' && (f.threadResolved || f.threadReplied || f.threadSkipped);
+    if (!fixing && !reopened) continue;
+    try {
+      const t = ghJson(['api', 'graphql', '-f', `query=${THREAD_STATE}`, '-f', `id=${f.threadId}`]).data?.node;
+      const mine = t && t.pullRequest?.number === Number(pr) && t.pullRequest?.repository?.nameWithOwner?.toLowerCase() === repo.toLowerCase() && t.comments?.nodes?.[0]?.author?.login === ledger.reviewer;
+      if (!t) f.threadSkipped = 'gone';
+      else if (!mine) f.threadSkipped = 'not-ours';
+      else if (fixing && t.isResolved) f.threadSkipped = 'resolved';
+      else if (fixing) {
+        if (!f.threadReplied) { threadCall('addPullRequestReviewThreadReply', 'reply', f.threadId, `Fixed in \`${short(ledger.rounds[f.fixedRound - 1].head)}\`.`); f.threadReplied = true; save(file, ledger); }
+        threadCall('resolveReviewThread', 'id', f.threadId);
+        f.threadResolved = true;
+      } else {
+        if (f.threadResolved && t.isResolved) { threadCall('unresolveReviewThread', 'id', f.threadId); threadCall('addPullRequestReviewThreadReply', 'reply', f.threadId, `Reopened at \`${short(head)}\`.`); }
+        delete f.threadResolved; delete f.threadReplied; delete f.threadSkipped;
+      }
+    } catch (_) { /* ponytail: nothing is recorded, so the next round retries */ }
+    save(file, ledger);
   }
 }
 
@@ -510,14 +547,16 @@ function attempt(repo, pr, ledger, file) {
     // Only the marker is saved: the verdict's findings travel inside it and apply when the review is found.
     if (input.approve) { save(file, { ...ledger, pending: { head: snap.head, after: known, round: entry({}), findings: next.findings } }); }
     let review;
+    const threadIds = {};
     try {
-      review = publishReview({ repo, pr, reviewer: ledger.reviewer, head: snap.head, after: known, state: input.approve ? 'APPROVED' : 'COMMENTED', input, render, headMoved: () => snapshot(repo, pr).head !== snap.head });
+      review = publishReview({ repo, pr, reviewer: ledger.reviewer, head: snap.head, after: known, state: input.approve ? 'APPROVED' : 'COMMENTED', input, render, headMoved: () => snapshot(repo, pr).head !== snap.head, onThread: (f, id) => { threadIds[lib.findingKey(f)] = id; } });
     } catch (error) {
       if (snapshot(repo, pr).head !== snap.head) return null;
       throw error;
     }
     if (!review) return null;
     // Saved before anything else can fail, so a posted review (an APPROVE above all) is never forgotten.
+    for (const f of next.findings) if (f.status === 'open' && threadIds[f.key]) f.threadId = threadIds[f.key];
     next.rounds.push(entry(review));
     delete next.pending;
     delete next.attempt;
@@ -528,6 +567,7 @@ function attempt(repo, pr, ledger, file) {
       next.rounds[next.rounds.length - 1].commentIds = ghJson(['api', '--paginate', '--slurp', `repos/${repo}/pulls/${pr}/reviews/${review.id}/comments`]).flat().map((c) => c.id);
       save(file, next);
     } catch (_) { /* ponytail: ids stay empty; thread replies are then missed until the next round */ }
+    settleThreads(repo, pr, next, file);
     return { event: 'published', round: n, mode: range.broad ? 'broad' : 'diff', review: input.approve ? 'APPROVE' : 'COMMENT', new: fresh.length, fixed: fixedIds.length, stillOpen: openIds.length, open: openNow, ...(unreviewed.length && { unreviewed }), ...(verdictNow.approve ? {} : { notApproved: verdictNow.reason }), ...(held.length && { held, hint: 'These findings cannot be settled from the code; run waive <key> (or waive <id> when the id is unique) to dismiss one you accept, or reclass <key> minor --reason <line> if it should not block.' }) };
   } catch (error) {
     // Any failure after the head snapshot is recorded with the head it tried, so the watch waits for a newer head or reply; the ledger is read again because a pending approval marker may have been saved meanwhile.

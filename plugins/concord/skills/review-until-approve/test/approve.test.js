@@ -75,12 +75,24 @@ else if (a[0] === 'api' && /^repos\\/[^/]+\\/[^/]+$/.test(a[1])) {
 else if (a[0] === 'api' && a[1] === 'graphql') {
   // A thread joins the pending review; a path listed in reject-paths is refused, as GitHub refuses a line outside the diff.
   const arg = (k) => { const at = a.findIndex((x, i) => (a[i - 1] === '-f' || a[i - 1] === '-F') && x.startsWith(k + '=')); return at < 0 ? undefined : a[at].slice(k.length + 1); };
+  const query = arg('query');
+  if (!/addPullRequestReviewThread\\(/.test(query)) {
+    // Thread queries and mutations: logged by name and thread id; thread-state.json overrides what the query reports for an id.
+    const id = arg('id');
+    const name = /mutation/.test(query) ? /(\\w+)\\(input/.exec(query)[1] : 'thread';
+    fs.appendFileSync(dir + '/gql.jsonl', JSON.stringify({ name, id }) + '\\n');
+    if (fs.existsSync(dir + '/gql-fail-' + name)) { console.error('boom'); process.exit(1); }
+    const states = fs.existsSync(dir + '/thread-state.json') ? JSON.parse(fs.readFileSync(dir + '/thread-state.json', 'utf8')) : {};
+    const t = { isResolved: false, author: 'bot', repo: 'o/r', pr: 5, ...states[id] };
+    if (name === 'thread') return j({ data: { node: t.gone ? null : { isResolved: t.isResolved, pullRequest: { number: t.pr, repository: { nameWithOwner: t.repo } }, comments: { nodes: [{ author: { login: t.author } }] } } } });
+    return j({ data: {} });
+  }
   const rejected = fs.existsSync(dir + '/reject-paths') ? JSON.parse(fs.readFileSync(dir + '/reject-paths', 'utf8')) : [];
   if (rejected.includes(arg('p'))) { console.error('Pull request review thread line must be part of the diff'); process.exit(1); }
   const pending = JSON.parse(fs.readFileSync(dir + '/pending.json', 'utf8'));
   pending.threads.push({ path: arg('p'), line: arg('l') === undefined ? undefined : Number(arg('l')), side: 'RIGHT', subject_type: arg('t'), body: arg('b') });
   fs.writeFileSync(dir + '/pending.json', JSON.stringify(pending));
-  j({ data: { addPullRequestReviewThread: { thread: { id: 'T' } } } });
+  j({ data: { addPullRequestReviewThread: { thread: { id: 'T' + pending.threads.length } } } });
 }
 else if (a[0] === 'api' && a.includes('DELETE')) {
   fs.writeFileSync(dir + '/reviews.json', JSON.stringify(JSON.parse(fs.readFileSync(dir + '/reviews.json', 'utf8')).filter((r) => '/' + r.id !== a[a.length - 1].replace(/^.*\\/reviews/, ''))));
@@ -144,7 +156,7 @@ console.log(JSON.stringify({ decision: 'review-only', round: 1, findings }));
   const trust = (runEnv = { ...env, ...extraEnv }, declaration = DECLARATION, confirmation = CONFIRMATION) => spawnSync(process.execPath, [APPROVE, 'trust', 'o/r', '5', '--declaration', declaration, '--confirmation', confirmation], { env: runEnv, encoding: 'utf8' });
   const approve = (...args) => spawnSync(process.execPath, [APPROVE, ...args], { env: { ...env, ...extraEnv }, encoding: 'utf8' });
   const lines = (name) => fs.existsSync(path.join(dir, name)) ? fs.readFileSync(path.join(dir, name), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
-  return { dir, src, bare, c1, state, write, approve, env: { ...env, ...extraEnv }, trust, DECLARATION, CONFIRMATION, posts: () => lines('posts.jsonl'), calls: () => lines('runner-calls.jsonl'), ledger: () => JSON.parse(fs.readFileSync(path.join(dir, 'ledgers', 'o__r__5__bot.json'), 'utf8')) };
+  return { dir, src, bare, c1, state, write, approve, env: { ...env, ...extraEnv }, trust, DECLARATION, CONFIRMATION, posts: () => lines('posts.jsonl'), gql: () => lines('gql.jsonl'), calls: () => lines('runner-calls.jsonl'), ledger: () => JSON.parse(fs.readFileSync(path.join(dir, 'ledgers', 'o__r__5__bot.json'), 'utf8')) };
 }
 
 const finding = { id: 'correctness:bad', category: 'correctness', file: 'a.js', line: 2, span: 'bad', summary: 'bad line', requirement: '' };
@@ -176,6 +188,82 @@ test('round 1 reviews broad against the merge base and publishes a COMMENT; a pu
   assert.equal(w.posts()[1].commit_id, c2);
   assert.equal(w.ledger().approval.head, c2);
   assert.equal(w.ledger().findings[0].status, 'fixed');
+});
+
+// Round 1 posts `finding` as a thread; the author then fixes it and round 2 runs.
+function fixedRound(w) {
+  w.write('findings.json', [finding]);
+  w.approve('start', 'o/r', '5');
+  w.approve('round', 'o/r', '5');
+  fs.writeFileSync(path.join(w.src, 'a.js'), 'one\ngood\nthree\nfour\n');
+  sh(w.src, 'commit', '-q', '-am', 'c2');
+  const c2 = sh(w.src, 'rev-parse', 'HEAD');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: c2 });
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5');
+  fs.rmSync(path.join(w.dir, 'gql.jsonl'), { force: true });
+  return { c2, round2: JSON.parse(w.approve('round', 'o/r', '5').stdout) };
+}
+
+test('a finding a round marks fixed has its own thread answered with the fixing head and resolved, and no other thread is touched (#394)', () => {
+  const w = world();
+  const { c2 } = fixedRound(w);
+  assert.deepEqual(w.gql().filter((c) => c.name !== 'thread'), [{ name: 'addPullRequestReviewThreadReply', id: 'T1' }, { name: 'resolveReviewThread', id: 'T1' }]);
+  assert.equal(w.ledger().findings[0].threadId, 'T1');
+  assert.equal(w.ledger().findings[0].threadResolved, true);
+  assert.equal(w.ledger().rounds[1].head, c2);
+});
+
+test('a thread another account started is neither answered nor resolved (#394)', () => {
+  const w = world();
+  w.write('thread-state.json', { T1: { author: 'dev' } });
+  fixedRound(w);
+  assert.deepEqual(w.gql().filter((c) => c.name !== 'thread'), []);
+  assert.equal(w.ledger().findings[0].threadSkipped, 'not-ours');
+});
+
+test('a thread of another pull request is never touched, and one a person already resolved is left alone (#394)', () => {
+  const other = world();
+  other.write('thread-state.json', { T1: { pr: 6 } });
+  fixedRound(other);
+  assert.deepEqual(other.gql().filter((c) => c.name !== 'thread'), []);
+  const done = world();
+  done.write('thread-state.json', { T1: { isResolved: true } });
+  fixedRound(done);
+  assert.deepEqual(done.gql().filter((c) => c.name !== 'thread'), []);
+  assert.equal(done.ledger().findings[0].threadSkipped, 'resolved');
+});
+
+test('a finding posted in the review body has no thread, and a failed resolution does not lose the round (#394)', () => {
+  const w = world();
+  w.write('reject-paths', ['a.js']);
+  fixedRound(w);
+  assert.deepEqual(w.gql().filter((c) => c.name !== 'thread'), []);
+  assert.equal(w.ledger().findings[0].threadId, undefined);
+  const f = world();
+  f.write('gql-fail-resolveReviewThread', '');
+  const { round2 } = fixedRound(f);
+  assert.equal(round2.event, 'published');
+  assert.equal(f.ledger().findings[0].threadReplied, true);
+  assert.equal(f.ledger().findings[0].threadResolved, undefined);
+});
+
+test('a finding raised again after its thread was resolved has the thread reopened and answered (#394)', () => {
+  const w = world();
+  fixedRound(w);
+  fs.writeFileSync(path.join(w.src, 'a.js'), 'one\nbad\nthree\nfour\n');
+  sh(w.src, 'commit', '-q', '-am', 'c3');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD') });
+  w.write('findings.json', [finding]);
+  w.write('thread-state.json', { T1: { isResolved: true } });
+  fs.rmSync(path.join(w.dir, 'gql.jsonl'), { force: true });
+  w.approve('start', 'o/r', '5');
+  w.approve('round', 'o/r', '5');
+  assert.deepEqual(w.gql().filter((c) => c.name !== 'thread'), [{ name: 'unresolveReviewThread', id: 'T1' }, { name: 'addPullRequestReviewThreadReply', id: 'T1' }]);
+  assert.equal(w.ledger().findings[0].status, 'open');
+  assert.equal(w.ledger().findings[0].threadResolved, undefined);
 });
 
 test('start refuses when the reviewing account is the author', () => {
