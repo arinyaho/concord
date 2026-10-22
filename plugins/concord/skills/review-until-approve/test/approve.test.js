@@ -263,6 +263,30 @@ test('trust --revoke clears the record and the next round of a claude ledger ref
   assert.equal(w.calls().length, 0);
 });
 
+test('round refuses a ledger that holds only a declaration: start has not chosen and checked a reviewer, and no reviewer runs', () => {
+  const w = world({ CLAUDECODE: '1' });
+  w.trust();
+  const r = w.approve('round', 'o/r', '5');
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /run start first/);
+  assert.equal(w.calls().length, 0);
+  assert.deepEqual(w.posts(), []);
+});
+
+test('the approval posted by waive on a claude ledger states the unconfined run without quoting the user', () => {
+  const w = world({ CLAUDE_CODE_OAUTH_TOKEN: 'oauth-token-abcdef' });
+  w.trust();
+  w.write('findings.json', [finding]);
+  w.approve('start', 'o/r', '5', '--reviewer', 'claude');
+  w.approve('round', 'o/r', '5');
+  const waived = w.approve('waive', 'o/r', '5', 'correctness:bad');
+  assert.equal(JSON.parse(waived.stdout || '{}').event, 'approved', waived.stderr);
+  const approval = w.posts()[1];
+  assert.equal(approval.event, 'APPROVE');
+  assert.match(approval.body, /reviewed unconfined on the reviewing account's trust declaration \(recorded \d{4}-/);
+  assert.equal(approval.body.includes(w.DECLARATION), false);
+});
+
 test('a declaration covers one pull request: the ledger of another pull request has none', () => {
   const w = world({ CLAUDECODE: '1' });
   w.trust();
@@ -838,7 +862,7 @@ const loginWorld = (extra, files) => {
   return { real, call: w.calls()[0] };
 };
 
-test('with the opt-in and no token, the Claude reviewer gets only the credentials file of the real configuration, in its own config directory', () => {
+test('with a declaration and no token, the Claude reviewer gets only the credentials file of the real configuration, in its own config directory', () => {
   const { real, call } = loginWorld({}, { '.credentials.json': '{"login":"user"}', 'settings.json': '{"hooks":{}}' });
   assert.notEqual(call.claudeConfig, real);
   assert.deepEqual(call.claudeConfigEntries, ['.credentials.json']);
@@ -846,7 +870,7 @@ test('with the opt-in and no token, the Claude reviewer gets only the credential
   assert.equal(call.claudeToken, undefined);
 });
 
-test('with the opt-in and a token, the Claude reviewer gets the token and no copied credentials file', () => {
+test('with a declaration and a token, the Claude reviewer gets the token and no copied credentials file', () => {
   const { call } = loginWorld({ CLAUDE_CODE_OAUTH_TOKEN: 'tok' }, { '.credentials.json': '{"login":"user"}' });
   assert.equal(call.claudeToken, 'tok');
   assert.deepEqual(call.claudeConfigEntries, []);
@@ -1098,7 +1122,7 @@ function claudeCodeWorld(extra = {}) {
   return w;
 }
 
-test('subagent transport: with the setting, under Claude Code, a round with no claude binary and no login is ready and publishes what the claude -p path publishes for the same findings', async () => {
+test('subagent transport: with a declaration, under Claude Code, a round with no claude binary and no login is ready and publishes what the claude -p path publishes for the same findings', async () => {
   const w = claudeCodeWorld();
   const started = JSON.parse(spawnSync(process.execPath, [APPROVE, 'start', 'o/r', '5'], { env: w.env, encoding: 'utf8' }).stdout);
   assert.deepEqual([started.reviewer, started.action], ['claude', 'round']);

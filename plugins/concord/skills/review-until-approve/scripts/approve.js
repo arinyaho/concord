@@ -181,6 +181,8 @@ function checkModel(ledger) {
   if (ledger.provider === 'claude' && subagents() && ledger.model && !MODEL_ALIASES.includes(ledger.model)) die(`under Claude Code the Claude reviewer runs as subagents, which take only the model names ${MODEL_ALIASES.slice(0, 2).join(', ')} or ${MODEL_ALIASES[2]}; --model ${ledger.model} cannot be used (run start with --model sonnet, opus or haiku)`);
 }
 
+// When the Claude reviewer ran unconfined on the user's declaration; a published review states it.
+const unconfinedAt = (ledger) => ledger.provider === 'claude' && ledger.trust ? ledger.trust.recordedAt : undefined;
 const newLedger = (repo, pr, reviewer, author) => ({ version: 1, repo, pr, reviewer, provider: null, model: null, author, startedAt: new Date().toISOString(), rounds: [], findings: [], nudged: null, approval: null, stopped: null });
 const opt = (args, name) => { const i = args.indexOf(name); return i === -1 ? undefined : args[i + 1]; };
 const lastRound = (ledger) => ledger.rounds[ledger.rounds.length - 1];
@@ -320,7 +322,7 @@ function submoduleDelta(work, from, subs, file) {
 
 function reviewRound(repo, pr, args) {
   const { file, ledger } = identify(repo, pr, args);
-  if (!ledger) die('no ledger; run start first');
+  if (!ledger?.provider) die('no ledger; run start first');
   if (ledger.rounds.length >= MAX_ROUNDS) return outFor(ledger, { event: 'round-limit', rounds: ledger.rounds.length });
   for (let discards = 0; discards < MAX_DISCARDS; discards++) {
     // Read again before every launch: a discarded attempt takes minutes, and the user may have revoked the declaration meanwhile.
@@ -444,7 +446,7 @@ function attempt(repo, pr, ledger, file) {
       const line = Buffer.isBuffer(blob) ? publish.placeLine(blob.toString('utf8'), f.span, f.file, hunks) : null;
       return line == null ? f : { ...f, line };
     };
-    const input = { unconfined: ledger.provider === 'claude' && ledger.trust ? ledger.trust.recordedAt : undefined, head: snap.head, round: n, rangeBase: range.base, reviewer: ledger.provider, hunks, findings: fresh.map(placed), fixed: fixedIds, stillOpen: openIds, previousHead: prior ? prior.head : snap.head, approve: verdictNow.approve };
+    const input = { unconfined: unconfinedAt(ledger), head: snap.head, round: n, rangeBase: range.base, reviewer: ledger.provider, hunks, findings: fresh.map(placed), fixed: fixedIds, stillOpen: openIds, previousHead: prior ? prior.head : snap.head, approve: verdictNow.approve };
     if (verdictNow.reason === 'head-moved') return null;
     // A submodule range that could not be read is said in the review, which then does not approve.
     const render = (i, how) => {
@@ -512,7 +514,7 @@ function approve(repo, pr, args) {
   save(file, ledger);
   let review;
   try {
-    review = post(repo, pr, publish.renderReview({ head: reviewed.head, round: reviewed.n, rangeBase: reviewed.base, reviewer: ledger.provider, hunks: [], findings: [], fixed: [], stillOpen: [], previousHead: reviewed.head, approve: true }, 'body'));
+    review = post(repo, pr, publish.renderReview({ unconfined: unconfinedAt(ledger), head: reviewed.head, round: reviewed.n, rangeBase: reviewed.base, reviewer: ledger.provider, hunks: [], findings: [], fixed: [], stillOpen: [], previousHead: reviewed.head, approve: true }, 'body'));
   } catch (error) {
     review = landed(reviewsOf(repo, pr), ledger.reviewer, reviewed.head, after, 'APPROVED');
     if (!review) { delete ledger.pending; save(file, ledger); throw error; }
