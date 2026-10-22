@@ -2037,7 +2037,8 @@ test('a description finding carries its quote in the verdict through the prompt 
   assert.deepEqual([f.status, f.addressedEvidence.span], ['addressed', 'Then src/log.js runs.']);
 });
 
-test('a repository file named like the description marker is read as a file, and the description answers no code finding (#423)', () => {
+// No git path starts with a slash, so the nearest real file name is ':pr-description'; the marker itself cannot collide with one.
+test('a repository file named ":pr-description" is read as a file, and a description quote answers no code finding (#423)', () => {
   const w = world();
   const real = ':pr-description';
   fs.writeFileSync(path.join(w.src, real), 'alpha\nbeta\n');
