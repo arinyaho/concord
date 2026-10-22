@@ -104,12 +104,16 @@ function reviewerGuidancePrefix(guidance) {
     : '';
 }
 
-function baseReviewerPrompt(role, { stateDir, round, targetType, dodDeferred, dodPending, finding, fixGroup, retryPrompt, slug, priorIntentIds, plannedFindings = [], gateMode, gateApplied = false, intentHash = null, examined = [], fixFiles = [] }) {
+function reviewLanguageClause(language) {
+  return language ? ` Write \`summary\` and \`requirement\` in the language with BCP 47 tag \`${language}\`. Copy \`span\`, \`file\`, \`id\`, \`category\` and every code identifier exactly as they appear in the source; never translate them.` : '';
+}
+
+function baseReviewerPrompt(role, { stateDir, round, targetType, dodDeferred, dodPending, finding, fixGroup, retryPrompt, slug, priorIntentIds, plannedFindings = [], gateMode, gateApplied = false, intentHash = null, examined = [], fixFiles = [], reviewLanguage = null }) {
   const groupArtifactId = fixGroup && fixGroup.groupId ? fixGroup.groupId : finding && finding.id;
   const artifact = path.join(stateDir, role === 'fix' || role === 'certify' ? `round-${round}-${role}-${safeIdForFilename(groupArtifactId)}.json` : `round-${round}-${role}.json`);
   const env = ENV_CLAUSE_BY_ROLE[role];
   const anchorRoles = ['correctness', 'verify', 'intent', 'gate', 'gate-verify'];
-  const retry = `${role === 'fix' ? '' : BLOCKED_CLAUSE}${anchorRoles.includes(role) ? FINDING_SPAN_CLAUSE : ''}${retryPrompt ? `\n\n${retryPrompt}` : ''}`;
+  const retry = `${role === 'fix' ? '' : BLOCKED_CLAUSE}${anchorRoles.includes(role) ? FINDING_SPAN_CLAUSE + reviewLanguageClause(reviewLanguage) : ''}${retryPrompt ? `\n\n${retryPrompt}` : ''}`;
   if (role === 'correctness') {
     const doc = targetType === 'file';
     const dodNote = dodPending
@@ -164,4 +168,4 @@ function reportedNoEdit(stateDir, round, groups) {
   });
 }
 
-module.exports = { VERIFIER_ENV_CLAUSE, ENV_CLAUSE_BY_ROLE, cliClause, DESIGN_EVIDENCE_BINDING_CLAUSE, fixDeclaration, reportedNoEdit, examinedClause, ROLE_SEQUENCE, BLOCKED_CLAUSE, GATE_SWEEP_CLAUSE, GATE_FOLLOWUP_CLAUSE, GATE_VERIFY_ADDED_CLAUSE, GATE_VERIFY_BLOCKING_CLAUSE, GATE_VERIFY_OWNERSHIP_CLAUSE, VERIFY_OWNERSHIP_CLAUSE, reviewerGuidancePrefix, reviewerPrompt };
+module.exports = { reviewLanguageClause, VERIFIER_ENV_CLAUSE, ENV_CLAUSE_BY_ROLE, cliClause, DESIGN_EVIDENCE_BINDING_CLAUSE, fixDeclaration, reportedNoEdit, examinedClause, ROLE_SEQUENCE, BLOCKED_CLAUSE, GATE_SWEEP_CLAUSE, GATE_FOLLOWUP_CLAUSE, GATE_VERIFY_ADDED_CLAUSE, GATE_VERIFY_BLOCKING_CLAUSE, GATE_VERIFY_OWNERSHIP_CLAUSE, VERIFY_OWNERSHIP_CLAUSE, reviewerGuidancePrefix, reviewerPrompt };

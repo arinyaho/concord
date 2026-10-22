@@ -21,7 +21,7 @@ const { isValidFindingId } = require('./gate-contract');
 const { readCommittedSource, prepareAnchors, applyAnchors } = require('./review-anchors');
 const { same } = require('./review-eval');
 const { PANEL_LENSES } = require('./report');
-const { BLOCKED_CLAUSE, cliClause, reviewerGuidancePrefix, reviewerPrompt, reportedNoEdit } = require('./round-plan');
+const { reviewLanguageClause, BLOCKED_CLAUSE, cliClause, reviewerGuidancePrefix, reviewerPrompt, reportedNoEdit } = require('./round-plan');
 const { isWindows, crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
 const { providerFailure, normalizeProviderFailure, reviewContinuation } = require('./provider-failure');
 
@@ -833,7 +833,7 @@ async function runRounds(options) {
         const artifact = path.join(context.stateDir, `round-${context.round}-gate-panel-${panel.round}-${lens}.json`);
         try {
           await launchLens({ preReserved: true, role: `gate-panel-${lens}`, repoRoot, stateDir: context.stateDir,
-            prompt: `Review ${path.join(context.stateDir, `round-${context.round}-diff.txt`)} and the repository through the ${lens} lens. You MAY Read/Grep the repository and MUST read ${path.join(context.stateDir, `intent-${context.slug}.md`)} if it exists to assess the design and acceptance criteria. Previously rejected IDs: ${JSON.stringify(panel.rejectedIds || [])} -- do not re-raise one unless you found something the earlier round did not. Every candidate faces three adversarial verifiers that default to REFUTED when uncertain and decide by majority, so a gap you cannot anchor in evidence will not survive: substantiate what you raise rather than raising more. Write ONLY {"status":"ok","findings":[]} to ${artifact}; every ID must use gate:${lens}:<slug>.${BLOCKED_CLAUSE}${cliClause(cliPath)}` });
+            prompt: `Review ${path.join(context.stateDir, `round-${context.round}-diff.txt`)} and the repository through the ${lens} lens. You MAY Read/Grep the repository and MUST read ${path.join(context.stateDir, `intent-${context.slug}.md`)} if it exists to assess the design and acceptance criteria. Previously rejected IDs: ${JSON.stringify(panel.rejectedIds || [])} -- do not re-raise one unless you found something the earlier round did not. Every candidate faces three adversarial verifiers that default to REFUTED when uncertain and decide by majority, so a gap you cannot anchor in evidence will not survive: substantiate what you raise rather than raising more. Write ONLY {"status":"ok","findings":[]} to ${artifact}; every ID must use gate:${lens}:<slug>.${reviewLanguageClause(context.reviewLanguage)}${BLOCKED_CLAUSE}${cliClause(cliPath)}` });
         } catch (error) {
           if (error.initiativeBlocked || (error.reviewFailure && ['interrupted', 'timeout', 'signal'].includes(error.reviewFailure.kind))) throw error;
         }

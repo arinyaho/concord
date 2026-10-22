@@ -311,3 +311,9 @@ test('every manual driver copy carries the sandbox uid note for each probe role,
     }
   }
 });
+
+test('gate-panel lens prompt carries the review-language clause', () => {
+  assert.equal(typeof require(path.join(CORE, 'round-plan')).reviewLanguageClause, 'function');
+  const runner = fs.readFileSync(path.join(CORE, 'codex-review-runner.js'), 'utf8');
+  assert.match(runner, /gate:\$\{lens\}:<slug>\.\$\{reviewLanguageClause\(context\.reviewLanguage\)\}\$\{BLOCKED_CLAUSE\}/);
+});
