@@ -81,6 +81,7 @@ else if (a[0] === 'api' && a[1] === 'graphql') {
     const id = arg('id');
     const name = /mutation/.test(query) ? /(\\w+)\\(input/.exec(query)[1] : 'thread';
     fs.appendFileSync(dir + '/gql.jsonl', JSON.stringify({ name, id }) + '\\n');
+    if (name === 'thread') fs.appendFileSync(dir + '/gql-queries.jsonl', JSON.stringify({ query }) + '\\n');
     if (arg('b') !== undefined) fs.appendFileSync(dir + '/gql-bodies.jsonl', JSON.stringify({ name, id, body: arg('b') }) + '\\n');
     if (fs.existsSync(dir + '/gql-fail-' + name)) { console.error('boom'); process.exit(1); }
     const states = fs.existsSync(dir + '/thread-state.json') ? JSON.parse(fs.readFileSync(dir + '/thread-state.json', 'utf8')) : {};
@@ -337,6 +338,14 @@ test('a finding posted in the review body has no thread, and a failed resolution
   assert.equal(round2.event, 'published');
   assert.equal(f.ledger().findings[0].threadReplied, true);
   assert.equal(f.ledger().findings[0].threadResolved, undefined);
+});
+
+test('settling a thread queries no comment bodies', () => {
+  const w = world();
+  fixedRound(w);
+  const queries = fs.readFileSync(path.join(w.dir, 'gql-queries.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l).query);
+  assert.ok(queries.length > 0);
+  for (const q of queries) assert.doesNotMatch(q, /body|createdAt|last:/);
 });
 
 test('a finding raised again after its thread was resolved has the thread reopened and answered (#394)', () => {

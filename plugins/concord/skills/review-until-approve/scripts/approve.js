@@ -170,6 +170,8 @@ function publishReview({ repo, pr, reviewer, head, after, state, input, render, 
 // still on this pull request, started by this account, not resolved by anyone else. A failure that may pass (network) records nothing, so the next round retries.
 const THREAD_STATE = 'query($id:ID!){node(id:$id){... on PullRequestReviewThread{isResolved resolvedBy{login} pullRequest{number repository{nameWithOwner}} root:comments(first:1){nodes{author{login}}} comments(last:100){nodes{author{login} body createdAt}}}}}';
 // ponytail: the thread's starter is read apart from the newest 100 comments, which are what the author-reply and last-comment checks need.
+// settleThreads needs only the starter and isResolved, so it does not download comment bodies.
+const SETTLE_STATE = 'query($id:ID!){node(id:$id){... on PullRequestReviewThread{isResolved pullRequest{number repository{nameWithOwner}} root:comments(first:1){nodes{author{login}}}}}}';
 const threadMutation = (name, field) => `mutation($id:ID!${field === 'reply' ? ',$b:String!' : ''}){${name}(input:{${field === 'reply' ? 'pullRequestReviewThreadId:$id,body:$b' : 'threadId:$id'}}){clientMutationId}}`;
 const threadCall = (name, field, id, body) => ghJson(['api', 'graphql', '-f', `query=${threadMutation(name, field)}`, '-f', `id=${id}`, ...(body ? ['-f', `b=${body}`] : [])]);
 function settleThreads(repo, pr, ledger, file) {
@@ -182,7 +184,7 @@ function settleThreads(repo, pr, ledger, file) {
     const reopened = f.status === 'open' && (f.threadResolved || f.threadReplied || f.threadSkipped || f.threadReopened);
     if (!fixing && !reopened) continue;
     try {
-      const t = ghJson(['api', 'graphql', '-f', `query=${THREAD_STATE}`, '-f', `id=${f.threadId}`]).data?.node;
+      const t = ghJson(['api', 'graphql', '-f', `query=${SETTLE_STATE}`, '-f', `id=${f.threadId}`]).data?.node;
       const mine = t && t.pullRequest?.number === Number(pr) && t.pullRequest?.repository?.nameWithOwner?.toLowerCase() === repo.toLowerCase() && t.root?.nodes?.[0]?.author?.login === ledger.reviewer;
       if (!t) f.threadSkipped = 'gone';
       else if (!mine) f.threadSkipped = 'not-ours';
