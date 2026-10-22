@@ -17,6 +17,7 @@ const publish = require('./publish');
 const { core } = require('./locate');
 const { writeFileAtomic } = require(path.join(core, 'atomic-write'));
 const { reclaimStaleLock } = require(path.join(core, 'run-lock'));
+const broker = require('./broker');
 
 // The review clone's .git is writable for an unconfined reviewer, which could plant refs/replace/* to make a head read differently; evidence is read as stored.
 process.env.GIT_NO_REPLACE_OBJECTS = '1';
@@ -31,6 +32,9 @@ const OPT_IN_HOW = `the user adds ${OPT_IN}=1 under "env" in ~/.claude/settings.
 function userOptedIn() {
   try { return JSON.parse(fs.readFileSync(path.join(os.userInfo().homedir, '.claude', 'settings.json'), 'utf8'))?.env?.[OPT_IN] === '1'; } catch (_) { return false; }
 }
+// Under Claude Code the Claude reviewer runs as subagents of the session that drives the skill, with the session's own login, so it needs no `claude` binary and no credentials of its own.
+const subagents = () => !!process.env.CLAUDECODE;
+const MODEL_ALIASES = ['sonnet', 'opus', 'haiku'];
 const WARNING = 'the claude reviewer can read your real home directory (gh, ssh and cloud credentials); a malicious pull request could make it publish their contents, and it is not trusted to leave the review clone intact. To avoid this, remove CONCORD_REVIEW_UNCONFINED_CLAUDE from your Claude settings (the codex reviewer stays confined).';
 const die = (message, code = 1) => { process.stderr.write(`review-until-approve: ${message}\n`); process.exit(code); };
 const out = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -86,7 +90,7 @@ function reviewerEnv(provider, claudeConfig, home, realClaudeConfig) {
   env.HOME = home;
   env.CLAUDE_CONFIG_DIR = claudeConfig;
   if (provider === 'codex') env.CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
-  if (provider === 'claude') {
+  if (provider === 'claude' && !subagents()) {
     // The opted-in Claude reviewer can already read the whole home, so it authenticates as the user: the token when set, else the
     // real credentials file copied into its own config directory. The user's settings, hooks, plugins and MCP servers never load
     // into the review: its allow rules and a logged-in gh would go beyond what the opt-in accepts.
@@ -163,6 +167,7 @@ const onPath = (name) => (process.env.PATH || '').split(path.delimiter).some((di
 function missing(provider) {
   if (provider === 'codex') return [!onPath('codex') ? 'install codex' : !fs.existsSync(path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'auth.json')) && 'run `codex login`'].filter(Boolean);
   // The Claude reviewer cannot yet be kept from the account's home directory (#366), so it runs only while the user's setting is present.
+  if (subagents()) return [!userOptedIn() && `off by default because it can read your real home directory and a malicious pull request could publish what it reads; ${OPT_IN_HOW}`].filter(Boolean);
   return [!onPath('claude') && 'install claude', !process.env.CLAUDE_CODE_OAUTH_TOKEN && !fs.existsSync(path.join(claudeConfigDir(), '.credentials.json')) && `log in with claude (no \`.credentials.json\` in ${claudeConfigDir()}) or export CLAUDE_CODE_OAUTH_TOKEN (create one with \`claude setup-token\`)`, !userOptedIn() && `off by default because it can read your real home directory and a malicious pull request could publish what it reads; ${OPT_IN_HOW}`].filter(Boolean);
 }
 // An explicit choice or a resumed ledger is kept or refused. Without one, the harness's own reviewer runs when it is ready, otherwise the other one; the note says why.
@@ -181,6 +186,11 @@ function chooseReviewer(asked) {
   return { provider, note: provider === first ? undefined : `reviewer: ${provider} (${first}: ${need[first].join('; ')})` };
 }
 
+// The Agent tool takes only these model names.
+function checkModel(ledger) {
+  if (ledger.provider === 'claude' && subagents() && ledger.model && !MODEL_ALIASES.includes(ledger.model)) die(`under Claude Code the Claude reviewer runs as subagents, which take only the model names ${MODEL_ALIASES.slice(0, 2).join(', ')} or ${MODEL_ALIASES[2]}; --model ${ledger.model} cannot be used (run start with --model sonnet, opus or haiku)`);
+}
+
 const opt = (args, name) => { const i = args.indexOf(name); return i === -1 ? undefined : args[i + 1]; };
 const lastRound = (ledger) => ledger.rounds[ledger.rounds.length - 1];
 
@@ -193,6 +203,7 @@ function start(repo, pr, args) {
   const ledger = found || { version: 1, repo, pr, reviewer, provider, model: opt(args, '--model') || null, author: snap.author, startedAt: new Date().toISOString(), rounds: [], findings: [], nudged: null, approval: null, stopped: null };
   ledger.provider = provider;
   if (opt(args, '--model')) ledger.model = opt(args, '--model');
+  checkModel(ledger);
   ledger.stopped = null;
   save(file, ledger);
   const viewer = gh(['repo', 'view', repo, '--json', 'viewerPermission', '--jq', '.viewerPermission']).trim();
@@ -323,6 +334,7 @@ function reviewRound(repo, pr, args) {
   for (let discards = 0; discards < MAX_DISCARDS; discards++) {
     // Read again before every launch: a discarded attempt takes minutes, and the user may have removed the setting meanwhile.
     if (ledger.provider === 'claude') { const need = missing('claude'); if (need.length) die(`the claude reviewer is not ready: ${need.join('; ')}`); }
+    checkModel(ledger);
     const result = attempt(repo, pr, ledger, file);
     if (result) return outFor(ledger, result);
   }
@@ -378,6 +390,14 @@ function attempt(repo, pr, ledger, file) {
     const runnerOptions = { ref: `concord-pr-${pr}`, base: range.base, broad: range.broad, noBroad: !range.broad, reviewer: ledger.provider, reviewerModel: ledger.model || undefined, reviewDenyRead: [realClaudeConfig], reviewRealHome: os.homedir(), reviewerGuidance: guidance(shown), intentFile: range.broad ? intentFile : undefined };
     const env = reviewerEnv(ledger.provider, claudeConfig, reviewerHome, realClaudeConfig);
     const runner = process.env.REVIEW_APPROVE_RUNNER || path.join(__dirname, 'run-review.js');
+    // The runner waits in `dir/broker` for the session to answer each request; `next` finds that directory through the run file.
+    if (ledger.provider === 'claude' && subagents()) {
+      const brokerDir = path.join(dir, 'broker');
+      fs.mkdirSync(brokerDir);
+      runnerOptions.broker = brokerDir;
+      if (process.env.REVIEW_APPROVE_BROKER_TIMEOUT_MS) runnerOptions.brokerTimeoutMs = Number(process.env.REVIEW_APPROVE_BROKER_TIMEOUT_MS);
+      fs.writeFileSync(runFile(file), JSON.stringify({ pid: process.pid, dir: brokerDir }));
+    }
     const reviewed = JSON.parse(run('node', [runner, JSON.stringify(runnerOptions)], { cwd: work, env }).trim().split('\n').pop());
     if (reviewed.decision !== 'review-only' || !Array.isArray(reviewed.findings)) throw new Error(`the review did not complete: ${JSON.stringify(reviewed).slice(0, 200)}`);
 
@@ -456,7 +476,32 @@ function attempt(repo, pr, ledger, file) {
       save(file, next);
     } catch (_) { /* ponytail: ids stay empty; thread replies are then missed until the next round */ }
     return { event: 'published', round: n, mode: range.broad ? 'broad' : 'diff', review: input.approve ? 'APPROVE' : 'COMMENT', new: fresh.length, fixed: fixedIds.length, stillOpen: openIds.length, open: openNow, ...(unreviewed.length && { unreviewed }), ...(verdictNow.approve ? {} : { notApproved: verdictNow.reason }), ...(held.length && { held, hint: 'These findings cannot be settled from the code; run waive <key> (or waive <id> when the id is unique) to clear one you accept.' }) };
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  } finally { fs.rmSync(runFile(file), { force: true }); fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+const runFile = (file) => `${file}.run.json`;
+const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
+const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+// The session's side of a round that runs as subagents: prints the open request, or `waiting` after a bounded wait, or `finished`
+// when no round is running (the round's own result is the output of the process the session started). Takes no lock.
+function next(repo, pr, args) {
+  const file = ledgerFile(repo, pr, gh(['api', 'user', '--jq', '.login']).trim());
+  const running = () => { const run = load(runFile(file)); return run && pidAlive(run.pid) ? run : null; };
+  const done = opt(args, '--done');
+  if (done !== undefined) {
+    const run = running();
+    if (!run) die('no round is running');
+    try { broker.markDone(run.dir, done); } catch (error) { die(error.message); }
+  }
+  const deadline = Date.now() + Number(process.env.REVIEW_APPROVE_NEXT_WAIT_MS || 540000);
+  for (;;) {
+    const run = running();
+    if (!run) return out({ event: 'finished' });
+    const request = broker.openRequest(run.dir);
+    if (request) return out({ event: 'subagent-request', id: request.id, role: request.role, promptFile: request.promptFile, ...(request.model && { model: request.model }) });
+    if (Date.now() > deadline) return out({ event: 'waiting' });
+    sleep(250);
+  }
 }
 
 function approve(repo, pr, args) {
@@ -511,7 +556,7 @@ function nudged(repo, pr, event, args) {
 }
 
 const [verb, repo, pr, ...rest] = process.argv.slice(2);
-if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '') || !/^\d+$/.test(pr || '')) die('usage: approve.js <start|round|approve|waive|stop|nudged> <owner/repo> <pr> [...]', 2);
-const verbs = { start, round: reviewRound, approve, stop, waive: (r, p, a) => waive(r, p, a[0], a), nudged: (r, p, a) => nudged(r, p, a[0], a) };
+if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '') || !/^\d+$/.test(pr || '')) die('usage: approve.js <start|round|next|approve|waive|stop|nudged> <owner/repo> <pr> [...]', 2);
+const verbs = { start, round: reviewRound, next, approve, stop, waive: (r, p, a) => waive(r, p, a[0], a), nudged: (r, p, a) => nudged(r, p, a[0], a) };
 if (!verbs[verb]) die(`unknown verb ${verb}`, 2);
 try { verbs[verb](repo, pr, rest); } catch (error) { die(error.message); }

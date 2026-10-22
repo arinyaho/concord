@@ -3,7 +3,8 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync, execFileSync } = require('node:child_process');
+const { spawn, spawnSync, execFileSync } = require('node:child_process');
+const { artifactDestinationFromPrompt } = require('../../../core/review-artifact');
 const { tempDir } = require('../../../hooks/test/temp-dir');
 
 const APPROVE = path.join(__dirname, '..', 'scripts', 'approve.js');
@@ -116,7 +117,7 @@ console.log(JSON.stringify({ decision: 'review-only', round: 1, findings }));
   const optIn = (settings = { env: { CONCORD_REVIEW_UNCONFINED_CLAUDE: '1' } }) => fs.writeFileSync(path.join(userHome, '.claude', 'settings.json'), typeof settings === 'string' ? settings : JSON.stringify(settings));
   const approve = (...args) => spawnSync(process.execPath, [APPROVE, ...args], { env: { ...env, ...extraEnv }, encoding: 'utf8' });
   const lines = (name) => fs.existsSync(path.join(dir, name)) ? fs.readFileSync(path.join(dir, name), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
-  return { dir, src, bare, c1, state, write, approve, optIn, userHome, posts: () => lines('posts.jsonl'), calls: () => lines('runner-calls.jsonl'), ledger: () => JSON.parse(fs.readFileSync(path.join(dir, 'ledgers', 'o__r__5__bot.json'), 'utf8')) };
+  return { dir, src, bare, c1, state, write, approve, env: { ...env, ...extraEnv }, optIn, userHome, posts: () => lines('posts.jsonl'), calls: () => lines('runner-calls.jsonl'), ledger: () => JSON.parse(fs.readFileSync(path.join(dir, 'ledgers', 'o__r__5__bot.json'), 'utf8')) };
 }
 
 const finding = { id: 'correctness:bad', category: 'correctness', file: 'a.js', line: 2, span: 'bad', summary: 'bad line', requirement: '' };
@@ -772,15 +773,16 @@ test('under Claude Code with the opt-in, the harness reviewer is chosen with a t
   }
 });
 
-test('under Claude Code with the opt-in but no Claude login, start runs on codex and names how to log in', () => {
-  const w = world({ CLAUDECODE: '1' });
+test('under Codex with the opt-in but no Claude login, start runs on codex and names how to log in', () => {
+  const w = world({ CLAUDECODE: '' });
   w.optIn();
-  const o = startOut(w.approve('start', 'o/r', '5'));
+  const o = startOut(w.approve('start', 'o/r', '5', '--reviewer', 'codex'));
   assert.equal(o.reviewer, 'codex');
-  assert.match(o.note, /^reviewer: codex \(claude: log in with claude .*setup-token/);
+  assert.equal(w.approve('start', 'o/r', '5').status, 0);
+  assert.equal(w.ledger().provider, 'codex');
   const explicit = w.approve('start', 'o/r', '5', '--reviewer', 'claude');
   assert.notEqual(explicit.status, 0);
-  assert.match(explicit.stderr, /log in with claude/);
+  assert.match(explicit.stderr, /log in with claude.*setup-token/);
 });
 
 test('under Codex with codex logged out, start runs on claude only with the opt-in', () => {
@@ -798,7 +800,7 @@ test('under Codex with codex logged out, start runs on claude only with the opt-
 });
 
 test('when no reviewer is usable, start exits non-zero with one line per reviewer naming what is missing, and creates no ledger', () => {
-  const w = world({ CLAUDECODE: '1' });
+  const w = world({ CLAUDECODE: '' });
   fs.rmSync(path.join(w.dir, 'bin', 'codex'));
   fs.rmSync(path.join(w.dir, 'bin', 'claude'));
   const r = w.approve('start', 'o/r', '5');
@@ -825,10 +827,10 @@ test('an explicit reviewer is never replaced: --reviewer codex with codex missin
 const loginWorld = (extra, files) => {
   const real = tempDir('rua-real-claude-');
   for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(real, name), text);
-  const w = world({ CLAUDECODE: '1', CLAUDE_CONFIG_DIR: real, ...extra });
+  const w = world({ CLAUDECODE: '', CLAUDE_CONFIG_DIR: real, ...extra });
   w.write('findings.json', []);
   w.optIn();
-  const started = w.approve('start', 'o/r', '5');
+  const started = w.approve('start', 'o/r', '5', '--reviewer', 'claude');
   assert.equal(started.status, 0, started.stderr);
   const round = w.approve('round', 'o/r', '5');
   assert.equal(round.status, 0, round.stderr);
@@ -850,11 +852,11 @@ test('with the opt-in and a token, the Claude reviewer gets the token and no cop
 });
 
 test('round refuses a claude ledger whose login has gone, naming how to log in, and starts no reviewer', () => {
-  const env = { CLAUDECODE: '1', CLAUDE_CODE_OAUTH_TOKEN: 't' };
+  const env = { CLAUDECODE: '', CLAUDE_CODE_OAUTH_TOKEN: 't' };
   const w = world(env);
   w.write('findings.json', []);
   w.optIn();
-  assert.equal(w.approve('start', 'o/r', '5').status, 0);
+  assert.equal(w.approve('start', 'o/r', '5', '--reviewer', 'claude').status, 0);
   env.CLAUDE_CODE_OAUTH_TOKEN = '';
   const again = w.approve('round', 'o/r', '5');
   assert.notEqual(again.status, 0);
@@ -1039,4 +1041,181 @@ test('a removed submodule needs nothing fetched and does not block approval', ()
   w.write('findings.json', []);
   const r = startRound(w);
   assert.deepEqual([r.review, r.unreviewed], ['APPROVE', undefined]);
+});
+
+// Under Claude Code the reviewer roles run as the session's own subagents: `round` keeps running and waits, a session loop asks `next`
+// for the open request, a subagent writes the one artifact the prompt names, and `next --done` hands control back.
+const roleArtifact = (role, found) => ({
+  correctness: { status: 'ok', examined: ['a.js'], findings: found.map((f) => ({ id: f.id, gate: 'correctness', file: f.file, span: f.span, summary: f.summary })) },
+  verify: { status: 'ok', rejected: [], findings: [] },
+  gate: { status: 'ok', findings: [] },
+  'gate-verify': { status: 'ok', rejected: [], findings: [], blocking: [] },
+  intent: { status: 'ok', findings: [] },
+}[role]);
+
+// Plays the session: starts `round` in the background, answers every request the way a subagent would, and returns the round's own output.
+async function session(w, { found = [], answer } = {}) {
+  const child = spawn(process.execPath, [APPROVE, 'round', 'o/r', '5'], { env: w.env });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (c) => { stdout += c; });
+  child.stderr.on('data', (c) => { stderr += c; });
+  let closed = false;
+  const exited = new Promise((resolve) => child.on('close', (code) => { closed = true; resolve(code); }));
+  const requests = [];
+  let answered = null;
+  for (let i = 0; i < 400 && !closed; i++) {
+    const next = spawnSync(process.execPath, [APPROVE, 'next', 'o/r', '5', ...(answered ? ['--done', answered] : [])], { env: w.env, encoding: 'utf8' });
+    answered = null;
+    const line = next.stdout.trim().split('\n').pop();
+    const event = line ? JSON.parse(line) : { event: 'none', stderr: next.stderr };
+    // `finished` before the round has written its run file is not the end: only the round process closing is.
+    if (event.event !== 'subagent-request') { await new Promise((r) => setTimeout(r, 200)); continue; }
+    requests.push(event);
+    const prompt = fs.readFileSync(event.promptFile, 'utf8');
+    // The artifact is the one the prompt tells the role to write, as the runner reads it; the other paths in the prompt are its inputs.
+    const artifact = artifactDestinationFromPrompt(prompt, path.dirname(prompt.match(/(\S*round-\d+-[A-Za-z0-9:._-]+\.json)/)[1]));
+    const body = answer ? answer(event, artifact) : roleArtifact(event.role, found);
+    if (body !== null) fs.writeFileSync(artifact, JSON.stringify(body));
+    answered = event.id;
+  }
+  const code = await exited;
+  return { code, stdout, stderr, requests };
+}
+
+const inClaudeCode = { CLAUDECODE: '1', PATH: '/usr/bin:/bin' };
+function claudeCodeWorld(extra = {}) {
+  const w = world(extra);
+  // No claude binary and no login: the session's own login is used.
+  fs.rmSync(path.join(w.dir, 'bin', 'claude'));
+  fs.rmSync(path.join(w.dir, 'bin', 'codex'));
+  w.env.CLAUDECODE = '1';
+  delete w.env.REVIEW_APPROVE_RUNNER;
+  w.env.REVIEW_APPROVE_NEXT_WAIT_MS = '2000';
+  w.env.REVIEW_APPROVE_BROKER_TIMEOUT_MS = '20000';
+  w.optIn();
+  return w;
+}
+
+test('subagent transport: with the setting, under Claude Code, a round with no claude binary and no login is ready and publishes what the claude -p path publishes for the same findings', async () => {
+  const w = claudeCodeWorld();
+  const started = JSON.parse(spawnSync(process.execPath, [APPROVE, 'start', 'o/r', '5'], { env: w.env, encoding: 'utf8' }).stdout);
+  assert.deepEqual([started.reviewer, started.action], ['claude', 'round']);
+  const r = await session(w, { found: [finding] });
+  assert.equal(r.code, 0, r.stderr);
+  const out = JSON.parse(r.stdout.trim().split('\n').pop());
+  assert.deepEqual([out.event, out.review, out.new], ['published', 'COMMENT', 1]);
+  assert.ok(r.requests.map((q) => q.role).includes('correctness'));
+  assert.equal(w.posts()[0].comments[0].path, 'a.js');
+
+  const reference = world({ CLAUDE_CODE_OAUTH_TOKEN: 'oauth-token-abcdef' });
+  reference.optIn();
+  reference.write('findings.json', [finding]);
+  reference.approve('start', 'o/r', '5', '--reviewer', 'claude');
+  reference.approve('round', 'o/r', '5');
+  // Each world has its own repository, so its head differs; the finding is verified at that world's head.
+  const shape = (x) => x.ledger().findings.map(({ key, id, file, span, status, spanVerified }) => ({ key, id, file, span, status, verified: spanVerified === x.c1 }));
+  assert.deepEqual(shape(w), shape(reference));
+  const posted = (x) => [x.posts()[0].event, x.posts()[0].commit_id === x.c1, x.posts()[0].body.replaceAll(x.c1, 'HEAD').replaceAll(x.state.mergeBase, 'BASE'), x.posts()[0].comments.map((c) => [c.path, c.line, c.body.replaceAll(x.c1, 'HEAD')])];
+  assert.deepEqual(posted(w), posted(reference));
+});
+
+test('subagent transport: under Claude Code without the setting nothing changes: start picks codex and round on a claude ledger issues no request', async () => {
+  const w = claudeCodeWorld();
+  w.optIn({});
+  fs.writeFileSync(path.join(w.dir, 'bin', 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  w.env.PATH = `${path.join(w.dir, 'bin')}:/usr/bin:/bin`;
+  const started = spawnSync(process.execPath, [APPROVE, 'start', 'o/r', '5'], { env: w.env, encoding: 'utf8' });
+  assert.equal(JSON.parse(started.stdout).reviewer, 'codex', started.stderr);
+  const ledger = w.ledger();
+  fs.writeFileSync(path.join(w.dir, 'ledgers', 'o__r__5__bot.json'), JSON.stringify({ ...ledger, provider: 'claude' }));
+  const r = await session(w, { found: [finding] });
+  assert.notEqual(r.code, 0);
+  assert.match(r.stderr, new RegExp(SETTING));
+  assert.deepEqual(r.requests, []);
+  assert.deepEqual(w.posts(), []);
+});
+
+test('subagent transport: a subagent that wrote no artifact fails the round: nothing is posted and no run state is left', async () => {
+  const w = claudeCodeWorld();
+  spawnSync(process.execPath, [APPROVE, 'start', 'o/r', '5'], { env: w.env });
+  const r = await session(w, { answer: () => null });
+  assert.notEqual(r.code, 0);
+  assert.deepEqual(w.posts(), []);
+  assert.equal(fs.existsSync(path.join(w.dir, 'ledgers', 'o__r__5__bot.json.run.json')), false);
+  assert.equal(w.ledger().rounds.length, 0);
+});
+
+test('subagent transport: --done for a request that is not open is refused, and next with no round running says finished', () => {
+  const w = claudeCodeWorld();
+  spawnSync(process.execPath, [APPROVE, 'start', 'o/r', '5'], { env: w.env });
+  const idle = spawnSync(process.execPath, [APPROVE, 'next', 'o/r', '5'], { env: w.env, encoding: 'utf8' });
+  assert.equal(JSON.parse(idle.stdout).event, 'finished');
+  const stale = spawnSync(process.execPath, [APPROVE, 'next', 'o/r', '5', '--done', '3'], { env: w.env, encoding: 'utf8' });
+  assert.notEqual(stale.status, 0);
+});
+
+test('subagent transport: start refuses a --model that the Agent tool cannot take', () => {
+  const w = claudeCodeWorld();
+  const bad = spawnSync(process.execPath, [APPROVE, 'start', 'o/r', '5', '--reviewer', 'claude', '--model', 'claude-opus-5-5'], { env: w.env, encoding: 'utf8' });
+  assert.notEqual(bad.status, 0);
+  assert.match(bad.stderr, /sonnet, opus or haiku/);
+  const good = spawnSync(process.execPath, [APPROVE, 'start', 'o/r', '5', '--reviewer', 'claude', '--model', 'opus'], { env: w.env, encoding: 'utf8' });
+  assert.equal(good.status, 0, good.stderr);
+});
+
+test('subagent transport: a subagent that edits a tracked file of the checkout fails the round and nothing is posted', async () => {
+  const w = claudeCodeWorld();
+  spawnSync(process.execPath, [APPROVE, 'start', 'o/r', '5'], { env: w.env });
+  const r = await session(w, { found: [finding], answer: (event) => {
+    if (event.role === 'correctness') fs.writeFileSync(path.join(path.dirname(path.dirname(event.promptFile)), 'work', 'a.js'), 'tampered\n');
+    return roleArtifact(event.role, [finding]);
+  } });
+  assert.notEqual(r.code, 0);
+  assert.match(r.stderr, /modified|moved/);
+  assert.deepEqual(w.posts(), []);
+});
+
+test('subagent transport: every role prompt tells a subagent without a shell to judge by reading, so "cannot run it" is never a reason to write blocked', async () => {
+  const w = claudeCodeWorld();
+  spawnSync(process.execPath, [APPROVE, 'start', 'o/r', '5'], { env: w.env });
+  const seen = [];
+  await session(w, { found: [finding], answer: (event) => {
+    seen.push([event.role, fs.readFileSync(event.promptFile, 'utf8')]);
+    return roleArtifact(event.role, [finding]);
+  } });
+  assert.ok(['correctness', 'verify'].every((role) => seen.some(([r]) => r === role)), JSON.stringify(seen.map(([r]) => r)));
+  for (const [role, prompt] of seen) {
+    assert.match(prompt, /cannot run any command/, role);
+    assert.match(prompt, /judge by reading/, role);
+    assert.match(prompt, /write "blocked" only for a file you must read and cannot/, role);
+  }
+});
+
+test('the pr-reviewer agent has no shell: Read, Grep, Glob and Write only', () => {
+  const agent = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'agents', 'pr-reviewer.md'), 'utf8');
+  assert.match(agent, /^---\nname: pr-reviewer\n/);
+  assert.match(agent, /\ntools: Read, Grep, Glob, Write\n/);
+});
+
+test('subagent transport: a session that never answers ends the round at the deadline: nothing is posted and no run state is left', async () => {
+  const w = claudeCodeWorld();
+  w.env.REVIEW_APPROVE_BROKER_TIMEOUT_MS = '1500';
+  spawnSync(process.execPath, [APPROVE, 'start', 'o/r', '5'], { env: w.env });
+  const child = spawnSync(process.execPath, [APPROVE, 'round', 'o/r', '5'], { env: w.env, encoding: 'utf8' });
+  assert.notEqual(child.status, 0);
+  assert.match(child.stderr, /no subagent answered/);
+  assert.deepEqual(w.posts(), []);
+  assert.equal(fs.existsSync(path.join(w.dir, 'ledgers', 'o__r__5__bot.json.run.json')), false);
+});
+
+test('subagent transport: a review that quotes the login credentials a subagent could read is never posted', async () => {
+  const w = claudeCodeWorld();
+  const token = 'sk-ant-oat01-aaaaaaaaaaaaaaaaaaaaaaaa';
+  fs.writeFileSync(path.join(w.dir, 'real-claude', '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: token } }));
+  spawnSync(process.execPath, [APPROVE, 'start', 'o/r', '5'], { env: w.env });
+  const r = await session(w, { found: [{ ...finding, summary: `leaks ${token}` }] });
+  assert.notEqual(r.code, 0);
+  assert.match(r.stderr, /holds a credential/);
+  assert.deepEqual(w.posts(), []);
 });
