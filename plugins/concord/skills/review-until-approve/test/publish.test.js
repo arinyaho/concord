@@ -33,8 +33,8 @@ test('renderReview: inline only inside a hunk, the rest in the body, never REQUE
   assert.equal(r.commit_id, 'abcdef1234');
   assert.deepEqual(r.comments.map((c) => c.path + c.line), ['a.js2']);
   assert.match(r.body.split('\n')[0], /^<!-- concord-approve: abcdef1234 round:2 base:b0 -->$/);
-  assert.match(r.body, /`a\.js:6` \*\*correctness\*\* sum out/);
-  assert.match(r.body, /`b\.js` \*\*correctness\*\* sum nofile/);
+  assert.match(r.body, /`a\.js:6` \*\*correctness\*\* \(blocker\) sum out/);
+  assert.match(r.body, /`b\.js` \*\*correctness\*\* \(blocker\) sum nofile/);
   assert.doesNotMatch(r.body, /sum in\b/);
 });
 
@@ -103,4 +103,21 @@ test('placeLine: a common span in a large file outside every hunk returns quickl
   const t = Date.now();
   assert.equal(publish.placeLine('}\n'.repeat(200000), '}', 'a.js', [{ file: 'a.js', from: 999999, to: 999999 }]), null);
   assert.ok(Date.now() - t < 2000);
+});
+
+test('renderReview: a class label on every finding, minors listed as follow-ups only on an approving review', () => {
+  const minor = { ...f('wording', 'a.js', 2), class: 'minor', reason: 'changes no behavior' };
+  const bug = { ...f('bug', 'a.js', 6), class: 'blocker', releaseBlocking: ['serious-bug', 'security'], reason: 'breaks login' };
+  const r = publish.renderReview({ ...base, findings: [minor, bug], approve: false, followUps: [minor] }, 'inline');
+  assert.match(r.comments[0].body, /\(minor\)/);
+  assert.match(r.comments[0].body, /changes no behavior/);
+  assert.match(r.body, /\(blocker: serious-bug, security\)/);
+  assert.match(r.body, /1 blocking/);
+  assert.doesNotMatch(r.body, /Follow-ups/);
+  const ok = publish.renderReview({ ...base, findings: [], stillOpen: ['wording'], approve: true, followUps: [minor] }, 'inline');
+  assert.equal(ok.event, 'APPROVE');
+  assert.match(ok.body, /No blocking finding is open/);
+  assert.match(ok.body, /Follow-ups \(not blocking\)/);
+  assert.match(ok.body, /`a\.js:2` .*sum wording.*changes no behavior.*`wording`/);
+  assert.match(ok.body, /Still open: `wording` \(minor\)/);
 });

@@ -49,23 +49,27 @@ function placeLine(content, span, file, hunks) {
   return null;
 }
 
-const text = (f) => `**${f.category}** ${f.summary}${f.requirement ? `\n\n> ${f.requirement}` : ''}\n\n\`${f.id}\``;
+// Anything but an explicit minor is labeled a blocker, with the release-blocking categories the reviewer named.
+const label = (f) => f.class === 'minor' ? 'minor' : `blocker${f.releaseBlocking?.length ? `: ${f.releaseBlocking.join(', ')}` : ''}`;
+const text = (f) => `**${f.category}** (${label(f)}) ${f.summary}${f.reason ? ` — ${f.reason}` : ''}${f.requirement ? `\n\n> ${f.requirement}` : ''}\n\n\`${f.id}\``;
 const ids = (list) => list.map((id) => `\`${id}\``).join(', ');
 
 // `how` is "inline" or "body". Event is APPROVE only for a clean round, never REQUEST_CHANGES.
-function renderReview({ unconfined, head, round, rangeBase, reviewer, hunks, findings, fixed, stillOpen, previousHead, approve }, how) {
+function renderReview({ unconfined, head, round, rangeBase, reviewer, hunks, findings, fixed, stillOpen, previousHead, approve, followUps = [] }, how) {
   const inDiff = (f) => f.line != null && hunks.some((h) => h.file === f.file && f.line >= h.from && f.line <= h.to);
   const inline = how === 'inline' ? findings.filter(inDiff) : [];
   const rest = findings.filter((f) => !inline.includes(f));
+  const minors = new Set(followUps.map((f) => f.id));
   const lines = [
     `<!-- concord-approve: ${head} round:${round} base:${rangeBase} -->`,
     `reviewed by concord (${reviewer})`,
     ...(unconfined ? [`reviewed unconfined on the reviewing account's trust declaration (recorded ${unconfined})`] : []),
-    findings.length === 0 && stillOpen.length === 0 ? (approve ? 'LGTM — no finding survived verification.' : 'No finding survived verification; this review does not approve.') : `${findings.length} new finding(s), ${stillOpen.length} still open.`,
+    findings.length === 0 && stillOpen.length === 0 ? (approve ? 'LGTM — no finding survived verification.' : 'No finding survived verification; this review does not approve.') : `${findings.length} new finding(s) (${findings.filter((f) => f.class !== 'minor').length} blocking), ${stillOpen.length} still open (${stillOpen.filter((id) => !minors.has(id)).length} blocking).${approve ? ' No blocking finding is open.' : ''}`,
   ];
   if (fixed.length) lines.push(`Fixed since \`${previousHead.slice(0, 7)}\`: ${ids(fixed)}`);
-  if (stillOpen.length) lines.push(`Still open: ${ids(stillOpen)}`);
+  if (stillOpen.length) lines.push(`Still open: ${stillOpen.map((id) => `\`${id}\`${minors.has(id) ? ' (minor)' : ''}`).join(', ')}`);
   for (const f of rest) lines.push(`- \`${f.file}${f.line ? `:${f.line}` : ''}\` ${text(f)}`);
+  if (approve && followUps.length) lines.push(`Follow-ups (not blocking):\n${followUps.map((f) => `- \`${f.file}${f.line ? `:${f.line}` : ''}\` ${f.summary} — ${f.reason} (\`${f.id}\`)`).join('\n')}`);
   return {
     commit_id: head,
     event: approve ? 'APPROVE' : 'COMMENT',

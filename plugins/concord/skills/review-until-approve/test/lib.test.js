@@ -104,7 +104,14 @@ test('evaluateApproval: approves only a reviewed, open, non-draft head with no o
   assert.equal(no(ledger(), { ...live, isDraft: true }).reason, 'draft');
   assert.equal(no(ledger(), { ...live, author: 'bot' }).reason, 'self-review');
   assert.equal(no(ledger({ approval: { head: 'h1' } }), live).reason, 'already-approved');
-  assert.equal(no(ledger({ findings: [{ ...finding('a', 'x', 's'), status: 'open' }] }), live).reason, 'open-findings');
+  assert.equal(no(ledger({ findings: [{ ...finding('a', 'x', 's'), status: 'open' }] }), live).reason, 'open-blockers');
+  // Only an explicit minor class lets an open finding through; a missing or any other class blocks.
+  const open = (extra) => ledger({ findings: [{ ...finding('a', 'x', 's'), status: 'open', ...extra }] });
+  assert.deepEqual(no(open({ class: 'minor', reason: 'wording only' }), live), { approve: true });
+  assert.equal(no(open({ class: 'blocker', reason: 'r' }), live).reason, 'open-blockers');
+  assert.equal(no(open({ class: 'Minor' }), live).reason, 'open-blockers');
+  assert.equal(no(open({ class: undefined }), live).reason, 'open-blockers');
+  assert.equal(no(ledger({ findings: [{ ...finding('a', 'x', 's'), status: 'open', class: 'minor' }, { ...finding('b', 'x', 't'), status: 'open' }] }), live).reason, 'open-blockers');
   assert.deepEqual(no(ledger({ findings: [{ ...finding('a', 'x', 's'), status: 'waived' }, { ...finding('b', 'x', 't'), status: 'fixed' }] }), live), { approve: true });
 });
 

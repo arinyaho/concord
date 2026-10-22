@@ -164,7 +164,7 @@ test('a waived finding lets the unchanged head be approved; the waiver is record
   const w = world();
   w.write('findings.json', [finding]);
   w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
-  assert.equal(JSON.parse(w.approve('approve', 'o/r', '5').stdout).reason, 'open-findings');
+  assert.equal(JSON.parse(w.approve('approve', 'o/r', '5').stdout).reason, 'open-blockers');
   assert.equal(JSON.parse(w.approve('waive', 'o/r', '5', 'correctness:bad').stdout).event, 'approved');
   assert.equal(w.posts()[1].event, 'APPROVE');
 });
@@ -558,7 +558,7 @@ test('a push to another file does not fix a finding whose span the file does not
   w.write('findings.json', []);
   w.approve('start', 'o/r', '5');
   const r2 = JSON.parse(w.approve('round', 'o/r', '5').stdout);
-  assert.deepEqual([r2.review, r2.fixed, r2.stillOpen, r2.notApproved], ['COMMENT', 0, 1, 'open-findings']);
+  assert.deepEqual([r2.review, r2.fixed, r2.stillOpen, r2.notApproved], ['COMMENT', 0, 1, 'open-blockers']);
   assert.equal(w.ledger().findings[0].status, 'open');
   assert.deepEqual(w.posts().map((p) => p.event), ['COMMENT', 'COMMENT']);
 });
@@ -616,7 +616,7 @@ test('a mode-only push (chmod +x) fixes nothing: the span is still at the new he
     w.write('findings.json', []);
     w.approve('start', 'o/r', '5');
     const r = JSON.parse(w.approve('round', 'o/r', '5').stdout);
-    assert.deepEqual([r.review, r.fixed, r.stillOpen, r.notApproved], ['COMMENT', 0, 1, 'open-findings']);
+    assert.deepEqual([r.review, r.fixed, r.stillOpen, r.notApproved], ['COMMENT', 0, 1, 'open-blockers']);
     assert.equal(w.ledger().findings[0].status, 'open');
   }
 });
@@ -1421,4 +1421,106 @@ test('a runner result that is not a review still records the head it attempted',
   const failed = w.ledger();
   assert.equal(failed.rounds.length, 0);
   assert.equal(failed.attempt.head, w.c1);
+});
+
+const minor = { ...finding, id: 'correctness:wording', class: 'minor', releaseBlocking: [], rationale: 'wording only, no behavior changes' };
+
+test('a round whose only open finding is minor posts APPROVE that lists it as a follow-up', () => {
+  const w = world();
+  w.write('findings.json', [minor]);
+  w.approve('start', 'o/r', '5');
+  const r = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r.event, r.review, r.new, r.stillOpen], ['published', 'APPROVE', 1, 0]);
+  const post = w.posts()[0];
+  assert.equal(post.event, 'APPROVE');
+  const body = `${post.body}\n${post.comments.map((c) => c.body).join('\n')}`;
+  assert.match(post.body, /Follow-ups \(not blocking\)/);
+  assert.match(post.body, /correctness:wording/);
+  assert.match(body, /\(minor\)/);
+  assert.match(body, /wording only, no behavior changes/);
+  const f = w.ledger().findings[0];
+  assert.deepEqual([f.status, f.class, f.reason], ['open', 'minor', 'wording only, no behavior changes']);
+  assert.equal(w.ledger().approval.head, w.c1);
+});
+
+test('a round with an unclassified finding does not approve, and labels it a blocker', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  w.approve('start', 'o/r', '5');
+  const r = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r.review, r.notApproved], ['COMMENT', 'open-blockers']);
+  assert.match(`${w.posts()[0].body}${w.posts()[0].comments.map((c) => c.body).join('')}`, /\(blocker/);
+  assert.deepEqual([w.ledger().findings[0].class, w.ledger().findings[0].reason], ['blocker', 'unclassified']);
+});
+
+test('a minor and a blocker in one round: COMMENT, and the minor is not lost when the blocker is fixed', () => {
+  const w = world();
+  w.write('findings.json', [finding, { ...minor, span: 'three', line: 3 }]);
+  w.approve('start', 'o/r', '5');
+  const r1 = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r1.review, r1.notApproved, r1.new], ['COMMENT', 'open-blockers', 2]);
+  fs.writeFileSync(path.join(w.src, 'a.js'), 'one\ngood\nthree\nfour\n');
+  sh(w.src, 'commit', '-q', '-am', 'c2');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD') });
+  w.write('findings.json', []);
+  const r2 = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r2.review, r2.fixed, r2.stillOpen], ['APPROVE', 1, 1]);
+  assert.match(w.posts()[1].body, /Follow-ups \(not blocking\)[\s\S]*correctness:wording/);
+});
+
+test('an unverified minor does not need a waiver and is not held', () => {
+  const w = world();
+  w.write('findings.json', [{ ...minor, span: 'text that is not in the file' }]);
+  w.approve('start', 'o/r', '5');
+  const r = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.deepEqual([r.review, r.held], ['APPROVE', undefined]);
+});
+
+test('reclass: the user turns a blocker into a minor with a reason, which approves; the record keeps the old class', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  const r = w.approve('reclass', 'o/r', '5', 'correctness:bad', 'minor', '--reason', 'unusual input only');
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout.trim().split('\n')[0]).event, 'reclassed');
+  const f = w.ledger().findings[0];
+  assert.deepEqual([f.class, f.reason], ['minor', 'unusual input only']);
+  assert.deepEqual(f.reclassed.map(({ from, to, reason, account }) => ({ from, to, reason, account })), [{ from: 'blocker', to: 'minor', reason: 'unusual input only', account: 'bot' }]);
+  assert.ok(f.reclassed[0].at);
+  assert.equal(w.posts()[1].event, 'APPROVE');
+  assert.match(w.posts()[1].body, /Follow-ups \(not blocking\)[\s\S]*unusual input only[\s\S]*correctness:bad/);
+});
+
+test('reclass: a minor can be raised to a blocker, which posts nothing and blocks the next approval', () => {
+  const w = world();
+  w.write('findings.json', [minor]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  const before = w.posts().length;
+  const r = w.approve('reclass', 'o/r', '5', 'correctness:wording', 'blocker', '--reason', 'it breaks callers');
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(w.posts().length, before);
+  assert.equal(w.ledger().findings[0].class, 'blocker');
+  w.write('state.json', { ...w.state });
+  assert.equal(JSON.parse(w.approve('approve', 'o/r', '5').stdout).reason, 'already-approved');
+});
+
+test('reclass refuses a missing reason, a class that is neither, and a finding that is not open', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  assert.match(w.approve('reclass', 'o/r', '5', 'correctness:bad', 'minor').stderr, /--reason/);
+  assert.match(w.approve('reclass', 'o/r', '5', 'correctness:bad', 'minor', '--reason', '  ').stderr, /--reason/);
+  assert.match(w.approve('reclass', 'o/r', '5', 'correctness:bad', 'major', '--reason', 'x').stderr, /blocker or minor/);
+  assert.match(w.approve('reclass', 'o/r', '5', 'nope', 'minor', '--reason', 'x').stderr, /no open finding/);
+  assert.equal(w.ledger().findings[0].class, 'blocker');
+});
+
+test('waive still dismisses a minor, and it leaves the follow-up list', () => {
+  const w = world();
+  w.write('findings.json', [minor, { ...finding, id: 'correctness:other', span: 'three', line: 3 }]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  assert.equal(JSON.parse(w.approve('waive', 'o/r', '5', 'correctness:other').stdout).event, 'approved');
+  assert.doesNotMatch(w.posts()[1].body, /Follow-ups[\s\S]*correctness:other/);
+  assert.match(w.posts()[1].body, /Follow-ups[\s\S]*correctness:wording/);
 });

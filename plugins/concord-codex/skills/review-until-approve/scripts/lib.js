@@ -102,8 +102,20 @@ function submoduleRepo(url, prRepo) {
   return null;
 }
 
-// Every verified finding blocks: the review engine emits no severity. A user
-// waives a disputed one with the `waive` verb.
+// A finding is a blocker unless it is explicitly minor: a missing or malformed class blocks. The engine reports `minor` only for an
+// empty `releaseBlocking` with a rationale; the same is required here, so a ledger or runner that says less blocks.
+const isBlocker = (f) => f.class !== 'minor';
+function classOf(f) {
+  const reason = collapse(f.rationale);
+  if (f.class === 'minor' && Array.isArray(f.releaseBlocking) && f.releaseBlocking.length === 0 && reason) return { class: 'minor', reason, releaseBlocking: [] };
+  const categories = Array.isArray(f.releaseBlocking) ? f.releaseBlocking.filter((c) => typeof c === 'string') : [];
+  return { class: 'blocker', reason: reason || 'unclassified', ...(categories.length && { releaseBlocking: categories }) };
+}
+// Of several raised findings with one key the strictest class stands.
+const strictest = (list) => list.map(classOf).find((c) => c.class === 'blocker') || classOf(list[0]);
+
+// An open blocker blocks. An open minor does not: the approving review lists it as a follow-up. A user
+// waives a disputed finding with `waive` and changes its class with `reclass`.
 function evaluateApproval(ledger, live, reviewedHead) {
   const no = (reason) => ({ approve: false, reason });
   if (reviewedHead !== live.head) return no('head-moved');
@@ -113,7 +125,7 @@ function evaluateApproval(ledger, live, reviewedHead) {
   if (ledger.approval?.head === live.head) return no('already-approved');
   const round = last(ledger);
   if (round?.head === reviewedHead && round.unreviewed?.length) return no('unreviewed-submodule');
-  if (ledger.findings.some((f) => f.status === 'open')) return no('open-findings');
+  if (ledger.findings.some((f) => f.status === 'open' && isBlocker(f))) return no('open-blockers');
   return { approve: true };
 }
 
@@ -153,4 +165,4 @@ function wakeDecision({ ledger, live, replies, now, stable }) {
   return { event: 'nudge', kind, head: live.head, replyAt };
 }
 
-module.exports = { submoduleRepo, chooseRange, findingKey, matches, isPublished, parseNameStatus, classifyPrior, evaluateApproval, repliesSince, wakeDecision, sha, NUDGE_AFTER_MS, TIMEOUT_MS };
+module.exports = { submoduleRepo, chooseRange, findingKey, matches, isPublished, parseNameStatus, classifyPrior, isBlocker, classOf, strictest, evaluateApproval, repliesSince, wakeDecision, sha, NUDGE_AFTER_MS, TIMEOUT_MS };
