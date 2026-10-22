@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 // Round runner of review-until-approve. Every verb prints one JSON line.
-//   start <owner/repo> <pr> [--reviewer codex|claude] [--model <m>]   check identity, open or resume the ledger, say what to do next
+//   start <owner/repo> <pr> [--reviewer codex|claude] [--model <m>] [--language <tag>] [--effort <level>]   check identity, open or resume the ledger, say what to do next
 //   trust <owner/repo> <pr> [--declaration '<words>' --confirmation '<reply>' | --revoke]   print the question, record the user's trust declaration for this pull request, or withdraw it
 //   round <owner/repo> <pr>                                           review, publish, approve when clean
 //   approve <owner/repo> <pr>                                         approve the reviewed head if the approval condition holds
@@ -30,6 +30,9 @@ const GUIDANCE_FINDINGS = 20;
 // Under Claude Code the Claude reviewer runs as subagents of the session that drives the skill, with the session's own login, so it needs no `claude` binary and no credentials of its own.
 const subagents = () => !!process.env.CLAUDECODE;
 const MODEL_ALIASES = ['sonnet', 'opus', 'haiku'];
+// The reasoning effort each reviewer takes: the Codex runner passes it as model_reasoning_effort, which has no `max`; Claude takes it as `--effort` (`claude -p`) or the Agent tool's `effort` (subagents).
+const EFFORTS = { codex: ['low', 'medium', 'high', 'xhigh'], claude: ['low', 'medium', 'high', 'xhigh', 'max'] };
+const LANGUAGE_TAG = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/;
 const warningFor = (ledger) => `the claude reviewer runs unconfined on your trust declaration${ledger.trust ? ` (recorded ${ledger.trust.recordedAt})` : ''}: it can read your real home directory (gh, ssh and cloud credentials); a malicious pull request could make it publish their contents, and it is not trusted to leave the review clone intact. To withdraw the declaration, run trust --revoke for this pull request (the codex reviewer stays confined).`;
 const die = (message, code = 1) => { process.stderr.write(`review-until-approve: ${message}\n`); process.exit(code); };
 const out = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -181,9 +184,14 @@ function checkModel(ledger) {
   if (ledger.provider === 'claude' && subagents() && ledger.model && !MODEL_ALIASES.includes(ledger.model)) die(`under Claude Code the Claude reviewer runs as subagents, which take only the model names ${MODEL_ALIASES.slice(0, 2).join(', ')} or ${MODEL_ALIASES[2]}; --model ${ledger.model} cannot be used (run start with --model sonnet, opus or haiku)`);
 }
 
+function checkLanguageAndEffort(ledger) {
+  if (ledger.language && !LANGUAGE_TAG.test(ledger.language)) die(`--language must be a BCP 47 tag such as ko, en or zh-TW, not "${ledger.language}"`);
+  if (ledger.effort && !EFFORTS[ledger.provider].includes(ledger.effort)) die(`--effort ${ledger.effort} cannot be used with the ${ledger.provider} reviewer, which takes ${EFFORTS[ledger.provider].join(', ')}`);
+}
+
 // When the Claude reviewer ran unconfined on the user's declaration; a published review states it.
 const unconfinedAt = (ledger) => ledger.provider === 'claude' && ledger.trust ? ledger.trust.recordedAt : undefined;
-const newLedger = (repo, pr, reviewer, author) => ({ version: 1, repo, pr, reviewer, provider: null, model: null, author, startedAt: new Date().toISOString(), rounds: [], findings: [], nudged: null, approval: null, stopped: null });
+const newLedger = (repo, pr, reviewer, author) => ({ version: 1, repo, pr, reviewer, provider: null, model: null, language: null, effort: null, author, startedAt: new Date().toISOString(), rounds: [], findings: [], nudged: null, approval: null, stopped: null });
 const opt = (args, name) => { const i = args.indexOf(name); return i === -1 ? undefined : args[i + 1]; };
 const lastRound = (ledger) => ledger.rounds[ledger.rounds.length - 1];
 
@@ -196,7 +204,10 @@ function start(repo, pr, args) {
   const ledger = found || newLedger(repo, pr, reviewer, snap.author);
   ledger.provider = provider;
   if (opt(args, '--model')) ledger.model = opt(args, '--model');
+  if (opt(args, '--language')) ledger.language = opt(args, '--language');
+  if (opt(args, '--effort')) ledger.effort = opt(args, '--effort');
   checkModel(ledger);
+  checkLanguageAndEffort(ledger);
   ledger.stopped = null;
   save(file, ledger);
   const viewer = gh(['repo', 'view', repo, '--json', 'viewerPermission', '--jq', '.viewerPermission']).trim();
@@ -204,7 +215,7 @@ function start(repo, pr, args) {
   let action = 'watch';
   if (ledger.rounds.length === 0 || snap.head !== lastRound(ledger).head) action = 'round';
   else if (lib.evaluateApproval(ledger, snap, lastRound(ledger).head).approve) action = 'approve';
-  outFor(ledger, { ledger: file, action, round: ledger.rounds.length + 1, reviewer: provider, ...(warning && { warning }) });
+  outFor(ledger, { ledger: file, action, round: ledger.rounds.length + 1, reviewer: provider, ...(ledger.model && { model: ledger.model }), ...(ledger.language && { language: ledger.language }), ...(ledger.effort && { effort: ledger.effort }), ...(warning && { warning }) });
 }
 
 // The findings the reviewer is told about. Telling it decides nothing: a finding is fixed by the code, never by the reviewer's silence.
@@ -388,7 +399,7 @@ function attempt(repo, pr, ledger, file) {
     const realClaudeConfig = claudeConfigDir();
     const claudeConfig = fs.mkdtempSync(path.join(dir, 'claude-'));
     const reviewerHome = fs.mkdtempSync(path.join(dir, 'home-'));
-    const runnerOptions = { ref: `concord-pr-${pr}`, base: range.base, broad: range.broad, noBroad: !range.broad, reviewer: ledger.provider, reviewerModel: ledger.model || undefined, reviewDenyRead: [realClaudeConfig], reviewRealHome: os.homedir(), reviewerGuidance: guidance(shown), intentFile: range.broad ? intentFile : undefined };
+    const runnerOptions = { ref: `concord-pr-${pr}`, base: range.base, broad: range.broad, noBroad: !range.broad, reviewer: ledger.provider, reviewerModel: ledger.model || undefined, reasoningEffort: ledger.effort || undefined, reviewLanguage: ledger.language || undefined, reviewDenyRead: [realClaudeConfig], reviewRealHome: os.homedir(), reviewerGuidance: guidance(shown), intentFile: range.broad ? intentFile : undefined };
     const env = reviewerEnv(ledger.provider, claudeConfig, reviewerHome, realClaudeConfig);
     const runner = process.env.REVIEW_APPROVE_RUNNER || path.join(__dirname, 'run-review.js');
     // The runner waits in `dir/broker` for the session to answer each request; `next` finds that directory through the run file.
@@ -497,7 +508,7 @@ function next(repo, pr, args) {
     const run = running();
     if (!run) return out({ event: 'finished' });
     const request = broker.openRequest(run.dir);
-    if (request) return out({ event: 'subagent-request', id: request.id, role: request.role, promptFile: request.promptFile, ...(request.model && { model: request.model }) });
+    if (request) return out({ event: 'subagent-request', id: request.id, role: request.role, promptFile: request.promptFile, ...(request.model && { model: request.model }), ...(request.effort && { effort: request.effort }) });
     if (Date.now() > deadline) return out({ event: 'waiting' });
     sleep(250);
   }

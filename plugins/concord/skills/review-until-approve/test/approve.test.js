@@ -510,6 +510,42 @@ function push(w, files, message) {
   return head;
 }
 
+
+test('start --language ko --effort high is stored in the ledger and reaches the runner in round 1 and in a resumed round 2', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  const started = JSON.parse(w.approve('start', 'o/r', '5', '--language', 'ko', '--effort', 'high').stdout);
+  assert.deepEqual([started.language, started.effort], ['ko', 'high']);
+  assert.deepEqual([w.ledger().language, w.ledger().effort], ['ko', 'high']);
+  w.approve('round', 'o/r', '5');
+  push(w, { 'b.js': 'unrelated\n' }, 'c2');
+  // A resumed start without the flags keeps them.
+  w.approve('start', 'o/r', '5');
+  w.approve('round', 'o/r', '5');
+  assert.equal(w.calls().length, 2);
+  for (const call of w.calls()) assert.deepEqual([call.reviewLanguage, call.reasoningEffort], ['ko', 'high']);
+});
+
+test('start without --language and --effort passes neither to the runner', () => {
+  const w = world();
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  assert.deepEqual([w.calls()[0].reviewLanguage, w.calls()[0].reasoningEffort], [undefined, undefined]);
+});
+
+test('start refuses a language that is not a BCP 47 tag and an effort the reviewer does not take, and writes no ledger', () => {
+  const w = world();
+  const name = w.approve('start', 'o/r', '5', '--language', 'Korean');
+  assert.notEqual(name.status, 0);
+  assert.match(name.stderr, /--language/);
+  const max = w.approve('start', 'o/r', '5', '--reviewer', 'codex', '--effort', 'max');
+  assert.notEqual(max.status, 0);
+  assert.match(max.stderr, /--effort max.*codex/);
+  const odd = w.approve('start', 'o/r', '5', '--reviewer', 'codex', '--effort', 'extreme');
+  assert.notEqual(odd.status, 0);
+  assert.equal(fs.existsSync(ledgerPath(w)), false);
+});
+
 test('a push to another file does not fix a finding whose span the file does not contain verbatim, and the PR is not approved', () => {
   const w = world();
   w.write('findings.json', [{ ...finding, span: 'text the engine paraphrased' }]);
@@ -1226,6 +1262,19 @@ test('subagent transport: start refuses a --model that the Agent tool cannot tak
   assert.match(bad.stderr, /sonnet, opus or haiku/);
   const good = spawnSync(process.execPath, [APPROVE, 'start', 'o/r', '5', '--reviewer', 'claude', '--model', 'opus'], { env: w.env, encoding: 'utf8' });
   assert.equal(good.status, 0, good.stderr);
+});
+
+test('subagent transport: the stored effort is in every subagent request, and none is set when --effort is absent', async () => {
+  const w = claudeCodeWorld();
+  assert.equal(spawnSync(process.execPath, [APPROVE, 'start', 'o/r', '5', '--effort', 'max'], { env: w.env, encoding: 'utf8' }).status, 0);
+  const r = await session(w, { found: [] });
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(r.requests.length > 0);
+  for (const q of r.requests) assert.equal(q.effort, 'max');
+  const plain = claudeCodeWorld();
+  spawnSync(process.execPath, [APPROVE, 'start', 'o/r', '5'], { env: plain.env });
+  const p = await session(plain, { found: [] });
+  for (const q of p.requests) assert.equal('effort' in q, false);
 });
 
 test('subagent transport: a subagent that edits a tracked file of the checkout fails the round and nothing is posted', async () => {

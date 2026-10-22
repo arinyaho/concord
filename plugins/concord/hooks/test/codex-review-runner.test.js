@@ -852,6 +852,23 @@ test('providerExec keeps the Claude prompt separate from the variadic --add-dir 
   }
 });
 
+test('providerExec passes the reasoning effort to claude -p as --effort', async () => {
+  const binDir = temp();
+  const claude = path.join(binDir, 'claude');
+  const capture = path.join(binDir, 'args.json');
+  fs.writeFileSync(claude, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(capture)}, JSON.stringify(process.argv.slice(2)));\n`);
+  fs.chmodSync(claude, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  try {
+    await providerExec({ provider: 'claude', role: 'correctness', prompt: 'p', repoRoot: binDir, stateDir: binDir, requestedModel: 'opus', reasoningEffort: 'high' });
+    const args = JSON.parse(fs.readFileSync(capture, 'utf8'));
+    assert.deepStrictEqual(args.slice(args.indexOf('--effort'), args.indexOf('--effort') + 2), ['--effort', 'high']);
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
 test('codexExec elapsed time excludes the synchronous version probe', async () => {
   const binDir = temp();
   const codex = path.join(binDir, 'codex');

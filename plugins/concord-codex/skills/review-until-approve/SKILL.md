@@ -33,7 +33,7 @@ A declaration is the user's own words, in this conversation, that they vouch for
 
 ## Loop
 
-1. `node "$SCRIPTS/approve.js" start <owner/repo> <pr> [--reviewer codex|claude] [--model <m>]` checks the account, opens or resumes the ledger, and prints `{ledger, action, reviewer}`. It refuses a pull request that is not open and an account that is the author. Relay a `warning` to the user.
+1. `node "$SCRIPTS/approve.js" start <owner/repo> <pr> [--reviewer codex|claude] [--model <m>] [--language <tag>] [--effort <level>]` checks the account, opens or resumes the ledger, and prints `{ledger, action, reviewer}` plus the stored `model`, `language` and `effort`. The options are stored in the ledger and every later round uses them; running `start` again with new values replaces them. It refuses a pull request that is not open and an account that is the author. Relay a `warning` to the user.
 
 2. `action: "round"`: with `reviewer: "codex"`, or under Codex, run `node "$SCRIPTS/approve.js" round <owner/repo> <pr>` in the foreground; it takes minutes. With `reviewer: "claude"` under Claude Code, follow Round with subagents instead; its last line is the same outcome. It clones the exact head into a temporary directory, runs the review-only engine without your GitHub token, publishes one review, and approves in the same review when the round is clean. Its last line is the outcome:
    - `published` with `review: "APPROVE"`: tell the user the head is approved and stop.
@@ -53,6 +53,23 @@ A declaration is the user's own words, in this conversation, that they vouch for
    - `timeout`: 7 days passed since the last review. Tell the user; the ledger stays resumable.
    - `error`: tell the user the detail and stop.
 5. A stop request from the user: stop the background task with TaskStop (Claude Code), run `node "$SCRIPTS/approve.js" stop <owner/repo> <pr>`, and post nothing.
+
+## Options the user asks for
+
+Map the user's words to `start` options; set an option only on an explicit request, and never infer one from the language the user happens to write in.
+
+| The user says | Option |
+|---|---|
+| "한글로", "한국어로", "in Korean" | `--language ko` (a BCP 47 tag; "in English" is `en`, "일본어" is `ja`) |
+| "opus", "sonnet", "haiku" | `--model <name>`; a Claude model name without a named reviewer also means `--reviewer claude` |
+| "low", "medium", "high", "xhigh", "max", "고강도로" (high), "최대로" (max) | `--effort <level>`; `max` is refused with the Codex reviewer |
+| "opus high" | `--model opus --effort high` |
+
+"Thorough" and "꼼꼼히" are not an effort request. Ask one question before `start` when the request conflicts (a model and a reviewer of different vendors), when no single level or language fits it, or when the model name is unknown; never guess one.
+
+The language applies to the `summary` and `requirement` text of the findings. The review header, the "Fixed since" and "Still open" lines, the finding ids, paths and quoted spans stay as they are; a quoted span is never translated. Under Claude Code, pass each `subagent-request`'s `effort` to the Agent call as its `effort` parameter, and pass nothing when the request has none.
+
+Never edit plugin files (the installed `approve.js`, runner or prompts) to add or change a behavior, even when the user asks for one the options lack. When `start` refuses an option or none exists for what the user wants, tell the user what is not supported and go on without it, or stop if it matters to them.
 
 ## Round with subagents (Claude Code, `reviewer: "claude"`)
 

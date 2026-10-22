@@ -47,6 +47,22 @@ Under Claude Code, `claude` reviews through the driving session's own subagents 
 | Stop | TaskStop on the background `round`, then `stop` as before. A killed `round` cannot clean up (it waits in `spawnSync`), so the runner it started checks for its parent on every poll, and when the parent is gone it removes the attempt's directory and ends. The stale run file names a pid that is gone, which `next` reads as no round | The ledger lock is reclaimed from the dead pid by the next call; the runner and the clone do not outlive the round |
 | Credentials | No copy of the Claude login is made, and `claude` need not be installed. The check on the review text still covers `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `gh auth token` and every long string of the real `.credentials.json` | Publication, ledger, span verification and approval run after the review comes back, in the same process, so they are the code that runs for `claude -p` |
 
+## Review language and effort
+
+`start --language <tag>` and `start --effort <level>` are ledger fields like `--model`: set at `start`, replaced by a later `start` that names them, kept by one that does not, and read by every `round`.
+
+| Decision | Rule | Reason |
+|---|---|---|
+| Language scope | The reviewers write each finding's `summary` and `requirement` in the language. The review header, the "Fixed since" and "Still open" lines, the finding count lines, the category label and the first-line marker stay English. `id`, `file`, `span`, `category` and code identifiers are never translated | The finding text is what the reader needs in their language. A translated phrase table per language in `publish.js` is a layer to maintain for boilerplate, and the marker is parsed by scripts |
+| Language carrier | The runner option `reviewLanguage` becomes a clause after the span clause in the prompts of the roles that write findings (`correctness`, `verify`, `intent`, `gate`, `gate-verify`), asking for the BCP 47 tag. It is not part of `reviewerGuidance` | Guidance is "priority hints only" and is rebuilt each round from the open findings; the language changes the output format and must hold in every round and role |
+| Language value | A BCP 47 tag (`ko`, `en`, `zh-TW`), checked by `^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$`; a language name is refused, and `SKILL.md` has the model convert the user's words | One accepted form means the prompt clause and the ledger agree |
+| Spans | The clause says to copy `span` exactly. A translated span does not occur in the file, so the existing byte-for-byte check leaves the finding `unverified`, held and blocking approval | The check already fails safe; a second one would repeat it |
+| Effort levels | Codex: `low`, `medium`, `high`, `xhigh`, passed by the runner as `model_reasoning_effort`. Claude: those and `max`, passed as `--effort` to `claude -p` and as `effort` in the subagent request, which `SKILL.md` has the session pass as the Agent tool's `effort` parameter | Each path uses its own control. The Agent tool takes `effort` only when the user asked for it, and the user did, at `start` |
+| Unusable effort | `start` refuses a level the chosen reviewer does not take (`max` with Codex) and writes nothing | The reviewer is known at `start`; a level dropped later would run a review the user did not ask for |
+| Natural language | `SKILL.md` maps the user's words ("한글로" to `ko`, "opus high" to `--model opus --effort high`) and has the model set an option only on an explicit request, ask one question when the request conflicts or is unclear, and never edit plugin files; when an option is missing or refused it tells the user | An installed copy edited to add an instruction ran two review rounds on modified code (#390) |
+
+`start` prints the stored `model`, `language` and `effort`, so the user sees what the rounds will use.
+
 ## Approval condition
 
 `evaluateApproval` approves exactly when all of these hold: the reviewed head is the live head, the pull request is open and not a draft, the reviewing account is not the author, no approval was already given for this head, and no finding in the ledger is open. The review engine emits no severity, so every verified finding blocks until it is fixed or the user waives it with the `waive` verb. A waived finding is recorded in the ledger and does not block. A finding the code cannot settle (`unverified`, `path-unresolved`) is cleared only by `waive`, by finding id or, when several open findings share an id, by key.
@@ -169,6 +185,12 @@ The loop can later run unattended, with GitHub Actions or `services/pr-review` r
 | role prompts ask to run or measure | request | the prompt file tells the subagent to judge by reading and not to write `blocked` for a command it cannot run | introduced | `subagent transport: every role prompt tells a subagent without a shell to judge by reading, so "cannot run it" is never a reason to write blocked` |
 | review text quotes the real credentials file, subagent transport | post | nothing posted, exit status 1 | unchanged | `subagent transport: a review that quotes the login credentials a subagent could read is never posted` |
 | `pr-reviewer` agent | load | tools are `Read, Grep, Glob, Write` | introduced | `the pr-reviewer agent has no shell: Read, Grep, Glob and Write only` |
+| ledger started with `--language ko --effort high` | `round` 1, then a resumed `start` and `round` 2 | the runner options of both rounds carry `reviewLanguage: ko` and `reasoningEffort: high` | introduced | `start --language ko --effort high is stored in the ledger and reaches the runner in round 1 and in a resumed round 2` |
+| ledger without them | `round` | neither option is passed | unchanged | `start without --language and --effort passes neither to the runner` |
+| `--language Korean`, or `--effort max` with Codex | `start` | refused, no ledger | introduced | `start refuses a language that is not a BCP 47 tag and an effort the reviewer does not take, and writes no ledger` |
+| ledger with an effort, subagent transport | subagent request | `request.json` carries `effort`; absent without one | introduced | `subagent transport: the stored effort is in every subagent request, and none is set when --effort is absent` |
+| `claude -p` reviewer with an effort | launch | `--effort <level>` is in the arguments | introduced | `providerExec passes the reasoning effort to claude -p as --effort` |
+| finding-producing role with a language | prompt | the clause names the tag and keeps `span` verbatim | introduced | `a review language is asked for in the finding text of the finding-producing prompts only, and spans stay verbatim` |
 | another session holds the ledger lock | `round`, `approve`, `waive` | refused | introduced | untested, because it needs two live processes; the lock reuses `core/run-lock.js` |
 
 Combinations the ledger lock rules out (two sessions interleaving on one pull request) are refused at start.

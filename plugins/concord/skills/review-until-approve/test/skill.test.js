@@ -86,3 +86,11 @@ test('`finished` is trusted only after the background round has exited: the roun
   assert.match(section, /`finished`[^\n]*background task (has|is)[^\n]*(still running|exited)/);
   assert.match(section, /still running[^\n]*run `next` again/);
 });
+
+test('SKILL.md maps the user\'s language and effort words to start options, passes effort to subagents, and never edits plugin files', () => {
+  assert.match(skill, /--language <tag>/);
+  assert.match(skill, /--effort <level>/);
+  assert.match(skill, /Agent[^.]*`effort`/);
+  assert.match(skill, /never edit(?:s)? (?:the )?plugin files/i);
+  assert.match(skill, /tell the user/i);
+});
