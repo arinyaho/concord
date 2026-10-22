@@ -47,7 +47,7 @@ The decisions behind each step are in `docs/design/review-until-approve.md`.
 The script cannot call the Agent tool, so the round keeps running and asks you for each reviewer role in turn.
 
 1. Run `node "$SCRIPTS/approve.js" round <owner/repo> <pr>` with Bash `run_in_background` and `timeout: 7200000`. Note its task id. Its output, when it exits, is the round's outcome described in step 2 above, or the error to relay.
-2. Run `node "$SCRIPTS/approve.js" next <owner/repo> <pr>` in the foreground (add `--done <id>` once the request with that id is answered). It prints one JSON line:
+2. Run `node "$SCRIPTS/approve.js" next <owner/repo> <pr>` in the foreground with Bash `timeout: 600000`, because it can wait 540 seconds (add `--done <id>` once the request with that id is answered). It prints one JSON line:
    - `subagent-request` with `id`, `role`, `promptFile` and, when set, `model`: spawn exactly one Agent of type `concord:pr-reviewer` (pass `model` when given) with this prompt and nothing else: `Read <promptFile> and do exactly what it says. Reply only done.` When it returns, whatever it replied, run `next --done <id>`.
    - `waiting`: run `next` again.
    - `finished`: the round has ended; read the background task's output for the outcome.

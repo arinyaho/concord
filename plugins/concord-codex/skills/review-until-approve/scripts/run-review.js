@@ -12,7 +12,7 @@ const { snapshotRunEngine } = require(path.join(core, 'run-snapshot'));
 const snapshot = snapshotRunEngine(path.dirname(core), process.cwd());
 process.once('exit', snapshot.remove);
 // Under Claude Code the reviewer roles are answered by the driving session's subagents instead of a `claude -p` process.
-const subagent = options.broker ? { spawn: require('./broker').requester(options.broker, { timeoutMs: options.brokerTimeoutMs }) } : {};
+const subagent = options.broker ? { spawn: require('./broker').requester(options.broker, { timeoutMs: options.brokerTimeoutMs, parentPid: process.ppid }) } : {};
 require(path.join(snapshot.root, 'engine', 'codex-review-runner')).runReviewUntilGreen({
   ...options, ...subagent, reviewOnly: true, repairFindingAnchors: true, handleSignals: true, repoRoot: process.cwd(), cliPath: snapshot.cliPath, publicCliPath: hook, reviewRuntimeDir: snapshot.root,
 }).then((result) => process.stdout.write(`${JSON.stringify(result)}\n`))

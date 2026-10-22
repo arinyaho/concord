@@ -1219,3 +1219,31 @@ test('subagent transport: a review that quotes the login credentials a subagent 
   assert.match(r.stderr, /holds a credential/);
   assert.deepEqual(w.posts(), []);
 });
+
+test('subagent transport: the run file exists before the clone starts, so `next` never says finished while a round is still setting up', async () => {
+  const w = claudeCodeWorld();
+  const real = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+  const seen = path.join(w.dir, 'run-file-at-clone');
+  fs.writeFileSync(path.join(w.dir, 'bin', 'git'), `#!/bin/sh\nif [ "$1" = clone ]; then ls ${JSON.stringify(path.join(w.dir, 'ledgers'))}/*.run.json >> ${JSON.stringify(seen)} 2>/dev/null; fi\nexec ${real} "$@"\n`, { mode: 0o755 });
+  spawnSync(process.execPath, [APPROVE, 'start', 'o/r', '5'], { env: w.env });
+  await session(w, { found: [] });
+  assert.match(fs.existsSync(seen) ? fs.readFileSync(seen, 'utf8') : '', /o__r__5__bot\.json\.run\.json/);
+});
+
+test('subagent transport: when the round is killed, the runner it started ends too and removes the clone', async () => {
+  const w = claudeCodeWorld();
+  spawnSync(process.execPath, [APPROVE, 'start', 'o/r', '5'], { env: w.env });
+  const round = spawn(process.execPath, [APPROVE, 'round', 'o/r', '5'], { env: w.env });
+  let request;
+  for (let i = 0; i < 100 && !request; i++) {
+    const out = spawnSync(process.execPath, [APPROVE, 'next', 'o/r', '5'], { env: w.env, encoding: 'utf8' }).stdout.trim().split('\n').pop();
+    if (out && JSON.parse(out).event === 'subagent-request') request = JSON.parse(out);
+  }
+  assert.ok(request, 'no request');
+  const attemptDir = path.dirname(path.dirname(request.promptFile));
+  const runner = Number(execFileSync('pgrep', ['-P', String(round.pid)], { encoding: 'utf8' }).trim().split('\n')[0]);
+  process.kill(round.pid, 'SIGKILL');
+  for (let i = 0; i < 60 && (fs.existsSync(attemptDir) || (() => { try { process.kill(runner, 0); return true; } catch (_) { return false; } })()); i++) await new Promise((r) => setTimeout(r, 250));
+  assert.equal(fs.existsSync(attemptDir), false);
+  assert.throws(() => process.kill(runner, 0));
+});

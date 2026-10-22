@@ -9,6 +9,7 @@ const path = require('node:path');
 // A subagent has no shell, so a prompt that says "run it" or "write blocked if you cannot" would fail the round for the tool, not for the code.
 const NO_SHELL = '\n\nIn this run you cannot run any command: you have Read, Grep and Glob on the checkout and Write for the one artifact named above. Where this prompt asks you to run, measure or execute something, judge by reading the code and tests instead, and say in the finding or rejection what you read. Do not write "blocked" for a command you cannot run; write "blocked" only for a file you must read and cannot.';
 const POLL_MS = 250;
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
 const sha = (text) => crypto.createHash('sha256').update(text).digest('hex');
 const write = (file, value) => { fs.writeFileSync(`${file}.tmp`, value); fs.renameSync(`${file}.tmp`, file); };
 
@@ -19,7 +20,8 @@ function fail(message) {
 }
 
 // Used inside the runner process as its `spawn`.
-function requester(dir, { timeoutMs = 3600000 } = {}) {
+// `parentPid` is the round process that started the runner: when it is gone (killed), nobody will answer, so the attempt's directory is removed and the runner ends.
+function requester(dir, { timeoutMs = 3600000, parentPid } = {}) {
   let counter = 0;
   return async (input) => {
     const id = ++counter;
@@ -31,6 +33,7 @@ function requester(dir, { timeoutMs = 3600000 } = {}) {
     const deadline = Date.now() + timeoutMs;
     while (!fs.existsSync(done)) {
       if (input.abortSignal?.aborted) fail(`the round was stopped while waiting for a subagent (${input.role})`);
+      if (parentPid && !alive(parentPid)) { fs.rmSync(path.dirname(dir), { recursive: true, force: true }); fail('the round that started this runner is gone'); }
       if (Date.now() > deadline) fail(`no subagent answered the ${input.role} request in time`);
       await new Promise((resolve) => setTimeout(resolve, POLL_MS));
     }

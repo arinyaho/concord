@@ -347,6 +347,14 @@ function attempt(repo, pr, ledger, file) {
   if (snap.state !== 'OPEN') return { event: snap.state.toLowerCase() };
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-until-approve-'));
   const work = path.join(dir, 'work');
+  // Written before anything slow, so `next` never finds no round while this one is still setting up; it is removed when the process ends, and a pid that is gone is not a running round.
+  const brokerDir = ledger.provider === 'claude' && subagents() ? path.join(dir, 'broker') : null;
+  if (brokerDir) {
+    fs.mkdirSync(brokerDir);
+    fs.writeFileSync(`${runFile(file)}.tmp`, JSON.stringify({ pid: process.pid, dir: brokerDir }));
+    fs.renameSync(`${runFile(file)}.tmp`, runFile(file));
+    process.once('exit', () => fs.rmSync(runFile(file), { force: true }));
+  }
   const remote = `${process.env.REVIEW_APPROVE_REMOTE || 'https://github.com'}/${repo}.git`;
   try {
     git(dir, ['clone', '--quiet', remote, work], GIT_AUTH);
@@ -391,12 +399,9 @@ function attempt(repo, pr, ledger, file) {
     const env = reviewerEnv(ledger.provider, claudeConfig, reviewerHome, realClaudeConfig);
     const runner = process.env.REVIEW_APPROVE_RUNNER || path.join(__dirname, 'run-review.js');
     // The runner waits in `dir/broker` for the session to answer each request; `next` finds that directory through the run file.
-    if (ledger.provider === 'claude' && subagents()) {
-      const brokerDir = path.join(dir, 'broker');
-      fs.mkdirSync(brokerDir);
+    if (brokerDir) {
       runnerOptions.broker = brokerDir;
       if (process.env.REVIEW_APPROVE_BROKER_TIMEOUT_MS) runnerOptions.brokerTimeoutMs = Number(process.env.REVIEW_APPROVE_BROKER_TIMEOUT_MS);
-      fs.writeFileSync(runFile(file), JSON.stringify({ pid: process.pid, dir: brokerDir }));
     }
     const reviewed = JSON.parse(run('node', [runner, JSON.stringify(runnerOptions)], { cwd: work, env }).trim().split('\n').pop());
     if (reviewed.decision !== 'review-only' || !Array.isArray(reviewed.findings)) throw new Error(`the review did not complete: ${JSON.stringify(reviewed).slice(0, 200)}`);
@@ -476,7 +481,7 @@ function attempt(repo, pr, ledger, file) {
       save(file, next);
     } catch (_) { /* ponytail: ids stay empty; thread replies are then missed until the next round */ }
     return { event: 'published', round: n, mode: range.broad ? 'broad' : 'diff', review: input.approve ? 'APPROVE' : 'COMMENT', new: fresh.length, fixed: fixedIds.length, stillOpen: openIds.length, open: openNow, ...(unreviewed.length && { unreviewed }), ...(verdictNow.approve ? {} : { notApproved: verdictNow.reason }), ...(held.length && { held, hint: 'These findings cannot be settled from the code; run waive <key> (or waive <id> when the id is unique) to clear one you accept.' }) };
-  } finally { fs.rmSync(runFile(file), { force: true }); fs.rmSync(dir, { recursive: true, force: true }); }
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
 const runFile = (file) => `${file}.run.json`;

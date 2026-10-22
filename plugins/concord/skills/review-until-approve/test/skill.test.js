@@ -63,3 +63,9 @@ test('SKILL.md never has the model pass a flag, set a variable or edit settings 
   const setup = skill.slice(skill.indexOf('## Setup'), skill.indexOf('## Loop'));
   assert.doesNotMatch(setup, /pass (?:`)?--/);
 });
+
+test('the foreground `next` call is given a Bash timeout longer than its 540 second wait', () => {
+  const section = skill.slice(skill.indexOf('## Round with subagents'), skill.indexOf('## Findings the user disputes'));
+  const timeoutMs = Number(section.match(/approve\.js" next[^\n]*`timeout: (\d+)`/)?.[1]);
+  assert.ok(timeoutMs > 540000, `timeout ${timeoutMs}`);
+});
