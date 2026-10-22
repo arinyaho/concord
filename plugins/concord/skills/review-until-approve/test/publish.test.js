@@ -150,3 +150,14 @@ test('filesOf: lists a file with no added line; renderReview makes its finding a
   const r = publish.renderReview({ ...base, hunks: publish.hunksOf(diff), files: publish.filesOf(diff), findings: [f('d', 'gone.js', 2)], approve: false }, 'inline');
   assert.deepEqual(r.threads.map((t) => t.subject), ['FILE']);
 });
+
+test('filesOf: lists files whose entry has only a diff --git header, and never /dev/null', () => {
+  const diff = [
+    'diff --git a/mode.sh b/mode.sh\nold mode 100644\nnew mode 100755',
+    'diff --git a/old.js b/new.js\nsimilarity index 100%\nrename from old.js\nrename to new.js',
+    'diff --git a/img.png b/img.png\nBinary files a/img.png and b/img.png differ',
+    'diff --git "a/q\\303\\251.js" "b/q\\303\\251.js"\nold mode 100644\nnew mode 100755',
+    'diff --git a/del.js b/del.js\ndeleted file mode 100644\n--- a/del.js\n+++ /dev/null\n@@ -1 +0,0 @@\n-x',
+  ].join('\n') + '\n';
+  assert.deepEqual(publish.filesOf(diff), ['mode.sh', 'new.js', 'img.png', 'q\u00e9.js', 'del.js']);
+});

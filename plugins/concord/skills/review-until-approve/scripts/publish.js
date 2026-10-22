@@ -49,14 +49,16 @@ function placeLine(content, span, file, hunks) {
   return null;
 }
 
-// Every file the diff names, including one with no added line (a deletion, a mode change) that has no hunk.
+// Every file the diff names, including one with no added line (a deletion, a mode change, a pure rename, a binary) that has no
+// hunk. The path is the b-side of the `diff --git` line, which is never /dev/null.
 function filesOf(diff) {
   const files = new Set();
-  let header = false;
   for (const line of diff.split('\n')) {
-    if (line.startsWith('diff --git ')) header = true;
-    else if (line.startsWith('@@')) header = false;
-    if (header && line.startsWith('+++ ')) { const file = headerPath(line.slice(4).replace(/\t$/, '')); if (file) files.add(file); }
+    if (!line.startsWith('diff --git ')) continue;
+    const q = /("b\/(?:[^"\\]|\\.)*")$/.exec(line);
+    const i = line.lastIndexOf(' b/');
+    const file = q ? headerPath(q[1]) : i === -1 ? '' : line.slice(i + 3);
+    if (file) files.add(file);
   }
   return [...files];
 }
