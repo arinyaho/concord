@@ -1193,16 +1193,16 @@ test('subagent transport: every role prompt tells a subagent without a shell to 
   spawnSync(process.execPath, [APPROVE, 'start', 'o/r', '5'], { env: w.env });
   const seen = [];
   await session(w, { found: [finding], answer: (event) => {
-    seen.push([event.role, fs.readFileSync(event.promptFile, 'utf8')]);
+    seen.push([event.role, fs.readFileSync(event.promptFile, 'utf8'), path.join(path.dirname(path.dirname(event.promptFile)), 'work')]);
     return roleArtifact(event.role, [finding]);
   } });
   assert.ok(['correctness', 'verify'].every((role) => seen.some(([r]) => r === role)), JSON.stringify(seen.map(([r]) => r)));
-  for (const [role, prompt] of seen) {
+  for (const [role, prompt, checkout] of seen) {
     assert.match(prompt, /cannot run any command/, role);
     assert.match(prompt, /judge by reading/, role);
     assert.match(prompt, /write "blocked" only for a file you must read and cannot/, role);
     // The subagent runs in the session's own directory, so the prompt must say where the pull request is checked out.
-    assert.ok(prompt.includes(`${path.sep}work`), `${role}: no checkout path`);
+    assert.ok(prompt.includes(`checked out at ${checkout}`), `${role}: prompt does not name ${checkout}`);
   }
 });
 
