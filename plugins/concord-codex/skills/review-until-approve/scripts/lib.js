@@ -59,23 +59,59 @@ function parseNameStatus(raw) {
 // nor in any other path the push left in place. Anything else stays open with a reason: `unverified` (no
 // verbatim span was ever recorded), `raised` (the reviewer raised it again), `path-unresolved`, `span-present`.
 // A span that occurs at the head moves the anchor (`file`, `spanVerified`) to the new head.
-function classifyPrior(open, raised, resolve, read, head) {
+// A span-present finding is closed as `addressed` only by the reviewer's explicit verdict `{ id, evidence: { file, span, reason } }`
+// (`addressed`), and only when the evidence quote occurs exactly once in that file at the head and differs from the finding's span;
+// a refused verdict leaves the finding open with `why`. An addressed finding (`status: 'addressed'`) is judged again every round by the
+// same rules: its span gone is `fixed`, its evidence gone or no longer unique reopens it, the reviewer raising it reopens it.
+const MAX_REASON = 500, MAX_EVIDENCE_BYTES = 8192;
+function judgeEvidence(p, entries, read) {
+  if (entries.length > 1) return { why: 'duplicate' };
+  const ev = entries[0].evidence;
+  if (typeof ev?.reason !== 'string' || !collapse(ev.reason) || collapse(ev.reason).length > MAX_REASON) return { why: 'no-reason' };
+  if (typeof ev.file !== 'string' || typeof ev.span !== 'string' || !ev.span || Buffer.byteLength(ev.span) > MAX_EVIDENCE_BYTES) return { why: 'evidence-absent' };
+  if (collapse(ev.span) === collapse(p.span)) return { why: 'evidence-is-span' };
+  const blob = read(ev.file);
+  if (!Buffer.isBuffer(blob)) return { why: 'evidence-absent' };
+  const at = blob.indexOf(Buffer.from(ev.span, 'utf8'));
+  if (at === -1) return { why: 'evidence-absent' };
+  if (blob.indexOf(Buffer.from(ev.span, 'utf8'), at + 1) !== -1) return { why: 'evidence-ambiguous' };
+  return { evidence: { file: ev.file, span: ev.span, reason: collapse(ev.reason) } };
+}
+// An addressed finding's stored evidence still stands: the quote occurs once; null when the file cannot be read, so nothing is decided.
+function evidenceStands(p, read) {
+  const ev = p.addressedEvidence, blob = ev && read(ev.file);
+  if (!ev) return false;
+  if (!Buffer.isBuffer(blob)) return blob === 'big' || blob === 'other' ? null : false;
+  const span = Buffer.from(ev.span, 'utf8'), at = blob.indexOf(span);
+  return at !== -1 && blob.indexOf(span, at + 1) === -1;
+}
+function classifyPrior(open, raised, resolve, read, head, addressed = []) {
   const ctx = open.map((p) => typeof p.spanVerified === 'string' && p.span ? resolve(p) : null);
   const moved = open.map((p, i) => ({ ...p, file: ctx[i]?.renames.get(p.file) || p.file }));
   return open.map((p, i) => {
-    const q = moved[i], keep = (reason, extra = {}) => ({ key: p.key, id: p.id, status: 'open', reason, ...extra });
+    const q = moved[i], closed = p.status === 'addressed', entries = addressed.filter((a) => a?.id === p.id);
+    const keep = (reason, extra = {}) => closed && reason === 'path-unresolved' ? { key: p.key, id: p.id, status: 'addressed' } : { key: p.key, id: p.id, status: 'open', reason, ...extra };
+    const present = (file) => {
+      if (closed) {
+        const stands = evidenceStands(p, read);
+        return stands === false ? keep('evidence-gone', { file, spanVerified: head }) : { key: p.key, id: p.id, status: 'addressed', file, spanVerified: head };
+      }
+      if (!entries.length) return keep('span-present', { file, spanVerified: head });
+      const judged = judgeEvidence(p, entries, read);
+      return judged.evidence ? { key: p.key, id: p.id, status: 'addressed', evidence: judged.evidence, file, spanVerified: head } : keep('span-present', { file, spanVerified: head, why: judged.why });
+    };
     if (typeof p.spanVerified !== 'string' || !p.span) return keep('unverified');
-    if (raised.some((f) => matches(moved, f).includes(q))) return keep('raised');
+    if (raised.some((f) => matches(moved, f).includes(q))) return keep('raised', entries.length ? { why: 'raised' } : {});
     if (!ctx[i]) return keep('path-unresolved');
     const span = Buffer.from(p.span, 'utf8');
     const here = read(q.file);
     if (here === 'other' || here === 'big') return keep('path-unresolved');
-    if (here && here.includes(span)) return keep('span-present', { file: q.file, spanVerified: head });
+    if (here && here.includes(span)) return present(q.file);
     for (const other of ctx[i].live) {
       if (other === q.file) continue;
       const b = read(other);
       if (b === 'big') return keep('path-unresolved');
-      if (Buffer.isBuffer(b) && b.includes(span)) return keep('span-present', { file: other, spanVerified: head });
+      if (Buffer.isBuffer(b) && b.includes(span)) return present(other);
     }
     return { key: p.key, id: p.id, status: 'fixed' };
   });

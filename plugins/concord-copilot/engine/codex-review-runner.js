@@ -990,7 +990,7 @@ async function runRounds(options) {
     if (started.decision !== 'work') return withTelemetry(started);
     currentRound = started.round;
     checks = [{ name: 'definition-of-done', status: started.dodPending ? 'pending' : started.dodDeferred ? 'deferred' : (started.dodPassed ? 'passed' : 'failed') }];
-    const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodDeferred: started.dodDeferred, dodPending: started.dodPending, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref), gateMode: started.gateMode, gateApplied: started.gateApplied, intentHash: started.intentHash, cliPath, reviewerGuidance: started.reviewerGuidance || null, priorFindings: options.priorFindings || [], reviewLanguage: options.reviewLanguage || null, classify: reviewOnly };
+    const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodDeferred: started.dodDeferred, dodPending: started.dodPending, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref), gateMode: started.gateMode, gateApplied: started.gateApplied, intentHash: started.intentHash, cliPath, reviewerGuidance: started.reviewerGuidance || null, priorFindings: options.priorFindings || [], reviewLanguage: options.reviewLanguage || null, classify: reviewOnly, addressable: reviewOnly ? options.addressable || [] : [] };
     const reviewRoles = reviewOnly ? [
       ...(started.intentApplied ? ['intent'] : []), 'correctness',
       ...(started.gateApplied ? ['gate'] : []), 'verify',
@@ -1225,6 +1225,7 @@ async function runRounds(options) {
       checkReviewCheckout(true);
       const reported = await cli(['findings', ref]);
       let findings = reported.findings;
+      const addressed = reported.addressed || [];
       if (anchorArtifact) {
         const head = started.head || gitHeadSha(canonicalRepoRoot);
         const request = prepareAnchors(findings, (file) => readCommittedSource(canonicalRepoRoot, head, file));
@@ -1250,7 +1251,7 @@ async function runRounds(options) {
           checkProtected();
         }
       }
-      return { decision: 'review-only', round: currentRound, findings };
+      return { decision: 'review-only', round: currentRound, findings, ...(addressed.length && { addressed }) };
     }
 
     await runArtifactReviewer('plan');

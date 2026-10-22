@@ -101,7 +101,20 @@ function preservesArtifact(name, raw, candidate) {
   return true;
 }
 
-function normalizeArtifact(name, raw) {
+// A review-only verify pass may say that an earlier finding is answered by the code; the entry carries the evidence a person can check.
+function normalizeAddressed(name, list) {
+  if (!Array.isArray(list)) throw new ArtifactError('fatal', `${name} artifact field "addressed" must be an array`);
+  return list.map((entry, index) => {
+    const ev = entry && typeof entry === 'object' ? entry.evidence : undefined;
+    const bad = (why) => new ArtifactError('retry', `${name} addressed[${index}] ${why}`);
+    if (!entry || typeof entry.id !== 'string' || !isValidFindingId(entry.id) || !SHAPES[name].prefixes.some((prefix) => entry.id.startsWith(prefix))) throw bad('has an invalid id');
+    if (!ev || typeof ev !== 'object' || typeof ev.file !== 'string' || !ev.file || typeof ev.span !== 'string' || !ev.span || typeof ev.reason !== 'string' || !ev.reason.trim()) throw bad(`("${entry.id}") needs evidence {file, span, reason}: the file, an exact quote of code at this head, and why that code answers the finding`);
+    if (ev.reason.trim().length > 500) throw bad(`("${entry.id}") has a reason over 500 characters`);
+    return { id: entry.id, evidence: { file: ev.file, span: ev.span, reason: ev.reason.trim() } };
+  });
+}
+
+function normalizeArtifact(name, raw, { addressed = false } = {}) {
   const shape = SHAPES[name];
   if (!shape) throw new Error(`unknown artifact role: ${name}`);
   let parsed;
@@ -179,6 +192,7 @@ function normalizeArtifact(name, raw) {
       }
     }
   }
+  if (addressed && name === 'verify' && parsed.addressed !== undefined) canonical.addressed = normalizeAddressed(name, parsed.addressed);
   if (name === 'gate-verify' && parsed.blocking !== undefined) {
     if (!Array.isArray(parsed.blocking)) throw new ArtifactError('fatal', 'gate-verify artifact field "blocking" must be an array');
     canonical.blocking = parsed.blocking.map((entry, index) => {

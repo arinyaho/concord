@@ -513,7 +513,7 @@ function readArtifact(stateDir, n, name) {
     throw new Error(`harness-failure: missing gate artifact ${name} for round ${n}`);
   }
   try {
-    const canonical = artifactContract.normalizeArtifact(name, raw);
+    const canonical = artifactContract.normalizeArtifact(name, raw, { addressed: process.env.CONCORD_UNTRUSTED_ARTIFACTS === '1' });
     const text = JSON.stringify(canonical) + '\n';
     if (raw !== text) writeReviewArtifact(p, text);
     return canonical;
@@ -1293,7 +1293,7 @@ function verifiedRound(ref, stateDir, run, what) {
     gateOpen = thisRound.concat(carried);
   }
   const reopenedIds = confirmedNonKilled.filter((f) => f.reopened).map((f) => f.id);
-  return { repoRoot, slug, ledger, n, isGit, changed, fixes, classified, suppressedIds, resolvedAbsent, reopenedIds, intentParked, gateOpen, gateRejectedIds, gateDuplicateIds, gateRaisedIds, gateApplied };
+  return { repoRoot, slug, ledger, n, isGit, changed, fixes, classified, suppressedIds, resolvedAbsent, reopenedIds, intentParked, gateOpen, gateRejectedIds, gateDuplicateIds, gateRaisedIds, gateApplied, addressed: vJson.addressed || [] };
 }
 
 // Every mutating target verb takes the same lock, including an unkeyed call
@@ -1535,7 +1535,7 @@ function runVerb(resolveFromCwd, args, initiative) {
         if (path.resolve(candidateArg) !== path.resolve(repair.candidatePath)) throw new Error(`${name} repair candidate path changed`);
         if (!artifactContract.preservesArtifact(name, original.toString('utf8'), JSON.parse(raw))) throw new Error(`${name} repair candidate does not preserve the original evidence`);
       }
-      const canonical = artifactContract.normalizeArtifact(name, raw);
+      const canonical = artifactContract.normalizeArtifact(name, raw, { addressed: process.env.CONCORD_UNTRUSTED_ARTIFACTS === '1' });
       // Correctness coverage is part of the artifact contract for git targets:
       // retry the reviewer while its original artifact is still intact rather
       // than canonicalizing an incomplete examined list and discovering the
@@ -2789,7 +2789,7 @@ function runVerb(resolveFromCwd, args, initiative) {
 
   if (verb === 'findings') {
     requireRef(ref, 'findings');
-    const { repoRoot, fixes, classified, intentParked, gateOpen } = verifiedRound(ref, stateDir, run, 'findings');
+    const { repoRoot, fixes, classified, intentParked, gateOpen, addressed } = verifiedRound(ref, stateDir, run, 'findings');
     // The file name comes from a reviewer, so it is read only when its real
     // path stays inside the checkout: a line number for a file elsewhere would
     // tell whoever reads the review whether a guessed span is in that file.
@@ -2812,7 +2812,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       // `class` is the one decision a review-only caller needs: minor only when the reviewer classified it follow-up eligible and gate-verify did not override it.
       return { id: f.id, category: f.class || f.id.split(':', 1)[0], file: f.file, line: lineOf(f.file, span), span, summary: f.summary, requirement: f.requirement || '', class: gateFollowUpEligible(f) ? 'minor' : 'blocker', ...(f.releaseBlocking !== undefined && { releaseBlocking: f.releaseBlocking }), ...(f.rationale !== undefined && { rationale: f.rationale }), ...(f.blockingReason && { blockingReason: f.blockingReason }) };
     });
-    process.stdout.write(JSON.stringify({ findings }) + '\n');
+    process.stdout.write(JSON.stringify({ findings, ...(process.env.CONCORD_UNTRUSTED_ARTIFACTS === '1' && addressed.length && { addressed }) }) + '\n');
     return;
   }
 
