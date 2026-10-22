@@ -105,6 +105,7 @@ else if (a[0] === 'api' && a.includes('-X')) {
   let posted = JSON.parse(body);
   const reviews = fs.existsSync(dir + '/reviews.json') ? JSON.parse(fs.readFileSync(dir + '/reviews.json', 'utf8')) : [];
   const submit = a.some((x) => /\\/events$/.test(x));
+  if (submit && fs.existsSync(dir + '/fail-submit')) { console.error('GitHub unreachable'); process.exit(1); }
   if (submit) {
     const pending = JSON.parse(fs.readFileSync(dir + '/pending.json', 'utf8'));
     fs.rmSync(dir + '/pending.json');
@@ -1678,4 +1679,13 @@ test('a pending review left by a crash is deleted before the next round posts; t
   assert.notEqual(draft.approve('round', 'o/r', '5').status, 0);
   assert.ok(JSON.parse(fs.readFileSync(path.join(draft.dir, 'reviews.json'), 'utf8')).some((r) => r.id === 51));
   assert.deepEqual(draft.posts(), []);
+});
+
+test('the thread id of a finding posted in an approving round is in the pending marker, so a recovered approval keeps it (#394)', () => {
+  const w = world();
+  w.write('findings.json', [minor]);
+  w.write('fail-submit', '');
+  w.approve('start', 'o/r', '5');
+  w.approve('round', 'o/r', '5');
+  assert.equal(w.ledger().pending.findings[0].threadId, 'T1');
 });

@@ -545,18 +545,17 @@ function attempt(repo, pr, ledger, file) {
     const entry = (review) => ({ n, head: snap.head, ...(unreviewed.length && { unreviewed }), base: range.base, mergeBase: snap.mergeBase, intent: snap.intent, mode: range.broad ? 'broad' : 'diff', reviewId: review.id, submittedAt: review.submitted_at || new Date().toISOString(), commentIds: [], event: input.approve ? 'APPROVE' : 'COMMENT' });
     // Saved before an APPROVE is posted, so a crash after GitHub accepts it is recovered by the next start.
     // Only the marker is saved: the verdict's findings travel inside it and apply when the review is found.
-    if (input.approve) { save(file, { ...ledger, pending: { head: snap.head, after: known, round: entry({}), findings: next.findings } }); }
+    const marker = { head: snap.head, after: known, round: entry({}), findings: next.findings };
+    if (input.approve) save(file, { ...ledger, pending: marker });
     let review;
-    const threadIds = {};
     try {
-      review = publishReview({ repo, pr, reviewer: ledger.reviewer, head: snap.head, after: known, state: input.approve ? 'APPROVED' : 'COMMENTED', input, render, headMoved: () => snapshot(repo, pr).head !== snap.head, onThread: (f, id) => { threadIds[lib.findingKey(f)] = id; } });
+      review = publishReview({ repo, pr, reviewer: ledger.reviewer, head: snap.head, after: known, state: input.approve ? 'APPROVED' : 'COMMENTED', input, render, headMoved: () => snapshot(repo, pr).head !== snap.head, onThread: (f, id) => { const g = next.findings.find((h) => h.status === 'open' && h.key === lib.findingKey(f)); if (g) g.threadId = id; if (input.approve) save(file, { ...ledger, pending: marker }); } });
     } catch (error) {
       if (snapshot(repo, pr).head !== snap.head) return null;
       throw error;
     }
     if (!review) return null;
     // Saved before anything else can fail, so a posted review (an APPROVE above all) is never forgotten.
-    for (const f of next.findings) if (f.status === 'open' && threadIds[f.key]) f.threadId = threadIds[f.key];
     next.rounds.push(entry(review));
     delete next.pending;
     delete next.attempt;
