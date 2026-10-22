@@ -49,15 +49,27 @@ function placeLine(content, span, file, hunks) {
   return null;
 }
 
+// Every file the diff names, including one with no added line (a deletion, a mode change) that has no hunk.
+function filesOf(diff) {
+  const files = new Set();
+  let header = false;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('diff --git ')) header = true;
+    else if (line.startsWith('@@')) header = false;
+    if (header && line.startsWith('+++ ')) { const file = headerPath(line.slice(4).replace(/\t$/, '')); if (file) files.add(file); }
+  }
+  return [...files];
+}
+
 // Anything but an explicit minor is labeled a blocker, with the release-blocking categories the reviewer named.
 const label = (f) => f.class === 'minor' ? 'minor' : `blocker${f.releaseBlocking?.length ? `: ${f.releaseBlocking.join(', ')}` : ''}`;
 const text = (f) => `**${f.category}** (${label(f)}) ${f.summary}${f.reason ? ` — ${f.reason}` : ''}${f.requirement ? `\n\n> ${f.requirement}` : ''}\n\n\`${f.id}\``;
 const ids = (list) => list.map((id) => `\`${id}\``).join(', ');
 
 // `how` is "inline" or "body". Event is APPROVE only for a clean round, never REQUEST_CHANGES.
-function renderReview({ unconfined, head, round, rangeBase, reviewer, hunks, findings, fixed, stillOpen, previousHead, approve, followUps = [], rejected = [] }, how) {
+function renderReview({ unconfined, head, round, rangeBase, reviewer, hunks, files = [], findings, fixed, stillOpen, previousHead, approve, followUps = [], rejected = [] }, how) {
   const inDiff = (f) => f.line != null && hunks.some((h) => h.file === f.file && f.line >= h.from && f.line <= h.to);
-  const inFile = (f) => hunks.some((h) => h.file === f.file);
+  const inFile = (f) => files.includes(f.file) || hunks.some((h) => h.file === f.file);
   const threads = how === 'inline' ? findings.filter((f) => !rejected.includes(f) && inFile(f)).map((f) => inDiff(f)
     ? { finding: f, subject: 'LINE', path: f.file, line: f.line, body: text(f) }
     : { finding: f, subject: 'FILE', path: f.file, body: `${f.line ? `Line ${f.line}: ` : ''}${text(f)}` }) : [];
@@ -83,4 +95,4 @@ function renderReview({ unconfined, head, round, rangeBase, reviewer, hunks, fin
 
 const containsSecret = (payload, secrets) => secrets.some((s) => s && payload.includes(s));
 
-module.exports = { hunksOf, placeLine, renderReview, containsSecret };
+module.exports = { hunksOf, filesOf, placeLine, renderReview, containsSecret };

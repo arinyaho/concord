@@ -143,3 +143,10 @@ test('renderReview: a rejected comment moves only its finding to the body', () =
   assert.deepEqual(r.threads.map((t) => t.finding.id), ['in']);
   assert.match(r.body, /sum out/);
 });
+
+test('filesOf: lists a file with no added line; renderReview makes its finding a file comment', () => {
+  const diff = 'diff --git a/gone.js b/gone.js\n--- a/gone.js\n+++ b/gone.js\n@@ -3,2 +2,0 @@\n-x\n-y\n';
+  assert.deepEqual(publish.filesOf(diff), ['gone.js']);
+  const r = publish.renderReview({ ...base, hunks: publish.hunksOf(diff), files: publish.filesOf(diff), findings: [f('d', 'gone.js', 2)], approve: false }, 'inline');
+  assert.deepEqual(r.threads.map((t) => t.subject), ['FILE']);
+});

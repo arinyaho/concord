@@ -497,7 +497,7 @@ function attempt(repo, pr, ledger, file) {
       const line = Buffer.isBuffer(blob) ? publish.placeLine(blob.toString('utf8'), f.span, f.file, hunks) : null;
       return line == null ? f : { ...f, line };
     };
-    const input = { unconfined: unconfinedAt(ledger), head: snap.head, round: n, rangeBase: range.base, reviewer: ledger.provider, hunks, findings: fresh.map(placed), fixed: fixedIds, stillOpen: stillOpenFindings, followUps: openMinors(next.findings), previousHead: prior ? prior.head : snap.head, approve: verdictNow.approve };
+    const input = { unconfined: unconfinedAt(ledger), head: snap.head, round: n, rangeBase: range.base, reviewer: ledger.provider, hunks, files: publish.filesOf(diff), findings: fresh.map(placed), fixed: fixedIds, stillOpen: stillOpenFindings, followUps: openMinors(next.findings), previousHead: prior ? prior.head : snap.head, approve: verdictNow.approve };
     if (verdictNow.reason === 'head-moved') return null;
     // A submodule range that could not be read is said in the review, which then does not approve.
     const render = (i, how) => {
