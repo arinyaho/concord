@@ -490,7 +490,7 @@ function attempt(repo, pr, ledger, file) {
       next.rounds[next.rounds.length - 1].commentIds = ghJson(['api', '--paginate', '--slurp', `repos/${repo}/pulls/${pr}/reviews/${review.id}/comments`]).flat().map((c) => c.id);
       save(file, next);
     } catch (_) { /* ponytail: ids stay empty; thread replies are then missed until the next round */ }
-    return { event: 'published', round: n, mode: range.broad ? 'broad' : 'diff', review: input.approve ? 'APPROVE' : 'COMMENT', new: fresh.length, fixed: fixedIds.length, stillOpen: openIds.length, open: openNow, ...(unreviewed.length && { unreviewed }), ...(verdictNow.approve ? {} : { notApproved: verdictNow.reason }), ...(held.length && { held, hint: 'These findings cannot be settled from the code; run waive <key> (or waive <id> when the id is unique) to clear one you accept.' }) };
+    return { event: 'published', round: n, mode: range.broad ? 'broad' : 'diff', review: input.approve ? 'APPROVE' : 'COMMENT', new: fresh.length, fixed: fixedIds.length, stillOpen: openIds.length, open: openNow, ...(unreviewed.length && { unreviewed }), ...(verdictNow.approve ? {} : { notApproved: verdictNow.reason }), ...(held.length && { held, hint: 'These findings cannot be settled from the code; run waive <key> (or waive <id> when the id is unique) to dismiss one you accept, or reclass <key> minor --reason <line> if it should not block.' }) };
   } catch (error) {
     // Any failure after the head snapshot is recorded with the head it tried, so the watch waits for a newer head or reply; the ledger is read again because a pending approval marker may have been saved meanwhile.
     save(file, { ...load(file), attempt: { head: snap.head, at: new Date().toISOString() } });

@@ -413,6 +413,7 @@ test('a pure rename (R100) does not fix a finding whose span is not verbatim: it
   assert.deepEqual([r.review, r.fixed, r.stillOpen], ['COMMENT', 0, 1]);
   assert.deepEqual(r.held, [{ id: 'correctness:bad', key: w.ledger().findings[0].key, file: 'a.js', reason: 'unverified' }]);
   assert.match(r.hint, /waive/);
+  assert.match(r.hint, /reclass/);
   assert.equal(w.ledger().findings[0].status, 'open');
 });
 
