@@ -545,7 +545,7 @@ function attempt(repo, pr, ledger, file) {
     if (reviewed.decision !== 'review-only' || !Array.isArray(reviewed.findings)) throw new Error(`the review did not complete: ${JSON.stringify(reviewed).slice(0, 200)}`);
     // The reviewer names the description by the copy of it in its state directory, which is no file of the head: from here on the finding is about the description.
     const copy = new RegExp(`(^|/)(intent-concord-pr-${pr}|intent)\\.md$`);
-    reviewed.findings = reviewed.findings.map((f) => copy.test(f.file) && !Buffer.isBuffer(gitBlob(work, snap.head, f.file)) ? { ...f, file: lib.DESC, line: undefined } : f);
+    reviewed.findings = reviewed.findings.map((f) => copy.test(f.file) && gitBlob(work, snap.head, f.file) === null ? { ...f, file: lib.DESC, line: undefined } : f);
 
     const n = lib.reviewedCount(ledger) + 1;
     // An addressed finding is judged again every round with the open ones.

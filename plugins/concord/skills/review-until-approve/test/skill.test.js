@@ -102,3 +102,8 @@ test('SKILL.md keeps watching a draft, handles several pull requests one round a
   assert.match(skill, /waits until that round ends/);
   assert.match(skill, /cannot read the pull request, stop and ask the user which account to use; never choose another account or profile yourself/);
 });
+
+test('SKILL.md says a finding about the pull request description is judged against its title and body, not git objects (#423)', () => {
+  assert.match(skill, /finding about the pull request description is judged against its title and body/);
+  assert.match(skill, /`\/pr-description`/);
+});

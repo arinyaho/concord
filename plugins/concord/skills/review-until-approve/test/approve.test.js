@@ -2059,3 +2059,12 @@ test('a repository file named ":pr-description" is read as a file, and a descrip
   JSON.parse(w.approve('round', 'o/r', '5').stdout);
   assert.equal(w.ledger().findings[0].status, 'addressed');
 });
+
+test('a file of the head named like the reviewer\'s copy of the description keeps its own path, even when it is a symlink (#423)', () => {
+  const w = world();
+  fs.symlinkSync('a.js', path.join(w.src, 'intent.md'));
+  push(w, {}, 'c1b');
+  w.write('findings.json', [{ ...descFinding, file: 'intent.md', span: 'bad' }]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  assert.equal(w.ledger().findings[0].file, 'intent.md');
+});

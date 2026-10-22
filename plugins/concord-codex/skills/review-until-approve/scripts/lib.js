@@ -82,7 +82,9 @@ const unfang = (text) => typeof text === 'string' ? text.replace(/\u2215/g, '/')
 function judgeEvidence(p, entries, read) {
   if (entries.length > 1) return { why: 'duplicate' };
   const given = entries[0].evidence;
-  const ev = given?.file === DESC ? { ...given, span: unfang(given.span) } : given;
+  // A quote that already occurs in the description is taken as it is: the description may genuinely hold the replacement characters.
+  const raw = given?.file === DESC && typeof given.span === 'string' ? read(DESC) : null;
+  const ev = given?.file === DESC && !(Buffer.isBuffer(raw) && raw.includes(Buffer.from(given.span, 'utf8'))) ? { ...given, span: unfang(given.span) } : given;
   // A description finding is answered by the description alone, and the description answers nothing else.
   if ((ev?.file === DESC) !== (p.file === DESC)) return { why: 'evidence-absent' };
   if (typeof ev?.reason !== 'string' || !collapse(ev.reason) || collapse(ev.reason).length > MAX_REASON) return { why: 'no-reason' };
@@ -201,11 +203,11 @@ function repliesSince(ledger, pullComments, issueComments, author) {
   ].filter((c) => c.user?.login === author && Date.parse(c.created_at) > since).map((c) => c.created_at).sort();
 }
 
-// An edited description asks for a round while a finding about it is open, since only a new round can settle that finding. A round that failed on
+// An edited description asks for a round while a finding about it is open or addressed, since only a new round can settle or re-judge that finding. A round that failed on
 // this head with this description used it already.
 function descriptionEdited(ledger, live) {
   const lastRound = last(ledger), attempt = ledger.attempt;
-  return Boolean(lastRound && live.intent && live.intent !== lastRound.intent && ledger.findings.some((f) => f.status === 'open' && f.file === DESC)
+  return Boolean(lastRound && live.intent && live.intent !== lastRound.intent && ledger.findings.some((f) => (f.status === 'open' || f.status === 'addressed') && f.file === DESC)
     && !(attempt && attempt.head === live.head && attempt.intent === live.intent));
 }
 
