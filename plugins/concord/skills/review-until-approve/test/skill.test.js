@@ -94,3 +94,11 @@ test('SKILL.md maps the user\'s language and effort words to start options, pass
   assert.match(skill, /never edit(?:s)? (?:the )?plugin files/i);
   assert.match(skill, /tell the user/i);
 });
+
+test('SKILL.md keeps watching a draft, handles several pull requests one round at a time, and never picks another account (#420, #421)', () => {
+  assert.match(skill, /`ready`: a clean, unapproved head/);
+  assert.doesNotMatch(skill, /re-invoke the skill once the pull request is ready/);
+  assert.match(skill, /one watch per pull request and run rounds one at a time/);
+  assert.match(skill, /waits until that round ends/);
+  assert.match(skill, /cannot read the pull request, stop and ask the user which account to use; never choose another account or profile yourself/);
+});

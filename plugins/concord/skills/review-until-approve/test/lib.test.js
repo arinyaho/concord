@@ -190,7 +190,9 @@ test('evaluateApproval: approves only a reviewed, open, non-draft head with no o
 });
 
 const live = (extra = {}) => ({ head: 'h1', state: 'OPEN', isDraft: false, author: 'dev', ...extra });
-const wake = (extra = {}) => lib.wakeDecision({ ledger: ledger(), live: live(), replies: [], now: Date.parse('2026-01-01T01:00:00Z'), stable: true, ...extra });
+// The default ledger waits on the author: it holds an open blocker. A clean, unapproved ledger is the draft case.
+const waiting = (extra = {}) => ledger({ findings: [{ ...finding('w', 'x', 's'), status: 'open' }], ...extra });
+const wake = (extra = {}) => lib.wakeDecision({ ledger: waiting(), live: live(), replies: [], now: Date.parse('2026-01-01T01:00:00Z'), stable: true, ...extra });
 
 test('wakeDecision: push alone or reply alone does not start a round', () => {
   assert.equal(wake({ live: live({ head: 'h2' }) }), null);
@@ -221,6 +223,18 @@ test('a first round that failed has no review to wait on: the watch wakes for a 
   assert.deepEqual(call('h3'), { event: 'round', head: 'h3' });
 });
 
+test('wakeDecision: a clean round on a draft keeps the watch: ready at the same head wakes "ready", a new head starts a round, a draft stays quiet (#420)', () => {
+  const args = { ledger: ledger() };
+  assert.equal(wake({ ...args, live: live({ isDraft: true }) }), null);
+  assert.deepEqual(wake({ ...args, live: live({ isDraft: false }) }), { event: 'ready', head: 'h1' });
+  assert.deepEqual(wake({ ...args, live: live({ isDraft: true, head: 'h2' }) }), { event: 'round', head: 'h2' });
+  assert.equal(wake({ ...args, live: live({ head: 'h2' }), stable: false }), null);
+  // An open blocker, a head already approved or an unreviewed submodule is not waiting for ready.
+  const blocked = ledger({ findings: [{ ...finding('a', 'x', 's'), status: 'open' }] });
+  assert.equal(wake({ ledger: blocked }), null);
+  assert.equal(wake({ ledger: ledger({ approval: { head: 'h1' } }) }), null);
+});
+
 test('wakeDecision: merge and close wake the loop regardless of replies', () => {
   assert.deepEqual(wake({ live: live({ state: 'MERGED' }) }), { event: 'merged' });
   assert.deepEqual(wake({ live: live({ state: 'CLOSED' }) }), { event: 'closed' });
@@ -232,7 +246,7 @@ test('wakeDecision: one side alone nudges once after 24 hours, then the 7-day ti
   assert.deepEqual(wake({ live: live({ head: 'h2' }), now: t0 + day }), { event: 'nudge', kind: 'push-only', head: 'h2', replyAt: null });
   const replyOnly = { replies: ['2026-01-01T00:30:00Z'], now: t0 + day };
   assert.deepEqual(wake(replyOnly), { event: 'nudge', kind: 'reply-only', head: 'h1', replyAt: '2026-01-01T00:30:00Z' });
-  const nudged = ledger({ nudged: { kind: 'reply-only', head: 'h1', replyAt: '2026-01-01T00:30:00Z' } });
+  const nudged = waiting({ nudged: { kind: 'reply-only', head: 'h1', replyAt: '2026-01-01T00:30:00Z' } });
   assert.equal(wake({ ...replyOnly, ledger: nudged }), null);
   assert.deepEqual(wake({ now: t0 + 7 * day }), { event: 'timeout' });
 });

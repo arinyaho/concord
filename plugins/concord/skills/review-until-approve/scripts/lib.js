@@ -197,6 +197,12 @@ function wakeDecision({ ledger, live, replies, now, stable }) {
   // A round that failed at this head used every reply up to its time: only a newer head or reply asks for another.
   const attempt = ledger.attempt;
   if (attempt && live.head === attempt.head && !replies.some((at) => Date.parse(at) > Date.parse(attempt.at))) return null;
+  // A clean round that was not approved (the pull request was a draft) waits for nothing from the author: a new head starts a
+  // round, and the reviewed head becoming ready is the event `approve` answers.
+  if (evaluateApproval(ledger, { ...live, state: 'OPEN', isDraft: false, head: lastRound.head }, lastRound.head).approve) {
+    if (pushed) return stable ? { event: 'round', head: live.head } : null;
+    if (!live.isDraft) return { event: 'ready', head: live.head };
+  }
   const replied = replies.length > 0;
   if (pushed && replied) return stable ? { event: 'round', head: live.head } : null;
   if (!pushed && !replied) return null;
