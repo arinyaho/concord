@@ -959,6 +959,24 @@ test('a fixed finding that the reviewer raises again with the span present reope
   assert.deepEqual([w.ledger().findings.length, w.ledger().findings[0].status], [1, 'open']);
 });
 
+test('a fixed finding that was addressed first carries no addressed fields once reopened', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  push(w, { 'a.js': 'one\ngood\nthree\nfour\n' }, 'c2');
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  const file = path.join(w.dir, 'ledgers', 'o__r__5__bot.json');
+  const ledger = JSON.parse(fs.readFileSync(file, 'utf8'));
+  Object.assign(ledger.findings[0], { addressedRound: 1, addressedHead: w.c1, addressedEvidence: { file: 'a.js', span: 'x', reason: 'r' } });
+  fs.writeFileSync(file, JSON.stringify(ledger));
+  push(w, { 'a.js': 'one\nbad\nthree\nfour\n' }, 'c3');
+  w.write('findings.json', [finding]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  const f = w.ledger().findings[0];
+  assert.deepEqual([f.status, f.addressedRound, f.addressedHead, f.addressedEvidence], ['open', undefined, undefined, undefined]);
+});
+
 test('a verbatim re-raise verifies an unverified finding', () => {
   const w = world();
   w.write('findings.json', [{ ...finding, span: 'bad\n' }]);

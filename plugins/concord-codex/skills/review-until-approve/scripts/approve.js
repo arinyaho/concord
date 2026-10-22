@@ -548,6 +548,7 @@ function attempt(repo, pr, ledger, file) {
       Object.assign(known, { status: 'open', span: f.span, file: f.file, spanVerified: snap.head });
       delete known.fixedRound;
       delete known.openReason;
+      delete known.addressedRound; delete known.addressedHead; delete known.addressedEvidence;
       known.key = lib.findingKey(known);
       reopened.add(lib.findingKey(f));
     }
