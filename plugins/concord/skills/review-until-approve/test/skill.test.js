@@ -69,3 +69,9 @@ test('the foreground `next` call is given a Bash timeout longer than its 540 sec
   const timeoutMs = Number(section.match(/approve\.js" next[^\n]*`timeout: (\d+)`/)?.[1]);
   assert.ok(timeoutMs > 540000, `timeout ${timeoutMs}`);
 });
+
+test('`finished` is trusted only after the background round has exited: the round registers after its first GitHub calls', () => {
+  const section = skill.slice(skill.indexOf('## Round with subagents'), skill.indexOf('## Findings the user disputes'));
+  assert.match(section, /`finished`[^\n]*background task (has|is)[^\n]*(still running|exited)/);
+  assert.match(section, /still running[^\n]*run `next` again/);
+});

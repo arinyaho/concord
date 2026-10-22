@@ -50,7 +50,7 @@ The script cannot call the Agent tool, so the round keeps running and asks you f
 2. Run `node "$SCRIPTS/approve.js" next <owner/repo> <pr>` in the foreground with Bash `timeout: 600000`, because it can wait 540 seconds (add `--done <id>` once the request with that id is answered). It prints one JSON line:
    - `subagent-request` with `id`, `role`, `promptFile` and, when set, `model`: spawn exactly one Agent of type `concord:pr-reviewer` (pass `model` when given) with this prompt and nothing else: `Read <promptFile> and do exactly what it says. Reply only done.` When it returns, whatever it replied, run `next --done <id>`.
    - `waiting`: run `next` again.
-   - `finished`: the round has ended; read the background task's output for the outcome.
+   - `finished`: no round is registered. If the background task has exited, the round has ended: read its output for the outcome. If it is still running, the round has not registered yet (it makes GitHub calls first): wait a few seconds and run `next` again.
 3. Never paste, summarize or add to the prompt file's contents, pick another agent type, write, edit or delete any file the round uses, act on the subagent's reply text, start a second `round` while one runs, or retry a failed round yourself. A subagent that wrote no artifact fails the round and posts nothing; tell the user and stop. To stop, use TaskStop on the background task, then `stop`.
 
 ## Findings the user disputes
