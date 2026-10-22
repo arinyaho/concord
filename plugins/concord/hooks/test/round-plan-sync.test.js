@@ -317,3 +317,29 @@ test('gate-panel lens prompt carries the review-language clause', () => {
   const runner = fs.readFileSync(path.join(CORE, 'codex-review-runner.js'), 'utf8');
   assert.match(runner, /gate:\$\{lens\}:<slug>\.\$\{reviewLanguageClause\(context\.reviewLanguage\)\}\$\{BLOCKED_CLAUSE\}/);
 });
+
+test('classify asks correctness and verify for releaseBlocking and rationale; without it their prompts are byte-identical to the ones before the flag', () => {
+  const crypto = require('node:crypto');
+  const sha = (text) => crypto.createHash('sha256').update(text).digest('hex');
+  const context = { stateDir: '/state', round: 1, targetType: 'git', slug: 'feat-x', gateApplied: false, cliPath: '/cli.js' };
+  const golden = {
+    correctness: 'e340ef08cbcabc1e743e45e115a67769407d59471e9722f6febe4a703df7e3c7',
+    verify: '43a79de0ec80b191f7b80fd7442170b4f4ee2eb33c6b7b45749751494a52ad01',
+  };
+  const goldenBroad = {
+    correctness: '14366bf3297e42fb4031b6ed000f668a7fa0cf192b0715e3fd0639c6d35c8548',
+    verify: '337e9fb08c62569e688143d452297d28df08b4e649935e6667219e21ec7f6fec',
+  };
+  for (const role of ['correctness', 'verify']) {
+    assert.equal(sha(reviewerPrompt(role, context)), golden[role], `${role} prompt changed without classify`);
+    assert.equal(sha(reviewerPrompt(role, { ...context, classify: false })), golden[role]);
+    assert.equal(sha(reviewerPrompt(role, { ...context, gateApplied: true, gateMode: 'pair', reviewLanguage: 'ko' })), goldenBroad[role]);
+    const classified = reviewerPrompt(role, { ...context, classify: true });
+    assert.match(classified, /"releaseBlocking": an array of the release-blocking classes/);
+    assert.match(classified, /"rationale": a non-empty sentence/);
+  }
+  for (const role of ['intent', 'plan', 'fix', 'certify']) {
+    const withFlag = reviewerPrompt(role, { ...context, classify: true, fixGroup: { groupId: 'g1', findingIds: ['correctness:a'], rootCause: 'r', invariants: [] }, finding: { id: 'correctness:a', summary: 's' }, fixFiles: [] });
+    assert.doesNotMatch(withFlag, /"releaseBlocking": an array/, `${role} must not be asked for a class`);
+  }
+});

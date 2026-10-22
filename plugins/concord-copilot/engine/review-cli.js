@@ -1192,6 +1192,8 @@ function verifiedRound(ref, stateDir, run, what) {
   const fixes = confirmedNonKilled
     .filter((f) => !isReplay(f))
     .map((f) => ({ id: f.id, file: f.file, span: f.span, summary: f.summary }));
+  // What the reviewer reported about release-blocking, kept apart from `fixes` so the fix path sees no new field.
+  const classified = new Map(confirmedNonKilled.map((f) => [f.id, f]));
   const resolvedAbsent = confirmedNonKilled
     .filter((f) => isReplay(f))
     .map((f) => f.id);
@@ -1291,7 +1293,7 @@ function verifiedRound(ref, stateDir, run, what) {
     gateOpen = thisRound.concat(carried);
   }
   const reopenedIds = confirmedNonKilled.filter((f) => f.reopened).map((f) => f.id);
-  return { repoRoot, slug, ledger, n, isGit, changed, fixes, suppressedIds, resolvedAbsent, reopenedIds, intentParked, gateOpen, gateRejectedIds, gateDuplicateIds, gateRaisedIds, gateApplied };
+  return { repoRoot, slug, ledger, n, isGit, changed, fixes, classified, suppressedIds, resolvedAbsent, reopenedIds, intentParked, gateOpen, gateRejectedIds, gateDuplicateIds, gateRaisedIds, gateApplied };
 }
 
 // Every mutating target verb takes the same lock, including an unkeyed call
@@ -2787,7 +2789,7 @@ function runVerb(resolveFromCwd, args, initiative) {
 
   if (verb === 'findings') {
     requireRef(ref, 'findings');
-    const { repoRoot, fixes, intentParked, gateOpen } = verifiedRound(ref, stateDir, run, 'findings');
+    const { repoRoot, fixes, classified, intentParked, gateOpen } = verifiedRound(ref, stateDir, run, 'findings');
     // The file name comes from a reviewer, so it is read only when its real
     // path stays inside the checkout: a line number for a file elsewhere would
     // tell whoever reads the review whether a guessed span is in that file.
@@ -2804,9 +2806,11 @@ function runVerb(resolveFromCwd, args, initiative) {
       } catch (_) { return null; }
     };
     // Gate findings carry their span as `evidence` and their lens as `class`.
-    const findings = [...fixes, ...intentParked, ...gateOpen].map((f) => {
+    const findings = [...fixes, ...intentParked, ...gateOpen].map((g) => {
+      const f = { ...g, ...(classified.has(g.id) && { releaseBlocking: classified.get(g.id).releaseBlocking, rationale: classified.get(g.id).rationale }) };
       const span = f.span ?? f.evidence ?? '';
-      return { id: f.id, category: f.class || f.id.split(':', 1)[0], file: f.file, line: lineOf(f.file, span), span, summary: f.summary, requirement: f.requirement || '' };
+      // `class` is the one decision a review-only caller needs: minor only when the reviewer classified it follow-up eligible and gate-verify did not override it.
+      return { id: f.id, category: f.class || f.id.split(':', 1)[0], file: f.file, line: lineOf(f.file, span), span, summary: f.summary, requirement: f.requirement || '', class: gateFollowUpEligible(f) ? 'minor' : 'blocker', ...(f.releaseBlocking !== undefined && { releaseBlocking: f.releaseBlocking }), ...(f.rationale !== undefined && { rationale: f.rationale }), ...(f.blockingReason && { blockingReason: f.blockingReason }) };
     });
     process.stdout.write(JSON.stringify({ findings }) + '\n');
     return;

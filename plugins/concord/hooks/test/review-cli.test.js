@@ -5382,7 +5382,7 @@ test('findings: reports verified correctness findings with their line, drops rej
   const slug = review.targetSlug('feat/ro');
   const before = fs.readFileSync(review.ledgerPath(dir, slug), 'utf8');
   const out = JSON.parse(run(['findings', 'feat/ro'], { env, skipPlanSeed: true }));
-  assert.deepStrictEqual(out.findings, [{ id: 'correctness:real', category: 'correctness', file: 'a.txt', line: 1, span: 'two', summary: 'x', requirement: '' }]);
+  assert.deepStrictEqual(out.findings, [{ id: 'correctness:real', category: 'correctness', file: 'a.txt', line: 1, span: 'two', summary: 'x', requirement: '', class: 'blocker' }]);
   assert.strictEqual(fs.readFileSync(review.ledgerPath(dir, slug), 'utf8'), before);
 });
 
@@ -5449,7 +5449,7 @@ test('findings: reports an intent finding on a changed file with its requirement
   writeArtifact(dir, n, 'intent', { status: 'ok', findings: [
     { id: 'intent:no-retry', file: 'a.txt', span: 'two', requirement: 'REQ: retry three times', summary: 'does not retry' } ] });
   const out = JSON.parse(run(['findings', 'feat/ro-intent'], { env, skipPlanSeed: true }));
-  assert.deepStrictEqual(out.findings, [{ id: 'intent:no-retry', category: 'intent', file: 'a.txt', line: 1, span: 'two', summary: 'does not retry', requirement: 'REQ: retry three times' }]);
+  assert.deepStrictEqual(out.findings, [{ id: 'intent:no-retry', category: 'intent', file: 'a.txt', line: 1, span: 'two', summary: 'does not retry', requirement: 'REQ: retry three times', class: 'blocker' }]);
 });
 
 test('findings: a gate duplicate is dropped only while the correctness finding it restates survives', () => {
@@ -6915,4 +6915,48 @@ test('review-cli rerun: a deferred finding stays deferred in the fresh ledger an
   assert.strictEqual(after.findings.find((f) => f.id === 'correctness:scope').status, 'deferred');
   assert.ok(after.seen.some((s) => s.id === 'correctness:scope' && s.status === 'deferred'));
   assert.deepStrictEqual(after.runs[0].deferred.map((f) => [f.id, f.ref]), [['correctness:scope', 'https://github.com/o/r/issues/9']]);
+});
+
+test('findings: each finding carries class and the classification it was reported with; a missing or invalid one is a blocker', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/finding-class';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'findings', examined: ['a.txt'], findings: [
+    { id: 'correctness:plain', file: 'a.txt', span: 'two', summary: 'no classification' },
+    { id: 'correctness:minor', file: 'a.txt', span: 'two', summary: 'wording', releaseBlocking: [], rationale: 'changes no behavior' },
+    { id: 'correctness:bug', file: 'a.txt', span: 'two', summary: 'wrong', releaseBlocking: ['serious-bug'], rationale: 'breaks login' },
+    { id: 'correctness:empty-rationale', file: 'a.txt', span: 'two', summary: 'x', releaseBlocking: [], rationale: ' ' },
+    { id: 'correctness:not-array', file: 'a.txt', span: 'two', summary: 'y', releaseBlocking: 'none', rationale: 'z' },
+  ] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  const byId = Object.fromEntries(JSON.parse(run(['findings', ref], { env, skipPlanSeed: true })).findings.map((f) => [f.id, f]));
+  assert.equal(byId['correctness:plain'].class, 'blocker');
+  assert.equal(byId['correctness:plain'].releaseBlocking, undefined);
+  assert.equal(byId['correctness:minor'].class, 'minor');
+  assert.equal(byId['correctness:minor'].rationale, 'changes no behavior');
+  assert.deepEqual(byId['correctness:minor'].releaseBlocking, []);
+  assert.equal(byId['correctness:bug'].class, 'blocker');
+  assert.deepEqual(byId['correctness:bug'].releaseBlocking, ['serious-bug']);
+  assert.equal(byId['correctness:empty-rationale'].class, 'blocker');
+  assert.equal(byId['correctness:not-array'].class, 'blocker');
+});
+
+test('findings: a gate finding is minor only when gate-verify did not override it', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/gate-finding-class';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', ref, 'HEAD~1', '--broad'], { env, broadDefault: true })).round;
+  writeArtifact(dir, n, 'correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  writeArtifact(dir, n, 'gate', { status: 'ok', findings: [
+    { id: 'gate:silent-gap:minor', file: 'a.txt', span: 'two', summary: 'small', releaseBlocking: [], rationale: 'docs wording only' },
+    { id: 'gate:silent-gap:blocked', file: 'a.txt', span: 'two', summary: 'small too', releaseBlocking: [], rationale: 'docs wording only' },
+  ] });
+  writeArtifact(dir, n, 'verify', { status: 'ok', rejected: [] });
+  writeArtifact(dir, n, 'gate-verify', { status: 'ok', rejected: [], findings: [], blocking: [{ id: 'gate:silent-gap:blocked', reason: 'it breaks callers' }] });
+  const byId = Object.fromEntries(JSON.parse(run(['findings', ref], { env, skipPlanSeed: true })).findings.map((f) => [f.id, f]));
+  assert.equal(byId['gate:silent-gap:minor'].class, 'minor');
+  assert.equal(byId['gate:silent-gap:blocked'].class, 'blocker');
 });

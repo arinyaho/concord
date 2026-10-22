@@ -117,12 +117,12 @@ function reviewLanguageClause(language) {
   return language ? ` Write \`summary\` and \`requirement\` in the language with BCP 47 tag \`${language}\`. Copy \`span\`, \`file\`, \`id\`, \`category\` and every code identifier exactly as they appear in the source; never translate them.` : '';
 }
 
-function baseReviewerPrompt(role, { stateDir, round, targetType, dodDeferred, dodPending, finding, fixGroup, retryPrompt, slug, priorIntentIds, plannedFindings = [], gateMode, gateApplied = false, intentHash = null, examined = [], fixFiles = [], reviewLanguage = null }) {
+function baseReviewerPrompt(role, { stateDir, round, targetType, dodDeferred, dodPending, finding, fixGroup, retryPrompt, slug, priorIntentIds, plannedFindings = [], gateMode, gateApplied = false, intentHash = null, examined = [], fixFiles = [], reviewLanguage = null, classify = false }) {
   const groupArtifactId = fixGroup && fixGroup.groupId ? fixGroup.groupId : finding && finding.id;
   const artifact = path.join(stateDir, role === 'fix' || role === 'certify' ? `round-${round}-${role}-${safeIdForFilename(groupArtifactId)}.json` : `round-${round}-${role}.json`);
   const env = ENV_CLAUSE_BY_ROLE[role];
   const anchorRoles = ['correctness', 'verify', 'intent', 'gate', 'gate-verify'];
-  const retry = `${role === 'fix' ? '' : BLOCKED_CLAUSE}${anchorRoles.includes(role) ? FINDING_SPAN_CLAUSE + reviewLanguageClause(reviewLanguage) : ''}${retryPrompt ? `\n\n${retryPrompt}` : ''}`;
+  const retry = `${role === 'fix' ? '' : BLOCKED_CLAUSE}${anchorRoles.includes(role) ? FINDING_SPAN_CLAUSE + reviewLanguageClause(reviewLanguage) : ''}${classify && (role === 'correctness' || role === 'verify') ? GATE_FOLLOWUP_CLAUSE : ''}${retryPrompt ? `\n\n${retryPrompt}` : ''}`;
   if (role === 'correctness') {
     const doc = targetType === 'file';
     const dodNote = dodPending

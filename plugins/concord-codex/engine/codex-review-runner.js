@@ -990,7 +990,7 @@ async function runRounds(options) {
     if (started.decision !== 'work') return withTelemetry(started);
     currentRound = started.round;
     checks = [{ name: 'definition-of-done', status: started.dodPending ? 'pending' : started.dodDeferred ? 'deferred' : (started.dodPassed ? 'passed' : 'failed') }];
-    const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodDeferred: started.dodDeferred, dodPending: started.dodPending, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref), gateMode: started.gateMode, gateApplied: started.gateApplied, intentHash: started.intentHash, cliPath, reviewerGuidance: started.reviewerGuidance || null, priorFindings: options.priorFindings || [], reviewLanguage: options.reviewLanguage || null };
+    const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodDeferred: started.dodDeferred, dodPending: started.dodPending, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref), gateMode: started.gateMode, gateApplied: started.gateApplied, intentHash: started.intentHash, cliPath, reviewerGuidance: started.reviewerGuidance || null, priorFindings: options.priorFindings || [], reviewLanguage: options.reviewLanguage || null, classify: reviewOnly };
     const reviewRoles = reviewOnly ? [
       ...(started.intentApplied ? ['intent'] : []), 'correctness',
       ...(started.gateApplied ? ['gate'] : []), 'verify',
