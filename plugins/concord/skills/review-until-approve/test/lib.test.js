@@ -200,3 +200,10 @@ test('an unreviewed submodule range keeps the round from approving its head and 
   assert.equal(lib.evaluateApproval({ ...ledger, rounds: [{ ...ledger.rounds[0], head: 'h0' }] }, { head: 'h1', state: 'OPEN', isDraft: false, author: 'dev' }, 'h1').approve, true);
   assert.deepEqual(lib.chooseRange(ledger.rounds[0], { head: 'h2', mergeBase: 'm', intent: 'i' }, () => true), { base: 'm', broad: false });
 });
+
+test('classOf: the gate verifier\'s blocking reason replaces the finder\'s non-blocking rationale; without one the rationale stands', () => {
+  const overridden = lib.classOf({ class: 'blocker', releaseBlocking: [], rationale: 'wording only', blockingReason: 'it breaks callers' });
+  assert.deepEqual([overridden.class, overridden.reason], ['blocker', 'it breaks callers']);
+  assert.equal(lib.classOf({ class: 'minor', releaseBlocking: [], rationale: 'wording only', blockingReason: 'x' }).class, 'blocker');
+  assert.equal(lib.classOf({ class: 'blocker', releaseBlocking: ['serious-bug'], rationale: 'breaks login' }).reason, 'breaks login');
+});

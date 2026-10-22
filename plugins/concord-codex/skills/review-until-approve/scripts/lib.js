@@ -107,9 +107,10 @@ function submoduleRepo(url, prRepo) {
 const isBlocker = (f) => f.class !== 'minor';
 function classOf(f) {
   const reason = collapse(f.rationale);
-  if (f.class === 'minor' && Array.isArray(f.releaseBlocking) && f.releaseBlocking.length === 0 && reason) return { class: 'minor', reason, releaseBlocking: [] };
+  if (f.class === 'minor' && !collapse(f.blockingReason) && Array.isArray(f.releaseBlocking) && f.releaseBlocking.length === 0 && reason) return { class: 'minor', reason, releaseBlocking: [] };
   const categories = Array.isArray(f.releaseBlocking) ? f.releaseBlocking.filter((c) => typeof c === 'string') : [];
-  return { class: 'blocker', reason: reason || 'unclassified', ...(categories.length && { releaseBlocking: categories }) };
+  // gate-verify's reason for overriding a minor claim is the reason the finding blocks.
+  return { class: 'blocker', reason: collapse(f.blockingReason) || reason || 'unclassified', ...(categories.length && { releaseBlocking: categories }) };
 }
 // Of several raised findings with one key the strictest class stands.
 const strictest = (list) => list.map(classOf).find((c) => c.class === 'blocker') || classOf(list[0]);

@@ -416,11 +416,13 @@ function attempt(repo, pr, ledger, file) {
     const n = ledger.rounds.length + 1;
     const verdict = lib.classifyPrior(open, reviewed.findings, resolve, (file) => gitBlob(work, snap.head, file), snap.head);
     const next = JSON.parse(JSON.stringify(ledger));
+    const stillOpenFindings = [];
     const inNext = (key, status) => next.findings.find((f) => f.key === key && f.status === status);
     for (const r of verdict) {
       const f = inNext(r.key, 'open');
       if (r.status === 'fixed') Object.assign(f, { status: 'fixed', fixedRound: n });
       else {
+        stillOpenFindings.push(f);
         Object.assign(f, { openReason: r.reason });
         if (r.file && (r.file !== f.file || r.spanVerified !== f.spanVerified)) Object.assign(f, { file: r.file, spanVerified: r.spanVerified, key: lib.findingKey({ ...f, file: r.file }) });
       }
@@ -462,7 +464,7 @@ function attempt(repo, pr, ledger, file) {
       const line = Buffer.isBuffer(blob) ? publish.placeLine(blob.toString('utf8'), f.span, f.file, hunks) : null;
       return line == null ? f : { ...f, line };
     };
-    const input = { unconfined: unconfinedAt(ledger), head: snap.head, round: n, rangeBase: range.base, reviewer: ledger.provider, hunks, findings: fresh.map(placed), fixed: fixedIds, stillOpen: openIds, followUps: openMinors(next.findings), previousHead: prior ? prior.head : snap.head, approve: verdictNow.approve };
+    const input = { unconfined: unconfinedAt(ledger), head: snap.head, round: n, rangeBase: range.base, reviewer: ledger.provider, hunks, findings: fresh.map(placed), fixed: fixedIds, stillOpen: stillOpenFindings, followUps: openMinors(next.findings), previousHead: prior ? prior.head : snap.head, approve: verdictNow.approve };
     if (verdictNow.reason === 'head-moved') return null;
     // A submodule range that could not be read is said in the review, which then does not approve.
     const render = (i, how) => {
@@ -536,7 +538,7 @@ function approve(repo, pr, args) {
   save(file, ledger);
   let review;
   try {
-    review = post(repo, pr, publish.renderReview({ unconfined: unconfinedAt(ledger), head: reviewed.head, round: reviewed.n, rangeBase: reviewed.base, reviewer: ledger.provider, hunks: [], findings: [], fixed: [], stillOpen: followUps.map((f) => f.id), followUps, previousHead: reviewed.head, approve: true }, 'body'));
+    review = post(repo, pr, publish.renderReview({ unconfined: unconfinedAt(ledger), head: reviewed.head, round: reviewed.n, rangeBase: reviewed.base, reviewer: ledger.provider, hunks: [], findings: [], fixed: [], stillOpen: followUps, followUps, previousHead: reviewed.head, approve: true }, 'body'));
   } catch (error) {
     review = landed(reviewsOf(repo, pr), ledger.reviewer, reviewed.head, after, 'APPROVED');
     if (!review) { delete ledger.pending; save(file, ledger); throw error; }

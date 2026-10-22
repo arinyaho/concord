@@ -59,15 +59,15 @@ function renderReview({ unconfined, head, round, rangeBase, reviewer, hunks, fin
   const inDiff = (f) => f.line != null && hunks.some((h) => h.file === f.file && f.line >= h.from && f.line <= h.to);
   const inline = how === 'inline' ? findings.filter(inDiff) : [];
   const rest = findings.filter((f) => !inline.includes(f));
-  const minors = new Set(followUps.map((f) => f.id));
+  const minors = new Set(followUps.map((f) => f.key));
   const lines = [
     `<!-- concord-approve: ${head} round:${round} base:${rangeBase} -->`,
     `reviewed by concord (${reviewer})`,
     ...(unconfined ? [`reviewed unconfined on the reviewing account's trust declaration (recorded ${unconfined})`] : []),
-    findings.length === 0 && stillOpen.length === 0 ? (approve ? 'LGTM — no finding survived verification.' : 'No finding survived verification; this review does not approve.') : `${findings.length} new finding(s) (${findings.filter((f) => f.class !== 'minor').length} blocking), ${stillOpen.length} still open (${stillOpen.filter((id) => !minors.has(id)).length} blocking).${approve ? ' No blocking finding is open.' : ''}`,
+    findings.length === 0 && stillOpen.length === 0 ? (approve ? 'LGTM — no finding survived verification.' : 'No finding survived verification; this review does not approve.') : `${findings.length} new finding(s) (${findings.filter((f) => f.class !== 'minor').length} blocking), ${stillOpen.length} still open (${stillOpen.filter((f) => !minors.has(f.key)).length} blocking).${approve ? ' No blocking finding is open.' : ''}`,
   ];
   if (fixed.length) lines.push(`Fixed since \`${previousHead.slice(0, 7)}\`: ${ids(fixed)}`);
-  if (stillOpen.length) lines.push(`Still open: ${stillOpen.map((id) => `\`${id}\`${minors.has(id) ? ' (minor)' : ''}`).join(', ')}`);
+  if (stillOpen.length) lines.push(`Still open: ${stillOpen.map((f) => `\`${f.id}\`${minors.has(f.key) ? ' (minor)' : ''}`).join(', ')}`);
   for (const f of rest) lines.push(`- \`${f.file}${f.line ? `:${f.line}` : ''}\` ${text(f)}`);
   if (approve && followUps.length) lines.push(`Follow-ups (not blocking):\n${followUps.map((f) => `- \`${f.file}${f.line ? `:${f.line}` : ''}\` ${f.summary} — ${f.reason} (\`${f.id}\`)`).join('\n')}`);
   return {
