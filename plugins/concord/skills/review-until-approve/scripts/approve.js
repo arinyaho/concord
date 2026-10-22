@@ -122,10 +122,43 @@ function credentialStrings(file) {
 const secrets = () => [process.env.GH_TOKEN, process.env.CLAUDE_CODE_OAUTH_TOKEN, process.env.OPENAI_API_KEY, (() => { try { return gh(['auth', 'token']).trim(); } catch (_) { return ''; } })(),
   ...credentialStrings(path.join(claudeConfigDir(), '.credentials.json')), ...credentialCopies.flatMap(credentialStrings)];
 
-function post(repo, pr, payload) {
-  const text = JSON.stringify(payload);
+function guard(text) {
   if (publish.containsSecret(text, secrets())) throw new Error('the review text holds a credential; nothing was posted');
-  return ghJson(['api', '-X', 'POST', `repos/${repo}/pulls/${pr}/reviews`, '--input', '-'], text);
+  return text;
+}
+function post(repo, pr, { threads, ...payload }) {
+  return ghJson(['api', '-X', 'POST', `repos/${repo}/pulls/${pr}/reviews`, '--input', '-'], guard(JSON.stringify(payload)));
+}
+
+// A review is built as a pending one (invisible until submitted): GitHub refuses a whole review for one bad comment and the
+// review API has no file-level comment, but a GraphQL thread can be added, and can fail, one at a time.
+const THREAD = 'mutation($r:ID!,$p:String!,$b:String!,$l:Int,$t:PullRequestReviewThreadSubjectType!){addPullRequestReviewThread(input:{pullRequestReviewId:$r,path:$p,body:$b,line:$l,side:RIGHT,subjectType:$t}){thread{id}}}';
+function postThread(nodeId, t) {
+  guard(t.body);
+  try {
+    const args = ['api', 'graphql', '-f', `query=${THREAD}`, '-f', `r=${nodeId}`, '-f', `p=${t.path}`, '-f', `b=${t.body}`, '-f', `t=${t.subject}`, ...(t.subject === 'LINE' ? ['-F', `l=${t.line}`] : [])];
+    return Boolean(ghJson(args).data?.addPullRequestReviewThread?.thread);
+  } catch (_) { return false; }
+}
+// Returns the submitted review, or null when the head moved before the submission (the pending review is deleted).
+// A comment GitHub refuses moves only its finding to the body. A pending review left by a crash carries the marker and is deleted first; one without it is the user's own draft and is never touched.
+function publishReview({ repo, pr, reviewer, head, after, state, input, render, headMoved }) {
+  const drop = (id) => gh(['api', '-X', 'DELETE', `repos/${repo}/pulls/${pr}/reviews/${id}`]);
+  for (const r of reviewsOf(repo, pr)) {
+    if (r.user?.login !== reviewer || r.state !== 'PENDING') continue;
+    if (!(r.body || '').startsWith('<!-- concord-approve:')) throw new Error(`finish or discard your pending review on ${repo}#${pr} first`);
+    drop(r.id);
+  }
+  const first = render(input, 'inline');
+  const pending = post(repo, pr, { commit_id: head, body: first.body.split('\n')[0] });
+  const rejected = first.threads.filter((t) => !postThread(pending.node_id, t)).map((t) => t.finding);
+  if (headMoved()) { drop(pending.id); return null; }
+  const final = render({ ...input, rejected }, 'inline');
+  const submit = () => ghJson(['api', '-X', 'POST', `repos/${repo}/pulls/${pr}/reviews/${pending.id}/events`, '--input', '-'], guard(JSON.stringify({ event: final.event, body: final.body })));
+  try { return submit(); } catch (error) {
+    // Accepted although the call failed: take that review; otherwise the pending review still exists, so submit once more.
+    return landed(reviewsOf(repo, pr), reviewer, head, after, state) || submit();
+  }
 }
 
 // GitHub may accept a review and still fail the call (a timeout, a crash before the ledger is saved). A review
@@ -477,10 +510,13 @@ function attempt(repo, pr, ledger, file) {
     // Only the marker is saved: the verdict's findings travel inside it and apply when the review is found.
     if (input.approve) { save(file, { ...ledger, pending: { head: snap.head, after: known, round: entry({}), findings: next.findings } }); }
     let review;
-    try { review = post(repo, pr, render(input, 'inline')); } catch (error) {
+    try {
+      review = publishReview({ repo, pr, reviewer: ledger.reviewer, head: snap.head, after: known, state: input.approve ? 'APPROVED' : 'COMMENTED', input, render, headMoved: () => snapshot(repo, pr).head !== snap.head });
+    } catch (error) {
       if (snapshot(repo, pr).head !== snap.head) return null;
-      review = landed(reviewsOf(repo, pr), ledger.reviewer, snap.head, known, input.approve ? 'APPROVED' : 'COMMENTED') || post(repo, pr, render(input, 'body'));
+      throw error;
     }
+    if (!review) return null;
     // Saved before anything else can fail, so a posted review (an APPROVE above all) is never forgotten.
     next.rounds.push(entry(review));
     delete next.pending;

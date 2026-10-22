@@ -72,13 +72,39 @@ else if (a[0] === 'api' && /^repos\\/[^/]+\\/[^/]+$/.test(a[1])) {
   if (!info) { console.error('HTTP 404'); process.exit(1); }
   j(info);
 }
+else if (a[0] === 'api' && a[1] === 'graphql') {
+  // A thread joins the pending review; a path listed in reject-paths is refused, as GitHub refuses a line outside the diff.
+  const arg = (k) => { const at = a.findIndex((x, i) => (a[i - 1] === '-f' || a[i - 1] === '-F') && x.startsWith(k + '=')); return at < 0 ? undefined : a[at].slice(k.length + 1); };
+  const rejected = fs.existsSync(dir + '/reject-paths') ? JSON.parse(fs.readFileSync(dir + '/reject-paths', 'utf8')) : [];
+  if (rejected.includes(arg('p'))) { console.error('Pull request review thread line must be part of the diff'); process.exit(1); }
+  const pending = JSON.parse(fs.readFileSync(dir + '/pending.json', 'utf8'));
+  pending.threads.push({ path: arg('p'), line: arg('l') === undefined ? undefined : Number(arg('l')), side: 'RIGHT', subject_type: arg('t'), body: arg('b') });
+  fs.writeFileSync(dir + '/pending.json', JSON.stringify(pending));
+  j({ data: { addPullRequestReviewThread: { thread: { id: 'T' } } } });
+}
+else if (a[0] === 'api' && a.includes('DELETE')) {
+  fs.writeFileSync(dir + '/reviews.json', JSON.stringify(JSON.parse(fs.readFileSync(dir + '/reviews.json', 'utf8')).filter((r) => '/' + r.id !== a[a.length - 1].replace(/^.*\\/reviews/, ''))));
+  fs.rmSync(dir + '/pending.json', { force: true });
+}
 else if (a[0] === 'api' && a.includes('-X')) {
   const posts = fs.existsSync(dir + '/posts.jsonl') ? fs.readFileSync(dir + '/posts.jsonl', 'utf8').split('\\n').filter(Boolean) : [];
   const body = fs.readFileSync(0, 'utf8');
   if (fs.existsSync(dir + '/fail-posts')) { console.error('GitHub unreachable'); process.exit(1); }
-  fs.appendFileSync(dir + '/posts.jsonl', body + '\\n');
-  const posted = JSON.parse(body);
+  let posted = JSON.parse(body);
   const reviews = fs.existsSync(dir + '/reviews.json') ? JSON.parse(fs.readFileSync(dir + '/reviews.json', 'utf8')) : [];
+  const submit = a.some((x) => /\\/events$/.test(x));
+  if (submit) {
+    const pending = JSON.parse(fs.readFileSync(dir + '/pending.json', 'utf8'));
+    fs.rmSync(dir + '/pending.json');
+    reviews.splice(reviews.findIndex((r) => r.state === 'PENDING'), 1);
+    posted = { commit_id: pending.commit_id, event: posted.event, body: posted.body, comments: pending.threads };
+  } else if (!posted.event) {
+    fs.writeFileSync(dir + '/pending.json', JSON.stringify({ commit_id: posted.commit_id, threads: [] }));
+    reviews.push({ id: 100 + posts.length, user: { login: 'bot' }, commit_id: posted.commit_id, state: 'PENDING', body: posted.body });
+    fs.writeFileSync(dir + '/reviews.json', JSON.stringify(reviews));
+    return j({ id: 100 + posts.length, node_id: 'N', submitted_at: new Date().toISOString() });
+  }
+  fs.appendFileSync(dir + '/posts.jsonl', JSON.stringify(posted) + '\\n');
   reviews.push({ id: 100 + posts.length, user: { login: 'bot' }, commit_id: posted.commit_id, state: posted.event === 'APPROVE' ? 'APPROVED' : 'COMMENTED', submitted_at: new Date().toISOString() });
   fs.writeFileSync(dir + '/reviews.json', JSON.stringify(reviews));
   if (fs.existsSync(dir + '/crash-after-post')) { console.error('timeout after GitHub accepted the review'); process.exit(1); }
@@ -655,12 +681,12 @@ test('a finding whose engine line is missing is still posted inline, at the span
   assert.match(w.posts()[0].body.split('\n\n')[1], /^reviewed by concord \(codex\)$/);
 });
 
-test('a finding whose engine line is outside the diff stays in the body even when its span occurs inside it', () => {
+test('a finding whose engine line is outside the diff is a file comment even when its span occurs inside it', () => {
   const w = world();
   w.write('findings.json', [{ ...finding, line: 99 }]);
   w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
-  assert.deepEqual(w.posts()[0].comments, []);
-  assert.match(w.posts()[0].body, /`a\.js:99`/);
+  assert.deepEqual(w.posts()[0].comments.map((c) => [c.path, c.subject_type, c.line]), [['a.js', 'FILE', undefined]]);
+  assert.match(w.posts()[0].comments[0].body, /^Line 99: /);
 });
 
 test('waive refuses an id shared by two open findings, names their keys, and waives exactly the one whose key is given', () => {
@@ -1524,4 +1550,44 @@ test('waive still dismisses a minor, and it leaves the follow-up list', () => {
   assert.equal(JSON.parse(w.approve('waive', 'o/r', '5', 'correctness:other').stdout).event, 'approved');
   assert.doesNotMatch(w.posts()[1].body, /Follow-ups[\s\S]*correctness:other/);
   assert.match(w.posts()[1].body, /Follow-ups[\s\S]*correctness:wording/);
+});
+
+test('a finding outside every hunk of a changed file is posted as a file comment, one in an unchanged file in the body', () => {
+  const w = world();
+  w.write('findings.json', [{ ...finding, line: 99 }, { ...finding, id: 'correctness:other', file: 'zz.js', line: 1, span: 'nope' }]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  const post = w.posts()[0];
+  assert.deepEqual(post.comments.map((c) => [c.path, c.subject_type]), [['a.js', 'FILE']]);
+  assert.match(post.body, /`zz\.js:1`/);
+  assert.doesNotMatch(post.body, /`a\.js:99`/);
+});
+
+test('a comment GitHub refuses moves only its finding to the body', () => {
+  const w = world();
+  w.write('reject-paths', ['a.js']);
+  w.write('findings.json', [finding, { ...finding, id: 'correctness:other', file: 'b.js', line: 1, span: 'bad2' }]);
+  fs.writeFileSync(path.join(w.src, 'b.js'), 'bad2\n');
+  sh(w.src, 'add', '.'); sh(w.src, 'commit', '-q', '-m', 'c1b');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD') });
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  const post = w.posts()[0];
+  assert.deepEqual(post.comments.map((c) => c.path), ['b.js']);
+  assert.match(post.body, /`a\.js:2`/);
+});
+
+test('a pending review left by a crash is deleted before the next round posts; the reviewer\'s own draft blocks the round and is kept', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  w.write('reviews.json', [{ id: 50, user: { login: 'bot' }, commit_id: 'x', state: 'PENDING', body: '<!-- concord-approve: x round:1 base:y -->' }]);
+  w.approve('start', 'o/r', '5');
+  assert.equal(w.approve('round', 'o/r', '5').status, 0);
+  assert.ok(!JSON.parse(fs.readFileSync(path.join(w.dir, 'reviews.json'), 'utf8')).some((r) => r.id === 50));
+  const draft = world();
+  draft.write('findings.json', [finding]);
+  draft.write('reviews.json', [{ id: 51, user: { login: 'bot' }, commit_id: 'x', state: 'PENDING', body: 'my notes' }]);
+  draft.approve('start', 'o/r', '5');
+  assert.notEqual(draft.approve('round', 'o/r', '5').status, 0);
+  assert.ok(JSON.parse(fs.readFileSync(path.join(draft.dir, 'reviews.json'), 'utf8')).some((r) => r.id === 51));
+  assert.deepEqual(draft.posts(), []);
 });

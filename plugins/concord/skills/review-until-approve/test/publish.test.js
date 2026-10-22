@@ -27,20 +27,19 @@ test('hunksOf: an added line that looks like a file header does not change the f
 const f = (id, file, line, extra = {}) => ({ id, category: 'correctness', file, line, span: 's', summary: `sum ${id}`, requirement: '', ...extra });
 const base = { head: 'abcdef1234', round: 2, rangeBase: 'b0', reviewer: 'codex', hunks: publish.hunksOf(DIFF), fixed: [], stillOpen: [], previousHead: '1111111222' };
 
-test('renderReview: inline only inside a hunk, the rest in the body, never REQUEST_CHANGES', () => {
+test('renderReview: a file outside the diff stays in the body, never REQUEST_CHANGES', () => {
   const r = publish.renderReview({ ...base, findings: [f('in', 'a.js', 2), f('out', 'a.js', 6), f('nofile', 'b.js', null)], approve: false }, 'inline');
   assert.equal(r.event, 'COMMENT');
   assert.equal(r.commit_id, 'abcdef1234');
-  assert.deepEqual(r.comments.map((c) => c.path + c.line), ['a.js2']);
+  assert.deepEqual(r.threads.map((c) => c.path + c.line), ['a.js2', 'a.jsundefined']);
   assert.match(r.body.split('\n')[0], /^<!-- concord-approve: abcdef1234 round:2 base:b0 -->$/);
-  assert.match(r.body, /`a\.js:6` \*\*correctness\*\* \(blocker\) sum out/);
   assert.match(r.body, /`b\.js` \*\*correctness\*\* \(blocker\) sum nofile/);
   assert.doesNotMatch(r.body, /sum in\b/);
 });
 
 test('renderReview: the body fallback carries every finding; a clean round approves; fixed and open ids are listed', () => {
   const body = publish.renderReview({ ...base, findings: [f('in', 'a.js', 2)], approve: false }, 'body');
-  assert.deepEqual(body.comments, []);
+  assert.deepEqual(body.threads, []);
   assert.match(body.body, /sum in/);
   const clean = publish.renderReview({ ...base, findings: [], fixed: ['old:1'], stillOpen: [{ id: 'old:2', key: 'k2' }], approve: true }, 'inline');
   assert.equal(clean.event, 'APPROVE');
@@ -107,10 +106,10 @@ test('placeLine: a common span in a large file outside every hunk returns quickl
 
 test('renderReview: a class label on every finding, minors listed as follow-ups only on an approving review', () => {
   const minor = { ...f('wording', 'a.js', 2), key: 'km', class: 'minor', reason: 'changes no behavior' };
-  const bug = { ...f('bug', 'a.js', 6), class: 'blocker', releaseBlocking: ['serious-bug', 'security'], reason: 'breaks login' };
+  const bug = { ...f('bug', 'b.js', 6), class: 'blocker', releaseBlocking: ['serious-bug', 'security'], reason: 'breaks login' };
   const r = publish.renderReview({ ...base, findings: [minor, bug], approve: false, followUps: [minor] }, 'inline');
-  assert.match(r.comments[0].body, /\(minor\)/);
-  assert.match(r.comments[0].body, /changes no behavior/);
+  assert.match(r.threads[0].body, /\(minor\)/);
+  assert.match(r.threads[0].body, /changes no behavior/);
   assert.match(r.body, /\(blocker: serious-bug, security\)/);
   assert.match(r.body, /1 blocking/);
   assert.doesNotMatch(r.body, /Follow-ups/);
@@ -128,4 +127,19 @@ test('renderReview: two open findings that share an id are told apart by key, so
   const r = publish.renderReview({ ...base, findings: [], stillOpen: [minorOne, blockerOne], followUps: [minorOne], approve: false }, 'inline');
   assert.match(r.body, /2 still open \(1 blocking\)/);
   assert.match(r.body, /Still open: `dup` \(minor\), `dup`(?! \(minor\))/);
+});
+
+test('renderReview: a hunk line is a line comment, a changed file outside the hunks a file comment, an unchanged file stays in the body', () => {
+  const r = publish.renderReview({ ...base, findings: [f('in', 'a.js', 2), f('out', 'a.js', 6), f('nolinefile', 'a.js', null), f('other', 'b.js', 3)], approve: false }, 'inline');
+  assert.deepEqual(r.threads.map((t) => [t.finding.id, t.subject, t.path, t.line]), [['in', 'LINE', 'a.js', 2], ['out', 'FILE', 'a.js', undefined], ['nolinefile', 'FILE', 'a.js', undefined]]);
+  assert.match(r.threads[1].body, /^Line 6: /);
+  assert.match(r.body, /`b\.js:3`/);
+  assert.doesNotMatch(r.body, /sum out|sum in\b/);
+});
+
+test('renderReview: a rejected comment moves only its finding to the body', () => {
+  const fs_ = [f('in', 'a.js', 2), f('out', 'a.js', 6)];
+  const r = publish.renderReview({ ...base, findings: fs_, rejected: [fs_[1]], approve: false }, 'inline');
+  assert.deepEqual(r.threads.map((t) => t.finding.id), ['in']);
+  assert.match(r.body, /sum out/);
 });
