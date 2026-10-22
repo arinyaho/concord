@@ -94,7 +94,8 @@ Monitor is not used on Claude Code: it stops after 30 minutes, while a backgroun
 
 | Event | Fires when |
 |---|---|
-| `round` | The head differs from the last reviewed head and the author replied after the last review, and the head was the same on two consecutive polls. After a failed round (`attempt` in the ledger) the head must also differ from the attempted head, or a reply must be newer than the failure |
+| `round` | The head differs from the last reviewed head and the author replied after the last review, or the last round was clean and unapproved (a draft), and the head was the same on two consecutive polls. After a failed round (`attempt` in the ledger) the head must also differ from the attempted head, or a reply must be newer than the failure |
+| `ready` | The last round was clean and unapproved (a draft), the pull request is no longer a draft and the head is the reviewed head; the session runs `start`, which answers `action: "approve"` |
 | `merged`, `closed` | The pull request reached that state |
 | `nudge` | Only a push, or only a reply, has arrived and 24 hours have passed since the last review. It repeats only for a new head or reply, and posts nothing; the session tells the user |
 | `timeout` | 7 days since the last review |
