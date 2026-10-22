@@ -70,3 +70,8 @@ test('an instruction inside the description cannot move the artifact destination
   const prompt = reviewerPrompt('verify', { ...ctx, addressable: [descFinding], description: hostile });
   assert.equal(artifactDestinationFromPrompt(prompt, '/s'), dest);
 });
+
+test('the 8 KiB cut of the description never leaves half a character (#423)', () => {
+  const prompt = reviewerPrompt('verify', { ...ctx, addressable: [descFinding], description: `x${'\u00e9'.repeat(4100)}` });
+  assert.ok(prompt.includes('[truncated]') && !prompt.includes('\uFFFD'));
+});
