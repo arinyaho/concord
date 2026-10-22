@@ -22,6 +22,16 @@ function chooseRange(lastRound, live, isAncestor) {
   return { base: live.mergeBase, broad: false };
 }
 
+// A head that only merges the base branch into the last reviewed head, leaving the pull request's own diff unchanged, has nothing new to
+// review. `commits` are the commits of the head that are neither in the last reviewed head nor in the base branch, each with its parents
+// (`inBase`: reachable from the base tip); `before` and `after` fingerprint the pull request diff at the last and the new head. Any doubt is false.
+function baseMergeOnly({ prior, live, ancestor, commits, before, after, replies }) {
+  if (!prior || live.intent !== prior.intent || prior.unreviewed?.length || live.head === prior.head || !ancestor || replies.length || !commits.length || !before || before !== after) return false;
+  return commits.every((c) => c.parents.length === 2 && c.parents.some((p) => p.inBase)
+    && c.parents.some((p) => !p.inBase && (p.sha === prior.head || commits.some((d) => d.sha === p.sha)))
+    && c.parents.every((p) => p.inBase || p.sha === prior.head || commits.some((d) => d.sha === p.sha)));
+}
+
 // A renamed id does not hide a published finding: the span identifies it.
 const findingKey = (f) => collapse(f.span) ? sha(`${f.file}\0${collapse(f.span)}`) : `${f.file}\0${f.id}`;
 
@@ -213,4 +223,7 @@ function wakeDecision({ ledger, live, replies, now, stable }) {
   return { event: 'nudge', kind, head: live.head, replyAt };
 }
 
-module.exports = { submoduleRepo, chooseRange, findingKey, matches, isPublished, parseNameStatus, classifyPrior, isBlocker, classOf, strictest, evaluateApproval, repliesSince, wakeDecision, sha, NUDGE_AFTER_MS, TIMEOUT_MS };
+// Rounds that reviewed code; a base-merge entry only moves the reviewed head.
+const reviewedCount = (ledger) => ledger.rounds.filter((r) => r.mode !== 'base-merge').length;
+
+module.exports = { submoduleRepo, chooseRange, baseMergeOnly, reviewedCount, findingKey, matches, isPublished, parseNameStatus, classifyPrior, isBlocker, classOf, strictest, evaluateApproval, repliesSince, wakeDecision, sha, NUDGE_AFTER_MS, TIMEOUT_MS };

@@ -218,7 +218,7 @@ function settlePending(repo, pr, ledger, file, reviewer) {
   const review = landed(reviewsOf(repo, pr), reviewer, head, after, 'APPROVED');
   if (review) {
     const at = review.submitted_at || new Date().toISOString();
-    if (round && round.n === ledger.rounds.length + 1) ledger.rounds.push({ ...round, reviewId: review.id, submittedAt: at });
+    if (round && round.n === lib.reviewedCount(ledger) + 1) ledger.rounds.push({ ...round, reviewId: review.id, submittedAt: at });
     if (findings) ledger.findings = findings;
     ledger.approval = { head, reviewId: review.id, at };
     delete ledger.attempt;
@@ -292,7 +292,7 @@ function start(repo, pr, args) {
   let action = 'watch';
   if (ledger.rounds.length === 0 || snap.head !== lastRound(ledger).head) action = 'round';
   else if (lib.evaluateApproval(ledger, snap, lastRound(ledger).head).approve) action = 'approve';
-  outFor(ledger, { ledger: file, action, round: ledger.rounds.length + 1, reviewer: provider, ...(ledger.model && { model: ledger.model }), ...(ledger.language && { language: ledger.language }), ...(ledger.effort && { effort: ledger.effort }), ...(warning && { warning }) });
+  outFor(ledger, { ledger: file, action, round: lib.reviewedCount(ledger) + 1, reviewer: provider, ...(ledger.model && { model: ledger.model }), ...(ledger.language && { language: ledger.language }), ...(ledger.effort && { effort: ledger.effort }), ...(warning && { warning }) });
 }
 
 // The findings the reviewer is told about. Telling it decides nothing: a finding is fixed by the code, never by the reviewer's silence. The runner gives each role only the ids of its own artifact.
@@ -431,10 +431,26 @@ function submoduleDelta(work, from, subs, file) {
   } catch (_) { return null; }
 }
 
+// Whether the head only merges the base branch into the last reviewed head over an unchanged pull request diff (see lib.baseMergeOnly).
+const fingerprint = (work, mergeBase, head) => {
+  const diff = git(work, ['diff', '--binary', '--full-index', '--no-renames', '--no-ext-diff', '--no-textconv', '--no-color', '--submodule=short', mergeBase, head]);
+  return lib.sha(diff.split('\n').map((l) => l.replace(/^@@ -\S+ \+\S+ @@/, '@@')).join('\n'));
+};
+function baseMergeOnly(work, repo, pr, ledger, snap, prior, isAncestor) {
+  try {
+    if (snap.head === prior.head || snap.intent !== prior.intent || prior.unreviewed?.length || !isAncestor(prior.head, snap.head)) return false;
+    const commits = git(work, ['rev-list', '--parents', snap.head, `^${prior.head}`, `^${snap.baseTip}`]).split('\n').filter(Boolean).map((l) => {
+      const [sha, ...parents] = l.split(' ');
+      return { sha, parents: parents.map((p) => ({ sha: p, inBase: isAncestor(p, snap.baseTip) })) };
+    });
+    const replies = lib.repliesSince(ledger, ghJson(['api', '--paginate', '--slurp', `repos/${repo}/pulls/${pr}/comments`]).flat(), ghJson(['api', '--paginate', '--slurp', `repos/${repo}/issues/${pr}/comments`]).flat(), snap.author);
+    return lib.baseMergeOnly({ prior, live: snap, ancestor: true, commits, before: fingerprint(work, prior.mergeBase, prior.head), after: fingerprint(work, snap.mergeBase, snap.head), replies });
+  } catch (_) { return false; }
+}
+
 function reviewRound(repo, pr, args) {
   const { file, ledger } = identify(repo, pr, args);
   if (!ledger?.provider) die('no ledger; run start first');
-  if (ledger.rounds.length >= MAX_ROUNDS) return outFor(ledger, { event: 'round-limit', rounds: ledger.rounds.length });
   for (let discards = 0; discards < MAX_DISCARDS; discards++) {
     // Read again before every launch: a discarded attempt takes minutes, and the user may have revoked the declaration meanwhile.
     if (ledger.provider === 'claude') { const need = missing('claude', repo, pr, ledger.trust); if (need.length) die(`the claude reviewer is not ready: ${need.join('; ')}`); }
@@ -469,6 +485,15 @@ function attempt(repo, pr, ledger, file) {
     if (git(work, ['merge-base', snap.baseTip, 'HEAD']).trim() !== snap.mergeBase) throw new Error('the local merge base differs from the snapshot');
     const prior = ledger.rounds.length ? lastRound(ledger) : null;
     const isAncestor = (a, b) => spawnSync('git', ['merge-base', '--is-ancestor', a, b], { cwd: work }).status === 0;
+    if (prior && baseMergeOnly(work, repo, pr, ledger, snap, prior, isAncestor)) {
+      if (snapshot(repo, pr).head !== snap.head) return null;
+      // Saved before the approval is posted, so the recorded head is what `approve` and the watch see.
+      ledger.rounds.push({ n: prior.n, head: snap.head, base: prior.base, mergeBase: snap.mergeBase, intent: snap.intent, mode: 'base-merge', reviewedHead: prior.reviewedHead || prior.head, reviewId: null, submittedAt: prior.submittedAt, commentIds: [], event: 'SKIP' });
+      save(file, ledger);
+      const v = approveHead(repo, pr, file, ledger);
+      return { event: 'base-merge', head: snap.head, ...(v.event === 'approved' ? { approved: true } : { notApproved: v.reason }) };
+    }
+    if (lib.reviewedCount(ledger) >= MAX_ROUNDS) return { event: 'round-limit', rounds: lib.reviewedCount(ledger) };
     const range = prior ? lib.chooseRange(prior, snap, isAncestor) : { base: snap.mergeBase, broad: true };
     const subs = new Map();
     const unreviewed = prepareSubmodules(work, repo, snap, range, subs);
@@ -514,7 +539,7 @@ function attempt(repo, pr, ledger, file) {
     const reviewed = JSON.parse(run('node', [runner, JSON.stringify(runnerOptions)], { cwd: work, env }).trim().split('\n').pop());
     if (reviewed.decision !== 'review-only' || !Array.isArray(reviewed.findings)) throw new Error(`the review did not complete: ${JSON.stringify(reviewed).slice(0, 200)}`);
 
-    const n = ledger.rounds.length + 1;
+    const n = lib.reviewedCount(ledger) + 1;
     // An addressed finding is judged again every round with the open ones.
     const tracked = ledger.findings.filter((f) => f.status === 'open' || f.status === 'addressed');
     // Only a finding offered this round can be closed by a verdict; any other verdict is reported as not-offered below.
@@ -648,16 +673,21 @@ function next(repo, pr, args) {
 function approve(repo, pr, args) {
   const { file, ledger } = identify(repo, pr, args);
   if (!ledger || !ledger.rounds.length) die('no reviewed round to approve');
+  out(approveHead(repo, pr, file, ledger));
+}
+
+// Approves the last recorded head when the approval condition holds; returns the event to print.
+function approveHead(repo, pr, file, ledger) {
   const reviewed = lastRound(ledger);
   const verdict = lib.evaluateApproval(ledger, snapshot(repo, pr), reviewed.head);
-  if (!verdict.approve) return out({ event: 'not-approved', reason: verdict.reason });
+  if (!verdict.approve) return { event: 'not-approved', reason: verdict.reason };
   const after = newestId(reviewsOf(repo, pr));
   const followUps = openMinors(ledger.findings);
   ledger.pending = { head: reviewed.head, after, round: null };
   save(file, ledger);
   let review;
   try {
-    review = post(repo, pr, publish.renderReview({ unconfined: unconfinedAt(ledger), head: reviewed.head, round: reviewed.n, rangeBase: reviewed.base, reviewer: ledger.provider, hunks: [], findings: [], fixed: [], stillOpen: followUps, followUps, previousHead: reviewed.head, approve: true }, 'body'));
+    review = post(repo, pr, publish.renderReview({ unconfined: unconfinedAt(ledger), head: reviewed.head, round: reviewed.n, rangeBase: reviewed.base, reviewer: ledger.provider, hunks: [], findings: [], fixed: [], stillOpen: followUps, followUps, previousHead: reviewed.head, approve: true, baseMergeOf: reviewed.reviewedHead }, 'body'));
   } catch (error) {
     review = landed(reviewsOf(repo, pr), ledger.reviewer, reviewed.head, after, 'APPROVED');
     if (!review) { delete ledger.pending; save(file, ledger); throw error; }
@@ -665,7 +695,7 @@ function approve(repo, pr, args) {
   delete ledger.pending;
   ledger.approval = { head: reviewed.head, reviewId: review.id, at: new Date().toISOString() };
   save(file, ledger);
-  out({ event: 'approved', head: reviewed.head });
+  return { event: 'approved', head: reviewed.head };
 }
 
 // The one open finding an id or key names; dies when there is none or the id is ambiguous.

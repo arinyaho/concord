@@ -69,7 +69,7 @@ const text = (f) => `**${f.category}** (${label(f)}) ${f.summary}${f.reason ? ` 
 const ids = (list) => list.map((id) => `\`${id}\``).join(', ');
 
 // `how` is "inline" or "body". Event is APPROVE only for a clean round, never REQUEST_CHANGES.
-function renderReview({ unconfined, head, round, rangeBase, reviewer, hunks, files = [], findings, fixed, addressed = [], stillOpen, previousHead, approve, followUps = [], rejected = [] }, how) {
+function renderReview({ unconfined, head, round, rangeBase, reviewer, hunks, files = [], findings, fixed, addressed = [], stillOpen, previousHead, approve, followUps = [], rejected = [], baseMergeOf }, how) {
   const inDiff = (f) => f.line != null && hunks.some((h) => h.file === f.file && f.line >= h.from && f.line <= h.to);
   const inFile = (f) => files.includes(f.file) || hunks.some((h) => h.file === f.file);
   const threads = how === 'inline' ? findings.filter((f) => !rejected.includes(f) && inFile(f)).map((f) => inDiff(f)
@@ -81,6 +81,7 @@ function renderReview({ unconfined, head, round, rangeBase, reviewer, hunks, fil
     `<!-- concord-approve: ${head} round:${round} base:${rangeBase} -->`,
     `reviewed by concord (${reviewer})`,
     ...(unconfined ? [`reviewed unconfined on the reviewing account's trust declaration (recorded ${unconfined})`] : []),
+    ...(baseMergeOf ? [`\`${head.slice(0, 7)}\` merges the base branch into the reviewed head \`${baseMergeOf.slice(0, 7)}\`; the pull request diff is unchanged.`] : []),
     findings.length === 0 && stillOpen.length === 0 ? (approve ? 'LGTM — no finding survived verification.' : 'No finding survived verification; this review does not approve.') : `${findings.length} new finding(s) (${findings.filter((f) => f.class !== 'minor').length} blocking), ${stillOpen.length} still open (${stillOpen.filter((f) => !minors.has(f.key)).length} blocking).${approve ? ' No blocking finding is open.' : ''}`,
   ];
   if (fixed.length) lines.push(`Fixed since \`${previousHead.slice(0, 7)}\`: ${ids(fixed)}`);

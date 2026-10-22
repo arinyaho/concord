@@ -295,3 +295,26 @@ test('classOf: the gate verifier\'s blocking reason replaces the finder\'s non-b
   assert.equal(lib.classOf({ class: 'minor', releaseBlocking: [], rationale: 'wording only', blockingReason: 'x' }).class, 'blocker');
   assert.equal(lib.classOf({ class: 'blocker', releaseBlocking: ['serious-bug'], rationale: 'breaks login' }).reason, 'breaks login');
 });
+
+test('baseMergeOnly: only merges of the base branch over an unchanged pull request diff skip a round', () => {
+  const prior = round(1, 'h1', { unreviewed: [] });
+  const merge = { sha: 'm', parents: [{ sha: 'h1', inBase: false }, { sha: 'b1', inBase: true }] };
+  const facts = (extra = {}) => ({ prior, live: { head: 'm', intent: 'i0' }, ancestor: true, commits: [merge], before: 'f', after: 'f', replies: [], ...extra });
+  assert.equal(lib.baseMergeOnly(facts()), true);
+  assert.equal(lib.baseMergeOnly(facts({ commits: [{ ...merge, parents: [{ sha: 'b1', inBase: true }, { sha: 'h1', inBase: false }] }] })), true);
+  const no = {
+    'no prior round': { prior: null },
+    'intent changed': { live: { head: 'm', intent: 'i1' } },
+    'unreviewed range': { prior: round(1, 'h1', { unreviewed: [{ path: 'x' }] }) },
+    'force push': { ancestor: false },
+    'same head': { live: { head: 'h1', intent: 'i0' } },
+    'author reply': { replies: ['2026-01-02T00:00:00Z'] },
+    'no new commit of the pull request': { commits: [] },
+    'plain commit': { commits: [{ sha: 'p', parents: [{ sha: 'h1', inBase: false }] }] },
+    'octopus': { commits: [{ ...merge, parents: [...merge.parents, { sha: 'b2', inBase: true }] }] },
+    'merge of another branch': { commits: [{ ...merge, parents: [{ sha: 'h1', inBase: false }, { sha: 'x', inBase: false }] }] },
+    'merge that drops the last head': { commits: [{ ...merge, parents: [{ sha: 'z', inBase: false }, { sha: 'b1', inBase: true }] }] },
+    'diff changed': { after: 'g' },
+  };
+  for (const [why, extra] of Object.entries(no)) assert.equal(lib.baseMergeOnly(facts(extra)), false, why);
+});
