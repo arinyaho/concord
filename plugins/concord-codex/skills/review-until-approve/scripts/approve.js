@@ -177,7 +177,7 @@ function settleThreads(repo, pr, ledger, file) {
   for (const f of ledger.findings) {
     if (!f.threadId) continue;
     const fixing = f.status === 'fixed' && !f.threadSkipped && !f.threadResolved;
-    const reopened = f.status === 'open' && (f.threadResolved || f.threadReplied || f.threadSkipped);
+    const reopened = f.status === 'open' && (f.threadResolved || f.threadReplied || f.threadSkipped || f.threadReopened);
     if (!fixing && !reopened) continue;
     try {
       const t = ghJson(['api', 'graphql', '-f', `query=${THREAD_STATE}`, '-f', `id=${f.threadId}`]).data?.node;
@@ -190,8 +190,10 @@ function settleThreads(repo, pr, ledger, file) {
         threadCall('resolveReviewThread', 'id', f.threadId);
         f.threadResolved = true;
       } else {
-        if (f.threadResolved && t.isResolved) { threadCall('unresolveReviewThread', 'id', f.threadId); threadCall('addPullRequestReviewThreadReply', 'reply', f.threadId, `Reopened at \`${short(head)}\`.`); }
+        if (f.threadResolved && t.isResolved) { threadCall('unresolveReviewThread', 'id', f.threadId); f.threadReopened = short(head); }
         delete f.threadResolved; delete f.threadReplied; delete f.threadSkipped;
+        save(file, ledger);
+        if (f.threadReopened) { threadCall('addPullRequestReviewThreadReply', 'reply', f.threadId, `Reopened at \`${f.threadReopened}\`.`); delete f.threadReopened; }
       }
     } catch (_) { /* ponytail: nothing is recorded, so the next round retries */ }
     save(file, ledger);

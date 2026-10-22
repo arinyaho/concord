@@ -1689,3 +1689,28 @@ test('the thread id of a finding posted in an approving round is in the pending 
   w.approve('round', 'o/r', '5');
   assert.equal(w.ledger().pending.findings[0].threadId, 'T1');
 });
+
+test('a reopened thread whose reply failed is answered on the next round (#394)', () => {
+  const w = world();
+  fixedRound(w);
+  fs.writeFileSync(path.join(w.src, 'a.js'), 'one\nbad\nthree\nfour\n');
+  sh(w.src, 'commit', '-q', '-am', 'c3');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD') });
+  w.write('findings.json', [finding]);
+  w.write('thread-state.json', { T1: { isResolved: true } });
+  w.write('gql-fail-addPullRequestReviewThreadReply', '');
+  w.approve('start', 'o/r', '5');
+  w.approve('round', 'o/r', '5');
+  fs.rmSync(path.join(w.dir, 'gql-fail-addPullRequestReviewThreadReply'));
+  w.write('thread-state.json', { T1: { isResolved: false } });
+  fs.rmSync(path.join(w.dir, 'gql.jsonl'), { force: true });
+  fs.writeFileSync(path.join(w.src, 'b.js'), 'x\n');
+  sh(w.src, 'add', 'b.js');
+  sh(w.src, 'commit', '-q', '-m', 'c4');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: sh(w.src, 'rev-parse', 'HEAD') });
+  w.approve('start', 'o/r', '5');
+  w.approve('round', 'o/r', '5');
+  assert.deepEqual(w.gql().filter((c) => c.name !== 'thread'), [{ name: 'addPullRequestReviewThreadReply', id: 'T1' }]);
+});
