@@ -131,6 +131,15 @@ test('wakeDecision: after a failed round at h2, h2 with no newer reply waits; h3
   assert.deepEqual(wake({ ...args, replies: [...old, '2026-01-01T00:50:00Z'] }), { event: 'round', head: 'h2' });
 });
 
+test('a first round that failed has no review to wait on: the watch wakes for a head newer than the attempt, never throws (#391)', () => {
+  const first = ledger({ rounds: [], attempt: { head: 'h2', at: '2026-01-01T00:40:00Z' } });
+  assert.deepEqual(lib.repliesSince(first, [], [], 'dev'), []);
+  const call = (head, stable = true) => lib.wakeDecision({ ledger: first, live: live({ head }), replies: [], now: Date.parse('2026-01-01T01:00:00Z'), stable });
+  assert.equal(call('h2'), null);
+  assert.equal(call('h3', false), null);
+  assert.deepEqual(call('h3'), { event: 'round', head: 'h3' });
+});
+
 test('wakeDecision: merge and close wake the loop regardless of replies', () => {
   assert.deepEqual(wake({ live: live({ state: 'MERGED' }) }), { event: 'merged' });
   assert.deepEqual(wake({ live: live({ state: 'CLOSED' }) }), { event: 'closed' });
