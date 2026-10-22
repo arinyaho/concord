@@ -120,6 +120,13 @@ test('classifyPrior: an addressed verdict is refused unless it is raised by no o
   assert.deepEqual(run([answer('f', 'a.js', 'ok()', 'y'.repeat(501))]), [['f', 'open', 'span-present', 'no-reason']]);
 });
 
+test('classifyPrior: evidence that contains the finding span plus extra text is refused as evidence-is-span (#395)', () => {
+  const read = files({ 'a.js': Buffer.from('if (ok) {\n bad()\n}\n') });
+  const run = (span) => addressedOf(lib.classifyPrior([held('f', 'a.js', 'bad()')], [], same, read, 'h2', [answer('f', 'a.js', span)]));
+  assert.deepEqual(run('if (ok) {\n bad()'), [['f', 'open', 'span-present', 'evidence-is-span']]);
+  assert.deepEqual(run('if (ok) {'), [['f', 'addressed', undefined, undefined]]);
+});
+
 test('classifyPrior: an unverified, path-unresolved or gone-span finding is never closed by a verdict (#395)', () => {
   const read = files({ 'a.js': Buffer.from('ok()'), 'big.js': 'big' });
   const open = [{ ...held('u', 'a.js', 'bad()'), spanVerified: undefined }, held('p', 'big.js', 'bad()'), held('g', 'a.js', 'bad()')];

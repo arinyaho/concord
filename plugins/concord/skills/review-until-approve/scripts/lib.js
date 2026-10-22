@@ -69,7 +69,7 @@ function judgeEvidence(p, entries, read) {
   const ev = entries[0].evidence;
   if (typeof ev?.reason !== 'string' || !collapse(ev.reason) || collapse(ev.reason).length > MAX_REASON) return { why: 'no-reason' };
   if (typeof ev.file !== 'string' || typeof ev.span !== 'string' || !ev.span || Buffer.byteLength(ev.span) > MAX_EVIDENCE_BYTES) return { why: 'evidence-absent' };
-  if (collapse(ev.span) === collapse(p.span)) return { why: 'evidence-is-span' };
+  if (collapse(ev.span).includes(collapse(p.span))) return { why: 'evidence-is-span' };
   const blob = read(ev.file);
   if (!Buffer.isBuffer(blob)) return { why: 'evidence-absent' };
   const at = blob.indexOf(Buffer.from(ev.span, 'utf8'));
