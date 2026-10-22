@@ -265,6 +265,22 @@ test('a verdict the reviewer does not give leaves the span-present finding open 
   assert.deepEqual([r2.review, r2.addressedRejected], ['COMMENT', [{ id: 'correctness:bad', why: 'evidence-absent' }]]);
 });
 
+test('a verdict for a finding past the offered cap leaves it open and is reported not-offered', () => {
+  const w = world();
+  const lines = Array.from({ length: 21 }, (_, i) => `bad-${String(i).padStart(2, '0')}-x`);
+  push(w, { 'a.js': lines.join('\n') + '\n' }, 'c1');
+  w.write('findings.json', lines.map((span, i) => ({ ...finding, id: `correctness:f${i}`, line: i + 1, span, summary: `bad ${i}` })));
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  push(w, { 'a.js': 'if (ok) {\n' + lines.join('\n') + '\n}\n' }, 'c2');
+  w.write('findings.json', []);
+  w.write('addressed.json', [{ id: 'correctness:f20', evidence: { file: 'a.js', span: 'if (ok) {', reason: 'guarded' } }]);
+  w.approve('start', 'o/r', '5');
+  const r = JSON.parse(w.approve('round', 'o/r', '5').stdout);
+  assert.equal(w.calls().at(-1).addressable.length, 20);
+  assert.deepEqual(r.addressedRejected, [{ id: 'correctness:f20', why: 'not-offered' }]);
+  assert.equal(w.ledger().findings.find((f) => f.id === 'correctness:f20').status, 'open');
+});
+
 test('a thread another account started is neither answered nor resolved (#394)', () => {
   const w = world();
   w.write('thread-state.json', { T1: { author: 'dev' } });

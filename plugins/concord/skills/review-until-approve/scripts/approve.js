@@ -510,8 +510,10 @@ function attempt(repo, pr, ledger, file) {
     const n = ledger.rounds.length + 1;
     // An addressed finding is judged again every round with the open ones.
     const tracked = ledger.findings.filter((f) => f.status === 'open' || f.status === 'addressed');
-    const verdict = lib.classifyPrior(tracked, reviewed.findings, resolve, (file) => gitBlob(work, snap.head, file), snap.head, Array.isArray(reviewed.addressed) ? reviewed.addressed : []);
+    // Only a finding offered this round can be closed by a verdict; any other verdict is reported as not-offered below.
     const offered = new Set(addressableNow.map((f) => f.id));
+    const verdicts = (Array.isArray(reviewed.addressed) ? reviewed.addressed : []).filter((a) => offered.has(a?.id));
+    const verdict = lib.classifyPrior(tracked, reviewed.findings, resolve, (file) => gitBlob(work, snap.head, file), snap.head, verdicts);
     const addressedRejected = [...verdict.filter((r) => r.why).map((r) => ({ id: r.id, why: r.why })), ...(Array.isArray(reviewed.addressed) ? reviewed.addressed : []).filter((a) => !offered.has(a?.id)).map((a) => ({ id: String(a?.id), why: 'not-offered' }))];
     const next = JSON.parse(JSON.stringify(ledger));
     const stillOpenFindings = [];
