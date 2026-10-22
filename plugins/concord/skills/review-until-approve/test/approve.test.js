@@ -90,6 +90,7 @@ else if (a[0] === 'api') j([[{ id: 7 }]]);
   fs.writeFileSync(path.join(dir, 'runner.js'), `const fs = require('node:fs');
 fs.appendFileSync(${JSON.stringify(path.join(dir, 'runner-calls.jsonl'))}, JSON.stringify({ ...JSON.parse(process.argv[2]), diff: require('node:child_process').spawnSync('git', ['diff', JSON.parse(process.argv[2]).base, 'HEAD'], { encoding: 'utf8' }).stdout, subGit: fs.existsSync('lib/.git'), envKeys: Object.keys(process.env), home: process.env.HOME, homeEntries: fs.readdirSync(process.env.HOME), codexHome: process.env.CODEX_HOME, claudeConfig: process.env.CLAUDE_CONFIG_DIR, claudeConfigEntries: fs.existsSync(process.env.CLAUDE_CONFIG_DIR) ? fs.readdirSync(process.env.CLAUDE_CONFIG_DIR) : null, claudeCredentials: fs.existsSync(process.env.CLAUDE_CONFIG_DIR + '/.credentials.json') ? fs.readFileSync(process.env.CLAUDE_CONFIG_DIR + '/.credentials.json', 'utf8') : null, claudeToken: process.env.CLAUDE_CODE_OAUTH_TOKEN }) + '\\n');
 if (fs.existsSync(${JSON.stringify(path.join(dir, 'fail-runner'))})) { console.error('harness-failure'); process.exit(1); }
+if (fs.existsSync(${JSON.stringify(path.join(dir, 'bad-runner-output'))})) { console.log(JSON.stringify({ decision: 'error' })); process.exit(0); }
 const findings = JSON.parse(fs.readFileSync(${JSON.stringify(path.join(dir, 'findings.json'))}, 'utf8'));
 const edit = ${JSON.stringify(path.join(dir, 'edit.json'))};
 if (fs.existsSync(${JSON.stringify(path.join(dir, 'replace'))})) {
@@ -1409,4 +1410,15 @@ test('a round whose runner fails records the head it attempted and leaves the ro
   w.approve('round', 'o/r', '5');
   assert.equal(w.ledger().attempt, undefined);
   assert.equal(w.ledger().rounds.length, 2);
+});
+
+test('a runner result that is not a review still records the head it attempted', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  w.approve('start', 'o/r', '5');
+  fs.writeFileSync(path.join(w.dir, 'bad-runner-output'), '');
+  assert.notEqual(w.approve('round', 'o/r', '5').status, 0);
+  const failed = w.ledger();
+  assert.equal(failed.rounds.length, 0);
+  assert.equal(failed.attempt.head, w.c1);
 });

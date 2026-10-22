@@ -346,10 +346,11 @@ function reviewRound(repo, pr, args) {
 function attempt(repo, pr, ledger, file) {
   const snap = snapshot(repo, pr);
   if (snap.state !== 'OPEN') return { event: snap.state.toLowerCase() };
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-until-approve-'));
-  const work = path.join(dir, 'work');
-  const remote = `${process.env.REVIEW_APPROVE_REMOTE || 'https://github.com'}/${repo}.git`;
+  let dir;
   try {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-until-approve-'));
+    const work = path.join(dir, 'work');
+    const remote = `${process.env.REVIEW_APPROVE_REMOTE || 'https://github.com'}/${repo}.git`;
     // Written before anything slow, so `next` never finds no round while this one is still setting up; it is removed when the process ends, and a pid that is gone is not a running round.
     const brokerDir = ledger.provider === 'claude' && subagents() ? path.join(dir, 'broker') : null;
     if (brokerDir) {
@@ -404,12 +405,7 @@ function attempt(repo, pr, ledger, file) {
       runnerOptions.broker = brokerDir;
       if (process.env.REVIEW_APPROVE_BROKER_TIMEOUT_MS) runnerOptions.brokerTimeoutMs = Number(process.env.REVIEW_APPROVE_BROKER_TIMEOUT_MS);
     }
-    // A failed round is recorded with the head it tried, so the watch waits for a newer head or reply instead of asking for the same round again.
-    let reviewed;
-    try { reviewed = JSON.parse(run('node', [runner, JSON.stringify(runnerOptions)], { cwd: work, env }).trim().split('\n').pop()); } catch (error) {
-      save(file, { ...ledger, attempt: { head: snap.head, at: new Date().toISOString() } });
-      throw error;
-    }
+    const reviewed = JSON.parse(run('node', [runner, JSON.stringify(runnerOptions)], { cwd: work, env }).trim().split('\n').pop());
     if (reviewed.decision !== 'review-only' || !Array.isArray(reviewed.findings)) throw new Error(`the review did not complete: ${JSON.stringify(reviewed).slice(0, 200)}`);
 
     const n = ledger.rounds.length + 1;
@@ -488,7 +484,11 @@ function attempt(repo, pr, ledger, file) {
       save(file, next);
     } catch (_) { /* ponytail: ids stay empty; thread replies are then missed until the next round */ }
     return { event: 'published', round: n, mode: range.broad ? 'broad' : 'diff', review: input.approve ? 'APPROVE' : 'COMMENT', new: fresh.length, fixed: fixedIds.length, stillOpen: openIds.length, open: openNow, ...(unreviewed.length && { unreviewed }), ...(verdictNow.approve ? {} : { notApproved: verdictNow.reason }), ...(held.length && { held, hint: 'These findings cannot be settled from the code; run waive <key> (or waive <id> when the id is unique) to clear one you accept.' }) };
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  } catch (error) {
+    // Any failure after the head snapshot is recorded with the head it tried, so the watch waits for a newer head or reply; the ledger is read again because a pending approval marker may have been saved meanwhile.
+    save(file, { ...load(file), attempt: { head: snap.head, at: new Date().toISOString() } });
+    throw error;
+  } finally { if (dir) fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
 const runFile = (file) => `${file}.run.json`;

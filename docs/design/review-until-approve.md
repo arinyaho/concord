@@ -89,7 +89,7 @@ Monitor is not used on Claude Code: it stops after 30 minutes, while a backgroun
 | `idle` | Only with `--max-wait`: the window ended without an event (exit status 0); the session runs the same command again |
 | `error` | Ten consecutive failed polls, counted across bounded runs (exit status 1) |
 
-A failed round is recorded in the ledger as `attempt` (`head`, `at`) by `approve.js`, the only writer of the ledger; the watch compares against it and still never writes. The ledger is the one record every process and every machine reads, while `.watch.json` belongs to one watch run. The session reports the failure to the user and restarts the watch: it neither retries the round nor stops for good.
+A round that fails after the head snapshot (the runner exits non-zero, its result is not a review, a credential is found in the review text, or the post fails) is recorded in the ledger as `attempt` (`head`, `at`) by `approve.js`, the only writer of the ledger; the watch compares against it and still never writes. The ledger is the one record every process and every machine reads, while `.watch.json` belongs to one watch run. The session reports the failure to the user and restarts the watch: it neither retries the round nor stops for good.
 
 A reply is a comment by the pull request author after the last review, either in a thread of a review the skill published (`in_reply_to_id` is one of its comment ids) or on the pull request conversation, which is the only way to answer a finding posted in a review body. Who pushed does not matter. A push or reply alone, a CI change, a label, or a comment by anyone but the author wakes nothing. A user stop ends the watch and is recorded in the ledger. At most 10 rounds run per pull request, and nothing is posted on any stop.
 
@@ -124,7 +124,7 @@ The loop can later run unattended, with GitHub Actions or `services/pr-review` r
 | force push, merged-in base, changed requirement | next round | whole-PR range, gate only when the requirement changed | introduced | `chooseRange` tests |
 | finding with a renamed id | next round | recognized by span, not posted twice | introduced | `isPublished` test |
 | clean round, draft, self-review, moved head, open or waived findings | approval check | approve only when every condition holds | introduced | `evaluateApproval` test |
-| any round | review engine fails or prints no `review-only` result | no review posted, rounds and findings unchanged, `attempt` set to the head and time of the failure | changed | `a round whose runner fails records the head it attempted` |
+| any round | failure after the head snapshot: review engine exits non-zero, prints no `review-only` result, a credential is found in the review text, or the post fails | no review posted, rounds and findings unchanged, `attempt` set to the head and time of the failure | changed | `a round whose runner fails records the head it attempted`, `a runner result that is not a review still records the head it attempted` |
 | failed round at head H2 | watch poll, head H2, no reply newer than `attempt.at` | no wake | introduced | `wakeDecision: after a failed round at h2` |
 | failed round at head H2 | watch poll, head H3 or a reply newer than `attempt.at` | `round` event as before | introduced | `wakeDecision: after a failed round at h2` |
 | failed round | the next round publishes | `attempt` removed | introduced | `a round whose runner fails records the head it attempted` |
@@ -203,7 +203,7 @@ Combinations the ledger lock rules out (two sessions interleaving on one pull re
 
 ## Residual exposure
 
-- A round killed hard (SIGKILL, power loss) before it records `attempt` leaves no record, and the watch wakes again at once on the same head.
+- A failure before the head snapshot (gh unreachable) and a round killed hard (SIGKILL, power loss) record no `attempt`, and the watch wakes again at once on the same head.
 - A finding whose id has a prefix that no reviewer role accepts reaches no reviewer. No such prefix exists.
 - Prior findings are kept in the approval ledger, not in the review-cli run ledger, so a run archived by review-cli does not show them.
 - If the `APPROVE` post errors and the head then moves, the pending marker is not settled against GitHub's review list until a later `start`, `round`, `approve` or `waive` reads it; an approval GitHub accepted for the old head stays recorded only on GitHub until then.
