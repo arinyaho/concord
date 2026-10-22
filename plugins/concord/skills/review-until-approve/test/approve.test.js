@@ -247,6 +247,16 @@ test('the reviewer is shown the author reply and the resolved state of a span-pr
   assert.equal(w.posts().at(-1).body.includes('Addressed since'), true);
 });
 
+test('a finding whose id prefix the verify artifact cannot list is not offered for a verdict', () => {
+  const w = world();
+  w.write('findings.json', [finding, { ...finding, id: 'intent:bad', line: 3, span: 'three', summary: 'intent line' }]);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  push(w, { 'a.js': 'one\nif (ok) {\nbad\n}\nthree\nfour\n' }, 'c2');
+  w.write('findings.json', []);
+  w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
+  assert.deepEqual(w.calls().at(-1).addressable.map((f) => f.id), ['correctness:bad']);
+});
+
 test('the thread starter and the newest replies are read even when the thread is longer than the comment window', () => {
   const w = world();
   guardedRound(w, { root: mine, comments: [reply] }, []);

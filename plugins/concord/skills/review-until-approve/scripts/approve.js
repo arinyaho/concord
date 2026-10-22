@@ -19,6 +19,7 @@ const publish = require('./publish');
 const { core } = require('./locate');
 const { writeFileAtomic } = require(path.join(core, 'atomic-write'));
 const { reclaimStaleLock } = require(path.join(core, 'run-lock'));
+const { allowedFindingPrefixes } = require(path.join(core, 'artifact-contract'));
 const broker = require('./broker');
 
 // The review clone's .git is writable for an unconfined reviewer, which could plant refs/replace/* to make a head read differently; evidence is read as stored.
@@ -300,7 +301,9 @@ const priorFindings = (open) => open.map((f) => ({ id: f.id, file: f.file, summa
 const cut = (text, max) => text.length > max ? `${text.slice(0, max)} [truncated]` : text;
 function addressable(repo, pr, ledger, shown) {
   const rank = (f) => lib.isBlocker(f) ? 0 : 1;
-  return shown.filter((f) => typeof f.spanVerified === 'string' && f.span).sort((a, b) => rank(a) - rank(b)).slice(0, 20).map((f) => {
+  // Only ids the verify artifact can list: a verdict for any other prefix would fail normalizeAddressed and the whole artifact.
+  const listable = allowedFindingPrefixes('verify');
+  return shown.filter((f) => typeof f.spanVerified === 'string' && f.span && listable.some((p) => f.id.startsWith(p))).sort((a, b) => rank(a) - rank(b)).slice(0, 20).map((f) => {
     const entry = { id: f.id, file: f.file, class: f.class || 'blocker', summary: f.summary, requirement: f.requirement || '', span: cut(f.span, 2048) };
     if (!f.threadId) return entry;
     try {
