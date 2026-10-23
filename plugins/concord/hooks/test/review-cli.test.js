@@ -2029,6 +2029,22 @@ test('commit-fix: two findings in the same file get two separate commits', () =>
   assert.deepStrictEqual(l.journal.map((j) => j.id), ['correctness:one', 'correctness:two']);
 });
 
+test('commit-fix with no dirty declared file, then record: uncommitted edits in other files survive', () => {
+  const sha = (text) => crypto.createHash('sha256').update(text).digest('hex');
+  const { repo, env } = seedCertifiedSingleGroup('feat/no-dirty-candidate', {});
+  const committed = execFileSync('git', ['show', 'HEAD:a.txt'], { cwd: repo, encoding: 'utf8' });
+  fs.writeFileSync(path.join(repo, 'a.txt'), committed);
+  const certPath = path.join(env.REVIEW_STATE_DIR, fs.readdirSync(env.REVIEW_STATE_DIR).find((f) => /^round-\d+-certify-doc-fix\.json$/.test(f)));
+  fs.writeFileSync(certPath, JSON.stringify({ ...JSON.parse(fs.readFileSync(certPath, 'utf8')), fileHashes: { 'a.txt': sha(committed) } }));
+  const EDIT = JSON.stringify({ dod: ['true'], edit: 'uncommitted work for another group' });
+  fs.writeFileSync(path.join(repo, 'review.config.json'), EDIT);
+  const before = execFileSync('git', ['status', '--porcelain'], { cwd: repo, encoding: 'utf8' });
+  assert.throws(() => run(['commit-fix', 'feat/no-dirty-candidate', 'doc-fix'], { env }), /no matching dirty candidate/);
+  assert.strictEqual(execFileSync('git', ['status', '--porcelain'], { cwd: repo, encoding: 'utf8' }), before, 'commit-fix must leave the tree as it found it');
+  run(['record', 'feat/no-dirty-candidate'], { env });
+  assert.strictEqual(fs.readFileSync(path.join(repo, 'review.config.json'), 'utf8'), EDIT, 'record must not discard edits it did not create');
+});
+
 test('commit-fix: scopes staging to the finding\'s file -- an unrelated dirty file is never swept into the commit', () => {
   const repo = initRepo(); const dir = tmpDir();
   const { env, n } = seedGatesRound(repo, dir, 'feat/x',
