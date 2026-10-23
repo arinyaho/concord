@@ -89,7 +89,7 @@ test('placeLine: a multi-line span is placed at its first line inside a hunk; on
 
 test('renderReview: the header signs the review as concord and names the engine', () => {
   const r = publish.renderReview({ ...base, reviewer: 'codex', findings: [], approve: false }, 'inline');
-  assert.equal(r.body.split('\n\n')[1], 'reviewed by concord (codex)');
+  assert.equal(r.body.split('\n\n')[1], 'reviewed by [concord](https://github.com/arinyaho/concord) (codex)');
 });
 
 test('placeLine: a trailing or leading newline in the span does not move the line', () => {

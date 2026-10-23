@@ -866,7 +866,7 @@ test('a finding whose engine line is missing is still posted inline, at the span
   w.write('findings.json', [{ ...finding, line: null }]);
   w.approve('start', 'o/r', '5'); w.approve('round', 'o/r', '5');
   assert.deepEqual(w.posts()[0].comments.map((c) => [c.path, c.line]), [['a.js', 2]]);
-  assert.match(w.posts()[0].body.split('\n\n')[1], /^reviewed by concord \(codex\)$/);
+  assert.match(w.posts()[0].body.split('\n\n')[1], /^reviewed by \[concord\]\(https:\/\/github\.com\/arinyaho\/concord\) \(codex\)$/);
 });
 
 test('a finding whose engine line is outside the diff is a file comment even when its span occurs inside it', () => {
@@ -1780,6 +1780,15 @@ test('a comment GitHub refuses moves only its finding to the body', () => {
   const post = w.posts()[0];
   assert.deepEqual(post.comments.map((c) => c.path), ['b.js']);
   assert.match(post.body, /`a\.js:2`/);
+});
+
+test('a pending review posted with the old unlinked header is still recognized by its marker and deleted', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  w.write('reviews.json', [{ id: 52, user: { login: 'bot' }, commit_id: 'x', state: 'PENDING', body: '<!-- concord-approve: x round:1 base:y -->\n\nreviewed by concord (codex)' }]);
+  w.approve('start', 'o/r', '5');
+  assert.equal(w.approve('round', 'o/r', '5').status, 0);
+  assert.ok(!JSON.parse(fs.readFileSync(path.join(w.dir, 'reviews.json'), 'utf8')).some((r) => r.id === 52));
 });
 
 test('a pending review left by a crash is deleted before the next round posts; the reviewer\'s own draft blocks the round and is kept', () => {

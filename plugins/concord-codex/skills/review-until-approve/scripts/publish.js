@@ -79,7 +79,7 @@ function renderReview({ unconfined, head, round, rangeBase, reviewer, hunks, fil
   const minors = new Set(followUps.map((f) => f.key));
   const lines = [
     `<!-- concord-approve: ${head} round:${round} base:${rangeBase} -->`,
-    `reviewed by concord (${reviewer})`,
+    `reviewed by [concord](https://github.com/arinyaho/concord) (${reviewer})`,
     ...(unconfined ? [`reviewed unconfined on the reviewing account's trust declaration (recorded ${unconfined})`] : []),
     ...(baseMergeOf ? [`\`${head.slice(0, 7)}\` merges the base branch into the reviewed head \`${baseMergeOf.slice(0, 7)}\`; the pull request diff is unchanged.`] : []),
     findings.length === 0 && stillOpen.length === 0 ? (approve ? 'LGTM — no finding survived verification.' : 'No finding survived verification; this review does not approve.') : `${findings.length} new finding(s) (${findings.filter((f) => f.class !== 'minor').length} blocking), ${stillOpen.length} still open (${stillOpen.filter((f) => !minors.has(f.key)).length} blocking).${approve ? ' No blocking finding is open.' : ''}`,
