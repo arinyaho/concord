@@ -2910,7 +2910,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       const rejected = { ...ledger, execution: { ...execution, completed: (execution.completed || []).filter((role) => role !== 'plan'), artifactHashes,
         normalizedPlan: null, planRepairPending: false, pending: Array.from(new Set([...(execution.pending || []), 'plan'])), retryArtifacts, retryArtifact: firstRetryArtifact(retryArtifacts),
         ...(execution.repairArtifacts ? { repairArtifacts } : {}),
-        planRetry: { ...prior, state: exhausted ? 'exhausted' : 'pending', missingIds: [...unclassified, ...duplicated], rejectedHash, message, discardRepair: true },
+        planRetry: { ...prior, state: exhausted ? 'exhausted' : 'pending', rejectedHash, message, discardRepair: true },
         failures: [...(execution.failures || []), failure].slice(-5), failure } };
       writeLedger(stateDir, slug, run ? withSupersededLaunch(rejected, 'plan', n) : rejected);
       // Publish semantic accounting before discarding only the rejected plan's
