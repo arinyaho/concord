@@ -10,7 +10,7 @@ concord is a plugin for Claude Code, Codex, and GitHub Copilot that reviews and 
 
 - `/review-and-fix` has independent reviewer subagents review your branch, fixes what they find, and re-reviews until a deterministic CLI ends the loop within a fixed round budget. Only serious bugs, security issues, and unmet acceptance criteria block; minor findings are collected and ticketed once before merge.
 - `review-until-lgtm` collects the Codex and Copilot reviews on your pull request, fixes them in bounded batches, and pushes until the current head gets an explicit LGTM. It merges only when you ask.
-- `review-until-approve` reviews someone else's pull request round by round, waits for the author to push or reply, and approves the reviewed head once a round is clean. It never requests changes, merges, or pushes.
+- `review-until-approve` (Claude Code and Codex) reviews someone else's pull request round by round, waits for the author to push or reply, and approves the reviewed head once a round is clean. It never requests changes, merges, or pushes.
 - The reviewer and the fixer can each be Claude, Codex, or Copilot, each with its own model.
 
 For example, type this in Claude Code:
@@ -37,7 +37,7 @@ Each workflow starts from one request. The examples below are what a user would 
 | Workflow | Example request |
 |---|---|
 | `/review-and-fix` | `/review-and-fix feature/login origin/main` reviews the branch against `origin/main`. Add `--reviewer codex --fixer claude` to pick the provider for each role, and `--reviewer-model` or `--fixer-model` to pick the model. |
-| `review-until-approve` | "Review https://github.com/acme/app/pull/57 until it is approvable." Findings are classed as blockers or minor follow-ups. The approving review lists the minors, and a finding outside a hunk becomes a file comment. Threads of fixed or addressed findings are answered and resolved, and a draft is watched until it is ready. |
+| `review-until-approve` | "Review https://github.com/acme/app/pull/57 until it is approvable." Findings are classed as blockers or minor follow-ups. The approving review lists the minors. A finding in a file the diff touches but outside a hunk becomes a file comment. Threads the skill started for fixed or addressed findings are answered and resolved, and a draft is watched until it is ready. |
 | `ticket-to-pr` | "Take issue #212 through design, implementation and a PR." |
 | `review-until-lgtm` | "Collect the Codex and Copilot reviews on PR 58, fix them, and tell me when the head has an LGTM." |
 
