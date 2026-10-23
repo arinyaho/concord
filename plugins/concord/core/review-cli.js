@@ -197,7 +197,7 @@ function validateFixFiles(repoRoot, stateDir, files, verb = 'commit-fix') {
 }
 // The CLI never discards working-tree content: it cannot tell a stray fixer edit from a person's edit, so dirty tracked paths stop the run and are named.
 function gitDirtyTrackedPaths(repoRoot) {
-  return sh('git', ['status', '--porcelain', '--untracked-files=no', '-z'], { cwd: repoRoot }).split('\0').filter(Boolean).map((entry) => entry.slice(3));
+  return sh('git', ['status', '--porcelain', '--untracked-files=no', '--no-renames', '-z'], { cwd: repoRoot }).split('\0').filter(Boolean).map((entry) => entry.slice(3));
 }
 function runDod(repoRoot) {
   const cfg = dodExec.loadDodConfig(repoRoot);
@@ -2665,9 +2665,9 @@ function runVerb(resolveFromCwd, args, initiative) {
     // this guards the ledger rather than a path the verbs reach today.
     const keptFiles = [...new Set([...keptEditFiles, ...(isGit ? gitDirtyTrackedPaths(repoRoot) : [])])];
     if (keptFiles.length && (decision.gatePending || decision.intentReview)) {
-      decision = { ...decision, reason: `${decision.reason}; an uncommitted fix edit is kept in ${keptFiles.join(', ')}` };
+      decision = { ...decision, reason: `${decision.reason}; uncommitted changes are kept in ${keptFiles.join(', ')}` };
     } else if (keptFiles.length) {
-      decision = { continue: false, converged: false, parked: true, abandoned: false, dodFailed: false, intentReview: false, gatePending: false, reason: `an uncommitted fix edit is kept in ${keptFiles.join(', ')}; commit or discard it, then unpark the finding or record the commit with record-fix` };
+      decision = { continue: false, converged: false, parked: true, abandoned: false, dodFailed: false, intentReview: false, gatePending: false, reason: `uncommitted changes are kept in ${keptFiles.join(', ')}; commit or discard it, then unpark the finding or record the commit with record-fix` };
       applied = { ...applied, status: 'parked' };
     }
     if (isGit && decision.converged && !ledger.dodDeferred) {

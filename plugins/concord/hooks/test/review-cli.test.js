@@ -651,6 +651,9 @@ test('git helpers operate on a real temp repo', () => {
   assert.strictEqual(cli.gitIsDirty(repo), false);
   fs.writeFileSync(path.join(repo, 'a.txt'), 'three\n');
   assert.deepStrictEqual(cli.gitDirtyTrackedPaths(repo), ['a.txt']);
+  execFileSync('git', ['checkout', '--', 'a.txt'], { cwd: repo });
+  execFileSync('git', ['mv', 'a.txt', 'moved.txt'], { cwd: repo });
+  assert.deepStrictEqual(cli.gitDirtyTrackedPaths(repo).sort(), ['a.txt', 'moved.txt']);
 });
 
 test('review-cli show: prints an empty/fresh ledger summary for an unknown ref', () => {
