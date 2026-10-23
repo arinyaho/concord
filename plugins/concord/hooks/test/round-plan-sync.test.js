@@ -323,12 +323,12 @@ test('classify asks correctness and verify for releaseBlocking and rationale; wi
   const sha = (text) => crypto.createHash('sha256').update(text).digest('hex');
   const context = { stateDir: '/state', round: 1, targetType: 'git', slug: 'feat-x', gateApplied: false, cliPath: '/cli.js' };
   const golden = {
-    correctness: 'e340ef08cbcabc1e743e45e115a67769407d59471e9722f6febe4a703df7e3c7',
-    verify: '43a79de0ec80b191f7b80fd7442170b4f4ee2eb33c6b7b45749751494a52ad01',
+    correctness: '5fb0201957fc7632898c57d04da3ddcc80b557945cb881db5284f1e158a4f5f8',
+    verify: 'c866bbcfc953e1734d6cf0f1a23c79c4d04b46549fe2d3d472a117adec542f79',
   };
   const goldenBroad = {
-    correctness: '14366bf3297e42fb4031b6ed000f668a7fa0cf192b0715e3fd0639c6d35c8548',
-    verify: '337e9fb08c62569e688143d452297d28df08b4e649935e6667219e21ec7f6fec',
+    correctness: '43b719cbd953a43eaf3f37310848afbae27ed50eac36528c85252423592ec16d',
+    verify: '91eebf0cd51c43222cc4c9b6acb1cc3b87a366bcdc0de3dd05cf8bc662a97751',
   };
   for (const role of ['correctness', 'verify']) {
     assert.equal(sha(reviewerPrompt(role, context)), golden[role], `${role} prompt changed without classify`);
@@ -341,5 +341,21 @@ test('classify asks correctness and verify for releaseBlocking and rationale; wi
   for (const role of ['intent', 'plan', 'fix', 'certify']) {
     const withFlag = reviewerPrompt(role, { ...context, classify: true, fixGroup: { groupId: 'g1', findingIds: ['correctness:a'], rootCause: 'r', invariants: [] }, finding: { id: 'correctness:a', summary: 's' }, fixFiles: [] });
     assert.doesNotMatch(withFlag, /"releaseBlocking": an array/, `${role} must not be asked for a class`);
+  }
+});
+
+test('every prompt that writes or cites finding ids states the id rule, and every driver copy carries it byte-for-byte (#414)', () => {
+  const { FINDING_ID_RULE } = require(path.join(CORE, 'gate-contract'));
+  const context = {
+    stateDir: '/state', round: 1, targetType: 'git', slug: 'feat-x', gateMode: 'pair',
+    fixGroup: { groupId: 'g1', findingIds: ['correctness:a'], rootCause: 'r', invariants: [] },
+    finding: { id: 'correctness:a', summary: 's' }, fixFiles: [],
+  };
+  for (const [role, extra] of [['correctness', {}], ['verify', {}], ['plan', {}], ['intent', {}], ['gate', {}], ['gate', { gateMode: 'design-conformance' }], ['gate-verify', {}]]) {
+    assert.ok(reviewerPrompt(role, { ...context, ...extra }).includes(FINDING_ID_RULE), `${role} prompt lacks the finding id rule`);
+  }
+  for (const role of ['fix', 'certify']) assert.ok(!reviewerPrompt(role, context).includes(FINDING_ID_RULE), `${role} prompt should not carry the id rule`);
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot driver', copilotDriverText]]) {
+    assert.ok(text.includes(FINDING_ID_RULE), `${name} lacks the finding id rule`);
   }
 });

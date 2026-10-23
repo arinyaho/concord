@@ -24,6 +24,10 @@ Also check whether this invocation asked to run without an executable DoD gate: 
 
 > If you were told to establish something by a specific method -- measure it, run it, execute the check -- and you cannot run that tool (missing, denied by permissions or sandbox, crashed, timed out), do NOT quietly substitute a weaker method and do NOT stay silent. Add `"blocked": ["<tool>: <what failed>"]` to your artifact and stop there -- keep `"status":"ok"` and leave the arrays empty; `blocked` is what fails the round, there is no `"status":"blocked"`. That fails the round loudly, which is the correct outcome; a schema-valid verdict from a check you never actually ran is indistinguishable from a real one and is worse than a failure.
 
+**Append this id rule verbatim to the prompt of every subagent that writes or cites finding ids** -- correctness, verify, plan, intent, gate-review, and gate-verify. A finding id that breaks it can fail the round:
+
+> A finding id is "<prefix>:<slug>" (a gate id is "gate:<class>:<slug>") whose slug uses only lowercase letters a-z, digits and "-", at most 80 characters per segment: write timeoutSeconds as timeoutseconds, never copy a camelCase, snake_case or dotted identifier into the slug. Copy an id you cite from another artifact exactly as written there.
+
 Never soften that clause, and never accept an artifact from a reviewer you know was blocked -- a non-empty `blocked` is terminal wherever the CLI reads the artifact, precisely so a degraded reviewer cannot produce a verdict.
 
 **Append the sandbox note for the role to its prompt.** The Codex reviewer sandbox is a user namespace, so a host owner it cannot map shows up as uid 65534, and a probe decided by that uid fails there for a reason the code under review does not share. Append the note for the role verbatim to its prompt, and no note to `intent`, `plan` or `fix`.

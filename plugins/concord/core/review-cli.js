@@ -1600,7 +1600,9 @@ function runVerb(resolveFromCwd, args, initiative) {
           && items.flatMap(idOf).some((id) => typeof id === 'string' && !prefixes.some((prefix) => id.startsWith(prefix)));
         // A verify/gate-verify finding without evidence fields (a kept candidate in verdict shape) is repaired by deleting it.
         const invalidFinding = artifactContract.dropsInvalidFindings(name) && /finding\[\d+\] is missing "/.test(e.message);
-        if (!statusSpelling && !mixedNamespaces && !invalidFinding) throw new Error(`harness-failure: ${e.message}`);
+        // A prefix-correct id with an invalid slug is a label slip: the repair normalizes the slug and keeps the finding.
+        const repairableSlug = /invalid id|invalid findingIds/.test(e.message) && artifactContract.repairsSlugs(name, raw);
+        if (!statusSpelling && !mixedNamespaces && !invalidFinding && !repairableSlug) throw new Error(`harness-failure: ${e.message}`);
         const retryArtifacts = retryArtifactMap(ledger.execution);
         // The pending semantic prompt requests a new plan, not a representation
         // repair. Durable repair bindings still bound that replacement to one repair.
@@ -2832,6 +2834,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     requirePlanDispatch(ledger);
     const fixById = new Map(fixes.map((finding) => [finding.id, finding]));
     const groupedIds = new Set();
+    const duplicatedIds = new Set();
     let planArtifact = { status: 'ok', protocolVersion: 2, groups: [] };
     let consumedPlanHash = ledger.execution?.normalizedPlan || ledger.execution?.artifactHashes?.plan;
     if (fixes.length) {
@@ -2876,7 +2879,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       });
       for (const id of findingIds) {
         if (!fixById.has(id)) throw new Error(`harness-failure: plan group[${index}] references finding "${id}" that is rejected or absent`);
-        if (groupedIds.has(id)) throw new Error(`harness-failure: plan finding "${id}" appears in more than one root-cause group`);
+        if (groupedIds.has(id)) duplicatedIds.add(id);
         groupedIds.add(id);
       }
       if (!findingIds.length) return [];
@@ -2884,17 +2887,21 @@ function runVerb(resolveFromCwd, args, initiative) {
       return [{ ...group, findingIds, findings: findingIds.map((id) => fixById.get(id)) }];
     });
     const unclassified = fixes.filter((finding) => !groupedIds.has(finding.id)).map((finding) => finding.id);
-    if (unclassified.length) {
+    // A finding in two groups is a planner slip like an omitted one: the same one replacement plan repairs it.
+    const duplicated = [...duplicatedIds];
+    if (unclassified.length || duplicated.length) {
       const execution = ledger.execution || { round: n, completed: [], pending: [] };
       const rejectedHash = consumedPlanHash;
       const prior = execution.planRetry;
       // Re-reading the rejected bytes is not another launch or retry attempt.
       if (prior?.rejectedHash === rejectedHash && !execution.normalizedPlan && !(execution.completed || []).includes('plan')) throw new Error(`harness-failure: ${prior.message}`);
       const exhausted = !!prior;
-      const message = `v2 classification is incomplete for finding(s): ${unclassified.join(', ')}${exhausted ? '; planner retry exhausted for this round; reconcile the failed plan before continuing' : ''}`;
+      const problems = [unclassified.length ? `v2 classification is incomplete for finding(s): ${unclassified.join(', ')}` : '',
+        duplicated.length ? `v2 classification is invalid: finding(s) ${duplicated.join(', ')} appear in more than one root-cause group` : ''].filter(Boolean).join('; ');
+      const message = `${problems}${exhausted ? '; planner retry exhausted for this round; reconcile the failed plan before continuing' : ''}`;
       const retryArtifacts = retryArtifactMap(execution);
       if (exhausted) delete retryArtifacts.plan;
-      else retryArtifacts.plan = `The previous normalized plan omitted surviving finding(s): ${unclassified.join(', ')}. Classify every surviving finding exactly once using the sealed correctness and verify evidence. Do not rerun reviewers or invent findings.`;
+      else retryArtifacts.plan = `The previous normalized plan ${[unclassified.length ? `omitted surviving finding(s): ${unclassified.join(', ')}` : '', duplicated.length ? `listed finding(s) ${duplicated.join(', ')} in more than one group` : ''].filter(Boolean).join(' and ')}. Classify every surviving finding exactly once using the sealed correctness and verify evidence. Do not rerun reviewers or invent findings.`;
       const artifactHashes = { ...(execution.artifactHashes || {}) };
       delete artifactHashes.plan;
       const repairArtifacts = { ...(execution.repairArtifacts || {}) };
@@ -2903,7 +2910,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       const rejected = { ...ledger, execution: { ...execution, completed: (execution.completed || []).filter((role) => role !== 'plan'), artifactHashes,
         normalizedPlan: null, planRepairPending: false, pending: Array.from(new Set([...(execution.pending || []), 'plan'])), retryArtifacts, retryArtifact: firstRetryArtifact(retryArtifacts),
         ...(execution.repairArtifacts ? { repairArtifacts } : {}),
-        planRetry: { ...prior, state: exhausted ? 'exhausted' : 'pending', missingIds: unclassified, rejectedHash, message, discardRepair: true },
+        planRetry: { ...prior, state: exhausted ? 'exhausted' : 'pending', missingIds: [...unclassified, ...duplicated], rejectedHash, message, discardRepair: true },
         failures: [...(execution.failures || []), failure].slice(-5), failure } };
       writeLedger(stateDir, slug, run ? withSupersededLaunch(rejected, 'plan', n) : rejected);
       // Publish semantic accounting before discarding only the rejected plan's

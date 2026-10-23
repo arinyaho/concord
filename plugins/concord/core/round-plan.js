@@ -17,6 +17,7 @@
 const path = require('node:path');
 const { safeIdForFilename } = require('./artifact-name');
 const { allowedFindingPrefixes } = require('./artifact-contract');
+const { FINDING_ID_RULE } = require('./gate-contract');
 const { readArtifactJson } = require('./bounded-artifact');
 
 // Order and parallelism, mirrored by review-driver.md steps 2-3 and
@@ -140,7 +141,7 @@ function baseReviewerPrompt(role, { stateDir, round, targetType, dodDeferred, do
   const artifact = path.join(stateDir, role === 'fix' || role === 'certify' ? `round-${round}-${role}-${safeIdForFilename(groupArtifactId)}.json` : `round-${round}-${role}.json`);
   const env = ENV_CLAUSE_BY_ROLE[role];
   const anchorRoles = ['correctness', 'verify', 'intent', 'gate', 'gate-verify'];
-  const retry = `${role === 'fix' ? '' : BLOCKED_CLAUSE}${anchorRoles.includes(role) ? FINDING_SPAN_CLAUSE + reviewLanguageClause(reviewLanguage) : ''}${classify && (role === 'correctness' || role === 'verify') ? GATE_FOLLOWUP_CLAUSE : ''}${retryPrompt ? `\n\n${retryPrompt}` : ''}`;
+  const retry = `${role === 'fix' ? '' : BLOCKED_CLAUSE}${[...anchorRoles, 'plan'].includes(role) ? FINDING_ID_RULE : ''}${anchorRoles.includes(role) ? FINDING_SPAN_CLAUSE + reviewLanguageClause(reviewLanguage) : ''}${classify && (role === 'correctness' || role === 'verify') ? GATE_FOLLOWUP_CLAUSE : ''}${retryPrompt ? `\n\n${retryPrompt}` : ''}`;
   if (role === 'correctness') {
     const doc = targetType === 'file';
     const dodNote = dodPending

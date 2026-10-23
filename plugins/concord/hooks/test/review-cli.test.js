@@ -6998,3 +6998,30 @@ test('findings: a gate finding is minor only when gate-verify did not override i
   assert.equal(byId['gate:silent-gap:minor'].class, 'minor');
   assert.equal(byId['gate:silent-gap:blocked'].class, 'blocker');
 });
+
+test('artifact-normalize repairs a prefix-correct id with an invalid slug and keeps the finding (#414)', () => {
+  const repo = initRepo(); const dir = tmpDir(); const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n'); execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/slug', 'HEAD~1'], { env })).round;
+  const file = path.join(dir, `round-${n}-correctness.json`);
+  const original = JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:probe-timeout-exceeds-timeoutSeconds', file: 'a.txt', span: 'two', summary: 's' }] });
+  fs.writeFileSync(file, original);
+  const result = JSON.parse(run(['artifact-normalize', 'feat/slug', 'correctness'], { env }));
+  assert.strictEqual(result.status, 'repair');
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), original, 'repair must retain the original artifact');
+  const dispatched = JSON.parse(run(['artifact-repair-dispatch', 'feat/slug', 'correctness'], { env }));
+  assert.strictEqual(JSON.parse(fs.readFileSync(dispatched.candidatePath, 'utf8')).findings[0].id, 'correctness:probe-timeout-exceeds-timeoutseconds');
+  run(['artifact-repair-candidate', 'feat/slug', 'correctness'], { env });
+  assert.strictEqual(JSON.parse(run(['artifact-normalize', 'feat/slug', 'correctness', '--candidate', dispatched.candidatePath], { env })).status, 'ok');
+  assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).findings[0].id, 'correctness:probe-timeout-exceeds-timeoutseconds');
+});
+
+test('artifact-normalize stays terminal when two invalid slugs would normalize to the same id (#414)', () => {
+  const repo = initRepo(); const dir = tmpDir(); const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n'); execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/slug2', 'HEAD~1'], { env })).round;
+  const findings = ['correctness:Foo_bar', 'correctness:foo.bar'].map((id) => ({ id, file: 'a.txt', span: 'two', summary: 's' }));
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings }));
+  assert.throws(() => run(['artifact-normalize', 'feat/slug2', 'correctness'], { env }), /harness-failure.*invalid id/);
+  assert.strictEqual(fs.existsSync(path.join(dir, `round-${n}-correctness.repair.json`)), false);
+});
