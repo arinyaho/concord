@@ -648,8 +648,9 @@ test('git helpers operate on a real temp repo', () => {
   const sha = cli.gitCommitFix(repo, 'correctness:x', 'fix it', ['a.txt']);
   assert.match(sha, /^[0-9a-f]{7,40}$/);
   assert.strictEqual(cli.gitIsReachable(repo, sha), true);
-  cli.gitCheckoutTree(repo);
   assert.strictEqual(cli.gitIsDirty(repo), false);
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'three\n');
+  assert.deepStrictEqual(cli.gitDirtyTrackedPaths(repo), ['a.txt']);
 });
 
 test('review-cli show: prints an empty/fresh ledger summary for an unknown ref', () => {
@@ -699,7 +700,7 @@ test('DoD runs once after review convergence, not at round start', () => {
   assert.match(recorded.handoff, /DoD: passed/);
 });
 
-test('final DoD runs against committed files after discarding reviewer edits', () => {
+test('a dirty reviewer edit parks the run and the final DoD is not run against it', () => {
   const repo = initRepo(); const dir = tmpDir();
   fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['false'] }));
   execFileSync('git', ['commit', '-aqm', 'failing dod'], { cwd: repo });
@@ -713,8 +714,10 @@ test('final DoD runs against committed files after discarding reviewer edits', (
   fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: ['true'] }));
 
   const recorded = JSON.parse(run(['record', 'feat/dirty-dod'], { env }));
-  assert.strictEqual(recorded.decision.dodFailed, true);
-  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(repo, 'review.config.json'), 'utf8')), { dod: ['false'] });
+  assert.strictEqual(recorded.decision.dodFailed, false);
+  assert.strictEqual(recorded.decision.parked, true);
+  assert.match(recorded.decision.reason, /review\.config\.json/);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(repo, 'review.config.json'), 'utf8')), { dod: ['true'] });
 });
 
 test('final DoD cannot pass by modifying the reviewed tree', () => {
@@ -729,8 +732,8 @@ test('final DoD cannot pass by modifying the reviewed tree', () => {
   writeArtifact(dir, started.round, 'verify', { status: 'ok', rejected: [] });
   run(['plan-fixes', 'feat/mutable-dod'], { env });
 
-  assert.throws(() => run(['record', 'feat/mutable-dod'], { env }), /harness-failure.*final DoD modified/);
-  assert.strictEqual(fs.readFileSync(path.join(repo, 'a.txt'), 'utf8'), 'two\n');
+  assert.throws(() => run(['record', 'feat/mutable-dod'], { env }), /harness-failure.*final DoD modified the repository \(a\.txt\)/);
+  assert.strictEqual(fs.readFileSync(path.join(repo, 'a.txt'), 'utf8'), 'dod-mutated', 'the CLI does not discard what the DoD left behind');
 });
 
 test('final DoD cannot pass by moving HEAD', () => {
@@ -915,7 +918,7 @@ test('round-start: refuses a dirty working tree on a fresh start', () => {
   assert.throws(() => run(['round-start', 'feat/x', 'HEAD'], { env }), /dirty/);
 });
 
-test('round-start: resume from phase fixes discards uncommitted edits and re-drives the same round at same budget', () => {
+test('round-start: resume from phase fixes refuses a dirty tree, naming the paths and discarding nothing', () => {
   const repo = initRepo();
   const dir = tmpDir();
   const slug = review.targetSlug('feat/x');
@@ -933,12 +936,14 @@ test('round-start: resume from phase fixes discards uncommitted edits and re-dri
   fs.writeFileSync(path.join(dir, 'round-1-fix-correctness_x.json'), '{"status":"ok","edited":true}');
   fs.writeFileSync(path.join(repo, 'a.txt'), 'uncommitted fix\n'); // dirty from the crashed fix
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  assert.throws(() => run(['round-start', 'feat/x'], { env }), /uncommitted changes in a\.txt/);
+  assert.strictEqual(fs.readFileSync(path.join(repo, 'a.txt'), 'utf8'), 'uncommitted fix\n');
+  execFileSync('git', ['checkout', '--', 'a.txt'], { cwd: repo }); // the person discards it
   JSON.parse(run(['round-start', 'feat/x'], { env }));
   const after = review.readLedger(dir, slug);
   assert.strictEqual(after.round, 1); // NOT advanced
   assert.strictEqual(after.budget.spent, 1); // NOT re-charged
   assert.strictEqual(after.phase, 'gates'); // re-driven
-  assert.strictEqual(cli.gitIsDirty(repo), false); // uncommitted discarded
   assert.ok(!fs.existsSync(path.join(dir, 'round-1-fix-correctness_x.json'))); // stale artifact gone
 });
 
@@ -1447,21 +1452,22 @@ test('commit-fix: a certificate whose file hash does not match the worktree is s
   assert.throws(() => run(['commit-fix', 'feat/cert-badhash', 'doc-fix'], { env }), /certified content changed/);
 });
 
-test('record keeps a rejected fix edit, restores every other path, and parks the run', () => {
+test('record keeps every dirty path, including a rejected fix edit, and parks the run', () => {
   const { repo, env } = seedCertifiedSingleGroup('feat/cert-kept', { fileHashes: { 'a.txt': 'deadbeef' } });
   assert.throws(() => run(['commit-fix', 'feat/cert-kept', 'doc-fix'], { env }), /certified content changed/);
   const STRAY = JSON.stringify({ dod: ['true'], stray: 'edit no fixer declared' });
   fs.writeFileSync(path.join(repo, 'review.config.json'), STRAY);
   const recorded = JSON.parse(run(['record', 'feat/cert-kept'], { env }));
   assert.strictEqual(fs.readFileSync(path.join(repo, 'a.txt'), 'utf8'), 'fixed a\n', 'record must not discard the uncommitted edit');
-  assert.notStrictEqual(fs.readFileSync(path.join(repo, 'review.config.json'), 'utf8'), STRAY, 'record must restore paths no rejected fix declared');
+  assert.strictEqual(fs.readFileSync(path.join(repo, 'review.config.json'), 'utf8'), STRAY, 'record must keep paths no fixer declared');
   assert.strictEqual(recorded.decision.continue, false);
   assert.strictEqual(recorded.decision.parked, true);
   assert.match(recorded.decision.reason, /a\.txt.*commit or discard/);
+  assert.match(recorded.decision.reason, /review\.config\.json/);
   assert.strictEqual(review.readLedger(env.REVIEW_STATE_DIR, review.targetSlug('feat/cert-kept')).status, 'parked');
 });
 
-test('record matches a rejected fix\'s declared files literally, so a glob keeps no undeclared edit', () => {
+test('record matches a rejected fix\'s declared files literally, and still keeps an undeclared edit', () => {
   const { repo, env, dir, n } = seedCertifiedSingleGroup('feat/cert-glob', { fileHashes: { 'a.txt': 'deadbeef' } });
   assert.throws(() => run(['commit-fix', 'feat/cert-glob', 'doc-fix'], { env }), /certified content changed/);
   writeArtifact(dir, n, 'fix-doc-fix', { status: 'ok', edited: true, groupId: 'doc-fix', files: ['a.txt', '*.json'] });
@@ -1469,7 +1475,7 @@ test('record matches a rejected fix\'s declared files literally, so a glob keeps
   fs.writeFileSync(path.join(repo, 'review.config.json'), STRAY);
   run(['record', 'feat/cert-glob'], { env });
   assert.strictEqual(fs.readFileSync(path.join(repo, 'a.txt'), 'utf8'), 'fixed a\n');
-  assert.notStrictEqual(fs.readFileSync(path.join(repo, 'review.config.json'), 'utf8'), STRAY, 'a declared glob must not keep an undeclared path');
+  assert.strictEqual(fs.readFileSync(path.join(repo, 'review.config.json'), 'utf8'), STRAY, 'no edit is discarded, declared or not');
 });
 
 test('record refuses a rejected fix that declares a file outside the repository', () => {
@@ -2045,6 +2051,19 @@ test('commit-fix with no dirty declared file, then record: uncommitted edits in 
   assert.strictEqual(fs.readFileSync(path.join(repo, 'review.config.json'), 'utf8'), EDIT, 'record must not discard edits it did not create');
 });
 
+test('commit-fix: a declared file already committed by an earlier group is refused with that commit named', () => {
+  const sha = (text) => crypto.createHash('sha256').update(text).digest('hex');
+  const { repo, env, dir } = seedCertifiedSingleGroup('feat/overlap', {});
+  const committed = execFileSync('git', ['show', 'HEAD:a.txt'], { cwd: repo, encoding: 'utf8' });
+  fs.writeFileSync(path.join(repo, 'a.txt'), committed);
+  const certPath = path.join(dir, fs.readdirSync(dir).find((f) => /^round-\d+-certify-doc-fix\.json$/.test(f)));
+  fs.writeFileSync(certPath, JSON.stringify({ ...JSON.parse(fs.readFileSync(certPath, 'utf8')), fileHashes: { 'a.txt': sha(committed) } }));
+  const slug = review.targetSlug('feat/overlap');
+  const ledger = review.readLedger(dir, slug);
+  review.writeLedger(dir, slug, { ...ledger, journal: [{ id: 'x', transactionId: 'earlier', files: ['a.txt'], sha: 'abc1234' }] });
+  assert.throws(() => run(['commit-fix', 'feat/overlap', 'doc-fix'], { env }), /already committed in abc1234 \(earlier\).*record-fix/);
+});
+
 test('commit-fix: scopes staging to the finding\'s file -- an unrelated dirty file is never swept into the commit', () => {
   const repo = initRepo(); const dir = tmpDir();
   const { env, n } = seedGatesRound(repo, dir, 'feat/x',
@@ -2073,7 +2092,7 @@ test('commit-fix: scopes staging to the finding\'s file -- an unrelated dirty fi
 // DEFECT: gitCommitFix staged only finding.file. If a fix subagent legitimately
 // edited a second file (e.g. a caller/import that needed updating to make the
 // fix correct), that companion edit was left uncommitted -- and record()'s
-// gitCheckoutTree discards any leftover uncommitted edit at the end of the
+// record() used to discard any leftover uncommitted edit at the end of the
 // round, silently wiping the companion change even though the finding is
 // reported fixed with a valid commit sha. The fix subagent now declares every
 // file it touched via a `files` array on the fix artifact; commit-fix must

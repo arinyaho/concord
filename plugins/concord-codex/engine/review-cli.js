@@ -74,7 +74,7 @@ function gitCommitFix(repoRoot, findingId, summary, files) {
   // normally just the finding's own file, but a fix may legitimately touch a
   // companion file (e.g. a caller/import it had to update); every file the
   // fix subagent declared must land in the same attributed commit, or the
-  // companion edit is wiped later by record()'s gitCheckoutTree.
+  // companion edit is left dirty and parks the run in record().
   const fileList = Array.isArray(files) ? files : [files];
   sh('git', ['add', '--', ...fileList], { cwd: repoRoot });
   // -F - (read the message from stdin) instead of -m '<multi-line message>':
@@ -195,8 +195,9 @@ function validateFixFiles(repoRoot, stateDir, files, verb = 'commit-fix') {
     }
   }
 }
-function gitCheckoutTree(repoRoot, keep = []) {
-  sh('git', ['checkout', 'HEAD', '--', '.', ...keep.map((file) => `:(exclude,literal)${file}`)], { cwd: repoRoot });
+// The CLI never discards working-tree content: it cannot tell a stray fixer edit from a person's edit, so dirty tracked paths stop the run and are named.
+function gitDirtyTrackedPaths(repoRoot) {
+  return sh('git', ['status', '--porcelain', '--untracked-files=no', '-z'], { cwd: repoRoot }).split('\0').filter(Boolean).map((entry) => entry.slice(3));
 }
 function runDod(repoRoot) {
   const cfg = dodExec.loadDodConfig(repoRoot);
@@ -2081,12 +2082,15 @@ function runVerb(resolveFromCwd, args, initiative) {
     // round artifacts (and, for a file target, a stale fix-<safe-id>.json that has no
     // git journal to override it), so BOTH target types must purge them and
     // reset the round's planned/absent/intent arrays before re-driving. Only the
-    // git-specific working-tree discard (gitCheckoutTree) is gated on git; a file
-    // target has no working tree to check out. Before this, a resumed file target
+    // git-specific dirty-tree refusal is gated on git; a file
+    // target has no working tree. Before this, a resumed file target
     // took the file-acquisition branch first and skipped all of it, so a stale
     // edited:true fix artifact could false-signal in record. (finding #3)
     const isGit = !isFileTarget;
-    if (resumed && isGit) gitCheckoutTree(repoRoot); // git-only: keep journaled commits, discard uncommitted
+    if (resumed && isGit) {
+      const dirtyTracked = gitDirtyTrackedPaths(repoRoot);
+      if (dirtyTracked.length) throw new Error(`review-until-green: working tree has uncommitted changes in ${dirtyTracked.join(', ')}; commit or discard them before resuming`);
+    }
 
     // Target acquisition goes through the core/target.js seam. On a FRESH git
     // start acquireTarget runs the dirty-check + HEAD rev-parse + diff (identical
@@ -2659,7 +2663,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // A reconciliation stop already waits for the person, so it stands and only
     // names the kept files. plan-fixes launches no fixer when it reconciles, so
     // this guards the ledger rather than a path the verbs reach today.
-    const keptFiles = [...new Set(keptEditFiles)];
+    const keptFiles = [...new Set([...keptEditFiles, ...(isGit ? gitDirtyTrackedPaths(repoRoot) : [])])];
     if (keptFiles.length && (decision.gatePending || decision.intentReview)) {
       decision = { ...decision, reason: `${decision.reason}; an uncommitted fix edit is kept in ${keptFiles.join(', ')}` };
     } else if (keptFiles.length) {
@@ -2667,14 +2671,12 @@ function runVerb(resolveFromCwd, args, initiative) {
       applied = { ...applied, status: 'parked' };
     }
     if (isGit && decision.converged && !ledger.dodDeferred) {
-      gitCheckoutTree(repoRoot);
       if (gitIsDirty(repoRoot, stateDir)) throw new Error('harness-failure: review work left untracked files in the repository; final DoD was not run against an uncommitted worktree');
       const finalDodHead = gitHeadSha(repoRoot);
       const finalDod = runDod(repoRoot);
       if (gitHeadSha(repoRoot) !== finalDodHead) throw new Error('harness-failure: final DoD moved HEAD; its result does not apply to the reviewed revision');
       if (gitIsDirty(repoRoot, stateDir)) {
-        gitCheckoutTree(repoRoot);
-        throw new Error('harness-failure: final DoD modified the repository; its result does not apply to committed HEAD');
+        throw new Error(`harness-failure: final DoD modified the repository (${gitDirtyTrackedPaths(repoRoot).join(', ') || 'untracked files'}); its result does not apply to committed HEAD`);
       }
       applied = { ...applied, dod: finalDod };
       if (!finalDod.deferred && !finalDod.passed) {
@@ -2733,10 +2735,6 @@ function runVerb(resolveFromCwd, args, initiative) {
         ledger = { ...ledger, status: 'parked' };
       }
     }
-    // Git only: clean any leftover uncommitted edit from a rejected/parked fixer,
-    // except the declared files of a rejected fix, which stay for the person to
-    // commit or discard. File targets have no working tree to discard.
-    if (isGit) gitCheckoutTree(repoRoot, keptFiles);
     const finalChecks = [{ name: 'definition-of-done', status: ledger.dod?.deferredBy === 'pending-final' ? 'not-run' : ledger.dod?.deferred ? 'deferred' : ledger.dod?.passed ? 'passed' : 'failed' }];
     const priorHistoryKeys = new Set((ledger.review_history || []).map((entry) => `${entry.planId}:${entry.groupId}`));
     const newHistory = (ledger.fix_plan?.groups || []).filter((group) => !priorHistoryKeys.has(`${ledger.fix_plan.planId}:${group.groupId}`)).map((group) => {
@@ -3272,7 +3270,8 @@ function runVerb(resolveFromCwd, args, initiative) {
     const candidates = roundCandidates(require('./gate-contract'), readRound('correctness'), readRound('verify'));
     const resolvedFindings = findingIds.map((id) => candidates.find((finding) => finding.id === id)).filter(Boolean);
     if (resolvedFindings.length !== findingIds.length || !files.some((file) => gitIsDirtyForFile(repoRoot, file))) {
-      throw new Error('harness-failure: commit-fix: certified transaction has no matching dirty candidate');
+      const landed = (ledger.journal || []).find((j) => files.some((file) => (j.files || []).includes(file)));
+      throw new Error(`harness-failure: commit-fix: certified transaction has no matching dirty candidate${landed ? `; its files were already committed in ${landed.sha} (${landed.transactionId}), run record-fix with that sha or unpark the finding` : ''}`);
     }
     {
       const sha = gitCommitFix(repoRoot, transactionId, groups.map((group) => group.rootCause).join('; '), files);
@@ -3305,4 +3304,4 @@ function runMain(resolveFromCwd) {
   }
 }
 
-module.exports = { unexaminedPaths, renderHandoff, gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitCheckoutTree, runDod, main, runMain, withTargetLock };
+module.exports = { unexaminedPaths, renderHandoff, gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitDirtyTrackedPaths, runDod, main, runMain, withTargetLock };
