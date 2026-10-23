@@ -47,8 +47,9 @@ test('Copilot marketplace points at the Copilot distribution', () => {
   assert.equal(plugin.source, './plugins/concord-copilot');
 });
 
-test('README documents the Copilot lifecycle and degraded mode', () => {
-  const readme = fs.readFileSync(path.join(REPO, 'README.md'), 'utf8');
+test('docs/install.md documents the Copilot lifecycle and degraded mode', () => {
+  assert.match(fs.readFileSync(path.join(REPO, 'README.md'), 'utf8'), /\]\(docs\/install\.md\)/);
+  const readme = fs.readFileSync(path.join(REPO, 'docs/install.md'), 'utf8');
   assert.match(readme, /copilot plugin marketplace add arinyaho\/concord/);
   assert.match(readme, /copilot plugin install concord@arinyaho-concord/);
   assert.match(readme, /copilot plugin update concord@arinyaho-concord/);
