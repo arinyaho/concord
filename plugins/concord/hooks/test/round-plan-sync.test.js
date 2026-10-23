@@ -359,3 +359,11 @@ test('every prompt that writes or cites finding ids states the id rule, and ever
     assert.ok(text.includes(FINDING_ID_RULE), `${name} lacks the finding id rule`);
   }
 });
+
+test('every driver copy spells the plan artifact envelope the validator requires, as round-plan.js does', () => {
+  const envelope = '{"status":"ok","protocolVersion":2,"groups":[]}';
+  assert.ok(reviewerPrompt('plan', { stateDir: '/state', round: 1, targetType: 'git', slug: 'feat-x' }).includes(envelope));
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
+    assert.ok(text.includes('ONLY the v2 plan JSON `' + envelope + '`'), `${name} plan step must name ${envelope} so a planner does not omit "status"`);
+  }
+});
