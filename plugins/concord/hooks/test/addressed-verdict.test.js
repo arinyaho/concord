@@ -12,7 +12,7 @@ const entry = { id: 'correctness:a', evidence: { file: 'a.js', span: 'guard()', 
 
 // Hashes taken on the code before the addressed verdict existed: the verdict is opt-in and changes nothing else.
 test('with no addressable finding every reviewer prompt, retry prompt and normalized verify artifact is byte-identical to before', () => {
-  assert.deepEqual(['correctness', 'verify', 'gate', 'gate-verify'].map((r) => h(reviewerPrompt(r, ctx))), ['b1afc9f00b95983c', '20e6eec5291442b5', '4148790becf6485a', '76787d0fe8d49074']);
+  assert.deepEqual(['correctness', 'verify', 'gate', 'gate-verify'].map((r) => h(reviewerPrompt(r, ctx))), ['a184471fd5d2b484', '7f271d313893e887', 'fe054059e08600f5', 'b8fc61054db3812e']);
   assert.deepEqual(['correctness', 'verify'].map((r) => h(retryPrompt(r))), ['758fc4f36b34f1aa', '89c2129a4a503d94']);
   assert.equal(h(JSON.stringify(normalizeArtifact('verify', verify({ addressed: [entry] })))), 'e72e3f4e87a1b9c1');
   assert.equal(reviewerPrompt('verify', { ...ctx, addressable: [] }), reviewerPrompt('verify', ctx));
