@@ -9,6 +9,7 @@ on:
       - "scripts/release-bump.mjs"
       - "VERSION"
       - "README.md"
+      - "docs/install.md"
       - ".github/plugin/marketplace.json"
       - ".claude-plugin/marketplace.json"
       - ".agents/plugins/marketplace.json"

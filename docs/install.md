@@ -22,6 +22,15 @@ codex plugin marketplace upgrade arinyaho-concord
 codex plugin add concord@arinyaho-concord
 ```
 
+Remove:
+
+```
+codex plugin remove concord@arinyaho-concord
+codex plugin marketplace remove arinyaho-concord
+```
+
+Back up any persistent Concord state (session checkpoints, charter, review ledgers) before removal if it must be retained.
+
 ## GitHub Copilot
 
 Install:
