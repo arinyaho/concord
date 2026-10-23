@@ -27,7 +27,7 @@ function normalizeFindingId(id) {
   const prefix = id.slice(0, colon + 1);
   const segment = (text) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80).replace(/-+$/, '');
   const parts = (prefix === 'gate:' ? id.slice(colon + 1).split(':') : [id.slice(colon + 1)]).map(segment);
-  if ((prefix === 'gate:' && parts.length !== 2) || parts.some((part) => !part)) return null;
+  if ((prefix === 'gate:' && parts.length > 2) || parts.some((part) => !part)) return null;
   const mapped = prefix + parts.join(':');
   return isValidFindingId(mapped) ? mapped : null;
 }

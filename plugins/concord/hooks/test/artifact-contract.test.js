@@ -329,3 +329,8 @@ test('a plan group listing the same finding twice keeps the first occurrence (#4
   const plan = normalizeArtifact('plan', JSON.stringify({ status: 'ok', protocolVersion: 2, groups: [group] }));
   assert.deepStrictEqual(plan.groups[0].findingIds, ['correctness:a', 'correctness:b']);
 });
+
+test('a legacy two-segment gate id with an invalid slug is normalized, not left terminal (#414)', () => {
+  const gate = repairCandidate('gate', JSON.stringify({ status: 'ok', findings: [{ id: 'gate:Foo_bar', file: 'a', span: 's', summary: 's' }] }));
+  assert.equal(gate.findings[0].id, 'gate:foo-bar');
+});

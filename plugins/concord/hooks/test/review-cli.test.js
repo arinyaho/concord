@@ -7025,3 +7025,11 @@ test('artifact-normalize stays terminal when two invalid slugs would normalize t
   assert.throws(() => run(['artifact-normalize', 'feat/slug2', 'correctness'], { env }), /harness-failure.*invalid id/);
   assert.strictEqual(fs.existsSync(path.join(dir, `round-${n}-correctness.repair.json`)), false);
 });
+
+test('artifact-normalize repairs an invalid slug that only appears in gate-verify duplicates.of (#414)', () => {
+  const repo = initRepo(); const dir = tmpDir(); const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n'); execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/dupof', 'HEAD~1', '--broad'], { env, broadDefault: true })).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [], duplicates: [{ id: 'gate:cross-context:x', of: 'correctness:Foo_bar' }] }));
+  assert.strictEqual(JSON.parse(run(['artifact-normalize', 'feat/dupof', 'gate-verify'], { env, broadDefault: true })).status, 'repair');
+});

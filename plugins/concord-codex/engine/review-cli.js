@@ -1601,7 +1601,7 @@ function runVerb(resolveFromCwd, args, initiative) {
         // A verify/gate-verify finding without evidence fields (a kept candidate in verdict shape) is repaired by deleting it.
         const invalidFinding = artifactContract.dropsInvalidFindings(name) && /finding\[\d+\] is missing "/.test(e.message);
         // A prefix-correct id with an invalid slug is a label slip: the repair normalizes the slug and keeps the finding.
-        const repairableSlug = /invalid id|invalid findingIds/.test(e.message) && artifactContract.repairsSlugs(name, raw);
+        const repairableSlug = /invalid id|invalid findingIds|must name the/.test(e.message) && artifactContract.repairsSlugs(name, raw);
         if (!statusSpelling && !mixedNamespaces && !invalidFinding && !repairableSlug) throw new Error(`harness-failure: ${e.message}`);
         const retryArtifacts = retryArtifactMap(ledger.execution);
         // The pending semantic prompt requests a new plan, not a representation
