@@ -133,7 +133,7 @@ function addressedClause(findings, description) {
 }
 
 function reviewLanguageClause(language) {
-  return language ? ` Write \`summary\` and \`requirement\` in the language with BCP 47 tag \`${language}\`. Copy \`span\`, \`file\`, \`id\`, \`category\` and every code identifier exactly as they appear in the source; never translate them.` : '';
+  return language ? ` Write \`summary\` in the language with BCP 47 tag \`${language}\`. Copy \`requirement\`, \`span\`, \`file\`, \`id\`, \`category\` and every code identifier exactly as they appear in the source; never translate them.` : '';
 }
 
 function baseReviewerPrompt(role, { stateDir, round, targetType, dodDeferred, dodPending, finding, fixGroup, retryPrompt, slug, priorIntentIds, plannedFindings = [], gateMode, gateApplied = false, intentHash = null, examined = [], fixFiles = [], reviewLanguage = null, classify = false }) {

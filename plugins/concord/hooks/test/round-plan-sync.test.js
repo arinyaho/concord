@@ -13,7 +13,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const CORE = path.join(__dirname, '..', '..', 'core');
-const { GATE_SWEEP_CLAUSE, GATE_VERIFY_OWNERSHIP_CLAUSE, GATE_VERIFY_ADDED_CLAUSE, reviewerPrompt } = require(path.join(CORE, 'round-plan'));
+const { GATE_SWEEP_CLAUSE, GATE_VERIFY_OWNERSHIP_CLAUSE, GATE_VERIFY_ADDED_CLAUSE, reviewLanguageClause, reviewerPrompt } = require(path.join(CORE, 'round-plan'));
 const { allowedFindingPrefixes } = require(path.join(CORE, 'artifact-contract'));
 const roundPlanText = fs.readFileSync(path.join(CORE, 'round-plan.js'), 'utf8');
 const driverText = fs.readFileSync(path.join(CORE, 'review-driver.md'), 'utf8');
@@ -54,18 +54,25 @@ test('finding-producing prompts require continuous verbatim spans and preserve s
   }
 });
 
-test('a review language is asked for in the finding text of the finding-producing prompts only, and spans stay verbatim', () => {
+test('review language localizes only summaries and preserves requirement and source identifiers in finding prompts', () => {
   const context = {
     stateDir: '/state', round: 1, targetType: 'git', slug: 'feat-x', gateMode: 'pair',
     fixGroup: { groupId: 'g1', findingIds: ['correctness:a'], rootCause: 'r', invariants: [] },
     finding: { id: 'correctness:a', summary: 's' }, fixFiles: [],
   };
+  const clause = reviewLanguageClause('ko');
+  assert.match(clause, /Write `summary` in the language with BCP 47 tag `ko`/);
+  assert.match(clause, /Copy `requirement`, `span`, `file`, `id`, `category` and every code identifier exactly as they appear in the source; never translate them/);
+  assert.equal(reviewLanguageClause(null), '');
   for (const role of ['correctness', 'verify', 'intent', 'gate', 'gate-verify']) {
     const prompt = reviewerPrompt(role, { ...context, reviewLanguage: 'ko' });
-    assert.match(prompt, /BCP 47 tag `ko`/, role);
-    assert.match(prompt, /`span`.*never translate/s, role);
+    assert.ok(prompt.includes(clause), `${role} prompt must carry the summary-only language clause`);
     assert.doesNotMatch(reviewerPrompt(role, context), /BCP 47/, role);
   }
+  const intent = reviewerPrompt('intent', { ...context, reviewLanguage: 'ko' });
+  assert.match(intent, /the verbatim requirement text, and summary/);
+  assert.match(intent, /Write `summary` in the language with BCP 47 tag `ko`/);
+  assert.doesNotMatch(intent, /Write `summary` and `requirement`/);
   for (const role of ['plan', 'fix', 'certify']) assert.doesNotMatch(reviewerPrompt(role, { ...context, reviewLanguage: 'ko' }), /BCP 47/, role);
 });
 
@@ -312,12 +319,6 @@ test('every manual driver copy carries the sandbox uid note for each probe role,
   }
 });
 
-test('gate-panel lens prompt carries the review-language clause', () => {
-  assert.equal(typeof require(path.join(CORE, 'round-plan')).reviewLanguageClause, 'function');
-  const runner = fs.readFileSync(path.join(CORE, 'codex-review-runner.js'), 'utf8');
-  assert.match(runner, /gate:\$\{lens\}:<slug>\.\$\{reviewLanguageClause\(context\.reviewLanguage\)\}\$\{BLOCKED_CLAUSE\}/);
-});
-
 test('classify asks correctness and verify for releaseBlocking and rationale; without it their prompts are byte-identical to the ones before the flag', () => {
   const crypto = require('node:crypto');
   const sha = (text) => crypto.createHash('sha256').update(text).digest('hex');
@@ -327,8 +328,8 @@ test('classify asks correctness and verify for releaseBlocking and rationale; wi
     verify: 'c866bbcfc953e1734d6cf0f1a23c79c4d04b46549fe2d3d472a117adec542f79',
   };
   const goldenBroad = {
-    correctness: '43b719cbd953a43eaf3f37310848afbae27ed50eac36528c85252423592ec16d',
-    verify: '91eebf0cd51c43222cc4c9b6acb1cc3b87a366bcdc0de3dd05cf8bc662a97751',
+    correctness: 'dfc1639fff27f78411e8d09b0eb7047c4aa9bf2385e8f0e953fe148f2495d83c',
+    verify: '855a0b53ed0bfc6443c63038332f14d63009d7827075657da61202e95e295fb0',
   };
   for (const role of ['correctness', 'verify']) {
     assert.equal(sha(reviewerPrompt(role, context)), golden[role], `${role} prompt changed without classify`);
