@@ -37,7 +37,7 @@ test('all provider handoff contracts require a complete substantive reconciliati
 test('initiative-to-prs composes the existing ticket contracts and stops at verified PRs', () => {
   const skill = read('concord', 'SKILL.md');
   const stages = read('concord', 'references/stages.md');
-  const codexReviewCommand = fs.readFileSync(path.join(REPO, 'plugins', 'concord-codex', 'commands', 'review-and-fix.md'), 'utf8');
+  const codexReviewCommand = fs.readFileSync(path.join(REPO, 'plugins', 'concord-codex', 'skills', 'review-and-fix', 'SKILL.md'), 'utf8');
 
   assert.match(skill, /^---\nname: initiative-to-prs\ndescription: /);
   assert.match(skill, /ticket-writing/);
@@ -65,7 +65,7 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(skill, /source version.*current initiative objective.*authorization envelope.*invalidation.*affected file-target and diff review ledger.*rerun <ref>.*runtime-specific packaged review CLI path.*stage 1/is);
   assert.match(skill, /objective.*authorization envelope.*differs.*reconciliation.*before any mutation/is);
   assert.match(skill, /before each mutation-capable stage.*recheck.*authoritative source.*version.*same invalidation.*reconciliation/is);
-  assert.match(codexReviewCommand, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/bin\/review-cli\.js" rerun <ref>/);
+  assert.match(codexReviewCommand, /node "<plugin-root>\/bin\/review-cli\.js" rerun <ref>/);
   assert.match(skill, /durable user-state root.*deterministic project fingerprint.*run key/is);
   assert.match(skill, /Do not use.*temporary directory/i);
   assert.match(skill, /Never reuse one run directory for another key/i);

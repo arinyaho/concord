@@ -1,13 +1,19 @@
 ---
-description: Deterministically review, fix, commit, and repeat with independently selected Claude, Codex, or Copilot providers and models until Concord reaches a terminal decision.
-argument-hint: "[target | file:<path-or-glob> | resume <ref>] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--broad|--no-broad] [--no-dod] [--review-only] [--intent-file <path>] [:: <reviewer guidance>]"
+name: review-and-fix
+description: Use when a branch, PR, or file should be reviewed, fixed, and re-reviewed in a deterministic loop with independently selected Claude, Codex, or Copilot reviewer and fixer providers and models, until Concord reaches a terminal decision.
 ---
+
+# Review and Fix
+
+Arguments: `[target | file:<path-or-glob> | resume <ref>] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--broad|--no-broad] [--no-dod] [--review-only] [--intent-file <path>] [:: <reviewer guidance>]`, taken from the user's request.
+
+`<plugin-root>` is the installed plugin directory, two levels above this skill's base directory; resolve it from the skill path and never from another harness cache.
 
 Run the bundled deterministic runner once; do not manually orchestrate reviewers:
 
 ```sh
-node "${CLAUDE_PLUGIN_ROOT}/bin/review-and-fix.js" --arguments-stdin <<'CONCORD_REVIEW_ARGUMENTS'
-$ARGUMENTS
+node "<plugin-root>/bin/review-and-fix.js" --arguments-stdin <<'CONCORD_REVIEW_ARGUMENTS'
+<the arguments, verbatim>
 CONCORD_REVIEW_ARGUMENTS
 ```
 
@@ -22,7 +28,7 @@ A 30-second foreground wait or empty output is not a terminal result. While an o
 For ledger operations required by composed workflows, invoke the packaged CLI directly:
 
 ```sh
-node "${CLAUDE_PLUGIN_ROOT}/bin/review-cli.js" rerun <ref>
+node "<plugin-root>/bin/review-cli.js" rerun <ref>
 ```
 
 The ledger permits at most three full runs for one target, including the initial run. When that cumulative budget is exhausted, `rerun` leaves the ledger and evidence unchanged; preserve the unresolved state and split the change or narrow the remaining verification instead of resetting and repeating the full review. A completed front pass without an external intent source is reused while its base and reviewed head ancestry still match; later runs review only the changed diff. There is no automatic final broad panel. Use the explicit `deep-review` skill when a bounded holistic second look is warranted.

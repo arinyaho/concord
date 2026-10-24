@@ -23,7 +23,7 @@ const driverText = fs.readFileSync(path.join(CORE, 'review-driver.md'), 'utf8');
 // by any build step, so it drifts silently unless a test checks it directly.
 const composedCommandText = fs.readFileSync(path.join(__dirname, '..', '..', 'commands', 'review-and-fix.md'), 'utf8');
 const REPO = path.join(__dirname, '..', '..', '..', '..');
-const codexCommandText = fs.readFileSync(path.join(REPO, 'plugins/concord-codex/commands/review-and-fix.md'), 'utf8');
+const codexCommandText = fs.readFileSync(path.join(REPO, 'plugins/concord-codex/skills/review-and-fix/SKILL.md'), 'utf8');
 const copilotDriverText = fs.readFileSync(
   path.join(REPO, 'plugins/concord-copilot/skills/review-and-fix/references/review-driver.md'),
   'utf8',
