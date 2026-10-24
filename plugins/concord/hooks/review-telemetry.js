@@ -8,8 +8,9 @@ try {
   const event = JSON.parse(fs.readFileSync(0, 'utf8'));
   const override = process.env.REVIEW_STATE_DIR;
   const trusted = override && override.trim() ? override : resolveStateDirFromTranscript(event.transcript_path || '');
-  const stateDir = telemetry.stateDirForEvent(event, trusted);
-  const record = telemetry.recordForEvent(event, stateDir);
+  const prompt = telemetry.promptForEvent(event);
+  const stateDir = telemetry.stateDirForPrompt(prompt, trusted);
+  const record = telemetry.recordForEvent(event, stateDir, prompt);
   if (record) telemetry.writeRecord(stateDir, record);
 } catch {
   // Telemetry is observational and must never block the tool result.

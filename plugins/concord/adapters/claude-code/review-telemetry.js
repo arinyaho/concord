@@ -196,10 +196,6 @@ function promptFromAgentTranscript(event) {
   } catch { return null; }
 }
 
-function artifactPathFromAgentTranscript(event, stateDir) {
-  return artifactFromPrompt(promptFromAgentTranscript(event), stateDir)?.artifactPath || null;
-}
-
 // The run's state directory is the directory of the prompt's single artifact
 // destination, accepted only when an active ledger there holds this engine's
 // telemetry slot for exactly that path (written by the CLI's `telemetry-slot` before
@@ -216,9 +212,14 @@ function resolveRunStateDir(prompt, trusted) {
   return slotted ? dir : null;
 }
 
-function stateDirForEvent(event, trusted) {
-  if (!event || typeof event !== 'object') return trusted;
-  const prompt = event.hook_event_name === 'SubagentStop' ? promptFromAgentTranscript(event) : event.tool_input && event.tool_input.prompt;
+// The prompt that names the artifact destination: the Agent call's own prompt, or for a
+// SubagentStop (which carries none) the stopped agent's first transcript row.
+function promptForEvent(event) {
+  if (!event || typeof event !== 'object') return null;
+  return event.hook_event_name === 'SubagentStop' ? promptFromAgentTranscript(event) : (event.tool_input && event.tool_input.prompt) ?? null;
+}
+
+function stateDirForPrompt(prompt, trusted) {
   return resolveRunStateDir(prompt, trusted) || trusted;
 }
 
@@ -324,14 +325,14 @@ function subagentRecord(event, pendingTool) {
   };
 }
 
-function recordForEvent(event, stateDir) {
+function recordForEvent(event, stateDir, prompt) {
   if (!event || typeof event !== 'object') return null;
   if (event.hook_event_name !== 'SubagentStop') return toolRecord(event, stateDir);
   if (!activeLedger(stateDir)) return null;
   const probe = {
     agentId: event.agent_id,
     parentTranscriptPath: typeof event.transcript_path === 'string' ? path.resolve(event.transcript_path) : null,
-    artifactPath: artifactPathFromAgentTranscript(event, stateDir),
+    artifactPath: artifactFromPrompt(prompt === undefined ? promptFromAgentTranscript(event) : prompt, stateDir)?.artifactPath || null,
   };
   const tool = activeReviewTool(stateDir, probe);
   return tool ? subagentRecord(event, tool.agentId === null ? tool : null) : null;
@@ -432,4 +433,4 @@ function writeRecord(stateDir, record) {
   }
 }
 
-module.exports = { artifactFromPrompt, recordForEvent, stateDirForEvent, writeRecord };
+module.exports = { artifactFromPrompt, promptForEvent, recordForEvent, stateDirForPrompt, writeRecord };
