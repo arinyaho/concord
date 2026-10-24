@@ -3133,7 +3133,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     const already = (ledger.gate_dismissed || []).find((d) => d.id === gateId);
     if (!open && !already) throw new Error(`review-cli dismiss: ${gateId} is not an open gate finding`);
     let status = ledger.status;
-    if (already && classification) {
+    if (already && classification && !already.classification) {
       // The adjudication is recorded beside the first dismissal; the finding's wording and the dismissing human stay.
       writeLedger(stateDir, slug, { ...ledger, gate_dismissed: ledger.gate_dismissed.map((d) => (d.id === gateId ? { ...d, ...adjudication } : d)) });
     }

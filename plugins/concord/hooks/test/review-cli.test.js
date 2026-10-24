@@ -7325,3 +7325,14 @@ test('review-cli dismiss: a repeat dismissal adds a classification to the first 
   const [kept] = review.readLedger(dir, slug).gate_dismissed;
   assert.deepStrictEqual({ by: kept.dismissedBy, c: kept.classification, r: kept.classificationReason }, { by: 'someone', c: 'optional-hardening', r: 'unreachable path' });
 });
+
+test('review-cli dismiss: a repeat dismissal keeps the first classification and reason', () => {
+  const dir = tmpDir();
+  const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  review.writeLedger(dir, slug, gatePendingLedger());
+  run(['dismiss', 'feat/x', 'gate:design-conformance:scope', '--by', 'someone', '--classification', 'design-decision', '--reason', 'the contract settles it'], { env });
+  run(['dismiss', 'feat/x', 'gate:design-conformance:scope', '--by', 'other', '--classification', 'defect', '--reason', 'changed my mind'], { env });
+  const [kept] = review.readLedger(dir, slug).gate_dismissed;
+  assert.deepStrictEqual({ c: kept.classification, r: kept.classificationReason }, { c: 'design-decision', r: 'the contract settles it' });
+});
