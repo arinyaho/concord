@@ -144,7 +144,7 @@ test('the start question asks for merge authority and own decisions once, and th
   const merge = skill.split('### Judge a `done` report')[1].split('## 6.')[0];
   assert.match(merge, /without asking again/);
   assert.match(merge, /Otherwise report your verdict and wait/);
-  assert.match(merge, /`mergeable-without-review` is put to the user even when merging is allowed|put to the user even when merging is allowed/);
+  assert.match(merge, /`mergeable-without-review` is put to the user even when merging is allowed/);
   const handoff = skill.split('## 7. Hand off yourself')[1];
   assert.match(handoff, /standing authorities from step 0/);
   assert.match(handoff, /each verbatim with the time it was given/);
