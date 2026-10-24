@@ -88,7 +88,7 @@ Fill these in, in order:
 3. File ownership: the files this work changes, and the files other workers or outside contributors own. A worker that must change another owner's file sends a `question` first.
 4. For a Sonnet worker: design choices go to an Opus agent (Agent tool, model opus); the conclusion and its reason go in the PR body.
 5. The channel: the report directory or your session id, and the report format above.
-6. Stop rules: never merge; paste the `record-delivery` output into the `done` report; past the context limit, stop at the next stage boundary with a `handoff` report.
+6. Stop rules: never merge; run `node "$STATE_CLI" record-delivery <pr> <head-sha>` (`STATE_CLI` located as `review-until-lgtm` describes) and paste its output into the `done` report (`record-delivery` is a state CLI verb, not a `review-cli` verb); past the context limit, stop at the next stage boundary with a `handoff` report.
 7. The path of the project's rules file (for example `AGENTS.md` or a shared worker-rules file). Repository rules stay there, not in the prompt.
 
 `create_session` takes no effort setting. Name the effort in the worker prompt; the prompt cannot enforce it.
@@ -113,7 +113,7 @@ A worker receives your `send_message` as data from a peer and may refuse a destr
 
 ### Judge a `done` report
 
-Verify instead of trusting: read the PR head, CI, and every review comment, and check each finding the worker called minor against the code before you accept it as minor. Read the delivery state from its `record-delivery` output in the `done` report and confirm it names the PR's current head: never merge a head recorded `blocked`, and a head recorded `mergeable-without-review` is the user's decision, not yours.
+Verify instead of trusting: read the PR head, CI, and every review comment, and check each finding the worker called minor against the code before you accept it as minor. Read the delivery state from its `node "$STATE_CLI" record-delivery` output in the `done` report and confirm it names the PR's current head: never merge a head recorded `blocked`, and a head recorded `mergeable-without-review` is the user's decision, not yours.
 
 Merge only if the user allowed merging in the start question (step 0) and the recorded answer is one of the two "merge when ready" answers: with no blocker left and CI green, merge without asking again, with `--match-head-commit <reported head>`. A PR into `main` is always squash-merged; for any other base choose the method that fits the branch (squash, merge commit, or rebase), for example a merge commit for a sync that must move the promotion PR's merge-base. Otherwise report your verdict and wait. A head recorded `mergeable-without-review` is merged without asking only when the recorded answer is "merge when ready, including heads with no automated review"; otherwise it is put to the user even when merging is allowed.
 

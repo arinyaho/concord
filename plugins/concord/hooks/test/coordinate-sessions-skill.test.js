@@ -80,7 +80,7 @@ test('worker authority comes from its creation prompt, not later messages', () =
 
 test('a merge honors the recorded delivery state and checks closed issues', () => {
   const skill = fs.readFileSync(SKILL, 'utf8');
-  assert.match(skill, /its `record-delivery` output/);
+  assert.match(skill, /its `node "\$STATE_CLI" record-delivery` output/);
   assert.doesNotMatch(skill, /with `record-delivery`:/, 'record-delivery writes a record; the coordinator reads the worker\'s output');
   assert.match(skill, /never merge a head recorded `blocked`/);
   assert.match(skill, /`mergeable-without-review`.*the user's decision/);
@@ -151,4 +151,18 @@ test('the start question asks for merge authority and own decisions once, and th
   assert.match(handoff, /applies them as recorded under step 4 and restates them in its first report/);
   assert.match(skill, /A successor coordinator applies the answers its handoff records, exactly as recorded/);
   assert.match(handoff, /each verbatim with the time it was given/);
+});
+
+test('every shipped skill and command that names record-delivery also names STATE_CLI or review-until-lgtm (#464)', () => {
+  const files = execFileSync('git', ['ls-files', 'plugins/*/skills/**/*.md', 'plugins/*/commands/*.md', 'plugins/concord/core/review-driver.md'], { cwd: REPO, encoding: 'utf8' }).split('\n').filter(Boolean);
+  let seen = 0;
+  for (const file of files) {
+    for (const line of read(file).split('\n')) {
+      if (!line.includes('record-delivery')) continue;
+      seen += 1;
+      assert.match(line, /STATE_CLI|review-until-lgtm/, `${file}: ${line.slice(0, 80)}`);
+    }
+  }
+  assert.ok(seen >= 8);
+  assert.match(read('plugins/concord/skills/coordinate-sessions/SKILL.md'), /run `node "\$STATE_CLI" record-delivery <pr> <head-sha>`/);
 });
