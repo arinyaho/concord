@@ -114,7 +114,7 @@ test('ticket-to-pr and the review waiters wait once, run the full suite once, an
   for (const file of [
     'plugins/concord/core/review-driver.md',
     'plugins/concord/commands/review-and-fix.md',
-    'plugins/concord-codex/commands/review-and-fix.md',
+    'plugins/concord-codex/skills/review-and-fix/SKILL.md',
     'plugins/concord-copilot/skills/review-and-fix/references/review-driver.md',
   ]) {
     const text = read(path.join(REPO, file));
