@@ -577,8 +577,7 @@ function requireArtifactAfter(stateDir, n, firstName, secondName) {
 
 function requireVerifierOrder(stateDir, n, gateApplied, gateMode) {
   requireArtifactAfter(stateDir, n, 'correctness', 'verify');
-  if (!gateApplied || gateMode === 'design-conformance') return;
-  requireArtifactAfter(stateDir, n, 'gate', 'verify');
+  if (gateApplied && gateMode !== 'design-conformance') requireArtifactAfter(stateDir, n, 'gate', 'verify');
   requireGateVerifierOrder(stateDir, n, gateApplied, gateMode);
 }
 
