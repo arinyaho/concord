@@ -6878,8 +6878,15 @@ test('unexaminedPaths: the old path of a rename is covered by the new path; a mo
   const head = git('rev-parse', 'HEAD');
   const ledger = { target: { base_sha: base, head_sha: head } };
   const changed = ['del.txt', 'mod.txt', 'new.txt', 'old.txt'];
-  assert.deepStrictEqual(cli.unexaminedPaths(repo, ledger, changed, ['new.txt']), ['del.txt', 'mod.txt']);
-  assert.deepStrictEqual(cli.unexaminedPaths(repo, ledger, changed, ['mod.txt', 'del.txt']), ['new.txt', 'old.txt']);
+  assert.deepStrictEqual(cli.unexaminedPaths(repo, ledger, changed, ['new.txt'], base), ['del.txt', 'mod.txt']);
+  assert.deepStrictEqual(cli.unexaminedPaths(repo, ledger, changed, ['mod.txt', 'del.txt'], base), ['new.txt', 'old.txt']);
+  // A base after the rename puts the rename outside the range: the old path is not covered.
+  fs.writeFileSync(path.join(repo, 'later.txt'), 'later\n');
+  git('add', '-A'); git('commit', '-qm', 'later');
+  const later = git('rev-parse', 'HEAD');
+  assert.deepStrictEqual(cli.unexaminedPaths(repo, { target: { head_sha: later } }, changed, ['new.txt'], head), ['del.txt', 'mod.txt', 'old.txt']);
+  // No base: rename detection is skipped.
+  assert.deepStrictEqual(cli.unexaminedPaths(repo, ledger, changed, ['new.txt']), ['del.txt', 'mod.txt', 'old.txt']);
 });
 
 test('commit-fix: a fixer that ran `git mv` and declares both paths commits the rename; undeclared dirty files stay dirty (#463)', () => {

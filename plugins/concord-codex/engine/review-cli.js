@@ -494,7 +494,7 @@ function readChangeManifest(stateDir, ledger, ref, n) {
 // reviewed head equal those of an examined changed path is covered: the
 // generated bundle copies are byte copies of their source, which bundle-drift
 // tests enforce. A deleted path has no blob and must be listed by name.
-function unexaminedPaths(repoRoot, ledger, changed, examinedList) {
+function unexaminedPaths(repoRoot, ledger, changed, examinedList, base) {
   const examined = new Set(examinedList);
   const head = ledger.target?.head_sha;
   let missing = changed.filter((file) => !examined.has(file));
@@ -502,7 +502,6 @@ function unexaminedPaths(repoRoot, ledger, changed, examinedList) {
   // The old path of a rename between the round's base and head has no blob at
   // head; it is covered once the reviewer lists the new path. A deleted path
   // keeps the rule above: it must be listed by name.
-  const base = ledger.target?.base_sha;
   if (base) {
     try {
       const f = sh('git', ['diff', '--name-status', '-M', '-z', base, head], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] }).split('\0');
@@ -521,8 +520,11 @@ function unexaminedPaths(repoRoot, ledger, changed, examinedList) {
   return missing.filter((file) => !covered.has(blobs.get(file)));
 }
 
-function readChangedPaths(stateDir, ledger, ref, n) {
-  return readChangeManifest(stateDir, ledger, ref, n)?.paths || [];
+// The round's changed paths with the manifest's own base, so rename detection
+// diffs the same range the manifest was built from.
+function readChangedRange(stateDir, ledger, ref, n) {
+  const manifest = readChangeManifest(stateDir, ledger, ref, n);
+  return { paths: manifest?.paths || [], baseSha: manifest?.target.baseSha };
 }
 
 // Fail-closed gate artifact read (design invariant: a broken/missing gate must
@@ -1223,8 +1225,9 @@ function verifiedRound(ref, stateDir, run, what) {
   if (isGit) {
     // Use the changed-path manifest saved with this round's diff. Do not
     // re-run git against a mutable ref while folding reviewer evidence.
-    changed = readChangedPaths(stateDir, ledger, ref, n);
-    const missing = unexaminedPaths(repoRoot, ledger, changed, Array.isArray(cJson.examined) ? cJson.examined : []);
+    const range = readChangedRange(stateDir, ledger, ref, n);
+    changed = range.paths;
+    const missing = unexaminedPaths(repoRoot, ledger, changed, Array.isArray(cJson.examined) ? cJson.examined : [], range.baseSha);
     if (missing.length) throw new Error(`harness-failure: coverage -- changed file(s) never examined: ${missing.join(', ')}`);
   }
   const verdict = gc.parseVerifyVerdict(JSON.stringify({ rejected: vJson.rejected || [] }), candidates);
@@ -1610,8 +1613,9 @@ function runVerb(resolveFromCwd, args, initiative) {
       // problem only after verify has already run. File targets hold document
       // contents, not a unified diff, so their examined list stays advisory.
       if (name === 'correctness' && (!ledger.target || ledger.target.type === 'git')) {
-        const changed = readChangedPaths(stateDir, ledger, ref, n);
-        const missing = unexaminedPaths(process.env.REVIEW_REPO_ROOT || process.cwd(), ledger, changed, canonical.examined);
+        const range = readChangedRange(stateDir, ledger, ref, n);
+        const changed = range.paths;
+        const missing = unexaminedPaths(process.env.REVIEW_REPO_ROOT || process.cwd(), ledger, changed, canonical.examined, range.baseSha);
         if (missing.length) {
           // Only the reviewer can say it read a file, so the CLI cannot repair this: record one corrective re-run
           // for the resumed round (the reviewer's incomplete artifact is deleted there) and end this attempt.
@@ -2713,8 +2717,9 @@ function runVerb(resolveFromCwd, args, initiative) {
     const examinedForOutcome = () => {
       const listed = Array.isArray(cJson.examined) ? cJson.examined : [];
       if (!isGit) return listed;
-      const changed = readChangedPaths(stateDir, ledger, ref, n);
-      const missing = new Set(unexaminedPaths(repoRoot, ledger, changed, listed));
+      const range = readChangedRange(stateDir, ledger, ref, n);
+      const changed = range.paths;
+      const missing = new Set(unexaminedPaths(repoRoot, ledger, changed, listed, range.baseSha));
       return [...new Set([...listed, ...changed.filter((file) => !missing.has(file))])];
     };
     const outcome = {
