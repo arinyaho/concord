@@ -20,6 +20,23 @@ The verify prompt lists the correctness artifact's `examined` paths, relative to
 
 `CONCORD_CODEX_BIN` is removed from the environment of every reviewer subprocess the Codex runner starts (after it has resolved the reviewer's own executable) and from every DoD command `dod-exec` runs. A test a reviewer or the DoD starts therefore cannot reach the driver's real Codex CLI through the override. A command that needs the variable sets it inline (`CONCORD_CODEX_BIN=... node ...`), which overrides the environment in the POSIX `/bin/sh` the DoD runs in; on win32 the DoD runs under cmd.exe, where a leading `NAME=value` word is not an environment assignment, so this form does not work there.
 
+## Codex executable selection
+
+The Codex runner picks its executable once per launch, in this order, taking the first candidate whose `--version` exits 0:
+
+1. `CONCORD_CODEX_BIN`. It is authoritative: when it is set and fails `--version`, the launch fails and no other candidate is tried.
+2. `CODEX_CLI_PATH`, which the desktop app that started the session exports. A value that fails `--version` is skipped and listed in the resolved value's `skipped` field; unlike the Concord override, it is the app's setting, not the user's choice, and a leftover value must not block a `PATH` command that works.
+3. `codex` on `PATH`.
+4. On macOS, the CLI binary inside the ChatGPT app bundle (`.../ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex`). This is the binary the `codex-cli/bin/codex` wrapper script runs.
+
+Versions are not compared: a newer version string is no proof that the CLI works, alpha tags do not order reliably, and comparing would require probing every candidate. Discovery makes no inference call. `--version` succeeding says nothing about inference, so a launch that then fails is not retried with another candidate (that would use review launches as a probe). Instead the failed role's diagnostic names the selected source (`CONCORD_CODEX_BIN`, `CODEX_CLI_PATH`, `PATH` or `macOS ChatGPT app`) and the CLI version when it matches `codex-cli <semver>`, and tells the user to set `CONCORD_CODEX_BIN` and resume. Both fields come from closed values; the raw provider error never reaches the durable record. Resuming with another `CONCORD_CODEX_BIN` changes only the next launch's executable; the ledger, budgets and completed roles are untouched.
+
+The sandbox read allowance for the Codex install directory follows the resolved executable, so a `CODEX_CLI_PATH` or app-bundle binary stays readable inside the reviewer's sandbox.
+
+A CLI version other than the one whose event schema is verified keeps usage explicitly partial (`usageStatus: unsupported-cli-version`); the reviewer's artifact is validated independently of usage.
+
+This change is not stateful: the resolution cache lives in the process and is keyed by the environment it read.
+
 ## State
 
 The change branches on persisted state: `round-start` reads the ledger's sticky `dodDeferred` to decide whether DoD names are checked.
