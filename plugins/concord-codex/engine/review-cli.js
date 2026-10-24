@@ -609,10 +609,12 @@ function finderHashes(stateDir, ledger, n) {
 }
 
 // The round's verify verdict: the reviewer's artifact, or the CLI-derived empty verdict for a round with no candidates.
-function readVerify(stateDir, ledger, n) {
+// `record` runs after plan-fixes has already normalized (and so re-stamped) the gate artifacts, so it asks for the correctness-before-verify check only (`fullOrder` false), as it always did.
+function readVerify(stateDir, ledger, n, fullOrder = true) {
   const derived = derivedEntry(ledger, n);
   if (!derived) {
-    requireVerifierOrder(stateDir, n, ledger.gateApplied, ledger.gateMode);
+    if (fullOrder) requireVerifierOrder(stateDir, n, ledger.gateApplied, ledger.gateMode);
+    else requireArtifactAfter(stateDir, n, 'correctness', 'verify');
     // readArtifact rewrites a non-canonical file, which moves its mtime; normalize correctness before verify so verify stays the newer file.
     readArtifact(stateDir, n, 'correctness');
     return readArtifact(stateDir, n, 'verify');
@@ -622,7 +624,7 @@ function readVerify(stateDir, ledger, n) {
   }
   const current = finderHashes(stateDir, ledger, n);
   if (JSON.stringify(current) !== JSON.stringify(derived.from)) throw new Error(`harness-failure: a finder artifact of round ${n} changed after review-cli derived verify and plan from it`);
-  requireGateVerifierOrder(stateDir, n, ledger.gateApplied, ledger.gateMode);
+  if (fullOrder) requireGateVerifierOrder(stateDir, n, ledger.gateApplied, ledger.gateMode);
   return { status: 'ok', rejected: [], findings: [] };
 }
 
@@ -2585,7 +2587,7 @@ function runVerb(resolveFromCwd, args, initiative) {
         return null;
       }
     };
-    const vJson = readVerify(stateDir, ledger, n);
+    const vJson = readVerify(stateDir, ledger, n, false);
     const cJson = readArtifact(stateDir, n, 'correctness');
     const candidates = roundCandidates(gc, cJson, vJson);
     const killedIds = gc.parseVerifyVerdict(JSON.stringify({ rejected: vJson.rejected || [] }), candidates).rejectedIds;
