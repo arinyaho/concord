@@ -587,10 +587,27 @@ test('correctness prompt requires rename sources and deleted paths, and a rename
   const n = JSON.parse(run(['round-start', 'feat/rename', 'HEAD~1'], { env })).round;
   const artifact = path.join(dir, `round-${n}-correctness.json`);
   fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', examined: ['renamed.txt'], findings: [] }));
-  assert.throws(() => run(['artifact-normalize', 'feat/rename', 'correctness'], { env }), /missing changed file\(s\): a\.txt/);
+  // #463: the new path covers the old path of a rename.
+  assert.strictEqual(JSON.parse(run(['artifact-normalize', 'feat/rename', 'correctness'], { env })).status, 'ok');
   run(['round-start', 'feat/rename', 'HEAD~1'], { env });
   fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', examined: ['renamed.txt', 'a.txt'], findings: [] }));
   assert.strictEqual(JSON.parse(run(['artifact-normalize', 'feat/rename', 'correctness'], { env })).status, 'ok');
+});
+
+test('coverage: a rename is covered by its new path, but an omitted modified file still fails (#463)', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'other.txt'), 'before\n');
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add other'], { cwd: repo });
+  execFileSync('git', ['mv', 'a.txt', 'renamed.txt'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'other.txt'), 'after\n');
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'rename a, edit other'], { cwd: repo });
+  const n = JSON.parse(run(['round-start', 'feat/rename-mod', 'HEAD~1'], { env })).round;
+  const artifact = path.join(dir, `round-${n}-correctness.json`);
+  fs.writeFileSync(artifact, JSON.stringify({ status: 'ok', examined: ['renamed.txt'], findings: [] }));
+  assert.throws(() => run(['artifact-normalize', 'feat/rename-mod', 'correctness'], { env }), /missing changed file\(s\): other\.txt/);
 });
 
 function seedCopyRound(ref, examined) {
@@ -6844,6 +6861,58 @@ test('unexaminedPaths resolves every changed path with one git call and keeps it
     assert.deepStrictEqual(missing, ['c.txt', 'gone.txt']);
   } finally { process.env.PATH = pathBefore; }
   assert.strictEqual(fs.readFileSync(log, 'utf8').trim().split('\n').length, 1);
+});
+
+test('unexaminedPaths: the old path of a rename is covered by the new path; a modified or deleted path still needs its name (#463)', { skip: process.platform === 'win32' }, () => {
+  const repo = initRepo();
+  const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(repo, 'old.txt'), 'renamed content line one\nline two\nline three\n');
+  fs.writeFileSync(path.join(repo, 'mod.txt'), 'before\n');
+  fs.writeFileSync(path.join(repo, 'del.txt'), 'delete me\n');
+  git('add', '-A'); git('commit', '-qm', 'files');
+  const base = git('rev-parse', 'HEAD');
+  git('mv', 'old.txt', 'new.txt');
+  fs.writeFileSync(path.join(repo, 'mod.txt'), 'after\n');
+  git('rm', '-q', 'del.txt');
+  git('add', '-A'); git('commit', '-qm', 'change');
+  const head = git('rev-parse', 'HEAD');
+  const ledger = { target: { base_sha: base, head_sha: head } };
+  const changed = ['del.txt', 'mod.txt', 'new.txt', 'old.txt'];
+  assert.deepStrictEqual(cli.unexaminedPaths(repo, ledger, changed, ['new.txt']), ['del.txt', 'mod.txt']);
+  assert.deepStrictEqual(cli.unexaminedPaths(repo, ledger, changed, ['mod.txt', 'del.txt']), ['new.txt', 'old.txt']);
+});
+
+test('commit-fix: a fixer that ran `git mv` and declares both paths commits the rename; undeclared dirty files stay dirty (#463)', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  fs.writeFileSync(path.join(repo, 'old.txt'), 'content to rename\n');
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'add old.txt'], { cwd: repo });
+  const { env, n } = seedGatesRound(repo, dir, 'feat/x',
+    { status: 'ok', examined: ['a.txt'], findings: [{ id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' }] },
+    { status: 'ok', rejected: [] });
+  run(['plan-fixes', 'feat/x'], { env });
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'fixed\n');
+  execFileSync('git', ['mv', 'old.txt', 'new.txt'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'unrelated\n');
+  fs.writeFileSync(path.join(dir, `round-${n}-fix-correctness_real.json`), JSON.stringify({ status: 'ok', edited: true, files: ['a.txt', 'old.txt', 'new.txt'] }));
+  const out = JSON.parse(run(['commit-fix', 'feat/x', 'correctness:real'], { env }));
+  assert.strictEqual(out.committed, true);
+  const changes = execFileSync('git', ['show', '--name-status', '-M', '--pretty=format:', out.sha], { cwd: repo, encoding: 'utf8' }).split('\n').map((s) => s.trim()).filter(Boolean);
+  assert.deepStrictEqual(changes.map((c) => c.split(/\s+/)[0].replace(/\d+$/, '')).sort(), ['M', 'R']);
+  assert.ok(execFileSync('git', ['status', '--porcelain', '--', 'b.txt'], { cwd: repo, encoding: 'utf8' }).trim(), 'b.txt must stay dirty');
+});
+
+test('gitCommitFix: a declared file deleted in the worktree (not staged) is committed as a removal (#463)', () => {
+  const repo = tempDir('ruit-git-');
+  const git = (...args) => execFileSync('git', args, { cwd: repo });
+  git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n'); fs.writeFileSync(path.join(repo, 'keep.txt'), 'k\n');
+  git('add', '-A'); git('commit', '-qm', 'init');
+  fs.unlinkSync(path.join(repo, 'a.txt'));
+  fs.writeFileSync(path.join(repo, 'keep.txt'), 'dirty\n');
+  cli.gitCommitFix(repo, 'correctness:x', 'drop a', ['a.txt']);
+  assert.strictEqual(execFileSync('git', ['ls-tree', '--name-only', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim(), 'keep.txt');
+  assert.strictEqual(execFileSync('git', ['status', '--porcelain'], { cwd: repo, encoding: 'utf8' }).trim(), 'M keep.txt');
 });
 
 // #341: a correctness finding stopped for a human decision (group-reconcile) is closed with `defer`.

@@ -66,6 +66,9 @@ function sh(bin, args, opts = {}) {
 // gitDiff, the dirty-check (gitDirty), and the HEAD rev-parse (gitHeadSha) moved
 // to core/target.js (the target-acquisition seam). They are re-imported above so
 // existing call sites and the module's public surface stay unchanged.
+function gitSucceeds(repoRoot, args) {
+  try { sh('git', args, { cwd: repoRoot, stdio: 'ignore' }); return true; } catch (_) { return false; }
+}
 function gitCommitFix(repoRoot, findingId, summary, files) {
   // Stage only the files the fix declares -- never `-A`. A whole-tree
   // `git add -A` sweeps in any other dirty content (untracked non-gitignored
@@ -76,7 +79,13 @@ function gitCommitFix(repoRoot, findingId, summary, files) {
   // fix subagent declared must land in the same attributed commit, or the
   // companion edit is left dirty and parks the run in record().
   const fileList = Array.isArray(files) ? files : [files];
-  sh('git', ['add', '--', ...fileList], { cwd: repoRoot });
+  // `-A` limited to the declared pathspecs records a removal (a deleted or
+  // renamed-away path) without touching any undeclared dirty file. A path the
+  // fixer already removed with `git mv`/`git rm` is in neither the index nor
+  // the worktree, so `git add` would reject it; its removal is already staged.
+  const stageable = fileList.filter((file) => fs.existsSync(path.join(repoRoot, file)) || gitSucceeds(repoRoot, ['ls-files', '--error-unmatch', '--', file])
+    || !gitSucceeds(repoRoot, ['cat-file', '-e', `HEAD:${file}`]));
+  if (stageable.length) sh('git', ['add', '-A', '--', ...stageable], { cwd: repoRoot });
   // -F - (read the message from stdin) instead of -m '<multi-line message>':
   // a GitHub Codex review on this exact code (PR #113) caught that on
   // Windows, crossPlatformOpts' shell:true routes this through cmd.exe, and
@@ -487,8 +496,21 @@ function readChangeManifest(stateDir, ledger, ref, n) {
 function unexaminedPaths(repoRoot, ledger, changed, examinedList) {
   const examined = new Set(examinedList);
   const head = ledger.target?.head_sha;
-  const missing = changed.filter((file) => !examined.has(file));
+  let missing = changed.filter((file) => !examined.has(file));
   if (!missing.length || !head) return missing;
+  // The old path of a rename between the round's base and head has no blob at
+  // head; it is covered once the reviewer lists the new path. A deleted path
+  // keeps the rule above: it must be listed by name.
+  const base = ledger.target?.base_sha;
+  if (base) {
+    try {
+      const f = sh('git', ['diff', '--name-status', '-M', '-z', base, head], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] }).split('\0');
+      const renamedTo = new Map();
+      for (let i = 0; i < f.length; i++) if (/^R/.test(f[i])) { renamedTo.set(f[i + 1], f[i + 2]); i += 2; } else i += 1;
+      missing = missing.filter((file) => !(renamedTo.has(file) && examined.has(renamedTo.get(file))));
+    } catch (_) { /* no rename information: fall back to the by-name rule */ }
+    if (!missing.length) return missing;
+  }
   // One batched call resolves every path's blob at head; a path absent at head has none.
   const files = [...new Set(changed)];
   let out;
