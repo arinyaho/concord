@@ -293,6 +293,7 @@ function renderHandoff(result) {
     lines.push(`routing: reviewer ${reviewer}; fixer ${fixer}`);
   }
   if (ledger.engine) lines.push(`reviewer engine: ${ledger.engine}`);
+  if ((ledger.cli_derived || []).length) lines.push(`verify and plan derived by review-cli, not run by a reviewer (finder artifacts had no findings): round ${ledger.cli_derived.map((entry) => entry.round).join(', ')}`);
   if (ledger.reviewerGuidance) lines.push(`reviewer guidance: ${JSON.stringify(ledger.reviewerGuidance)}`);
   if (ledger.telemetry) lines.push(`review usage: ${ledger.telemetry.totalTokens ?? 'unknown'} tokens across ${ledger.telemetry.calls} call(s), ${ledger.telemetry.partialCalls} partial${ledger.telemetry.missingCalls ? `, ${ledger.telemetry.missingCalls} missing` : ''}${ledger.telemetry.malformedCalls ? `, ${ledger.telemetry.malformedCalls} malformed` : ''}`);
   for (const r of ledger.runs || []) {
@@ -584,6 +585,39 @@ function requireVerifierOrder(stateDir, n, gateApplied, gateMode) {
   }
 }
 
+// A round whose sealed finder artifacts hold no finding has nothing for verify to rule on or plan to group.
+// `verify-needed` records that fact in the ledger (`cli_derived`), bound to the finder bytes it read; it writes no
+// verify or plan file, so a file at those names is always reviewer output. The readers below refuse a derived
+// round that also has one, and refuse it when a finder artifact changed after the derivation.
+function derivedEntry(ledger, n) {
+  return (ledger.cli_derived || []).find((entry) => entry.round === n) || null;
+}
+
+function finderHashes(stateDir, ledger, n) {
+  const roles = ['correctness'].concat(ledger.gateApplied ? ['gate'] : []);
+  return Object.fromEntries(roles.map((role) => {
+    let bytes;
+    try { bytes = readReviewArtifact(path.join(stateDir, `round-${n}-${role}.json`), stateDir, 'utf8'); }
+    catch (e) { throw new Error(`harness-failure: missing gate artifact ${role} for round ${n}`); }
+    return [role, contentHash(bytes)];
+  }));
+}
+
+// The round's verify verdict: the reviewer's artifact, or the CLI-derived empty verdict for a round with no candidates.
+function readVerify(stateDir, ledger, n) {
+  const derived = derivedEntry(ledger, n);
+  if (!derived) {
+    requireVerifierOrder(stateDir, n, ledger.gateApplied, ledger.gateMode);
+    return readArtifact(stateDir, n, 'verify');
+  }
+  if (fs.existsSync(path.join(stateDir, `round-${n}-verify.json`)) || fs.existsSync(path.join(stateDir, `round-${n}-plan.json`))) {
+    throw new Error(`harness-failure: round ${n} verify and plan were derived by review-cli from finder artifacts with no findings, but a verify or plan artifact exists; refusing ambiguous evidence`);
+  }
+  const current = finderHashes(stateDir, ledger, n);
+  if (JSON.stringify(current) !== JSON.stringify(derived.from)) throw new Error(`harness-failure: a finder artifact of round ${n} changed after review-cli derived verify and plan from it`);
+  return { status: 'ok', rejected: [], findings: [] };
+}
+
 // Deletes any state-dir file for round n (diff, gate artifacts, fix artifacts)
 // so a re-driven round never reads a stale artifact left over from a crashed
 // or superseded attempt.
@@ -631,6 +665,7 @@ const VERB_HELP = {
   findings: 'list the findings the fixer works on, with file excerpts',
   'plan-fixes': 'turn the verified findings into fix groups',
   'plan-dispatch': 'grant the planner launch for the round',
+  'verify-needed': 'report whether verify and plan must run, or derive them empty from finder artifacts with no findings',
   'commit-fix': 'commit a certified fix transaction',
   record: 'record the round result and decide: converged, continue or stop',
   'round-failure': 'record a failed reviewer, planner or fixer launch',
@@ -1124,9 +1159,8 @@ function verifiedRound(ref, stateDir, run, what) {
   const gateApplied = !!ledger.gateApplied;
   const n = ledger.round;
   requireReservations(run, ledger, gatesNeeds(stateDir, n), what);
-  requireVerifierOrder(stateDir, n, ledger.gateApplied, ledger.gateMode);
+  const vJson = readVerify(stateDir, ledger, n);
   const cJson = readArtifact(stateDir, n, 'correctness');
-  const vJson = readArtifact(stateDir, n, 'verify');
   const candidates = roundCandidates(gc, cJson, vJson);
   // Symmetric guard: an intent-prefixed id must never come from the
   // correctness (auto-fixing) gate -- only the intent detector may mint
@@ -1663,6 +1697,35 @@ function runVerb(resolveFromCwd, args, initiative) {
     const completed = { ...repair, candidateHash, state: 'candidate-ready' };
     writeReviewArtifact(repairPath, JSON.stringify(completed) + '\n');
     process.stdout.write(JSON.stringify(completed) + '\n');
+    return;
+  }
+
+  if (verb === 'verify-needed') {
+    requireRef(ref, 'verify-needed');
+    const slug = targetSlug(ref);
+    const ledger = readLedger(stateDir, slug);
+    if (!ledger || ledger.phase !== 'gates') throw new Error(`verify-needed: expected phase "gates", got "${ledger && ledger.phase}" ${stateDirHint(stateDir)}`);
+    const n = ledger.round;
+    const execution = ledger.execution;
+    const required = () => process.stdout.write(JSON.stringify({ verify: 'required', plan: 'required' }) + '\n');
+    if (!execution || execution.round !== n) { required(); return; }
+    const finders = ['correctness'].concat(ledger.gateApplied ? ['gate'] : []);
+    // Every finder must be sealed (normalized, hash recorded) before its zero findings can be believed.
+    if (finders.some((role) => !(execution.completed || []).includes(role))) { required(); return; }
+    let hashes;
+    try { hashes = finderHashes(stateDir, ledger, n); } catch (e) { required(); return; }
+    if (finders.some((role) => hashes[role] !== execution.artifactHashes?.[role])) { required(); return; }
+    // Anything already on disk or pending for verify or plan is reviewer work or a repair in flight: behave as today.
+    const present = ['verify', 'plan'].flatMap((role) => [`round-${n}-${role}.json`, `round-${n}-${role}.repair.json`, `round-${n}-${role}.retry`, `round-${n}-${role}.original`]).some((name) => fs.existsSync(path.join(stateDir, name)));
+    const retry = execution.planRetry;
+    if (present || execution.retryArtifacts?.verify || execution.retryArtifacts?.plan || (retry && retry.state !== 'accepted') || execution.planTransportRetry || execution.planRepairPending) { required(); return; }
+    if (finders.some((role) => readArtifact(stateDir, n, role).findings.length)) { required(); return; }
+    if (!derivedEntry(ledger, n)) {
+      writeLedger(stateDir, slug, { ...ledger,
+        cli_derived: [...(ledger.cli_derived || []), { round: n, roles: ['verify', 'plan'], from: hashes, at: new Date().toISOString() }],
+        execution: { ...execution, pending: (execution.pending || []).filter((role) => role !== 'verify' && role !== 'plan') } });
+    }
+    process.stdout.write(JSON.stringify({ verify: 'not-needed', plan: 'not-needed' }) + '\n');
     return;
   }
 
@@ -2426,6 +2489,8 @@ function runVerb(resolveFromCwd, args, initiative) {
       gateDisarmedBy,
       broad_reuse: reuseFrontPass ? broadReuse : null,
       gate_open: reusedGateOpen,
+      // A resumed round re-derives from its finder artifacts, so earlier-or-equal rounds keep no stale claim.
+      cli_derived: (ledger.cli_derived || []).filter((entry) => entry.round < ledger.round),
       gateApplied,
       gateMode: lite ? 'design-conformance' : 'pair',
       gate_rounds: gateApplied && !gateRounds.includes(ledger.round) ? [...gateRounds, ledger.round] : gateRounds,
@@ -2512,9 +2577,8 @@ function runVerb(resolveFromCwd, args, initiative) {
         return null;
       }
     };
-    requireArtifactAfter(stateDir, n, 'correctness', 'verify');
+    const vJson = readVerify(stateDir, ledger, n);
     const cJson = readArtifact(stateDir, n, 'correctness');
-    const vJson = readArtifact(stateDir, n, 'verify');
     const candidates = roundCandidates(gc, cJson, vJson);
     const killedIds = gc.parseVerifyVerdict(JSON.stringify({ rejected: vJson.rejected || [] }), candidates).rejectedIds;
     // Carry each rejection's stated basis into the ledger so the handoff can

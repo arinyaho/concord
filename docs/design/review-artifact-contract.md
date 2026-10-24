@@ -123,6 +123,35 @@ The plan validator, the plan prompt in `core/round-plan.js`, and the plan step i
 
 Allowing local reconcile gives a local finding that needs a product decision an honest encoding. Without it the only valid encodings were `local` + `fix`, which sends a product question to a fixer, and `structural` + `reconcile`, which claims a structural effect the finding does not have. The cost is a wider contract: a planner can stop a round for a local finding, and the reason text is the only guard against using it to avoid a fix.
 
+## Rounds with no finder candidates
+
+When every finder of a round has sealed an artifact with no findings, no verifier has a candidate to rule on and no planner has a finding to group. `review-cli verify-needed <ref>` decides this after `artifact-normalize` has sealed `correctness` (and `gate` when the round applies the gate). It answers `verify: not-needed, plan: not-needed` and records the fact in the ledger, or answers `verify: required, plan: required` and changes nothing. Drivers launch no verify or plan reviewer for a `not-needed` round and reserve no launch for either.
+
+`verify-needed` derives the empty result only when all of these hold; any other state answers `required`:
+
+- The round is in the `gates` phase, and `correctness` (and `gate`, when applied) is sealed: it is in `execution.completed`, and its bytes hash to the recorded `artifactHashes` entry.
+- The normalized `correctness` and `gate` artifacts have no findings. Intent findings do not matter: the verifier ignores them and the planner never groups them.
+- No verify or plan artifact, repair, retry or original file exists for the round, no plan retry or transport retry is pending, and no repair of either role is in flight.
+
+A pair gate still runs `gate-verify`: its verifier can add `gate:` findings and reject carried ones, and those never pass through `verify` or `plan`.
+
+The derived result is a ledger entry (`cli_derived`: round, roles `verify` and `plan`, and the hash of each finder artifact it read), not a file. A file at `round-<n>-verify.json` or `round-<n>-plan.json` is therefore always reviewer output, and a hand-written empty verifier artifact is distinguishable from a derived result. The entry also lets the handoff list the rounds whose verify and plan the CLI derived. `plan-fixes`, `findings` and `record` read the verdict through one function: with an entry for the round they use the empty verdict, and they refuse the round when a verify or plan file exists or a finder artifact no longer hashes to the entry; without one they apply the ordering check and the fail-closed read as for any other round. A missing reviewer artifact is never read as zero findings, because the empty verdict exists only where the CLI read sealed finder artifacts that held none. `round-start` drops the entries of the round it drives, so a resumed round derives again from the artifacts it keeps.
+
+| State | Event | Outcome | Kind | Evidence |
+|---|---|---|---|---|
+| `correctness` sealed with no findings, no verify or plan evidence | `verify-needed` | `not-needed`; `cli_derived` entry written; no file written | introduced | `verify-needed: zero finder findings derive verify and plan; plan-fixes and record decide with no verify or plan artifact` |
+| same, repeated | `verify-needed` | `not-needed`; one entry | introduced | same test |
+| `correctness` sealed with a finding | `verify-needed` | `required`; ledger unchanged; a verify artifact older than `correctness` is refused | unchanged | `verify-needed: a round with a finding still requires a reviewer verify artifact, and an empty one written before correctness is refused` |
+| `correctness` written but not sealed | `verify-needed` | `required`; never read as zero findings | introduced | `verify-needed: an unsealed correctness artifact is never read as zero findings` |
+| derived round, then a finder artifact changes | `plan-fixes` or `record` | harness failure | introduced | `verify-needed: a derived round fails closed when a finder artifact changes or a verify or plan artifact appears` |
+| derived round, then a verify or plan file appears | `plan-fixes` or `record` | harness failure | introduced | same test |
+| derived round | Codex runner | `correctness` (and `gate`) launched; no verify and no plan launched | changed | `a round whose finders report nothing launches no verify or plan subprocess` |
+| derived round | `record` handoff | lists the round as derived by `review-cli` | introduced | `verify-needed: zero finder findings derive verify and plan; plan-fixes and record decide with no verify or plan artifact` |
+
+Interruption between writing the ledger entry and the next verb needs no row: `verify-needed` is idempotent, and a resumed round derives again.
+
+A derived round skips the verifier's second look at the correctness findings, and a verifier can also add `correctness:` candidates the finder missed; for a round whose finder reported nothing, the review accepts that loss in exchange for the launches it saves.
+
 ## Residual exposure
 
 - A reviewer can still emit false but schema-valid evidence; preservation proves continuity, not truth.

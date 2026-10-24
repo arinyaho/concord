@@ -1208,27 +1208,40 @@ async function runRounds(options) {
       }
     };
 
+    // When every finder artifact is sealed with no findings, the CLI derives the empty verify and plan results
+    // itself (`verify-needed`), so neither is launched. Anything else answers `required` and runs as before.
+    let derived = { verify: 'required', plan: 'required' };
+    const deriveEmptyVerify = async () => {
+      derived = await cli(['verify-needed', ref]);
+      checkProtected(true);
+      refreshLedger();
+    };
     if (reviewOnly) {
-      for (const role of reviewRoles) await runArtifactReviewer(role);
+      for (const role of reviewRoles) {
+        if (role === 'verify') {
+          await deriveEmptyVerify();
+          if (derived.verify === 'not-needed') continue;
+        }
+        await runArtifactReviewer(role);
+      }
     } else {
     const reviewers = [];
     if (started.intentApplied) reviewers.push(runArtifactReviewer('intent'));
+    const runPool = async (roles) => {
+      const results = await Promise.allSettled(roles.map(runArtifactReviewer));
+      const failure = results.find((result) => result.status === 'rejected');
+      if (failure) throw failure.reason;
+    };
     if (started.gateApplied && started.gateMode !== 'design-conformance') reviewers.push((async () => {
-      const runPool = async (roles) => {
-        const results = await Promise.allSettled(roles.map(runArtifactReviewer));
-        const failure = results.find((result) => result.status === 'rejected');
-        if (failure) throw failure.reason;
-      };
       await runPool(['correctness', 'gate']);
-      await runPool(['verify', 'gate-verify']);
+      await deriveEmptyVerify();
+      await runPool(derived.verify === 'not-needed' ? ['gate-verify'] : ['verify', 'gate-verify']);
     })());
-    else {
-      reviewers.push((async () => {
-        await runArtifactReviewer('correctness');
-        await runArtifactReviewer('verify');
-      })());
-      if (started.gateApplied) reviewers.push(runArtifactReviewer('gate'));
-    }
+    else reviewers.push((async () => {
+      await runPool(['correctness', ...(started.gateApplied ? ['gate'] : [])]);
+      await deriveEmptyVerify();
+      if (derived.verify === 'required') await runArtifactReviewer('verify');
+    })());
     const reviewerResults = await Promise.allSettled(reviewers);
     const reviewerFailure = reviewerResults.find((result) => result.status === 'rejected');
     if (reviewerFailure) throw reviewerFailure.reason;
@@ -1270,7 +1283,7 @@ async function runRounds(options) {
       return { decision: 'review-only', round: currentRound, findings, ...(addressed.length && { addressed }) };
     }
 
-    await runArtifactReviewer('plan');
+    if (derived.plan === 'required') await runArtifactReviewer('plan');
 
     const planned = await cli(['plan-fixes', ref]);
     await throwIfAborted(true);

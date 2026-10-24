@@ -61,6 +61,7 @@ const cli=(args)=>{
   const [verb]=args;
   if(verb==='round-start')return{decision:'work',round:1,stateDir,targetType:'git',dodPassed:true,intentApplied:false,gateApplied:false};
   if(verb==='artifact-normalize')return{status:'ok'};
+  if(verb==='verify-needed')return{verify:'required',plan:'required'};
   if(verb==='telemetry-slot')return{engine:'codex',provider:'openai',artifactPath:args[2],attempt:1};
   if(verb==='plan-fixes')return{protocolVersion:2,planId:'p',transactionScope:'group',fixes:site==='fix'?fixGroup.findings:[],fixGroups:site==='fix'?[fixGroup]:[]};
   if(verb==='commit-fix')return{committed:true,sha:'abc'};
