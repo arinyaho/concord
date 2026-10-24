@@ -147,5 +147,7 @@ test('the start question asks for merge authority and own decisions once, and th
   assert.match(merge, /`mergeable-without-review` is put to the user even when merging is allowed/);
   const handoff = skill.split('## 7. Hand off yourself')[1];
   assert.match(handoff, /standing authorities from step 0/);
+  assert.match(handoff, /applies them as recorded under step 4 and restates them in its first report/);
+  assert.match(skill, /A successor coordinator applies the answers its handoff records, exactly as recorded/);
   assert.match(handoff, /each verbatim with the time it was given/);
 });
