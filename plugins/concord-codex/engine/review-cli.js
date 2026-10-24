@@ -615,6 +615,11 @@ function readVerify(stateDir, ledger, n) {
   }
   const current = finderHashes(stateDir, ledger, n);
   if (JSON.stringify(current) !== JSON.stringify(derived.from)) throw new Error(`harness-failure: a finder artifact of round ${n} changed after review-cli derived verify and plan from it`);
+  // gate-verify still runs on a pair-gate round, so it keeps its ordering guard against both finders.
+  if (ledger.gateApplied && ledger.gateMode !== 'design-conformance' && fs.existsSync(path.join(stateDir, `round-${n}-gate-verify.json`))) {
+    requireArtifactAfter(stateDir, n, 'correctness', 'gate-verify');
+    requireArtifactAfter(stateDir, n, 'gate', 'gate-verify');
+  }
   return { status: 'ok', rejected: [], findings: [] };
 }
 

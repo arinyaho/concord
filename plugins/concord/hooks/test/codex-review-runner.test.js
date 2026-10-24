@@ -1348,6 +1348,23 @@ test('a round whose finders report nothing launches no verify or plan subprocess
   assert.ok(calls.indexOf('verify-needed') > calls.indexOf('artifact-normalize') && calls.indexOf('verify-needed') < calls.indexOf('plan-fixes'));
 });
 
+test('a pair-gate round whose finders report nothing launches only gate-verify after correctness and gate', async () => {
+  const stateDir = temp();
+  const roles = [];
+  const cli = (args) => {
+    if (args[0] === 'round-start') return { decision: 'work', round: 1, stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: true, gateMode: 'pair' };
+    if (args[0] === 'artifact-normalize') return { status: 'ok' };
+    if (args[0] === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
+    if (args[0] === 'verify-needed') { assert.deepStrictEqual(roles.slice().sort(), ['correctness', 'gate']); return { verify: 'not-needed', plan: 'not-needed' }; }
+    if (args[0] === 'plan-fixes') return v2Plan([]);
+    if (args[0] === 'record') return { decision: { continue: false, converged: true }, handoff: 'LGTM' };
+    throw new Error(`unexpected CLI ${args[0]}`);
+  };
+  const spawn = async ({ role }) => { roles.push(role); return { status: 0 }; };
+  await runReviewUntilGreen({ ref: 'feature/pair', repoRoot: '/repo', runCli: cli, spawn });
+  assert.deepStrictEqual(roles.slice().sort(), ['correctness', 'gate', 'gate-verify']);
+});
+
 test('runner records slots when the review state directory contains whitespace', async () => {
   const stateDir = path.join(temp(), 'state dir');
   fs.mkdirSync(stateDir);

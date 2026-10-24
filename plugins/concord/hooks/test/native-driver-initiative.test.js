@@ -108,6 +108,22 @@ const CLEAN = { status: 'ok', examined: ['a.txt'], findings: [] };
 const finding = { id: 'correctness:bug', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' };
 
 for (const provider of Object.keys(PROVIDERS)) {
+  test(`${provider}: a keyed round whose finder reports nothing needs no verify or plan reservation`, () => {
+    const t = setup(provider, { maxLaunches: 1 });
+    t.start();
+    t.ok(['reserve', 'feat/x', 'correctness']);
+    t.write(1, 'correctness', CLEAN);
+    t.ok(['artifact-normalize', 'feat/x', 'correctness']);
+    assert.deepStrictEqual(t.ok(['verify-needed', 'feat/x']), { verify: 'not-needed', plan: 'not-needed' });
+    // `ok` seeds a plan for plan-fixes; this round has none, so call the CLI directly.
+    const planned = t.cli(['plan-fixes', 'feat/x']);
+    assert.strictEqual(planned.status, 0, planned.stderr);
+    assert.strictEqual(planned.json().fixGroups.length, 0);
+    assert.strictEqual(t.ok(['record', 'feat/x']).decision.converged, true);
+    const reserved = t.cli(['reserve', 'feat/x', 'verify']);
+    assert.notStrictEqual(reserved.status === 0 && reserved.json().status === 'granted', true, 'the single launch of the budget went to correctness');
+  });
+
   test(`${provider}: bound initiative rejects omitted flags without changing either ledger`, () => {
     const t = setup(provider);
     t.start();

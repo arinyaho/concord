@@ -7095,3 +7095,29 @@ test('verify-needed: an unsealed correctness artifact is never read as zero find
   fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
   assert.deepEqual(JSON.parse(run(['verify-needed', 'feat/x'], { env })), { verify: 'required', plan: 'required' });
 });
+
+test('verify-needed: a pair-gate round derives only when both finders are sealed empty, and gate-verify keeps its ordering guard', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true });
+  const ref = 'feat/x';
+  const n = review.readLedger(dir, review.targetSlug(ref)).round;
+  const write = (name, body) => fs.writeFileSync(path.join(dir, `round-${n}-${name}.json`), JSON.stringify(body));
+  write('correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  run(['artifact-normalize', ref, 'correctness'], { env });
+  assert.deepEqual(JSON.parse(run(['verify-needed', ref], { env })), { verify: 'required', plan: 'required' }, 'the gate finder is not sealed yet');
+  write('gate', { status: 'ok', findings: [{ id: 'gate:silent-gap:x', file: 'a.txt', span: 'two', summary: 's', releaseBlocking: [], rationale: 'r' }] });
+  run(['artifact-normalize', ref, 'gate'], { env });
+  assert.deepEqual(JSON.parse(run(['verify-needed', ref], { env })), { verify: 'required', plan: 'required' }, 'a gate finding keeps verify and plan');
+  // Replace the gate artifact with an empty one and seal it again: both finders are now empty.
+  write('gate', { status: 'ok', findings: [] });
+  run(['artifact-normalize', ref, 'gate'], { env });
+  assert.deepEqual(JSON.parse(run(['verify-needed', ref], { env })), { verify: 'not-needed', plan: 'not-needed' });
+  write('gate-verify', { status: 'ok', rejected: [] });
+  const gvPath = path.join(dir, `round-${n}-gate-verify.json`);
+  const past = new Date(Date.now() - 60000);
+  fs.utimesSync(gvPath, past, past); // gate-verify predates its finders: spawned before they finished
+  assert.throws(() => run(['plan-fixes', ref], { env, broadDefault: true, skipPlanSeed: true }), /predates/);
+});
