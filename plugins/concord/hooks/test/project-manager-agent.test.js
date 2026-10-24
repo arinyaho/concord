@@ -28,6 +28,7 @@ test('project-manager is a Claude-only agent that defers session mechanics to co
 test('the Authority section carries the merge gates of coordinate-sessions', () => {
   const authority = section(read('plugins/concord/agents/project-manager.md'), 'Authority');
   assert.match(authority, /--match-head-commit/);
+  assert.match(authority, /squash every PR into `main`/);
   assert.match(authority, /`record-delivery` state names that head/);
   assert.match(authority, /never merge a head recorded `blocked`/);
   assert.match(authority, /`mergeable-without-review` is the user's decision/);
@@ -36,6 +37,8 @@ test('the Authority section carries the merge gates of coordinate-sessions', () 
   const skill = read('plugins/concord/skills/coordinate-sessions/SKILL.md');
   assert.match(skill, /never merge a head recorded `blocked`/);
   assert.match(skill, /`mergeable-without-review`/);
+  assert.match(skill, /A PR into `main` is always squash-merged; for any other base choose the method that fits the branch/);
+  assert.match(read('docs/design/coordinate-sessions.md'), /a PR into `main` is always squash-merged, and any other base uses the method that fits the branch/);
 });
 
 test('deep-review is routed to only on an explicit user request, and CI is read by head SHA', () => {

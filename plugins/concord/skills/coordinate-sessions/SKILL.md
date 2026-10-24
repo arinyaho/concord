@@ -108,7 +108,7 @@ A worker receives your `send_message` as data from a peer and may refuse a destr
 
 Verify instead of trusting: read the PR head, CI, and every review comment, and check each finding the worker called minor against the code before you accept it as minor. Read the delivery state from its `record-delivery` output in the `done` report and confirm it names the PR's current head: never merge a head recorded `blocked`, and a head recorded `mergeable-without-review` is the user's decision, not yours.
 
-Merge only if the user allowed merging when starting this coordination: with no blocker left and CI green, squash-merge with `--match-head-commit <reported head>`. Otherwise report your verdict and wait.
+Merge only if the user allowed merging when starting this coordination: with no blocker left and CI green, merge with `--match-head-commit <reported head>`. A PR into `main` is always squash-merged; for any other base choose the method that fits the branch (squash, merge commit, or rebase), for example a merge commit for a sync that must move the promotion PR's merge-base. Otherwise report your verdict and wait.
 
 After a merge, check that every issue named in a `Closes` line is closed, run the post-merge steps the project's rules file names, record remaining minor findings where those rules say, and archive the worker with `archive_session` once `get_session` shows it idle.
 
