@@ -7352,3 +7352,9 @@ test('handoff does not call a Codex CLI version a Claude Code version', () => {
   ledger.telemetry = { calls: 1, partialCalls: 1, totalTokens: 5, unsupportedCliVersionCalls: 1, unsupportedCliVersions: ['0.999.0'] };
   assert.ok(!cli.renderHandoff({ ledger }).includes('Claude Code'));
 });
+
+test('handoff names malformed telemetry records as a cause of incomplete usage', () => {
+  const ledger = review.emptyLedger('feat/x');
+  ledger.telemetry = { calls: 1, partialCalls: 0, totalTokens: 19, malformedCalls: 2 };
+  assert.match(cli.renderHandoff({ ledger }), /review usage incomplete: 2 telemetry record\(s\) could not be read/);
+});

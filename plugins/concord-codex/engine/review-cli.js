@@ -315,6 +315,7 @@ function renderHandoff(result) {
     const causes = [];
     if (t.missingCalls) causes.push(`${t.missingCalls} slot(s) have no hook record (the telemetry hook did not see that spawn)`);
     if (t.unsupportedCliVersionCalls) causes.push(`${t.unsupportedCliVersionCalls} call(s) ran on unsupported CLI version ${(t.unsupportedCliVersions || []).join(', ') || 'unknown'}`);
+    if (t.malformedCalls) causes.push(`${t.malformedCalls} telemetry record(s) could not be read`);
     const otherPartial = t.partialCalls - (t.unsupportedCliVersionCalls || 0);
     if (otherPartial > 0) causes.push(`${otherPartial} call(s) have incomplete or inconsistent transcript or hook usage`);
     if (causes.length) lines.push(`review usage incomplete: ${causes.join('; ')}`);
