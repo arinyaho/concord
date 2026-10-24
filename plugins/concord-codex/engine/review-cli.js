@@ -1595,7 +1595,7 @@ function runVerb(resolveFromCwd, args, initiative) {
           ? ['rejected', 'findings', 'groups', 'unverifiable'].flatMap((key) => Array.isArray(parsed[key]) ? parsed[key] : [])
           : [];
         const idOf = (item) => typeof item === 'string' ? item : item && (item.id || item.findingIds);
-        const mixedNamespaces = /invalid id/.test(e.message)
+        const mixedNamespaces = /invalid id|invalid findingIds/.test(e.message)
           && items.flatMap(idOf).some((id) => typeof id === 'string' && prefixes.some((prefix) => id.startsWith(prefix)))
           && items.flatMap(idOf).some((id) => typeof id === 'string' && !prefixes.some((prefix) => id.startsWith(prefix)));
         // A verify/gate-verify finding without evidence fields (a kept candidate in verdict shape) is repaired by deleting it.
