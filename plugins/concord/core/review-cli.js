@@ -753,7 +753,13 @@ function helpText() {
 const RESERVE_ROLES = ['correctness', 'verify', 'plan', 'intent', 'gate-review', 'gate-verify', 'fix', 'certify', 'lens', 'vote'];
 const ARTIFACT_RESERVE_ROLE = { correctness: 'correctness', verify: 'verify', plan: 'plan', intent: 'intent', gate: 'gate-review', 'gate-verify': 'gate-verify' };
 
+// Verbs of review-lgtm-state.js that workers send here by mistake.
+const STATE_CLI_VERBS = new Set(['record-delivery']);
+
 function unknownVerb(verb) {
+  if (STATE_CLI_VERBS.has(verb)) {
+    return new Error(`review-cli: "${verb}" is a verb of the state CLI (review-lgtm-state.js), not review-cli: run node "\$STATE_CLI" ${verb} ..., with STATE_CLI located as review-until-lgtm describes (docs/design/state-cli-locator.md)`);
+  }
   return new Error(`review-cli: unknown verb "${verb}" (expected ${CLI_VERBS.join(' | ')})`);
 }
 

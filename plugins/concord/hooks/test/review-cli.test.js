@@ -4811,6 +4811,15 @@ test('review-cli --help, -h and help list every dispatched verb and exit 0; an u
   assert.match(stderr, /unknown verb "bogus-verb" \(expected show \|/);
 });
 
+test('review-cli record-delivery fails naming the state CLI and the STATE_CLI locator (#464)', () => {
+  const env = { ...process.env, REVIEW_STATE_DIR: tmpDir(), REVIEW_REPO_ROOT: initRepo() };
+  const { stderr, status } = runCapture(['record-delivery', '1', 'abc'], { env });
+  assert.notStrictEqual(status, 0);
+  assert.match(stderr, /review-lgtm-state\.js/);
+  assert.match(stderr, /STATE_CLI/);
+  assert.doesNotMatch(stderr, /unknown verb/);
+});
+
 test('review-cli: unknown verb error message lists the two new gate-panel verbs', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
