@@ -67,7 +67,7 @@ function sh(bin, args, opts = {}) {
 // to core/target.js (the target-acquisition seam). They are re-imported above so
 // existing call sites and the module's public surface stay unchanged.
 function gitCommitFix(repoRoot, findingId, summary, files) {
-  // Stage only the files the fix declares -- never `-A`. A whole-tree
+  // Stage only the files the fix declares -- never `-A` on the whole tree. A whole-tree
   // `git add -A` sweeps in any other dirty content (untracked non-gitignored
   // dirs, a crash-recovery leftover, a driver-contract violation) and
   // silently mis-attributes it to this finding's commit. `files` is a list:
