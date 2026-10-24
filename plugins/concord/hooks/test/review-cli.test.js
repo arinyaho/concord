@@ -1467,6 +1467,36 @@ test('commit-fix: a certificate that paraphrases the planned invariants but matc
   assert.strictEqual(JSON.parse(run(['commit-fix', 'feat/cert-paraphrase', 'doc-fix'], { env })).committed, true);
 });
 
+test('commit-fix: a certificate with an in-repository absolute path is normalized and committed', () => {
+  const { env, repo } = seedCertifiedSingleGroup('feat/cert-abs', {});
+  const file = path.join(repo, 'a.txt');
+  const cert = path.join(env.REVIEW_STATE_DIR, 'round-1-certify-doc-fix.json');
+  const body = JSON.parse(fs.readFileSync(cert, 'utf8'));
+  fs.writeFileSync(cert, JSON.stringify({ ...body, files: [file], fileHashes: { [file]: body.fileHashes['a.txt'] } }));
+  assert.strictEqual(JSON.parse(run(['commit-fix', 'feat/cert-abs', 'doc-fix'], { env })).committed, true);
+});
+
+test('commit-fix: a certificate whose files is one string is normalized and committed', () => {
+  const { env } = seedCertifiedSingleGroup('feat/cert-string', { files: 'a.txt' });
+  assert.strictEqual(JSON.parse(run(['commit-fix', 'feat/cert-string', 'doc-fix'], { env })).committed, true);
+});
+
+test('commit-fix: a certificate path outside the repository or in the state directory is still rejected', () => {
+  for (const [ref, bad] of [['feat/cert-out', (r) => path.join(path.dirname(r), 'elsewhere.txt')], ['feat/cert-state', (r, d) => path.join(d, 'x.json')]]) {
+    const { env, repo, dir } = seedCertifiedSingleGroup(ref, {});
+    const cert = path.join(dir, 'round-1-certify-doc-fix.json');
+    fs.writeFileSync(cert, JSON.stringify({ ...JSON.parse(fs.readFileSync(cert, 'utf8')), files: [bad(repo, dir)] }));
+    assert.throws(() => run(['commit-fix', ref, 'doc-fix'], { env }), /complete group certification/i);
+  }
+});
+
+test('commit-fix: a normalized certificate that differs from the declared files is still rejected', () => {
+  const { env, repo, dir } = seedCertifiedSingleGroup('feat/cert-extra', {});
+  const cert = path.join(dir, 'round-1-certify-doc-fix.json');
+  fs.writeFileSync(cert, JSON.stringify({ ...JSON.parse(fs.readFileSync(cert, 'utf8')), files: [path.join(repo, 'a.txt'), path.join(repo, 'b.txt')] }));
+  assert.throws(() => run(['commit-fix', 'feat/cert-extra', 'doc-fix'], { env }), /complete group certification/i);
+});
+
 test('commit-fix: a certificate whose file hash does not match the worktree is still rejected', () => {
   const { env } = seedCertifiedSingleGroup('feat/cert-badhash', { fileHashes: { 'a.txt': 'deadbeef' } });
   assert.throws(() => run(['commit-fix', 'feat/cert-badhash', 'doc-fix'], { env }), /certified content changed/);
