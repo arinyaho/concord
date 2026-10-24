@@ -767,6 +767,15 @@ function leaveStopIfClear(stateDir, slug, prior, next) {
   return prior.status === 'gate-pending' ? { ...left, diff_content_hash: null, retry_diff_base: prior.target?.head_sha, gate_panel: gatePanelLib.emptyGatePanel() } : left;
 }
 
+// The reconcile group stop without one finding. The packet's per-class counts come from the sealed plan, which knows each group's changeClass.
+function reconciliationWithout(ledger, findingId) {
+  const classOf = new Map((ledger.fix_plan?.groups || []).map((g) => [g.groupId, g.changeClass]));
+  const packet = ledger.reconciliation;
+  if (!packet?.groups) return packet;
+  const groups = packet.groups.map((g) => ({ ...g, findingIds: g.findingIds.filter((id) => id !== findingId) })).filter((g) => g.findingIds.length);
+  return groups.length ? { ...packet, finding: groups[0].findingIds[0], groups, findings: groups.reduce((counts, g) => ({ ...counts, [classOf.get(g.groupId)]: (counts[classOf.get(g.groupId)] || 0) + g.findingIds.length }), {}) } : null;
+}
+
 function findingEvidence(f, extra = {}) {
   return { id: f.id, file: f.file, span: f.span ?? f.evidence ?? '', summary: f.summary, rationale: f.rationale, releaseBlocking: f.releaseBlocking, ...(f.blockingReason ? { blockingReason: f.blockingReason } : {}), ...(f.fix_evidence ? { fix_evidence: f.fix_evidence } : {}), ...extra };
 }
@@ -3141,13 +3150,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       if (finding.status !== 'open') throw new Error(`review-cli defer: ${findingId} is ${finding.status}, not open`);
       if (ledger.status !== 'gate-pending' || ledger.reconciliation?.trigger !== 'group-reconcile') throw new Error('review-cli defer: the run is not stopped for a group decision');
       if (!ledger.reconciliation.groups?.some((g) => g.findingIds.includes(findingId))) throw new Error(`review-cli defer: ${findingId} is not in a reconcile group`);
-      // The packet's per-class counts come from the sealed plan, which knows each group's changeClass.
-      const classOf = new Map((ledger.fix_plan?.groups || []).map((g) => [g.groupId, g.changeClass]));
-      const shrink = (packet) => {
-        const groups = packet.groups.map((g) => ({ ...g, findingIds: g.findingIds.filter((id) => id !== findingId) })).filter((g) => g.findingIds.length);
-        return groups.length ? { ...packet, finding: groups[0].findingIds[0], groups, findings: groups.reduce((counts, g) => ({ ...counts, [classOf.get(g.groupId)]: (counts[classOf.get(g.groupId)] || 0) + g.findingIds.length }), {}) } : null;
-      };
-      const reconciliation = shrink(ledger.reconciliation);
+      const reconciliation = reconciliationWithout(ledger, findingId);
       const at = new Date().toISOString();
       const seenEntry = (ledger.seen || []).find((e) => e.id === findingId);
       let next = {
@@ -3179,9 +3182,9 @@ function runVerb(resolveFromCwd, args, initiative) {
     const ledger = readLedger(stateDir, slug);
     if (!ledger) throw new Error(`review-cli record-fix: no ledger for ref "${ref}" ${stateDirHint(stateDir)}`);
     if (ledger.status !== 'parked' && ledger.status !== 'gate-pending') throw new Error(`review-cli record-fix: the ledger is "${ledger.status}"; only a stopped run (parked or gate-pending) takes a fix made outside the loop`);
-    const parkedIdx = (ledger.findings || []).findIndex((f) => f.id === findingId && f.status === 'parked');
+    const parkedIdx = (ledger.findings || []).findIndex((f) => f.id === findingId && (f.status === 'parked' || f.status === 'open'));
     const gate = (ledger.gate_open || []).find((f) => f.id === findingId && !gateFollowUpEligible(f));
-    if (parkedIdx === -1 && !gate) throw new Error(`review-cli record-fix: ${findingId} is not a parked finding or a blocking gate finding of ref "${ref}"`);
+    if (parkedIdx === -1 && !gate) throw new Error(`review-cli record-fix: ${findingId} is not an open or parked finding, or a blocking gate finding, of ref "${ref}"`);
     const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
     let commit;
     try { commit = sh('git', ['rev-parse', '--verify', `${commitArg}^{commit}`], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { throw new Error(`review-cli record-fix: ${commitArg} is not a commit`); }
@@ -3214,8 +3217,9 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (parkedIdx >= 0) {
       const findings = ledger.findings.slice();
       findings[parkedIdx] = { ...findings[parkedIdx], status: 'fixed', fix_commit: commit, park_reason: null, fix_evidence: fixEvidence };
-      const seen = (ledger.seen || []).map((e) => (e.id === findingId ? { ...e, status: 'fixed' } : e));
-      next = { ...ledger, findings, seen };
+      const seen = (ledger.seen || []).filter((e) => e.id !== findingId).concat([{ id: findingId, hash: (ledger.seen || []).find((e) => e.id === findingId)?.hash ?? require('./review').seenHash(findings[parkedIdx]), status: 'fixed' }]);
+      const reconciliation = ledger.reconciliation ? reconciliationWithout(ledger, findingId) : ledger.reconciliation;
+      next = { ...ledger, findings, seen, ...(ledger.reconciliation ? { reconciliation, reconciliationPacket: reconciliation } : {}) };
     } else {
       // A done panel's confirmed list would merge the fixed finding back into gate_open on the next record, so the panel
       // re-runs fresh whether or not the run leaves its stop now.
