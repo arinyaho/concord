@@ -66,9 +66,6 @@ function sh(bin, args, opts = {}) {
 // gitDiff, the dirty-check (gitDirty), and the HEAD rev-parse (gitHeadSha) moved
 // to core/target.js (the target-acquisition seam). They are re-imported above so
 // existing call sites and the module's public surface stay unchanged.
-function gitSucceeds(repoRoot, args) {
-  try { sh('git', args, { cwd: repoRoot, stdio: 'ignore' }); return true; } catch (_) { return false; }
-}
 function gitCommitFix(repoRoot, findingId, summary, files) {
   // Stage only the files the fix declares -- never `-A`. A whole-tree
   // `git add -A` sweeps in any other dirty content (untracked non-gitignored
@@ -83,8 +80,12 @@ function gitCommitFix(repoRoot, findingId, summary, files) {
   // renamed-away path) without touching any undeclared dirty file. A path the
   // fixer already removed with `git mv`/`git rm` is in neither the index nor
   // the worktree, so `git add` would reject it; its removal is already staged.
-  const stageable = fileList.filter((file) => fs.existsSync(path.join(repoRoot, file)) || gitSucceeds(repoRoot, ['ls-files', '--error-unmatch', '--', file])
-    || !gitSucceeds(repoRoot, ['cat-file', '-e', `HEAD:${file}`]));
+  // Pathspecs can match directory contents, so compare exact path strings.
+  const listed = (args) => new Set(sh('git', args, { cwd: repoRoot }).split('\0'));
+  const inIndex = listed(['ls-files', '-z', '--', ...fileList]);
+  const inHead = listed(['ls-tree', '-r', '--name-only', '-z', 'HEAD', '--', ...fileList]);
+  const alreadyStagedRemoval = (file) => !fs.existsSync(path.join(repoRoot, file)) && !inIndex.has(file) && inHead.has(file);
+  const stageable = fileList.filter((file) => !alreadyStagedRemoval(file));
   if (stageable.length) sh('git', ['add', '-A', '--', ...stageable], { cwd: repoRoot });
   // -F - (read the message from stdin) instead of -m '<multi-line message>':
   // a GitHub Codex review on this exact code (PR #113) caught that on
