@@ -287,6 +287,9 @@ function evidenceLine(f) {
   return `[${f.id}] ${f.file}: ${f.summary}${f.rationale ? ` -- rationale: ${f.rationale}` : ''} -- release-blocking: ${blocking}${f.blockingReason ? ` -- verifier: ${f.blockingReason}` : ''}${f.span ?? f.evidence ? ` -- span: ${f.span ?? f.evidence}` : ''}`;
 }
 
+// What a human asserts when dismissing a gate finding: a real bug handled outside the loop, an acceptance blocker tracked elsewhere, an intended behavior the design covers, or a real finding the change does not require.
+const DISMISS_CLASSIFICATIONS = ['defect', 'acceptance-blocker', 'design-decision', 'optional-hardening'];
+
 // A fix recorded by record-fix names the test that showed it.
 const fixTest = (f) => (f.fix_evidence ? ` (record-fix test: ${f.fix_evidence.command})` : '');
 
@@ -318,7 +321,7 @@ function renderHandoff(result) {
     for (const f of (r.fixed || []).filter((fixed) => !reopened.has(fixed.id))) lines.push(`  fixed in prior run #${r.run}: ${evidenceLine(f)} -> commit ${f.fix_commit}${fixTest(f)}`);
   }
   for (const f of currentGateFixed(ledger)) lines.push(`fixed outside the loop: ${evidenceLine(f)} -> commit ${f.fix_commit}${fixTest(f)}`);
-  for (const d of ledger.gate_dismissed || []) lines.push(`dismissed by ${d.dismissedBy}: ${evidenceLine(d)}`);
+  for (const d of ledger.gate_dismissed || []) lines.push(`dismissed by ${d.dismissedBy}${d.classification ? ` (${d.classification}${d.classificationReason ? `: ${d.classificationReason}` : ''})` : ''}: ${evidenceLine(d)}`);
   for (const f of (ledger.findings || []).filter((x) => x.status === 'deferred')) lines.push(`deferred by ${f.deferral.deferredBy} -> ${f.deferral.ref}: ${evidenceLine(f)} -- reason: ${f.deferral.reason}`);
   // A cleared finding is reported once: still open or dismissed ids show in their own section, and "not re-raised" needs a gate round whose verdict was recorded.
   const reported = new Set([...(ledger.gate_open || []).map((f) => f.id), ...dismissedIds(ledger)]);
@@ -343,7 +346,14 @@ function renderHandoff(result) {
   if (ledger.dod && !ledger.dod.deferred && !ledger.dod.passed) {
     lines.push(...renderDodFailure(ledger.dod));
   }
-  lines.push(ledger.intentHash ? `intent: applied (${String(ledger.intentHash).slice(0, 12)}, ${ledger.intentBytes} bytes)` : 'intent: not configured');
+  const waitsForHuman = ledger.status === 'gate-pending';
+  lines.push(ledger.intentHash ? `intent: applied (${String(ledger.intentHash).slice(0, 12)}, ${ledger.intentBytes} bytes)` : waitsForHuman ? `intent: not configured -- add "intent": { "command": "<command that prints the approved contract>" } to review.config.json, then re-run /review-and-fix ${ledger.target && ledger.target.ref} to continue this run with the same findings and dismissals` : 'intent: not configured');
+  if (waitsForHuman) {
+    const group = ledger.reconciliation?.trigger === 'group-reconcile' ? (ledger.reconciliation.groups || [])[0] : null;
+    const gate = (ledger.gate_open || []).find((f) => !gateFollowUpEligible(f));
+    if (group) lines.push(`decision needed: [${group.findingIds[0]}] ${group.reason || 'no reason recorded'} -- fix it in this change, or defer it to a tracked follow-up`);
+    else if (gate) lines.push(`decision needed: [${gate.id}] ${gate.file}: ${gate.summary} -- is this required for this change? Fix it, or dismiss it with --classification`);
+  }
 
   const fixed = (ledger.findings || []).filter((f) => f.status === 'fixed');
   const killedCount = (ledger.seen || []).filter((s) => s.status === 'killed').length;
@@ -707,7 +717,7 @@ const VERB_HELP = {
   'gate-panel-round-start': 'start a gate panel round',
   'gate-panel-round-record': 'record a gate panel round result',
   unpark: 'return a parked finding to open',
-  dismiss: 'dismiss an open gate finding (gate: id)',
+  dismiss: 'dismiss an open gate finding (gate: id); --by <name> [--classification <defect|acceptance-blocker|design-decision|optional-hardening> --reason <text>]',
   defer: 'defer an open finding of a reconcile group to a tracked follow-up',
   'record-fix': 'record a fix committed outside the loop, with red-to-green evidence',
   reset: 'discard the target ledger',
@@ -3113,12 +3123,22 @@ function runVerb(resolveFromCwd, args, initiative) {
     const byFlag = rest.indexOf('--by');
     const by = byFlag >= 0 && rest[byFlag + 1] ? rest[byFlag + 1].trim() : '';
     if (!by) throw new Error('review-cli dismiss: --by <name> is required; a dismissal records the human who made it');
+    const flagValue = (flag) => { const i = rest.indexOf(flag); return i >= 0 && rest[i + 1] ? rest[i + 1].trim() : ''; };
+    const classification = flagValue('--classification');
+    const classificationReason = flagValue('--reason');
+    if (classification && !DISMISS_CLASSIFICATIONS.includes(classification)) throw new Error(`review-cli dismiss: --classification must be one of ${DISMISS_CLASSIFICATIONS.join(', ')}`);
+    if (classificationReason && !classification) throw new Error('review-cli dismiss: --reason needs --classification');
+    const adjudication = classification ? { classification, ...(classificationReason ? { classificationReason } : {}) } : {};
     const open = (ledger.gate_open || []).find((f) => f.id === gateId);
     const already = (ledger.gate_dismissed || []).find((d) => d.id === gateId);
     if (!open && !already) throw new Error(`review-cli dismiss: ${gateId} is not an open gate finding`);
     let status = ledger.status;
+    if (already && classification) {
+      // The adjudication is recorded beside the first dismissal; the finding's wording and the dismissing human stay.
+      writeLedger(stateDir, slug, { ...ledger, gate_dismissed: ledger.gate_dismissed.map((d) => (d.id === gateId ? { ...d, ...adjudication } : d)) });
+    }
     if (!already) {
-      let next = { ...ledger, gate_dismissed: (ledger.gate_dismissed || []).concat([findingEvidence(open, { dismissedBy: by, dismissedAt: new Date().toISOString() })]), gate_open: (ledger.gate_open || []).filter((f) => f.id !== gateId) };
+      let next = { ...ledger, gate_dismissed: (ledger.gate_dismissed || []).concat([findingEvidence(open, { dismissedBy: by, dismissedAt: new Date().toISOString(), ...adjudication })]), gate_open: (ledger.gate_open || []).filter((f) => f.id !== gateId) };
       // Only dismissing a blocking finding of a stopped run can end its stop.
       if ((ledger.status === 'parked' || ledger.status === 'gate-pending') && !gateFollowUpEligible(open)) next = leaveStopIfClear(stateDir, slug, ledger, next);
       writeLedger(stateDir, slug, next);
