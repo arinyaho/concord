@@ -58,8 +58,10 @@ const GIT_AUTH = { GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'credential.https://
 
 const stateDir = () => process.env.REVIEW_APPROVE_STATE_DIR || path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'concord', 'review-until-approve');
 const ledgerFile = (repo, pr, login) => path.join(stateDir(), `${repo.replace('/', '__')}__${pr}__${login}.json`);
-const load = (file) => fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
-const save = (file, ledger) => { fs.mkdirSync(path.dirname(file), { recursive: true }); writeFileAtomic(file, `${JSON.stringify(ledger, null, 2)}\n`); };
+const readJson = (file) => fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
+// Only the ledger carries a format version; the run file ({pid, dir}) does not, so it is read with readJson.
+const load = (file) => lib.checkLedgerFormat(readJson(file));
+const save = (file, ledger) => { fs.mkdirSync(path.dirname(file), { recursive: true }); writeFileAtomic(file, `${JSON.stringify({ ...ledger, plugin: lib.pluginVersion() }, null, 2)}\n`); };
 
 const held = new Set();
 function lock(file) {
@@ -659,7 +661,7 @@ const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 
 // when no round is running (the round's own result is the output of the process the session started). Takes no lock.
 function next(repo, pr, args) {
   const file = ledgerFile(repo, pr, gh(['api', 'user', '--jq', '.login']).trim());
-  const running = () => { const run = load(runFile(file)); return run && pidAlive(run.pid) ? run : null; };
+  const running = () => { const run = readJson(runFile(file)); return run && pidAlive(run.pid) ? run : null; };
   const done = opt(args, '--done');
   if (args.includes('--done') && !done) die('--done needs the id of the request');
   if (done !== undefined) {

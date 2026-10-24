@@ -49,7 +49,7 @@ const sameNudge = (a, b) => a && b && a.kind === b.kind && a.head === b.head && 
   let failures = sidecar.failures ?? 0;
   for (;;) {
     try {
-      const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+      const ledger = lib.checkLedgerFormat(JSON.parse(fs.readFileSync(ledgerPath, 'utf8')));
       const view = gh(['pr', 'view', pr, '--repo', repo, '--json', 'headRefOid,state,isDraft,author,title,body']);
       const live = { head: view.headRefOid, state: view.state, isDraft: view.isDraft, author: view.author.login, intent: lib.intentOf(view.title, view.body) };
       const replies = lib.repliesSince(ledger, pages(`repos/${repo}/pulls/${pr}/comments`), pages(`repos/${repo}/issues/${pr}/comments`), live.author);
@@ -62,6 +62,7 @@ const sameNudge = (a, b) => a && b && a.kind === b.kind && a.head === b.head && 
       writeSidecar({ ...sidecar, previousHead, previousIntent, failures });
       if (event) return emit(event);
     } catch (error) {
+      if (error instanceof lib.LedgerFormatError) return emit({ event: 'error', detail: error.message }, 1);
       writeSidecar({ ...sidecar, previousHead, previousIntent, failures: ++failures % MAX_FAILURES });
       if (failures >= MAX_FAILURES) return emit({ event: 'error', detail: String(error.message) }, 1);
     }

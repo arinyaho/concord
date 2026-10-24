@@ -107,3 +107,9 @@ test('SKILL.md says a finding about the pull request description is judged again
   assert.match(skill, /finding about the pull request description is judged against its title and body/);
   assert.match(skill, /`\/pr-description`/);
 });
+
+test('SKILL.md puts the locator assignment before the mien exec prefix for Codex commands', () => {
+  assert.match(skill, /SCRIPTS=\$\(LOCATOR\) && \[mien exec <profile> -- \]node "\$SCRIPTS\/watch\.js"/);
+  assert.match(skill, /SCRIPTS=\$\(LOCATOR\) && \[mien exec <profile> -- \]node "\$SCRIPTS\/<script>\.js"/);
+  assert.match(skill, /the prefix goes after the assignment, directly before `node`/);
+});
