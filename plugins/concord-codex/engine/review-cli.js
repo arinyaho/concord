@@ -205,6 +205,16 @@ function validateFixFiles(repoRoot, stateDir, files, verb = 'commit-fix') {
     }
   }
 }
+// A certificate may name the right files in a recoverable shape: one string, or an absolute path inside the repository.
+// Normalize only those; every other path stays as written and fails the exact-set check against the fixers' union.
+function normalizeCertificateFiles(repoRoot, cert) {
+  const repo = path.resolve(repoRoot);
+  const relative = (file) => (typeof file === 'string' && path.isAbsolute(file) && pathWithin(path.resolve(file), repo) ? path.relative(repo, path.resolve(file)) : file);
+  const files = typeof cert.files === 'string' ? [cert.files] : cert.files;
+  if (!Array.isArray(files)) return cert;
+  const fileHashes = cert.fileHashes && typeof cert.fileHashes === 'object' ? Object.fromEntries(Object.entries(cert.fileHashes).map(([file, hash]) => [relative(file), hash])) : cert.fileHashes;
+  return { ...cert, files: files.map(relative), fileHashes };
+}
 // The CLI never discards working-tree content: it cannot tell a stray fixer edit from a person's edit, so dirty tracked paths stop the run and are named.
 function gitDirtyTrackedPaths(repoRoot) {
   return sh('git', ['status', '--porcelain', '--untracked-files=no', '--no-renames', '-z'], { cwd: repoRoot }).split('\0').filter(Boolean).map((entry) => entry.slice(3));
@@ -3404,7 +3414,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     }
     const files = Array.from(new Set(fixArtifacts.flatMap((artifact) => artifact.files)));
     validateFixFiles(repoRoot, stateDir, files);
-    const cert = (() => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-certify-${safeIdForFilename(transactionId)}.json`), 'utf8')); } catch (_) { return null; } })();
+    const cert = (() => { try { return normalizeCertificateFiles(repoRoot, JSON.parse(fs.readFileSync(path.join(stateDir, `round-${n}-certify-${safeIdForFilename(transactionId)}.json`), 'utf8'))); } catch (_) { return null; } })();
     if (!cert || cert.status !== 'ok' || cert.groupId !== transactionId
       || !sameMembers(cert.resolvedFindingIds, findingIds)
       || !sameMembers(cert.files, files) || !Array.isArray(cert.evidence) || !cert.evidence.length
