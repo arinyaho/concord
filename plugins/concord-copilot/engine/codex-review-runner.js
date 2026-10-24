@@ -1240,7 +1240,7 @@ async function runRounds(options) {
     else reviewers.push((async () => {
       await runPool(['correctness', ...(started.gateApplied ? ['gate'] : [])]);
       await deriveEmptyVerify();
-      if (derived.verify === 'required') await runArtifactReviewer('verify');
+      if (derived.verify !== 'not-needed') await runArtifactReviewer('verify');
     })());
     const reviewerResults = await Promise.allSettled(reviewers);
     const reviewerFailure = reviewerResults.find((result) => result.status === 'rejected');
@@ -1283,7 +1283,7 @@ async function runRounds(options) {
       return { decision: 'review-only', round: currentRound, findings, ...(addressed.length && { addressed }) };
     }
 
-    if (derived.plan === 'required') await runArtifactReviewer('plan');
+    if (derived.plan !== 'not-needed') await runArtifactReviewer('plan');
 
     const planned = await cli(['plan-fixes', ref]);
     await throwIfAborted(true);

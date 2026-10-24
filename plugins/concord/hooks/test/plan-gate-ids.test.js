@@ -56,7 +56,7 @@ test('a plan grouping a gate: finding with a correctness: finding is repaired by
 
 test('every plan step states that a plan group carries only correctness: and docreview: ids', () => {
   for (const file of ['plugins/concord/core/review-driver.md', 'plugins/concord/commands/review-and-fix.md', 'plugins/concord-copilot/skills/review-and-fix/references/review-driver.md']) {
-    const step = fs.readFileSync(path.join(REPO, file), 'utf8').split('\n').find((line) => line.startsWith('4. After every independent reviewer'));
+    const step = fs.readFileSync(path.join(REPO, file), 'utf8').split('\n').find((line) => line.startsWith('4. Only when step 3 answered'));
     assert.match(step, /only `correctness:` and `docreview:` ids/, file);
     assert.match(step, /`gate:` findings are never planned/, file);
   }

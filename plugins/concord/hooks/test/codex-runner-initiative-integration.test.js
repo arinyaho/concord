@@ -33,8 +33,12 @@ function fixture({ maxLaunches = 30, mode } = {}) {
       workers.push(role);
       const destination = /Write ONLY .*? to ([^\n]+?\.json)/.exec(prompt)?.[1];
       assert.ok(destination, `no destination for ${role}`);
-      const artifact = role === 'plan'
-        ? { status: 'ok', protocolVersion: 2, groups: [] }
+      // The correctness reviewer raises one candidate and verify rejects it: the round has a candidate, so verify and plan
+      // still launch (a round with no candidate derives both, see the verify-needed tests), yet nothing survives to be fixed.
+      const candidate = { id: 'correctness:rejected-candidate', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'a candidate verify rejects' };
+      const artifact = role === 'plan' ? { status: 'ok', protocolVersion: 2, groups: [] }
+        : role === 'correctness' ? { status: 'ok', examined: ['a.txt'], findings: [candidate] }
+        : role === 'verify' ? { status: 'ok', rejected: [{ id: candidate.id, reason: 'verify read the line and found no defect' }], findings: [] }
         : { status: 'ok', examined: ['a.txt'], rejected: [], findings: [] };
       fs.writeFileSync(destination, JSON.stringify(artifact));
       return { status: 0 };
@@ -74,6 +78,7 @@ test('default suggestions publish once while later progress continues to termina
     if (args[0] === 'artifact-normalize') return { status: 'ok' };
     if (args[0] === 'plan-fixes') return emptyPlan;
     if (args[0] === 'telemetry-slot') return {};
+    if (args[0] === 'verify-needed') return { verify: 'required', plan: 'required' };
     return original(args);
   };
   const result = await runReviewUntilGreen({ ...f.options, runCli, getInputContextTokens: () => 128000, onSessionHandoff: h => suggestions.push(h) });
@@ -81,7 +86,7 @@ test('default suggestions publish once while later progress continues to termina
   assert.equal(calls.filter(x => x[0] === 'session-checkpoint').length, 1);
   assert.equal(result.sessionHandoff.promptPath, suggestions[0].promptPath);
   const checkpoint = JSON.parse(fs.readFileSync(result.sessionHandoff.checkpointPath));
-  assert.equal(checkpoint.observations.toolCalls, 15);
+  assert.equal(checkpoint.observations.toolCalls, 16); // includes the one verify-needed call per round
   assert.equal(checkpoint.observations.noProgressCalls, 2);
   assert.equal(fs.readFileSync(checkpoint.sources.state.path, 'utf8').includes('RAW_TRANSCRIPT_NEVER_COPY'), false);
   assert.equal(fs.readFileSync(checkpoint.sources.handoff.path, 'utf8').includes('RAW_TRANSCRIPT_NEVER_COPY'), false);
@@ -95,6 +100,7 @@ test('session handoff reports an oversized round artifact as a failed handoff in
     if (args[0] === 'artifact-normalize') return { status: 'ok' };
     if (args[0] === 'plan-fixes') return emptyPlan;
     if (args[0] === 'telemetry-slot') return {};
+    if (args[0] === 'verify-needed') return { verify: 'required', plan: 'required' };
     return original(args);
   };
   const spawn = async (input) => {
@@ -121,7 +127,9 @@ function fixingWorker(f) {
   return async ({ role, prompt }) => {
     f.workers.push(role);
     const artifact = destination(prompt, f.stateDir), round = Number(/round-(\d+)/.exec(artifact)[1]);
-    let data = { status: 'ok', examined: ['a.txt'], rejected: [], findings: role === 'correctness' && round === 1 ? [bug] : [] };
+    // Later rounds raise one candidate that verify rejects, so verify and plan still launch there (a round with no candidate derives both).
+    const stale = { id: 'correctness:stale-candidate', gate: 'correctness', file: 'a.txt', span: 'three', summary: 'a candidate verify rejects' };
+    let data = { status: 'ok', examined: ['a.txt'], rejected: role === 'verify' && round > 1 ? [{ id: stale.id, reason: 'verify read the line and found no defect' }] : [], findings: role === 'correctness' ? (round === 1 ? [bug] : [stale]) : [] };
     if (role === 'plan') data = { status: 'ok', protocolVersion: 2, groups: round === 1 ? [{ groupId: bug.id, findingIds: [bug.id], rootCause: bug.summary, invariants: ['two is replaced'], changeClass: 'local', structuralEffects: [], action: 'fix' }] : [] };
     if (role === 'fix') { fs.writeFileSync(path.join(f.options.repoRoot, 'a.txt'), 'three\n'); data = { status: 'ok', edited: true, groupId: bug.id, files: ['a.txt'] }; }
     if (role === 'certify') data = { status: 'ok', groupId: bug.id, resolvedFindingIds: [bug.id], invariants: ['two is replaced'], files: ['a.txt'], fileHashes: { 'a.txt': crypto.createHash('sha256').update(fs.readFileSync(path.join(f.options.repoRoot, 'a.txt'))).digest('hex') }, evidence: ['replacement checked'] };
@@ -186,13 +194,14 @@ test('unmeasured input context stays null and the runner tool-call threshold tri
     if (args[0] === 'round-start') return { decision: 'work', round: ++starts, stateDir: f.stateDir, head: f.git('rev-parse', 'HEAD'), base: f.options.base, targetType: 'git', dodPassed: true };
     if (args[0] === 'reserve') return { status: 'granted' };
     if (args[0] === 'telemetry-slot') return {};
+    if (args[0] === 'verify-needed') return { verify: 'required', plan: 'required' };
     if (args[0] === 'artifact-normalize') return { status: 'ok' };
     if (args[0] === 'plan-fixes') return emptyPlan;
     if (args[0] === 'record') return { decision: starts < 6 ? { continue: true } : { converged: true } };
     return original(args);
   } });
   const checkpoint = JSON.parse(fs.readFileSync(result.sessionHandoff.checkpointPath));
-  assert.equal(checkpoint.observations.inputTokens, null); assert.equal(checkpoint.observations.toolCalls, 60);
+  assert.equal(checkpoint.observations.inputTokens, null); assert.equal(checkpoint.observations.toolCalls, 64);
   assert.equal(checkpoint.observations.noProgressCalls, 2);
   assert.deepEqual(checkpoint.triggers, ['toolCalls']);
 });

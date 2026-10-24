@@ -613,6 +613,8 @@ function readVerify(stateDir, ledger, n) {
   const derived = derivedEntry(ledger, n);
   if (!derived) {
     requireVerifierOrder(stateDir, n, ledger.gateApplied, ledger.gateMode);
+    // readArtifact rewrites a non-canonical file, which moves its mtime; normalize correctness before verify so verify stays the newer file.
+    readArtifact(stateDir, n, 'correctness');
     return readArtifact(stateDir, n, 'verify');
   }
   if (fs.existsSync(path.join(stateDir, `round-${n}-verify.json`)) || fs.existsSync(path.join(stateDir, `round-${n}-plan.json`))) {
