@@ -62,7 +62,7 @@ const sameNudge = (a, b) => a && b && a.kind === b.kind && a.head === b.head && 
       writeSidecar({ ...sidecar, previousHead, previousIntent, failures });
       if (event) return emit(event);
     } catch (error) {
-      if (/ledger format/.test(error.message)) return emit({ event: 'error', detail: error.message }, 1);
+      if (error instanceof lib.LedgerFormatError) return emit({ event: 'error', detail: error.message }, 1);
       writeSidecar({ ...sidecar, previousHead, previousIntent, failures: ++failures % MAX_FAILURES });
       if (failures >= MAX_FAILURES) return emit({ event: 'error', detail: String(error.message) }, 1);
     }

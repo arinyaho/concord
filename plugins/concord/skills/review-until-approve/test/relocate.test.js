@@ -102,3 +102,25 @@ else console.log(JSON.stringify({ state: 'OPEN', author: { login: 'dev' }, headR
   assert.match(r.stderr, /format 2 written by concord 0\.10\.0/);
   assert.equal(JSON.parse(fs.readFileSync(path.join(state, 'o__r__5__me.json'), 'utf8')).version, 2);
 });
+
+test('approve.js next reads a run file that has no format version', () => {
+  const f = fixture(ledger);
+  const root = install(f.home, '0.9.1-beta.2');
+  const state = path.join(f.dir, 'state');
+  fs.mkdirSync(state);
+  fs.writeFileSync(path.join(f.dir, 'gh'), '#!/usr/bin/env node\nconsole.log("me");\n', { mode: 0o755 });
+  const dead = spawnSync(process.execPath, ['-e', '']).pid;
+  fs.writeFileSync(path.join(state, 'o__r__5__me.json.run.json'), JSON.stringify({ pid: dead, dir: f.dir }));
+  const r = spawnSync('node', [path.join(root, 'skills', 'review-until-approve', 'scripts', 'approve.js'), 'next', 'o/r', '5'], { encoding: 'utf8', env: { ...env(f), REVIEW_APPROVE_STATE_DIR: state } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout).event, 'finished');
+});
+
+test('a failed poll whose message mentions ledger format is retried, not treated as a format refusal', () => {
+  const f = fixture(ledger);
+  install(f.home, '0.9.1-beta.2');
+  fs.writeFileSync(path.join(f.dir, 'gh'), '#!/usr/bin/env node\nconsole.error("ledger format");\nprocess.exit(1);\n', { mode: 0o755 });
+  const r = window(f);
+  assert.equal(r.status, 0, r.stdout);
+  assert.equal(JSON.parse(r.stdout).event, 'idle');
+});

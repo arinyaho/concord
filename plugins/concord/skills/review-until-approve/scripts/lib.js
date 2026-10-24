@@ -258,9 +258,10 @@ function pluginVersion() {
     if (path.dirname(dir) === dir) return 'unknown';
   }
 }
+class LedgerFormatError extends Error {}
 function checkLedgerFormat(ledger) {
   if (!ledger || ledger.version === LEDGER_FORMAT) return ledger;
-  throw new Error(`concord ${pluginVersion()} reads ledger format ${LEDGER_FORMAT}, but this ledger is format ${ledger.version} written by concord ${ledger.plugin || 'unknown'}; the ledger is unchanged. Use the concord version that wrote it, or stop this review and start a new one.`);
+  throw new LedgerFormatError(`concord ${pluginVersion()} reads ledger format ${LEDGER_FORMAT}, but this ledger is format ${ledger.version} written by concord ${ledger.plugin || 'unknown'}; the ledger is unchanged. Use the concord version that wrote it, or stop this review and start a new one.`);
 }
 
-module.exports = { LEDGER_FORMAT, pluginVersion, checkLedgerFormat, submoduleRepo, chooseRange, baseMergeOnly, reviewedCount, findingKey, matches, isPublished, parseNameStatus, classifyPrior, isBlocker, classOf, strictest, evaluateApproval, repliesSince, wakeDecision, descriptionEdited, intentOf, DESC, sha, NUDGE_AFTER_MS, TIMEOUT_MS };
+module.exports = { LEDGER_FORMAT, LedgerFormatError, pluginVersion, checkLedgerFormat, submoduleRepo, chooseRange, baseMergeOnly, reviewedCount, findingKey, matches, isPublished, parseNameStatus, classifyPrior, isBlocker, classOf, strictest, evaluateApproval, repliesSince, wakeDecision, descriptionEdited, intentOf, DESC, sha, NUDGE_AFTER_MS, TIMEOUT_MS };
