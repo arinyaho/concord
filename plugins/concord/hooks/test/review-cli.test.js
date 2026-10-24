@@ -7255,3 +7255,84 @@ test('verify-needed: a pair-gate round derives only when both finders are sealed
   fs.utimesSync(gvPath, past, past); // gate-verify predates its finders: spawned before they finished
   assert.throws(() => run(['plan-fixes', ref], { env, broadDefault: true, skipPlanSeed: true }), /predates/);
 });
+
+// #454: a stop that needs a human names the missing intent, the finding and the question, and keeps the human's classification beside the original finding.
+const gatePendingLedger = (extra = {}) => ({ ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), status: 'gate-pending', gate_open: [{ id: 'gate:design-conformance:scope', file: 'a.js', span: 's', summary: 'scope is not covered', requirement: 'r', releaseBlocking: ['acceptance-criterion'], rationale: 'x' }], ...extra });
+
+test('renderHandoff: a gate-pending stop without intent names the missing intent, the config key and the resume command', () => {
+  const handoff = cli.renderHandoff({ ledger: gatePendingLedger() });
+  assert.match(handoff, /intent: not configured -- add "intent": \{ "command": .* to review\.config\.json, then re-run \/review-and-fix feat\/x to continue this run/);
+});
+
+test('renderHandoff: a gate-pending stop with intent shows the applied hash instead of the attach hint', () => {
+  const handoff = cli.renderHandoff({ ledger: gatePendingLedger({ intentHash: 'abcdef0123456789', intentBytes: 12 }) });
+  assert.match(handoff, /intent: applied \(abcdef012345, 12 bytes\)/);
+  assert.doesNotMatch(handoff, /review\.config\.json/);
+});
+
+test('renderHandoff: a non-human stop without intent keeps the plain "intent: not configured" line', () => {
+  const handoff = cli.renderHandoff({ ledger: { ...review.emptyLedger({ kind: 'local', ref: 'feat/x' }), status: 'clean' } });
+  assert.match(handoff, /^intent: not configured$/m);
+});
+
+test('renderHandoff: a gate-pending stop names the finding and the question needing a decision', () => {
+  const handoff = cli.renderHandoff({ ledger: gatePendingLedger() });
+  assert.match(handoff, /decision needed: \[gate:design-conformance:scope\] a\.js: scope is not covered -- is this required for this change\? Fix it, or dismiss it with --classification/);
+});
+
+test('renderHandoff: a group-reconcile stop names the finding and the group reason as the question', () => {
+  const ledger = { ...gatePendingLedger({ gate_open: [] }), reconciliation: { trigger: 'group-reconcile', finding: 'correctness:x', groups: [{ groupId: 'g1', findingIds: ['correctness:x'], reason: 'which id is the owner?' }] } };
+  assert.match(cli.renderHandoff({ ledger }), /decision needed: \[correctness:x\] which id is the owner\? -- fix it in this change, or defer it to a tracked follow-up/);
+});
+
+test('review-cli dismiss: records the classification and reason beside the original finding, and show and the handoff render them', () => {
+  const dir = tmpDir();
+  const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  review.writeLedger(dir, slug, gatePendingLedger());
+  run(['dismiss', 'feat/x', 'gate:design-conformance:scope', '--by', 'someone', '--classification', 'design-decision', '--reason', 'the contract settles it'], { env });
+  const [kept] = review.readLedger(dir, slug).gate_dismissed;
+  assert.strictEqual(kept.summary, 'scope is not covered'); // original wording stays
+  assert.deepStrictEqual({ c: kept.classification, r: kept.classificationReason }, { c: 'design-decision', r: 'the contract settles it' });
+  assert.strictEqual(JSON.parse(run(['show', 'feat/x'], { env })).gate_dismissed[0].classification, 'design-decision');
+  assert.match(cli.renderHandoff({ ledger: review.readLedger(dir, slug) }), /dismissed by someone \(design-decision: the contract settles it\): .*scope is not covered/);
+});
+
+test('review-cli dismiss: a classification outside the four is rejected and nothing is recorded', () => {
+  const dir = tmpDir();
+  const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  review.writeLedger(dir, slug, gatePendingLedger());
+  assert.throws(() => run(['dismiss', 'feat/x', 'gate:design-conformance:scope', '--by', 'someone', '--classification', 'nit'], { env }), /defect, acceptance-blocker, design-decision, optional-hardening/);
+  assert.deepStrictEqual(review.readLedger(dir, slug).gate_dismissed, []);
+});
+
+test('review-cli dismiss: --reason without --classification is rejected', () => {
+  const dir = tmpDir();
+  const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  review.writeLedger(dir, slug, gatePendingLedger());
+  assert.throws(() => run(['dismiss', 'feat/x', 'gate:design-conformance:scope', '--by', 'someone', '--reason', 'why'], { env }), /--reason needs --classification/);
+});
+
+test('review-cli dismiss: a repeat dismissal adds a classification to the first record without changing it', () => {
+  const dir = tmpDir();
+  const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  review.writeLedger(dir, slug, gatePendingLedger());
+  run(['dismiss', 'feat/x', 'gate:design-conformance:scope', '--by', 'someone'], { env });
+  run(['dismiss', 'feat/x', 'gate:design-conformance:scope', '--by', 'other', '--classification', 'optional-hardening', '--reason', 'unreachable path'], { env });
+  const [kept] = review.readLedger(dir, slug).gate_dismissed;
+  assert.deepStrictEqual({ by: kept.dismissedBy, c: kept.classification, r: kept.classificationReason }, { by: 'someone', c: 'optional-hardening', r: 'unreachable path' });
+});
+
+test('review-cli dismiss: a repeat dismissal keeps the first classification and reason', () => {
+  const dir = tmpDir();
+  const slug = review.targetSlug('feat/x');
+  const env = { ...process.env, REVIEW_STATE_DIR: dir };
+  review.writeLedger(dir, slug, gatePendingLedger());
+  run(['dismiss', 'feat/x', 'gate:design-conformance:scope', '--by', 'someone', '--classification', 'design-decision', '--reason', 'the contract settles it'], { env });
+  run(['dismiss', 'feat/x', 'gate:design-conformance:scope', '--by', 'other', '--classification', 'defect', '--reason', 'changed my mind'], { env });
+  const [kept] = review.readLedger(dir, slug).gate_dismissed;
+  assert.deepStrictEqual({ c: kept.classification, r: kept.classificationReason }, { c: 'design-decision', r: 'the contract settles it' });
+});
