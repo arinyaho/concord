@@ -7033,3 +7033,91 @@ test('artifact-normalize repairs an invalid slug that only appears in gate-verif
   fs.writeFileSync(path.join(dir, `round-${n}-gate-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [], duplicates: [{ id: 'gate:cross-context:x', of: 'correctness:Foo_bar' }] }));
   assert.strictEqual(JSON.parse(run(['artifact-normalize', 'feat/dupof', 'gate-verify'], { env, broadDefault: true })).status, 'repair');
 });
+
+// #466: a round whose sealed finder artifacts hold no finding needs no verify or plan launch.
+function emptyFinderRound(ref = 'feat/x', { findings = [] } = {}) {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  run(['round-start', ref, 'HEAD~1'], { env });
+  const n = review.readLedger(dir, review.targetSlug(ref)).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings }));
+  run(['artifact-normalize', ref, 'correctness'], { env });
+  return { repo, dir, env, n, ref };
+}
+
+test('verify-needed: zero finder findings derive verify and plan; plan-fixes and record decide with no verify or plan artifact', () => {
+  const { dir, env, n, ref } = emptyFinderRound();
+  assert.deepEqual(JSON.parse(run(['verify-needed', ref], { env })), { verify: 'not-needed', plan: 'not-needed' });
+  assert.deepEqual(JSON.parse(run(['verify-needed', ref], { env })), { verify: 'not-needed', plan: 'not-needed' }, 'replay is idempotent');
+  assert.equal(fs.existsSync(path.join(dir, `round-${n}-verify.json`)), false);
+  assert.equal(fs.existsSync(path.join(dir, `round-${n}-plan.json`)), false);
+  const ledger = review.readLedger(dir, review.targetSlug(ref));
+  assert.equal(ledger.cli_derived.length, 1);
+  assert.deepEqual(ledger.cli_derived[0].roles, ['verify', 'plan']);
+  assert.equal(JSON.parse(run(['plan-fixes', ref], { env, skipPlanSeed: true })).fixGroups.length, 0);
+  const recorded = JSON.parse(run(['record', ref], { env }));
+  assert.match(recorded.handoff, /verify and plan derived by review-cli.*round 1/);
+});
+
+test('verify-needed: a round with a finding still requires a reviewer verify artifact, and an empty one written before correctness is refused', () => {
+  const finding = { id: 'correctness:real', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' };
+  const { dir, env, n, ref } = emptyFinderRound('feat/x', { findings: [finding] });
+  assert.deepEqual(JSON.parse(run(['verify-needed', ref], { env })), { verify: 'required', plan: 'required' });
+  assert.deepEqual(review.readLedger(dir, review.targetSlug(ref)).cli_derived, []);
+  const vPath = path.join(dir, `round-${n}-verify.json`);
+  fs.writeFileSync(vPath, JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
+  const past = new Date(Date.now() - 60000);
+  fs.utimesSync(vPath, past, past);
+  assert.throws(() => run(['plan-fixes', ref], { env, skipPlanSeed: true }), /harness-failure.*predates/);
+});
+
+test('verify-needed: a derived round fails closed when a finder artifact changes or a verify or plan artifact appears', () => {
+  const finding = { id: 'correctness:late', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'x' };
+  const changed = emptyFinderRound();
+  run(['verify-needed', changed.ref], { env: changed.env });
+  fs.writeFileSync(path.join(changed.dir, `round-${changed.n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [finding] }));
+  assert.throws(() => run(['plan-fixes', changed.ref], { env: changed.env, skipPlanSeed: true }), /changed after review-cli derived/);
+  const written = emptyFinderRound();
+  run(['verify-needed', written.ref], { env: written.env });
+  fs.writeFileSync(path.join(written.dir, `round-${written.n}-verify.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [] }));
+  assert.throws(() => run(['plan-fixes', written.ref], { env: written.env, skipPlanSeed: true }), /refusing ambiguous evidence/);
+});
+
+test('verify-needed: an unsealed correctness artifact is never read as zero findings', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  run(['round-start', 'feat/x', 'HEAD~1'], { env });
+  const n = review.readLedger(dir, review.targetSlug('feat/x')).round;
+  fs.writeFileSync(path.join(dir, `round-${n}-correctness.json`), JSON.stringify({ status: 'ok', examined: ['a.txt'], findings: [] }));
+  assert.deepEqual(JSON.parse(run(['verify-needed', 'feat/x'], { env })), { verify: 'required', plan: 'required' });
+});
+
+test('verify-needed: a pair-gate round derives only when both finders are sealed empty, and gate-verify keeps its ordering guard', () => {
+  const repo = initRepo(); const dir = tmpDir();
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  run(['round-start', 'feat/x', 'HEAD~1'], { env, broadDefault: true });
+  const ref = 'feat/x';
+  const n = review.readLedger(dir, review.targetSlug(ref)).round;
+  const write = (name, body) => fs.writeFileSync(path.join(dir, `round-${n}-${name}.json`), JSON.stringify(body));
+  write('correctness', { status: 'ok', examined: ['a.txt'], findings: [] });
+  run(['artifact-normalize', ref, 'correctness'], { env });
+  assert.deepEqual(JSON.parse(run(['verify-needed', ref], { env })), { verify: 'required', plan: 'required' }, 'the gate finder is not sealed yet');
+  write('gate', { status: 'ok', findings: [{ id: 'gate:silent-gap:x', file: 'a.txt', span: 'two', summary: 's', releaseBlocking: [], rationale: 'r' }] });
+  run(['artifact-normalize', ref, 'gate'], { env });
+  assert.deepEqual(JSON.parse(run(['verify-needed', ref], { env })), { verify: 'required', plan: 'required' }, 'a gate finding keeps verify and plan');
+  // Replace the gate artifact with an empty one and seal it again: both finders are now empty.
+  write('gate', { status: 'ok', findings: [] });
+  run(['artifact-normalize', ref, 'gate'], { env });
+  assert.deepEqual(JSON.parse(run(['verify-needed', ref], { env })), { verify: 'not-needed', plan: 'not-needed' });
+  write('gate-verify', { status: 'ok', rejected: [] });
+  const gvPath = path.join(dir, `round-${n}-gate-verify.json`);
+  const past = new Date(Date.now() - 60000);
+  fs.utimesSync(gvPath, past, past); // gate-verify predates its finders: spawned before they finished
+  assert.throws(() => run(['plan-fixes', ref], { env, broadDefault: true, skipPlanSeed: true }), /predates/);
+});

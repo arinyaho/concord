@@ -18,6 +18,8 @@ const { reviewerPrompt: packagedReviewerPrompt } = require('../../../concord-cod
 const { tempDir } = require('./temp-dir');
 const { providerFailure } = require('../../core/provider-failure');
 
+// What review-cli answers when a round has a finder candidate: verify and plan still run.
+const REQUIRED_VERIFY = { verify: 'required', plan: 'required' };
 function temp() { return tempDir('codex-runner-'); }
 function v2Plan(fixes, groups) {
   const fixGroups = (groups || fixes.map((finding) => ({ findingIds: [finding.id], rootCause: finding.summary, invariants: ['fixed behavior'], changeClass: 'local', action: 'fix', findings: [finding] })))
@@ -560,6 +562,7 @@ test('initiative accepts a runner-owned fixer revision on the next round', async
     runCli: ([verb]) => {
       if (verb === 'reserve') return { status: 'granted' };
       if (verb === 'round-start') return { decision: 'work', round: ++round, base: 'main', head: round === 1 ? 'before' : 'after', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false };
+      if (verb === 'verify-needed') return REQUIRED_VERIFY;
       if (verb === 'artifact-normalize') return { status: 'ok' };
       if (verb === 'plan-fixes') return v2Plan(round === 1 ? [{ id: 'correctness:bug', file: 'a.txt', span: 'bad', summary: 'fix it' }] : []);
       if (verb === 'commit-fix') return { committed: true, sha: 'after' };
@@ -579,6 +582,7 @@ test('initiative rejects a revision that differs from the committed fixer revisi
     runCli: ([verb]) => {
       if (verb === 'reserve') return { status: 'granted' };
       if (verb === 'round-start') return { decision: 'work', round: ++round, base: 'main', head: round === 1 ? 'before' : 'other', stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false };
+      if (verb === 'verify-needed') return REQUIRED_VERIFY;
       if (verb === 'artifact-normalize') return { status: 'ok' };
       if (verb === 'plan-fixes') return v2Plan([{ id: 'correctness:bug', file: 'a.txt', span: 'bad', summary: 'fix it' }]);
       if (verb === 'commit-fix') return { committed: true, sha: 'after' };
@@ -600,6 +604,7 @@ test('initiative accepts a file identity produced by its fixer', async () => {
     runCli: ([verb]) => {
       if (verb === 'reserve') return { status: 'granted' };
       if (verb === 'round-start') return { decision: 'work', round: ++round, head: identity(), stateDir, targetType: 'file', dodPassed: true, dodDeferred: true, intentApplied: false, gateApplied: false };
+      if (verb === 'verify-needed') return REQUIRED_VERIFY;
       if (verb === 'artifact-normalize') return { status: 'ok' };
       if (verb === 'plan-fixes') return v2Plan(round === 1 ? [{ id: 'docreview:fix', file: 'note.md', span: 'before', summary: 'fix it' }] : []);
       if (verb === 'record') return round === 1 ? { decision: { continue: true } } : { decision: { continue: false, converged: true } };
@@ -616,6 +621,7 @@ test('reconciliation terminates the target and retains its restored base and avo
       if (verb === 'reserve') return { status: 'granted' };
       if (verb === 'show') return { target: { base: 'main' } };
       if (verb === 'round-start') return { decision: 'work', round: 1, base: 'main', head: 'head', stateDir, targetType: 'git', dodPassed: false, dodDeferred: false, intentApplied: false, gateApplied: false };
+      if (verb === 'verify-needed') return REQUIRED_VERIFY;
       if (verb === 'artifact-normalize') return { status: 'ok' };
       if (verb === 'plan-fixes') return { ...v2Plan([]), avoidedLaunches: 2, reconciliation: { finding: 'intent:missing', findings: { intent: 1 } } };
       if (verb === 'record') return { decision: { continue: false, intentReview: true }, reconciliation: { finding: 'intent:missing', stage: 'record', avoidedLaunches: 2, findings: { intent: 1 } } };
@@ -1094,6 +1100,7 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
       return { committed: true, sha: 'abc' };
     }
     if (verb === 'record') return round < rounds ? { decision: { continue: true }, handoff: 'continue' } : { decision: { continue: false, converged: true }, handoff: 'LGTM' };
+    if (verb === 'verify-needed') return REQUIRED_VERIFY;
     throw new Error(`unexpected CLI ${verb} ${ref}`);
   };
   const spawn = ({ role, prompt, provider, repoRoot }) => {
@@ -1163,6 +1170,7 @@ test('runner persists an interruption delivered between orchestration steps', as
     }
     if (args[0] === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
     if (args[0] === 'round-failure') { failures.push(JSON.parse(args[2])); return { status: 'recorded' }; }
+    if (args[0] === 'verify-needed') return REQUIRED_VERIFY;
     throw new Error(`unexpected CLI ${args[0]}`);
   };
   await assert.rejects(runReviewUntilGreen({ ref: 'feature/orchestration-signal', repoRoot: '/repo', runCli: cli, spawn: () => ({ status: 0 }), handleSignals: true }), /interrupted by SIGINT/);
@@ -1185,6 +1193,7 @@ test('resume launches only the artifact role still pending after an interruption
     if (verb === 'round-failure') return { status: 'recorded', retryable: true };
     if (verb === 'plan-fixes') return { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] };
     if (verb === 'record') return { decision: { continue: false, converged: true }, handoff: 'LGTM' };
+    if (verb === 'verify-needed') return REQUIRED_VERIFY;
     throw new Error(`unexpected CLI ${verb}`);
   };
   const spawn = ({ role }) => {
@@ -1206,6 +1215,7 @@ test('a failing parallel reviewer does not let the parent return before its sibl
     if (args[0] === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
     if (args[0] === 'round-failure') return { status: 'recorded' };
     if (args[0] === 'artifact-normalize') return { status: 'ok' };
+    if (args[0] === 'verify-needed') return REQUIRED_VERIFY;
     throw new Error(`unexpected CLI ${args[0]}`);
   };
   const spawn = async ({ role }) => {
@@ -1230,6 +1240,7 @@ test('a failing pooled broad finder waits for its paired finder before returning
     if (args[0] === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
     if (args[0] === 'round-failure') return { status: 'recorded' };
     if (args[0] === 'artifact-normalize') return { status: 'ok' };
+    if (args[0] === 'verify-needed') return REQUIRED_VERIFY;
     throw new Error(`unexpected CLI ${args[0]}`);
   };
   const spawn = async ({ role }) => {
@@ -1263,6 +1274,7 @@ test('a prior group cannot skip a later group without its own certification', as
       return { committed: true, sha: 'fixed', resolvedFindingIds: ['correctness:b'] };
     }
     if (args[0] === 'record') return { decision: { continue: false, converged: true }, handoff: 'LGTM' };
+    if (args[0] === 'verify-needed') return REQUIRED_VERIFY;
     throw new Error(`unexpected CLI ${args[0]}`);
   };
   const spawn = async ({ role, prompt }) => {
@@ -1293,6 +1305,7 @@ test('runner launches one fixer for one root-cause group', async () => {
     if (args[0] === 'plan-fixes') return v2Plan(fixes, fixGroups);
     if (args[0] === 'commit-fix') return { committed: true, sha: 'fixed', resolvedFindingIds: ['correctness:b'] };
     if (args[0] === 'record') return { decision: { continue: false, converged: true }, handoff: 'LGTM' };
+    if (args[0] === 'verify-needed') return REQUIRED_VERIFY;
     throw new Error(`unexpected CLI ${args[0]}`);
   };
   const spawn = async ({ role, prompt }) => { if (role === 'fix') fixPrompts.push(prompt); return { status: 0 }; };
@@ -1308,10 +1321,48 @@ test('runner automatically executes a clean round in correctness then verify ord
   const out = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn });
   assert.strictEqual(out.handoff, 'LGTM');
   assert.deepStrictEqual(h.calls.map((c) => c[0] === 'spawn' ? c.slice(0, 2) : c.slice(0, 2)), [
-    ['cli', 'round-start'], ['cli', 'telemetry-slot'], ['spawn', 'correctness'], ['cli', 'artifact-normalize'], ['cli', 'telemetry-slot'], ['spawn', 'verify'], ['cli', 'artifact-normalize'], ['cli', 'telemetry-slot'], ['spawn', 'plan'], ['cli', 'artifact-normalize'], ['cli', 'plan-fixes'], ['cli', 'telemetry-slot'], ['spawn', 'fix'], ['cli', 'telemetry-slot'], ['spawn', 'certify'], ['cli', 'commit-fix'], ['cli', 'record'],
+    ['cli', 'round-start'], ['cli', 'telemetry-slot'], ['spawn', 'correctness'], ['cli', 'artifact-normalize'], ['cli', 'verify-needed'], ['cli', 'telemetry-slot'], ['spawn', 'verify'], ['cli', 'artifact-normalize'], ['cli', 'telemetry-slot'], ['spawn', 'plan'], ['cli', 'artifact-normalize'], ['cli', 'plan-fixes'], ['cli', 'telemetry-slot'], ['spawn', 'fix'], ['cli', 'telemetry-slot'], ['spawn', 'certify'], ['cli', 'commit-fix'], ['cli', 'record'],
   ]);
   assert.ok(h.calls.filter((call) => call[0] === 'cli' && call[1] === 'telemetry-slot').every((call) => call.slice(-2).join(' ') === '--engine codex'));
   assert.strictEqual(fs.existsSync(path.join(h.stateDir, 'telemetry-feature-x.json')), false);
+});
+
+test('a round whose finders report nothing launches no verify or plan subprocess', async () => {
+  const stateDir = temp();
+  const calls = [];
+  const cli = (args) => {
+    calls.push(args[0]);
+    if (args[0] === 'round-start') return { decision: 'work', round: 1, stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false };
+    if (args[0] === 'artifact-normalize') return { status: 'ok' };
+    if (args[0] === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
+    if (args[0] === 'verify-needed') return { verify: 'not-needed', plan: 'not-needed' };
+    if (args[0] === 'plan-fixes') return v2Plan([]);
+    if (args[0] === 'record') return { decision: { continue: false, converged: true }, handoff: 'LGTM' };
+    throw new Error(`unexpected CLI ${args[0]}`);
+  };
+  const roles = [];
+  const spawn = async ({ role }) => { roles.push(role); return { status: 0 }; };
+  const out = await runReviewUntilGreen({ ref: 'feature/empty', repoRoot: '/repo', runCli: cli, spawn });
+  assert.strictEqual(out.handoff, 'LGTM');
+  assert.deepStrictEqual(roles, ['correctness']);
+  assert.ok(calls.indexOf('verify-needed') > calls.indexOf('artifact-normalize') && calls.indexOf('verify-needed') < calls.indexOf('plan-fixes'));
+});
+
+test('a pair-gate round whose finders report nothing launches only gate-verify after correctness and gate', async () => {
+  const stateDir = temp();
+  const roles = [];
+  const cli = (args) => {
+    if (args[0] === 'round-start') return { decision: 'work', round: 1, stateDir, targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: true, gateMode: 'pair' };
+    if (args[0] === 'artifact-normalize') return { status: 'ok' };
+    if (args[0] === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: args[2], attempt: 1 };
+    if (args[0] === 'verify-needed') { assert.deepStrictEqual(roles.slice().sort(), ['correctness', 'gate']); return { verify: 'not-needed', plan: 'not-needed' }; }
+    if (args[0] === 'plan-fixes') return v2Plan([]);
+    if (args[0] === 'record') return { decision: { continue: false, converged: true }, handoff: 'LGTM' };
+    throw new Error(`unexpected CLI ${args[0]}`);
+  };
+  const spawn = async ({ role }) => { roles.push(role); return { status: 0 }; };
+  await runReviewUntilGreen({ ref: 'feature/pair', repoRoot: '/repo', runCli: cli, spawn });
+  assert.deepStrictEqual(roles.slice().sort(), ['correctness', 'gate', 'gate-verify']);
 });
 
 test('runner records slots when the review state directory contains whitespace', async () => {
@@ -2014,6 +2065,7 @@ test('base broad pools both finder artifacts before launching both verifiers', a
     if (verb === 'telemetry-slot') return { engine: 'codex', provider: 'openai', artifactPath: role, attempt: 1 };
     if (verb === 'plan-fixes') return { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] };
     if (verb === 'record') return { decision: { continue: false }, handoff: 'LGTM' };
+    if (verb === 'verify-needed') return REQUIRED_VERIFY;
     throw new Error(`unexpected CLI ${verb} ${role}`);
   };
   const spawn = ({ role, prompt }) => {
@@ -2086,6 +2138,7 @@ test('panel lens prompts identify the reviewed diff and require the intent sourc
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
     if (verb === 'gate-panel-round-record') return { status: 'done' };
+    if (verb === 'verify-needed') return REQUIRED_VERIFY;
     throw new Error(`unexpected CLI ${verb}`);
   };
   const spawn = ({ role, prompt }) => {
@@ -2122,6 +2175,7 @@ test('panel lens and adversarial-vote prompts carry the blocked-tool clause', as
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
     if (verb === 'gate-panel-round-record') return { status: 'done' };
+    if (verb === 'verify-needed') return REQUIRED_VERIFY;
     throw new Error(`unexpected CLI ${verb}`);
   };
   const spawn = ({ role, prompt }) => {
@@ -2173,6 +2227,7 @@ test('panel lens and adversarial-vote prompts end with the review CLI sentence (
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
     if (verb === 'gate-panel-round-record') return { status: 'done' };
+    if (verb === 'verify-needed') return REQUIRED_VERIFY;
     throw new Error(`unexpected CLI ${verb}`);
   };
   const spawn = ({ role, prompt }) => {
@@ -2207,6 +2262,7 @@ test('an adversarial vote that declares blocked fails the round instead of count
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
     if (verb === 'gate-panel-round-record') return { status: 'done' };
+    if (verb === 'verify-needed') return REQUIRED_VERIFY;
     throw new Error(`unexpected CLI ${verb}`);
   };
   const spawn = ({ role }) => {
@@ -2246,6 +2302,7 @@ test('a failed panel lens is treated as zero findings while the remaining lenses
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
     if (verb === 'gate-panel-round-record') return { status: 'done' };
+    if (verb === 'verify-needed') return REQUIRED_VERIFY;
     throw new Error(`unexpected CLI ${verb}`);
   };
   const spawn = ({ role }) => {
@@ -2276,6 +2333,7 @@ test('an interrupted panel lens waits for every launched sibling before the runn
     if (verb === 'plan-fixes') return { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] };
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
+    if (verb === 'verify-needed') return REQUIRED_VERIFY;
     throw new Error(`unexpected CLI ${verb}`);
   };
   const spawn = ({ role }) => {
@@ -2314,6 +2372,7 @@ test('an interrupted adversarial vote waits for every sibling before the runner 
     if (verb === 'plan-fixes') return { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] };
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
+    if (verb === 'verify-needed') return REQUIRED_VERIFY;
     throw new Error(`unexpected CLI ${verb}`);
   };
   const spawn = ({ role, prompt }) => {
@@ -2367,6 +2426,7 @@ test('panel lenses and each finding\'s adversarial votes fan out concurrently', 
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
     if (verb === 'gate-panel-round-record') return { status: 'done' };
+    if (verb === 'verify-needed') return REQUIRED_VERIFY;
     throw new Error(`unexpected CLI ${verb}`);
   };
   const spawn = ({ role }) => {
@@ -2411,6 +2471,7 @@ test('panel candidates with unsafe IDs never reach an interpolated verdict path'
     if (verb === 'record') return recorded++ === 0 ? { decision: { panelPending: true } } : { decision: { continue: false }, handoff: 'LGTM' };
     if (verb === 'gate-panel-round-start') return { round: 1, rejectedIds: [] };
     if (verb === 'gate-panel-round-record') return { status: 'done' };
+    if (verb === 'verify-needed') return REQUIRED_VERIFY;
     throw new Error(`unexpected CLI ${verb}`);
   };
   const spawn = ({ role }) => {

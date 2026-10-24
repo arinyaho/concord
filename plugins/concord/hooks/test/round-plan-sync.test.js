@@ -367,3 +367,15 @@ test('every driver copy spells the plan artifact envelope the validator requires
     assert.ok(text.includes('ONLY the v2 plan JSON `' + envelope + '`'), `${name} plan step must name ${envelope} so a planner does not omit "status"`);
   }
 });
+
+// #466: every native driver asks the CLI whether verify and plan run, and reserves neither before the answer.
+test('every driver runs verify-needed before reserving verify or plan', () => {
+  const files = ['plugins/concord/core/review-driver.md', 'plugins/concord/commands/review-and-fix.md', 'plugins/concord-copilot/skills/review-and-fix/references/review-driver.md'];
+  for (const file of files) {
+    const text = fs.readFileSync(path.join(__dirname, '..', '..', '..', '..', file), 'utf8');
+    assert.match(text, /verify-needed <ref>/, file);
+    assert.match(text, /verify: not-needed, plan: not-needed/, file);
+    assert.match(text, /Reserve `correctness` \(and `intent`, `gate-review`, `gate-verify` for the roles this round will launch; `verify` and `plan` are reserved only after step 3/, file);
+    assert.match(text, /Only when step 3 answered `plan: required`/, file);
+  }
+});
