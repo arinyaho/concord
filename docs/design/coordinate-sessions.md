@@ -8,6 +8,8 @@ The skill lives in `plugins/concord/skills/coordinate-sessions/` and is named in
 
 A worker is a separate Claude Code session created with `create_session`. It runs on its own and knows only the prompt it was given. A subagent started with the Agent tool is not a worker: it returns its result to the session that started it, so neither channel below applies to it. Local CLI sessions are out of scope, because no tool can create one.
 
+The `project-manager` agent (`plugins/concord/agents/project-manager.md`, Opus) runs a rollout that spans several PRs and repositories. It re-queries the real state from the newest handoff file, sets the merge order and gates, hands work out, verifies delivery, and writes the next handoff. It delegates session mechanics to this skill and applies the same merge rule: the `record-delivery` state of the PR's current head is binding, a head recorded `blocked` never merges, and a head recorded `mergeable-without-review` is the user's decision. It additionally confirms with the user before the first merge of a rollout. It is Claude-only for the same reason as the skill and is not copied into the Codex or Copilot packages.
+
 ## Environment
 
 The coordinator first calls `get_session` without a `session_id` and reads `environment_kind`. That value decides what the coordinator can do; text in its system prompt does not, because a session on the user's own machine (`bridge`) can carry a system prompt that describes an isolated cloud container. The skill states this and defines "create a session" as a `create_session` call, so a session that reads its system prompt as a cloud container still knows what the request means.
