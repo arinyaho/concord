@@ -22,6 +22,8 @@ Each reviewer, fixer, panel lens, and panel vote reserves one launch through an 
 
 The Codex runner spawns its reviewers from code, so it reserves each launch itself immediately before spawning it. The reservation is a physical gate.
 
+The initiative state directory is not a writable root of any reviewer sandbox: a reviewer that could write the run ledger could rewrite reservations or dispositions, which would void the gate. Every verb that writes the ledger therefore runs in the parent driver, and each reviewer prompt, native or Codex, states that the reviewer runs only read-only verbs, never passes `--initiative-*` flags, and never reports a driver verb as `blocked`. Adding the directory as a writable root was rejected for that reason; moving the ledger write into the driver is already the runner's design, so the fix is the prompt clause, not a launch argument. Keyed and unkeyed launches use the same sandbox arguments.
+
 ### Native drivers: enforcement at evidence acceptance
 
 Native reviewers, fixers, panel lenses, and votes are spawned by the host model following the driver prose, not by code. The CLI sees only the artifacts they leave behind, so it cannot prevent a launch. The guarantee is instead that an unreserved launch cannot produce accepted evidence.
