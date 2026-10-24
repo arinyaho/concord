@@ -67,7 +67,7 @@ function sh(bin, args, opts = {}) {
 // to core/target.js (the target-acquisition seam). They are re-imported above so
 // existing call sites and the module's public surface stay unchanged.
 function gitCommitFix(repoRoot, findingId, summary, files) {
-  // Stage only the files the fix declares -- never `-A`. A whole-tree
+  // Stage only the files the fix declares -- never `-A` on the whole tree. A whole-tree
   // `git add -A` sweeps in any other dirty content (untracked non-gitignored
   // dirs, a crash-recovery leftover, a driver-contract violation) and
   // silently mis-attributes it to this finding's commit. `files` is a list:
@@ -76,7 +76,17 @@ function gitCommitFix(repoRoot, findingId, summary, files) {
   // fix subagent declared must land in the same attributed commit, or the
   // companion edit is left dirty and parks the run in record().
   const fileList = Array.isArray(files) ? files : [files];
-  sh('git', ['add', '--', ...fileList], { cwd: repoRoot });
+  // `-A` limited to the declared pathspecs records a removal (a deleted or
+  // renamed-away path) without touching any undeclared dirty file. A path the
+  // fixer already removed with `git mv`/`git rm` is in neither the index nor
+  // the worktree, so `git add` would reject it; its removal is already staged.
+  // Pathspecs can match directory contents, so compare exact path strings.
+  const listed = (args) => new Set(sh('git', args, { cwd: repoRoot }).split('\0'));
+  const inIndex = listed(['ls-files', '-z', '--', ...fileList]);
+  const inHead = listed(['ls-tree', '-r', '--name-only', '-z', 'HEAD', '--', ...fileList]);
+  const alreadyStagedRemoval = (file) => !fs.existsSync(path.join(repoRoot, file)) && !inIndex.has(file) && inHead.has(file);
+  const stageable = fileList.filter((file) => !alreadyStagedRemoval(file));
+  if (stageable.length) sh('git', ['add', '-A', '--', ...stageable], { cwd: repoRoot });
   // -F - (read the message from stdin) instead of -m '<multi-line message>':
   // a GitHub Codex review on this exact code (PR #113) caught that on
   // Windows, crossPlatformOpts' shell:true routes this through cmd.exe, and
@@ -484,11 +494,23 @@ function readChangeManifest(stateDir, ledger, ref, n) {
 // reviewed head equal those of an examined changed path is covered: the
 // generated bundle copies are byte copies of their source, which bundle-drift
 // tests enforce. A deleted path has no blob and must be listed by name.
-function unexaminedPaths(repoRoot, ledger, changed, examinedList) {
+function unexaminedPaths(repoRoot, ledger, changed, examinedList, base) {
   const examined = new Set(examinedList);
   const head = ledger.target?.head_sha;
-  const missing = changed.filter((file) => !examined.has(file));
+  let missing = changed.filter((file) => !examined.has(file));
   if (!missing.length || !head) return missing;
+  // The old path of a rename between the round's base and head has no blob at
+  // head; it is covered once the reviewer lists the new path. A deleted path
+  // keeps the rule above: it must be listed by name.
+  if (base) {
+    try {
+      const f = sh('git', ['diff', '--name-status', '-M', '-z', base, head], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] }).split('\0');
+      const renamedTo = new Map();
+      for (let i = 0; i < f.length; i++) if (/^R/.test(f[i])) { renamedTo.set(f[i + 1], f[i + 2]); i += 2; } else i += 1;
+      missing = missing.filter((file) => !(renamedTo.has(file) && examined.has(renamedTo.get(file))));
+    } catch (_) { /* no rename information: fall back to the by-name rule */ }
+    if (!missing.length) return missing;
+  }
   // One batched call resolves every path's blob at head; a path absent at head has none.
   const files = [...new Set(changed)];
   let out;
@@ -498,8 +520,11 @@ function unexaminedPaths(repoRoot, ledger, changed, examinedList) {
   return missing.filter((file) => !covered.has(blobs.get(file)));
 }
 
-function readChangedPaths(stateDir, ledger, ref, n) {
-  return readChangeManifest(stateDir, ledger, ref, n)?.paths || [];
+// The round's changed paths with the manifest's own base, so rename detection
+// diffs the same range the manifest was built from.
+function readChangedRange(stateDir, ledger, ref, n) {
+  const manifest = readChangeManifest(stateDir, ledger, ref, n);
+  return { paths: manifest?.paths || [], baseSha: manifest?.target.baseSha };
 }
 
 // Fail-closed gate artifact read (design invariant: a broken/missing gate must
@@ -1200,8 +1225,9 @@ function verifiedRound(ref, stateDir, run, what) {
   if (isGit) {
     // Use the changed-path manifest saved with this round's diff. Do not
     // re-run git against a mutable ref while folding reviewer evidence.
-    changed = readChangedPaths(stateDir, ledger, ref, n);
-    const missing = unexaminedPaths(repoRoot, ledger, changed, Array.isArray(cJson.examined) ? cJson.examined : []);
+    const range = readChangedRange(stateDir, ledger, ref, n);
+    changed = range.paths;
+    const missing = unexaminedPaths(repoRoot, ledger, changed, Array.isArray(cJson.examined) ? cJson.examined : [], range.baseSha);
     if (missing.length) throw new Error(`harness-failure: coverage -- changed file(s) never examined: ${missing.join(', ')}`);
   }
   const verdict = gc.parseVerifyVerdict(JSON.stringify({ rejected: vJson.rejected || [] }), candidates);
@@ -1587,8 +1613,9 @@ function runVerb(resolveFromCwd, args, initiative) {
       // problem only after verify has already run. File targets hold document
       // contents, not a unified diff, so their examined list stays advisory.
       if (name === 'correctness' && (!ledger.target || ledger.target.type === 'git')) {
-        const changed = readChangedPaths(stateDir, ledger, ref, n);
-        const missing = unexaminedPaths(process.env.REVIEW_REPO_ROOT || process.cwd(), ledger, changed, canonical.examined);
+        const range = readChangedRange(stateDir, ledger, ref, n);
+        const changed = range.paths;
+        const missing = unexaminedPaths(process.env.REVIEW_REPO_ROOT || process.cwd(), ledger, changed, canonical.examined, range.baseSha);
         if (missing.length) {
           // Only the reviewer can say it read a file, so the CLI cannot repair this: record one corrective re-run
           // for the resumed round (the reviewer's incomplete artifact is deleted there) and end this attempt.
@@ -2690,8 +2717,9 @@ function runVerb(resolveFromCwd, args, initiative) {
     const examinedForOutcome = () => {
       const listed = Array.isArray(cJson.examined) ? cJson.examined : [];
       if (!isGit) return listed;
-      const changed = readChangedPaths(stateDir, ledger, ref, n);
-      const missing = new Set(unexaminedPaths(repoRoot, ledger, changed, listed));
+      const range = readChangedRange(stateDir, ledger, ref, n);
+      const changed = range.paths;
+      const missing = new Set(unexaminedPaths(repoRoot, ledger, changed, listed, range.baseSha));
       return [...new Set([...listed, ...changed.filter((file) => !missing.has(file))])];
     };
     const outcome = {
