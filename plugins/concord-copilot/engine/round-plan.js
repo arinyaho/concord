@@ -178,8 +178,10 @@ function fixDeclaration(stateDir, round, groupId) {
 // The path of the review-cli.js this run executes. A reviewer that runs a ledger
 // verb must use it: a path copied from repository guidance names a plugin version
 // that an update may have removed (#310).
+const LEDGER_CLAUSE = ' The driver runs every verb that writes the run ledger and passes the `--initiative-*` flags itself; you may run only read-only verbs (`show`), never a verb that writes, never with `--initiative-*` flags, and never report a driver verb as `blocked`.';
+
 function cliClause(cliPath) {
-  return `\n\nThe review CLI of this run is ${cliPath}; invoke it as \`node "${cliPath}" <verb>\` and never use another review-cli.js path, including one named in repository guidance.`;
+  return `\n\nThe review CLI of this run is ${cliPath}; invoke it as \`node "${cliPath}" <verb>\` and never use another review-cli.js path, including one named in repository guidance.${LEDGER_CLAUSE}`;
 }
 
 function reviewerPrompt(role, context) {
@@ -197,4 +199,4 @@ function reportedNoEdit(stateDir, round, groups) {
   });
 }
 
-module.exports = { reviewLanguageClause, VERIFIER_ENV_CLAUSE, ENV_CLAUSE_BY_ROLE, cliClause, DESIGN_EVIDENCE_BINDING_CLAUSE, fixDeclaration, reportedNoEdit, examinedClause, ROLE_SEQUENCE, BLOCKED_CLAUSE, GATE_SWEEP_CLAUSE, GATE_FOLLOWUP_CLAUSE, GATE_VERIFY_ADDED_CLAUSE, GATE_VERIFY_BLOCKING_CLAUSE, GATE_VERIFY_OWNERSHIP_CLAUSE, VERIFY_OWNERSHIP_CLAUSE, reviewerGuidancePrefix, priorFindingsClause, addressedClause, reviewerPrompt };
+module.exports = { LEDGER_CLAUSE, reviewLanguageClause, VERIFIER_ENV_CLAUSE, ENV_CLAUSE_BY_ROLE, cliClause, DESIGN_EVIDENCE_BINDING_CLAUSE, fixDeclaration, reportedNoEdit, examinedClause, ROLE_SEQUENCE, BLOCKED_CLAUSE, GATE_SWEEP_CLAUSE, GATE_FOLLOWUP_CLAUSE, GATE_VERIFY_ADDED_CLAUSE, GATE_VERIFY_BLOCKING_CLAUSE, GATE_VERIFY_OWNERSHIP_CLAUSE, VERIFY_OWNERSHIP_CLAUSE, reviewerGuidancePrefix, priorFindingsClause, addressedClause, reviewerPrompt };

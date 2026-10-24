@@ -323,12 +323,12 @@ test('classify asks correctness and verify for releaseBlocking and rationale; wi
   const sha = (text) => crypto.createHash('sha256').update(text).digest('hex');
   const context = { stateDir: '/state', round: 1, targetType: 'git', slug: 'feat-x', gateApplied: false, cliPath: '/cli.js' };
   const golden = {
-    correctness: '5fb0201957fc7632898c57d04da3ddcc80b557945cb881db5284f1e158a4f5f8',
-    verify: 'c866bbcfc953e1734d6cf0f1a23c79c4d04b46549fe2d3d472a117adec542f79',
+    correctness: 'e334addedf8506cc6796c0a3a942e51b7f0983fecaeb0d0503584b6c22292178',
+    verify: '229140f1fc69198f2fe25482f5359217955f5d3f054350b3f6779e6bfa2f1bb9',
   };
   const goldenBroad = {
-    correctness: '43b719cbd953a43eaf3f37310848afbae27ed50eac36528c85252423592ec16d',
-    verify: '91eebf0cd51c43222cc4c9b6acb1cc3b87a366bcdc0de3dd05cf8bc662a97751',
+    correctness: 'd7c2233aa782f92de827947cdaaa6f150d0089172ecc7324f1a11096f30aa0ad',
+    verify: '854242f6306384680bb42f60c2aed6a751f96cb8de9e4981092a19bf0a47ebd4',
   };
   for (const role of ['correctness', 'verify']) {
     assert.equal(sha(reviewerPrompt(role, context)), golden[role], `${role} prompt changed without classify`);

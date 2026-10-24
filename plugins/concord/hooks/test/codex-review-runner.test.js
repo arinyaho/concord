@@ -12,6 +12,7 @@ const { fileTarget } = require('../../core/target');
 
 // The runner owns all sequencing. Its subprocess seam makes this a no-network
 // integration test while exercising the real artifact contract at the boundary.
+const { LEDGER_CLAUSE } = require('../../core/round-plan');
 const { runReviewUntilGreen, reviewCodexConfig, reviewerPrompt, codexExec, providerExec, resolveCodexExecutable, resolveDefaultBase } = require('../../core/codex-review-runner');
 const { reviewerPrompt: packagedReviewerPrompt } = require('../../../concord-codex/engine/codex-review-runner');
 const { tempDir } = require('./temp-dir');
@@ -825,7 +826,7 @@ test('every native driver document tells the driver to end each subagent prompt 
   const root = path.resolve(__dirname, '..', '..');
   for (const file of ['commands/review-and-fix.md', 'core/review-driver.md', '../concord-copilot/skills/review-and-fix/references/review-driver.md']) {
     const text = fs.readFileSync(path.join(root, file), 'utf8');
-    assert.match(text, /End EVERY subagent prompt you spawn \(review-class and fixer\) with this sentence: `The review CLI of this run is .*never use another review-cli\.js path, including one named in repository guidance\.`/, file);
+    assert.match(text, /End EVERY subagent prompt you spawn \(review-class and fixer\) with this sentence: `The review CLI of this run is .*never use another review-cli\.js path, including one named in repository guidance\. The driver runs every verb that writes the run ledger .*never report a driver verb as \\`blocked\\`\.` A review-cli\.js/, file);
   }
 });
 
@@ -2139,7 +2140,7 @@ test('panel lens and adversarial-vote prompts end with the review CLI sentence (
 
   const panelPrompts = prompts.filter(({ role }) => role.startsWith('gate-panel-'));
   assert.strictEqual(panelPrompts.length, 8); // 5 lenses + 3 votes
-  for (const { role, prompt } of panelPrompts) assert.ok(prompt.endsWith(`The review CLI of this run is ${cliPath}; invoke it as \`node "${cliPath}" <verb>\` and never use another review-cli.js path, including one named in repository guidance.`), `${role} prompt must end with the CLI sentence`);
+  for (const { role, prompt } of panelPrompts) assert.ok(prompt.endsWith(`The review CLI of this run is ${cliPath}; invoke it as \`node "${cliPath}" <verb>\` and never use another review-cli.js path, including one named in repository guidance.${LEDGER_CLAUSE}`), `${role} prompt must end with the CLI sentence`);
 });
 
 test('an adversarial vote that declares blocked fails the round instead of counting as a refutation', async () => {
@@ -3841,4 +3842,57 @@ test('reviewOnly: the coverage re-run survives the CLI rewriting the protected l
     assert.doesNotMatch(error.message, /protected review artifact changed/);
   }
   assert.ok(normalizes >= 2, 'the re-run must reach its second normalize');
+});
+
+test('every reviewer prompt tells the reviewer the driver owns the ledger verbs (#451)', () => {
+  const finding = { id: 'correctness:a', file: 'a.js', span: 'bad a', summary: 'symptom' };
+  const group = { groupId: 'g', findingIds: [finding.id], rootCause: 'r', invariants: ['i'], changeClass: 'local', action: 'fix', findings: [finding] };
+  const context = { stateDir: '/state', round: 1, targetType: 'git', slug: 'feat-x', intentHash: 'abc', cliPath: '/run/review-cli.js', finding, fixGroup: group, plannedFindings: group.findings };
+  for (const role of ['correctness', 'verify', 'intent', 'gate', 'gate-verify', 'plan', 'fix', 'certify']) {
+    const prompt = reviewerPrompt(role, context);
+    assert.ok(prompt.endsWith(LEDGER_CLAUSE), `${role} prompt must end with the ledger clause`);
+    assert.match(prompt, /only read-only verbs/);
+    assert.match(prompt, /never with \`--initiative-\*\` flags/);
+  }
+  assert.ok(!reviewerPrompt('plan', { ...context, cliPath: undefined }).includes('read-only verbs'), 'no CLI path, no CLI clause');
+});
+
+test('a keyed plan stage with the initiative state dir outside the worktree reaches its verdict (#451)', async () => {
+  const h = harness();
+  const initiativeStateDir = temp();
+  const cli = (args) => {
+    if (args[0] === 'reserve') return { status: 'granted' };
+    if (args[0] === 'artifact-normalize' && args[2] === 'plan' && JSON.parse(fs.readFileSync(path.join(h.stateDir, 'round-1-plan.json'), 'utf8')).status === 'blocked') {
+      throw new Error('harness-failure: plan reviewer blocked: review-cli plan-fixes: EPERM creating the initiative ledger lock');
+    }
+    return h.cli(args);
+  };
+  // A sandboxed reviewer cannot write the initiative lock: it hits EPERM only when its prompt lets it run a ledger verb.
+  const spawn = (input) => {
+    const result = h.spawn(input);
+    if (input.role === 'plan' && !input.prompt.includes(LEDGER_CLAUSE)) {
+      fs.writeFileSync(path.join(h.stateDir, 'round-1-plan.json'), JSON.stringify({ status: 'blocked', reason: 'EPERM creating the initiative ledger lock' }));
+    }
+    return result;
+  };
+  const result = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', runCli: cli, spawn, cliPath: '/run/review-cli.js',
+    initiativeRunKey: 'ext-state', initiativeStateDir, initiativeMaxLaunches: 20, initiativeMaxRounds: 5 });
+  assert.notStrictEqual(result.decision, 'error');
+  assert.ok(h.calls.some((call) => call[0] === 'cli' && call[1] === 'plan-fixes'), 'the driver ran plan-fixes itself');
+});
+
+test('keyed and unkeyed reviewer launches use the same codex arguments (#451)', async () => {
+  const run = async (initiative) => {
+    const dir = temp();
+    const dump = path.join(dir, 'args.json');
+    const codex = path.join(dir, 'codex');
+    fs.writeFileSync(codex, `#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(dump)}, JSON.stringify(process.argv.slice(2)));\nif (process.argv.includes('--version')) process.stdout.write('codex-cli 0.155.0\\n');\n`);
+    fs.chmodSync(codex, 0o755);
+    await codexExec({ role: 'plan', prompt: 'p', repoRoot: dir, stateDir: '/state', codexExecutable: { command: codex, version: 'codex-cli 0.155.0' }, ...initiative });
+    return JSON.parse(fs.readFileSync(dump, 'utf8'));
+  };
+  const unkeyed = await run({});
+  const keyed = await run({ initiativeStateDir: '/outside/initiative' });
+  assert.deepStrictEqual(keyed.map((a) => a.replace(/^.*codex-runner-[^/]*/, '<dir>')), unkeyed.map((a) => a.replace(/^.*codex-runner-[^/]*/, '<dir>')));
+  assert.ok(!keyed.includes('/outside/initiative'), 'the initiative state directory is not a writable root');
 });
