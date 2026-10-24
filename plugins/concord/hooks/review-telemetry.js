@@ -7,7 +7,8 @@ const { resolveStateDirFromTranscript } = require('../adapters/claude-code/state
 try {
   const event = JSON.parse(fs.readFileSync(0, 'utf8'));
   const override = process.env.REVIEW_STATE_DIR;
-  const stateDir = override && override.trim() ? override : resolveStateDirFromTranscript(event.transcript_path || '');
+  const trusted = override && override.trim() ? override : resolveStateDirFromTranscript(event.transcript_path || '');
+  const stateDir = telemetry.stateDirForEvent(event, trusted);
   const record = telemetry.recordForEvent(event, stateDir);
   if (record) telemetry.writeRecord(stateDir, record);
 } catch {

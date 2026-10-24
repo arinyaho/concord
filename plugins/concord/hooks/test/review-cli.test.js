@@ -3489,6 +3489,16 @@ test('a Codex-owned slot without runner evidence stays visible but is not counte
   run(['plan-fixes', 'feat/codex-slots'], { env });
   const recorded = JSON.parse(run(['record', 'feat/codex-slots'], { env }));
   assert.match(recorded.handoff, /review usage: unknown tokens across 0 call\(s\), 0 partial, 1 missing/);
+  assert.match(recorded.handoff, /review usage incomplete: 1 slot\(s\) have no hook record/);
+});
+
+test('handoff names the unsupported Claude Code version behind partial usage', () => {
+  const ledger = review.emptyLedger('feat/x');
+  ledger.telemetry = { calls: 2, partialCalls: 2, totalTokens: 40, unsupportedCliVersionCalls: 2, unsupportedCliVersions: ['2.1.999'] };
+  const handoff = cli.renderHandoff({ ledger });
+  assert.match(handoff, /review usage: 40 tokens across 2 call\(s\), 2 partial/);
+  assert.match(handoff, /review usage incomplete: 2 call\(s\) ran on unsupported Claude Code version 2\.1\.999/);
+  assert.ok(!handoff.includes('incomplete or inconsistent'), 'unsupported-version calls are not double counted as generic partial');
 });
 
 test('round-start: --no-dod starts a run in a repo with no review.config.json at all', () => {

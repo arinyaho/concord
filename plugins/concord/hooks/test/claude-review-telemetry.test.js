@@ -1059,3 +1059,79 @@ test('an unrelated unreadable ledger file in the state dir is skipped, not throw
     assert.ok(record, 'the valid ledger is still matched despite the corrupt sibling');
   });
 });
+
+function worktreeRun({ slotted = true } = {}) {
+  const session = setup();
+  const runDir = tempDir('claude-review-worktree-state-');
+  const artifactPath = path.join(runDir, 'round-2-correctness.json');
+  fs.writeFileSync(path.join(runDir, 'review-feat-x.json'), JSON.stringify({
+    target: { ref: 'feat/x' }, status: 'converging', phase: 'gates', round: 2,
+    telemetrySlots: slotted ? [{ engine: 'claude-code', provider: 'anthropic', artifactPath, attempt: 1, role: 'correctness', round: 2 }] : [],
+  }));
+  return { ...session, runDir, artifactPath };
+}
+
+function runHook(input) {
+  const result = spawnSync(process.execPath, [HOOK], { encoding: 'utf8', env: { ...process.env, REVIEW_STATE_DIR: '' }, input: JSON.stringify(input) });
+  assert.strictEqual(result.status, 0, result.stderr);
+  assert.strictEqual(result.stdout, '');
+  assert.strictEqual(result.stderr, '');
+}
+
+const records = (dir) => fs.readdirSync(dir).filter((name) => /^review-(agent-)?telemetry-/.test(name));
+
+test('hook records into the CLI state directory when it differs from the session transcript state directory', () => {
+  const { transcript, stateDir, runDir, artifactPath } = worktreeRun();
+  runHook(event({ transcript, id: 'worktree-run', prompt: `Write ONLY to ${artifactPath}`, response: successfulResponse() }));
+  assert.strictEqual(records(runDir).length, 1);
+  assert.deepStrictEqual(records(stateDir), []);
+});
+
+test('hook follows a SubagentStop into the CLI state directory', () => {
+  const { transcript, runDir, artifactPath } = worktreeRun();
+  runHook(event({ transcript, id: 'worktree-run', prompt: `Write ONLY to ${artifactPath}`, response: successfulResponse() }));
+  const childTranscript = writeSubagentTranscript(transcript, [
+    { type: 'user', agentId: 'agent-7', message: { content: `Write ONLY to ${artifactPath}` } },
+    assistantRow({ requestId: 'req-1', messageId: 'msg-1', input: 1, create: 0, read: 0, output: 1 }),
+  ]);
+  runHook({ hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-7', agent_transcript_path: childTranscript, last_assistant_message: 'done' });
+  assert.strictEqual(records(runDir).filter((name) => name.startsWith('review-agent-telemetry-')).length, 1);
+});
+
+test('hook writes nothing for an output path in a directory without a matching telemetry slot', () => {
+  const unslotted = worktreeRun({ slotted: false });
+  runHook(event({ transcript: unslotted.transcript, prompt: `Write ONLY to ${unslotted.artifactPath}`, response: successfulResponse() }));
+  assert.deepStrictEqual(records(unslotted.runDir), []);
+  assert.deepStrictEqual(records(unslotted.stateDir), []);
+
+  const plain = tempDir('claude-review-not-a-state-dir-');
+  const { transcript } = setup();
+  runHook(event({ transcript, prompt: `Write ONLY to ${path.join(plain, 'round-2-correctness.json')}`, response: successfulResponse() }));
+  assert.deepStrictEqual(fs.readdirSync(plain), []);
+});
+
+test('hook does not record a slotted path under a different engine', () => {
+  const { transcript, runDir, artifactPath } = worktreeRun();
+  const ledgerPath = path.join(runDir, 'review-feat-x.json');
+  const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+  ledger.telemetrySlots[0].engine = 'codex';
+  fs.writeFileSync(ledgerPath, JSON.stringify(ledger));
+  runHook(event({ transcript, prompt: `Write ONLY to ${artifactPath}`, response: successfulResponse() }));
+  assert.deepStrictEqual(records(runDir), []);
+});
+
+test('accepts a synthetic current-version (2.1.309) subagent transcript as complete usage', () => {
+  const { transcript, stateDir } = setup();
+  recordActiveTool(transcript, stateDir);
+  const fixture = path.join(__dirname, 'fixtures', 'claude-subagent-2.1.309-synthetic.jsonl');
+  const childTranscript = writeSubagentTranscript(transcript, fs.readFileSync(fixture, 'utf8').trim().split('\n').map(JSON.parse));
+
+  const record = core.recordForEvent({
+    hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-7',
+    agent_transcript_path: childTranscript, last_assistant_message: 'done',
+  }, stateDir);
+
+  assert.strictEqual(record.usagePartial, false);
+  assert.strictEqual(record.usageStatus, undefined);
+  assert.strictEqual(record.totalTokens, 2 + 1000 + 50 + 3 + 200 + 1000 + 120);
+});

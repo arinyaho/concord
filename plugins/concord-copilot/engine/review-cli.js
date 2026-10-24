@@ -308,7 +308,17 @@ function renderHandoff(result) {
   if (ledger.engine) lines.push(`reviewer engine: ${ledger.engine}`);
   if ((ledger.cli_derived || []).length) lines.push(`verify and plan derived by review-cli, not run by a reviewer (finder artifacts had no findings): round ${ledger.cli_derived.map((entry) => entry.round).join(', ')}`);
   if (ledger.reviewerGuidance) lines.push(`reviewer guidance: ${JSON.stringify(ledger.reviewerGuidance)}`);
-  if (ledger.telemetry) lines.push(`review usage: ${ledger.telemetry.totalTokens ?? 'unknown'} tokens across ${ledger.telemetry.calls} call(s), ${ledger.telemetry.partialCalls} partial${ledger.telemetry.missingCalls ? `, ${ledger.telemetry.missingCalls} missing` : ''}${ledger.telemetry.malformedCalls ? `, ${ledger.telemetry.malformedCalls} malformed` : ''}`);
+  if (ledger.telemetry) {
+    const t = ledger.telemetry;
+    lines.push(`review usage: ${t.totalTokens ?? 'unknown'} tokens across ${t.calls} call(s), ${t.partialCalls} partial${t.missingCalls ? `, ${t.missingCalls} missing` : ''}${t.malformedCalls ? `, ${t.malformedCalls} malformed` : ''}`);
+    // Name why usage is incomplete: a bare count does not say whether the hook never ran, the Claude Code version is unpinned, or the transcript was unreadable.
+    const causes = [];
+    if (t.missingCalls) causes.push(`${t.missingCalls} slot(s) have no hook record (the telemetry hook did not see that spawn)`);
+    if (t.unsupportedCliVersionCalls) causes.push(`${t.unsupportedCliVersionCalls} call(s) ran on unsupported Claude Code version ${(t.unsupportedCliVersions || []).join(', ') || 'unknown'}`);
+    const otherPartial = t.partialCalls - (t.unsupportedCliVersionCalls || 0);
+    if (otherPartial > 0) causes.push(`${otherPartial} call(s) have incomplete or inconsistent transcript or hook usage`);
+    if (causes.length) lines.push(`review usage incomplete: ${causes.join('; ')}`);
+  }
   for (const r of ledger.runs || []) {
     lines.push(`prior run #${r.run} (${r.engine || 'engine unrecorded'}): ${r.status} -- ${r.rounds} round(s), ${(r.fixed || []).length} fixed, ${(r.parked || []).length} parked, ${(r.killed || []).length} killed${r.reviewerGuidance ? `; guidance ${JSON.stringify(r.reviewerGuidance)}` : ''}`);
   }
