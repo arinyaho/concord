@@ -2,13 +2,16 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { artifactDestinationFromPrompt } = require('../../core/review-artifact');
+const { artifactDestinationFromPrompt, artifactDestinationAnyDir } = require('../../core/review-artifact');
 const { roleFromArtifactSuffix } = require('../../core/review-telemetry');
 const { writeFileAtomic } = require('../../core/atomic-write');
 
 const ACTIVE_STATUSES = new Set(['converging', 'gate-panel-pending', 'intent-review']);
-const TRANSCRIPT_VERSION = '2.1.268';
-const TRANSCRIPT_SCHEMA = `claude-subagent-transcript-${TRANSCRIPT_VERSION}-v1`;
+// Claude Code versions whose recorded subagent transcript fixture the reader is checked
+// against (hooks/test/fixtures). Add a version only together with its fixture. The schema
+// label names the row layout, which 2.1.309 shares with 2.1.268, so it is not per version.
+const SUPPORTED_TRANSCRIPT_VERSIONS = new Set(['2.1.268', '2.1.309']);
+const TRANSCRIPT_SCHEMA = 'claude-subagent-transcript-2.1.268-v1';
 const USAGE_FIELDS = ['input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens', 'output_tokens'];
 
 function nonnegativeInteger(value) {
@@ -181,17 +184,43 @@ function resolvedAgentTranscriptPath(event) {
   } catch { return null; }
 }
 
-function artifactPathFromAgentTranscript(event, stateDir) {
+function promptFromAgentTranscript(event) {
   const transcriptPath = resolvedAgentTranscriptPath(event);
   if (!transcriptPath) return null;
   try {
     const row = JSON.parse(fs.readFileSync(transcriptPath, 'utf8').split(/\r?\n/).find(Boolean));
     if (row?.type !== 'user' || row.agentId !== event.agent_id) return null;
     const content = row.message?.content;
-    const prompt = typeof content === 'string' ? content
+    return typeof content === 'string' ? content
       : (Array.isArray(content) ? content.filter((block) => block?.type === 'text' && typeof block.text === 'string').map((block) => block.text).join('') : null);
-    return artifactFromPrompt(prompt, stateDir)?.artifactPath || null;
   } catch { return null; }
+}
+
+// The run's state directory is the directory of the prompt's single artifact
+// destination, accepted only when an active ledger there holds this engine's
+// telemetry slot for exactly that path (written by the CLI's `telemetry-slot` before
+// the spawn). `trusted` (REVIEW_STATE_DIR or the session transcript's sibling `state`)
+// stays valid without a slot. Anything else yields null, so nothing is written.
+function resolveRunStateDir(prompt, trusted) {
+  const destination = artifactDestinationAnyDir(prompt);
+  const match = destination && path.basename(destination).match(/^round-(\d+)-/);
+  if (!match) return null;
+  const dir = path.dirname(destination);
+  if (dir === path.resolve(trusted)) return trusted;
+  const ledger = activeLedger(dir, Number(match[1]), destination);
+  const slotted = (ledger?.telemetrySlots || []).some((slot) => slot?.engine === 'claude-code' && slot.artifactPath === destination);
+  return slotted ? dir : null;
+}
+
+// The prompt that names the artifact destination: the Agent call's own prompt, or for a
+// SubagentStop (which carries none) the stopped agent's first transcript row.
+function promptForEvent(event) {
+  if (!event || typeof event !== 'object') return null;
+  return event.hook_event_name === 'SubagentStop' ? promptFromAgentTranscript(event) : (event.tool_input && event.tool_input.prompt) ?? null;
+}
+
+function stateDirForPrompt(prompt, trusted) {
+  return resolveRunStateDir(prompt, trusted) || trusted;
 }
 
 function subagentRecord(event, pendingTool) {
@@ -247,8 +276,8 @@ function subagentRecord(event, pendingTool) {
     const messageId = typeof row.message.id === 'string' && row.message.id ? row.message.id : null;
     const model = typeof row.message.model === 'string' && row.message.model ? row.message.model : null;
     const usage = Object.fromEntries(USAGE_FIELDS.map((field) => [field, nonnegativeInteger(row.message.usage[field])]));
-    if (row.version !== TRANSCRIPT_VERSION) unsupportedVersions.add(typeof row.version === 'string' && row.version ? row.version : 'unknown');
-    if (!requestId || !messageId || !model || row.version !== TRANSCRIPT_VERSION || row.agentId !== event.agent_id || Object.values(usage).includes(null)) {
+    if (!SUPPORTED_TRANSCRIPT_VERSIONS.has(row.version)) unsupportedVersions.add(typeof row.version === 'string' && row.version ? row.version : 'unknown');
+    if (!requestId || !messageId || !model || !SUPPORTED_TRANSCRIPT_VERSIONS.has(row.version) || row.agentId !== event.agent_id || Object.values(usage).includes(null)) {
       invalid = true;
       continue;
     }
@@ -296,14 +325,14 @@ function subagentRecord(event, pendingTool) {
   };
 }
 
-function recordForEvent(event, stateDir) {
+function recordForEvent(event, stateDir, prompt) {
   if (!event || typeof event !== 'object') return null;
   if (event.hook_event_name !== 'SubagentStop') return toolRecord(event, stateDir);
   if (!activeLedger(stateDir)) return null;
   const probe = {
     agentId: event.agent_id,
     parentTranscriptPath: typeof event.transcript_path === 'string' ? path.resolve(event.transcript_path) : null,
-    artifactPath: artifactPathFromAgentTranscript(event, stateDir),
+    artifactPath: artifactFromPrompt(prompt === undefined ? promptFromAgentTranscript(event) : prompt, stateDir)?.artifactPath || null,
   };
   const tool = activeReviewTool(stateDir, probe);
   return tool ? subagentRecord(event, tool.agentId === null ? tool : null) : null;
@@ -404,4 +433,4 @@ function writeRecord(stateDir, record) {
   }
 }
 
-module.exports = { artifactFromPrompt, recordForEvent, writeRecord };
+module.exports = { artifactFromPrompt, promptForEvent, recordForEvent, stateDirForPrompt, writeRecord };

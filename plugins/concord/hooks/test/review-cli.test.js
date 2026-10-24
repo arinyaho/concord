@@ -3489,6 +3489,16 @@ test('a Codex-owned slot without runner evidence stays visible but is not counte
   run(['plan-fixes', 'feat/codex-slots'], { env });
   const recorded = JSON.parse(run(['record', 'feat/codex-slots'], { env }));
   assert.match(recorded.handoff, /review usage: unknown tokens across 0 call\(s\), 0 partial, 1 missing/);
+  assert.match(recorded.handoff, /review usage incomplete: 1 slot\(s\) have no hook record/);
+});
+
+test('handoff names the unsupported CLI version behind partial usage', () => {
+  const ledger = review.emptyLedger('feat/x');
+  ledger.telemetry = { calls: 2, partialCalls: 2, totalTokens: 40, unsupportedCliVersionCalls: 2, unsupportedCliVersions: ['2.1.999'] };
+  const handoff = cli.renderHandoff({ ledger });
+  assert.match(handoff, /review usage: 40 tokens across 2 call\(s\), 2 partial/);
+  assert.match(handoff, /review usage incomplete: 2 call\(s\) ran on unsupported CLI version 2\.1\.999/);
+  assert.ok(!handoff.includes('incomplete or inconsistent'), 'unsupported-version calls are not double counted as generic partial');
 });
 
 test('round-start: --no-dod starts a run in a repo with no review.config.json at all', () => {
@@ -7335,4 +7345,16 @@ test('review-cli dismiss: a repeat dismissal keeps the first classification and 
   run(['dismiss', 'feat/x', 'gate:design-conformance:scope', '--by', 'other', '--classification', 'defect', '--reason', 'changed my mind'], { env });
   const [kept] = review.readLedger(dir, slug).gate_dismissed;
   assert.deepStrictEqual({ c: kept.classification, r: kept.classificationReason }, { c: 'design-decision', r: 'the contract settles it' });
+});
+
+test('handoff does not call a Codex CLI version a Claude Code version', () => {
+  const ledger = review.emptyLedger('feat/x');
+  ledger.telemetry = { calls: 1, partialCalls: 1, totalTokens: 5, unsupportedCliVersionCalls: 1, unsupportedCliVersions: ['0.999.0'] };
+  assert.ok(!cli.renderHandoff({ ledger }).includes('Claude Code'));
+});
+
+test('handoff names malformed telemetry records as a cause of incomplete usage', () => {
+  const ledger = review.emptyLedger('feat/x');
+  ledger.telemetry = { calls: 1, partialCalls: 0, totalTokens: 19, malformedCalls: 2 };
+  assert.match(cli.renderHandoff({ ledger }), /review usage incomplete: 2 telemetry record\(s\) could not be read/);
 });
