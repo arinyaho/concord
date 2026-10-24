@@ -482,10 +482,10 @@ function denyAround(root, keep) {
 }
 
 // Codex starts its own binary again inside the sandbox, so the directory it is installed in must stay readable.
-function codexInstallDir() {
+function codexInstallDir(repoRoot) {
   let command;
-  try { command = resolveCodexExecutable(process.cwd(), { env: process.env }).command; } catch (_) { return null; }
-  const candidates = /[\\/]/.test(command) ? [command] : String(process.env.PATH || '').split(path.delimiter).map((dir) => dir && path.join(dir, command));
+  try { command = resolveCodexExecutable(repoRoot, { env: process.env }).command; } catch (_) { return null; }
+  const candidates = /[\\/]/.test(command) ? [path.resolve(repoRoot, command)] : String(process.env.PATH || '').split(path.delimiter).map((dir) => dir && path.join(dir, command));
   for (const candidate of candidates.filter(Boolean)) {
     try {
       const real = fs.realpathSync(candidate);
@@ -501,7 +501,7 @@ function codexInstallDir() {
 // review's own directories. The CODEX_HOME itself is read-only, so a reviewer that could rewrite its
 // config.toml cannot lift the restrictions for every later launch.
 function reviewCodexConfig({ home, sourceAuth, checkout, stateDir, denyRead, runtimeDir, realHome: accountHome = os.homedir() }) {
-  const installed = codexInstallDir();
+  const installed = codexInstallDir(checkout);
   const realHome = canonicalPath(accountHome);
   const runtime = runtimeDir ? canonicalPath(runtimeDir) : null;
   const keep = [checkout, canonicalPath(home), ...(stateDir ? [canonicalPath(stateDir)] : []), ...(runtime ? [runtime] : []), ...(installed ? [installed] : [])];

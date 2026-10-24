@@ -3619,6 +3619,50 @@ test('reviewCodexConfig reads the runtime snapshot and denies the volatile accou
   }
 });
 
+test('reviewCodexConfig keeps the CODEX_CLI_PATH binary readable although it is not on PATH', () => {
+  const accountHome = fs.realpathSync(temp());
+  const appDir = path.join(accountHome, 'appbin');
+  fs.mkdirSync(appDir);
+  const appCli = path.join(appDir, 'codex');
+  fs.writeFileSync(appCli, '#!/bin/sh\nexit 0\n');
+  fs.chmodSync(appCli, 0o755);
+  const saved = { PATH: process.env.PATH, bin: process.env.CONCORD_CODEX_BIN, app: process.env.CODEX_CLI_PATH };
+  delete process.env.CONCORD_CODEX_BIN;
+  process.env.CODEX_CLI_PATH = appCli;
+  try {
+    const config = reviewCodexConfig({ home: fs.realpathSync(temp()), sourceAuth: path.join(accountHome, '.codex', 'auth.json'), checkout: fs.realpathSync(temp()), denyRead: [], realHome: accountHome });
+    assert.ok(!config.includes(`${JSON.stringify(appDir)} = "deny"`) && !config.includes(`${JSON.stringify(appCli)} = "deny"`), config);
+  } finally {
+    if (saved.PATH === undefined) delete process.env.PATH; else process.env.PATH = saved.PATH;
+    if (saved.bin === undefined) delete process.env.CONCORD_CODEX_BIN; else process.env.CONCORD_CODEX_BIN = saved.bin;
+    if (saved.app === undefined) delete process.env.CODEX_CLI_PATH; else process.env.CODEX_CLI_PATH = saved.app;
+  }
+});
+
+test('switching CONCORD_CODEX_BIN after a failed launch changes only the executable and leaves the state directory untouched', async () => {
+  const dir = temp();
+  const stateDir = path.join(dir, 'state');
+  fs.mkdirSync(stateDir);
+  const ledger = path.join(stateDir, 'review-fix-x.json');
+  fs.writeFileSync(ledger, JSON.stringify({ budget: { max_rounds: 5, spent: 1 }, execution: { completed: ['correctness'] } }));
+  const before = fs.readFileSync(ledger);
+  const fake = (name, version, exec) => {
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('${version}\\n');\nelse { ${exec} }\n`);
+    fs.chmodSync(file, 0o755);
+    return file;
+  };
+  const stale = fake('stale', 'codex-cli 0.154.0', `process.exit(1);`);
+  const app = fake('app', 'codex-cli 0.163.0', `console.log(JSON.stringify({ type: 'turn.completed', usage: {} }));`);
+  const launch = (bin) => codexExec({ role: 'verify', prompt: 'p', repoRoot: dir, stateDir, env: { ...process.env, CONCORD_CODEX_BIN: bin } });
+  const failed = await launch(stale);
+  const resumed = await launch(app);
+  assert.deepStrictEqual([failed.status, resumed.status], [1, 0]);
+  assert.deepStrictEqual([failed.cliVersion, resumed.cliVersion], ['codex-cli 0.154.0', 'codex-cli 0.163.0']);
+  assert.deepStrictEqual(fs.readFileSync(ledger), before);
+  assert.deepStrictEqual(fs.readdirSync(stateDir), ['review-fix-x.json']);
+});
+
 // The review-only CODEX_HOME is explicitly mounted read-only. A reviewer that could rewrite its config.toml would lift the deny list
 // for every later launch of the same run. Runs the real Codex sandbox, so it stands down where that cannot run.
 test('a command inside the review sandbox cannot rewrite the CODEX_HOME configuration, so a later launch is still denied', (t) => {
