@@ -45,7 +45,7 @@ test('decisions, verification and merging follow the design', () => {
   assert.match(skill, /only what the user typed into this session/);
   assert.match(skill, /`dismiss --by`/);
   assert.match(skill, /check each finding the worker called minor against the code/);
-  assert.match(skill, /only if the user allowed merging/);
+  assert.match(skill, /Merge only if the user allowed merging in the start question/);
   assert.match(skill, /--match-head-commit/);
   assert.match(skill, /disjoint/);
   for (const forbidden of [/mien exec/, /arinyaho/, /release-bump/, /claude plugin update/]) assert.doesNotMatch(skill, forbidden);
@@ -130,4 +130,25 @@ test('effort goes in the worker prompt and list_sessions is filtered', () => {
   assert.match(skill, /takes no effort setting/);
   assert.match(skill, /the prompt cannot enforce/);
   assert.match(skill, /`list_sessions` with `mine: true`/);
+});
+
+test('the start question asks for merge authority and own decisions once, and the handoff carries the answers', () => {
+  const skill = fs.readFileSync(SKILL, 'utf8');
+  const start = skill.split('## 0. Start')[1].split('## 1.')[0];
+  assert.match(start, /Before your first `create_session`, ask the user once/);
+  assert.match(start, /"merge when ready"/);
+  assert.match(start, /"report and wait"/);
+  assert.match(start, /"merge when ready, including heads with no automated review \(`mergeable-without-review`\)"/);
+  assert.match(start, /Decisions you may take yourself/);
+  assert.match(start, /verbatim with the time it was given/);
+  assert.match(start, /restate it in your first report/);
+  const merge = skill.split('### Judge a `done` report')[1].split('## 6.')[0];
+  assert.match(merge, /without asking again/);
+  assert.match(merge, /Otherwise report your verdict and wait/);
+  assert.match(merge, /merged without asking only when the recorded answer is "merge when ready, including heads with no automated review"; otherwise it is put to the user/);
+  const handoff = skill.split('## 7. Hand off yourself')[1];
+  assert.match(handoff, /standing authorities from step 0/);
+  assert.match(handoff, /applies them as recorded under step 4 and restates them in its first report/);
+  assert.match(skill, /A successor coordinator applies the answers its handoff records, exactly as recorded/);
+  assert.match(handoff, /each verbatim with the time it was given/);
 });
