@@ -6069,6 +6069,64 @@ test('record-fix marks a parked finding fixed and unparks the run', () => {
   assert.strictEqual(after.status, 'converging');
 });
 
+// #453: a no-progress park leaves its correctness findings open; a fix made outside the loop closes them with the same evidence.
+const OPEN_X = { id: 'correctness:x', file: 'a.txt', summary: 's', status: 'open' };
+const openParked = () => recordFixRepo({ ledger: () => ({ status: 'parked', findings: [OPEN_X], seen: [] }) });
+const recordOpenX = (t, extra = []) => ['record-fix', 'feat/x', 'correctness:x', '--commit', t.fix, '--test', 'sh check.sh', '--test-file', 'check.sh', ...extra];
+
+test('record-fix closes an open correctness finding of a parked run and the handoff lists it as fixed outside the loop, with a seen entry so a later report reopens it', () => {
+  const t = openParked();
+  run(recordOpenX(t), { env: t.env });
+  const after = review.readLedger(t.dir, t.slug);
+  assert.deepStrictEqual([after.findings[0].status, after.findings[0].fix_commit, after.findings[0].fix_evidence.command], ['fixed', t.fix, 'sh check.sh']);
+  assert.deepStrictEqual(after.seen.map((e) => [e.id, e.status]), [['correctness:x', 'fixed']]);
+  assert.strictEqual(after.status, 'converging');
+  assert.strictEqual(after.seen[0].hash, review.seenHash(OPEN_X));
+  assert.match(cli.renderHandoff({ ledger: after }), new RegExp(`-> commit ${t.fix} \\(record-fix test: sh check\\.sh\\)`));
+});
+
+test('record-fix on an open correctness finding refuses a commit that does not descend from the reviewed head and leaves it open', () => {
+  const t = openParked();
+  assertRefused(t, ['record-fix', 'feat/x', 'correctness:x', '--commit', t.reviewed, '--test', 'sh check.sh'], /does not follow the reviewed head/);
+  assert.strictEqual(review.readLedger(t.dir, t.slug).findings[0].status, 'open');
+});
+
+test('record-fix on an open correctness finding refuses a claim without a test command', () => {
+  const t = openParked();
+  assertRefused(t, ['record-fix', 'feat/x', 'correctness:x', '--commit', t.fix], /--commit <sha> and --test <command> are required/);
+});
+
+test('record-fix on an open correctness finding refuses a test that passes before the fix', () => {
+  const t = recordFixRepo({ test: 'true', ledger: () => ({ status: 'parked', findings: [OPEN_X], seen: [] }) });
+  assertRefused(t, recordOpenX(t), /it does not show the finding/);
+});
+
+test('record-fix on an open finding of a group-reconcile stop shrinks the group and leaves the stop', () => {
+  const packet = { trigger: 'group-reconcile', finding: 'correctness:x', groups: [{ groupId: 'g1', findingIds: ['correctness:x'] }], findings: { a: 1 } };
+  const t = recordFixRepo({ ledger: () => ({ status: 'gate-pending', findings: [OPEN_X], seen: [], reconciliation: packet, reconciliationPacket: packet, fix_plan: { groups: [{ groupId: 'g1', changeClass: 'a' }] } }) });
+  run(recordOpenX(t), { env: t.env });
+  const after = review.readLedger(t.dir, t.slug);
+  assert.strictEqual(after.findings[0].status, 'fixed');
+  assert.strictEqual(after.reconciliation, null);
+  assert.strictEqual(after.status, 'converging');
+});
+
+test('record-fix on one of two open findings closes only that one and leaves the other open', () => {
+  const other = { id: 'correctness:y', file: 'a.txt', summary: 's', status: 'open' };
+  const t = recordFixRepo({ ledger: () => ({ status: 'parked', findings: [OPEN_X, other], seen: [] }) });
+  run(recordOpenX(t), { env: t.env });
+  const after = review.readLedger(t.dir, t.slug);
+  assert.deepStrictEqual(after.findings.map((f) => [f.id, f.status]), [['correctness:x', 'fixed'], ['correctness:y', 'open']]);
+  assert.strictEqual(after.status, 'converging');
+});
+
+test('record-fix on an open finding keeps gate-pending while a blocking gate finding is open', () => {
+  const t = recordFixRepo({ ledger: () => ({ status: 'gate-pending', findings: [OPEN_X], seen: [], gate_open: [BLOCKING_GATE('gate:silent-gap:x')] }) });
+  run(recordOpenX(t), { env: t.env });
+  const after = review.readLedger(t.dir, t.slug);
+  assert.deepStrictEqual([after.findings[0].status, after.status, after.gate_open.map((f) => f.id)], ['fixed', 'gate-pending', ['gate:silent-gap:x']]);
+});
+
 function assertRefused(t, args, pattern) {
   const before = fs.readFileSync(path.join(t.dir, fs.readdirSync(t.dir).find((n) => n.endsWith('.json'))), 'utf8');
   const res = runFails(args, t.env);
@@ -6116,8 +6174,8 @@ test('record-fix refuses a ledger that is not stopped', () => {
 test('record-fix refuses a finding it does not own', () => {
   const eligible = { ...BLOCKING_GATE('gate:silent-gap:x'), releaseBlocking: [], rationale: 'r' };
   const t = recordFixRepo({ ledger: () => ({ status: 'gate-pending', gate_open: [eligible, BLOCKING_GATE('gate:silent-gap:y')] }) });
-  assertRefused(t, recordFixArgs(t.fix), /not a parked finding or a blocking gate finding/);
-  assertRefused(t, ['record-fix', 'feat/x', 'gate:unknown', '--commit', t.fix, '--test', 'sh check.sh'], /not a parked finding or a blocking gate finding/);
+  assertRefused(t, recordFixArgs(t.fix), /not an open or parked finding, or a blocking gate finding/);
+  assertRefused(t, ['record-fix', 'feat/x', 'gate:unknown', '--commit', t.fix, '--test', 'sh check.sh'], /not an open or parked finding, or a blocking gate finding/);
 });
 
 test('rerun archives gate_fixed as fixed', () => {
@@ -6326,7 +6384,7 @@ test('record-fix refuses a commit earlier than the reviewed head (#293)', () => 
 test('record-fix refuses a dismissed gate finding and a clean ledger (#293)', () => {
   const dismissed = { ...BLOCKING_GATE('gate:silent-gap:x'), dismissedBy: 'user' };
   const t = recordFixRepo({ ledger: () => ({ status: 'gate-pending', gate_open: [BLOCKING_GATE('gate:silent-gap:y')], gate_dismissed: [dismissed] }) });
-  assertRefused(t, recordFixArgs(t.fix), /not a parked finding or a blocking gate finding/);
+  assertRefused(t, recordFixArgs(t.fix), /not an open or parked finding, or a blocking gate finding/);
   const c = recordFixRepo({ ledger: () => ({ status: 'clean', gate_open: [BLOCKING_GATE('gate:silent-gap:x')] }) });
   assertRefused(c, recordFixArgs(c.fix), /the ledger is "clean"; only a stopped run/);
 });
