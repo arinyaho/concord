@@ -14,6 +14,7 @@ const MESSAGES = {
   'malformed-response': 'Provider returned a malformed response.',
   unknown: 'Provider execution failed without a recognized diagnostic.',
 };
+const EXECUTABLE_SOURCES = new Set(['CONCORD_CODEX_BIN', 'CODEX_CLI_PATH', 'PATH', 'macOS ChatGPT app']);
 const KINDS = new Set(['subprocess-exit', 'timeout', 'signal', 'interrupted', 'provider-error']);
 const SIGNALS = new Set(['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGABRT', 'SIGSEGV', 'SIGHUP', 'SIGQUIT', 'SIGPIPE', 'SIGBUS', 'SIGILL', 'SIGFPE']);
 const ROLES = new Set(['plan', 'correctness', 'verify', 'intent', 'gate', 'gate-verify', 'gate-review', 'fix', 'certify', 'gate-panel-ac-coverage', 'gate-panel-design-conformance', 'gate-panel-silent-gap', 'gate-panel-threat-model', 'gate-panel-cross-context', 'gate-panel-verify']);
@@ -26,6 +27,13 @@ function normalizeProviderFailure(failure) {
   const exitCode = Number.isSafeInteger(failure.exitCode) ? failure.exitCode : null;
   const signal = SIGNALS.has(failure.signal) ? failure.signal : null;
   const diagnostic = { classification, message: MESSAGES[classification], ...identity };
+  // Which Codex executable ran, from closed values only, so a failed launch says what to override.
+  const executable = failure.diagnostic?.executable;
+  if (identity.engine === 'codex' && EXECUTABLE_SOURCES.has(executable?.source)) {
+    diagnostic.executable = { source: executable.source, ...(/^codex-cli \d+\.\d+\.\d+[0-9A-Za-z.+-]{0,40}$/.test(executable.version) ? { version: executable.version } : {}) };
+    diagnostic.message += ` Executable: ${diagnostic.executable.source}${diagnostic.executable.version ? ` (${diagnostic.executable.version})` : ''}.`
+      + (executable.source === 'CONCORD_CODEX_BIN' ? '' : ' To use another, set CONCORD_CODEX_BIN=/absolute/path/to/codex and resume.');
+  }
   const retryable = ['rate-limit', 'transient'].includes(classification) && !['interrupted', 'signal'].includes(kind);
   const summary = kind === 'subprocess-exit' ? `${role} subprocess exited ${exitCode === null ? 'unknown' : exitCode}`
     : kind === 'timeout' ? `${role} subprocess timed out`
@@ -81,7 +89,7 @@ function classify(result, engine) {
 function providerFailure(input, result) {
   const kind = result?.interrupted || result?.reviewFailure?.kind === 'interrupted' ? 'interrupted' : result?.timedOut || result?.reviewFailure?.kind === 'timeout' ? 'timeout' : result?.signal ? 'signal' : result instanceof Error ? 'provider-error' : 'subprocess-exit';
   return normalizeProviderFailure({ role: input.role, kind, exitCode: result?.status, signal: result?.signal,
-    diagnostic: { classification: classify(result, input.provider), engine: input.provider } });
+    diagnostic: { classification: classify(result, input.provider), engine: input.provider, executable: result?.executable || result?.telemetry?.executable } });
 }
 
 function reviewContinuation(ledger) {

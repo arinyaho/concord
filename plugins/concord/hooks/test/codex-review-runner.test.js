@@ -16,6 +16,7 @@ const { LEDGER_CLAUSE } = require('../../core/round-plan');
 const { runReviewUntilGreen, reviewCodexConfig, reviewerPrompt, codexExec, providerExec, resolveCodexExecutable, resolveDefaultBase } = require('../../core/codex-review-runner');
 const { reviewerPrompt: packagedReviewerPrompt } = require('../../../concord-codex/engine/codex-review-runner');
 const { tempDir } = require('./temp-dir');
+const { providerFailure } = require('../../core/provider-failure');
 
 function temp() { return tempDir('codex-runner-'); }
 function v2Plan(fixes, groups) {
@@ -654,25 +655,76 @@ test('initiative terminal records object decision reason and deferred DoD accura
   assert.deepStrictEqual(ledger.checks, [{ name: 'definition-of-done', status: 'deferred' }]);
 });
 
-test('Codex resolver falls back to the macOS app after a broken PATH command', () => {
+const APP_BINARY = '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex';
+
+test('Codex resolver falls back to the macOS app binary after a broken PATH command', () => {
   const calls = [];
   const resolved = resolveCodexExecutable('/repo', {
     platform: 'darwin', env: { PATH: '/broken' },
     probe: (command) => {
       calls.push(command);
-      return command === 'codex' ? { error: { code: 'ENOENT' } } : { status: 0, stdout: 'codex-cli 0.154.0\n' };
+      return command === 'codex' ? { error: { code: 'ENOENT' } } : { status: 0, stdout: 'codex-cli 0.163.0\n' };
     },
   });
-  assert.deepStrictEqual(calls, ['codex', '/Applications/ChatGPT.app/Contents/Resources/codex']);
-  assert.strictEqual(resolved.command, '/Applications/ChatGPT.app/Contents/Resources/codex');
-  assert.strictEqual(resolved.version, 'codex-cli 0.154.0');
+  assert.deepStrictEqual(calls, ['codex', APP_BINARY]);
+  assert.strictEqual(resolved.command, APP_BINARY);
+  assert.strictEqual(resolved.source, 'macOS ChatGPT app');
+});
+
+test('Codex resolver prefers the app-exported CODEX_CLI_PATH over a PATH command that passes --version', () => {
+  const versions = { codex: 'codex-cli 0.154.0\n', '/app/codex': 'codex-cli 0.163.0-alpha.11.2\n' };
+  const resolved = resolveCodexExecutable('/repo', {
+    platform: 'darwin', env: { PATH: '/stale', CODEX_CLI_PATH: '/app/codex' },
+    probe: (command) => ({ status: 0, stdout: versions[command] }),
+  });
+  assert.strictEqual(resolved.command, '/app/codex');
+  assert.strictEqual(resolved.source, 'CODEX_CLI_PATH');
+  assert.strictEqual(resolved.version, 'codex-cli 0.163.0-alpha.11.2');
+});
+
+test('Codex resolver skips an invalid CODEX_CLI_PATH and records why', () => {
+  const resolved = resolveCodexExecutable('/repo', {
+    platform: 'linux', env: { PATH: '/p', CODEX_CLI_PATH: '/gone/codex' },
+    probe: (command) => command === 'codex' ? { status: 0, stdout: 'codex-cli 0.154.0\n' } : { error: { code: 'ENOENT' } },
+  });
+  assert.strictEqual(resolved.source, 'PATH');
+  assert.deepStrictEqual(resolved.skipped, ['CODEX_CLI_PATH /gone/codex: ENOENT']);
 });
 
 test('Codex resolver treats an explicit override as authoritative', () => {
+  const calls = [];
   assert.throws(() => resolveCodexExecutable('/repo', {
-    platform: 'darwin', env: { CONCORD_CODEX_BIN: '/broken/codex' },
-    probe: () => ({ error: { code: 'ENOENT' } }),
+    platform: 'darwin', env: { CONCORD_CODEX_BIN: '/broken/codex', CODEX_CLI_PATH: '/app/codex', PATH: '/p' },
+    probe: (command) => { calls.push(command); return command === '/broken/codex' ? { error: { code: 'ENOENT' } } : { status: 0, stdout: 'codex-cli 0.163.0\n' }; },
   }), /no usable Codex executable/);
+  assert.deepStrictEqual(calls, ['/broken/codex']);
+});
+
+test('a failed launch reports the selected executable source and version without the raw provider error', async () => {
+  const binDir = temp();
+  const fake = (name, version, exec) => {
+    const file = path.join(binDir, name);
+    fs.writeFileSync(file, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write('${version}\\n');\nelse { ${exec} }\n`);
+    fs.chmodSync(file, 0o755);
+    return file;
+  };
+  const stale = fake('stale', 'codex-cli 0.154.0', `console.log(JSON.stringify({ type: 'turn.failed', error: { message: 'HTTP 400 invalid_request sk-SECRET123' } })); process.exit(1);`);
+  const app = fake('app', 'codex-cli 0.163.0-alpha.11.2', `console.log(JSON.stringify({ type: 'turn.completed', usage: {} }));`);
+  const input = { role: 'verify', prompt: 'p', repoRoot: binDir, stateDir: binDir, provider: 'codex' };
+  const exe = (command, source, version) => ({ codexExecutable: { command, source, version }, env: process.env });
+  const failed = await codexExec({ ...input, ...exe(stale, 'CONCORD_CODEX_BIN', 'codex-cli 0.154.0') });
+  const failure = providerFailure(input, failed);
+  assert.deepStrictEqual(failure.diagnostic.executable, { source: 'CONCORD_CODEX_BIN', version: 'codex-cli 0.154.0' });
+  assert.ok(!JSON.stringify(failure).includes('SECRET123'));
+  const viaPath = await codexExec({ ...input, ...exe(stale, 'CODEX_CLI_PATH', 'codex-cli 0.154.0') });
+  const advice = providerFailure(input, viaPath);
+  assert.strictEqual(advice.diagnostic.executable.source, 'CODEX_CLI_PATH');
+  assert.match(advice.message, /set CONCORD_CODEX_BIN=\/absolute\/path\/to\/codex/);
+  const ok = await codexExec({ ...input, ...exe(app, 'PATH', 'codex-cli 0.163.0-alpha.11.2') });
+  assert.strictEqual(ok.status, 0);
+  assert.strictEqual(ok.executable.version, 'codex-cli 0.163.0-alpha.11.2');
+  assert.strictEqual(ok.usageStatus, 'unsupported-cli-version');
+  assert.strictEqual(ok.usagePartial, true);
 });
 
 test('codex-review-runner.js has no hardcoded copy of the panel lens list -- it must import report.js\'s PANEL_LENSES', () => {

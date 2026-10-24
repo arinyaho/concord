@@ -41,7 +41,8 @@ function failureOccurrence(ledger, continuation) {
 
 const CODEX_VERSION = 'codex-cli 0.154.0';
 const CODEX_BIN_ENV = 'CONCORD_CODEX_BIN';
-const MACOS_APP_CODEX = '/Applications/ChatGPT.app/Contents/Resources/codex';
+const CODEX_APP_ENV = 'CODEX_CLI_PATH';
+const MACOS_APP_CODEX = '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex';
 const CODEX_USAGE_FIELDS = ['input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens', 'reasoning_output_tokens'];
 const CODEX_EVENT_TYPES = new Set(['thread.started', 'turn.started', 'turn.completed', 'turn.failed', 'item.started', 'item.updated', 'item.completed', 'error']);
 const CODEX_ITEM_TYPES = new Set(['agent_message', 'reasoning', 'command_execution', 'file_change', 'mcp_tool_call', 'web_search', 'todo_list', 'error', 'collaboration_tool_call', 'collab_agent_tool_call']);
@@ -54,10 +55,17 @@ function resolveCodexExecutable(repoRoot, options = {}) {
   const env = options.env || process.env;
   const platform = options.platform || (isWindows ? 'win32' : process.platform);
   const override = String(env[CODEX_BIN_ENV] || '').trim();
+  const appExported = String(env[CODEX_APP_ENV] || '').trim();
+  // CONCORD_CODEX_BIN is authoritative. Otherwise the first candidate whose --version exits 0 wins:
+  // the app that launched this session, then PATH, then the installed macOS app. Versions are not compared.
   const candidates = override
     ? [{ command: override, source: CODEX_BIN_ENV }]
-    : [{ command: 'codex', source: 'PATH' }, ...(platform === 'darwin' ? [{ command: MACOS_APP_CODEX, source: 'macOS ChatGPT app' }] : [])];
-  const cacheKey = JSON.stringify([repoRoot, platform, env.PATH, override]);
+    : [
+      ...(appExported ? [{ command: appExported, source: CODEX_APP_ENV }] : []),
+      { command: 'codex', source: 'PATH' },
+      ...(platform === 'darwin' ? [{ command: MACOS_APP_CODEX, source: 'macOS ChatGPT app' }] : []),
+    ];
+  const cacheKey = JSON.stringify([repoRoot, platform, env.PATH, override, appExported]);
   if (!options.probe && codexResolutionCache?.key === cacheKey) {
     if (codexResolutionCache.error) throw codexResolutionCache.error;
     return codexResolutionCache.value;
@@ -76,11 +84,11 @@ function resolveCodexExecutable(repoRoot, options = {}) {
     let result;
     try { result = probe(candidate.command, repoRoot, env); } catch (error) { result = { error }; }
     if (result?.status === 0) {
-      const value = { ...candidate, version: String(result.stdout || '').trim() };
+      const value = { ...candidate, version: String(result.stdout || '').trim(), skipped: failures.slice() };
       if (!options.probe) codexResolutionCache = { key: cacheKey, value };
       return value;
     }
-    failures.push(`${candidate.command}: ${result?.error?.code || `exit ${result?.error?.status ?? result?.status ?? 'unknown'}`}`);
+    failures.push(`${candidate.source} ${candidate.command}: ${result?.error?.code || `exit ${result?.error?.status ?? result?.status ?? 'unknown'}`}`);
   }
   const error = new Error(`harness-failure: no usable Codex executable was found before review started. Checked: ${failures.join('; ')}. Set ${CODEX_BIN_ENV}=/absolute/path/to/codex to select one explicitly.`);
   if (!options.probe) codexResolutionCache = { key: cacheKey, error };
@@ -151,6 +159,7 @@ function codexExec({ role, prompt, repoRoot, stateDir, cliPath, requestedModel, 
     const effort = typeof reasoningEffort === 'string' && reasoningEffort.trim() ? reasoningEffort : null;
     const tier = typeof serviceTier === 'string' && serviceTier.trim() ? serviceTier : null;
     const cliVersion = resolvedCodex.version;
+    const executable = { source: resolvedCodex.source, version: cliVersion };
     const startedAt = Date.now();
     // On Windows, `shell: true` (crossPlatformOpts) routes this through
     // cmd.exe, whose command-line reader treats an embedded newline as a
@@ -247,7 +256,7 @@ function codexExec({ role, prompt, repoRoot, stateDir, cliPath, requestedModel, 
       if (killTimer) clearTimeout(killTimer);
       abortSignal?.removeEventListener('abort', abort);
       error.telemetry = {
-        status: 'failed', role, engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', cliVersion,
+        status: 'failed', role, engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', cliVersion, executable,
         requestedModel: model, reasoningEffort: effort, serviceTier: tier, resolvedModel: 'unavailable', invocationId,
         elapsedMs: Date.now() - startedAt, usagePartial: true,
       };
@@ -260,7 +269,7 @@ function codexExec({ role, prompt, repoRoot, stateDir, cliPath, requestedModel, 
       consume(pending);
       const normalized = normalizeUsage(usage);
       resolve({
-        status, role, engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', cliVersion,
+        status, role, engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', cliVersion, executable,
         requestedModel: model, reasoningEffort: effort, serviceTier: tier, resolvedModel: 'unavailable', invocationId, elapsedMs: Date.now() - startedAt,
         ...normalized,
         signal: signal || null,
@@ -474,8 +483,10 @@ function denyAround(root, keep) {
 
 // Codex starts its own binary again inside the sandbox, so the directory it is installed in must stay readable.
 function codexInstallDir() {
-  const candidates = [process.env[CODEX_BIN_ENV], ...String(process.env.PATH || '').split(path.delimiter).map((dir) => dir && path.join(dir, 'codex'))].filter(Boolean);
-  for (const candidate of candidates) {
+  let command;
+  try { command = resolveCodexExecutable(process.cwd(), { env: process.env }).command; } catch (_) { return null; }
+  const candidates = /[\\/]/.test(command) ? [command] : String(process.env.PATH || '').split(path.delimiter).map((dir) => dir && path.join(dir, command));
+  for (const candidate of candidates.filter(Boolean)) {
     try {
       const real = fs.realpathSync(candidate);
       return real.match(/^(.*[\\/]node_modules[\\/]@openai[\\/]codex)[\\/]/)?.[1] || real;
@@ -724,7 +735,7 @@ async function runRounds(options) {
       ...(result && result.invocationId ? { engine: result.engine, provider: result.provider, providerSchema: result.providerSchema, invocationId: result.invocationId } : {}),
       ...(result?.cliVersion ? { cliVersion: result.cliVersion } : {}),
       ...(result?.evidence ? { evidence: result.evidence } : {}),
-      ...(result?.diagnostic && result.status !== 0 ? { diagnostic: normalizeProviderFailure({ diagnostic: { classification: result.diagnostic.classification, engine: input.provider } }).diagnostic } : {}),
+      ...(result?.diagnostic && result.status !== 0 ? { diagnostic: normalizeProviderFailure({ diagnostic: { classification: result.diagnostic.classification, engine: input.provider, executable: result.diagnostic.executable } }).diagnostic } : {}),
       ...(result && result.providerUsage && Object.keys(result.providerUsage).length ? { providerUsage: result.providerUsage } : {}),
     });
     persistTelemetry();
