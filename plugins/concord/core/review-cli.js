@@ -314,7 +314,7 @@ function renderHandoff(result) {
     // Name why usage is incomplete: a bare count does not say whether the hook never ran, the Claude Code version is unpinned, or the transcript was unreadable.
     const causes = [];
     if (t.missingCalls) causes.push(`${t.missingCalls} slot(s) have no hook record (the telemetry hook did not see that spawn)`);
-    if (t.unsupportedCliVersionCalls) causes.push(`${t.unsupportedCliVersionCalls} call(s) ran on unsupported Claude Code version ${(t.unsupportedCliVersions || []).join(', ') || 'unknown'}`);
+    if (t.unsupportedCliVersionCalls) causes.push(`${t.unsupportedCliVersionCalls} call(s) ran on unsupported CLI version ${(t.unsupportedCliVersions || []).join(', ') || 'unknown'}`);
     const otherPartial = t.partialCalls - (t.unsupportedCliVersionCalls || 0);
     if (otherPartial > 0) causes.push(`${otherPartial} call(s) have incomplete or inconsistent transcript or hook usage`);
     if (causes.length) lines.push(`review usage incomplete: ${causes.join('; ')}`);

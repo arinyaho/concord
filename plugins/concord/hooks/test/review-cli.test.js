@@ -3492,12 +3492,12 @@ test('a Codex-owned slot without runner evidence stays visible but is not counte
   assert.match(recorded.handoff, /review usage incomplete: 1 slot\(s\) have no hook record/);
 });
 
-test('handoff names the unsupported Claude Code version behind partial usage', () => {
+test('handoff names the unsupported CLI version behind partial usage', () => {
   const ledger = review.emptyLedger('feat/x');
   ledger.telemetry = { calls: 2, partialCalls: 2, totalTokens: 40, unsupportedCliVersionCalls: 2, unsupportedCliVersions: ['2.1.999'] };
   const handoff = cli.renderHandoff({ ledger });
   assert.match(handoff, /review usage: 40 tokens across 2 call\(s\), 2 partial/);
-  assert.match(handoff, /review usage incomplete: 2 call\(s\) ran on unsupported Claude Code version 2\.1\.999/);
+  assert.match(handoff, /review usage incomplete: 2 call\(s\) ran on unsupported CLI version 2\.1\.999/);
   assert.ok(!handoff.includes('incomplete or inconsistent'), 'unsupported-version calls are not double counted as generic partial');
 });
 
@@ -7345,4 +7345,10 @@ test('review-cli dismiss: a repeat dismissal keeps the first classification and 
   run(['dismiss', 'feat/x', 'gate:design-conformance:scope', '--by', 'other', '--classification', 'defect', '--reason', 'changed my mind'], { env });
   const [kept] = review.readLedger(dir, slug).gate_dismissed;
   assert.deepStrictEqual({ c: kept.classification, r: kept.classificationReason }, { c: 'design-decision', r: 'the contract settles it' });
+});
+
+test('handoff does not call a Codex CLI version a Claude Code version', () => {
+  const ledger = review.emptyLedger('feat/x');
+  ledger.telemetry = { calls: 1, partialCalls: 1, totalTokens: 5, unsupportedCliVersionCalls: 1, unsupportedCliVersions: ['0.999.0'] };
+  assert.ok(!cli.renderHandoff({ ledger }).includes('Claude Code'));
 });
