@@ -138,13 +138,14 @@ test('the start question asks for merge authority and own decisions once, and th
   assert.match(start, /Before your first `create_session`, ask the user once/);
   assert.match(start, /"merge when ready"/);
   assert.match(start, /"report and wait"/);
+  assert.match(start, /"merge when ready, including heads with no automated review \(`mergeable-without-review`\)"/);
   assert.match(start, /Decisions you may take yourself/);
   assert.match(start, /verbatim with the time it was given/);
   assert.match(start, /restate it in your first report/);
   const merge = skill.split('### Judge a `done` report')[1].split('## 6.')[0];
   assert.match(merge, /without asking again/);
   assert.match(merge, /Otherwise report your verdict and wait/);
-  assert.match(merge, /`mergeable-without-review` is put to the user even when merging is allowed/);
+  assert.match(merge, /merged without asking only when the recorded answer is "merge when ready, including heads with no automated review"; otherwise it is put to the user/);
   const handoff = skill.split('## 7. Hand off yourself')[1];
   assert.match(handoff, /standing authorities from step 0/);
   assert.match(handoff, /applies them as recorded under step 4 and restates them in its first report/);
