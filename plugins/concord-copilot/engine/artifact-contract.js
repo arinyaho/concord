@@ -56,6 +56,10 @@ function isForeign(name, item) {
 // What a repair may delete from `key`: a foreign entry, or an evidence-less verdict-shape finding.
 const repairKeys = (name) => dropsInvalidFindings(name) ? [...SHAPES[name].arrays, 'unverifiable'] : SHAPES[name].arrays;
 const removable = (name, key, item) => isForeign(name, item) || (key === 'findings' && dropsInvalidFindings(name) && lacksFindingFields(item));
+// A plan group may carry a foreign id next to its own (a gate: id beside a correctness: id); a repair drops just that id and keeps the group.
+const ownedItem = (name, key, item) => name === 'plan' && key === 'groups' && item && Array.isArray(item.findingIds) && !isForeign(name, item)
+  ? { ...item, findingIds: item.findingIds.filter((id) => typeof id !== 'string' || SHAPES.plan.prefixes.some((prefix) => id.startsWith(prefix))) } : item;
+const ownedItems = (name, key, items) => items.filter((item) => !removable(name, key, item)).map((item) => ownedItem(name, key, item));
 
 // Every place an artifact names a finding id: the callback maps each id string, so one pass both collects and rewrites.
 const mapIds = (value, fn) => {
@@ -91,7 +95,7 @@ function strippedCandidate(name, original) {
   if (typeof original.status === 'string') candidate.status = original.status.toLowerCase();
   for (const key of repairKeys(name)) {
     if (key === 'examined' || !Array.isArray(original[key])) continue;
-    candidate[key] = original[key].filter((item) => !removable(name, key, item));
+    candidate[key] = ownedItems(name, key, original[key]);
   }
   return candidate;
 }
@@ -133,8 +137,8 @@ function preservesArtifact(name, raw, candidate) {
         if (!Array.isArray(candidate[key]) || comparable(original[key]) !== comparable(candidate[key])) return false;
         continue;
       }
-      const owned = original[key].filter((item) => !removable(name, key, item));
-      if (owned.length !== original[key].length) {
+      const owned = ownedItems(name, key, original[key]);
+      if (comparable(owned) !== comparable(original[key])) {
         if (!Array.isArray(candidate[key]) || comparable(owned) !== comparable(candidate[key])) return false;
         continue;
       }
