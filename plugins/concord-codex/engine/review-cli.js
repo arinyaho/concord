@@ -579,6 +579,12 @@ function requireVerifierOrder(stateDir, n, gateApplied, gateMode) {
   requireArtifactAfter(stateDir, n, 'correctness', 'verify');
   if (!gateApplied || gateMode === 'design-conformance') return;
   requireArtifactAfter(stateDir, n, 'gate', 'verify');
+  requireGateVerifierOrder(stateDir, n, gateApplied, gateMode);
+}
+
+// gate-verify runs on a pair-gate round, so when its artifact exists it must postdate both finders.
+function requireGateVerifierOrder(stateDir, n, gateApplied, gateMode) {
+  if (!gateApplied || gateMode === 'design-conformance') return;
   if (fs.existsSync(path.join(stateDir, `round-${n}-gate-verify.json`))) {
     requireArtifactAfter(stateDir, n, 'correctness', 'gate-verify');
     requireArtifactAfter(stateDir, n, 'gate', 'gate-verify');
@@ -615,11 +621,7 @@ function readVerify(stateDir, ledger, n) {
   }
   const current = finderHashes(stateDir, ledger, n);
   if (JSON.stringify(current) !== JSON.stringify(derived.from)) throw new Error(`harness-failure: a finder artifact of round ${n} changed after review-cli derived verify and plan from it`);
-  // gate-verify still runs on a pair-gate round, so it keeps its ordering guard against both finders.
-  if (ledger.gateApplied && ledger.gateMode !== 'design-conformance' && fs.existsSync(path.join(stateDir, `round-${n}-gate-verify.json`))) {
-    requireArtifactAfter(stateDir, n, 'correctness', 'gate-verify');
-    requireArtifactAfter(stateDir, n, 'gate', 'gate-verify');
-  }
+  requireGateVerifierOrder(stateDir, n, ledger.gateApplied, ledger.gateMode);
   return { status: 'ok', rejected: [], findings: [] };
 }
 
