@@ -51,21 +51,25 @@ const REVIEW_SUBPROCESS_TIMEOUT_MS = 30 * 60 * 1000;
 const TERMINATION_GRACE_MS = 5 * 1000;
 let codexResolutionCache = null;
 
-function resolveCodexExecutable(repoRoot, options = {}) {
-  const env = options.env || process.env;
-  const platform = options.platform || (isWindows ? 'win32' : process.platform);
+// CONCORD_CODEX_BIN is authoritative. Otherwise the first candidate whose --version exits 0 wins:
+// the app that launched this session, then PATH, then the installed macOS app. Versions are not compared.
+function codexCandidates(env, platform) {
   const override = String(env[CODEX_BIN_ENV] || '').trim();
   const appExported = String(env[CODEX_APP_ENV] || '').trim();
-  // CONCORD_CODEX_BIN is authoritative. Otherwise the first candidate whose --version exits 0 wins:
-  // the app that launched this session, then PATH, then the installed macOS app. Versions are not compared.
-  const candidates = override
+  return override
     ? [{ command: override, source: CODEX_BIN_ENV }]
     : [
       ...(appExported ? [{ command: appExported, source: CODEX_APP_ENV }] : []),
       { command: 'codex', source: 'PATH' },
       ...(platform === 'darwin' ? [{ command: MACOS_APP_CODEX, source: 'macOS ChatGPT app' }] : []),
     ];
-  const cacheKey = JSON.stringify([repoRoot, platform, env.PATH, override, appExported]);
+}
+
+function resolveCodexExecutable(repoRoot, options = {}) {
+  const env = options.env || process.env;
+  const platform = options.platform || (isWindows ? 'win32' : process.platform);
+  const candidates = codexCandidates(env, platform);
+  const cacheKey = JSON.stringify([repoRoot, platform, env.PATH, env[CODEX_BIN_ENV], env[CODEX_APP_ENV]]);
   if (!options.probe && codexResolutionCache?.key === cacheKey) {
     if (codexResolutionCache.error) throw codexResolutionCache.error;
     return codexResolutionCache.value;
@@ -483,14 +487,15 @@ function denyAround(root, keep) {
 
 // Codex starts its own binary again inside the sandbox, so the directory it is installed in must stay readable.
 function codexInstallDir(repoRoot) {
-  let command;
-  try { command = resolveCodexExecutable(repoRoot, { env: process.env }).command; } catch (_) { return null; }
-  const candidates = /[\\/]/.test(command) ? [path.resolve(repoRoot, command)] : String(process.env.PATH || '').split(path.delimiter).map((dir) => dir && path.join(dir, command));
-  for (const candidate of candidates.filter(Boolean)) {
-    try {
-      const real = fs.realpathSync(candidate);
-      return real.match(/^(.*[\\/]node_modules[\\/]@openai[\\/]codex)[\\/]/)?.[1] || real;
-    } catch (_) { /* not installed here */ }
+  // The config is written before any launch, so the first candidate that exists counts, whether or not it runs yet.
+  for (const { command } of codexCandidates(process.env, isWindows ? 'win32' : process.platform)) {
+    const paths = /[\\/]/.test(command) ? [path.resolve(repoRoot, command)] : String(process.env.PATH || '').split(path.delimiter).map((dir) => dir && path.join(dir, command));
+    for (const candidate of paths.filter(Boolean)) {
+      try {
+        const real = fs.realpathSync(candidate);
+        return real.match(/^(.*[\\/]node_modules[\\/]@openai[\\/]codex)[\\/]/)?.[1] || real;
+      } catch (_) { /* not installed here */ }
+    }
   }
   return null;
 }
