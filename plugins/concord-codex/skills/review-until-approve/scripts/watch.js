@@ -45,22 +45,24 @@ const sameNudge = (a, b) => a && b && a.kind === b.kind && a.head === b.head && 
 (async () => {
   const sidecar = readSidecar();
   let previousHead = sidecar.previousHead ?? null;
+  let previousIntent = sidecar.previousIntent ?? null;
   let failures = sidecar.failures ?? 0;
   for (;;) {
     try {
       const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
-      const view = gh(['pr', 'view', pr, '--repo', repo, '--json', 'headRefOid,state,isDraft,author']);
-      const live = { head: view.headRefOid, state: view.state, isDraft: view.isDraft, author: view.author.login };
+      const view = gh(['pr', 'view', pr, '--repo', repo, '--json', 'headRefOid,state,isDraft,author,title,body']);
+      const live = { head: view.headRefOid, state: view.state, isDraft: view.isDraft, author: view.author.login, intent: lib.intentOf(view.title, view.body) };
       const replies = lib.repliesSince(ledger, pages(`repos/${repo}/pulls/${pr}/comments`), pages(`repos/${repo}/issues/${pr}/comments`), live.author);
-      let event = lib.wakeDecision({ ledger, live, replies, now: Date.now(), stable: previousHead === live.head });
+      let event = lib.wakeDecision({ ledger, live, replies, now: Date.now(), stable: previousHead === live.head && previousIntent === live.intent });
       if (event && event.event === 'nudge' && sameNudge(event, sidecar.nudged)) event = null;
       previousHead = live.head;
+      previousIntent = live.intent;
       failures = 0;
       if (event && event.event === 'nudge') sidecar.nudged = { kind: event.kind, head: event.head, replyAt: event.replyAt };
-      writeSidecar({ ...sidecar, previousHead, failures });
+      writeSidecar({ ...sidecar, previousHead, previousIntent, failures });
       if (event) return emit(event);
     } catch (error) {
-      writeSidecar({ ...sidecar, previousHead, failures: ++failures % MAX_FAILURES });
+      writeSidecar({ ...sidecar, previousHead, previousIntent, failures: ++failures % MAX_FAILURES });
       if (failures >= MAX_FAILURES) return emit({ event: 'error', detail: String(error.message) }, 1);
     }
     const remaining = deadline - Date.now();

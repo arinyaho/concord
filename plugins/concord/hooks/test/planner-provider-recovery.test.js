@@ -12,7 +12,7 @@ const { tempDir } = require('./temp-dir');
 
 const ref = 'feature/plan-resume';
 const ids = ['correctness:first', 'correctness:second'];
-function fixture({ maxLaunches = 12, incompleteReplacement = false, acceptedInitially = false, repairInitialPlan = false, replacementError = null, cliCopy = 'core', broadIntent = false, keyed = true, replacementResult = null, transportResult = null, initialPlanFailure = null, fixResult = null } = {}) {
+function fixture({ maxLaunches = 12, incompleteReplacement = false, acceptedInitially = false, repairInitialPlan = false, replacementError = null, cliCopy = 'core', broadIntent = false, keyed = true, replacementResult = null, transportResult = null, initialPlanFailure = null, fixResult = null, duplicatePlan = false } = {}) {
   const root = tempDir('plan-resume-');
   const repo = path.join(root, 'repo');
   const stateDir = path.join(root, 'review');
@@ -61,6 +61,9 @@ function fixture({ maxLaunches = 12, incompleteReplacement = false, acceptedInit
     else if (input.role === 'plan') {
       const complete = acceptedInitially || (!incompleteReplacement && launches.filter((role) => role === 'plan').length > 1);
       artifact = { status: repairInitialPlan && launches.filter((role) => role === 'plan').length === 1 ? 'OK' : 'ok', protocolVersion: 2, groups: complete ? [{ groupId: 'shared', findingIds: ids, rootCause: 'shared local defect', invariants: ['both findings fixed'], changeClass: 'local', structuralEffects: [], action: 'fix' }] : [] };
+      if (duplicatePlan && launches.filter((role) => role === 'plan').length === 1) artifact.groups = [
+        { groupId: 'one', findingIds: [ids[0]], rootCause: 'a', invariants: ['a'], changeClass: 'local', structuralEffects: [], action: 'fix' },
+        { groupId: 'two', findingIds: ids, rootCause: 'b', invariants: ['b'], changeClass: 'local', structuralEffects: [], action: 'fix' }];
       if (launches.filter((role) => role === 'plan').length > 1) {
         if (replacementError === 'status') artifact.status = 'OK';
         // Status case makes this mixed-namespace plan eligible under the existing repair contract.
@@ -566,3 +569,14 @@ for (const mode of ['persistence', 'readback']) {
   });
 }
 
+
+test('a plan listing one finding in two groups gets one replacement plan instead of a terminal failure (#414)', async (t) => {
+  const h = fixture({ duplicatePlan: true });
+  t.after(() => fs.rmSync(h.root, { recursive: true, force: true }));
+  await assert.rejects(h.run(), /classification is invalid.*correctness:first.*more than one root-cause group/);
+  assert.deepEqual(h.launches, ['correctness', 'verify', 'plan']);
+  assert.equal(h.ledger().execution.planRetry.state, 'pending');
+  await assert.rejects(h.resume(), /fix.*(?:exit|failed)/);
+  assert.deepEqual(h.launches, ['correctness', 'verify', 'plan', 'plan', 'fix']);
+  assert.deepEqual(h.plans[0].fixGroups[0].findingIds, ids);
+});

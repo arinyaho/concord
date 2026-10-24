@@ -95,6 +95,80 @@ test('classifyPrior: a rename is followed, and a deleted file with the span nowh
   assert.equal(v[0].file, 'a2.js');
 });
 
+const answer = (id, file, span, reason = 'a guard precedes it') => ({ id, evidence: { file, span, reason } });
+const addressedOf = (v) => v.map((r) => [r.id, r.status, r.reason, r.why]);
+
+test('classifyPrior: a span-present finding the reviewer lists as addressed with evidence quoted once from the head is closed, and silence closes nothing (#395)', () => {
+  const open = [held('answered', 'a.js', 'bad()'), held('silent', 'b.js', 'worse()')];
+  const read = files({ 'a.js': Buffer.from('if (ok) {\n bad()\n}\n'), 'b.js': Buffer.from('worse()') });
+  const v = lib.classifyPrior(open, [], same, read, 'h2', [answer('answered', 'a.js', 'if (ok) {')]);
+  assert.deepEqual(addressedOf(v), [['answered', 'addressed', undefined, undefined], ['silent', 'open', 'span-present', undefined]]);
+  assert.deepEqual(v[0].evidence, { file: 'a.js', span: 'if (ok) {', reason: 'a guard precedes it' });
+  assert.equal(v[0].spanVerified, 'h2');
+});
+
+test('classifyPrior: a verdict for an id shared by several open findings closes none of them and is reported as ambiguous-id', () => {
+  const open = [held('dup', 'a.js', 'bad()'), held('dup', 'b.js', 'worse()')];
+  const read = files({ 'a.js': Buffer.from('if (ok) {\n bad()\n}\n'), 'b.js': Buffer.from('worse()') });
+  const v = lib.classifyPrior(open, [], same, read, 'h2', [answer('dup', 'a.js', 'if (ok) {')]);
+  assert.deepEqual(addressedOf(v), [['dup', 'open', 'span-present', 'ambiguous-id'], ['dup', 'open', 'span-present', 'ambiguous-id']]);
+});
+
+test('classifyPrior: an addressed verdict is refused unless it is raised by no one, offered, unique and backed by a quote that exists once and is not the span itself (#395)', () => {
+  const read = files({ 'a.js': Buffer.from('x\nx\nbad()\nok()\n') });
+  const run = (verdict, raised = []) => addressedOf(lib.classifyPrior([held('f', 'a.js', 'bad()')], raised, same, read, 'h2', verdict));
+  assert.deepEqual(run([answer('f', 'a.js', 'ok()')], [finding('f', 'a.js', 'bad()')]), [['f', 'open', 'raised', 'raised']]);
+  assert.deepEqual(run([answer('f', 'a.js', 'ok()'), answer('f', 'a.js', 'ok()')]), [['f', 'open', 'span-present', 'duplicate']]);
+  assert.deepEqual(run([answer('f', 'a.js', 'x')]), [['f', 'open', 'span-present', 'evidence-ambiguous']]);
+  assert.deepEqual(run([answer('f', 'a.js', 'nope')]), [['f', 'open', 'span-present', 'evidence-absent']]);
+  assert.deepEqual(run([answer('f', 'gone.js', 'ok()')]), [['f', 'open', 'span-present', 'evidence-absent']]);
+  assert.deepEqual(run([answer('f', 'a.js', ' bad()  ')]), [['f', 'open', 'span-present', 'evidence-is-span']]);
+  assert.deepEqual(run([answer('f', 'a.js', 'ok()', ' ')]), [['f', 'open', 'span-present', 'no-reason']]);
+  assert.deepEqual(run([answer('f', 'a.js', 'ok()', 'y'.repeat(501))]), [['f', 'open', 'span-present', 'no-reason']]);
+});
+
+test('classifyPrior: evidence that contains the finding span plus extra text is refused as evidence-is-span (#395)', () => {
+  const read = files({ 'a.js': Buffer.from('if (ok) {\n bad()\n}\n') });
+  const run = (span) => addressedOf(lib.classifyPrior([held('f', 'a.js', 'bad()')], [], same, read, 'h2', [answer('f', 'a.js', span)]));
+  assert.deepEqual(run('if (ok) {\n bad()'), [['f', 'open', 'span-present', 'evidence-is-span']]);
+  assert.deepEqual(run('if (ok) {'), [['f', 'addressed', undefined, undefined]]);
+});
+
+test('classifyPrior: evidence that is a substring of the finding span is refused as evidence-is-span', () => {
+  const read = files({ 'a.js': Buffer.from('if (ok) {\n bad()\n}\n') });
+  const run = (span) => addressedOf(lib.classifyPrior([held('f', 'a.js', 'bad()')], [], same, read, 'h2', [answer('f', 'a.js', span)]));
+  assert.deepEqual(run('bad'), [['f', 'open', 'span-present', 'evidence-is-span']]);
+  assert.deepEqual(run('if (ok) {'), [['f', 'addressed', undefined, undefined]]);
+});
+
+test('classifyPrior: an unverified, path-unresolved or gone-span finding is never closed by a verdict (#395)', () => {
+  const read = files({ 'a.js': Buffer.from('ok()'), 'big.js': 'big' });
+  const open = [{ ...held('u', 'a.js', 'bad()'), spanVerified: undefined }, held('p', 'big.js', 'bad()'), held('g', 'a.js', 'bad()')];
+  const v = lib.classifyPrior(open, [], same, read, 'h2', [answer('u', 'a.js', 'ok()'), answer('p', 'a.js', 'ok()'), answer('g', 'a.js', 'ok()')]);
+  assert.deepEqual(addressedOf(v), [['u', 'open', 'unverified', undefined], ['p', 'open', 'path-unresolved', undefined], ['g', 'fixed', undefined, undefined]]);
+});
+
+test('classifyPrior: an addressed finding is re-checked every round: it stays closed while both quotes stand, is fixed when the span goes, and reopens when the evidence goes or the span is raised again (#395)', () => {
+  const closed = (id) => ({ ...held(id, 'a.js', 'bad()'), status: 'addressed', addressedEvidence: { file: 'a.js', span: 'ok()', reason: 'r' } });
+  const both = Buffer.from('ok()\nbad()');
+  assert.deepEqual(addressedOf(lib.classifyPrior([closed('c')], [], same, files({ 'a.js': both }), 'h3')), [['c', 'addressed', undefined, undefined]]);
+  assert.deepEqual(addressedOf(lib.classifyPrior([closed('c')], [], same, files({ 'a.js': Buffer.from('ok()') }), 'h3')), [['c', 'fixed', undefined, undefined]]);
+  assert.deepEqual(addressedOf(lib.classifyPrior([closed('c')], [], same, files({ 'a.js': Buffer.from('bad()') }), 'h3')), [['c', 'open', 'evidence-gone', undefined]]);
+  assert.deepEqual(addressedOf(lib.classifyPrior([closed('c')], [finding('c', 'a.js', 'bad()')], same, files({ 'a.js': both }), 'h3')), [['c', 'open', 'raised', undefined]]);
+  assert.deepEqual(addressedOf(lib.classifyPrior([closed('c')], [], same, files({ 'a.js': 'big' }), 'h3')), [['c', 'addressed', undefined, undefined]]);
+});
+
+test('classifyPrior: an addressed finding whose evidence file was renamed keeps its closure (#395)', () => {
+  const closed = { ...held('c', 'a.js', 'bad()'), status: 'addressed', addressedEvidence: { file: 'a.js', span: 'ok()', reason: 'r' } };
+  const resolve = () => ({ renames: new Map([['a.js', 'b.js']]), live: new Set(['b.js']) });
+  assert.deepEqual(addressedOf(lib.classifyPrior([closed], [], resolve, files({ 'b.js': Buffer.from('ok()\nbad()') }), 'h3')), [['c', 'addressed', undefined, undefined]]);
+});
+
+test('evaluateApproval: an addressed finding no longer blocks (#395)', () => {
+  const live = { head: 'h1', state: 'OPEN', isDraft: false, author: 'someone' };
+  assert.deepEqual(lib.evaluateApproval(ledger({ findings: [{ ...finding('a', 'a.js', 'x'), status: 'addressed' }] }), live, 'h1'), { approve: true });
+});
+
 test('evaluateApproval: approves only a reviewed, open, non-draft head with no open blocking finding', () => {
   const live = { head: 'h1', state: 'OPEN', isDraft: false, author: 'someone' };
   assert.deepEqual(lib.evaluateApproval(ledger(), live, 'h1'), { approve: true });
@@ -104,12 +178,21 @@ test('evaluateApproval: approves only a reviewed, open, non-draft head with no o
   assert.equal(no(ledger(), { ...live, isDraft: true }).reason, 'draft');
   assert.equal(no(ledger(), { ...live, author: 'bot' }).reason, 'self-review');
   assert.equal(no(ledger({ approval: { head: 'h1' } }), live).reason, 'already-approved');
-  assert.equal(no(ledger({ findings: [{ ...finding('a', 'x', 's'), status: 'open' }] }), live).reason, 'open-findings');
+  assert.equal(no(ledger({ findings: [{ ...finding('a', 'x', 's'), status: 'open' }] }), live).reason, 'open-blockers');
+  // Only an explicit minor class lets an open finding through; a missing or any other class blocks.
+  const open = (extra) => ledger({ findings: [{ ...finding('a', 'x', 's'), status: 'open', ...extra }] });
+  assert.deepEqual(no(open({ class: 'minor', reason: 'wording only' }), live), { approve: true });
+  assert.equal(no(open({ class: 'blocker', reason: 'r' }), live).reason, 'open-blockers');
+  assert.equal(no(open({ class: 'Minor' }), live).reason, 'open-blockers');
+  assert.equal(no(open({ class: undefined }), live).reason, 'open-blockers');
+  assert.equal(no(ledger({ findings: [{ ...finding('a', 'x', 's'), status: 'open', class: 'minor' }, { ...finding('b', 'x', 't'), status: 'open' }] }), live).reason, 'open-blockers');
   assert.deepEqual(no(ledger({ findings: [{ ...finding('a', 'x', 's'), status: 'waived' }, { ...finding('b', 'x', 't'), status: 'fixed' }] }), live), { approve: true });
 });
 
 const live = (extra = {}) => ({ head: 'h1', state: 'OPEN', isDraft: false, author: 'dev', ...extra });
-const wake = (extra = {}) => lib.wakeDecision({ ledger: ledger(), live: live(), replies: [], now: Date.parse('2026-01-01T01:00:00Z'), stable: true, ...extra });
+// The default ledger waits on the author: it holds an open blocker. A clean, unapproved ledger is the draft case.
+const waiting = (extra = {}) => ledger({ findings: [{ ...finding('w', 'x', 's'), status: 'open' }], ...extra });
+const wake = (extra = {}) => lib.wakeDecision({ ledger: waiting(), live: live(), replies: [], now: Date.parse('2026-01-01T01:00:00Z'), stable: true, ...extra });
 
 test('wakeDecision: push alone or reply alone does not start a round', () => {
   assert.equal(wake({ live: live({ head: 'h2' }) }), null);
@@ -120,6 +203,36 @@ test('wakeDecision: push plus reply starts a round once the head is stable', () 
   const args = { live: live({ head: 'h2' }), replies: ['2026-01-01T00:30:00Z'] };
   assert.deepEqual(wake(args), { event: 'round', head: 'h2' });
   assert.equal(wake({ ...args, stable: false }), null);
+});
+
+test('wakeDecision: after a failed round at h2, h2 with no newer reply waits; h3 or a newer reply wakes (#391)', () => {
+  const attempt = { head: 'h2', at: '2026-01-01T00:40:00Z' };
+  const old = ['2026-01-01T00:30:00Z'];
+  const args = { ledger: ledger({ attempt }), live: live({ head: 'h2' }), replies: old };
+  assert.equal(wake(args), null);
+  assert.deepEqual(wake({ ...args, live: live({ head: 'h3' }) }), { event: 'round', head: 'h3' });
+  assert.deepEqual(wake({ ...args, replies: [...old, '2026-01-01T00:50:00Z'] }), { event: 'round', head: 'h2' });
+});
+
+test('a first round that failed has no review to wait on: the watch wakes for a head newer than the attempt, never throws (#391)', () => {
+  const first = ledger({ rounds: [], attempt: { head: 'h2', at: '2026-01-01T00:40:00Z' } });
+  assert.deepEqual(lib.repliesSince(first, [], [], 'dev'), []);
+  const call = (head, stable = true) => lib.wakeDecision({ ledger: first, live: live({ head }), replies: [], now: Date.parse('2026-01-01T01:00:00Z'), stable });
+  assert.equal(call('h2'), null);
+  assert.equal(call('h3', false), null);
+  assert.deepEqual(call('h3'), { event: 'round', head: 'h3' });
+});
+
+test('wakeDecision: a clean round on a draft keeps the watch: ready at the same head wakes "ready", a new head starts a round, a draft stays quiet (#420)', () => {
+  const args = { ledger: ledger() };
+  assert.equal(wake({ ...args, live: live({ isDraft: true }) }), null);
+  assert.deepEqual(wake({ ...args, live: live({ isDraft: false }) }), { event: 'ready', head: 'h1' });
+  assert.deepEqual(wake({ ...args, live: live({ isDraft: true, head: 'h2' }) }), { event: 'round', head: 'h2' });
+  assert.equal(wake({ ...args, live: live({ head: 'h2' }), stable: false }), null);
+  // An open blocker, a head already approved or an unreviewed submodule is not waiting for ready.
+  const blocked = ledger({ findings: [{ ...finding('a', 'x', 's'), status: 'open' }] });
+  assert.equal(wake({ ledger: blocked }), null);
+  assert.equal(wake({ ledger: ledger({ approval: { head: 'h1' } }) }), null);
 });
 
 test('wakeDecision: merge and close wake the loop regardless of replies', () => {
@@ -133,7 +246,7 @@ test('wakeDecision: one side alone nudges once after 24 hours, then the 7-day ti
   assert.deepEqual(wake({ live: live({ head: 'h2' }), now: t0 + day }), { event: 'nudge', kind: 'push-only', head: 'h2', replyAt: null });
   const replyOnly = { replies: ['2026-01-01T00:30:00Z'], now: t0 + day };
   assert.deepEqual(wake(replyOnly), { event: 'nudge', kind: 'reply-only', head: 'h1', replyAt: '2026-01-01T00:30:00Z' });
-  const nudged = ledger({ nudged: { kind: 'reply-only', head: 'h1', replyAt: '2026-01-01T00:30:00Z' } });
+  const nudged = waiting({ nudged: { kind: 'reply-only', head: 'h1', replyAt: '2026-01-01T00:30:00Z' } });
   assert.equal(wake({ ...replyOnly, ledger: nudged }), null);
   assert.deepEqual(wake({ now: t0 + 7 * day }), { event: 'timeout' });
 });
@@ -174,4 +287,64 @@ test('an unreviewed submodule range keeps the round from approving its head and 
   assert.equal(lib.evaluateApproval(ledger, { head: 'h1', state: 'OPEN', isDraft: false, author: 'dev' }, 'h1').reason, 'unreviewed-submodule');
   assert.equal(lib.evaluateApproval({ ...ledger, rounds: [{ ...ledger.rounds[0], head: 'h0' }] }, { head: 'h1', state: 'OPEN', isDraft: false, author: 'dev' }, 'h1').approve, true);
   assert.deepEqual(lib.chooseRange(ledger.rounds[0], { head: 'h2', mergeBase: 'm', intent: 'i' }, () => true), { base: 'm', broad: false });
+});
+
+test('classOf: the gate verifier\'s blocking reason replaces the finder\'s non-blocking rationale; without one the rationale stands', () => {
+  const overridden = lib.classOf({ class: 'blocker', releaseBlocking: [], rationale: 'wording only', blockingReason: 'it breaks callers' });
+  assert.deepEqual([overridden.class, overridden.reason], ['blocker', 'it breaks callers']);
+  assert.equal(lib.classOf({ class: 'minor', releaseBlocking: [], rationale: 'wording only', blockingReason: 'x' }).class, 'blocker');
+  assert.equal(lib.classOf({ class: 'blocker', releaseBlocking: ['serious-bug'], rationale: 'breaks login' }).reason, 'breaks login');
+});
+
+test('baseMergeOnly: only merges of the base branch over an unchanged pull request diff skip a round', () => {
+  const prior = round(1, 'h1', { unreviewed: [] });
+  const merge = { sha: 'm', parents: [{ sha: 'h1', inBase: false }, { sha: 'b1', inBase: true }] };
+  const facts = (extra = {}) => ({ prior, live: { head: 'm', intent: 'i0' }, ancestor: true, commits: [merge], before: 'f', after: 'f', replies: [], ...extra });
+  assert.equal(lib.baseMergeOnly(facts()), true);
+  assert.equal(lib.baseMergeOnly(facts({ commits: [{ ...merge, parents: [{ sha: 'b1', inBase: true }, { sha: 'h1', inBase: false }] }] })), true);
+  const no = {
+    'no prior round': { prior: null },
+    'intent changed': { live: { head: 'm', intent: 'i1' } },
+    'unreviewed range': { prior: round(1, 'h1', { unreviewed: [{ path: 'x' }] }) },
+    'force push': { ancestor: false },
+    'same head': { live: { head: 'h1', intent: 'i0' } },
+    'author reply': { replies: ['2026-01-02T00:00:00Z'] },
+    'no new commit of the pull request': { commits: [] },
+    'plain commit': { commits: [{ sha: 'p', parents: [{ sha: 'h1', inBase: false }] }] },
+    'octopus': { commits: [{ ...merge, parents: [...merge.parents, { sha: 'b2', inBase: true }] }] },
+    'merge of another branch': { commits: [{ ...merge, parents: [{ sha: 'h1', inBase: false }, { sha: 'x', inBase: false }] }] },
+    'merge that drops the last head': { commits: [{ ...merge, parents: [{ sha: 'z', inBase: false }, { sha: 'b1', inBase: true }] }] },
+    'diff changed': { after: 'g' },
+  };
+  for (const [why, extra] of Object.entries(no)) assert.equal(lib.baseMergeOnly(facts(extra)), false, why);
+});
+
+const descOpen = { ...finding('gate:d', '/pr-description', 'x'), status: 'open' };
+test('wakeDecision: an edited description wakes a round only while a description finding is open or addressed, once the head and description are stable (#423)', () => {
+  const edited = { live: live({ intent: 'i2' }), ledger: waiting({ findings: [descOpen], rounds: [{ n: 1, head: 'h1', intent: 'i1', submittedAt: '2026-01-01T00:00:00Z' }] }) };
+  assert.deepEqual(wake({ ...edited }), { event: 'round', head: 'h1' });
+  assert.equal(wake({ ...edited, stable: false }), null);
+  assert.equal(wake({ ...edited, live: live({ intent: 'i1' }) }), null);
+  // An addressed description finding is judged again against the edited text; with none open or addressed the edit wakes no round.
+  assert.deepEqual(wake({ ...edited, ledger: waiting({ findings: [{ ...descOpen, status: 'addressed' }], rounds: edited.ledger.rounds }) }), { event: 'round', head: 'h1' });
+  assert.deepEqual(wake({ ...edited, ledger: waiting({ findings: [{ ...descOpen, status: 'fixed' }], rounds: edited.ledger.rounds }) }), { event: 'ready', head: 'h1' });
+  assert.equal(wake({ ...edited, ledger: waiting({ findings: [{ ...finding('c', 'a.js', 's'), status: 'open' }], rounds: edited.ledger.rounds }) }), null);
+});
+
+test('wakeDecision: a failed round at an unchanged head and description waits; a newer description asks again (#423)', () => {
+  const l = waiting({ findings: [descOpen], rounds: [{ n: 1, head: 'h1', intent: 'i1', submittedAt: '2026-01-01T00:00:00Z' }], attempt: { head: 'h1', intent: 'i2', at: '2026-01-01T00:30:00Z' } });
+  assert.equal(wake({ ledger: l, live: live({ intent: 'i2' }) }), null);
+  assert.deepEqual(wake({ ledger: l, live: live({ intent: 'i3' }) }), { event: 'round', head: 'h1' });
+});
+
+test('intentOf is the hash of the title and body that snapshot records', () => {
+  assert.equal(lib.intentOf('T', 'B'), lib.sha('T\n\nB'));
+});
+
+test('classifyPrior: a quote with the replacement characters is matched as the text when the description really holds them, else restored (#423)', () => {
+  const finding1 = { key: 'k', id: 'gate:d', file: '/pr-description', span: 'old claim', spanVerified: 'h0', status: 'open' };
+  const closes = (text, quote) => lib.classifyPrior([finding1], [], () => ({ renames: new Map(), live: new Set() }), (f) => f === '/pr-description' ? Buffer.from(`old claim ${text}`) : null, 'h1',
+    [{ id: 'gate:d', evidence: { file: '/pr-description', span: quote, reason: 'r' } }])[0];
+  assert.equal(closes('uses a∕b here', 'uses a∕b here').evidence.span, 'uses a∕b here');
+  assert.equal(closes('uses a/b here', 'uses a∕b here').evidence.span, 'uses a/b here');
 });

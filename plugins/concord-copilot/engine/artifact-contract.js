@@ -1,6 +1,6 @@
 'use strict';
 
-const { isValidFindingId } = require('./gate-contract');
+const { isValidFindingId, normalizeFindingId } = require('./gate-contract');
 const { safeIdForFilename } = require('./artifact-name');
 
 const SHAPES = {
@@ -11,6 +11,9 @@ const SHAPES = {
   gate: { arrays: ['findings'], prefixes: ['gate:'] },
   'gate-verify': { arrays: ['rejected', 'findings'], prefixes: ['gate:'] },
 };
+
+// Earlier findings a verify pass may find answered: the verify prefixes, and the findings of the gate and the intent review.
+const ADDRESSABLE_PREFIXES = [...SHAPES.verify.prefixes, ...SHAPES.gate.prefixes, ...SHAPES.intent.prefixes];
 
 class ArtifactError extends Error {
   constructor(kind, message) { super(message); this.kind = kind; }
@@ -54,12 +57,36 @@ function isForeign(name, item) {
 const repairKeys = (name) => dropsInvalidFindings(name) ? [...SHAPES[name].arrays, 'unverifiable'] : SHAPES[name].arrays;
 const removable = (name, key, item) => isForeign(name, item) || (key === 'findings' && dropsInvalidFindings(name) && lacksFindingFields(item));
 
-// The only candidate preservesArtifact accepts: the original with its status
-// spelling lowercased, foreign dispositions omitted and invalid findings deleted.
-function repairCandidate(name, raw) {
-  const shape = SHAPES[name];
-  if (!shape) throw new Error(`unknown artifact role: ${name}`);
-  const original = JSON.parse(raw);
+// Every place an artifact names a finding id: the callback maps each id string, so one pass both collects and rewrites.
+const mapIds = (value, fn) => {
+  const one = (item) => typeof item === 'string' ? fn(item) : item && typeof item === 'object' && !Array.isArray(item) && typeof item.id === 'string' ? { ...item, id: fn(item.id) } : item;
+  const out = { ...value };
+  for (const key of ['findings', 'rejected', 'unverifiable', 'blocking', 'addressed']) if (Array.isArray(value[key])) out[key] = value[key].map(one);
+  if (Array.isArray(value.groups)) out.groups = value.groups.map((g) => g && Array.isArray(g.findingIds) ? { ...g, findingIds: g.findingIds.map((id) => typeof id === 'string' ? fn(id) : id) } : g);
+  if (Array.isArray(value.duplicates)) out.duplicates = value.duplicates.map((d) => d && typeof d === 'object' ? { ...d, ...(typeof d.id === 'string' ? { id: fn(d.id) } : {}), ...(typeof d.of === 'string' ? { of: fn(d.of) } : {}) } : d);
+  return out;
+};
+
+// Raw id -> normalized id for every id whose prefix this role may use but whose slug is invalid. Empty when any such id has no
+// derivable form or two distinct ids would become one (an order-dependent suffix could attach a verdict to the wrong finding).
+function slugRewrites(name, value) {
+  const prefixes = [...SHAPES[name].prefixes, ...(name === 'gate-verify' ? SHAPES.verify.prefixes : []), ...ADDRESSABLE_PREFIXES];
+  const seen = new Set();
+  mapIds(value, (id) => { seen.add(id); return id; });
+  const rewrites = new Map();
+  const taken = new Map([...seen].filter(isValidFindingId).map((id) => [id, id]));
+  for (const id of seen) {
+    if (isValidFindingId(id) || !prefixes.some((prefix) => id.startsWith(prefix))) continue;
+    const mapped = normalizeFindingId(id);
+    if (!mapped || (taken.has(mapped) && taken.get(mapped) !== id)) return new Map();
+    taken.set(mapped, id);
+    rewrites.set(id, mapped);
+  }
+  return rewrites;
+}
+
+// What a repair deletes (foreign and evidence-less entries) and respells (status), before any id is rewritten.
+function strippedCandidate(name, original) {
   const candidate = { ...original };
   if (typeof original.status === 'string') candidate.status = original.status.toLowerCase();
   for (const key of repairKeys(name)) {
@@ -67,6 +94,22 @@ function repairCandidate(name, raw) {
     candidate[key] = original[key].filter((item) => !removable(name, key, item));
   }
   return candidate;
+}
+
+// The only candidate preservesArtifact accepts: the original with its status spelling lowercased, foreign dispositions
+// omitted, invalid findings deleted and invalid slugs normalized (the finding and its evidence stay).
+function repairCandidate(name, raw) {
+  if (!SHAPES[name]) throw new Error(`unknown artifact role: ${name}`);
+  const stripped = strippedCandidate(name, JSON.parse(raw));
+  const rewrites = slugRewrites(name, stripped);
+  return rewrites.size ? mapIds(stripped, (id) => rewrites.get(id) || id) : stripped;
+}
+
+// True when a slug rewrite alone would make the artifact's ids valid.
+function repairsSlugs(name, raw) {
+  let parsed; try { parsed = JSON.parse(raw); } catch (_) { return false; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || !SHAPES[name]) return false;
+  return slugRewrites(name, strippedCandidate(name, parsed)).size > 0;
 }
 
 function preservesArtifact(name, raw, candidate) {
@@ -80,6 +123,7 @@ function preservesArtifact(name, raw, candidate) {
   if (!shape) return false;
   const ownedEvidence = shape.arrays.flatMap((key) => key === 'examined' ? (original[key] || []) : (Array.isArray(original[key]) ? original[key].filter((item) => !isForeign(name, item)) : []));
   if (!ownedEvidence.length && !shape.arrays.every((key) => Array.isArray(original[key]) && original[key].length === 0)) return false;
+  if (slugRewrites(name, strippedCandidate(name, original)).size) return comparable(candidate) === comparable(repairCandidate(name, raw));
   for (const key of Object.keys(original)) {
     if (key === 'status') continue;
     // A repair may omit foreign dispositions only when its role-owned evidence
@@ -101,7 +145,20 @@ function preservesArtifact(name, raw, candidate) {
   return true;
 }
 
-function normalizeArtifact(name, raw) {
+// A review-only verify pass may say that an earlier finding is answered by the code; the entry carries the evidence a person can check.
+function normalizeAddressed(name, list) {
+  if (!Array.isArray(list)) throw new ArtifactError('fatal', `${name} artifact field "addressed" must be an array`);
+  return list.map((entry, index) => {
+    const ev = entry && typeof entry === 'object' ? entry.evidence : undefined;
+    const bad = (why) => new ArtifactError('retry', `${name} addressed[${index}] ${why}`);
+    if (!entry || typeof entry.id !== 'string' || !isValidFindingId(entry.id) || !ADDRESSABLE_PREFIXES.some((prefix) => entry.id.startsWith(prefix))) throw bad('has an invalid id');
+    if (!ev || typeof ev !== 'object' || typeof ev.file !== 'string' || !ev.file || typeof ev.span !== 'string' || !ev.span || typeof ev.reason !== 'string' || !ev.reason.trim()) throw bad(`("${entry.id}") needs evidence {file, span, reason}: the file, an exact quote of code at this head, and why that code answers the finding`);
+    if (ev.reason.trim().length > 500) throw bad(`("${entry.id}") has a reason over 500 characters`);
+    return { id: entry.id, evidence: { file: ev.file, span: ev.span, reason: ev.reason.trim() } };
+  });
+}
+
+function normalizeArtifact(name, raw, { addressed = false } = {}) {
   const shape = SHAPES[name];
   if (!shape) throw new Error(`unknown artifact role: ${name}`);
   let parsed;
@@ -179,6 +236,7 @@ function normalizeArtifact(name, raw) {
       }
     }
   }
+  if (addressed && name === 'verify' && parsed.addressed !== undefined) canonical.addressed = normalizeAddressed(name, parsed.addressed);
   if (name === 'gate-verify' && parsed.blocking !== undefined) {
     if (!Array.isArray(parsed.blocking)) throw new ArtifactError('fatal', 'gate-verify artifact field "blocking" must be an array');
     canonical.blocking = parsed.blocking.map((entry, index) => {
@@ -220,10 +278,11 @@ function normalizeArtifact(name, raw) {
     if (!Array.isArray(parsed.groups)) throw new ArtifactError('fatal', `${name} artifact field "groups" must be an array`);
     canonical.groups = parsed.groups.map((group, index) => {
       if (!group || typeof group !== 'object' || Array.isArray(group)) throw new ArtifactError('fatal', `${name} group[${index}] is not an object`);
-      const findingIds = group.findingIds;
-      if (!Array.isArray(findingIds) || !findingIds.length || new Set(findingIds).size !== findingIds.length
+      // A repeat inside one group carries no information: keep the first occurrence.
+      const findingIds = Array.isArray(group.findingIds) ? [...new Set(group.findingIds)] : group.findingIds;
+      if (!Array.isArray(findingIds) || !findingIds.length
         || findingIds.some((id) => !isValidFindingId(id) || !shape.prefixes.some((prefix) => id.startsWith(prefix)))) {
-        throw new ArtifactError('retry', `${name} group[${index}] has invalid or duplicate findingIds`);
+        throw new ArtifactError('retry', `${name} group[${index}] has invalid findingIds`);
       }
       if (typeof group.rootCause !== 'string' || !group.rootCause.trim()) throw new ArtifactError('retry', `${name} group[${index}] is missing "rootCause"`);
       if (!Array.isArray(group.invariants) || !group.invariants.length || group.invariants.some((item) => typeof item !== 'string' || !item.trim())) {
@@ -278,4 +337,4 @@ function normalizeArtifact(name, raw) {
   return canonical;
 }
 
-module.exports = { ArtifactError, dropsInvalidFindings, normalizeArtifact, retryPrompt, repairCandidate, preservesArtifact, allowedFindingPrefixes, ARTIFACT_ROLES: Object.keys(SHAPES) };
+module.exports = { ArtifactError, repairsSlugs, dropsInvalidFindings, normalizeArtifact, retryPrompt, repairCandidate, preservesArtifact, allowedFindingPrefixes, ADDRESSABLE_PREFIXES, ARTIFACT_ROLES: Object.keys(SHAPES) };

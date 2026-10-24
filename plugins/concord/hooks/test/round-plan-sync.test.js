@@ -317,3 +317,53 @@ test('gate-panel lens prompt carries the review-language clause', () => {
   const runner = fs.readFileSync(path.join(CORE, 'codex-review-runner.js'), 'utf8');
   assert.match(runner, /gate:\$\{lens\}:<slug>\.\$\{reviewLanguageClause\(context\.reviewLanguage\)\}\$\{BLOCKED_CLAUSE\}/);
 });
+
+test('classify asks correctness and verify for releaseBlocking and rationale; without it their prompts are byte-identical to the ones before the flag', () => {
+  const crypto = require('node:crypto');
+  const sha = (text) => crypto.createHash('sha256').update(text).digest('hex');
+  const context = { stateDir: '/state', round: 1, targetType: 'git', slug: 'feat-x', gateApplied: false, cliPath: '/cli.js' };
+  const golden = {
+    correctness: '5fb0201957fc7632898c57d04da3ddcc80b557945cb881db5284f1e158a4f5f8',
+    verify: 'c866bbcfc953e1734d6cf0f1a23c79c4d04b46549fe2d3d472a117adec542f79',
+  };
+  const goldenBroad = {
+    correctness: '43b719cbd953a43eaf3f37310848afbae27ed50eac36528c85252423592ec16d',
+    verify: '91eebf0cd51c43222cc4c9b6acb1cc3b87a366bcdc0de3dd05cf8bc662a97751',
+  };
+  for (const role of ['correctness', 'verify']) {
+    assert.equal(sha(reviewerPrompt(role, context)), golden[role], `${role} prompt changed without classify`);
+    assert.equal(sha(reviewerPrompt(role, { ...context, classify: false })), golden[role]);
+    assert.equal(sha(reviewerPrompt(role, { ...context, gateApplied: true, gateMode: 'pair', reviewLanguage: 'ko' })), goldenBroad[role]);
+    const classified = reviewerPrompt(role, { ...context, classify: true });
+    assert.match(classified, /"releaseBlocking": an array of the release-blocking classes/);
+    assert.match(classified, /"rationale": a non-empty sentence/);
+  }
+  for (const role of ['intent', 'plan', 'fix', 'certify']) {
+    const withFlag = reviewerPrompt(role, { ...context, classify: true, fixGroup: { groupId: 'g1', findingIds: ['correctness:a'], rootCause: 'r', invariants: [] }, finding: { id: 'correctness:a', summary: 's' }, fixFiles: [] });
+    assert.doesNotMatch(withFlag, /"releaseBlocking": an array/, `${role} must not be asked for a class`);
+  }
+});
+
+test('every prompt that writes or cites finding ids states the id rule, and every driver copy carries it byte-for-byte (#414)', () => {
+  const { FINDING_ID_RULE } = require(path.join(CORE, 'gate-contract'));
+  const context = {
+    stateDir: '/state', round: 1, targetType: 'git', slug: 'feat-x', gateMode: 'pair',
+    fixGroup: { groupId: 'g1', findingIds: ['correctness:a'], rootCause: 'r', invariants: [] },
+    finding: { id: 'correctness:a', summary: 's' }, fixFiles: [],
+  };
+  for (const [role, extra] of [['correctness', {}], ['verify', {}], ['plan', {}], ['intent', {}], ['gate', {}], ['gate', { gateMode: 'design-conformance' }], ['gate-verify', {}]]) {
+    assert.ok(reviewerPrompt(role, { ...context, ...extra }).includes(FINDING_ID_RULE), `${role} prompt lacks the finding id rule`);
+  }
+  for (const role of ['fix', 'certify']) assert.ok(!reviewerPrompt(role, context).includes(FINDING_ID_RULE), `${role} prompt should not carry the id rule`);
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot driver', copilotDriverText]]) {
+    assert.ok(text.includes(FINDING_ID_RULE), `${name} lacks the finding id rule`);
+  }
+});
+
+test('every driver copy spells the plan artifact envelope the validator requires, as round-plan.js does', () => {
+  const envelope = '{"status":"ok","protocolVersion":2,"groups":[]}';
+  assert.ok(reviewerPrompt('plan', { stateDir: '/state', round: 1, targetType: 'git', slug: 'feat-x' }).includes(envelope));
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
+    assert.ok(text.includes('ONLY the v2 plan JSON `' + envelope + '`'), `${name} plan step must name ${envelope} so a planner does not omit "status"`);
+  }
+});

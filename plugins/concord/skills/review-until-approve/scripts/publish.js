@@ -1,8 +1,8 @@
 'use strict';
 // Rendering of one review. Pure, so an unattended variant can reuse it.
-// The contract is that of services/pr-review/review-one.sh: a finding is posted
-// inline only where its line is inside a diff hunk (GitHub rejects the whole
-// review otherwise), the rest go in the body, and `body` mode puts them all there.
+// A finding is posted as a line comment where its line is inside a diff hunk, as a file comment where its file is in the
+// diff but the line is not, and in the body otherwise. `body` mode puts them all in the body, and so does a finding
+// listed in `rejected` (a comment GitHub refused).
 
 // The path of a `+++ ` header: git quotes one with special characters as "b/..." with C escapes.
 function headerPath(raw) {
@@ -49,31 +49,54 @@ function placeLine(content, span, file, hunks) {
   return null;
 }
 
-const text = (f) => `**${f.category}** ${f.summary}${f.requirement ? `\n\n> ${f.requirement}` : ''}\n\n\`${f.id}\``;
+// Every file the diff names, including one with no added line (a deletion, a mode change, a pure rename, a binary) that has no
+// hunk. The path is the b-side of the `diff --git` line, which is never /dev/null.
+function filesOf(diff) {
+  const files = new Set();
+  for (const line of diff.split('\n')) {
+    if (!line.startsWith('diff --git ')) continue;
+    const q = /("b\/(?:[^"\\]|\\.)*")$/.exec(line);
+    const i = line.lastIndexOf(' b/');
+    const file = q ? headerPath(q[1]) : i === -1 ? '' : line.slice(i + 3);
+    if (file) files.add(file);
+  }
+  return [...files];
+}
+
+// Anything but an explicit minor is labeled a blocker, with the release-blocking categories the reviewer named.
+const label = (f) => f.class === 'minor' ? 'minor' : `blocker${f.releaseBlocking?.length ? `: ${f.releaseBlocking.join(', ')}` : ''}`;
+const text = (f) => `**${f.category}** (${label(f)}) ${f.summary}${f.reason ? ` — ${f.reason}` : ''}${f.requirement ? `\n\n> ${f.requirement}` : ''}\n\n\`${f.id}\``;
 const ids = (list) => list.map((id) => `\`${id}\``).join(', ');
 
 // `how` is "inline" or "body". Event is APPROVE only for a clean round, never REQUEST_CHANGES.
-function renderReview({ unconfined, head, round, rangeBase, reviewer, hunks, findings, fixed, stillOpen, previousHead, approve }, how) {
+function renderReview({ unconfined, head, round, rangeBase, reviewer, hunks, files = [], findings, fixed, addressed = [], stillOpen, previousHead, approve, followUps = [], rejected = [], baseMergeOf }, how) {
   const inDiff = (f) => f.line != null && hunks.some((h) => h.file === f.file && f.line >= h.from && f.line <= h.to);
-  const inline = how === 'inline' ? findings.filter(inDiff) : [];
-  const rest = findings.filter((f) => !inline.includes(f));
+  const inFile = (f) => files.includes(f.file) || hunks.some((h) => h.file === f.file);
+  const threads = how === 'inline' ? findings.filter((f) => !rejected.includes(f) && inFile(f)).map((f) => inDiff(f)
+    ? { finding: f, subject: 'LINE', path: f.file, line: f.line, body: text(f) }
+    : { finding: f, subject: 'FILE', path: f.file, body: `${f.line ? `Line ${f.line}: ` : ''}${text(f)}` }) : [];
+  const rest = findings.filter((f) => !threads.some((t) => t.finding === f));
+  const minors = new Set(followUps.map((f) => f.key));
   const lines = [
     `<!-- concord-approve: ${head} round:${round} base:${rangeBase} -->`,
-    `reviewed by concord (${reviewer})`,
+    `reviewed by [concord](https://github.com/arinyaho/concord) (${reviewer})`,
     ...(unconfined ? [`reviewed unconfined on the reviewing account's trust declaration (recorded ${unconfined})`] : []),
-    findings.length === 0 && stillOpen.length === 0 ? (approve ? 'LGTM — no finding survived verification.' : 'No finding survived verification; this review does not approve.') : `${findings.length} new finding(s), ${stillOpen.length} still open.`,
+    ...(baseMergeOf ? [`\`${head.slice(0, 7)}\` merges the base branch into the reviewed head \`${baseMergeOf.slice(0, 7)}\`; the pull request diff is unchanged.`] : []),
+    findings.length === 0 && stillOpen.length === 0 ? (approve ? 'LGTM — no finding survived verification.' : 'No finding survived verification; this review does not approve.') : `${findings.length} new finding(s) (${findings.filter((f) => f.class !== 'minor').length} blocking), ${stillOpen.length} still open (${stillOpen.filter((f) => !minors.has(f.key)).length} blocking).${approve ? ' No blocking finding is open.' : ''}`,
   ];
   if (fixed.length) lines.push(`Fixed since \`${previousHead.slice(0, 7)}\`: ${ids(fixed)}`);
-  if (stillOpen.length) lines.push(`Still open: ${ids(stillOpen)}`);
+  if (addressed.length) lines.push(`Addressed since \`${previousHead.slice(0, 7)}\`: ${ids(addressed)}`);
+  if (stillOpen.length) lines.push(`Still open: ${stillOpen.map((f) => `\`${f.id}\`${minors.has(f.key) ? ' (minor)' : ''}`).join(', ')}`);
   for (const f of rest) lines.push(`- \`${f.file}${f.line ? `:${f.line}` : ''}\` ${text(f)}`);
+  if (approve && followUps.length) lines.push(`Follow-ups (not blocking):\n${followUps.map((f) => `- \`${f.file}${f.line ? `:${f.line}` : ''}\` ${f.summary} — ${f.reason} (\`${f.id}\`)`).join('\n')}`);
   return {
     commit_id: head,
     event: approve ? 'APPROVE' : 'COMMENT',
     body: lines.join('\n\n'),
-    comments: inline.map((f) => ({ path: f.file, line: f.line, side: 'RIGHT', body: text(f) })),
+    threads,
   };
 }
 
 const containsSecret = (payload, secrets) => secrets.some((s) => s && payload.includes(s));
 
-module.exports = { hunksOf, placeLine, renderReview, containsSecret };
+module.exports = { hunksOf, filesOf, placeLine, renderReview, containsSecret };

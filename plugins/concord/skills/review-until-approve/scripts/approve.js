@@ -6,6 +6,7 @@
 //   round <owner/repo> <pr>                                           review, publish, approve when clean
 //   approve <owner/repo> <pr>                                         approve the reviewed head if the approval condition holds
 //   waive <owner/repo> <pr> <finding-id|key>                          the user dismisses a finding, then approve if possible
+//   reclass <owner/repo> <pr> <finding-id|key> <blocker|minor> --reason '<line>'   the user changes the class of an open finding, then approve if it became minor
 //   stop <owner/repo> <pr>                                            record a user stop
 //   nudged <owner/repo> <pr> '<nudge event json>'                     record that the user was told, so the watch stays silent until a new head or reply
 // Run under `mien exec <profile> --` when the reviewing account is not the ambient gh account.
@@ -18,6 +19,7 @@ const publish = require('./publish');
 const { core } = require('./locate');
 const { writeFileAtomic } = require(path.join(core, 'atomic-write'));
 const { reclaimStaleLock } = require(path.join(core, 'run-lock'));
+const { ADDRESSABLE_PREFIXES } = require(path.join(core, 'artifact-contract'));
 const broker = require('./broker');
 
 // The review clone's .git is writable for an unconfined reviewer, which could plant refs/replace/* to make a head read differently; evidence is read as stored.
@@ -25,7 +27,6 @@ process.env.GIT_NO_REPLACE_OBJECTS = '1';
 
 const MAX_ROUNDS = 10;
 const MAX_DISCARDS = 3;
-const GUIDANCE_FINDINGS = 20;
 // The Claude reviewer is unconfined (#366), so it runs only on a pull request the user declared trusted: `trust` records the user's own confirming words in that pull request's ledger.
 // Under Claude Code the Claude reviewer runs as subagents of the session that drives the skill, with the session's own login, so it needs no `claude` binary and no credentials of its own.
 const subagents = () => !!process.env.CLAUDECODE;
@@ -107,7 +108,7 @@ function reviewerEnv(provider, claudeConfig, home, realClaudeConfig) {
 function snapshot(repo, pr) {
   const v = ghJson(['pr', 'view', pr, '--repo', repo, '--json', 'headRefOid,baseRefOid,title,body,state,isDraft,author']);
   const mergeBase = gh(['api', `repos/${repo}/compare/${v.baseRefOid}...${v.headRefOid}`, '--jq', '.merge_base_commit.sha']).trim();
-  return { head: v.headRefOid, baseTip: v.baseRefOid, mergeBase, intent: lib.sha(`${v.title}\n\n${v.body}`), title: v.title, body: v.body, state: v.state, isDraft: v.isDraft, author: v.author.login };
+  return { head: v.headRefOid, baseTip: v.baseRefOid, mergeBase, intent: lib.intentOf(v.title, v.body), title: v.title, body: v.body, state: v.state, isDraft: v.isDraft, author: v.author.login };
 }
 
 const claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
@@ -122,10 +123,85 @@ function credentialStrings(file) {
 const secrets = () => [process.env.GH_TOKEN, process.env.CLAUDE_CODE_OAUTH_TOKEN, process.env.OPENAI_API_KEY, (() => { try { return gh(['auth', 'token']).trim(); } catch (_) { return ''; } })(),
   ...credentialStrings(path.join(claudeConfigDir(), '.credentials.json')), ...credentialCopies.flatMap(credentialStrings)];
 
-function post(repo, pr, payload) {
-  const text = JSON.stringify(payload);
+function guard(text) {
   if (publish.containsSecret(text, secrets())) throw new Error('the review text holds a credential; nothing was posted');
-  return ghJson(['api', '-X', 'POST', `repos/${repo}/pulls/${pr}/reviews`, '--input', '-'], text);
+  return text;
+}
+function post(repo, pr, { threads, ...payload }) {
+  return ghJson(['api', '-X', 'POST', `repos/${repo}/pulls/${pr}/reviews`, '--input', '-'], guard(JSON.stringify(payload)));
+}
+
+// A review is built as a pending one (invisible until submitted): GitHub refuses a whole review for one bad comment and the
+// review API has no file-level comment, but a GraphQL thread can be added, and can fail, one at a time.
+const THREAD = 'mutation($r:ID!,$p:String!,$b:String!,$l:Int,$t:PullRequestReviewThreadSubjectType!){addPullRequestReviewThread(input:{pullRequestReviewId:$r,path:$p,body:$b,line:$l,side:RIGHT,subjectType:$t}){thread{id}}}';
+function postThread(nodeId, t) {
+  guard(t.body);
+  try {
+    const args = ['api', 'graphql', '-f', `query=${THREAD}`, '-f', `r=${nodeId}`, '-f', `p=${t.path}`, '-f', `b=${t.body}`, '-f', `t=${t.subject}`, ...(t.subject === 'LINE' ? ['-F', `l=${t.line}`] : [])];
+    return ghJson(args).data?.addPullRequestReviewThread?.thread?.id || null;
+  } catch (_) { return null; }
+}
+// Returns the submitted review, or null when the head moved before the submission (the pending review is deleted).
+// A comment GitHub refuses moves only its finding to the body. A pending review left by a crash carries the marker and is deleted first; one without it is the user's own draft and is never touched.
+function publishReview({ repo, pr, reviewer, head, after, state, input, render, headMoved, onThread }) {
+  const drop = (id) => gh(['api', '-X', 'DELETE', `repos/${repo}/pulls/${pr}/reviews/${id}`]);
+  for (const r of reviewsOf(repo, pr)) {
+    if (r.user?.login !== reviewer || r.state !== 'PENDING') continue;
+    if (!(r.body || '').startsWith('<!-- concord-approve:')) throw new Error(`finish or discard your pending review on ${repo}#${pr} first`);
+    drop(r.id);
+  }
+  const first = render(input, 'inline');
+  const pending = post(repo, pr, { commit_id: head, body: first.body.split('\n')[0] });
+  const rejected = first.threads.filter((t) => {
+    const id = postThread(pending.node_id, t);
+    if (id) onThread(t.finding, id);
+    return !id;
+  }).map((t) => t.finding);
+  if (headMoved()) { drop(pending.id); return null; }
+  const final = render({ ...input, rejected }, 'inline');
+  const submit = () => ghJson(['api', '-X', 'POST', `repos/${repo}/pulls/${pr}/reviews/${pending.id}/events`, '--input', '-'], guard(JSON.stringify({ event: final.event, body: final.body })));
+  try { return submit(); } catch (error) {
+    // Accepted although the call failed: take that review; otherwise the pending review still exists, so submit once more.
+    return landed(reviewsOf(repo, pr), reviewer, head, after, state) || submit();
+  }
+}
+
+// A finding that is fixed has its own thread answered and resolved; one reopened has it unresolved. Each thread is checked when acted on:
+// still on this pull request, started by this account, not resolved by anyone else. A failure that may pass (network) records nothing, so the next round retries.
+const THREAD_STATE = 'query($id:ID!){node(id:$id){... on PullRequestReviewThread{isResolved resolvedBy{login} pullRequest{number repository{nameWithOwner}} root:comments(first:1){nodes{author{login}}} comments(last:100){nodes{author{login} body createdAt}}}}}';
+// ponytail: the thread's starter is read apart from the newest 100 comments, which are what the author-reply and last-comment checks need.
+// settleThreads needs only the starter and isResolved, so it does not download comment bodies.
+const SETTLE_STATE = 'query($id:ID!){node(id:$id){... on PullRequestReviewThread{isResolved pullRequest{number repository{nameWithOwner}} root:comments(first:1){nodes{author{login}}}}}}';
+const threadMutation = (name, field) => `mutation($id:ID!${field === 'reply' ? ',$b:String!' : ''}){${name}(input:{${field === 'reply' ? 'pullRequestReviewThreadId:$id,body:$b' : 'threadId:$id'}}){clientMutationId}}`;
+const threadCall = (name, field, id, body) => ghJson(['api', 'graphql', '-f', `query=${threadMutation(name, field)}`, '-f', `id=${id}`, ...(body ? ['-f', `b=${body}`] : [])]);
+function settleThreads(repo, pr, ledger, file) {
+  const head = (ledger.rounds[ledger.rounds.length - 1] || {}).head;
+  if (!head) return;
+  const short = (sha) => sha.slice(0, 7);
+  for (const f of ledger.findings) {
+    if (!f.threadId) continue;
+    const fixing = (f.status === 'fixed' || f.status === 'addressed') && !f.threadSkipped && !f.threadResolved;
+    const reopened = f.status === 'open' && (f.threadResolved || f.threadReplied || f.threadSkipped || f.threadReopened);
+    if (!fixing && !reopened) continue;
+    try {
+      const t = ghJson(['api', 'graphql', '-f', `query=${SETTLE_STATE}`, '-f', `id=${f.threadId}`]).data?.node;
+      const mine = t && t.pullRequest?.number === Number(pr) && t.pullRequest?.repository?.nameWithOwner?.toLowerCase() === repo.toLowerCase() && t.root?.nodes?.[0]?.author?.login === ledger.reviewer;
+      if (!t) f.threadSkipped = 'gone';
+      else if (!mine) f.threadSkipped = 'not-ours';
+      else if (fixing && t.isResolved) f.threadSkipped = 'resolved';
+      else if (fixing) {
+        if (!f.threadReplied) { threadCall('addPullRequestReviewThreadReply', 'reply', f.threadId, guard(f.status === 'addressed' ? `Addressed at \`${short(f.addressedHead)}\`: ${f.addressedEvidence.reason} (\`${f.addressedEvidence.file}\`).` : `Fixed in \`${short(ledger.rounds.find((r) => r.n === f.fixedRound && r.mode !== 'base-merge').head)}\`.`)); f.threadReplied = true; save(file, ledger); }
+        threadCall('resolveReviewThread', 'id', f.threadId);
+        f.threadResolved = true;
+      } else {
+        if (f.threadResolved && t.isResolved) { threadCall('unresolveReviewThread', 'id', f.threadId); f.threadReopened = short(head); }
+        delete f.threadResolved; delete f.threadReplied; delete f.threadSkipped;
+        save(file, ledger);
+        if (f.threadReopened) { threadCall('addPullRequestReviewThreadReply', 'reply', f.threadId, `Reopened at \`${f.threadReopened}\`.`); delete f.threadReopened; }
+      }
+    } catch (_) { /* ponytail: nothing is recorded, so the next round retries */ }
+    save(file, ledger);
+  }
 }
 
 // GitHub may accept a review and still fail the call (a timeout, a crash before the ledger is saved). A review
@@ -142,9 +218,10 @@ function settlePending(repo, pr, ledger, file, reviewer) {
   const review = landed(reviewsOf(repo, pr), reviewer, head, after, 'APPROVED');
   if (review) {
     const at = review.submitted_at || new Date().toISOString();
-    if (round && round.n === ledger.rounds.length + 1) ledger.rounds.push({ ...round, reviewId: review.id, submittedAt: at });
+    if (round && round.n === lib.reviewedCount(ledger) + 1) ledger.rounds.push({ ...round, reviewId: review.id, submittedAt: at });
     if (findings) ledger.findings = findings;
     ledger.approval = { head, reviewId: review.id, at };
+    delete ledger.attempt;
   }
   delete ledger.pending;
   save(file, ledger);
@@ -213,16 +290,39 @@ function start(repo, pr, args) {
   const viewer = gh(['repo', 'view', repo, '--json', 'viewerPermission', '--jq', '.viewerPermission']).trim();
   const warning = ['ADMIN', 'MAINTAIN', 'WRITE'].includes(viewer) ? undefined : `permission ${viewer}: an approval will not satisfy branch protection`;
   let action = 'watch';
-  if (ledger.rounds.length === 0 || snap.head !== lastRound(ledger).head) action = 'round';
+  if (ledger.rounds.length === 0 || snap.head !== lastRound(ledger).head || lib.descriptionEdited(ledger, snap)) action = 'round';
   else if (lib.evaluateApproval(ledger, snap, lastRound(ledger).head).approve) action = 'approve';
-  outFor(ledger, { ledger: file, action, round: ledger.rounds.length + 1, reviewer: provider, ...(ledger.model && { model: ledger.model }), ...(ledger.language && { language: ledger.language }), ...(ledger.effort && { effort: ledger.effort }), ...(warning && { warning }) });
+  outFor(ledger, { ledger: file, action, round: lib.reviewedCount(ledger) + 1, reviewer: provider, ...(ledger.model && { model: ledger.model }), ...(ledger.language && { language: ledger.language }), ...(ledger.effort && { effort: ledger.effort }), ...(warning && { warning }) });
 }
 
-// The findings the reviewer is told about. Telling it decides nothing: a finding is fixed by the code, never by the reviewer's silence.
-function guidance(open) {
-  if (!open.length) return undefined;
-  return `Earlier findings on this pull request. If one is still present at this head, raise it again with the same id and the current path: ${open.slice(0, GUIDANCE_FINDINGS).map((f) => `${f.id} (${f.file}): ${f.summary.slice(0, 200)}`).join('; ')}`;
+// The findings the reviewer is told about. Telling it decides nothing: a finding is fixed by the code, never by the reviewer's silence. The runner gives each role only the ids of its own artifact.
+const priorFindings = (open) => open.map((f) => ({ id: f.id, file: f.file, summary: f.summary }));
+
+// What the verify pass is shown about a finding whose quoted code is still present: the span, and the PR author's own replies in its thread
+// (after our last comment there) and whether someone else resolved it. All of it is the author's claim; the reviewer must check it against the code.
+const cut = (text, max) => text.length > max ? `${text.slice(0, max)} [truncated]` : text;
+function addressable(repo, pr, ledger, shown) {
+  const rank = (f) => lib.isBlocker(f) ? 0 : 1;
+  // Only ids the verify artifact can list: a verdict for any other prefix would fail normalizeAddressed and the whole artifact.
+  const listable = ADDRESSABLE_PREFIXES;
+  return shown.filter((f) => typeof f.spanVerified === 'string' && f.span && listable.some((p) => f.id.startsWith(p))).sort((a, b) => rank(a) - rank(b)).slice(0, 20).map((f) => {
+    const entry = { id: f.id, file: f.file, class: f.class || 'blocker', summary: f.summary, requirement: f.requirement || '', span: cut(f.span, 2048) };
+    if (!f.threadId) return entry;
+    try {
+      const t = ghJson(['api', 'graphql', '-f', `query=${THREAD_STATE}`, '-f', `id=${f.threadId}`]).data?.node;
+      const comments = t?.comments?.nodes || [];
+      if (!t || t.pullRequest?.number !== Number(pr) || t.pullRequest?.repository?.nameWithOwner?.toLowerCase() !== repo.toLowerCase() || t.root?.nodes?.[0]?.author?.login !== ledger.reviewer) return entry;
+      const lastMine = comments.map((c) => c.author?.login).lastIndexOf(ledger.reviewer);
+      let budget = 4000;
+      const replies = comments.slice(lastMine + 1).filter((c) => c.author?.login === ledger.author).slice(-3).reverse().map((c) => cut(String(c.body || ''), 1500)).map((text) => { text = text.slice(0, Math.max(0, budget)); budget -= text.length; return text; }).reverse().filter(Boolean);
+      return { ...entry, ...(replies.length && { authorReply: replies.join('\n\n') }), ...(t.isResolved && t.resolvedBy?.login && t.resolvedBy.login !== ledger.reviewer && { threadResolved: { resolved: true, by: t.resolvedBy.login } }) };
+    } catch (_) { return entry; /* the thread is only an input: without it the reviewer judges the code alone */ }
+  });
 }
+
+// The class a published finding is labeled with.
+const pick = ({ class: cls, reason, releaseBlocking }) => ({ class: cls || 'blocker', ...(reason && { reason }), ...(releaseBlocking && { releaseBlocking }) });
+const openMinors = (findings) => findings.filter((f) => f.status === 'open' && !lib.isBlocker(f));
 
 const MAX_SPAN_FILE_BYTES = 20 * 1024 * 1024;
 // A file as stored in the git object of `rev`, never from the working tree: a Buffer, null when the path is
@@ -256,8 +356,8 @@ function inGitlink(cwd, rev, file) {
   return null;
 }
 // A finding is verified when its span occurs byte for byte in the file at the head it was recorded against.
-const verifiedAt = (cwd, head, f) => {
-  const blob = f.span ? gitBlob(cwd, head, f.file) : null;
+const verifiedAt = (read, f) => {
+  const blob = f.span ? read(f.file) : null;
   return Buffer.isBuffer(blob) && blob.includes(Buffer.from(f.span, 'utf8'));
 };
 
@@ -331,10 +431,26 @@ function submoduleDelta(work, from, subs, file) {
   } catch (_) { return null; }
 }
 
+// Whether the head only merges the base branch into the last reviewed head over an unchanged pull request diff (see lib.baseMergeOnly).
+const fingerprint = (work, mergeBase, head) => {
+  const diff = git(work, ['diff', '--binary', '--no-renames', '--no-ext-diff', '--no-textconv', '--no-color', '--submodule=short', mergeBase, head]);
+  return lib.sha(diff.split('\n').filter((l) => !l.startsWith('index ')).map((l) => l.replace(/^@@ -\S+ \+\S+ @@/, '@@')).join('\n'));
+};
+function baseMergeOnly(work, repo, pr, ledger, snap, prior, isAncestor) {
+  try {
+    if (snap.head === prior.head || snap.intent !== prior.intent || prior.unreviewed?.length || !isAncestor(prior.head, snap.head)) return false;
+    const commits = git(work, ['rev-list', '--parents', snap.head, `^${prior.head}`, `^${snap.baseTip}`]).split('\n').filter(Boolean).map((l) => {
+      const [sha, ...parents] = l.split(' ');
+      return { sha, parents: parents.map((p) => ({ sha: p, inBase: isAncestor(p, snap.baseTip) })) };
+    });
+    const replies = lib.repliesSince(ledger, ghJson(['api', '--paginate', '--slurp', `repos/${repo}/pulls/${pr}/comments`]).flat(), ghJson(['api', '--paginate', '--slurp', `repos/${repo}/issues/${pr}/comments`]).flat(), snap.author);
+    return lib.baseMergeOnly({ prior, live: snap, ancestor: true, commits, before: fingerprint(work, prior.mergeBase, prior.head), after: fingerprint(work, snap.mergeBase, snap.head), replies });
+  } catch (_) { return false; }
+}
+
 function reviewRound(repo, pr, args) {
   const { file, ledger } = identify(repo, pr, args);
   if (!ledger?.provider) die('no ledger; run start first');
-  if (ledger.rounds.length >= MAX_ROUNDS) return outFor(ledger, { event: 'round-limit', rounds: ledger.rounds.length });
   for (let discards = 0; discards < MAX_DISCARDS; discards++) {
     // Read again before every launch: a discarded attempt takes minutes, and the user may have revoked the declaration meanwhile.
     if (ledger.provider === 'claude') { const need = missing('claude', repo, pr, ledger.trust); if (need.length) die(`the claude reviewer is not ready: ${need.join('; ')}`); }
@@ -349,10 +465,11 @@ function reviewRound(repo, pr, args) {
 function attempt(repo, pr, ledger, file) {
   const snap = snapshot(repo, pr);
   if (snap.state !== 'OPEN') return { event: snap.state.toLowerCase() };
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-until-approve-'));
-  const work = path.join(dir, 'work');
-  const remote = `${process.env.REVIEW_APPROVE_REMOTE || 'https://github.com'}/${repo}.git`;
+  let dir;
   try {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-until-approve-'));
+    const work = path.join(dir, 'work');
+    const remote = `${process.env.REVIEW_APPROVE_REMOTE || 'https://github.com'}/${repo}.git`;
     // Written before anything slow, so `next` never finds no round while this one is still setting up; it is removed when the process ends, and a pid that is gone is not a running round.
     const brokerDir = ledger.provider === 'claude' && subagents() ? path.join(dir, 'broker') : null;
     if (brokerDir) {
@@ -368,6 +485,16 @@ function attempt(repo, pr, ledger, file) {
     if (git(work, ['merge-base', snap.baseTip, 'HEAD']).trim() !== snap.mergeBase) throw new Error('the local merge base differs from the snapshot');
     const prior = ledger.rounds.length ? lastRound(ledger) : null;
     const isAncestor = (a, b) => spawnSync('git', ['merge-base', '--is-ancestor', a, b], { cwd: work }).status === 0;
+    if (prior && baseMergeOnly(work, repo, pr, ledger, snap, prior, isAncestor)) {
+      if (snapshot(repo, pr).head !== snap.head) return null;
+      // Saved before the approval is posted, so the recorded head is what `approve` and the watch see.
+      ledger.rounds.push({ n: prior.n, head: snap.head, base: prior.base, mergeBase: snap.mergeBase, intent: snap.intent, mode: 'base-merge', reviewedHead: prior.reviewedHead || prior.head, reviewId: null, submittedAt: prior.submittedAt, commentIds: [], event: 'SKIP' });
+      delete ledger.attempt;
+      save(file, ledger);
+      const v = approveHead(repo, pr, file, ledger);
+      return { event: 'base-merge', head: snap.head, ...(v.event === 'approved' ? { approved: true } : { notApproved: v.reason }) };
+    }
+    if (lib.reviewedCount(ledger) >= MAX_ROUNDS) return { event: 'round-limit', rounds: lib.reviewedCount(ledger) };
     const range = prior ? lib.chooseRange(prior, snap, isAncestor) : { base: snap.mergeBase, broad: true };
     const subs = new Map();
     const unreviewed = prepareSubmodules(work, repo, snap, range, subs);
@@ -375,8 +502,12 @@ function attempt(repo, pr, ledger, file) {
     git(work, ['config', 'diff.submodule', 'diff']);
 
     // The delta from the head where each open finding's span was last verified to this head; a head that is gone is fetched, else the finding stays open.
+    const description = `# ${snap.title}\n\n${snap.body}`;
+    // The description is read from the snapshot, never from a path; every other file from the git object of the head.
+    const read = (file) => file === lib.DESC ? Buffer.from(description) : gitBlob(work, snap.head, file);
     const deltas = new Map();
     const resolve = (p) => {
+      if (p.file === lib.DESC) return { renames: new Map(), live: new Set() };
       if (!deltas.has(p.spanVerified)) {
         let delta = null;
         try {
@@ -394,12 +525,15 @@ function attempt(repo, pr, ledger, file) {
     const open = ledger.findings.filter((f) => f.status === 'open');
     const shown = open.map((p) => { const d = typeof p.spanVerified === 'string' && p.span ? resolve(p) : null; return { ...p, file: d?.renames.get(p.file) || p.file }; });
 
+    // A finding whose span is gone at this head is about to be fixed: it is not offered, and does not take a slot of the cap.
+    const gone = new Set(lib.classifyPrior(open, [], resolve, read, snap.head).filter((r) => r.status === 'fixed').map((r) => r.key));
+    const addressableNow = addressable(repo, pr, ledger, shown.filter((f) => !gone.has(f.key)));
     const intentFile = path.join(dir, 'intent.md');
     fs.writeFileSync(intentFile, `# ${snap.title}\n\n${snap.body}`);
     const realClaudeConfig = claudeConfigDir();
     const claudeConfig = fs.mkdtempSync(path.join(dir, 'claude-'));
     const reviewerHome = fs.mkdtempSync(path.join(dir, 'home-'));
-    const runnerOptions = { ref: `concord-pr-${pr}`, base: range.base, broad: range.broad, noBroad: !range.broad, reviewer: ledger.provider, reviewerModel: ledger.model || undefined, reasoningEffort: ledger.effort || undefined, reviewLanguage: ledger.language || undefined, reviewDenyRead: [realClaudeConfig], reviewRealHome: os.homedir(), reviewerGuidance: guidance(shown), intentFile: range.broad ? intentFile : undefined };
+    const runnerOptions = { ref: `concord-pr-${pr}`, base: range.base, broad: range.broad, noBroad: !range.broad, reviewer: ledger.provider, reviewerModel: ledger.model || undefined, reasoningEffort: ledger.effort || undefined, reviewLanguage: ledger.language || undefined, reviewDenyRead: [realClaudeConfig], reviewRealHome: os.homedir(), priorFindings: priorFindings(shown), ...(addressableNow.length && { addressable: addressableNow }), ...(addressableNow.some((f) => f.file === lib.DESC) && { description }), intentFile: range.broad ? intentFile : undefined };
     const env = reviewerEnv(ledger.provider, claudeConfig, reviewerHome, realClaudeConfig);
     const runner = process.env.REVIEW_APPROVE_RUNNER || path.join(__dirname, 'run-review.js');
     // The runner waits in `dir/broker` for the session to answer each request; `next` finds that directory through the run file.
@@ -409,15 +543,31 @@ function attempt(repo, pr, ledger, file) {
     }
     const reviewed = JSON.parse(run('node', [runner, JSON.stringify(runnerOptions)], { cwd: work, env }).trim().split('\n').pop());
     if (reviewed.decision !== 'review-only' || !Array.isArray(reviewed.findings)) throw new Error(`the review did not complete: ${JSON.stringify(reviewed).slice(0, 200)}`);
+    // The reviewer names the description by the copy of it in its state directory, which is no file of the head: from here on the finding is about the description.
+    const copy = new RegExp(`(^|/)(intent-concord-pr-${pr}|intent)\\.md$`);
+    reviewed.findings = reviewed.findings.map((f) => copy.test(f.file) && gitBlob(work, snap.head, f.file) === null ? { ...f, file: lib.DESC, line: undefined } : f);
 
-    const n = ledger.rounds.length + 1;
-    const verdict = lib.classifyPrior(open, reviewed.findings, resolve, (file) => gitBlob(work, snap.head, file), snap.head);
+    const n = lib.reviewedCount(ledger) + 1;
+    // An addressed finding is judged again every round with the open ones.
+    const tracked = ledger.findings.filter((f) => f.status === 'open' || f.status === 'addressed');
+    // Only a finding offered this round can be closed by a verdict; any other verdict is reported as not-offered below.
+    const offered = new Set(addressableNow.map((f) => f.id));
+    const verdicts = (Array.isArray(reviewed.addressed) ? reviewed.addressed : []).filter((a) => offered.has(a?.id));
+    const verdict = lib.classifyPrior(tracked, reviewed.findings, resolve, read, snap.head, verdicts);
+    const addressedRejected = [...verdict.filter((r) => r.why).map((r) => ({ id: r.id, why: r.why })), ...(Array.isArray(reviewed.addressed) ? reviewed.addressed : []).filter((a) => !offered.has(a?.id)).map((a) => ({ id: String(a?.id), why: 'not-offered' }))];
     const next = JSON.parse(JSON.stringify(ledger));
-    const inNext = (key, status) => next.findings.find((f) => f.key === key && f.status === status);
+    const stillOpenFindings = [];
+    const inNext = (key) => next.findings.find((f) => f.key === key && (f.status === 'open' || f.status === 'addressed'));
     for (const r of verdict) {
-      const f = inNext(r.key, 'open');
+      const f = inNext(r.key);
       if (r.status === 'fixed') Object.assign(f, { status: 'fixed', fixedRound: n });
-      else {
+      else if (r.status === 'addressed') {
+        if (r.evidenceFile && f.addressedEvidence && r.evidenceFile !== f.addressedEvidence.file) f.addressedEvidence = { ...f.addressedEvidence, file: r.evidenceFile };
+        if (r.evidence) { Object.assign(f, { status: 'addressed', addressedRound: n, addressedHead: snap.head, addressedEvidence: r.evidence }); delete f.openReason; }
+        if (r.file && (r.file !== f.file || r.spanVerified !== f.spanVerified)) Object.assign(f, { file: r.file, spanVerified: r.spanVerified, key: lib.findingKey({ ...f, file: r.file }) });
+      } else {
+        if (f.status === 'addressed') { f.status = 'open'; delete f.addressedRound; delete f.addressedHead; delete f.addressedEvidence; }
+        stillOpenFindings.push(f);
         Object.assign(f, { openReason: r.reason });
         if (r.file && (r.file !== f.file || r.spanVerified !== f.spanVerified)) Object.assign(f, { file: r.file, spanVerified: r.spanVerified, key: lib.findingKey({ ...f, file: r.file }) });
       }
@@ -426,7 +576,7 @@ function attempt(repo, pr, ledger, file) {
     const fresh = reviewed.findings.filter((f, i, all) => !lib.isPublished(next, f) && all.findIndex((g) => lib.findingKey(g) === lib.findingKey(f)) === i);
     const verified = (f) => typeof f.spanVerified === 'string' && f.span;
     const reopened = new Set();
-    for (const f of reviewed.findings.filter((g) => verifiedAt(work, snap.head, g))) {
+    for (const f of reviewed.findings.filter((g) => verifiedAt(read, g))) {
       const unverified = next.findings.find((g) => g.status === 'open' && !verified(g) && lib.findingKey(g) === lib.findingKey(f));
       const fixed = unverified || next.findings.some((g) => g.status === 'open' && lib.findingKey(g) === lib.findingKey(f)) ? null : next.findings.find((g) => g.status === 'fixed' && lib.findingKey(g) === lib.findingKey(f));
       const known = unverified || fixed;
@@ -434,30 +584,34 @@ function attempt(repo, pr, ledger, file) {
       Object.assign(known, { status: 'open', span: f.span, file: f.file, spanVerified: snap.head });
       delete known.fixedRound;
       delete known.openReason;
+      delete known.addressedRound; delete known.addressedHead; delete known.addressedEvidence;
       known.key = lib.findingKey(known);
       reopened.add(lib.findingKey(f));
     }
     for (const f of fresh.filter((g) => !reopened.has(lib.findingKey(g)))) {
-      next.findings.push({ key: lib.findingKey(f), id: f.id, category: f.category, file: f.file, line: f.line, span: f.span, summary: f.summary, requirement: f.requirement || '', status: 'open', firstRound: n, ...(verifiedAt(work, snap.head, f) && { spanVerified: snap.head }) });
+      next.findings.push({ key: lib.findingKey(f), id: f.id, category: f.category, file: f.file, line: f.line, span: f.span, summary: f.summary, requirement: f.requirement || '', ...lib.strictest(reviewed.findings.filter((g) => lib.findingKey(g) === lib.findingKey(f))), status: 'open', firstRound: n, ...(verifiedAt(read, f) && { spanVerified: snap.head }) });
     }
     for (const f of next.findings) if (f.status === 'open' && !verified(f)) f.openReason = 'unverified';
     for (const f of next.findings) if (f.status === 'open' && verified(f) && f.openReason === 'unverified') delete f.openReason;
     const fixedIds = verdict.filter((r) => r.status === 'fixed').map((r) => r.id);
+    const addressedIds = verdict.filter((r) => r.evidence).map((r) => r.id);
     const openIds = verdict.filter((r) => r.status === 'open').map((r) => r.id);
-    const held = next.findings.filter((f) => f.status === 'open' && ['unverified', 'path-unresolved'].includes(f.openReason)).map((f) => ({ id: f.id, key: f.key, file: f.file, reason: f.openReason }));
-    const openNow = next.findings.filter((f) => f.status === 'open').map((f) => ({ id: f.id, key: f.key, file: f.file }));
+    const held = next.findings.filter((f) => f.status === 'open' && lib.isBlocker(f) && ['unverified', 'path-unresolved'].includes(f.openReason)).map((f) => ({ id: f.id, key: f.key, file: f.file, reason: f.openReason }));
+    const openNow = next.findings.filter((f) => f.status === 'open').map((f) => ({ id: f.id, key: f.key, file: f.file, class: f.class || 'blocker' }));
 
     const diff = git(work, ['diff', '-U3', '--submodule=short', range.base, 'HEAD']);
     const verdictNow = lib.evaluateApproval({ ...next, rounds: [...next.rounds, { head: snap.head, unreviewed }] }, snapshot(repo, pr), snap.head);
     const hunks = publish.hunksOf(diff);
     // The engine's line is kept whether or not it is in the diff; only a finding without one is looked up by span in the file at the head.
-    const placed = (f) => {
-      if (f.line != null) return f;
-      const blob = f.span ? gitBlob(work, snap.head, f.file) : null;
+    const entryOf = (f) => next.findings.find((g) => g.status === 'open' && lib.findingKey(g) === lib.findingKey(f)) || f;
+    const placed = (f0) => {
+      const f = { ...f0, ...pick(entryOf(f0)) };
+      if (f.line != null || f.file === lib.DESC) return f;
+      const blob = f.span ? read(f.file) : null;
       const line = Buffer.isBuffer(blob) ? publish.placeLine(blob.toString('utf8'), f.span, f.file, hunks) : null;
       return line == null ? f : { ...f, line };
     };
-    const input = { unconfined: unconfinedAt(ledger), head: snap.head, round: n, rangeBase: range.base, reviewer: ledger.provider, hunks, findings: fresh.map(placed), fixed: fixedIds, stillOpen: openIds, previousHead: prior ? prior.head : snap.head, approve: verdictNow.approve };
+    const input = { unconfined: unconfinedAt(ledger), head: snap.head, round: n, rangeBase: range.base, reviewer: ledger.provider, hunks, files: publish.filesOf(diff), findings: fresh.map(placed), fixed: fixedIds, addressed: addressedIds, stillOpen: stillOpenFindings, followUps: openMinors(next.findings), previousHead: prior ? prior.head : snap.head, approve: verdictNow.approve };
     if (verdictNow.reason === 'head-moved') return null;
     // A submodule range that could not be read is said in the review, which then does not approve.
     const render = (i, how) => {
@@ -468,15 +622,20 @@ function attempt(repo, pr, ledger, file) {
     const entry = (review) => ({ n, head: snap.head, ...(unreviewed.length && { unreviewed }), base: range.base, mergeBase: snap.mergeBase, intent: snap.intent, mode: range.broad ? 'broad' : 'diff', reviewId: review.id, submittedAt: review.submitted_at || new Date().toISOString(), commentIds: [], event: input.approve ? 'APPROVE' : 'COMMENT' });
     // Saved before an APPROVE is posted, so a crash after GitHub accepts it is recovered by the next start.
     // Only the marker is saved: the verdict's findings travel inside it and apply when the review is found.
-    if (input.approve) { save(file, { ...ledger, pending: { head: snap.head, after: known, round: entry({}), findings: next.findings } }); }
+    const marker = { head: snap.head, after: known, round: entry({}), findings: next.findings };
+    if (input.approve) save(file, { ...ledger, pending: marker });
     let review;
-    try { review = post(repo, pr, render(input, 'inline')); } catch (error) {
+    try {
+      review = publishReview({ repo, pr, reviewer: ledger.reviewer, head: snap.head, after: known, state: input.approve ? 'APPROVED' : 'COMMENTED', input, render, headMoved: () => snapshot(repo, pr).head !== snap.head, onThread: (f, id) => { const g = next.findings.find((h) => h.status === 'open' && h.key === lib.findingKey(f)); if (g) g.threadId = id; if (input.approve) save(file, { ...ledger, pending: marker }); } });
+    } catch (error) {
       if (snapshot(repo, pr).head !== snap.head) return null;
-      review = landed(reviewsOf(repo, pr), ledger.reviewer, snap.head, known, input.approve ? 'APPROVED' : 'COMMENTED') || post(repo, pr, render(input, 'body'));
+      throw error;
     }
+    if (!review) return null;
     // Saved before anything else can fail, so a posted review (an APPROVE above all) is never forgotten.
     next.rounds.push(entry(review));
     delete next.pending;
+    delete next.attempt;
     if (input.approve) next.approval = { head: snap.head, reviewId: review.id, at: next.rounds[next.rounds.length - 1].submittedAt };
     save(file, next);
     // Best effort: replies to a thread are recognized by these ids; without them only conversation replies count.
@@ -484,8 +643,13 @@ function attempt(repo, pr, ledger, file) {
       next.rounds[next.rounds.length - 1].commentIds = ghJson(['api', '--paginate', '--slurp', `repos/${repo}/pulls/${pr}/reviews/${review.id}/comments`]).flat().map((c) => c.id);
       save(file, next);
     } catch (_) { /* ponytail: ids stay empty; thread replies are then missed until the next round */ }
-    return { event: 'published', round: n, mode: range.broad ? 'broad' : 'diff', review: input.approve ? 'APPROVE' : 'COMMENT', new: fresh.length, fixed: fixedIds.length, stillOpen: openIds.length, open: openNow, ...(unreviewed.length && { unreviewed }), ...(verdictNow.approve ? {} : { notApproved: verdictNow.reason }), ...(held.length && { held, hint: 'These findings cannot be settled from the code; run waive <key> (or waive <id> when the id is unique) to clear one you accept.' }) };
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    settleThreads(repo, pr, next, file);
+    return { event: 'published', round: n, mode: range.broad ? 'broad' : 'diff', review: input.approve ? 'APPROVE' : 'COMMENT', new: fresh.length, fixed: fixedIds.length, ...(addressedIds.length && { addressed: addressedIds.length }), ...(addressedRejected.length && { addressedRejected }), stillOpen: openIds.length, open: openNow, ...(unreviewed.length && { unreviewed }), ...(verdictNow.approve ? {} : { notApproved: verdictNow.reason }), ...(held.length && { held, hint: 'These findings cannot be settled from the code; run waive <key> (or waive <id> when the id is unique) to dismiss one you accept, or reclass <key> minor --reason <line> if it should not block.' }) };
+  } catch (error) {
+    // Any failure after the head snapshot is recorded with the head it tried, so the watch waits for a newer head or reply; the ledger is read again because a pending approval marker may have been saved meanwhile.
+    save(file, { ...load(file), attempt: { head: snap.head, intent: snap.intent, at: new Date().toISOString() } });
+    throw error;
+  } finally { if (dir) fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
 const runFile = (file) => `${file}.run.json`;
@@ -517,15 +681,21 @@ function next(repo, pr, args) {
 function approve(repo, pr, args) {
   const { file, ledger } = identify(repo, pr, args);
   if (!ledger || !ledger.rounds.length) die('no reviewed round to approve');
+  out(approveHead(repo, pr, file, ledger));
+}
+
+// Approves the last recorded head when the approval condition holds; returns the event to print.
+function approveHead(repo, pr, file, ledger) {
   const reviewed = lastRound(ledger);
   const verdict = lib.evaluateApproval(ledger, snapshot(repo, pr), reviewed.head);
-  if (!verdict.approve) return out({ event: 'not-approved', reason: verdict.reason });
+  if (!verdict.approve) return { event: 'not-approved', reason: verdict.reason };
   const after = newestId(reviewsOf(repo, pr));
+  const followUps = openMinors(ledger.findings);
   ledger.pending = { head: reviewed.head, after, round: null };
   save(file, ledger);
   let review;
   try {
-    review = post(repo, pr, publish.renderReview({ unconfined: unconfinedAt(ledger), head: reviewed.head, round: reviewed.n, rangeBase: reviewed.base, reviewer: ledger.provider, hunks: [], findings: [], fixed: [], stillOpen: [], previousHead: reviewed.head, approve: true }, 'body'));
+    review = post(repo, pr, publish.renderReview({ unconfined: unconfinedAt(ledger), head: reviewed.head, round: reviewed.n, rangeBase: reviewed.base, reviewer: ledger.provider, hunks: [], findings: [], fixed: [], stillOpen: followUps, followUps, previousHead: reviewed.head, approve: true, baseMergeOf: reviewed.reviewedHead }, 'body'));
   } catch (error) {
     review = landed(reviewsOf(repo, pr), ledger.reviewer, reviewed.head, after, 'APPROVED');
     if (!review) { delete ledger.pending; save(file, ledger); throw error; }
@@ -533,18 +703,39 @@ function approve(repo, pr, args) {
   delete ledger.pending;
   ledger.approval = { head: reviewed.head, reviewId: review.id, at: new Date().toISOString() };
   save(file, ledger);
-  out({ event: 'approved', head: reviewed.head });
+  return { event: 'approved', head: reviewed.head };
+}
+
+// The one open finding an id or key names; dies when there is none or the id is ambiguous.
+function openFinding(ledger, id) {
+  const matching = (ledger?.findings || []).filter((f) => (f.id === id || f.key === id) && f.status === 'open');
+  if (!matching.length) die(`no open finding ${id}`);
+  if (matching.length > 1) die(`${id} matches more than one open finding; pass the key of one: ${matching.map((f) => `${f.key} (${f.file})`).join(', ')}`);
+  return matching[0];
 }
 
 function waive(repo, pr, id, args) {
   const { file, ledger } = identify(repo, pr, args);
-  const matching = (ledger?.findings || []).filter((f) => (f.id === id || f.key === id) && f.status === 'open');
-  if (!matching.length) die(`no open finding ${id}`);
-  if (matching.length > 1) die(`${id} matches more than one open finding; pass the key of one: ${matching.map((f) => `${f.key} (${f.file})`).join(', ')}`);
-  const [finding] = matching;
+  const finding = openFinding(ledger, id);
   Object.assign(finding, { status: 'waived', waivedAt: new Date().toISOString() });
   save(file, ledger);
   approve(repo, pr, args);
+}
+
+// The user changes the class of an open finding. The script cannot know who typed it (see trust); the record keeps the account, the time and the class it replaced.
+function reclass(repo, pr, id, to, args) {
+  const reason = (opt(args, '--reason') || '').trim();
+  if (!['blocker', 'minor'].includes(to)) die('usage: reclass <owner/repo> <pr> <finding-id|key> <blocker|minor> --reason <one line>: the class must be blocker or minor', 2);
+  if (!reason) die('reclass needs --reason with the user\'s one-line reason', 2);
+  const { reviewer, file, ledger } = identify(repo, pr, args);
+  const finding = openFinding(ledger, id);
+  const from = finding.class || 'blocker';
+  finding.reclassed = [...(finding.reclassed || []), { from, to, reason, at: new Date().toISOString(), account: reviewer }];
+  Object.assign(finding, { class: to, reason });
+  if (to === 'minor') Object.assign(finding, { releaseBlocking: [] });
+  save(file, ledger);
+  out({ event: 'reclassed', id: finding.id, key: finding.key, from, to, ...(to === 'blocker' && ledger.approval && { note: 'an approval already posted for this head stays on GitHub' }) });
+  if (to === 'minor') approve(repo, pr, args);
 }
 
 // The user's own confirming words for this pull request, kept in its ledger. The script cannot know who typed them; they stay in the ledger and the local output, and a published review states only that the declaration exists.
@@ -588,7 +779,7 @@ function nudged(repo, pr, event, args) {
 }
 
 const [verb, repo, pr, ...rest] = process.argv.slice(2);
-if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '') || !/^\d+$/.test(pr || '')) die('usage: approve.js <start|trust|round|next|approve|waive|stop|nudged> <owner/repo> <pr> [...]', 2);
-const verbs = { start, trust, round: reviewRound, next, approve, stop, waive: (r, p, a) => waive(r, p, a[0], a), nudged: (r, p, a) => nudged(r, p, a[0], a) };
+if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '') || !/^\d+$/.test(pr || '')) die('usage: approve.js <start|trust|round|next|approve|waive|reclass|stop|nudged> <owner/repo> <pr> [...]', 2);
+const verbs = { start, trust, round: reviewRound, next, approve, stop, waive: (r, p, a) => waive(r, p, a[0], a), reclass: (r, p, a) => reclass(r, p, a[0], a[1], a), nudged: (r, p, a) => nudged(r, p, a[0], a) };
 if (!verbs[verb]) die(`unknown verb ${verb}`, 2);
 try { verbs[verb](repo, pr, rest); } catch (error) { die(error.message); }

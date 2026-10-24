@@ -26,7 +26,11 @@ A fix artifact `{"status":"ok","edited":false}` is a fixer outcome, not a harnes
 
 ### Group identity
 
-`normalizeArtifact('plan')` in `plugins/concord/core/artifact-contract.js` rejects a plan in which two groups share a `groupId` or share `safeIdForFilename(groupId)`, naming both group indexes. The check sits with the existing `groupId` pattern check because uniqueness is a property of the artifact. `artifact-normalize` repairs only a status spelling or a mixed-namespace id, so it answers this error with `harness-failure` and no representation repair, and the plan is never sealed; `plan-fixes`, which normalizes the same bytes, fails as `invalid v2 classification plan` before it writes the ledger. No fix reservation or edit follows either way.
+`normalizeArtifact('plan')` in `plugins/concord/core/artifact-contract.js` rejects a plan in which two groups share a `groupId` or share `safeIdForFilename(groupId)`, naming both group indexes. The check sits with the existing `groupId` pattern check because uniqueness is a property of the artifact. `artifact-normalize` repairs only a status spelling, an invalid id slug or a mixed-namespace id, so it answers this error with `harness-failure` and no representation repair, and the plan is never sealed; `plan-fixes`, which normalizes the same bytes, fails as `invalid v2 classification plan` before it writes the ledger. No fix reservation or edit follows either way.
+
+### Duplicate finding ids
+
+`normalizeArtifact('plan')` keeps the first occurrence of a finding id repeated inside one group, since the repeat carries no information. `plan-fixes` treats a finding listed in two groups like an omitted one: it takes the single replacement plan (`planRetry`) with the duplicated ids named in the retry prompt, and a second failure in the round is terminal. A deterministic choice between the two groups is not made because they can disagree on `action`, and keeping the first could turn a `reconcile` into a `fix`.
 
 ### Exact sets
 

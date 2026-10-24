@@ -9,6 +9,9 @@ const TIMEOUT_MS = 7 * DAY;
 
 const sha = (text) => crypto.createHash('sha256').update(text).digest('hex');
 const collapse = (text) => String(text || '').replace(/\s+/g, ' ').trim();
+// The `file` of a finding about the pull request description: not a git path, since a path never starts with a slash.
+const DESC = '/pr-description';
+const intentOf = (title, body) => sha(`${title}\n\n${body}`);
 const last = (ledger) => ledger.rounds[ledger.rounds.length - 1];
 
 // The diff a new round reviews. Only a plain push on the same merge base has an
@@ -20,6 +23,16 @@ function chooseRange(lastRound, live, isAncestor) {
   if (lastRound.unreviewed?.length) return { base: live.mergeBase, broad: false };
   if (live.mergeBase === lastRound.mergeBase && isAncestor(lastRound.head, live.head)) return { base: lastRound.head, broad: false };
   return { base: live.mergeBase, broad: false };
+}
+
+// A head that only merges the base branch into the last reviewed head, leaving the pull request's own diff unchanged, has nothing new to
+// review. `commits` are the commits of the head that are neither in the last reviewed head nor in the base branch, each with its parents
+// (`inBase`: reachable from the base tip); `before` and `after` fingerprint the pull request diff at the last and the new head. Any doubt is false.
+function baseMergeOnly({ prior, live, ancestor, commits, before, after, replies }) {
+  if (!prior || live.intent !== prior.intent || prior.unreviewed?.length || live.head === prior.head || !ancestor || replies.length || !commits.length || !before || before !== after) return false;
+  return commits.every((c) => c.parents.length === 2 && c.parents.some((p) => p.inBase)
+    && c.parents.some((p) => !p.inBase && (p.sha === prior.head || commits.some((d) => d.sha === p.sha)))
+    && c.parents.every((p) => p.inBase || p.sha === prior.head || commits.some((d) => d.sha === p.sha)));
 }
 
 // A renamed id does not hide a published finding: the span identifies it.
@@ -59,23 +72,71 @@ function parseNameStatus(raw) {
 // nor in any other path the push left in place. Anything else stays open with a reason: `unverified` (no
 // verbatim span was ever recorded), `raised` (the reviewer raised it again), `path-unresolved`, `span-present`.
 // A span that occurs at the head moves the anchor (`file`, `spanVerified`) to the new head.
-function classifyPrior(open, raised, resolve, read, head) {
+// A span-present finding is closed as `addressed` only by the reviewer's explicit verdict `{ id, evidence: { file, span, reason } }`
+// (`addressed`), and only when the evidence quote occurs exactly once in that file at the head and differs from the finding's span;
+// a refused verdict leaves the finding open with `why`. An addressed finding (`status: 'addressed'`) is judged again every round by the
+// same rules: its span gone is `fixed`, its evidence gone or no longer unique reopens it, the reviewer raising it reopens it.
+const MAX_REASON = 500, MAX_EVIDENCE_BYTES = 8192;
+// The prompt shows the description with its slashes and backslashes replaced; a quote from it is matched against the raw text.
+const unfang = (text) => typeof text === 'string' ? text.replace(/\u2215/g, '/').replace(/\u29f5/g, '\\') : text;
+function judgeEvidence(p, entries, read) {
+  if (entries.length > 1) return { why: 'duplicate' };
+  const given = entries[0].evidence;
+  // A quote that already occurs in the description is taken as it is: the description may genuinely hold the replacement characters.
+  const raw = given?.file === DESC && typeof given.span === 'string' ? read(DESC) : null;
+  const ev = given?.file === DESC && !(Buffer.isBuffer(raw) && raw.includes(Buffer.from(given.span, 'utf8'))) ? { ...given, span: unfang(given.span) } : given;
+  // A description finding is answered by the description alone, and the description answers nothing else.
+  if ((ev?.file === DESC) !== (p.file === DESC)) return { why: 'evidence-absent' };
+  if (typeof ev?.reason !== 'string' || !collapse(ev.reason) || collapse(ev.reason).length > MAX_REASON) return { why: 'no-reason' };
+  if (typeof ev.file !== 'string' || typeof ev.span !== 'string' || !ev.span || Buffer.byteLength(ev.span) > MAX_EVIDENCE_BYTES) return { why: 'evidence-absent' };
+  const evSpan = collapse(ev.span), span = collapse(p.span);
+  if (evSpan.includes(span) || span.includes(evSpan)) return { why: 'evidence-is-span' };
+  const blob = read(ev.file);
+  if (!Buffer.isBuffer(blob)) return { why: 'evidence-absent' };
+  const at = blob.indexOf(Buffer.from(ev.span, 'utf8'));
+  if (at === -1) return { why: 'evidence-absent' };
+  if (blob.indexOf(Buffer.from(ev.span, 'utf8'), at + 1) !== -1) return { why: 'evidence-ambiguous' };
+  return { evidence: { file: ev.file, span: ev.span, reason: collapse(ev.reason) } };
+}
+// An addressed finding's stored evidence still stands: the quote occurs once; null when the file cannot be read, so nothing is decided.
+function evidenceStands(p, read, file) {
+  const ev = p.addressedEvidence, blob = ev && read(file || ev.file);
+  if (!ev) return false;
+  if (!Buffer.isBuffer(blob)) return blob === 'big' || blob === 'other' ? null : false;
+  const span = Buffer.from(ev.span, 'utf8'), at = blob.indexOf(span);
+  return at !== -1 && blob.indexOf(span, at + 1) === -1;
+}
+function classifyPrior(open, raised, resolve, read, head, addressed = []) {
   const ctx = open.map((p) => typeof p.spanVerified === 'string' && p.span ? resolve(p) : null);
   const moved = open.map((p, i) => ({ ...p, file: ctx[i]?.renames.get(p.file) || p.file }));
   return open.map((p, i) => {
-    const q = moved[i], keep = (reason, extra = {}) => ({ key: p.key, id: p.id, status: 'open', reason, ...extra });
+    const q = moved[i], closed = p.status === 'addressed', entries = addressed.filter((a) => a?.id === p.id);
+    const keep = (reason, extra = {}) => closed && reason === 'path-unresolved' ? { key: p.key, id: p.id, status: 'addressed' } : { key: p.key, id: p.id, status: 'open', reason, ...extra };
+    const present = (file) => {
+      if (closed) {
+        // The evidence file follows a rename like the finding's own file.
+        const evidenceFile = ctx[i]?.renames.get(p.addressedEvidence?.file) || p.addressedEvidence?.file;
+        const stands = evidenceStands(p, read, evidenceFile);
+        return stands === false ? keep('evidence-gone', { file, spanVerified: head }) : { key: p.key, id: p.id, status: 'addressed', file, spanVerified: head, evidenceFile };
+      }
+      if (!entries.length) return keep('span-present', { file, spanVerified: head });
+      // A verdict names an id only; when several open findings share it, it cannot say which one it answers, so none is closed.
+      if (open.some((o) => o !== p && o.id === p.id && o.status !== 'addressed')) return keep('span-present', { file, spanVerified: head, why: 'ambiguous-id' });
+      const judged = judgeEvidence(p, entries, read);
+      return judged.evidence ? { key: p.key, id: p.id, status: 'addressed', evidence: judged.evidence, file, spanVerified: head } : keep('span-present', { file, spanVerified: head, why: judged.why });
+    };
     if (typeof p.spanVerified !== 'string' || !p.span) return keep('unverified');
-    if (raised.some((f) => matches(moved, f).includes(q))) return keep('raised');
+    if (raised.some((f) => matches(moved, f).includes(q))) return keep('raised', entries.length ? { why: 'raised' } : {});
     if (!ctx[i]) return keep('path-unresolved');
     const span = Buffer.from(p.span, 'utf8');
     const here = read(q.file);
     if (here === 'other' || here === 'big') return keep('path-unresolved');
-    if (here && here.includes(span)) return keep('span-present', { file: q.file, spanVerified: head });
+    if (here && here.includes(span)) return present(q.file);
     for (const other of ctx[i].live) {
       if (other === q.file) continue;
       const b = read(other);
       if (b === 'big') return keep('path-unresolved');
-      if (Buffer.isBuffer(b) && b.includes(span)) return keep('span-present', { file: other, spanVerified: head });
+      if (Buffer.isBuffer(b) && b.includes(span)) return present(other);
     }
     return { key: p.key, id: p.id, status: 'fixed' };
   });
@@ -102,8 +163,21 @@ function submoduleRepo(url, prRepo) {
   return null;
 }
 
-// Every verified finding blocks: the review engine emits no severity. A user
-// waives a disputed one with the `waive` verb.
+// A finding is a blocker unless it is explicitly minor: a missing or malformed class blocks. The engine reports `minor` only for an
+// empty `releaseBlocking` with a rationale; the same is required here, so a ledger or runner that says less blocks.
+const isBlocker = (f) => f.class !== 'minor';
+function classOf(f) {
+  const reason = collapse(f.rationale);
+  if (f.class === 'minor' && !collapse(f.blockingReason) && Array.isArray(f.releaseBlocking) && f.releaseBlocking.length === 0 && reason) return { class: 'minor', reason, releaseBlocking: [] };
+  const categories = Array.isArray(f.releaseBlocking) ? f.releaseBlocking.filter((c) => typeof c === 'string') : [];
+  // gate-verify's reason for overriding a minor claim is the reason the finding blocks.
+  return { class: 'blocker', reason: collapse(f.blockingReason) || reason || 'unclassified', ...(categories.length && { releaseBlocking: categories }) };
+}
+// Of several raised findings with one key the strictest class stands.
+const strictest = (list) => list.map(classOf).find((c) => c.class === 'blocker') || classOf(list[0]);
+
+// An open blocker blocks. An open minor does not: the approving review lists it as a follow-up. A user
+// waives a disputed finding with `waive` and changes its class with `reclass`.
 function evaluateApproval(ledger, live, reviewedHead) {
   const no = (reason) => ({ approve: false, reason });
   if (reviewedHead !== live.head) return no('head-moved');
@@ -113,13 +187,14 @@ function evaluateApproval(ledger, live, reviewedHead) {
   if (ledger.approval?.head === live.head) return no('already-approved');
   const round = last(ledger);
   if (round?.head === reviewedHead && round.unreviewed?.length) return no('unreviewed-submodule');
-  if (ledger.findings.some((f) => f.status === 'open')) return no('open-findings');
+  if (ledger.findings.some((f) => f.status === 'open' && isBlocker(f))) return no('open-blockers');
   return { approve: true };
 }
 
 // Author replies after the last review: in a thread of a review we published, or
 // on the PR conversation (the only way to answer a finding posted in a review body).
 function repliesSince(ledger, pullComments, issueComments, author) {
+  if (!ledger.rounds.length) return [];
   const ours = new Set(ledger.rounds.flatMap((r) => r.commentIds));
   const since = Date.parse(last(ledger).submittedAt);
   return [
@@ -128,15 +203,35 @@ function repliesSince(ledger, pullComments, issueComments, author) {
   ].filter((c) => c.user?.login === author && Date.parse(c.created_at) > since).map((c) => c.created_at).sort();
 }
 
+// An edited description asks for a round while a finding about it is open or addressed, since only a new round can settle or re-judge that finding. A round that failed on
+// this head with this description used it already.
+function descriptionEdited(ledger, live) {
+  const lastRound = last(ledger), attempt = ledger.attempt;
+  return Boolean(lastRound && live.intent && live.intent !== lastRound.intent && ledger.findings.some((f) => (f.status === 'open' || f.status === 'addressed') && f.file === DESC)
+    && !(attempt && attempt.head === live.head && attempt.intent === live.intent));
+}
+
 // The one event the watch prints, or null to keep waiting. `stable` means the head
 // was the same on two consecutive polls, so a burst of pushes wakes the session once.
 function wakeDecision({ ledger, live, replies, now, stable }) {
   if (live.state === 'MERGED') return { event: 'merged' };
   if (live.state === 'CLOSED') return { event: 'closed' };
+  // No round was published (the first one failed): there is no review to answer, so only a head newer than the attempt asks for a round.
+  if (!ledger.rounds.length) return ledger.attempt && live.head !== ledger.attempt.head && stable ? { event: 'round', head: live.head } : null;
   const lastRound = last(ledger);
   const age = now - Date.parse(lastRound.submittedAt);
   if (age >= TIMEOUT_MS) return { event: 'timeout' };
   const pushed = live.head !== lastRound.head;
+  if (descriptionEdited(ledger, live)) return stable ? { event: 'round', head: live.head } : null;
+  // A round that failed at this head used every reply up to its time: only a newer head or reply asks for another.
+  const attempt = ledger.attempt;
+  if (attempt && live.head === attempt.head && !replies.some((at) => Date.parse(at) > Date.parse(attempt.at))) return null;
+  // A clean round that was not approved (the pull request was a draft) waits for nothing from the author: a new head starts a
+  // round, and the reviewed head becoming ready is the event `approve` answers.
+  if (evaluateApproval(ledger, { ...live, state: 'OPEN', isDraft: false, head: lastRound.head }, lastRound.head).approve) {
+    if (pushed) return stable ? { event: 'round', head: live.head } : null;
+    if (!live.isDraft) return { event: 'ready', head: live.head };
+  }
   const replied = replies.length > 0;
   if (pushed && replied) return stable ? { event: 'round', head: live.head } : null;
   if (!pushed && !replied) return null;
@@ -147,4 +242,7 @@ function wakeDecision({ ledger, live, replies, now, stable }) {
   return { event: 'nudge', kind, head: live.head, replyAt };
 }
 
-module.exports = { submoduleRepo, chooseRange, findingKey, matches, isPublished, parseNameStatus, classifyPrior, evaluateApproval, repliesSince, wakeDecision, sha, NUDGE_AFTER_MS, TIMEOUT_MS };
+// Rounds that reviewed code; a base-merge entry only moves the reviewed head.
+const reviewedCount = (ledger) => ledger.rounds.filter((r) => r.mode !== 'base-merge').length;
+
+module.exports = { submoduleRepo, chooseRange, baseMergeOnly, reviewedCount, findingKey, matches, isPublished, parseNameStatus, classifyPrior, isBlocker, classOf, strictest, evaluateApproval, repliesSince, wakeDecision, descriptionEdited, intentOf, DESC, sha, NUDGE_AFTER_MS, TIMEOUT_MS };

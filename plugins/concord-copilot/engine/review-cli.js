@@ -74,7 +74,7 @@ function gitCommitFix(repoRoot, findingId, summary, files) {
   // normally just the finding's own file, but a fix may legitimately touch a
   // companion file (e.g. a caller/import it had to update); every file the
   // fix subagent declared must land in the same attributed commit, or the
-  // companion edit is wiped later by record()'s gitCheckoutTree.
+  // companion edit is left dirty and parks the run in record().
   const fileList = Array.isArray(files) ? files : [files];
   sh('git', ['add', '--', ...fileList], { cwd: repoRoot });
   // -F - (read the message from stdin) instead of -m '<multi-line message>':
@@ -195,8 +195,9 @@ function validateFixFiles(repoRoot, stateDir, files, verb = 'commit-fix') {
     }
   }
 }
-function gitCheckoutTree(repoRoot, keep = []) {
-  sh('git', ['checkout', 'HEAD', '--', '.', ...keep.map((file) => `:(exclude,literal)${file}`)], { cwd: repoRoot });
+// The CLI never discards working-tree content: it cannot tell a stray fixer edit from a person's edit, so dirty tracked paths stop the run and are named.
+function gitDirtyTrackedPaths(repoRoot) {
+  return sh('git', ['status', '--porcelain', '--untracked-files=no', '--no-renames', '-z'], { cwd: repoRoot }).split('\0').filter(Boolean).map((entry) => entry.slice(3));
 }
 function runDod(repoRoot) {
   const cfg = dodExec.loadDodConfig(repoRoot);
@@ -513,7 +514,7 @@ function readArtifact(stateDir, n, name) {
     throw new Error(`harness-failure: missing gate artifact ${name} for round ${n}`);
   }
   try {
-    const canonical = artifactContract.normalizeArtifact(name, raw);
+    const canonical = artifactContract.normalizeArtifact(name, raw, { addressed: process.env.CONCORD_UNTRUSTED_ARTIFACTS === '1' });
     const text = JSON.stringify(canonical) + '\n';
     if (raw !== text) writeReviewArtifact(p, text);
     return canonical;
@@ -1192,6 +1193,8 @@ function verifiedRound(ref, stateDir, run, what) {
   const fixes = confirmedNonKilled
     .filter((f) => !isReplay(f))
     .map((f) => ({ id: f.id, file: f.file, span: f.span, summary: f.summary }));
+  // What the reviewer reported about release-blocking, kept apart from `fixes` so the fix path sees no new field.
+  const classified = new Map(confirmedNonKilled.map((f) => [f.id, f]));
   const resolvedAbsent = confirmedNonKilled
     .filter((f) => isReplay(f))
     .map((f) => f.id);
@@ -1291,7 +1294,7 @@ function verifiedRound(ref, stateDir, run, what) {
     gateOpen = thisRound.concat(carried);
   }
   const reopenedIds = confirmedNonKilled.filter((f) => f.reopened).map((f) => f.id);
-  return { repoRoot, slug, ledger, n, isGit, changed, fixes, suppressedIds, resolvedAbsent, reopenedIds, intentParked, gateOpen, gateRejectedIds, gateDuplicateIds, gateRaisedIds, gateApplied };
+  return { repoRoot, slug, ledger, n, isGit, changed, fixes, classified, suppressedIds, resolvedAbsent, reopenedIds, intentParked, gateOpen, gateRejectedIds, gateDuplicateIds, gateRaisedIds, gateApplied, addressed: vJson.addressed || [] };
 }
 
 // Every mutating target verb takes the same lock, including an unkeyed call
@@ -1533,7 +1536,7 @@ function runVerb(resolveFromCwd, args, initiative) {
         if (path.resolve(candidateArg) !== path.resolve(repair.candidatePath)) throw new Error(`${name} repair candidate path changed`);
         if (!artifactContract.preservesArtifact(name, original.toString('utf8'), JSON.parse(raw))) throw new Error(`${name} repair candidate does not preserve the original evidence`);
       }
-      const canonical = artifactContract.normalizeArtifact(name, raw);
+      const canonical = artifactContract.normalizeArtifact(name, raw, { addressed: process.env.CONCORD_UNTRUSTED_ARTIFACTS === '1' });
       // Correctness coverage is part of the artifact contract for git targets:
       // retry the reviewer while its original artifact is still intact rather
       // than canonicalizing an incomplete examined list and discovering the
@@ -1597,7 +1600,9 @@ function runVerb(resolveFromCwd, args, initiative) {
           && items.flatMap(idOf).some((id) => typeof id === 'string' && !prefixes.some((prefix) => id.startsWith(prefix)));
         // A verify/gate-verify finding without evidence fields (a kept candidate in verdict shape) is repaired by deleting it.
         const invalidFinding = artifactContract.dropsInvalidFindings(name) && /finding\[\d+\] is missing "/.test(e.message);
-        if (!statusSpelling && !mixedNamespaces && !invalidFinding) throw new Error(`harness-failure: ${e.message}`);
+        // A prefix-correct id with an invalid slug is a label slip: the repair normalizes the slug and keeps the finding.
+        const repairableSlug = /invalid id|invalid findingIds|must name the/.test(e.message) && artifactContract.repairsSlugs(name, raw);
+        if (!statusSpelling && !mixedNamespaces && !invalidFinding && !repairableSlug) throw new Error(`harness-failure: ${e.message}`);
         const retryArtifacts = retryArtifactMap(ledger.execution);
         // The pending semantic prompt requests a new plan, not a representation
         // repair. Durable repair bindings still bound that replacement to one repair.
@@ -2079,12 +2084,15 @@ function runVerb(resolveFromCwd, args, initiative) {
     // round artifacts (and, for a file target, a stale fix-<safe-id>.json that has no
     // git journal to override it), so BOTH target types must purge them and
     // reset the round's planned/absent/intent arrays before re-driving. Only the
-    // git-specific working-tree discard (gitCheckoutTree) is gated on git; a file
-    // target has no working tree to check out. Before this, a resumed file target
+    // git-specific dirty-tree refusal is gated on git; a file
+    // target has no working tree. Before this, a resumed file target
     // took the file-acquisition branch first and skipped all of it, so a stale
     // edited:true fix artifact could false-signal in record. (finding #3)
     const isGit = !isFileTarget;
-    if (resumed && isGit) gitCheckoutTree(repoRoot); // git-only: keep journaled commits, discard uncommitted
+    if (resumed && isGit) {
+      const dirtyTracked = gitDirtyTrackedPaths(repoRoot);
+      if (dirtyTracked.length) throw new Error(`review-until-green: working tree has uncommitted changes in ${dirtyTracked.join(', ')}; commit or discard them before resuming`);
+    }
 
     // Target acquisition goes through the core/target.js seam. On a FRESH git
     // start acquireTarget runs the dirty-check + HEAD rev-parse + diff (identical
@@ -2657,22 +2665,20 @@ function runVerb(resolveFromCwd, args, initiative) {
     // A reconciliation stop already waits for the person, so it stands and only
     // names the kept files. plan-fixes launches no fixer when it reconciles, so
     // this guards the ledger rather than a path the verbs reach today.
-    const keptFiles = [...new Set(keptEditFiles)];
+    const keptFiles = [...new Set([...keptEditFiles, ...(isGit ? gitDirtyTrackedPaths(repoRoot) : [])])];
     if (keptFiles.length && (decision.gatePending || decision.intentReview)) {
-      decision = { ...decision, reason: `${decision.reason}; an uncommitted fix edit is kept in ${keptFiles.join(', ')}` };
+      decision = { ...decision, reason: `${decision.reason}; uncommitted changes are kept in ${keptFiles.join(', ')}` };
     } else if (keptFiles.length) {
-      decision = { continue: false, converged: false, parked: true, abandoned: false, dodFailed: false, intentReview: false, gatePending: false, reason: `an uncommitted fix edit is kept in ${keptFiles.join(', ')}; commit or discard it, then unpark the finding or record the commit with record-fix` };
+      decision = { continue: false, converged: false, parked: true, abandoned: false, dodFailed: false, intentReview: false, gatePending: false, reason: `uncommitted changes are kept in ${keptFiles.join(', ')}; commit or discard it, then unpark the finding or record the commit with record-fix` };
       applied = { ...applied, status: 'parked' };
     }
     if (isGit && decision.converged && !ledger.dodDeferred) {
-      gitCheckoutTree(repoRoot);
       if (gitIsDirty(repoRoot, stateDir)) throw new Error('harness-failure: review work left untracked files in the repository; final DoD was not run against an uncommitted worktree');
       const finalDodHead = gitHeadSha(repoRoot);
       const finalDod = runDod(repoRoot);
       if (gitHeadSha(repoRoot) !== finalDodHead) throw new Error('harness-failure: final DoD moved HEAD; its result does not apply to the reviewed revision');
       if (gitIsDirty(repoRoot, stateDir)) {
-        gitCheckoutTree(repoRoot);
-        throw new Error('harness-failure: final DoD modified the repository; its result does not apply to committed HEAD');
+        throw new Error(`harness-failure: final DoD modified the repository (${gitDirtyTrackedPaths(repoRoot).join(', ') || 'untracked files'}); its result does not apply to committed HEAD`);
       }
       applied = { ...applied, dod: finalDod };
       if (!finalDod.deferred && !finalDod.passed) {
@@ -2731,10 +2737,6 @@ function runVerb(resolveFromCwd, args, initiative) {
         ledger = { ...ledger, status: 'parked' };
       }
     }
-    // Git only: clean any leftover uncommitted edit from a rejected/parked fixer,
-    // except the declared files of a rejected fix, which stay for the person to
-    // commit or discard. File targets have no working tree to discard.
-    if (isGit) gitCheckoutTree(repoRoot, keptFiles);
     const finalChecks = [{ name: 'definition-of-done', status: ledger.dod?.deferredBy === 'pending-final' ? 'not-run' : ledger.dod?.deferred ? 'deferred' : ledger.dod?.passed ? 'passed' : 'failed' }];
     const priorHistoryKeys = new Set((ledger.review_history || []).map((entry) => `${entry.planId}:${entry.groupId}`));
     const newHistory = (ledger.fix_plan?.groups || []).filter((group) => !priorHistoryKeys.has(`${ledger.fix_plan.planId}:${group.groupId}`)).map((group) => {
@@ -2787,7 +2789,7 @@ function runVerb(resolveFromCwd, args, initiative) {
 
   if (verb === 'findings') {
     requireRef(ref, 'findings');
-    const { repoRoot, fixes, intentParked, gateOpen } = verifiedRound(ref, stateDir, run, 'findings');
+    const { repoRoot, fixes, classified, intentParked, gateOpen, addressed } = verifiedRound(ref, stateDir, run, 'findings');
     // The file name comes from a reviewer, so it is read only when its real
     // path stays inside the checkout: a line number for a file elsewhere would
     // tell whoever reads the review whether a guessed span is in that file.
@@ -2804,11 +2806,13 @@ function runVerb(resolveFromCwd, args, initiative) {
       } catch (_) { return null; }
     };
     // Gate findings carry their span as `evidence` and their lens as `class`.
-    const findings = [...fixes, ...intentParked, ...gateOpen].map((f) => {
+    const findings = [...fixes, ...intentParked, ...gateOpen].map((g) => {
+      const f = { ...g, ...(classified.has(g.id) && { releaseBlocking: classified.get(g.id).releaseBlocking, rationale: classified.get(g.id).rationale }) };
       const span = f.span ?? f.evidence ?? '';
-      return { id: f.id, category: f.class || f.id.split(':', 1)[0], file: f.file, line: lineOf(f.file, span), span, summary: f.summary, requirement: f.requirement || '' };
+      // `class` is the one decision a review-only caller needs: minor only when the reviewer classified it follow-up eligible and gate-verify did not override it.
+      return { id: f.id, category: f.class || f.id.split(':', 1)[0], file: f.file, line: lineOf(f.file, span), span, summary: f.summary, requirement: f.requirement || '', class: gateFollowUpEligible(f) ? 'minor' : 'blocker', ...(f.releaseBlocking !== undefined && { releaseBlocking: f.releaseBlocking }), ...(f.rationale !== undefined && { rationale: f.rationale }), ...(f.blockingReason && { blockingReason: f.blockingReason }) };
     });
-    process.stdout.write(JSON.stringify({ findings }) + '\n');
+    process.stdout.write(JSON.stringify({ findings, ...(process.env.CONCORD_UNTRUSTED_ARTIFACTS === '1' && addressed.length && { addressed }) }) + '\n');
     return;
   }
 
@@ -2830,6 +2834,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     requirePlanDispatch(ledger);
     const fixById = new Map(fixes.map((finding) => [finding.id, finding]));
     const groupedIds = new Set();
+    const duplicatedIds = new Set();
     let planArtifact = { status: 'ok', protocolVersion: 2, groups: [] };
     let consumedPlanHash = ledger.execution?.normalizedPlan || ledger.execution?.artifactHashes?.plan;
     if (fixes.length) {
@@ -2874,7 +2879,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       });
       for (const id of findingIds) {
         if (!fixById.has(id)) throw new Error(`harness-failure: plan group[${index}] references finding "${id}" that is rejected or absent`);
-        if (groupedIds.has(id)) throw new Error(`harness-failure: plan finding "${id}" appears in more than one root-cause group`);
+        if (groupedIds.has(id)) duplicatedIds.add(id);
         groupedIds.add(id);
       }
       if (!findingIds.length) return [];
@@ -2882,17 +2887,21 @@ function runVerb(resolveFromCwd, args, initiative) {
       return [{ ...group, findingIds, findings: findingIds.map((id) => fixById.get(id)) }];
     });
     const unclassified = fixes.filter((finding) => !groupedIds.has(finding.id)).map((finding) => finding.id);
-    if (unclassified.length) {
+    // A finding in two groups is a planner slip like an omitted one: the same one replacement plan repairs it.
+    const duplicated = [...duplicatedIds];
+    if (unclassified.length || duplicated.length) {
       const execution = ledger.execution || { round: n, completed: [], pending: [] };
       const rejectedHash = consumedPlanHash;
       const prior = execution.planRetry;
       // Re-reading the rejected bytes is not another launch or retry attempt.
       if (prior?.rejectedHash === rejectedHash && !execution.normalizedPlan && !(execution.completed || []).includes('plan')) throw new Error(`harness-failure: ${prior.message}`);
       const exhausted = !!prior;
-      const message = `v2 classification is incomplete for finding(s): ${unclassified.join(', ')}${exhausted ? '; planner retry exhausted for this round; reconcile the failed plan before continuing' : ''}`;
+      const problems = [unclassified.length ? `v2 classification is incomplete for finding(s): ${unclassified.join(', ')}` : '',
+        duplicated.length ? `v2 classification is invalid: finding(s) ${duplicated.join(', ')} appear in more than one root-cause group` : ''].filter(Boolean).join('; ');
+      const message = `${problems}${exhausted ? '; planner retry exhausted for this round; reconcile the failed plan before continuing' : ''}`;
       const retryArtifacts = retryArtifactMap(execution);
       if (exhausted) delete retryArtifacts.plan;
-      else retryArtifacts.plan = `The previous normalized plan omitted surviving finding(s): ${unclassified.join(', ')}. Classify every surviving finding exactly once using the sealed correctness and verify evidence. Do not rerun reviewers or invent findings.`;
+      else retryArtifacts.plan = `The previous normalized plan ${[unclassified.length ? `omitted surviving finding(s): ${unclassified.join(', ')}` : '', duplicated.length ? `listed finding(s) ${duplicated.join(', ')} in more than one group` : ''].filter(Boolean).join(' and ')}. Classify every surviving finding exactly once using the sealed correctness and verify evidence. Do not rerun reviewers or invent findings.`;
       const artifactHashes = { ...(execution.artifactHashes || {}) };
       delete artifactHashes.plan;
       const repairArtifacts = { ...(execution.repairArtifacts || {}) };
@@ -2901,7 +2910,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       const rejected = { ...ledger, execution: { ...execution, completed: (execution.completed || []).filter((role) => role !== 'plan'), artifactHashes,
         normalizedPlan: null, planRepairPending: false, pending: Array.from(new Set([...(execution.pending || []), 'plan'])), retryArtifacts, retryArtifact: firstRetryArtifact(retryArtifacts),
         ...(execution.repairArtifacts ? { repairArtifacts } : {}),
-        planRetry: { ...prior, state: exhausted ? 'exhausted' : 'pending', missingIds: unclassified, rejectedHash, message, discardRepair: true },
+        planRetry: { ...prior, state: exhausted ? 'exhausted' : 'pending', rejectedHash, message, discardRepair: true },
         failures: [...(execution.failures || []), failure].slice(-5), failure } };
       writeLedger(stateDir, slug, run ? withSupersededLaunch(rejected, 'plan', n) : rejected);
       // Publish semantic accounting before discarding only the rejected plan's
@@ -3268,7 +3277,8 @@ function runVerb(resolveFromCwd, args, initiative) {
     const candidates = roundCandidates(require('./gate-contract'), readRound('correctness'), readRound('verify'));
     const resolvedFindings = findingIds.map((id) => candidates.find((finding) => finding.id === id)).filter(Boolean);
     if (resolvedFindings.length !== findingIds.length || !files.some((file) => gitIsDirtyForFile(repoRoot, file))) {
-      throw new Error('harness-failure: commit-fix: certified transaction has no matching dirty candidate');
+      const landed = (ledger.journal || []).find((j) => files.some((file) => (j.files || []).includes(file)));
+      throw new Error(`harness-failure: commit-fix: certified transaction has no matching dirty candidate${landed ? `; its files were already committed in ${landed.sha} (${landed.transactionId}), run record-fix with that sha or unpark the finding` : ''}`);
     }
     {
       const sha = gitCommitFix(repoRoot, transactionId, groups.map((group) => group.rootCause).join('; '), files);
@@ -3301,4 +3311,4 @@ function runMain(resolveFromCwd) {
   }
 }
 
-module.exports = { unexaminedPaths, renderHandoff, gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitCheckoutTree, runDod, main, runMain, withTargetLock };
+module.exports = { unexaminedPaths, renderHandoff, gitDiff, gitCommitFix, gitIsReachable, gitIsDirty, gitIsDirtyForFile, gitDirtyTrackedPaths, runDod, main, runMain, withTargetLock };

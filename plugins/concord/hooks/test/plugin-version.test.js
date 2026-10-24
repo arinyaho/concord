@@ -43,8 +43,9 @@ test('all harness packages and marketplaces expose the plugin as concord', () =>
   for (const file of marketplaces) assert.ok(manifest(path.join(REPO, file)).plugins.some(({ name }) => name === 'concord'));
 });
 
-test('README installs the Codex marketplace and plugin source through sparse checkout', () => {
-  const readme = fs.readFileSync(path.join(REPO, 'README.md'), 'utf8');
+test('docs/install.md installs the Codex marketplace and plugin source through sparse checkout', () => {
+  assert.match(fs.readFileSync(path.join(REPO, 'README.md'), 'utf8'), /\]\(docs\/install\.md\)/);
+  const readme = fs.readFileSync(path.join(REPO, 'docs/install.md'), 'utf8');
   assert.match(readme, /codex plugin marketplace add arinyaho\/concord --ref main --sparse \.agents\/plugins --sparse plugins\/concord-codex/);
 });
 

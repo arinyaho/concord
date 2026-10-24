@@ -295,3 +295,42 @@ test('verify and gate-verify prompts and retry prompts tell the reviewer about t
   }
   assert.doesNotMatch(retryPrompt('correctness'), /unverifiable/);
 });
+
+test('repairCandidate normalizes an invalid slug across every id-bearing field and preservesArtifact accepts exactly that candidate (#414)', () => {
+  const raw = JSON.stringify({ status: 'ok', examined: ['a.js'], findings: [{ id: 'correctness:Probe_timeoutSeconds', file: 'a.js', span: 'x', summary: 's' }] });
+  const candidate = repairCandidate('correctness', raw);
+  assert.equal(candidate.findings[0].id, 'correctness:probe-timeoutseconds');
+  assert.ok(preservesArtifact('correctness', raw, candidate));
+  assert.ok(!preservesArtifact('correctness', raw, { ...candidate, findings: [{ ...candidate.findings[0], id: 'correctness:other' }] }));
+  assert.equal(normalizeArtifact('correctness', JSON.stringify(candidate)).findings[0].id, 'correctness:probe-timeoutseconds');
+  const verify = repairCandidate('verify', JSON.stringify({ status: 'ok', rejected: [{ id: 'correctness:A_b', reason: 'ran' }, 'correctness:ok-id'], findings: [], groups: [{ findingIds: ['correctness:A_b'] }] }));
+  assert.equal(verify.rejected[0].id, 'correctness:a-b');
+  assert.equal(verify.rejected[1], 'correctness:ok-id');
+  assert.deepStrictEqual(verify.groups[0].findingIds, ['correctness:a-b']);
+  const gate = repairCandidate('gate', JSON.stringify({ status: 'ok', findings: [{ id: 'gate:Silent_Gap:Foo.Bar', file: 'a', span: 's', summary: 's' }] }));
+  assert.equal(gate.findings[0].id, 'gate:silent-gap:foo-bar');
+});
+
+test('slug normalization truncates to 80, leaves valid ids alone and refuses empty or colliding results (#414)', () => {
+  const long = repairCandidate('correctness', JSON.stringify({ status: 'ok', findings: [{ id: `correctness:${'A'.repeat(90)}`, file: 'a', span: 's', summary: 's' }] }));
+  assert.equal(long.findings[0].id, `correctness:${'a'.repeat(80)}`);
+  const doubleDash = JSON.stringify({ status: 'ok', findings: [{ id: 'correctness:keep--double', file: 'a', span: 's', summary: 's' }] });
+  assert.equal(repairCandidate('correctness', doubleDash).findings[0].id, 'correctness:keep--double');
+  const unrepairable = (findings) => JSON.stringify({ status: 'ok', findings: findings.map((id) => ({ id, file: 'a', span: 's', summary: 's' })) });
+  for (const ids of [['correctness:___'], ['correctness:Foo_bar', 'correctness:foo-bar'], ['correctness:Foo_bar', 'correctness:FOO.bar']]) {
+    const raw = unrepairable(ids);
+    assert.deepStrictEqual(repairCandidate('correctness', raw).findings.map((f) => f.id), ids);
+    assert.throws(() => normalizeArtifact('correctness', raw), /invalid id/);
+  }
+});
+
+test('a plan group listing the same finding twice keeps the first occurrence (#414)', () => {
+  const group = { groupId: 'g', findingIds: ['correctness:a', 'correctness:b', 'correctness:a'], rootCause: 'r', invariants: ['i'], changeClass: 'local', action: 'fix' };
+  const plan = normalizeArtifact('plan', JSON.stringify({ status: 'ok', protocolVersion: 2, groups: [group] }));
+  assert.deepStrictEqual(plan.groups[0].findingIds, ['correctness:a', 'correctness:b']);
+});
+
+test('a legacy two-segment gate id with an invalid slug is normalized, not left terminal (#414)', () => {
+  const gate = repairCandidate('gate', JSON.stringify({ status: 'ok', findings: [{ id: 'gate:Foo_bar', file: 'a', span: 's', summary: 's' }] }));
+  assert.equal(gate.findings[0].id, 'gate:foo-bar');
+});

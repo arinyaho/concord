@@ -14,6 +14,24 @@ function isValidFindingId(id) {
   return typeof id === 'string' && FINDING_ID_RE.test(id);
 }
 
+// The id rule as every finding-producing prompt states it; keep it next to FINDING_ID_RE so the two cannot drift.
+const FINDING_ID_RULE = ' A finding id is "<prefix>:<slug>" (a gate id is "gate:<class>:<slug>") whose slug uses only lowercase letters a-z, digits and "-", at most 80 characters per segment: write timeoutSeconds as timeoutseconds, never copy a camelCase, snake_case or dotted identifier into the slug. Copy an id you cite from another artifact exactly as written there.';
+
+// The id a slip such as an uppercase or underscore slug stands for, or null when none can be derived. A valid id maps to itself.
+// Only the slug segments are rewritten: lowercase, every run of characters outside a-z0-9 becomes "-", ends trimmed, cut to 80.
+function normalizeFindingId(id) {
+  if (typeof id !== 'string') return null;
+  if (isValidFindingId(id)) return id;
+  const colon = id.indexOf(':');
+  if (colon < 1) return null;
+  const prefix = id.slice(0, colon + 1);
+  const segment = (text) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80).replace(/-+$/, '');
+  const parts = (prefix === 'gate:' ? id.slice(colon + 1).split(':') : [id.slice(colon + 1)]).map(segment);
+  if ((prefix === 'gate:' && parts.length > 2) || parts.some((part) => !part)) return null;
+  const mapped = prefix + parts.join(':');
+  return isValidFindingId(mapped) ? mapped : null;
+}
+
 function stripFences(text) {
   const s = String(text == null ? '' : text).trim();
   const m = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(s);
@@ -73,4 +91,4 @@ function validateParkReason(reason) {
   return { kind: reason.kind, text: reason.text };
 }
 
-module.exports = { FINDING_ID_RE, isValidFindingId, stripFences, parseGateFindings, parseVerifyVerdict, PARK_KINDS, validateParkReason };
+module.exports = { FINDING_ID_RE, FINDING_ID_RULE, isValidFindingId, normalizeFindingId, stripFences, parseGateFindings, parseVerifyVerdict, PARK_KINDS, validateParkReason };

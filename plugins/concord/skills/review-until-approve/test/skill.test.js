@@ -8,7 +8,7 @@ const skill = fs.readFileSync(path.join(__dirname, '..', 'SKILL.md'), 'utf8');
 
 test('SKILL.md names the skill and instructs the whole loop with scripts that exist', () => {
   assert.match(skill, /^---\nname: review-until-approve\n/);
-  for (const verb of ['start', 'round', 'approve', 'waive', 'stop']) assert.match(skill, new RegExp(`approve\\.js" ${verb} `));
+  for (const verb of ['start', 'round', 'approve', 'waive', 'reclass', 'stop']) assert.match(skill, new RegExp(`approve\\.js" ${verb} `));
   assert.match(skill, /watch\.js/);
   for (const file of ['approve.js', 'watch.js']) assert.ok(fs.existsSync(path.join(__dirname, '..', 'scripts', file)));
   assert.match(skill, /never request changes, merge, push/i);
@@ -93,4 +93,17 @@ test('SKILL.md maps the user\'s language and effort words to start options, pass
   assert.match(skill, /Agent[^.]*`effort`/);
   assert.match(skill, /never edit(?:s)? (?:the )?plugin files/i);
   assert.match(skill, /tell the user/i);
+});
+
+test('SKILL.md keeps watching a draft, handles several pull requests one round at a time, and never picks another account (#420, #421)', () => {
+  assert.match(skill, /`ready`: a clean, unapproved head/);
+  assert.doesNotMatch(skill, /re-invoke the skill once the pull request is ready/);
+  assert.match(skill, /one watch per pull request and run rounds one at a time/);
+  assert.match(skill, /waits until that round ends/);
+  assert.match(skill, /cannot read the pull request, stop and ask the user which account to use; never choose another account or profile yourself/);
+});
+
+test('SKILL.md says a finding about the pull request description is judged against its title and body, not git objects (#423)', () => {
+  assert.match(skill, /finding about the pull request description is judged against its title and body/);
+  assert.match(skill, /`\/pr-description`/);
 });

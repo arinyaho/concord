@@ -30,7 +30,7 @@ else console.log(JSON.stringify([args.some((a) => a.includes('/pulls/')) ? step.
   return dir;
 }
 
-const ledger = { reviewer: 'bot', rounds: [{ n: 1, head: 'h1', mergeBase: 'm', intent: 'i', submittedAt: new Date().toISOString(), commentIds: [11] }], findings: [] };
+const ledger = { reviewer: 'bot', rounds: [{ n: 1, head: 'h1', mergeBase: 'm', intent: 'i', submittedAt: new Date().toISOString(), commentIds: [11] }], findings: [{ id: 'w', key: 'w', status: 'open' }] };
 const reply = () => ({ in_reply_to_id: 11, user: { login: 'dev' }, created_at: new Date(Date.now() + 1000).toISOString() });
 
 function run(steps, extra = ledger) {
