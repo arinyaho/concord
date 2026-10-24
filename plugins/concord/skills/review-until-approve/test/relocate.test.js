@@ -46,6 +46,7 @@ test('a watch window run after the plugin version directory was replaced runs fr
   const f = fixture(ledger);
   const first = install(f.home, '0.9.1-beta.1');
   const stale = path.join(first, 'skills', 'review-until-approve', 'scripts', 'watch.js');
+  const before = fs.readFileSync(f.ledgerPath, 'utf8');
   assert.equal(JSON.parse(window(f).stdout).event, 'idle');
   fs.rmSync(first, { recursive: true });
   install(f.home, '0.9.1-beta.2');
@@ -56,6 +57,8 @@ test('a watch window run after the plugin version directory was replaced runs fr
   const second = window(f);
   assert.equal(second.status, 0, second.stderr);
   assert.equal(JSON.parse(second.stdout).event, 'idle');
+  // The watch never writes the ledger.
+  assert.equal(fs.readFileSync(f.ledgerPath, 'utf8'), before);
 });
 
 test('the locator names the newest installed version and never a path from the reviewed checkout', () => {
@@ -83,7 +86,13 @@ test('a ledger written by the previous version (no plugin field) is read and kee
   const { plugin, ...previous } = ledger;
   const f = fixture(previous);
   install(f.home, '0.9.1-beta.2');
-  assert.equal(JSON.parse(window(f).stdout).event, 'idle');
+  const before = fs.readFileSync(f.ledgerPath, 'utf8');
+  assert.equal(JSON.parse(before).findings[0].status, 'open');
+  assert.equal(JSON.parse(before).rounds.length, 1);
+  const r = window(f);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout).event, 'idle');
+  assert.equal(fs.readFileSync(f.ledgerPath, 'utf8'), before);
 });
 
 test('approve.js refuses a ledger of another format without writing it', () => {
