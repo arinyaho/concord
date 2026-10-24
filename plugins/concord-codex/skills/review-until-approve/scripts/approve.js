@@ -58,8 +58,8 @@ const GIT_AUTH = { GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'credential.https://
 
 const stateDir = () => process.env.REVIEW_APPROVE_STATE_DIR || path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'concord', 'review-until-approve');
 const ledgerFile = (repo, pr, login) => path.join(stateDir(), `${repo.replace('/', '__')}__${pr}__${login}.json`);
-const load = (file) => fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
-const save = (file, ledger) => { fs.mkdirSync(path.dirname(file), { recursive: true }); writeFileAtomic(file, `${JSON.stringify(ledger, null, 2)}\n`); };
+const load = (file) => fs.existsSync(file) ? lib.checkLedgerFormat(JSON.parse(fs.readFileSync(file, 'utf8'))) : null;
+const save = (file, ledger) => { fs.mkdirSync(path.dirname(file), { recursive: true }); writeFileAtomic(file, `${JSON.stringify({ ...ledger, plugin: lib.pluginVersion() }, null, 2)}\n`); };
 
 const held = new Set();
 function lock(file) {

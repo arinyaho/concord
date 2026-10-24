@@ -2,6 +2,8 @@
 // Pure decisions of review-until-approve. Nothing here touches the network, the
 // filesystem or a live session, so a CI-driven variant can reuse it unchanged.
 const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const DAY = 24 * 3600 * 1000;
 const NUDGE_AFTER_MS = DAY;
@@ -245,4 +247,20 @@ function wakeDecision({ ledger, live, replies, now, stable }) {
 // Rounds that reviewed code; a base-merge entry only moves the reviewed head.
 const reviewedCount = (ledger) => ledger.rounds.filter((r) => r.mode !== 'base-merge').length;
 
-module.exports = { submoduleRepo, chooseRange, baseMergeOnly, reviewedCount, findingKey, matches, isPublished, parseNameStatus, classifyPrior, isBlocker, classOf, strictest, evaluateApproval, repliesSince, wakeDecision, descriptionEdited, intentOf, DESC, sha, NUDGE_AFTER_MS, TIMEOUT_MS };
+// The ledger format this version reads and writes. A ledger of another format is refused, never reset:
+// the file stays as it is and the message names the plugin version that wrote it and the one that refused it.
+const LEDGER_FORMAT = 1;
+function pluginVersion() {
+  for (let dir = __dirname; ; dir = path.dirname(dir)) {
+    for (const sub of ['.claude-plugin', '.codex-plugin', '']) {
+      try { const m = JSON.parse(fs.readFileSync(path.join(dir, sub, 'plugin.json'), 'utf8')); if (m.name === 'concord' && typeof m.version === 'string') return m.version; } catch (_) { /* next manifest */ }
+    }
+    if (path.dirname(dir) === dir) return 'unknown';
+  }
+}
+function checkLedgerFormat(ledger) {
+  if (!ledger || ledger.version === LEDGER_FORMAT) return ledger;
+  throw new Error(`concord ${pluginVersion()} reads ledger format ${LEDGER_FORMAT}, but this ledger is format ${ledger.version} written by concord ${ledger.plugin || 'unknown'}; the ledger is unchanged. Use the concord version that wrote it, or stop this review and start a new one.`);
+}
+
+module.exports = { LEDGER_FORMAT, pluginVersion, checkLedgerFormat, submoduleRepo, chooseRange, baseMergeOnly, reviewedCount, findingKey, matches, isPublished, parseNameStatus, classifyPrior, isBlocker, classOf, strictest, evaluateApproval, repliesSince, wakeDecision, descriptionEdited, intentOf, DESC, sha, NUDGE_AFTER_MS, TIMEOUT_MS };
