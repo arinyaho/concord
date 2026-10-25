@@ -838,6 +838,41 @@ test('round-start resume preserves normalized artifacts and records an artifact 
   assert.deepStrictEqual(JSON.parse(run(['round-start', 'feat/resume-artifact'], { env })).completedArtifacts, ['correctness'], 'a second interruption must preserve the same verified artifact');
 });
 
+test('round-failure persists a declared blocked gate method as terminal', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/blocked-gate-method';
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const started = JSON.parse(run(['round-start', ref, 'HEAD~1'], { env, broadDefault: true }));
+  const failure = { role: 'gate', kind: 'blocked-method', retryable: false, message: 'gate reviewer could not run: rg permission denied' };
+  const recorded = JSON.parse(run(['round-failure', ref, JSON.stringify(failure)], { env, broadDefault: true }));
+  assert.equal(recorded.retryable, false);
+  assert.equal(recorded.nextAction, 'terminal-handoff');
+  let ledger = review.readLedger(dir, review.targetSlug(ref));
+  assert.equal(ledger.execution.failure.retryable, false);
+  assert.equal(ledger.execution.failure.kind, 'blocked-method');
+  assert.equal(ledger.execution.round, started.round);
+
+  const laterFailure = JSON.parse(run(['round-failure', ref, JSON.stringify({ role: 'correctness', kind: 'artifact-write-failure', message: 'correctness artifact unavailable' })], { env }));
+  assert.equal(laterFailure.retryable, false, 'a later unrelated failure must not erase the blocked-method terminal handoff');
+  ledger = review.readLedger(dir, review.targetSlug(ref));
+  assert.equal(ledger.execution.failure.role, 'correctness');
+  assert.equal(ledger.execution.blockedMethodFailure.role, 'gate');
+
+  const resumed = JSON.parse(run(['round-start', ref], { env, broadDefault: true }));
+  assert.equal(resumed.gateApplied, true);
+  assert.equal(resumed.completedArtifacts.includes('gate'), false);
+  ledger = review.readLedger(dir, review.targetSlug(ref));
+  assert.equal(ledger.execution.failure, null);
+  assert.equal(ledger.execution.blockedMethodFailure, null);
+  assert.ok(ledger.execution.pending.includes('gate'), 'explicit resume must re-drive the blocked gate role');
+
+  const controlRef = 'feat/non-gate-blocked-method';
+  run(['round-start', controlRef, 'HEAD~1'], { env });
+  const control = JSON.parse(run(['round-failure', controlRef, JSON.stringify({ role: 'correctness', kind: 'blocked-method', retryable: false, message: 'correctness reviewer could not run: tool denied' })], { env }));
+  assert.equal(control.retryable, true, 'only gate and gate-verify blocked-method failures are terminalized');
+});
+
 test('round-start resume re-drives a normalized artifact changed after completion', () => {
   const repo = initRepo(); const dir = tmpDir();
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };

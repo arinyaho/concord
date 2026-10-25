@@ -1847,7 +1847,8 @@ function runVerb(resolveFromCwd, args, initiative) {
     const execution = ledger.execution || { round: ledger.round, completed: [], pending: [] };
     const replacement = failure.role === 'plan' && execution.planRetry?.launched && execution.planRetry.state !== 'accepted';
     const transport = execution.planTransportRetry;
-    const retryable = replacement ? failure.role === 'plan' && failure.retryable === true && (!transport || (transport.state === 'pending' && transport.attempts === 0)) : true;
+    const blockedMethod = ['gate', 'gate-verify'].includes(failure.role) && failure.kind === 'blocked-method' && failure.retryable === false;
+    const retryable = replacement ? failure.role === 'plan' && failure.retryable === true && (!transport || (transport.state === 'pending' && transport.attempts === 0)) : !blockedMethod;
     const entry = { role: failure.role, kind: failure.kind, message: failure.message, ...(failure.exitCode !== undefined ? { exitCode: failure.exitCode } : {}), ...(failure.signal ? { signal: failure.signal } : {}),
       ...(failure.diagnostic ? { diagnostic: failure.diagnostic } : {}), retryable, nextAction: retryable ? 'resume' : 'terminal-handoff', at: new Date().toISOString() };
     // No new dispatch happened while pending: a repeated failure report cannot
@@ -1856,7 +1857,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       process.stdout.write(JSON.stringify({ status: 'recorded', round: ledger.round, ...reviewContinuation(ledger) }) + '\n');
       return;
     }
-    const failed = { ...ledger, execution: { ...execution, ...(replacement ? {
+    const failed = { ...ledger, execution: { ...execution, ...(blockedMethod ? { blockedMethodFailure: entry } : {}), ...(replacement ? {
       planRetry: { ...execution.planRetry, state: retryable ? 'pending' : 'exhausted', discardRepair: true,
         message: retryable ? `planner transport retry available for this round; ${failure.message}` : `planner retry exhausted for this round; ${failure.message}` },
       planTransportRetry: { state: retryable ? 'pending' : 'exhausted', attempts: transport?.attempts || 0 },
@@ -2597,6 +2598,7 @@ function runVerb(resolveFromCwd, args, initiative) {
         retryArtifact,
         failures: resumed && ledger.execution ? (ledger.execution.failures || []) : [],
         failure: null,
+        blockedMethodFailure: null,
       },
       target: targetUpdate,
     };

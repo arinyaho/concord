@@ -10,9 +10,9 @@ const ctx = { stateDir: '/s', round: 2, targetType: 'git', dodDeferred: true, sl
 const verify = (extra) => JSON.stringify({ status: 'ok', rejected: [], findings: [], ...extra });
 const entry = { id: 'correctness:a', evidence: { file: 'a.js', span: 'guard()', reason: 'a guard precedes the call' } };
 
-// Hashes taken on the code before the addressed verdict existed: the verdict is opt-in and changes nothing else.
+// Hashes taken before the addressed verdict existed: the verdict is opt-in. The gate hash tracks the later bounded reference-sweep prompt correction.
 test('with no addressable finding every reviewer prompt, retry prompt and normalized verify artifact is byte-identical to before', () => {
-  assert.deepEqual(['correctness', 'verify', 'gate', 'gate-verify'].map((r) => h(reviewerPrompt(r, ctx))), ['a184471fd5d2b484', '7f271d313893e887', 'fe054059e08600f5', 'b8fc61054db3812e']);
+  assert.deepEqual(['correctness', 'verify', 'gate', 'gate-verify'].map((r) => h(reviewerPrompt(r, ctx))), ['a184471fd5d2b484', '7f271d313893e887', 'f43d01865a162744', 'b8fc61054db3812e']);
   assert.deepEqual(['correctness', 'verify'].map((r) => h(retryPrompt(r))), ['758fc4f36b34f1aa', '89c2129a4a503d94']);
   assert.equal(h(JSON.stringify(normalizeArtifact('verify', verify({ addressed: [entry] })))), 'e72e3f4e87a1b9c1');
   assert.equal(reviewerPrompt('verify', { ...ctx, addressable: [] }), reviewerPrompt('verify', ctx));
