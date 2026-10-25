@@ -230,6 +230,29 @@ test('guard run from the base code fails a head that rewrites the guard together
   assert.match(result.stdout + result.stderr, /VERSION/);
 });
 
+test('version-guard fetches the event head without requiring a pull ref and runs trusted base code', () => {
+  const { tmp, remote } = makeOrigin();
+  const pr = clone(remote, path.join(tmp, 'pr'));
+  fs.writeFileSync(path.join(pr, 'VERSION'), '0.9.0-beta.10\n');
+  fs.writeFileSync(path.join(pr, 'scripts/release-bump.mjs'), 'process.exit(0);\n');
+  git(pr, 'commit', '-q', '-am', 'untrusted head');
+  const head = git(pr, 'rev-parse', 'HEAD');
+  git(pr, 'push', '-q', 'origin', 'HEAD:refs/heads/worker');
+  const trusted = clone(remote, path.join(tmp, 'trusted'));
+  const missing = spawnSync('git', ['fetch', 'origin', 'refs/pull/1/head:refs/pr/head'], { cwd: trusted, env: ENV });
+  assert.notEqual(missing.status, 0, 'fixture must have no synthetic pull ref');
+  const workflow = fs.readFileSync(path.join(REPO, '.github/workflows/version-guard.yml'), 'utf8');
+  assert.match(workflow, /HEAD_SHA: \$\{\{ github.event.pull_request.head.sha \}\}/);
+  const commands = workflow.split('        run: |\n')[1].replace(/^          /gm, '');
+  const result = spawnSync('bash', ['-e', '-c', commands], {
+    cwd: trusted, env: { ...ENV, BASE_REF: 'main', HEAD_SHA: head, PR: '1' }, encoding: 'utf8',
+  });
+  assert.equal(git(trusted, 'rev-parse', 'refs/pr/head'), head);
+  assert.equal(git(trusted, 'rev-parse', 'HEAD'), git(trusted, 'rev-parse', 'origin/main'));
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /Pull requests do not edit version files/);
+});
+
 // The release commit a maintainer merges: a human-authored change that sets a stable version in every release file.
 function releaseCommit(remote, tmp, name, version) {
   const dir = clone(remote, path.join(tmp, `release-${name}`));
