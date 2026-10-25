@@ -8,7 +8,7 @@ The skill lives in `plugins/concord/skills/coordinate-sessions/` and is named in
 
 A worker is a separate Claude Code session created with `create_session`. It runs on its own and knows only the prompt it was given. A subagent started with the Agent tool is not a worker: it returns its result to the session that started it, so neither channel below applies to it. Local CLI sessions are out of scope, because no tool can create one.
 
-The `project-manager` agent (`plugins/concord/agents/project-manager.md`, Opus) runs a rollout that spans several PRs and repositories. It re-queries the real state from the newest handoff file, sets the merge order and gates, hands work out, verifies delivery, and writes the next handoff. It delegates session mechanics to this skill and applies the same merge rule: the `record-delivery` state of the PR's current head is binding, a head recorded `blocked` never merges, and a head recorded `mergeable-without-review` is the user's decision. It additionally confirms with the user before the first merge of a rollout. This agent declaration remains Claude-specific and is not copied into other packages; Codex ships the separate native PM skill described below.
+The `project-manager` agent (`plugins/concord/agents/project-manager.md`, Sonnet) runs a rollout that spans several PRs and repositories. It re-queries the real state from the newest handoff file, sets the merge order and gates, hands work out, verifies delivery, and writes the next handoff. It delegates session mechanics to this skill and applies the same merge rule: the `record-delivery` state of the PR's current head is binding, a head recorded `blocked` never merges, and a head recorded `mergeable-without-review` is the user's decision. It reuses the merge authority recorded by the coordination skill and asks only when that authority is missing or insufficient. This agent declaration remains Claude-specific and is not copied into other packages; Codex ships the separate native PM skill described below.
 
 ## Environment
 
@@ -49,7 +49,7 @@ The skill carries a template the coordinator fills in, in this order:
 1. The skill the worker runs (default `ticket-to-pr`).
 2. The work: issue numbers, where the acceptance criteria are, and what is out of scope.
 3. File ownership: the files this work changes, and the files other workers or outside contributors own. A worker that must change another owner's file sends a `question` first.
-4. On a Sonnet worker, design choices go to an Opus agent (Agent tool, model opus), and the conclusion and its reason go into the PR body.
+4. Bounded work prefers a lower-cost model; ambiguous design goes to Sonnet; changed authority, data-loss, recovery or migration contracts get one Opus review plus fix confirmation. Codex models are used only through a user-selected available Codex provider. The PR links the decision evidence.
 5. The channel: the report directory, or the coordinator's session id, and the report format.
 6. Stop rules: the worker never merges, pastes its `record-delivery` output into the `done` report, and past the context limit it stops at the next stage boundary with a `handoff` report.
 7. A path to the project's rules file (for example `AGENTS.md` or a shared worker-rules file). Repository rules such as the gh account, worktree location and release bump stay in that file, not in the prompt or the skill.
@@ -105,3 +105,20 @@ review for ordinary changes, and one Astra review for changed authority/data-los
 recovery/migration contracts plus fix confirmation. Unchanged reviewed source
 retains its review; current-head CI and delivery gates remain mandatory. These
 are recommendations, not automatic model configuration changes.
+
+## Shared operating discipline
+
+The Claude PM now defaults to Sonnet rather than always using Opus. Bounded
+implementation, investigation and verification prefer Haiku; user-selected Codex
+providers can use Luna for that role, Sol for coordination and ordinary review,
+and Astra for changed risky contracts. These are routing choices, not claims of
+model equivalence or automatic cross-provider configuration.
+
+Both harnesses assign one evidence owner/observer per task, collect deterministic
+status in scripts or event waits, and notify only on actionable changes or terminal
+results. They use compact briefs and durable evidence links, preserve scoped review
+across equivalent source syncs, and rerun only to address a named evidence gap or
+new risk. Current-head CI and delivery gates remain binding. Observation time,
+attempt/context and recovery status remain explicit. Repeated fixes escalate the
+design decision; real provider integration stays ahead of further local evidence
+machinery. No savings percentage is promised without usage measurements.
