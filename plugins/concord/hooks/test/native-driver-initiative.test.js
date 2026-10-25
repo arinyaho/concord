@@ -533,7 +533,18 @@ test('cross-provider: the reserve verb answers identically (AC6)', () => {
   const answers = Object.keys(PROVIDERS).map((provider) => {
     const t = setup(provider, { maxLaunches: 2 });
     t.start();
-    return ['correctness', 'lens', 'verify'].map((role) => { const { token, ...rest } = t.ok(['reserve', 'feat/x', role]); return rest; });
+    return ['correctness', 'lens', 'verify'].map((role) => {
+      const { token, reservationIds, ...rest } = t.ok(['reserve', 'feat/x', role]);
+      if (rest.status === 'granted') {
+        assert.strictEqual(reservationIds.length, rest.count);
+        assert.strictEqual(new Set(reservationIds).size, rest.count);
+        for (const id of reservationIds) {
+          assert.match(id, /^[0-9a-f]{32}:\d+$/);
+          assert.ok(!id.includes(token), 'accounting IDs must be independent of grant tokens');
+        }
+      } else assert.strictEqual(reservationIds, undefined);
+      return rest;
+    });
   });
   assert.deepStrictEqual(answers[0], answers[1]);
 });

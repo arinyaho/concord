@@ -6552,6 +6552,55 @@ test('a resumed round-start on a ledger with sticky --no-dod still does not requ
   assert.match(resumed.stdout, /"decision":"work"/);
 });
 
+test('round-start runs declared preflight before creating a target lock or ledger even for dod:null, --no-dod, and file targets', () => {
+  const failing = `node -e "require('./missing-review-preflight-module')"`;
+  const cases = [
+    { ref: 'feat/preflight-dod-null', config: { dod: null, preflight: [failing] }, args: [] },
+    { ref: 'feat/preflight-no-dod', config: { dod: ['true'], preflight: [failing] }, args: ['--no-dod'] },
+    { ref: 'file:a.txt', config: { dod: ['true'], preflight: [failing] }, args: [] },
+  ];
+  for (const { ref, config, args } of cases) {
+    const repo = initRepo(); const dir = tmpDir();
+    fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify(config));
+    execFileSync('git', ['add', 'review.config.json'], { cwd: repo });
+    execFileSync('git', ['commit', '-qm', 'configure review preflight'], { cwd: repo });
+    const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+    const r = runCapture(['round-start', ref, ...(ref.startsWith('file:') ? [] : ['HEAD~1']), ...args], { env });
+    assert.notStrictEqual(r.status, 0, ref);
+    assert.match(r.stderr, /driver environment preflight failed/i, r.stderr);
+    assert.deepStrictEqual(fs.readdirSync(dir), [], `${ref}: preflight must fail before lock or ledger creation`);
+  }
+});
+
+test('failed preflight on explicit resume preserves existing ledger and artifacts byte-for-byte', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/preflight-resume-preserves-state';
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  execFileSync('git', ['commit', '-aqm', 'change'], { cwd: repo });
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };
+  assert.equal(JSON.parse(run(['round-start', ref, 'HEAD~1'], { env })).decision, 'work');
+  const before = fs.readdirSync(dir).sort().map((name) => [name, fs.readFileSync(path.join(dir, name))]);
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: null, preflight: [`node -e "require('./missing-resume-preflight-module')"`] }));
+  execFileSync('git', ['add', 'review.config.json'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'configure failing review preflight'], { cwd: repo });
+  const refused = runCapture(['round-start', ref], { env });
+  assert.notStrictEqual(refused.status, 0);
+  assert.match(refused.stderr, /driver environment preflight failed/i);
+  const after = fs.readdirSync(dir).sort().map((name) => [name, fs.readFileSync(path.join(dir, name))]);
+  assert.deepStrictEqual(after, before);
+});
+
+test('round-start skips repository preflight only for the runner-marked untrusted read-only mode', () => {
+  const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/review-only-preflight';
+  const sentinel = path.join(repo, 'preflight-ran');
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ dod: null, preflight: [`node -e "require('fs').writeFileSync('preflight-ran', 'ran')"`] }));
+  execFileSync('git', ['add', 'review.config.json'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'declare read-only preflight sentinel'], { cwd: repo });
+  const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo, CONCORD_UNTRUSTED_ARTIFACTS: '1' };
+  const r = runCapture(['round-start', ref, 'HEAD~1', '--no-dod'], { env });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(fs.existsSync(sentinel), false, 'untrusted review-only checkout commands must not execute');
+});
+
 test('round-start accepts a DoD that starts with shell builtins the parser cannot tell from programs', { skip: process.platform === 'win32' }, () => {
   const repo = initRepo(); const dir = tmpDir(); const ref = 'feat/builtin-dod';
   const env = { ...process.env, REVIEW_STATE_DIR: dir, REVIEW_REPO_ROOT: repo };

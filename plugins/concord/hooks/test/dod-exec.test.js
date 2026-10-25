@@ -153,3 +153,106 @@ test('commandExecutables removes a backslash-newline continuation before reading
   assert.deepStrictEqual(dodExec.commandExecutables(['FOO=1 \\\n  go test']), ['go']);
   assert.ok(!dodExec.commandExecutables(['true \\\n#c; fmt']).includes('fmt'));
 });
+
+test('review preflight is an optional no-op when review.config.json is absent', () => {
+  const repoRoot = tmpDir();
+  let called = false;
+  assert.deepStrictEqual(dodExec.loadReviewPreflight(repoRoot), []);
+  assert.deepStrictEqual(dodExec.runReviewPreflight(repoRoot, { execFn: () => { called = true; return { status: 0 }; } }), { commands: [], passed: true });
+  assert.equal(called, false);
+});
+
+test('review preflight leaves configs without a preflight property to their existing DoD validation path', () => {
+  const repoRoot = tmpDir();
+  for (const raw of ['null', '[]', '{"dod":null}']) {
+    fs.writeFileSync(path.join(repoRoot, 'review.config.json'), raw);
+    assert.deepStrictEqual(dodExec.loadReviewPreflight(repoRoot), [], raw);
+  }
+});
+
+test('review preflight validates the declaration independently of the DoD field', () => {
+  const repoRoot = tmpDir();
+  fs.writeFileSync(path.join(repoRoot, 'review.config.json'), JSON.stringify({ dod: null, preflight: ['node -e "process.exit(0)"', 'git --version'] }));
+  assert.deepStrictEqual(dodExec.loadReviewPreflight(repoRoot), ['node -e "process.exit(0)"', 'git --version']);
+  fs.writeFileSync(path.join(repoRoot, 'review.config.json'), JSON.stringify({ dod: null, preflight: [] }));
+  assert.deepStrictEqual(dodExec.loadReviewPreflight(repoRoot), []);
+});
+
+test('review preflight rejects malformed arrays and blank command strings', () => {
+  const repoRoot = tmpDir();
+  for (const preflight of [null, 'node --version', [''], ['  '], ['node --version', 3]]) {
+    fs.writeFileSync(path.join(repoRoot, 'review.config.json'), JSON.stringify({ preflight }));
+    assert.throws(() => dodExec.loadReviewPreflight(repoRoot), /driver environment.*preflight/i, JSON.stringify(preflight));
+  }
+});
+
+test('review preflight fails closed for malformed or unreadable raw config', () => {
+  const repoRoot = tmpDir();
+  fs.writeFileSync(path.join(repoRoot, 'review.config.json'), '{ invalid');
+  assert.throws(() => dodExec.loadReviewPreflight(repoRoot), /driver environment preflight.*malformed/i);
+  assert.throws(() => dodExec.loadReviewPreflight(repoRoot, () => { const error = new Error('EACCES'); error.code = 'EACCES'; throw error; }), /driver environment preflight could not read/i);
+});
+
+test('review preflight runs commands sequentially from the repository root', () => {
+  const repoRoot = tmpDir();
+  fs.writeFileSync(path.join(repoRoot, 'review.config.json'), JSON.stringify({ preflight: ['first check', 'second check'] }));
+  const calls = [];
+  const result = dodExec.runReviewPreflight(repoRoot, { execFn: (command, cwd) => { calls.push([command, cwd]); return { status: 0 }; } });
+  assert.deepStrictEqual(calls, [['first check', repoRoot], ['second check', repoRoot]]);
+  assert.deepStrictEqual(result, { commands: ['first check', 'second check'], passed: true });
+});
+
+test('review preflight stops at a failed command and bounds its diagnostic', () => {
+  const repoRoot = tmpDir(); const command = 'node -e "require(\'./missing-preflight-module\')"';
+  fs.writeFileSync(path.join(repoRoot, 'review.config.json'), JSON.stringify({ preflight: [command, 'must not run'] }));
+  const calls = [];
+  assert.throws(() => dodExec.runReviewPreflight(repoRoot, { execFn: (cmd, cwd) => { calls.push([cmd, cwd]); return { status: 1, stdout: 'diagnostic '.repeat(1000), stderr: '' }; } }), (error) => {
+    assert.match(error.message, /driver environment preflight failed/i);
+    assert.ok(error.message.includes(command), 'the exact failed command must be named');
+    const diagnostic = error.message.slice(error.message.indexOf('\n') + 1);
+    assert.ok(Buffer.byteLength(diagnostic, 'utf8') <= 4 * 1024, 'diagnostic must be at most 4 KiB');
+    assert.doesNotMatch(error.message, /sandbox/i);
+    return true;
+  });
+  assert.deepStrictEqual(calls, [[command, repoRoot]]);
+});
+
+test('review preflight treats spawn errors and timeout results as failures', () => {
+  const repoRoot = tmpDir(); const command = 'slow check';
+  fs.writeFileSync(path.join(repoRoot, 'review.config.json'), JSON.stringify({ preflight: [command] }));
+  for (const result of [
+    { status: null, signal: 'SIGTERM', error: Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' }) },
+    { status: 0, error: new Error('spawn error') },
+  ]) {
+    assert.throws(() => dodExec.runReviewPreflight(repoRoot, { execFn: () => result }), /driver environment preflight failed/i);
+  }
+});
+
+test('review preflight real commands use the bounded timeout and do not inherit the driver executable override', () => {
+  assert.equal(dodExec.PREFLIGHT_TIMEOUT_MS, 10_000);
+  assert.equal(dodExec.PREFLIGHT_MAX_BUFFER, 64 * 1024);
+  const repoRoot = tmpDir(); const previous = process.env.CONCORD_CODEX_BIN;
+  process.env.CONCORD_CODEX_BIN = '/driver/codex';
+  try {
+    fs.writeFileSync(path.join(repoRoot, 'review.config.json'), JSON.stringify({ preflight: [`node -e "process.exit(process.env.CONCORD_CODEX_BIN ? 7 : 0)"`] }));
+    assert.deepStrictEqual(dodExec.runReviewPreflight(repoRoot), { commands: [`node -e "process.exit(process.env.CONCORD_CODEX_BIN ? 7 : 0)"`], passed: true });
+  } finally {
+    if (previous === undefined) delete process.env.CONCORD_CODEX_BIN; else process.env.CONCORD_CODEX_BIN = previous;
+  }
+});
+
+test('review preflight forcibly stops a command that ignores SIGTERM before the configured timeout', { skip: process.platform === 'win32' }, () => {
+  const childProcess = require('node:child_process');
+  const originalSpawnSync = childProcess.spawnSync;
+  const repoRoot = tmpDir();
+  const started = Date.now();
+  let result;
+  childProcess.spawnSync = (command, options) => originalSpawnSync(command, { ...options, timeout: 100 });
+  try {
+    result = dodExec.defaultPreflightExec(`exec node -e "process.on('SIGTERM', () => {}); setTimeout(() => {}, 2000)"`, repoRoot);
+  } finally {
+    childProcess.spawnSync = originalSpawnSync;
+  }
+  assert.equal(result.error?.code, 'ETIMEDOUT');
+  assert.ok(Date.now() - started < 1500, `SIGTERM-resistant child ran for ${Date.now() - started}ms`);
+});

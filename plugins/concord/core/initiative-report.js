@@ -7,7 +7,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { writeFileAtomic } = require('./atomic-write');
 const { lockOwner, reclaimStaleLock } = require('./run-lock');
-const { MODES, ESCALATION_TRIGGERS } = require('./initiative-review-run');
+const { MODES, ESCALATION_TRIGGERS, launchAccounting } = require('./initiative-review-run');
 
 const SCHEMA = 1;
 const LEDGER_FILE = /^initiative-review-([0-9a-f]{64})\.json$/;
@@ -41,6 +41,7 @@ function bump(map, key, by = 1) {
 // The one allowlist projection: named ledger fields only, keys bounded by pattern.
 // report.json, report.md and every index line are built from this value.
 function project(ledger, runId) {
+  const accounting = ledger.launchOutcomes ? launchAccounting(ledger) : null;
   const byRole = {};
   for (const launch of ledger.launches) bump(byRole, bound(launchRole(launch?.role)));
   const findings = {};
@@ -69,7 +70,7 @@ function project(ledger, runId) {
     escalation: ESCALATION_TRIGGERS.includes(ledger.escalation?.trigger) ? ledger.escalation.trigger : null,
     outcome: { status: 'terminal', reason: REASONS.includes(ledger.terminal?.reason) ? ledger.terminal.reason : 'other' },
     targets: { count: ledger.targets.length, ids: [...new Set(ledger.targets.map((target) => sha(JSON.stringify(target))))] },
-    counts: { launches: ledger.launches.length, rounds: ledger.rounds.length, byRole },
+    counts: { launches: ledger.launches.length, rounds: ledger.rounds.length, byRole, ...(accounting ? { chargedLaunches: accounting.charged, refundedLaunches: accounting.refunded, environmentFailures: accounting.environmentFailures } : {}) },
     findings,
     checks: { total: ledger.checks.length, byStatus },
     tokens: { total, byRole: roles },
@@ -105,6 +106,7 @@ function renderMarkdown(report) {
     `- Targets: ${report.targets.count}`,
     `- Rounds: ${report.counts.rounds}`,
     `- Launches: ${report.counts.launches} (${fixed(report.counts.byRole)})`,
+    ...(report.counts.chargedLaunches !== undefined ? [`- Charged launches: ${report.counts.chargedLaunches}`, `- Refunded launches: ${report.counts.refundedLaunches}`, `- Environment failures: ${report.counts.environmentFailures}`] : []),
     `- Findings: ${fixed(report.findings)}`,
     `- Checks: ${report.checks.total} (${fixed(report.checks.byStatus)})`,
     `- Opened: ${report.openedAt ?? 'unmeasured'}`,

@@ -31,7 +31,7 @@ const {
   gateFollowUpEligible,
 } = require('./review');
 const crypto = require('node:crypto');
-const { canonicalPath, openInitiativeRun, claimBroadSweep, reserveLaunchBatch, denialReason, recordDisposition, finaliseInitiativeRun, consumeDispositionDelivery, escalateInitiativeRun, lockDiagnosis, resolveBaseCommit, repositoryIdentity, runPath, terminalDispositionInLedger } = require('./initiative-review-run');
+const { canonicalPath, openInitiativeRun, claimBroadSweep, reserveLaunchBatch, recordLaunchOutcome, denialReason, recordDisposition, finaliseInitiativeRun, consumeDispositionDelivery, escalateInitiativeRun, lockDiagnosis, resolveBaseCommit, repositoryIdentity, runPath, terminalDispositionInLedger } = require('./initiative-review-run');
 const { acquireTarget, gitDiff, gitReviewSnapshot, gitHeadSha, gitDirty } = require('./target');
 const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape, resolveOnPath } = require('./spawn-cross-platform');
 
@@ -735,6 +735,7 @@ const VERB_HELP = {
   'commit-fix': 'commit a certified fix transaction',
   record: 'record the round result and decide: converged, continue or stop',
   'round-failure': 'record a failed reviewer, planner or fixer launch',
+  'launch-outcome': 'record trusted provider lifecycle evidence for one keyed reservation',
   'gate-panel-round-start': 'start a gate panel round',
   'gate-panel-round-record': 'record a gate panel round result',
   unpark: 'return a parked finding to open',
@@ -1424,6 +1425,11 @@ function main(resolveFromCwd) {
     process.stdout.write(`${JSON.stringify(result)}\n`);
     return;
   }
+  // The runner marks its read-only untrusted-checkout path with this existing
+  // flag; project-authored shell commands are never executed in that mode.
+  if (args[0] === 'round-start' && process.env.CONCORD_UNTRUSTED_ARTIFACTS !== '1') {
+    dodExec.runReviewPreflight(process.env.REVIEW_REPO_ROOT || process.cwd());
+  }
   if (!args[1] || args[0] === 'show' || RUN_VERBS.has(args[0])) return runVerb(resolveFromCwd, args, initiative);
   const stateDir = resolveStateDir(resolveFromCwd);
   const slug = targetSlug(args[1]);
@@ -1551,7 +1557,11 @@ function runVerb(resolveFromCwd, args, initiative) {
       if (role === 'fix' && ledger.reconciliation) return { status: 'reconciliation-required', role, count, round: ledger.round };
       const target = ledger.target?.ref || ref;
       const revision = { ref: target, ...(ledger.target?.base ? { base: resolveBaseCommit(process.env.REVIEW_REPO_ROOT || process.cwd(), ledger.target.base) } : {}), ...(ledger.target?.head_sha ? { head_sha: ledger.target.head_sha } : {}) };
-      const launch = { role, round: ledger.round, target, revision, attemptId: ledger.attemptId, broad: ledger.gateMode === 'pair' && /^gate-/.test(role) };
+      const token = crypto.randomBytes(16).toString('hex');
+      // Shared accounting IDs must never contain the target ledger's grant token.
+      const reservationNonce = crypto.randomBytes(16).toString('hex');
+      const reservationIds = Array.from({ length: count }, (_, index) => `${reservationNonce}:${index}`);
+      const launch = { role, round: ledger.round, target, revision, attemptId: ledger.attemptId, reservationIds, broad: ledger.gateMode === 'pair' && /^gate-/.test(role) };
       if (!reserveLaunchBatch(run, launch, count, () => {
         // Called under the run lock only after phase and budget validation.
         // Publish identity before charging so interruption cannot free the target.
@@ -1571,12 +1581,32 @@ function runVerb(resolveFromCwd, args, initiative) {
         }
         return reason === 'reconciliation-required' ? { status: reason, role, count, round: ledger.round } : { status: 'denied', role, count, round: ledger.round, ...(reason ? { reason } : {}), ...(diagnosis ? { lockDiagnosis: diagnosis } : {}) };
       }
-      const token = crypto.randomBytes(16).toString('hex');
       const panel = role === 'lens' || role === 'vote' ? (ledger.gate_panel?.round || 0) + 1 : undefined;
-      writeLedger(stateDir, slug, { ...ledger, initiative_reservations: [...(ledger.initiative_reservations || []), { token, role, round: ledger.round, ...(panel ? { panel } : {}), count }] });
-      return { status: 'granted', role, count, round: ledger.round, token };
+      writeLedger(stateDir, slug, { ...ledger, initiative_reservations: [...(ledger.initiative_reservations || []), { token, role, round: ledger.round, ...(panel ? { panel } : {}), count, reservationIds, target, revision, attemptId: ledger.attemptId }] });
+      return { status: 'granted', role, count, round: ledger.round, token, reservationIds };
     })();
     process.stdout.write(`${JSON.stringify(result)}\n`);
+    return;
+  }
+
+  if (verb === 'launch-outcome') {
+    requireRef(ref, 'launch-outcome');
+    if (!run || !initiative) throw new Error('launch-outcome: requires the reserved initiative run flags');
+    const ledger = readLedger(stateDir, targetSlug(ref));
+    const panelPending = ledger?.phase === 'done' && ledger.status === 'gate-panel-pending';
+    if (!ledger || (!['gates', 'fixes'].includes(ledger.phase) && !panelPending)) throw new Error('launch-outcome: no active target reservation');
+    let input;
+    try { input = JSON.parse(rest[0]); } catch (_) { throw new Error('launch-outcome: expected one JSON receipt'); }
+    const fields = ['reservationId', 'invocationId', 'provider', 'lifecycle', 'reason', 'failed'];
+    if (rest.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input)
+      || Object.keys(input).length !== fields.length || Object.keys(input).some((key) => !fields.includes(key))) throw new Error('launch-outcome: receipt fields must contain only closed lifecycle evidence, not identity overrides');
+    const reservation = (ledger.initiative_reservations || []).find((entry) => entry.reservationIds?.includes(input.reservationId));
+    if (!reservation || reservation.attemptId !== ledger.attemptId || reservation.round !== ledger.round) throw new Error('launch-outcome: reservation identity does not match this active target');
+    const result = recordLaunchOutcome(run, { ...input, role: reservation.role, target: reservation.target,
+      attemptId: reservation.attemptId, round: reservation.round, revision: reservation.revision });
+    if (!result) throw new Error(lockDiagnosis(run) || 'launch-outcome: run lock contended; preserve the original reservation');
+    const current = JSON.parse(fs.readFileSync(run.path, 'utf8'));
+    process.stdout.write(`${JSON.stringify({ ...result, limitReached: current.launchRefunds?.limitReached === true })}\n`);
     return;
   }
 

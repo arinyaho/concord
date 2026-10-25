@@ -5,7 +5,7 @@
 // subprocess and every state transition remains owned by review-cli.
 const { execFileSync, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
-const { canonicalPath, runPath, openInitiativeRun, pairRefusal, resolveBaseCommit, recordDisposition, normalizeDisposition, consumeDispositionDelivery, terminalTarget, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
+const { canonicalPath, runPath, openInitiativeRun, launchBudgetUsage, pairRefusal, resolveBaseCommit, recordDisposition, normalizeDisposition, consumeDispositionDelivery, terminalTarget, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun } = require('./initiative-review-run');
 const { gitHeadSha, gitDirty, fileTarget, trackedCheckoutInventory, changedTrackedPath } = require('./target');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -24,6 +24,20 @@ const { PANEL_LENSES } = require('./report');
 const { reviewLanguageClause, BLOCKED_CLAUSE, cliClause, reviewerGuidancePrefix, priorFindingsClause, reviewerPrompt, reportedNoEdit } = require('./round-plan');
 const { isWindows, crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
 const { providerFailure, normalizeProviderFailure, reviewContinuation } = require('./provider-failure');
+const { createLaunchLifecycle } = require('./launch-lifecycle');
+const dodExec = require('./dod-exec');
+
+function aggregationFailurePriority(error) {
+  if (error?.notAReviewFailure) return 4;
+  if (error?.initiativeBlocked === 'environment-failure-limit') return 3;
+  if (error?.durableContinuation?.retryable === false || error?.durableContinuation?.nextAction === 'terminal-handoff') return 2;
+  return 1;
+}
+
+function preferredFailure(results) {
+  return results.filter((result) => result.status === 'rejected')
+    .reduce((best, candidate) => !best || aggregationFailurePriority(candidate.reason) > aggregationFailurePriority(best.reason) ? candidate : best, null);
+}
 
 function failureOccurrence(ledger, continuation) {
   const execution = ledger?.execution;
@@ -95,6 +109,7 @@ function resolveCodexExecutable(repoRoot, options = {}) {
     failures.push(`${candidate.source} ${candidate.command}: ${result?.error?.code || `exit ${result?.error?.status ?? result?.status ?? 'unknown'}`}`);
   }
   const error = new Error(`harness-failure: no usable Codex executable was found before review started. Checked: ${failures.join('; ')}. Set ${CODEX_BIN_ENV}=/absolute/path/to/codex to select one explicitly.`);
+  error.code = 'CONCORD_CODEX_UNUSABLE';
   if (!options.probe) codexResolutionCache = { key: cacheKey, error };
   throw error;
 }
@@ -157,13 +172,19 @@ function sameKeys(actual, expected) {
 
 function codexExec({ role, prompt, repoRoot, stateDir, cliPath, requestedModel, reasoningEffort, serviceTier, timeoutMs, abortSignal, codexExecutable, env, untrustedCheckout = false }) {
   return new Promise((resolve, reject) => {
-    const resolvedCodex = codexExecutable || resolveCodexExecutable(repoRoot, { env });
     const invocationId = crypto.randomUUID();
+    let resolvedCodex;
+    try { resolvedCodex = codexExecutable || resolveCodexExecutable(repoRoot, { env }); } catch (error) {
+      if (error?.code === 'CONCORD_CODEX_UNUSABLE') error.telemetry = { status: 'failed', role, engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', invocationId, launchOutcome: { lifecycle: 'not-started', reason: 'unusable-executable', failed: true } };
+      reject(error);
+      return;
+    }
     const model = typeof requestedModel === 'string' && requestedModel.trim() ? requestedModel : null;
     const effort = typeof reasoningEffort === 'string' && reasoningEffort.trim() ? reasoningEffort : null;
     const tier = typeof serviceTier === 'string' && serviceTier.trim() ? serviceTier : null;
     const cliVersion = resolvedCodex.version;
     const executable = { source: resolvedCodex.source, version: cliVersion };
+    const lifecycle = createLaunchLifecycle({ provider: 'codex', supportedSchema: cliVersion === CODEX_VERSION });
     const startedAt = Date.now();
     // On Windows, `shell: true` (crossPlatformOpts) routes this through
     // cmd.exe, whose command-line reader treats an embedded newline as a
@@ -193,6 +214,7 @@ function codexExec({ role, prompt, repoRoot, stateDir, cliPath, requestedModel, 
     ], needsDoubleEscape(resolvedCodex.command, repoRoot)), crossPlatformOpts({ cwd: repoRoot, env: childEnv, stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'pipe'], detached: !isWindows }));
     // A top-level CLI can exit after spawning a same-group child. End the
     // untrusted review's process group before 'close' resolves the launch.
+    child.once('spawn', () => lifecycle.spawned());
     if (untrustedCheckout) child.once('exit', () => terminateProcessTree(child, 'SIGKILL'));
     if (isWindows) {
       // If `codex` exits before consuming stdin (a rejected flag, a
@@ -231,6 +253,7 @@ function codexExec({ role, prompt, repoRoot, stateDir, cliPath, requestedModel, 
       if (!line.trim()) return;
       try {
         const event = JSON.parse(line);
+        lifecycle.observe(event);
         if (!event || !CODEX_EVENT_TYPES.has(event.type)) streamPartial = true;
         if (/^item\./.test(event?.type || '') && (!event.item || !CODEX_ITEM_TYPES.has(event.item.type))) streamPartial = true;
         if (event.type === 'turn.completed') {
@@ -246,7 +269,7 @@ function codexExec({ role, prompt, repoRoot, stateDir, cliPath, requestedModel, 
           collaborationEvidenceCount++;
           streamPartial = true;
         }
-      } catch (_) { streamPartial = true; }
+      } catch (_) { streamPartial = true; lifecycle.malformed(); }
     };
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => {
@@ -259,8 +282,11 @@ function codexExec({ role, prompt, repoRoot, stateDir, cliPath, requestedModel, 
       if (timeout) clearTimeout(timeout);
       if (killTimer) clearTimeout(killTimer);
       abortSignal?.removeEventListener('abort', abort);
+      const launchOutcome = error.code === 'CONCORD_CODEX_UNUSABLE'
+        ? { lifecycle: 'not-started', reason: 'unusable-executable', failed: true }
+        : lifecycle.spawnError(error.code);
       error.telemetry = {
-        status: 'failed', role, engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', cliVersion, executable,
+        status: 'failed', role, launchOutcome, engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', cliVersion, executable,
         requestedModel: model, reasoningEffort: effort, serviceTier: tier, resolvedModel: 'unavailable', invocationId,
         elapsedMs: Date.now() - startedAt, usagePartial: true,
       };
@@ -272,13 +298,15 @@ function codexExec({ role, prompt, repoRoot, stateDir, cliPath, requestedModel, 
       abortSignal?.removeEventListener('abort', abort);
       consume(pending);
       const normalized = normalizeUsage(usage);
+      const interrupted = abortSignal?.aborted ? String(abortSignal.reason || 'signal') : null;
+      const launchOutcome = lifecycle.finish({ status, signal, timedOut, interrupted: Boolean(interrupted) });
       resolve({
         status, role, engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1', cliVersion, executable,
         requestedModel: model, reasoningEffort: effort, serviceTier: tier, resolvedModel: 'unavailable', invocationId, elapsedMs: Date.now() - startedAt,
         ...normalized,
         signal: signal || null,
         timedOut,
-        interrupted: abortSignal?.aborted ? String(abortSignal.reason || 'signal') : null,
+        interrupted, launchOutcome,
         diagnosticText, stderr: diagnosticStderr,
         usagePartial: normalized.usagePartial || streamPartial || completionCount !== 1 || status !== 0 || !!signal,
         ...(cliVersion !== CODEX_VERSION ? { usageStatus: 'unsupported-cli-version' } : {}),
@@ -352,7 +380,9 @@ function providerExec(input) {
   const truncate = (text) => (text.length > OUTPUT_LIMIT ? `${text.slice(0, OUTPUT_LIMIT)}\n...(truncated)` : text);
 
   return new Promise((resolve, reject) => {
+    const lifecycle = createLaunchLifecycle({ provider });
     const child = spawn(crossPlatformCommand(executable, repoRoot), crossPlatformArgs(args, needsDoubleEscape(executable, repoRoot)), crossPlatformOpts({ cwd: repoRoot, env: reviewerEnv(input.env, input.cliPath), stdio: [isWindows ? 'pipe' : 'ignore', 'pipe', 'pipe'], detached: !isWindows }));
+    child.once('spawn', () => lifecycle.spawned());
     if (input.untrustedCheckout) child.once('exit', () => terminateProcessTree(child, 'SIGKILL'));
     if (isWindows) {
       // See codexExec's identical stdin 'error' handling above -- the
@@ -383,7 +413,7 @@ function providerExec(input) {
       if (killTimer) clearTimeout(killTimer);
       abortSignal?.removeEventListener('abort', abort);
       error.telemetry = {
-        status: 'failed', role, engine: provider, provider: providerName, providerSchema,
+        status: 'failed', launchOutcome: lifecycle.spawnError(error.code), role, engine: provider, provider: providerName, providerSchema,
         requestedModel, resolvedModel: 'unavailable', invocationId,
         elapsedMs: Date.now() - startedAt, usagePartial: true,
         stdout: truncate(stdout), stderr: truncate(stderr),
@@ -394,11 +424,13 @@ function providerExec(input) {
       if (timeout) clearTimeout(timeout);
       if (killTimer) clearTimeout(killTimer);
       abortSignal?.removeEventListener('abort', abort);
+      const interrupted = abortSignal?.aborted ? String(abortSignal.reason || 'signal') : null;
+      const launchOutcome = lifecycle.finish({ status, signal, timedOut, interrupted: Boolean(interrupted) });
       resolve({
-      status, role, engine: provider, provider: providerName, providerSchema,
+      status, launchOutcome, role, engine: provider, provider: providerName, providerSchema,
       requestedModel, resolvedModel: 'unavailable', invocationId,
       elapsedMs: Date.now() - startedAt, usagePartial: true, signal: signal || null, timedOut,
-      interrupted: abortSignal?.aborted ? String(abortSignal.reason || 'signal') : null,
+      interrupted,
       stdout: truncate(stdout), stderr: truncate(stderr),
       });
     });
@@ -604,13 +636,18 @@ async function runRounds(options) {
   }
   let initiativeId = options.initiativeId || options.initiativeRunKey;
   if (keyedRun && !options.initiativeId) try { initiativeId = JSON.parse(fs.readFileSync(runPath(canonicalStateDir, options.initiativeRunKey), 'utf8')).initiativeId || initiativeId; } catch (_) {}
-  const initiativeRun = keyedRun ? openInitiativeRun({ stateDir: canonicalStateDir, key: options.initiativeRunKey, initiativeId, repository: canonicalRepoRoot, maxLaunches: options.initiativeMaxLaunches, maxRounds: options.initiativeMaxRounds, allowTerminal: !!options.initiativeFinalise, mode: options.initiativeMode }) : null;
+  let initiativeRun;
   if (options.initiativeFinalise) {
+    initiativeRun = keyedRun ? openInitiativeRun({ stateDir: canonicalStateDir, key: options.initiativeRunKey, initiativeId, repository: canonicalRepoRoot, maxLaunches: options.initiativeMaxLaunches, maxRounds: options.initiativeMaxRounds, allowTerminal: true, mode: options.initiativeMode }) : null;
     if (!initiativeRun) throw new Error('review-until-green: --initiative-finalise requires an initiative run');
     if (!finaliseInitiativeRun(initiativeRun)) throw new Error('review-until-green: initiative run finalisation was contended');
     return { decision: { finalised: true }, initiative: publicInitiativeSummary(initiativeRun) };
   }
   if (!ref) throw new Error('review-until-green: missing target ref');
+  // Review-only treats repository config as untrusted and cannot execute its
+  // command strings; normal runs preflight before creating the keyed run.
+  if (!reviewOnly) dodExec.runReviewPreflight(repoRoot, { execFn: options.preflightExecFn });
+  initiativeRun = keyedRun ? openInitiativeRun({ stateDir: canonicalStateDir, key: options.initiativeRunKey, initiativeId, repository: canonicalRepoRoot, maxLaunches: options.initiativeMaxLaunches, maxRounds: options.initiativeMaxRounds, allowTerminal: !!options.initiativeFinalise, mode: options.initiativeMode }) : null;
   // Never resolve a base for resume: round-start restores ledger.target.base.
   // File targets do not have a git base at all.
   const baseResolver = options.resolveDefaultBase || (options.runCli ? null : resolveDefaultBase);
@@ -769,17 +806,40 @@ async function runRounds(options) {
     };
     invocation();
     let result;
-    try { result = await rawSpawn(input); } catch (error) {
-      const failure = providerFailure(input, error);
-      record(input, { ...(error?.telemetry || {}), ...identity, status: 'failed', usagePartial: true, diagnostic: providerFailure(input, error).diagnostic });
+    let spawnError;
+    try { result = await rawSpawn(input); } catch (error) { spawnError = error; }
+    const providerFailed = spawnError || result && (result.status !== 0 || result.signal || result.interrupted || result.timedOut);
+    const rawOutcome = result?.launchOutcome || spawnError?.telemetry?.launchOutcome;
+    const allowedLifecycles = new Set(['not-started', 'started', 'unknown']);
+    const allowedReasons = new Set(['none', 'unknown', 'spawn-enoent', 'spawn-eacces', 'spawn-eperm', 'unsupported-model', 'sandbox-denied', 'unusable-executable']);
+    const launchOutcome = rawOutcome && allowedLifecycles.has(rawOutcome.lifecycle) && allowedReasons.has(rawOutcome.reason) && typeof rawOutcome.failed === 'boolean'
+      ? { lifecycle: rawOutcome.lifecycle, reason: rawOutcome.reason, failed: rawOutcome.failed }
+      : { lifecycle: 'unknown', reason: providerFailed ? 'unknown' : 'none', failed: Boolean(providerFailed) };
+    let launchLimitReached = false;
+    if (initiativeRun && input.reservationId) {
+      let receipt;
+      try {
+        receipt = await cli(['launch-outcome', ref, JSON.stringify({ reservationId: input.reservationId, invocationId: identity.invocationId, provider: input.provider, ...launchOutcome })]);
+      } catch (_) {
+        const blocked = new Error('harness-failure: initiative launch outcome could not be persisted; stopping to avoid an unaccounted launch');
+        blocked.notAReviewFailure = true;
+        throw blocked;
+      }
+      launchLimitReached = receipt?.limitReached === true;
+    }
+    if (spawnError) {
+      const failure = providerFailure(input, spawnError);
+      record(input, { ...(spawnError?.telemetry || {}), ...identity, launchOutcome, status: 'failed', usagePartial: true, diagnostic: failure.diagnostic });
+      if (launchLimitReached) { const blocked = new Error('review-until-green: environment launch failure limit reached'); blocked.initiativeBlocked = 'environment-failure-limit'; throw blocked; }
       const safeError = new Error(`harness-failure: ${failure.message}`);
       safeError.reviewFailure = failure;
       safeError.providerInvocationId = identity.invocationId;
       throw safeError;
     }
-    record(input, { ...identity, ...result, engine: identity.engine, provider: identity.provider, providerSchema: identity.providerSchema,
+    record(input, { ...identity, ...result, launchOutcome, engine: identity.engine, provider: identity.provider, providerSchema: identity.providerSchema,
       ...(result && (result.status !== 0 || result.signal || result.interrupted || result.timedOut) ? { diagnostic: providerFailure(input, result).diagnostic } : {}) });
-    return result ? { ...result, concordInvocationId: identity.invocationId } : result;
+    if (launchLimitReached) { const blocked = new Error('review-until-green: environment launch failure limit reached'); blocked.initiativeBlocked = 'environment-failure-limit'; throw blocked; }
+    return result ? { ...result, launchOutcome, concordInvocationId: identity.invocationId } : result;
   };
   const withTelemetry = (result) => {
     const output = { ...result, telemetry: result?.telemetry || telemetry };
@@ -867,10 +927,10 @@ async function runRounds(options) {
           await launchLens({ preReserved: true, role: `gate-panel-${lens}`, repoRoot, stateDir: context.stateDir,
             prompt: `Review ${path.join(context.stateDir, `round-${context.round}-diff.txt`)} and the repository through the ${lens} lens. You MAY Read/Grep the repository and MUST read ${path.join(context.stateDir, `intent-${context.slug}.md`)} if it exists to assess the design and acceptance criteria. Previously rejected IDs: ${JSON.stringify(panel.rejectedIds || [])} -- do not re-raise one unless you found something the earlier round did not. Every candidate faces three adversarial verifiers that default to REFUTED when uncertain and decide by majority, so a gap you cannot anchor in evidence will not survive: substantiate what you raise rather than raising more. Write ONLY {"status":"ok","findings":[]} to ${artifact}; every ID must use gate:${lens}:<slug>.${reviewLanguageClause(context.reviewLanguage)}${BLOCKED_CLAUSE}${cliClause(cliPath)}` });
         } catch (error) {
-          if (error.initiativeBlocked || (error.reviewFailure && ['interrupted', 'timeout', 'signal'].includes(error.reviewFailure.kind))) throw error;
+          if (error.notAReviewFailure || error.initiativeBlocked || (error.reviewFailure && ['interrupted', 'timeout', 'signal'].includes(error.reviewFailure.kind))) throw error;
         }
       }));
-      const lensFailure = lensResults.find((result) => result.status === 'rejected');
+      const lensFailure = preferredFailure(lensResults);
       if (lensFailure) throw lensFailure.reason;
       const candidates = [];
       for (const lens of lenses) {
@@ -907,7 +967,7 @@ async function runRounds(options) {
           }
           return raw ? raw.survives === true : false;
         }));
-        const voteFailure = voteResults.find((result) => result.status === 'rejected');
+        const voteFailure = preferredFailure(voteResults);
         if (voteFailure) throw voteFailure.reason;
         const votes = voteResults.map((result) => result.value);
         survives = votes.filter(Boolean).length;
@@ -944,7 +1004,7 @@ async function runRounds(options) {
     const statePath = `${stem}-state.json`, handoffPath = `${stem}-handoff.json`, packetPath = `${stem}-packet.json`;
     const decision = typeof result.decision === 'string' ? result.decision : Object.fromEntries(['continue', 'converged', 'parked', 'abandoned', 'intentReview', 'gatePending', 'panelPending', 'reason'].filter(key => Object.hasOwn(result.decision || {}, key)).map(key => [key, result.decision[key]]));
     const summary = { schema: 1, scope: 'review', ref, revision: initiativeRevision, round: started.round, decision,
-      authoritativeSources, initiative: { key: options.initiativeRunKey, stateDir: canonicalStateDir, mode: run.mode, status: run.status, budget: { maxLaunches: run.budget.maxLaunches, maxRounds: run.budget.maxRounds, usedLaunches: run.launches.length, usedRounds: run.rounds.length } },
+      authoritativeSources, initiative: { key: options.initiativeRunKey, stateDir: canonicalStateDir, mode: run.mode, status: run.status, budget: { maxLaunches: run.budget.maxLaunches, maxRounds: run.budget.maxRounds, usedLaunches: launchBudgetUsage(run).launches, usedRounds: run.rounds.length } },
       targetStatePath: targetPath, initiativePath: initiativeRun.path, options: { broad, noBroad, noDod, reviewer, fixer, reviewerModel: reviewerModel || null, fixerModel: fixerModel || null, reasoningEffort: options.reasoningEffort || null, serviceTier: options.serviceTier || null, sessionHandoff: sessionMode },
       initiativeFlags, reservations: (target.initiative_reservations || []).map(({ role, round, panel, count, token }) => ({ role, round, ...(panel ? { panel } : {}), count, token })), completedArtifacts, nextStep };
     writeFileAtomic(statePath, `${JSON.stringify(summary)}\n`, { mode: 0o600 });
@@ -1108,14 +1168,20 @@ async function runRounds(options) {
     }
     if (reviewOnly) for (const role of Object.keys(started.repairArtifacts || {})) sealRepair(role);
     let slotAllocation = Promise.resolve();
+    const reservationQueues = new Map();
     const reserve = async (role, count = 1) => {
       if (!initiativeRun) return false;
       const reservation = await cli(['reserve', ref, role, '--count', String(count)]);
       if (reservation?.status !== 'granted') {
         const reason = reservation?.status === 'reconciliation-required' ? reservation.status : reservation?.reason;
         const denied = new Error(`review-until-green: initiative launch ${reason || reservation?.lockDiagnosis || 'reservation contended'} before ${role}`);
-        if (reason === 'budget-exhausted' || reason === 'reconciliation-required') denied.initiativeBlocked = reason;
+        if (reason === 'budget-exhausted' || reason === 'reconciliation-required' || reason === 'environment-failure-limit') denied.initiativeBlocked = reason;
         throw denied;
+      }
+      if (Array.isArray(reservation.reservationIds) && reservation.reservationIds.length) {
+        const queue = reservationQueues.get(role) || [];
+        queue.push(...reservation.reservationIds);
+        reservationQueues.set(role, queue);
       }
       return true;
     };
@@ -1123,7 +1189,9 @@ async function runRounds(options) {
       checkReviewCheckout();
       const ownOutput = roleArtifacts.get(input.artifactRole || input.role) || null;
       checkProtected(false, ownOutput);
-      if (!input.preReserved) await reserve(input.reservationRole || (input.role === 'gate' ? 'gate-review' : input.role));
+      const reservationRole = input.reservationRole || (input.role === 'gate' ? 'gate-review' : input.role === 'gate-panel-verify' ? 'vote' : input.role.startsWith('gate-panel-') ? 'lens' : input.role);
+      if (!input.preReserved) await reserve(reservationRole);
+      const reservationId = initiativeRun ? reservationQueues.get(reservationRole)?.shift() : null;
       if (input.role === 'plan' && started.planRetry && started.planRetry.state !== 'accepted') {
         await cli(['plan-dispatch', ref]);
         checkProtected(true, ownOutput);
@@ -1146,6 +1214,7 @@ async function runRounds(options) {
       checkReviewCheckout();
       const result = await invoke(spawn, {
         ...input,
+        ...(reservationId ? { reservationId } : {}),
         provider,
         cliPath,
         ...(requestedModel ? { requestedModel } : {}),
@@ -1245,9 +1314,7 @@ async function runRounds(options) {
     if (started.intentApplied) reviewers.push(runArtifactReviewer('intent'));
     const runPool = async (roles) => {
       const results = await Promise.allSettled(roles.map(runArtifactReviewer));
-      const rejected = results.filter((result) => result.status === 'rejected');
-      const failure = rejected.find((result) => result.reason?.durableContinuation?.retryable === false
-        || result.reason?.durableContinuation?.nextAction === 'terminal-handoff') || rejected[0];
+      const failure = preferredFailure(results);
       if (failure) throw failure.reason;
     };
     if (started.gateApplied && started.gateMode !== 'design-conformance') reviewers.push((async () => {
@@ -1261,9 +1328,7 @@ async function runRounds(options) {
       if (derived.verify !== 'not-needed') await runArtifactReviewer('verify');
     })());
     const reviewerResults = await Promise.allSettled(reviewers);
-    const rejectedReviewers = reviewerResults.filter((result) => result.status === 'rejected');
-    const reviewerFailure = rejectedReviewers.find((result) => result.reason?.durableContinuation?.retryable === false
-      || result.reason?.durableContinuation?.nextAction === 'terminal-handoff') || rejectedReviewers[0];
+    const reviewerFailure = preferredFailure(reviewerResults);
     if (reviewerFailure) throw reviewerFailure.reason;
     }
 
@@ -1367,6 +1432,10 @@ async function runRounds(options) {
   }
   } catch (error) {
     if (error.notAReviewFailure) throw error;
+    if (error.initiativeBlocked === 'environment-failure-limit') {
+      const usage = initiativeRun ? launchBudgetUsage(JSON.parse(fs.readFileSync(initiativeRun.path, 'utf8'))) : null;
+      return { decision: 'environment-failure-limit', reason: error.initiativeBlocked, nextAction: 'terminal-handoff', retryable: false, ...(usage ? { initiative: { ...publicInitiativeSummary(initiativeRun), launches: usage.launches, attemptedLaunches: usage.attemptedLaunches || usage.launches, refundedLaunches: usage.refundedLaunches || 0, environmentFailures: usage.environmentFailures || 0 } } : {}) };
+    }
     if (error.initiativeBlocked) {
       // carry is a human/reconciliation step: this runner stops at `blocked`
       // and names the exact command rather than picking a new key itself.

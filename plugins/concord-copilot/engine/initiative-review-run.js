@@ -228,6 +228,7 @@ function parkedRefusal(ledger, target, revision) {
 function pairRefusal(run, target, revision) {
   let ledger;
   try { ledger = JSON.parse(fs.readFileSync(run.path, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (ledger?.status === 'active' && ledger.launchRefunds?.limitReached) return 'environment-failure-limit';
   return ledger?.status === 'active' && parkedRefusal(ledger, target, revision) ? 'reconciliation-required' : null;
 }
 
@@ -241,6 +242,82 @@ function resolveBaseCommit(repoRoot, base) {
   }
 }
 
+// Receipts describe driver-observed transport lifecycle, never reviewer assertions.
+const ENVIRONMENT_FAILURES = new Set(['spawn-enoent', 'spawn-eacces', 'spawn-eperm', 'unsupported-model', 'sandbox-denied', 'unusable-executable']);
+const MAX_CONSECUTIVE_REFUNDS = 3;
+const RESERVATION_ID = /^[0-9a-f]{32}:\d+$/;
+
+function launchAccounting(ledger) {
+  const launches = ledger.launches || [];
+  const outcomes = ledger.launchOutcomes || [];
+  if (!Array.isArray(outcomes)) throw new Error('initiative launch outcomes must be an array');
+  const seen = new Set(), refunded = new Set();
+  let environmentFailures = 0, started = 0;
+  for (const outcome of outcomes) {
+    const launch = launches.find((entry) => entry.reservationId === outcome.reservationId);
+    if (!launch || seen.has(outcome.reservationId)) throw new Error('initiative launch outcome has an invalid reservation identity');
+    seen.add(outcome.reservationId);
+    if (outcome.failed && ENVIRONMENT_FAILURES.has(outcome.reason)) environmentFailures++;
+    if (outcome.lifecycle === 'started') started++;
+    if (outcome.refunded) {
+      if (outcome.lifecycle !== 'not-started' || !outcome.failed || !ENVIRONMENT_FAILURES.has(outcome.reason)) throw new Error('initiative refund lacks pre-turn environment failure evidence');
+      refunded.add(outcome.reservationId);
+    }
+  }
+  return { attempted: launches.length, charged: launches.length - refunded.size, refunded: refunded.size, environmentFailures, started };
+}
+
+function launchBudgetUsage(ledger) {
+  const counts = launchAccounting(ledger);
+  return { launches: counts.charged, rounds: (ledger.rounds || []).length, ...(ledger.launchOutcomes ? {
+    attemptedLaunches: counts.attempted, refundedLaunches: counts.refunded, environmentFailures: counts.environmentFailures,
+  } : {}) };
+}
+
+function recordLaunchOutcome(run, input) {
+  if (!input || !RESERVATION_ID.test(input.reservationId || '') || !['codex', 'claude', 'copilot'].includes(input.provider)
+    || !['not-started', 'started', 'unknown'].includes(input.lifecycle) || typeof input.failed !== 'boolean'
+    || !['none', 'unknown', ...ENVIRONMENT_FAILURES].includes(input.reason)
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.invocationId || '')) {
+    throw new Error('initiative launch outcome requires a valid reservation identity and closed lifecycle evidence');
+  }
+  let result;
+  const accepted = locked(run, (ledger) => {
+    if (!ledger) throw new Error('initiative launch outcome has no reserved run');
+    assertVersion(ledger);
+    const launch = ledger.launches.find((entry) => entry.reservationId === input.reservationId);
+    if (!launch || ['role', 'target', 'attemptId', 'round'].some((field) => input[field] !== launch[field])
+      || !launch.revision || !same(launch.revision, launchRevision({ revision: input.revision }, input.target))) {
+      throw new Error('initiative launch outcome identity does not match its reservation');
+    }
+    const receipt = { reservationId: input.reservationId, role: launch.role, target: launch.target, attemptId: launch.attemptId,
+      round: launch.round, revision: launch.revision, invocationId: input.invocationId, provider: input.provider,
+      lifecycle: input.lifecycle, reason: input.reason, failed: input.failed };
+    const outcomes = ledger.launchOutcomes || [];
+    const prior = outcomes.find((entry) => entry.reservationId === input.reservationId);
+    if (prior) {
+      const { at, refunded, ...recorded } = prior;
+      if (!same(recorded, receipt)) throw new Error('initiative reservation already has a different outcome');
+      result = { status: 'duplicate', refunded };
+      return undefined;
+    }
+    if (ledger.status !== 'active') throw new Error('initiative launch outcome requires an active run, not a terminal run');
+    if ((ledger.dispositions || []).some((entry) => entry.target === launch.target && entry.kind === 'terminal' && samePair(entry.revision, launch.revision))) throw new Error('initiative launch outcome belongs to a completed terminal target');
+    if (outcomes.some((entry) => entry.invocationId === input.invocationId)) throw new Error('provider invocation already belongs to a different reservation');
+    const policy = ledger.launchRefunds || { consecutive: 0, limitReached: false };
+    let consecutive = policy.consecutive;
+    if (!Number.isSafeInteger(consecutive) || consecutive < 0 || consecutive > MAX_CONSECUTIVE_REFUNDS) throw new Error('invalid initiative refund streak');
+    const refundable = input.failed && input.lifecycle === 'not-started' && ENVIRONMENT_FAILURES.has(input.reason);
+    const refunded = refundable && !policy.limitReached && consecutive < MAX_CONSECUTIVE_REFUNDS;
+    if (refunded) consecutive++;
+    else if (input.lifecycle === 'started' && !policy.limitReached) consecutive = 0;
+    const limitReached = policy.limitReached || consecutive >= MAX_CONSECUTIVE_REFUNDS;
+    result = { status: 'recorded', refunded };
+    return { ...ledger, launchOutcomes: [...outcomes, { ...receipt, refunded, at: now() }], launchRefunds: { consecutive, limitReached } };
+  });
+  return accepted ? result : null;
+}
+
 // Why the run cannot take this launch, or null when it can.
 function launchRefusal(ledger, launch, count) {
   if (!ledger || ledger.status !== 'active' || !Number.isInteger(launch.round) || !Number.isInteger(count) || count < 1) return 'inactive';
@@ -249,7 +326,8 @@ function launchRefusal(ledger, launch, count) {
   if (parkedRefusal(ledger, target, revision)) return 'reconciliation-required';
   if (launch.broad && !hasBroadSweepClaim(launch.run, launch)) return 'broad-sweep-claimed';
   if ((ledger.dispositions || []).some((disposition) => disposition.target === target && disposition.kind === 'terminal' && samePair(disposition.revision, revision))) return 'target-terminal';
-  if (ledger.launches.length + count > ledger.budget.maxLaunches) return 'budget-exhausted';
+  if (ledger.launchRefunds?.limitReached) return 'environment-failure-limit';
+  if (launchAccounting(ledger).charged + count > ledger.budget.maxLaunches) return 'budget-exhausted';
   const round = `${target}\u0000${typeof launch.attemptId === 'string' ? launch.attemptId : 'legacy'}\u0000${launch.round}`;
   if (!(ledger.rounds || []).includes(round) && (ledger.rounds || []).length >= ledger.budget.maxRounds) return 'budget-exhausted';
   return null;
@@ -266,8 +344,15 @@ function reserveLaunchBatch(run, launch, count = 1, beforeCharge) {
     const rounds = ledger.rounds || [];
     const revision = launchRevision(launch, target);
     const targets = revision && !(ledger.targets || []).some((item) => same(item, revision)) ? [...(ledger.targets || []), revision] : (ledger.targets || []);
+    const ids = launch.reservationIds;
+    if (ids && (!Array.isArray(ids) || ids.length !== count || new Set(ids).size !== count
+      || ids.some((id) => !RESERVATION_ID.test(id) || ledger.launches.some((entry) => entry.reservationId === id)))) {
+      throw new Error('initiative launch reservation identities must be unique and match the batch');
+    }
+    if (ids && (!launch.attemptId || !revision?.head_sha || target === 'unknown')) throw new Error('initiative launch reservation identity requires an attempt and revision');
     const entry = { role: launch.role, round: launch.round, ...(target === 'unknown' ? {} : { target }), at: now() };
-    return { ...ledger, rounds: rounds.includes(round) ? rounds : [...rounds, round], targets, launches: [...ledger.launches, ...Array.from({ length: count }, () => ({ ...entry }))] };
+    const entries = Array.from({ length: count }, (_, index) => ({ ...entry, ...(ids ? { reservationId: ids[index], attemptId: launch.attemptId, revision } : {}) }));
+    return { ...ledger, rounds: rounds.includes(round) ? rounds : [...rounds, round], targets, launches: [...ledger.launches, ...entries] };
   }, beforeCharge));
 }
 
@@ -304,7 +389,7 @@ function recordDisposition(run, { target, revision, result, packet = {}, finding
     if (!terminalRevision?.head_sha) throw new Error('initiative review terminal target requires a stored revision');
     const sequence = (ledger.dispositions || []).length + 1;
     const continuation = packet.nextAction || (disposition.kind === 'terminal' ? 'replay' : 'resume');
-    const durablePacket = { ...packet, outcome: { kind: disposition.kind, reason: disposition.reason }, ledger: { version: ledger.version, status: ledger.status }, budget: { maxLaunches: ledger.budget.maxLaunches, maxRounds: ledger.budget.maxRounds, launches: ledger.launches.length, rounds: ledger.rounds.length }, delivery: { claim: `${target}:${sequence}`, continuation, consumed: false } };
+    const durablePacket = { ...packet, outcome: { kind: disposition.kind, reason: disposition.reason }, ledger: { version: ledger.version, status: ledger.status }, budget: { maxLaunches: ledger.budget.maxLaunches, maxRounds: ledger.budget.maxRounds, ...launchBudgetUsage(ledger) }, delivery: { claim: `${target}:${sequence}`, continuation, consumed: false } };
     const entry = { target, revision: terminalRevision, ...disposition, sequence, at: now(), packet: durablePacket };
     const previous = ledger.reconciliation || {};
     const reconciliationHint = previous.hint && previous.hint.trigger === 'reconciliation-required'
@@ -332,8 +417,7 @@ function publicInitiativeSummary(run) {
     targetIds: [...new Set((ledger.targets || []).map((target) => crypto.createHash('sha256').update(JSON.stringify(target)).digest('hex')))],
     counts: {
       targets: (ledger.targets || []).length,
-      launches: (ledger.launches || []).length,
-      rounds: (ledger.rounds || []).length,
+      ...launchBudgetUsage(ledger),
       findings: ledger.findings || {},
       checks: (ledger.checks || []).length,
       telemetry: (ledger.telemetry || []).length,
@@ -396,4 +480,4 @@ function finaliseInitiativeRun(run, reason = 'finalised') {
   return true;
 }
 
-module.exports = { MODES, ESCALATION_TRIGGERS, lockDiagnosis, escalateInitiativeRun, canonicalPath, runPath, repositoryIdentity, openInitiativeRun, claimBroadSweep, hasBroadSweepClaim, reserveLaunch, reserveLaunchBatch, denialReason, pairRefusal, resolveBaseCommit, normalizeDisposition, recordDisposition, consumeDispositionDelivery, terminalTarget, terminalDispositionInLedger, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };
+module.exports = { launchBudgetUsage, launchAccounting, recordLaunchOutcome, MAX_CONSECUTIVE_REFUNDS, MODES, ESCALATION_TRIGGERS, lockDiagnosis, escalateInitiativeRun, canonicalPath, runPath, repositoryIdentity, openInitiativeRun, claimBroadSweep, hasBroadSweepClaim, reserveLaunch, reserveLaunchBatch, denialReason, pairRefusal, resolveBaseCommit, normalizeDisposition, recordDisposition, consumeDispositionDelivery, terminalTarget, terminalDispositionInLedger, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };

@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { writeFileAtomic } = require('./atomic-write');
-const { canonicalPath, runPath, repositoryIdentity } = require('./initiative-review-run');
+const { canonicalPath, runPath, repositoryIdentity, launchBudgetUsage } = require('./initiative-review-run');
 
 const SESSION_MODES = ['off', 'suggest', 'stop-at-checkpoint'];
 const BOUNDARIES = ['stage-complete', 'batch-complete', 'round-complete'];
@@ -77,11 +77,12 @@ function createSessionHandoff({ packetPath, mode = 'suggest', initiative, reposi
       || ledger.budget?.maxLaunches !== Number(initiative.maxLaunches)
       || ledger.budget?.maxRounds !== Number(initiative.maxRounds)
       || !Array.isArray(ledger.launches) || !Array.isArray(ledger.rounds)) fail('initiative identity, mode or budgets disagree with the live ledger');
+    const launchUsage = launchBudgetUsage(ledger);
     const checkpoint = {
       schema: 1, mode, scope: packet.scope, boundary: packet.boundary, triggers,
       observationSource: 'caller-reported', observations: observed, sources: { state: { path: state.path, sha256: state.sha256 }, handoff: { path: handoff.path, sha256: handoff.sha256 } }, nextAction: packet.nextAction,
       run: { key: initiative.key, initiativeId: ledger.initiativeId || initiative.key, stateDir: canonicalPath(initiative.stateDir), mode: ledger.mode, status: ledger.status },
-      budget: { maxLaunches: ledger.budget.maxLaunches, maxRounds: ledger.budget.maxRounds, usedLaunches: ledger.launches.length, usedRounds: ledger.rounds.length },
+      budget: { maxLaunches: ledger.budget.maxLaunches, maxRounds: ledger.budget.maxRounds, usedLaunches: launchUsage.launches, usedRounds: ledger.rounds.length, ...(ledger.launchOutcomes ? { attemptedLaunches: launchUsage.attemptedLaunches, refundedLaunches: launchUsage.refundedLaunches, environmentFailures: launchUsage.environmentFailures } : {}) },
     };
     const directory = path.join(checkpoint.run.stateDir, `session-handoff-${digest(JSON.stringify(checkpoint))}`);
     for (const [name, original] of Object.entries({ state, handoff })) {
