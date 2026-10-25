@@ -86,7 +86,7 @@ Fill these in, in order:
 1. The skill the worker runs (default: `ticket-to-pr`).
 2. The work: issue numbers, where the acceptance criteria are, what is out of scope.
 3. File ownership: the files this work changes, and the files other workers or outside contributors own. A worker that must change another owner's file sends a `question` first.
-4. Model routing and escalation: use a lower-cost model for bounded work with clear acceptance criteria, Sonnet for ambiguous design, and one Opus review for a changed authority, data-loss, recovery or migration contract plus fix confirmation. Use Luna/Sol/Astra only through an available Codex provider selected by the user, never as Claude Agent model identifiers. Record the decision and reason once in evidence and link it from the PR body.
+4. Model routing and escalation: use a lower-cost model for bounded work with clear acceptance criteria, Sonnet for ambiguous design, and one Opus review for a changed authority, data-loss, recovery or migration contract plus fix confirmation. Keep workers and reviews within Claude; do not route this workflow to Codex models or providers. Record the decision and reason once in evidence and link it from the PR body.
 5. The channel: the report directory or your session id, and the report format above.
 6. Stop rules: never merge; run `node "$STATE_CLI" record-delivery <pr> <head-sha>` (`STATE_CLI` located as `review-until-lgtm` describes) and paste its output into the `done` report (`record-delivery` is a state CLI verb, not a `review-cli` verb); past the context limit, stop at the next stage boundary with a `handoff` report.
 7. The path of the project's rules file (for example `AGENTS.md` or a shared worker-rules file). Repository rules stay there, not in the prompt.

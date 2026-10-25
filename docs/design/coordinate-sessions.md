@@ -49,7 +49,7 @@ The skill carries a template the coordinator fills in, in this order:
 1. The skill the worker runs (default `ticket-to-pr`).
 2. The work: issue numbers, where the acceptance criteria are, and what is out of scope.
 3. File ownership: the files this work changes, and the files other workers or outside contributors own. A worker that must change another owner's file sends a `question` first.
-4. Bounded work prefers a lower-cost model; ambiguous design goes to Sonnet; changed authority, data-loss, recovery or migration contracts get one Opus review plus fix confirmation. Codex models are used only through a user-selected available Codex provider. The PR links the decision evidence.
+4. Bounded work prefers a lower-cost model; ambiguous design goes to Sonnet; changed authority, data-loss, recovery or migration contracts get one Opus review plus fix confirmation. Workers and reviews stay within Claude. The PR links the decision evidence.
 5. The channel: the report directory, or the coordinator's session id, and the report format.
 6. Stop rules: the worker never merges, pastes its `record-delivery` output into the `done` report, and past the context limit it stops at the next stage boundary with a `handoff` report.
 7. A path to the project's rules file (for example `AGENTS.md` or a shared worker-rules file). Repository rules such as the gh account, worktree location and release bump stay in that file, not in the prompt or the skill.
@@ -109,10 +109,10 @@ are recommendations, not automatic model configuration changes.
 ## Shared operating discipline
 
 The Claude PM now defaults to Sonnet rather than always using Opus. Bounded
-implementation, investigation and verification prefer Haiku; user-selected Codex
-providers can use Luna for that role, Sol for coordination and ordinary review,
-and Astra for changed risky contracts. These are routing choices, not claims of
-model equivalence or automatic cross-provider configuration.
+implementation, investigation and verification prefer Haiku, and changed risky
+contracts receive Opus review. Claude workflows stay within Claude; Codex workflows
+use their own Luna/Sol/Astra routing. Neither workflow recommends cross-provider
+delegation. These are separate routing choices, not claims of model equivalence.
 
 Both harnesses assign one evidence owner/observer per task, collect deterministic
 status in scripts or event waits, and notify only on actionable changes or terminal

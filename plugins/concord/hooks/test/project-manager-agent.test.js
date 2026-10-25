@@ -68,7 +68,8 @@ test('Claude coordination assigns one observer and reuses evidence without weake
   const pm = read('plugins/concord/agents/project-manager.md');
   const coordination = read('plugins/concord/skills/coordinate-sessions/SKILL.md');
   assert.match(pm, /Prefer a Haiku subagent/);
-  assert.match(pm, /Luna\/Sol\/Astra are Codex choices, not Claude Agent model identifiers/);
+  assert.match(pm, /Keep coordination, workers and reviews within Claude/);
+  assert.doesNotMatch(pm + coordination, /Luna|Astra|Codex provider selected/);
   assert.match(pm, /One Sonnet review plus relevant tests/);
   assert.match(pm, /One Opus review plus confirmation of fixes/);
   assert.doesNotMatch(pm, /rerun the key command|Confirm with the user in your own session before the first merge/);
