@@ -113,6 +113,10 @@ implementation, investigation and verification prefer Haiku, and changed risky
 contracts receive Opus review. Claude workflows stay within Claude; Codex workflows
 use their own Luna/Sol/Astra routing. Neither workflow recommends cross-provider
 delegation. These are separate routing choices, not claims of model equivalence.
+Every Claude worker creation prompt carries that provider policy into composed
+review/fix workflows; unavailable native models block the step rather than trigger
+cross-vendor fallback. Independent reviewers use fresh source/evidence context
+without the implementer's reasoning or conclusions and never assess their own edits.
 
 Both harnesses assign one evidence owner/observer per task, collect deterministic
 status in scripts or event waits, and notify only on actionable changes or terminal

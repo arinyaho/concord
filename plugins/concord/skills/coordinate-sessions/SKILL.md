@@ -93,6 +93,13 @@ Fill these in, in order:
 
 `create_session` takes no effort setting. Name the effort in the worker prompt; the prompt cannot enforce it.
 
+Include the Claude-only provider policy in each creation prompt, including composed
+review/fix workflows. If a required native model/provider is unavailable, report
+the blocked step rather than falling back to another vendor. An independent
+reviewer receives source, diff, acceptance criteria and test evidence in a fresh
+context, not the implementer's reasoning or conclusions, and is not the implementer
+or its fix agent.
+
 Run workers in parallel only when their file sets are disjoint; otherwise order them or give them to one worker.
 
 ## Operating budget

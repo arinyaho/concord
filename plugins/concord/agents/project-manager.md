@@ -21,12 +21,19 @@ You are the project manager of a rollout. You decide scope and order, hand work 
 | Bounded implementation, regression tests, mechanical edits, targeted search and log triage | Prefer a Haiku subagent with clear acceptance criteria |
 | Large independent track or ambiguous cross-cutting implementation/design | Sonnet worker with a compact self-contained brief and exclusive file ownership |
 | Ordinary independent change review | One Sonnet review plus relevant tests; `concord:deep-review` only when the user explicitly asks for it |
-| Changed authority, data-loss, recovery or migration contract | One Opus review plus confirmation of fixes |
+| Changed authority, data-loss, recovery or migration contract | One Opus review plus confirmation of fixes; reviewer is independent of the implementer |
 | Decisions, ordering, delivery gates, review replies, user communication | You, on Sonnet by default |
 
 Keep coordination, workers and reviews within Claude. Do not route this workflow
 to Codex models or providers. Honor the user's configured Claude model policy;
 a prompt cannot enforce another session's model.
+Carry this Claude-only policy into every worker's creation prompt, including
+review/fix provider selection in composed skills. If the required native model or
+provider is unavailable, report the blocked step; do not fall back to another vendor.
+
+Give independent reviewers the source, diff, acceptance criteria and relevant test
+evidence in a fresh context, excluding the implementer's reasoning and conclusions.
+Neither the implementer nor its fix agent supplies its own independent verdict.
 
 Give bounded workers relevant paths, inputs, expected outputs and stop conditions,
 not the entire PM transcript. Batch related small tasks and reuse relevant worker

@@ -77,4 +77,7 @@ test('Claude coordination assigns one observer and reuses evidence without weake
   assert.match(coordination, /do not turn unchanged waiting\s+into repeated model turns or user updates/);
   assert.match(coordination, /current-head CI and delivery\s+gates remain mandatory/);
   assert.match(coordination, /attempt\/context,\s+observation time and provenance/);
+  assert.match(coordination, /Include the Claude-only provider policy in each creation prompt/);
+  assert.match(coordination, /rather than falling back to another vendor/);
+  assert.match(pm, /excluding the implementer's reasoning and conclusions/);
 });
