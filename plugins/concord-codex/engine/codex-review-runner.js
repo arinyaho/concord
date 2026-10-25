@@ -1206,7 +1206,8 @@ async function runRounds(options) {
         sealArtifact(role);
         return;
       } catch (error) {
-        const failure = error.reviewFailure || { role, kind: /artifact|missing gate artifact/.test(String(error.message)) ? 'artifact-write-failure' : 'harness-error', message: String(error.message).replace(/^harness-failure:\s*/, '') };
+        const blockedMethod = !error.reviewFailure && ['gate', 'gate-verify'].includes(role) && String(error.message).includes(`${role} reviewer could not run:`);
+        const failure = error.reviewFailure || { role, kind: blockedMethod ? 'blocked-method' : /artifact|missing gate artifact/.test(String(error.message)) ? 'artifact-write-failure' : 'harness-error', message: String(error.message).replace(/^harness-failure:\s*/, ''), ...(blockedMethod ? { retryable: false } : {}) };
         if (!reviewOnly && !error.initiativeBlocked) {
           try {
             await cli(['round-failure', ref, JSON.stringify(failure)]);
@@ -1244,7 +1245,9 @@ async function runRounds(options) {
     if (started.intentApplied) reviewers.push(runArtifactReviewer('intent'));
     const runPool = async (roles) => {
       const results = await Promise.allSettled(roles.map(runArtifactReviewer));
-      const failure = results.find((result) => result.status === 'rejected');
+      const rejected = results.filter((result) => result.status === 'rejected');
+      const failure = rejected.find((result) => result.reason?.durableContinuation?.retryable === false
+        || result.reason?.durableContinuation?.nextAction === 'terminal-handoff') || rejected[0];
       if (failure) throw failure.reason;
     };
     if (started.gateApplied && started.gateMode !== 'design-conformance') reviewers.push((async () => {
@@ -1258,7 +1261,9 @@ async function runRounds(options) {
       if (derived.verify !== 'not-needed') await runArtifactReviewer('verify');
     })());
     const reviewerResults = await Promise.allSettled(reviewers);
-    const reviewerFailure = reviewerResults.find((result) => result.status === 'rejected');
+    const rejectedReviewers = reviewerResults.filter((result) => result.status === 'rejected');
+    const reviewerFailure = rejectedReviewers.find((result) => result.reason?.durableContinuation?.retryable === false
+      || result.reason?.durableContinuation?.nextAction === 'terminal-handoff') || rejectedReviewers[0];
     if (reviewerFailure) throw reviewerFailure.reason;
     }
 

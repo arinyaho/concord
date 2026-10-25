@@ -97,10 +97,16 @@ function reviewContinuation(ledger) {
   const retry = execution?.planRetry;
   const transport = execution?.planTransportRetry;
   const planEvidence = execution?.normalizedPlan || execution?.completed?.includes('plan') || execution?.planRepairPending;
+  const blockedMethodFailure = execution?.blockedMethodFailure;
+  const blockedMethodLatched = ['gate', 'gate-verify'].includes(blockedMethodFailure?.role)
+    && blockedMethodFailure.kind === 'blocked-method' && blockedMethodFailure.retryable === false;
+  const blockedMethodCurrent = ['gate', 'gate-verify'].includes(execution?.failure?.role)
+    && execution.failure.kind === 'blocked-method' && execution.failure.retryable === false;
   const terminal = retry?.state === 'exhausted'
     || transport?.state === 'exhausted'
     || (retry?.launched && retry.state !== 'accepted' && !planEvidence
-      && !(transport?.state === 'pending' && transport.attempts === 0));
+      && !(transport?.state === 'pending' && transport.attempts === 0))
+    || blockedMethodLatched || blockedMethodCurrent;
   return { nextAction: terminal ? 'terminal-handoff' : 'resume', retryable: !terminal };
 }
 

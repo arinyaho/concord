@@ -72,6 +72,11 @@ test('a review language is asked for in the finding text of the finding-producin
 test('GATE_SWEEP_CLAUSE is non-trivial and role-agnostic text', () => {
   assert.equal(typeof GATE_SWEEP_CLAUSE, 'string');
   assert.ok(GATE_SWEEP_CLAUSE.length > 40, 'GATE_SWEEP_CLAUSE should be a real instruction, not a stub');
+  assert.match(GATE_SWEEP_CLAUSE, /enumerate.*actually exist/i);
+  assert.match(GATE_SWEEP_CLAUSE, /missing.*skip|skip.*missing/i);
+  assert.match(GATE_SWEEP_CLAUSE, /report each occurrence as its own finding/i);
+  assert.match(GATE_SWEEP_CLAUSE, /exit status 1.*no matches/i);
+  assert.match(GATE_SWEEP_CLAUSE, /exit status 2.*blocked/i);
 });
 
 test('review-driver.md embeds GATE_SWEEP_CLAUSE byte-for-byte in the gate-review prompt', () => {

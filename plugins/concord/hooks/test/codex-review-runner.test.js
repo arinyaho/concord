@@ -2054,6 +2054,118 @@ test('gate-verify subprocess failure is retryable instead of being folded as a c
   assert.ok(h.calls.some((call) => call[0] === 'spawn' && call[1] === 'gate-verify'));
 });
 
+test('gate sweep accepts rg no-match on an existing-file inventory in a repository without package.json', async () => {
+  const repoRoot = temp(), h = harness({ gateApplied: true });
+  fs.writeFileSync(path.join(repoRoot, 'a.txt'), 'no package reference here\n');
+  const spawn = (input) => {
+    if (input.role === 'gate') {
+      assert.match(input.prompt, /enumerate.*actually exist/i);
+      const files = execFileSync('rg', ['--files'], { cwd: repoRoot, encoding: 'utf8' }).trim().split('\n').filter(Boolean);
+      assert.ok(!files.includes('package.json'));
+      const sweep = spawnSync('rg', ['-n', 'package.json', '--', ...files], { cwd: repoRoot, encoding: 'utf8' });
+      assert.equal(sweep.status, 1, sweep.stderr);
+      assert.equal(fs.existsSync(path.join(repoRoot, 'package.json')), false);
+    }
+    return h.spawn(input);
+  };
+  await runReviewUntilGreen({ ref: 'feature/x', repoRoot, runCli: h.cli, spawn });
+});
+
+test('a genuine rg exit 2 remains a blocked gate method failure with terminal continuation', async () => {
+  for (const blockedRole of ['gate', 'gate-verify']) {
+    const repoRoot = temp(), h = harness({ gateApplied: true });
+    fs.writeFileSync(path.join(repoRoot, 'a.txt'), 'content\n');
+    let failure;
+    const cli = (args) => {
+      if (args[0] === 'artifact-normalize' && args[2] === blockedRole) {
+        try { normalizeArtifact(blockedRole, fs.readFileSync(path.join(h.stateDir, `round-1-${blockedRole}.json`), 'utf8')); }
+        catch (error) { throw new Error(`harness-failure: ${error.message}`); }
+        return { status: 'ok' };
+      }
+      if (args[0] === 'round-failure') { failure = JSON.parse(args[2]); return { status: 'recorded' }; }
+      if (args[0] === 'show') return { execution: { failure: { ...failure, retryable: failure.retryable } } };
+      return h.cli(args);
+    };
+    const spawn = (input) => {
+      if (input.role === blockedRole) {
+        const sweep = spawnSync('rg', ['--definitely-invalid-option'], { cwd: repoRoot, encoding: 'utf8' });
+        assert.equal(sweep.status, 2);
+        fs.writeFileSync(path.join(h.stateDir, `round-1-${blockedRole}.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [], blocked: [`rg reference sweep exited ${sweep.status}: ${sweep.stderr.trim()}`] }));
+        return { status: 0 };
+      }
+      return h.spawn(input);
+    };
+    await assert.rejects(runReviewUntilGreen({ ref: `feature/${blockedRole}`, repoRoot, runCli: cli, spawn }), (error) => {
+      assert.match(error.message, new RegExp(`${blockedRole} reviewer could not run: rg reference sweep exited 2`));
+      assert.deepEqual(error.durableContinuation, { nextAction: 'terminal-handoff', retryable: false });
+      return true;
+    });
+    assert.equal(failure.kind, 'blocked-method', JSON.stringify(failure));
+    assert.equal(failure.retryable, false);
+  }
+});
+
+test('terminal gate failure wins over correctness failure in either completion order', async () => {
+  const scenarios = [
+    { intentApplied: false, failureOrder: ['correctness', 'gate'] },
+    { intentApplied: false, failureOrder: ['gate', 'correctness'] },
+    { intentApplied: true, failureOrder: ['intent', 'correctness', 'gate'] },
+  ];
+  for (const { intentApplied, failureOrder } of scenarios) {
+    const h = harness({ gateApplied: true });
+    const execution = { completed: [], pending: ['correctness', 'gate', ...(intentApplied ? ['intent'] : [])], failures: [], failure: null, blockedMethodFailure: null };
+    const cli = (args) => {
+      if (args[0] === 'round-start') return { ...h.cli(args), intentApplied };
+      if (args[0] === 'artifact-normalize') {
+        const role = args[2];
+        try { normalizeArtifact(role, fs.readFileSync(path.join(h.stateDir, `round-1-${role}.json`), 'utf8')); }
+        catch (error) { throw new Error(`harness-failure: ${error.message}`); }
+        return { status: 'ok' };
+      }
+      if (args[0] === 'round-failure') {
+        const failure = JSON.parse(args[2]);
+        const entry = { ...failure, retryable: !(failure.role === 'gate' && failure.kind === 'blocked-method') };
+        execution.failure = entry;
+        if (failure.role === 'gate' && failure.kind === 'blocked-method') execution.blockedMethodFailure = entry;
+        execution.failures.push(entry);
+        return { status: 'recorded' };
+      }
+      if (args[0] === 'show') return { execution: { ...execution } };
+      return h.cli(args);
+    };
+    let startedCount = 0;
+    let notifyStarted;
+    const bothStarted = new Promise((resolve) => { notifyStarted = resolve; });
+    const rejectors = {};
+    const spawnedRoles = [];
+    const spawn = ({ role }) => {
+      if (!['correctness', 'gate', ...(intentApplied ? ['intent'] : [])].includes(role)) return h.spawn({ role });
+      spawnedRoles.push(role);
+      startedCount++;
+      if (startedCount === (intentApplied ? 3 : 2)) notifyStarted();
+      return new Promise((resolve) => {
+        rejectors[role] = (result) => {
+          if (role === 'gate') fs.writeFileSync(path.join(h.stateDir, 'round-1-gate.json'), JSON.stringify({ status: 'ok', findings: [], blocked: ['rg reference sweep exited 2'] }));
+          resolve(result);
+        };
+      });
+    };
+    const run = runReviewUntilGreen({ ref: `feature/order-${failureOrder.join('-')}`, repoRoot: '/repo', runCli: cli, spawn });
+    const runOutcome = run.then((value) => ({ value }), (error) => ({ error }));
+    await bothStarted;
+    for (const role of failureOrder) {
+      rejectors[role](role === 'gate' ? { status: 0 } : { status: 1 });
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    const { error } = await runOutcome;
+    assert.ok(error, 'the run should stop after reviewer failures');
+    assert.deepEqual(error.durableContinuation, { nextAction: 'terminal-handoff', retryable: false }, JSON.stringify({ message: error.message, durableContinuation: error.durableContinuation, failure: error.reviewFailure, execution }));
+    assert.equal(execution.blockedMethodFailure?.role, 'gate');
+    assert.equal(execution.failure?.role, failureOrder.at(-1), 'the ledger keeps the failure recorded last');
+    assert.deepEqual(spawnedRoles.sort(), ['correctness', 'gate', ...(intentApplied ? ['intent'] : [])].sort());
+  }
+});
+
 test('base broad pools both finder artifacts before launching both verifiers', async () => {
   const stateDir = temp();
   const pending = new Map();
