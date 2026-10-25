@@ -10,14 +10,14 @@ const REPO = path.join(__dirname, '..', '..', '..', '..');
 const SKILL = path.join(REPO, 'plugins/concord/skills/coordinate-sessions/SKILL.md');
 const read = (file) => fs.readFileSync(path.join(REPO, file), 'utf8');
 
-test('coordinate-sessions is a Claude-only skill', () => {
+test('coordinate-sessions has separate Claude and Codex skills', () => {
   const skill = fs.readFileSync(SKILL, 'utf8');
   assert.match(skill, /^---\nname: coordinate-sessions\n/);
-  assert.ok(!fs.existsSync(path.join(REPO, 'plugins/concord-codex/skills/coordinate-sessions')));
+  assert.ok(fs.existsSync(path.join(REPO, 'plugins/concord-codex/skills/coordinate-sessions/SKILL.md')));
   assert.ok(!fs.existsSync(path.join(REPO, 'plugins/concord-copilot/skills/coordinate-sessions')));
   assert.match(read('.claude-plugin/marketplace.json'), /coordinate-sessions/);
   assert.doesNotMatch(read('plugins/concord/.claude-plugin/plugin.json'), /coordinate-sessions/, 'plugin.json is a release-bump version file; PRs do not edit it');
-  assert.match(read('README.md'), /\| `coordinate-sessions` \|.*\| Claude Code \|/);
+  assert.match(read('README.md'), /\| `coordinate-sessions` \|.*\| Claude Code, Codex \|/);
 });
 
 test('the environment comes from get_session, not the system prompt', () => {

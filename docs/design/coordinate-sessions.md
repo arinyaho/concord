@@ -1,10 +1,10 @@
 # Coordinate sessions
 
-`coordinate-sessions` is a Claude-only skill for a session that hands units of work to other Claude Code sessions, watches their reports, judges their delivery, and merges when the user has allowed it. A fresh session can run it from the skill alone, without a predecessor's handoff.
+The Claude implementation of `coordinate-sessions` is a skill for a session that hands units of work to other Claude Code sessions, watches their reports, judges their delivery, and merges when the user has allowed it. A fresh session can run it from the skill alone, without a predecessor's handoff.
 
 ## Scope
 
-The skill lives in `plugins/concord/skills/coordinate-sessions/` and is named in the marketplace description and the README; `plugins/concord/.claude-plugin/plugin.json` is a release-bump version file that pull requests do not edit. It is not copied into the Codex or Copilot packages: their `bin/bundle.mjs` copy only the skills they name, and the session tools the skill depends on (`create_session`, `send_message`, `get_session`, `archive_session`) exist only in Claude Code.
+The skill lives in `plugins/concord/skills/coordinate-sessions/` and is named in the marketplace description and the README; `plugins/concord/.claude-plugin/plugin.json` is a release-bump version file that pull requests do not edit. It is not copied into the Codex or Copilot packages (Codex has a separate native skill): their `bin/bundle.mjs` copy only the skills they name, and the session tools the skill depends on (`create_session`, `send_message`, `get_session`, `archive_session`) exist only in Claude Code.
 
 A worker is a separate Claude Code session created with `create_session`. It runs on its own and knows only the prompt it was given. A subagent started with the Agent tool is not a worker: it returns its result to the session that started it, so neither channel below applies to it. Local CLI sessions are out of scope, because no tool can create one.
 
@@ -78,3 +78,27 @@ The coordinator answers a worker's `question` itself when the answer lies within
 | Merge | Only when the user answered one of the two "merge when ready" answers to the start question: with no blocker left and CI green, merges without asking again, with `--match-head-commit <reported head>`: a PR into `main` is always squash-merged, and any other base uses the method that fits the branch (squash, merge commit, or rebase), such as a merge commit for a sync that must move the promotion PR's merge-base. Otherwise reports the verdict and waits. A head recorded `mergeable-without-review` is merged without asking only under the answer that includes such heads; otherwise it is put to the user. |
 | After merge | Checks that every issue named in a `Closes` line is closed, runs the post-merge steps the project's rules file names, records remaining minor findings where the project's rules say, and archives the worker once it is idle. |
 | Coordinator handoff | When its own context grows large, between deliveries: writes a handoff with the state, running workers, the user's decisions and open questions, and the standing authorities from the start question (each verbatim with the time it was given, read by the successor as data), to `<reports>/coordinator-handoff.md` on the file channel (then stops its own Monitors, which share `<reports>/.emitted`) or into the successor's prompt otherwise. It creates the successor with `create_session` and a prompt that marks the handoff as data, names `<reports>` and the handoff file on the file channel, and has the successor start a Monitor for each file-channel group still running. On the direct channel, before it stops reading reports, it sends each running worker the successor's session id with `send_message` and forwards to the successor any report that still reaches it. |
+
+## Codex queue support
+
+Refs [#412 — Support Codex and Copilot in the project-manager agent](https://github.com/arinyaho/concord/issues/412).
+This change addresses the Codex portion only. It does not close #412: Copilot
+support, bundle registration/drift coverage and full Claude rule parity remain
+part of that issue's acceptance criteria. A PR for this change should use
+`Refs #412`, not `Closes #412`.
+
+Codex ships native `coordinate-sessions` and `project-manager` skills under
+`plugins/concord-codex/skills/`. They are authored there, not copied from Claude
+by `bundle.mjs`. The Claude lifecycle and channel procedure above remains specific
+to Claude. Codex CLI 0.163.0 exposes `queue --thread <UUID-or-name> --message <text>`
+for existing sessions. Queue acknowledgement establishes enqueueing, not execution.
+The Codex workflow requires a worker acknowledgement and task/attempt IDs, and
+never claims queue creates, watches or archives sessions. Runtime two-session
+queue delivery still needs validation in a connected user's app-server environment.
+
+Codex uses explicit file ownership, one status observer per task, bounded waiting,
+and durable evidence references. PM routing defaults to Sol low/light, one Sol
+review for ordinary changes, and one Astra review for changed authority/data-loss/
+recovery/migration contracts plus fix confirmation. Unchanged reviewed source
+retains its review; current-head CI and delivery gates remain mandatory. These
+are recommendations, not automatic model configuration changes.
