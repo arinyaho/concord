@@ -24,8 +24,9 @@ jobs:
       - name: Fail when the pull request edits version files other than a stable release
         env:
           BASE_REF: ${{ github.base_ref }}
-          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           git fetch --no-tags origin "$BASE_REF"
-          git fetch --no-tags origin "refs/pull/$PR/head:refs/pr/head"
+          git fetch --no-tags origin "$HEAD_SHA"
+          git update-ref refs/pr/head "$HEAD_SHA"
           node scripts/release-bump.mjs guard "origin/$BASE_REF" refs/pr/head
