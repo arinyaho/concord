@@ -5,7 +5,9 @@ description: Use when a branch, PR, or file should be reviewed, fixed, and re-re
 
 # Review and Fix
 
-Arguments: `[target | file:<path-or-glob> | resume <ref>] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--broad|--no-broad] [--no-dod] [--review-only] [--intent-file <path>] [:: <reviewer guidance>]`, taken from the user's request.
+Arguments: `[target | file:<path-or-glob> | resume <ref>] [--lite [--lite-exclusion <trigger>]] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--broad|--no-broad] [--no-dod] [--review-only] [--intent-file <path>] [:: <reviewer guidance>]`, taken from the user's request.
+
+An explicit user request for a standalone lite review (including “lite”) maps to `--lite`; this unkeyed git-only mode runs correctness, verify, and plan/fix/certify as needed, without a broad gate and with a three-round cap. Preserve configured DoD and existing `--review-only` semantics. Check the approved contract for `public-api`, `schema`, `security`, `cross-package`, `migration`, `multi-outcome`, `unsettled-contract`, `cross-repository`, or `legal`; pass the matching `--lite-exclusion <trigger>` so the CLI refuses before writing state and names why a base review is needed. Never infer eligibility from diff size or synthesize initiative flags. `--lite` conflicts with initiative flags, broad gate flags, and file targets; repeat it on every `round-start` and let a persisted lite ledger retain its mode on resume.
 
 `<plugin-root>` is the installed plugin directory, two levels above this skill's base directory; resolve it from the skill path and never from another harness cache.
 
@@ -34,6 +36,8 @@ node "<plugin-root>/bin/review-cli.js" rerun <ref>
 The ledger permits at most three full runs for one target, including the initial run. When that cumulative budget is exhausted, `rerun` leaves the ledger and evidence unchanged; preserve the unresolved state and split the change or narrow the remaining verification instead of resetting and repeating the full review. A completed front pass without an external intent source is reused while its base and reviewed head ancestry still match; later runs review only the changed diff. There is no automatic final broad panel. Use the explicit `deep-review` skill when a bounded holistic second look is warranted.
 
 Use `file:<path-or-glob>` for the explicit documentation-only profile. It skips the full branch DoD and broad front pass by default. `--broad` opts into the repository-wide front pass.
+
+New file-target attempts perform one review-and-fix pass and one confirmation pass; legacy attempts keep their stored policy. A terminal `reviewed-with-followups` result is allowed only when the independent verifier confirms each survivor as minor and non-blocking; preserve its ID and rationale. Do not automatically rerun or describe that document as clean. Blockers, unknown classifications, and unverified findings remain actionable. The shared file-review prompts define the confirmation evidence; follow the [document review follow-ups contract](../../../../docs/design/document-review-followups.md). This file-only policy does not change git or initiative review.
 
 Return its terminal handoff verbatim. If it exits with `harness-failure`, report that failure without treating the target as clean.
 

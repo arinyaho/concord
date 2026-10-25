@@ -13,6 +13,7 @@ const intentLib = require('./intent');
 const gateLib = require('./gate');
 const gatePanelLib = require('./gate-panel');
 const artifactContract = require('./artifact-contract');
+const { classifyDocumentFindings, isDocumentFollowUp } = require('./document-review');
 const reportLib = require('./report');
 const reviewTelemetry = require('./review-telemetry');
 const { normalizeProviderFailure, reviewContinuation } = require('./provider-failure');
@@ -299,6 +300,8 @@ function evidenceLine(f) {
 
 // What a human asserts when dismissing a gate finding: a real bug handled outside the loop, an acceptance blocker tracked elsewhere, an intended behavior the design covers, or a real finding the change does not require.
 const DISMISS_CLASSIFICATIONS = ['defect', 'acceptance-blocker', 'design-decision', 'optional-hardening'];
+const STANDALONE_LITE_MAX_ROUNDS = 3;
+const LITE_EXCLUSION_TRIGGERS = new Set(['public-api', 'schema', 'security', 'cross-package', 'migration', 'multi-outcome', 'unsettled-contract', 'cross-repository', 'legal']);
 
 // A fix recorded by record-fix names the test that showed it.
 const fixTest = (f) => (f.fix_evidence ? ` (record-fix test: ${f.fix_evidence.command})` : '');
@@ -308,8 +311,20 @@ function renderHandoff(result) {
   const lines = [];
   lines.push(`review-until-green: target ${ledger.target && ledger.target.ref} -- status: ${ledger.status}`);
   lines.push(`rounds: ${ledger.round}/${ledger.budget.max_rounds} (spent ${ledger.budget.spent})`);
+  if (ledger.reviewMode === 'standalone-lite') lines.push('review mode: standalone-lite (broad gate disabled)');
   lines.push(`full runs: ${(ledger.runs || []).length + 1}/${ledger.run_budget?.max_runs ?? REVIEW_MAX_RUNS_DEFAULT}`);
   if (ledger._lastDecision && ledger._lastDecision.reason) lines.push(`termination: ${ledger._lastDecision.reason}`);
+  if (ledger.status === 'reviewed-with-followups') {
+    const byId = new Map([...(ledger.findings || []), ...(ledger.gate_open || [])].map((finding) => [finding.id, finding]));
+    lines.push('', 'Follow-ups (verified minor; not fixed; additional review requires an explicit rerun):');
+    for (const id of ledger.documentFollowUps || []) {
+      const finding = byId.get(id);
+      lines.push(`  - [${id}] ${finding?.file || '(file unavailable)'}: ${finding?.summary || '(summary unavailable)'}`);
+      if (finding?.minorReason) lines.push(`    verifier reason: ${finding.minorReason}`);
+      else if (finding?.rationale) lines.push(`    rationale: ${finding.rationale}`);
+      if (finding?.span ?? finding?.evidence) lines.push(`    span: ${finding.span ?? finding.evidence}`);
+    }
+  }
   if (ledger.reviewRouting) {
     const reviewer = `${ledger.reviewRouting.reviewer || 'host-default'}${ledger.reviewRouting.reviewerModel ? ` (${ledger.reviewRouting.reviewerModel})` : ''}`;
     const fixer = `${ledger.reviewRouting.fixer || 'host-default'}${ledger.reviewRouting.fixerModel ? ` (${ledger.reviewRouting.fixerModel})` : ''}`;
@@ -857,6 +872,26 @@ function requireRoundStartMode(run, rest) {
   if (run && runMode(run) === 'lite' && rest.some((a) => ['--broad', '--gate', '--no-broad'].includes(a))) throw new Error('review-cli round-start: a lite initiative run takes no --broad, --gate or --no-broad; lite always runs the one design-conformance gate (escalate to base before the first launch for the full gate pair)');
 }
 
+function standaloneLiteMode(ref, rest, initiative, ledger) {
+  const liteRequested = rest.includes('--lite');
+  const exclusionIndexes = rest.flatMap((arg, index) => arg === '--lite-exclusion' ? [index] : []);
+  if (exclusionIndexes.length > 1) throw new Error('review-cli round-start: --lite-exclusion may be supplied only once');
+  const exclusion = exclusionIndexes.length ? rest[exclusionIndexes[0] + 1] : null;
+  if (exclusionIndexes.length && (!exclusion || exclusion.startsWith('--'))) throw new Error('review-cli round-start: --lite-exclusion requires exactly one trigger');
+  if (exclusionIndexes.length && !liteRequested) throw new Error('review-cli round-start: --lite-exclusion requires --lite');
+  if (exclusion && !LITE_EXCLUSION_TRIGGERS.has(exclusion)) throw new Error(`review-cli round-start: invalid --lite-exclusion trigger "${exclusion}"`);
+  if (liteRequested && initiative) throw new Error('review-cli round-start: standalone --lite cannot be combined with initiative flags');
+  if (liteRequested && typeof ref === 'string' && ref.startsWith('file:')) throw new Error('review-cli round-start: standalone --lite is git-only and cannot review a file target');
+  const broadRequested = rest.some((arg) => arg === '--broad' || arg === '--gate');
+  if (liteRequested && broadRequested) throw new Error('review-cli round-start: standalone --lite cannot be combined with --broad or --gate');
+  const storedLite = ledger?.reviewMode === 'standalone-lite';
+  if (storedLite && broadRequested) throw new Error('review-cli round-start: standalone-lite mode cannot be changed to broad review; reset or rerun to start a new attempt');
+  if (liteRequested && ledger && ledger.round > 0 && !storedLite) throw new Error('review-cli round-start: standalone-lite mode differs from the active base ledger; reset or rerun to start a new attempt');
+  if (storedLite && ledger.budget?.max_rounds !== STANDALONE_LITE_MAX_ROUNDS) throw new Error('review-cli round-start: standalone-lite round budget differs from its immutable three-round budget');
+  if (exclusion) throw new Error(`review-cli round-start: standalone --lite is excluded by the declared ${exclusion} trigger; choose a base review`);
+  return liteRequested || storedLite;
+}
+
 function extractInitiative(argv) {
   const args = argv.slice();
   const found = {};
@@ -1243,7 +1278,9 @@ function verifiedRound(ref, stateDir, run, what) {
   requireReservations(run, ledger, gatesNeeds(stateDir, n), what);
   const vJson = readVerify(stateDir, ledger, n);
   const cJson = readArtifact(stateDir, n, 'correctness');
-  const candidates = roundCandidates(gc, cJson, vJson);
+  const rawCandidates = roundCandidates(gc, cJson, vJson);
+  const documentPolicy = ledger.target?.type === 'file' && ledger.documentReviewPolicy === 'single-pass-confirmation';
+  const candidates = documentPolicy ? classifyDocumentFindings(rawCandidates, cJson.findings, vJson) : rawCandidates;
   // Symmetric guard: an intent-prefixed id must never come from the
   // correctness (auto-fixing) gate -- only the intent detector may mint
   // "intent:" ids. Catching this here (not just on the intent side) keeps
@@ -1307,8 +1344,13 @@ function verifiedRound(ref, stateDir, run, what) {
   // (its seen entry gone, so no longer `reopened`) is not resolved by a fix from before it recurred.
   const isReplay = (f) => !f.reopened && (ledger.journal || []).slice((ledger.journal_floor || {})[f.id]?.at || 0).some((j) => (j.findingIds || []).includes(f.id) || j.id === f.id
     || (j.resolutions || []).some((r) => r.id === f.id && r.file === f.file && r.span === f.span)) && !spanPresent(f.file, f.span);
+  const documentFollowUps = documentPolicy && n >= 2
+    ? confirmedNonKilled.filter(isDocumentFollowUp)
+    : [];
+  const documentFollowUpIds = new Set(documentFollowUps.map((finding) => finding.id));
   const fixes = confirmedNonKilled
     .filter((f) => !isReplay(f))
+    .filter((f) => !documentFollowUpIds.has(f.id))
     .map((f) => ({ id: f.id, file: f.file, span: f.span, summary: f.summary }));
   // What the reviewer reported about release-blocking, kept apart from `fixes` so the fix path sees no new field.
   const classified = new Map(confirmedNonKilled.map((f) => [f.id, f]));
@@ -1411,7 +1453,7 @@ function verifiedRound(ref, stateDir, run, what) {
     gateOpen = thisRound.concat(carried);
   }
   const reopenedIds = confirmedNonKilled.filter((f) => f.reopened).map((f) => f.id);
-  return { repoRoot, slug, ledger, n, isGit, changed, fixes, classified, suppressedIds, resolvedAbsent, reopenedIds, intentParked, gateOpen, gateRejectedIds, gateDuplicateIds, gateRaisedIds, gateApplied, addressed: vJson.addressed || [] };
+  return { repoRoot, slug, ledger, n, isGit, changed, fixes, classified, suppressedIds, resolvedAbsent, reopenedIds, intentParked, gateOpen, gateRejectedIds, gateDuplicateIds, gateRaisedIds, gateApplied, documentPolicy, documentFollowUps, addressed: vJson.addressed || [] };
 }
 
 // Every mutating target verb takes the same lock, including an unkeyed call
@@ -1424,6 +1466,12 @@ function main(resolveFromCwd) {
     const result = require('./review-feedback').runFeedback(args.slice(1), process.env.REVIEW_REPO_ROOT || process.cwd());
     process.stdout.write(`${JSON.stringify(result)}\n`);
     return;
+  }
+  if (args[0] === 'round-start' && args[1]) {
+    // Reject incompatible standalone-lite requests before repository preflight,
+    // target locks, state-directory creation, or keyed-run initialization.
+    const prior = readLedger(resolveStateDir(resolveFromCwd), targetSlug(args[1]));
+    standaloneLiteMode(args[1], args.slice(2), initiative, prior);
   }
   // The runner marks its read-only untrusted-checkout path with this existing
   // flag; project-authored shell commands are never executed in that mode.
@@ -1439,6 +1487,7 @@ function main(resolveFromCwd) {
   const isBound = (ledger) => !!ledger?.initiative_binding || !!ledger?.initiative_reservations?.length;
   const dispatch = () => {
     const prior = readPrior();
+    if (args[0] === 'round-start') standaloneLiteMode(args[1], args.slice(2), initiative, prior);
     if (!initiative && isBound(prior)) throw new Error('review-cli: this target belongs to an initiative; every mutating verb requires the complete initiative run flags');
     // carry's whole point is binding the target to a DIFFERENT key than its
     // current one -- the generic same-binding check would refuse every real
@@ -2052,6 +2101,10 @@ function runVerb(resolveFromCwd, args, initiative) {
     // Rejected before any state is written: the intent-review and gate-pending resets below delete the cached intent.
     requireRoundStartMode(run, optionArgs);
     let ledger = storedLedger || emptyLedger({ kind: 'local', ref });
+    const standaloneLite = standaloneLiteMode(ref, optionArgs, initiative, storedLedger);
+    if (standaloneLite && !storedLedger?.reviewMode) {
+      ledger = { ...ledger, reviewMode: 'standalone-lite', budget: { ...ledger.budget, max_rounds: STANDALONE_LITE_MAX_ROUNDS } };
+    }
     const reviewerGuidance = storedLedger?.reviewerGuidance || requestedGuidance || null;
     const ROUTING_FLAGS = new Map([
       ['--reviewer', 'reviewer'],
@@ -2097,7 +2150,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     const broadFlagPassed = optionArgs.some((a) => BROAD_FLAGS.has(a));
     const NO_BROAD_FLAGS = new Set(['--no-broad']);
     const noBroadFlagPassed = optionArgs.some((a) => NO_BROAD_FLAGS.has(a));
-    const lite = !!run && runMode(run) === 'lite';
+    const initiativeLite = !!run && runMode(run) === 'lite';
     // Executable-DoD opt-out (--no-dod): the same deferral `"dod": null` in
     // review.config.json declares, asked for per-run instead. It exists for a
     // repo that HAS a config with real `dod` commands but wants the executable
@@ -2116,8 +2169,11 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (intentFileAt !== -1 && (!intentFile || intentFile.startsWith('--') || optionArgs.indexOf('--intent-file', intentFileAt + 1) !== -1)) {
       throw new Error('review-cli round-start: --intent-file requires exactly one value');
     }
-    const positional = optionArgs.filter((a, index) => !BROAD_FLAGS.has(a) && !NO_BROAD_FLAGS.has(a) && !NO_DOD_FLAGS.has(a) && a !== '--no-intent-command' && !routingIndexes.has(index)
-      && (intentFileAt === -1 || (index !== intentFileAt && index !== intentFileAt + 1)));
+    const standaloneLiteExclusionAt = optionArgs.indexOf('--lite-exclusion');
+    const positional = optionArgs.filter((a, index) => !BROAD_FLAGS.has(a) && !NO_BROAD_FLAGS.has(a) && !NO_DOD_FLAGS.has(a)
+      && a !== '--no-intent-command' && a !== '--lite' && a !== '--lite-exclusion' && !routingIndexes.has(index)
+      && (intentFileAt === -1 || (index !== intentFileAt && index !== intentFileAt + 1))
+      && (standaloneLiteExclusionAt === -1 || index !== standaloneLiteExclusionAt + 1));
     for (const tok of positional) {
       if (tok.startsWith('--')) throw new Error(`review-cli round-start: unknown flag "${tok}"`);
     }
@@ -2253,7 +2309,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // repository no longer reaches is not replayed; resetUnreachable below starts that target over.
     if (require('./review').TERMINAL_STATUSES.has(ledger.status) && (isFileTarget || !ledger.target?.head_sha || gitIsReachable(repoRoot, ledger.target.head_sha))) {
       writeLedger(stateDir, slug, ledger);
-      process.stdout.write(JSON.stringify({ decision: 'terminal', status: ledger.status, round: ledger.round, base: ledger.target?.base, head: ledger.target?.head_sha, stateDir }) + '\n');
+      process.stdout.write(JSON.stringify({ decision: 'terminal', status: ledger.status, mode: ledger.reviewMode === 'standalone-lite' ? 'standalone-lite' : (run ? runMode(run) : undefined), gateMode: ledger.reviewMode === 'standalone-lite' ? 'none' : (run && runMode(run) === 'lite' ? 'design-conformance' : 'pair'), round: ledger.round, base: ledger.target?.base, head: ledger.target?.head_sha, stateDir, ...(ledger.documentReviewPolicy ? { documentReviewPolicy: ledger.documentReviewPolicy } : {}), ...(ledger.status === 'reviewed-with-followups' ? { followUps: ledger.documentFollowUps || [] } : {}) }) + '\n');
       return;
     }
 
@@ -2308,7 +2364,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     const intentCfg = intentFile ? { file: path.resolve(intentFile) } : noIntentCommand ? null : intentLib.loadIntentConfig(repoRoot);
     const fetchIntentNow = () => (intentCfg.file ? intentLib.readIntentFile(intentCfg.file) : intentLib.fetchIntent({ command: intentCfg.command, cwd: repoRoot, ref, base }));
     const broadReuse = ledger.broad_reuse;
-    const reuseFrontPass = !!broadReuse && !broadFlagPassed && !noBroadFlagPassed && !isFileTarget && !intentCfg && !reviewerGuidance && !broadReuse.intentHash && !broadReuse.reviewerGuidance
+    const reuseFrontPass = !standaloneLite && !!broadReuse && !broadFlagPassed && !noBroadFlagPassed && !isFileTarget && !intentCfg && !reviewerGuidance && !broadReuse.intentHash && !broadReuse.reviewerGuidance
       && broadReuse.base_sha === baseSha
       && gitIsReachable(repoRoot, broadReuse.head_sha);
     const retryDiffBase = !isFileTarget && ledger.target?.base_sha === baseSha && ledger.retry_diff_base && gitIsReachable(repoRoot, ledger.retry_diff_base) ? ledger.retry_diff_base : null;
@@ -2431,12 +2487,12 @@ function runVerb(resolveFromCwd, args, initiative) {
       ledger = begun;
       if (terminal) {
         writeLedger(stateDir, slug, ledger);
-        process.stdout.write(JSON.stringify({ decision: 'terminal', status: ledger.status, round: ledger.round, base: ledger.target?.base, head: ledger.target?.head_sha, stateDir }) + '\n');
+        process.stdout.write(JSON.stringify({ decision: 'terminal', status: ledger.status, round: ledger.round, base: ledger.target?.base, head: ledger.target?.head_sha, stateDir, ...(ledger.documentReviewPolicy ? { documentReviewPolicy: ledger.documentReviewPolicy } : {}), ...(ledger.status === 'reviewed-with-followups' ? { followUps: ledger.documentFollowUps || [] } : {}) }) + '\n');
         return;
       }
       if (noOp) {
         writeLedger(stateDir, slug, ledger);
-        process.stdout.write(JSON.stringify({ decision: 'no-op', round: ledger.round, budget: ledger.budget, stateDir }) + '\n');
+      process.stdout.write(JSON.stringify({ decision: 'no-op', mode: standaloneLite ? 'standalone-lite' : (run ? runMode(run) : undefined), gateMode: standaloneLite ? 'none' : (initiativeLite ? 'design-conformance' : 'pair'), round: ledger.round, budget: ledger.budget, stateDir }) + '\n');
         return;
       }
     }
@@ -2483,12 +2539,12 @@ function runVerb(resolveFromCwd, args, initiative) {
       dismissedIds: dismissedIds(ledger),
       changedFiles: reusedGateChangedPaths,
     }) : ledger.gate_open;
-    let gateArmed = lite ? true : broadFlagPassed ? true
+    let gateArmed = initiativeLite ? true : standaloneLite ? false : broadFlagPassed ? true
       : noBroadFlagPassed ? false
       : reuseFrontPass ? false
       : typeof ledger.gateArmed === 'boolean' ? ledger.gateArmed
       : !isFileTarget;
-    const gateDisarmedBy = gateArmed ? null : (noBroadFlagPassed ? '--no-broad' : reuseFrontPass ? 'prior-front-pass' : isFileTarget ? 'file-target' : ledger.gateDisarmedBy || '--no-broad');
+    const gateDisarmedBy = gateArmed ? null : (standaloneLite ? '--lite' : noBroadFlagPassed ? '--no-broad' : reuseFrontPass ? 'prior-front-pass' : isFileTarget ? 'file-target' : ledger.gateDisarmedBy || '--no-broad');
     // Fired only on the FIRST armed round. The pair reads the whole repository,
     // and the defects it is built for -- cross-context violations, design
     // conformance, latent gaps -- live in a tree that does not change round to
@@ -2509,11 +2565,11 @@ function runVerb(resolveFromCwd, args, initiative) {
     // before plan-fixes runs. Re-deriving from review.config.json there would
     // silently miss a flag-enabled round and discard its findings.
     let gateApplied = gateArmed && (gateRounds.length === 0 || gateRounds.includes(ledger.round));
-    if (run && gateApplied && !lite && !claimBroadSweep(run, { target: ref, attemptId: ledger.attemptId })) {
+    if (run && gateApplied && !initiativeLite && !claimBroadSweep(run, { target: ref, attemptId: ledger.attemptId })) {
       gateArmed = false;
       gateApplied = false;
     }
-    const expectedArtifacts = ['correctness', 'verify', 'plan'].concat(intentCfg ? ['intent'] : [], gateApplied ? (lite ? ['gate'] : ['gate', 'gate-verify']) : []);
+    const expectedArtifacts = ['correctness', 'verify', 'plan'].concat(intentCfg ? ['intent'] : [], gateApplied ? (initiativeLite ? ['gate'] : ['gate', 'gate-verify']) : []);
     const completedArtifacts = resumed && ledger.execution
       ? resumedCompletedArtifacts.filter((role) => expectedArtifacts.includes(role))
       : [];
@@ -2591,12 +2647,14 @@ function runVerb(resolveFromCwd, args, initiative) {
     // re-parsing the ref. For git targets, the existing ref/base/head_sha fields
     // are preserved; type/hasDoD are added for consistency.
     const targetType = isFileTarget ? 'file' : 'git';
+    const documentReviewPolicy = !storedLedger && isFileTarget ? 'single-pass-confirmation' : storedLedger?.documentReviewPolicy;
     const baseTarget = ledger.target || { kind: 'local', ref };
     const targetUpdate = isFileTarget
       ? { ...baseTarget, type: 'file', hasDoD: false, spec: fileSpec, head_sha: headSha }
       : { ...baseTarget, type: 'git', hasDoD: true, spec: { ref, base }, base, base_sha: baseSha, head_sha: headSha };
     ledger = {
       ...ledger,
+      ...(documentReviewPolicy ? { documentReviewPolicy } : {}),
       dod,
       phase: 'gates',
       gateArmed,
@@ -2606,7 +2664,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       // A resumed round re-derives from its finder artifacts, so earlier-or-equal rounds keep no stale claim.
       cli_derived: (ledger.cli_derived || []).filter((entry) => entry.round < ledger.round),
       gateApplied,
-      gateMode: lite ? 'design-conformance' : 'pair',
+      gateMode: standaloneLite ? 'none' : initiativeLite ? 'design-conformance' : 'pair',
       gate_rounds: gateApplied && !gateRounds.includes(ledger.round) ? [...gateRounds, ledger.round] : gateRounds,
       gate_reviewed_head_sha: gateApplied && isGit ? headSha : ledger.gate_reviewed_head_sha,
       dodDeferred,
@@ -2636,7 +2694,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // The three fields are mutually descriptive: pending is the normal configured
     // gate waiting for convergence, deferred means no gate will run, and passed is
     // retained for file/no-op compatibility. Callers must not infer one from another.
-    process.stdout.write(JSON.stringify({ decision: 'work', mode: run ? runMode(run) : undefined, gateMode: lite ? 'design-conformance' : 'pair', ref: targetUpdate.ref, base: targetUpdate.base, head: targetUpdate.head_sha, attemptId: ledger.attemptId, round: ledger.round, budget: ledger.budget, dodPassed: dod.deferredBy === 'pending-final' ? false : dod.passed, dodDeferred: !!dod.deferred && dod.deferredBy !== 'pending-final', dodPending: dod.deferredBy === 'pending-final', intentApplied: !!intentCfg, intentHash: ledger.intentHash || null, reviewerGuidance: ledger.reviewerGuidance || null, priorIntentIds, gateApplied, targetType, reviewRouting, stateDir, completedArtifacts, normalizedArtifacts, planRetry: ledger.execution?.planRetry || null, retryArtifacts, retryArtifact, repairArtifacts }) + '\n');
+    process.stdout.write(JSON.stringify({ decision: 'work', mode: standaloneLite ? 'standalone-lite' : (run ? runMode(run) : undefined), gateMode: standaloneLite ? 'none' : initiativeLite ? 'design-conformance' : 'pair', ref: targetUpdate.ref, base: targetUpdate.base, head: targetUpdate.head_sha, attemptId: ledger.attemptId, round: ledger.round, budget: ledger.budget, dodPassed: dod.deferredBy === 'pending-final' ? false : dod.passed, dodDeferred: !!dod.deferred && dod.deferredBy !== 'pending-final', dodPending: dod.deferredBy === 'pending-final', intentApplied: !!intentCfg, intentHash: ledger.intentHash || null, reviewerGuidance: ledger.reviewerGuidance || null, priorIntentIds, gateApplied, targetType, ...(ledger.documentReviewPolicy ? { documentReviewPolicy: ledger.documentReviewPolicy } : {}), reviewRouting, stateDir, completedArtifacts, normalizedArtifacts, planRetry: ledger.execution?.planRetry || null, retryArtifacts, retryArtifact, repairArtifacts }) + '\n');
     return;
   }
 
@@ -2694,8 +2752,13 @@ function runVerb(resolveFromCwd, args, initiative) {
     };
     const vJson = readVerify(stateDir, ledger, n, false);
     const cJson = readArtifact(stateDir, n, 'correctness');
-    const candidates = roundCandidates(gc, cJson, vJson);
+    const rawCandidates = roundCandidates(gc, cJson, vJson);
+    const documentPolicy = ledger.target?.type === 'file' && ledger.documentReviewPolicy === 'single-pass-confirmation';
+    const candidates = documentPolicy ? classifyDocumentFindings(rawCandidates, cJson.findings, vJson) : rawCandidates;
     const killedIds = gc.parseVerifyVerdict(JSON.stringify({ rejected: vJson.rejected || [] }), candidates).rejectedIds;
+    const documentFollowUps = documentPolicy && n >= 2
+      ? candidates.filter((finding) => !killedIds.includes(finding.id) && isDocumentFollowUp(finding)).map((finding) => finding.id)
+      : [];
     // Carry each rejection's stated basis into the ledger so the handoff can
     // show WHY a finding was killed. Without it the handoff reports only a
     // count, and a rejection backed by a real measurement is indistinguishable
@@ -2802,6 +2865,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     };
     const outcome = {
       dodPassed: !!(ledger.dod && ledger.dod.passed), dodDeferred: !!(ledger.dod && ledger.dod.deferred), findings: candidates, fixedIds, parkedIds, killedIds, specDoubtScope: 'none', fixCommits, parkReasons,
+      documentFollowUps,
       targetUnchanged,
       examined: examinedForOutcome(),
       intentReviewCount: (ledger.intent_parked || []).length,
@@ -2969,7 +3033,7 @@ function runVerb(resolveFromCwd, args, initiative) {
 
   if (verb === 'findings') {
     requireRef(ref, 'findings');
-    const { repoRoot, fixes, classified, intentParked, gateOpen, addressed } = verifiedRound(ref, stateDir, run, 'findings');
+    const { repoRoot, fixes, classified, intentParked, gateOpen, addressed, documentPolicy, documentFollowUps, ledger, n } = verifiedRound(ref, stateDir, run, 'findings');
     // The file name comes from a reviewer, so it is read only when its real
     // path stays inside the checkout: a line number for a file elsewhere would
     // tell whoever reads the review whether a guessed span is in that file.
@@ -2987,12 +3051,19 @@ function runVerb(resolveFromCwd, args, initiative) {
     };
     // Gate findings carry their span as `evidence` and their lens as `class`.
     const findings = [...fixes, ...intentParked, ...gateOpen].map((g) => {
-      const f = { ...g, ...(classified.has(g.id) && { releaseBlocking: classified.get(g.id).releaseBlocking, rationale: classified.get(g.id).rationale }) };
+      const classification = classified.get(g.id);
+      const f = { ...g, ...(classification && {
+        releaseBlocking: classification.releaseBlocking, rationale: classification.rationale,
+        ...(documentPolicy ? { minorVerified: classification.minorVerified, minorReason: classification.minorReason, blockingReason: classification.blockingReason } : {}),
+      }) };
       const span = f.span ?? f.evidence ?? '';
       // `class` is the one decision a review-only caller needs: minor only when the reviewer classified it follow-up eligible and gate-verify did not override it.
-      return { id: f.id, category: f.class || f.id.split(':', 1)[0], file: f.file, line: lineOf(f.file, span), span, summary: f.summary, requirement: f.requirement || '', class: gateFollowUpEligible(f) ? 'minor' : 'blocker', ...(f.releaseBlocking !== undefined && { releaseBlocking: f.releaseBlocking }), ...(f.rationale !== undefined && { rationale: f.rationale }), ...(f.blockingReason && { blockingReason: f.blockingReason }) };
+      const isMinor = documentPolicy ? isDocumentFollowUp(f) : gateFollowUpEligible(f);
+      return { id: f.id, category: f.class || f.id.split(':', 1)[0], file: f.file, line: lineOf(f.file, span), span, summary: f.summary, requirement: f.requirement || '', class: isMinor ? 'minor' : 'blocker', ...(f.releaseBlocking !== undefined && { releaseBlocking: f.releaseBlocking }), ...(f.rationale !== undefined && { rationale: f.rationale }), ...(f.blockingReason && { blockingReason: f.blockingReason }) };
     });
-    process.stdout.write(JSON.stringify({ findings, ...(process.env.CONCORD_UNTRUSTED_ARTIFACTS === '1' && addressed.length && { addressed }) }) + '\n');
+    process.stdout.write(JSON.stringify({ findings, ...(documentPolicy ? { planRequired: fixes.length > 0 } : {}),
+      ...(documentPolicy && n >= 2 ? { documentFollowUps } : {}),
+      ...(process.env.CONCORD_UNTRUSTED_ARTIFACTS === '1' && addressed.length && { addressed }) }) + '\n');
     return;
   }
 
@@ -3379,6 +3450,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     }]);
     const fresh = {
       ...emptyLedger(prior.target || { kind: 'local', ref }),
+      ...(prior.target?.type === 'file' ? { documentReviewPolicy: 'single-pass-confirmation' } : {}),
       runs,
       review_history: prior.review_history || [],
       run_budget: { max_runs: maxRuns },

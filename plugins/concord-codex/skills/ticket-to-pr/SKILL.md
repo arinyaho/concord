@@ -16,6 +16,10 @@ When one set of acceptance criteria requires multiple repositories, keep one out
 
 Record a discriminating outcome-level red against the unchanged combined system before treating the outcome as established. Stages 2 and 8 for each repository unit then use the narrowest executable check that proves that unit's contribution, including its real consumer when a library contract requires one. When the final `review-and-fix` DoD ran that same discriminating check against the exact final head, dependencies, and environment, reuse that evidence for stage 8 and do not run the check again; otherwise run the discriminating green once. Do not describe a unit's green as end-to-end green for the outcome. The integration owner later checks the same outcome behavior against the exact combined artifacts. If a required package release, pin, deployment, or environment is unavailable, record the outcome check as blocked with its owner and unblock condition; do not move the outcome ticket to `READY FOR TEST` or `Done`. This PR pipeline never authorizes a release or deployment.
 
+## Review mode selection
+
+When the user explicitly asks for a lite review, pass `--lite` to the standalone `review-and-fix` stage; do not create an initiative key or infer lite from diff size. Standalone `--lite` is incompatible with initiative flags and uses a different gate policy from initiative `--initiative-mode lite`. If the invocation already carries initiative flags, stop before review and explain the conflict instead of silently changing modes. Before starting standalone lite, check the approved contract for `public-api`, `schema`, `security`, `cross-package`, `migration`, `multi-outcome`, `unsettled-contract`, `cross-repository`, or `legal`; pass a matching `--lite-exclusion <trigger>` so the CLI refuses with the named reason and the user can choose a base review.
+
 ## The stages
 
 | # | Stage | Exit condition |
