@@ -18,9 +18,13 @@ permissions:
   contents: read
 
 jobs:
-  plugin-tests:
+  plugin-test-shards:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
 
@@ -28,7 +32,18 @@ jobs:
         with:
           node-version: 22
 
-      - run: find plugins -path '*/test/*.test.js' -type f -print0 | xargs -0 -r node --test
+      - run: find plugins -path '*/test/*.test.js' -type f -print0 | sort -z | xargs -0 -r node --test --test-shard=${{ matrix.shard }}/4
+
+  # Keep the required check name stable while running the suite in parallel.
+  plugin-tests:
+    needs: plugin-test-shards
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - run: test "$RESULT" = success
+        env:
+          RESULT: ${{ needs.plugin-test-shards.result }}
 
   agent-team-tests:
     runs-on: ubuntu-latest
