@@ -3700,6 +3700,33 @@ test('reviewCodexConfig keeps the CODEX_CLI_PATH binary readable although it is 
   }
 });
 
+test('reviewCodexConfig keeps the selected working PATH Codex readable when CODEX_CLI_PATH fails its version probe', () => {
+  const accountHome = fs.realpathSync(temp());
+  const appDir = path.join(accountHome, 'appbin'), skippedDir = path.join(accountHome, 'not-executable'), pathDir = path.join(accountHome, 'pathbin');
+  fs.mkdirSync(appDir); fs.mkdirSync(skippedDir); fs.mkdirSync(pathDir);
+  const appCli = path.join(appDir, 'codex'), skippedCli = path.join(skippedDir, 'codex'), pathCli = path.join(pathDir, 'codex');
+  fs.writeFileSync(appCli, '#!/bin/sh\nexit 1\n');
+  fs.writeFileSync(skippedCli, '#!/bin/sh\necho codex-cli\n');
+  fs.writeFileSync(pathCli, '#!/bin/sh\n[ "$1" = "--version" ] && { echo codex-cli; exit 0; }\nexit 1\n');
+  fs.chmodSync(appCli, 0o755); fs.chmodSync(skippedCli, 0o644); fs.chmodSync(pathCli, 0o755);
+  const checkout = fs.realpathSync(temp());
+  const saved = { PATH: process.env.PATH, bin: process.env.CONCORD_CODEX_BIN, app: process.env.CODEX_CLI_PATH };
+  delete process.env.CONCORD_CODEX_BIN;
+  process.env.CODEX_CLI_PATH = appCli;
+  process.env.PATH = [skippedDir, pathDir].map((dir) => path.relative(checkout, dir)).join(path.delimiter);
+  try {
+    const config = reviewCodexConfig({ home: fs.realpathSync(temp()), sourceAuth: path.join(accountHome, '.codex', 'auth.json'), checkout, denyRead: [], realHome: accountHome });
+    assert.ok(!config.includes(`${JSON.stringify(pathCli)} = "deny"`), config);
+    assert.ok(!config.includes(`${JSON.stringify(pathDir)} = "deny"`), config);
+    assert.ok(config.includes(`${JSON.stringify(skippedDir)} = "deny"`), config);
+    assert.ok(config.includes(`${JSON.stringify(appDir)} = "deny"`), config);
+  } finally {
+    if (saved.PATH === undefined) delete process.env.PATH; else process.env.PATH = saved.PATH;
+    if (saved.bin === undefined) delete process.env.CONCORD_CODEX_BIN; else process.env.CONCORD_CODEX_BIN = saved.bin;
+    if (saved.app === undefined) delete process.env.CODEX_CLI_PATH; else process.env.CODEX_CLI_PATH = saved.app;
+  }
+});
+
 test('switching CONCORD_CODEX_BIN after a failed launch changes only the executable and leaves the state directory untouched', async () => {
   const dir = temp();
   const stateDir = path.join(dir, 'state');
@@ -3767,7 +3794,9 @@ test('reviewOnly denies the reviewer every entry of the real home except the way
   fs.symlinkSync(linked, path.join(fakeHome, 'link-out'));
   fs.symlinkSync('/usr', path.join(fakeHome, 'link-system'));
   fs.symlinkSync(path.join(fakeHome, '.ssh'), path.join(fakeHome, 'link-in'));
-  fs.writeFileSync(path.join(fakeHome, '.local', 'bin', 'codex'), '');
+  const fakeCodex = path.join(fakeHome, '.local', 'bin', 'codex');
+  fs.writeFileSync(fakeCodex, '#!/bin/sh\n[ "$1" = "--version" ] && { echo codex-cli; exit 0; }\nexit 1\n');
+  fs.chmodSync(fakeCodex, 0o755);
   const saved = { HOME: process.env.HOME, CODEX_HOME: process.env.CODEX_HOME, PATH: process.env.PATH };
   // The runner itself runs with the reviewer's empty HOME, so the real home comes in as an option.
   process.env.HOME = fs.realpathSync(temp()); process.env.CODEX_HOME = sourceHome; process.env.PATH = `${path.join(fakeHome, '.local', 'bin')}${path.delimiter}${saved.PATH}`;
