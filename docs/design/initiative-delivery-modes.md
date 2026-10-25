@@ -2,6 +2,12 @@
 
 An initiative run has a delivery mode, `base` or `lite`, stored in its run ledger. `base` is the default and runs the full review: correctness, verify, and the gate pair. `lite` is opt-in per run and reduces only the cross-cutting gate to a design-conformance check, so work whose risk is local does not pay for the full gate on every round. The run ledger, budgets, and reservation contract are described in the [initiative review runs design](initiative-review-runs.md).
 
+## Standalone lite review
+
+The unkeyed `review-and-fix --lite` mode is separate from initiative `--initiative-mode lite`. It is git-only, stores `reviewMode: "standalone-lite"` in the target ledger, runs correctness and verify with plan/fix/certify as needed, omits broad gates, and has an immutable three-round budget. The configured DoD remains active unless the caller explicitly requests `--no-dod`; review-only keeps its existing behavior. Resume inherits the stored mode and budget when `--lite` is omitted, and an explicit `--lite` cannot switch an active base ledger. The CLI refuses `--lite` with initiative flags, broad-gate flags, and file targets before writing state.
+
+The driver checks the approved contract for the known lite exclusion triggers `public-api`, `schema`, `security`, `cross-package`, `migration`, `multi-outcome`, `unsettled-contract`, `cross-repository`, and `legal`. For a named trigger it passes `--lite-exclusion <trigger>`; the CLI refuses the run and names the reason to choose a base review. Eligibility is decided from the contract before starting, never inferred from diff size. A user request for standalone lite is passed as `--lite` without creating an initiative key. Initiative lite remains unchanged: it runs its design-conformance gate under the shared initiative budget.
+
 ## Ledger and mode
 
 The run ledger (schema version 5) carries `mode` and, after an escalation, `escalation: { from, to, trigger }`. A ledger of an older version is rejected, and the error tells the operator to start a new run key, `rerun` each ref, and remap the initiative skill's source index to the new key.

@@ -5,6 +5,7 @@ const path = require('node:path');
 const { REVIEW_MAX_ROUNDS_DEFAULT, REVIEW_MAX_RUNS_DEFAULT, REVIEW_PARK_BUDGET_DEFAULT } = require('./config');
 const { emptyGatePanel } = require('./gate-panel');
 const { writeFileAtomic } = require('./atomic-write');
+const { isDocumentFollowUp } = require('./document-review');
 
 // Pure, unit-testable core for review-until-green. No LLM calls, no process
 // spawning, no network -- the "CLI enforces, the agent drives" model: this module
@@ -225,7 +226,7 @@ function followUpSuffix(gateFollowUps) {
 }
 
 function decideTermination(roundOutcome) {
-  const { dodPassed, dodDeferred = false, dodCommand, dodExitCode, openFindingsCount, specDoubtScope, noProgress, budgetSpent, maxRounds, fixedCount = 0, parkedCount = 0, intentReviewCount = 0, gateOpenCount = 0, gateFollowUps = [], panelConfigured = false, panelDone = false, hasDoD = true, dryStreak = 0, targetUnchanged = true } = roundOutcome;
+  const { dodPassed, dodDeferred = false, dodCommand, dodExitCode, openFindingsCount, specDoubtScope, noProgress, budgetSpent, maxRounds, fixedCount = 0, parkedCount = 0, intentReviewCount = 0, gateOpenCount = 0, gateFollowUps = [], panelConfigured = false, panelDone = false, hasDoD = true, dryStreak = 0, targetUnchanged = true, documentConfirmation = false, documentFollowUps = [] } = roundOutcome;
 
   if (specDoubtScope === 'whole-diff') {
     return { continue: false, converged: false, parked: false, abandoned: true, reason: 'spec-doubt invalidates the whole diff' };
@@ -255,6 +256,13 @@ function decideTermination(roundOutcome) {
         return { continue: false, converged: false, parked: false, abandoned: false, panelPending: true, reason: 'dry-round clean, but the holistic GATE panel has not run yet this convergence attempt' };
       }
       return { continue: false, converged: true, parked: false, abandoned: false, reason: `no new findings for ${dryStreak} consecutive rounds (dry, no-DoD target)${gateFollowUps.length ? `; ${gateFollowUps.length} non-blocking GATE follow-up candidate(s)` : ''}`, ...followUpSuffix(gateFollowUps) };
+    }
+    if (documentConfirmation && targetUnchanged && fixedCount === 0 && openFindingsCount > 0 && documentFollowUps.length === openFindingsCount) {
+      if (gateOpenCount > 0) return { continue: false, converged: false, parked: false, abandoned: false, gatePending: true, reason: 'document confirmation has an open blocking GATE finding' };
+      if (panelConfigured && !panelDone) return { continue: false, converged: false, parked: false, abandoned: false, panelPending: true, reason: 'document confirmation still requires the configured panel' };
+      return { continue: false, converged: false, parked: false, abandoned: false, reviewedWithFollowUps: true,
+        reason: 'document confirmation completed with only independently verified minor follow-ups',
+        followUps: [...new Set([...documentFollowUps, ...gateFollowUps])] };
     }
     if (budgetSpent >= maxRounds) {
       return { continue: false, converged: false, parked: true, abandoned: false, reason: 'round budget exhausted before the no-DoD target ran dry' };
@@ -352,7 +360,7 @@ function resetUnreachable(ledger) {
 // ---------------------------------------------------------------------------
 
 // A ledger in one of these statuses has already concluded; the loop is over.
-const TERMINAL_STATUSES = new Set(['clean', 'parked', 'abandoned']);
+const TERMINAL_STATUSES = new Set(['clean', 'parked', 'abandoned', 'reviewed-with-followups']);
 
 // Starts a new round against `diffContentHash`. Returns a NEW ledger object
 // (does not mutate the input) plus three flags for the caller:
@@ -424,6 +432,7 @@ function applyRoundOutcome(ledger, outcome) {
   const killedIds = new Set(outcome.killedIds || []);
   const fixCommits = outcome.fixCommits || {};
   const parkReasons = outcome.parkReasons || {};
+  const documentPolicy = ledger.target?.type === 'file' && ledger.documentReviewPolicy === 'single-pass-confirmation';
 
   const survivors = dedupeAgainstSeen(outcome.findings || [], ledger.seen);
 
@@ -445,6 +454,13 @@ function applyRoundOutcome(ledger, outcome) {
       line: f.line,
       ...(f.span ? { span: f.span } : {}),
       summary: f.summary,
+      ...(documentPolicy && f.id.startsWith('docreview:') ? {
+        ...(Array.isArray(f.releaseBlocking) ? { releaseBlocking: f.releaseBlocking.slice() } : {}),
+        ...(typeof f.rationale === 'string' ? { rationale: f.rationale } : {}),
+        minorVerified: isDocumentFollowUp(f),
+        ...(isDocumentFollowUp(f) ? { minorReason: f.minorReason } : {}),
+        ...(f.blockingReason ? { blockingReason: f.blockingReason } : {}),
+      } : {}),
       status,
       fix_commit: status === 'fixed' ? fixCommits[f.id] || null : null,
       park_reason: status === 'parked' ? parkReasons[f.id] || null : null,
@@ -512,7 +528,8 @@ function applyRoundOutcome(ledger, outcome) {
     // confirmation round, so the round being decided counts: the last budgeted round
     // must not continue into another. A git target's final fix round is deliberately
     // let through to one confirmation round, so it keeps the uncounted value.
-    budgetSpent: hasDoD ? ledger.budget.spent : ledger.budget.spent + 1,
+    // Standalone lite has a strict total cap, including confirmation rounds.
+    budgetSpent: hasDoD && ledger.reviewMode !== 'standalone-lite' ? ledger.budget.spent : ledger.budget.spent + 1,
     maxRounds: ledger.budget.max_rounds,
     fixedCount: (outcome.fixedIds || []).length, // COUNT, not the in-scope Set named fixedIds
     parkedCount: (outcome.parkedIds || []).length, // COUNT, not the in-scope Set named parkedIds
@@ -524,9 +541,11 @@ function applyRoundOutcome(ledger, outcome) {
     hasDoD,
     dryStreak,
     targetUnchanged: outcome.targetUnchanged !== false,
+    documentConfirmation: documentPolicy && ledger.round >= 2,
+    documentFollowUps: documentPolicy ? findings.filter((finding) => finding.status === 'open' && isDocumentFollowUp(finding)).map((finding) => finding.id) : [],
   });
 
-  const status = decision.converged ? 'clean' : decision.parked ? 'parked' : decision.abandoned ? 'abandoned' : decision.intentReview ? 'intent-review' : decision.gatePending ? 'gate-pending' : decision.panelPending ? 'gate-panel-pending' : 'converging';
+  const status = decision.reviewedWithFollowUps ? 'reviewed-with-followups' : decision.converged ? 'clean' : decision.parked ? 'parked' : decision.abandoned ? 'abandoned' : decision.intentReview ? 'intent-review' : decision.gatePending ? 'gate-pending' : decision.panelPending ? 'gate-panel-pending' : 'converging';
 
   const history = (ledger.history || []).concat([
     {
@@ -544,6 +563,7 @@ function applyRoundOutcome(ledger, outcome) {
     seen: (ledger.seen || []).concat(newSeenEntries),
     history,
     dryStreak,
+    ...(documentPolicy ? { documentFollowUps: decision.reviewedWithFollowUps ? decision.followUps : [] } : {}),
   };
 
   return { ledger: next, decision };
@@ -635,6 +655,9 @@ function renderReviewReport(ledgers) {
       lines.push(`review-and-fix [${ref}]: ${roundInfo} -- stopped for advisory broad review finding(s), needs a human decision; re-run \`/review-and-fix ${ref}\` (a fresh run re-evaluates broad review), record a fix committed outside the loop with \`review-cli.js record-fix ${ref} <gateId> --commit <sha> --test "<command>"\`, or \`review-cli.js dismiss ${ref} <gateId> --by <name>\` for a finding you accept as out-of-scope, or \`review-cli.js defer ${ref} <findingId> --by <name> --reason <text> --ref <issue>\` for a correctness finding waiting on a group decision.`);
     } else if (ledger.status === 'dod-failed') {
       lines.push(`review-and-fix [${ref}]: ${roundInfo} -- final DoD failed; fix the failure, then re-run \`/review-and-fix ${ref}\` to review the changed diff before retrying DoD.`);
+    } else if (ledger.status === 'reviewed-with-followups') {
+      const followUps = (ledger.documentFollowUps || []).map(reportFailureText).join(', ');
+      lines.push(`review-and-fix [${ref}]: ${roundInfo} -- reviewed-with-followups; document confirmation completed; follow-ups: ${followUps}. Additional review requires an explicit rerun.`);
     } else if (ledger.status === 'gate-panel-pending') {
       lines.push(`review-and-fix [${ref}]: ${roundInfo} -- diff-local clean, holistic broad-review panel pending or interrupted; re-run \`/review-and-fix resume ${ref}\` to run/resume the panel.`);
     }

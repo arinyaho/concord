@@ -20,6 +20,10 @@ A no-DoD target converges after one round with no new or open finding and no fix
 
 Rejected candidates do not count as new because a reviewer is instructed to report uncertain findings and rarely returns an empty list. Counting them made convergence depend on the reviewer returning nothing twice, and a no-DoD target kept parking on the round budget although verification had rejected everything it raised.
 
+### New document attempts
+
+A new file-target attempt uses one review-and-fix pass followed by one confirmation pass. A surviving finding may terminate as `reviewed-with-followups` only when the independent verifier confirms it as minor and non-blocking; preserve its finding ID and rationale in the handoff. This status is terminal and is not a clean result: the driver does not automatically rerun, and blockers, unknown classifications, or unverified findings remain actionable. The document-specific finding and verification contract is defined in [document review follow-ups](document-review-followups.md). Existing attempts retain their stored policy; this rule does not change git-target or initiative review.
+
 ## Atomic writes
 
 `core/atomic-write.js` writes a temporary file beside the target and renames it over the target, so a reader never sees partial content. The review ledger, the initiative run ledger, the Codex runner telemetry, and the intent file written by the review CLI all use it; none renames directly.

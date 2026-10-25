@@ -217,6 +217,35 @@ function normalizeArtifact(name, raw, { addressed = false } = {}) {
       return { id, reason: reason.trim() };
     });
   }
+  // File-review verification may independently confirm that an original
+  // document candidate is minor. This is evidence only; the caller binds it
+  // to the original finder candidate and current identity before using it.
+  if (name === 'verify' && parsed.minor !== undefined) {
+    if (!Array.isArray(parsed.minor)) throw new ArtifactError('fatal', `${name} artifact field "minor" must be an array`);
+    const seen = new Set();
+    canonical.minor = parsed.minor.map((entry, index) => {
+      const id = entry && typeof entry === 'object' && !Array.isArray(entry) ? entry.id : undefined;
+      const reason = entry && typeof entry === 'object' && !Array.isArray(entry) ? entry.reason : undefined;
+      if (typeof id !== 'string' || !isValidFindingId(id) || !id.startsWith('docreview:')) throw new ArtifactError('retry', `${name} minor[${index}] has invalid document finding id`);
+      if (seen.has(id)) throw new ArtifactError('retry', `${name} minor[${index}] duplicates id "${id}"`);
+      if (typeof reason !== 'string' || !reason.trim()) throw new ArtifactError('retry', `${name} minor[${index}] ("${id}") has no reason`);
+      seen.add(id);
+      return { id, reason: reason.trim() };
+    });
+  }
+  if (name === 'verify' && parsed.blocking !== undefined) {
+    if (!Array.isArray(parsed.blocking)) throw new ArtifactError('fatal', `${name} artifact field "blocking" must be an array`);
+    const seen = new Set();
+    canonical.blocking = parsed.blocking.map((entry, index) => {
+      const id = entry && typeof entry === 'object' && !Array.isArray(entry) ? entry.id : undefined;
+      const reason = entry && typeof entry === 'object' && !Array.isArray(entry) ? entry.reason : undefined;
+      if (typeof id !== 'string' || !isValidFindingId(id) || !id.startsWith('docreview:')) throw new ArtifactError('retry', `${name} blocking[${index}] has invalid document finding id`);
+      if (seen.has(id)) throw new ArtifactError('retry', `${name} blocking[${index}] duplicates id "${id}"`);
+      if (typeof reason !== 'string' || !reason.trim()) throw new ArtifactError('retry', `${name} blocking[${index}] ("${id}") has no reason`);
+      seen.add(id);
+      return { id, reason: reason.trim() };
+    });
+  }
   // A verifier whose probe ran but whose result is decided by the reviewer's
   // own environment (the Codex sandbox's user namespace shows unmapped host
   // owners as uid 65534) lists the candidate here instead of declaring

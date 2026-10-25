@@ -56,7 +56,7 @@ if (reviewerGuidance !== null && !reviewerGuidance) {
   process.exit(1);
 }
 if (args.includes('--help') || args.includes('-h')) {
-  process.stdout.write('Usage: review-and-fix [<branch> [<base>] | file:<path-or-glob> | resume <ref>] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--reasoning-effort <effort>] [--service-tier <tier>] [--initiative-run-key <key> --initiative-id <id> --initiative-state-dir <absolute-dir> --initiative-max-launches <n> --initiative-max-rounds <n> [--initiative-mode <base|lite>] [--initiative-finalise]] [--session-handoff <off|suggest|stop-at-checkpoint>] [--broad|--no-broad] [--no-dod] [--review-only] [--intent-file <path>] [:: <reviewer guidance>]\n');
+  process.stdout.write('Usage: review-and-fix [<branch> [<base>] | file:<path-or-glob> | resume <ref>] [--lite [--lite-exclusion <trigger>]] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--reasoning-effort <effort>] [--service-tier <tier>] [--initiative-run-key <key> --initiative-id <id> --initiative-state-dir <absolute-dir> --initiative-max-launches <n> --initiative-max-rounds <n> [--initiative-mode <base|lite>] [--initiative-finalise]] [--session-handoff <off|suggest|stop-at-checkpoint>] [--broad|--no-broad] [--no-dod] [--review-only] [--intent-file <path>] [:: <reviewer guidance>]\n');
   process.exit(0);
 }
 const broadPhraseArgs = new Set();
@@ -79,7 +79,7 @@ const inference = {};
 if (reviewerGuidance) inference.reviewerGuidance = reviewerGuidance;
 const inferenceArgs = new Set();
 if (args.includes('--initiative-finalise')) { inference.initiativeFinalise = true; inferenceArgs.add(args.indexOf('--initiative-finalise')); }
-for (const [flag, field] of [['--session-handoff', 'sessionHandoff'], ['--reviewer', 'reviewer'], ['--reviewer-model', 'reviewerModel'], ['--fixer', 'fixer'], ['--fixer-model', 'fixerModel'], ['--reasoning-effort', 'reasoningEffort'], ['--service-tier', 'serviceTier'], ['--initiative-run-key', 'initiativeRunKey'], ['--initiative-id', 'initiativeId'], ['--initiative-state-dir', 'initiativeStateDir'], ['--initiative-max-launches', 'initiativeMaxLaunches'], ['--initiative-max-rounds', 'initiativeMaxRounds'], ['--initiative-mode', 'initiativeMode'], ['--intent-file', 'intentFile']]) {
+for (const [flag, field] of [['--session-handoff', 'sessionHandoff'], ['--reviewer', 'reviewer'], ['--reviewer-model', 'reviewerModel'], ['--fixer', 'fixer'], ['--fixer-model', 'fixerModel'], ['--reasoning-effort', 'reasoningEffort'], ['--service-tier', 'serviceTier'], ['--initiative-run-key', 'initiativeRunKey'], ['--initiative-id', 'initiativeId'], ['--initiative-state-dir', 'initiativeStateDir'], ['--initiative-max-launches', 'initiativeMaxLaunches'], ['--initiative-max-rounds', 'initiativeMaxRounds'], ['--initiative-mode', 'initiativeMode'], ['--intent-file', 'intentFile'], ['--lite-exclusion', 'liteExclusion']]) {
   const index = args.indexOf(flag); const value = index === -1 ? undefined : args[index + 1];
   if (index !== -1 && (!value || !value.trim() || value.startsWith('--') || args.indexOf(flag, index + 1) !== -1)) {
     process.stderr.write(`review-and-fix: ${flag} requires exactly one value\n`);
@@ -87,6 +87,7 @@ for (const [flag, field] of [['--session-handoff', 'sessionHandoff'], ['--review
   }
   if (index !== -1) { inference[field] = value; inferenceArgs.add(index); inferenceArgs.add(index + 1); }
 }
+if (args.includes('--lite')) inference.lite = true;
 if (inference.sessionHandoff && !['off', 'suggest', 'stop-at-checkpoint'].includes(inference.sessionHandoff)) {
   process.stderr.write('review-and-fix: --session-handoff must be off, suggest, or stop-at-checkpoint\n');
   process.exit(1);
@@ -109,7 +110,7 @@ for (const field of ['reviewer', 'fixer']) {
     process.exit(1);
   }
 }
-const positional = args.filter((arg, index) => arg !== '--broad' && arg !== '--gate' && arg !== '--no-broad' && arg !== '--no-dod' && arg !== '--review-only' && !inferenceArgs.has(index) && !broadPhraseArgs.has(index));
+const positional = args.filter((arg, index) => arg !== '--broad' && arg !== '--gate' && arg !== '--no-broad' && arg !== '--no-dod' && arg !== '--review-only' && arg !== '--lite' && !inferenceArgs.has(index) && !broadPhraseArgs.has(index));
 const resumed = positional[0] === 'resume';
 const ref = (resumed ? positional[1] : positional[0]) || (inference.initiativeFinalise ? undefined : require('node:child_process').execFileSync(crossPlatformCommand('git', process.cwd()), crossPlatformArgs(['branch', '--show-current'], needsDoubleEscape('git', process.cwd())), crossPlatformOpts({ encoding: 'utf8' })).trim());
 const base = resumed ? positional[2] : positional[1];

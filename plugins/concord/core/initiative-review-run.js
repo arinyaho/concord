@@ -116,10 +116,11 @@ function normalizeDisposition(result = {}) {
   if (result instanceof Error) return { kind: 'error', reason: `runner-error:${crypto.createHash('sha256').update(result.message || '').digest('hex').slice(0, 12)}` };
   if (result.decision === 'escape') return { kind: 'escape', reason: 'escape' };
   const decision = result.decision || {};
-  if (['parked', 'abandoned'].includes(result.status) || decision.parked || decision.abandoned || result.reconciliation || result.status || decision.converged) {
+  if (['parked', 'abandoned'].includes(result.status) || decision.parked || decision.abandoned || result.reconciliation || result.status || decision.converged || decision.reviewedWithFollowUps) {
     const reason = ['parked', 'abandoned'].includes(result.status) ? result.status
       : decision.parked ? 'parked' : decision.abandoned ? 'abandoned'
         : result.reconciliation ? 'reconciliation-required'
+          : decision.reviewedWithFollowUps ? 'reviewed-with-followups'
           : result.status || 'clean';
     return { kind: 'terminal', reason };
   }

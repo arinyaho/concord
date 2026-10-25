@@ -67,6 +67,7 @@ test('normalizeDisposition classifies resumable review stops as escape, not term
   assert.deepStrictEqual(normalizeDisposition({ decision: { continue: false, gatePending: true } }), { kind: 'escape', reason: 'gate-pending' });
   assert.deepStrictEqual(normalizeDisposition({ decision: { continue: false, intentReview: true } }), { kind: 'escape', reason: 'intent-review' });
   assert.deepStrictEqual(normalizeDisposition({ decision: { continue: false, dodFailed: true } }), { kind: 'escape', reason: 'dod-failed' });
+  assert.deepStrictEqual(normalizeDisposition({ decision: { continue: false, reviewedWithFollowUps: true, followUps: ['docreview:x'] } }), { kind: 'terminal', reason: 'reviewed-with-followups' });
   // A material finding's reconciliation still takes precedence and stays
   // genuinely terminal, matching the existing reconciliation tests.
   assert.deepStrictEqual(normalizeDisposition({ decision: { continue: false, intentReview: true }, reconciliation: { finding: 'intent:missing' } }), { kind: 'terminal', reason: 'reconciliation-required' });

@@ -26,6 +26,16 @@ const { isWindows, crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, n
 const { providerFailure, normalizeProviderFailure, reviewContinuation } = require('./provider-failure');
 const { createLaunchLifecycle } = require('./launch-lifecycle');
 const dodExec = require('./dod-exec');
+const STANDALONE_LITE_EXCLUSIONS = new Set(['public-api', 'schema', 'security', 'cross-package', 'migration', 'multi-outcome', 'unsettled-contract', 'cross-repository', 'legal']);
+
+function validateStandaloneLiteOptions(options) {
+  if (options.lite && (options.initiativeRunKey || options.initiativeStateDir)) throw new Error('review-until-green: standalone --lite cannot be combined with initiative flags');
+  if (options.lite && options.broad) throw new Error('review-until-green: standalone --lite cannot be combined with --broad or --gate');
+  if (options.lite && typeof options.ref === 'string' && options.ref.startsWith('file:')) throw new Error('review-until-green: standalone --lite is git-only and cannot review a file target');
+  if (options.liteExclusion && !options.lite) throw new Error('review-until-green: --lite-exclusion requires --lite');
+  if (options.liteExclusion && !STANDALONE_LITE_EXCLUSIONS.has(options.liteExclusion)) throw new Error(`review-until-green: invalid --lite-exclusion trigger "${options.liteExclusion}"`);
+  if (options.liteExclusion) throw new Error(`review-until-green: standalone --lite is excluded by the declared ${options.liteExclusion} trigger; choose a base review`);
+}
 
 function aggregationFailurePriority(error) {
   if (error?.notAReviewFailure) return 4;
@@ -611,6 +621,7 @@ async function runReviewUntilGreen(options) {
 
 async function runRounds(options) {
   const { ref, base, broad = false, noBroad = false, reviewOnly = false, resume = false, repoRoot: configuredRepoRoot = process.cwd(), cliPath = path.join(__dirname, '..', 'bin', 'review-cli.js') } = options;
+  validateStandaloneLiteOptions({ ...options, ref, broad });
   // The path a human or a later session is told to run; the run's own cliPath may be a snapshot that is gone by then.
   const publicCliPath = options.publicCliPath || cliPath;
   // A review-only run never edits, so it has no definition of done to check.
@@ -662,6 +673,7 @@ async function runRounds(options) {
   const observed = { toolCalls: 0, noProgressCalls: 0 };
   const invocation = () => { observed.toolCalls++; observed.noProgressCalls++; };
   const progress = () => { observed.noProgressCalls = 0; };
+  let reviewMode = options.lite ? 'standalone-lite' : null;
   const cli = async (args) => {
     invocation();
     const result = await runCli([...args, ...initiativeFlags]);
@@ -993,7 +1005,7 @@ async function runRounds(options) {
     const run = JSON.parse(fs.readFileSync(initiativeRun.path, 'utf8'));
     const sourcePaths = [path.join(repoRoot, 'AGENTS.md'), path.join(repoRoot, 'review.config.json'), path.join(started.stateDir, `intent-${targetSlug(ref)}.md`), ...(options.authoritativeSources || [])];
     const authoritativeSources = [...new Set(sourcePaths)].filter(source => fs.existsSync(source)).map(source => ({ path: canonicalPath(source), sha256: crypto.createHash('sha256').update(fs.readFileSync(source)).digest('hex') }));
-    const nextArgs = result.decision?.continue ? ['round-start', ref, ...(initialBase ? [initialBase] : []), ...(broad ? ['--broad'] : []), ...(noBroad ? ['--no-broad'] : []), ...(noDod ? ['--no-dod'] : []), ...(options.intentFile ? ['--intent-file', options.intentFile] : [])] : ['show', ref];
+    const nextArgs = result.decision?.continue ? ['round-start', ref, ...(initialBase ? [initialBase] : []), ...(broad ? ['--broad'] : []), ...(noBroad ? ['--no-broad'] : []), ...(reviewMode === 'standalone-lite' ? ['--lite'] : []), ...(noDod ? ['--no-dod'] : []), ...(options.intentFile ? ['--intent-file', options.intentFile] : [])] : ['show', ref];
     const nextStep = { executable: process.execPath, cliPath: path.resolve(publicCliPath), args: [...nextArgs, ...initiativeFlags] };
     const artifactRoot = captureArtifactRoot(started.stateDir);
     const completedArtifacts = fs.readdirSync(started.stateDir).filter(name => new RegExp(`^round-${started.round}-.*\\.json$`).test(name)).map(name => {
@@ -1002,14 +1014,14 @@ async function runRounds(options) {
     });
     const stem = path.join(started.stateDir, `session-review-${targetSlug(ref)}`);
     const statePath = `${stem}-state.json`, handoffPath = `${stem}-handoff.json`, packetPath = `${stem}-packet.json`;
-    const decision = typeof result.decision === 'string' ? result.decision : Object.fromEntries(['continue', 'converged', 'parked', 'abandoned', 'intentReview', 'gatePending', 'panelPending', 'reason'].filter(key => Object.hasOwn(result.decision || {}, key)).map(key => [key, result.decision[key]]));
+    const decision = typeof result.decision === 'string' ? result.decision : Object.fromEntries(['continue', 'converged', 'parked', 'abandoned', 'intentReview', 'gatePending', 'panelPending', 'reviewedWithFollowUps', 'followUps', 'reason'].filter(key => Object.hasOwn(result.decision || {}, key)).map(key => [key, result.decision[key]]));
     const summary = { schema: 1, scope: 'review', ref, revision: initiativeRevision, round: started.round, decision,
       authoritativeSources, initiative: { key: options.initiativeRunKey, stateDir: canonicalStateDir, mode: run.mode, status: run.status, budget: { maxLaunches: run.budget.maxLaunches, maxRounds: run.budget.maxRounds, usedLaunches: launchBudgetUsage(run).launches, usedRounds: run.rounds.length } },
-      targetStatePath: targetPath, initiativePath: initiativeRun.path, options: { broad, noBroad, noDod, reviewer, fixer, reviewerModel: reviewerModel || null, fixerModel: fixerModel || null, reasoningEffort: options.reasoningEffort || null, serviceTier: options.serviceTier || null, sessionHandoff: sessionMode },
+      targetStatePath: targetPath, initiativePath: initiativeRun.path, options: { broad, noBroad, noDod, reviewMode: reviewMode || 'base', reviewer, fixer, reviewerModel: reviewerModel || null, fixerModel: fixerModel || null, reasoningEffort: options.reasoningEffort || null, serviceTier: options.serviceTier || null, sessionHandoff: sessionMode },
       initiativeFlags, reservations: (target.initiative_reservations || []).map(({ role, round, panel, count, token }) => ({ role, round, ...(panel ? { panel } : {}), count, token })), completedArtifacts, nextStep };
     writeFileAtomic(statePath, `${JSON.stringify(summary)}\n`, { mode: 0o600 });
     writeFileAtomic(handoffPath, `${JSON.stringify({ schema: 1, nextStep, decision, resume: 'Read the latest target and initiative ledgers, validate authoritative sources and artifact hashes, skip completed roles, preserve reservations and budget. Terminal or human gate decisions remain in force.' })}\n`, { mode: 0o600 });
-    writeFileAtomic(packetPath, `${JSON.stringify({ scope: 'review', boundary: 'round-complete', liveWorkers: [], observations, statePath, handoffPath, nextAction: result.decision?.continue ? 'Resume the existing review ledger with the recorded round-start command; skip completed artifacts and reserve only new workers.' : 'Inspect the recorded decision and live ledger; preserve terminal and human gate dispositions. No new review round is authorized by this checkpoint.' })}\n`, { mode: 0o600 });
+    writeFileAtomic(packetPath, `${JSON.stringify({ scope: 'review', boundary: 'round-complete', liveWorkers: [], observations, statePath, handoffPath, reviewMode: reviewMode || 'base', nextAction: result.decision?.continue ? 'Resume the existing review ledger with the recorded round-start command; skip completed artifacts and reserve only new workers.' : 'Inspect the recorded decision and live ledger; preserve terminal and human gate dispositions. No new review round is authorized by this checkpoint.' })}\n`, { mode: 0o600 });
     const handoff = await cli(['session-checkpoint', packetPath, '--session-handoff', sessionMode]);
     if (!['suggest', 'stop'].includes(handoff.action)) return null;
     const output = { ...handoff, prompt: fs.readFileSync(handoff.promptPath, 'utf8') };
@@ -1028,6 +1040,8 @@ async function runRounds(options) {
     if (initialBase) startArgs.push(initialBase);
     if (broad) startArgs.push('--broad');
     if (noBroad) startArgs.push('--no-broad'); // broad review is on by default; this is the opt-out
+    if (options.lite) startArgs.push('--lite');
+    if (options.liteExclusion) startArgs.push('--lite-exclusion', options.liteExclusion);
     if (noDod) startArgs.push('--no-dod');
     if (options.intentFile) startArgs.push('--intent-file', options.intentFile);
     if (pendingReviewerGuidance) startArgs.push('--reviewer-guidance', pendingReviewerGuidance);
@@ -1051,6 +1065,7 @@ async function runRounds(options) {
       throw error;
     }
     if (!initialBase && started.base) initialBase = started.base;
+    if (started.mode) reviewMode = started.mode;
     if (initiativeRevision.head_sha && started.head && initiativeRevision.head_sha !== started.head) throw new Error('review-until-green: initiative target revision changed before round-start');
     initiativeRevision = { ref: started.ref || ref, ...(started.base || initialBase ? { base: baseIdentity(started.base || initialBase) } : {}), ...(started.head || initiativeRevision.head_sha ? { head_sha: started.head || initiativeRevision.head_sha } : {}) };
     await throwIfAborted(started.decision === 'work');
@@ -1081,7 +1096,7 @@ async function runRounds(options) {
     if (started.decision !== 'work') return withTelemetry(started);
     currentRound = started.round;
     checks = [{ name: 'definition-of-done', status: started.dodPending ? 'pending' : started.dodDeferred ? 'deferred' : (started.dodPassed ? 'passed' : 'failed') }];
-    const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, dodDeferred: started.dodDeferred, dodPending: started.dodPending, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref), gateMode: started.gateMode, gateApplied: started.gateApplied, intentHash: started.intentHash, cliPath, reviewerGuidance: started.reviewerGuidance || null, priorFindings: options.priorFindings || [], reviewLanguage: options.reviewLanguage || null, classify: reviewOnly, addressable: reviewOnly ? options.addressable || [] : [], description: reviewOnly ? options.description || '' : '' };
+    const context = { stateDir: started.stateDir, round: started.round, targetType: started.targetType, documentReviewPolicy: started.documentReviewPolicy, dodDeferred: started.dodDeferred, dodPending: started.dodPending, priorIntentIds: started.priorIntentIds, slug: targetSlug(ref), gateMode: started.gateMode, gateApplied: started.gateApplied, intentHash: started.intentHash, cliPath, reviewerGuidance: started.reviewerGuidance || null, priorFindings: options.priorFindings || [], reviewLanguage: options.reviewLanguage || null, classify: reviewOnly, addressable: reviewOnly ? options.addressable || [] : [], description: reviewOnly ? options.description || '' : '' };
     const reviewRoles = reviewOnly ? [
       ...(started.intentApplied ? ['intent'] : []), 'correctness',
       ...(started.gateApplied ? ['gate'] : []), 'verify',
@@ -1368,6 +1383,11 @@ async function runRounds(options) {
       return { decision: 'review-only', round: currentRound, findings, ...(addressed.length && { addressed }) };
     }
 
+    if (started.documentReviewPolicy === 'single-pass-confirmation' && started.targetType === 'file' && started.round >= 2) {
+      const planDecision = await cli(['findings', ref]);
+      await throwIfAborted(true);
+      if (planDecision.planRequired === false) derived.plan = 'not-needed';
+    }
     if (derived.plan !== 'not-needed') await runArtifactReviewer('plan');
 
     const planned = await cli(['plan-fixes', ref]);
@@ -1491,7 +1511,7 @@ async function runRounds(options) {
     // this catch is handling -- rethrow the ORIGINAL error, with the
     // recording failure only noted on its message, so the caller still
     // sees what actually went wrong instead of a generic "contended".
-    const failurePacket = { trigger: 'error', exit: { code: Number.isInteger(failure.exitCode) ? failure.exitCode : null, signal: failure.signal || null }, dod: { status: checks[0]?.status || 'not-run' }, telemetry: { complete: false }, ...continuation, error: { message: error.message, ...(failure.diagnostic ? { diagnostic: failure.diagnostic } : {}) } };
+    const failurePacket = { trigger: 'error', exit: { code: Number.isInteger(failure.exitCode) ? failure.exitCode : null, signal: failure.signal || null }, dod: { status: checks[0]?.status || 'not-run' }, telemetry: { complete: false }, ...(reviewMode ? { reviewMode } : {}), ...continuation, error: { message: error.message, ...(failure.diagnostic ? { diagnostic: failure.diagnostic } : {}) } };
     if (!initiativeRun) error.continuationPacket = failurePacket;
     if (initiativeRun && initiativeRevision.head_sha && !recordDisposition(initiativeRun, { target: ref, revision: initiativeRevision, result: dispositionError, packet: failurePacket, checks })) {
       if (!pendingContinuationPacket(initiativeRun, ref, initiativeRevision, 'error', true, errorReason)) {
