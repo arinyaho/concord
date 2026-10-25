@@ -39,6 +39,18 @@ function setup(t, provider) {
 }
 
 for (const provider of Object.keys(providers)) {
+  test(`${provider}: checkpoints preserve charged budget after a refund`, (t) => {
+    const s = setup(t, provider), lib = require('../../core/initiative-review-run');
+    const reservationId = `${'1'.repeat(32)}:0`, revision = { ref: 'feat/x', head_sha: 'head' };
+    assert.equal(lib.reserveLaunch(s.run, { role: 'correctness', target: 'feat/x', attemptId: 'checkpoint', round: 1, revision, reservationIds: [reservationId] }), true);
+    lib.recordLaunchOutcome(s.run, { reservationId, role: 'correctness', target: 'feat/x', attemptId: 'checkpoint', round: 1, revision,
+      invocationId: '11111111-1111-4111-8111-111111111111', provider: 'codex', lifecycle: 'not-started', reason: 'spawn-enoent', failed: true });
+    const result = s.ok();
+    const checkpoint = JSON.parse(fs.readFileSync(result.checkpointPath, 'utf8'));
+    assert.equal(checkpoint.budget.usedLaunches, 1);
+    assert.equal(checkpoint.budget.attemptedLaunches, 2);
+    assert.equal(checkpoint.budget.refundedLaunches, 1);
+  });
   test(`${provider}: default suggests a durable short continuation without changing budgets`, (t) => {
     const s = setup(t, provider); const before = fs.readFileSync(s.run.path, 'utf8');
     const result = s.ok({ ...s.packet, transcript: 'RAW_TRANSCRIPT_MARKER', cachedInputTokens: 999999999 });

@@ -12,12 +12,12 @@ const { tempDir } = require('./temp-dir');
 const cliPath = path.resolve(__dirname, '../../hooks/review-cli.js');
 const tmp = () => tempDir('runner-bound-');
 const emptyPlan = { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] };
-function fixture({ maxLaunches = 30, mode, zeroFindings = false } = {}) {
+function fixture({ maxLaunches = 30, mode, zeroFindings = false, preflight } = {}) {
   const repoRoot = tmp(), stateDir = tmp(), initiativeStateDir = tmp();
   const git = (...args) => execFileSync('git', args, { cwd: repoRoot, stdio: 'pipe' }).toString().trim();
   git('init', '-q'); git('config', 'user.email', 'test@example.com'); git('config', 'user.name', 'test');
   fs.writeFileSync(path.join(repoRoot, 'a.txt'), 'one\n');
-  fs.writeFileSync(path.join(repoRoot, 'review.config.json'), JSON.stringify({ dod: ['true'] }));
+  fs.writeFileSync(path.join(repoRoot, 'review.config.json'), JSON.stringify({ dod: ['true'], ...(preflight ? { preflight } : {}) }));
   git('add', '.'); git('commit', '-qm', 'base'); const base = git('rev-parse', 'HEAD');
   fs.writeFileSync(path.join(repoRoot, 'a.txt'), 'two\n'); git('commit', '-aqm', 'change');
   const calls = [], workers = [];
@@ -45,6 +45,21 @@ function fixture({ maxLaunches = 30, mode, zeroFindings = false } = {}) {
     } };
   return { options, calls, workers, stateDir, git, ledger: () => JSON.parse(fs.readFileSync(runPath(initiativeStateDir, 'integration'))) };
 }
+test('a failed declared preflight leaves a keyed initiative without run ledger, target ledger, or launches', async () => {
+  const f = fixture({ preflight: [`node -e "require('./missing-initiative-preflight-module')"`] });
+  await assert.rejects(runReviewUntilGreen(f.options), /driver environment preflight failed/i);
+  assert.equal(fs.existsSync(runPath(f.options.initiativeStateDir, f.options.initiativeRunKey)), false);
+  assert.deepEqual(fs.readdirSync(f.stateDir), []);
+  assert.deepEqual(f.calls, []);
+  assert.deepEqual(f.workers, []);
+});
+test('initiative finalisation does not execute repository preflight commands', async () => {
+  const f = fixture();
+  await runReviewUntilGreen(f.options);
+  fs.writeFileSync(path.join(f.options.repoRoot, 'review.config.json'), JSON.stringify({ preflight: [`node -e "require('./missing-finalise-preflight-module')"`] }));
+  const result = await runReviewUntilGreen({ ...f.options, initiativeFinalise: true });
+  assert.equal(result.decision.finalised, true);
+});
 test('a zero-findings initiative round derives verify and plan without launching workers', async () => {
   const f = fixture({ zeroFindings: true });
   await runReviewUntilGreen(f.options);

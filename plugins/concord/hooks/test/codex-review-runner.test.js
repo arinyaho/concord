@@ -818,6 +818,39 @@ test('codexExec probes the CLI version once for concurrent calls', async () => {
   }
 });
 
+test('provider adapters attach conservative launch outcomes to real subprocess results', async () => {
+  const binDir = temp();
+  const codex = path.join(binDir, 'codex');
+  const fixture = (version, events, status = 1) => {
+    fs.writeFileSync(codex, `#!${process.execPath}\nif (process.argv.includes('--version')) process.stdout.write(${JSON.stringify(version + '\n')});\nelse { process.stdout.write(${JSON.stringify(events.map((event) => JSON.stringify(event) + '\n').join(''))}); process.exitCode = ${status}; }\n`);
+    fs.chmodSync(codex, 0o755);
+    return codexExec({ role: 'verify', prompt: 'review', repoRoot: binDir, stateDir: binDir, codexExecutable: { command: codex, version } });
+  };
+  const rejected = await fixture('codex-cli 0.154.0', [{ type: 'error', error: { code: 'model_not_found' } }]);
+  assert.deepStrictEqual(rejected.launchOutcome, { lifecycle: 'not-started', reason: 'unsupported-model', failed: true });
+  const started = await fixture('codex-cli 0.154.0', [{ type: 'turn.started' }, { type: 'error', error: { code: 'model_not_found' } }]);
+  assert.deepStrictEqual(started.launchOutcome, { lifecycle: 'started', reason: 'unsupported-model', failed: true });
+  const unknownVersion = await fixture('codex-cli 0.155.0', [{ type: 'error', error: { code: 'model_not_found' } }]);
+  assert.deepStrictEqual(unknownVersion.launchOutcome, { lifecycle: 'unknown', reason: 'unknown', failed: true });
+  const native = path.join(binDir, 'claude');
+  fs.writeFileSync(native, `#!${process.execPath}\nprocess.stdout.write('normal output');\n`);
+  fs.chmodSync(native, 0o755);
+  const previousPath = process.env.PATH; process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  try {
+    const result = await providerExec({ provider: 'claude', role: 'verify', prompt: 'review', repoRoot: binDir, stateDir: binDir });
+    assert.deepStrictEqual(result.launchOutcome, { lifecycle: 'unknown', reason: 'none', failed: false });
+  } finally { process.env.PATH = previousPath; }
+});
+
+test('Codex executable resolution failure is tagged as a trusted local pre-turn failure', async () => {
+  const missing = path.join(temp(), 'missing-codex');
+  await assert.rejects(codexExec({ role: 'verify', prompt: 'review', repoRoot: temp(), stateDir: temp(), env: { PATH: '/no-such-path', CONCORD_CODEX_BIN: missing } }), (error) => {
+    assert.strictEqual(error.telemetry.launchOutcome.lifecycle, 'not-started');
+    assert.strictEqual(error.telemetry.launchOutcome.reason, 'unusable-executable');
+    return true;
+  });
+});
+
 test('codexExec parses documented turn.completed usage without retaining agent output', async () => {
   const binDir = temp();
   const codex = path.join(binDir, 'codex');
@@ -1151,6 +1184,41 @@ function harness({ targetType = 'git', rounds = 1, malformed = false, retry = fa
   };
   return { stateDir, calls, cli, spawn };
 }
+
+test('initiative runner records one launch outcome per returned reservation identity', async () => {
+  const h = harness();
+  const outcomes = [];
+  const reservationIds = [];
+  let reserveIndex = 0;
+  const cli = (args) => {
+    if (args[0] === 'reserve') { const id = `${String(++reserveIndex).padStart(32, '0')}:0`; reservationIds.push(id); return { status: 'granted', reservationIds: [id] }; }
+    if (args[0] === 'launch-outcome') { outcomes.push(JSON.parse(args[2])); return { status: 'recorded', refunded: false, limitReached: false }; }
+    return h.cli(args);
+  };
+  await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', initiativeRunKey: 'launch-outcomes', initiativeStateDir: h.stateDir, initiativeMaxLaunches: 20, initiativeMaxRounds: 1, runCli: cli, spawn: h.spawn });
+  const launches = h.calls.filter((call) => call[0] === 'spawn');
+  assert.strictEqual(outcomes.length, launches.length);
+  assert.deepStrictEqual(outcomes.map((item) => item.reservationId), reservationIds);
+  for (const outcome of outcomes) {
+    assert.match(outcome.invocationId, /^[0-9a-f-]{36}$/);
+    assert.strictEqual(outcome.provider, 'codex');
+    assert.deepStrictEqual({ lifecycle: outcome.lifecycle, reason: outcome.reason, failed: outcome.failed }, { lifecycle: 'unknown', reason: 'none', failed: false });
+  }
+});
+
+test('environment launch failure limit stops the initiative without retrying', async () => {
+  const h = harness();
+  let launches = 0;
+  const token = 'fedcba9876543210fedcba9876543210';
+  const cli = (args) => {
+    if (args[0] === 'reserve') return { status: 'granted', reservationIds: [`${token}:0`] };
+    if (args[0] === 'launch-outcome') return { status: 'recorded', refunded: true, limitReached: true };
+    return h.cli(args);
+  };
+  const result = await runReviewUntilGreen({ ref: 'feature/x', repoRoot: '/repo', initiativeRunKey: 'launch-limit', initiativeStateDir: h.stateDir, initiativeMaxLaunches: 20, initiativeMaxRounds: 1, runCli: cli, spawn: async () => { launches++; return { status: 1, launchOutcome: { lifecycle: 'not-started', reason: 'unsupported-model', failed: true } }; } });
+  assert.strictEqual(launches, 1);
+  assert.deepStrictEqual({ decision: result.decision, nextAction: result.nextAction, retryable: result.retryable }, { decision: 'environment-failure-limit', nextAction: 'terminal-handoff', retryable: false });
+});
 
 test('runner records an artifact-less reviewer exit as a retryable harness failure', async () => {
   const h = harness();
@@ -3362,6 +3430,23 @@ test('reviewOnly reports findings for an unchanged file target', async () => {
   };
   const result = await runReviewUntilGreen({ ref: 'file:note.md', repoRoot: repo, runCli: cli, spawn: h.spawn, reviewOnly: true, reviewer: 'claude', noBroad: true });
   assert.deepStrictEqual(result, { decision: 'review-only', round: 1, findings: [] });
+});
+
+test('reviewOnly skips repo-authored preflight commands for the untrusted checkout', async () => {
+  const repo = temp();
+  const sentinel = path.join(repo, 'preflight-ran');
+  fs.writeFileSync(path.join(repo, 'note.md'), 'original\n');
+  fs.writeFileSync(path.join(repo, 'review.config.json'), JSON.stringify({ preflight: [`node -e "require('fs').writeFileSync('preflight-ran', 'ran')"`] }));
+  const head = fileTarget({ files: ['note.md'] }, repo).identity;
+  const h = harness({ targetType: 'file' });
+  const cli = (args) => {
+    if (args[0] === 'findings') return { findings: [] };
+    const result = h.cli(args);
+    return args[0] === 'round-start' ? { ...result, head } : result;
+  };
+  const result = await runReviewUntilGreen({ ref: 'file:note.md', repoRoot: repo, runCli: cli, spawn: h.spawn, reviewOnly: true, reviewer: 'claude', noBroad: true });
+  assert.deepStrictEqual(result, { decision: 'review-only', round: 1, findings: [] });
+  assert.equal(fs.existsSync(sentinel), false);
 });
 
 test('reviewOnly rejects a file target replaced by an identical external symlink', async () => {

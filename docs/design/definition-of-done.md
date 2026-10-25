@@ -1,6 +1,6 @@
 # Definition of Done
 
-The repository's definition of done is the `dod` command list in `review.config.json`. It runs from the repository root and gates a review round: a round is clean only when the DoD actually ran and passed.
+The repository's definition of done is the `dod` command list in `review.config.json`. It runs from the repository root and gates a review round: a round is clean only when the DoD actually ran and passed. A separate optional `preflight` command array can check cheap project-specific reviewer environment requirements before review state or launch budget is opened; it does not replace or pass the DoD.
 
 ## Decision
 
@@ -12,6 +12,8 @@ The script does two things:
 2. It runs `node --test` with `CONCORD_RUN_PLUGIN_INSTALL_E2E=1` on the two test files that contain the e2e tests, selecting only tests whose title starts with `plugin-install e2e:`. It uses the TAP reporter, echoes the output, and exits with the test status. Because `node --test` exits 0 when the pattern matches no test and when every match is skipped, the DoD also parses the `# pass N` summary and fails (exit 1) when no e2e test passed. The other tests in those files are CI's and are not run.
 
 If a CLI cannot run (missing, or exits non-zero), the script does not run the tests. It prints one truncated detail line, then the short line `DoD environment error: <cli> CLI is not usable. This is not an implementation failure.`, and exits with 78 (EX_CONFIG). The explanatory line comes last because the review handoff shows only the tail of the failing command's output.
+
+The optional `preflight` array in `review.config.json` is read independently of `dod` and runs each declared command from the repository root before a review starts. It also runs when the DoD is deferred (`dod: null`), skipped with `--no-dod`, or omitted for a file target. Each command has a ten-second timeout and 64 KiB output limit; any unsuccessful command prevents startup with a bounded driver-environment error. Review-only runs skip project-authored commands because their checkout is untrusted.
 
 Exit code 78 is the convention for "the DoD could not be prepared". Any DoD command may use it. The review handoff labels a failing command with exit 78 as a DoD environment/setup error rather than a test failure of the reviewed change. The label is text only: termination, budgets and the ledger treat the result like any other DoD failure.
 

@@ -8,6 +8,54 @@ const path = require('node:path');
 // root; `execFn` is injectable so unit tests never spawn a real process.
 
 const CONFIG_FILENAME = 'review.config.json';
+const PREFLIGHT_TIMEOUT_MS = 10_000;
+const PREFLIGHT_MAX_BUFFER = 64 * 1024;
+const PREFLIGHT_DIAGNOSTIC_BYTES = 4 * 1024;
+
+function loadReviewPreflight(repoRoot, readFileFn = fs.readFileSync) {
+  let raw;
+  try { raw = readFileFn(path.join(repoRoot, CONFIG_FILENAME), 'utf8'); }
+  catch (error) {
+    if (error && error.code === 'ENOENT') return [];
+    throw new Error(`review-cli: driver environment preflight could not read ${CONFIG_FILENAME}: ${error?.message || error}`);
+  }
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch (error) { throw new Error(`review-cli: driver environment preflight found malformed ${CONFIG_FILENAME}: ${error?.message || error}`); }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || !Object.prototype.hasOwnProperty.call(parsed, 'preflight')) return [];
+  if (!Array.isArray(parsed.preflight) || parsed.preflight.some((command) => typeof command !== 'string' || !command.trim())) {
+    throw new Error(`review-cli: driver environment preflight declaration in ${CONFIG_FILENAME} must be an array of non-empty command strings`);
+  }
+  return [...parsed.preflight];
+}
+
+function defaultPreflightExec(command, cwd) {
+  const { spawnSync } = require('node:child_process');
+  const env = { ...process.env };
+  delete env.CONCORD_CODEX_BIN;
+  return spawnSync(command, {
+    cwd, env, shell: true, encoding: 'utf8', timeout: PREFLIGHT_TIMEOUT_MS,
+    maxBuffer: PREFLIGHT_MAX_BUFFER, killSignal: 'SIGKILL', windowsHide: true,
+  });
+}
+
+function runReviewPreflight(repoRoot, { execFn = defaultPreflightExec, readFileFn = fs.readFileSync } = {}) {
+  const commands = loadReviewPreflight(repoRoot, readFileFn);
+  for (const command of commands) {
+    let result;
+    try { result = execFn(command, repoRoot); }
+    catch (error) { result = { status: null, error }; }
+    const failed = !result || result.status !== 0 || result.error || result.signal;
+    if (failed) {
+      const diagnosticText = [result?.error?.message, result?.stdout, result?.stderr].filter(Boolean).join('\n');
+      let diagnostic = Buffer.from(diagnosticText, 'utf8').subarray(0, PREFLIGHT_DIAGNOSTIC_BYTES).toString('utf8');
+      while (Buffer.byteLength(diagnostic, 'utf8') > PREFLIGHT_DIAGNOSTIC_BYTES) diagnostic = diagnostic.slice(0, -1);
+      const outcome = result?.error?.code || (result?.signal ? `signal ${result.signal}` : `exit ${result?.status ?? 'unknown'}`);
+      throw new Error(`review-cli: driver environment preflight failed for command: ${command} (${outcome})${diagnostic ? `\n${diagnostic}` : ''}`);
+    }
+  }
+  return { commands, passed: true };
+}
 
 // Reads `review.config.json` from repoRoot. An ABSENT config DEFERS the gate:
 // the review still converges, and the handoff says so ("DEFERRED (no
@@ -160,4 +208,5 @@ function missingPrograms(names, cwd, platform = process.platform) {
   return r.stdout.split('\n').filter(Boolean);
 }
 
-module.exports = { CONFIG_FILENAME, loadDodConfig, runDodExec, defaultExecFn, commandExecutables, missingPrograms };
+module.exports = { CONFIG_FILENAME, loadDodConfig, runDodExec, defaultExecFn, commandExecutables, missingPrograms,
+  PREFLIGHT_TIMEOUT_MS, PREFLIGHT_MAX_BUFFER, loadReviewPreflight, defaultPreflightExec, runReviewPreflight };
