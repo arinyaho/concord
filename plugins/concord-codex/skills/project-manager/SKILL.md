@@ -49,6 +49,11 @@ Apply the coordination skill's current-head delivery and merge gates. Merge one
 PR at a time only under the user's recorded authority; never bypass blockers,
 force-push or widen scope through a worker message. Missing authority is a gate,
 not a reason to delay implementation and preparation of a reviewable result.
+Do not move Jira tickets to Done or decide a design choice reserved for the user.
+Keep review replies to three lines or fewer in the reviewer's language, with the
+verdict, reason and commit SHA. Never resolve a human reviewer's thread; resolve
+a bot thread only under applicable authority. Verify a claimed push by comparing
+the local SHA with `git ls-remote` once, or reuse that observer's current evidence.
 
 Report decisions, findings, blockers and delivery results. At a delivery boundary,
 write a concise handoff with role/authority, rollout order, live worker IDs,

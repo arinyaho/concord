@@ -12,7 +12,7 @@ const section = (text, heading) => {
   return match[1];
 };
 
-test('project-manager is a Claude-only agent that defers session mechanics to coordinate-sessions', () => {
+test('project-manager has a Claude agent and a native Codex skill', () => {
   const agent = read('plugins/concord/agents/project-manager.md');
   assert.match(agent, /^---\nname: project-manager\n/);
   assert.match(agent, /^model: opus$/m);
@@ -21,7 +21,8 @@ test('project-manager is a Claude-only agent that defers session mechanics to co
   for (const pkg of ['concord-codex', 'concord-copilot']) {
     assert.ok(!fs.existsSync(path.join(REPO, 'plugins', pkg, 'agents', 'project-manager.md')));
   }
-  assert.match(read('README.md'), /\| `project-manager` agent \|.*\| Claude Code \|/);
+  assert.ok(fs.existsSync(path.join(REPO, 'plugins/concord-codex/skills/project-manager/SKILL.md')));
+  assert.match(read('README.md'), /\| `project-manager` agent \/ skill \|.*\| Claude Code, Codex \|/);
   assert.match(read('.claude-plugin/marketplace.json'), /project-manager/);
 });
 
@@ -46,4 +47,19 @@ test('deep-review is routed to only on an explicit user request, and CI is read 
   assert.match(section(agent, 'Hand out work'), /`concord:deep-review` only when the user explicitly asks/);
   assert.match(section(agent, 'Judge delivery'), /filter check runs by `headSha`/);
   assert.match(read('plugins/concord/skills/deep-review/SKILL.md'), /explicitly asks for deep-review/);
+});
+
+test('Codex coordination preserves delivery gates while reusing scoped review evidence', () => {
+  const coordination = read('plugins/concord-codex/skills/coordinate-sessions/SKILL.md');
+  const pm = read('plugins/concord-codex/skills/project-manager/SKILL.md');
+  assert.match(coordination, /queue success proves enqueueing\s+only/);
+  assert.match(coordination, /Request acknowledgement/);
+  assert.match(coordination, /Filter CI check runs by the verified head SHA/);
+  assert.match(coordination, /never merge `blocked`/);
+  assert.match(coordination, /`mergeable-without-review` requires the user's applicable decision/);
+  assert.match(coordination, /--match-head-commit/);
+  assert.match(coordination, /Never use `--admin`, force-push, delete branches/);
+  assert.match(coordination, /unchanged relevant dependencies, configuration\s+and approved intent/);
+  assert.match(pm, /Never resolve a human reviewer's thread/);
+  assert.match(pm, /Do not move Jira tickets to Done/);
 });

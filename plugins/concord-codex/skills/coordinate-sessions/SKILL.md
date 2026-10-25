@@ -78,8 +78,16 @@ every worker command. Invalidate evidence on changed inputs, attempt/context,
 required checks or risk contract; identical reviewed bytes preserve source review,
 but CI and delivery gates must still apply to the current head. Recovery is recorded
 as recovery, not ordinary success. Record observation time and provenance.
+Source review reuse also requires unchanged relevant dependencies, configuration
+and approved intent; equal diff bytes alone do not establish equivalent behavior.
+Filter CI check runs by the verified head SHA, not the branch name. Check every
+review finding, including findings the worker called minor, against the code.
 
 Merge only within existing user authority, with all gates met and
-`--match-head-commit <verified-head>`; squash into main. Check issues named in
+`--match-head-commit <verified-head>`; squash into main. For another base choose
+the method that fits the branch, preserving merge ancestry for synchronization.
+Never use `--admin`, force-push, delete branches or merge outside the rollout chain.
+Required approvals, current-head CI and PR-body gates must all be satisfied.
+Check issues named in
 Closes lines after merging. Keep the ledger's next gate current and hand off at a
 delivery boundary with authority, evidence references and outstanding decisions.
