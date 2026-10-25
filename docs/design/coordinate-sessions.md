@@ -97,7 +97,10 @@ never claims queue creates, watches or archives sessions. Runtime two-session
 queue delivery still needs validation in a connected user's app-server environment.
 
 Codex uses explicit file ownership, one status observer per task, bounded waiting,
-and durable evidence references. PM routing defaults to Sol low/light, one Sol
+and durable evidence references. PM routing defaults to Sol low/light, actively
+prefers Luna for bounded implementation, investigation and verification with
+compact briefs and one evidence owner, and escalates ambiguous or unsuccessful
+work to Sol using the evidence already collected. It retains one independent Sol
 review for ordinary changes, and one Astra review for changed authority/data-loss/
 recovery/migration contracts plus fix confirmation. Unchanged reviewed source
 retains its review; current-head CI and delivery gates remain mandatory. These
