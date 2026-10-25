@@ -21,6 +21,35 @@ const { providerFailure } = require('../../core/provider-failure');
 // What review-cli answers when a round has a finder candidate: verify and plan still run.
 const REQUIRED_VERIFY = { verify: 'required', plan: 'required' };
 function temp() { return tempDir('codex-runner-'); }
+function writeReferenceSearchFixture() {
+  const tool = path.join(temp(), 'reference-search-fixture.js');
+  fs.writeFileSync(tool, `
+'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const args = process.argv.slice(2);
+if (args[0] === '--files' && args.length === 1) {
+  const files = fs.readdirSync(process.cwd(), { withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => entry.name).sort();
+  process.stdout.write(files.join('\\n') + (files.length ? '\\n' : ''));
+} else if (args[0] === '-n' && args[2] === '--') {
+  const pattern = args[1];
+  const files = args.slice(3);
+  process.exitCode = 1;
+  for (const file of files) {
+    try {
+      if (process.exitCode !== 2 && fs.readFileSync(path.resolve(process.cwd(), file), 'utf8').includes(pattern)) process.exitCode = 0;
+    } catch (error) {
+      process.stderr.write(error.message + '\\n');
+      process.exitCode = 2;
+    }
+  }
+} else {
+  process.stderr.write('reference-search-fixture: unsupported or invalid search arguments\\n');
+  process.exitCode = 2;
+}
+`);
+  return (args, cwd) => spawnSync(process.execPath, [tool, ...args], { cwd, encoding: 'utf8' });
+}
 function v2Plan(fixes, groups) {
   const fixGroups = (groups || fixes.map((finding) => ({ findingIds: [finding.id], rootCause: finding.summary, invariants: ['fixed behavior'], changeClass: 'local', action: 'fix', findings: [finding] })))
     .map((group) => ({ groupId: group.groupId || group.findingIds[0], ...group }));
@@ -2054,15 +2083,19 @@ test('gate-verify subprocess failure is retryable instead of being folded as a c
   assert.ok(h.calls.some((call) => call[0] === 'spawn' && call[1] === 'gate-verify'));
 });
 
-test('gate sweep accepts rg no-match on an existing-file inventory in a repository without package.json', async () => {
+test('gate sweep accepts fixture search no-match on an existing-file inventory without package.json', async () => {
   const repoRoot = temp(), h = harness({ gateApplied: true });
+  const search = writeReferenceSearchFixture();
   fs.writeFileSync(path.join(repoRoot, 'a.txt'), 'no package reference here\n');
   const spawn = (input) => {
     if (input.role === 'gate') {
       assert.match(input.prompt, /enumerate.*actually exist/i);
-      const files = execFileSync('rg', ['--files'], { cwd: repoRoot, encoding: 'utf8' }).trim().split('\n').filter(Boolean);
+      const inventory = search(['--files'], repoRoot);
+      assert.equal(inventory.status, 0, inventory.stderr);
+      const files = inventory.stdout.trim().split('\n').filter(Boolean);
+      assert.ok(files.includes('a.txt'), 'the search inventory must include the real fixture file');
       assert.ok(!files.includes('package.json'));
-      const sweep = spawnSync('rg', ['-n', 'package.json', '--', ...files], { cwd: repoRoot, encoding: 'utf8' });
+      const sweep = search(['-n', 'package.json', '--', ...files], repoRoot);
       assert.equal(sweep.status, 1, sweep.stderr);
       assert.equal(fs.existsSync(path.join(repoRoot, 'package.json')), false);
     }
@@ -2071,9 +2104,10 @@ test('gate sweep accepts rg no-match on an existing-file inventory in a reposito
   await runReviewUntilGreen({ ref: 'feature/x', repoRoot, runCli: h.cli, spawn });
 });
 
-test('a genuine rg exit 2 remains a blocked gate method failure with terminal continuation', async () => {
+test('fixture search exit 2 remains a blocked gate method failure with terminal continuation', async () => {
   for (const blockedRole of ['gate', 'gate-verify']) {
     const repoRoot = temp(), h = harness({ gateApplied: true });
+    const search = writeReferenceSearchFixture();
     fs.writeFileSync(path.join(repoRoot, 'a.txt'), 'content\n');
     let failure;
     const cli = (args) => {
@@ -2088,15 +2122,15 @@ test('a genuine rg exit 2 remains a blocked gate method failure with terminal co
     };
     const spawn = (input) => {
       if (input.role === blockedRole) {
-        const sweep = spawnSync('rg', ['--definitely-invalid-option'], { cwd: repoRoot, encoding: 'utf8' });
+        const sweep = search(['--definitely-invalid-option'], repoRoot);
         assert.equal(sweep.status, 2);
-        fs.writeFileSync(path.join(h.stateDir, `round-1-${blockedRole}.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [], blocked: [`rg reference sweep exited ${sweep.status}: ${sweep.stderr.trim()}`] }));
+        fs.writeFileSync(path.join(h.stateDir, `round-1-${blockedRole}.json`), JSON.stringify({ status: 'ok', rejected: [], findings: [], blocked: [`reference sweep exited ${sweep.status}: ${sweep.stderr.trim()}`] }));
         return { status: 0 };
       }
       return h.spawn(input);
     };
     await assert.rejects(runReviewUntilGreen({ ref: `feature/${blockedRole}`, repoRoot, runCli: cli, spawn }), (error) => {
-      assert.match(error.message, new RegExp(`${blockedRole} reviewer could not run: rg reference sweep exited 2`));
+      assert.match(error.message, new RegExp(`${blockedRole} reviewer could not run: reference sweep exited 2`));
       assert.deepEqual(error.durableContinuation, { nextAction: 'terminal-handoff', retryable: false });
       return true;
     });
