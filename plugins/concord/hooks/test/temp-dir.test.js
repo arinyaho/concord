@@ -45,7 +45,7 @@ test('creates temporary directories', () => {
     const created = JSON.parse(fs.readFileSync(marker, 'utf8'));
     assert.strictEqual(created.length, 2);
     for (const createdDir of created) {
-      assert.strictEqual(path.dirname(createdDir), fs.realpathSync(tmp));
+      assert.strictEqual(fs.realpathSync(path.dirname(createdDir)), fs.realpathSync(tmp));
       assert.strictEqual(fs.existsSync(createdDir), false);
     }
     assert.deepStrictEqual(fs.readdirSync(tmp), []);
