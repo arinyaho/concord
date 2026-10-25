@@ -14,15 +14,43 @@ function filesCallingMkdtemp(dir) {
     .filter((name) => DIRECT_CALL.test(fs.readFileSync(path.join(dir, name), 'utf8')));
 }
 
-// native-driver-initiative.test.js left the most directories in #280 (native-init-*); its run takes about two minutes.
-test('a run of native-driver-initiative.test.js leaves no directory behind in the temp directory', () => {
-  const tmp = tempDir('temp-dir-run-');
-  const env = { ...process.env, TMPDIR: tmp, TEMP: tmp, TMP: tmp };
-  delete env.NODE_TEST_CONTEXT; // set by an enclosing `node --test`; it would make the child report to the parent instead of running the files
-  const run = spawnSync(process.execPath, ['--test', 'native-driver-initiative.test.js'], { cwd: __dirname, env, encoding: 'utf8' });
-  assert.strictEqual(run.status, 0, run.stdout + run.stderr);
-  assert.deepStrictEqual(fs.readdirSync(tmp), []);
+// Exercise the exit handler in a real test process without rerunning an entire
+// integration suite. The source check below ensures every suite uses this helper.
+for (const fails of [false, true]) {
+  test(`tempDir removes all directories after a ${fails ? 'failing' : 'passing'} test process exits`, () => {
+    const dir = tempDir('temp-dir-run-');
+    const tmp = path.join(dir, 'tmp');
+    fs.mkdirSync(tmp);
+    const marker = path.join(dir, 'created.json');
+    const fixture = path.join(dir, 'cleanup.test.cjs');
+    fs.writeFileSync(fixture, `
+const { test } = require('node:test');
+const fs = require('node:fs');
+const path = require('node:path');
+const { tempDir } = require(${JSON.stringify(require.resolve('./temp-dir'))});
+test('creates temporary directories', () => {
+  const dirs = [tempDir('native-init-'), tempDir('another-prefix-')];
+  for (const dir of dirs) {
+    fs.mkdirSync(path.join(dir, 'nested'));
+    fs.writeFileSync(path.join(dir, 'nested', 'artifact.json'), '{}');
+  }
+  fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify(dirs));
+  ${fails ? "throw new Error('expected fixture failure');" : ''}
 });
+`);
+    const env = { ...process.env, TMPDIR: tmp, TEMP: tmp, TMP: tmp };
+    delete env.NODE_TEST_CONTEXT; // let the child run its own test runner
+    const run = spawnSync(process.execPath, ['--test', fixture], { env, encoding: 'utf8' });
+    assert.strictEqual(run.status, fails ? 1 : 0, run.stdout + run.stderr);
+    const created = JSON.parse(fs.readFileSync(marker, 'utf8'));
+    assert.strictEqual(created.length, 2);
+    for (const createdDir of created) {
+      assert.strictEqual(fs.realpathSync(path.dirname(createdDir)), fs.realpathSync(tmp));
+      assert.strictEqual(fs.existsSync(createdDir), false);
+    }
+    assert.deepStrictEqual(fs.readdirSync(tmp), []);
+  });
+}
 
 test('the check flags a test file that calls mkdtemp directly', () => {
   const dir = tempDir('temp-dir-check-');
