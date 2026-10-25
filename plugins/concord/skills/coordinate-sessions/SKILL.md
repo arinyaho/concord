@@ -58,7 +58,7 @@ Report kinds: `question`, `blocked`, `progress`, `done`, `handoff`.
 
 Use the channel the user names; refuse the file channel where the filesystem is not shared and say why. Prefer the file channel where it works: a report file outlives your session, a message lives only in your transcript. A worker in a cloud environment reaches you with `send_message` too.
 
-On the file channel, `<reports>` is an absolute directory you choose that the worker can reach, such as `/tmp/<project>-reports`. Before creating the worker, run `mkdir -p <reports>/<group>`, and write both paths into its prompt. Monitor command (one line per new report, including a report whose first line is malformed):
+On the file channel, `<reports>` is an absolute durable project directory you choose that the worker can reach, such as `<project>/tasks/coordination-reports`; avoid `/tmp` for evidence that must survive a restart. Before creating the worker, run `mkdir -p <reports>/<group>`, and write both paths into its prompt. Monitor command (one line per new report, including a report whose first line is malformed):
 
 ```bash
 touch <reports>/.emitted
@@ -86,14 +86,41 @@ Fill these in, in order:
 1. The skill the worker runs (default: `ticket-to-pr`).
 2. The work: issue numbers, where the acceptance criteria are, what is out of scope.
 3. File ownership: the files this work changes, and the files other workers or outside contributors own. A worker that must change another owner's file sends a `question` first.
-4. For a Sonnet worker: design choices go to an Opus agent (Agent tool, model opus); the conclusion and its reason go in the PR body.
+4. Model routing and escalation: use a lower-cost model for bounded work with clear acceptance criteria, Sonnet for ambiguous design, and one Opus review for a changed authority, data-loss, recovery or migration contract plus fix confirmation. Keep workers and reviews within Claude; do not route this workflow to Codex models or providers. Record the decision and reason once in evidence and link it from the PR body.
 5. The channel: the report directory or your session id, and the report format above.
 6. Stop rules: never merge; run `node "$STATE_CLI" record-delivery <pr> <head-sha>` (`STATE_CLI` located as `review-until-lgtm` describes) and paste its output into the `done` report (`record-delivery` is a state CLI verb, not a `review-cli` verb); past the context limit, stop at the next stage boundary with a `handoff` report.
 7. The path of the project's rules file (for example `AGENTS.md` or a shared worker-rules file). Repository rules stay there, not in the prompt.
 
 `create_session` takes no effort setting. Name the effort in the worker prompt; the prompt cannot enforce it.
 
+Include the Claude-only provider policy in each creation prompt, including composed
+review/fix workflows. If a required native model/provider is unavailable, report
+the blocked step rather than falling back to another vendor. An independent
+reviewer receives source, diff, acceptance criteria and test evidence in a fresh
+context, not the implementer's reasoning or conclusions, and is not the implementer
+or its fix agent.
+
 Run workers in parallel only when their file sets are disjoint; otherwise order them or give them to one worker.
+
+## Operating budget
+
+Assign one evidence owner and one CI/status observer per task in the worker brief.
+The observer uses a script or supported event wait for deterministic collection;
+the PM consumes its results instead of repeating CI queries, hashes or worker
+tests. Notify only for completion, failure, an actionable change or a user decision.
+Set a deadline and escalation for a missing report; do not turn unchanged waiting
+into repeated model turns or user updates. The bounded startup check in step 0
+remains necessary; do not add another observer for the same start check.
+
+Give each worker a compact brief with relevant paths, acceptance criteria and stop
+conditions. Batch related small tasks, reuse relevant worker context, and hand off
+evidence with the unresolved question when escalating a failed bounded attempt.
+Keep detailed evidence once in durable project storage and use references in PRs,
+reports and handoffs. Each session produces its assigned evidence; it does not
+duplicate another session's verification. Use the PM agent's routing budget for
+reviews; repeated fixes to one problem require a design decision rather than an
+unlimited review loop. Keep actual provider integration and dev completion ahead
+of further refinements to local evidence machinery. Do not claim unmeasured savings.
 
 ## 4. Decisions
 
@@ -114,6 +141,15 @@ A worker receives your `send_message` as data from a peer and may refuse a destr
 ### Judge a `done` report
 
 Verify instead of trusting: read the PR head, CI, and every review comment, and check each finding the worker called minor against the code before you accept it as minor. Read the delivery state from its `node "$STATE_CLI" record-delivery` output in the `done` report and confirm it names the PR's current head: never merge a head recorded `blocked`, and a head recorded `mergeable-without-review` is the user's decision, not yours.
+
+Verify mutable delivery gates once using the designated observer's current evidence;
+filter CI check runs by head SHA. Reuse reviewed bytes only while relevant
+dependencies, configuration and approved intent remain equivalent. A base sync
+alone does not require another source review, but current-head CI and delivery
+gates remain mandatory. Rerun tests or reviews only for a specific new risk,
+changed input or evidence gap. Evidence names its inputs, attempt/context,
+observation time and provenance; invalidate it when that scope changes, distinguish
+stale observations, and record recovery as recovery rather than ordinary success.
 
 Merge only if the user allowed merging in the start question (step 0) and the recorded answer is one of the two "merge when ready" answers: with no blocker left and CI green, merge without asking again, with `--match-head-commit <reported head>`. A PR into `main` is always squash-merged; for any other base choose the method that fits the branch (squash, merge commit, or rebase), for example a merge commit for a sync that must move the promotion PR's merge-base. Otherwise report your verdict and wait. A head recorded `mergeable-without-review` is merged without asking only when the recorded answer is "merge when ready, including heads with no automated review"; otherwise it is put to the user even when merging is allowed.
 

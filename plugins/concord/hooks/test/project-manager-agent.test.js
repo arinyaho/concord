@@ -15,7 +15,7 @@ const section = (text, heading) => {
 test('project-manager has a Claude agent and a native Codex skill', () => {
   const agent = read('plugins/concord/agents/project-manager.md');
   assert.match(agent, /^---\nname: project-manager\n/);
-  assert.match(agent, /^model: opus$/m);
+  assert.match(agent, /^model: sonnet$/m);
   assert.match(section(agent, 'Start'), /`concord:coordinate-sessions`/);
   assert.doesNotMatch(agent, /HPKE|concord-implementer|concord-architect/, 'the agent stays rollout-neutral and names only agents the plugin ships or the harness provides');
   for (const pkg of ['concord-codex', 'concord-copilot']) {
@@ -62,4 +62,22 @@ test('Codex coordination preserves delivery gates while reusing scoped review ev
   assert.match(coordination, /unchanged relevant dependencies, configuration\s+and approved intent/);
   assert.match(pm, /Never resolve a human reviewer's thread/);
   assert.match(pm, /Do not move Jira tickets to Done/);
+});
+
+test('Claude coordination assigns one observer and reuses evidence without weakening merge gates', () => {
+  const pm = read('plugins/concord/agents/project-manager.md');
+  const coordination = read('plugins/concord/skills/coordinate-sessions/SKILL.md');
+  assert.match(pm, /Prefer a Haiku subagent/);
+  assert.match(pm, /Keep coordination, workers and reviews within Claude/);
+  assert.doesNotMatch(pm + coordination, /Luna|Astra|Codex provider selected/);
+  assert.match(pm, /One Sonnet review plus relevant tests/);
+  assert.match(pm, /One Opus review plus confirmation of fixes/);
+  assert.doesNotMatch(pm, /rerun the key command|Confirm with the user in your own session before the first merge/);
+  assert.match(coordination, /one CI\/status observer per task/);
+  assert.match(coordination, /do not turn unchanged waiting\s+into repeated model turns or user updates/);
+  assert.match(coordination, /current-head CI and delivery\s+gates remain mandatory/);
+  assert.match(coordination, /attempt\/context,\s+observation time and provenance/);
+  assert.match(coordination, /Include the Claude-only provider policy in each creation prompt/);
+  assert.match(coordination, /rather than falling back to another vendor/);
+  assert.match(pm, /excluding the implementer's reasoning and conclusions/);
 });
