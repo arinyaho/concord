@@ -487,15 +487,30 @@ function denyAround(root, keep) {
 
 // Codex starts its own binary again inside the sandbox, so the directory it is installed in must stay readable.
 function codexInstallDir(repoRoot) {
-  // The config is written before any launch, so the first candidate that exists counts, whether or not it runs yet.
-  for (const { command } of codexCandidates(process.env, isWindows ? 'win32' : process.platform)) {
-    const paths = /[\\/]/.test(command) ? [path.resolve(repoRoot, command)] : String(process.env.PATH || '').split(path.delimiter).map((dir) => dir && path.join(dir, command));
+  const executablePath = (command, requireExecutable = false) => {
+    const paths = /[\\/]/.test(command) ? [path.resolve(repoRoot, command)] : String(process.env.PATH || '').split(path.delimiter).map((dir) => requireExecutable ? path.resolve(repoRoot, dir || '.', command) : dir && path.join(dir, command));
     for (const candidate of paths.filter(Boolean)) {
       try {
+        if (requireExecutable) {
+          if (!fs.statSync(candidate).isFile()) continue;
+          if (!isWindows) fs.accessSync(candidate, fs.constants.X_OK);
+        }
         const real = fs.realpathSync(candidate);
         return real.match(/^(.*[\\/]node_modules[\\/]@openai[\\/]codex)[\\/]/)?.[1] || real;
       } catch (_) { /* not installed here */ }
     }
+    return null;
+  };
+  // Keep the installed directory readable for the same executable the runner will launch.
+  try {
+    const selected = resolveCodexExecutable(repoRoot);
+    const installed = executablePath(selected.command, true);
+    if (installed) return installed;
+  } catch (_) { /* preserve config-only setups when no executable can be resolved */ }
+  // The config is also generated before launches in config-only flows; retain the old best-effort path fallback there.
+  for (const { command } of codexCandidates(process.env, isWindows ? 'win32' : process.platform)) {
+    const installed = executablePath(command);
+    if (installed) return installed;
   }
   return null;
 }

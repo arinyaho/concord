@@ -12,7 +12,7 @@ const { tempDir } = require('./temp-dir');
 const cliPath = path.resolve(__dirname, '../../hooks/review-cli.js');
 const tmp = () => tempDir('runner-bound-');
 const emptyPlan = { protocolVersion: 2, planId: 'empty-plan', transactionScope: 'group', fixes: [], fixGroups: [] };
-function fixture({ maxLaunches = 30, mode } = {}) {
+function fixture({ maxLaunches = 30, mode, zeroFindings = false } = {}) {
   const repoRoot = tmp(), stateDir = tmp(), initiativeStateDir = tmp();
   const git = (...args) => execFileSync('git', args, { cwd: repoRoot, stdio: 'pipe' }).toString().trim();
   git('init', '-q'); git('config', 'user.email', 'test@example.com'); git('config', 'user.name', 'test');
@@ -37,7 +37,7 @@ function fixture({ maxLaunches = 30, mode } = {}) {
       // still launch (a round with no candidate derives both, see the verify-needed tests), yet nothing survives to be fixed.
       const candidate = { id: 'correctness:rejected-candidate', gate: 'correctness', file: 'a.txt', span: 'two', summary: 'a candidate verify rejects' };
       const artifact = role === 'plan' ? { status: 'ok', protocolVersion: 2, groups: [] }
-        : role === 'correctness' ? { status: 'ok', examined: ['a.txt'], findings: [candidate] }
+        : role === 'correctness' ? { status: 'ok', examined: ['a.txt'], findings: zeroFindings ? [] : [candidate] }
         : role === 'verify' ? { status: 'ok', rejected: [{ id: candidate.id, reason: 'verify read the line and found no defect' }], findings: [] }
         : { status: 'ok', examined: ['a.txt'], rejected: [], findings: [] };
       fs.writeFileSync(destination, JSON.stringify(artifact));
@@ -45,6 +45,17 @@ function fixture({ maxLaunches = 30, mode } = {}) {
     } };
   return { options, calls, workers, stateDir, git, ledger: () => JSON.parse(fs.readFileSync(runPath(initiativeStateDir, 'integration'))) };
 }
+test('a zero-findings initiative round derives verify and plan without launching workers', async () => {
+  const f = fixture({ zeroFindings: true });
+  await runReviewUntilGreen(f.options);
+  assert.deepEqual(f.workers, ['correctness']);
+  assert.equal(f.ledger().launches.length, 1);
+  assert.equal(f.ledger().launches[0].role, 'correctness');
+  const targetLedger = review.readLedger(f.stateDir, review.targetSlug(f.options.ref));
+  assert.equal(targetLedger.cli_derived.length, 1);
+  assert.deepEqual(targetLedger.cli_derived[0].roles, ['verify', 'plan']);
+  assert.equal(f.ledger().launches.some((entry) => ['verify', 'plan'].includes(entry.role)), false);
+});
 test('keyed runner propagates complete options, reserves every review role and delivers only the CLI disposition', async () => {
   const f = fixture(); const result = await runReviewUntilGreen(f.options);
   assert.deepEqual(f.workers, ['correctness', 'verify', 'plan']);

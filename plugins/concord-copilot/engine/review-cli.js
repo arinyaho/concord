@@ -665,7 +665,7 @@ function finderHashes(stateDir, ledger, n) {
 }
 
 // The round's verify verdict: the reviewer's artifact, or the CLI-derived empty verdict for a round with no candidates.
-// `record` runs after plan-fixes has already normalized (and so re-stamped) the gate artifacts, so it asks for the correctness-before-verify check only (`fullOrder` false), as it always did.
+// `record` requires the fixes phase, reached by plan-fixes after its full order check (or by gate-panel-fold), so it checks correctness-before-verify only (`fullOrder` false); the gate artifact is not necessarily re-stamped here.
 function readVerify(stateDir, ledger, n, fullOrder = true) {
   const derived = derivedEntry(ledger, n);
   if (!derived) {
