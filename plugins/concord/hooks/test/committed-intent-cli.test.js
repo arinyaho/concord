@@ -84,6 +84,28 @@ test('legacy command-backed ledger without source metadata resumes when the fetc
   assert.equal(f.ledger().intentSource.kind, 'project-command');
 });
 
+test('legacy same-content switch from configured command to explicit intent file remains compatible', (t) => {
+  const text = 'same legacy intent text';
+  const f = setup(t, { config: { dod: null, intent: { command: `printf '${text}'` } } });
+  assert.equal(start(f).status, 0);
+  const fileDir = tempDir('legacy-command-to-file-'); const intentFile = path.join(fileDir, 'intent.md');
+  fs.writeFileSync(intentFile, text);
+  const switched = f.call(['round-start', f.target, '--no-intent-command', '--intent-file', intentFile]);
+  assert.equal(switched.status, 0, switched.stderr);
+  assert.equal(f.ledger().intentHash, require('../../core/review').contentHash(text));
+});
+
+test('legacy same-content switch from explicit intent file to configured command remains compatible', (t) => {
+  const text = 'same legacy intent text';
+  const f = setup(t, { config: { dod: null, intent: { command: `printf '${text}'` } } });
+  const fileDir = tempDir('legacy-file-to-command-'); const intentFile = path.join(fileDir, 'intent.md');
+  fs.writeFileSync(intentFile, text);
+  assert.equal(start(f, f.target, ['--intent-file', intentFile]).status, 0);
+  const switched = f.call(['round-start', f.target]);
+  assert.equal(switched.status, 0, switched.stderr);
+  assert.equal(f.ledger().intentHash, require('../../core/review').contentHash(text));
+});
+
 test('legacy configured-command ledger migrates with a persisted but unused fallback selector', (t) => {
   const f = setup(t, { config: { dod: null, intent: { command: "printf 'stable configured requirement'" } } });
   const first = start(f, f.target, ['--intent-path', f.notePath]);

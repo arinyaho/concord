@@ -2695,18 +2695,21 @@ function runVerb(resolveFromCwd, args, initiative) {
         }
         const priorSource = ledger.intentSource || null;
         const freshSource = fresh.source || null;
-        // Older command-backed ledgers predate intentSource. Their authority is
-        // unknown until the configured command has been re-run and its content
-        // hash matches the pinned cache; only then can we safely record it.
-        if (!priorSource && freshSource?.kind === 'project-command') {
-          ledger = { ...ledger, intentSource: freshSource };
-        }
-        if (JSON.stringify(priorSource && { kind: priorSource.kind, path: priorSource.path }) !== JSON.stringify(freshSource && { kind: freshSource.kind, path: freshSource.path })) {
-          if (!(priorSource === null && freshSource?.kind === 'project-command')) {
-            throw new Error('harness-failure: intent source authority changed during this run; rerun to adopt a different intent source');
+        if (intentPathSelector) {
+          // Older command-backed ledgers predate intentSource. Their authority
+          // is unknown until a fresh configured-command hash matches the cache.
+          if (!priorSource && freshSource?.kind === 'project-command') ledger = { ...ledger, intentSource: freshSource };
+          if (JSON.stringify(priorSource && { kind: priorSource.kind, path: priorSource.path }) !== JSON.stringify(freshSource && { kind: freshSource.kind, path: freshSource.path })) {
+            if (!(priorSource === null && freshSource?.kind === 'project-command')) {
+              throw new Error('harness-failure: intent source authority changed during this run; rerun to adopt a different intent source');
+            }
           }
-        }
-        if (freshSource && (freshSource.commit !== priorSource?.commit || freshSource.blob !== priorSource?.blob)) {
+          if (freshSource && (freshSource.commit !== priorSource?.commit || freshSource.blob !== priorSource?.blob)) {
+            ledger = { ...ledger, intentSource: freshSource };
+          }
+        } else {
+          // Preserve legacy selector switching when the fetched content remains
+          // identical. The hash drift check above still protects the cache.
           ledger = { ...ledger, intentSource: freshSource };
         }
       }
