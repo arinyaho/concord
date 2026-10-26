@@ -185,6 +185,20 @@ test('ticket-to-pr keeps Notion lifecycle transitions bounded and unambiguous', 
   assert.match(skill.slice(prCreation), /Do not move the ticket to Done/);
 });
 
+test('ticket-to-pr plans one coherent outcome unit and permits only justified boundaries', () => {
+  const skill = read(CLAUDE_TICKET_TO_PR);
+  const scenarios = [
+    { name: 'one outcome with atomic changes', rule: /default unit is one coherent approved ticket outcome; keep its atomic changes together/is },
+    { name: 'independent deployment or revert boundary', rule: /independently deployable or revertible boundary/i },
+    { name: 'required merge prerequisite', rule: /prerequisite must merge first/i },
+    { name: 'multi-repository delivery boundary', rule: /multi-repository delivery boundary/i },
+    { name: 'approved ownership split', rule: /ownership split justified in the approved plan/i },
+    { name: 'frontend/backend labels alone do not justify a split', rule: /frontend\/backend label alone.*not a boundary/i },
+    { name: 'arbitrary size does not justify fragmentation', rule: /arbitrary size is not a boundary/i },
+  ];
+  for (const scenario of scenarios) assert.match(skill, scenario.rule, scenario.name);
+});
+
 pluginInstallE2ETest('plugin-install e2e: clean Claude and Codex installs discover the same shared skills', (t) => {
   const root = tempDir('concord-ticket-writing-');
   const home = path.join(root, 'home');

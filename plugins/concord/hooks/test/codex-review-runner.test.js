@@ -3219,13 +3219,17 @@ test('reviewOnly rejects a finder that plants the future anchors artifact', asyn
   assert.strictEqual(h.calls.some((call) => call[0] === 'spawn' && call[1] === 'anchors'), false);
 });
 
-test('Codex review-and-fix launcher passes --review-only to the runner and prints its findings as JSON', () => {
+test('Codex review-and-fix launcher passes legacy and committed intent selectors to the runner', () => {
   const dir = temp();
   const capture = path.join(dir, 'options.json');
   const preload = path.join(dir, 'capture-runner.js');
   const bin = path.join(__dirname, '..', '..', '..', 'concord-codex', 'bin', 'review-and-fix.js');
   fs.writeFileSync(preload, `
     const fs = require('node:fs');
+    const childProcess = require('node:child_process');
+    for (const name of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync']) {
+      childProcess[name] = () => { throw new Error('unexpected child-process/provider launch in mocked launcher test'); };
+    }
     const Module = require('node:module');
     const load = Module._load;
     Module._load = function(request, parent, isMain) {
@@ -3236,13 +3240,18 @@ test('Codex review-and-fix launcher passes --review-only to the runner and print
       return load.apply(this, arguments);
     };
   `);
-  const output = execFileSync('node', ['--require', preload, bin, 'feature/x', 'main', '--review-only', '--no-broad', '--reviewer', 'claude', '--intent-file', '/abs/pr.md'], { cwd: dir, env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
-  const options = JSON.parse(fs.readFileSync(capture, 'utf8'));
-  assert.strictEqual(options.reviewOnly, true);
-  assert.strictEqual(options.intentFile, '/abs/pr.md');
-  assert.strictEqual(options.ref, 'feature/x');
-  assert.strictEqual(options.base, 'main');
-  assert.deepStrictEqual(JSON.parse(output), { decision: 'review-only', round: 1, findings: [] });
+  for (const [selector, field, value] of [
+    [['--intent-file', '/abs/pr.md'], 'intentFile', '/abs/pr.md'],
+    [['--intent-path', 'docs/requirements.md'], 'intentPath', 'docs/requirements.md'],
+  ]) {
+    const output = execFileSync('node', ['--require', preload, bin, 'feature/x', 'main', '--review-only', '--no-broad', '--reviewer', 'claude', ...selector], { cwd: dir, env: { ...process.env, CAPTURE: capture }, encoding: 'utf8' });
+    const options = JSON.parse(fs.readFileSync(capture, 'utf8'));
+    assert.strictEqual(options.reviewOnly, true);
+    assert.strictEqual(options[field], value);
+    assert.strictEqual(options.ref, 'feature/x');
+    assert.strictEqual(options.base, 'main');
+    assert.deepStrictEqual(JSON.parse(output), { decision: 'review-only', round: 1, findings: [] });
+  }
 });
 
 test('runner passes intentFile to round-start as --intent-file', async () => {
@@ -3251,6 +3260,14 @@ test('runner passes intentFile to round-start as --intent-file', async () => {
   const start = h.calls.find((c) => c[0] === 'cli' && c[1] === 'round-start');
   const at = start.indexOf('--intent-file');
   assert.ok(at > 0 && start[at + 1] === '/abs/pr.md', `round-start args: ${start.join(' ')}`);
+});
+
+test('runner forwards committed intentPath to the initial round-start', async () => {
+  const h = harness();
+  await runReviewUntilGreen({ ref: 'feature/committed-intent', repoRoot: '/repo', runCli: h.cli, spawn: h.spawn, intentPath: 'docs/requirements.md' });
+  const start = h.calls.find((c) => c[0] === 'cli' && c[1] === 'round-start');
+  const at = start.indexOf('--intent-path');
+  assert.ok(at > 0 && start[at + 1] === 'docs/requirements.md', `round-start args: ${start.join(' ')}`);
 });
 
 test('providerExec keeps project settings out of a Claude reviewer on an untrusted checkout', async () => {

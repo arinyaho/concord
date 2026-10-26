@@ -2,6 +2,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { execFileSync } = require('node:child_process');
+const crossPlatform = require('./spawn-cross-platform');
 
 // Intent-source fetch for case-3 intent-aware review. Mirrors dod-exec's config
 // trust model: a project-authored command string the CLI runs, never the agent.
@@ -86,4 +88,56 @@ function readIntentFile(file, readFileFn = fs.readFileSync) {
   return { text, sha: crypto.createHash('sha256').update(text, 'utf8').digest('hex'), bytes };
 }
 
-module.exports = { CONFIG_FILENAME, INTENT_MAX_BYTES, INTENT_TIMEOUT_MS, loadIntentConfig, intentExecFn, fetchIntent, readIntentFile };
+function committedGit(repoRoot, args, options = {}) {
+  const command = crossPlatform.crossPlatformCommand('git', repoRoot);
+  const escapeShimArgs = crossPlatform.needsDoubleEscape('git', repoRoot);
+  return execFileSync(command, crossPlatform.crossPlatformArgs(args, escapeShimArgs), crossPlatform.crossPlatformOpts({
+    cwd: repoRoot,
+    encoding: options.encoding,
+    maxBuffer: options.maxBuffer || INTENT_MAX_BYTES + 1,
+    timeout: INTENT_TIMEOUT_MS,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }));
+}
+
+// Read an immutable Git blob at an explicitly reviewed commit. This never
+// consults the index or worktree, so dirty and missing working files are safe.
+function readCommittedIntent({ repoRoot, path: relativePath, head }) {
+  try {
+    if (typeof relativePath !== 'string' || relativePath.length === 0 || relativePath.includes('\0') || relativePath.includes('\\') || relativePath.startsWith('/') || /^[A-Za-z]:/.test(relativePath)) {
+      throw new Error('invalid relative path');
+    }
+    const parts = relativePath.split('/');
+    if (parts.some((part) => !part || part === '.' || part === '..' || part.toLowerCase() === '.git')) throw new Error('invalid relative path');
+    if (typeof head !== 'string' || !head.trim()) throw new Error('missing commit');
+
+    const commit = String(committedGit(repoRoot, ['rev-parse', '--verify', '--end-of-options', `${head}^{commit}`], { encoding: 'utf8' })).trim();
+    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(commit)) throw new Error('invalid resolved commit');
+
+    const listing = committedGit(repoRoot, ['--literal-pathspecs', 'ls-tree', '-z', commit, '--', relativePath]);
+    const entries = listing.toString('utf8').split('\0').filter(Boolean);
+    if (entries.length !== 1) throw new Error('committed path not found');
+    const tab = entries[0].indexOf('\t');
+    if (tab < 0 || entries[0].slice(tab + 1) !== relativePath) throw new Error('committed path not found');
+    const [mode, type, blob] = entries[0].slice(0, tab).split(' ');
+    if ((mode !== '100644' && mode !== '100755') || type !== 'blob' || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(blob || '')) {
+      throw new Error('committed path is not a regular file');
+    }
+    const bytesBuffer = committedGit(repoRoot, ['cat-file', 'blob', blob], { maxBuffer: INTENT_MAX_BYTES + 1 });
+    if (bytesBuffer.length > INTENT_MAX_BYTES) throw new Error(`intent blob exceeds cap ${INTENT_MAX_BYTES}`);
+    const text = bytesBuffer.toString('utf8');
+    if (!Buffer.from(text, 'utf8').equals(bytesBuffer)) throw new Error('intent blob is not valid UTF-8 text');
+    if (text.trim() === '') throw new Error('intent blob is empty');
+    return {
+      text,
+      sha: crypto.createHash('sha256').update(bytesBuffer).digest('hex'),
+      bytes: bytesBuffer.length,
+      source: { kind: 'committed-file', path: relativePath, commit, blob },
+    };
+  } catch (e) {
+    if (e && typeof e.message === 'string' && e.message.startsWith('harness-failure:')) throw e;
+    throw new Error(`harness-failure: committed intent is unavailable or invalid: ${e && e.message ? e.message : e}`);
+  }
+}
+
+module.exports = { CONFIG_FILENAME, INTENT_MAX_BYTES, INTENT_TIMEOUT_MS, loadIntentConfig, intentExecFn, fetchIntent, readIntentFile, readCommittedIntent };

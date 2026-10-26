@@ -79,7 +79,7 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(stages, /missing or unreadable handoff.*unresolved model identity or capability.*incomplete or unsuccessful review.*uncovered decision.*missing required independent review blocks checkpoint 1 and Stage 2.*user approval cannot replace/is);
   assert.match(stages, /proposed design-record mutation.*specific approval/i);
   assert.match(stages, /Continue only after the user approves implementation of that exact set/i);
-  assert.match(skill, /repository boundary requires a separate implementation unit and PR, not automatically another outcome ticket/i);
+  assert.match(skill, /one coherent approved ticket outcome is the default implementation unit/i);
   assert.match(skill, /one owner can verify the combined result.*ordered implementation record/is);
   assert.match(stages, /one execution handoff per implementation unit.*artifact\/version prerequisites/is);
   assert.match(stages, /not `READY FOR TEST` until the exact combined artifacts are deployed.*runnable QA hand-off/is);
@@ -109,6 +109,27 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(stages, /pending.*in progress.*terminal failure.*missing required check.*expired.*`BLOCKED`/is);
   assert.match(stages, /wait.*required PR checks.*final head.*base.*bounded.*terminal failure.*expired.*`BLOCKED`/is);
   assert.match(stages, /integration rewrote history.*force-with-lease.*fetched live head SHA.*repository policy.*`BLOCKED`/is);
+});
+
+test('initiative unit boundaries are approved before launch and scope growth returns to planning', () => {
+  const skill = read('concord', 'SKILL.md');
+  const stages = read('concord', 'references/stages.md');
+  const handoff = read('concord', 'references/handoff-contract.md');
+  const approvedUnit = /\{outcome, acceptanceCriteria, repo, base, dependencyRefs, boundaryReason\}/;
+  for (const [name, source] of [['initiative skill', skill], ['stage reference', stages]]) {
+    assert.match(source, approvedUnit, `${name} must define the approved unit record`);
+    assert.match(source, /independently deployable or revertible boundary/i);
+    assert.match(source, /prerequisite.*must merge first/i);
+    assert.match(source, /multi-repository delivery boundary/i);
+    assert.match(source, /ownership split.*approved plan/i);
+    assert.match(source, /frontend\/backend.*alone.*(?:does not|insufficient)/i);
+    assert.match(source, /arbitrary size.*(?:does not|insufficient)/i);
+    assert.match(source, /unit-boundary-unsettled/i);
+  }
+  assert.match(stages, /scope growth.*stop dependent code and PR growth.*planning\/checkpoint-2/i);
+  assert.match(stages, /immutable execution graph after its first launch.*reset a review budget/i);
+  assert.match(handoff, /Approved implementation-unit contract.*boundary reason.*dependency references/i);
+  assert.match(handoff, /every PR disposition/i);
 });
 
 test('initiative-to-prs reconciles approved tickets before a no-PR exit', () => {

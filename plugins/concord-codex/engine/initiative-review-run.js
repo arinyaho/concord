@@ -2,8 +2,10 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const { same } = require('./review-eval');
 const { writeFileAtomic } = require('./atomic-write');
+const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
 
 function canonicalPath(value) {
   const resolved = path.resolve(value);
@@ -19,7 +21,12 @@ function canonicalPath(value) {
 function repositoryIdentity(repository) {
   const root = canonicalPath(repository);
   try {
-    const commonDir = require('node:child_process').execFileSync('git', ['rev-parse', '--git-common-dir'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const gitArgs = ['rev-parse', '--git-common-dir'];
+    const commonDir = execFileSync(
+      crossPlatformCommand('git', root),
+      crossPlatformArgs(gitArgs, needsDoubleEscape('git', root)),
+      crossPlatformOpts({ cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }),
+    ).trim();
     return fs.realpathSync(path.resolve(root, commonDir));
   } catch (_) {
     return root;

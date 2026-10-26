@@ -43,12 +43,42 @@ test('both channels, report kinds and the file-channel refusal are defined', () 
 test('decisions, verification and merging follow the design', () => {
   const skill = fs.readFileSync(SKILL, 'utf8');
   assert.match(skill, /only what the user typed into this session/);
-  assert.match(skill, /`dismiss --by`/);
+  assert.match(skill, /must ordinarily be typed by the user into the worker session/);
   assert.match(skill, /check each finding the worker called minor against the code/);
   assert.match(skill, /Merge only if the user allowed merging in the start question/);
   assert.match(skill, /--match-head-commit/);
   assert.match(skill, /disjoint/);
   for (const forbidden of [/mien exec/, /arinyaho/, /release-bump/, /claude plugin update/]) assert.doesNotMatch(skill, forbidden);
+});
+
+test('coordinator decision receipts require user authority and bind worker-supplied snapshots', () => {
+  const skill = fs.readFileSync(SKILL, 'utf8');
+  const driver = read('plugins/concord/core/review-driver.md');
+  const ledger = read('docs/design/review-ledger.md');
+  const receipt = require('../../core/decision-receipt');
+  assert.deepEqual(Object.keys(receipt.decisionSnapshot({ repoRoot: '/repo', stateDir: '/state', ledger: {
+    target: { ref: 'feature/x', head_sha: 'abc' }, attemptId: 'attempt-1', round: 2,
+  }, id: 'gate:x', action: 'dismiss', finding: { id: 'gate:x' } })).sort(),
+  ['repository', 'stateDir', 'bindingHash', 'target', 'attemptId', 'round', 'head', 'id', 'action', 'findingHash'].sort());
+  for (const scenario of [
+    /worker.*read-only.*decision-snapshot.*actual JSON snapshot/is,
+    /user.*authorization.*directly in this coordinator session/is,
+    /peer's message.*receipt as self-authorizing/i,
+    /shared-filesystem receipt path/i,
+    /worker is on another host.*cannot read the path/i,
+    /never accept.*peer.*self-authorizing/i,
+  ]) assert.match(skill, scenario);
+  assert.match(skill, /"version":1/);
+  assert.match(skill, /sessionId/);
+  assert.match(skill, /findingHash/);
+  assert.match(skill, /bindingHash.*existing initiative ownership/i);
+  assert.match(skill, /cannot create or change target ownership.*carried\/new run key/i);
+  assert.match(skill, /dismiss.*--decision <absolute-file>/s);
+  assert.match(skill, /defer.*--decision <absolute-file>/s);
+  assert.match(driver, /decision-snapshot <ref> <id> --action dismiss[|]defer/);
+  assert.match(driver, /--decision <absolute-file>/);
+  assert.match(ledger, /decisionProvenance/);
+  assert.match(ledger, /not authenticated proof of a human/);
 });
 
 test('a fresh coordinator can set up, run and stop the file channel', () => {

@@ -389,6 +389,7 @@ function renderHandoff(result) {
   }
   const waitsForHuman = ledger.status === 'gate-pending';
   lines.push(ledger.intentHash ? `intent: applied (${String(ledger.intentHash).slice(0, 12)}, ${ledger.intentBytes} bytes)` : waitsForHuman ? `intent: not configured -- add "intent": { "command": "<command that prints the approved contract>" } to review.config.json, then re-run /review-and-fix ${ledger.target && ledger.target.ref} to continue this run with the same findings and dismissals` : 'intent: not configured');
+  if (ledger.intentSource?.kind === 'committed-file') lines.push(`intent source: committed ${JSON.stringify(ledger.intentSource.path)} at ${ledger.intentSource.commit} (blob ${ledger.intentSource.blob})`);
   if (waitsForHuman) {
     const group = ledger.reconciliation?.trigger === 'group-reconcile' ? (ledger.reconciliation.groups || [])[0] : null;
     const gate = (ledger.gate_open || []).find((f) => !gateFollowUpEligible(f));
@@ -489,8 +490,9 @@ function renderHandoff(result) {
 // NOT for a mid-round resume or a gate-panel-pending restart: those are the
 // SAME run continuing, and their intent stays pinned.
 function clearIntentForFreshLook(stateDir, slug, ledger) {
+  if (ledger.intentPath) return ledger;
   try { fs.unlinkSync(path.join(stateDir, `intent-${slug}.md`)); } catch (e) {}
-  return { ...ledger, intentHash: null, intentBytes: null };
+  return { ...ledger, intentHash: null, intentBytes: null, intentSource: null };
 }
 
 function requireRef(ref, verb) {
@@ -746,6 +748,7 @@ const MODE_FLAG = '--initiative-mode';
 const RUN_VERBS = new Set(['finalise', 'consume', 'escalate', 'session-checkpoint', 'initiative-plan', 'reconcile']);
 const VERB_HELP = {
   show: 'print the ledger, handoff and next action for <ref> (read-only)',
+  'decision-snapshot': 'print the current finding identity for an attributed decision receipt (read-only)',
   'round-start': 'start or resume a review round and print the work to do',
   'telemetry-slot': 'bind a reviewer artifact path to a telemetry slot',
   findings: 'list the findings the fixer works on, with file excerpts',
@@ -759,8 +762,8 @@ const VERB_HELP = {
   'gate-panel-round-start': 'start a gate panel round',
   'gate-panel-round-record': 'record a gate panel round result',
   unpark: 'return a parked finding to open',
-  dismiss: 'dismiss an open gate finding (gate: id); --by <name> [--classification <defect|acceptance-blocker|design-decision|optional-hardening> --reason <text>]',
-  defer: 'defer an open finding of a reconcile group to a tracked follow-up',
+  dismiss: 'dismiss an open gate finding (gate: id); --by <name> [--classification <defect|acceptance-blocker|design-decision|optional-hardening> --reason <text>]; alternatively --decision <absolute-file> with no decision overrides',
+  defer: 'defer an open finding of a reconcile group to a tracked follow-up; alternatively --decision <absolute-file> with no decision overrides',
   'record-fix': 'record a fix committed outside the loop, with red-to-green evidence',
   reset: 'discard the target ledger',
   rerun: 'archive the ledger history and start the target over',
@@ -834,6 +837,13 @@ function reconciliationWithout(ledger, findingId) {
   if (!packet?.groups) return packet;
   const groups = packet.groups.map((g) => ({ ...g, findingIds: g.findingIds.filter((id) => id !== findingId) })).filter((g) => g.findingIds.length);
   return groups.length ? { ...packet, finding: groups[0].findingIds[0], groups, findings: groups.reduce((counts, g) => ({ ...counts, [classOf.get(g.groupId)]: (counts[classOf.get(g.groupId)] || 0) + g.findingIds.length }), {}) } : null;
+}
+
+function decisionForFinding(rest, context) {
+  if (!rest.includes('--decision')) return null;
+  if (rest.length !== 3 || rest[1] !== '--decision') throw new Error('decision receipt: use only <findingId> --decision <absolute-file>; CLI overrides are forbidden');
+  if (context.closed && !context.prior) throw new Error('closed finding has no matching decision receipt provenance');
+  return require('./decision-receipt').resolveDecision({ ...context, file: rest[2] });
 }
 
 function findingEvidence(f, extra = {}) {
@@ -1485,7 +1495,7 @@ function main(resolveFromCwd) {
   if (args[0] === 'round-start' && process.env.CONCORD_UNTRUSTED_ARTIFACTS !== '1') {
     dodExec.runReviewPreflight(process.env.REVIEW_REPO_ROOT || process.cwd());
   }
-  if (!args[1] || args[0] === 'show' || RUN_VERBS.has(args[0])) return runVerb(resolveFromCwd, args, initiative);
+  if (!args[1] || args[0] === 'show' || args[0] === 'decision-snapshot' || RUN_VERBS.has(args[0])) return runVerb(resolveFromCwd, args, initiative);
   const stateDir = resolveStateDir(resolveFromCwd);
   const slug = targetSlug(args[1]);
   // Unreadable state cannot prove a standalone identity or an absent binding.
@@ -1494,6 +1504,10 @@ function main(resolveFromCwd) {
   const isBound = (ledger) => !!ledger?.initiative_binding || !!ledger?.initiative_reservations?.length;
   const dispatch = () => {
     const prior = readPrior();
+    if (['dismiss', 'defer'].includes(args[0]) && args.includes('--decision') && initiative) {
+      if (!prior?.initiative_binding) throw new Error('decision receipt cannot create an initiative binding; use the target\'s original ownership');
+      if (!fs.existsSync(runPath(initiative.stateDir, initiative.key))) throw new Error('decision receipt requires the existing original initiative run');
+    }
     if (args[0] === 'round-start') standaloneLiteMode(args[1], args.slice(2), initiative, prior);
     if (!initiative && isBound(prior)) throw new Error('review-cli: this target belongs to an initiative; every mutating verb requires the complete initiative run flags');
     // carry's whole point is binding the target to a DIFFERENT key than its
@@ -1526,6 +1540,7 @@ function main(resolveFromCwd) {
     }
     if (args[0] === 'reset' && initiative) throw new Error('review-cli reset: cannot discard an initiative target; use rerun with the same initiative run flags to retain history and spent budget');
     if (prior?.rerun_cleanup) {
+      if (['dismiss', 'defer'].includes(args[0]) && args.includes('--decision')) throw new Error('decision receipt: complete the interrupted rerun before applying a decision');
       // Cleanup is a mutation: reject invalid calls and immutable run option
       // mismatches before deleting any evidence or clearing the pending marker.
       if (!CLI_VERBS.includes(args[0])) throw unknownVerb(args[0]);
@@ -1614,6 +1629,15 @@ function runVerb(resolveFromCwd, args, initiative) {
   // lock main() holds, so parallel first calls (and the old-then-new run order
   // carry needs) serialize correctly.
   if (RUN_VERBS.has(verb)) return runLevelVerb(verb, ref, initiative, rest);
+  if (verb === 'decision-snapshot') {
+    requireRef(ref, verb);
+    if (rest.length !== 3 || rest[1] !== '--action' || !['dismiss', 'defer'].includes(rest[2])) throw new Error('decision-snapshot: use <ref> <findingId> --action dismiss|defer');
+    const ledger = readLedger(stateDir, targetSlug(ref));
+    if (!ledger) throw new Error(`decision-snapshot: no ledger ${stateDirHint(stateDir)}`);
+    const finding = rest[2] === 'dismiss' ? (ledger.gate_open || []).find(f => f.id === rest[0]) : (ledger.findings || []).find(f => f.id === rest[0] && f.status === 'open');
+    const snapshot = require('./decision-receipt').decisionSnapshot({ repoRoot: process.env.REVIEW_REPO_ROOT || process.cwd(), stateDir, ledger, id: rest[0], action: rest[2], finding });
+    process.stdout.write(`${JSON.stringify(snapshot)}\n`); return;
+  }
   const run = initiative && verb !== 'reserve' && verb !== 'carry' && verb !== 'show' ? openKeyedRun(initiative) : null;
 
   if (verb === 'reserve') {
@@ -2193,17 +2217,29 @@ function runVerb(resolveFromCwd, args, initiative) {
     // --intent-file <path>: the caller supplies the intent text directly and the
     // repository's configured intent command, if any, is not run.
     // --no-intent-command: the checkout is untrusted, so its configured intent
-    // command is not run; only an --intent-file supplies intent.
+    // command is not run; explicit intent sources can still supply intent.
     const noIntentCommand = optionArgs.includes('--no-intent-command');
     const intentFileAt = optionArgs.indexOf('--intent-file');
     const intentFile = intentFileAt === -1 ? null : optionArgs[intentFileAt + 1];
     if (intentFileAt !== -1 && (!intentFile || intentFile.startsWith('--') || optionArgs.indexOf('--intent-file', intentFileAt + 1) !== -1)) {
       throw new Error('review-cli round-start: --intent-file requires exactly one value');
     }
+    const intentPathAt = optionArgs.indexOf('--intent-path');
+    const requestedIntentPath = intentPathAt === -1 ? null : optionArgs[intentPathAt + 1];
+    if (intentPathAt !== -1 && (!requestedIntentPath || requestedIntentPath.startsWith('--') || optionArgs.indexOf('--intent-path', intentPathAt + 1) !== -1)) {
+      throw new Error('review-cli round-start: --intent-path requires exactly one relative committed path');
+    }
+    if (intentFileAt !== -1 && intentPathAt !== -1) throw new Error('review-cli round-start: --intent-file and --intent-path cannot be combined');
+    if (requestedIntentPath && storedLedger?.intentPath && requestedIntentPath !== storedLedger.intentPath && storedLedger.round > 0) {
+      throw new Error('review-cli round-start: --intent-path differs from the active run; rerun to start a new attempt with a different intent selector');
+    }
+    const intentPathSelector = requestedIntentPath || storedLedger?.intentPath || null;
+    if (intentFileAt !== -1 && intentPathSelector) throw new Error('review-cli round-start: --intent-file cannot be combined with the active --intent-path selector');
     const standaloneLiteExclusionAt = optionArgs.indexOf('--lite-exclusion');
     const positional = optionArgs.filter((a, index) => !BROAD_FLAGS.has(a) && !NO_BROAD_FLAGS.has(a) && !NO_DOD_FLAGS.has(a)
       && a !== '--no-intent-command' && a !== '--lite' && a !== '--lite-exclusion' && !routingIndexes.has(index)
       && (intentFileAt === -1 || (index !== intentFileAt && index !== intentFileAt + 1))
+      && (intentPathAt === -1 || (index !== intentPathAt && index !== intentPathAt + 1))
       && (standaloneLiteExclusionAt === -1 || index !== standaloneLiteExclusionAt + 1));
     for (const tok of positional) {
       if (tok.startsWith('--')) throw new Error(`review-cli round-start: unknown flag "${tok}"`);
@@ -2217,6 +2253,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     const fileRefMatch = ref && ref.match(/^file:(.+)$/);
     const fileSpec = fileRefMatch ? { files: [fileRefMatch[1]] } : null;
     const isFileTarget = fileSpec !== null;
+    if (intentPathSelector && isFileTarget) throw new Error('review-cli round-start: --intent-path is git-only and cannot review a file target');
 
     // A fresh git start needs a base: without one the review snapshot is HEAD..HEAD, an empty diff that would be reviewed as work and converge clean.
     // Refused before the resets below delete cached artifacts. The base of a resume is the one persisted by its fresh start.
@@ -2392,8 +2429,15 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (!isFileTarget && ledger.target && ledger.target.head_sha && !gitIsReachable(repoRoot, ledger.target.head_sha)) {
       ledger = resetUnreachable(ledger);
     }
-    const intentCfg = intentFile ? { file: path.resolve(intentFile) } : noIntentCommand ? null : intentLib.loadIntentConfig(repoRoot);
-    const fetchIntentNow = () => (intentCfg.file ? intentLib.readIntentFile(intentCfg.file) : intentLib.fetchIntent({ command: intentCfg.command, cwd: repoRoot, ref, base }));
+    const projectIntentCfg = intentFile ? null : noIntentCommand ? null : intentLib.loadIntentConfig(repoRoot);
+    const intentCfg = intentFile ? { file: path.resolve(intentFile) }
+      : projectIntentCfg ? { command: projectIntentCfg.command }
+        : intentPathSelector ? { committedPath: intentPathSelector } : null;
+    const fetchIntentNow = () => {
+      if (intentCfg.file) return { ...intentLib.readIntentFile(intentCfg.file), source: null };
+      if (intentCfg.command) return { ...intentLib.fetchIntent({ command: intentCfg.command, cwd: repoRoot, ref, base }), source: { kind: 'project-command' } };
+      return intentLib.readCommittedIntent({ repoRoot, path: intentCfg.committedPath, head: headSha });
+    };
     const broadReuse = ledger.broad_reuse;
     const reuseFrontPass = !standaloneLite && !!broadReuse && !broadFlagPassed && !noBroadFlagPassed && !isFileTarget && !intentCfg && !reviewerGuidance && !broadReuse.intentHash && !broadReuse.reviewerGuidance
       && broadReuse.base_sha === baseSha
@@ -2622,9 +2666,9 @@ function runVerb(resolveFromCwd, args, initiative) {
     if (intentCfg) {
       const intentPath = path.join(stateDir, `intent-${slug}.md`);
       if (!ledger.intentHash) {
-        const { text, sha, bytes } = fetchIntentNow();
+        const { text, sha, bytes, source } = fetchIntentNow();
         writeFileAtomic(intentPath, text); // atomic: never leave a partial file a later step trusts
-        ledger = { ...ledger, intentHash: sha, intentBytes: bytes };
+        ledger = { ...ledger, intentHash: sha, intentBytes: bytes, ...(source ? { intentSource: source } : { intentSource: null }) };
       } else {
         let cached;
         try { cached = fs.readFileSync(intentPath, 'utf8'); } catch (e) {
@@ -2648,6 +2692,22 @@ function runVerb(resolveFromCwd, args, initiative) {
         }
         if (fresh.sha !== ledger.intentHash) {
           throw new Error(`harness-failure: intent source changed since this run began (run has ${ledger.intentHash.slice(0, 12)}, source now ${fresh.sha.slice(0, 12)}); this run keeps reviewing against the intent it started with -- reconcile the changed source before adopting it, then run review-cli.js rerun ${ref} with the original initiative flags when bound`);
+        }
+        const priorSource = ledger.intentSource || null;
+        const freshSource = fresh.source || null;
+        // Older command-backed ledgers predate intentSource. Their authority is
+        // unknown until the configured command has been re-run and its content
+        // hash matches the pinned cache; only then can we safely record it.
+        if (!priorSource && freshSource?.kind === 'project-command') {
+          ledger = { ...ledger, intentSource: freshSource };
+        }
+        if (JSON.stringify(priorSource && { kind: priorSource.kind, path: priorSource.path }) !== JSON.stringify(freshSource && { kind: freshSource.kind, path: freshSource.path })) {
+          if (!(priorSource === null && freshSource?.kind === 'project-command')) {
+            throw new Error('harness-failure: intent source authority changed during this run; rerun to adopt a different intent source');
+          }
+        }
+        if (freshSource && (freshSource.commit !== priorSource?.commit || freshSource.blob !== priorSource?.blob)) {
+          ledger = { ...ledger, intentSource: freshSource };
         }
       }
     }
@@ -2701,6 +2761,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       dodDeferred,
       reviewerGuidance,
       reviewRouting,
+      ...(intentPathSelector ? { intentPath: intentPathSelector } : {}),
       execution: {
         round: ledger.round,
         diffHash,
@@ -2725,7 +2786,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     // The three fields are mutually descriptive: pending is the normal configured
     // gate waiting for convergence, deferred means no gate will run, and passed is
     // retained for file/no-op compatibility. Callers must not infer one from another.
-    process.stdout.write(JSON.stringify({ decision: 'work', mode: standaloneLite ? 'standalone-lite' : (run ? runMode(run) : undefined), gateMode: standaloneLite ? 'none' : initiativeLite ? 'design-conformance' : 'pair', ref: targetUpdate.ref, base: targetUpdate.base, head: targetUpdate.head_sha, attemptId: ledger.attemptId, round: ledger.round, budget: ledger.budget, dodPassed: dod.deferredBy === 'pending-final' ? false : dod.passed, dodDeferred: !!dod.deferred && dod.deferredBy !== 'pending-final', dodPending: dod.deferredBy === 'pending-final', intentApplied: !!intentCfg, intentHash: ledger.intentHash || null, reviewerGuidance: ledger.reviewerGuidance || null, priorIntentIds, gateApplied, targetType, ...(ledger.documentReviewPolicy ? { documentReviewPolicy: ledger.documentReviewPolicy } : {}), reviewRouting, stateDir, completedArtifacts, normalizedArtifacts, planRetry: ledger.execution?.planRetry || null, retryArtifacts, retryArtifact, repairArtifacts }) + '\n');
+    process.stdout.write(JSON.stringify({ decision: 'work', mode: standaloneLite ? 'standalone-lite' : (run ? runMode(run) : undefined), gateMode: standaloneLite ? 'none' : initiativeLite ? 'design-conformance' : 'pair', ref: targetUpdate.ref, base: targetUpdate.base, head: targetUpdate.head_sha, attemptId: ledger.attemptId, round: ledger.round, budget: ledger.budget, dodPassed: dod.deferredBy === 'pending-final' ? false : dod.passed, dodDeferred: !!dod.deferred && dod.deferredBy !== 'pending-final', dodPending: dod.deferredBy === 'pending-final', intentApplied: !!intentCfg, intentHash: ledger.intentHash || null, ...(ledger.intentSource ? { intentSource: ledger.intentSource } : {}), reviewerGuidance: ledger.reviewerGuidance || null, priorIntentIds, gateApplied, targetType, ...(ledger.documentReviewPolicy ? { documentReviewPolicy: ledger.documentReviewPolicy } : {}), reviewRouting, stateDir, completedArtifacts, normalizedArtifacts, planRetry: ledger.execution?.planRetry || null, retryArtifacts, retryArtifact, repairArtifacts }) + '\n');
     return;
   }
 
@@ -3289,17 +3350,18 @@ function runVerb(resolveFromCwd, args, initiative) {
     const slug = targetSlug(ref);
     const ledger = readLedger(stateDir, slug);
     if (!ledger) throw new Error(`review-cli dismiss: no ledger for ref "${ref}" ${stateDirHint(stateDir)}`);
-    const byFlag = rest.indexOf('--by');
-    const by = byFlag >= 0 && rest[byFlag + 1] ? rest[byFlag + 1].trim() : '';
-    if (!by) throw new Error('review-cli dismiss: --by <name> is required; a dismissal records the human who made it');
-    const flagValue = (flag) => { const i = rest.indexOf(flag); return i >= 0 && rest[i + 1] ? rest[i + 1].trim() : ''; };
-    const classification = flagValue('--classification');
-    const classificationReason = flagValue('--reason');
-    if (classification && !DISMISS_CLASSIFICATIONS.includes(classification)) throw new Error(`review-cli dismiss: --classification must be one of ${DISMISS_CLASSIFICATIONS.join(', ')}`);
-    if (classificationReason && !classification) throw new Error('review-cli dismiss: --reason needs --classification');
-    const adjudication = classification ? { classification, ...(classificationReason ? { classificationReason } : {}) } : {};
     const open = (ledger.gate_open || []).find((f) => f.id === gateId);
     const already = (ledger.gate_dismissed || []).find((d) => d.id === gateId);
+    const receipt = decisionForFinding(rest, { repoRoot: process.env.REVIEW_REPO_ROOT || process.cwd(), stateDir, ledger, id: gateId, action: 'dismiss', finding: open, closed: !!already, prior: already?.decisionProvenance });
+    const byFlag = rest.indexOf('--by');
+    const by = receipt ? receipt.by : byFlag >= 0 && rest[byFlag + 1] ? rest[byFlag + 1].trim() : '';
+    if (!by) throw new Error('review-cli dismiss: --by <name> is required; a dismissal records the human who made it');
+    const flagValue = (flag) => { const i = rest.indexOf(flag); return i >= 0 && rest[i + 1] ? rest[i + 1].trim() : ''; };
+    const classification = receipt ? receipt.entry.classification || '' : flagValue('--classification');
+    const classificationReason = receipt ? receipt.entry.classificationReason || '' : flagValue('--reason');
+    if (classification && !DISMISS_CLASSIFICATIONS.includes(classification)) throw new Error(`review-cli dismiss: --classification must be one of ${DISMISS_CLASSIFICATIONS.join(', ')}`);
+    if (classificationReason && !classification) throw new Error('review-cli dismiss: --reason needs --classification');
+    const adjudication = { ...(classification ? { classification, ...(classificationReason ? { classificationReason } : {}) } : {}), ...(receipt ? { decisionProvenance: receipt.provenance } : {}) };
     if (!open && !already) throw new Error(`review-cli dismiss: ${gateId} is not an open gate finding`);
     let status = ledger.status;
     if (already && classification && !already.classification) {
@@ -3328,11 +3390,12 @@ function runVerb(resolveFromCwd, args, initiative) {
     const slug = targetSlug(ref);
     const ledger = readLedger(stateDir, slug);
     if (!ledger) throw new Error(`review-cli defer: no ledger for ref "${ref}" ${stateDirHint(stateDir)}`);
-    const [by, reason, tracker] = [flag('--by'), flag('--reason'), flag('--ref')];
+    const finding = (ledger.findings || []).find((f) => f.id === findingId);
+    const receipt = decisionForFinding(rest, { repoRoot: process.env.REVIEW_REPO_ROOT || process.cwd(), stateDir, ledger, id: findingId, action: 'defer', finding, closed: finding?.status === 'deferred', prior: finding?.deferral?.decisionProvenance });
+    const [by, reason, tracker] = receipt ? [receipt.by, receipt.entry.reason, receipt.entry.ref] : [flag('--by'), flag('--reason'), flag('--ref')];
     if (!by) throw new Error('review-cli defer: --by <name> is required; a deferral records the human who made it');
     if (!reason) throw new Error('review-cli defer: --reason <text> is required');
     if (!tracker) throw new Error('review-cli defer: --ref <issue url or key> is required; a deferred finding is tracked elsewhere');
-    const finding = (ledger.findings || []).find((f) => f.id === findingId);
     if (!finding) throw new Error(`review-cli defer: unknown finding ${findingId}`);
     if (finding.status !== 'deferred') {
       if (finding.status === 'parked') throw new Error(`review-cli defer: ${findingId} is parked; use unpark or record-fix`);
@@ -3344,7 +3407,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       const seenEntry = (ledger.seen || []).find((e) => e.id === findingId);
       let next = {
         ...ledger,
-        findings: ledger.findings.map((f) => (f.id === findingId ? { ...f, status: 'deferred', deferral: { deferredBy: by, deferredAt: at, reason, ref: tracker } } : f)),
+        findings: ledger.findings.map((f) => (f.id === findingId ? { ...f, status: 'deferred', deferral: { deferredBy: by, deferredAt: at, reason, ref: tracker, ...(receipt ? { decisionProvenance: receipt.provenance } : {}) } } : f)),
         seen: (ledger.seen || []).filter((e) => e.id !== findingId).concat([{ id: findingId, hash: seenEntry?.hash ?? require('./review').seenHash(finding), status: 'deferred' }]),
         reconciliation, reconciliationPacket: reconciliation,
       };
@@ -3490,6 +3553,7 @@ function runVerb(resolveFromCwd, args, initiative) {
     const fresh = {
       ...emptyLedger(prior.target || { kind: 'local', ref }),
       ...(prior.target?.type === 'file' ? { documentReviewPolicy: 'single-pass-confirmation' } : {}),
+      ...(prior.intentPath ? { intentPath: prior.intentPath } : {}),
       runs,
       review_history: prior.review_history || [],
       run_budget: { max_runs: maxRuns },

@@ -1005,7 +1005,7 @@ async function runRounds(options) {
     const run = JSON.parse(fs.readFileSync(initiativeRun.path, 'utf8'));
     const sourcePaths = [path.join(repoRoot, 'AGENTS.md'), path.join(repoRoot, 'review.config.json'), path.join(started.stateDir, `intent-${targetSlug(ref)}.md`), ...(options.authoritativeSources || [])];
     const authoritativeSources = [...new Set(sourcePaths)].filter(source => fs.existsSync(source)).map(source => ({ path: canonicalPath(source), sha256: crypto.createHash('sha256').update(fs.readFileSync(source)).digest('hex') }));
-    const nextArgs = result.decision?.continue ? ['round-start', ref, ...(initialBase ? [initialBase] : []), ...(broad ? ['--broad'] : []), ...(noBroad ? ['--no-broad'] : []), ...(reviewMode === 'standalone-lite' ? ['--lite'] : []), ...(noDod ? ['--no-dod'] : []), ...(options.intentFile ? ['--intent-file', options.intentFile] : [])] : ['show', ref];
+    const nextArgs = result.decision?.continue ? ['round-start', ref, ...(initialBase ? [initialBase] : []), ...(broad ? ['--broad'] : []), ...(noBroad ? ['--no-broad'] : []), ...(reviewMode === 'standalone-lite' ? ['--lite'] : []), ...(noDod ? ['--no-dod'] : []), ...(options.intentFile ? ['--intent-file', options.intentFile] : []), ...(options.intentPath ? ['--intent-path', options.intentPath] : [])] : ['show', ref];
     const nextStep = { executable: process.execPath, cliPath: path.resolve(publicCliPath), args: [...nextArgs, ...initiativeFlags] };
     const artifactRoot = captureArtifactRoot(started.stateDir);
     const completedArtifacts = fs.readdirSync(started.stateDir).filter(name => new RegExp(`^round-${started.round}-.*\\.json$`).test(name)).map(name => {
@@ -1044,6 +1044,7 @@ async function runRounds(options) {
     if (options.liteExclusion) startArgs.push('--lite-exclusion', options.liteExclusion);
     if (noDod) startArgs.push('--no-dod');
     if (options.intentFile) startArgs.push('--intent-file', options.intentFile);
+    if (options.intentPath) startArgs.push('--intent-path', options.intentPath);
     if (pendingReviewerGuidance) startArgs.push('--reviewer-guidance', pendingReviewerGuidance);
     // A review-only checkout is untrusted: its configured intent command is never run.
     if (reviewOnly) startArgs.push('--no-intent-command');
