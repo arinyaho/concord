@@ -49,6 +49,12 @@ Launch only the reviewers the plan names, each after its reservation. Never laun
 
 When every unit has its disposition and the completion report is persisted, acknowledge each delivered disposition with `consume <claim>` and end the run with `finalise`, through the same CLI path.
 
+## Initiative reconciliation decisions
+
+Before the initiative's first reserved reviewer, register the approved source index's complete dependency graph with `initiative-plan <absolute-plan.json>` through the runtime-specific packaged review CLI documented by `review-and-fix` and the original initiative flags. The JSON is `{"version":1,"targets":[{"ref":"feature/A","dependsOn":[]},{"ref":"feature/B","dependsOn":["feature/A"]}]}`; include every file/diff review target and explicit dependencies. The run fixes this plan before launches. Never declare independence or replace a key to bypass a pending decision. With no registered plan the conservative run-wide stop remains; missing or unknown dependencies remain blocked. With a plan, only known independent targets continue while a target or its transitive dependents are held, using the same remaining budget.
+
+For a pending unchanged-contract decision, show the exact recorded target and delivery claim, obtain the user's decision, then use `reconcile <target> --claim <exact-claim> --by <human> --decision <verbatim-user-words> --contract unchanged` with the original initiative flags. Record only direct human authorization, never an agent's invented acceptance. This retires one occurrence and preserves budgets, refunds and history; it neither dismisses findings nor approves a changed contract. A changed contract uses the existing human-authorized new-run procedure. Preserve other pending holds and resume from the ledger; a later round can create a new claim at the same head, and an older decision cannot clear it.
+
 ## Human checkpoints
 
 There are two mandatory human checkpoints:

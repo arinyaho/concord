@@ -119,7 +119,7 @@ test('Copilot-specific orchestration uses native clean-context agents and explic
   const routing = read('skills/initiative-to-prs/references/model-routing.md');
   assert.match(review, /Concord Reviewer/);
   assert.match(review, /clean context/i);
-  assert.match(routing, /separate deep-capability specialist in clean context/i);
+  assert.match(routing, /A user-designated model may fill a Deep role|A user-designated callable model may satisfy this gate/i);
   assert.match(review, /review-cli\.js/);
   assert.match(review, /do not invoke `telemetry-slot`/i);
   assert.match(review, /telemetry.*unavailable/i);
@@ -130,8 +130,8 @@ test('Copilot-specific orchestration uses native clean-context agents and explic
   assert.match(review, /--add-dir=<stateDir>/);
   assert.doesNotMatch(review, /--add-dir <stateDir> "<prompt>"/);
   assert.match(alias, /review-and-fix/);
-  assert.match(routing, /active root agent cannot satisfy a Deep decision gate/i);
-  assert.doesNotMatch(routing, /active agent may perform that pass/i);
+  assert.match(routing, /do not add a specialist solely because the root agent selected that model/i);
+  assert.match(routing, /Any required independent review uses a separate invocation and context/i);
   assert.match(routing, /bounded implementation batch.*approved.*contract.*clear.*lowest-cost capable implementation model.*focused self-checks.*without pausing for status/is);
   assert.match(routing, /higher-cost capability.*design work, scope decisions.*new P1 findings.*findings against the content or wording of a rule, contract, interface, or schema.*fresh independent verification after the batch/is);
   assert.match(routing, /distinct second-reviewer evidence record.*invocation or agent identity.*requested and resolved model.*provider and catalog basis.*reasoning effort.*successful completion.*conclusion.*covered decision identities/is);

@@ -421,6 +421,51 @@ test('the ledger is saved even when the comment-id fetch after a successful post
   assert.equal(w.ledger().findings.length, 1);
 });
 
+test('resuming after a published comment on the same head watches without publishing a duplicate round', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  assert.equal(JSON.parse(w.approve('start', 'o/r', '5').stdout).action, 'round');
+  assert.equal(JSON.parse(w.approve('round', 'o/r', '5').stdout).event, 'published');
+  const postsBeforeResume = w.posts().length;
+  const resumed = JSON.parse(w.approve('start', 'o/r', '5').stdout);
+  assert.equal(resumed.action, 'watch');
+  assert.equal(w.posts().length, postsBeforeResume);
+  assert.equal(w.ledger().rounds.length, 1);
+});
+
+test('an explicit start resumes a new head without waiting for an author reply', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  w.approve('start', 'o/r', '5');
+  w.approve('round', 'o/r', '5');
+  fs.writeFileSync(path.join(w.src, 'a.js'), 'one\nbad\nthree\nfour\nfive\n');
+  sh(w.src, 'commit', '-q', '-am', 'c2');
+  const c2 = sh(w.src, 'rev-parse', 'HEAD');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: c2 });
+  assert.equal(JSON.parse(w.approve('start', 'o/r', '5').stdout).action, 'round');
+  assert.equal(w.posts().length, 1);
+});
+
+test('explicit resume reviews an eligible new head after the legacy watch expiry', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  w.approve('start', 'o/r', '5');
+  w.approve('round', 'o/r', '5');
+  const ledgerFile = path.join(w.dir, 'ledgers', 'o__r__5__bot.json');
+  const ledger = w.ledger();
+  ledger.rounds[0].submittedAt = '2000-01-01T00:00:00.000Z';
+  fs.writeFileSync(ledgerFile, JSON.stringify(ledger));
+  fs.writeFileSync(path.join(w.src, 'a.js'), 'one\nbad\nthree\nfour\nfive\n');
+  sh(w.src, 'commit', '-q', '-am', 'c2');
+  const c2 = sh(w.src, 'rev-parse', 'HEAD');
+  sh(w.src, 'push', '-q', w.bare, 'HEAD:refs/pull/5/head', '-f');
+  w.write('state.json', { ...w.state, head: c2 });
+  w.write('issue-comments.json', [{ user: { login: 'dev' }, created_at: new Date().toISOString() }]);
+  assert.equal(JSON.parse(w.approve('start', 'o/r', '5').stdout).action, 'round');
+  assert.equal(w.posts().length, 1);
+});
+
 test('a refused post leaves no temporary clone behind', () => {
   const tmp = tempDir('rua-tmp-');
   const w = world({ TMPDIR: tmp });
@@ -1654,6 +1699,7 @@ test('a runner result that is not a review still records the head it attempted',
   const failed = w.ledger();
   assert.equal(failed.rounds.length, 0);
   assert.equal(failed.attempt.head, w.c1);
+  assert.equal(JSON.parse(w.approve('start', 'o/r', '5').stdout).action, 'round');
 });
 
 const minor = { ...finding, id: 'correctness:wording', class: 'minor', releaseBlocking: [], rationale: 'wording only, no behavior changes' };
