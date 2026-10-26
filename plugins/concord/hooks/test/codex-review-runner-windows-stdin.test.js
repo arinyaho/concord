@@ -191,3 +191,23 @@ for (const [provider, expectDashP] of [['claude', true], ['copilot', false]]) {
     });
   });
 }
+
+test('win32: jsonCli preserves Path entries without duplicate case variants', (t) => {
+  let launch;
+  t.mock.method(childProcess, 'execFileSync', (bin, args, opts) => {
+    launch = { bin, args, opts };
+    return '{}';
+  });
+  const { jsonCli } = loadRunnerWithPlatform('win32');
+  const originalEnv = process.env;
+  process.env = { Path: 'C:\\Windows\\System32;C:\\Tools', PATHEXT: '.EXE;.CMD' };
+  try {
+    jsonCli('review-cli.js', ['status'], '/repo');
+    const keys = Object.keys(launch.opts.env).filter((key) => key.toLowerCase() === 'path');
+    assert.deepStrictEqual(keys, ['Path']);
+    assert.strictEqual(launch.opts.env.Path, pathMod.dirname(process.execPath) + ';C:\\Windows\\System32;C:\\Tools');
+    assert.strictEqual(launch.bin, process.execPath);
+  } finally {
+    process.env = originalEnv;
+  }
+});

@@ -113,8 +113,14 @@ function terminateProcessTree(child, signal) {
 }
 
 function jsonCli(cliPath, args, repoRoot, stateDir, reviewOnly = false) {
+  const env = { ...process.env };
+  const pathKeys = isWindows ? Object.keys(env).filter((key) => key.toLowerCase() === 'path').sort() : ['PATH'];
+  const pathKey = pathKeys[0] || 'PATH';
+  const inheritedPath = env[pathKey];
+  for (const key of pathKeys.slice(1)) delete env[key];
+  env[pathKey] = [path.dirname(process.execPath), inheritedPath].filter(Boolean).join(isWindows ? ';' : path.delimiter);
   const out = execFileSync(process.execPath, [cliPath, ...args], {
-    cwd: repoRoot, encoding: 'utf8', env: { ...process.env, PATH: [path.dirname(process.execPath), process.env.PATH].filter(Boolean).join(path.delimiter), REVIEW_REPO_ROOT: repoRoot, ...(stateDir ? { REVIEW_STATE_DIR: stateDir } : {}), ...(reviewOnly ? { CONCORD_UNTRUSTED_ARTIFACTS: '1' } : {}) },
+    cwd: repoRoot, encoding: 'utf8', env: { ...env, REVIEW_REPO_ROOT: repoRoot, ...(stateDir ? { REVIEW_STATE_DIR: stateDir } : {}), ...(reviewOnly ? { CONCORD_UNTRUSTED_ARTIFACTS: '1' } : {}) },
   });
   try { return JSON.parse(out); } catch (e) { throw new Error(`harness-failure: review-cli ${args[0]} returned non-JSON output`); }
 }
