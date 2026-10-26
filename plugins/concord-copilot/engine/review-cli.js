@@ -314,6 +314,11 @@ function renderHandoff(result) {
   if (ledger.reviewMode === 'standalone-lite') lines.push('review mode: standalone-lite (broad gate disabled)');
   lines.push(`full runs: ${(ledger.runs || []).length + 1}/${ledger.run_budget?.max_runs ?? REVIEW_MAX_RUNS_DEFAULT}`);
   if (ledger._lastDecision && ledger._lastDecision.reason) lines.push(`termination: ${ledger._lastDecision.reason}`);
+  if (ledger._lastDecision?.reconciliation && ledger._lastInitiativeClaim) {
+    const quote = value => `'${String(value).replace(/'/g, "'\\''")}'`;
+    lines.push(`Human decision required for this target: review-cli.js reconcile ${quote(ledger.target.ref)} --claim ${quote(ledger._lastInitiativeClaim)} --by <human> --decision <verbatim-human-decision> --contract unchanged <original initiative flags>.`);
+    lines.push('This records the decision for this occurrence only; it does not change the approved contract or reset budgets. A changed contract requires the existing human-authorized new-run procedure. Planned independent targets may continue; unknown dependencies remain blocked.');
+  }
   if (ledger.status === 'reviewed-with-followups') {
     const byId = new Map([...(ledger.findings || []), ...(ledger.gate_open || [])].map((finding) => [finding.id, finding]));
     lines.push('', 'Follow-ups (verified minor; not fixed; additional review requires an explicit rerun):');
@@ -738,7 +743,7 @@ function firstRetryArtifact(retries) {
 // (`reserve`) and refuses to accept evidence from an unreserved launch.
 const INITIATIVE_FLAGS = [['--initiative-run-key', 'key'], ['--initiative-id', 'initiativeId'], ['--initiative-state-dir', 'stateDir'], ['--initiative-max-launches', 'maxLaunches'], ['--initiative-max-rounds', 'maxRounds']];
 const MODE_FLAG = '--initiative-mode';
-const RUN_VERBS = new Set(['finalise', 'consume', 'escalate', 'session-checkpoint']);
+const RUN_VERBS = new Set(['finalise', 'consume', 'escalate', 'session-checkpoint', 'initiative-plan', 'reconcile']);
 const VERB_HELP = {
   show: 'print the ledger, handoff and next action for <ref> (read-only)',
   'round-start': 'start or resume a review round and print the work to do',
@@ -767,6 +772,8 @@ const VERB_HELP = {
   finalise: 'finalise the initiative run',
   consume: 'consume a delivery claim from the initiative run',
   escalate: 'escalate the initiative run to base review',
+  'initiative-plan': 'register an immutable dependency plan before initiative launches',
+  reconcile: 'record a human decision for one pending initiative claim without changing its contract or budget',
   'session-checkpoint': 'write the session handoff for a packet',
   feedback: 'record, decide, select, observe or report review feedback',
 };
@@ -1548,6 +1555,30 @@ function main(resolveFromCwd) {
 // Run-level verbs act on the initiative run, not on a target ledger, so they take no target lock.
 function runLevelVerb(verb, arg, initiative, rest = []) {
   if (!initiative) throw new Error(`review-cli ${verb}: requires the initiative run flags (--initiative-run-key, --initiative-state-dir, --initiative-max-launches, --initiative-max-rounds)`);
+  if (verb === 'initiative-plan') {
+    if (!arg || !path.isAbsolute(arg) || rest.length) throw new Error('review-cli initiative-plan: requires one absolute plan JSON path');
+    const I = require('./initiative-review-run');
+    const plan = I.normalizedInitiativePlan(JSON.parse(fs.readFileSync(arg, 'utf8')));
+    const run = openKeyedRun(initiative);
+    if (!I.setInitiativePlan(run, plan)) throw new Error(lockDiagnosis(run) || 'initiative plan registration was contended');
+    process.stdout.write(`${JSON.stringify({ status: 'registered' })}\n`);
+    return;
+  }
+  if (verb === 'reconcile') {
+    const values = { target: arg };
+    const options = new Map([['--claim', 'claim'], ['--by', 'by'], ['--decision', 'decision'], ['--contract', 'contract']]);
+    for (let index = 0; index < rest.length; index += 2) {
+      const field = options.get(rest[index]), value = rest[index + 1];
+      if (!field || Object.hasOwn(values, field) || typeof value !== 'string' || !value.trim() || value.startsWith('--')) throw new Error('review-cli reconcile: provide one --claim, --by, --decision and --contract unchanged');
+      values[field] = value;
+    }
+    if (['target', 'claim', 'by', 'decision'].some(key => typeof values[key] !== 'string' || !values[key].trim()) || values.contract !== 'unchanged') throw new Error('review-cli reconcile: requires a target, claim, human identity, exact decision and unchanged contract');
+    if (!fs.existsSync(runPath(initiative.stateDir, initiative.key))) throw new Error('review-cli reconcile: no existing initiative run');
+    const run = openKeyedRun(initiative);
+    if (!require('./initiative-review-run').reconcileInitiativeRun(run, values)) throw new Error(lockDiagnosis(run) || 'initiative reconciliation was contended');
+    process.stdout.write(`${JSON.stringify({ status: 'reconciled', target: values.target, claim: values.claim })}\n`);
+    return;
+  }
   if (verb === 'session-checkpoint') {
     if (rest.length && (rest.length !== 2 || rest[0] !== '--session-handoff')) throw new Error('session handoff: use session-checkpoint <absolute-packet.json> [--session-handoff <off|suggest|stop-at-checkpoint>]');
     const result = require('./session-handoff').createSessionHandoff({ packetPath: arg, mode: rest.length ? rest[1] : 'suggest', initiative, repository: process.env.REVIEW_REPO_ROOT || process.cwd() });
@@ -2720,9 +2751,11 @@ function runVerb(resolveFromCwd, args, initiative) {
         // Legacy done ledgers can recover only an unambiguous original entry.
         const entries = (JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions || []).filter(d =>
           d.target === target && d.revision?.head_sha === ledger.target?.head_sha && d.kind === disposition.kind && d.reason === disposition.reason
+          && (!d.occurrence || (d.occurrence.attemptId === ledger.attemptId && d.occurrence.round === n))
           && (!ledger._lastInitiativeClaim || d.packet?.delivery?.claim === ledger._lastInitiativeClaim));
         if (entries.length !== 1 || !entries[0].packet?.delivery?.claim) throw new Error('harness-failure: record: original initiative claim is missing or ambiguous; reconcile the existing ledgers');
         initiativeClaim = entries[0].packet.delivery.claim;
+        ledger = { ...ledger, _lastInitiativeClaim: initiativeClaim };
       }
       if (R.TERMINAL_STATUSES.has(ledger.status) || (run && ledger._lastDecision && !ledger._lastDecision.continue && !ledger._lastDecision.panelPending)) reviewTelemetry.deleteTelemetry(stateDir, ledger.target?.ref || ref, slug);
       process.stdout.write(
@@ -3008,6 +3041,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       const pending = (ledger.telemetry?.entries || []).filter((item) => !forwarded.has(telemetryKey(item)));
       const recorded = recordDisposition(run, {
         target, revision, result: { decision, reconciliation },
+        ...(ledger.attemptId ? { occurrence: { attemptId: ledger.attemptId, round: n } } : {}),
         packet: { trigger: escaped ? 'escape' : 'terminal', exit: { code: 0, signal: null }, dod: { status: finalChecks[0].status === 'passed' ? 'passed' : finalChecks[0].status }, telemetry: { complete: false }, nextAction: escaped ? 'resume' : 'replay', handoff: renderHandoff({ ledger }) },
         finding: reconciliation?.finding || null, stage: reconciliation?.stage || null, avoidedLaunches: reconciliation?.avoidedLaunches || 0, findings: reconciliation?.findings || {}, checks: finalChecks,
         telemetry: pending.map(({ role, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, stage: 'review', revision, round, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens })),
@@ -3015,7 +3049,12 @@ function runVerb(resolveFromCwd, args, initiative) {
       // Match by target + revision + kind, and reason for an escape (as the Codex runner does), and fail without
       // marking the target ledger done so a re-run of `record` can still record it.
       const kind = escaped ? 'escape' : 'terminal';
-      entry = (JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions || []).findLast((d) => d.target === target && JSON.stringify(d.revision) === JSON.stringify(revision) && d.kind === kind && (!escaped || d.reason === disposition.reason));
+      const storedRun = JSON.parse(fs.readFileSync(run.path, 'utf8'));
+      const resolvedClaims = new Set((storedRun.reconciliationDecisions || []).map(item => item.claim));
+      const matching = (storedRun.dispositions || []).filter(d => d.target === target && JSON.stringify(d.revision) === JSON.stringify(revision) && d.kind === kind && d.reason === disposition.reason
+        && (d.occurrence ? d.occurrence.attemptId === ledger.attemptId && d.occurrence.round === n : !resolvedClaims.has(d.packet?.delivery?.claim)));
+      const exact = matching.filter(d => d.occurrence);
+      entry = exact.length === 1 ? exact[0] : !exact.length && matching.length === 1 ? matching[0] : null;
       if (!entry || (!recorded && kind === 'escape' && entry.packet?.delivery?.consumed !== false)) throw new Error('harness-failure: record: initiative target disposition recording was contended; re-run record');
       // A duplicate disposition recorded nothing, so its telemetry stays pending and the cache stays.
       recordedNow = recorded;

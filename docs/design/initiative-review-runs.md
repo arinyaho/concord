@@ -85,7 +85,25 @@ Terminal outcomes follow the same privacy contract on every path: raw refs and S
 
 Before fixer planning, intent findings and design-conformance or AC-coverage gate findings become reconciliation work, for keyed and unkeyed runs alike. This deliberately suppresses correctness and docreview fixers in the same round.
 
-While the run holds a `reconciliation-required` hint, a launch on a revision pair the run has not yet opened is refused as `reconciliation-required` and consumes nothing. Pairs already opened keep working, so a target mid-review is not cut off by another target's park. The Codex runner checks this before `round-start`, so a refused pair never runs the DoD or moves the per-ref ledger into gates. The hint is never cleared inside a run: resolving it is a human decision, and a materially approved contract revision starts a new run key.
+A run without a dependency plan keeps the conservative run-wide circuit breaker: while a `reconciliation-required` hint is held, a revision pair not yet opened is refused without charging. Pairs already opened retain their existing behavior. The Codex runner checks this before `round-start`, so a refused pair never runs the DoD or moves the per-ref ledger into gates.
+
+To permit independent targets to continue, register the approved source index's dependency graph before the first reservation: `review-cli initiative-plan <absolute-plan.json>` with the original initiative flags. Its schema is `{"version":1,"targets":[{"ref":"feature/A","dependsOn":[]},{"ref":"feature/B","dependsOn":["feature/A"]}]}`. Every target has an explicit dependency array; duplicate targets or edges, unknown dependencies, self-edges and cycles are refused. The private run ledger stores the normalized plan and its SHA256. Re-registering an identical plan is idempotent; changing it, or adding the first plan after a launch, is refused. The source index and reviewed contract determine dependencies; an agent must not declare independence merely to bypass a hold.
+
+With a plan, a pending reconciliation blocks every future reservation for its target and all transitive dependents, including already-opened pairs. Already-running workers may finish; no new dependent launch is authorized. A known independent target continues under the same key and remaining budget. An unknown target, or a held target absent from the plan, stays blocked. Concurrent registration and reservation serialize on the same run lock.
+
+A human decision that keeps the approved contract uses `review-cli reconcile <target> --claim <exact-delivery-claim> --by <human> --decision <verbatim-human-words> --contract unchanged` with the original initiative flags. The existing run must be active and hold that exact target/claim. The command appends an attributed entry to `reconciliationDecisions`, resolving only that occurrence; stale, repeated, wrong-target and incomplete decisions are refused. Other holds remain effective. Dispositions, launches, refunds, round history and budgets are preserved. The command records an operator-supplied human decision, like `dismiss`; a claim and `--by` are not cryptographic proof of identity. Drivers require direct human authorization and must not invent acceptance text. A changed contract requires the existing human-authorized new-run procedure.
+
+Native terminal recording binds each reconciliation to `{attemptId,round}`. Retrying a resolved occurrence returns its original claim; a later round at the same head may create a distinct hold, which an old claim cannot release. A legacy disposition without occurrence data remains conservative for the old pair after a decision; a new revision may proceed. Ordinary terminal outcomes remain final. Raw decision text, dependency refs and provenance stay in the private ledger; public reports retain their aggregate allowlist.
+
+| State and event | Result |
+| --- | --- |
+| No plan; new pair while a reconciliation is pending | Refuse without charging |
+| Planned target is independent of every pending hold | Allow within the unchanged budget |
+| Planned target is held, dependent, or unknown | Refuse every new reservation without charging |
+| Exact pending claim plus an attributed unchanged-contract decision | Append the decision; retire only that hold |
+| Stale claim, changed contract, or malformed decision | Refuse without changing the run |
+| Resolved occurrence replay | Return its original recorded outcome |
+| Later occurrence at the same pair | Record a new claim and hold |
 
 A refusal has one of five causes, checked in this order: `inactive`, `reconciliation-required`, `target-terminal`, `budget-exhausted` (launch or round budget), or lock contention. The Codex runner returns `{ decision: 'reconciliation-required' }` or `{ decision: 'blocked', reason: 'budget-exhausted' }` without recording an error disposition, and its launcher prints the result and exits non-zero; contention and a terminal pair stay errors, because they signal a defect or a race, not a decision. A blocked outcome is not recorded in the run ledger, so a repeated attempt is refused again with the same outcome instead of adding records.
 

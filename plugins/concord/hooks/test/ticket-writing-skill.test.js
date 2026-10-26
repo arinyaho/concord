@@ -70,10 +70,16 @@ test('ticket-to-pr delegates by the kind of work, not by importance', () => {
   for (const pattern of [
     /decides what something should be/,
     /applies a decision already made/,
+    /user-designated callable model may fill a required role when it meets that role's capability gate/is,
+    /Astra.*model the user restricts.*direct authorization from the user/is,
+    /ask the user once.*pending decision batch.*record.*policy.*request.*answer/is,
+    /pause only dependent work/i,
+    /do not create an extra specialist merely because.*(?:root|active agent).*model/i,
+    /substantive findings once per stage/i,
     /separate deep-capability reviewer/,
     /excluding the responsible agent's reasoning/,
     /"Adjudicate and escalate" subsection of `review-until-lgtm`/,
-    /when a PR review raised it, in a thread or in a review body; when local review raised it, the deep-capability agent rules on it/,
+    /when a PR review raised it, in a thread or in a review body; when local review raised it, adjudicate the substantive findings once per stage using a callable model that meets the gate/,
     /A finding in a review body has no thread, so the reply that subsection posts on a thread goes instead to a PR comment that quotes the finding's URL, with the same disposition/,
   ]) {
     assert.match(section, pattern);

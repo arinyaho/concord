@@ -76,7 +76,7 @@ test('initiative-to-prs composes the existing ticket contracts and stops at veri
   assert.match(skill, /repository-backed design records.*assigned ticket and repository unit.*planned branch.*PR disposition/is);
   assert.match(stages, /No tracker or design-document mutation occurs before this checkpoint/i);
   assert.match(stages, /Write and read back the Stage 1 handoff before presenting this checkpoint/is);
-  assert.match(stages, /missing or unreadable handoff.*unresolved model identity.*incomplete or unsuccessful specialist.*uncovered decision.*missing required independent review blocks checkpoint 1 and Stage 2.*user approval cannot replace/is);
+  assert.match(stages, /missing or unreadable handoff.*unresolved model identity or capability.*incomplete or unsuccessful review.*uncovered decision.*missing required independent review blocks checkpoint 1 and Stage 2.*user approval cannot replace/is);
   assert.match(stages, /proposed design-record mutation.*specific approval/i);
   assert.match(stages, /Continue only after the user approves implementation of that exact set/i);
   assert.match(skill, /repository boundary requires a separate implementation unit and PR, not automatically another outcome ticket/i);
@@ -131,22 +131,41 @@ test('initiative-to-prs routes models by task shape and bounds delegation', () =
   }
   assert.match(routing, /current model catalog.*newest suitable model/is);
   assert.match(routing, /confirm.*selected model and reasoning effort are callable/is);
-  assert.match(routing, /Do not infer capability from a model name, version number, or price alone/i);
+  assert.match(routing, /honor a user-designated callable model when it meets the required capability/is);
+  assert.match(routing, /Astra.*model the user restricts.*direct authorization from the user/is);
+  assert.match(routing, /ask the user once.*pending decision batch.*record.*policy.*request.*answer/is);
+  assert.match(routing, /pause only dependent work/i);
+  assert.match(routing, /do not create an extra specialist merely because.*root.*model/i);
+  assert.match(routing, /batch the substantive findings for one adjudication per stage/is);
+  assert.match(routing, /model names, versions, and price alone do not establish capability/i);
   assert.match(routing, /bounded implementation batch.*approved.*contract.*clear.*lowest-cost capable implementation model.*focused self-checks.*without pausing for status/is);
-  assert.match(routing, /higher-cost capability.*design work, scope decisions.*new P1 findings.*findings against the content or wording of a rule, contract, interface, or schema.*fresh independent verification after the batch/is);
+  assert.match(routing, /higher-cost capability.*design work, scope decisions.*new P1 findings.*batched adjudication of substantive findings against the content or wording of rules, contracts, interfaces, or schemas.*fresh independent verification after the batch/is);
   assert.match(routing, /before checkpoint 1.*deep-capability model.*before.*approved contract/is);
-  assert.match(routing, /separate deep-capability specialist.*clean context/is);
-  assert.match(routing, /active root agent cannot satisfy a Deep decision gate/i);
-  assert.doesNotMatch(routing, /active agent may perform that pass/i);
-  assert.match(routing, /child invocation or agent identity.*requested and resolved model.*provider and catalog basis.*reasoning effort.*successful completion.*conclusion.*covered decision identities/is);
-  assert.match(routing, /a cryptography, security, or migration decision.*second independent deep-capability reviewer/is);
+  assert.match(routing, /a user-designated model may provide this evidence when it meets the requirement/is);
+  assert.match(routing, /do not force a different model or create an additional specialist solely because the active root agent selected the approved model/is);
+  assert.match(routing, /invocation or agent identity.*applicable model policy.*requested and resolved model.*provider and catalog basis.*reasoning effort.*successful completion.*conclusion.*covered decision identities/is);
+  assert.match(routing, /a cryptography, security, or migration decision.*second independent Deep review/is);
   assert.match(routing, /distinct second-reviewer evidence record.*invocation or agent identity.*requested and resolved model.*provider and catalog basis.*reasoning effort.*successful completion.*conclusion.*covered decision identities/is);
   assert.match(routing, /Apply this gate throughout execution, including implementation and review/is);
-  assert.match(read('concord', 'references/stages.md'), /architecture decision gate.*requires a separate deep-capability specialist for design work/is);
+  assert.match(read('concord', 'references/stages.md'), /architecture decision gate.*requires evidence from a callable Deep-capable model.*do not add a specialist solely/is);
   assert.match(routing, /maximum delegation depth is two/i);
   assert.match(routing, /at most two specialist children/i);
   assert.match(routing, /Record the role, required class, requested and resolved model/i);
   assert.match(skill, /independent review.*omit the implementer's handoff.*approved contract.*source evidence.*reviewed head and base.*verification commands/is);
+});
+
+test('Copilot packaged routing retains provider constraints with the shared user model policy', () => {
+  const packaged = read('concord-copilot', 'references/model-routing.md');
+  const override = fs.readFileSync(path.join(REPO, 'plugins/concord-copilot/overrides/initiative-model-routing.md'), 'utf8');
+  for (const text of [packaged, override]) {
+    assert.match(text, /user's explicit model choice and standing model restrictions/i);
+    assert.match(text, /Astra.*direct authorization from the user/is);
+    assert.match(text, /lowest-cost capable implementation model/i);
+  }
+  assert.match(packaged, /For cross-model review, the reviewer must resolve to a different model from the implementer/i);
+  assert.match(packaged, /current subscription or parent cost tier.*capability gap/i);
+  assert.match(packaged, /Request a specific available Copilot model when model selection is authorized/i);
+  assert.match(packaged, /Never silently substitute or override a user restriction/i);
 });
 
 test('initiative-to-prs handoffs carry evidence without copying session history', () => {
@@ -156,8 +175,8 @@ test('initiative-to-prs handoffs carry evidence without copying session history'
   assert.match(handoff, /Evidence references/);
   assert.match(handoff, /Decisions/);
   assert.match(handoff, /Exit verdict/);
-  assert.match(handoff, /Requested and resolved model/);
-  assert.match(handoff, /Requested and resolved model[^\n]*provider and catalog basis[^\n]*reasoning effort[^\n]*separate child invocation or agent identity[^\n]*successful completion[^\n]*conclusion[^\n]*covered decision identities[^\n]*second independent Deep reviewer[^\n]*same fields[^\n]*distinct second-reviewer evidence record/i);
+  assert.match(handoff, /requested and resolved model/i);
+  assert.match(handoff, /applicable user model policy and authorization[^\n]*requested and resolved model[^\n]*provider and catalog basis[^\n]*reasoning effort[^\n]*invocation or agent identity[^\n]*successful completion[^\n]*conclusion[^\n]*covered decision identities[^\n]*second independent Deep review[^\n]*distinct second-reviewer evidence record/i);
   assert.match(handoff, /active root agent.*not resolved model evidence/i);
 });
 

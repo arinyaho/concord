@@ -15,7 +15,7 @@ Persist one compact Markdown handoff per completed stage. The file is the child 
 - Delivery mode (`base` or `lite`), review run key, budgets, and any lite-to-base escalation trigger with the exclusion that caused it
 - Ticket or PR identities and dependency relationships
 - Checks actually run, their exact result, and checks not run with the blocker
-- Requested and resolved model, provider and catalog basis, reasoning effort when exposed, escalation or fallback reason, and for a required Deep decision the separate child invocation or agent identity, successful completion, conclusion, and covered decision identities; when a second independent Deep reviewer is required, preserve the same fields in a distinct second-reviewer evidence record; labels such as `active root agent` are not resolved model evidence
+- Applicable user model policy and authorization, requested and resolved model, provider and catalog basis, reasoning effort when exposed, escalation or fallback reason, and for a required Deep decision the invocation or agent identity, successful completion, conclusion, and covered decision identities; when a second independent Deep review is required, preserve the same fields in a distinct second-reviewer evidence record. Record any user request for authorization and the answer, including refusal or no answer. Labels such as `active root agent` are not resolved model evidence.
 - Exit verdict, failed exit conditions, blockers, and the only dependency-ready next stage
 
 ## Context discipline

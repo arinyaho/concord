@@ -47,6 +47,17 @@ test('the Claude Code wait re-arms silently on idle or a killed run and never en
   assert.doesNotMatch(skill, /spends no model tokens/);
 });
 
+test('Codex returns with an explicit start resume command and does not run a watcher', () => {
+  const codexWait = skill.slice(skill.indexOf('- Codex:'), skill.indexOf('The watch prints one JSON line'));
+  assert.match(codexWait, /do not run `watch\.js` or wait in the foreground/);
+  assert.match(codexWait, /resume command/);
+  assert.match(codexWait, /approve\.js" start <owner\/repo> <pr>/);
+  assert.match(codexWait, /new head.*edited description.*action: "round".*without waiting for an author reply/);
+  assert.match(codexWait, /unchanged reviewed head.*action: "approve".*otherwise.*action: "watch"/);
+  assert.match(codexWait, /does not change the watcher.*push-and-reply wake condition/);
+  assert.doesNotMatch(codexWait, /node "\$SCRIPTS\/watch\.js"|run_in_background|foreground polling|after 6 windows/);
+});
+
 test('no doc or script comment describes the Claude Code wait as Monitor-based or free of model calls', () => {
   const root = path.join(__dirname, '..', '..', '..', '..', '..');
   const watchHeader = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'watch.js'), 'utf8').split('\n').slice(0, 12).join('\n');
@@ -108,8 +119,8 @@ test('SKILL.md says a finding about the pull request description is judged again
   assert.match(skill, /`\/pr-description`/);
 });
 
-test('SKILL.md puts the locator assignment before the mien exec prefix for Codex commands', () => {
-  assert.match(skill, /SCRIPTS=\$\(LOCATOR\) && \[mien exec <profile> -- \]node "\$SCRIPTS\/watch\.js"/);
+test('SKILL.md puts the locator assignment before the mien exec prefix for the Codex resume command', () => {
   assert.match(skill, /SCRIPTS=\$\(LOCATOR\) && \[mien exec <profile> -- \]node "\$SCRIPTS\/<script>\.js"/);
+  assert.match(skill, /SCRIPTS=\$\(LOCATOR\) && \[mien exec <profile> -- \]node "\$SCRIPTS\/approve\.js" start/);
   assert.match(skill, /the prefix goes after the assignment, directly before `node`/);
 });

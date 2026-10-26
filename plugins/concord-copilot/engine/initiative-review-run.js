@@ -218,9 +218,89 @@ function samePair(recorded, revision) {
   return !revision?.head_sha || (recorded?.head_sha === revision.head_sha && (recorded?.base || null) === (revision.base || null));
 }
 
-// A run parked for reconciliation opens no new revision pair; pairs it already
-// holds keep working.
+function normalizedInitiativePlan(plan) {
+  const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
+  const text = (value) => typeof value === 'string' && value.trim().length > 0;
+  if (!object(plan) || plan.version !== 1 || Object.keys(plan).some(k => !['version', 'targets'].includes(k)) || !Array.isArray(plan.targets) || !plan.targets.length) throw new Error('initiative plan requires version 1 and explicit targets');
+  const refs = new Set();
+  const targets = plan.targets.map(node => {
+    if (!object(node) || !text(node.ref) || Object.keys(node).some(k => !['ref', 'dependsOn'].includes(k)) || !Array.isArray(node.dependsOn) || node.dependsOn.some(dep => !text(dep)) || new Set(node.dependsOn).size !== node.dependsOn.length || refs.has(node.ref)) throw new Error('initiative plan targets require unique refs and explicit unique dependencies');
+    refs.add(node.ref);
+    return { ref: node.ref, dependsOn: [...node.dependsOn].sort() };
+  }).sort((a, b) => a.ref.localeCompare(b.ref));
+  const nodes = new Map(targets.map(node => [node.ref, node.dependsOn]));
+  const visited = new Set(), visiting = new Set();
+  function visit(ref) {
+    if (visiting.has(ref)) throw new Error('initiative plan dependency cycle');
+    if (visited.has(ref)) return;
+    if (!nodes.has(ref)) throw new Error('initiative plan dependency is unknown');
+    visiting.add(ref);
+    for (const dep of nodes.get(ref)) visit(dep);
+    visiting.delete(ref); visited.add(ref);
+  }
+  for (const ref of refs) visit(ref);
+  return { version: 1, targets };
+}
+
+function setInitiativePlan(run, input) {
+  const plan = normalizedInitiativePlan(input);
+  const sha256 = crypto.createHash('sha256').update(JSON.stringify(plan)).digest('hex');
+  return Boolean(locked(run, ledger => {
+    if (!ledger) throw new Error('initiative plan requires an existing run');
+    assertVersion(ledger);
+    if (ledger.status !== 'active') throw new Error('initiative plan requires an active run');
+    if (ledger.dependencyPlan) {
+      if (ledger.dependencyPlan.sha256 !== sha256) throw new Error('initiative dependency plan is immutable');
+      return undefined;
+    }
+    if ((ledger.launches || []).length) throw new Error('initiative plan must be registered before the first launch');
+    return { ...ledger, dependencyPlan: { ...plan, sha256 } };
+  }));
+}
+
+function reconciledDisposition(ledger, entry) {
+  return entry.reason === 'reconciliation-required' && !!entry.packet?.delivery?.claim
+    && (ledger.reconciliationDecisions || []).some(decision => decision.claim === entry.packet.delivery.claim && decision.target === entry.target);
+}
+
+function pendingReconciliations(ledger) {
+  return (ledger.dispositions || []).filter(entry => entry.reason === 'reconciliation-required' && !reconciledDisposition(ledger, entry));
+}
+
+function reconcileInitiativeRun(run, input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)
+    || ['target', 'claim', 'by', 'decision'].some(key => typeof input[key] !== 'string' || !input[key].trim())
+    || input.contract !== 'unchanged' || Object.keys(input).some(key => !['target', 'claim', 'by', 'decision', 'contract'].includes(key))) throw new Error('initiative reconcile requires a target, exact claim, human identity, decision text and unchanged contract');
+  // An absent run is not a new run authorization; do not create its directory.
+  if (!fs.existsSync(run.path)) throw new Error('initiative reconcile requires an existing run');
+  return Boolean(locked(run, ledger => {
+    if (!ledger) throw new Error('initiative reconcile requires an existing run');
+    assertVersion(ledger);
+    if (ledger.status !== 'active') throw new Error('initiative reconcile requires an active run');
+    const matches = pendingReconciliations(ledger).filter(entry => entry.target === input.target && entry.packet?.delivery?.claim === input.claim);
+    if (matches.length !== 1) throw new Error('initiative reconcile requires one matching pending reconciliation claim');
+    const reconciliationDecisions = [...(ledger.reconciliationDecisions || []), { ...input, at: now() }];
+    const next = { ...ledger, reconciliationDecisions };
+    const remaining = pendingReconciliations(next);
+    return { ...next, reconciliation: { ...ledger.reconciliation, hint: remaining.length ? hint('reconciliation-required', remaining[0].packet?.reconciliation?.finding || null) : null } };
+  }));
+}
+
+// Planned holds block every future dependent reservation. Legacy runs without
+// a plan retain their circuit breaker for revision pairs not already opened.
 function parkedRefusal(ledger, target, revision) {
+  const pending = pendingReconciliations(ledger);
+  if (ledger.dependencyPlan && pending.length) {
+    const plan = normalizedInitiativePlan({ version: ledger.dependencyPlan.version, targets: ledger.dependencyPlan.targets });
+    const sha256 = crypto.createHash('sha256').update(JSON.stringify(plan)).digest('hex');
+    if (sha256 !== ledger.dependencyPlan.sha256) throw new Error('initiative dependency plan hash mismatch');
+    const nodes = new Map(plan.targets.map(node => [node.ref, node.dependsOn]));
+    if (!nodes.has(target) || pending.some(entry => !nodes.has(entry.target))) return true;
+    const closure = new Set();
+    const visit = ref => { if (closure.has(ref)) return; closure.add(ref); for (const dep of nodes.get(ref)) visit(dep); };
+    visit(target);
+    return pending.some(entry => closure.has(entry.target));
+  }
   return ledger.reconciliation?.hint?.trigger === 'reconciliation-required' && !(ledger.targets || []).some((item) => same(item, revision || { ref: target }));
 }
 
@@ -326,7 +406,7 @@ function launchRefusal(ledger, launch, count) {
   const revision = launchRevision(launch, target);
   if (parkedRefusal(ledger, target, revision)) return 'reconciliation-required';
   if (launch.broad && !hasBroadSweepClaim(launch.run, launch)) return 'broad-sweep-claimed';
-  if ((ledger.dispositions || []).some((disposition) => disposition.target === target && disposition.kind === 'terminal' && samePair(disposition.revision, revision))) return 'target-terminal';
+  if ((ledger.dispositions || []).some((disposition) => disposition.target === target && disposition.kind === 'terminal' && (!reconciledDisposition(ledger, disposition) || !disposition.occurrence) && samePair(disposition.revision, revision))) return 'target-terminal';
   if (ledger.launchRefunds?.limitReached) return 'environment-failure-limit';
   if (launchAccounting(ledger).charged + count > ledger.budget.maxLaunches) return 'budget-exhausted';
   const round = `${target}\u0000${typeof launch.attemptId === 'string' ? launch.attemptId : 'legacy'}\u0000${launch.round}`;
@@ -369,12 +449,14 @@ function reserveLaunch(run, launch) {
   return reserveLaunchBatch(run, launch, 1);
 }
 
-function recordDisposition(run, { target, revision, result, packet = {}, finding = null, stage = null, avoidedLaunches = 0, findings = {}, checks = [], telemetry = [] }) {
+function recordDisposition(run, { target, revision, result, packet = {}, finding = null, stage = null, avoidedLaunches = 0, findings = {}, checks = [], telemetry = [], occurrence }) {
+  if (occurrence !== undefined && (!occurrence || typeof occurrence !== 'object' || Array.isArray(occurrence) || typeof occurrence.attemptId !== 'string' || !occurrence.attemptId.trim() || !Number.isInteger(occurrence.round) || occurrence.round < 1 || Object.keys(occurrence).some(key => !['attemptId', 'round'].includes(key)))) throw new Error('initiative disposition occurrence requires an attempt and round');
   const safeTelemetry = telemetry.map(({ role, stage: telemetryStage, revision, round, count, elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }) => ({ role, ...(telemetryStage ? { stage: telemetryStage } : {}), ...(revision ? { revision } : {}), ...(Number.isInteger(round) ? { round } : {}), ...(Number.isInteger(count) ? { count } : {}), elapsedMs, inputTokens, cacheWriteInputTokens, cachedInputTokens, reasoningOutputTokens, outputTokens, totalTokens }));
   return Boolean(locked(run, (ledger) => {
     if (!ledger || ledger.version !== 5 || ledger.status !== 'active') return null;
     const disposition = normalizeDisposition(result);
-    if (disposition.kind === 'terminal' && (ledger.dispositions || []).some((item) => item.target === target && item.kind === 'terminal' && samePair(item.revision, launchRevision({ revision }, target) || { head_sha: null }))) return null;
+    const sameOccurrence = item => !occurrence || !item.occurrence || (item.occurrence.attemptId === occurrence.attemptId && item.occurrence.round === occurrence.round);
+    if (disposition.kind === 'terminal' && (ledger.dispositions || []).some((item) => item.target === target && item.kind === 'terminal' && samePair(item.revision, launchRevision({ revision }, target) || { head_sha: null }) && (!reconciledDisposition(ledger, item) || sameOccurrence(item)))) return null;
     // For 'escape', only dedupe against a still-unconsumed match: once a
     // target's escape is consumed, terminalTarget lets a fresh round start
     // at the same revision (see terminalTarget's consumed-vs-unconsumed
@@ -384,14 +466,18 @@ function recordDisposition(run, { target, revision, result, packet = {}, finding
     // 'error' keeps matching regardless of consumption: a retry producing
     // the identical error message is intentionally treated as the same
     // outcome (see normalizeDisposition's per-message error reason).
-    if ((ledger.dispositions || []).some((item) => item.target === target && same(item.revision, revision) && item.kind === disposition.kind && item.reason === disposition.reason && (disposition.kind !== 'escape' || item.packet?.delivery?.consumed === false))) return null;
+    if ((ledger.dispositions || []).some((item) => item.target === target && same(item.revision, revision) && item.kind === disposition.kind && item.reason === disposition.reason && (!reconciledDisposition(ledger, item) || sameOccurrence(item)) && (disposition.kind !== 'escape' || item.packet?.delivery?.consumed === false))) return null;
     const terminalRevision = launchRevision({ revision }, target);
     const targets = terminalRevision && !(ledger.targets || []).some((item) => same(item, terminalRevision)) ? [...(ledger.targets || []), terminalRevision] : (ledger.targets || []);
     if (!terminalRevision?.head_sha) throw new Error('initiative review terminal target requires a stored revision');
     const sequence = (ledger.dispositions || []).length + 1;
     const continuation = packet.nextAction || (disposition.kind === 'terminal' ? 'replay' : 'resume');
     const durablePacket = { ...packet, outcome: { kind: disposition.kind, reason: disposition.reason }, ledger: { version: ledger.version, status: ledger.status }, budget: { maxLaunches: ledger.budget.maxLaunches, maxRounds: ledger.budget.maxRounds, ...launchBudgetUsage(ledger) }, delivery: { claim: `${target}:${sequence}`, continuation, consumed: false } };
-    const entry = { target, revision: terminalRevision, ...disposition, sequence, at: now(), packet: durablePacket };
+    if (disposition.reason === 'reconciliation-required') {
+      const quote = value => `'${String(value).replace(/'/g, "'\\''")}'`;
+      durablePacket.handoff = `${typeof packet.handoff === 'string' ? packet.handoff + '\n' : ''}Human decision required: review-cli.js reconcile ${quote(target)} --claim ${quote(durablePacket.delivery.claim)} --by <human> --decision <verbatim-human-decision> --contract unchanged <original initiative flags>. Preserve the approved contract, remaining budget and other pending holds.`;
+    }
+    const entry = { target, revision: terminalRevision, ...disposition, sequence, at: now(), packet: durablePacket, ...(occurrence ? { occurrence: { ...occurrence } } : {}) };
     const previous = ledger.reconciliation || {};
     const reconciliationHint = previous.hint && previous.hint.trigger === 'reconciliation-required'
       ? previous.hint
@@ -427,7 +513,7 @@ function publicInitiativeSummary(run) {
 }
 
 function dispositionsFromLedger(ledger, target, kinds) {
-  return (ledger.dispositions || []).filter((item) => item.target === target && kinds.includes(item.kind));
+  return (ledger.dispositions || []).filter((item) => item.target === target && kinds.includes(item.kind) && (!reconciledDisposition(ledger, item) || !item.occurrence));
 }
 
 function dispositionCandidates(run, target, kinds) {
@@ -481,4 +567,4 @@ function finaliseInitiativeRun(run, reason = 'finalised') {
   return true;
 }
 
-module.exports = { launchBudgetUsage, launchAccounting, recordLaunchOutcome, MAX_CONSECUTIVE_REFUNDS, MODES, ESCALATION_TRIGGERS, lockDiagnosis, escalateInitiativeRun, canonicalPath, runPath, repositoryIdentity, openInitiativeRun, claimBroadSweep, hasBroadSweepClaim, reserveLaunch, reserveLaunchBatch, denialReason, pairRefusal, resolveBaseCommit, normalizeDisposition, recordDisposition, consumeDispositionDelivery, terminalTarget, terminalDispositionInLedger, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };
+module.exports = { normalizedInitiativePlan, setInitiativePlan, reconcileInitiativeRun, pendingReconciliations, launchBudgetUsage, launchAccounting, recordLaunchOutcome, MAX_CONSECUTIVE_REFUNDS, MODES, ESCALATION_TRIGGERS, lockDiagnosis, escalateInitiativeRun, canonicalPath, runPath, repositoryIdentity, openInitiativeRun, claimBroadSweep, hasBroadSweepClaim, reserveLaunch, reserveLaunchBatch, denialReason, pairRefusal, resolveBaseCommit, normalizeDisposition, recordDisposition, consumeDispositionDelivery, terminalTarget, terminalDispositionInLedger, hasDisposition, publicInitiativeSummary, finaliseInitiativeRun, finishInitiativeRun: finaliseInitiativeRun };
