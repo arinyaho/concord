@@ -5,13 +5,13 @@
   },
   "metadata": {
     "description": "Concord workflows for agent harnesses",
-    "version": "0.9.1-beta.54"
+    "version": "0.9.1-beta.55"
   },
   "plugins": [
     {
       "name": "concord",
       "description": "Persistent project charter and Concord workflows for GitHub Copilot",
-      "version": "0.9.1-beta.54",
+      "version": "0.9.1-beta.55",
       "source": "./plugins/concord-copilot"
     }
   ]
