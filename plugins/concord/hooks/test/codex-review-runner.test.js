@@ -4330,3 +4330,16 @@ test('keyed and unkeyed reviewer launches use the same codex arguments (#451)', 
   assert.deepStrictEqual(keyed.map((a) => a.replace(/^.*codex-runner-[^/]*/, '<dir>')), unkeyed.map((a) => a.replace(/^.*codex-runner-[^/]*/, '<dir>')));
   assert.ok(!keyed.includes('/outside/initiative'), 'the initiative state directory is not a writable root');
 });
+
+test('jsonCli starts with no node on PATH and makes its runtime available to nested commands', () => {
+  const dir = temp();
+  const cli = path.join(dir, 'runtime-probe.js');
+  fs.writeFileSync(cli, `const { execFileSync } = require('node:child_process');
+process.stdout.write(JSON.stringify({ runtime: process.execPath, nested: execFileSync('node', ['-p', 'process.execPath'], { encoding: 'utf8' }).trim() }));`);
+  const runner = require.resolve('../../core/codex-review-runner');
+  const probe = spawnSync(process.execPath, ['-e', `const { jsonCli } = require(${JSON.stringify(runner)}); process.stdout.write(JSON.stringify(jsonCli(${JSON.stringify(cli)}, [], ${JSON.stringify(dir)})));`], {
+    env: { ...process.env, PATH: dir }, encoding: 'utf8',
+  });
+  assert.strictEqual(probe.status, 0, probe.stderr);
+  assert.deepStrictEqual(JSON.parse(probe.stdout), { runtime: process.execPath, nested: process.execPath });
+});
