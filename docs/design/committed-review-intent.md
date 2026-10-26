@@ -1,0 +1,13 @@
+# Committed review intent
+
+A ticket unit's diff review receives its approved contract through a committed design note. The design note contains the approved acceptance criteria, and its reviewed fixes are committed before diff review. The handoff records its path and digest; a material contract change returns to the design checkpoint before dependent work continues.
+
+`review-and-fix <branch> --intent-path <repository-relative-note>` provides a committed fallback without changing the product's review configuration. A valid project-configured intent command takes priority. A broken configured source fails closed. The separate legacy `--intent-file` input keeps its existing caller-supplied behavior and cannot be combined with the committed selector. An explicitly untrusted checkout's `--no-intent-command` still suppresses project execution while allowing the safe committed-blob input.
+
+The committed source is a regular Git blob from the exact reviewed head. Untracked files, dirty working-tree replacements, symbolic links, directories, traversal paths and invalid or oversized text cannot become this contract. The private review ledger records the selected path, source kind, commit and blob identity, content SHA256 and byte count. This binds the review to repository content under review; it is not cryptographic proof that a human approved that content.
+
+Resume inherits the selector. For a stored committed-selector attempt, dismissal, deferral, unpark and other fresh-look transitions retain the cache, hash, byte count and source binding; accepting one finding never authorizes a different contract. Selector-absent legacy intent refresh keeps its existing behavior. Equal content at a new head may refresh commit provenance. Changed content or a changed source authority preserves the cached contract and stops rather than silently replacing it. The failure names the old and candidate hash when content drift is observed. An approved revision uses the applicable reconciliation and fresh-attempt procedure; it does not reset shared budgets or rewrite prior evidence. File-target reviews do not accept the committed selector.
+
+The workflow records `intent: applied` and the actual selected source. It never substitutes agent-written prose, an uncommitted file or a configuration mutation merely to make that signal appear.
+
+The unit boundary is defined in [implementation unit boundaries](ticket-to-pr-unit-boundaries.md). Human acceptance receipts follow the separate [review ledger contract](review-ledger.md); they do not replace the committed intent or approve a changed contract.
