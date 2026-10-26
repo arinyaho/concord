@@ -113,8 +113,8 @@ function terminateProcessTree(child, signal) {
 }
 
 function jsonCli(cliPath, args, repoRoot, stateDir, reviewOnly = false) {
-  const out = execFileSync('node', [cliPath, ...args], {
-    cwd: repoRoot, encoding: 'utf8', env: { ...process.env, REVIEW_REPO_ROOT: repoRoot, ...(stateDir ? { REVIEW_STATE_DIR: stateDir } : {}), ...(reviewOnly ? { CONCORD_UNTRUSTED_ARTIFACTS: '1' } : {}) },
+  const out = execFileSync(process.execPath, [cliPath, ...args], {
+    cwd: repoRoot, encoding: 'utf8', env: { ...process.env, PATH: [path.dirname(process.execPath), process.env.PATH].filter(Boolean).join(path.delimiter), REVIEW_REPO_ROOT: repoRoot, ...(stateDir ? { REVIEW_STATE_DIR: stateDir } : {}), ...(reviewOnly ? { CONCORD_UNTRUSTED_ARTIFACTS: '1' } : {}) },
   });
   try { return JSON.parse(out); } catch (e) { throw new Error(`harness-failure: review-cli ${args[0]} returned non-JSON output`); }
 }
