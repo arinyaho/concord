@@ -180,6 +180,10 @@ function claimBroadSweep(run, claimant, reclaim = false) {
         if (reclaim && prior.key !== run.key) writeFileAtomic(claim, `${JSON.stringify({ ...prior, key: run.key })}\n`, { mode: 0o600 });
         return prior.key === run.key || reclaim;
       }
+      if (prior.repository === run.repository && prior.initiativeId === run.initiativeId
+        && prior.target === claimant.target && prior.attemptId !== claimant.attemptId) {
+        throw new Error('initiative broad-sweep is owned by a prior attempt of this target; completion is not established for this attempt. Preserve the claim, archived evidence and spent budgets; reconcile the prior attempt before continuing');
+      }
       return false;
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
     writeFileAtomic(claim, `${JSON.stringify({ repository: run.repository, initiativeId: run.initiativeId, key: run.key, target: claimant.target, attemptId: claimant.attemptId, claimedAt: now() })}\n`, { mode: 0o600 });

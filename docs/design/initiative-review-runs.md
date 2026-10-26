@@ -14,6 +14,20 @@ The execution root and the state directory are canonicalized through their neare
 
 The per-ref target ledger stays the source of review findings. With a run key, the launch and round budgets are immutable: `reset` or `rerun` of a target ledger cannot alter them. The CLI flags `--initiative-run-key`, `--initiative-state-dir`, `--initiative-max-launches`, and `--initiative-max-rounds` must be supplied together and are validated and opened by the same code for every distribution; reopening a run compares the supplied budgets with the stored ones.
 
+## Broad claims across attempts
+
+A broad-sweep claim establishes ownership, not completion. When a new attempt of the same target reaches the claim path, an existing claim for a different attempt stops `round-start` with an explicit prior-attempt reconciliation error. A denied claim must not silently disarm that target's required broad review. The claim, archived attempt and cumulative budgets remain intact; this stop does not authorize reclaiming a running executor, changing keys, resetting ledgers or replenishing budgets.
+
+| Existing claim and event | Result | Evidence |
+|---|---|---|
+| No claim; first armed round | Claim the sweep and require gate artifacts | Existing claim and initiative tests |
+| Same target and attempt; resume | Retain ownership and require gate artifacts | `unfinished-broad-claim.test.js`, each packaged CLI |
+| Same target, different attempt; no reusable completed pass | Stop before silently disarming the gate; preserve the old claim, archive, launches and rounds | Discriminating red/green in `unfinished-broad-claim.test.js`, each packaged CLI |
+| Completed pass eligible for existing front-pass reuse | Reuse recorded evidence before reaching the claim path | Existing `review-cli.test.js` completed-front-pass tests |
+| Different target under the same initiative | Existing one-sweep policy remains unchanged | Existing claim and initiative tests |
+
+This is a conservative stop, not automatic recovery. A completed pass that is ineligible for existing reuse (for example because its intent must be re-evaluated) also requires reconciliation rather than an inferred waiver. Claims written by earlier versions need no migration: they already identify the target and attempt. This change does not repair prior false clean results or establish completion for a different target's claim.
+
 ## Launch reservation
 
 Each reviewer, fixer, panel lens, and panel vote reserves one launch through an exclusive filesystem lock before it is spawned. A started, unknown, unsupported, malformed, or incomplete launch outcome remains charged; a reservation whose launch never happens also remains charged unless a trusted programmatic driver records eligible pre-turn environment failure evidence. Lock contention and exhausted budgets deny the launch, so separate worktrees cannot race for a final slot.
