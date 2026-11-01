@@ -182,7 +182,7 @@ function normalizeArtifact(name, raw, { addressed = false } = {}) {
   if (parsed.blocked !== undefined) {
     if (!Array.isArray(parsed.blocked)) throw new ArtifactError('fatal', `${name} artifact field "blocked" must be an array`);
     if (parsed.blocked.length) {
-      throw new ArtifactError('fatal', `${name} reviewer could not run: ${parsed.blocked.map((b) => String(b)).join('; ')} -- it was blocked from the method it was assigned, so this round has no usable verdict. Fix the reviewer's environment (sandbox, permissions, missing tool) and re-run; do not accept the artifact.`);
+      throw new ArtifactError('fatal', `${name} reviewer could not run: ${parsed.blocked.map((b) => String(b)).join('; ')} -- it was blocked from the method it was assigned, so this round has no usable verdict. If a sandbox, permission, or tool failure blocked it, fix the environment and re-run; if the block was the reviewer's own probe (for example a raw equality check of a file-target artifact against its file), re-run the reviewer with a corrected method and leave the target, ledger, and prior review evidence unchanged. Do not accept the artifact.`);
     }
   }
   if (!['ok', 'findings', 'clean'].includes(parsed.status)) throw new ArtifactError('retry', `${name} artifact has unsupported status`);

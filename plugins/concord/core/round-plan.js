@@ -67,6 +67,9 @@ const ENV_CLAUSE_BY_ROLE = Object.freeze({
   certify: CERTIFIER_ENV_CLAUSE,
 });
 
+// A file target's round-N-diff.txt is not the file: the engine writes `===== <path> =====\n`, the file bytes, then `\n` per file. A freshness probe that compares the whole artifact to the file fails at offset zero on the header, which is the framing and not a stale or mutated target; it must not be declared `blocked`.
+const FILE_FRAMING_CLAUSE = ' The document artifact frames each target as a header line `===== <path> =====`, the file\'s exact bytes, and one trailing newline. When you check that the artifact matches the current file, compare the bytes between the header and that trailing newline; a mismatch of the whole artifact against the file at offset zero is the framing, not a stale target, and is never a reason to declare blocked or to report an environment failure.';
+
 const BLOCKED_CLAUSE = ' If you cannot run a tool this task requires (missing, denied by sandbox or permissions, crashed, timed out), do NOT substitute a weaker method and do NOT stay silent: write {"status":"ok","blocked":["<tool>: <what failed>"]} and stop.';
 
 const FINDING_SPAN_CLAUSE = ' Each finding MUST include a continuous verbatim source snippet as its span or evidence anchor; preserve whitespace exactly and use no explanatory ellipses (literal ellipses are valid only when present in the source).';
@@ -143,7 +146,7 @@ function baseReviewerPrompt(role, { stateDir, round, targetType, dodDeferred, do
   const artifact = path.join(stateDir, role === 'fix' || role === 'certify' ? `round-${round}-${role}-${safeIdForFilename(groupArtifactId)}.json` : `round-${round}-${role}.json`);
   const env = ENV_CLAUSE_BY_ROLE[role];
   const anchorRoles = ['correctness', 'verify', 'intent', 'gate', 'gate-verify'];
-  const retry = `${role === 'fix' ? '' : BLOCKED_CLAUSE}${[...anchorRoles, 'plan'].includes(role) ? FINDING_ID_RULE : ''}${anchorRoles.includes(role) ? FINDING_SPAN_CLAUSE + reviewLanguageClause(reviewLanguage) : ''}${targetType !== 'file' && classify && (role === 'correctness' || role === 'verify') ? GATE_FOLLOWUP_CLAUSE : ''}${retryPrompt ? `\n\n${retryPrompt}` : ''}`;
+  const retry = `${role === 'fix' ? '' : BLOCKED_CLAUSE}${[...anchorRoles, 'plan'].includes(role) ? FINDING_ID_RULE : ''}${anchorRoles.includes(role) ? FINDING_SPAN_CLAUSE + reviewLanguageClause(reviewLanguage) : ''}${targetType === 'file' && (role === 'correctness' || role === 'verify') ? FILE_FRAMING_CLAUSE : ''}${targetType !== 'file' && classify && (role === 'correctness' || role === 'verify') ? GATE_FOLLOWUP_CLAUSE : ''}${retryPrompt ? `\n\n${retryPrompt}` : ''}`;
   if (role === 'correctness') {
     const doc = targetType === 'file';
     const dodNote = dodPending
@@ -201,4 +204,4 @@ function reportedNoEdit(stateDir, round, groups) {
   });
 }
 
-module.exports = { LEDGER_CLAUSE, reviewLanguageClause, VERIFIER_ENV_CLAUSE, ENV_CLAUSE_BY_ROLE, cliClause, DESIGN_EVIDENCE_BINDING_CLAUSE, fixDeclaration, reportedNoEdit, examinedClause, ROLE_SEQUENCE, BLOCKED_CLAUSE, GATE_SWEEP_CLAUSE, GATE_FOLLOWUP_CLAUSE, GATE_VERIFY_ADDED_CLAUSE, GATE_VERIFY_BLOCKING_CLAUSE, GATE_VERIFY_OWNERSHIP_CLAUSE, VERIFY_OWNERSHIP_CLAUSE, reviewerGuidancePrefix, priorFindingsClause, addressedClause, reviewerPrompt };
+module.exports = { LEDGER_CLAUSE, reviewLanguageClause, VERIFIER_ENV_CLAUSE, ENV_CLAUSE_BY_ROLE, cliClause, DESIGN_EVIDENCE_BINDING_CLAUSE, fixDeclaration, reportedNoEdit, examinedClause, ROLE_SEQUENCE, BLOCKED_CLAUSE, FILE_FRAMING_CLAUSE, GATE_SWEEP_CLAUSE, GATE_FOLLOWUP_CLAUSE, GATE_VERIFY_ADDED_CLAUSE, GATE_VERIFY_BLOCKING_CLAUSE, GATE_VERIFY_OWNERSHIP_CLAUSE, VERIFY_OWNERSHIP_CLAUSE, reviewerGuidancePrefix, priorFindingsClause, addressedClause, reviewerPrompt };

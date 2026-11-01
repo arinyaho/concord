@@ -384,3 +384,18 @@ test('every driver runs verify-needed before reserving verify or plan', () => {
     assert.match(text, /Only when step 3 answered `plan: required`/, file);
   }
 });
+
+test('file-target reviewers are told the artifact framing, and a blocked method is correctable', () => {
+  const context = { stateDir: '/state', round: 1, targetType: 'file', slug: 'doc', finding: { id: 'docreview:a', summary: 's' }, fixFiles: [] };
+  for (const role of ['correctness', 'verify']) {
+    const prompt = reviewerPrompt(role, context);
+    assert.ok(prompt.includes('===== <path> =====') && prompt.includes('trailing newline'), `${role} prompt states the file artifact framing`);
+    assert.ok(prompt.includes('never a reason to declare blocked'), `${role} prompt forbids blocking on the framing mismatch`);
+    assert.ok(!reviewerPrompt(role, { ...context, targetType: 'git' }).includes('===== <path> ====='), `${role} git prompt is unchanged`);
+  }
+  const { normalizeArtifact } = require(path.join(CORE, 'artifact-contract'));
+  assert.throws(
+    () => normalizeArtifact('correctness', JSON.stringify({ status: 'ok', blocked: ['equality probe: whole artifact differs from file'] })),
+    /re-run the reviewer with a corrected method and leave the target, ledger, and prior review evidence unchanged/,
+  );
+});
