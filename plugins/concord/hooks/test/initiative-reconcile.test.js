@@ -16,6 +16,15 @@ function open(runtime, key) {
   return runtime.openInitiativeRun({ stateDir: tempDir('initiative-reconcile-'), key, repository: '/repo', maxLaunches: 12, maxRounds: 6 });
 }
 
+// A version 2 plan over the single declared repository `repo`.
+function plan(targets) {
+  return { version: 2, repositories: { repo: '/repo' }, targets: targets.map(target => ({ repository: 'repo', ...target })) };
+}
+
+function register(runtime, run, input) {
+  return runtime.openInitiativeRun({ stateDir: run.stateDir, key: run.key, repository: '/repo', maxLaunches: 12, maxRounds: 6, plan: runtime.normalizedInitiativePlan(input) });
+}
+
 function revision(ref, head = `${ref}-head`) {
   return { ref, base: 'main', head_sha: head };
 }
@@ -27,42 +36,57 @@ function ledger(run) {
 for (const [runtimeName, runtime] of [['native', runtimes[0]], ['Codex', runtimes[1]], ['Copilot', runtimes[2]]]) {
   test(`${runtimeName}: initiative plans validate and are immutable after launch`, () => {
     const run = open(runtime, `plan-${runtimeName}`);
-    const plan = { version: 1, targets: [{ ref: 'A', dependsOn: [] }, { ref: 'B', dependsOn: ['A'] }] };
-    assert.equal(runtime.setInitiativePlan(run, plan), true);
-    assert.equal(runtime.setInitiativePlan(run, plan), true, 'the same plan is idempotent');
-    const storedPlan = ledger(run).dependencyPlan;
-    assert.deepEqual({ version: storedPlan.version, targets: storedPlan.targets }, plan);
-    assert.match(storedPlan.sha256, /^[a-f0-9]{64}$/);
+    const approved = plan([{ ref: 'A', dependsOn: [] }, { ref: 'B', dependsOn: ['repo:A'] }]);
+    assert.equal(register(runtime, run, approved).repository, 'repo');
+    assert.equal(register(runtime, run, approved).repository, 'repo', 'the same plan is idempotent');
+    const { sha256, ...storedPlan } = ledger(run).dependencyPlan;
+    assert.deepEqual(storedPlan, approved);
+    assert.deepEqual(ledger(run).repositories, { repo: '/repo' }, 'the plan replaces the opener-only repository map');
+    assert.match(sha256, /^[a-f0-9]{64}$/);
 
     const invalidPlans = [
-      { version: 1, targets: [{ ref: 'A' }] },
-      { version: 1, targets: [{ ref: '' , dependsOn: [] }] },
-      { version: 1, targets: [{ ref: 'A', dependsOn: [] }, { ref: 'A', dependsOn: [] }] },
-      { version: 1, targets: [{ ref: 'A', dependsOn: ['missing'] }] },
-      { version: 1, targets: [{ ref: 'A', dependsOn: ['A'] }] },
-      { version: 1, targets: [{ ref: 'A', dependsOn: [] }, { ref: 'B', dependsOn: ['A', 'A'] }] },
-      { version: 1, targets: [{ ref: 'A', dependsOn: ['B'] }, { ref: 'B', dependsOn: ['A'] }] },
+      { version: 1, targets: [{ ref: 'A', dependsOn: [] }] },
+      plan([{ ref: 'A' }]),
+      plan([{ ref: '', dependsOn: [] }]),
+      plan([{ ref: 'A', dependsOn: [] }, { ref: 'A', dependsOn: [] }]),
+      plan([{ ref: 'A', dependsOn: ['repo:missing'] }]),
+      plan([{ ref: 'A', dependsOn: ['A'] }]),
+      plan([{ ref: 'A', dependsOn: ['repo:A'] }]),
+      plan([{ ref: 'A', dependsOn: [] }, { ref: 'B', dependsOn: ['repo:A', 'repo:A'] }]),
+      plan([{ ref: 'A', dependsOn: ['repo:B'] }, { ref: 'B', dependsOn: ['repo:A'] }]),
+      { ...plan([{ ref: 'A', dependsOn: [] }]), repositories: {} },
+      { ...plan([{ ref: 'A', dependsOn: [] }]), repositories: { repo: 'relative/path' } },
+      { ...plan([{ ref: 'A', dependsOn: [] }]), repositories: { 'bad:name': '/repo' } },
+      { ...plan([{ ref: 'A', dependsOn: [] }]), repositories: { repo: '/repo', alias: '/repo' } },
+      { ...plan([]), targets: [{ repository: 'undeclared', ref: 'A', dependsOn: [] }] },
     ];
     for (const bad of invalidPlans) {
       const before = fs.readFileSync(run.path, 'utf8');
-      assert.throws(() => runtime.setInitiativePlan(run, bad));
+      assert.throws(() => register(runtime, run, bad));
       assert.equal(fs.readFileSync(run.path, 'utf8'), before, 'invalid plan refusal leaves ledger bytes unchanged');
     }
 
-    assert.equal(runtime.reserveLaunch(run, { role: 'correctness', target: 'A', attemptId: 'a', round: 1 }), true);
-    assert.equal(runtime.setInitiativePlan(run, plan), true, 're-registering the identical plan after launch is safe');
+    assert.throws(() => runtime.reserveLaunch(run, { role: 'correctness', target: 'A', attemptId: 'a', round: 1 }), /reopen the run/, 'a run object opened before the plan is refused');
+    assert.equal(runtime.reserveLaunch(register(runtime, run, approved), { role: 'correctness', target: 'A', attemptId: 'a', round: 1 }), true);
+    assert.ok(register(runtime, run, approved), 're-registering the identical plan after launch is safe');
     const beforeChangedPlan = fs.readFileSync(run.path, 'utf8');
-    assert.throws(() => runtime.setInitiativePlan(run, { version: 1, targets: [{ ref: 'A', dependsOn: [] }] }));
+    assert.throws(() => register(runtime, run, plan([{ ref: 'A', dependsOn: [] }])), /immutable/);
     assert.equal(fs.readFileSync(run.path, 'utf8'), beforeChangedPlan);
   });
 
+  test(`${runtimeName}: a first plan is refused once the run holds a disposition`, () => {
+    const run = open(runtime, `late-plan-${runtimeName}`);
+    assert.ok(runtime.recordDisposition(run, { target: 'A', revision: revision('A'), result: new Error('dod failed') }));
+    const before = fs.readFileSync(run.path, 'utf8');
+    assert.throws(() => register(runtime, run, plan([{ ref: 'A', dependsOn: [] }])), /before the first launch or disposition/);
+    assert.equal(fs.readFileSync(run.path, 'utf8'), before);
+  });
+
   test(`${runtimeName}: a reconciliation hold blocks its target and dependents while independent work remains reservable`, () => {
-    const run = open(runtime, `holds-${runtimeName}`);
-    const plan = { version: 1, targets: [
-      { ref: 'A', dependsOn: [] }, { ref: 'B', dependsOn: ['A'] },
-      { ref: 'C', dependsOn: ['B'] }, { ref: 'D', dependsOn: [] },
-    ] };
-    runtime.setInitiativePlan(run, plan);
+    const run = register(runtime, open(runtime, `holds-${runtimeName}`), plan([
+      { ref: 'A', dependsOn: [] }, { ref: 'B', dependsOn: ['repo:A'] },
+      { ref: 'C', dependsOn: ['repo:B'] }, { ref: 'D', dependsOn: [] },
+    ]));
     for (const ref of ['A', 'B']) assert.equal(runtime.reserveLaunch(run, { role: 'correctness', target: ref, revision: { ref, base: 'main' }, attemptId: `${ref}-old`, round: 1 }), true);
 
     const held = revision('A');
@@ -99,8 +123,7 @@ for (const [runtimeName, runtime] of [['native', runtimes[0]], ['Codex', runtime
   });
 
   test(`${runtimeName}: reconciliation decisions reject stale claims and changed or incomplete contracts without writes`, () => {
-    const run = open(runtime, `reject-${runtimeName}`);
-    runtime.setInitiativePlan(run, { version: 1, targets: [{ ref: 'A', dependsOn: [] }] });
+    const run = register(runtime, open(runtime, `reject-${runtimeName}`), plan([{ ref: 'A', dependsOn: [] }]));
     runtime.recordDisposition(run, { target: 'A', revision: revision('A'), occurrence: { attemptId: 'a1', round: 1 }, result: { reconciliation: { finding: 'gate:A' } } });
     const claim = ledger(run).dispositions.at(-1).packet.delivery.claim;
     const attempts = [
@@ -122,8 +145,7 @@ for (const [runtimeName, runtime] of [['native', runtimes[0]], ['Codex', runtime
   });
 
   test(`${runtimeName}: claims resolve by occurrence, preserving distinct later holds at the same revision`, () => {
-    const run = open(runtime, `occurrences-${runtimeName}`);
-    runtime.setInitiativePlan(run, { version: 1, targets: [{ ref: 'A', dependsOn: [] }] });
+    const run = register(runtime, open(runtime, `occurrences-${runtimeName}`), plan([{ ref: 'A', dependsOn: [] }]));
     const revisionA = revision('A');
     const firstOccurrence = { attemptId: 'a1', round: 1 };
     runtime.recordDisposition(run, { target: 'A', revision: revisionA, occurrence: firstOccurrence, result: { reconciliation: { finding: 'gate:first' } } });

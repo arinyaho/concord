@@ -32,7 +32,7 @@ for (const [provider, cli] of [
       cwd: repo, env: { ...process.env, REVIEW_STATE_DIR: state, REVIEW_REPO_ROOT: repo }, encoding: 'utf8',
     });
     const planFile = path.join(state, 'initiative-plan.json');
-    fs.writeFileSync(planFile, JSON.stringify({ version: 1, targets: [{ ref: 'feature/x', dependsOn: [] }] }));
+    fs.writeFileSync(planFile, JSON.stringify({ version: 2, repositories: { app: repo }, targets: [{ repository: 'app', ref: 'feature/x', dependsOn: [] }] }));
     const planned = run(['initiative-plan', planFile]);
     assert.equal(planned.status, 0, planned.stderr);
     const first = run(['round-start', 'feature/x', 'HEAD~1']);

@@ -472,7 +472,7 @@ function resolveDefaultBase(repoRoot, exec = execFileSync) {
 }
 
 function pendingContinuationPacket(run, target, revision, kind, includeConsumed = false, reason) {
-  const entry = JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions.findLast((item) => item.target === target
+  const entry = JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions.findLast((item) => item.repository === run.repository && item.target === target
     && same(item.revision, revision)
     && (!kind || item.kind === kind)
     && (!reason || item.reason === reason));
