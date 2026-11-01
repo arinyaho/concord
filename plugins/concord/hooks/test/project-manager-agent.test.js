@@ -64,6 +64,24 @@ test('Codex coordination preserves delivery gates while reusing scoped review ev
   assert.match(pm, /Do not move Jira tickets to Done/);
 });
 
+test('Codex coordination checks the CLI creation route before refusing and keeps queue separate from creation', () => {
+  const skill = read('plugins/concord-codex/skills/coordinate-sessions/SKILL.md');
+  const create = section(skill, 'Create workers').replace(/\s+/g, ' ');
+  assert.match(create, /Prefer the app's session creation tool \(`create_thread`\)/);
+  assert.match(create, /absent, that alone does not mean no route exists/);
+  assert.match(create, /Inspect the installed CLI \(`codex --help`, `codex exec --help`\)/);
+  assert.match(create, /`codex exec --json`.*`thread\.started`/s);
+  assert.match(create, /argument-array process API/);
+  assert.match(create, /distinct thread ID and a task acknowledgement bound to that worker's assigned task ID/);
+  assert.match(create, /A PID.*insufficient/s);
+  assert.match(create, /Report startup as startup/);
+  assert.match(create, /Do not call it a sidebar-visible app chat/);
+  assert.match(create, /which capabilities were checked.*concrete missing prerequisite/s);
+  assert.match(create, /queue messages existing workers and never creates one/);
+  assert.match(skill, /`codex queue` sends to an existing session; it does not create a worker/);
+  assert.match(skill, /same remote selection on every\s+call/);
+});
+
 test('Claude coordination assigns one observer and reuses evidence without weakening merge gates', () => {
   const pm = read('plugins/concord/agents/project-manager.md');
   const coordination = read('plugins/concord/skills/coordinate-sessions/SKILL.md');

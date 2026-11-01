@@ -96,6 +96,18 @@ The Codex workflow requires a worker acknowledgement and task/attempt IDs, and
 never claims queue creates, watches or archives sessions. Runtime two-session
 queue delivery still needs validation in a connected user's app-server environment.
 
+When the user explicitly asks for new Codex workers, the skill prefers the app's
+session creation tool. If it is absent, the skill inspects the installed CLI help
+for a creation route (`codex exec --json` reports a `thread.started` ID) before
+concluding none exists, so a missing app tool alone never ends the request. Workers
+are started through an argument-array process API on the intended host and
+endpoint, and each needs its own observed thread ID plus an acknowledgement bound to
+its assigned task; a PID or enqueue success is not enough. Startup is reported as
+startup, not completion. A process started this way is a headless session, not a
+sidebar-visible app chat. If neither route works, the report names the capabilities
+checked and the concrete missing prerequisite. `queue` stays the route for existing
+workers and is never used to create one.
+
 Codex uses explicit file ownership, one status observer per task, bounded waiting,
 and durable evidence references. PM routing defaults to Sol low/light, actively
 prefers Luna for bounded implementation, investigation and verification with

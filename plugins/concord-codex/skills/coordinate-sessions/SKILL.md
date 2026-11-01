@@ -1,6 +1,6 @@
 ---
 name: coordinate-sessions
-description: Coordinate existing Codex sessions through codex queue, with explicit ownership, durable evidence and bounded observation.
+description: Create requested Codex worker sessions and coordinate them through codex queue, with explicit ownership, durable evidence and bounded observation.
 ---
 
 # Coordinate Codex sessions
@@ -8,6 +8,35 @@ description: Coordinate existing Codex sessions through codex queue, with explic
 Use this workflow when the user asks you to coordinate separate Codex sessions.
 `codex queue` sends to an existing session; it does not create a worker. Do not
 substitute Claude session tools or assume a queue acknowledgement means work ran.
+
+## Create workers
+
+Use this section only when the user explicitly asks for new worker sessions; never
+create sessions unprompted. Creation and messaging are separate: queue messages
+existing workers and never creates one, and a worker already created is messaged,
+not created again.
+
+1. Prefer the app's session creation tool (`create_thread`) when it is available.
+2. When it is absent, that alone does not mean no route exists. Inspect the
+   installed CLI (`codex --help`, `codex exec --help`) for a creation route before
+   concluding none exists. `codex exec --json` emits a `thread.started` event whose
+   thread ID identifies the new session; detect the capability rather than assume
+   a CLI version. Run every call against the intended host and app-server endpoint,
+   and keep that selection for the whole task.
+3. Start each worker with an argument-array process API (for example Node
+   `execFile` with `['exec', '--json', prompt]`), never interpolating the worker
+   prompt into shell code. Put no credentials in prompts or arguments.
+4. For each worker, capture its own distinct thread ID and a task acknowledgement
+   bound to that worker's assigned task ID. A PID, a started process or an enqueue
+   success is insufficient. Record the ID and acknowledgement in the ledger.
+5. Report startup as startup: workers started and acknowledged, not their work
+   complete. Completion needs the worker's own `done` report and the delivery gates.
+6. A process started this way is a headless Codex session. Do not call it a
+   sidebar-visible app chat; if the user needs an app chat and only this route is
+   available, report that specific limitation.
+7. If neither route works, report which capabilities were checked (app creation
+   tool, CLI help output) and the concrete missing prerequisite. Do not hand the
+   user prompts to paste into new chats as the first response.
 
 ## Connect
 
