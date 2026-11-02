@@ -1699,6 +1699,19 @@ test('a runner result that is not a review still records the head it attempted',
   const failed = w.ledger();
   assert.equal(failed.rounds.length, 0);
   assert.equal(failed.attempt.head, w.c1);
+});
+
+test('start after a first round failed on the live head waits; a newer head requests one round (#502)', () => {
+  const w = world();
+  w.write('findings.json', [finding]);
+  w.approve('start', 'o/r', '5');
+  fs.writeFileSync(path.join(w.dir, 'bad-runner-output'), '');
+  assert.notEqual(w.approve('round', 'o/r', '5').status, 0);
+  const before = w.ledger();
+  assert.equal(JSON.parse(w.approve('start', 'o/r', '5').stdout).action, 'watch');
+  assert.deepEqual(w.ledger().attempt, before.attempt);
+  assert.equal(w.posts().length, 0);
+  push(w, { 'b.js': 'unrelated\n' }, 'c2');
   assert.equal(JSON.parse(w.approve('start', 'o/r', '5').stdout).action, 'round');
 });
 

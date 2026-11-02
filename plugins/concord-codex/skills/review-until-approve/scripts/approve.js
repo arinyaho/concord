@@ -292,7 +292,9 @@ function start(repo, pr, args) {
   const viewer = gh(['repo', 'view', repo, '--json', 'viewerPermission', '--jq', '.viewerPermission']).trim();
   const warning = ['ADMIN', 'MAINTAIN', 'WRITE'].includes(viewer) ? undefined : `permission ${viewer}: an approval will not satisfy branch protection`;
   let action = 'watch';
-  if (ledger.rounds.length === 0 || snap.head !== lastRound(ledger).head || lib.descriptionEdited(ledger, snap)) action = 'round';
+  // A first round that failed on this head has no review to answer: like the watch, only a newer head asks for another.
+  if (ledger.rounds.length === 0) { if (ledger.attempt?.head !== snap.head) action = 'round'; }
+  else if (snap.head !== lastRound(ledger).head || lib.descriptionEdited(ledger, snap)) action = 'round';
   else if (lib.evaluateApproval(ledger, snap, lastRound(ledger).head).approve) action = 'approve';
   outFor(ledger, { ledger: file, action, round: lib.reviewedCount(ledger) + 1, reviewer: provider, ...(ledger.model && { model: ledger.model }), ...(ledger.language && { language: ledger.language }), ...(ledger.effort && { effort: ledger.effort }), ...(warning && { warning }) });
 }
