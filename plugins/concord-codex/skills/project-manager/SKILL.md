@@ -7,8 +7,10 @@ description: Manage a multi-PR or multi-repository rollout in Codex using queue-
 
 Own priorities, dependencies, authority and delivery decisions. Use the sibling
 `coordinate-sessions` skill before dispatching to existing Codex sessions. This is
-a Codex skill, not a Claude agent declaration; it does not create sessions or
-change the running model automatically.
+a Codex skill, not a Claude agent declaration; it does not create sessions on its
+own or change the running model automatically. When the user asks for new
+workers, create them only through the `coordinate-sessions` skill's "Create
+workers" section.
 
 Read the newest handoff and repository rules. Reconcile mutable PR heads, CI,
 reviews and ticket state once before acting. Maintain one rollout ledger with

@@ -55,7 +55,7 @@ Each workflow starts from one request. The examples below are what a user would 
 | `/charter` | Stores the project goal and merged decisions and injects them into each new session. | All three |
 | Session-state checkpoint | Saves per-session state from the transcript when a session stops and restores it on start, resume, or compaction. | Claude Code, Codex |
 | `delegate-verbose-work` | Sends broad repository-wide searches to a subagent and keeps only the conclusion in the main conversation. | Claude Code |
-| `coordinate-sessions` | Coordinates worker sessions, ownership, reports and delivery gates; Codex connects existing sessions through `codex queue`. | Claude Code, Codex |
+| `coordinate-sessions` | Coordinates worker sessions, ownership, reports and delivery gates; Codex messages existing sessions through `codex queue` and, when the app creation tool is absent, creates workers through the supported CLI route. | Claude Code, Codex |
 | `project-manager` agent / skill | Runs multi-PR, multi-repository rollouts with ownership, merge gates and reusable evidence. Claude agent; Codex skill. | Claude Code, Codex |
 | `review-until-approve` | Reviews someone else's pull request in a loop and approves the reviewed head once a round is clean. | Claude Code, Codex |
 
