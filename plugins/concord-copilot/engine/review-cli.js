@@ -620,7 +620,7 @@ function requireNotBlocked(what, parsed) {
   // false clean by a different door.
   if (blocked !== undefined && !(Array.isArray(blocked) && !blocked.length)) {
     const detail = Array.isArray(blocked) ? blocked.map((b) => String(b)).join('; ') : String(blocked);
-    throw new Error(`harness-failure: ${what} reviewer could not run: ${detail} -- it was blocked from the method it was assigned, so this round has no usable verdict. Fix the reviewer's environment (sandbox, permissions, missing tool) and re-run; do not accept the artifact.`);
+    throw new Error(`harness-failure: ${what} reviewer could not run: ${detail} -- it was blocked from the method it was assigned, so this round has no usable verdict. If a sandbox, permission, or tool failure blocked it, fix the environment and re-run; if the block was the reviewer's own probe (for example a raw equality check of a file-target artifact against its file), re-run the reviewer with a corrected method and leave the target, ledger, and prior review evidence unchanged. Do not accept the artifact.`);
   }
 }
 
