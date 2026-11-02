@@ -205,7 +205,7 @@ function openInitiativeRun({ stateDir, key, initiativeId = key, repository, maxL
   if (!locked(run, initialize)) {
     let ledger;
     try { ledger = JSON.parse(fs.readFileSync(run.path, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    if (!ledger || initialize(ledger) !== undefined) throw new Error('initiative review run initialization was contended');
+    if (!ledger || initialize(ledger) !== undefined) throw new Error(lockDiagnosis(run) || 'initiative review run initialization was contended');
   }
   return run;
 }

@@ -138,7 +138,7 @@ test('interleaved initializations cannot overwrite a consumed launch reservation
         const second = open({ stateDir: dir, key: 'shared key', maxLaunches: 1, maxRounds: 1 });
         secondReserved = reserveLaunch(second, { role: 'second', round: 1 });
       } catch (error) {
-        assert.match(error.message, /initialization was contended/);
+        assert.match(error.message, /initiative run lock .*\.lock is held, owner pid \d+ \(still running\); if no review is running, remove it with: rm -r /);
       }
     }
     return originalWrite.call(this, file, ...args);
