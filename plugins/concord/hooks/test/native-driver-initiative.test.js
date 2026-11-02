@@ -8,7 +8,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync, spawnSync, spawn } = require('node:child_process');
-const { openInitiativeRun, reserveLaunch, recordDisposition, publicInitiativeSummary, runPath, canonicalPath } = require('../../core/initiative-review-run');
+const { openInitiativeRun, reserveLaunch, recordDisposition, publicInitiativeSummary, runPath, canonicalPath, repositoryIdentity } = require('../../core/initiative-review-run');
 const review = require('../../core/review');
 const { normalizeArtifact } = require('../../core/artifact-contract');
 const { safeIdForFilename } = require('../../core/artifact-name');
@@ -836,7 +836,7 @@ for (const provider of Object.keys(PROVIDERS)) {
         build: () => {
           const t = blockedSetup(provider);
           const ledger = review.readLedger(t.dir, review.targetSlug('feat/x'));
-          const run = { path: runPath(t.initDir, 'key-1') };
+          const run = { path: runPath(t.initDir, 'key-1'), repository: 'default', identity: repositoryIdentity(t.repo) };
           assert.ok(recordDisposition(run, { target: 'feat/x', revision: { ref: 'feat/x', base: execFileSync('git', ['rev-parse', ledger.target.base], { cwd: t.repo, encoding: 'utf8' }).trim(), head_sha: ledger.target.head_sha }, result: { status: 'clean' } }));
           return t;
         },
@@ -930,7 +930,7 @@ for (const provider of Object.keys(PROVIDERS)) {
     const newStateDir = canonicalPath(t.initDir);
     // Simulate the crash window: the old run's terminal `carried` disposition
     // landed, but the target-ledger write (step 4) never did.
-    const oldRun = { path: runPath(t.initDir, 'key-1') };
+    const oldRun = { path: runPath(t.initDir, 'key-1'), repository: 'default', identity: repositoryIdentity(t.repo) };
     assert.ok(recordDisposition(oldRun, {
       target: 'feat/x',
       revision: { ref: 'feat/x', base: execFileSync('git', ['rev-parse', ledger.target.base], { cwd: t.repo, encoding: 'utf8' }).trim(), head_sha: ledger.target.head_sha },
@@ -1083,7 +1083,7 @@ for (const provider of Object.keys(PROVIDERS)) {
     const t = blockedSetup(provider);
     const ledger = review.readLedger(t.dir, review.targetSlug('feat/x'));
     const newStateDir = canonicalPath(t.initDir);
-    const oldRun = { path: runPath(t.initDir, 'key-1') };
+    const oldRun = { path: runPath(t.initDir, 'key-1'), repository: 'default', identity: repositoryIdentity(t.repo) };
     assert.ok(recordDisposition(oldRun, {
       target: 'feat/x',
       revision: { ref: 'feat/x', base: execFileSync('git', ['rev-parse', ledger.target.base], { cwd: t.repo, encoding: 'utf8' }).trim(), head_sha: ledger.target.head_sha },
@@ -1100,7 +1100,7 @@ for (const provider of Object.keys(PROVIDERS)) {
     const t = blockedSetup(provider);
     const ledger = review.readLedger(t.dir, review.targetSlug('feat/x'));
     const newStateDir = canonicalPath(t.initDir);
-    const oldRun = { path: runPath(t.initDir, 'key-1') };
+    const oldRun = { path: runPath(t.initDir, 'key-1'), repository: 'default', identity: repositoryIdentity(t.repo) };
     assert.ok(recordDisposition(oldRun, {
       target: 'feat/x',
       revision: { ref: 'feat/x', base: execFileSync('git', ['rev-parse', ledger.target.base], { cwd: t.repo, encoding: 'utf8' }).trim(), head_sha: ledger.target.head_sha },

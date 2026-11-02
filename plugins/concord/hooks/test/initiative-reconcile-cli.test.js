@@ -21,7 +21,7 @@ function fixture() {
 }
 test('initiative-plan registers private dependency evidence without creating a target ledger', () => {
   const h = fixture(), source = path.join(h.repo, 'plan.json');
-  fs.writeFileSync(source, JSON.stringify({ version: 1, targets: [{ ref: 'A', dependsOn: [] }, { ref: 'B', dependsOn: [] }, { ref: 'C', dependsOn: ['A'] }] }));
+  fs.writeFileSync(source, JSON.stringify({ version: 2, repositories: { app: h.repo }, targets: [{ repository: 'app', ref: 'A', dependsOn: [] }, { repository: 'app', ref: 'B', dependsOn: [] }, { repository: 'app', ref: 'C', dependsOn: ['app:A'] }] }));
   assert.equal(h.json('initiative-plan', source).status, 'registered');
   const run = h.open(); h.hold(run);
   assert.equal(I.pairRefusal(run, 'B', { ref: 'B', base: 'main', head_sha: 'b' }), null);

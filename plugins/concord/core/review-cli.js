@@ -32,7 +32,7 @@ const {
   gateFollowUpEligible,
 } = require('./review');
 const crypto = require('node:crypto');
-const { canonicalPath, openInitiativeRun, claimBroadSweep, reserveLaunchBatch, recordLaunchOutcome, denialReason, recordDisposition, finaliseInitiativeRun, consumeDispositionDelivery, escalateInitiativeRun, lockDiagnosis, resolveBaseCommit, repositoryIdentity, runPath, terminalDispositionInLedger } = require('./initiative-review-run');
+const { canonicalPath, openInitiativeRun, claimBroadSweep, reserveLaunchBatch, recordLaunchOutcome, denialReason, recordDisposition, finaliseInitiativeRun, consumeDispositionDelivery, escalateInitiativeRun, lockDiagnosis, resolveBaseCommit, repositoryIdentity, declaredRepository, runPath, terminalDispositionInLedger } = require('./initiative-review-run');
 const { acquireTarget, gitDiff, gitReviewSnapshot, gitHeadSha, gitDirty } = require('./target');
 const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape, resolveOnPath } = require('./spawn-cross-platform');
 
@@ -935,9 +935,9 @@ function extractInitiative(argv) {
   return { args, initiative: found };
 }
 
-function openKeyedRun(initiative) {
+function openKeyedRun(initiative, plan = null) {
   const stateDir = canonicalPath(initiative.stateDir);
-  const run = openInitiativeRun({ stateDir, key: initiative.key, initiativeId: initiative.initiativeId || initiative.key, repository: canonicalPath(process.env.REVIEW_REPO_ROOT || process.cwd()), maxLaunches: Number(initiative.maxLaunches), maxRounds: Number(initiative.maxRounds), allowTerminal: true, mode: initiative.mode || 'base' });
+  const run = openInitiativeRun({ stateDir, key: initiative.key, initiativeId: initiative.initiativeId || initiative.key, repository: canonicalPath(process.env.REVIEW_REPO_ROOT || process.cwd()), maxLaunches: Number(initiative.maxLaunches), maxRounds: Number(initiative.maxRounds), allowTerminal: true, mode: initiative.mode || 'base', plan });
   const mode = runMode(run);
   if (initiative.mode && initiative.mode !== mode) throw new Error(`review-cli: --initiative-mode ${initiative.mode} disagrees with the run ledger: run mode is ${mode}`);
   return run;
@@ -1166,10 +1166,12 @@ function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey,
   const liveHead = isFileTarget ? acquireTarget(ledger.target.spec, repoRoot).identity : gitHeadSha(repoRoot);
   if (liveHead !== ledger.target?.head_sha) fail('the live HEAD has moved since the budget-exhausted round; this is no longer the blocked revision pair');
 
-  const oldRun = { path: runPath(newStateDir, fromRunKey) };
+  const oldRun = { path: runPath(newStateDir, fromRunKey), identity: repositoryIdentity(repoRoot) };
   let oldLedger;
   try { oldLedger = JSON.parse(fs.readFileSync(oldRun.path, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (!oldLedger) fail('no initiative run for --from-run-key');
+  oldRun.repository = declaredRepository(oldLedger, oldRun.identity);
+  if (!oldRun.repository) fail('the old run does not declare this repository');
   // Legacy callers did not carry an initiative ID. Preserve the old run's
   // effective identity instead of silently turning a rollover into a new one.
   initiative = { ...initiative, initiativeId: initiative.initiativeId || oldLedger.initiativeId || fromRunKey };
@@ -1202,7 +1204,7 @@ function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey,
   // run between recording this very disposition and this carry's own step 4 --
   // the retry must still find its own disposition even though the run is no
   // longer active.
-  const existingTerminal = terminalDispositionInLedger(oldLedger, revision.ref, revision, ['terminal']);
+  const existingTerminal = terminalDispositionInLedger(oldLedger, oldRun.repository, revision.ref, revision, ['terminal']);
   if (existingTerminal && !carriedToSameTarget(existingTerminal)) {
     fail(existingTerminal.reason === 'carried' ? 'this target was already carried to a different run key' : `the old run already holds a terminal disposition ("${existingTerminal.reason}") for this pair`);
   }
@@ -1222,7 +1224,6 @@ function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey,
   };
   if (!existingTerminal) {
     if (oldLedger.status !== 'active') fail('the old run is not active');
-    if (oldLedger.repository !== repositoryIdentity(repoRoot)) fail('the old run is for a different repository');
     const oldReason = denialReason(oldRun, { role: marker.role, round: marker.round, attemptId: marker.attemptId, target: revision.ref, revision }, marker.count);
     if (oldReason !== 'budget-exhausted') fail(`the old run's blocked batch is no longer budget-exhausted (${oldReason || 'it would now be accepted'})`);
     const carryNeeds = [
@@ -1248,7 +1249,7 @@ function carryBudgetBlockedTarget({ stateDir, slug, ref, initiative, fromRunKey,
     if (!carried) {
       let retryLedger;
       try { retryLedger = JSON.parse(fs.readFileSync(oldRun.path, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-      const retryMatch = retryLedger && terminalDispositionInLedger(retryLedger, revision.ref, revision, ['terminal']);
+      const retryMatch = retryLedger && terminalDispositionInLedger(retryLedger, oldRun.repository, revision.ref, revision, ['terminal']);
       if (!carriedToSameTarget(retryMatch)) {
         if (retryLedger && retryLedger.status !== 'active') fail('the old run is not active');
         fail(lockDiagnosis(oldRun) || 'the old run disposition write was contended; retry');
@@ -1572,10 +1573,7 @@ function runLevelVerb(verb, arg, initiative, rest = []) {
   if (!initiative) throw new Error(`review-cli ${verb}: requires the initiative run flags (--initiative-run-key, --initiative-state-dir, --initiative-max-launches, --initiative-max-rounds)`);
   if (verb === 'initiative-plan') {
     if (!arg || !path.isAbsolute(arg) || rest.length) throw new Error('review-cli initiative-plan: requires one absolute plan JSON path');
-    const I = require('./initiative-review-run');
-    const plan = I.normalizedInitiativePlan(JSON.parse(fs.readFileSync(arg, 'utf8')));
-    const run = openKeyedRun(initiative);
-    if (!I.setInitiativePlan(run, plan)) throw new Error(lockDiagnosis(run) || 'initiative plan registration was contended');
+    openKeyedRun(initiative, require('./initiative-review-run').normalizedInitiativePlan(JSON.parse(fs.readFileSync(arg, 'utf8'))));
     process.stdout.write(`${JSON.stringify({ status: 'registered' })}\n`);
     return;
   }
@@ -2814,7 +2812,7 @@ function runVerb(resolveFromCwd, args, initiative) {
         // Use the reviewed head and durable claim, never the post-fix live head.
         // Legacy done ledgers can recover only an unambiguous original entry.
         const entries = (JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions || []).filter(d =>
-          d.target === target && d.revision?.head_sha === ledger.target?.head_sha && d.kind === disposition.kind && d.reason === disposition.reason
+          d.repository === run.repository && d.target === target && d.revision?.head_sha === ledger.target?.head_sha && d.kind === disposition.kind && d.reason === disposition.reason
           && (!d.occurrence || (d.occurrence.attemptId === ledger.attemptId && d.occurrence.round === n))
           && (!ledger._lastInitiativeClaim || d.packet?.delivery?.claim === ledger._lastInitiativeClaim));
         if (entries.length !== 1 || !entries[0].packet?.delivery?.claim) throw new Error('harness-failure: record: original initiative claim is missing or ambiguous; reconcile the existing ledgers');
@@ -3115,7 +3113,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       const kind = escaped ? 'escape' : 'terminal';
       const storedRun = JSON.parse(fs.readFileSync(run.path, 'utf8'));
       const resolvedClaims = new Set((storedRun.reconciliationDecisions || []).map(item => item.claim));
-      const matching = (storedRun.dispositions || []).filter(d => d.target === target && JSON.stringify(d.revision) === JSON.stringify(revision) && d.kind === kind && d.reason === disposition.reason
+      const matching = (storedRun.dispositions || []).filter(d => d.repository === run.repository && d.target === target && JSON.stringify(d.revision) === JSON.stringify(revision) && d.kind === kind && d.reason === disposition.reason
         && (d.occurrence ? d.occurrence.attemptId === ledger.attemptId && d.occurrence.round === n : !resolvedClaims.has(d.packet?.delivery?.claim)));
       const exact = matching.filter(d => d.occurrence);
       entry = exact.length === 1 ? exact[0] : !exact.length && matching.length === 1 ? matching[0] : null;

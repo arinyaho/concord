@@ -115,7 +115,7 @@ for (const provider of Object.keys(providers)) {
       if (flag === '--initiative-state-dir') assert.deepEqual(fs.readdirSync(value), []);
     }
     const foreignRepository = t.call(['round-start', 'feat/rerun', 'HEAD~1', '--no-broad'], { repository: tmp() });
-    assert.equal(foreignRepository.status, 1); assert.match(foreignRepository.stderr, /different repository/);
+    assert.equal(foreignRepository.status, 1); assert.match(foreignRepository.stderr, /does not declare this repository/);
     assert.deepEqual(snapshot(t.dir), stateBefore); assert.deepEqual(snapshot(t.initDir), budgetBefore);
     const partial = t.call(['round-start', 'feat/rerun', 'HEAD~1', '--no-broad'], { flags: t.keyed.slice(0, -2) });
     assert.equal(partial.status, 1); assert.match(partial.stderr, /must be used together/);

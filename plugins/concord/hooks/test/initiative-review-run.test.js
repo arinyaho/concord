@@ -21,7 +21,7 @@ test('keyed runs use a hashed separate ledger and atomically consume launch budg
   assert.ok(reserveLaunch(run, { role: 'correctness', round: 1 }));
   assert.strictEqual(reserveLaunch(run, { role: 'fix', round: 1 }), false);
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  assert.deepStrictEqual(ledger.launches.map(({ at, ...launch }) => launch), [{ role: 'correctness', round: 1 }]);
+  assert.deepStrictEqual(ledger.launches.map(({ at, ...launch }) => launch), [{ role: 'correctness', round: 1, repository: 'default' }]);
   assert.match(ledger.launches[0].at, /^\d{4}-\d\d-\d\dT/);
   assert.strictEqual(ledger.key, undefined);
 });
@@ -56,7 +56,7 @@ test('v5 terminal dispositions are normalized and recorded exactly once', () => 
   assert.strictEqual(recordDisposition(run, { target: 'feature/x', revision, result: { decision: { converged: true } }, packet }), false);
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
   assert.strictEqual(ledger.version, 5);
-  assert.deepStrictEqual(ledger.dispositions.map(({ at, ...disposition }) => disposition), [{ target: 'feature/x', revision, kind: 'terminal', reason: 'clean', sequence: 1, packet: { ...packet, outcome: { kind: 'terminal', reason: 'clean' }, ledger: { version: 5, status: 'active' }, budget: { maxLaunches: 1, maxRounds: 1, launches: 0, rounds: 0 }, delivery: { claim: 'feature/x:1', continuation: 'replay', consumed: false } } }]);
+  assert.deepStrictEqual(ledger.dispositions.map(({ at, ...disposition }) => disposition), [{ repository: 'default', target: 'feature/x', revision, kind: 'terminal', reason: 'clean', sequence: 1, packet: { ...packet, outcome: { kind: 'terminal', reason: 'clean' }, ledger: { version: 5, status: 'active' }, budget: { maxLaunches: 1, maxRounds: 1, launches: 0, rounds: 0 }, delivery: { claim: 'feature/x:1', continuation: 'replay', consumed: false } } }]);
 });
 
 test('normalizeDisposition classifies resumable review stops as escape, not terminal', () => {
@@ -138,7 +138,7 @@ test('interleaved initializations cannot overwrite a consumed launch reservation
         const second = open({ stateDir: dir, key: 'shared key', maxLaunches: 1, maxRounds: 1 });
         secondReserved = reserveLaunch(second, { role: 'second', round: 1 });
       } catch (error) {
-        assert.match(error.message, /initialization was contended/);
+        assert.match(error.message, /initiative run lock .*\.lock is held, owner pid \d+ \(still running\); if no review is running, remove it with: rm -r /);
       }
     }
     return originalWrite.call(this, file, ...args);
@@ -181,7 +181,7 @@ test('Claude, Codex, and Copilot runtimes produce the same disposition packet', 
 test('a keyed run cannot cross repository identities', () => {
   const dir = temp();
   open({ stateDir: dir, key: 'opaque key', maxLaunches: 2, maxRounds: 1 });
-  assert.throws(() => openInitiativeRun({ stateDir: dir, key: 'opaque key', repository: '/other-repo', maxLaunches: 2, maxRounds: 1 }), /different repository/);
+  assert.throws(() => openInitiativeRun({ stateDir: dir, key: 'opaque key', repository: '/other-repo', maxLaunches: 2, maxRounds: 1 }), /does not declare this repository/);
 });
 
 test('linked worktrees share a git-common-dir identity while other repositories do not', () => {
@@ -195,7 +195,7 @@ test('linked worktrees share a git-common-dir identity while other repositories 
   require('node:child_process').execFileSync('git', ['worktree', 'add', '-q', linked], { cwd: root });
   openInitiativeRun({ stateDir, key: 'shared', repository: root, maxLaunches: 2, maxRounds: 1 });
   assert.doesNotThrow(() => openInitiativeRun({ stateDir, key: 'shared', repository: linked, maxLaunches: 2, maxRounds: 1 }));
-  assert.throws(() => openInitiativeRun({ stateDir, key: 'shared', repository: temp(), maxLaunches: 2, maxRounds: 1 }), /different repository/);
+  assert.throws(() => openInitiativeRun({ stateDir, key: 'shared', repository: temp(), maxLaunches: 2, maxRounds: 1 }), /does not declare this repository/);
 });
 
 test('new target attempts consume distinct global round slots', () => {
@@ -220,7 +220,7 @@ test('keyed runs stay active per target, require absolute state, charge rounds g
   assert.ok(reserveLaunch(run, { role: 'correctness', target: 'second-ref', revision: { ref: 'second-ref', base: 'main' }, round: 1 }));
   assert.strictEqual(reserveLaunch(run, { role: 'correctness', target: 'third-ref', revision: { ref: 'third-ref', base: 'main' }, round: 1 }), false);
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  assert.deepStrictEqual(ledger.targets, [{ ref: 'first-ref', base: 'main' }, { ref: 'first-ref', base: 'main', head_sha: 'first-head' }, { ref: 'second-ref', base: 'main' }]);
+  assert.deepStrictEqual(ledger.targets, [{ repository: 'default', ref: 'first-ref', base: 'main' }, { repository: 'default', ref: 'first-ref', base: 'main', head_sha: 'first-head' }, { repository: 'default', ref: 'second-ref', base: 'main' }]);
   assert.strictEqual(ledger.rounds.length, 2);
   assert.deepStrictEqual(ledger.reconciliation.hint, {
     trigger: 'target-terminal', firstMaterialFinding: null, stage: null, avoidedLaunches: 0,
@@ -239,7 +239,7 @@ test('initiative aggregate output hashes local target revisions and exposes coun
   recordDisposition(run, { target: 'private-ref', revision: { ref: 'private-ref', base: 'private-base', head_sha: 'private-head' }, result: { status: 'target-terminal' }, findings: { intent: 1 }, checks: [{ name: 'check', status: 'passed' }] });
   const summary = publicInitiativeSummary(run);
   assert.deepStrictEqual(summary, {
-    targetIds: [require('node:crypto').createHash('sha256').update(JSON.stringify({ ref: 'private-ref', base: 'private-base', head_sha: 'private-head' })).digest('hex')],
+    targetIds: [require('node:crypto').createHash('sha256').update(JSON.stringify({ repository: 'default', ref: 'private-ref', base: 'private-base', head_sha: 'private-head' })).digest('hex')],
     counts: { targets: 1, launches: 1, rounds: 1, findings: { intent: 1 }, checks: 1, telemetry: 0 },
   });
   assert.doesNotMatch(JSON.stringify(summary), /private-(?:ref|base|head)/);

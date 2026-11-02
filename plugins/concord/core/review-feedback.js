@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { writeFileAtomic } = require('./atomic-write');
-const { repositoryIdentity, canonicalPath, runPath } = require('./initiative-review-run');
+const { repositoryIdentity, declaredRepository, canonicalPath, runPath } = require('./initiative-review-run');
 const { lockOwner, reclaimStaleLock } = require('./run-lock');
 const { TERMINAL_STATUSES } = require('./review');
 const TARGET_STATUSES = new Set([...TERMINAL_STATUSES, 'converging', 'intent-review', 'gate-pending', 'gate-panel-pending', 'dod-failed']);
@@ -43,7 +43,7 @@ function assertRepository(ledger, runKey, repository) {
   if (!binding || typeof binding.stateDir !== 'string' || !path.isAbsolute(binding.stateDir)) fail('native target has no provable repository binding');
   if (binding.key !== runKey) fail('run key disagrees with target binding');
   const initiative = JSON.parse(readFile(runPath(binding.stateDir, binding.key)).bytes);
-  if (initiative?.version !== 5 || initiative.repository !== repository) fail('bound initiative repository disagrees with feedback store');
+  if (initiative?.version !== 5 || !declaredRepository(initiative, repository)) fail('bound initiative repository disagrees with feedback store');
 }
 function finding(ledger, id) {
   const matches = [...ledger.findings, ...(ledger.gate_open || []), ...(ledger.intent_parked || [])].filter(f => f?.id === id);

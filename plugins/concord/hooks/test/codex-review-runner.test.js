@@ -132,7 +132,7 @@ test('terminal file targets retain their content identity and preflight without 
     },
   };
   await runReviewUntilGreen(options);
-  assert.deepStrictEqual(JSON.parse(fs.readFileSync(runPath(stateDir, 'file-terminal'), 'utf8')).targets, [{ ref: 'file:note.md', head_sha: 'content-sha' }]);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(runPath(stateDir, 'file-terminal'), 'utf8')).targets, [{ repository: 'default', ref: 'file:note.md', head_sha: 'content-sha' }]);
   starts = 0;
   const replay = await runReviewUntilGreen({ ...options, targetIdentity: () => 'content-sha', runCli: () => { starts++; throw new Error('round-start must not run'); } });
   assert.strictEqual(starts, 0);
@@ -144,7 +144,7 @@ test('a changed target head opens a new target and reaches round-start', async (
   const key = 'changed-terminal';
   const run = openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, targets: [{ ref: 'file:note.md', head_sha: 'old-bytes' }], dispositions: [{ target: 'file:note.md', reason: 'clean', kind: 'terminal', revision: { ref: 'file:note.md', head_sha: 'old-bytes' } }] }));
+  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, targets: [{ ref: 'file:note.md', head_sha: 'old-bytes' }], dispositions: [{ repository: 'default', target: 'file:note.md', reason: 'clean', kind: 'terminal', revision: { ref: 'file:note.md', head_sha: 'old-bytes' } }] }));
   await assert.rejects(
     runReviewUntilGreen({ ref: 'file:note.md', initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => 'new-bytes', runCli: () => { throw new Error('round-start reached'); } }),
     /round-start reached/,
@@ -156,7 +156,7 @@ test('a legacy terminal file target without head_sha does not match and reaches 
   const key = 'legacy-file-terminal';
   const run = openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, targets: [{ ref: 'file:note.md' }], dispositions: [{ target: 'file:note.md', reason: 'clean', kind: 'terminal', revision: { ref: 'file:note.md' } }] }));
+  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, targets: [{ ref: 'file:note.md' }], dispositions: [{ repository: 'default', target: 'file:note.md', reason: 'clean', kind: 'terminal', revision: { ref: 'file:note.md' } }] }));
   await assert.rejects(
     runReviewUntilGreen({ ref: 'file:note.md', initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => 'new-bytes', runCli: () => { throw new Error('round-start reached'); } }),
     /round-start reached/,
@@ -168,7 +168,7 @@ test('a different base with the same head is a new target', async () => {
   const key = 'same-head-different-base';
   const run = openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, dispositions: [{ target: 'feature/x', reason: 'clean', kind: 'terminal', revision: { ref: 'feature/x', base: 'main', head_sha: 'same-head' } }] }));
+  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, dispositions: [{ repository: 'default', target: 'feature/x', reason: 'clean', kind: 'terminal', revision: { ref: 'feature/x', base: 'main', head_sha: 'same-head' } }] }));
   await assert.rejects(runReviewUntilGreen({ ref: 'feature/x', base: 'release', initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => 'same-head', runCli: () => { throw new Error('round-start reached'); } }), /round-start reached/);
 });
 
@@ -178,7 +178,7 @@ test('resuming a terminal git target binds the review ledger base before identit
   const headCommit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   const run = openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, dispositions: [{ target: 'feature/x', reason: 'clean', kind: 'terminal', revision: { ref: 'feature/x', base: headCommit, head_sha: 'same-head' } }] }));
+  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, dispositions: [{ repository: 'default', target: 'feature/x', reason: 'clean', kind: 'terminal', revision: { ref: 'feature/x', base: headCommit, head_sha: 'same-head' } }] }));
   let identityBase;
   const result = await runReviewUntilGreen({ ref: 'feature/x', resume: true, initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: (_ref, base) => { identityBase = base; return 'same-head'; }, runCli: ([verb]) => { if (verb === 'show') return { target: { base: 'HEAD' } }; throw new Error('round-start must not run'); } });
   assert.strictEqual(identityBase, 'HEAD');
@@ -209,7 +209,7 @@ test('resuming a git target with no base in the review ledger fails closed befor
   const key = 'resume-no-base';
   const run = openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, dispositions: [{ target: 'feature/x', reason: 'clean', kind: 'terminal', revision: { ref: 'feature/x', base: 'main', head_sha: 'same-head' } }] }));
+  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, dispositions: [{ repository: 'default', target: 'feature/x', reason: 'clean', kind: 'terminal', revision: { ref: 'feature/x', base: 'main', head_sha: 'same-head' } }] }));
   await assert.rejects(runReviewUntilGreen({ ref: 'feature/x', resume: true, initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => { throw new Error('identity must not run'); }, runCli: ([verb]) => { if (verb === 'show') return {}; throw new Error('round-start must not run'); } }), /no recorded base/);
 });
 
@@ -225,7 +225,7 @@ test('resume does not replay a terminal on the same head with another base', asy
   const key = 'resume-same-head-other-base';
   const run = openInitiativeRun({ stateDir, key, repository: process.cwd(), maxLaunches: 1, maxRounds: 1 });
   const ledger = JSON.parse(fs.readFileSync(run.path, 'utf8'));
-  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, dispositions: [{ target: 'feature/x', reason: 'clean', kind: 'terminal', revision: { ref: 'feature/x', base: 'main', head_sha: 'same-head' } }] }));
+  fs.writeFileSync(run.path, JSON.stringify({ ...ledger, dispositions: [{ repository: 'default', target: 'feature/x', reason: 'clean', kind: 'terminal', revision: { ref: 'feature/x', base: 'main', head_sha: 'same-head' } }] }));
   await assert.rejects(runReviewUntilGreen({ ref: 'feature/x', resume: true, initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1, targetIdentity: () => 'same-head', runCli: ([verb]) => { if (verb === 'show') return { target: { base: 'release' } }; throw new Error('round-start reached'); } }), /round-start reached/);
 });
 
@@ -276,7 +276,7 @@ test('initiative terminal evidence uses record reconciliation and post-fix DoD c
     spawn: async () => ({ status: 0 }),
   });
   const ledger = JSON.parse(fs.readFileSync(runPath(stateDir, 'final-packet'), 'utf8'));
-  assert.deepStrictEqual(ledger.targets, [{ ref: 'feature/x', base: 'main', head_sha: 'reviewed-head' }]);
+  assert.deepStrictEqual(ledger.targets, [{ repository: 'default', ref: 'feature/x', base: 'main', head_sha: 'reviewed-head' }]);
   assert.deepStrictEqual(ledger.checks, [{ name: 'definition-of-done', status: 'passed' }]);
   assert.deepStrictEqual(ledger.reconciliation.hint.firstMaterialFinding, 'intent:missing');
 });
@@ -288,8 +288,8 @@ test('initiative terminal string decisions are recorded', async () => {
     runCli: ([verb]) => verb === 'round-start' ? { decision: 'terminal', status: 'parked', base: 'main', head: 'head', stateDir, dodPassed: false, dodDeferred: false } : undefined,
   });
   const ledger = JSON.parse(fs.readFileSync(runPath(stateDir, 'terminal-string'), 'utf8'));
-  assert.deepStrictEqual(ledger.reconciliation.terminals, [{ target: 'feature/x', reason: 'parked', revision: { ref: 'feature/x', base: 'main', head_sha: 'head' } }]);
-  assert.deepStrictEqual(ledger.targets, [{ ref: 'feature/x', base: 'main', head_sha: 'head' }]);
+  assert.deepStrictEqual(ledger.reconciliation.terminals, [{ repository: 'default', target: 'feature/x', reason: 'parked', revision: { ref: 'feature/x', base: 'main', head_sha: 'head' } }]);
+  assert.deepStrictEqual(ledger.targets, [{ repository: 'default', ref: 'feature/x', base: 'main', head_sha: 'head' }]);
 });
 
 test('initiative runner records escaped results and thrown errors as durable dispositions', async () => {
@@ -313,7 +313,7 @@ test('initiative runner records escaped results and thrown errors as durable dis
 test('initiative terminal recording contended by an already-recorded matching disposition returns its packet instead of throwing', async () => {
   const stateDir = temp();
   const key = 'terminal-race';
-  const run = { path: runPath(stateDir, key) }; // ledger is opened by runReviewUntilGreen itself before round-start runs below
+  const run = { path: runPath(stateDir, key), repository: 'default', identity: '/repo' }; // ledger is opened by runReviewUntilGreen itself before round-start runs below
   const result = await runReviewUntilGreen({
     ref: 'feature/race', repoRoot: '/repo', initiativeRunKey: key, initiativeStateDir: stateDir, initiativeMaxLaunches: 1, initiativeMaxRounds: 1,
     runCli: ([verb]) => {
@@ -658,7 +658,7 @@ test('reconciliation terminates the target and retains its restored base and avo
     spawn: async () => ({ status: 0 }),
   });
   const ledger = JSON.parse(fs.readFileSync(runPath(stateDir, 'reconcile'), 'utf8'));
-  assert.deepStrictEqual(ledger.targets, [{ ref: 'feature/x', base: 'main', head_sha: 'head' }]);
+  assert.deepStrictEqual(ledger.targets, [{ repository: 'default', ref: 'feature/x', base: 'main', head_sha: 'head' }]);
   assert.deepStrictEqual(ledger.reconciliation.hint.avoidedLaunches, 2);
   assert.deepStrictEqual(ledger.checks, [{ name: 'definition-of-done', status: 'failed' }]);
 });
@@ -671,7 +671,7 @@ test('parked and abandoned target outcomes take precedence over reconciliation m
       runCli: ([verb]) => verb === 'round-start' ? { decision: { [outcome]: true }, head: 'head', reconciliation: { finding: 'intent:missing' }, stateDir } : undefined,
     });
     const ledger = JSON.parse(fs.readFileSync(runPath(stateDir, `${outcome}-over-reconcile`), 'utf8'));
-    assert.deepStrictEqual(ledger.reconciliation.terminals, [{ target: 'feature/x', reason: outcome, revision: { ref: 'feature/x', head_sha: 'head' } }]);
+    assert.deepStrictEqual(ledger.reconciliation.terminals, [{ repository: 'default', target: 'feature/x', reason: outcome, revision: { ref: 'feature/x', head_sha: 'head' } }]);
   }
 });
 
@@ -686,7 +686,7 @@ test('initiative terminal records object decision reason and deferred DoD accura
     spawn: async () => ({ status: 0 }),
   });
   const ledger = JSON.parse(fs.readFileSync(runPath(stateDir, 'deferred-terminal'), 'utf8'));
-  assert.deepStrictEqual(ledger.reconciliation.terminals, [{ target: 'feature/x', reason: 'clean', revision: { ref: 'feature/x', base: 'main', head_sha: 'head' } }]);
+  assert.deepStrictEqual(ledger.reconciliation.terminals, [{ repository: 'default', target: 'feature/x', reason: 'clean', revision: { ref: 'feature/x', base: 'main', head_sha: 'head' } }]);
   assert.deepStrictEqual(ledger.checks, [{ name: 'definition-of-done', status: 'deferred' }]);
 });
 

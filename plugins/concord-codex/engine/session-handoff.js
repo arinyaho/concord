@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { writeFileAtomic } = require('./atomic-write');
-const { canonicalPath, runPath, repositoryIdentity, launchBudgetUsage } = require('./initiative-review-run');
+const { canonicalPath, runPath, repositoryIdentity, declaredRepository, launchBudgetUsage } = require('./initiative-review-run');
 
 const SESSION_MODES = ['off', 'suggest', 'stop-at-checkpoint'];
 const BOUNDARIES = ['stage-complete', 'batch-complete', 'round-complete'];
@@ -71,7 +71,7 @@ function createSessionHandoff({ packetPath, mode = 'suggest', initiative, reposi
     if (state.path === handoff.path) fail('state and handoff must be distinct files');
     // Read only: a context checkpoint cannot open, reset or advance a run.
     const ledger = JSON.parse(fs.readFileSync(runPath(initiative.stateDir, initiative.key), 'utf8'));
-    if (ledger.version !== 5 || ledger.repository !== repositoryIdentity(repository)
+    if (ledger.version !== 5 || !declaredRepository(ledger, repositoryIdentity(repository))
       || !['base', 'lite'].includes(ledger.mode) || !['active', 'terminal'].includes(ledger.status)
       || (initiative.mode && initiative.mode !== ledger.mode)
       || ledger.budget?.maxLaunches !== Number(initiative.maxLaunches)

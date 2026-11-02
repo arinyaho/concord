@@ -82,7 +82,7 @@ test('AC6: aggregate output for revision pairs carries hashed identifiers and co
   assert.strictEqual(summary.targetIds.length, 2);
   assert.ok(summary.targetIds.every((id) => /^[0-9a-f]{64}$/.test(id)));
   assert.doesNotMatch(JSON.stringify(summary), /secret|feature\/x/);
-  assert.strictEqual(summary.targetIds[0], crypto.createHash('sha256').update(JSON.stringify(rev('secret-h1', 'secret-base'))).digest('hex'));
+  assert.strictEqual(summary.targetIds[0], crypto.createHash('sha256').update(JSON.stringify({ repository: 'default', ...rev('secret-h1', 'secret-base') })).digest('hex'));
 });
 
 const work = { decision: 'work', round: 1, base: 'main', head: 'h2', stateDir: temp(), targetType: 'git', dodPassed: true, dodDeferred: false, intentApplied: false, gateApplied: false };
@@ -233,7 +233,7 @@ test('AC5: two worktrees of one repository resolve to one run ledger', () => {
   assert.strictEqual(first.path, other.path);
   assert.ok(terminal(first, rev('h1')));
   assert.strictEqual(reserveLaunch(other, launchAt(rev('h1'))), false);
-  assert.throws(() => openInitiativeRun({ stateDir, key: 'two-worktrees', repository: repoWithCommits(), maxLaunches: 4, maxRounds: 3 }), /different repository/);
+  assert.throws(() => openInitiativeRun({ stateDir, key: 'two-worktrees', repository: repoWithCommits(), maxLaunches: 4, maxRounds: 3 }), /does not declare this repository/);
 });
 
 test('a version 3 ledger with a name base is rejected by terminalTarget, reserve and the runner', async () => {
