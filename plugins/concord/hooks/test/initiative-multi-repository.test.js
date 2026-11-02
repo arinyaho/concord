@@ -153,4 +153,17 @@ for (const [name, runtime] of runtimes) {
     assert.equal(h.ledger(web).rounds.length, 3);
     assert.equal(runtime.launchBudgetUsage(h.ledger(web)).launches, 6);
   });
+
+  test(`${name}: a ledger without declared repositories is refused alike by open, escalate and the shared lookup`, () => {
+    const h = fixture();
+    const api = h.open(h.api);
+    const legacy = h.ledger(api);
+    delete legacy.repositories;
+    fs.writeFileSync(api.path, JSON.stringify(legacy));
+    const refusal = /predates declared repositories and is not migrated/;
+    assert.throws(() => h.open(h.api), refusal);
+    assert.throws(() => runtime.escalateInitiativeRun({ stateDir: h.stateDir, key: 'k', repository: h.api, trigger: 'schema', maxLaunches: 6, maxRounds: 3 }), refusal);
+    assert.throws(() => runtime.declaredRepository(legacy, api.identity), refusal);
+    assert.doesNotMatch(String(refusal), /register/);
+  });
 }

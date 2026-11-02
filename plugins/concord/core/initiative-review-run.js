@@ -39,8 +39,11 @@ function repositoryIdentity(repository) {
 const SOLE_REPOSITORY = 'default';
 const REPOSITORY_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
-// The declared name of the repository with this identity, or null.
+// The declared name of the repository with this identity, or null. A ledger
+// without declared repositories is refused here, so every consumer refuses alike.
+const LEGACY_LEDGER = 'initiative review run predates declared repositories and is not migrated; preserve the original initiative and target ledgers, reconcile their history and spent budgets, then start a new run key';
 function declaredRepository(ledger, identity) {
+  if (ledger && typeof ledger === 'object' && (!ledger.repositories || typeof ledger.repositories !== 'object')) throw new Error(LEGACY_LEDGER);
   return Object.entries(ledger?.repositories || {}).find(([, value]) => value === identity)?.[0] || null;
 }
 
@@ -185,7 +188,7 @@ function openInitiativeRun({ stateDir, key, initiativeId = key, repository, maxL
       return created;
     }
     assertVersion(ledger);
-    if (!ledger.repositories || typeof ledger.repositories !== 'object') throw new Error('initiative review run predates declared repositories and is not migrated; preserve the original initiative and target ledgers, reconcile their history and spent budgets, then start a new run key');
+    if (!ledger.repositories || typeof ledger.repositories !== 'object') throw new Error(LEGACY_LEDGER);
     if ((ledger.initiativeId || key) !== initiativeId || (!allowTerminal && ledger.status === 'terminal') || ledger.budget?.maxLaunches !== maxLaunches || ledger.budget?.maxRounds !== maxRounds) throw new Error('initiative review run has a different initiative identity, is terminal, or has immutable configured budgets');
     if (!plan) return bind(ledger);
     if (ledger.status !== 'active') throw new Error('initiative plan requires an active run');
