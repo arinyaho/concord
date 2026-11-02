@@ -24,8 +24,10 @@ not created again.
    a CLI version. Run every call against the intended host and app-server endpoint,
    and keep that selection for the whole task.
 3. Start each worker with an argument-array process API (for example Node
-   `execFile` with `['exec', '--json', prompt]`), never interpolating the worker
-   prompt into shell code. Put no credentials in prompts or arguments.
+   `execFile` with `['exec', '--json', '-']`), writing the worker prompt to the
+   child's stdin, never interpolating the worker prompt into shell code. Put no
+   credentials in prompts or arguments. Give the worker an explicit sandbox and
+   approval choice so it is not read-only when it must edit.
 4. For each worker, capture its own distinct thread ID and a task acknowledgement
    bound to that worker's assigned task ID. A PID, a started process or an enqueue
    success is insufficient. Record the ID and acknowledgement in the ledger.
