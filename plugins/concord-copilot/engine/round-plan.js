@@ -67,8 +67,8 @@ const ENV_CLAUSE_BY_ROLE = Object.freeze({
   certify: CERTIFIER_ENV_CLAUSE,
 });
 
-// A file target's round-N-diff.txt is not the file: the engine writes `===== <path> =====\n`, the file bytes, then `\n` per file. A freshness probe that compares the whole artifact to the file fails at offset zero on the header, which is the framing and not a stale or mutated target; it must not be declared `blocked`.
-const FILE_FRAMING_CLAUSE = ' The document artifact frames each target as a header line `===== <path> =====`, the file\'s exact bytes, and one trailing newline. When you check that the artifact matches the current file, compare the bytes between the header and that trailing newline; a mismatch of the whole artifact against the file at offset zero is the framing, not a stale target, and is never a reason to declare blocked or to report an environment failure.';
+// A file target's round-N-diff.txt is not the file: the engine writes `===== <path> =====\n`, the file bytes, then `\n`, with one extra `\n` between consecutive files. A freshness probe that compares the whole artifact to the file fails at offset zero on the header, which is the framing and not a stale or mutated target; it must not be declared `blocked`.
+const FILE_FRAMING_CLAUSE = ' The document artifact frames each target as a header line `===== <path> =====`, the file\'s exact bytes, and a trailing newline, with one extra newline between consecutive files. When you check that the artifact matches the current file, compare the bytes between the header and that trailing newline (the extra newline between files is framing too); a mismatch of the whole artifact against the file at offset zero is the framing, not a stale target, and is never a reason to declare blocked or to report an environment failure.';
 
 const BLOCKED_CLAUSE = ' If you cannot run a tool this task requires (missing, denied by sandbox or permissions, crashed, timed out), do NOT substitute a weaker method and do NOT stay silent: write {"status":"ok","blocked":["<tool>: <what failed>"]} and stop.';
 
