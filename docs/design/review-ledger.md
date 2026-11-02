@@ -52,7 +52,7 @@ Every target mutation, including standalone operations, holds the target lock. D
 
 ## Findings closed outside the loop
 
-`record-fix` closes a correctness finding that is `parked` or still `open` on a stopped ledger (`parked` or `gate-pending`), and a blocking gate finding, when a test fails at the fixing commit's parent and passes at the commit and the commit follows the reviewed head; see [Fixes made outside the loop](delivery-disposition.md#fixes-made-outside-the-loop). Closure is never unconditional: a ledger that is not stopped, a commit that is not a single-parent descendant of the reviewed head, a missing test command and a test that does not fail before the fix are all refused, and the finding stays as it was.
+`record-fix` closes a correctness finding that is `parked`, or still `open` on a stopped ledger (`parked` or `gate-pending`) or on a `converging` one, and a blocking gate finding, when a test fails at the fixing commit's parent and passes at the commit and the commit follows the reviewed head; see [Fixes made outside the loop](delivery-disposition.md#fixes-made-outside-the-loop). Closure is never unconditional: a ledger that is neither stopped nor `converging` with the named finding open, a commit that is not a single-parent descendant of the reviewed head, a missing test command and a test that does not fail before the fix are all refused, and the finding stays as it was.
 
 A later round does not re-verify a closed finding by default. The closure writes a `fixed` seen entry, so a later round that reports the same id again marks it reopened and the finding goes through the loop as an open finding; the recorded evidence admits the fix and the reopen path is the later check, without a round per recorded fix. Budgets are unchanged.
 

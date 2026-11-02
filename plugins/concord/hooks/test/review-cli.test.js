@@ -6211,6 +6211,21 @@ test('record-fix on an open finding keeps gate-pending while a blocking gate fin
   assert.deepStrictEqual([after.findings[0].status, after.status, after.gate_open.map((f) => f.id)], ['fixed', 'gate-pending', ['gate:silent-gap:x']]);
 });
 
+test('record-fix records every external fix of a gate-pending run whatever the order of two groups and two ordinary findings', () => {
+  const ids = ['correctness:a', 'correctness:b', 'correctness:c', 'correctness:d'];
+  const packet = { trigger: 'group-reconcile', finding: ids[0], groups: [{ groupId: 'g1', findingIds: [ids[0]] }, { groupId: 'g2', findingIds: [ids[1]] }], findings: { a: 2 } };
+  const t = recordFixRepo({ ledger: () => ({ status: 'gate-pending', findings: ids.map((id) => ({ id, file: 'a.txt', summary: 's', status: 'open' })), seen: [], reconciliation: packet, reconciliationPacket: packet, fix_plan: { groups: [{ groupId: 'g1', changeClass: 'a' }, { groupId: 'g2', changeClass: 'a' }] } }) });
+  for (const id of ids) run(['record-fix', 'feat/x', id, '--commit', t.fix, '--test', 'sh check.sh', '--test-file', 'check.sh'], { env: t.env });
+  const after = review.readLedger(t.dir, t.slug);
+  assert.deepStrictEqual(after.findings.map((f) => f.status), ['fixed', 'fixed', 'fixed', 'fixed']);
+  assert.strictEqual(after.status, 'converging');
+});
+
+test('record-fix on a converging run refuses a finding that is not open', () => {
+  const t = recordFixRepo({ ledger: () => ({ status: 'converging', findings: [{ ...OPEN_X, status: 'fixed' }], seen: [] }) });
+  assertRefused(t, recordOpenX(t), /the ledger is "converging"/);
+});
+
 function assertRefused(t, args, pattern) {
   const before = fs.readFileSync(path.join(t.dir, fs.readdirSync(t.dir).find((n) => n.endsWith('.json'))), 'utf8');
   const res = runFails(args, t.env);

@@ -3436,8 +3436,10 @@ function runVerb(resolveFromCwd, args, initiative) {
     const slug = targetSlug(ref);
     const ledger = readLedger(stateDir, slug);
     if (!ledger) throw new Error(`review-cli record-fix: no ledger for ref "${ref}" ${stateDirHint(stateDir)}`);
-    if (ledger.status !== 'parked' && ledger.status !== 'gate-pending') throw new Error(`review-cli record-fix: the ledger is "${ledger.status}"; only a stopped run (parked or gate-pending) takes a fix made outside the loop`);
     const parkedIdx = (ledger.findings || []).findIndex((f) => f.id === findingId && (f.status === 'parked' || f.status === 'open'));
+    // A run that left its stop while an ordinary finding stayed open still takes that finding's external fix, so recording does not depend on finding order.
+    const openOrdinary = ledger.status === 'converging' && parkedIdx >= 0 && ledger.findings[parkedIdx].status === 'open';
+    if (ledger.status !== 'parked' && ledger.status !== 'gate-pending' && !openOrdinary) throw new Error(`review-cli record-fix: the ledger is "${ledger.status}"; only a stopped run (parked or gate-pending), or a converging run whose named finding is still open, takes a fix made outside the loop`);
     const gate = (ledger.gate_open || []).find((f) => f.id === findingId && !gateFollowUpEligible(f));
     if (parkedIdx === -1 && !gate) throw new Error(`review-cli record-fix: ${findingId} is not an open or parked finding, or a blocking gate finding, of ref "${ref}"`);
     const repoRoot = process.env.REVIEW_REPO_ROOT || process.cwd();
@@ -3480,7 +3482,7 @@ function runVerb(resolveFromCwd, args, initiative) {
       // re-runs fresh whether or not the run leaves its stop now.
       next = { ...ledger, gate_open: ledger.gate_open.filter((f) => f.id !== findingId), gate_cleared: (ledger.gate_cleared || []).filter((f) => f.id !== findingId), gate_fixed: (ledger.gate_fixed || []).filter((f) => f.id !== findingId).concat([findingEvidence(gate, { fix_commit: commit, fix_evidence: fixEvidence })]), gate_panel: gatePanelLib.emptyGatePanel() };
     }
-    next = leaveStopIfClear(stateDir, slug, ledger, next);
+    if (!openOrdinary) next = leaveStopIfClear(stateDir, slug, ledger, next);
     writeLedger(stateDir, slug, next);
     process.stdout.write(`recorded ${findingId} as fixed by ${commit}; ledger status is now "${next.status}".\n`);
     return;
