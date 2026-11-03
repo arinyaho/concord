@@ -4,6 +4,8 @@
 
 `review-until-lgtm` is a provider-neutral GitHub PR feedback loop. It collects every configured automated review for one exact head, records the reviews as one batch, verifies the findings together, fixes the rollout blockers among them, and pushes once. Codex, Copilot, and other explicitly configured automated reviewers use the same state contract.
 
+Human reviewers, alone or mixed with automated ones, go through the same loop with their own identity, feedback, waiting and delivery rules, described in the [human reviewers design](review-until-lgtm-human-reviewers.md). This note describes the automated-reviewer contract that design builds on.
+
 The loop has two PR-wide durable ceilings: three manual review requests and three fix-and-push rounds, the latter raised only by a recorded waiver. Neither resets when the head changes or the agent session is replaced. Exhaustion is a human-reconciliation outcome, never green.
 
 ## Review evidence
