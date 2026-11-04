@@ -96,6 +96,15 @@ test('a thumbs-up from an account that is not the selected Codex Bot does not ma
   assert.ok(!packet.observations.some((o) => o.lgtm));
 });
 
+test('a mixed-case Codex login selects the Codex Bot and reaches the summary path', async () => {
+  const github = { userByLogin: (l) => (l === 'Chatgpt-Codex-Connector' ? { login: 'chatgpt-codex-connector[bot]', id: CODEX_ID, type: 'Bot' } : null), userById: () => null, prAuthorId: () => 1 };
+  const { selection } = lgtmState.selectReviewers({ stateDir: temp(), pr: 244, logins: ['Chatgpt-Codex-Connector'], github });
+  assert.deepStrictEqual(selection, [CODEX_ACCOUNT]);
+  const clean = () => { const data = fixture(); pullRequest(data).reviews.nodes = []; return data; };
+  const packet = await collector.collect({ pr: 244, head: HEAD, selection, graphql: graphqlDouble({ main: clean, reactions: reactionsResponse([thumbsUp('2026-10-09T13:47:56Z')]) }) });
+  assert.strictEqual(packet.observations[0].lgtm, true);
+});
+
 test('no reaction is read while the summary is not Completed', async () => {
   const double = graphqlDouble({ main: () => withSummaryStatus(fixture(), '👀 **In progress**') });
   const packet = await collector.collect({ pr: 244, head: HEAD, selection: SELECTION, graphql: double });
@@ -202,7 +211,7 @@ test('the CLI reviewer list is explicit: every named reviewer must be terminal b
   assert.deepStrictEqual(collector.reviewersFrom(['244', 'abc']), []);
   assert.deepStrictEqual(collector.reviewersFrom(['--reviewer', 'copilot-pull-request-reviewer', '--reviewer', CODEX]), ['copilot-pull-request-reviewer', CODEX]);
   assert.throws(() => collector.reviewersFrom(['--reviewer']), /reviewer/);
-  const packet = await collector.collect({ pr: 244, head: HEAD, selection: SELECTION, graphql: graphqlDouble(), selection: [{ login: 'copilot-pull-request-reviewer', id: 900, type: 'Bot' }, CODEX_ACCOUNT] });
+  const packet = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble(), selection: [{ login: 'copilot-pull-request-reviewer', id: 900, type: 'Bot' }, CODEX_ACCOUNT] });
   assert.strictEqual(packet.terminal, false);
   assert.deepStrictEqual(packet.pending, ['copilot-pull-request-reviewer']);
   assert.match(fs.readFileSync(SKILL, 'utf8'), /--reviewer <login>/);

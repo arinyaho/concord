@@ -781,8 +781,8 @@ function latestSelection({ stateDir, pr }) {
   return latest ? { sequence: latest.sequence, reviewers: latest.reviewers, recordedAtMs: latest.recordedAtMs } : null;
 }
 
-// A bot is stored under the slug the collector and --reviewer use; GitHub's REST login for it can differ (Copilot's is `Copilot`), so only a person's login comes from the API.
-const accountOf = ({ login, id, type }, slug) => ({ login: type === 'Bot' ? slug : login, id, type });
+// A bot is stored under the lowercased slug the collector and --reviewer use (logins are case-insensitive); GitHub's REST login for it can differ (Copilot's is `Copilot`), so only a person's login comes from the API.
+const accountOf = ({ login, id, type }, slug) => ({ login: type === 'Bot' ? slug.toLowerCase() : login, id, type });
 
 // Resolves typed logins to accounts, or names each login it refuses.
 function accountsOf(logins, github, authorId) {
@@ -819,6 +819,8 @@ function selectReviewers({ stateDir, pr, logins, github, now = Date.now() }) {
     let refused;
     ({ selection, refused } = accountsOf(logins, github, github.prAuthorId(number)));
     if (refused.length > 0) return { selected: false, reason: 'refused', refused };
+    // Every collect and watch repeats --reviewer; an unchanged selection writes nothing and needs no lock.
+    if (latest && JSON.stringify(selection) === JSON.stringify(latest.reviewers)) return { selected: true, recorded: false, selection, gone };
   } else {
     // Resume: re-resolve the stored accounts by id so a rename follows the account and a deleted account stays recorded as gone.
     selection = (latest?.reviewers || []).map((reviewer) => {

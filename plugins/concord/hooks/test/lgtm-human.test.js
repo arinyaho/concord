@@ -45,6 +45,15 @@ test('a run that names reviewers replaces the selection and keeps the earlier re
   assert.ok(require('node:fs').existsSync(require('node:path').join(stateDir, `pr-${PR}.reviewers-000001.json`)));
 });
 
+test('a repeated identical --reviewer call writes nothing and needs no transition lock', () => {
+  const stateDir = temp();
+  lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice'], github: github() });
+  require('node:fs').mkdirSync(require('node:path').join(stateDir, `pr-${PR}.transition.lock`));
+  assert.deepStrictEqual(lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice'], github: github() }), { selected: true, recorded: false, selection: [ACCOUNTS.alice], gone: [] });
+  assert.strictEqual(lgtmState.latestSelection({ stateDir, pr: PR }).sequence, 1);
+  assert.deepStrictEqual(lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['copilot-pull-request-reviewer'], github: github() }), { selected: false, reason: 'transition-busy' });
+});
+
 test('a resume without --reviewer uses the stored selection', () => {
   const stateDir = temp();
   lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice'], github: github() });
