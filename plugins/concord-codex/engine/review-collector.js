@@ -147,7 +147,8 @@ async function read(graphql, pr, selection) {
 function humanFeedback(pull, { head, mode, selection, prAuthorId, actorId }) {
   const byAnswerer = (node) => { const { id } = identityOf(node.author); return id !== null && (id === prAuthorId || id === actorId); };
   const eligible = ({ id, type }) => id === null || (id !== prAuthorId && id !== actorId && (type !== 'Bot' || mode === 'all'));
-  const after = (node, revision) => Date.parse(node.createdAt) >= Date.parse(revision);
+  // A review is made when it is submitted; its createdAt is when the pending draft was started.
+  const after = (node, revision) => Date.parse(node.submittedAt ?? node.createdAt) >= Date.parse(revision);
   const reviews = pull.reviews.nodes.filter((review) => review.state !== 'PENDING');
   // A review body or conversation comment is answered by a later author comment or review body that links it, as GitHub's "Quote reply" and "Copy link" do.
   const answers = [...pull.comments.nodes, ...reviews].filter(byAnswerer);
@@ -194,7 +195,6 @@ function humanFeedback(pull, { head, mode, selection, prAuthorId, actorId }) {
   return {
     observations: [...groups.values()],
     authorAnswered: entries.filter((e) => e.item.answered).map(({ item, answer }) => ({ itemId: item.itemId, url: item.url, answerUrl: answer.url, kind: item.kind, author: item.author, originalCommitId: item.originalCommitId })),
-    items: entries.map((e) => e.item),
   };
 }
 
@@ -358,4 +358,4 @@ function ghGraphql(cwd = process.cwd()) {
   return async (query, variables) => JSON.parse(execFileSync(gh, crossPlatformArgs(['api', 'graphql', ...(variables.pr === undefined ? [] : ['-F', 'owner={owner}', '-F', 'name={repo}', '-F', `pr=${variables.pr}`]), ...['id', 'cursor'].filter((key) => variables[key] !== undefined).flatMap((key) => ['-f', `${key}=${variables[key]}`]), '-f', `query=${query}`], needsDoubleEscape('gh', cwd)), crossPlatformOpts({ cwd, encoding: 'utf8', maxBuffer: 64 << 20 })));
 }
 
-module.exports = { QUERY, REVIEWS_PAGE_QUERY, PR_COMMENTS_PAGE_QUERY, THREADS_PAGE_QUERY, THREAD_COMMENTS_PAGE_QUERY, REACTIONS_QUERY, identityOf, itemKey, humanFeedback, reviewersFrom, MAX_BODY_CHARS, WINDOW_SECONDS, collect, watch, analyze, complete, formatPacketLine, ghGraphql };
+module.exports = { QUERY, REVIEWS_PAGE_QUERY, PR_COMMENTS_PAGE_QUERY, THREADS_PAGE_QUERY, THREAD_COMMENTS_PAGE_QUERY, REACTIONS_QUERY, identityOf, reviewersFrom, MAX_BODY_CHARS, WINDOW_SECONDS, collect, watch, analyze, complete, formatPacketLine, ghGraphql };

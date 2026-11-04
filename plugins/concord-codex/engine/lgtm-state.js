@@ -57,7 +57,7 @@ function validateFinding(finding) {
     out.itemId = finding.itemId;
   }
   if (finding.kind !== undefined) {
-    if (!FEEDBACK_KINDS.has(finding.kind)) throw new Error('review-lgtm-state: finding kind must be review, review-comment, thread-comment or comment');
+    if (!FEEDBACK_KINDS.has(finding.kind)) throw new Error('review-lgtm-state: finding kind must be review-body, inline, reply or comment');
     out.kind = finding.kind;
   }
   if (finding.author !== undefined) {
@@ -69,7 +69,7 @@ function validateFinding(finding) {
   return out;
 }
 
-const FEEDBACK_KINDS = new Set(['review', 'review-comment', 'thread-comment', 'comment']);
+const FEEDBACK_KINDS = new Set(['review-body', 'inline', 'reply', 'comment']);
 const ACCOUNT_TYPES = new Set(['User', 'Bot']);
 function optionalSha(value, name) {
   if (value === null) return null;
@@ -82,7 +82,8 @@ function optionalSha(value, name) {
 // number or a decimal-digit string and normalize to the decimal string,
 // since the id becomes part of a file name.
 function normalizeReviewId(reviewId) {
-  if (typeof reviewId === 'string' && reviewId.startsWith('comment-')) return `comment-${normalizeReviewId(reviewId.slice(8))}`; // an issue comment shares no id space with reviews
+  const comment = typeof reviewId === 'string' && /^comment-([0-9]+)$/.exec(reviewId);
+  if (comment) return `comment-${normalizeReviewId(comment[1])}`; // an issue comment shares no id space with reviews
   if (typeof reviewId === 'string' && /^[0-9]+$/.test(reviewId)) {
     const canonical = BigInt(reviewId).toString();
     if (canonical === '0') throw new Error('review-lgtm-state: reviewId must be a positive safe integer or decimal digits');

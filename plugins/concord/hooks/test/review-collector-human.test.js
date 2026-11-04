@@ -3,6 +3,8 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const collector = require('../../core/review-collector');
 const f = require('./fixtures/review-collector/human');
+const lgtmState = require('../../core/lgtm-state');
+const { tempDir } = require('./temp-dir');
 const collect = (data, opts = {}) => collector.collect({ pr: 7, head: f.HEAD, graphql: f.graphqlOf(data), ...opts });
 
 test("a selected human's review becomes an observation that keeps identity, URL, commit and items", async () => {
@@ -163,4 +165,19 @@ test('a bot LGTM ends nothing in empty mode', async () => {
   const data = f.response({ reviews: [f.review(21, f.CODEX, { state: 'APPROVED' })], comments: [f.prComment(91, f.BOB)] });
   const packet = await collector.collect({ pr: 7, head: f.HEAD, graphql: f.graphqlOf(data) });
   assert.ok(packet.observations.some((o) => o.reviewId === 'comment-91' && o.findings.length === 1));
+});
+
+test('an author review body is dated by its submission, not by when its pending draft started', async () => {
+  const draft = { ...f.review(90, f.AUTHOR, { body: `${f.URL}#issuecomment-91 done`, at: '2026-11-01T01:00:00Z' }), createdAt: '2026-10-31T00:00:00Z' };
+  const packet = await collect(f.response({ reviews: [draft], comments: [f.prComment(91, f.BOB)] }));
+  assert.deepStrictEqual(packet.authorAnswered.map((a) => a.itemId), ['IC_91@2026-11-01T00:00:02Z']);
+});
+
+test('every collected human observation is recorded with its four kinds', async () => {
+  const data = f.response({ reviews: [f.review(5, f.ALICE, { body: 'overall: needs work' })], threads: [f.thread([f.inline(51, f.ALICE, 5), f.inline(52, f.BOB, 9, { at: '2026-11-02T00:00:00Z' })])], comments: [f.prComment(70, f.BOB)] });
+  const packet = await collect(data, { selection: f.selection(f.ALICE, f.BOB) });
+  const stateDir = tempDir('collector-roundtrip-');
+  for (const observation of packet.observations) assert.ok(lgtmState.recordReview({ stateDir, pr: 7, headSha: f.HEAD, observation }));
+  const kinds = require('node:fs').readdirSync(stateDir).filter((n) => n.endsWith('.json')).flatMap((n) => { const r = JSON.parse(require('node:fs').readFileSync(require('node:path').join(stateDir, n), 'utf8')); return (r.findings || []).map((x) => x.kind); });
+  assert.deepStrictEqual([...new Set(kinds)].sort(), ['comment', 'inline', 'reply', 'review-body']);
 });

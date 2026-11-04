@@ -204,6 +204,10 @@ test('malformed optional human fields fail closed', () => {
   assert.throws(() => lgtmState.recordReview({ stateDir: temp(), pr: PR, headSha: HEAD, observation: bad }), /kind/);
 });
 
+test('a doubled comment prefix is not a review id', () => {
+  assert.throws(() => lgtmState.recordReview({ stateDir: temp(), pr: PR, headSha: HEAD, observation: humanObs('comment-comment-5') }), /reviewId/);
+});
+
 test('delivery reviewIds accept comment-<n>', () => {
   const packet = { baseSha: 'a'.repeat(40), contractDigest: 'a'.repeat(64), reviewIds: ['comment-70'], acceptance: [], requiredChecks: [], reviewsTerminal: true, openChoices: [], findings: [], droppedMinors: [], tickets: [] };
   assert.doesNotThrow(() => lgtmState.classifyDelivery({ ...packet, pr: PR, headSha: HEAD }));
