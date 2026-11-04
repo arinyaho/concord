@@ -304,7 +304,7 @@ The human path adds these markers beside the bot loop's. Each is written with th
 | `pr-<n>-<head>.approve-prompt-<reviewer>.json` | head and reviewer | The single request to press Approve on that head |
 | `pr-<n>.wait.json` | PR | Non-authoritative sidecar of the wait: previous head, fingerprint, failure count |
 
-`<reviewer>` and `<item>` are the first 16 hex digits of the SHA-256 of the account id and of the item node id with its revision, the same scheme as the existing provider-keyed request markers. Review records gain the optional fields listed under Observation shape. `status` gains `reviewers` (the selection with each status), `humanWait` (start and deadline of the head), `unanswered` (item ids by the unanswered test), `owedReplies`, and `humanFixBudget`.
+`<reviewer>` and `<item>` are the first 16 hex digits of the SHA-256 of the account id and of the item node id with its revision, the same scheme as the existing provider-keyed request markers. Review records gain the optional fields listed under Observation shape. `status` gains `reviewers` (the selection with its request, refusal and prompt markers), `humanWait` (start and deadline of the head), `owedReplies`, and `humanFixBudget`. The per-reviewer statuses and the `unanswered` item list are not in `status`: they derive from live GitHub data and are carried by the collector packet's `humanReview` object (`humanReview.reviewers` and `humanReview.unanswered`). `status` reads only local ledger state and stays independent of GitHub.
 
 ## Failure and edge cases
 
@@ -394,7 +394,7 @@ Rejected alternatives:
 
 | State | Event | Outcome | Kind | Evidence |
 |---|---|---|---|---|
-| no selection | `select-reviewers` with a human and a bot | selection record with login, id and type each; `status.reviewers` lists both | introduced | `select-reviewers stores login, id and GitHub type for each reviewer` |
+| no selection | `select-reviewers` with a human and a bot | selection record with login, id and type each; `status.reviewers` lists both selected accounts | introduced | `select-reviewers stores login, id and GitHub type for each reviewer` |
 | no selection, no `--reviewer` | first run on head H | every account observed; 15-minute window opened at first observation; no review request, grace or claim; bot request budget unspent | changed | `with no reviewer named every account is observed and no request is sent` |
 | no selection, bot-only user who relied on the default bot | that bot stays silent | no manual request; its LGTM not required; completion by answered feedback and branch rules | changed | `the empty selection requests no default bot and does not await its LGTM` |
 | no selection | bot posts a clean result with LGTM, an item from a person is unanswered | not complete; the item is assessed and answered | introduced | `a bot LGTM ends nothing in empty mode` |
