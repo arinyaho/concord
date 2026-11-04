@@ -161,7 +161,7 @@ test('a comment observation records under comment-<id> and keeps provenance with
   const [review] = lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reconciliation.reviews;
   assert.strictEqual(review.id, 'comment-70');
   assert.deepStrictEqual(Object.keys(review.findings[0]).sort(), ['author', 'itemId', 'kind', 'originalCommitId', 'priority', 'signals', 'url']);
-  const record = JSON.parse(require('node:fs').readFileSync(require('node:path').join(stateDir, `pr-${PR}-${HEAD}.review-comment-70.json`), 'utf8'));
+  const record = JSON.parse(require('node:fs').readFileSync(require('node:path').join(stateDir, `pr-${PR}-${HEAD}.comment-70.json`), 'utf8'));
   assert.deepStrictEqual([record.reviewerId, record.reviewerType, record.reviewCommitId, record.submittedAt], [101, 'User', 'd'.repeat(40), '2026-11-01T00:00:00Z']);
 });
 

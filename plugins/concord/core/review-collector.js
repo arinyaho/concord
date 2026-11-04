@@ -50,7 +50,8 @@ function codexOf(selection) { return selection.find((account) => !account.gone &
 function botsOf(selection) { return selection.filter((account) => account.type === 'Bot'); }
 
 // An author as the human path names it. A deleted account's author is null on GitHub and shows as ghost.
-function identityOf(author) { return author ? { login: String(author.login).replace(/\[bot\]$/, ''), id: author.databaseId ?? null, type: author.__typename } : { login: 'ghost', id: null, type: 'User' }; }
+// Any account type other than a bot (Mannequin, Organization, ...) is recorded as a User; the query gives such an author no id.
+function identityOf(author) { return author ? { login: String(author.login).replace(/\[bot\]$/, ''), id: author.databaseId ?? null, type: author.__typename === 'Bot' ? 'Bot' : 'User' } : { login: 'ghost', id: null, type: 'User' }; }
 
 // A feedback item is one revision of one GitHub node, so an edit after an answer is a new item.
 function itemKey(nodeId, revision) { return `${nodeId}@${revision}`; }
@@ -171,7 +172,8 @@ function humanFeedback(pull, { head, mode, selection, prAuthorId, actorId }) {
   for (const thread of pull.reviewThreads.nodes.filter((t) => !t.isResolved)) {
     const comments = thread.comments.nodes;
     // An inline item is answered by a later comment of the author in the same thread.
-    comments.forEach((comment, i) => add(comment, { kind: i === 0 ? 'inline' : 'reply', group: String(comment.pullRequestReview.databaseId), review: comment.pullRequestReview, originalCommitId: oidOf(comment.originalCommit), answerOf: (revision) => comments.slice(i + 1).find((later) => byAnswerer(later) && after(later, revision)) || null }));
+    // GraphQL allows a thread comment without a review; it is its own observation, keyed apart from every review and conversation comment.
+    comments.forEach((comment, i) => { const review = comment.pullRequestReview; add(comment, { kind: i === 0 ? 'inline' : 'reply', group: review ? String(review.databaseId) : `thread-${comment.databaseId}`, review: review || { url: comment.url, commit: null, submittedAt: comment.createdAt }, originalCommitId: oidOf(comment.originalCommit), answerOf: (revision) => comments.slice(i + 1).find((later) => byAnswerer(later) && after(later, revision)) || null }); });
   }
   // A bot that updates its conversation comment in place makes no new revision.
   for (const comment of pull.comments.nodes) add(comment, { kind: 'comment', group: `comment-${comment.databaseId}`, review: { url: comment.url, commit: null, submittedAt: comment.createdAt }, originalCommitId: null, answerOf: linkAnswer(comment.url), revision: identityOf(comment.author).type === 'Bot' ? comment.createdAt : undefined });

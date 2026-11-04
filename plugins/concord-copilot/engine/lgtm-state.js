@@ -82,8 +82,9 @@ function optionalSha(value, name) {
 // number or a decimal-digit string and normalize to the decimal string,
 // since the id becomes part of a file name.
 function normalizeReviewId(reviewId) {
-  const comment = typeof reviewId === 'string' && /^comment-([0-9]+)$/.exec(reviewId);
-  if (comment) return `comment-${normalizeReviewId(comment[1])}`; // an issue comment shares no id space with reviews
+  // A conversation comment and a thread comment without a review each have an id space of their own, apart from reviews'.
+  const prefixed = typeof reviewId === 'string' && /^(comment|thread)-([0-9]+)$/.exec(reviewId);
+  if (prefixed) return `${prefixed[1]}-${normalizeReviewId(prefixed[2])}`;
   if (typeof reviewId === 'string' && /^[0-9]+$/.test(reviewId)) {
     const canonical = BigInt(reviewId).toString();
     if (canonical === '0') throw new Error('review-lgtm-state: reviewId must be a positive safe integer or decimal digits');
@@ -373,10 +374,10 @@ function requestMarkers({ stateDir, pr, headSha }, kind, stage) {
 
 // ponytail: linear directory scan per read; fine at this marker-directory scale, switch to an index file if a PR head accumulates many reviews.
 function reviewRecords({ stateDir, pr, headSha }) {
-  const prefix = `pr-${pr}-${headSha}.review-`;
+  const prefix = `pr-${pr}-${headSha}.`;
   let names;
   try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
-  return names.filter((name) => name.startsWith(prefix) && name.endsWith('.json'))
+  return names.filter((name) => name.startsWith(prefix) && /^(?:review|comment|thread)-/.test(name.slice(prefix.length)) && name.endsWith('.json'))
     .map((name) => readMarker(path.join(stateDir, name)))
     .filter((record) => record && record.pr === pr && record.headSha === headSha);
 }
@@ -428,7 +429,7 @@ function recordReview(input) {
   if (observation.commitId !== key.headSha) return { outcome: 'stale', recorded: false };
   if (observation.state === 'in-progress') return { outcome: 'in-progress', recorded: false };
   if (observation.findings.length > 0) {
-    const file = markerPath({ stateDir, ...key }, `review-${observation.reviewId}`);
+    const file = markerPath({ stateDir, ...key }, /^[0-9]+$/.test(observation.reviewId) ? `review-${observation.reviewId}` : observation.reviewId);
     if (readMarker(file)) {
       const outcome = rejectedReviewIds({ stateDir, ...key }).has(observation.reviewId) ? 'rejected' : 'needs-reconciliation';
       return { outcome, recorded: false, duplicate: true };
@@ -629,7 +630,7 @@ function validatePacket(packet) {
     if (packet.findings.some((finding) => text(finding.id) === text(dropped.id))) throw new Error(`review-lgtm-state: minor ${text(dropped.id)} is both a finding and a dropped minor`);
   }
   unique(packet.tickets, 'rootCause', 'ticket');
-  if (!packet.reviewIds.every((id) => /^(?:[0-9]+|comment-[0-9]+)$/.test(String(id)))) throw new Error('review-lgtm-state: delivery reviewIds must be review ids');
+  if (!packet.reviewIds.every((id) => /^(?:[0-9]+|(?:comment|thread)-[0-9]+)$/.test(String(id)))) throw new Error('review-lgtm-state: delivery reviewIds must be review ids');
   for (const finding of packet.findings) {
     if (finding.releaseBlocking != null && !Array.isArray(finding.releaseBlocking)) throw new Error(`review-lgtm-state: delivery finding ${text(finding.id)} releaseBlocking must be an array`);
     const id = text(finding.id);

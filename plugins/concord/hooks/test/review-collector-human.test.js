@@ -181,3 +181,19 @@ test('every collected human observation is recorded with its four kinds', async 
   const kinds = require('node:fs').readdirSync(stateDir).filter((n) => n.endsWith('.json')).flatMap((n) => { const r = JSON.parse(require('node:fs').readFileSync(require('node:path').join(stateDir, n), 'utf8')); return (r.findings || []).map((x) => x.kind); });
   assert.deepStrictEqual([...new Set(kinds)].sort(), ['comment', 'inline', 'reply', 'review-body']);
 });
+
+test('a thread comment without a review is collected and records', async () => {
+  const orphan = { ...f.inline(61, f.ALICE, 5), pullRequestReview: null };
+  const packet = await collect(f.response({ threads: [f.thread([orphan])] }), { selection: f.selection(f.ALICE) });
+  assert.deepStrictEqual(packet.observations.map((o) => [o.reviewId, o.reviewCommitId, o.findings.map((x) => x.kind)]), [['thread-61', null, ['inline']]]);
+  const stateDir = tempDir('collector-orphan-');
+  assert.strictEqual(lgtmState.recordReview({ stateDir, pr: 7, headSha: f.HEAD, observation: packet.observations[0] }).recorded, true);
+});
+
+test('an author of another account type is collected as a User and records', async () => {
+  const mannequin = { __typename: 'Mannequin', login: 'imported' };
+  const packet = await collect(f.response({ comments: [f.prComment(73, mannequin)] }), { selection: f.selection(f.ALICE) });
+  assert.deepStrictEqual(packet.observations.map((o) => [o.reviewId, o.reviewerType, o.reviewerId]), [['comment-73', 'User', null]]);
+  const stateDir = tempDir('collector-mannequin-');
+  assert.strictEqual(lgtmState.recordReview({ stateDir, pr: 7, headSha: f.HEAD, observation: packet.observations[0] }).recorded, true);
+});
