@@ -129,3 +129,38 @@ test('an approval followed by a request for changes is not lgtm', async () => {
   const packet = await collect(data, { selection: f.selection(f.ALICE) });
   assert.deepStrictEqual(packet.observations.map((o) => [o.reviewId, o.lgtm]), [['18', false], ['19', false]]);
 });
+
+test('watch without --reviewer observes every account', async () => {
+  let tick = 0;
+  const opened = [];
+  const lines = [];
+  const data = f.response({ reviews: [f.review(20, f.CODEX, { body: '[P2] nit' })], comments: [f.prComment(90, f.BOB)] });
+  const exit = await collector.watch({
+    pr: 7, graphql: f.graphqlOf(data), intervalMs: 30000,
+    state: { openWindow: (head) => opened.push([head, tick]), status: () => ({ deadlineMs: 3 * 30000, delivery: tick >= 4 ? { classification: 'mergeable-clean', current: true } : null }) },
+    now: () => tick * 30000, sleep: async () => { tick += 1; }, write: (l) => lines.push(JSON.parse(l)),
+  });
+  assert.strictEqual(exit, 'delivery');
+  assert.deepStrictEqual(opened, [[f.HEAD, 0]]);
+  assert.deepStrictEqual(lines.map((l) => l.event), ['packet', 'delivery']);
+  assert.deepStrictEqual([lines[0].pending, lines[0].terminal], [[], true]);
+  assert.deepStrictEqual(lines[0].observations.map((o) => o.reviewId).sort(), ['20', 'comment-90']);
+});
+
+test('the empty selection requests no default bot and does not await its LGTM', async () => {
+  assert.strictEqual(collector.DEFAULT_REVIEWERS, undefined);
+  assert.deepStrictEqual(collector.reviewersFrom([]), []);
+  const packet = await collector.collect({ pr: 7, head: f.HEAD, graphql: f.graphqlOf(f.response()) });
+  assert.deepStrictEqual([packet.terminal, packet.pending, packet.summary], [true, [], null]);
+});
+
+test('the bot packet lists only bots as pending', async () => {
+  const packet = await collector.collect({ pr: 7, head: f.HEAD, graphql: f.graphqlOf(f.response()), selection: f.selection(f.ALICE, f.CODEX) });
+  assert.deepStrictEqual(packet.pending, ['chatgpt-codex-connector']);
+});
+
+test('a bot LGTM ends nothing in empty mode', async () => {
+  const data = f.response({ reviews: [f.review(21, f.CODEX, { state: 'APPROVED' })], comments: [f.prComment(91, f.BOB)] });
+  const packet = await collector.collect({ pr: 7, head: f.HEAD, graphql: f.graphqlOf(data) });
+  assert.ok(packet.observations.some((o) => o.reviewId === 'comment-91' && o.findings.length === 1));
+});

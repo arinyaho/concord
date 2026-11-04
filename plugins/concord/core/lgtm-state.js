@@ -849,13 +849,18 @@ function accountsOf(logins, github, authorId) {
 }
 
 // GitHub lookups are slow and can stall, so they run before the transition lock; the lock only re-checks that no other selection landed meanwhile and writes.
-function selectReviewers({ stateDir, pr, logins, github, now = Date.now() }) {
+function selectReviewers({ stateDir, pr, logins, none = false, github, now = Date.now() }) {
   if (!Number.isSafeInteger(Number(pr)) || Number(pr) < 1) throw new Error('review-lgtm-state: PR number must be a positive integer');
   const number = Number(pr);
   const latest = selectionRecords({ stateDir, pr: number }).at(-1);
   let selection;
   let gone = [];
-  if (logins && logins.length > 0) {
+  if (none) {
+    if (logins && logins.length > 0) throw new Error('review-lgtm-state: --none cannot be combined with --reviewer');
+    // Observing every account is the empty selection; one already in force needs no record.
+    selection = [];
+    if (!latest || latest.reviewers.length === 0) return { selected: true, recorded: false, selection, gone };
+  } else if (logins && logins.length > 0) {
     let refused;
     ({ selection, refused } = accountsOf(logins, github, github.prAuthorId(number)));
     if (refused.length > 0) return { selected: false, reason: 'refused', refused };
@@ -878,12 +883,10 @@ function selectReviewers({ stateDir, pr, logins, github, now = Date.now() }) {
   }, { selected: false, reason: 'transition-busy' });
 }
 
-// The selection collect and watch use: named reviewers replace the stored selection, a stored selection is refreshed by id,
-// and with neither the built-in default logins are resolved for this run only, writing nothing.
+// The selection collect and watch use: named reviewers replace the stored selection, and a stored selection is refreshed by id.
+// With neither, the selection is empty and every account is observed; nothing is written.
 function reviewerSelection({ stateDir, pr, logins, github, now = Date.now() }) {
-  if (logins.length > 0 || latestSelection({ stateDir, pr })) return selectReviewers({ stateDir, pr, logins: logins.length > 0 ? logins : null, github, now });
-  const { selection, refused } = accountsOf(collector.DEFAULT_REVIEWERS, github, github.prAuthorId(Number(pr)));
-  return refused.length > 0 ? { selected: false, reason: 'refused', refused } : { selected: true, recorded: false, selection, gone: [] };
+  return selectReviewers({ stateDir, pr, logins: logins.length > 0 ? logins : null, github, now });
 }
 
 // gh answers HTTP 404 for an unknown or deleted account; that is a null, every other failure is the caller's.
@@ -973,7 +976,7 @@ function runMain(repoRoot = process.cwd()) {
   else if (verb === 'record-review') process.stdout.write(`${JSON.stringify(recordReview({ stateDir, pr, headSha, observation: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'record-delivery') process.stdout.write(`${JSON.stringify(recordDelivery({ stateDir, pr, headSha, packet: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'reject-review-batch') process.stdout.write(`${JSON.stringify(rejectReviewBatch({ stateDir, pr, headSha, ...JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
-  else if (verb === 'select-reviewers') process.stdout.write(`${JSON.stringify(selectReviewers({ stateDir, pr, logins: collector.reviewersFrom(process.argv.slice(4)), github: ghUsers(repoRoot) }))}\n`);
+  else if (verb === 'select-reviewers') process.stdout.write(`${JSON.stringify(selectReviewers({ stateDir, pr, logins: collector.reviewersFrom(process.argv.slice(4)), none: process.argv.slice(4).includes('--none'), github: ghUsers(repoRoot) }))}\n`);
   else if (verb === 'collect' || verb === 'watch') {
     // The selection is resolved once per run; a refusal or a busy selection prints its result and collects nothing.
     const resolved = reviewerSelection({ stateDir, pr, logins: collector.reviewersFrom(process.argv.slice(verb === 'collect' ? 5 : 4)), github: ghUsers(repoRoot) });

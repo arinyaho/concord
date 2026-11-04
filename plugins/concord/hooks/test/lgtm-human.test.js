@@ -208,3 +208,21 @@ test('delivery reviewIds accept comment-<n>', () => {
   const packet = { baseSha: 'a'.repeat(40), contractDigest: 'a'.repeat(64), reviewIds: ['comment-70'], acceptance: [], requiredChecks: [], reviewsTerminal: true, openChoices: [], findings: [], droppedMinors: [], tickets: [] };
   assert.doesNotThrow(() => lgtmState.classifyDelivery({ ...packet, pr: PR, headSha: HEAD }));
 });
+
+test('select-reviewers --none returns to observing every account', () => {
+  const stateDir = temp();
+  lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice'], github: github() });
+  const result = lgtmState.selectReviewers({ stateDir, pr: PR, logins: null, none: true, github: github() });
+  assert.deepStrictEqual(result, { selected: true, recorded: true, selection: [], gone: [] });
+  assert.deepStrictEqual(lgtmState.latestSelection({ stateDir, pr: PR }).reviewers, []);
+  assert.strictEqual(lgtmState.selectReviewers({ stateDir, pr: PR, logins: null, none: true, github: github() }).recorded, false);
+});
+
+test('a later run without --reviewer keeps the empty record and writes nothing', () => {
+  const stateDir = temp();
+  lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice'], github: github() });
+  lgtmState.selectReviewers({ stateDir, pr: PR, logins: null, none: true, github: github() });
+  const before = require('node:fs').readdirSync(stateDir).sort();
+  assert.deepStrictEqual(lgtmState.reviewerSelection({ stateDir, pr: PR, logins: [], github: github() }), { selected: true, recorded: false, selection: [], gone: [] });
+  assert.deepStrictEqual(require('node:fs').readdirSync(stateDir).sort(), before);
+});

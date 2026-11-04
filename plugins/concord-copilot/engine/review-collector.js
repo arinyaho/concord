@@ -8,8 +8,6 @@ const { crossPlatformCommand, crossPlatformArgs, crossPlatformOpts, needsDoubleE
 // data: bodies are size-limited and marked untrusted, and a packet only hints;
 // the session re-reads the state before acting.
 
-// The logins a run resolves to accounts when the PR has no stored reviewer selection.
-const DEFAULT_REVIEWERS = ['chatgpt-codex-connector'];
 const CODEX_REVIEWER = 'chatgpt-codex-connector';
 const SUMMARY_MARKER = '<!-- codex-pull-request-review-summary -->';
 const MAX_BODY_CHARS = 4000;
@@ -318,26 +316,32 @@ function formatPacketLine(packet) { return JSON.stringify(packet); }
 
 // Shell-level polling: the model is not involved between lines. One packet
 // line per terminal head; the loop ends on a recorded delivery or the deadline.
-async function watch({ pr, graphql, state, now = Date.now, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), intervalMs = DEFAULT_INTERVAL_MS, write, selection }) {
+async function watch({ pr, graphql, state, now = Date.now, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), intervalMs = DEFAULT_INTERVAL_MS, write, selection = [] }) {
   if (intervalMs < MIN_INTERVAL_MS) throw new Error(`review-collector: the watch interval must be at least ${MIN_INTERVAL_MS} ms`);
   const printed = new Map(); // head -> the reviews its last packet covered
   const awaitingReaction = new Map(); // head -> a clean result still waits for its reaction
   const windowed = new Set();
+  const named = selection.length > 0; // an empty selection observes every account: no reviewer is awaited, so the window runs from the first poll of a head
   const since = new Map();
   for (;;) {
     const response = await read(graphql, pr, selection);
     const head = pullRequestOf(response).headRefOid.toLowerCase();
     if (!since.has(head)) since.set(head, now());
     const analysis = analyze(response, head, selection);
-    if (analysis.activity && !windowed.has(head)) { state.openWindow(head); windowed.add(head); }
+    if ((analysis.activity || !named) && !windowed.has(head)) { state.openWindow(head); windowed.add(head); }
     const status = state.status(head);
     if (status.delivery && status.delivery.current === true) { write(JSON.stringify({ event: 'delivery', pr: Number(pr), head, classification: status.delivery.classification })); return 'delivery'; }
     // The deadline bounds the wait for a first packet; once one was printed the watch runs on to catch later reviews until a delivery is recorded.
-    if (!printed.has(head) && now() >= (status.deadlineMs ?? since.get(head) + WINDOW_SECONDS * 1000)) { write(JSON.stringify({ event: 'deadline', pr: Number(pr), head, pending: analysis.model.pending, awaitingReaction: awaitingReaction.get(head) === true })); return 'deadline'; }
+    const expired = now() >= (status.deadlineMs ?? since.get(head) + WINDOW_SECONDS * 1000);
+    // With nothing awaited the window's end is the packet: whatever was observed by then is the batch.
+    if (!named && !printed.has(head) && expired) {
+      const packet = await complete(analysis, { pr, graphql, selection });
+      if (!packet.stale) { printed.set(head, true); write(formatPacketLine({ event: 'packet', ...packet, pending: [], terminal: true })); }
+    } else if (named && !printed.has(head) && expired) { write(JSON.stringify({ event: 'deadline', pr: Number(pr), head, pending: analysis.model.pending, awaitingReaction: awaitingReaction.get(head) === true })); return 'deadline'; }
     // The summary joins the fingerprint: it can appear after the review, and a second clean result only moves its completion time.
     const summary = analysis.model.summary;
     const covered = `${analysis.model.observations.map((o) => o.reviewId).join(',')}|${summary ? `${summary.status}@${summary.completedAt}` : ''}`;
-    if (analysis.model.terminal && printed.get(head) !== covered) {
+    if (named && analysis.model.terminal && printed.get(head) !== covered) {
       // A clean Codex result is final only with its reaction, which arrives after the summary: keep reading until it does or the deadline passes.
       const packet = await complete(analysis, { pr, graphql, selection });
       if (!packet.stale) {
@@ -354,4 +358,4 @@ function ghGraphql(cwd = process.cwd()) {
   return async (query, variables) => JSON.parse(execFileSync(gh, crossPlatformArgs(['api', 'graphql', ...(variables.pr === undefined ? [] : ['-F', 'owner={owner}', '-F', 'name={repo}', '-F', `pr=${variables.pr}`]), ...['id', 'cursor'].filter((key) => variables[key] !== undefined).flatMap((key) => ['-f', `${key}=${variables[key]}`]), '-f', `query=${query}`], needsDoubleEscape('gh', cwd)), crossPlatformOpts({ cwd, encoding: 'utf8', maxBuffer: 64 << 20 })));
 }
 
-module.exports = { DEFAULT_REVIEWERS, QUERY, REVIEWS_PAGE_QUERY, PR_COMMENTS_PAGE_QUERY, THREADS_PAGE_QUERY, THREAD_COMMENTS_PAGE_QUERY, REACTIONS_QUERY, identityOf, itemKey, humanFeedback, reviewersFrom, MAX_BODY_CHARS, WINDOW_SECONDS, collect, watch, analyze, complete, formatPacketLine, ghGraphql };
+module.exports = { QUERY, REVIEWS_PAGE_QUERY, PR_COMMENTS_PAGE_QUERY, THREADS_PAGE_QUERY, THREAD_COMMENTS_PAGE_QUERY, REACTIONS_QUERY, identityOf, itemKey, humanFeedback, reviewersFrom, MAX_BODY_CHARS, WINDOW_SECONDS, collect, watch, analyze, complete, formatPacketLine, ghGraphql };

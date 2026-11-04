@@ -670,8 +670,8 @@ test('a reviewer login that names both a person and a bot refuses the run and wr
   assert.deepStrictEqual(fs.readdirSync(stateDir), []);
 });
 
-test('with no reviewer named and no stored selection the default is resolved for the run only', () => {
+test('with no reviewer named and no stored selection the run observes every account and writes nothing', () => {
   const stateDir = temp();
-  assert.deepStrictEqual(lgtmState.reviewerSelection({ stateDir, pr: 244, logins: [], github: githubUsers() }), { selected: true, recorded: false, selection: [CODEX_ACCOUNT], gone: [] });
+  assert.deepStrictEqual(lgtmState.reviewerSelection({ stateDir, pr: 244, logins: [], github: githubUsers() }), { selected: true, recorded: false, selection: [], gone: [] });
   assert.deepStrictEqual(fs.readdirSync(stateDir), []);
 });
