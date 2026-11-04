@@ -924,11 +924,11 @@ function runMain(repoRoot = process.cwd()) {
     const named = args.includes('--reviewer');
     process.stdout.write(`${JSON.stringify(selectReviewers({ stateDir, pr, logins: named ? collector.reviewersFrom(args) : null, none: args.includes('--none'), github: ghUsers(repoRoot) }))}\n`);
   }
-  else if (verb === 'collect') collector.collect({ pr, head: headSha, graphql: collector.ghGraphql(repoRoot), reviewers: collector.reviewersFrom(process.argv.slice(5)), selection: latestSelection({ stateDir, pr }) }).then((packet) => process.stdout.write(`${collector.formatPacketLine(packet)}\n`), fail);
+  else if (verb === 'collect') collector.collect({ pr, head: headSha, graphql: collector.ghGraphql(repoRoot), reviewers: collector.reviewersFrom(process.argv.slice(5)) }).then((packet) => process.stdout.write(`${collector.formatPacketLine(packet)}\n`), fail);
   else if (verb === 'watch') {
     const graphql = collector.ghGraphql(repoRoot);
     const state = { status: (head) => status({ stateDir, pr, headSha: head }), openWindow: (head) => openWindow({ stateDir, pr, headSha: head, durationMs: collector.WINDOW_SECONDS * 1000 }) };
-    collector.watch({ pr, graphql, state, reviewers: collector.reviewersFrom(process.argv.slice(3)), selection: latestSelection({ stateDir, pr }), write: (line) => process.stdout.write(`${line}\n`) }).catch(fail);
+    collector.watch({ pr, graphql, state, reviewers: collector.reviewersFrom(process.argv.slice(3)), write: (line) => process.stdout.write(`${line}\n`) }).catch(fail);
   }
   else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, waive-fix-budget, collect-minor, self-feeding, merge-ready, select-reviewers, collect, watch, record-review, reject-review-batch, or record-delivery');
 }

@@ -57,20 +57,6 @@ test('only the review made on the head is a current-head observation, and it rec
   assert.deepStrictEqual(packet.comments.map((c) => c.author), []);
 });
 
-test('packet observations carry the reviewer account id and type, and the packet echoes the stored selection', async () => {
-  const CODEX_ID = 199175422;
-  const packet = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble() });
-  assert.deepStrictEqual(packet.observations.map((o) => [o.reviewerId, o.reviewerType]), [[CODEX_ID, 'Bot']]);
-  assert.strictEqual(packet.selection, null);
-  const clean = () => { const data = fixture(); pullRequest(data).reviews.nodes = []; return data; };
-  const synthetic = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble({ main: clean }) });
-  assert.deepStrictEqual(synthetic.observations.map((o) => [o.reviewerId, o.reviewerType]), [[CODEX_ID, 'Bot']]);
-  const selection = { sequence: 3, reviewers: [{ login: CODEX, id: CODEX_ID, type: 'Bot' }], recordedAtMs: 10 };
-  const selected = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble(), selection });
-  assert.deepStrictEqual(selected.selection, { sequence: 3, reviewers: selection.reviewers });
-  assert.strictEqual(lgtmState.recordReview({ stateDir: temp(), pr: 244, headSha: HEAD, observation: selected.observations[0] }).recorded, true);
-});
-
 test('a review whose own commit differs from its comments\' original commit still lists every comment made on the head', async () => {
   const data = fixture();
   const review = pullRequest(data).reviews.nodes.find((r) => r.databaseId === 5470807189);
@@ -157,7 +143,7 @@ test('bodies are size-limited and marked untrusted, and instructions in a body l
   assert.strictEqual(collector.formatPacketLine(packet).includes('\n'), false);
 });
 
-function watchHarness({ responses, status, reactions, step = 30000, selection = null }) {
+function watchHarness({ responses, status, reactions, step = 30000 }) {
   let tick = 0;
   let calls = 0;
   const lines = [];
@@ -171,7 +157,6 @@ function watchHarness({ responses, status, reactions, step = 30000, selection = 
     sleep: async () => { tick += 1; },
     intervalMs: step,
     write: (line) => lines.push(JSON.parse(line)),
-    selection,
   });
   return { run, lines, opened, graphql };
 }
@@ -187,14 +172,6 @@ test('watch prints nothing while reviewers are in progress, then exactly one pac
   assert.deepStrictEqual(harness.lines.map((l) => l.event), ['packet', 'delivery']);
   assert.strictEqual(harness.lines[0].head, HEAD);
   assert.deepStrictEqual(harness.opened, [HEAD]);
-});
-
-test('the watch packet line echoes the stored selection', async () => {
-  const selection = { sequence: 1, reviewers: [], recordedAtMs: 10 };
-  const harness = watchHarness({ responses: [fixture], status: (_head, tick) => ({ deadlineMs: 900000, delivery: tick >= 1 ? { classification: 'mergeable-clean', current: true } : null }), selection });
-  await harness.run();
-  assert.deepStrictEqual(harness.lines[0].selection, { sequence: 1, reviewers: [] });
-  assert.strictEqual(harness.lines[0].observations[0].reviewerType, 'Bot');
 });
 
 test('watch exits at the deadline with one deadline line and lists the reviewers that never finished', async () => {
@@ -562,15 +539,8 @@ test('a user account named like a bot is not matched to the bot', async () => {
   assert.ok(!packet.observations.some((o) => o.reviewId === '5470929926'));
 });
 
-test('identityOf keeps the account id and GitHub type and maps a deleted author to ghost', () => {
-  assert.deepStrictEqual(collector.identityOf({ __typename: 'Bot', login: 'copilot[bot]', databaseId: 9 }), { login: 'copilot', id: 9, type: 'Bot' });
-  assert.deepStrictEqual(collector.identityOf({ __typename: 'User', login: 'alice', databaseId: 101 }), { login: 'alice', id: 101, type: 'User' });
-  assert.deepStrictEqual(collector.identityOf(null), { login: 'ghost', id: null, type: 'User' });
-});
-
 test('the collector query reads account type and id on every author', () => {
-  for (const query of [collector.QUERY, collector.THREADS_PAGE_QUERY, collector.COMMENTS_PAGE_QUERY]) assert.match(query, /__typename login \.\.\. on User\{databaseId\} \.\.\. on Bot\{databaseId\}/);
-  assert.match(collector.QUERY, /viewer\{login databaseId\}/);
+  for (const query of [collector.QUERY, collector.REVIEWS_PAGE_QUERY, collector.PR_COMMENTS_PAGE_QUERY]) assert.match(query, /author\{__typename login \.\.\. on User\{databaseId\} \.\.\. on Bot\{databaseId\}\}/);
 });
 
 test('PR comments and reviews past the first page are collected', async () => {
