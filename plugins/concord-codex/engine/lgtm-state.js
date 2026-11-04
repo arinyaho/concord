@@ -764,7 +764,7 @@ function recordDelivery(input) {
   }, { recorded: false, reason: 'transition-busy' });
 }
 
-// The reviewer selection is an append-only series of records; the highest sequence is current. An empty list means observe every account.
+// The reviewer selection is an append-only series of records; the highest sequence is current.
 function selectionRecords({ stateDir, pr }) {
   const prefix = `pr-${pr}.reviewers-`;
   let names;
@@ -784,36 +784,40 @@ function latestSelection({ stateDir, pr }) {
 // A bot is stored under the slug the collector and --reviewer use; GitHub's REST login for it can differ (Copilot's is `Copilot`), so only a person's login comes from the API.
 const accountOf = ({ login, id, type }, slug) => ({ login: type === 'Bot' ? slug : login, id, type });
 
+// Resolves typed logins to accounts, or names each login it refuses.
+function accountsOf(logins, github, authorId) {
+  const refused = [];
+  const selection = [];
+  for (const raw of logins) {
+    const login = raw.replace(/^@/, '');
+    // Fail closed: a typed [bot] login names only a Bot, and a bare login that is both a person's and a bot's account names neither. An app's bare login is an Organization on GitHub, so an Organization next to a Bot selects the Bot.
+    const asBot = (found) => (found && found.type === 'Bot' ? found : null);
+    let user;
+    if (/\[bot\]$/.test(login)) user = asBot(github.userByLogin(login));
+    else {
+      const plain = github.userByLogin(login);
+      const bot = asBot(github.userByLogin(`${login}[bot]`));
+      if (plain?.type === 'User' && bot) { refused.push({ login, why: 'ambiguous' }); continue; }
+      user = (plain?.type === 'Organization' && bot) || plain || bot;
+    }
+    if (!user) refused.push({ login, why: 'not-found' });
+    else if (user.type === 'Organization') refused.push({ login, why: 'organization' });
+    else if (user.id === authorId) refused.push({ login, why: 'pr-author' });
+    else if (!selection.some((account) => account.id === user.id)) selection.push(accountOf(user, login.replace(/\[bot\]$/, '')));
+  }
+  return { selection, refused };
+}
+
 // GitHub lookups are slow and can stall, so they run before the transition lock; the lock only re-checks that no other selection landed meanwhile and writes.
-function selectReviewers({ stateDir, pr, logins, none = false, github, now = Date.now() }) {
+function selectReviewers({ stateDir, pr, logins, github, now = Date.now() }) {
   if (!Number.isSafeInteger(Number(pr)) || Number(pr) < 1) throw new Error('review-lgtm-state: PR number must be a positive integer');
   const number = Number(pr);
   const latest = selectionRecords({ stateDir, pr: number }).at(-1);
   let selection;
   let gone = [];
-  if (none && logins && logins.length > 0) throw new Error('review-lgtm-state: name reviewers or choose none, not both');
-  if (none) selection = [];
-  else if (logins && logins.length > 0) {
-    const authorId = github.prAuthorId(number);
-    const refused = [];
-    selection = [];
-    for (const raw of logins) {
-      const login = raw.replace(/^@/, '');
-      // Fail closed: a typed [bot] login names only a Bot, and a bare login that is both a person's and a bot's account names neither. An app's bare login is an Organization on GitHub, so an Organization next to a Bot selects the Bot.
-      const asBot = (found) => (found && found.type === 'Bot' ? found : null);
-      let user;
-      if (/\[bot\]$/.test(login)) user = asBot(github.userByLogin(login));
-      else {
-        const plain = github.userByLogin(login);
-        const bot = asBot(github.userByLogin(`${login}[bot]`));
-        if (plain?.type === 'User' && bot) { refused.push({ login, why: 'ambiguous' }); continue; }
-        user = (plain?.type === 'Organization' && bot) || plain || bot;
-      }
-      if (!user) refused.push({ login, why: 'not-found' });
-      else if (user.type === 'Organization') refused.push({ login, why: 'organization' });
-      else if (user.id === authorId) refused.push({ login, why: 'pr-author' });
-      else if (!selection.some((account) => account.id === user.id)) selection.push(accountOf(user, login.replace(/\[bot\]$/, '')));
-    }
+  if (logins && logins.length > 0) {
+    let refused;
+    ({ selection, refused } = accountsOf(logins, github, github.prAuthorId(number)));
     if (refused.length > 0) return { selected: false, reason: 'refused', refused };
   } else {
     // Resume: re-resolve the stored accounts by id so a rename follows the account and a deleted account stays recorded as gone.
@@ -830,6 +834,14 @@ function selectReviewers({ stateDir, pr, logins, none = false, github, now = Dat
     if (!writeExclusive(path.join(stateDir, `pr-${number}.reviewers-${String(sequence).padStart(6, '0')}.json`), { pr: number, sequence, reviewers: selection, recordedAtMs: now })) throw new Error('review-lgtm-state: reviewer record collided; retry');
     return { selected: true, recorded: true, selection, gone };
   }, { selected: false, reason: 'transition-busy' });
+}
+
+// The selection collect and watch use: named reviewers replace the stored selection, a stored selection is refreshed by id,
+// and with neither the built-in default logins are resolved for this run only, writing nothing.
+function reviewerSelection({ stateDir, pr, logins, github, now = Date.now() }) {
+  if (logins.length > 0 || latestSelection({ stateDir, pr })) return selectReviewers({ stateDir, pr, logins: logins.length > 0 ? logins : null, github, now });
+  const { selection, refused } = accountsOf(collector.DEFAULT_REVIEWERS, github, github.prAuthorId(Number(pr)));
+  return refused.length > 0 ? { selected: false, reason: 'refused', refused } : { selected: true, recorded: false, selection, gone: [] };
 }
 
 // gh answers HTTP 404 for an unknown or deleted account; that is a null, every other failure is the caller's.
@@ -919,18 +931,20 @@ function runMain(repoRoot = process.cwd()) {
   else if (verb === 'record-review') process.stdout.write(`${JSON.stringify(recordReview({ stateDir, pr, headSha, observation: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'record-delivery') process.stdout.write(`${JSON.stringify(recordDelivery({ stateDir, pr, headSha, packet: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'reject-review-batch') process.stdout.write(`${JSON.stringify(rejectReviewBatch({ stateDir, pr, headSha, ...JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
-  else if (verb === 'select-reviewers') {
-    const args = process.argv.slice(4);
-    const named = args.includes('--reviewer');
-    process.stdout.write(`${JSON.stringify(selectReviewers({ stateDir, pr, logins: named ? collector.reviewersFrom(args) : null, none: args.includes('--none'), github: ghUsers(repoRoot) }))}\n`);
-  }
-  else if (verb === 'collect') collector.collect({ pr, head: headSha, graphql: collector.ghGraphql(repoRoot), reviewers: collector.reviewersFrom(process.argv.slice(5)) }).then((packet) => process.stdout.write(`${collector.formatPacketLine(packet)}\n`), fail);
-  else if (verb === 'watch') {
+  else if (verb === 'select-reviewers') process.stdout.write(`${JSON.stringify(selectReviewers({ stateDir, pr, logins: collector.reviewersFrom(process.argv.slice(4)), github: ghUsers(repoRoot) }))}\n`);
+  else if (verb === 'collect' || verb === 'watch') {
+    // The selection is resolved once per run; a refusal or a busy selection prints its result and collects nothing.
+    const resolved = reviewerSelection({ stateDir, pr, logins: collector.reviewersFrom(process.argv.slice(verb === 'collect' ? 5 : 4)), github: ghUsers(repoRoot) });
+    if (!resolved.selected) { process.stdout.write(`${JSON.stringify(resolved)}\n`); process.exitCode = 1; return; }
+    const { selection } = resolved;
     const graphql = collector.ghGraphql(repoRoot);
-    const state = { status: (head) => status({ stateDir, pr, headSha: head }), openWindow: (head) => openWindow({ stateDir, pr, headSha: head, durationMs: collector.WINDOW_SECONDS * 1000 }) };
-    collector.watch({ pr, graphql, state, reviewers: collector.reviewersFrom(process.argv.slice(3)), write: (line) => process.stdout.write(`${line}\n`) }).catch(fail);
+    if (verb === 'collect') collector.collect({ pr, head: headSha, graphql, selection }).then((packet) => process.stdout.write(`${collector.formatPacketLine(packet)}\n`), fail);
+    else {
+      const state = { status: (head) => status({ stateDir, pr, headSha: head }), openWindow: (head) => openWindow({ stateDir, pr, headSha: head, durationMs: collector.WINDOW_SECONDS * 1000 }) };
+      collector.watch({ pr, graphql, state, selection, write: (line) => process.stdout.write(`${line}\n`) }).catch(fail);
+    }
   }
   else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, waive-fix-budget, collect-minor, self-feeding, merge-ready, select-reviewers, collect, watch, record-review, reject-review-batch, or record-delivery');
 }
 
-module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, waiveFixBudget, collectMinor, mergeReady, selfFeeding, recordReview, rejectReviewBatch, classifyDelivery, recordDelivery, selectReviewers, latestSelection, ghUsers, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, runMain };
+module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, waiveFixBudget, collectMinor, mergeReady, selfFeeding, recordReview, rejectReviewBatch, classifyDelivery, recordDelivery, selectReviewers, reviewerSelection, latestSelection, ghUsers, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, runMain };

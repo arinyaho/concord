@@ -76,13 +76,6 @@ test('a deleted reviewer is gone and stays in the selection', () => {
   assert.deepStrictEqual(lgtmState.latestSelection({ stateDir, pr: PR }).reviewers, [{ login: 'alice', id: 101, type: 'User', gone: true }]);
 });
 
-test('select-reviewers --none returns to observing every account', () => {
-  const stateDir = temp();
-  lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice'], github: github() });
-  lgtmState.selectReviewers({ stateDir, pr: PR, logins: null, none: true, github: github() });
-  assert.deepStrictEqual(lgtmState.latestSelection({ stateDir, pr: PR }).reviewers, []);
-});
-
 test('select-reviewers rejects a non-numeric PR number and writes nothing', () => {
   const stateDir = temp();
   for (const pr of ['--reviewer', 'abc', '0', undefined]) assert.throws(() => lgtmState.selectReviewers({ stateDir, pr, logins: null, github: github() }), /PR number must be a positive integer/);
@@ -93,9 +86,9 @@ test('select-reviewers answers transition-busy when another selection lands duri
   const stateDir = temp();
   const racing = github();
   let raced = false;
-  racing.userByLogin = (login) => { if (!raced) { raced = true; lgtmState.selectReviewers({ stateDir, pr: PR, logins: null, none: true, github: github(), now: 5 }); } return ACCOUNTS[login] || null; };
+  racing.userByLogin = (login) => { if (!raced) { raced = true; lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['copilot-pull-request-reviewer'], github: github(), now: 5 }); } return ACCOUNTS[login] || null; };
   assert.deepStrictEqual(lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice'], github: racing }), { selected: false, reason: 'transition-busy' });
-  assert.deepStrictEqual(lgtmState.latestSelection({ stateDir, pr: PR }).reviewers, []);
+  assert.deepStrictEqual(lgtmState.latestSelection({ stateDir, pr: PR }).reviewers.map((r) => r.id), [900]);
   assert.strictEqual(lgtmState.latestSelection({ stateDir, pr: PR }).sequence, 1);
 });
 
@@ -147,10 +140,4 @@ test('select-reviewers selects the bot when its bare login is an organization', 
 test('select-reviewers selects the user when a bare login has no bot form', () => {
   const stateDir = temp();
   assert.deepStrictEqual(lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice'], github: github() }).selection, [ACCOUNTS.alice]);
-});
-
-test('select-reviewers rejects named reviewers together with none', () => {
-  const stateDir = temp();
-  assert.throws(() => lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice'], none: true, github: github() }), /not both/);
-  assert.strictEqual(lgtmState.latestSelection({ stateDir, pr: PR }), null);
 });
