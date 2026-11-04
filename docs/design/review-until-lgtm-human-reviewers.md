@@ -197,7 +197,7 @@ Replies are idempotent. Before posting, the skill claims the item with `claim-re
 
 ### Request re-review
 
-After each push the skill asks each selected human to review the new head, once per reviewer per head, through GitHub's requested-reviewers API. `claim-human-request <pr> <head-sha> <reviewer-id>` writes a write-once claim; after GitHub accepts the request, `mark-human-requested` writes the sent marker. A claim without a sent marker is settled from the PR timeline: a review-request event for that reviewer by the acting account after the head appeared counts as sent; otherwise the request is sent once. On the first run, a selected human who is not already requested and has not reviewed the head gets the same single request. A request refused by GitHub (the account cannot be requested on this repository) is reported once as `request-refused:<login>` and is not retried.
+After each push the skill asks each selected human to review the new head, once per reviewer per head, through GitHub's requested-reviewers API. `claim-human-request <pr> <head-sha> <reviewer-id>` writes a write-once claim; after GitHub accepts the request, `mark-human-requested` writes the sent marker. A claim without a sent marker is settled from the PR timeline: a review-request event for that reviewer by the acting account after the head appeared counts as sent; otherwise the request is sent once. On the first run, a selected human who is not already requested and has not reviewed the head gets the same single request. A request refused by GitHub (the account cannot be requested on this repository) is recorded in the `-refused.json` marker, reported once as `request-refused:<login>`, and not retried: the marker is read before any request.
 
 On a draft PR no review request is sent; everything else runs, including the bot loop and the answering of human feedback. When the wait sees the PR leave draft (`ready`), the skill sends the requests owed for the live head, once each.
 
@@ -295,7 +295,7 @@ The human path adds these markers beside the bot loop's. Each is written with th
 |---|---|---|
 | `pr-<n>.reviewers-<sequence>.json` | PR, locked | The selection: `[{login, id, type}]`, recorded time; the latest sequence wins |
 | `pr-<n>-<head>.human-wait-<sequence>.json` | head | `startedAtMs`, `deadlineMs`; the latest sequence wins |
-| `pr-<n>-<head>.human-request-<reviewer>-claim.json`, `-request.json` | head and reviewer | Request claim, then the sent marker |
+| `pr-<n>-<head>.human-request-<reviewer>-claim.json`, `-request.json`, `-refused.json` | head and reviewer | Request claim, then the sent marker, or the refusal marker written when GitHub refuses the request; its presence ends retries and is what `status` reports as the refusal |
 | `pr-<n>.reply-<item>-claim.json` | PR, locked | Reply claim for one feedback item revision |
 | `pr-<n>.feedback-<item>.json` | PR | Handled record: item id and revision, kind, URL, author `{login, id, type}`, original commit, disposition (including `author-answered` and `no-action`), reason, reply or answer URL, fix commit |
 | `pr-<n>-<head>.fix-round-claim.json` | head, locked | Existing claim; gains `itemIds`, the human items the round takes |
