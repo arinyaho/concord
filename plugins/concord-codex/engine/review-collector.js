@@ -22,10 +22,12 @@ const MIN_INTERVAL_MS = 30000;
 const AUTHOR_FIELDS = 'author{__typename login ... on User{databaseId} ... on Bot{databaseId}}';
 const COMMENT_FIELDS = 'id databaseId url body path line commit{oid} originalCommit{oid}';
 const CONTEXT_FIELDS = '__typename ... on CheckRun{name status conclusion} ... on StatusContext{context state}';
-const THREAD_FIELDS = 'id isResolved comments(first:100){pageInfo{hasNextPage endCursor} nodes{id}}';
-const REVIEW_FIELDS = `id databaseId url state submittedAt body ${AUTHOR_FIELDS} commit{oid} comments(first:100){pageInfo{hasNextPage endCursor} nodes{${COMMENT_FIELDS}}}`;
-const PR_COMMENT_FIELDS = `databaseId url body createdAt ${AUTHOR_FIELDS}`;
-const QUERY = `query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){id headRefOid
+// A thread comment is a human item: it carries its author, its revision and the review GitHub created it in.
+const THREAD_COMMENT_FIELDS = `${COMMENT_FIELDS} ${AUTHOR_FIELDS} createdAt lastEditedAt pullRequestReview{databaseId url state submittedAt commit{oid}}`;
+const THREAD_FIELDS = `id isResolved comments(first:100){pageInfo{hasNextPage endCursor} nodes{${THREAD_COMMENT_FIELDS}}}`;
+const REVIEW_FIELDS = `id databaseId url state submittedAt createdAt lastEditedAt body ${AUTHOR_FIELDS} commit{oid} comments(first:100){pageInfo{hasNextPage endCursor} nodes{${COMMENT_FIELDS}}}`;
+const PR_COMMENT_FIELDS = `id databaseId url body createdAt lastEditedAt ${AUTHOR_FIELDS}`;
+const QUERY = `query($owner:String!,$name:String!,$pr:Int!){viewer{login databaseId} repository(owner:$owner,name:$name){pullRequest(number:$pr){id headRefOid ${AUTHOR_FIELDS}
 reviews(first:100){pageInfo{hasNextPage endCursor} nodes{${REVIEW_FIELDS}}}
 reviewThreads(first:100){pageInfo{hasNextPage endCursor} nodes{${THREAD_FIELDS}}}
 comments(first:100){pageInfo{hasNextPage endCursor} nodes{${PR_COMMENT_FIELDS}}}
@@ -34,7 +36,7 @@ commits(last:1){nodes{commit{oid statusCheckRollup{id contexts(first:100){pageIn
 const REVIEWS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on PullRequest{reviews(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${REVIEW_FIELDS}}}}}}`;
 const PR_COMMENTS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on PullRequest{comments(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${PR_COMMENT_FIELDS}}}}}}`;
 const THREADS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on PullRequest{reviewThreads(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${THREAD_FIELDS}}}}}}`;
-const THREAD_COMMENTS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on PullRequestReviewThread{comments(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{id}}}}}`;
+const THREAD_COMMENTS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on PullRequestReviewThread{comments(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${THREAD_COMMENT_FIELDS}}}}}}`;
 const COMMENTS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on PullRequestReview{comments(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${COMMENT_FIELDS}}}}}}`;
 const CONTEXTS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on StatusCheckRollup{contexts(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${CONTEXT_FIELDS}}}}}}`;
 const REACTIONS_QUERY = 'query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){headRefOid reactionGroups{content reactors(first:100){edges{reactedAt node{__typename ... on Bot{databaseId}}}}}}}}';
@@ -45,6 +47,17 @@ function selectedOf(author, selection) { return (author && selection.find((accou
 
 // Codex's summary comment and clean-result reaction count only from the selected Codex Bot account.
 function codexOf(selection) { return selection.find((account) => !account.gone && account.type === 'Bot' && account.login === CODEX_REVIEWER) || null; }
+
+// The bot path reads only the selected Bot accounts; a selected person is collected through the human path.
+function botsOf(selection) { return selection.filter((account) => account.type === 'Bot'); }
+
+// An author as the human path names it. A deleted account's author is null on GitHub and shows as ghost.
+function identityOf(author) { return author ? { login: String(author.login).replace(/\[bot\]$/, ''), id: author.databaseId ?? null, type: author.__typename } : { login: 'ghost', id: null, type: 'User' }; }
+
+// A feedback item is one revision of one GitHub node, so an edit after an answer is a new item.
+function itemKey(nodeId, revision) { return `${nodeId}@${revision}`; }
+
+function oidOf(commit) { return commit && commit.oid ? commit.oid.toLowerCase() : null; }
 
 function wholeSeconds(iso) { return Math.floor(Date.parse(iso) / 1000); }
 
@@ -116,37 +129,94 @@ async function fillPages(connection, query, id, field, graphql) {
   }
 }
 
-// Every review and PR comment is paged; only the selected reviewers' inline comments are.
+// Every review, PR comment and thread comment is paged; a review's own inline comments only for a selected Bot.
 async function read(graphql, pr, selection) {
   const response = await graphql(QUERY, { pr });
   const pull = pullRequestOf(response);
   await fillPages(pull.comments, PR_COMMENTS_PAGE_QUERY, pull.id, 'comments', graphql);
   await fillPages(pull.reviews, REVIEWS_PAGE_QUERY, pull.id, 'reviews', graphql);
   await fillPages(pull.reviewThreads, THREADS_PAGE_QUERY, pull.id, 'reviewThreads', graphql);
-  // Only a resolved thread's comments matter: they are the ids that stop being findings.
-  await Promise.all(pull.reviewThreads.nodes.filter((thread) => thread.isResolved).map((thread) => fillPages(thread.comments, THREAD_COMMENTS_PAGE_QUERY, thread.id, 'comments', graphql)));
-  await Promise.all(pull.reviews.nodes.filter((review) => selectedOf(review.author, selection)).map((review) => fillPages(review.comments, COMMENTS_PAGE_QUERY, review.id, 'comments', graphql)));
+  await Promise.all(pull.reviewThreads.nodes.map((thread) => fillPages(thread.comments, THREAD_COMMENTS_PAGE_QUERY, thread.id, 'comments', graphql)));
+  const bots = botsOf(selection);
+  await Promise.all(pull.reviews.nodes.filter((review) => selectedOf(review.author, bots)).map((review) => fillPages(review.comments, COMMENTS_PAGE_QUERY, review.id, 'comments', graphql)));
   const commit = pull.commits.nodes[0] && pull.commits.nodes[0].commit;
   if (commit && commit.statusCheckRollup) await fillPages(commit.statusCheckRollup.contexts, CONTEXTS_PAGE_QUERY, commit.statusCheckRollup.id, 'contexts', graphql);
   return response;
+}
+
+// Every unanswered feedback item on the PR, wherever it was made, grouped into one observation per review or conversation comment.
+// `mode` 'all' (empty selection) takes every account; 'named' takes every person and leaves the bots to the bot path.
+function humanFeedback(pull, { head, mode, selection, prAuthorId, actorId }) {
+  const byAnswerer = (node) => { const { id } = identityOf(node.author); return id !== null && (id === prAuthorId || id === actorId); };
+  const eligible = ({ id, type }) => id === null || (id !== prAuthorId && id !== actorId && (type !== 'Bot' || mode === 'all'));
+  const after = (node, revision) => Date.parse(node.createdAt) >= Date.parse(revision);
+  const reviews = pull.reviews.nodes.filter((review) => review.state !== 'PENDING');
+  // A review body or conversation comment is answered by a later author comment or review body that links it, as GitHub's "Quote reply" and "Copy link" do.
+  const answers = [...pull.comments.nodes, ...reviews].filter(byAnswerer);
+  const linkAnswer = (url) => {
+    const link = new RegExp(`${url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_-])`);
+    return (revision) => answers.find((node) => after(node, revision) && link.test(node.body || '')) || null;
+  };
+  const entries = [];
+  const add = (node, { kind, group, review, originalCommitId, answerOf, revision = node.lastEditedAt || node.createdAt }) => {
+    const author = identityOf(node.author);
+    if (!eligible(author)) return;
+    const answer = answerOf(revision);
+    const { body, truncated } = limited(node.body);
+    const item = { itemId: itemKey(node.id, revision), kind, url: node.url, author, originalCommitId, group, reviewUrl: review.url, reviewCommitId: oidOf(review.commit), submittedAt: review.submittedAt, body, truncated, untrusted: true, answered: answer !== null };
+    entries.push({ item, answer, priority: priorityOf(node.body), suggestions: suggestionsOf(body), approved: review.state === 'APPROVED' && oidOf(review.commit) === head });
+  };
+  for (const review of reviews) {
+    if ((review.body || '').trim() !== '') add(review, { kind: 'review-body', group: String(review.databaseId), review, originalCommitId: oidOf(review.commit), answerOf: linkAnswer(review.url) });
+  }
+  for (const thread of pull.reviewThreads.nodes.filter((t) => !t.isResolved)) {
+    const comments = thread.comments.nodes;
+    // An inline item is answered by a later comment of the author in the same thread.
+    comments.forEach((comment, i) => add(comment, { kind: i === 0 ? 'inline' : 'reply', group: String(comment.pullRequestReview.databaseId), review: comment.pullRequestReview, originalCommitId: oidOf(comment.originalCommit), answerOf: (revision) => comments.slice(i + 1).find((later) => byAnswerer(later) && after(later, revision)) || null }));
+  }
+  // A bot that updates its conversation comment in place makes no new revision.
+  for (const comment of pull.comments.nodes) add(comment, { kind: 'comment', group: `comment-${comment.databaseId}`, review: { url: comment.url, commit: null, submittedAt: comment.createdAt }, originalCommitId: null, answerOf: linkAnswer(comment.url), revision: identityOf(comment.author).type === 'Bot' ? comment.createdAt : undefined });
+  // A person's approval is the latest review GitHub's review decision reads (a comment-only review does not replace it), and only on the commit it is attached to.
+  const latest = new Map();
+  for (const review of reviews) if (review.state !== 'COMMENTED') latest.set(identityOf(review.author).id, String(review.databaseId));
+  const observationOf = (author, { reviewUrl, reviewCommitId, submittedAt }, group, approved) => ({ reviewId: group, reviewer: author.login, reviewerId: author.id, reviewerType: author.type, reviewUrl, commitId: head, reviewCommitId, submittedAt, state: 'completed', lgtm: approved && author.type === 'User' && latest.get(author.id) === group, findings: [] });
+  const groups = new Map();
+  for (const { item, priority, suggestions, approved } of entries.filter((e) => !e.item.answered)) {
+    if (!groups.has(item.group)) groups.set(item.group, observationOf(item.author, item, item.group, approved));
+    groups.get(item.group).findings.push({ url: item.url, priority, signals: [], itemId: item.itemId, kind: item.kind, author: item.author, originalCommitId: item.originalCommitId, body: item.body, truncated: item.truncated, suggestions, untrusted: true });
+  }
+  // A selected person's clean approval of the head is an observation without findings.
+  const people = selection.filter((account) => account.type === 'User');
+  for (const review of reviews) {
+    const group = String(review.databaseId);
+    if (groups.has(group) || !selectedOf(review.author, people)) continue;
+    const observation = observationOf(identityOf(review.author), { reviewUrl: review.url, reviewCommitId: oidOf(review.commit), submittedAt: review.submittedAt }, group, review.state === 'APPROVED' && oidOf(review.commit) === head);
+    if (observation.lgtm) groups.set(group, observation);
+  }
+  return {
+    observations: [...groups.values()],
+    authorAnswered: entries.filter((e) => e.item.answered).map(({ item, answer }) => ({ itemId: item.itemId, url: item.url, answerUrl: answer.url, kind: item.kind, author: item.author, originalCommitId: item.originalCommitId })),
+    items: entries.map((e) => e.item),
+  };
 }
 
 // A review belongs to the head when its own commit is the head or when any of
 // its inline comments was made on the head (originalCommit): GitHub moves a
 // comment's current commit to every later head, so `commit` says nothing about
 // where the finding was made.
-// A selected User is observed through the same review path as a bot.
+// The bot path observes the selected Bots; the human result from the same read is carried beside it to `complete`, so the watch's activity and fingerprint stay bot-only.
 function analyze(response, head, selection) {
   const pr = pullRequestOf(response);
   const live = pr.headRefOid.toLowerCase();
   if (live !== head) return { stale: true, head, liveHead: live };
+  const bots = botsOf(selection);
   const codex = codexOf(selection);
   const summary = summaryOf(pr.comments.nodes, head, codex);
   const resolved = new Set(pr.reviewThreads.nodes.filter((t) => t.isResolved).flatMap((t) => t.comments.nodes.map((c) => c.id)));
   const observations = [];
   const observed = new Set();
   for (const review of pr.reviews.nodes) {
-    const account = selectedOf(review.author, selection);
+    const account = selectedOf(review.author, bots);
     if (!account || review.state === 'PENDING') continue;
     const inline = review.comments.nodes;
     const reviewCommit = review.commit ? review.commit.oid.toLowerCase() : null; // null once a force-push drops the commit
@@ -158,7 +228,7 @@ function analyze(response, head, selection) {
     observations.push({ reviewId: String(review.databaseId), reviewer: account.login, reviewUrl: review.url, commitId: head, reviewCommitId: reviewCommit, submittedAt: review.submittedAt, state: 'completed', lgtm: review.state === 'APPROVED', findings: own.map(finding), ...limited(review.body), untrusted: true });
   }
   // A gone (deleted) account can no longer answer, so it is never pending.
-  const pending = selection.filter((account) => !account.gone && (account === codex && summary ? summary.status !== 'completed' : !observed.has(account))).map((account) => account.login);
+  const pending = bots.filter((account) => !account.gone && (account === codex && summary ? summary.status !== 'completed' : !observed.has(account))).map((account) => account.login);
   const activity = observations.length > 0 || summary !== null;
   return {
     stale: false,
@@ -170,18 +240,19 @@ function analyze(response, head, selection) {
       summary: summary && { url: summary.url, commit: summary.commit, status: summary.status, completedAt: summary.completedAt },
       reaction: null,
       observations,
-      comments: pr.comments.nodes.map((c) => [c, selectedOf(c.author, selection)]).filter(([c, account]) => account && !(c.body || '').includes(SUMMARY_MARKER)).map(([c, account]) => ({ url: c.url, author: account.login, ...limited(c.body), untrusted: true })),
+      comments: pr.comments.nodes.map((c) => [c, selectedOf(c.author, bots)]).filter(([c, account]) => account && !(c.body || '').includes(SUMMARY_MARKER)).map(([c, account]) => ({ url: c.url, author: account.login, ...limited(c.body), untrusted: true })),
       checks: checksOf(pr, head),
     },
     activity,
     summaryId: summary && summary.id,
+    human: humanFeedback(pr, { head, mode: selection.length > 0 ? 'named' : 'all', selection, prAuthorId: identityOf(pr.author).id, actorId: response.data.viewer.databaseId }),
   };
 }
 
 // The reaction list is read once, when the Codex summary has turned Completed
 // for this head; GitHub sends no event for a reaction, so this is the only way
 // to see the clean-result thumbs-up.
-async function complete(analysis, { pr, graphql, selection }) {
+async function botPacket(analysis, { pr, graphql, selection }) {
   const { untrusted, ...rest } = analysis.model;
   const packet = { untrusted, pr: Number(pr), ...rest, awaitingReaction: false };
   const summary = packet.summary;
@@ -217,7 +288,14 @@ async function complete(analysis, { pr, graphql, selection }) {
   return packet;
 }
 
-async function collect({ pr, head, graphql, selection }) {
+// Human observations follow the bot ones and come after the Codex reaction logic, so they never hold a clean bot batch waiting for its reaction.
+async function complete(analysis, options) {
+  const packet = await botPacket(analysis, options);
+  if (packet.stale) return packet;
+  return { ...packet, observations: [...packet.observations, ...analysis.human.observations], authorAnswered: analysis.human.authorAnswered };
+}
+
+async function collect({ pr, head, graphql, selection = [] }) {
   const normalized = String(head).toLowerCase();
   const analysis = analyze(await read(graphql, pr, selection), normalized, selection);
   if (analysis.stale) return { stale: true, head: analysis.head, liveHead: analysis.liveHead };
@@ -276,4 +354,4 @@ function ghGraphql(cwd = process.cwd()) {
   return async (query, variables) => JSON.parse(execFileSync(gh, crossPlatformArgs(['api', 'graphql', ...(variables.pr === undefined ? [] : ['-F', 'owner={owner}', '-F', 'name={repo}', '-F', `pr=${variables.pr}`]), ...['id', 'cursor'].filter((key) => variables[key] !== undefined).flatMap((key) => ['-f', `${key}=${variables[key]}`]), '-f', `query=${query}`], needsDoubleEscape('gh', cwd)), crossPlatformOpts({ cwd, encoding: 'utf8', maxBuffer: 64 << 20 })));
 }
 
-module.exports = { DEFAULT_REVIEWERS, QUERY, REVIEWS_PAGE_QUERY, PR_COMMENTS_PAGE_QUERY, REACTIONS_QUERY, reviewersFrom, MAX_BODY_CHARS, WINDOW_SECONDS, collect, watch, analyze, complete, formatPacketLine, ghGraphql };
+module.exports = { DEFAULT_REVIEWERS, QUERY, REVIEWS_PAGE_QUERY, PR_COMMENTS_PAGE_QUERY, THREADS_PAGE_QUERY, THREAD_COMMENTS_PAGE_QUERY, REACTIONS_QUERY, identityOf, itemKey, humanFeedback, reviewersFrom, MAX_BODY_CHARS, WINDOW_SECONDS, collect, watch, analyze, complete, formatPacketLine, ghGraphql };

@@ -20,8 +20,19 @@ const CODEX_ID = 199175422;
 const CODEX_ACCOUNT = { login: CODEX, id: CODEX_ID, type: 'Bot' };
 const SELECTION = [CODEX_ACCOUNT];
 
-function fixture() { return JSON.parse(fs.readFileSync(FIXTURE, 'utf8')); }
 function pullRequest(data) { return data.data.repository.pullRequest; }
+// The recording predates the human-path fields. Its PR author (arinyaho, 4135) is also the acting account, a review's creation is its submission,
+// and each thread comment carries what its review's inline comment, author and review hold.
+function fixture() {
+  const data = JSON.parse(fs.readFileSync(FIXTURE, 'utf8'));
+  const pull = pullRequest(data);
+  pull.author = pull.reviews.nodes.find((r) => r.author.login === 'arinyaho').author;
+  data.data.viewer = { login: pull.author.login, databaseId: pull.author.databaseId };
+  for (const r of pull.reviews.nodes) Object.assign(r, { createdAt: r.submittedAt, lastEditedAt: null });
+  const byId = new Map(pull.reviews.nodes.flatMap((r) => r.comments.nodes.map((c) => [c.id, { ...c, author: r.author, createdAt: r.submittedAt, lastEditedAt: null, pullRequestReview: { databaseId: r.databaseId, url: r.url, state: r.state, submittedAt: r.submittedAt, commit: r.commit } }])));
+  for (const t of pull.reviewThreads.nodes) t.comments.nodes = t.comments.nodes.map((c) => byId.get(c.id) || c);
+  return data;
+}
 function reactionsResponse(edges, headRefOid = HEAD) { return { data: { repository: { pullRequest: { headRefOid, reactionGroups: [{ content: 'THUMBS_UP', reactors: { edges } }] } } } }; }
 function thumbsUp(createdAt, databaseId = CODEX_ID, type = 'Bot') { return { reactedAt: createdAt, node: { __typename: type, databaseId } }; }
 function temp() { return tempDir('review-collector-'); }
@@ -378,12 +389,13 @@ test('a review with findings stays not-lgtm even with a fresh thumbs-up', async 
   assert.strictEqual(packet.observations.find((o) => o.reviewId === String(REVIEW)).lgtm, false);
 });
 
-test('a review by the selected login with a different account id or type is not observed', async () => {
-  for (const author of [{ __typename: 'Bot', login: CODEX, databaseId: 777 }, { __typename: 'User', login: CODEX, databaseId: CODEX_ID }]) {
+// A person with the bot's login is still a person: their review body is human feedback, never the bot's review.
+test('a review by the selected login with a different account id or type is not observed as the bot', async () => {
+  for (const [author, types] of [[{ __typename: 'Bot', login: CODEX, databaseId: 777 }, []], [{ __typename: 'User', login: CODEX, databaseId: CODEX_ID }, ['User']]]) {
     const data = fixture();
     headReview(data).author = author;
     const packet = await collector.collect({ pr: 244, head: HEAD, selection: SELECTION, graphql: graphqlDouble({ main: () => data }) });
-    assert.ok(!packet.observations.some((o) => o.reviewId === String(REVIEW)));
+    assert.deepStrictEqual(packet.observations.filter((o) => o.reviewId === String(REVIEW)).map((o) => o.reviewerType), types);
   }
 });
 
@@ -553,11 +565,11 @@ test('a user account named like a bot is not matched to the bot', async () => {
   const review = pullRequest(data).reviews.nodes.find((r) => r.databaseId === 5470929926);
   review.author = { __typename: 'User', login: CODEX, databaseId: 777 };
   const packet = await collector.collect({ pr: 244, head: HEAD, selection: SELECTION, graphql: graphqlDouble({ main: data }) });
-  assert.ok(!packet.observations.some((o) => o.reviewId === '5470929926'));
+  assert.deepStrictEqual(packet.observations.filter((o) => o.reviewId === '5470929926').map((o) => [o.reviewerType, o.findings.map((x) => x.kind)]), [['User', ['review-body']]]);
 });
 
 test('the collector query reads account type and id on every author and the reaction by Bot id', () => {
-  for (const query of [collector.QUERY, collector.REVIEWS_PAGE_QUERY, collector.PR_COMMENTS_PAGE_QUERY]) assert.match(query, /author\{__typename login \.\.\. on User\{databaseId\} \.\.\. on Bot\{databaseId\}\}/);
+  for (const query of [collector.QUERY, collector.REVIEWS_PAGE_QUERY, collector.PR_COMMENTS_PAGE_QUERY, collector.THREADS_PAGE_QUERY, collector.THREAD_COMMENTS_PAGE_QUERY]) assert.match(query, /author\{__typename login \.\.\. on User\{databaseId\} \.\.\. on Bot\{databaseId\}\}/);
   assert.match(collector.REACTIONS_QUERY, /node\{__typename \.\.\. on Bot\{databaseId\}\}/);
 });
 
@@ -633,17 +645,20 @@ test('a renamed account is still collected by id after the selection is refreshe
   const { selection } = lgtmState.reviewerSelection({ stateDir, pr: 244, logins: [], github: renamed });
   assert.deepStrictEqual(selection, [{ login: 'alice-2', id: 101, type: 'User' }]);
   const data = withReviewBy(withReviewBy(fixture(), { __typename: 'User', login: 'alice-2', databaseId: 101 }), { __typename: 'User', login: 'alice', databaseId: 999 }, 5479990002);
+  for (const review of pullRequest(data).reviews.nodes.filter((r) => r.databaseId >= 5479990001)) Object.assign(review, { body: '', state: 'APPROVED' });
   const packet = await collectWith(selection, data);
-  assert.deepStrictEqual(packet.observations.map((o) => [o.reviewId, o.reviewer]), [['5479990001', 'alice-2']]);
+  // Only the selected account's approval is its response; the account that took the old login is not the reviewer.
+  assert.deepStrictEqual(packet.observations.map((o) => [o.reviewId, o.reviewer, o.reviewerId, o.lgtm]), [['5479990001', 'alice-2', 101, true]]);
 });
 
-test('a deleted account is neither collected nor pending', async () => {
+test('a deleted account is not pending', async () => {
   const stateDir = temp();
   lgtmState.selectReviewers({ stateDir, pr: 244, logins: ['alice', CODEX], github: githubUsers() });
   const { selection } = lgtmState.reviewerSelection({ stateDir, pr: 244, logins: [], github: githubUsers({ alice: null }) });
   assert.deepStrictEqual(selection, [{ login: 'alice', id: 101, type: 'User', gone: true }, CODEX_ACCOUNT]);
   const packet = await collectWith(selection, withReviewBy(fixture(), { __typename: 'User', login: 'alice', databaseId: 101 }));
-  assert.deepStrictEqual(packet.observations.map((o) => o.reviewer), [CODEX]);
+  // The feedback a gone person left is still owed an answer, so it is collected as a person's feedback.
+  assert.deepStrictEqual(packet.observations.map((o) => [o.reviewer, o.reviewerType]), [[CODEX, undefined], ['alice', 'User']]);
   assert.deepStrictEqual(packet.pending, []);
   assert.strictEqual(packet.terminal, true);
 });
