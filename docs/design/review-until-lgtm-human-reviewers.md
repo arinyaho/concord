@@ -110,7 +110,7 @@ When the collector recognizes an answer, the skill writes the item's handled rec
 
 ### Feedback across pushes
 
-A human's comment is made on one commit and is still owed an answer after the head moves. Feedback is therefore collected by whether it is answered, not by the head it was made on: every unanswered item enters the batch of the live head, wherever it was made, and keeps the commit it was made on. This is the deliberate difference from bot collection, which keeps only reviews made on the head and treats older ones as history. An approval is the opposite: it is attached to one commit and never moves (see Approval).
+A human's comment is made on one commit and is still owed an answer after the head moves. Feedback is therefore collected by whether it is answered, not by the head it was made on: every unanswered item enters the batch of the live head, wherever it was made, and keeps the commit it was made on. This is the deliberate difference from the bot loop under a named selection, which keeps only reviews made on the head and treats older ones as history; in empty mode, bot items follow the same unanswered test. An approval is the opposite: it is attached to one commit and never moves (see Approval).
 
 ### Observation shape
 
@@ -179,7 +179,7 @@ A human's minor suggestion is fixed rather than ticketed because the person who 
 
 ### Fix and reply
 
-A fix round is claimed, owned, certified and pushed as in the bot loop: one claim per head with an immutable owner, one certified commit and one push. `claim-fix-round` reads the human item ids of the plan on stdin and writes them as `itemIds` into the head's `fix-round-claim` marker, which is what removes them from the unanswered set. A push happens only where the bot loop already authorizes it.
+A fix round is claimed, owned, certified and pushed as in the bot loop: one claim per head with an immutable owner, one certified commit and one push. `claim-fix-round` reads from stdin the ids of the plan's items that the unanswered test collects (every item in empty mode, the human items under a named selection) and writes them as `itemIds` into the head's `fix-round-claim` marker, which is what removes them from the unanswered set. A push happens only where the bot loop already authorizes it.
 
 Human-driven rounds have their own cap. A round whose plan holds at least one human item spends a slot of the human cap (`pr-<n>.human-fix-round-slot-<k>.json`); a round with only bot items spends a slot of the existing PR-wide bot cap of three, which is unchanged. A head still has at most one fix round of either kind. The human cap defaults to five rounds per PR, a design choice: a human review commonly takes more iterations than an automated one, and each human round already costs the reviewer a re-review, so the cap guards a runaway loop rather than rationing ordinary iterations; three would park ordinary reviews too often, and an unbounded cap would let a disagreement loop forever. Only a person raises it, with `waive-fix-budget <pr> <person> <n> --human`, which follows the existing waiver rules (pairs of person and count add up, a repeated pair changes nothing) and raises only the human cap; `status` reports `humanFixBudget` and its waivers beside `fixBudget`. Exhausting either cap stops for human reconciliation as now.
 
@@ -300,7 +300,7 @@ The human path adds these markers beside the bot loop's. Each is written with th
 | `pr-<n>-<head>.human-request-<reviewer>-claim.json`, `-request.json`, `-refused.json` | head and reviewer | Request claim, then the sent marker, or the refusal marker written when GitHub refuses the request; its presence ends retries and is what `status` reports as the refusal |
 | `pr-<n>.reply-<item>-claim.json` | PR, locked | Reply claim for one feedback item revision |
 | `pr-<n>.feedback-<item>.json` | PR | Handled record: item id and revision, kind, URL, author `{login, id, type}`, original commit, disposition (including `author-answered` and `no-action`), reason, reply or answer URL, fix commit |
-| `pr-<n>-<head>.fix-round-claim.json` | head, locked | Existing claim; gains `itemIds`, the human items the round takes |
+| `pr-<n>-<head>.fix-round-claim.json` | head, locked | Existing claim; gains `itemIds`, the items the round takes that the unanswered test collects (human and bot in empty mode, human under a named selection) |
 | `pr-<n>.human-fix-round-slot-<k>.json` | PR, locked | One slot of the human fix cap |
 | `pr-<n>.fix-waiver-<id>.json` | PR | Existing waiver; gains `kind: "human"` for a waiver of the human cap |
 | `pr-<n>-<head>.approve-prompt-<reviewer>.json` | head and reviewer | The single request to press Approve on that head |
