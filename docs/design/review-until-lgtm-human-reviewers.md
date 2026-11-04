@@ -118,7 +118,7 @@ The collector already turns each review into one `record-review` observation tha
 
 | Field | Held by the bot path | Added for the human path |
 |---|---|---|
-| `reviewId` | GitHub review database id, decimal digits; the file key `review-<id>` | A thread reply belongs to the review GitHub created for it and joins that review's observation; a PR conversation comment is its own observation with id `comment-<databaseId>` and file key `comment-<databaseId>`, so the two id spaces cannot collide |
+| `reviewId` | GitHub review database id, decimal digits; the file key `review-<id>` | A thread reply belongs to the review GitHub created for it and joins that review's observation; a PR conversation comment is its own observation with id `comment-<databaseId>` and file key `comment-<databaseId>`, so the two id spaces cannot collide; a thread comment that GitHub reports without a containing review is its own observation with id and file key `thread-<databaseId>` and a null `reviewCommitId` |
 | `reviewer` | Login without `[bot]`; required; `legacy/unknown` in status when a record lacks it | `reviewerId` (account id) and `reviewerType` (`User` or `Bot`) beside it |
 | `reviewUrl` | Review URL | A comment observation carries the comment URL |
 | `commitId` | Must equal the live head; the collector sets it to the head | Unchanged: the head at which the item is handled |

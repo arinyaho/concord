@@ -50,7 +50,31 @@ function validateFinding(finding) {
   for (const signal of finding.signals) {
     if (!SIGNALS.has(signal)) throw new Error(`review-lgtm-state: unknown signal ${JSON.stringify(signal)}`);
   }
-  return { url: finding.url, priority: finding.priority ?? null, signals: [...finding.signals] };
+  const out = { url: finding.url, priority: finding.priority ?? null, signals: [...finding.signals] };
+  // Human-feedback provenance is optional and never carries the body; a bot finding keeps its three-field shape.
+  if (finding.itemId !== undefined) {
+    if (typeof finding.itemId !== 'string' || !finding.itemId || finding.itemId.length > 300) throw new Error('review-lgtm-state: finding itemId must be a string of at most 300 characters');
+    out.itemId = finding.itemId;
+  }
+  if (finding.kind !== undefined) {
+    if (!FEEDBACK_KINDS.has(finding.kind)) throw new Error('review-lgtm-state: finding kind must be review-body, inline, reply or comment');
+    out.kind = finding.kind;
+  }
+  if (finding.author !== undefined) {
+    const a = finding.author;
+    if (!a || typeof a.login !== 'string' || !a.login || !(a.id === null || Number.isSafeInteger(a.id)) || !ACCOUNT_TYPES.has(a.type)) throw new Error('review-lgtm-state: finding author must be {login, id, type}');
+    out.author = { login: a.login, id: a.id, type: a.type };
+  }
+  if (finding.originalCommitId !== undefined) out.originalCommitId = optionalSha(finding.originalCommitId, 'finding originalCommitId');
+  return out;
+}
+
+const FEEDBACK_KINDS = new Set(['review-body', 'inline', 'reply', 'comment']);
+const ACCOUNT_TYPES = new Set(['User', 'Bot']);
+function optionalSha(value, name) {
+  if (value === null) return null;
+  if (typeof value !== 'string' || !FULL_SHA.test(value)) throw new Error(`review-lgtm-state: ${name} must be a full hexadecimal SHA or null`);
+  return value.toLowerCase();
 }
 
 // GitHub's API returns a review id as a JSON number; the CLI's own hook entry
@@ -58,6 +82,9 @@ function validateFinding(finding) {
 // number or a decimal-digit string and normalize to the decimal string,
 // since the id becomes part of a file name.
 function normalizeReviewId(reviewId) {
+  // A conversation comment and a thread comment without a review each have an id space of their own, apart from reviews'.
+  const prefixed = typeof reviewId === 'string' && /^(comment|thread)-([0-9]+)$/.exec(reviewId);
+  if (prefixed) return `${prefixed[1]}-${normalizeReviewId(prefixed[2])}`;
   if (typeof reviewId === 'string' && /^[0-9]+$/.test(reviewId)) {
     const canonical = BigInt(reviewId).toString();
     if (canonical === '0') throw new Error('review-lgtm-state: reviewId must be a positive safe integer or decimal digits');
@@ -77,7 +104,21 @@ function validateObservation(observation) {
   if (state !== 'completed' && state !== 'in-progress') throw new Error('review-lgtm-state: state must be completed or in-progress');
   if (typeof lgtm !== 'boolean') throw new Error('review-lgtm-state: lgtm is required and must be a boolean');
   if (!Array.isArray(findings)) throw new Error('review-lgtm-state: findings is required and must be an array');
-  return { reviewId: normalizedReviewId, reviewer: reviewer.trim(), reviewUrl, commitId: commitId.toLowerCase(), state, lgtm, findings: findings.map(validateFinding) };
+  const out = { reviewId: normalizedReviewId, reviewer: reviewer.trim(), reviewUrl, commitId: commitId.toLowerCase(), state, lgtm, findings: findings.map(validateFinding) };
+  if (observation.reviewerId !== undefined) {
+    if (!(observation.reviewerId === null || Number.isSafeInteger(observation.reviewerId))) throw new Error('review-lgtm-state: reviewerId must be a safe integer or null');
+    out.reviewerId = observation.reviewerId;
+  }
+  if (observation.reviewerType !== undefined) {
+    if (!ACCOUNT_TYPES.has(observation.reviewerType)) throw new Error('review-lgtm-state: reviewerType must be User or Bot');
+    out.reviewerType = observation.reviewerType;
+  }
+  if (observation.reviewCommitId !== undefined) out.reviewCommitId = optionalSha(observation.reviewCommitId, 'reviewCommitId');
+  if (observation.submittedAt !== undefined) {
+    if (observation.submittedAt !== null && (typeof observation.submittedAt !== 'string' || !observation.submittedAt)) throw new Error('review-lgtm-state: submittedAt must be a string or null');
+    out.submittedAt = observation.submittedAt;
+  }
+  return out;
 }
 
 function defaultStateDir(repoRoot = process.cwd()) {
@@ -333,10 +374,10 @@ function requestMarkers({ stateDir, pr, headSha }, kind, stage) {
 
 // ponytail: linear directory scan per read; fine at this marker-directory scale, switch to an index file if a PR head accumulates many reviews.
 function reviewRecords({ stateDir, pr, headSha }) {
-  const prefix = `pr-${pr}-${headSha}.review-`;
+  const prefix = `pr-${pr}-${headSha}.`;
   let names;
   try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
-  return names.filter((name) => name.startsWith(prefix) && name.endsWith('.json'))
+  return names.filter((name) => name.startsWith(prefix) && /^(?:review|comment|thread)-/.test(name.slice(prefix.length)) && name.endsWith('.json'))
     .map((name) => readMarker(path.join(stateDir, name)))
     .filter((record) => record && record.pr === pr && record.headSha === headSha);
 }
@@ -370,7 +411,8 @@ function reconciliationPacket({ stateDir, pr, headSha }) {
   const p1Count = findings.filter((finding) => finding.priority === 'P1').length;
   const p2Count = findings.filter((finding) => finding.priority === 'P2').length;
   const signals = [...new Set(findings.flatMap((finding) => finding.signals))].sort();
-  const classification = (p1Count > 0 || records.length >= 2 || signals.length > 0) ? 'requires-architecture-review' : 'light-implementation-eligible';
+  const botRecords = records.filter((record) => record.reviewerType !== 'User').length; // all human records are one batch
+  const classification = (p1Count > 0 || botRecords + (records.some((record) => record.reviewerType === 'User') ? 1 : 0) >= 2 || signals.length > 0) ? 'requires-architecture-review' : 'light-implementation-eligible';
   const claimed = !!fixRoundForHead({ stateDir, pr, headSha });
   const abandoned = !claimed && !!readMarker(markerPath({ stateDir, pr, headSha }, 'fix-round-claim'));
   const exhausted = !claimed && fixBudget({ stateDir, pr }).remaining === 0;
@@ -387,12 +429,12 @@ function recordReview(input) {
   if (observation.commitId !== key.headSha) return { outcome: 'stale', recorded: false };
   if (observation.state === 'in-progress') return { outcome: 'in-progress', recorded: false };
   if (observation.findings.length > 0) {
-    const file = markerPath({ stateDir, ...key }, `review-${observation.reviewId}`);
+    const file = markerPath({ stateDir, ...key }, /^[0-9]+$/.test(observation.reviewId) ? `review-${observation.reviewId}` : observation.reviewId);
     if (readMarker(file)) {
       const outcome = rejectedReviewIds({ stateDir, ...key }).has(observation.reviewId) ? 'rejected' : 'needs-reconciliation';
       return { outcome, recorded: false, duplicate: true };
     }
-    const written = writeExclusive(file, { pr: key.pr, headSha: key.headSha, reviewId: observation.reviewId, reviewer: observation.reviewer, reviewUrl: observation.reviewUrl, recordedAtMs: now, findings: observation.findings });
+    const written = writeExclusive(file, { pr: key.pr, headSha: key.headSha, reviewId: observation.reviewId, reviewer: observation.reviewer, reviewUrl: observation.reviewUrl, recordedAtMs: now, findings: observation.findings, ...Object.fromEntries(['reviewerId', 'reviewerType', 'reviewCommitId', 'submittedAt'].filter((k) => k in observation).map((k) => [k, observation[k]])) });
     if (!written) return { outcome: 'needs-reconciliation', recorded: false, duplicate: true };
     return { outcome: 'needs-reconciliation', recorded: true, duplicate: false };
   }
@@ -588,7 +630,7 @@ function validatePacket(packet) {
     if (packet.findings.some((finding) => text(finding.id) === text(dropped.id))) throw new Error(`review-lgtm-state: minor ${text(dropped.id)} is both a finding and a dropped minor`);
   }
   unique(packet.tickets, 'rootCause', 'ticket');
-  if (!packet.reviewIds.every((id) => /^[0-9]+$/.test(String(id)))) throw new Error('review-lgtm-state: delivery reviewIds must be review ids');
+  if (!packet.reviewIds.every((id) => /^(?:[0-9]+|(?:comment|thread)-[0-9]+)$/.test(String(id)))) throw new Error('review-lgtm-state: delivery reviewIds must be review ids');
   for (const finding of packet.findings) {
     if (finding.releaseBlocking != null && !Array.isArray(finding.releaseBlocking)) throw new Error(`review-lgtm-state: delivery finding ${text(finding.id)} releaseBlocking must be an array`);
     const id = text(finding.id);
@@ -809,13 +851,18 @@ function accountsOf(logins, github, authorId) {
 }
 
 // GitHub lookups are slow and can stall, so they run before the transition lock; the lock only re-checks that no other selection landed meanwhile and writes.
-function selectReviewers({ stateDir, pr, logins, github, now = Date.now() }) {
+function selectReviewers({ stateDir, pr, logins, none = false, github, now = Date.now() }) {
   if (!Number.isSafeInteger(Number(pr)) || Number(pr) < 1) throw new Error('review-lgtm-state: PR number must be a positive integer');
   const number = Number(pr);
   const latest = selectionRecords({ stateDir, pr: number }).at(-1);
   let selection;
   let gone = [];
-  if (logins && logins.length > 0) {
+  if (none) {
+    if (logins && logins.length > 0) throw new Error('review-lgtm-state: --none cannot be combined with --reviewer');
+    // Observing every account is the empty selection; one already in force needs no record.
+    selection = [];
+    if (!latest || latest.reviewers.length === 0) return { selected: true, recorded: false, selection, gone };
+  } else if (logins && logins.length > 0) {
     let refused;
     ({ selection, refused } = accountsOf(logins, github, github.prAuthorId(number)));
     if (refused.length > 0) return { selected: false, reason: 'refused', refused };
@@ -838,12 +885,10 @@ function selectReviewers({ stateDir, pr, logins, github, now = Date.now() }) {
   }, { selected: false, reason: 'transition-busy' });
 }
 
-// The selection collect and watch use: named reviewers replace the stored selection, a stored selection is refreshed by id,
-// and with neither the built-in default logins are resolved for this run only, writing nothing.
+// The selection collect and watch use: named reviewers replace the stored selection, and a stored selection is refreshed by id.
+// With neither, the selection is empty and every account is observed; nothing is written.
 function reviewerSelection({ stateDir, pr, logins, github, now = Date.now() }) {
-  if (logins.length > 0 || latestSelection({ stateDir, pr })) return selectReviewers({ stateDir, pr, logins: logins.length > 0 ? logins : null, github, now });
-  const { selection, refused } = accountsOf(collector.DEFAULT_REVIEWERS, github, github.prAuthorId(Number(pr)));
-  return refused.length > 0 ? { selected: false, reason: 'refused', refused } : { selected: true, recorded: false, selection, gone: [] };
+  return selectReviewers({ stateDir, pr, logins: logins.length > 0 ? logins : null, github, now });
 }
 
 // gh answers HTTP 404 for an unknown or deleted account; that is a null, every other failure is the caller's.
@@ -933,7 +978,7 @@ function runMain(repoRoot = process.cwd()) {
   else if (verb === 'record-review') process.stdout.write(`${JSON.stringify(recordReview({ stateDir, pr, headSha, observation: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'record-delivery') process.stdout.write(`${JSON.stringify(recordDelivery({ stateDir, pr, headSha, packet: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'reject-review-batch') process.stdout.write(`${JSON.stringify(rejectReviewBatch({ stateDir, pr, headSha, ...JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
-  else if (verb === 'select-reviewers') process.stdout.write(`${JSON.stringify(selectReviewers({ stateDir, pr, logins: collector.reviewersFrom(process.argv.slice(4)), github: ghUsers(repoRoot) }))}\n`);
+  else if (verb === 'select-reviewers') process.stdout.write(`${JSON.stringify(selectReviewers({ stateDir, pr, logins: collector.reviewersFrom(process.argv.slice(4)), none: process.argv.slice(4).includes('--none'), github: ghUsers(repoRoot) }))}\n`);
   else if (verb === 'collect' || verb === 'watch') {
     // The selection is resolved once per run; a refusal or a busy selection prints its result and collects nothing.
     const resolved = reviewerSelection({ stateDir, pr, logins: collector.reviewersFrom(process.argv.slice(verb === 'collect' ? 5 : 4)), github: ghUsers(repoRoot) });
