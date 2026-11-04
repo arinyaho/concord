@@ -764,6 +764,77 @@ function recordDelivery(input) {
   }, { recorded: false, reason: 'transition-busy' });
 }
 
+// The reviewer selection is an append-only series of records; the highest sequence is current. An empty list means observe every account.
+function selectionRecords({ stateDir, pr }) {
+  const prefix = `pr-${pr}.reviewers-`;
+  let names;
+  try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+  return names.filter((name) => name.startsWith(prefix) && name.endsWith('.json'))
+    .map((name) => readMarker(path.join(stateDir, name)))
+    .filter((record) => record && record.pr === Number(pr) && Number.isSafeInteger(record.sequence))
+    .sort((a, b) => a.sequence - b.sequence);
+}
+
+function latestSelection({ stateDir, pr }) {
+  const latest = selectionRecords({ stateDir, pr }).at(-1);
+  return latest ? { sequence: latest.sequence, reviewers: latest.reviewers, recordedAtMs: latest.recordedAtMs } : null;
+}
+
+const accountOf = ({ login, id, type }) => ({ login: login.replace(/\[bot\]$/, ''), id, type });
+
+function selectReviewers({ stateDir, pr, logins, none = false, github, now = Date.now() }) {
+  const number = Number(pr);
+  return withTransitionLock({ stateDir, pr: number }, () => {
+    const latest = selectionRecords({ stateDir, pr: number }).at(-1);
+    let selection;
+    let gone = [];
+    if (none) selection = [];
+    else if (logins && logins.length > 0) {
+      const authorId = github.prAuthorId(number);
+      const refused = [];
+      selection = [];
+      for (const raw of logins) {
+        const login = raw.replace(/^@/, '');
+        const user = github.userByLogin(login) || github.userByLogin(`${login}[bot]`);
+        if (!user) refused.push({ login, why: 'not-found' });
+        else if (user.type === 'Organization') refused.push({ login, why: 'organization' });
+        else if (user.id === authorId) refused.push({ login, why: 'pr-author' });
+        else selection.push(accountOf(user));
+      }
+      if (refused.length > 0) return { selected: false, reason: 'refused', refused };
+    } else {
+      // Resume: re-resolve the stored accounts by id so a rename follows the account and a deleted account stays recorded as gone.
+      selection = (latest?.reviewers || []).map((reviewer) => {
+        const user = github.userById(reviewer.id);
+        return user ? accountOf(user) : { ...reviewer, gone: true };
+      });
+      gone = selection.filter((reviewer) => reviewer.gone).map((reviewer) => reviewer.id);
+      if (!latest || JSON.stringify(selection) === JSON.stringify(latest.reviewers)) return { selected: true, recorded: false, selection, gone };
+    }
+    const sequence = (latest ? latest.sequence : 0) + 1;
+    if (!writeExclusive(path.join(stateDir, `pr-${number}.reviewers-${String(sequence).padStart(6, '0')}.json`), { pr: number, sequence, reviewers: selection, recordedAtMs: now })) throw new Error('review-lgtm-state: reviewer record collided; retry');
+    return { selected: true, recorded: true, selection, gone };
+  }, { selected: false, reason: 'transition-busy' });
+}
+
+// gh answers HTTP 404 for an unknown or deleted account; that is a null, every other failure is the caller's.
+function ghUsers(repoRoot) {
+  const gh = crossPlatformCommand('gh', repoRoot);
+  const api = (...args) => {
+    try { return execFileSync(gh, crossPlatformArgs(['api', ...args], needsDoubleEscape('gh', repoRoot)), crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })); }
+    catch (error) {
+      if (/HTTP 404/.test(String(error.stderr || ''))) return null;
+      throw error;
+    }
+  };
+  const user = (endpoint) => { const out = api(endpoint); if (out === null) return null; const { login, id, type } = JSON.parse(out); return { login, id, type }; };
+  return {
+    userByLogin: (login) => user(`users/${encodeURIComponent(login)}`),
+    userById: (id) => user(`user/${Number(id)}`),
+    prAuthorId: (pr) => Number(api(`repos/{owner}/{repo}/pulls/${Number(pr)}`, '--jq', '.user.id')),
+  };
+}
+
 // Answers whether the fix commit(s) between the head of the latest earlier fix round and `headSha`
 // wrote any line in [start, end] of `file` as it stands at `headSha`. Uses only the path and line numbers, never the review text.
 function selfFeeding({ repoRoot, stateDir, pr, headSha, file, start, end }) {
@@ -832,13 +903,18 @@ function runMain(repoRoot = process.cwd()) {
   else if (verb === 'record-review') process.stdout.write(`${JSON.stringify(recordReview({ stateDir, pr, headSha, observation: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'record-delivery') process.stdout.write(`${JSON.stringify(recordDelivery({ stateDir, pr, headSha, packet: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'reject-review-batch') process.stdout.write(`${JSON.stringify(rejectReviewBatch({ stateDir, pr, headSha, ...JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
+  else if (verb === 'select-reviewers') {
+    const args = process.argv.slice(4);
+    const named = args.includes('--reviewer');
+    process.stdout.write(`${JSON.stringify(selectReviewers({ stateDir, pr, logins: named ? collector.reviewersFrom(args) : null, none: args.includes('--none'), github: ghUsers(repoRoot) }))}\n`);
+  }
   else if (verb === 'collect') collector.collect({ pr, head: headSha, graphql: collector.ghGraphql(repoRoot), reviewers: collector.reviewersFrom(process.argv.slice(5)) }).then((packet) => process.stdout.write(`${collector.formatPacketLine(packet)}\n`), fail);
   else if (verb === 'watch') {
     const graphql = collector.ghGraphql(repoRoot);
     const state = { status: (head) => status({ stateDir, pr, headSha: head }), openWindow: (head) => openWindow({ stateDir, pr, headSha: head, durationMs: collector.WINDOW_SECONDS * 1000 }) };
     collector.watch({ pr, graphql, state, reviewers: collector.reviewersFrom(process.argv.slice(3)), write: (line) => process.stdout.write(`${line}\n`) }).catch(fail);
   }
-  else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, waive-fix-budget, collect-minor, self-feeding, merge-ready, collect, watch, record-review, reject-review-batch, or record-delivery');
+  else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, waive-fix-budget, collect-minor, self-feeding, merge-ready, select-reviewers, collect, watch, record-review, reject-review-batch, or record-delivery');
 }
 
-module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, waiveFixBudget, collectMinor, mergeReady, selfFeeding, recordReview, rejectReviewBatch, classifyDelivery, recordDelivery, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, runMain };
+module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, waiveFixBudget, collectMinor, mergeReady, selfFeeding, recordReview, rejectReviewBatch, classifyDelivery, recordDelivery, selectReviewers, latestSelection, ghUsers, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, runMain };
