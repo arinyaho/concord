@@ -90,7 +90,7 @@ function summaryOf(comments, head) {
   if (rows.length === 0) return null;
   const completed = rows.every((row) => row[1].includes('**Completed**'));
   const times = rows.map((row) => /datetime="([^"]+)"/.exec(row[1])).filter(Boolean).map((m) => m[1]).sort();
-  return { id: comment.databaseId, url: comment.url, commit: rows[0][2], status: completed ? 'completed' : 'in-progress', completedAt: completed && times.length > 0 ? times[times.length - 1] : null };
+  return { id: comment.databaseId, url: comment.url, commit: rows[0][2], status: completed ? 'completed' : 'in-progress', completedAt: completed && times.length > 0 ? times[times.length - 1] : null, author: identityOf(comment.author) };
 }
 
 function checksOf(pr, head) {
@@ -153,7 +153,8 @@ function analyze(response, head, reviewers = DEFAULT_REVIEWERS) {
     if (reviewCommit !== head && !inline.some(madeOnHead)) continue;
     // Only comments made on this head count (a reply keeps its thread's older original commit), and a comment in a resolved thread is no longer a finding.
     const own = inline.filter((c) => (c.originalCommit ? madeOnHead(c) : reviewCommit === head) && !resolved.has(c.id));
-    observations.push({ reviewId: String(review.databaseId), reviewer, reviewUrl: review.url, commitId: head, reviewCommitId: reviewCommit, submittedAt: review.submittedAt, state: 'completed', lgtm: review.state === 'APPROVED', findings: own.map(finding), ...limited(review.body), untrusted: true });
+    const { id: reviewerId, type: reviewerType } = identityOf(review.author);
+    observations.push({ reviewId: String(review.databaseId), reviewer, reviewerId, reviewerType, reviewUrl: review.url, commitId: head, reviewCommitId: reviewCommit, submittedAt: review.submittedAt, state: 'completed', lgtm: review.state === 'APPROVED', findings: own.map(finding), ...limited(review.body), untrusted: true });
   }
   const pending = reviewers.filter((reviewer) => {
     const hasReview = observations.some((o) => o.reviewer === reviewer);
@@ -176,15 +177,17 @@ function analyze(response, head, reviewers = DEFAULT_REVIEWERS) {
     },
     activity,
     summaryId: summary && summary.id,
+    summaryAuthor: summary && summary.author,
   };
 }
 
 // The reaction list is read once, when the Codex summary has turned Completed
 // for this head; GitHub sends no event for a reaction, so this is the only way
 // to see the clean-result thumbs-up.
-async function complete(analysis, { pr, graphql, reviewers = DEFAULT_REVIEWERS }) {
+// `selection` is the stored reviewer selection (`latestSelection`), echoed for the session; the packet does not act on it.
+async function complete(analysis, { pr, graphql, reviewers = DEFAULT_REVIEWERS, selection = null }) {
   const { untrusted, ...rest } = analysis.model;
-  const packet = { untrusted, pr: Number(pr), ...rest, awaitingReaction: false };
+  const packet = { untrusted, pr: Number(pr), selection: selection && { sequence: selection.sequence, reviewers: selection.reviewers }, ...rest, awaitingReaction: false };
   const summary = packet.summary;
   if (!summary || summary.status !== 'completed' || !summary.completedAt) return packet;
   const reactions = pullRequestOf(await graphql(REACTIONS_QUERY, { pr }));
@@ -210,18 +213,18 @@ async function complete(analysis, { pr, graphql, reviewers = DEFAULT_REVIEWERS }
     if (!observation.lgtm && batchClean) packet.awaitingReaction = true;
   }
   if (!packet.observations.some((o) => o.reviewer === CODEX_REVIEWER) && reviewers.includes(CODEX_REVIEWER)) {
-    packet.observations.push({ reviewId: String(analysis.summaryId), reviewer: CODEX_REVIEWER, reviewUrl: summary.url, commitId: packet.head, reviewCommitId: packet.head, state: 'completed', lgtm: !!(packet.reaction && packet.reaction.fresh), findings: [] });
+    packet.observations.push({ reviewId: String(analysis.summaryId), reviewer: CODEX_REVIEWER, reviewerId: analysis.summaryAuthor.id, reviewerType: analysis.summaryAuthor.type, reviewUrl: summary.url, commitId: packet.head, reviewCommitId: packet.head, state: 'completed', lgtm: !!(packet.reaction && packet.reaction.fresh), findings: [] });
     packet.awaitingReaction = !(packet.reaction && packet.reaction.fresh);
   }
   return packet;
 }
 
-async function collect({ pr, head, graphql, reviewers = DEFAULT_REVIEWERS }) {
+async function collect({ pr, head, graphql, reviewers = DEFAULT_REVIEWERS, selection = null }) {
   const normalized = String(head).toLowerCase();
   reviewers = reviewers.map(loginOf);
   const analysis = analyze(await read(graphql, pr, reviewers), normalized, reviewers);
   if (analysis.stale) return { stale: true, head: analysis.head, liveHead: analysis.liveHead };
-  return complete(analysis, { pr, graphql, reviewers });
+  return complete(analysis, { pr, graphql, reviewers, selection });
 }
 
 // `--reviewer <login>` (repeatable) names the configured automated reviewers; every one must be terminal.
@@ -240,7 +243,7 @@ function formatPacketLine(packet) { return JSON.stringify(packet); }
 
 // Shell-level polling: the model is not involved between lines. One packet
 // line per terminal head; the loop ends on a recorded delivery or the deadline.
-async function watch({ pr, graphql, state, now = Date.now, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), intervalMs = DEFAULT_INTERVAL_MS, write, reviewers = DEFAULT_REVIEWERS }) {
+async function watch({ pr, graphql, state, now = Date.now, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), intervalMs = DEFAULT_INTERVAL_MS, write, reviewers = DEFAULT_REVIEWERS, selection = null }) {
   if (intervalMs < MIN_INTERVAL_MS) throw new Error(`review-collector: the watch interval must be at least ${MIN_INTERVAL_MS} ms`);
   reviewers = reviewers.map(loginOf);
   const printed = new Map(); // head -> the reviews its last packet covered
@@ -262,7 +265,7 @@ async function watch({ pr, graphql, state, now = Date.now, sleep = (ms) => new P
     const covered = `${analysis.model.observations.map((o) => o.reviewId).join(',')}|${summary ? `${summary.status}@${summary.completedAt}` : ''}`;
     if (analysis.model.terminal && printed.get(head) !== covered) {
       // A clean Codex result is final only with its reaction, which arrives after the summary: keep reading until it does or the deadline passes.
-      const packet = await complete(analysis, { pr, graphql, reviewers });
+      const packet = await complete(analysis, { pr, graphql, reviewers, selection });
       if (!packet.stale) {
         awaitingReaction.set(head, packet.awaitingReaction);
         if (!packet.awaitingReaction) { printed.set(head, covered); write(formatPacketLine({ event: 'packet', ...packet })); }
