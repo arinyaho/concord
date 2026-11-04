@@ -540,3 +540,25 @@ test('the collector query reads account type and id on every author', () => {
   for (const query of [collector.QUERY, collector.THREADS_PAGE_QUERY, collector.COMMENTS_PAGE_QUERY]) assert.match(query, /__typename login \.\.\. on User\{databaseId\} \.\.\. on Bot\{databaseId\}/);
   assert.match(collector.QUERY, /viewer\{login databaseId\}/);
 });
+
+test('PR comments and reviews past the first page are collected', async () => {
+  const data = fixture();
+  const pull = pullRequest(data);
+  const extraReview = { ...pull.reviews.nodes.find((r) => r.databaseId === 5470929926), id: 'PRR_extra', databaseId: 5470930099, url: `${pull.reviews.nodes[0].url.split('#')[0]}#pullrequestreview-5470930099` };
+  pull.reviews.pageInfo = { hasNextPage: true, endCursor: 'R1' };
+  pull.comments.pageInfo = { hasNextPage: true, endCursor: 'C1' };
+  const pages = (query) => /PullRequest\{reviews/.test(query)
+    ? { data: { node: { reviews: { pageInfo: { hasNextPage: false }, nodes: [extraReview] } } } }
+    : { data: { node: { comments: { pageInfo: { hasNextPage: false }, nodes: [] } } } };
+  const graphql = graphqlDouble({ main: data, pages });
+  const packet = await collector.collect({ pr: 244, head: HEAD, graphql, reviewers: [CODEX] });
+  assert.ok(packet.observations.some((o) => o.reviewId === '5470930099'));
+  assert.deepStrictEqual(graphql.pageReads.map((v) => v.cursor).sort(), ['C1', 'R1']);
+});
+
+test('a reviews connection that never stops paging fails the collection', async () => {
+  const data = fixture();
+  pullRequest(data).reviews.pageInfo = { hasNextPage: true, endCursor: 'R' };
+  const pages = () => ({ data: { node: { reviews: { pageInfo: { hasNextPage: true, endCursor: 'R' }, nodes: [] } } } });
+  await assert.rejects(collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble({ main: data, pages }), reviewers: [CODEX] }), /reviews exceeds 20 pages/);
+});

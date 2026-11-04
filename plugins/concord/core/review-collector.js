@@ -23,12 +23,16 @@ const COMMENT_FIELDS = `id databaseId url body path line createdAt lastEditedAt 
 const THREAD_COMMENT_FIELDS = `${COMMENT_FIELDS} pullRequestReview{databaseId url state submittedAt commit{oid}}`;
 const CONTEXT_FIELDS = '__typename ... on CheckRun{name status conclusion} ... on StatusContext{context state}';
 const THREAD_FIELDS = `id isResolved comments(first:100){pageInfo{hasNextPage endCursor} nodes{${THREAD_COMMENT_FIELDS}}}`;
+const REVIEW_FIELDS = `id databaseId url state submittedAt createdAt lastEditedAt body ${AUTHOR_FIELDS} commit{oid} comments(first:100){pageInfo{hasNextPage endCursor} nodes{${COMMENT_FIELDS}}}`;
+const PR_COMMENT_FIELDS = `id databaseId url body createdAt lastEditedAt ${AUTHOR_FIELDS}`;
 const QUERY = `query($owner:String!,$name:String!,$pr:Int!){viewer{login databaseId} repository(owner:$owner,name:$name){pullRequest(number:$pr){id headRefOid ${AUTHOR_FIELDS}
-reviews(last:100){nodes{id databaseId url state submittedAt createdAt lastEditedAt body ${AUTHOR_FIELDS} commit{oid} comments(first:100){pageInfo{hasNextPage endCursor} nodes{${COMMENT_FIELDS}}}}}
+reviews(first:100){pageInfo{hasNextPage endCursor} nodes{${REVIEW_FIELDS}}}
 reviewThreads(first:100){pageInfo{hasNextPage endCursor} nodes{${THREAD_FIELDS}}}
-comments(last:100){nodes{id databaseId url body createdAt lastEditedAt ${AUTHOR_FIELDS}}}
+comments(first:100){pageInfo{hasNextPage endCursor} nodes{${PR_COMMENT_FIELDS}}}
 commits(last:1){nodes{commit{oid statusCheckRollup{id contexts(first:100){pageInfo{hasNextPage endCursor} nodes{${CONTEXT_FIELDS}}}}}}}}}}`;
-// Follow-up pages for a pull request with more than 100 review threads, a review with more than 100 inline comments and a check rollup with more than 100 contexts.
+// Follow-up pages for a pull request with more than 100 reviews, conversation comments or review threads, a review with more than 100 inline comments and a check rollup with more than 100 contexts.
+const REVIEWS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on PullRequest{reviews(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${REVIEW_FIELDS}}}}}}`;
+const PR_COMMENTS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on PullRequest{comments(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${PR_COMMENT_FIELDS}}}}}}`;
 const THREADS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on PullRequest{reviewThreads(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${THREAD_FIELDS}}}}}}`;
 const THREAD_COMMENTS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on PullRequestReviewThread{comments(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${THREAD_COMMENT_FIELDS}}}}}}`;
 const COMMENTS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on PullRequestReview{comments(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${COMMENT_FIELDS}}}}}}`;
@@ -118,6 +122,8 @@ async function fillPages(connection, query, id, field, graphql) {
 async function read(graphql, pr, reviewers) {
   const response = await graphql(QUERY, { pr });
   const pull = pullRequestOf(response);
+  await fillPages(pull.comments, PR_COMMENTS_PAGE_QUERY, pull.id, 'comments', graphql);
+  await fillPages(pull.reviews, REVIEWS_PAGE_QUERY, pull.id, 'reviews', graphql);
   await fillPages(pull.reviewThreads, THREADS_PAGE_QUERY, pull.id, 'reviewThreads', graphql);
   await Promise.all(pull.reviewThreads.nodes.map((thread) => fillPages(thread.comments, THREAD_COMMENTS_PAGE_QUERY, thread.id, 'comments', graphql)));
   await Promise.all(pull.reviews.nodes.filter((review) => botOf(review.author, reviewers)).map((review) => fillPages(review.comments, COMMENTS_PAGE_QUERY, review.id, 'comments', graphql)));
