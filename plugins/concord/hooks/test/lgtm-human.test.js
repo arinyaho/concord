@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const lgtmState = require('../../core/lgtm-state');
 const { tempDir } = require('./temp-dir');
 const PR = 7;
-const ACCOUNTS = { alice: { login: 'alice', id: 101, type: 'User' }, 'copilot-pull-request-reviewer[bot]': { login: 'copilot-pull-request-reviewer[bot]', id: 900, type: 'Bot' }, acme: { login: 'acme', id: 50, type: 'Organization' }, author: { login: 'author', id: 1, type: 'User' } };
+const ACCOUNTS = { alice: { login: 'alice', id: 101, type: 'User' }, 'copilot-pull-request-reviewer': { login: 'copilot-pull-request-reviewer', id: 899, type: 'Organization' }, 'copilot-pull-request-reviewer[bot]': { login: 'copilot-pull-request-reviewer[bot]', id: 900, type: 'Bot' }, acme: { login: 'acme', id: 50, type: 'Organization' }, author: { login: 'author', id: 1, type: 'User' } };
 function github(overrides = {}) {
   const accounts = { ...ACCOUNTS, ...overrides };
   return { userByLogin: (l) => accounts[l] || null, userById: (id) => Object.values(accounts).find((a) => a && a.id === id) || null, prAuthorId: () => 1 };
@@ -131,6 +131,12 @@ test('select-reviewers refuses a typed [bot] login that is not a Bot account', (
   const stateDir = temp();
   const result = lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['odd[bot]'], github: github({ 'odd[bot]': { login: 'odd[bot]', id: 302, type: 'User' } }) });
   assert.deepStrictEqual(result, { selected: false, reason: 'refused', refused: [{ login: 'odd[bot]', why: 'not-found' }] });
+});
+
+test('select-reviewers selects the bot when its bare login is an organization', () => {
+  const stateDir = temp();
+  const result = lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['gh-app'], github: github({ 'gh-app': { login: 'gh-app', id: 400, type: 'Organization' }, 'gh-app[bot]': { login: 'gh-app[bot]', id: 401, type: 'Bot' } }) });
+  assert.deepStrictEqual(result.selection, [{ login: 'gh-app', id: 401, type: 'Bot' }]);
 });
 
 test('select-reviewers selects the user when a bare login has no bot form', () => {

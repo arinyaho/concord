@@ -798,15 +798,15 @@ function selectReviewers({ stateDir, pr, logins, none = false, github, now = Dat
     selection = [];
     for (const raw of logins) {
       const login = raw.replace(/^@/, '');
-      // Fail closed: a typed [bot] login names only a Bot, and a bare login that is both a person's and a bot's account names neither.
+      // Fail closed: a typed [bot] login names only a Bot, and a bare login that is both a person's and a bot's account names neither. An app's bare login is an Organization on GitHub, so an Organization next to a Bot selects the Bot.
       const asBot = (found) => (found && found.type === 'Bot' ? found : null);
       let user;
       if (/\[bot\]$/.test(login)) user = asBot(github.userByLogin(login));
       else {
         const plain = github.userByLogin(login);
         const bot = asBot(github.userByLogin(`${login}[bot]`));
-        if (plain && bot && plain.type !== bot.type) { refused.push({ login, why: 'ambiguous' }); continue; }
-        user = plain || bot;
+        if (plain?.type === 'User' && bot) { refused.push({ login, why: 'ambiguous' }); continue; }
+        user = (plain?.type === 'Organization' && bot) || plain || bot;
       }
       if (!user) refused.push({ login, why: 'not-found' });
       else if (user.type === 'Organization') refused.push({ login, why: 'organization' });
