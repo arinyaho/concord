@@ -798,8 +798,16 @@ function selectReviewers({ stateDir, pr, logins, none = false, github, now = Dat
     selection = [];
     for (const raw of logins) {
       const login = raw.replace(/^@/, '');
-      // A login is tried as typed, then as a bot's [bot] form.
-      const user = github.userByLogin(login) || (/\[bot\]$/.test(login) ? null : github.userByLogin(`${login}[bot]`));
+      // Fail closed: a typed [bot] login names only a Bot, and a bare login that is both a person's and a bot's account names neither.
+      const asBot = (found) => (found && found.type === 'Bot' ? found : null);
+      let user;
+      if (/\[bot\]$/.test(login)) user = asBot(github.userByLogin(login));
+      else {
+        const plain = github.userByLogin(login);
+        const bot = asBot(github.userByLogin(`${login}[bot]`));
+        if (plain && bot && plain.type !== bot.type) { refused.push({ login, why: 'ambiguous' }); continue; }
+        user = plain || bot;
+      }
       if (!user) refused.push({ login, why: 'not-found' });
       else if (user.type === 'Organization') refused.push({ login, why: 'organization' });
       else if (user.id === authorId) refused.push({ login, why: 'pr-author' });

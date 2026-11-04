@@ -87,7 +87,8 @@ test('select-reviewers rejects a non-numeric PR number and writes nothing', () =
 test('select-reviewers answers transition-busy when another selection lands during the lookups', () => {
   const stateDir = temp();
   const racing = github();
-  racing.userByLogin = (login) => { lgtmState.selectReviewers({ stateDir, pr: PR, logins: null, none: true, github: github(), now: 5 }); return ACCOUNTS[login]; };
+  let raced = false;
+  racing.userByLogin = (login) => { if (!raced) { raced = true; lgtmState.selectReviewers({ stateDir, pr: PR, logins: null, none: true, github: github(), now: 5 }); } return ACCOUNTS[login] || null; };
   assert.deepStrictEqual(lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice'], github: racing }), { selected: false, reason: 'transition-busy' });
   assert.deepStrictEqual(lgtmState.latestSelection({ stateDir, pr: PR }).reviewers, []);
   assert.strictEqual(lgtmState.latestSelection({ stateDir, pr: PR }).sequence, 1);
@@ -111,6 +112,30 @@ test('ghUsers maps 404 to null for users and throws for a missing PR or other fa
 test('select-reviewers selects the bot when its [bot] login is typed', () => {
   const stateDir = temp();
   assert.deepStrictEqual(lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['copilot-pull-request-reviewer[bot]'], github: github() }).selection, [{ login: 'copilot-pull-request-reviewer', id: 900, type: 'Bot' }]);
+});
+
+test('select-reviewers refuses a bare login that names both a person and a bot, and writes nothing', () => {
+  const stateDir = temp();
+  const result = lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['twin'], github: github({ twin: { login: 'twin', id: 300, type: 'User' }, 'twin[bot]': { login: 'twin[bot]', id: 301, type: 'Bot' } }) });
+  assert.deepStrictEqual(result, { selected: false, reason: 'refused', refused: [{ login: 'twin', why: 'ambiguous' }] });
+  assert.deepStrictEqual(require('node:fs').readdirSync(stateDir), []);
+});
+
+test('select-reviewers selects the bot of an ambiguous name only when its [bot] login is typed', () => {
+  const stateDir = temp();
+  const twins = github({ twin: { login: 'twin', id: 300, type: 'User' }, 'twin[bot]': { login: 'twin[bot]', id: 301, type: 'Bot' } });
+  assert.deepStrictEqual(lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['twin[bot]'], github: twins }).selection, [{ login: 'twin', id: 301, type: 'Bot' }]);
+});
+
+test('select-reviewers refuses a typed [bot] login that is not a Bot account', () => {
+  const stateDir = temp();
+  const result = lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['odd[bot]'], github: github({ 'odd[bot]': { login: 'odd[bot]', id: 302, type: 'User' } }) });
+  assert.deepStrictEqual(result, { selected: false, reason: 'refused', refused: [{ login: 'odd[bot]', why: 'not-found' }] });
+});
+
+test('select-reviewers selects the user when a bare login has no bot form', () => {
+  const stateDir = temp();
+  assert.deepStrictEqual(lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice'], github: github() }).selection, [ACCOUNTS.alice]);
 });
 
 test('select-reviewers rejects named reviewers together with none', () => {
