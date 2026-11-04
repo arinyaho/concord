@@ -207,7 +207,7 @@ Human requests do not spend the bot request budget of three per PR. They are bou
 
 When the head's batch is assessed, every item is answered or claimed, no fix round is open, and the end condition (see Deliver) is not met, the session waits.
 
-The wait is `wait-feedback <pr> [--max-wait <seconds>] [--once]`, a script in the pattern of `review-until-approve`'s `watch.js`. It reads the ledger without writing it, polls GitHub every 60 seconds with a small query (head, PR state and draft flag, newest review, comment and reply ids with their edit times, review decision and merge state) and runs the full collection only when that fingerprint changes. It costs no model tokens between polls, prints exactly one JSON line and exits:
+The wait is `wait-feedback <pr> [--max-wait <seconds>] [--once]`, a script in the pattern of `review-until-approve`'s `watch.js`. It reads the ledger without writing ledger markers; its only write is the non-authoritative `pr-<n>.wait.json` sidecar. It polls GitHub every 60 seconds with a small query (head, PR state and draft flag, newest review, comment and reply ids with their edit times, review decision and merge state) and runs the full collection only when that fingerprint changes. It costs no model tokens between polls, prints exactly one JSON line and exits:
 
 | Event | Fires when |
 |---|---|
