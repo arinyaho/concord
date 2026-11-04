@@ -316,6 +316,83 @@ function latestFixOwnership({ stateDir, pr, headSha }, slot) {
     .sort((a, b) => b.claimedAtMs - a.claimedAtMs || b.name.localeCompare(a.name))[0];
 }
 
+const ITEM_ID = /^[^@\s]{1,200}@[0-9T:.Z-]{10,40}$/;
+const REPLY_URL_DISPOSITIONS = ['blocker', 'minor', 'rejected', 'clarify', 'approve-intent'];
+const REPLY_DISPOSITIONS = [...REPLY_URL_DISPOSITIONS, 'author-answered', 'no-action'];
+const sha16 = (value) => crypto.createHash('sha256').update(value).digest('hex').slice(0, 16);
+const itemFileKey = (itemId) => sha16(itemId);
+const accountFileKey = (id) => sha16(String(id));
+
+function prNumber(pr) {
+  if (!Number.isSafeInteger(Number(pr)) || Number(pr) < 1) throw new Error('review-lgtm-state: PR number must be a positive integer');
+  return Number(pr);
+}
+
+function validItem(itemId) {
+  if (typeof itemId !== 'string' || !ITEM_ID.test(itemId)) throw new Error('review-lgtm-state: an item id is <node id>@<revision timestamp>');
+  return itemId;
+}
+
+function prFileNames(stateDir, test) {
+  let names;
+  try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') names = []; else throw error; }
+  return names.filter(test).map((name) => path.join(stateDir, name));
+}
+
+// An item is answered once it has a handled record, a reply claim (a session is replying) or a place in a fix round's itemIds (any head).
+function answeredParts({ stateDir, pr }) {
+  const n = Number(pr);
+  const ids = (test, pick) => prFileNames(stateDir, test).flatMap((file) => pick(readMarker(file)) || []);
+  return {
+    feedback: ids((name) => name.startsWith(`pr-${n}.feedback-`) && name.endsWith('.json'), (marker) => marker && marker.itemId),
+    claims: ids((name) => name.startsWith(`pr-${n}.reply-`) && name.endsWith('-claim.json'), (marker) => marker && marker.itemId),
+    fixed: ids((name) => name.startsWith(`pr-${n}-`) && name.endsWith('.fix-round-claim.json'), (marker) => marker && Array.isArray(marker.itemIds) && marker.itemIds),
+  };
+}
+
+function answeredItemIds(input) { return new Set(Object.values(answeredParts(input)).flat()); }
+
+function claimReply({ stateDir, pr, itemId, now = Date.now() }) {
+  const id = validItem(itemId);
+  const n = prNumber(pr);
+  return withTransitionLock({ stateDir, pr: n }, () => {
+    const { feedback, fixed } = answeredParts({ stateDir, pr: n });
+    if (feedback.includes(id) || fixed.includes(id)) return { claimed: false, reason: 'answered' };
+    return writeExclusive(path.join(stateDir, `pr-${n}.reply-${itemFileKey(id)}-claim.json`), { pr: n, itemId: id, claimedAtMs: now }) ? { claimed: true } : { claimed: false, reason: 'reply-claimed' };
+  });
+}
+
+function validReply(record) {
+  const r = record || {};
+  const { disposition } = r;
+  if (!REPLY_DISPOSITIONS.includes(disposition)) throw new Error(`review-lgtm-state: a reply disposition is one of ${REPLY_DISPOSITIONS.join(', ')}`);
+  if (!text(r.kind) || !text(r.url) || !r.author || !text(r.author.login) || !Number.isSafeInteger(r.author.id) || !text(r.author.type)) throw new Error('review-lgtm-state: a handled reply needs kind, url and the author login, id and type');
+  if (typeof r.reason !== 'string' || r.reason.trim().length < 1 || r.reason.length > 500) throw new Error('review-lgtm-state: a handled reply needs a reason of 1 to 500 characters');
+  if (REPLY_URL_DISPOSITIONS.includes(disposition) !== !!r.replyUrl) throw new Error(`review-lgtm-state: ${disposition} ${REPLY_URL_DISPOSITIONS.includes(disposition) ? 'needs a replyUrl' : 'takes no replyUrl'}`);
+  if ((disposition === 'author-answered') !== !!r.answerUrl) throw new Error(`review-lgtm-state: ${disposition} ${disposition === 'author-answered' ? 'needs an answerUrl' : 'takes no answerUrl'}`);
+  if ((disposition === 'blocker' || (disposition === 'minor' && r.author.type === 'User')) !== !!r.fixCommit) throw new Error(`review-lgtm-state: ${disposition} ${r.fixCommit ? 'takes no fixCommit' : 'needs a fixCommit'}`);
+  if (r.fixCommit && !/^[0-9a-f]{40}$/.test(r.fixCommit)) throw new Error('review-lgtm-state: fixCommit is a full commit SHA');
+  return { kind: r.kind, url: r.url, author: { login: r.author.login, id: r.author.id, type: r.author.type }, originalCommitId: r.originalCommitId ?? null, disposition, reason: r.reason, ...(r.replyUrl ? { replyUrl: r.replyUrl } : {}), ...(r.answerUrl ? { answerUrl: r.answerUrl } : {}), ...(r.fixCommit ? { fixCommit: r.fixCommit } : {}) };
+}
+
+// Write-once per item revision: the handled record is what the next collection reads as answered.
+function recordReply({ stateDir, pr, itemId, record, now = Date.now() }) {
+  const id = validItem(itemId);
+  const n = prNumber(pr);
+  const entry = validReply(record);
+  const file = path.join(stateDir, `pr-${n}.feedback-${itemFileKey(id)}.json`);
+  return withTransitionLock({ stateDir, pr: n }, () => {
+    const created = writeExclusive(file, { ...entry, pr: n, itemId: id, revision: id.slice(id.lastIndexOf('@') + 1), recordedAtMs: now });
+    return { recorded: true, ...(created ? {} : { existing: true }), feedback: readMarker(file) };
+  }, { recorded: false, reason: 'transition-busy' });
+}
+
+// Reply claims whose handled record is not written yet: a session started replying and did not finish.
+function claimedReplies({ stateDir, pr }) {
+  const { feedback, claims } = answeredParts({ stateDir, pr });
+  return [...new Set(claims)].filter((id) => !feedback.includes(id)).sort();
+}
+
 function readMarker(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
   catch (error) {
@@ -478,7 +555,7 @@ function status(input) {
     }
   }
   const deadlines = [window, retryWindow].filter(Boolean).map((marker) => marker.deadlineMs);
-  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), waivers: fixWaivers({ stateDir, pr: key.pr }), minors: collectedMinors({ stateDir, pr: key.pr }), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested, reconciliation: reconciliationPacket({ stateDir, ...key }), delivery: deliveryStatus({ stateDir, ...key }) };
+  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), waivers: fixWaivers({ stateDir, pr: key.pr }), minors: collectedMinors({ stateDir, pr: key.pr }), claimedReplies: claimedReplies({ stateDir, pr: key.pr }), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested, reconciliation: reconciliationPacket({ stateDir, ...key }), delivery: deliveryStatus({ stateDir, ...key }) };
 }
 
 function claimFixRound(input) {
@@ -973,6 +1050,8 @@ function runMain(repoRoot = process.cwd()) {
   else if (verb === 'renew-fix-round') process.stdout.write(`${JSON.stringify(renewFixRound({ stateDir, pr, headSha, owner: argument }))}\n`);
   else if (verb === 'waive-fix-budget') process.stdout.write(`${JSON.stringify(waiveFixBudget({ stateDir, pr, person: headSha, count: Number(argument) }))}\n`);
   else if (verb === 'collect-minor') process.stdout.write(`${JSON.stringify(collectMinor({ stateDir, pr, headSha, ...JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
+  else if (verb === 'claim-reply') process.stdout.write(`${JSON.stringify(claimReply({ stateDir, pr, itemId: headSha }))}\n`);
+  else if (verb === 'record-reply') process.stdout.write(`${JSON.stringify(recordReply({ stateDir, pr, itemId: headSha, record: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'merge-ready') process.stdout.write(`${JSON.stringify(mergeReady({ stateDir, pr, headSha, evidence: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'self-feeding') { const [start, end] = process.argv.slice(6); process.stdout.write(`${JSON.stringify(selfFeeding({ repoRoot: worktreeRoot(repoRoot), stateDir, pr, headSha, file: argument, start: Number(start), end: Number(end === undefined ? start : end) }))}\n`); }
   else if (verb === 'record-review') process.stdout.write(`${JSON.stringify(recordReview({ stateDir, pr, headSha, observation: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
@@ -985,13 +1064,13 @@ function runMain(repoRoot = process.cwd()) {
     if (!resolved.selected) { process.stdout.write(`${JSON.stringify(resolved)}\n`); process.exitCode = 1; return; }
     const { selection } = resolved;
     const graphql = collector.ghGraphql(repoRoot);
-    if (verb === 'collect') collector.collect({ pr, head: headSha, graphql, selection }).then((packet) => process.stdout.write(`${collector.formatPacketLine(packet)}\n`), fail);
+    if (verb === 'collect') collector.collect({ pr, head: headSha, graphql, selection, answered: answeredItemIds({ stateDir, pr }) }).then((packet) => process.stdout.write(`${collector.formatPacketLine(packet)}\n`), fail);
     else {
-      const state = { status: (head) => status({ stateDir, pr, headSha: head }), openWindow: (head) => openWindow({ stateDir, pr, headSha: head, durationMs: collector.WINDOW_SECONDS * 1000 }) };
+      const state = { status: (head) => status({ stateDir, pr, headSha: head }), openWindow: (head) => openWindow({ stateDir, pr, headSha: head, durationMs: collector.WINDOW_SECONDS * 1000 }), answered: () => answeredItemIds({ stateDir, pr }) };
       collector.watch({ pr, graphql, state, selection, write: (line) => process.stdout.write(`${line}\n`) }).catch(fail);
     }
   }
-  else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, waive-fix-budget, collect-minor, self-feeding, merge-ready, select-reviewers, collect, watch, record-review, reject-review-batch, or record-delivery');
+  else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, waive-fix-budget, collect-minor, claim-reply, record-reply, self-feeding, merge-ready, select-reviewers, collect, watch, record-review, reject-review-batch, or record-delivery');
 }
 
-module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, waiveFixBudget, collectMinor, mergeReady, selfFeeding, recordReview, rejectReviewBatch, classifyDelivery, recordDelivery, selectReviewers, reviewerSelection, latestSelection, ghUsers, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, runMain };
+module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, waiveFixBudget, collectMinor, itemFileKey, accountFileKey, claimReply, recordReply, answeredItemIds, mergeReady, selfFeeding, recordReview, rejectReviewBatch, classifyDelivery, recordDelivery, selectReviewers, reviewerSelection, latestSelection, ghUsers, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, runMain };

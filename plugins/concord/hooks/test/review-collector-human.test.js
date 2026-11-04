@@ -1,6 +1,8 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
 const collector = require('../../core/review-collector');
 const f = require('./fixtures/review-collector/human');
 const lgtmState = require('../../core/lgtm-state');
@@ -196,4 +198,31 @@ test('an author of another account type is collected as a User and records', asy
   assert.deepStrictEqual(packet.observations.map((o) => [o.reviewId, o.reviewerType, o.reviewerId]), [['comment-73', 'User', null]]);
   const stateDir = tempDir('collector-mannequin-');
   assert.strictEqual(lgtmState.recordReview({ stateDir, pr: 7, headSha: f.HEAD, observation: packet.observations[0] }).recorded, true);
+});
+
+test('items in the answered set are not collected again', async () => {
+  const data = f.response({ comments: [f.prComment(75, f.BOB), f.prComment(76, f.BOB), f.prComment(77, f.BOB), f.prComment(78, f.BOB)] });
+  const stateDir = tempDir('collector-answered-');
+  const at = (n) => `IC_${n}@2026-11-01T00:00:02Z`;
+  lgtmState.claimReply({ stateDir, pr: 7, itemId: at(75) });
+  lgtmState.recordReply({ stateDir, pr: 7, itemId: at(76), record: { kind: 'comment', url: 'https://x/76', author: { login: 'bob', id: 202, type: 'User' }, originalCommitId: null, disposition: 'no-action', reason: 'nothing to do' } });
+  fs.writeFileSync(path.join(stateDir, `pr-7-${'d'.repeat(40)}.fix-round-claim.json`), JSON.stringify({ itemIds: [at(77)] }));
+  const packet = await collect(data, { answered: lgtmState.answeredItemIds({ stateDir, pr: 7 }) });
+  assert.deepStrictEqual(packet.observations.flatMap((o) => o.findings.map((x) => x.itemId)), [at(78)]);
+  assert.deepStrictEqual(packet.authorAnswered, []);
+});
+
+test('the watch reads the answered set for each packet', async () => {
+  const answered = new Set();
+  const seen = [];
+  const lines = [];
+  let tick = 0;
+  const data = f.response({ comments: [f.prComment(75, f.BOB)] });
+  await collector.watch({
+    pr: 7, graphql: f.graphqlOf(data), intervalMs: 30000,
+    state: { openWindow() {}, answered: () => { seen.push(answered.size); return answered; }, status: () => ({ deadlineMs: 0, delivery: tick >= 2 ? { classification: 'mergeable-clean', current: true } : null }) },
+    now: () => tick * 30000, sleep: async () => { tick += 1; answered.add('IC_75@2026-11-01T00:00:02Z'); }, write: (l) => lines.push(JSON.parse(l)),
+  });
+  assert.deepStrictEqual(seen.slice(0, 2), [0, 1]);
+  assert.deepStrictEqual(lines.filter((l) => l.event === 'packet').map((l) => l.observations.length), [1]);
 });

@@ -145,7 +145,8 @@ async function read(graphql, pr, selection) {
 
 // Every unanswered feedback item on the PR, wherever it was made, grouped into one observation per review or conversation comment.
 // `mode` 'all' (empty selection) takes every account; 'named' takes every person and leaves the bots to the bot path.
-function humanFeedback(pull, { head, mode, selection, prAuthorId, actorId }) {
+// An item already in `answered` (replied to, claimed, or fixed in a round) is neither a finding nor an author answer.
+function humanFeedback(pull, { head, mode, selection, prAuthorId, actorId, answered = new Set() }) {
   const byAnswerer = (node) => { const { id } = identityOf(node.author); return id !== null && (id === prAuthorId || id === actorId); };
   const eligible = ({ id, type }) => id === null || (id !== prAuthorId && id !== actorId && (type !== 'Bot' || mode === 'all'));
   // A review is made when it is submitted; its createdAt is when the pending draft was started.
@@ -160,7 +161,7 @@ function humanFeedback(pull, { head, mode, selection, prAuthorId, actorId }) {
   const entries = [];
   const add = (node, { kind, group, review, originalCommitId, answerOf, revision = node.lastEditedAt || node.createdAt }) => {
     const author = identityOf(node.author);
-    if (!eligible(author)) return;
+    if (!eligible(author) || answered.has(itemKey(node.id, revision))) return;
     const answer = answerOf(revision);
     const { body, truncated } = limited(node.body);
     const item = { itemId: itemKey(node.id, revision), kind, url: node.url, author, originalCommitId, group, reviewUrl: review.url, reviewCommitId: oidOf(review.commit), submittedAt: review.submittedAt, body, truncated, untrusted: true, answered: answer !== null };
@@ -205,7 +206,7 @@ function humanFeedback(pull, { head, mode, selection, prAuthorId, actorId }) {
 // comment's current commit to every later head, so `commit` says nothing about
 // where the finding was made.
 // The bot path observes the selected Bots; the human result from the same read is carried beside it to `complete`, so the watch's activity and fingerprint stay bot-only.
-function analyze(response, head, selection) {
+function analyze(response, head, selection, answered = new Set()) {
   const pr = pullRequestOf(response);
   const live = pr.headRefOid.toLowerCase();
   if (live !== head) return { stale: true, head, liveHead: live };
@@ -245,7 +246,7 @@ function analyze(response, head, selection) {
     },
     activity,
     summaryId: summary && summary.id,
-    human: humanFeedback(pr, { head, mode: selection.length > 0 ? 'named' : 'all', selection, prAuthorId: identityOf(pr.author).id, actorId: response.data.viewer.databaseId }),
+    human: humanFeedback(pr, { head, mode: selection.length > 0 ? 'named' : 'all', selection, prAuthorId: identityOf(pr.author).id, actorId: response.data.viewer.databaseId, answered }),
   };
 }
 
@@ -295,9 +296,9 @@ async function complete(analysis, options) {
   return { ...packet, observations: [...packet.observations, ...analysis.human.observations], authorAnswered: analysis.human.authorAnswered };
 }
 
-async function collect({ pr, head, graphql, selection = [] }) {
+async function collect({ pr, head, graphql, selection = [], answered = new Set() }) {
   const normalized = String(head).toLowerCase();
-  const analysis = analyze(await read(graphql, pr, selection), normalized, selection);
+  const analysis = analyze(await read(graphql, pr, selection), normalized, selection, answered);
   if (analysis.stale) return { stale: true, head: analysis.head, liveHead: analysis.liveHead };
   return complete(analysis, { pr, graphql, selection });
 }
@@ -329,7 +330,7 @@ async function watch({ pr, graphql, state, now = Date.now, sleep = (ms) => new P
     const response = await read(graphql, pr, selection);
     const head = pullRequestOf(response).headRefOid.toLowerCase();
     if (!since.has(head)) since.set(head, now());
-    const analysis = analyze(response, head, selection);
+    const analysis = analyze(response, head, selection, state.answered ? state.answered() : new Set()); // replies are recorded while the watch runs
     if ((analysis.activity || !named) && !windowed.has(head)) { state.openWindow(head); windowed.add(head); }
     const status = state.status(head);
     if (status.delivery && status.delivery.current === true) { write(JSON.stringify({ event: 'delivery', pr: Number(pr), head, classification: status.delivery.classification })); return 'delivery'; }

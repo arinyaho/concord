@@ -1,6 +1,8 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
 const lgtmState = require('../../core/lgtm-state');
 const { tempDir } = require('./temp-dir');
 const PR = 7;
@@ -229,4 +231,49 @@ test('a later run without --reviewer keeps the empty record and writes nothing',
   const before = require('node:fs').readdirSync(stateDir).sort();
   assert.deepStrictEqual(lgtmState.reviewerSelection({ stateDir, pr: PR, logins: [], github: github() }), { selected: true, recorded: false, selection: [], gone: [] });
   assert.deepStrictEqual(require('node:fs').readdirSync(stateDir).sort(), before);
+});
+
+const ITEM = 'IC_75@2026-11-01T00:00:02Z';
+const reply = (extra = {}) => ({ kind: 'comment', url: 'https://x/75', author: { login: 'bob', id: 202, type: 'User' }, originalCommitId: null, disposition: 'rejected', reason: 'covered by test a.test.js:12', replyUrl: 'https://x/99', ...extra });
+
+test('two sessions answer one item once', () => {
+  const stateDir = temp();
+  assert.deepStrictEqual(lgtmState.claimReply({ stateDir, pr: PR, itemId: ITEM }), { claimed: true });
+  assert.deepStrictEqual(lgtmState.claimReply({ stateDir, pr: PR, itemId: ITEM }), { claimed: false, reason: 'reply-claimed' });
+  assert.ok(lgtmState.answeredItemIds({ stateDir, pr: PR }).has(ITEM));
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).claimedReplies, [ITEM]);
+});
+
+test('record-reply writes the handled record once and validates each disposition', () => {
+  const stateDir = temp();
+  const first = lgtmState.recordReply({ stateDir, pr: PR, itemId: ITEM, record: reply(), now: 5 });
+  assert.deepStrictEqual([first.recorded, first.feedback.revision, first.feedback.disposition], [true, '2026-11-01T00:00:02Z', 'rejected']);
+  assert.strictEqual(lgtmState.recordReply({ stateDir, pr: PR, itemId: ITEM, record: reply() }).existing, true);
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).claimedReplies, []);
+  assert.throws(() => lgtmState.recordReply({ stateDir, pr: PR, itemId: 'X@2026-11-01T00:00:00Z', record: reply({ disposition: 'blocker' }) }), /fixCommit/);
+  assert.throws(() => lgtmState.recordReply({ stateDir, pr: PR, itemId: 'Y@2026-11-01T00:00:00Z', record: reply({ disposition: 'author-answered', replyUrl: undefined }) }), /answerUrl/);
+  assert.strictEqual(lgtmState.recordReply({ stateDir, pr: PR, itemId: 'Z@2026-11-01T00:00:00Z', record: reply({ disposition: 'no-action', replyUrl: undefined }) }).recorded, true);
+  assert.deepStrictEqual(lgtmState.claimReply({ stateDir, pr: PR, itemId: ITEM }), { claimed: false, reason: 'answered' });
+});
+
+test('an edited item is answered again once', () => {
+  const stateDir = temp();
+  lgtmState.recordReply({ stateDir, pr: PR, itemId: ITEM, record: reply() });
+  assert.deepStrictEqual(lgtmState.claimReply({ stateDir, pr: PR, itemId: 'IC_75@2026-11-03T00:00:00Z' }), { claimed: true });
+});
+
+test('the answered set also reads the itemIds of a fix-round claim of any head', () => {
+  const stateDir = temp();
+  fs.writeFileSync(path.join(stateDir, `pr-${PR}-${'d'.repeat(40)}.fix-round-claim.json`), JSON.stringify({ pr: PR, headSha: 'd'.repeat(40), itemIds: [ITEM] }));
+  assert.ok(lgtmState.answeredItemIds({ stateDir, pr: PR }).has(ITEM));
+  assert.deepStrictEqual(lgtmState.claimReply({ stateDir, pr: PR, itemId: ITEM }), { claimed: false, reason: 'answered' });
+});
+
+test('a resume of the empty selection answers nothing twice', async () => {
+  const stateDir = temp();
+  const f = require('./fixtures/review-collector/human');
+  const collector = require('../../core/review-collector');
+  lgtmState.recordReply({ stateDir, pr: PR, itemId: 'IC_75@2026-11-01T00:00:02Z', record: reply() });
+  const packet = await collector.collect({ pr: PR, head: f.HEAD, graphql: f.graphqlOf(f.response({ comments: [f.prComment(75, f.BOB)] })), answered: lgtmState.answeredItemIds({ stateDir, pr: PR }) });
+  assert.deepStrictEqual(packet.observations, []);
 });
