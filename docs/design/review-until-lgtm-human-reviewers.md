@@ -38,7 +38,7 @@ The PR's ledger in this note is the set of marker files the state engine (`core/
 
 `--reviewer <login>` names one reviewer and repeats for each. The list may mix humans and bots. The skill passes it to `select-reviewers <pr> --reviewer <login>...`, which resolves each login through GitHub's user API and stores, for each, the login, the numeric account id and the account type, as a new write-once record `pr-<n>.reviewers-<sequence>.json` under the PR transition lock; the latest record is the selection. A run that names reviewers replaces the selection; a run that names none uses the stored one, so a resume needs no re-entry. Every record is kept, so the handoff can show when the selection changed.
 
-Reviewers come only from the selection. GitHub's requested reviewers, the repository's configuration and any built-in default reviewer are not read: a person or bot a teammate requested in the GitHub interface is not awaited and receives no request from the skill, while their feedback is still accepted (see Feedback). The bot list is exactly the bots the selection names.
+Reviewers come only from the selection. GitHub's requested reviewers, the repository's configuration and any built-in default reviewer are not read: a person or bot a teammate requested in the GitHub interface is not awaited and receives no request from the skill; a requested person's feedback is still accepted (see Feedback), and a requested bot's feedback is accepted only under the empty selection, because a bot outside a named list is ignored. The bot list is exactly the bots the selection names.
 
 ### Empty selection
 
