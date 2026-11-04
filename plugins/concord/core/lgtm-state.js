@@ -50,7 +50,31 @@ function validateFinding(finding) {
   for (const signal of finding.signals) {
     if (!SIGNALS.has(signal)) throw new Error(`review-lgtm-state: unknown signal ${JSON.stringify(signal)}`);
   }
-  return { url: finding.url, priority: finding.priority ?? null, signals: [...finding.signals] };
+  const out = { url: finding.url, priority: finding.priority ?? null, signals: [...finding.signals] };
+  // Human-feedback provenance is optional and never carries the body; a bot finding keeps its three-field shape.
+  if (finding.itemId !== undefined) {
+    if (typeof finding.itemId !== 'string' || !finding.itemId || finding.itemId.length > 300) throw new Error('review-lgtm-state: finding itemId must be a string of at most 300 characters');
+    out.itemId = finding.itemId;
+  }
+  if (finding.kind !== undefined) {
+    if (!FEEDBACK_KINDS.has(finding.kind)) throw new Error('review-lgtm-state: finding kind must be review, review-comment, thread-comment or comment');
+    out.kind = finding.kind;
+  }
+  if (finding.author !== undefined) {
+    const a = finding.author;
+    if (!a || typeof a.login !== 'string' || !a.login || !(a.id === null || Number.isSafeInteger(a.id)) || !ACCOUNT_TYPES.has(a.type)) throw new Error('review-lgtm-state: finding author must be {login, id, type}');
+    out.author = { login: a.login, id: a.id, type: a.type };
+  }
+  if (finding.originalCommitId !== undefined) out.originalCommitId = optionalSha(finding.originalCommitId, 'finding originalCommitId');
+  return out;
+}
+
+const FEEDBACK_KINDS = new Set(['review', 'review-comment', 'thread-comment', 'comment']);
+const ACCOUNT_TYPES = new Set(['User', 'Bot']);
+function optionalSha(value, name) {
+  if (value === null) return null;
+  if (typeof value !== 'string' || !FULL_SHA.test(value)) throw new Error(`review-lgtm-state: ${name} must be a full hexadecimal SHA or null`);
+  return value.toLowerCase();
 }
 
 // GitHub's API returns a review id as a JSON number; the CLI's own hook entry
@@ -58,6 +82,7 @@ function validateFinding(finding) {
 // number or a decimal-digit string and normalize to the decimal string,
 // since the id becomes part of a file name.
 function normalizeReviewId(reviewId) {
+  if (typeof reviewId === 'string' && reviewId.startsWith('comment-')) return `comment-${normalizeReviewId(reviewId.slice(8))}`; // an issue comment shares no id space with reviews
   if (typeof reviewId === 'string' && /^[0-9]+$/.test(reviewId)) {
     const canonical = BigInt(reviewId).toString();
     if (canonical === '0') throw new Error('review-lgtm-state: reviewId must be a positive safe integer or decimal digits');
@@ -77,7 +102,21 @@ function validateObservation(observation) {
   if (state !== 'completed' && state !== 'in-progress') throw new Error('review-lgtm-state: state must be completed or in-progress');
   if (typeof lgtm !== 'boolean') throw new Error('review-lgtm-state: lgtm is required and must be a boolean');
   if (!Array.isArray(findings)) throw new Error('review-lgtm-state: findings is required and must be an array');
-  return { reviewId: normalizedReviewId, reviewer: reviewer.trim(), reviewUrl, commitId: commitId.toLowerCase(), state, lgtm, findings: findings.map(validateFinding) };
+  const out = { reviewId: normalizedReviewId, reviewer: reviewer.trim(), reviewUrl, commitId: commitId.toLowerCase(), state, lgtm, findings: findings.map(validateFinding) };
+  if (observation.reviewerId !== undefined) {
+    if (!(observation.reviewerId === null || Number.isSafeInteger(observation.reviewerId))) throw new Error('review-lgtm-state: reviewerId must be a safe integer or null');
+    out.reviewerId = observation.reviewerId;
+  }
+  if (observation.reviewerType !== undefined) {
+    if (!ACCOUNT_TYPES.has(observation.reviewerType)) throw new Error('review-lgtm-state: reviewerType must be User or Bot');
+    out.reviewerType = observation.reviewerType;
+  }
+  if (observation.reviewCommitId !== undefined) out.reviewCommitId = optionalSha(observation.reviewCommitId, 'reviewCommitId');
+  if (observation.submittedAt !== undefined) {
+    if (observation.submittedAt !== null && (typeof observation.submittedAt !== 'string' || !observation.submittedAt)) throw new Error('review-lgtm-state: submittedAt must be a string or null');
+    out.submittedAt = observation.submittedAt;
+  }
+  return out;
 }
 
 function defaultStateDir(repoRoot = process.cwd()) {
@@ -370,7 +409,8 @@ function reconciliationPacket({ stateDir, pr, headSha }) {
   const p1Count = findings.filter((finding) => finding.priority === 'P1').length;
   const p2Count = findings.filter((finding) => finding.priority === 'P2').length;
   const signals = [...new Set(findings.flatMap((finding) => finding.signals))].sort();
-  const classification = (p1Count > 0 || records.length >= 2 || signals.length > 0) ? 'requires-architecture-review' : 'light-implementation-eligible';
+  const botRecords = records.filter((record) => record.reviewerType !== 'User').length; // all human records are one batch
+  const classification = (p1Count > 0 || botRecords + (records.some((record) => record.reviewerType === 'User') ? 1 : 0) >= 2 || signals.length > 0) ? 'requires-architecture-review' : 'light-implementation-eligible';
   const claimed = !!fixRoundForHead({ stateDir, pr, headSha });
   const abandoned = !claimed && !!readMarker(markerPath({ stateDir, pr, headSha }, 'fix-round-claim'));
   const exhausted = !claimed && fixBudget({ stateDir, pr }).remaining === 0;
@@ -392,7 +432,7 @@ function recordReview(input) {
       const outcome = rejectedReviewIds({ stateDir, ...key }).has(observation.reviewId) ? 'rejected' : 'needs-reconciliation';
       return { outcome, recorded: false, duplicate: true };
     }
-    const written = writeExclusive(file, { pr: key.pr, headSha: key.headSha, reviewId: observation.reviewId, reviewer: observation.reviewer, reviewUrl: observation.reviewUrl, recordedAtMs: now, findings: observation.findings });
+    const written = writeExclusive(file, { pr: key.pr, headSha: key.headSha, reviewId: observation.reviewId, reviewer: observation.reviewer, reviewUrl: observation.reviewUrl, recordedAtMs: now, findings: observation.findings, ...Object.fromEntries(['reviewerId', 'reviewerType', 'reviewCommitId', 'submittedAt'].filter((k) => k in observation).map((k) => [k, observation[k]])) });
     if (!written) return { outcome: 'needs-reconciliation', recorded: false, duplicate: true };
     return { outcome: 'needs-reconciliation', recorded: true, duplicate: false };
   }
@@ -588,7 +628,7 @@ function validatePacket(packet) {
     if (packet.findings.some((finding) => text(finding.id) === text(dropped.id))) throw new Error(`review-lgtm-state: minor ${text(dropped.id)} is both a finding and a dropped minor`);
   }
   unique(packet.tickets, 'rootCause', 'ticket');
-  if (!packet.reviewIds.every((id) => /^[0-9]+$/.test(String(id)))) throw new Error('review-lgtm-state: delivery reviewIds must be review ids');
+  if (!packet.reviewIds.every((id) => /^(?:[0-9]+|comment-[0-9]+)$/.test(String(id)))) throw new Error('review-lgtm-state: delivery reviewIds must be review ids');
   for (const finding of packet.findings) {
     if (finding.releaseBlocking != null && !Array.isArray(finding.releaseBlocking)) throw new Error(`review-lgtm-state: delivery finding ${text(finding.id)} releaseBlocking must be an array`);
     const id = text(finding.id);

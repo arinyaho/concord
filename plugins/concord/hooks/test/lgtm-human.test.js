@@ -150,3 +150,61 @@ test('select-reviewers selects the user when a bare login has no bot form', () =
   const stateDir = temp();
   assert.deepStrictEqual(lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice'], github: github() }).selection, [ACCOUNTS.alice]);
 });
+
+const HEAD = 'c'.repeat(40);
+const humanObs = (reviewId, findings = 1, extra = {}) => ({ reviewId, reviewer: 'alice', reviewerId: 101, reviewerType: 'User', reviewUrl: `https://x/${reviewId}`, commitId: HEAD, reviewCommitId: 'd'.repeat(40), submittedAt: '2026-11-01T00:00:00Z', state: 'completed', lgtm: false, findings: Array.from({ length: findings }, (_, i) => ({ url: `https://x/${reviewId}/${i}`, priority: null, signals: [], itemId: `N${reviewId}${i}@2026-11-01T00:00:00Z`, kind: 'comment', author: { login: 'alice', id: 101, type: 'User' }, originalCommitId: null, body: 'secret text' })), ...extra });
+const botObs = (reviewId) => ({ reviewId, reviewer: 'chatgpt-codex-connector', reviewUrl: `https://x/${reviewId}`, commitId: HEAD, state: 'completed', lgtm: false, findings: [{ url: `https://x/${reviewId}/f`, priority: 'P2', signals: [] }] });
+
+test('a comment observation records under comment-<id> and keeps provenance without the body', () => {
+  const stateDir = temp();
+  assert.strictEqual(lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: humanObs('comment-70') }).recorded, true);
+  const [review] = lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reconciliation.reviews;
+  assert.strictEqual(review.id, 'comment-70');
+  assert.deepStrictEqual(Object.keys(review.findings[0]).sort(), ['author', 'itemId', 'kind', 'originalCommitId', 'priority', 'signals', 'url']);
+  const record = JSON.parse(require('node:fs').readFileSync(require('node:path').join(stateDir, `pr-${PR}-${HEAD}.review-comment-70.json`), 'utf8'));
+  assert.deepStrictEqual([record.reviewerId, record.reviewerType, record.reviewCommitId, record.submittedAt], [101, 'User', 'd'.repeat(40), '2026-11-01T00:00:00Z']);
+});
+
+test('a ghost author and a null review commit are accepted', () => {
+  const stateDir = temp();
+  const obs = humanObs('comment-72', 1, { reviewCommitId: null });
+  obs.findings[0].author = { login: 'ghost', id: null, type: 'User' };
+  assert.strictEqual(lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs }).recorded, true);
+});
+
+test('a bot record keeps its exact shape when the human fields are absent', () => {
+  const stateDir = temp();
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, now: 5, observation: botObs('900') });
+  const record = JSON.parse(require('node:fs').readFileSync(require('node:path').join(stateDir, `pr-${PR}-${HEAD}.review-900.json`), 'utf8'));
+  assert.deepStrictEqual(Object.keys(record).sort(), ['findings', 'headSha', 'pr', 'recordedAtMs', 'reviewId', 'reviewUrl', 'reviewer']);
+  assert.deepStrictEqual(Object.keys(record.findings[0]).sort(), ['priority', 'signals', 'url']);
+});
+
+test('the human records of a head count as one batch in the classification', () => {
+  const stateDir = temp();
+  for (const id of ['5', 'comment-70', 'comment-71']) lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: humanObs(id) });
+  assert.strictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reconciliation.classification, 'light-implementation-eligible');
+});
+
+test('a bot record plus human feedback counts as two records', () => {
+  const stateDir = temp();
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: botObs('900') });
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: humanObs('comment-70') });
+  assert.strictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reconciliation.classification, 'requires-architecture-review');
+});
+
+test('a malformed comment id fails closed', () => {
+  for (const id of ['comment-0', 'comment-', 'comment-x', 'comment-01x']) assert.throws(() => lgtmState.recordReview({ stateDir: temp(), pr: PR, headSha: HEAD, observation: humanObs(id) }), /reviewId/);
+});
+
+test('malformed optional human fields fail closed', () => {
+  for (const extra of [{ reviewerType: 'Organization' }, { reviewerId: 1.5 }, { reviewCommitId: 'abc' }, { submittedAt: 5 }]) assert.throws(() => lgtmState.recordReview({ stateDir: temp(), pr: PR, headSha: HEAD, observation: humanObs('comment-70', 1, extra) }), /review-lgtm-state/);
+  const bad = humanObs('comment-70');
+  bad.findings[0].kind = 'tweet';
+  assert.throws(() => lgtmState.recordReview({ stateDir: temp(), pr: PR, headSha: HEAD, observation: bad }), /kind/);
+});
+
+test('delivery reviewIds accept comment-<n>', () => {
+  const packet = { baseSha: 'a'.repeat(40), contractDigest: 'a'.repeat(64), reviewIds: ['comment-70'], acceptance: [], requiredChecks: [], reviewsTerminal: true, openChoices: [], findings: [], droppedMinors: [], tickets: [] };
+  assert.doesNotThrow(() => lgtmState.classifyDelivery({ ...packet, pr: PR, headSha: HEAD }));
+});
