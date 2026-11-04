@@ -420,3 +420,34 @@ test('self-feeding takes the latest earlier fix head across bot and human rounds
   fs.writeFileSync(path.join(stateDir, `pr-${PR}.human-fix-round-slot-1.json`), JSON.stringify({ pr: PR, headSha: second, owner: 'o', claimedAtMs: 2000 }));
   assert.deepStrictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: PR, headSha: head, file: 'a.md', start: 2, end: 2 }), { selfFeeding: false, previousFixHead: second });
 });
+
+test('a claim that lists no item ids on a batch of feedback items is refused and spends no slot', () => {
+  const stateDir = temp();
+  const heads = ['1', '2', '3', '4', '5', '6'].map((c) => c.repeat(40));
+  heads.forEach((head, i) => {
+    const obs = { ...humanObs(`comment-${80 + i}`), commitId: head };
+    lgtmState.recordReview({ stateDir, pr: PR, headSha: head, observation: obs });
+    if (i < 5) lgtmState.claimFixRound({ stateDir, pr: PR, headSha: head, itemIds: [itemOf(obs)] });
+  });
+  assert.throws(() => lgtmState.claimFixRound({ stateDir, pr: PR, headSha: heads[5] }), /^Error: review-lgtm-state: itemIds are required when the head's batch holds feedback items$/);
+  const s = lgtmState.status({ stateDir, pr: PR, headSha: heads[5] });
+  assert.deepStrictEqual([s.fixBudget.spent, s.humanFixBudget.spent], [0, 5]);
+  assert.ok(!fs.existsSync(path.join(stateDir, `pr-${PR}-${heads[5]}.fix-round-claim.json`)));
+});
+
+test('a resumed owner re-claims its round without listing item ids', () => {
+  const stateDir = temp();
+  const obs = humanObs('comment-70');
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
+  lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, owner: 'w', itemIds: [itemOf(obs)] });
+  assert.deepStrictEqual(lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, owner: 'w' }), { claimed: true, resumed: true, owner: 'w', round: 1, kind: 'human', budget: { max: 5, spent: 1, remaining: 4 } });
+});
+
+test('claim-fix-round stdin that is not an object of item ids fails with a state message', () => {
+  const stateDir = temp();
+  const { execFileSync } = require('node:child_process');
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: humanObs('comment-70') });
+  for (const input of ['null', '5', '[]', '{"itemIds":null}', '{"itemIds":[1]}']) {
+    assert.throws(() => execFileSync('node', [path.join(__dirname, '..', 'review-lgtm-state.js'), 'claim-fix-round', String(PR), HEAD], { encoding: 'utf8', stdio: 'pipe', env: { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir }, input }), (error) => /^Error: review-lgtm-state: /m.test(error.stderr) && !/TypeError/.test(error.stderr), input);
+  }
+});

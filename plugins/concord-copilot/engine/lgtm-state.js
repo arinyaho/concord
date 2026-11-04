@@ -611,6 +611,8 @@ function claimFixRound(input) {
       if (active.owner === owner) return { claimed: true, resumed: true, owner, round: slot.round, kind: slot.kind, budget: fixBudget({ stateDir, pr: key.pr }, slot.kind === 'human') };
       return { claimed: false, reason: 'fix-round-owned', humanRequired: true, owner: active.owner };
     }
+    // Without item ids a batch of feedback items would claim a bot slot and leave the human cap unspent.
+    if (ids.length === 0 && findings.size > 0) throw new Error('review-lgtm-state: itemIds are required when the head\'s batch holds feedback items');
     const human = ids.some((id) => findings.get(id).author?.type === 'User');
     const kind = human ? 'human' : 'bot';
     const exhausted = human ? 'human-fix-round-budget-exhausted' : 'fix-round-budget-exhausted';
@@ -1091,7 +1093,9 @@ function runMain(repoRoot = process.cwd()) {
   else if (verb === 'claim-fix-round') {
     // Empty stdin (or a terminal) takes no item ids.
     const raw = process.stdin.isTTY ? '' : fs.readFileSync(0, 'utf8');
-    process.stdout.write(`${JSON.stringify(claimFixRound({ stateDir, pr, headSha, itemIds: raw.trim() ? JSON.parse(raw).itemIds : [] }))}\n`);
+    const body = raw.trim() ? JSON.parse(raw) : { itemIds: [] };
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('review-lgtm-state: claim-fix-round reads {"itemIds":[...]} on stdin');
+    process.stdout.write(`${JSON.stringify(claimFixRound({ stateDir, pr, headSha, itemIds: body.itemIds }))}\n`);
   }
   else if (verb === 'renew-fix-round') process.stdout.write(`${JSON.stringify(renewFixRound({ stateDir, pr, headSha, owner: argument }))}\n`);
   else if (verb === 'waive-fix-budget') process.stdout.write(`${JSON.stringify(waiveFixBudget({ stateDir, pr, person: headSha, count: Number(argument), human: process.argv[6] === '--human' }))}\n`);
