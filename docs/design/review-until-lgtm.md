@@ -54,14 +54,14 @@ The default verifier classifies a head's findings, so the first plain findings o
 
 The loop ends when no rollout blocker remains, the required checks are green, and collection for the head is terminal; a reviewer reaching zero findings is not part of the end condition. The result is the delivery classification, and a head with collected minors is `mergeable-with-follow-ups`, never green.
 
-- Green: collection is complete, no unfixed blocker remains, no minor was collected, and at least one fresh explicit LGTM exists.
+- Green: collection is complete, no unfixed blocker remains, no minor was collected, and, when a reviewer is named, at least one fresh explicit LGTM exists. With the empty selection nobody is awaited and a bot LGTM ends nothing; completion follows answered feedback and the branch rules, as the [human reviewers design](review-until-lgtm-human-reviewers.md) describes.
 - `completed-without-lgtm`: a terminal clean review has no qualifying signal by the deadline. The skill does not request another full review on the same head solely to obtain a reaction.
 - Human reconciliation: the request budget is exhausted, or an accepted finding changes product contract, PR scope, or unrelated architecture.
 - Delivery disposition: when collection is terminal and no fix round is open, including after the fix budget is exhausted, the skill records the delivery disposition (see the [delivery disposition design](delivery-disposition.md)). Release-blocking residuals keep the PR `blocked` for human reconciliation; collected minors and other follow-up-eligible residuals are grouped by root cause into read-back tickets within the tracker authorization.
 
 ## Merge gate
 
-An agent merges a PR only at the user's explicit request naming it, and only after `merge-ready <pr> <head-sha>` prints `{"result":"ready"}`, merging with `gh pr merge <pr> --match-head-commit <head-sha>` so a push after the check makes the merge fail. A human merging by hand is not gated. The CLI cannot observe GitHub, so the caller reads the live facts immediately before merging and passes them on stdin. `expectedReviewers` lists the logins of the named reviewers and is empty when none is named; a reviewer entry without a `reviewer` identity makes the verb fail.
+An agent merges a PR only at the user's explicit request naming it, and only after `merge-ready <pr> <head-sha>` prints `{"result":"ready"}`, merging with `gh pr merge <pr> --match-head-commit <head-sha>` so a push after the check makes the merge fail. A human merging by hand is not gated. The CLI cannot observe GitHub, so the caller reads the live facts immediately before merging and passes them on stdin. `expectedReviewers` lists the logins of the named reviewers and is empty when none is named; a reviewer entry without a `reviewer` identity makes the verb fail. With the empty selection `no-automated-review` and `no-lgtm` are not reported and an unreviewed head with satisfied branch rules is merge-ready; a `User` entry is not checked for `no-lgtm` either, as the [human reviewers design](review-until-lgtm-human-reviewers.md) describes.
 
 ```json
 {
@@ -78,12 +78,12 @@ An agent merges a PR only at the user's explicit request naming it, and only aft
 |---|---|
 | The live head equals the head asked about | `head-mismatch:<live>` |
 | Every check on that head concluded `success` | `check:<name>:<conclusion>` |
-| A reviewer is named or observed, and the delivery record is not `mergeable-without-review` | `no-automated-review` |
+| With a named selection, a reviewer is named or observed, and the delivery record is not `mergeable-without-review` | `no-automated-review` |
 | Every named reviewer was observed (not checked for a `mergeable-without-review` record) | `reviewer-missing:<login>` |
 | Every required check of the delivery record is present | `check-missing:<name>` |
 | No reviewer reports a provider failure or timeout | `reviewer-failure:<reviewer>:<label>` |
 | Every reviewer is terminal for that head | `reviewer-pending:<reviewer>` |
-| Every reviewer gave a fresh LGTM for that head | `no-lgtm:<reviewer>` |
+| With a named selection, every named automated reviewer gave a fresh LGTM for that head | `no-lgtm:<reviewer>` |
 | A delivery record exists for that head | `no-delivery` |
 | No review was recorded or rejected, and no minor collected, after that record | `delivery-stale` |
 | The record is `mergeable-clean`, `mergeable-with-follow-ups` or `mergeable-without-review` | `delivery-blocked` |
@@ -91,7 +91,7 @@ An agent merges a PR only at the user's explicit request naming it, and only aft
 | The approved contract digest equals the record's | `contract-changed` |
 | No fix claim exists on that head | `fix-round-open` |
 
-The verb merges nothing and posts nothing. With `no-automated-review` as the only reason (no reviewer named and none observed, or a `mergeable-without-review` record) the agent merges only on the user's explicit instruction naming the PR and reports that no automated review exists; otherwise it reports the reason and does not merge. Outside a `mergeable-without-review` record, a named reviewer that was not observed is `reviewer-missing`, which this exception never covers. A timeout or provider failure is a human-reconciliation state, never approval. A push makes a new head, so the gate runs again after every push.
+The verb merges nothing and posts nothing. With `no-automated-review` as the only reason (a named selection with no reviewer observed, or a `mergeable-without-review` record) the agent merges only on the user's explicit instruction naming the PR and reports that no automated review exists; otherwise it reports the reason and does not merge. Outside a `mergeable-without-review` record, a named reviewer that was not observed is `reviewer-missing`, which this exception never covers. A timeout or provider failure is a human-reconciliation state, never approval. A push makes a new head, so the gate runs again after every push.
 
 ## Rationale
 
