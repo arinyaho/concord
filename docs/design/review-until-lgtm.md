@@ -2,7 +2,9 @@
 
 ## Decision
 
-`review-until-lgtm` is a provider-neutral GitHub PR feedback loop. It collects every configured automated review for one exact head, records the reviews as one batch, verifies the findings together, fixes the rollout blockers among them, and pushes once. Codex, Copilot, and other explicitly configured automated reviewers use the same state contract.
+`review-until-lgtm` is a provider-neutral GitHub PR feedback loop. It collects every named automated review for one exact head, records the reviews as one batch, verifies the findings together, fixes the rollout blockers among them, and pushes once. Codex, Copilot, and other named automated reviewers use the same state contract.
+
+Human reviewers, alone or mixed with automated ones, go through the same loop with their own identity, feedback, waiting and delivery rules, described in the [human reviewers design](review-until-lgtm-human-reviewers.md). This note describes the automated-reviewer contract that design builds on. The reviewers the loop awaits are the named selection: `--reviewer` names each automated reviewer, and with none named and none stored the selection is empty, so every account is observed, no default bot is requested and nobody is awaited. A "named" reviewer below is a reviewer of that selection.
 
 The loop has two PR-wide durable ceilings: three manual review requests and three fix-and-push rounds, the latter raised only by a recorded waiver. Neither resets when the head changes or the agent session is replaced. Exhaustion is a human-reconciliation outcome, never green.
 
@@ -30,13 +32,13 @@ An LGTM must be explicit and fresh for the current head: an automated `APPROVED`
 
 ## Collection and batching
 
-The skill waits for every known configured automated reviewer to finish before deciding. When GitHub does not expose a finite set, it requires 120 seconds without new current-head review activity, bounded by the persisted 15-minute collection deadline. It records every completed review even after the first finding; this prevents the first-arriving reviewer from causing a piecemeal fix and push.
+The skill waits for every known named automated reviewer to finish before deciding. When GitHub does not expose a finite set, it requires 120 seconds without new current-head review activity, bounded by the persisted 15-minute collection deadline. It records every completed review even after the first finding; this prevents the first-arriving reviewer from causing a piecemeal fix and push.
 
 If no activity exists, the initial request path first waits through a persisted 120-second automatic-review grace. Manual claims are keyed by provider, and each sent attempt reserves one of the PR's three request slots. Status aggregates every claim, recovery, and sent marker for the PR, including markers in older formats, so a replacement session can resume the bounded window, and each counts toward the same budget without double-counting a corresponding slot. Recovery requires an original provider claim, so a missing claim cannot skip the automatic-review grace. Every recovery that may send another provider request consumes another slot, and exhaustion remains visible on resume. Reservation transitions are serialized by a PR-scoped non-reclaiming lock. A concurrent caller retries `transition-busy`; an abandoned lock fails closed for human reconciliation. Reservation remains conservative: a crashed claimant still consumes its slot, because session replacement must not recreate budget.
 
 A recovery-claim marker in an older format also consumes an attempt when no matching request slot covers it, and an older `retry-window` marker remains part of the active collection deadline, so process replacement cannot shorten an already-open retry window.
 
-All configured reviewers finish collection before reconciliation begins. A finding from an early reviewer blocks fixing but does not block bounded claims needed to collect a missing reviewer. All collected findings then go to one clean-context verifier as a batch. A second verifier is used only for conflicting conclusions, security or data-boundary risk, or a proposed contract or architecture change. Accepted blockers are deduplicated by shared root cause and planned together.
+All named reviewers finish collection before reconciliation begins. A finding from an early reviewer blocks fixing but does not block bounded claims needed to collect a missing reviewer. All collected findings then go to one clean-context verifier as a batch. A second verifier is used only for conflicting conclusions, security or data-boundary risk, or a proposed contract or architecture change. Accepted blockers are deduplicated by shared root cause and planned together.
 
 When the verifier rejects every finding in the exact active batch as false positive, `reject-review-batch` stores the review ids and evidence summary in a durable disposition marker. The original review records remain immutable, no fix round or empty commit is created, and a partial or stale batch is rejected. The disposition only clears reconciliation; green still requires fresh explicit LGTM evidence.
 
@@ -52,14 +54,14 @@ The default verifier classifies a head's findings, so the first plain findings o
 
 The loop ends when no rollout blocker remains, the required checks are green, and collection for the head is terminal; a reviewer reaching zero findings is not part of the end condition. The result is the delivery classification, and a head with collected minors is `mergeable-with-follow-ups`, never green.
 
-- Green: collection is complete, no unfixed blocker remains, no minor was collected, and at least one fresh explicit LGTM exists.
+- Green: collection is complete, no unfixed blocker remains, no minor was collected, and, when an automated reviewer is named, at least one fresh explicit LGTM exists. With the empty selection nobody is awaited and a bot LGTM ends nothing; completion follows answered feedback and the branch rules, as the [human reviewers design](review-until-lgtm-human-reviewers.md) describes.
 - `completed-without-lgtm`: a terminal clean review has no qualifying signal by the deadline. The skill does not request another full review on the same head solely to obtain a reaction.
 - Human reconciliation: the request budget is exhausted, or an accepted finding changes product contract, PR scope, or unrelated architecture.
 - Delivery disposition: when collection is terminal and no fix round is open, including after the fix budget is exhausted, the skill records the delivery disposition (see the [delivery disposition design](delivery-disposition.md)). Release-blocking residuals keep the PR `blocked` for human reconciliation; collected minors and other follow-up-eligible residuals are grouped by root cause into read-back tickets within the tracker authorization.
 
 ## Merge gate
 
-An agent merges a PR only at the user's explicit request naming it, and only after `merge-ready <pr> <head-sha>` prints `{"result":"ready"}`, merging with `gh pr merge <pr> --match-head-commit <head-sha>` so a push after the check makes the merge fail. A human merging by hand is not gated. The CLI cannot observe GitHub, so the caller reads the live facts immediately before merging and passes them on stdin. `expectedReviewers` lists the logins of the configured reviewers and is empty when none is configured; a reviewer entry without a `reviewer` identity makes the verb fail.
+An agent merges a PR only at the user's explicit request naming it, and only after `merge-ready <pr> <head-sha>` prints `{"result":"ready"}`, merging with `gh pr merge <pr> --match-head-commit <head-sha>` so a push after the check makes the merge fail. A human merging by hand is not gated. The CLI cannot observe GitHub, so the caller reads the live facts immediately before merging and passes them on stdin. `expectedReviewers` lists the logins of the named reviewers and is empty when none is named; a reviewer entry without a `reviewer` identity makes the verb fail. With the empty selection `no-automated-review` and `no-lgtm` are not reported and an unreviewed head with satisfied branch rules is merge-ready; a `User` entry is exempt from `no-lgtm`, `no-automated-review`, `reviewer-missing` and `reviewer-pending`, as the [human reviewers design](review-until-lgtm-human-reviewers.md) describes.
 
 ```json
 {
@@ -76,12 +78,12 @@ An agent merges a PR only at the user's explicit request naming it, and only aft
 |---|---|
 | The live head equals the head asked about | `head-mismatch:<live>` |
 | Every check on that head concluded `success` | `check:<name>:<conclusion>` |
-| A reviewer is configured or observed, and the delivery record is not `mergeable-without-review` | `no-automated-review` |
-| Every configured reviewer was observed (not checked for a `mergeable-without-review` record) | `reviewer-missing:<login>` |
+| With a named selection, an automated (`Bot`) reviewer is named or observed, and the delivery record is not `mergeable-without-review` | `no-automated-review` |
+| Every named automated reviewer was observed (not checked for a `mergeable-without-review` record) | `reviewer-missing:<login>` |
 | Every required check of the delivery record is present | `check-missing:<name>` |
 | No reviewer reports a provider failure or timeout | `reviewer-failure:<reviewer>:<label>` |
-| Every reviewer is terminal for that head | `reviewer-pending:<reviewer>` |
-| Every reviewer gave a fresh LGTM for that head | `no-lgtm:<reviewer>` |
+| Every automated reviewer is terminal for that head | `reviewer-pending:<reviewer>` |
+| With a named selection, every named automated reviewer gave a fresh LGTM for that head | `no-lgtm:<reviewer>` |
 | A delivery record exists for that head | `no-delivery` |
 | No review was recorded or rejected, and no minor collected, after that record | `delivery-stale` |
 | The record is `mergeable-clean`, `mergeable-with-follow-ups` or `mergeable-without-review` | `delivery-blocked` |
@@ -89,11 +91,11 @@ An agent merges a PR only at the user's explicit request naming it, and only aft
 | The approved contract digest equals the record's | `contract-changed` |
 | No fix claim exists on that head | `fix-round-open` |
 
-The verb merges nothing and posts nothing. With `no-automated-review` as the only reason (no reviewer configured and none observed, or a `mergeable-without-review` record) the agent merges only on the user's explicit instruction naming the PR and reports that no automated review exists; otherwise it reports the reason and does not merge. Outside a `mergeable-without-review` record, a configured reviewer that was not observed is `reviewer-missing`, which this exception never covers. A timeout or provider failure is a human-reconciliation state, never approval. A push makes a new head, so the gate runs again after every push.
+The verb merges nothing and posts nothing. With `no-automated-review` as the only reason (a named selection with no reviewer observed, or a `mergeable-without-review` record) the agent merges only on the user's explicit instruction naming the PR and reports that no automated review exists; otherwise it reports the reason and does not merge. Outside a `mergeable-without-review` record, a named reviewer that was not observed is `reviewer-missing`, which this exception never covers. A timeout or provider failure is a human-reconciliation state, never approval. A push makes a new head, so the gate runs again after every push.
 
 ## Rationale
 
-The review state lives on GitHub, so the skill reads it there with the GitHub CLI; the local state engine (`core/lgtm-state.js`, exposed as `review-lgtm-state`) holds only what GitHub cannot: request and fix budgets, claims, recorded review batches, and delivery records. Collecting every configured reviewer before fixing prevents the first-arriving reviewer from driving a piecemeal fix and push, and a PR-wide budget that survives head changes and session replacement prevents a loop from recreating budget by pushing or restarting.
+The review state lives on GitHub, so the skill reads it there with the GitHub CLI; the local state engine (`core/lgtm-state.js`, exposed as `review-lgtm-state`) holds only what GitHub cannot: request and fix budgets, claims, recorded review batches, and delivery records. Collecting every named reviewer before fixing prevents the first-arriving reviewer from driving a piecemeal fix and push, and a PR-wide budget that survives head changes and session replacement prevents a loop from recreating budget by pushing or restarting.
 
 Treating a completed review without an LGTM signal as `completed-without-lgtm`, a named non-green outcome, preserves the signal without requesting another full review just to obtain a reaction.
 
@@ -102,5 +104,5 @@ Treating a completed review without an LGTM signal as `completed-without-lgtm`, 
 - An automated reviewer may complete without emitting its LGTM signal. The named outcome preserves that fact but cannot force the reviewer to emit it.
 
 - GitHub may still run a full automatic review for every pushed head. Concord reduces that multiplier by batching fixes and bounding pushes; it cannot control provider-side review scope.
-- The agent determines which reviewers are configured and whether their activity is terminal. Unknown provider markup fails to timeout or manual reconciliation rather than green.
+- The agent determines which reviewers are named and whether their activity is terminal. Unknown provider markup fails to timeout or manual reconciliation rather than green.
 - Fewer review launches do not prove token or cost savings. Evaluation must compare actual total and cached tokens when available, provider cost, automatic and manual review launches, duplicate finding/path volume, fix pushes, wall time, final unresolved findings, and escaped defects.
