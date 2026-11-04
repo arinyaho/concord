@@ -77,3 +77,9 @@ test('select-reviewers --none returns to observing every account', () => {
   lgtmState.selectReviewers({ stateDir, pr: PR, logins: null, none: true, github: github() });
   assert.deepStrictEqual(lgtmState.latestSelection({ stateDir, pr: PR }).reviewers, []);
 });
+
+test('select-reviewers rejects a non-numeric PR number and writes nothing', () => {
+  const stateDir = temp();
+  for (const pr of ['--reviewer', 'abc', '0', undefined]) assert.throws(() => lgtmState.selectReviewers({ stateDir, pr, logins: null, github: github() }), /PR number must be a positive integer/);
+  assert.deepStrictEqual(require('node:fs').readdirSync(stateDir), []);
+});

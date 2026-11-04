@@ -776,6 +776,7 @@ function selectionRecords({ stateDir, pr }) {
 }
 
 function latestSelection({ stateDir, pr }) {
+  if (!Number.isSafeInteger(Number(pr)) || Number(pr) < 1) throw new Error('review-lgtm-state: PR number must be a positive integer');
   const latest = selectionRecords({ stateDir, pr }).at(-1);
   return latest ? { sequence: latest.sequence, reviewers: latest.reviewers, recordedAtMs: latest.recordedAtMs } : null;
 }
@@ -783,6 +784,7 @@ function latestSelection({ stateDir, pr }) {
 const accountOf = ({ login, id, type }) => ({ login: login.replace(/\[bot\]$/, ''), id, type });
 
 function selectReviewers({ stateDir, pr, logins, none = false, github, now = Date.now() }) {
+  if (!Number.isSafeInteger(Number(pr)) || Number(pr) < 1) throw new Error('review-lgtm-state: PR number must be a positive integer');
   const number = Number(pr);
   return withTransitionLock({ stateDir, pr: number }, () => {
     const latest = selectionRecords({ stateDir, pr: number }).at(-1);
