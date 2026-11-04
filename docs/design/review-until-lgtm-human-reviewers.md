@@ -260,7 +260,7 @@ Branch rules alone decide merge-readiness; Concord requires no selected reviewer
     "branchRules": {"mergeStateStatus": "CLEAN", "reviewDecision": "APPROVED"},
     "reviewers": [{"login": "alice", "id": 101, "type": "User", "status": "approved", "reviewId": "5470930001", "commitId": "<head>"}],
     "unanswered": [],
-    "changesRequested": [{"login": "bob", "id": 202, "selected": false, "answered": true}]
+    "changesRequested": []
   }
 }
 ```
