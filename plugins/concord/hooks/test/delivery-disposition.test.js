@@ -327,6 +327,17 @@ test('a recorded fix-budget waiver lifts a terminal delivery so the waived round
   assert.strictEqual(claim.budget.max, 4);
 });
 
+test('a human fix-budget waiver also lifts a terminal delivery', () => {
+  const stateDir = temp();
+  const input = { stateDir, pr: PR, headSha: HEAD };
+  withActiveReview(stateDir);
+  const record = lgtmState.recordDelivery({ ...input, now: 4000, packet: pr172Packet({ reviewIds: ['4192088400'] }) });
+  assert.deepStrictEqual(record.budgets.humanFix, { max: 5, spent: 0, remaining: 5 });
+  assert.strictEqual(lgtmState.claimFixRound({ ...input, now: 5000 }).reason, 'delivery-terminal');
+  lgtmState.waiveFixBudget({ stateDir, pr: PR, person: 'someone', count: 1, human: true });
+  assert.strictEqual(lgtmState.claimFixRound({ ...input, now: 6000 }).claimed, true);
+});
+
 test('a fix-budget waiver does not reopen review requests on a terminal delivery', () => {
   const stateDir = temp();
   withActiveReview(stateDir);

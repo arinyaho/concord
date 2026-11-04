@@ -210,8 +210,8 @@ test('a doubled comment prefix is not a review id', () => {
   assert.throws(() => lgtmState.recordReview({ stateDir: temp(), pr: PR, headSha: HEAD, observation: humanObs('comment-comment-5') }), /reviewId/);
 });
 
-test('delivery reviewIds accept comment-<n>', () => {
-  const packet = { baseSha: 'a'.repeat(40), contractDigest: 'a'.repeat(64), reviewIds: ['comment-70'], acceptance: [], requiredChecks: [], reviewsTerminal: true, openChoices: [], findings: [], droppedMinors: [], tickets: [] };
+test('delivery reviewIds accept comment-<n> and revision records', () => {
+  const packet = { baseSha: 'a'.repeat(40), contractDigest: 'a'.repeat(64), reviewIds: ['comment-70', 'comment-70~0123456789abcdef', '5~0123456789abcdef'], acceptance: [], requiredChecks: [], reviewsTerminal: true, openChoices: [], findings: [], droppedMinors: [], tickets: [] };
   assert.doesNotThrow(() => lgtmState.classifyDelivery({ ...packet, pr: PR, headSha: HEAD }));
 });
 
@@ -276,4 +276,147 @@ test('a resume of the empty selection answers nothing twice', async () => {
   lgtmState.recordReply({ stateDir, pr: PR, itemId: 'IC_75@2026-11-01T00:00:02Z', record: reply() });
   const packet = await collector.collect({ pr: PR, head: f.HEAD, graphql: f.graphqlOf(f.response({ comments: [f.prComment(75, f.BOB)] })), answered: lgtmState.answeredItemIds({ stateDir, pr: PR }) });
   assert.deepStrictEqual(packet.observations, []);
+});
+
+const H2 = 'e'.repeat(40);
+const itemOf = (obs, i = 0) => obs.findings[i].itemId;
+
+test('a round with a human item spends the human cap', () => {
+  const stateDir = temp();
+  const obs = humanObs('comment-70');
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
+  const claim = lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(obs)] });
+  assert.deepStrictEqual([claim.claimed, claim.kind, claim.budget], [true, 'human', { max: 5, spent: 1, remaining: 4 }]);
+  const s = lgtmState.status({ stateDir, pr: PR, headSha: HEAD });
+  assert.deepStrictEqual([s.fixBudget.spent, s.humanFixBudget.spent], [0, 1]);
+});
+
+test('a round with only bot items spends the bot cap even when it lists bot item ids', () => {
+  const stateDir = temp();
+  const obs = { ...humanObs('comment-73'), reviewer: 'vercel', reviewerId: 901, reviewerType: 'Bot' };
+  obs.findings[0].author = { login: 'vercel', id: 901, type: 'Bot' };
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
+  assert.strictEqual(lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(obs)] }).kind, 'bot');
+});
+
+test('an item taken by a fix round does not return in the next head\'s batch', async () => {
+  const stateDir = temp();
+  const f = require('./fixtures/review-collector/human');
+  const collector = require('../../core/review-collector');
+  const comments = [f.prComment(75, f.BOB)];
+  const first = await collector.collect({ pr: PR, head: f.HEAD, graphql: f.graphqlOf(f.response({ comments })), answered: lgtmState.answeredItemIds({ stateDir, pr: PR }) });
+  const [obs] = first.observations;
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: f.HEAD, observation: obs });
+  lgtmState.claimFixRound({ stateDir, pr: PR, headSha: f.HEAD, itemIds: [itemOf(obs)] });
+  assert.ok(lgtmState.answeredItemIds({ stateDir, pr: PR }).has(itemOf(obs)));
+  const next = await collector.collect({ pr: PR, head: f.H1, graphql: f.graphqlOf(f.response({ head: f.H1, comments })), answered: lgtmState.answeredItemIds({ stateDir, pr: PR }) });
+  assert.deepStrictEqual(next.observations.filter((o) => o.findings.some((x) => x.itemId === itemOf(obs))), []);
+});
+
+test('owed replies of a finished round are posted on resume', () => {
+  const stateDir = temp();
+  const obs = humanObs('comment-70');
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
+  lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(obs)] });
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).owedReplies, []);
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, [itemOf(obs)]);
+  lgtmState.recordReply({ stateDir, pr: PR, itemId: itemOf(obs), record: { kind: 'comment', url: 'https://x/70', author: obs.findings[0].author, originalCommitId: null, disposition: 'minor', reason: 'renamed', replyUrl: 'https://x/r', fixCommit: H2 } });
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, []);
+});
+
+test('an exhausted human cap stops for reconciliation', () => {
+  const stateDir = temp();
+  const heads = ['1', '2', '3', '4', '5', '6'].map((c) => c.repeat(40));
+  heads.forEach((head, i) => {
+    const obs = { ...humanObs(`comment-${80 + i}`), commitId: head };
+    lgtmState.recordReview({ stateDir, pr: PR, headSha: head, observation: obs });
+    const claim = lgtmState.claimFixRound({ stateDir, pr: PR, headSha: head, itemIds: [itemOf(obs)] });
+    if (i < 5) assert.strictEqual(claim.claimed, true);
+    else assert.deepStrictEqual([claim.claimed, claim.reason], [false, 'human-fix-round-budget-exhausted']);
+  });
+  assert.strictEqual(lgtmState.status({ stateDir, pr: PR, headSha: heads[5] }).reconciliation.action, 'human-reconciliation');
+  assert.strictEqual(lgtmState.status({ stateDir, pr: PR, headSha: heads[5] }).fixBudget.spent, 0);
+});
+
+test('a human waiver raises only the human cap', () => {
+  const stateDir = temp();
+  const first = lgtmState.waiveFixBudget({ stateDir, pr: PR, person: 'maintainer', count: 2, human: true });
+  assert.deepStrictEqual(first.budget, { max: 7, spent: 0, remaining: 7 });
+  assert.strictEqual(lgtmState.waiveFixBudget({ stateDir, pr: PR, person: 'maintainer', count: 2, human: true }).existing, true);
+  const s = lgtmState.status({ stateDir, pr: PR, headSha: HEAD });
+  assert.deepStrictEqual([s.fixBudget.max, s.humanFixBudget.max, s.waivers, s.humanWaivers.map((w) => w.count)], [3, 7, [], [2]]);
+  // The same person and count for the bot cap is a separate waiver.
+  assert.strictEqual(lgtmState.waiveFixBudget({ stateDir, pr: PR, person: 'maintainer', count: 2 }).existing, undefined);
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).fixBudget.max, 5);
+});
+
+test('claim-fix-round rejects item ids outside the head\'s active findings', () => {
+  const stateDir = temp();
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: humanObs('comment-70') });
+  assert.throws(() => lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: ['other@2026-11-01T00:00:00Z'] }), /itemIds must belong/);
+  assert.ok(!fs.existsSync(path.join(stateDir, `pr-${PR}-${HEAD}.fix-round-claim.json`)));
+});
+
+test('the CLI reads claim-fix-round item ids from stdin and waive-fix-budget --human', () => {
+  const stateDir = temp();
+  const { execFileSync } = require('node:child_process');
+  const cli = (args, input) => JSON.parse(execFileSync('node', [path.join(__dirname, '..', 'review-lgtm-state.js'), ...args], { encoding: 'utf8', env: { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir }, input }));
+  const obs = humanObs('comment-70');
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
+  assert.deepStrictEqual(cli(['waive-fix-budget', String(PR), 'maintainer', '1', '--human']).budget, { max: 6, spent: 0, remaining: 6 });
+  const claim = cli(['claim-fix-round', String(PR), HEAD], JSON.stringify({ itemIds: [itemOf(obs)] }));
+  assert.deepStrictEqual([claim.kind, claim.budget], ['human', { max: 6, spent: 1, remaining: 5 }]);
+});
+
+const edited = (reviewId, revision) => { const obs = humanObs(reviewId); obs.findings[0].itemId = `N${reviewId}0@${revision}`; return obs; };
+
+test('an edited item on the same head is recorded as a revision and can be claimed by a fix round', () => {
+  const stateDir = temp();
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: humanObs('comment-70') });
+  const later = edited('comment-70', '2026-11-02T00:00:00Z');
+  assert.deepStrictEqual(lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: later }), { outcome: 'needs-reconciliation', recorded: true, duplicate: false });
+  const hex = require('node:crypto').createHash('sha256').update(itemOf(later)).digest('hex').slice(0, 16);
+  assert.ok(fs.existsSync(path.join(stateDir, `pr-${PR}-${HEAD}.comment-70~${hex}.json`)));
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reconciliation.reviews.map((r) => r.id), ['comment-70', `comment-70~${hex}`]);
+  assert.strictEqual(lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(later)] }).claimed, true);
+});
+
+test('a rejected record does not reject the later revision of its item', () => {
+  const stateDir = temp();
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: humanObs('5') });
+  assert.strictEqual(lgtmState.rejectReviewBatch({ stateDir, pr: PR, headSha: HEAD, reviewIds: ['5'], reason: 'not a finding' }).rejected, true);
+  assert.strictEqual(lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: humanObs('5') }).outcome, 'rejected');
+  assert.strictEqual(lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: edited('5', '2026-11-02T00:00:00Z') }).recorded, true);
+  const [review] = lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reconciliation.reviews;
+  assert.match(review.id, /^5~[0-9a-f]{16}$/);
+  assert.ok(fs.existsSync(path.join(stateDir, `pr-${PR}-${HEAD}.review-${review.id}.json`)));
+  assert.strictEqual(lgtmState.rejectReviewBatch({ stateDir, pr: PR, headSha: HEAD, reviewIds: [review.id], reason: 'not a finding' }).rejected, true);
+});
+
+test('a repeated revision is a duplicate', () => {
+  const stateDir = temp();
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: humanObs('thread-9') });
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: edited('thread-9', '2026-11-02T00:00:00Z') });
+  assert.deepStrictEqual(lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: edited('thread-9', '2026-11-02T00:00:00Z') }), { outcome: 'needs-reconciliation', recorded: false, duplicate: true });
+  assert.strictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reconciliation.reviews.length, 2);
+  // A bot record never takes a revision suffix.
+  assert.throws(() => lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: botObs('5~0123456789abcdef') }), /reviewId/);
+});
+
+test('self-feeding takes the latest earlier fix head across bot and human rounds by claim time', () => {
+  const { execFileSync } = require('node:child_process');
+  const repo = tempDir('lgtm-human-self-');
+  const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
+  git('init', '-q');
+  git('config', 'user.email', 't@example.com');
+  git('config', 'user.name', 't');
+  const commit = (line) => { fs.appendFileSync(path.join(repo, 'a.md'), `${line}\n`); git('add', 'a.md'); git('commit', '-qm', line); return git('rev-parse', 'HEAD'); };
+  const first = commit('one');
+  const second = commit('two');
+  const head = commit('three');
+  const stateDir = temp();
+  // The bot slot has the higher round number but the human round was claimed later.
+  fs.writeFileSync(path.join(stateDir, `pr-${PR}.fix-round-slot-2.json`), JSON.stringify({ pr: PR, headSha: first, owner: 'o', claimedAtMs: 1000 }));
+  fs.writeFileSync(path.join(stateDir, `pr-${PR}.human-fix-round-slot-1.json`), JSON.stringify({ pr: PR, headSha: second, owner: 'o', claimedAtMs: 2000 }));
+  assert.deepStrictEqual(lgtmState.selfFeeding({ repoRoot: repo, stateDir, pr: PR, headSha: head, file: 'a.md', start: 2, end: 2 }), { selfFeeding: false, previousFixHead: second });
 });

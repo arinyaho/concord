@@ -12,6 +12,7 @@ const INITIAL_CLAIM_LEASE_MS = 15 * 60 * 1000;
 const AUTO_REVIEW_GRACE_MS = 2 * 60 * 1000;
 const MAX_REQUESTS_PER_PR = 3;
 const MAX_FIX_ROUNDS_PER_PR = 3;
+const MAX_HUMAN_FIX_ROUNDS_PER_PR = 5;
 
 const FULL_SHA = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/i;
 
@@ -81,7 +82,11 @@ function optionalSha(value, name) {
 // point also passes one through verbatim from stdin JSON. Accept either that
 // number or a decimal-digit string and normalize to the decimal string,
 // since the id becomes part of a file name.
-function normalizeReviewId(reviewId) {
+// A revision record of an edited item on the same head carries `~<16 hex>` after its id; an observation takes one only when its findings carry item ids.
+const REVISION = /~[0-9a-f]{16}$/;
+function normalizeReviewId(reviewId, revision = true) {
+  const suffix = revision && typeof reviewId === 'string' && REVISION.exec(reviewId);
+  if (suffix) return `${normalizeReviewId(reviewId.slice(0, suffix.index), false)}${suffix[0]}`;
   // A conversation comment and a thread comment without a review each have an id space of their own, apart from reviews'.
   const prefixed = typeof reviewId === 'string' && /^(comment|thread)-([0-9]+)$/.exec(reviewId);
   if (prefixed) return `${prefixed[1]}-${normalizeReviewId(prefixed[2])}`;
@@ -97,7 +102,7 @@ function normalizeReviewId(reviewId) {
 function validateObservation(observation) {
   if (!observation || typeof observation !== 'object') throw new Error('review-lgtm-state: observation must be an object');
   const { reviewId, reviewer, reviewUrl, commitId, state, lgtm, findings } = observation;
-  const normalizedReviewId = normalizeReviewId(reviewId);
+  const normalizedReviewId = normalizeReviewId(reviewId, Array.isArray(findings) && findings.length > 0 && findings.every((finding) => finding && finding.itemId !== undefined));
   if (typeof reviewer !== 'string' || !reviewer.trim()) throw new Error('review-lgtm-state: reviewer is required');
   if (typeof reviewUrl !== 'string' || !reviewUrl) throw new Error('review-lgtm-state: reviewUrl is required');
   if (typeof commitId !== 'string' || !FULL_SHA.test(commitId)) throw new Error('review-lgtm-state: commitId must be a full 40- or 64-character hexadecimal SHA (the review commit_id)');
@@ -192,36 +197,41 @@ function reserveRequestSlot({ stateDir, pr, headSha }, kind, now, provider = nul
   return null;
 }
 
-function fixWaivers({ stateDir, pr }) {
+function fixWaivers({ stateDir, pr }, human = false) {
   let names;
   try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') names = []; else throw error; }
   return names.filter((name) => name.startsWith(`pr-${Number(pr)}.fix-waiver-`) && name.endsWith('.json'))
     .map((name) => readMarker(path.join(stateDir, name)))
-    .filter((marker) => marker && typeof marker.person === 'string' && Number.isSafeInteger(marker.count) && Number.isSafeInteger(marker.atMs))
+    .filter((marker) => marker && typeof marker.person === 'string' && Number.isSafeInteger(marker.count) && Number.isSafeInteger(marker.atMs) && (marker.kind === 'human') === human)
     .map(({ person, count, atMs }) => ({ person, count, atMs }))
     .sort((a, b) => a.atMs - b.atMs || a.person.localeCompare(b.person) || a.count - b.count);
 }
 
-function fixBudget({ stateDir, pr }) {
+const fixSlotPrefix = (pr, human) => `pr-${Number(pr)}.${human ? 'human-' : ''}fix-round-slot-`;
+
+// A round whose plan holds a human item spends the human cap; any other round the PR-wide bot cap.
+function fixBudget({ stateDir, pr }, human = false) {
   let names;
   try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') names = []; else throw error; }
-  const spent = names.filter((name) => name.startsWith(`pr-${Number(pr)}.fix-round-slot-`) && name.endsWith('.json')).length;
-  const max = MAX_FIX_ROUNDS_PER_PR + fixWaivers({ stateDir, pr }).reduce((sum, waiver) => sum + waiver.count, 0);
+  const spent = names.filter((name) => name.startsWith(fixSlotPrefix(pr, human)) && name.endsWith('.json')).length;
+  const max = (human ? MAX_HUMAN_FIX_ROUNDS_PER_PR : MAX_FIX_ROUNDS_PER_PR) + fixWaivers({ stateDir, pr }, human).reduce((sum, waiver) => sum + waiver.count, 0);
   return { max, spent, remaining: Math.max(0, max - spent) };
 }
 
+function humanFixBudget(input) { return fixBudget(input, true); }
+
 // A human's waiver raises the per-PR fix-round cap by `count`. The cap stays a hard stop for
 // automation; the waiver is the recorded decision that changes who may continue.
-function waiveFixBudget({ stateDir, pr, person, count, now = Date.now() }) {
+function waiveFixBudget({ stateDir, pr, person, count, human = false, now = Date.now() }) {
   if (!Number.isSafeInteger(Number(pr)) || Number(pr) < 1) throw new Error('review-lgtm-state: PR number must be a positive integer');
   if (typeof person !== 'string' || !person.trim() || person.length > 200) throw new Error('review-lgtm-state: waiver person must be a non-empty string of at most 200 characters');
   if (!Number.isSafeInteger(count) || count < 1) throw new Error('review-lgtm-state: waiver count must be a positive integer');
   const who = person.trim();
-  const id = crypto.createHash('sha256').update(`${who}\0${count}`).digest('hex').slice(0, 16);
+  const id = crypto.createHash('sha256').update(human ? `${who}\0${count}\0human` : `${who}\0${count}`).digest('hex').slice(0, 16);
   const file = path.join(stateDir, `pr-${Number(pr)}.fix-waiver-${id}.json`);
-  const created = writeExclusive(file, { pr: Number(pr), person: who, count, atMs: now });
-  const waiver = fixWaivers({ stateDir, pr }).find((entry) => entry.person === who && entry.count === count);
-  return { waived: true, ...(created ? {} : { existing: true }), waiver, budget: fixBudget({ stateDir, pr }) };
+  const created = writeExclusive(file, { pr: Number(pr), person: who, count, ...(human ? { kind: 'human' } : {}), atMs: now });
+  const waiver = fixWaivers({ stateDir, pr }, human).find((entry) => entry.person === who && entry.count === count);
+  return { waived: true, ...(created ? {} : { existing: true }), waiver, budget: fixBudget({ stateDir, pr }, human) };
 }
 
 function collectedMinors({ stateDir, pr }) {
@@ -286,10 +296,10 @@ function mergeReady({ stateDir, pr, headSha, evidence }) {
   return { result: reasons.length === 0 ? 'ready' : 'blocked', reasons };
 }
 
-function reserveFixRound({ stateDir, pr, headSha }, now, owner) {
-  const { max } = fixBudget({ stateDir, pr });
+function reserveFixRound({ stateDir, pr, headSha }, now, owner, human = false) {
+  const { max } = fixBudget({ stateDir, pr }, human);
   for (let round = 1; round <= max; round += 1) {
-    const file = path.join(stateDir, `pr-${pr}.fix-round-slot-${round}.json`);
+    const file = path.join(stateDir, `${fixSlotPrefix(pr, human)}${round}.json`);
     if (writeExclusive(file, { pr, headSha, owner, claimedAtMs: now })) return round;
   }
   return null;
@@ -298,9 +308,10 @@ function reserveFixRound({ stateDir, pr, headSha }, now, owner) {
 function fixRoundForHead({ stateDir, pr, headSha }) {
   let names;
   try { names = fs.readdirSync(stateDir); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
-  for (const name of names.filter((name) => name.startsWith(`pr-${pr}.fix-round-slot-`) && name.endsWith('.json'))) {
-    const marker = readMarker(path.join(stateDir, name));
-    if (marker && marker.pr === pr && marker.headSha === headSha) return { ...marker, round: Number(name.match(/slot-(\d+)\.json$/)[1]) };
+  for (const name of names) {
+    const slot = new RegExp(`^pr-${pr}\\.(human-)?fix-round-slot-(\\d+)\\.json$`).exec(name);
+    const marker = slot && readMarker(path.join(stateDir, name));
+    if (marker && marker.pr === pr && marker.headSha === headSha) return { ...marker, round: Number(slot[2]), kind: slot[1] ? 'human' : 'bot' };
   }
   return null;
 }
@@ -391,6 +402,15 @@ function recordReply({ stateDir, pr, itemId, record, now = Date.now() }) {
 function claimedReplies({ stateDir, pr }) {
   const { feedback, claims } = answeredParts({ stateDir, pr });
   return [...new Set(claims)].filter((id) => !feedback.includes(id)).sort();
+}
+
+// Items a fix round of an earlier head took and no handled record answers yet: the round finished and its replies are owed.
+function owedReplies({ stateDir, pr, headSha }) {
+  const n = Number(pr);
+  const { feedback } = answeredParts({ stateDir, pr: n });
+  const taken = prFileNames(stateDir, (name) => name.startsWith(`pr-${n}-`) && name.endsWith('.fix-round-claim.json') && name !== `pr-${n}-${headSha}.fix-round-claim.json`)
+    .flatMap((file) => { const marker = readMarker(file); return marker && Array.isArray(marker.itemIds) ? marker.itemIds : []; });
+  return [...new Set(taken)].filter((id) => !feedback.includes(id)).sort();
 }
 
 function readMarker(file) {
@@ -492,10 +512,11 @@ function reconciliationPacket({ stateDir, pr, headSha }) {
   const classification = (p1Count > 0 || botRecords + (records.some((record) => record.reviewerType === 'User') ? 1 : 0) >= 2 || signals.length > 0) ? 'requires-architecture-review' : 'light-implementation-eligible';
   const claimed = !!fixRoundForHead({ stateDir, pr, headSha });
   const abandoned = !claimed && !!readMarker(markerPath({ stateDir, pr, headSha }, 'fix-round-claim'));
-  const exhausted = !claimed && fixBudget({ stateDir, pr }).remaining === 0;
+  const human = findings.some((finding) => finding.author?.type === 'User');
+  const exhausted = !claimed && fixBudget({ stateDir, pr }, human).remaining === 0;
   const humanRequired = abandoned || exhausted;
   const action = claimed ? 'complete-claimed-fix-round' : humanRequired ? 'human-reconciliation' : 'verify-and-fix';
-  const requires = claimed ? 'complete the claimed fix round' : abandoned ? 'human decision: abandoned fix-round claim' : exhausted ? 'human decision: fix-round budget exhausted' : 'verify the batch and claim a fix round';
+  const requires = claimed ? 'complete the claimed fix round' : abandoned ? 'human decision: abandoned fix-round claim' : exhausted ? `human decision: ${human ? 'human ' : ''}fix-round budget exhausted` : 'verify the batch and claim a fix round';
   return { pr, headSha, reviews, batchCount: records.length, p1Count, p2Count, signals, classification, action, humanRequired, requires };
 }
 
@@ -506,12 +527,23 @@ function recordReview(input) {
   if (observation.commitId !== key.headSha) return { outcome: 'stale', recorded: false };
   if (observation.state === 'in-progress') return { outcome: 'in-progress', recorded: false };
   if (observation.findings.length > 0) {
-    const file = markerPath({ stateDir, ...key }, /^[0-9]+$/.test(observation.reviewId) ? `review-${observation.reviewId}` : observation.reviewId);
+    const fileOf = (id) => markerPath({ stateDir, ...key }, /^[0-9]/.test(id) ? `review-${id}` : id);
+    let file = fileOf(observation.reviewId);
+    let { reviewId, findings } = observation;
     if (readMarker(file)) {
-      const outcome = rejectedReviewIds({ stateDir, ...key }).has(observation.reviewId) ? 'rejected' : 'needs-reconciliation';
-      return { outcome, recorded: false, duplicate: true };
+      // A record is write-once per head, so an item edited on the same head is stored as a revision record of the items no record of this observation holds yet.
+      const base = reviewId.replace(REVISION, '');
+      const own = reviewRecords({ stateDir, ...key }).filter((record) => String(record.reviewId).replace(REVISION, '') === base);
+      const recorded = new Set(own.flatMap((record) => record.findings.map((finding) => finding.itemId)));
+      findings = findings.every((finding) => finding.itemId !== undefined) ? findings.filter((finding) => !recorded.has(finding.itemId)) : [];
+      if (findings.length === 0) {
+        const rejected = rejectedReviewIds({ stateDir, ...key });
+        return { outcome: own.every((record) => rejected.has(record.reviewId)) ? 'rejected' : 'needs-reconciliation', recorded: false, duplicate: true };
+      }
+      reviewId = `${base}~${sha16(findings.map((finding) => finding.itemId).sort().join(','))}`;
+      file = fileOf(reviewId);
     }
-    const written = writeExclusive(file, { pr: key.pr, headSha: key.headSha, reviewId: observation.reviewId, reviewer: observation.reviewer, reviewUrl: observation.reviewUrl, recordedAtMs: now, findings: observation.findings, ...Object.fromEntries(['reviewerId', 'reviewerType', 'reviewCommitId', 'submittedAt'].filter((k) => k in observation).map((k) => [k, observation[k]])) });
+    const written = writeExclusive(file, { pr: key.pr, headSha: key.headSha, reviewId, reviewer: observation.reviewer, reviewUrl: observation.reviewUrl, recordedAtMs: now, findings, ...Object.fromEntries(['reviewerId', 'reviewerType', 'reviewCommitId', 'submittedAt'].filter((k) => k in observation).map((k) => [k, observation[k]])) });
     if (!written) return { outcome: 'needs-reconciliation', recorded: false, duplicate: true };
     return { outcome: 'needs-reconciliation', recorded: true, duplicate: false };
   }
@@ -525,7 +557,7 @@ function rejectReviewBatch(input) {
   const key = validate(input);
   if (!Array.isArray(input.reviewIds) || input.reviewIds.length === 0) throw new Error('review-lgtm-state: reject-review-batch requires reviewIds');
   if (typeof reason !== 'string' || !reason.trim() || reason.length > 2000) throw new Error('review-lgtm-state: rejection reason must be a non-empty string of at most 2000 characters');
-  const reviewIds = [...new Set(input.reviewIds.map(normalizeReviewId))].sort(compareReviewIds);
+  const reviewIds = [...new Set(input.reviewIds.map((id) => normalizeReviewId(id)))].sort(compareReviewIds);
   return withTransitionLock({ stateDir, pr: key.pr }, () => {
     const activeIds = activeReviewRecords({ stateDir, ...key }).map((record) => record.reviewId).sort(compareReviewIds);
     if (reviewIds.length !== activeIds.length || reviewIds.some((id, index) => id !== activeIds[index])) {
@@ -555,7 +587,7 @@ function status(input) {
     }
   }
   const deadlines = [window, retryWindow].filter(Boolean).map((marker) => marker.deadlineMs);
-  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), waivers: fixWaivers({ stateDir, pr: key.pr }), minors: collectedMinors({ stateDir, pr: key.pr }), claimedReplies: claimedReplies({ stateDir, pr: key.pr }), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested, reconciliation: reconciliationPacket({ stateDir, ...key }), delivery: deliveryStatus({ stateDir, ...key }) };
+  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), waivers: fixWaivers({ stateDir, pr: key.pr }), humanFixBudget: humanFixBudget({ stateDir, pr: key.pr }), humanWaivers: fixWaivers({ stateDir, pr: key.pr }, true), minors: collectedMinors({ stateDir, pr: key.pr }), claimedReplies: claimedReplies({ stateDir, pr: key.pr }), owedReplies: owedReplies({ stateDir, ...key }), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested, reconciliation: reconciliationPacket({ stateDir, ...key }), delivery: deliveryStatus({ stateDir, ...key }) };
 }
 
 function claimFixRound(input) {
@@ -563,23 +595,32 @@ function claimFixRound(input) {
   const key = validate(input);
   const owner = input.owner || crypto.randomUUID();
   if (typeof owner !== 'string' || !owner || owner.length > 200) throw new Error('review-lgtm-state: fix-round owner must be a non-empty string of at most 200 characters');
+  const { itemIds = [] } = input;
+  if (!Array.isArray(itemIds) || itemIds.some((id) => typeof id !== 'string')) throw new Error('review-lgtm-state: itemIds must be an array of item ids');
+  const ids = [...new Set(itemIds)];
   return withTransitionLock({ stateDir, pr: key.pr }, () => {
     const terminal = deliveryTerminal({ stateDir, ...key }, { fixCap: true });
     if (terminal) return terminal;
-    if (activeReviewRecords({ stateDir, ...key }).length === 0) return { claimed: false, reason: 'no-findings' };
+    const records = activeReviewRecords({ stateDir, ...key });
+    if (records.length === 0) return { claimed: false, reason: 'no-findings' };
+    const findings = new Map(records.flatMap((record) => record.findings).filter((finding) => finding.itemId !== undefined).map((finding) => [finding.itemId, finding]));
+    if (ids.some((id) => !findings.has(id))) throw new Error('review-lgtm-state: itemIds must belong to the head\'s active findings');
     const slot = fixRoundForHead({ stateDir, ...key });
     if (slot) {
       const active = latestFixOwnership({ stateDir, ...key }, slot);
-      if (active.owner === owner) return { claimed: true, resumed: true, owner, round: slot.round, budget: fixBudget({ stateDir, pr: key.pr }) };
+      if (active.owner === owner) return { claimed: true, resumed: true, owner, round: slot.round, kind: slot.kind, budget: fixBudget({ stateDir, pr: key.pr }, slot.kind === 'human') };
       return { claimed: false, reason: 'fix-round-owned', humanRequired: true, owner: active.owner };
     }
-    const budget = fixBudget({ stateDir, pr: key.pr });
-    if (budget.remaining === 0) return { claimed: false, reason: 'fix-round-budget-exhausted', budget };
+    const human = ids.some((id) => findings.get(id).author?.type === 'User');
+    const kind = human ? 'human' : 'bot';
+    const exhausted = human ? 'human-fix-round-budget-exhausted' : 'fix-round-budget-exhausted';
+    const budget = fixBudget({ stateDir, pr: key.pr }, human);
+    if (budget.remaining === 0) return { claimed: false, reason: exhausted, budget };
     const claimFile = markerPath({ stateDir, ...key }, 'fix-round-claim');
-    if (!writeExclusive(claimFile, { ...key, owner, claimedAtMs: now })) return { claimed: false, reason: 'abandoned-fix-claim', humanRequired: true };
-    const round = reserveFixRound({ stateDir, ...key }, now, owner);
-    if (!round) return { claimed: false, reason: 'fix-round-budget-exhausted', budget: fixBudget({ stateDir, pr: key.pr }) };
-    return { claimed: true, owner, round, budget: fixBudget({ stateDir, pr: key.pr }) };
+    if (!writeExclusive(claimFile, { ...key, owner, itemIds: ids, claimedAtMs: now })) return { claimed: false, reason: 'abandoned-fix-claim', humanRequired: true };
+    const round = reserveFixRound({ stateDir, ...key }, now, owner, human);
+    if (!round) return { claimed: false, reason: exhausted, budget: fixBudget({ stateDir, pr: key.pr }, human) };
+    return { claimed: true, owner, round, kind, budget: fixBudget({ stateDir, pr: key.pr }, human) };
   });
 }
 
@@ -707,7 +748,7 @@ function validatePacket(packet) {
     if (packet.findings.some((finding) => text(finding.id) === text(dropped.id))) throw new Error(`review-lgtm-state: minor ${text(dropped.id)} is both a finding and a dropped minor`);
   }
   unique(packet.tickets, 'rootCause', 'ticket');
-  if (!packet.reviewIds.every((id) => /^(?:[0-9]+|(?:comment|thread)-[0-9]+)$/.test(String(id)))) throw new Error('review-lgtm-state: delivery reviewIds must be review ids');
+  if (!packet.reviewIds.every((id) => /^(?:[0-9]+|(?:comment|thread)-[0-9]+)(?:~[0-9a-f]{16})?$/.test(String(id)))) throw new Error('review-lgtm-state: delivery reviewIds must be review ids');
   for (const finding of packet.findings) {
     if (finding.releaseBlocking != null && !Array.isArray(finding.releaseBlocking)) throw new Error(`review-lgtm-state: delivery finding ${text(finding.id)} releaseBlocking must be an array`);
     const id = text(finding.id);
@@ -798,7 +839,7 @@ function canonicalPacket(packet) {
   return {
     baseSha: String(packet.baseSha).toLowerCase(),
     contractDigest: String(packet.contractDigest).toLowerCase(),
-    reviewIds: [...new Set(packet.reviewIds.map(normalizeReviewId))].sort(compareReviewIds),
+    reviewIds: [...new Set(packet.reviewIds.map((id) => normalizeReviewId(id)))].sort(compareReviewIds),
     acceptance: packet.acceptance.map((ac) => ({ id: text(ac.id), met: ac.met === true })),
     requiredChecks: packet.requiredChecks.map((check) => ({ name: text(check.name), conclusion: text(check.conclusion) })),
     reviewsTerminal: packet.reviewsTerminal,
@@ -857,7 +898,7 @@ function deliveryCurrent(input, record) {
 function deliveryTerminal(input, { fixCap = false } = {}) {
   const latest = latestDelivery(input);
   if (!latest || latest.classification === 'blocked' || !deliveryBatchCurrent(input, latest)) return null;
-  if (fixCap && latest.budgets?.fix?.max !== fixBudget(input).max) return null;
+  if (fixCap && (latest.budgets?.fix?.max !== fixBudget(input).max || latest.budgets?.humanFix?.max !== humanFixBudget(input).max)) return null;
   return { claimed: false, reason: 'delivery-terminal', classification: latest.classification };
 }
 
@@ -877,7 +918,7 @@ function recordDelivery(input) {
     if (JSON.stringify(observed) !== JSON.stringify(reviewIds)) return { recorded: false, reason: 'review-batch-changed', reviewIds };
     if (latest && latest.digest === digest && deliveryCurrent({ stateDir, ...key }, latest)) return latest;
     const sequence = (latest ? latest.sequence : 0) + 1;
-    const record = { ...classified, reviewIds, minorIds, digest, sequence, recordedAtMs: now, budgets: { request: requestBudget({ stateDir, pr: key.pr }), fix: fixBudget({ stateDir, pr: key.pr }) } };
+    const record = { ...classified, reviewIds, minorIds, digest, sequence, recordedAtMs: now, budgets: { request: requestBudget({ stateDir, pr: key.pr }), fix: fixBudget({ stateDir, pr: key.pr }), humanFix: humanFixBudget({ stateDir, pr: key.pr }) } };
     if (!writeExclusive(markerPath({ stateDir, ...key }, `delivery-${String(sequence).padStart(6, '0')}`), record)) throw new Error('review-lgtm-state: delivery record collided; retry');
     return record;
   }, { recorded: false, reason: 'transition-busy' });
@@ -1004,11 +1045,12 @@ function selfFeeding({ repoRoot, stateDir, pr, headSha, file, start, end }) {
     firstParent = firstParent || new Set(run(['rev-list', '--first-parent', key.headSha]).split('\n').filter(Boolean));
     return firstParent.has(sha);
   };
-  const previous = names.map((name) => ({ slot: /^pr-(\d+)\.fix-round-slot-(\d+)\.json$/.exec(name), name }))
+  // Bot and human rounds share one history, ordered by when each was claimed.
+  const previous = names.map((name) => ({ slot: /^pr-(\d+)\.(?:human-)?fix-round-slot-\d+\.json$/.exec(name), name }))
     .filter(({ slot }) => slot && Number(slot[1]) === key.pr)
-    .map(({ slot, name }) => ({ round: Number(slot[2]), marker: readMarker(path.join(stateDir, name)) }))
+    .map(({ name }) => ({ name, marker: readMarker(path.join(stateDir, name)) }))
     .filter(({ marker }) => marker && FULL_SHA.test(String(marker.headSha)) && marker.headSha !== key.headSha)
-    .sort((a, b) => b.round - a.round)
+    .sort((a, b) => (b.marker.claimedAtMs || 0) - (a.marker.claimedAtMs || 0) || b.name.localeCompare(a.name))
     .map(({ marker }) => marker)
     .find((marker) => onFirstParent(marker.headSha));
   if (!previous) return { selfFeeding: false, previousFixHead: null };
@@ -1046,9 +1088,13 @@ function runMain(repoRoot = process.cwd()) {
   else if (verb === 'claim-initial-request') process.stdout.write(`${JSON.stringify(claimResult(claimInitialRequest({ stateDir, pr, headSha, provider: argument })))}\n`);
   else if (verb === 'recover-initial-request') process.stdout.write(`${JSON.stringify(claimResult(recoverInitialRequest({ stateDir, pr, headSha, provider: argument })))}\n`);
   else if (verb === 'mark-initial-requested') process.stdout.write(`${JSON.stringify({ marked: markInitialRequested({ stateDir, pr, headSha, provider: argument }) })}\n`);
-  else if (verb === 'claim-fix-round') process.stdout.write(`${JSON.stringify(claimFixRound({ stateDir, pr, headSha }))}\n`);
+  else if (verb === 'claim-fix-round') {
+    // Empty stdin (or a terminal) takes no item ids.
+    const raw = process.stdin.isTTY ? '' : fs.readFileSync(0, 'utf8');
+    process.stdout.write(`${JSON.stringify(claimFixRound({ stateDir, pr, headSha, itemIds: raw.trim() ? JSON.parse(raw).itemIds : [] }))}\n`);
+  }
   else if (verb === 'renew-fix-round') process.stdout.write(`${JSON.stringify(renewFixRound({ stateDir, pr, headSha, owner: argument }))}\n`);
-  else if (verb === 'waive-fix-budget') process.stdout.write(`${JSON.stringify(waiveFixBudget({ stateDir, pr, person: headSha, count: Number(argument) }))}\n`);
+  else if (verb === 'waive-fix-budget') process.stdout.write(`${JSON.stringify(waiveFixBudget({ stateDir, pr, person: headSha, count: Number(argument), human: process.argv[6] === '--human' }))}\n`);
   else if (verb === 'collect-minor') process.stdout.write(`${JSON.stringify(collectMinor({ stateDir, pr, headSha, ...JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'claim-reply') process.stdout.write(`${JSON.stringify(claimReply({ stateDir, pr, itemId: headSha }))}\n`);
   else if (verb === 'record-reply') process.stdout.write(`${JSON.stringify(recordReply({ stateDir, pr, itemId: headSha, record: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
@@ -1073,4 +1119,4 @@ function runMain(repoRoot = process.cwd()) {
   else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, waive-fix-budget, collect-minor, claim-reply, record-reply, self-feeding, merge-ready, select-reviewers, collect, watch, record-review, reject-review-batch, or record-delivery');
 }
 
-module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, waiveFixBudget, collectMinor, itemFileKey, accountFileKey, claimReply, recordReply, answeredItemIds, mergeReady, selfFeeding, recordReview, rejectReviewBatch, classifyDelivery, recordDelivery, selectReviewers, reviewerSelection, latestSelection, ghUsers, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, runMain };
+module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, waiveFixBudget, collectMinor, itemFileKey, accountFileKey, claimReply, recordReply, answeredItemIds, mergeReady, selfFeeding, recordReview, rejectReviewBatch, classifyDelivery, recordDelivery, selectReviewers, reviewerSelection, latestSelection, ghUsers, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, MAX_HUMAN_FIX_ROUNDS_PER_PR, humanFixBudget, runMain };
