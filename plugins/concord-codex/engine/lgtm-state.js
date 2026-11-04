@@ -781,7 +781,8 @@ function latestSelection({ stateDir, pr }) {
   return latest ? { sequence: latest.sequence, reviewers: latest.reviewers, recordedAtMs: latest.recordedAtMs } : null;
 }
 
-const accountOf = ({ login, id, type }) => ({ login: login.replace(/\[bot\]$/, ''), id, type });
+// A bot is stored under the slug the collector and --reviewer use; GitHub's REST login for it can differ (Copilot's is `Copilot`), so only a person's login comes from the API.
+const accountOf = ({ login, id, type }, slug) => ({ login: type === 'Bot' ? slug : login, id, type });
 
 // GitHub lookups are slow and can stall, so they run before the transition lock; the lock only re-checks that no other selection landed meanwhile and writes.
 function selectReviewers({ stateDir, pr, logins, none = false, github, now = Date.now() }) {
@@ -811,14 +812,14 @@ function selectReviewers({ stateDir, pr, logins, none = false, github, now = Dat
       if (!user) refused.push({ login, why: 'not-found' });
       else if (user.type === 'Organization') refused.push({ login, why: 'organization' });
       else if (user.id === authorId) refused.push({ login, why: 'pr-author' });
-      else if (!selection.some((account) => account.id === user.id)) selection.push(accountOf(user));
+      else if (!selection.some((account) => account.id === user.id)) selection.push(accountOf(user, login.replace(/\[bot\]$/, '')));
     }
     if (refused.length > 0) return { selected: false, reason: 'refused', refused };
   } else {
     // Resume: re-resolve the stored accounts by id so a rename follows the account and a deleted account stays recorded as gone.
     selection = (latest?.reviewers || []).map((reviewer) => {
       const user = github.userById(reviewer.id);
-      return user ? accountOf(user) : { ...reviewer, gone: true };
+      return user ? accountOf(user, reviewer.login) : { ...reviewer, gone: true };
     });
     gone = selection.filter((reviewer) => reviewer.gone).map((reviewer) => reviewer.id);
     if (!latest || JSON.stringify(selection) === JSON.stringify(latest.reviewers)) return { selected: true, recorded: false, selection, gone };

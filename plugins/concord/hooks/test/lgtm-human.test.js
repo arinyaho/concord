@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const lgtmState = require('../../core/lgtm-state');
 const { tempDir } = require('./temp-dir');
 const PR = 7;
-const ACCOUNTS = { alice: { login: 'alice', id: 101, type: 'User' }, 'copilot-pull-request-reviewer': { login: 'copilot-pull-request-reviewer', id: 899, type: 'Organization' }, 'copilot-pull-request-reviewer[bot]': { login: 'copilot-pull-request-reviewer[bot]', id: 900, type: 'Bot' }, acme: { login: 'acme', id: 50, type: 'Organization' }, author: { login: 'author', id: 1, type: 'User' } };
+const ACCOUNTS = { alice: { login: 'alice', id: 101, type: 'User' }, 'copilot-pull-request-reviewer': { login: 'copilot-pull-request-reviewer', id: 899, type: 'Organization' }, 'copilot-pull-request-reviewer[bot]': { login: 'Copilot', id: 900, type: 'Bot' }, acme: { login: 'acme', id: 50, type: 'Organization' }, author: { login: 'author', id: 1, type: 'User' } };
 function github(overrides = {}) {
   const accounts = { ...ACCOUNTS, ...overrides };
   return { userByLogin: (l) => accounts[l] || null, userById: (id) => Object.values(accounts).find((a) => a && a.id === id) || null, prAuthorId: () => 1 };
@@ -16,6 +16,11 @@ test('select-reviewers stores login, id and GitHub type for each reviewer', () =
   const result = lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice', 'copilot-pull-request-reviewer'], github: github(), now: 10 });
   assert.deepStrictEqual(result.selection, [{ login: 'alice', id: 101, type: 'User' }, { login: 'copilot-pull-request-reviewer', id: 900, type: 'Bot' }]);
   assert.deepStrictEqual(lgtmState.latestSelection({ stateDir, pr: PR }).reviewers, result.selection);
+  // GitHub's REST login for this bot is `Copilot`; the stored slug survives a refresh by id.
+  const refreshed = lgtmState.selectReviewers({ stateDir, pr: PR, logins: null, github: github(), now: 11 });
+  assert.strictEqual(refreshed.recorded, false);
+  assert.deepStrictEqual(refreshed.selection, result.selection);
+  assert.strictEqual(lgtmState.latestSelection({ stateDir, pr: PR }).sequence, 1);
 });
 
 test('select-reviewers refuses the PR author and an organization', () => {
