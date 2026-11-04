@@ -61,7 +61,7 @@ The loop ends when no rollout blocker remains, the required checks are green, an
 
 ## Merge gate
 
-An agent merges a PR only at the user's explicit request naming it, and only after `merge-ready <pr> <head-sha>` prints `{"result":"ready"}`, merging with `gh pr merge <pr> --match-head-commit <head-sha>` so a push after the check makes the merge fail. A human merging by hand is not gated. The CLI cannot observe GitHub, so the caller reads the live facts immediately before merging and passes them on stdin. `expectedReviewers` lists the logins of the named reviewers and is empty when none is named; a reviewer entry without a `reviewer` identity makes the verb fail. With the empty selection `no-automated-review` and `no-lgtm` are not reported and an unreviewed head with satisfied branch rules is merge-ready; a `User` entry is not checked for `no-lgtm` either, as the [human reviewers design](review-until-lgtm-human-reviewers.md) describes.
+An agent merges a PR only at the user's explicit request naming it, and only after `merge-ready <pr> <head-sha>` prints `{"result":"ready"}`, merging with `gh pr merge <pr> --match-head-commit <head-sha>` so a push after the check makes the merge fail. A human merging by hand is not gated. The CLI cannot observe GitHub, so the caller reads the live facts immediately before merging and passes them on stdin. `expectedReviewers` lists the logins of the named reviewers and is empty when none is named; a reviewer entry without a `reviewer` identity makes the verb fail. With the empty selection `no-automated-review` and `no-lgtm` are not reported and an unreviewed head with satisfied branch rules is merge-ready; a `User` entry is exempt from `no-lgtm`, `no-automated-review`, `reviewer-missing` and `reviewer-pending`, as the [human reviewers design](review-until-lgtm-human-reviewers.md) describes.
 
 ```json
 {
@@ -78,11 +78,11 @@ An agent merges a PR only at the user's explicit request naming it, and only aft
 |---|---|
 | The live head equals the head asked about | `head-mismatch:<live>` |
 | Every check on that head concluded `success` | `check:<name>:<conclusion>` |
-| With a named selection, a reviewer is named or observed, and the delivery record is not `mergeable-without-review` | `no-automated-review` |
-| Every named reviewer was observed (not checked for a `mergeable-without-review` record) | `reviewer-missing:<login>` |
+| With a named selection, an automated (`Bot`) reviewer is named or observed, and the delivery record is not `mergeable-without-review` | `no-automated-review` |
+| Every named automated reviewer was observed (not checked for a `mergeable-without-review` record) | `reviewer-missing:<login>` |
 | Every required check of the delivery record is present | `check-missing:<name>` |
 | No reviewer reports a provider failure or timeout | `reviewer-failure:<reviewer>:<label>` |
-| Every reviewer is terminal for that head | `reviewer-pending:<reviewer>` |
+| Every automated reviewer is terminal for that head | `reviewer-pending:<reviewer>` |
 | With a named selection, every named automated reviewer gave a fresh LGTM for that head | `no-lgtm:<reviewer>` |
 | A delivery record exists for that head | `no-delivery` |
 | No review was recorded or rejected, and no minor collected, after that record | `delivery-stale` |
