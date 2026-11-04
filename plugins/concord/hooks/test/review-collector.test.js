@@ -521,3 +521,22 @@ test('watch prints a new packet when the Codex summary appears or completes agai
   const packets = harness.lines.filter((l) => l.event === 'packet');
   assert.deepStrictEqual(packets.map((p) => p.summary && p.summary.completedAt), [null, COMPLETED_AT, '2026-10-09T14:10:00.000000Z']);
 });
+
+test('a user account named like a bot is not matched to the bot', async () => {
+  const data = fixture();
+  const review = pullRequest(data).reviews.nodes.find((r) => r.databaseId === 5470929926);
+  review.author = { __typename: 'User', login: CODEX, databaseId: 777 };
+  const packet = await collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble({ main: data }), reviewers: [CODEX] });
+  assert.ok(!packet.observations.some((o) => o.reviewId === '5470929926'));
+});
+
+test('identityOf keeps the account id and GitHub type and maps a deleted author to ghost', () => {
+  assert.deepStrictEqual(collector.identityOf({ __typename: 'Bot', login: 'copilot[bot]', databaseId: 9 }), { login: 'copilot', id: 9, type: 'Bot' });
+  assert.deepStrictEqual(collector.identityOf({ __typename: 'User', login: 'alice', databaseId: 101 }), { login: 'alice', id: 101, type: 'User' });
+  assert.deepStrictEqual(collector.identityOf(null), { login: 'ghost', id: null, type: 'User' });
+});
+
+test('the collector query reads account type and id on every author', () => {
+  for (const query of [collector.QUERY, collector.THREADS_PAGE_QUERY, collector.COMMENTS_PAGE_QUERY]) assert.match(query, /__typename login \.\.\. on User\{databaseId\} \.\.\. on Bot\{databaseId\}/);
+  assert.match(collector.QUERY, /viewer\{login databaseId\}/);
+});

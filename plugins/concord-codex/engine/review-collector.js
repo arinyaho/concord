@@ -17,23 +17,32 @@ const WINDOW_SECONDS = 900;
 const DEFAULT_INTERVAL_MS = 30000;
 const MIN_INTERVAL_MS = 30000;
 
-const COMMENT_FIELDS = 'id databaseId url body path line commit{oid} originalCommit{oid}';
+// Account type and id: a bot is matched by GitHub type, not by a login that a user account could also carry.
+const AUTHOR_FIELDS = 'author{__typename login ... on User{databaseId} ... on Bot{databaseId}}';
+const COMMENT_FIELDS = `id databaseId url body path line createdAt lastEditedAt commit{oid} originalCommit{oid} ${AUTHOR_FIELDS}`;
+const THREAD_COMMENT_FIELDS = `${COMMENT_FIELDS} pullRequestReview{databaseId url state submittedAt commit{oid}}`;
 const CONTEXT_FIELDS = '__typename ... on CheckRun{name status conclusion} ... on StatusContext{context state}';
-const THREAD_FIELDS = 'id isResolved comments(first:100){pageInfo{hasNextPage endCursor} nodes{id}}';
-const QUERY = `query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){id headRefOid
-reviews(last:100){nodes{id databaseId url state submittedAt body author{login} commit{oid} comments(first:100){pageInfo{hasNextPage endCursor} nodes{${COMMENT_FIELDS}}}}}
+const THREAD_FIELDS = `id isResolved comments(first:100){pageInfo{hasNextPage endCursor} nodes{${THREAD_COMMENT_FIELDS}}}`;
+const QUERY = `query($owner:String!,$name:String!,$pr:Int!){viewer{login databaseId} repository(owner:$owner,name:$name){pullRequest(number:$pr){id headRefOid ${AUTHOR_FIELDS}
+reviews(last:100){nodes{id databaseId url state submittedAt createdAt lastEditedAt body ${AUTHOR_FIELDS} commit{oid} comments(first:100){pageInfo{hasNextPage endCursor} nodes{${COMMENT_FIELDS}}}}}
 reviewThreads(first:100){pageInfo{hasNextPage endCursor} nodes{${THREAD_FIELDS}}}
-comments(last:100){nodes{databaseId url body createdAt author{login}}}
+comments(last:100){nodes{id databaseId url body createdAt lastEditedAt ${AUTHOR_FIELDS}}}
 commits(last:1){nodes{commit{oid statusCheckRollup{id contexts(first:100){pageInfo{hasNextPage endCursor} nodes{${CONTEXT_FIELDS}}}}}}}}}}`;
 // Follow-up pages for a pull request with more than 100 review threads, a review with more than 100 inline comments and a check rollup with more than 100 contexts.
 const THREADS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on PullRequest{reviewThreads(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${THREAD_FIELDS}}}}}}`;
-const THREAD_COMMENTS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on PullRequestReviewThread{comments(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{id}}}}}`;
+const THREAD_COMMENTS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on PullRequestReviewThread{comments(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${THREAD_COMMENT_FIELDS}}}}}}`;
 const COMMENTS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on PullRequestReview{comments(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${COMMENT_FIELDS}}}}}}`;
 const CONTEXTS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on StatusCheckRollup{contexts(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${CONTEXT_FIELDS}}}}}}`;
 const REACTIONS_QUERY = 'query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){headRefOid reactions(first:100,content:THUMBS_UP){nodes{content createdAt user{login}}}}}}';
 
 // Reactions carry the bot account's login with a [bot] suffix; review and comment authors do not.
 function loginOf(login) { return typeof login === 'string' ? login.replace(/\[bot\]$/, '') : login; }
+
+// The account behind an author node; a deleted account reads as GitHub's ghost user.
+function identityOf(author) { return author ? { login: loginOf(author.login), id: author.databaseId ?? null, type: author.__typename } : { login: 'ghost', id: null, type: 'User' }; }
+
+// A configured reviewer is an automated reviewer: it counts only as a Bot account.
+function botOf(author, reviewers) { return !!author && author.__typename === 'Bot' && reviewers.includes(loginOf(author.login)); }
 
 function wholeSeconds(iso) { return Math.floor(Date.parse(iso) / 1000); }
 
@@ -70,7 +79,7 @@ function finding(comment) {
 // The Codex summary comment holds one table row per review kind; only rows for
 // this head count, and the summary is Completed only when every such row is.
 function summaryOf(comments, head) {
-  const comment = comments.find((c) => c.author && loginOf(c.author.login) === CODEX_REVIEWER && typeof c.body === 'string' && c.body.includes(SUMMARY_MARKER));
+  const comment = comments.find((c) => c.author.__typename === 'Bot' && loginOf(c.author.login) === CODEX_REVIEWER && typeof c.body === 'string' && c.body.includes(SUMMARY_MARKER));
   if (!comment) return null;
   const rows = [...comment.body.matchAll(/^\|[^|\n]*\|([^|\n]*)\|\s*`([0-9a-f]{7,64})`\s*\|/gim)]
     .filter((row) => head.startsWith(row[2].toLowerCase()));
@@ -110,9 +119,8 @@ async function read(graphql, pr, reviewers) {
   const response = await graphql(QUERY, { pr });
   const pull = pullRequestOf(response);
   await fillPages(pull.reviewThreads, THREADS_PAGE_QUERY, pull.id, 'reviewThreads', graphql);
-  // Only a resolved thread's comments matter: they are the ids that stop being findings.
-  await Promise.all(pull.reviewThreads.nodes.filter((thread) => thread.isResolved).map((thread) => fillPages(thread.comments, THREAD_COMMENTS_PAGE_QUERY, thread.id, 'comments', graphql)));
-  await Promise.all(pull.reviews.nodes.filter((review) => review.author && reviewers.includes(loginOf(review.author.login))).map((review) => fillPages(review.comments, COMMENTS_PAGE_QUERY, review.id, 'comments', graphql)));
+  await Promise.all(pull.reviewThreads.nodes.map((thread) => fillPages(thread.comments, THREAD_COMMENTS_PAGE_QUERY, thread.id, 'comments', graphql)));
+  await Promise.all(pull.reviews.nodes.filter((review) => botOf(review.author, reviewers)).map((review) => fillPages(review.comments, COMMENTS_PAGE_QUERY, review.id, 'comments', graphql)));
   const commit = pull.commits.nodes[0] && pull.commits.nodes[0].commit;
   if (commit && commit.statusCheckRollup) await fillPages(commit.statusCheckRollup.contexts, CONTEXTS_PAGE_QUERY, commit.statusCheckRollup.id, 'contexts', graphql);
   return response;
@@ -126,13 +134,13 @@ function analyze(response, head, reviewers = DEFAULT_REVIEWERS) {
   const pr = pullRequestOf(response);
   const live = pr.headRefOid.toLowerCase();
   if (live !== head) return { stale: true, head, liveHead: live };
-  const comments = pr.comments.nodes.filter((c) => c.author).map((c) => ({ ...c, author: { login: loginOf(c.author.login) } }));
+  const comments = pr.comments.nodes.filter((c) => botOf(c.author, reviewers)).map((c) => ({ ...c, author: { __typename: 'Bot', login: loginOf(c.author.login) } }));
   const summary = reviewers.includes(CODEX_REVIEWER) ? summaryOf(comments, head) : null;
   const resolved = new Set(pr.reviewThreads.nodes.filter((t) => t.isResolved).flatMap((t) => t.comments.nodes.map((c) => c.id)));
   const observations = [];
   for (const review of pr.reviews.nodes) {
-    const reviewer = review.author && loginOf(review.author.login);
-    if (!reviewers.includes(reviewer) || review.state === 'PENDING') continue;
+    if (!botOf(review.author, reviewers) || review.state === 'PENDING') continue;
+    const reviewer = loginOf(review.author.login);
     const inline = review.comments.nodes;
     const reviewCommit = review.commit ? review.commit.oid.toLowerCase() : null; // null once a force-push drops the commit
     const madeOnHead = (c) => c.originalCommit && c.originalCommit.oid.toLowerCase() === head;
@@ -157,7 +165,7 @@ function analyze(response, head, reviewers = DEFAULT_REVIEWERS) {
       summary: summary && { url: summary.url, commit: summary.commit, status: summary.status, completedAt: summary.completedAt },
       reaction: null,
       observations,
-      comments: comments.filter((c) => reviewers.includes(c.author.login) && !(c.body || '').includes(SUMMARY_MARKER)).map((c) => ({ url: c.url, author: c.author.login, ...limited(c.body), untrusted: true })),
+      comments: comments.filter((c) => !(c.body || '').includes(SUMMARY_MARKER)).map((c) => ({ url: c.url, author: c.author.login, ...limited(c.body), untrusted: true })),
       checks: checksOf(pr, head),
     },
     activity,
@@ -259,4 +267,4 @@ function ghGraphql(cwd = process.cwd()) {
   return async (query, variables) => JSON.parse(execFileSync(gh, crossPlatformArgs(['api', 'graphql', ...(variables.pr === undefined ? [] : ['-F', 'owner={owner}', '-F', 'name={repo}', '-F', `pr=${variables.pr}`]), ...['id', 'cursor'].filter((key) => variables[key] !== undefined).flatMap((key) => ['-f', `${key}=${variables[key]}`]), '-f', `query=${query}`], needsDoubleEscape('gh', cwd)), crossPlatformOpts({ cwd, encoding: 'utf8', maxBuffer: 64 << 20 })));
 }
 
-module.exports = { DEFAULT_REVIEWERS, reviewersFrom, MAX_BODY_CHARS, WINDOW_SECONDS, collect, watch, analyze, complete, formatPacketLine, ghGraphql };
+module.exports = { DEFAULT_REVIEWERS, AUTHOR_FIELDS, QUERY, THREADS_PAGE_QUERY, COMMENTS_PAGE_QUERY, identityOf, reviewersFrom, MAX_BODY_CHARS, WINDOW_SECONDS, collect, watch, analyze, complete, formatPacketLine, ghGraphql };
