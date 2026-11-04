@@ -18,8 +18,8 @@ const SKILL = path.join(__dirname, '..', '..', 'skills', 'review-until-lgtm', 'S
 
 function fixture() { return JSON.parse(fs.readFileSync(FIXTURE, 'utf8')); }
 function pullRequest(data) { return data.data.repository.pullRequest; }
-function reactionsResponse(nodes, headRefOid = HEAD) { return { data: { repository: { pullRequest: { headRefOid, reactions: { nodes } } } } }; }
-function thumbsUp(createdAt, login = `${CODEX}[bot]`) { return { content: 'THUMBS_UP', createdAt, user: { login } }; }
+function reactionsResponse(edges, headRefOid = HEAD) { return { data: { repository: { pullRequest: { headRefOid, reactionGroups: [{ content: 'THUMBS_UP', reactors: { edges } }] } } } }; }
+function thumbsUp(createdAt, login = `${CODEX}[bot]`, type = 'Bot') { return { reactedAt: createdAt, node: { __typename: type, login } }; }
 function temp() { return tempDir('review-collector-'); }
 
 // A graphql double that serves the main query from `main()` and the reaction
@@ -27,7 +27,7 @@ function temp() { return tempDir('review-collector-'); }
 function graphqlDouble({ main = fixture, reactions = reactionsResponse([]), pages = null } = {}) {
   const double = async (query, variables) => {
     if (/node\(id:/.test(query)) { double.pageReads.push(variables); return pages(query, variables); }
-    if (/reactions\(/.test(query) && !/reviews\(/.test(query)) { double.reactionReads += 1; return typeof reactions === 'function' ? reactions() : reactions; }
+    if (/reactionGroups/.test(query) && !/reviews\(/.test(query)) { double.reactionReads += 1; return typeof reactions === 'function' ? reactions() : reactions; }
     return typeof main === 'function' ? main() : main;
   };
   double.reactionReads = 0;
@@ -81,6 +81,15 @@ test('a Completed summary triggers exactly one reaction read and a later thumbs-
 
   const other = graphqlDouble({ reactions: reactionsResponse([thumbsUp('2026-10-09T13:47:56Z', 'someone-else')]) });
   assert.strictEqual((await collector.collect({ pr: 244, head: HEAD, graphql: other })).reaction, null);
+});
+
+test('a User account named like Codex does not make a clean review lgtm', async () => {
+  const clean = fixture();
+  pullRequest(clean).reviews.nodes.forEach((r) => { r.comments.nodes = []; });
+  const impostor = graphqlDouble({ main: clean, reactions: reactionsResponse([thumbsUp('2026-10-09T13:47:56Z', CODEX, 'User')]) });
+  const packet = await collector.collect({ pr: 244, head: HEAD, graphql: impostor });
+  assert.strictEqual(packet.reaction, null);
+  assert.ok(!packet.observations.some((o) => o.lgtm));
 });
 
 test('no reaction is read while the summary is not Completed', async () => {
@@ -561,4 +570,11 @@ test('a reviews connection that never stops paging fails the collection', async 
   pullRequest(data).reviews.pageInfo = { hasNextPage: true, endCursor: 'R' };
   const pages = () => ({ data: { node: { reviews: { pageInfo: { hasNextPage: true, endCursor: 'R' }, nodes: [] } } } });
   await assert.rejects(collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble({ main: data, pages }), reviewers: [CODEX] }), /reviews exceeds 20 pages/);
+});
+
+test('a comments connection that never stops paging fails the collection', async () => {
+  const data = fixture();
+  pullRequest(data).comments.pageInfo = { hasNextPage: true, endCursor: 'C' };
+  const pages = () => ({ data: { node: { comments: { pageInfo: { hasNextPage: true, endCursor: 'C' }, nodes: [] } } } });
+  await assert.rejects(collector.collect({ pr: 244, head: HEAD, graphql: graphqlDouble({ main: data, pages }), reviewers: [CODEX] }), /comments exceeds 20 pages/);
 });

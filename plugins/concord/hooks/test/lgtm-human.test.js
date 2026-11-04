@@ -87,7 +87,8 @@ test('select-reviewers rejects a non-numeric PR number and writes nothing', () =
 test('select-reviewers answers transition-busy when another selection lands during the lookups', () => {
   const stateDir = temp();
   const racing = github();
-  racing.userByLogin = (login) => { lgtmState.selectReviewers({ stateDir, pr: PR, logins: null, none: true, github: github(), now: 5 }); return ACCOUNTS[login]; };
+  let raced = false;
+  racing.userByLogin = (login) => { if (!raced) lgtmState.selectReviewers({ stateDir, pr: PR, logins: null, none: true, github: github(), now: 5 }); raced = true; return ACCOUNTS[login]; };
   assert.deepStrictEqual(lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice'], github: racing }), { selected: false, reason: 'transition-busy' });
   assert.deepStrictEqual(lgtmState.latestSelection({ stateDir, pr: PR }).reviewers, []);
   assert.strictEqual(lgtmState.latestSelection({ stateDir, pr: PR }).sequence, 1);
@@ -106,4 +107,18 @@ test('ghUsers maps 404 to null for users and throws for a missing PR or other fa
   assert.throws(() => missing.prAuthorId(PR), /not found/);
   assert.throws(() => lgtmState.ghUsers(process.cwd(), failing('HTTP 500')).userByLogin('x'), /gh failed/);
   assert.strictEqual(lgtmState.ghUsers(process.cwd(), () => '42\n').prAuthorId(PR), 42);
+});
+
+test('select-reviewers refuses a bare login owned by both a User and a bot, and a [bot] suffix selects the bot', () => {
+  const stateDir = temp();
+  const both = github({ 'copilot-pull-request-reviewer': { login: 'copilot-pull-request-reviewer', id: 901, type: 'User' } });
+  assert.deepStrictEqual(lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['copilot-pull-request-reviewer'], github: both }), { selected: false, reason: 'refused', refused: [{ login: 'copilot-pull-request-reviewer', why: 'ambiguous' }] });
+  assert.strictEqual(lgtmState.latestSelection({ stateDir, pr: PR }), null);
+  assert.deepStrictEqual(lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['copilot-pull-request-reviewer[bot]'], github: both }).selection, [{ login: 'copilot-pull-request-reviewer', id: 900, type: 'Bot' }]);
+});
+
+test('select-reviewers rejects named reviewers together with none', () => {
+  const stateDir = temp();
+  assert.throws(() => lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice'], none: true, github: github() }), /not both/);
+  assert.strictEqual(lgtmState.latestSelection({ stateDir, pr: PR }), null);
 });

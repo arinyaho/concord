@@ -37,7 +37,7 @@ const THREADS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on Pu
 const THREAD_COMMENTS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on PullRequestReviewThread{comments(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${THREAD_COMMENT_FIELDS}}}}}}`;
 const COMMENTS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on PullRequestReview{comments(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${COMMENT_FIELDS}}}}}}`;
 const CONTEXTS_PAGE_QUERY = `query($id:ID!,$cursor:String){node(id:$id){... on StatusCheckRollup{contexts(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{${CONTEXT_FIELDS}}}}}}`;
-const REACTIONS_QUERY = 'query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){headRefOid reactions(first:100,content:THUMBS_UP){nodes{content createdAt user{login}}}}}}';
+const REACTIONS_QUERY = 'query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){headRefOid reactionGroups{content reactors(first:100){edges{reactedAt node{__typename ... on Bot{login} ... on User{login}}}}}}}}';
 
 // Reactions carry the bot account's login with a [bot] suffix; review and comment authors do not.
 function loginOf(login) { return typeof login === 'string' ? login.replace(/\[bot\]$/, '') : login; }
@@ -191,8 +191,12 @@ async function complete(analysis, { pr, graphql, reviewers = DEFAULT_REVIEWERS }
   // The head may have moved while the reaction was read: a packet for a head that is no longer live is stale.
   const live = reactions.headRefOid.toLowerCase();
   if (live !== packet.head) return { stale: true, head: packet.head, liveHead: live };
-  const nodes = reactions.reactions.nodes
-    .filter((node) => node.content === 'THUMBS_UP' && node.user && loginOf(node.user.login) === CODEX_REVIEWER)
+  // Reaction.user is typed User, so a bot's reaction is read through the Reactor union, where the account type is visible: only a Bot named Codex counts.
+  const nodes = (reactions.reactionGroups || [])
+    .filter((group) => group.content === 'THUMBS_UP')
+    .flatMap((group) => group.reactors.edges)
+    .filter((edge) => botOf(edge.node, [CODEX_REVIEWER]))
+    .map((edge) => ({ content: 'THUMBS_UP', createdAt: edge.reactedAt, user: edge.node }))
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   if (nodes.length > 0) {
     const node = nodes[0];

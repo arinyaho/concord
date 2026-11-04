@@ -790,6 +790,7 @@ function selectReviewers({ stateDir, pr, logins, none = false, github, now = Dat
   const latest = selectionRecords({ stateDir, pr: number }).at(-1);
   let selection;
   let gone = [];
+  if (none && logins && logins.length > 0) throw new Error('review-lgtm-state: name reviewers or choose none, not both');
   if (none) selection = [];
   else if (logins && logins.length > 0) {
     const authorId = github.prAuthorId(number);
@@ -797,8 +798,12 @@ function selectReviewers({ stateDir, pr, logins, none = false, github, now = Dat
     selection = [];
     for (const raw of logins) {
       const login = raw.replace(/^@/, '');
-      const user = github.userByLogin(login) || github.userByLogin(`${login}[bot]`);
-      if (!user) refused.push({ login, why: 'not-found' });
+      // A bare login may name a User or a bot; when both exist the choice is the caller's, not ours.
+      const bare = /\[bot\]$/.test(login) ? null : github.userByLogin(`${login}[bot]`);
+      const plain = github.userByLogin(login);
+      const user = plain || bare;
+      if (plain && bare && plain.id !== bare.id) refused.push({ login, why: 'ambiguous' });
+      else if (!user) refused.push({ login, why: 'not-found' });
       else if (user.type === 'Organization') refused.push({ login, why: 'organization' });
       else if (user.id === authorId) refused.push({ login, why: 'pr-author' });
       else if (!selection.some((account) => account.id === user.id)) selection.push(accountOf(user));
