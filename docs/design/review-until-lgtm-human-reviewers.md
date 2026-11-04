@@ -9,7 +9,7 @@ The PR's ledger in this note is the set of marker files the state engine (`core/
 ## Goals
 
 - The user selects the human reviewers of one PR explicitly, and may name bots in the same list; a resumed session reads the selection from the ledger.
-- Every piece of human feedback on the PR, from a selected reviewer or any other person, is verified and answered once: fixed with the fix commit named, rebutted with evidence, or answered with a clarifying question.
+- Every piece of human feedback on the PR, from a selected reviewer or any other person, is verified and answered once: fixed with the fix commit named, rebutted with evidence, or answered with a clarifying question; an item that asks nothing of the author (a status notice) or that the author already answered is recorded as handled and posts nothing.
 - After an authorized push, each selected human reviewer is asked to review the new head once, and the session waits without model calls until the branch rules are satisfied, new feedback arrives, or the wait deadline passes.
 - Only a GitHub Approve review on the current head counts as a human approval, and delivery follows what GitHub reports about the branch rules.
 - With no reviewer named, the skill observes every review and comment on the PR, from any account, and completion is decided by answered feedback and the branch rules alone.
@@ -84,7 +84,7 @@ A person's feedback is accepted whether or not that person is selected. A bot's 
 
 A review's state (`APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED`) is a signal, separate from its text. Reactions are neither feedback nor signal for a human; the Codex thumbs-up path stays a bot adapter. A comment in a resolved thread is not feedback, as in the bot loop.
 
-A review, inline comment or actionable PR comment from a person who is not selected enters the same assess, fix and reply flow. An approval from an unselected person never stands in for a selected reviewer's response; it counts only as far as the branch rules count it. A request for changes from an unselected person blocks completion until it is addressed, and addressed means the author has answered every item of that person's review; it does not wait for that person to approve or for the review to be dismissed.
+A review, inline comment or actionable PR comment from a person who is not selected enters the same assess, fix and reply flow. An approval from an unselected person never stands in for a selected reviewer's response; it counts only as far as the branch rules count it. A request for changes from an unselected person holds Concord's fix and reply work until the author has answered every item of that person's review; after that Concord counts it as addressed and sends that person no re-review request. GitHub keeps its review decision unmet until that person re-reviews or the review is dismissed, so in a repository whose rules require reviews the branch rules stay unmet and delivery reports `feedback answered, waiting for <login> to re-review or dismiss` as a pending branch-rule condition, never as approval. The run waits to the per-head deadline and then parks like any other human wait; Concord never dismisses a review. In a repository whose rules require no review the same state is merge-ready, as the branch rules say.
 
 ### Feedback items and the unanswered set
 
@@ -146,7 +146,7 @@ select ──► collect (bots: 15-min window; humans: unanswered items)
               no                                                       ▼
               │                                              collect on the new head
               ▼
-     reply to every item ──► end condition met? ──yes──► deliver
+     reply to items owed ──► end condition met? ──yes──► deliver
                                    │
                                    no
                                    ▼
@@ -183,13 +183,15 @@ A fix round is claimed, owned, certified and pushed as in the bot loop: one clai
 
 Human-driven rounds have their own cap. A round whose plan holds at least one human item spends a slot of the human cap (`pr-<n>.human-fix-round-slot-<k>.json`); a round with only bot items spends a slot of the existing PR-wide bot cap of three, which is unchanged. A head still has at most one fix round of either kind. The human cap defaults to five rounds per PR, a design choice: a human review commonly takes more iterations than an automated one, and each human round already costs the reviewer a re-review, so the cap guards a runaway loop rather than rationing ordinary iterations; three would park ordinary reviews too often, and an unbounded cap would let a disagreement loop forever. Only a person raises it, with `waive-fix-budget <pr> <person> <n> --human`, which follows the existing waiver rules (pairs of person and count add up, a repeated pair changes nothing) and raises only the human cap; `status` reports `humanFixBudget` and its waivers beside `fixBudget`. Exhausting either cap stops for human reconciliation as now.
 
-After the push, and after its checks support the response, the skill replies to every item of the batch, whatever its disposition:
+After the push, and after its checks support the response, the skill replies to every item of the batch that needs a reply, whatever its disposition:
 
 - `blocker` or human `minor`: the fix commit, and what changed;
 - bot `minor`: the verdict and reason, as now;
 - `rejected`: the evidence (a file and line, a test, a contract clause) for keeping the code as it is;
 - `clarify`: the question;
 - `approve-intent`: the request to press Approve.
+
+A `no-action` item and an `author-answered` item post nothing; their handled record is the answer.
 
 A reply that claims no fix (rejected, clarify, approve-intent) needs no push and is posted as soon as the item is assessed. An inline item is answered in its own thread; a review body or PR comment is answered with a PR conversation comment that links the item. The skill never resolves a human's thread, also when its fix makes the thread outdated. The existing resolution rule for a bot's threads is unchanged.
 
@@ -201,7 +203,7 @@ After each push the skill asks each selected human to review the new head, once 
 
 On a draft PR no review request is sent; everything else runs, including the bot loop and the answering of human feedback. When the wait sees the PR leave draft (`ready`), the skill sends the requests owed for the live head, once each.
 
-Human requests do not spend the bot request budget of three per PR. They are bounded by the heads, which the fix-round caps bound, and they are separate because a re-review request to a person is the normal step after every push, while a manual bot request is the exception the bot budget exists to limit. Bot requests keep their budget, grace and claims unchanged. A head pushed by someone other than the skill also gets one request per selected human, because a push makes every earlier approval stale whoever pushed it. A bot needs no re-review request after a push: the bot loop's automatic-review grace and claims cover it on every head.
+Human requests do not spend the bot request budget of three per PR. They are bounded by one request per selected human per head, and they are separate because a re-review request to a person is the normal step after every push, while a manual bot request is the exception the bot budget exists to limit. Bot requests keep their budget, grace and claims unchanged. A head pushed by someone other than the skill also gets one request per selected human, because a push makes every earlier approval stale whoever pushed it. A bot needs no re-review request after a push: the bot loop's automatic-review grace and claims cover it on every head.
 
 ### Wait
 
@@ -222,7 +224,7 @@ The wait is `wait-feedback <pr> [--max-wait <seconds>] [--once]`, a script in th
 
 Reactions, CI changes that do not change the merge state, labels, comments by bots outside a named list, edits of a bot's conversation comment, and a reviewer's silence wake nothing. Unanswered is decided by the ledger's markers and GitHub's thread order, not by timestamps, because a commit's date is set by whoever made it and the local clock is not GitHub's; in the normal case this is exactly the feedback newer than the last push.
 
-The wait deadline is a design choice made per head. `open-human-wait <pr> <head-sha> <seconds>` writes it when the session first waits on a head, as a write-once record of start and deadline. A resume while the deadline is in the future never restarts the clock. A resume of a PR already parked at its passed deadline opens a new wait for the same head, with a new start, instead of parking again at once: the explicit invocation is the user asking to wait again, and parking immediately would make a parked PR impossible to resume. Each re-review request starts a fresh wait on its new head, because the request asks the reviewer for a fresh response. The default is 48 hours, a day of margin on a team norm of answering within one day. `--human-wait <hours>` changes it for the run: the skill writes a new record for the current head that keeps the current start and moves the deadline, and later heads use the new length.
+The wait deadline is a design choice made per head. `open-human-wait <pr> <head-sha> <seconds>` writes it when the session first waits on a head, as a write-once record of start and deadline. A resume while the deadline is in the future never restarts the clock. A resume of a PR already parked at its passed deadline opens a new wait for the same head, with a new start, instead of parking again at once: the explicit invocation is the user asking to wait again, and parking immediately would make a parked PR impossible to resume. When the session waits on a head, each re-review request starts a fresh wait on that head, because the request asks the reviewer for a fresh response. The default is 48 hours, a day of margin on a team norm of answering within one day. `--human-wait <hours>` changes it for the run: the skill writes a new record for the current head that keeps the current start and moves the deadline, and later heads use the new length.
 
 Polls back off on failure (doubling the interval up to eight times) and a rate-limit response sleeps until the reset time GitHub reports, bounded by the window end, without counting as a failure. The failure count, the head seen on the previous poll and the last fingerprint live in a non-authoritative sidecar `pr-<n>.wait.json`, so they carry across windows; an unreadable sidecar is treated as empty and at worst repeats one full collection.
 
@@ -265,9 +267,9 @@ Branch rules alone decide merge-readiness; Concord requires no selected reviewer
 
 `branchRules` carries GitHub's own values, read with `gh pr view --json mergeStateStatus,reviewDecision` at the time the packet is built. They are satisfied when `mergeStateStatus` is `CLEAN` or `HAS_HOOKS`, or `UNSTABLE` (a check GitHub does not require failed; the required checks are judged by `requiredChecks` as now), and `reviewDecision` is `APPROVED` or null (the repository requires no review). `UNKNOWN` is read again and never counts. Any other value adds `branch-rules-unmet:<mergeStateStatus>:<reviewDecision>`. Each entry of `unanswered` adds `feedback-unanswered:<item-id>`, and each `changesRequested` entry with `answered: false` adds `changes-requested:<login>`. Reviewer statuses (`approved`, `changes-requested`, `commented`, `pending`, `stale-approval`, `gone`) are recorded and reported; they are not classification reasons. A bot LGTM never masks a pending human approval: when the repository requires a human approval, GitHub's review decision is not `APPROVED`, the end condition does not hold, and the session keeps waiting.
 
-`merge-ready` takes the same `branchRules` and reports `branch-rules-unmet` from the live values. A reviewer entry of type `User` is not checked for `no-lgtm`; the branch rules and the current delivery record cover it. Named bot entries are checked as now. In empty mode `expectedReviewers` is empty and observed bots are passed without a `no-lgtm` check, because nobody is awaited; `no-automated-review` is reported only when no review of any account was observed on the head. `merge-ready` stays a gate for an agent's merge at the user's explicit request; it never merges by itself.
+`merge-ready` takes the same `branchRules` and reports `branch-rules-unmet` from the live values. A reviewer entry of type `User` is not checked for `no-lgtm`; the branch rules and the current delivery record cover it. Named bot entries are checked as now. In empty mode `expectedReviewers` is empty and observed bots are passed without a `no-lgtm` check, because nobody is awaited; `no-automated-review` is not reported, because nobody is awaited: an unreviewed head whose branch rules are satisfied is merge-ready, as its delivery record says. `merge-ready` stays a gate for an agent's merge at the user's explicit request; it never merges by itself.
 
-When the deadline passes first, the run parks. It records no delivery, because the end condition does not hold. The handoff says human review is pending and is not approval, names each selected reviewer's status, says which branch-rule values are unmet, lists every unanswered item, says for a draft PR that no review request was sent and that the requests go out when it is marked ready, and gives the resume command. A parked PR resumes on the next invocation with the same ledger and a new wait.
+When the deadline passes first, the run parks. It records no delivery, because the end condition does not hold. The handoff says human review is pending and is not approval, names each selected reviewer's status, says which branch-rule values are unmet (naming `feedback answered, waiting for <login> to re-review or dismiss` for each answered request for changes that keeps the review decision unmet), lists every unanswered item, says for a draft PR that no review request was sent and that the requests go out when it is marked ready, and gives the resume command. A parked PR resumes on the next invocation with the same ledger and a new wait.
 
 ## Approval
 
@@ -289,7 +291,7 @@ A bot's LGTM is a bot's signal and does not satisfy branch rules that require a 
 
 ## Ledger
 
-The human path adds these markers beside the bot loop's. Each is written with the existing write-once primitive; those marked as locked are written under the PR transition lock, whose `transition-busy` answer is retried later.
+The human path adds these markers beside the bot loop's. Each is written with the existing write-once primitive, except the non-authoritative `pr-<n>.wait.json` sidecar, which the wait script rewrites; those marked as locked are written under the PR transition lock, whose `transition-busy` answer is retried later.
 
 | Marker | Scope | Content |
 |---|---|---|
@@ -327,6 +329,7 @@ The human path adds these markers beside the bot loop's. Each is written with th
 | PR closed or merged during the wait | `closed` or `merged`; the run stops and posts nothing |
 | Draft PR | Bot loop and answers run; no review request; `ready` sends the owed requests |
 | Review request refused by GitHub | Reported once; not retried |
+| Unselected person's request for changes, all items answered, review decision still unmet | Reported as `feedback answered, waiting for <login> to re-review or dismiss`, a pending branch-rule condition and never approval; no re-review request; the run parks at the deadline; the review is never dismissed by the skill |
 | Rate limit | The wait sleeps until GitHub's reset time within its window; not a failure |
 | GitHub unreachable | Backoff; ten consecutive failures across windows end the wait with `error` |
 | A fix cap exhausted | Stop for human reconciliation as in the bot loop; replies that claim no fix are still posted |
@@ -412,7 +415,7 @@ Rejected alternatives:
 | selection stored | a reviewer renamed on GitHub | new record with the new login; matching by id continues | introduced | `a renamed reviewer is matched by account id and the selection records the new login` |
 | any | `select-reviewers` names the PR author or an organization | refused; nothing written | introduced | `select-reviewers refuses the PR author and an organization` |
 | user account whose login equals a bot slug | it comments | treated as an unselected person; not the bot | introduced | `a user account named like a bot is not matched to the bot` |
-| selected human, head H, no feedback, not a draft | first run | one review request per human; human wait opened with the 48-hour default when the session first waits, and none when the branch rules ask for nothing and nothing is unanswered, where the head is delivered at once | introduced | `a selected human is requested once and a 48-hour wait opens` |
+| selected human, head H, no feedback, not a draft | first run | one review request per human; human wait opened with the 48-hour default when the session first waits, and none when the branch rules ask for nothing and nothing is unanswered, where the head is delivered at once | introduced | `a selected human is requested once and the 48-hour wait opens only when the session waits` |
 | mixed selection, head H | first run | bot window, grace and claims for the bots only; humans absent from the bot packet's `pending` | changed | `the bot packet lists only bots as pending` |
 | mixed selection, human silent | 15 minutes pass | no `review-timeout`; the human wait continues | introduced | `a silent human never produces review-timeout` |
 | head H, selected human submits a review with inline findings | collect | one observation with each inline item as a finding with item id, kind, author and original commit | introduced | `a selected human's review becomes an observation that keeps identity, URL, commit and items` |
@@ -425,7 +428,8 @@ Rejected alternatives:
 | item fixed in H1's round, pushed to H2 | collect on H2 | excluded by the claim's `itemIds`; no second round | introduced | `an item taken by a fix round does not return in the next head's batch` |
 | item claimed by a finished round, crash before its reply | resume | listed in `owedReplies`; reply posted before collecting | introduced | `owed replies of a finished round are posted on resume` |
 | unselected person comments | collect | item enters the batch; assessed and answered like any other | introduced | `feedback from an unselected person enters the batch` |
-| unselected person requests changes | all its items answered | no longer blocking; that person's approval not awaited | introduced | `an unselected request for changes blocks until every item is answered` |
+| unselected person requests changes | all its items answered, repository requires reviews | Concord's work is done and no re-review request is sent; the review decision stays unmet; `feedback answered, waiting for <login> to re-review or dismiss` is a pending branch-rule condition and the run parks at the deadline | introduced | `an answered unselected request for changes leaves the branch rules unmet where reviews are required` |
+| unselected person requests changes | all its items answered, repository requires no review | merge-ready by the branch rules | introduced | `an answered unselected request for changes is merge-ready where no review is required` |
 | unselected person approves the live head | wait | not a selected reviewer's response; counted only through the review decision | introduced | `an unselected approval does not stand in for a selected reviewer` |
 | colleague comments, author answers in the thread by hand | collect, wait | handled record `author-answered`; nothing posted; no wake | introduced | `an author's hand-written answer counts and the skill posts nothing` |
 | PR comment, author quotes it by URL | collect | handled record `author-answered` | introduced | `an author comment that links the item answers it` |
@@ -487,7 +491,7 @@ Each criterion of the extension maps to collector fixtures (GraphQL responses in
 | Evidence-backed replies, with the fix commit when applicable; rejected and deferred feedback keeps reason and provenance; threads stay unresolved | `a fixed item's reply names the fix commit and the thread stays unresolved`; `a human minor is fixed in the head's round`; `a reply that claims no fix is posted without a push ...`; `an interrupted reply is found by its marker and not posted twice`; `an author's hand-written answer counts and the skill posts nothing` |
 | After a push, human re-review is pending and resumes without losing findings, duplicating replies or requests, or resetting budgets | `each push sends one request per selected human and spends no bot request`; `an interrupted review request is settled from the timeline`; `a resumed wait keeps the persisted deadline`; `resuming a parked PR opens a new wait`; `an item taken by a fix round does not return in the next head's batch`; `owed replies of a finished round are posted on resume`; `a round with a human item spends the human cap`; `a human waiver raises only the human cap` |
 | A delayed human response follows the waiting policy, is not a provider failure or approval; silence and reactions never yield LGTM | `a silent human never produces review-timeout`; `wait-feedback --max-wait ends a silent window with idle`; `the deadline parks the run without a delivery ...`; `a reaction is never human approval`; `a comment-only LGTM gets one request to press Approve ...`; `ready for review wakes the wait and sends the owed requests` |
-| A human approval belongs to its commit; a later push cannot reuse it; requests for changes stay visible | `an approval of an earlier head is stale for the new head`; `a review whose commit is gone approves nothing`; `a dismissed approval approves nothing`; `an unselected request for changes blocks until every item is answered` |
+| A human approval belongs to its commit; a later push cannot reuse it; requests for changes stay visible | `an approval of an earlier head is stale for the new head`; `a review whose commit is gone approves nothing`; `a dismissed approval approves nothing`; `an answered unselected request for changes leaves the branch rules unmet where reviews are required`; `an answered unselected request for changes is merge-ready where no review is required` |
 | In a mixed set, a bot LGTM cannot mask a pending human review or an unresolved blocker; delivery reports each reviewer's status | `a bot LGTM does not satisfy branch rules that require a human approval`; `an unprotected repository is merge-ready by its branch rules without the selected reviewer` (asserting the `pending` status in `humanReview.reviewers`); `delivery with satisfied branch rules and no unanswered item is mergeable` |
 | Bot-only collection, reconciliation, ownership, budget and delivery behavior stays covered for named bots; the default without a named reviewer observes every account | the existing collector and state tests, with the bot they rely on named by `--reviewer`; `watch without --reviewer observes every account`; `the empty selection requests no default bot and does not await its LGTM`; `empty mode delivers on answered feedback and branch rules`; `a bot LGTM ends nothing in empty mode`; `the bot packet lists only bots as pending`; `a bot record plus human feedback counts as two records`; `a bot-only delivery packet keeps its digest` |
 
