@@ -211,7 +211,7 @@ The wait is `wait-feedback <pr> [--max-wait <seconds>] [--once]`, a script in th
 
 | Event | Fires when |
 |---|---|
-| `feedback` | An unanswered item exists, by the same test the collector uses, including a new review of any state by a person |
+| `feedback` | An unanswered item exists, by the same test the collector uses. A review counts only when its body or inline comments make it an item; a review with an empty body, such as a bare Approve, is not an item, and an approval wakes the wait through `rules-changed` when it changes GitHub's review decision |
 | `rules-changed` | GitHub's review decision or merge state changed |
 | `head-moved` | The live head differs from the head the ledger last handled, and is the same on two consecutive polls |
 | `ready` | The PR left draft |
