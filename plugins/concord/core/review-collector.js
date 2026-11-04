@@ -83,7 +83,7 @@ function finding(comment) {
 // The Codex summary comment holds one table row per review kind; only rows for
 // this head count, and the summary is Completed only when every such row is.
 function summaryOf(comments, head) {
-  const comment = comments.find((c) => c.author.__typename === 'Bot' && loginOf(c.author.login) === CODEX_REVIEWER && typeof c.body === 'string' && c.body.includes(SUMMARY_MARKER));
+  const comment = comments.find((c) => loginOf(c.author.login) === CODEX_REVIEWER && typeof c.body === 'string' && c.body.includes(SUMMARY_MARKER));
   if (!comment) return null;
   const rows = [...comment.body.matchAll(/^\|[^|\n]*\|([^|\n]*)\|\s*`([0-9a-f]{7,64})`\s*\|/gim)]
     .filter((row) => head.startsWith(row[2].toLowerCase()));
@@ -118,7 +118,7 @@ async function fillPages(connection, query, id, field, graphql) {
   }
 }
 
-// Only the configured reviewers' reviews are paged: no other review is ever read.
+// Every review and PR comment is paged; only the configured reviewers' inline comments are.
 async function read(graphql, pr, reviewers) {
   const response = await graphql(QUERY, { pr });
   const pull = pullRequestOf(response);
@@ -140,7 +140,7 @@ function analyze(response, head, reviewers = DEFAULT_REVIEWERS) {
   const pr = pullRequestOf(response);
   const live = pr.headRefOid.toLowerCase();
   if (live !== head) return { stale: true, head, liveHead: live };
-  const comments = pr.comments.nodes.filter((c) => botOf(c.author, reviewers)).map((c) => ({ ...c, author: { __typename: 'Bot', login: loginOf(c.author.login) } }));
+  const comments = pr.comments.nodes.filter((c) => botOf(c.author, reviewers)).map((c) => ({ ...c, author: { ...c.author, login: loginOf(c.author.login) } }));
   const summary = reviewers.includes(CODEX_REVIEWER) ? summaryOf(comments, head) : null;
   const resolved = new Set(pr.reviewThreads.nodes.filter((t) => t.isResolved).flatMap((t) => t.comments.nodes.map((c) => c.id)));
   const observations = [];

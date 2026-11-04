@@ -83,3 +83,27 @@ test('select-reviewers rejects a non-numeric PR number and writes nothing', () =
   for (const pr of ['--reviewer', 'abc', '0', undefined]) assert.throws(() => lgtmState.selectReviewers({ stateDir, pr, logins: null, github: github() }), /PR number must be a positive integer/);
   assert.deepStrictEqual(require('node:fs').readdirSync(stateDir), []);
 });
+
+test('select-reviewers answers transition-busy when another selection lands during the lookups', () => {
+  const stateDir = temp();
+  const racing = github();
+  racing.userByLogin = (login) => { lgtmState.selectReviewers({ stateDir, pr: PR, logins: null, none: true, github: github(), now: 5 }); return ACCOUNTS[login]; };
+  assert.deepStrictEqual(lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice'], github: racing }), { selected: false, reason: 'transition-busy' });
+  assert.deepStrictEqual(lgtmState.latestSelection({ stateDir, pr: PR }).reviewers, []);
+  assert.strictEqual(lgtmState.latestSelection({ stateDir, pr: PR }).sequence, 1);
+});
+
+test('select-reviewers stores one account once however it is named', () => {
+  const stateDir = temp();
+  assert.deepStrictEqual(lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice', '@alice'], github: github() }).selection, [ACCOUNTS.alice]);
+});
+
+test('ghUsers maps 404 to null for users and throws for a missing PR or other failures', () => {
+  const failing = (stderr) => () => { throw Object.assign(new Error('gh failed'), { stderr }); };
+  const missing = lgtmState.ghUsers(process.cwd(), failing('gh: Not Found (HTTP 404)'));
+  assert.strictEqual(missing.userByLogin('nobody'), null);
+  assert.strictEqual(missing.userById(5), null);
+  assert.throws(() => missing.prAuthorId(PR), /not found/);
+  assert.throws(() => lgtmState.ghUsers(process.cwd(), failing('HTTP 500')).userByLogin('x'), /gh failed/);
+  assert.strictEqual(lgtmState.ghUsers(process.cwd(), () => '42\n').prAuthorId(PR), 42);
+});

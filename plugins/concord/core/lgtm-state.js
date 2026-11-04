@@ -783,36 +783,38 @@ function latestSelection({ stateDir, pr }) {
 
 const accountOf = ({ login, id, type }) => ({ login: login.replace(/\[bot\]$/, ''), id, type });
 
+// GitHub lookups are slow and can stall, so they run before the transition lock; the lock only re-checks that no other selection landed meanwhile and writes.
 function selectReviewers({ stateDir, pr, logins, none = false, github, now = Date.now() }) {
   if (!Number.isSafeInteger(Number(pr)) || Number(pr) < 1) throw new Error('review-lgtm-state: PR number must be a positive integer');
   const number = Number(pr);
-  return withTransitionLock({ stateDir, pr: number }, () => {
-    const latest = selectionRecords({ stateDir, pr: number }).at(-1);
-    let selection;
-    let gone = [];
-    if (none) selection = [];
-    else if (logins && logins.length > 0) {
-      const authorId = github.prAuthorId(number);
-      const refused = [];
-      selection = [];
-      for (const raw of logins) {
-        const login = raw.replace(/^@/, '');
-        const user = github.userByLogin(login) || github.userByLogin(`${login}[bot]`);
-        if (!user) refused.push({ login, why: 'not-found' });
-        else if (user.type === 'Organization') refused.push({ login, why: 'organization' });
-        else if (user.id === authorId) refused.push({ login, why: 'pr-author' });
-        else selection.push(accountOf(user));
-      }
-      if (refused.length > 0) return { selected: false, reason: 'refused', refused };
-    } else {
-      // Resume: re-resolve the stored accounts by id so a rename follows the account and a deleted account stays recorded as gone.
-      selection = (latest?.reviewers || []).map((reviewer) => {
-        const user = github.userById(reviewer.id);
-        return user ? accountOf(user) : { ...reviewer, gone: true };
-      });
-      gone = selection.filter((reviewer) => reviewer.gone).map((reviewer) => reviewer.id);
-      if (!latest || JSON.stringify(selection) === JSON.stringify(latest.reviewers)) return { selected: true, recorded: false, selection, gone };
+  const latest = selectionRecords({ stateDir, pr: number }).at(-1);
+  let selection;
+  let gone = [];
+  if (none) selection = [];
+  else if (logins && logins.length > 0) {
+    const authorId = github.prAuthorId(number);
+    const refused = [];
+    selection = [];
+    for (const raw of logins) {
+      const login = raw.replace(/^@/, '');
+      const user = github.userByLogin(login) || github.userByLogin(`${login}[bot]`);
+      if (!user) refused.push({ login, why: 'not-found' });
+      else if (user.type === 'Organization') refused.push({ login, why: 'organization' });
+      else if (user.id === authorId) refused.push({ login, why: 'pr-author' });
+      else if (!selection.some((account) => account.id === user.id)) selection.push(accountOf(user));
     }
+    if (refused.length > 0) return { selected: false, reason: 'refused', refused };
+  } else {
+    // Resume: re-resolve the stored accounts by id so a rename follows the account and a deleted account stays recorded as gone.
+    selection = (latest?.reviewers || []).map((reviewer) => {
+      const user = github.userById(reviewer.id);
+      return user ? accountOf(user) : { ...reviewer, gone: true };
+    });
+    gone = selection.filter((reviewer) => reviewer.gone).map((reviewer) => reviewer.id);
+    if (!latest || JSON.stringify(selection) === JSON.stringify(latest.reviewers)) return { selected: true, recorded: false, selection, gone };
+  }
+  return withTransitionLock({ stateDir, pr: number }, () => {
+    if ((selectionRecords({ stateDir, pr: number }).at(-1)?.sequence ?? 0) !== (latest?.sequence ?? 0)) return { selected: false, reason: 'transition-busy' };
     const sequence = (latest ? latest.sequence : 0) + 1;
     if (!writeExclusive(path.join(stateDir, `pr-${number}.reviewers-${String(sequence).padStart(6, '0')}.json`), { pr: number, sequence, reviewers: selection, recordedAtMs: now })) throw new Error('review-lgtm-state: reviewer record collided; retry');
     return { selected: true, recorded: true, selection, gone };
@@ -820,10 +822,11 @@ function selectReviewers({ stateDir, pr, logins, none = false, github, now = Dat
 }
 
 // gh answers HTTP 404 for an unknown or deleted account; that is a null, every other failure is the caller's.
-function ghUsers(repoRoot) {
+const GH_TIMEOUT_MS = 30000;
+function ghUsers(repoRoot, exec = execFileSync) {
   const gh = crossPlatformCommand('gh', repoRoot);
   const api = (...args) => {
-    try { return execFileSync(gh, crossPlatformArgs(['api', ...args], needsDoubleEscape('gh', repoRoot)), crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })); }
+    try { return exec(gh, crossPlatformArgs(['api', ...args], needsDoubleEscape('gh', repoRoot)), crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: GH_TIMEOUT_MS })); }
     catch (error) {
       if (/HTTP 404/.test(String(error.stderr || ''))) return null;
       throw error;
@@ -833,7 +836,7 @@ function ghUsers(repoRoot) {
   return {
     userByLogin: (login) => user(`users/${encodeURIComponent(login)}`),
     userById: (id) => user(`user/${Number(id)}`),
-    prAuthorId: (pr) => Number(api(`repos/{owner}/{repo}/pulls/${Number(pr)}`, '--jq', '.user.id')),
+    prAuthorId: (pr) => { const out = api(`repos/{owner}/{repo}/pulls/${Number(pr)}`, '--jq', '.user.id'); if (out === null) throw new Error(`review-lgtm-state: PR ${Number(pr)} not found`); return Number(out); },
   };
 }
 
