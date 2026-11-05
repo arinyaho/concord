@@ -557,6 +557,12 @@ test('reply and answer URLs are non-empty bounded strings', () => {
   assert.deepStrictEqual(fs.readdirSync(stateDir).filter((name) => name.includes('feedback')), []);
 });
 
+test('a handled reply url is a bounded string', () => {
+  const stateDir = temp();
+  assert.throws(() => lgtmState.recordReply({ stateDir, pr: PR, itemId: ITEM, record: reply({ url: `https://x/${'y'.repeat(500)}` }) }), /url/);
+  assert.strictEqual(lgtmState.recordReply({ stateDir, pr: PR, itemId: ITEM, record: reply({ url: 'x'.repeat(500) }) }).recorded, true);
+});
+
 test('a human minor is fixed in the head\'s round', () => {
   const stateDir = temp();
   const obs = humanObs('comment-70');

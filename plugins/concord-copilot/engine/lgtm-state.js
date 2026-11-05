@@ -378,7 +378,7 @@ function validReply(record) {
   const { disposition } = r;
   if (!REPLY_DISPOSITIONS.includes(disposition)) throw new Error(`review-lgtm-state: a reply disposition is one of ${REPLY_DISPOSITIONS.join(', ')}`);
   // A deleted account's item carries the collector's ghost author, whose id is null.
-  if (!text(r.kind) || !text(r.url) || !r.author || !text(r.author.login) || !(r.author.id === null || Number.isSafeInteger(r.author.id)) || !text(r.author.type)) throw new Error('review-lgtm-state: a handled reply needs kind, url and the author login, id and type');
+  if (!text(r.kind) || !text(r.url) || r.url.length > 500 || !r.author || !text(r.author.login) || !(r.author.id === null || Number.isSafeInteger(r.author.id)) || !text(r.author.type)) throw new Error('review-lgtm-state: a handled reply needs kind, a url of at most 500 characters and the author login, id and type');
   if (typeof r.reason !== 'string' || r.reason.trim().length < 1 || r.reason.length > 500) throw new Error('review-lgtm-state: a handled reply needs a reason of 1 to 500 characters');
   const link = (name, needed) => {
     if (needed !== (r[name] != null)) throw new Error(`review-lgtm-state: ${disposition} ${needed ? `needs ${name === 'answerUrl' ? 'an' : 'a'} ${name}` : `takes no ${name}`}`);

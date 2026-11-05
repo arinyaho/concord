@@ -722,7 +722,7 @@ test('Claude, Codex, and Copilot review-until-lgtm skills pin bounded batch fixe
     assert.match(skill, /Codex, Copilot, or another explicitly configured reviewer/);
     assert.match(skill, /Do not start fixing when the first review arrives/);
     assert.match(skill, /complete collected set.*one clean-context verifier/);
-    assert.match(skill, /partition every blocker into exactly one explicit root-cause group/);
+    assert.match(skill, /partition every blocker and every minor from a person \(the items the head's round fixes\) into exactly one explicit root-cause group/);
     assert.match(skill, /round-scoped transaction/);
     assert.match(skill, /independent certifier/);
     assert.match(skill, /three fix-and-push rounds are a PR-wide hard cap, not a quality guarantee/);
