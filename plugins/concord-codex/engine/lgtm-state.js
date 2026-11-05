@@ -526,12 +526,20 @@ function compareReviewIds(a, b) {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
+// The head's unanswered feedback items: the exact set claimFixRound requires. An item's earlier revision on the head is superseded by its later one, the only revision the collector shows.
+function unansweredFindings(records, answered) {
+  const items = records.flatMap((record) => record.findings).filter((finding) => finding.itemId !== undefined);
+  const at = (id) => id.lastIndexOf('@');
+  const superseded = (id) => items.some(({ itemId }) => itemId.slice(0, at(itemId)) === id.slice(0, at(id)) && Date.parse(itemId.slice(at(itemId) + 1)) > Date.parse(id.slice(at(id) + 1)));
+  return [...new Map(items.filter((finding) => !answered.has(finding.itemId) && !superseded(finding.itemId)).map((finding) => [finding.itemId, finding])).values()];
+}
+
 function reconciliationPacket({ stateDir, pr, headSha }) {
   const records = activeReviewRecords({ stateDir, pr, headSha })
     .sort((a, b) => a.recordedAtMs - b.recordedAtMs || compareReviewIds(a.reviewId, b.reviewId));
   // The cap is chosen as claimFixRound chooses it: the claim lists exactly the unanswered items, and one from a person takes the human cap.
-  const answered = answeredItemIds({ stateDir, pr });
-  const human = records.some((record) => record.findings.some((finding) => finding.itemId !== undefined && finding.author?.type === 'User' && !answered.has(finding.itemId)));
+  const unanswered = unansweredFindings(records, answeredItemIds({ stateDir, pr }));
+  const human = unanswered.some((finding) => finding.author?.type === 'User');
   const delivered = !fixRoundForHead({ stateDir, pr, headSha }) && deliveryTerminal({ stateDir, pr, headSha }, { fixCap: human ? 'human' : 'bot' });
   if (delivered) return { pr, headSha, reviews: records.map((record) => ({ id: record.reviewId, reviewer: record.reviewer || 'legacy/unknown', url: record.reviewUrl, findings: record.findings })), batchCount: records.length, classification: 'delivery-terminal', action: 'report-delivery', humanRequired: false, requires: `report the recorded ${delivered.classification} delivery disposition` };
   if (records.length === 0) return null;
@@ -548,7 +556,7 @@ function reconciliationPacket({ stateDir, pr, headSha }) {
   const humanRequired = abandoned || exhausted;
   const action = claimed ? 'complete-claimed-fix-round' : humanRequired ? 'human-reconciliation' : 'verify-and-fix';
   const requires = claimed ? 'complete the claimed fix round' : abandoned ? 'human decision: abandoned fix-round claim' : exhausted ? `human decision: ${human ? 'human ' : ''}fix-round budget exhausted` : 'verify the batch and claim a fix round';
-  return { pr, headSha, reviews, batchCount: records.length, p1Count, p2Count, signals, classification, action, humanRequired, requires };
+  return { pr, headSha, reviews, batchCount: records.length, unansweredItemIds: unanswered.map((finding) => finding.itemId).sort(), p1Count, p2Count, signals, classification, action, humanRequired, requires };
 }
 
 function recordReview(input) {
@@ -644,8 +652,7 @@ function claimFixRound(input) {
       return { claimed: false, reason: 'fix-round-owned', humanRequired: true, owner: active.owner };
     }
     // The round takes every unanswered item, so its cap is the one reconciliationPacket reports and no item is left without a round or a reply.
-    const answered = answeredItemIds({ stateDir, pr: key.pr });
-    const unanswered = [...findings.keys()].filter((id) => !answered.has(id));
+    const unanswered = unansweredFindings(records, answeredItemIds({ stateDir, pr: key.pr })).map((finding) => finding.itemId);
     if (ids.length !== unanswered.length || unanswered.some((id) => !ids.includes(id))) throw new Error('review-lgtm-state: itemIds must list exactly the head\'s unanswered feedback items');
     const kind = human ? 'human' : 'bot';
     const exhausted = human ? 'human-fix-round-budget-exhausted' : 'fix-round-budget-exhausted';

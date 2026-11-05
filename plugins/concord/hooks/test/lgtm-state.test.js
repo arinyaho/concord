@@ -288,6 +288,7 @@ test('an abandoned fix-round claim fails closed for human reconciliation', () =>
     headSha: HEAD_A,
     reviews: [{ id: '5332811440', reviewer: 'chatgpt-codex-connector[bot]', url: 'https://github.com/arinyaho/concord/pull/122#pullrequestreview-5332811440', findings: [inlineFinding()] }],
     batchCount: 1,
+    unansweredItemIds: [],
     p1Count: 1,
     p2Count: 0,
     signals: [],
@@ -656,6 +657,7 @@ test('status.reconciliation is null when unmarked and a full packet once marked'
     headSha: HEAD_A,
     reviews: [{ id: '5332811440', reviewer: obs.reviewer, url: obs.reviewUrl, findings: [{ url: obs.findings[0].url, priority: 'P1', signals: ['lifecycle'] }] }],
     batchCount: 1,
+    unansweredItemIds: [],
     p1Count: 1,
     p2Count: 0,
     signals: ['lifecycle'],
@@ -1192,7 +1194,7 @@ test('review-until-lgtm merges only on explicit request and a ready merge-ready 
 test('review-until-lgtm names the answered-feedback ledger verbs', () => {
   for (const file of [CLAUDE_SKILL, CODEX_SKILL, COPILOT_SKILL]) {
     const skill = fs.readFileSync(file, 'utf8');
-    for (const token of ['claim-reply', 'record-reply', 'find-reply', 'owedReplies', '--human', 'claim-approve-prompt', '{"itemIds":[...]}', 'record JSON on stdin', '`answerUrl` from the packet\'s `authorAnswered` entry', 'with that `url` as `replyUrl`', 'numeric GitHub account id', 'press Approve on GitHub', 'A bot\'s minor is never fixed during the loop', 'A minor from a person (`author.type` `User`) is fixed in the head\'s fix round, with a failing test first when the change alters behavior, and its reply names the fix commit; it takes no `collect-minor`', 'never resolves a person\'s review thread, also when the fix makes it outdated', '`{"itemIds":[]}`', 'never run it without a piped body', 'git rev-list --first-parent --reverse <headSha>..<live head>', 'git merge-base --is-ancestor <headSha> <live head>', 'post nothing for that item and stop for human reconciliation, naming the item', 'every remaining unanswered item id of the head', '`{"itemIds":[]}` only when the head has no unanswered feedback item', '`not-selected`', '`approvePrompted`']) assert.ok(skill.includes(token), `${path.basename(path.dirname(file))} lacks ${token}`);
+    for (const token of ['claim-reply', 'record-reply', 'find-reply', 'owedReplies', '--human', 'claim-approve-prompt', 'record JSON on stdin', '`answerUrl` from the packet\'s `authorAnswered` entry', 'with that `url` as `replyUrl`', 'numeric GitHub account id', 'press Approve on GitHub', 'A bot\'s minor is never fixed during the loop', 'A minor from a person (`author.type` `User`) is fixed in the head\'s fix round, with a failing test first when the change alters behavior, and its reply names the fix commit; it takes no `collect-minor`', 'never resolves a person\'s review thread, also when the fix makes it outdated', '`{"itemIds":[]}`', 'never run it without a piped body', 'git rev-list --first-parent --reverse <headSha>..<live head>', 'git merge-base --is-ancestor <headSha> <live head>', 'post nothing for that item and stop for human reconciliation, naming the item', '`{"itemIds": <status.reconciliation.unansweredItemIds>}`', 'read from a fresh `status`', '`not-selected`', '`approvePrompted`']) assert.ok(skill.includes(token), `${path.basename(path.dirname(file))} lacks ${token}`);
     assert.ok(!skill.includes('required when the head\'s active findings carry item ids'), `${path.basename(path.dirname(file))} describes claim-fix-round stdin as optional`);
     assert.ok(!skill.includes('for a batch with only bot findings'), `${path.basename(path.dirname(file))} keys empty claim-fix-round stdin on bot findings`);
   }

@@ -401,7 +401,8 @@ test('an edited item on the same head is recorded as a revision and can be claim
   const hex = require('node:crypto').createHash('sha256').update(itemOf(later)).digest('hex').slice(0, 16);
   assert.ok(fs.existsSync(path.join(stateDir, `pr-${PR}-${HEAD}.comment-70~${hex}.json`)));
   assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reconciliation.reviews.map((r) => r.id), ['comment-70', `comment-70~${hex}`]);
-  assert.strictEqual(lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(later), itemOf(humanObs('comment-70'))] }).claimed, true);
+  assert.throws(() => lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(later), itemOf(humanObs('comment-70'))] }), /itemIds must list exactly the head's unanswered feedback items/);
+  assert.strictEqual(lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(later)] }).claimed, true);
 });
 
 test('a rejected record does not reject the later revision of its item', () => {
@@ -519,6 +520,21 @@ test('a fix-round claim with item ids and no reserved slot leaves its items unan
   fs.writeFileSync(path.join(stateDir, `pr-${PR}-${'d'.repeat(40)}.fix-round-claim.json`), JSON.stringify({ pr: PR, headSha: 'd'.repeat(40), owner: 'o', itemIds: [ITEM], claimedAtMs: 1 }));
   assert.ok(!lgtmState.answeredItemIds({ stateDir, pr: PR }).has(ITEM));
   assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, []);
+});
+
+test('status lists the exact unanswered item ids a claim takes, without answered items or superseded revisions', () => {
+  const stateDir = temp();
+  const obs = humanObs('comment-70', 3);
+  const bot = { ...humanObs('comment-73'), reviewer: 'vercel', reviewerId: 901, reviewerType: 'Bot' };
+  bot.findings[0].author = { login: 'vercel', id: 901, type: 'Bot' };
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: bot });
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: { ...humanObs('comment-70'), findings: [{ ...obs.findings[2], itemId: 'Ncomment-702@2026-11-02T00:00:00Z' }] } });
+  lgtmState.claimReply({ stateDir, pr: PR, itemId: itemOf(obs) });
+  const { unansweredItemIds } = lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reconciliation;
+  assert.deepStrictEqual(unansweredItemIds, [itemOf(obs, 1), 'Ncomment-702@2026-11-02T00:00:00Z', itemOf(bot)].sort());
+  const claim = lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: unansweredItemIds });
+  assert.deepStrictEqual([claim.claimed, claim.kind], [true, 'human']);
 });
 
 test('a resumed owner re-claims its round without listing item ids', () => {
