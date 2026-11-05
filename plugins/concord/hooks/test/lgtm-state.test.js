@@ -38,7 +38,7 @@ test('review-until-lgtm persists its monitoring window and request budget', () =
 
   // Simulates a process/session interruption: a new invocation reconstructs
   // the exact same deadline and cannot restart the bounded wait window.
-  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: 901000, requestEligibleAtMs: null, requestBudget: { max: 3, spent: 0, remaining: 3 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, waivers: [], humanFixBudget: { max: 5, spent: 0, remaining: 5 }, humanWaivers: [], minors: [], claimedReplies: [], owedReplies: [], initialClaimed: false, initialClaimedAtMs: null, initialRecoveryClaimed: false, initialRequested: false, reconciliation: null, delivery: null });
+  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: 901000, requestEligibleAtMs: null, requestBudget: { max: 3, spent: 0, remaining: 3 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, waivers: [], humanFixBudget: { max: 5, spent: 0, remaining: 5 }, humanWaivers: [], minors: [], claimedReplies: [], owedReplies: [], reviewers: [], initialClaimed: false, initialClaimedAtMs: null, initialRecoveryClaimed: false, initialRequested: false, reconciliation: null, delivery: null });
   assert.deepStrictEqual(lgtmState.openWindow({ ...input, now: 2000, durationMs: 900000 }), { created: false, deadlineMs: 901000 });
 });
 
@@ -142,9 +142,9 @@ test('review requests distinguish a durable claim from a request that was sent',
   const input = { stateDir, pr: 116, headSha: '0123456789abcdef0123456789abcdef01234567' };
   lgtmState.claimInitialRequest({ ...input, now: 2000 });
   assert.strictEqual(lgtmState.claimInitialRequest({ ...input, now: 122000 }), true);
-  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, requestEligibleAtMs: 122000, requestBudget: { max: 3, spent: 1, remaining: 2 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, waivers: [], humanFixBudget: { max: 5, spent: 0, remaining: 5 }, humanWaivers: [], minors: [], claimedReplies: [], owedReplies: [], initialClaimed: true, initialClaimedAtMs: 122000, initialRecoveryClaimed: false, initialRequested: false, reconciliation: null, delivery: null });
+  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, requestEligibleAtMs: 122000, requestBudget: { max: 3, spent: 1, remaining: 2 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, waivers: [], humanFixBudget: { max: 5, spent: 0, remaining: 5 }, humanWaivers: [], minors: [], claimedReplies: [], owedReplies: [], reviewers: [], initialClaimed: true, initialClaimedAtMs: 122000, initialRecoveryClaimed: false, initialRequested: false, reconciliation: null, delivery: null });
   assert.strictEqual(lgtmState.markInitialRequested(input), true);
-  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, requestEligibleAtMs: 122000, requestBudget: { max: 3, spent: 1, remaining: 2 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, waivers: [], humanFixBudget: { max: 5, spent: 0, remaining: 5 }, humanWaivers: [], minors: [], claimedReplies: [], owedReplies: [], initialClaimed: true, initialClaimedAtMs: 122000, initialRecoveryClaimed: false, initialRequested: true, reconciliation: null, delivery: null });
+  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, requestEligibleAtMs: 122000, requestBudget: { max: 3, spent: 1, remaining: 2 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, waivers: [], humanFixBudget: { max: 5, spent: 0, remaining: 5 }, humanWaivers: [], minors: [], claimedReplies: [], owedReplies: [], reviewers: [], initialClaimed: true, initialClaimedAtMs: 122000, initialRecoveryClaimed: false, initialRequested: true, reconciliation: null, delivery: null });
 });
 
 test('status exposes a provider-specific sent request so resume can open its window', () => {
@@ -1192,7 +1192,8 @@ test('review-until-lgtm merges only on explicit request and a ready merge-ready 
 test('review-until-lgtm names the answered-feedback ledger verbs', () => {
   for (const file of [CLAUDE_SKILL, CODEX_SKILL, COPILOT_SKILL]) {
     const skill = fs.readFileSync(file, 'utf8');
-    for (const token of ['claim-reply', 'record-reply', 'find-reply', 'owedReplies', '--human', 'claim-approve-prompt', '{"itemIds":[...]}', 'record JSON on stdin', '`answerUrl` from the packet\'s `authorAnswered` entry', 'with that `url` as `replyUrl`', 'numeric GitHub account id', 'press Approve on GitHub']) assert.ok(skill.includes(token), `${path.basename(path.dirname(file))} lacks ${token}`);
+    for (const token of ['claim-reply', 'record-reply', 'find-reply', 'owedReplies', '--human', 'claim-approve-prompt', '{"itemIds":[...]}', 'record JSON on stdin', '`answerUrl` from the packet\'s `authorAnswered` entry', 'with that `url` as `replyUrl`', 'numeric GitHub account id', 'press Approve on GitHub', 'A bot\'s minor is never fixed during the loop', 'A minor from a person (`author.type` `User`) is fixed in the head\'s fix round, with a failing test first when the change alters behavior, and its reply names the fix commit; it takes no `collect-minor`', 'never resolves a person\'s review thread, also when the fix makes it outdated', '`{"itemIds":[]}`', 'never run it without a piped body', 'git rev-list --first-parent --reverse <headSha>..<live head>', '`not-selected`', '`approvePrompted`']) assert.ok(skill.includes(token), `${path.basename(path.dirname(file))} lacks ${token}`);
+    assert.ok(!skill.includes('required when the head\'s active findings carry item ids'), `${path.basename(path.dirname(file))} describes claim-fix-round stdin as optional`);
   }
 });
 

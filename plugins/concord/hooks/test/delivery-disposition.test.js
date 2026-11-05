@@ -327,15 +327,39 @@ test('a recorded fix-budget waiver lifts a terminal delivery so the waived round
   assert.strictEqual(claim.budget.max, 4);
 });
 
+const HUMAN_ITEM = 'IC_70@2026-11-01T00:00:00Z';
+function withHumanItem(stateDir) {
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, now: 2000, observation: {
+    reviewId: 'comment-70', reviewer: 'alice', reviewerId: 101, reviewerType: 'User', reviewUrl: 'https://github.com/arinyaho/concord/pull/172#issuecomment-70',
+    commitId: HEAD, state: 'completed', lgtm: false,
+    findings: [{ url: 'https://github.com/arinyaho/concord/pull/172#issuecomment-70', priority: null, signals: [], itemId: HUMAN_ITEM, kind: 'comment', author: { login: 'alice', id: 101, type: 'User' }, originalCommitId: null }],
+  } });
+}
+
 test('a human fix-budget waiver also lifts a terminal delivery', () => {
   const stateDir = temp();
   const input = { stateDir, pr: PR, headSha: HEAD };
   withActiveReview(stateDir);
-  const record = lgtmState.recordDelivery({ ...input, now: 4000, packet: pr172Packet({ reviewIds: ['4192088400'] }) });
+  withHumanItem(stateDir);
+  const record = lgtmState.recordDelivery({ ...input, now: 4000, packet: pr172Packet({ reviewIds: ['4192088400', 'comment-70'] }) });
   assert.deepStrictEqual(record.budgets.humanFix, { max: 5, spent: 0, remaining: 5 });
-  assert.strictEqual(lgtmState.claimFixRound({ ...input, now: 5000 }).reason, 'delivery-terminal');
+  assert.strictEqual(lgtmState.claimFixRound({ ...input, now: 5000, itemIds: [HUMAN_ITEM] }).reason, 'delivery-terminal');
+  assert.strictEqual(lgtmState.status(input).reconciliation.action, 'report-delivery');
   lgtmState.waiveFixBudget({ stateDir, pr: PR, person: 'someone', count: 1, human: true });
-  assert.strictEqual(lgtmState.claimFixRound({ ...input, now: 6000 }).claimed, true);
+  assert.strictEqual(lgtmState.status(input).reconciliation.action, 'verify-and-fix');
+  const claim = lgtmState.claimFixRound({ ...input, now: 6000, itemIds: [HUMAN_ITEM] });
+  assert.deepStrictEqual([claim.claimed, claim.kind], [true, 'human']);
+});
+
+test('a human fix-budget waiver leaves a bot-only claim delivery-terminal', () => {
+  const stateDir = temp();
+  const input = { stateDir, pr: PR, headSha: HEAD };
+  withActiveReview(stateDir);
+  lgtmState.recordDelivery({ ...input, now: 4000, packet: pr172Packet({ reviewIds: ['4192088400'] }) });
+  lgtmState.waiveFixBudget({ stateDir, pr: PR, person: 'someone', count: 1, human: true });
+  assert.strictEqual(lgtmState.claimFixRound({ ...input, now: 5000 }).reason, 'delivery-terminal');
+  assert.strictEqual(lgtmState.status(input).reconciliation.action, 'report-delivery');
+  assert.strictEqual(lgtmState.status(input).fixBudget.spent, 0);
 });
 
 test('a fix-budget waiver does not reopen review requests on a terminal delivery', () => {

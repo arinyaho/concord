@@ -328,7 +328,7 @@ test('owed replies of a finished round are posted on resume', () => {
   lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
   lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(obs)] });
   assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).owedReplies, []);
-  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, [itemOf(obs)]);
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, [{ itemId: itemOf(obs), headSha: HEAD }]);
   lgtmState.recordReply({ stateDir, pr: PR, itemId: itemOf(obs), record: { kind: 'comment', url: 'https://x/70', author: obs.findings[0].author, originalCommitId: null, disposition: 'minor', reason: 'renamed', replyUrl: 'https://x/r', fixCommit: H2 } });
   assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, []);
 });
@@ -338,7 +338,7 @@ test('an owed reply can be claimed and recorded, after which it leaves owedRepli
   const obs = humanObs('comment-70');
   lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
   lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(obs)] });
-  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, [itemOf(obs)]);
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, [{ itemId: itemOf(obs), headSha: HEAD }]);
   assert.deepStrictEqual(lgtmState.claimReply({ stateDir, pr: PR, itemId: itemOf(obs) }), { claimed: true });
   assert.strictEqual(lgtmState.recordReply({ stateDir, pr: PR, itemId: itemOf(obs), record: { kind: 'comment', url: 'https://x/70', author: obs.findings[0].author, originalCommitId: null, disposition: 'blocker', reason: 'fixed', replyUrl: 'https://x/r', fixCommit: H2 } }).recorded, true);
   const s = lgtmState.status({ stateDir, pr: PR, headSha: H2 });
@@ -487,6 +487,7 @@ test('claim-fix-round stdin that is not an object of item ids fails with a state
 
 test('the Approve prompt is sent once per reviewer and head', () => {
   const stateDir = temp();
+  lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice'], github: github() });
   assert.deepStrictEqual(lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: HEAD, reviewerId: 101 }), { claimed: true });
   assert.deepStrictEqual(lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: HEAD, reviewerId: 101 }), { claimed: false, reason: 'approve-prompt-sent' });
   assert.deepStrictEqual(lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: H2, reviewerId: 101 }), { claimed: true });
@@ -500,4 +501,112 @@ test('the Approve prompt needs a positive account id and writes nothing otherwis
   const { execFileSync } = require('node:child_process');
   assert.throws(() => execFileSync('node', [path.join(__dirname, '..', 'review-lgtm-state.js'), 'claim-approve-prompt', String(PR), HEAD, 'alice'], { encoding: 'utf8', stdio: 'pipe', env: { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir } }), (error) => /reviewerId must be a positive account id/.test(error.stderr));
   assert.deepStrictEqual(fs.readdirSync(stateDir), []);
+});
+
+test('a claim whose round reserved no slot owes no reply', () => {
+  const stateDir = temp();
+  const D = 'd'.repeat(40);
+  fs.writeFileSync(path.join(stateDir, `pr-${PR}-${D}.fix-round-claim.json`), JSON.stringify({ pr: PR, headSha: D, owner: 'o', itemIds: [ITEM], claimedAtMs: 1 }));
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, []);
+  fs.writeFileSync(path.join(stateDir, `pr-${PR}.human-fix-round-slot-1.json`), JSON.stringify({ pr: PR, headSha: D, owner: 'o', claimedAtMs: 1 }));
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, [{ itemId: ITEM, headSha: D }]);
+});
+
+test('the Approve prompt goes only to a selected person who is not gone', () => {
+  const stateDir = temp();
+  assert.deepStrictEqual(lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: HEAD, reviewerId: 101 }), { claimed: false, reason: 'not-selected' });
+  lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice', 'copilot-pull-request-reviewer'], github: github() });
+  const before = fs.readdirSync(stateDir).sort();
+  for (const reviewerId of [900, 202]) assert.deepStrictEqual(lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: HEAD, reviewerId }), { claimed: false, reason: 'not-selected' });
+  assert.deepStrictEqual(fs.readdirSync(stateDir).sort(), before);
+  lgtmState.selectReviewers({ stateDir, pr: PR, logins: null, github: github({ alice: null }) });
+  assert.deepStrictEqual(lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: HEAD, reviewerId: 101 }), { claimed: false, reason: 'not-selected' });
+});
+
+test('status lists the selected reviewers with their Approve prompt for the head', () => {
+  const stateDir = temp();
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reviewers, []);
+  lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice', 'copilot-pull-request-reviewer'], github: github() });
+  lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: HEAD, reviewerId: 101 });
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reviewers, [{ ...ACCOUNTS.alice, approvePrompted: true }, { login: 'copilot-pull-request-reviewer', id: 900, type: 'Bot', approvePrompted: false }]);
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).reviewers.map((r) => r.approvePrompted), [false, false]);
+  lgtmState.selectReviewers({ stateDir, pr: PR, logins: null, github: github({ alice: null }) });
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reviewers[0], { ...ACCOUNTS.alice, gone: true, approvePrompted: true });
+});
+
+test('a deleted author\'s item is claimed and recorded', () => {
+  const stateDir = temp();
+  const ghost = { login: 'ghost', id: null, type: 'User' };
+  assert.deepStrictEqual(lgtmState.claimReply({ stateDir, pr: PR, itemId: ITEM }), { claimed: true });
+  assert.deepStrictEqual(lgtmState.recordReply({ stateDir, pr: PR, itemId: ITEM, record: reply({ author: ghost }) }).feedback.author, ghost);
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).claimedReplies, []);
+});
+
+test('a fix commit is a full SHA of either length in any case and is stored lowercased', () => {
+  const stateDir = temp();
+  for (const [i, sha] of ['A'.repeat(40), 'b'.repeat(64), 'C'.repeat(64)].entries()) assert.strictEqual(lgtmState.recordReply({ stateDir, pr: PR, itemId: `F${i}@2026-11-01T00:00:00Z`, record: reply({ disposition: 'blocker', fixCommit: sha }) }).feedback.fixCommit, sha.toLowerCase());
+  for (const sha of ['a'.repeat(39), 'g'.repeat(40), 40]) assert.throws(() => lgtmState.recordReply({ stateDir, pr: PR, itemId: 'G@2026-11-01T00:00:00Z', record: reply({ disposition: 'blocker', fixCommit: sha }) }), /fixCommit/);
+});
+
+test('reply and answer URLs are non-empty bounded strings', () => {
+  const stateDir = temp();
+  for (const bad of [1, {}, ['x'], '', '   ', 'x'.repeat(501)]) {
+    assert.throws(() => lgtmState.recordReply({ stateDir, pr: PR, itemId: ITEM, record: reply({ replyUrl: bad }) }), /replyUrl/, JSON.stringify(bad));
+    assert.throws(() => lgtmState.recordReply({ stateDir, pr: PR, itemId: ITEM, record: reply({ disposition: 'author-answered', replyUrl: undefined, answerUrl: bad }) }), /answerUrl/, JSON.stringify(bad));
+  }
+  assert.deepStrictEqual(fs.readdirSync(stateDir).filter((name) => name.includes('feedback')), []);
+});
+
+test('a human minor is fixed in the head\'s round', () => {
+  const stateDir = temp();
+  const obs = humanObs('comment-70');
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
+  const claim = lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(obs)] });
+  assert.deepStrictEqual([claim.claimed, claim.kind, claim.budget.spent], [true, 'human', 1]);
+  const minor = { kind: 'comment', url: 'https://x/70', author: obs.findings[0].author, originalCommitId: null, disposition: 'minor', reason: 'renamed as asked', replyUrl: 'https://x/r' };
+  assert.throws(() => lgtmState.recordReply({ stateDir, pr: PR, itemId: itemOf(obs), record: minor }), /needs a fixCommit/);
+  assert.strictEqual(lgtmState.recordReply({ stateDir, pr: PR, itemId: itemOf(obs), record: { ...minor, fixCommit: H2 } }).feedback.fixCommit, H2);
+  const s = lgtmState.status({ stateDir, pr: PR, headSha: H2 });
+  assert.deepStrictEqual([s.minors, s.owedReplies, s.humanFixBudget.spent, s.fixBudget.spent], [[], [], 1, 0]);
+});
+
+const slots = (stateDir, human, count) => { for (let k = 1; k <= count; k += 1) fs.writeFileSync(path.join(stateDir, `pr-${PR}.${human ? 'human-' : ''}fix-round-slot-${k}.json`), JSON.stringify({ pr: PR, headSha: String(k).repeat(40), owner: 'o', claimedAtMs: k })); };
+
+test('the reconciliation picks the cap the claim would spend: an answered human item does not take the human cap', () => {
+  const stateDir = temp();
+  slots(stateDir, true, 5);
+  const obs = humanObs('comment-70');
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: botObs('900') });
+  assert.strictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reconciliation.requires, 'human decision: human fix-round budget exhausted');
+  lgtmState.recordReply({ stateDir, pr: PR, itemId: itemOf(obs), record: reply({ url: 'https://x/70', author: obs.findings[0].author }) });
+  assert.strictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reconciliation.action, 'verify-and-fix');
+  assert.strictEqual(lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD }).kind, 'bot');
+});
+
+test('the reconciliation reports the exhausted bot cap when the human items are answered', () => {
+  const stateDir = temp();
+  slots(stateDir, false, 3);
+  const obs = humanObs('comment-70');
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: botObs('900') });
+  assert.strictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reconciliation.action, 'verify-and-fix');
+  lgtmState.recordReply({ stateDir, pr: PR, itemId: itemOf(obs), record: reply({ url: 'https://x/70', author: obs.findings[0].author }) });
+  const { reconciliation } = lgtmState.status({ stateDir, pr: PR, headSha: HEAD });
+  assert.deepStrictEqual([reconciliation.action, reconciliation.requires], ['human-reconciliation', 'human decision: fix-round budget exhausted']);
+  assert.strictEqual(lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD }).reason, 'fix-round-budget-exhausted');
+});
+
+test('the CLI claims and records a reply and requires an item id for the reply verbs', () => {
+  const stateDir = temp();
+  const { execFileSync } = require('node:child_process');
+  const run = (args, input) => execFileSync('node', [path.join(__dirname, '..', 'review-lgtm-state.js'), ...args], { encoding: 'utf8', stdio: 'pipe', env: { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir }, input });
+  assert.deepStrictEqual(JSON.parse(run(['claim-reply', String(PR), ITEM])), { claimed: true });
+  assert.deepStrictEqual(JSON.parse(run(['claim-reply', String(PR), ITEM])), { claimed: false, reason: 'reply-claimed' });
+  const recorded = JSON.parse(run(['record-reply', String(PR), ITEM], JSON.stringify(reply())));
+  assert.deepStrictEqual([recorded.recorded, recorded.feedback.itemId, recorded.feedback.replyUrl], [true, ITEM, 'https://x/99']);
+  assert.deepStrictEqual(JSON.parse(run(['status', String(PR), HEAD])).claimedReplies, []);
+  for (const verb of ['claim-reply', 'record-reply', 'find-reply']) {
+    for (const args of [[String(PR)], [String(PR), 'not-an-item']]) assert.throws(() => run([verb, ...args], '{}'), (error) => /an item id is <node id>@<revision timestamp>/.test(error.stderr), `${verb} ${args.join(' ')}`);
+  }
 });

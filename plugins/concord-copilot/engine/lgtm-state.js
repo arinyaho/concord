@@ -377,13 +377,19 @@ function validReply(record) {
   const r = record || {};
   const { disposition } = r;
   if (!REPLY_DISPOSITIONS.includes(disposition)) throw new Error(`review-lgtm-state: a reply disposition is one of ${REPLY_DISPOSITIONS.join(', ')}`);
-  if (!text(r.kind) || !text(r.url) || !r.author || !text(r.author.login) || !Number.isSafeInteger(r.author.id) || !text(r.author.type)) throw new Error('review-lgtm-state: a handled reply needs kind, url and the author login, id and type');
+  // A deleted account's item carries the collector's ghost author, whose id is null.
+  if (!text(r.kind) || !text(r.url) || !r.author || !text(r.author.login) || !(r.author.id === null || Number.isSafeInteger(r.author.id)) || !text(r.author.type)) throw new Error('review-lgtm-state: a handled reply needs kind, url and the author login, id and type');
   if (typeof r.reason !== 'string' || r.reason.trim().length < 1 || r.reason.length > 500) throw new Error('review-lgtm-state: a handled reply needs a reason of 1 to 500 characters');
-  if (REPLY_URL_DISPOSITIONS.includes(disposition) !== !!r.replyUrl) throw new Error(`review-lgtm-state: ${disposition} ${REPLY_URL_DISPOSITIONS.includes(disposition) ? 'needs a replyUrl' : 'takes no replyUrl'}`);
-  if ((disposition === 'author-answered') !== !!r.answerUrl) throw new Error(`review-lgtm-state: ${disposition} ${disposition === 'author-answered' ? 'needs an answerUrl' : 'takes no answerUrl'}`);
-  if ((disposition === 'blocker' || (disposition === 'minor' && r.author.type === 'User')) !== !!r.fixCommit) throw new Error(`review-lgtm-state: ${disposition} ${r.fixCommit ? 'takes no fixCommit' : 'needs a fixCommit'}`);
-  if (r.fixCommit && !/^[0-9a-f]{40}$/.test(r.fixCommit)) throw new Error('review-lgtm-state: fixCommit is a full commit SHA');
-  return { kind: r.kind, url: r.url, author: { login: r.author.login, id: r.author.id, type: r.author.type }, originalCommitId: r.originalCommitId ?? null, disposition, reason: r.reason, ...(r.replyUrl ? { replyUrl: r.replyUrl } : {}), ...(r.answerUrl ? { answerUrl: r.answerUrl } : {}), ...(r.fixCommit ? { fixCommit: r.fixCommit } : {}) };
+  const link = (name, needed) => {
+    if (needed !== (r[name] != null)) throw new Error(`review-lgtm-state: ${disposition} ${needed ? `needs ${name === 'answerUrl' ? 'an' : 'a'} ${name}` : `takes no ${name}`}`);
+    if (needed && (!text(r[name]) || r[name].length > 500)) throw new Error(`review-lgtm-state: ${name} must be a non-empty string of at most 500 characters`);
+    return needed ? { [name]: text(r[name]) } : {};
+  };
+  const replyUrl = link('replyUrl', REPLY_URL_DISPOSITIONS.includes(disposition));
+  const answerUrl = link('answerUrl', disposition === 'author-answered');
+  if ((disposition === 'blocker' || (disposition === 'minor' && r.author.type === 'User')) !== (r.fixCommit != null)) throw new Error(`review-lgtm-state: ${disposition} ${r.fixCommit != null ? 'takes no fixCommit' : 'needs a fixCommit'}`);
+  if (r.fixCommit != null && (typeof r.fixCommit !== 'string' || !FULL_SHA.test(r.fixCommit))) throw new Error('review-lgtm-state: fixCommit is a full commit SHA');
+  return { kind: r.kind, url: r.url, author: { login: r.author.login, id: r.author.id, type: r.author.type }, originalCommitId: r.originalCommitId ?? null, disposition, reason: r.reason, ...replyUrl, ...answerUrl, ...(r.fixCommit != null ? { fixCommit: r.fixCommit.toLowerCase() } : {}) };
 }
 
 // Write-once per item revision: the handled record is what the next collection reads as answered.
@@ -398,10 +404,13 @@ function recordReply({ stateDir, pr, itemId, record, now = Date.now() }) {
   }, { recorded: false, reason: 'transition-busy' });
 }
 
-// The comment-only LGTM Approve prompt is sent at most once per reviewer and head.
+const approvePromptFile = ({ stateDir, pr, headSha }, reviewerId) => path.join(stateDir, `pr-${pr}-${headSha}.approve-prompt-${accountFileKey(reviewerId)}.json`);
+
+// The comment-only LGTM Approve prompt is sent at most once per reviewer and head, and only to a selected person.
 function claimApprovePrompt({ stateDir, pr, headSha, reviewerId, now = Date.now() }) {
   const key = validate({ pr, headSha });
-  const file = path.join(stateDir, `pr-${key.pr}-${key.headSha}.approve-prompt-${accountFileKey(reviewerId)}.json`);
+  const file = approvePromptFile({ stateDir, ...key }, reviewerId);
+  if (!(latestSelection({ stateDir, pr: key.pr })?.reviewers || []).some((reviewer) => reviewer.id === reviewerId && reviewer.type === 'User' && !reviewer.gone)) return { claimed: false, reason: 'not-selected' };
   return writeExclusive(file, { ...key, reviewerId, claimedAtMs: now }) ? { claimed: true } : { claimed: false, reason: 'approve-prompt-sent' };
 }
 
@@ -412,12 +421,18 @@ function claimedReplies({ stateDir, pr }) {
 }
 
 // Items a fix round of an earlier head took and no handled record answers yet: the round finished and its replies are owed.
+// Only a claim whose round reserved a slot owes replies; each names the head the round was claimed on, which the fix commit was pushed on top of.
 function owedReplies({ stateDir, pr, headSha }) {
   const n = Number(pr);
   const { feedback } = answeredParts({ stateDir, pr: n });
-  const taken = prFileNames(stateDir, (name) => name.startsWith(`pr-${n}-`) && name.endsWith('.fix-round-claim.json') && name !== `pr-${n}-${headSha}.fix-round-claim.json`)
-    .flatMap((file) => { const marker = readMarker(file); return marker && Array.isArray(marker.itemIds) ? marker.itemIds : []; });
-  return [...new Set(taken)].filter((id) => !feedback.includes(id)).sort();
+  const slotHeads = new Set(prFileNames(stateDir, (name) => new RegExp(`^pr-${n}\\.(?:human-)?fix-round-slot-\\d+\\.json$`).test(name)).map((file) => readMarker(file)?.headSha));
+  const owed = new Map();
+  for (const file of prFileNames(stateDir, (name) => name.startsWith(`pr-${n}-`) && name.endsWith('.fix-round-claim.json') && name !== `pr-${n}-${headSha}.fix-round-claim.json`)) {
+    const marker = readMarker(file);
+    if (!marker || !Array.isArray(marker.itemIds) || !slotHeads.has(marker.headSha)) continue;
+    for (const itemId of marker.itemIds) if (!feedback.includes(itemId) && !owed.has(itemId)) owed.set(itemId, { itemId, headSha: marker.headSha });
+  }
+  return [...owed.values()].sort((a, b) => a.itemId.localeCompare(b.itemId));
 }
 
 function readMarker(file) {
@@ -507,7 +522,10 @@ function compareReviewIds(a, b) {
 function reconciliationPacket({ stateDir, pr, headSha }) {
   const records = activeReviewRecords({ stateDir, pr, headSha })
     .sort((a, b) => a.recordedAtMs - b.recordedAtMs || compareReviewIds(a.reviewId, b.reviewId));
-  const delivered = !fixRoundForHead({ stateDir, pr, headSha }) && deliveryTerminal({ stateDir, pr, headSha }, { fixCap: true });
+  // The cap is chosen as claimFixRound chooses it: an unanswered item from a person takes the human cap.
+  const answered = answeredItemIds({ stateDir, pr });
+  const human = records.some((record) => record.findings.some((finding) => finding.author?.type === 'User' && !answered.has(finding.itemId)));
+  const delivered = !fixRoundForHead({ stateDir, pr, headSha }) && deliveryTerminal({ stateDir, pr, headSha }, { fixCap: human ? 'human' : 'bot' });
   if (delivered) return { pr, headSha, reviews: records.map((record) => ({ id: record.reviewId, reviewer: record.reviewer || 'legacy/unknown', url: record.reviewUrl, findings: record.findings })), batchCount: records.length, classification: 'delivery-terminal', action: 'report-delivery', humanRequired: false, requires: `report the recorded ${delivered.classification} delivery disposition` };
   if (records.length === 0) return null;
   const reviews = records.map((record) => ({ id: record.reviewId, reviewer: record.reviewer || 'legacy/unknown', url: record.reviewUrl, findings: record.findings }));
@@ -519,7 +537,6 @@ function reconciliationPacket({ stateDir, pr, headSha }) {
   const classification = (p1Count > 0 || botRecords + (records.some((record) => record.reviewerType === 'User') ? 1 : 0) >= 2 || signals.length > 0) ? 'requires-architecture-review' : 'light-implementation-eligible';
   const claimed = !!fixRoundForHead({ stateDir, pr, headSha });
   const abandoned = !claimed && !!readMarker(markerPath({ stateDir, pr, headSha }, 'fix-round-claim'));
-  const human = findings.some((finding) => finding.author?.type === 'User');
   const exhausted = !claimed && fixBudget({ stateDir, pr }, human).remaining === 0;
   const humanRequired = abandoned || exhausted;
   const action = claimed ? 'complete-claimed-fix-round' : humanRequired ? 'human-reconciliation' : 'verify-and-fix';
@@ -594,7 +611,7 @@ function status(input) {
     }
   }
   const deadlines = [window, retryWindow].filter(Boolean).map((marker) => marker.deadlineMs);
-  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), waivers: fixWaivers({ stateDir, pr: key.pr }), humanFixBudget: humanFixBudget({ stateDir, pr: key.pr }), humanWaivers: fixWaivers({ stateDir, pr: key.pr }, true), minors: collectedMinors({ stateDir, pr: key.pr }), claimedReplies: claimedReplies({ stateDir, pr: key.pr }), owedReplies: owedReplies({ stateDir, ...key }), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested, reconciliation: reconciliationPacket({ stateDir, ...key }), delivery: deliveryStatus({ stateDir, ...key }) };
+  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), waivers: fixWaivers({ stateDir, pr: key.pr }), humanFixBudget: humanFixBudget({ stateDir, pr: key.pr }), humanWaivers: fixWaivers({ stateDir, pr: key.pr }, true), minors: collectedMinors({ stateDir, pr: key.pr }), claimedReplies: claimedReplies({ stateDir, pr: key.pr }), owedReplies: owedReplies({ stateDir, ...key }), reviewers: (latestSelection({ stateDir, pr: key.pr })?.reviewers || []).map(({ login, id, type, gone }) => ({ login, id, type, ...(gone ? { gone: true } : {}), approvePrompted: !!readMarker(approvePromptFile({ stateDir, ...key }, id)) })), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested, reconciliation: reconciliationPacket({ stateDir, ...key }), delivery: deliveryStatus({ stateDir, ...key }) };
 }
 
 function claimFixRound(input) {
@@ -606,11 +623,12 @@ function claimFixRound(input) {
   if (!Array.isArray(itemIds) || itemIds.some((id) => typeof id !== 'string')) throw new Error('review-lgtm-state: itemIds must be an array of item ids');
   const ids = [...new Set(itemIds)];
   return withTransitionLock({ stateDir, pr: key.pr }, () => {
-    const terminal = deliveryTerminal({ stateDir, ...key }, { fixCap: true });
-    if (terminal) return terminal;
     const records = activeReviewRecords({ stateDir, ...key });
-    if (records.length === 0) return { claimed: false, reason: 'no-findings' };
     const findings = new Map(records.flatMap((record) => record.findings).filter((finding) => finding.itemId !== undefined).map((finding) => [finding.itemId, finding]));
+    const human = ids.some((id) => findings.get(id)?.author?.type === 'User');
+    const terminal = deliveryTerminal({ stateDir, ...key }, { fixCap: human ? 'human' : 'bot' });
+    if (terminal) return terminal;
+    if (records.length === 0) return { claimed: false, reason: 'no-findings' };
     if (ids.some((id) => !findings.has(id))) throw new Error('review-lgtm-state: itemIds must belong to the head\'s active findings');
     const slot = fixRoundForHead({ stateDir, ...key });
     if (slot) {
@@ -621,7 +639,6 @@ function claimFixRound(input) {
     // Without item ids a batch of unanswered feedback items would claim a bot slot and leave the human cap unspent.
     const answered = answeredItemIds({ stateDir, pr: key.pr });
     if (ids.length === 0 && [...findings.keys()].some((id) => !answered.has(id))) throw new Error('review-lgtm-state: itemIds are required when the head\'s batch holds feedback items');
-    const human = ids.some((id) => findings.get(id).author?.type === 'User');
     const kind = human ? 'human' : 'bot';
     const exhausted = human ? 'human-fix-round-budget-exhausted' : 'fix-round-budget-exhausted';
     const budget = fixBudget({ stateDir, pr: key.pr }, human);
@@ -903,12 +920,12 @@ function deliveryCurrent(input, record) {
   return deliveryBatchCurrent(input, record) && JSON.stringify(record.minorIds) === JSON.stringify(collectedMinorIds(input));
 }
 
-// A fix claim also finds the delivery stale when a waiver changed the fix cap the record was written under;
-// review-request claims depend on the review batch alone.
-function deliveryTerminal(input, { fixCap = false } = {}) {
+// A fix claim also finds the delivery stale when a waiver changed the cap it would spend (`fixCap` 'bot' or 'human')
+// since the record was written; review-request claims depend on the review batch alone.
+function deliveryTerminal(input, { fixCap = null } = {}) {
   const latest = latestDelivery(input);
   if (!latest || latest.classification === 'blocked' || !deliveryBatchCurrent(input, latest)) return null;
-  if (fixCap && (latest.budgets?.fix?.max !== fixBudget(input).max || latest.budgets?.humanFix?.max !== humanFixBudget(input).max)) return null;
+  if (fixCap && latest.budgets?.[fixCap === 'human' ? 'humanFix' : 'fix']?.max !== fixBudget(input, fixCap === 'human').max) return null;
   return { claimed: false, reason: 'delivery-terminal', classification: latest.classification };
 }
 
@@ -1111,7 +1128,7 @@ function runMain(repoRoot = process.cwd()) {
   else if (verb === 'claim-reply') process.stdout.write(`${JSON.stringify(claimReply({ stateDir, pr, itemId: headSha }))}\n`);
   else if (verb === 'record-reply') process.stdout.write(`${JSON.stringify(recordReply({ stateDir, pr, itemId: headSha, record: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'claim-approve-prompt') process.stdout.write(`${JSON.stringify(claimApprovePrompt({ stateDir, pr, headSha, reviewerId: Number(argument) }))}\n`);
-  else if (verb === 'find-reply') collector.findReply({ pr, graphql: collector.ghGraphql(repoRoot), itemId: headSha }).then((result) => process.stdout.write(`${JSON.stringify(result)}\n`), fail);
+  else if (verb === 'find-reply') collector.findReply({ pr: prNumber(pr), itemId: validItem(headSha), graphql: collector.ghGraphql(repoRoot) }).then((result) => process.stdout.write(`${JSON.stringify(result)}\n`), fail);
   else if (verb === 'merge-ready') process.stdout.write(`${JSON.stringify(mergeReady({ stateDir, pr, headSha, evidence: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'self-feeding') { const [start, end] = process.argv.slice(6); process.stdout.write(`${JSON.stringify(selfFeeding({ repoRoot: worktreeRoot(repoRoot), stateDir, pr, headSha, file: argument, start: Number(start), end: Number(end === undefined ? start : end) }))}\n`); }
   else if (verb === 'record-review') process.stdout.write(`${JSON.stringify(recordReview({ stateDir, pr, headSha, observation: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
