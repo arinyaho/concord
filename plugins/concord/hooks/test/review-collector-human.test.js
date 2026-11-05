@@ -208,7 +208,8 @@ test('items in the answered set are not collected again', async () => {
   lgtmState.recordReply({ stateDir, pr: 7, itemId: at(76), record: { kind: 'comment', url: 'https://x/76', author: { login: 'bob', id: 202, type: 'User' }, originalCommitId: null, disposition: 'no-action', reason: 'nothing to do' } });
   fs.writeFileSync(path.join(stateDir, `pr-7.fix-round-slot-1.json`), JSON.stringify({ pr: 7, headSha: 'd'.repeat(40), owner: 'o', claimedAtMs: 1 }));
   fs.writeFileSync(path.join(stateDir, `pr-7-${'d'.repeat(40)}.fix-round-claim.json`), JSON.stringify({ headSha: 'd'.repeat(40), itemIds: [at(77)] }));
-  const packet = await collect(data, { answered: lgtmState.answeredItemIds({ stateDir, pr: 7 }) });
+  lgtmState.markFixPushed({ stateDir, pr: 7, headSha: 'd'.repeat(40), fixCommit: f.HEAD, owner: 'o' });
+  const packet = await collect(data, { answered: lgtmState.answeredItemIds({ stateDir, pr: 7, headSha: f.HEAD }) });
   assert.deepStrictEqual(packet.observations.flatMap((o) => o.findings.map((x) => x.itemId)), [at(78)]);
   assert.deepStrictEqual(packet.authorAnswered, []);
 });

@@ -262,11 +262,14 @@ test('an edited item is answered again once', () => {
   assert.deepStrictEqual(lgtmState.claimReply({ stateDir, pr: PR, itemId: 'IC_75@2026-11-03T00:00:00Z' }), { claimed: true });
 });
 
-test('the answered set also reads the itemIds of a fix-round claim of any head that reserved a slot', () => {
+test('the answered set reads the itemIds of the head\'s own slotted round and of a pushed round on any head', () => {
   const stateDir = temp();
-  fs.writeFileSync(path.join(stateDir, `pr-${PR}.fix-round-slot-1.json`), JSON.stringify({ pr: PR, headSha: 'd'.repeat(40), owner: 'o', claimedAtMs: 1 }));
-  fs.writeFileSync(path.join(stateDir, `pr-${PR}-${'d'.repeat(40)}.fix-round-claim.json`), JSON.stringify({ pr: PR, headSha: 'd'.repeat(40), itemIds: [ITEM] }));
-  assert.ok(lgtmState.answeredItemIds({ stateDir, pr: PR }).has(ITEM));
+  const D = 'd'.repeat(40);
+  fs.writeFileSync(path.join(stateDir, `pr-${PR}.fix-round-slot-1.json`), JSON.stringify({ pr: PR, headSha: D, owner: 'o', claimedAtMs: 1 }));
+  fs.writeFileSync(path.join(stateDir, `pr-${PR}-${D}.fix-round-claim.json`), JSON.stringify({ pr: PR, headSha: D, itemIds: [ITEM] }));
+  assert.deepStrictEqual([D, D.toUpperCase(), H2].map((headSha) => lgtmState.answeredItemIds({ stateDir, pr: PR, headSha }).has(ITEM)), [true, true, false]);
+  lgtmState.markFixPushed({ stateDir, pr: PR, headSha: D, fixCommit: H2, owner: 'o' });
+  assert.ok(lgtmState.answeredItemIds({ stateDir, pr: PR, headSha: H2 }).has(ITEM));
   assert.deepStrictEqual(lgtmState.claimReply({ stateDir, pr: PR, itemId: ITEM }), { claimed: true });
 });
 
@@ -318,9 +321,10 @@ test('an item taken by a fix round does not return in the next head\'s batch', a
   const first = await collector.collect({ pr: PR, head: f.HEAD, graphql: f.graphqlOf(f.response({ comments })), answered: lgtmState.answeredItemIds({ stateDir, pr: PR }) });
   const [obs] = first.observations;
   lgtmState.recordReview({ stateDir, pr: PR, headSha: f.HEAD, observation: obs });
-  lgtmState.claimFixRound({ stateDir, pr: PR, headSha: f.HEAD, itemIds: [itemOf(obs)] });
-  assert.ok(lgtmState.answeredItemIds({ stateDir, pr: PR }).has(itemOf(obs)));
-  const next = await collector.collect({ pr: PR, head: f.H1, graphql: f.graphqlOf(f.response({ head: f.H1, comments })), answered: lgtmState.answeredItemIds({ stateDir, pr: PR }) });
+  const { owner } = lgtmState.claimFixRound({ stateDir, pr: PR, headSha: f.HEAD, itemIds: [itemOf(obs)] });
+  assert.ok(lgtmState.answeredItemIds({ stateDir, pr: PR, headSha: f.HEAD }).has(itemOf(obs)));
+  lgtmState.markFixPushed({ stateDir, pr: PR, headSha: f.HEAD, fixCommit: f.H1, owner });
+  const next = await collector.collect({ pr: PR, head: f.H1, graphql: f.graphqlOf(f.response({ head: f.H1, comments })), answered: lgtmState.answeredItemIds({ stateDir, pr: PR, headSha: f.H1 }) });
   assert.deepStrictEqual(next.observations.filter((o) => o.findings.some((x) => x.itemId === itemOf(obs))), []);
 });
 
@@ -328,9 +332,10 @@ test('owed replies of a finished round are posted on resume', () => {
   const stateDir = temp();
   const obs = humanObs('comment-70');
   lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
-  lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(obs)] });
-  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).owedReplies, []);
-  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, [{ itemId: itemOf(obs), headSha: HEAD }]);
+  const { owner } = lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(obs)] });
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, []);
+  assert.deepStrictEqual(lgtmState.markFixPushed({ stateDir, pr: PR, headSha: HEAD, fixCommit: H2.toUpperCase(), owner, now: 9 }), { marked: true, pushed: { pr: PR, headSha: HEAD, fixCommit: H2, owner, pushedAtMs: 9 } });
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, [{ itemId: itemOf(obs), headSha: HEAD, fixCommit: H2 }]);
   lgtmState.recordReply({ stateDir, pr: PR, itemId: itemOf(obs), record: { kind: 'comment', url: 'https://x/70', author: obs.findings[0].author, originalCommitId: null, disposition: 'minor', reason: 'renamed', replyUrl: 'https://x/r', fixCommit: H2 } });
   assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, []);
 });
@@ -339,13 +344,51 @@ test('an owed reply can be claimed and recorded, after which it leaves owedRepli
   const stateDir = temp();
   const obs = humanObs('comment-70');
   lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
-  lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(obs)] });
-  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, [{ itemId: itemOf(obs), headSha: HEAD }]);
+  const { owner } = lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(obs)] });
+  lgtmState.markFixPushed({ stateDir, pr: PR, headSha: HEAD, fixCommit: H2, owner });
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, [{ itemId: itemOf(obs), headSha: HEAD, fixCommit: H2 }]);
   assert.deepStrictEqual(lgtmState.claimReply({ stateDir, pr: PR, itemId: itemOf(obs) }), { claimed: true });
   assert.strictEqual(lgtmState.recordReply({ stateDir, pr: PR, itemId: itemOf(obs), record: { kind: 'comment', url: 'https://x/70', author: obs.findings[0].author, originalCommitId: null, disposition: 'blocker', reason: 'fixed', replyUrl: 'https://x/r', fixCommit: H2 } }).recorded, true);
   const s = lgtmState.status({ stateDir, pr: PR, headSha: H2 });
   assert.deepStrictEqual([s.owedReplies, s.claimedReplies], [[], []]);
   assert.deepStrictEqual(lgtmState.claimReply({ stateDir, pr: PR, itemId: itemOf(obs) }), { claimed: false, reason: 'answered' });
+});
+
+test('an unpushed fix round on an earlier head returns its items to the batch and owes nothing', () => {
+  const stateDir = temp();
+  const obs = humanObs('comment-70');
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
+  lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(obs)] });
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reconciliation.unansweredItemIds, []);
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: H2, observation: { ...obs, commitId: H2 } });
+  const s = lgtmState.status({ stateDir, pr: PR, headSha: H2 });
+  assert.deepStrictEqual([s.reconciliation.unansweredItemIds, s.owedReplies], [[itemOf(obs)], []]);
+});
+
+test('a pushed fix round owes its replies with the fix commit and keeps its items out of the next batch', () => {
+  const stateDir = temp();
+  const { execFileSync } = require('node:child_process');
+  const obs = humanObs('comment-70');
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
+  const { owner } = lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(obs)] });
+  const marked = JSON.parse(execFileSync('node', [path.join(__dirname, '..', 'review-lgtm-state.js'), 'mark-fix-pushed', String(PR), HEAD, H2, owner], { encoding: 'utf8', env: { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir } }));
+  assert.deepStrictEqual([marked.marked, marked.pushed.fixCommit, marked.pushed.owner], [true, H2, owner]);
+  assert.strictEqual(lgtmState.markFixPushed({ stateDir, pr: PR, headSha: HEAD, fixCommit: H2, owner }).existing, true);
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: H2, observation: { ...obs, commitId: H2 } });
+  const s = lgtmState.status({ stateDir, pr: PR, headSha: H2 });
+  assert.deepStrictEqual([s.reconciliation.unansweredItemIds, s.owedReplies], [[], [{ itemId: itemOf(obs), headSha: HEAD, fixCommit: H2 }]]);
+});
+
+test('mark-fix-pushed refuses a non-owner and a malformed fix commit and writes no marker', () => {
+  const stateDir = temp();
+  const obs = humanObs('comment-70');
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
+  lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, owner: 'w', itemIds: [itemOf(obs)] });
+  assert.deepStrictEqual(lgtmState.markFixPushed({ stateDir, pr: PR, headSha: HEAD, fixCommit: H2, owner: 'other' }), { marked: false, reason: 'owner-mismatch' });
+  for (const fixCommit of ['e'.repeat(39), undefined]) assert.throws(() => lgtmState.markFixPushed({ stateDir, pr: PR, headSha: HEAD, fixCommit, owner: 'w' }), /fixCommit is a full commit SHA/);
+  assert.throws(() => lgtmState.markFixPushed({ stateDir, pr: PR, headSha: HEAD, fixCommit: H2 }), /requires its claim owner/);
+  assert.deepStrictEqual(fs.readdirSync(stateDir).filter((name) => name.includes('fix-round-pushed')), []);
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, []);
 });
 
 test('an exhausted human cap stops for reconciliation', () => {
@@ -597,8 +640,10 @@ test('a claim whose round reserved no slot owes no reply', () => {
   const D = 'd'.repeat(40);
   fs.writeFileSync(path.join(stateDir, `pr-${PR}-${D}.fix-round-claim.json`), JSON.stringify({ pr: PR, headSha: D, owner: 'o', itemIds: [ITEM], claimedAtMs: 1 }));
   assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, []);
+  assert.deepStrictEqual(lgtmState.markFixPushed({ stateDir, pr: PR, headSha: D, fixCommit: H2, owner: 'o' }), { marked: false, reason: 'no-fix-round' });
   fs.writeFileSync(path.join(stateDir, `pr-${PR}.human-fix-round-slot-1.json`), JSON.stringify({ pr: PR, headSha: D, owner: 'o', claimedAtMs: 1 }));
-  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, [{ itemId: ITEM, headSha: D }]);
+  lgtmState.markFixPushed({ stateDir, pr: PR, headSha: D, fixCommit: H2, owner: 'o' });
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, [{ itemId: ITEM, headSha: D, fixCommit: H2 }]);
 });
 
 test('the Approve prompt goes only to a selected person who is not gone', () => {

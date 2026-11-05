@@ -356,15 +356,20 @@ function slotHeads({ stateDir, pr }) {
   return new Set(prFileNames(stateDir, (name) => new RegExp(`^pr-${n}\\.(?:human-)?fix-round-slot-\\d+\\.json$`).test(name)).map((file) => readMarker(file)?.headSha));
 }
 
-// An item is answered once it has a handled record, a reply claim (a session is replying) or a place in the itemIds of a fix round that reserved a slot (any head).
-function answeredParts({ stateDir, pr }) {
+const pushedFile = ({ stateDir, pr, headSha }) => path.join(stateDir, `pr-${pr}-${headSha}.fix-round-pushed.json`);
+
+// An item is answered on a head once it has a handled record, a reply claim (a session is replying) or a place in the itemIds of a fix-round claim
+// that is the head's own slotted round, or of any head whose round pushed its fix: an unpushed round on an earlier head fixed nothing.
+function answeredParts({ stateDir, pr, headSha = null }) {
   const n = Number(pr);
   const ids = (test, pick) => prFileNames(stateDir, test).flatMap((file) => pick(readMarker(file)) || []);
   const slotted = slotHeads({ stateDir, pr: n });
+  const head = headSha && String(headSha).toLowerCase();
+  const counts = (claim) => (claim.headSha === head && slotted.has(claim.headSha)) || !!readMarker(pushedFile({ stateDir, pr: n, headSha: claim.headSha }));
   return {
     feedback: ids((name) => name.startsWith(`pr-${n}.feedback-`) && name.endsWith('.json'), (marker) => marker && marker.itemId),
     claims: ids((name) => name.startsWith(`pr-${n}.reply-`) && name.endsWith('-claim.json'), (marker) => marker && marker.itemId),
-    fixed: ids((name) => name.startsWith(`pr-${n}-`) && name.endsWith('.fix-round-claim.json'), (marker) => marker && Array.isArray(marker.itemIds) && slotted.has(marker.headSha) && marker.itemIds),
+    fixed: ids((name) => name.startsWith(`pr-${n}-`) && name.endsWith('.fix-round-claim.json'), (marker) => marker && Array.isArray(marker.itemIds) && typeof marker.headSha === 'string' && counts(marker) && marker.itemIds),
   };
 }
 
@@ -427,19 +432,33 @@ function claimedReplies({ stateDir, pr }) {
   return [...new Set(claims)].filter((id) => !feedback.includes(id)).sort();
 }
 
-// Items a fix round of an earlier head took and no handled record answers yet: the round finished and its replies are owed.
-// Only a claim whose round reserved a slot owes replies; each names the head the round was claimed on, which the fix commit was pushed on top of.
-function owedReplies({ stateDir, pr, headSha }) {
+// Items of a fix round that pushed its fix and that no handled record answers yet: each reply is owed and names the pushed fix commit.
+function owedReplies({ stateDir, pr }) {
   const n = Number(pr);
   const { feedback } = answeredParts({ stateDir, pr: n });
-  const slotted = slotHeads({ stateDir, pr: n });
   const owed = new Map();
-  for (const file of prFileNames(stateDir, (name) => name.startsWith(`pr-${n}-`) && name.endsWith('.fix-round-claim.json') && name !== `pr-${n}-${headSha}.fix-round-claim.json`)) {
-    const marker = readMarker(file);
-    if (!marker || !Array.isArray(marker.itemIds) || !slotted.has(marker.headSha)) continue;
-    for (const itemId of marker.itemIds) if (!feedback.includes(itemId) && !owed.has(itemId)) owed.set(itemId, { itemId, headSha: marker.headSha });
+  for (const file of prFileNames(stateDir, (name) => name.startsWith(`pr-${n}-`) && name.endsWith('.fix-round-pushed.json'))) {
+    const pushed = readMarker(file);
+    const claim = pushed && FULL_SHA.test(String(pushed.headSha)) ? readMarker(markerPath({ stateDir, pr: n, headSha: pushed.headSha }, 'fix-round-claim')) : null;
+    if (!claim || !Array.isArray(claim.itemIds)) continue;
+    for (const itemId of claim.itemIds) if (!feedback.includes(itemId) && !owed.has(itemId)) owed.set(itemId, { itemId, headSha: pushed.headSha, fixCommit: pushed.fixCommit });
   }
   return [...owed.values()].sort((a, b) => a.itemId.localeCompare(b.itemId));
+}
+
+// Written once the round's certified commit is pushed: from then on its items are answered on every head and their replies are owed.
+function markFixPushed({ stateDir, pr, headSha, fixCommit, owner, now = Date.now() }) {
+  const key = validate({ pr, headSha });
+  if (typeof fixCommit !== 'string' || !FULL_SHA.test(fixCommit)) throw new Error('review-lgtm-state: fixCommit is a full commit SHA');
+  if (typeof owner !== 'string' || !owner) throw new Error('review-lgtm-state: mark-fix-pushed requires its claim owner');
+  return withTransitionLock({ stateDir, pr: key.pr }, () => {
+    const slot = fixRoundForHead({ stateDir, ...key });
+    if (!slot) return { marked: false, reason: 'no-fix-round' };
+    if (latestFixOwnership({ stateDir, ...key }, slot).owner !== owner) return { marked: false, reason: 'owner-mismatch' };
+    const file = pushedFile({ stateDir, ...key });
+    const created = writeExclusive(file, { ...key, fixCommit: fixCommit.toLowerCase(), owner, pushedAtMs: now });
+    return { marked: true, ...(created ? {} : { existing: true }), pushed: readMarker(file) };
+  }, { marked: false, reason: 'transition-busy' });
 }
 
 function readMarker(file) {
@@ -538,7 +557,7 @@ function reconciliationPacket({ stateDir, pr, headSha }) {
   const records = activeReviewRecords({ stateDir, pr, headSha })
     .sort((a, b) => a.recordedAtMs - b.recordedAtMs || compareReviewIds(a.reviewId, b.reviewId));
   // The cap is chosen as claimFixRound chooses it: the claim lists exactly the unanswered items, and one from a person takes the human cap.
-  const unanswered = unansweredFindings(records, answeredItemIds({ stateDir, pr }));
+  const unanswered = unansweredFindings(records, answeredItemIds({ stateDir, pr, headSha }));
   const human = unanswered.some((finding) => finding.author?.type === 'User');
   const delivered = !fixRoundForHead({ stateDir, pr, headSha }) && deliveryTerminal({ stateDir, pr, headSha }, { fixCap: human ? 'human' : 'bot' });
   if (delivered) return { pr, headSha, reviews: records.map((record) => ({ id: record.reviewId, reviewer: record.reviewer || 'legacy/unknown', url: record.reviewUrl, findings: record.findings })), batchCount: records.length, classification: 'delivery-terminal', action: 'report-delivery', humanRequired: false, requires: `report the recorded ${delivered.classification} delivery disposition` };
@@ -627,7 +646,7 @@ function status(input) {
     }
   }
   const deadlines = [window, retryWindow].filter(Boolean).map((marker) => marker.deadlineMs);
-  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), waivers: fixWaivers({ stateDir, pr: key.pr }), humanFixBudget: humanFixBudget({ stateDir, pr: key.pr }), humanWaivers: fixWaivers({ stateDir, pr: key.pr }, true), minors: collectedMinors({ stateDir, pr: key.pr }), claimedReplies: claimedReplies({ stateDir, pr: key.pr }), owedReplies: owedReplies({ stateDir, ...key }), reviewers: (latestSelection({ stateDir, pr: key.pr })?.reviewers || []).map(({ login, id, type, gone }) => ({ login, id, type, ...(gone ? { gone: true } : {}), approvePrompted: !!readMarker(approvePromptFile({ stateDir, ...key }, id)) })), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested, reconciliation: reconciliationPacket({ stateDir, ...key }), delivery: deliveryStatus({ stateDir, ...key }) };
+  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), waivers: fixWaivers({ stateDir, pr: key.pr }), humanFixBudget: humanFixBudget({ stateDir, pr: key.pr }), humanWaivers: fixWaivers({ stateDir, pr: key.pr }, true), minors: collectedMinors({ stateDir, pr: key.pr }), claimedReplies: claimedReplies({ stateDir, pr: key.pr }), owedReplies: owedReplies({ stateDir, pr: key.pr }), reviewers: (latestSelection({ stateDir, pr: key.pr })?.reviewers || []).map(({ login, id, type, gone }) => ({ login, id, type, ...(gone ? { gone: true } : {}), approvePrompted: !!readMarker(approvePromptFile({ stateDir, ...key }, id)) })), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested, reconciliation: reconciliationPacket({ stateDir, ...key }), delivery: deliveryStatus({ stateDir, ...key }) };
 }
 
 function claimFixRound(input) {
@@ -653,7 +672,7 @@ function claimFixRound(input) {
     if (terminal) return terminal;
     if (records.length === 0) return { claimed: false, reason: 'no-findings' };
     // The round takes every unanswered item, so its cap is the one reconciliationPacket reports and no item is left without a round or a reply.
-    const unanswered = unansweredFindings(records, answeredItemIds({ stateDir, pr: key.pr })).map((finding) => finding.itemId).sort();
+    const unanswered = unansweredFindings(records, answeredItemIds({ stateDir, ...key })).map((finding) => finding.itemId).sort();
     if (ids.length !== unanswered.length || unanswered.some((id) => !ids.includes(id))) return { claimed: false, reason: 'item-ids-mismatch', expected: unanswered };
     const kind = human ? 'human' : 'bot';
     const exhausted = human ? 'human-fix-round-budget-exhausted' : 'fix-round-budget-exhausted';
@@ -1138,6 +1157,7 @@ function runMain(repoRoot = process.cwd()) {
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('review-lgtm-state: claim-fix-round reads {"itemIds":[...]} on stdin');
     process.stdout.write(`${JSON.stringify(claimFixRound({ stateDir, pr, headSha, itemIds: body.itemIds }))}\n`);
   }
+  else if (verb === 'mark-fix-pushed') process.stdout.write(`${JSON.stringify(markFixPushed({ stateDir, pr, headSha, fixCommit: argument, owner: process.argv[6] }))}\n`);
   else if (verb === 'renew-fix-round') process.stdout.write(`${JSON.stringify(renewFixRound({ stateDir, pr, headSha, owner: argument }))}\n`);
   else if (verb === 'waive-fix-budget') {
     const flags = process.argv.slice(6);
@@ -1161,13 +1181,13 @@ function runMain(repoRoot = process.cwd()) {
     if (!resolved.selected) { process.stdout.write(`${JSON.stringify(resolved)}\n`); process.exitCode = 1; return; }
     const { selection } = resolved;
     const graphql = collector.ghGraphql(repoRoot);
-    if (verb === 'collect') collector.collect({ pr, head: headSha, graphql, selection, answered: answeredItemIds({ stateDir, pr }) }).then((packet) => process.stdout.write(`${collector.formatPacketLine(packet)}\n`), fail);
+    if (verb === 'collect') collector.collect({ pr, head: headSha, graphql, selection, answered: answeredItemIds({ stateDir, pr, headSha }) }).then((packet) => process.stdout.write(`${collector.formatPacketLine(packet)}\n`), fail);
     else {
-      const state = { status: (head) => status({ stateDir, pr, headSha: head }), openWindow: (head) => openWindow({ stateDir, pr, headSha: head, durationMs: collector.WINDOW_SECONDS * 1000 }), answered: () => answeredItemIds({ stateDir, pr }) };
+      const state = { status: (head) => status({ stateDir, pr, headSha: head }), openWindow: (head) => openWindow({ stateDir, pr, headSha: head, durationMs: collector.WINDOW_SECONDS * 1000 }), answered: (head) => answeredItemIds({ stateDir, pr, headSha: head }) };
       collector.watch({ pr, graphql, state, selection, write: (line) => process.stdout.write(`${line}\n`) }).catch(fail);
     }
   }
-  else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, waive-fix-budget, collect-minor, claim-reply, record-reply, find-reply, claim-approve-prompt, self-feeding, merge-ready, select-reviewers, collect, watch, record-review, reject-review-batch, or record-delivery');
+  else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, mark-fix-pushed, waive-fix-budget, collect-minor, claim-reply, record-reply, find-reply, claim-approve-prompt, self-feeding, merge-ready, select-reviewers, collect, watch, record-review, reject-review-batch, or record-delivery');
 }
 
-module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, waiveFixBudget, collectMinor, itemFileKey, accountFileKey, claimReply, recordReply, claimApprovePrompt, answeredItemIds, mergeReady, selfFeeding, recordReview, rejectReviewBatch, classifyDelivery, recordDelivery, selectReviewers, reviewerSelection, latestSelection, ghUsers, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, MAX_HUMAN_FIX_ROUNDS_PER_PR, humanFixBudget, runMain };
+module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, markFixPushed, waiveFixBudget, collectMinor, itemFileKey, accountFileKey, claimReply, recordReply, claimApprovePrompt, answeredItemIds, mergeReady, selfFeeding, recordReview, rejectReviewBatch, classifyDelivery, recordDelivery, selectReviewers, reviewerSelection, latestSelection, ghUsers, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, MAX_HUMAN_FIX_ROUNDS_PER_PR, humanFixBudget, runMain };

@@ -94,10 +94,10 @@ An item is unanswered unless one of these holds, and the collector and the wait 
 
 - `pr-<n>.feedback-<item>.json` exists: the handled record written after the skill's reply, or the record of an author answer or a no-reply disposition;
 - `pr-<n>.reply-<item>-claim.json` exists: a session has claimed the reply;
-- the item id is listed in the `itemIds` of a `pr-<n>-<head>.fix-round-claim.json` of any head of the PR whose round reserved a slot: a fix round has taken it. A claim without a slot is an abandoned claim, handled by human reconciliation, and does not answer its items;
+- the item id is listed in the `itemIds` of a `pr-<n>-<head>.fix-round-claim.json` that is the live head's own claim whose round reserved a slot, or the claim of any head whose round has a `pr-<n>-<head>.fix-round-pushed.json` marker: a fix round has taken it. A claim without a slot is an abandoned claim, handled by human reconciliation, and does not answer its items; a slotted round on an earlier head without a pushed marker pushed no fix, so its items return to the live head's batch;
 - the PR author or the acting account has answered it on GitHub (below).
 
-The fix-round test is what keeps a fixed item out of the next head's batch: the item's fix is pushed in the round that claimed it, the new head's collection finds the item in that claim, and no second fix round is spent on it. A claimed item whose round finished without a handled record is listed by `status` as `owedReplies`, and the session posts those replies before collecting again.
+The fix-round test is what keeps a fixed item out of the next head's batch: the item's fix is pushed in the round that claimed it, the new head's collection finds the item in that claim through the round's pushed marker, and no second fix round is spent on it. An item of a pushed round without a handled record is listed by `status` as `owedReplies`, each with the marker's `fixCommit`, and the session posts those replies before collecting again.
 
 ### Author answers
 
@@ -182,6 +182,8 @@ A human's minor suggestion is fixed rather than ticketed because the person who 
 A fix round is claimed, owned, certified and pushed as in the bot loop: one claim per head with an immutable owner, one certified commit and one push. Before the claim, the session answers the batch's items the round does not fix. `claim-fix-round` then reads from stdin exactly the head's unanswered item ids, the latest revision of each, as `status.reconciliation.unansweredItemIds` lists them (every item in empty mode, the human items under a named selection), refuses any other set with `{claimed: false, reason: 'item-ids-mismatch', expected}`, where `expected` is that sorted set, and writes them as `itemIds` into the head's `fix-round-claim` marker, which is what removes them from the unanswered set. An earlier revision of an item on the same head is superseded by the later one and is not part of the set. Because the claim takes exactly the unanswered set, the round's cap is the one `status.reconciliation` reports. A push happens only where the bot loop already authorizes it.
 
 Human-driven rounds have their own cap. A round whose plan holds at least one human item spends a slot of the human cap (`pr-<n>.human-fix-round-slot-<k>.json`); a round with only bot items spends a slot of the existing PR-wide bot cap of three, which is unchanged. A head still has at most one fix round of either kind. The human cap defaults to five rounds per PR, a design choice: a human review commonly takes more iterations than an automated one, and each human round already costs the reviewer a re-review, so the cap guards a runaway loop rather than rationing ordinary iterations; three would park ordinary reviews too often, and an unbounded cap would let a disagreement loop forever. Only a person raises it, with `waive-fix-budget <pr> <person> <n> --human`, which follows the existing waiver rules (pairs of person and count add up, a repeated pair changes nothing) and raises only the human cap; `status` reports `humanFixBudget` and its waivers beside `fixBudget`. Exhausting either cap stops for human reconciliation as now.
+
+Right after the certified push succeeds, `mark-fix-pushed <pr> <head-sha> <fix-commit> <owner>` writes the head's write-once `fix-round-pushed` marker with the pushed commit's full SHA. Only the round's owner writes it (`owner-mismatch` otherwise), and only while the head's round holds a slot (`no-fix-round` otherwise). The marker is what answers the round's items on later heads and what owes their replies; each reply to a fixed item names its `fixCommit`.
 
 After the push, and after its checks support the response, the skill replies to every item of the batch that needs a reply, whatever its disposition:
 
@@ -301,6 +303,7 @@ The human path adds these markers beside the bot loop's. Each is written with th
 | `pr-<n>.reply-<item>-claim.json` | PR, locked | Reply claim for one feedback item revision |
 | `pr-<n>.feedback-<item>.json` | PR | Handled record: item id and revision, kind, URL, author `{login, id, type}`, original commit, disposition (including `author-answered` and `no-action`), reason, reply or answer URL, fix commit |
 | `pr-<n>-<head>.fix-round-claim.json` | head, locked | Existing claim; gains `itemIds`, the items the round takes that the unanswered test collects (human and bot in empty mode, human under a named selection) |
+| `pr-<n>-<head>.fix-round-pushed.json` | head, locked | `{pr, headSha, fixCommit, owner, pushedAtMs}`: the round's certified commit was pushed; its claim's items are answered on every head and owe a reply naming `fixCommit` |
 | `pr-<n>.human-fix-round-slot-<k>.json` | PR, locked | One slot of the human fix cap |
 | `pr-<n>.fix-waiver-<id>.json` | PR | Existing waiver; gains `kind: "human"` for a waiver of the human cap |
 | `pr-<n>-<head>.approve-prompt-<reviewer>.json` | head and reviewer | The single request to press Approve on that head |
@@ -337,7 +340,7 @@ The human path adds these markers beside the bot loop's. Each is written with th
 | A fix cap exhausted | Stop for human reconciliation as in the bot loop; replies that claim no fix are still posted |
 | Two sessions on one PR | Reads are harmless; reply and request claims, fix-round claims and delivery records are write-once or locked, so one session posts and the other gets a claimed or busy answer; a duplicate background wait only costs polls |
 | Crash between a post and its marker | Settled from GitHub on resume: the reply's hidden first line, or the timeline's review-request event |
-| Crash after a fix push, before its replies | `owedReplies` lists the items; the resume posts them before collecting |
+| Crash after a fix push, before its replies | `owedReplies` lists the items with the pushed `fixCommit`; the resume posts them before collecting |
 | More than 100 reviews or PR comments | Paged; a connection beyond the page bound fails the collection instead of truncating |
 
 ## Security
@@ -431,8 +434,10 @@ Rejected alternatives:
 | head H, one bot record and one human record | reconciliation packet | `requires-architecture-review`, as for two records | changed | `a bot record plus human feedback counts as two records` |
 | head H2, unanswered inline item made on H1 | collect on H2 | item enters H2's batch with `originalCommitId` H1 | introduced | `feedback made on an older head is collected on the live head with its original commit` |
 | head H2, reply by a reviewer in a thread opened on H1 | collect | the reply is an item | introduced | `a reply in an older thread is feedback on the live head` |
-| item fixed in H1's round, pushed to H2 | collect on H2 | excluded by the claim's `itemIds`; no second round | introduced | `an item taken by a fix round does not return in the next head's batch` |
-| item claimed by a finished round, crash before its reply | resume | listed in `owedReplies`; reply posted before collecting | introduced | `owed replies of a finished round are posted on resume` |
+| item fixed in H1's round, pushed to H2 | collect on H2 | excluded by the claim's `itemIds` through the pushed marker; no second round | introduced | `an item taken by a fix round does not return in the next head's batch`; `a pushed fix round owes its replies with the fix commit and keeps its items out of the next batch` |
+| item claimed by H1's round, no pushed marker | collect on H2 | the item returns to H2's batch; no reply owed | introduced | `an unpushed fix round on an earlier head returns its items to the batch and owes nothing` |
+| H1's round slotted | `mark-fix-pushed` by another owner | `owner-mismatch`; no marker | introduced | `mark-fix-pushed refuses a non-owner and a malformed fix commit and writes no marker` |
+| item claimed by a finished round, crash before its reply | resume | listed in `owedReplies` with the pushed fix commit; reply posted before collecting | introduced | `owed replies of a finished round are posted on resume` |
 | unselected person comments | collect | item enters the batch; assessed and answered like any other | introduced | `feedback from an unselected person enters the batch` |
 | unselected person requests changes | all its items answered, repository requires reviews | Concord's work is done and no re-review request is sent; the review decision stays unmet; `feedback answered, waiting for <login> to re-review or dismiss` is a pending branch-rule condition and the run parks at the deadline | introduced | `an answered unselected request for changes leaves the branch rules unmet where reviews are required` |
 | unselected person requests changes | all its items answered, repository requires no review | merge-ready by the branch rules | introduced | `an answered unselected request for changes is merge-ready where no review is required` |

@@ -341,7 +341,7 @@ async function watch({ pr, graphql, state, now = Date.now, sleep = (ms) => new P
     const response = await read(graphql, pr, selection);
     const head = pullRequestOf(response).headRefOid.toLowerCase();
     if (!since.has(head)) since.set(head, now());
-    const analysis = analyze(response, head, selection, state.answered ? state.answered() : new Set()); // replies are recorded while the watch runs
+    const analysis = analyze(response, head, selection, state.answered ? state.answered(head) : new Set()); // replies are recorded while the watch runs
     if ((analysis.activity || !named) && !windowed.has(head)) { state.openWindow(head); windowed.add(head); }
     const status = state.status(head);
     if (status.delivery && status.delivery.current === true) { write(JSON.stringify({ event: 'delivery', pr: Number(pr), head, classification: status.delivery.classification })); return 'delivery'; }
