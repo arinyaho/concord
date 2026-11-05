@@ -1192,7 +1192,7 @@ test('review-until-lgtm merges only on explicit request and a ready merge-ready 
 test('review-until-lgtm names the answered-feedback ledger verbs', () => {
   for (const file of [CLAUDE_SKILL, CODEX_SKILL, COPILOT_SKILL]) {
     const skill = fs.readFileSync(file, 'utf8');
-    for (const token of ['claim-reply', 'record-reply', 'find-reply', 'owedReplies', '--human', 'claim-approve-prompt', '{"itemIds":[...]}']) assert.ok(skill.includes(token), `${path.basename(path.dirname(file))} lacks ${token}`);
+    for (const token of ['claim-reply', 'record-reply', 'find-reply', 'owedReplies', '--human', 'claim-approve-prompt', '{"itemIds":[...]}', 'record JSON on stdin', '`answerUrl` from the packet\'s `authorAnswered` entry', 'with that `url` as `replyUrl`', 'numeric GitHub account id', 'press Approve on GitHub']) assert.ok(skill.includes(token), `${path.basename(path.dirname(file))} lacks ${token}`);
   }
 });
 

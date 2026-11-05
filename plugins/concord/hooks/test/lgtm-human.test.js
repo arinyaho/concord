@@ -266,7 +266,16 @@ test('the answered set also reads the itemIds of a fix-round claim of any head',
   const stateDir = temp();
   fs.writeFileSync(path.join(stateDir, `pr-${PR}-${'d'.repeat(40)}.fix-round-claim.json`), JSON.stringify({ pr: PR, headSha: 'd'.repeat(40), itemIds: [ITEM] }));
   assert.ok(lgtmState.answeredItemIds({ stateDir, pr: PR }).has(ITEM));
-  assert.deepStrictEqual(lgtmState.claimReply({ stateDir, pr: PR, itemId: ITEM }), { claimed: false, reason: 'answered' });
+  assert.deepStrictEqual(lgtmState.claimReply({ stateDir, pr: PR, itemId: ITEM }), { claimed: true });
+});
+
+test('a fixed item\'s reply can be claimed after its fix round', () => {
+  const stateDir = temp();
+  const obs = humanObs('comment-70');
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
+  assert.strictEqual(lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(obs)] }).claimed, true);
+  assert.deepStrictEqual(lgtmState.claimReply({ stateDir, pr: PR, itemId: itemOf(obs) }), { claimed: true });
+  assert.deepStrictEqual(lgtmState.claimReply({ stateDir, pr: PR, itemId: itemOf(obs) }), { claimed: false, reason: 'reply-claimed' });
 });
 
 test('a resume of the empty selection answers nothing twice', async () => {
@@ -322,6 +331,19 @@ test('owed replies of a finished round are posted on resume', () => {
   assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, [itemOf(obs)]);
   lgtmState.recordReply({ stateDir, pr: PR, itemId: itemOf(obs), record: { kind: 'comment', url: 'https://x/70', author: obs.findings[0].author, originalCommitId: null, disposition: 'minor', reason: 'renamed', replyUrl: 'https://x/r', fixCommit: H2 } });
   assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, []);
+});
+
+test('an owed reply can be claimed and recorded, after which it leaves owedReplies', () => {
+  const stateDir = temp();
+  const obs = humanObs('comment-70');
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
+  lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(obs)] });
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, [itemOf(obs)]);
+  assert.deepStrictEqual(lgtmState.claimReply({ stateDir, pr: PR, itemId: itemOf(obs) }), { claimed: true });
+  assert.strictEqual(lgtmState.recordReply({ stateDir, pr: PR, itemId: itemOf(obs), record: { kind: 'comment', url: 'https://x/70', author: obs.findings[0].author, originalCommitId: null, disposition: 'blocker', reason: 'fixed', replyUrl: 'https://x/r', fixCommit: H2 } }).recorded, true);
+  const s = lgtmState.status({ stateDir, pr: PR, headSha: H2 });
+  assert.deepStrictEqual([s.owedReplies, s.claimedReplies], [[], []]);
+  assert.deepStrictEqual(lgtmState.claimReply({ stateDir, pr: PR, itemId: itemOf(obs) }), { claimed: false, reason: 'answered' });
 });
 
 test('an exhausted human cap stops for reconciliation', () => {
@@ -435,6 +457,17 @@ test('a claim that lists no item ids on a batch of feedback items is refused and
   assert.ok(!fs.existsSync(path.join(stateDir, `pr-${PR}-${heads[5]}.fix-round-claim.json`)));
 });
 
+test('a head whose feedback items are all answered claims a bot round without item ids', () => {
+  const stateDir = temp();
+  const obs = humanObs('comment-70');
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: botObs('900') });
+  lgtmState.recordReply({ stateDir, pr: PR, itemId: itemOf(obs), record: reply({ url: 'https://x/70', author: obs.findings[0].author }) });
+  const claim = lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD });
+  assert.deepStrictEqual([claim.claimed, claim.kind, claim.budget.spent], [true, 'bot', 1]);
+  assert.strictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).humanFixBudget.spent, 0);
+});
+
 test('a resumed owner re-claims its round without listing item ids', () => {
   const stateDir = temp();
   const obs = humanObs('comment-70');
@@ -457,4 +490,14 @@ test('the Approve prompt is sent once per reviewer and head', () => {
   assert.deepStrictEqual(lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: HEAD, reviewerId: 101 }), { claimed: true });
   assert.deepStrictEqual(lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: HEAD, reviewerId: 101 }), { claimed: false, reason: 'approve-prompt-sent' });
   assert.deepStrictEqual(lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: H2, reviewerId: 101 }), { claimed: true });
+});
+
+test('the Approve prompt needs a positive account id and writes nothing otherwise', () => {
+  const stateDir = temp();
+  for (const reviewerId of [NaN, 0, -1, 1.5, '101', Number.MAX_SAFE_INTEGER + 1, undefined]) assert.throws(() => lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: HEAD, reviewerId }), /^Error: review-lgtm-state: reviewerId must be a positive account id$/, String(reviewerId));
+  assert.deepStrictEqual(fs.readdirSync(stateDir), []);
+  assert.throws(() => lgtmState.accountFileKey(NaN), /account id/);
+  const { execFileSync } = require('node:child_process');
+  assert.throws(() => execFileSync('node', [path.join(__dirname, '..', 'review-lgtm-state.js'), 'claim-approve-prompt', String(PR), HEAD, 'alice'], { encoding: 'utf8', stdio: 'pipe', env: { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir } }), (error) => /reviewerId must be a positive account id/.test(error.stderr));
+  assert.deepStrictEqual(fs.readdirSync(stateDir), []);
 });

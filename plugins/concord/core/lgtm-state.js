@@ -332,7 +332,7 @@ const REPLY_URL_DISPOSITIONS = ['blocker', 'minor', 'rejected', 'clarify', 'appr
 const REPLY_DISPOSITIONS = [...REPLY_URL_DISPOSITIONS, 'author-answered', 'no-action'];
 const sha16 = (value) => crypto.createHash('sha256').update(value).digest('hex').slice(0, 16);
 const itemFileKey = (itemId) => sha16(itemId);
-const accountFileKey = (id) => sha16(String(id));
+const accountFileKey = (id) => { if (!Number.isSafeInteger(id) || id < 1) throw new Error('review-lgtm-state: reviewerId must be a positive account id'); return sha16(String(id)); };
 
 function prNumber(pr) {
   if (!Number.isSafeInteger(Number(pr)) || Number(pr) < 1) throw new Error('review-lgtm-state: PR number must be a positive integer');
@@ -367,8 +367,8 @@ function claimReply({ stateDir, pr, itemId, now = Date.now() }) {
   const id = validItem(itemId);
   const n = prNumber(pr);
   return withTransitionLock({ stateDir, pr: n }, () => {
-    const { feedback, fixed } = answeredParts({ stateDir, pr: n });
-    if (feedback.includes(id) || fixed.includes(id)) return { claimed: false, reason: 'answered' };
+    // A fix round's itemIds keep an item out of the next batch but still owe its reply, so only a handled record refuses the claim.
+    if (answeredParts({ stateDir, pr: n }).feedback.includes(id)) return { claimed: false, reason: 'answered' };
     return writeExclusive(path.join(stateDir, `pr-${n}.reply-${itemFileKey(id)}-claim.json`), { pr: n, itemId: id, claimedAtMs: now }) ? { claimed: true } : { claimed: false, reason: 'reply-claimed' };
   });
 }
@@ -618,8 +618,9 @@ function claimFixRound(input) {
       if (active.owner === owner) return { claimed: true, resumed: true, owner, round: slot.round, kind: slot.kind, budget: fixBudget({ stateDir, pr: key.pr }, slot.kind === 'human') };
       return { claimed: false, reason: 'fix-round-owned', humanRequired: true, owner: active.owner };
     }
-    // Without item ids a batch of feedback items would claim a bot slot and leave the human cap unspent.
-    if (ids.length === 0 && findings.size > 0) throw new Error('review-lgtm-state: itemIds are required when the head\'s batch holds feedback items');
+    // Without item ids a batch of unanswered feedback items would claim a bot slot and leave the human cap unspent.
+    const answered = answeredItemIds({ stateDir, pr: key.pr });
+    if (ids.length === 0 && [...findings.keys()].some((id) => !answered.has(id))) throw new Error('review-lgtm-state: itemIds are required when the head\'s batch holds feedback items');
     const human = ids.some((id) => findings.get(id).author?.type === 'User');
     const kind = human ? 'human' : 'bot';
     const exhausted = human ? 'human-fix-round-budget-exhausted' : 'fix-round-budget-exhausted';
