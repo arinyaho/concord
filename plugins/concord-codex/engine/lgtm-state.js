@@ -421,12 +421,15 @@ function recordReply({ stateDir, pr, itemId, record, now = Date.now() }) {
 
 const approvePromptFile = ({ stateDir, pr, headSha }, reviewerId) => path.join(stateDir, `pr-${pr}-${headSha}.approve-prompt-${accountFileKey(reviewerId)}.json`);
 
-// The comment-only LGTM Approve prompt is sent at most once per reviewer and head, and only to a selected person.
-function claimApprovePrompt({ stateDir, pr, headSha, reviewerId, now = Date.now() }) {
+// The comment-only LGTM Approve prompt is sent at most once per reviewer and head, and only to a selected person. The claim keeps the item
+// it answers, so a session that crashed before posting resumes that item's reply; another item gets no second prompt.
+function claimApprovePrompt({ stateDir, pr, headSha, reviewerId, itemId, now = Date.now() }) {
   const key = validate({ pr, headSha });
   const file = approvePromptFile({ stateDir, ...key }, reviewerId);
+  const id = validItem(itemId);
   if (!(latestSelection({ stateDir, pr: key.pr })?.reviewers || []).some((reviewer) => reviewer.id === reviewerId && reviewer.type === 'User' && !reviewer.gone)) return { claimed: false, reason: 'not-selected' };
-  return writeExclusive(file, { ...key, reviewerId, claimedAtMs: now }) ? { claimed: true } : { claimed: false, reason: 'approve-prompt-sent' };
+  if (writeExclusive(file, { ...key, reviewerId, itemId: id, claimedAtMs: now })) return { claimed: true };
+  return readMarker(file).itemId === id ? { claimed: true, resumed: true } : { claimed: false, reason: 'approve-prompt-sent' };
 }
 
 // Reply claims whose handled record is not written yet: a session started replying and did not finish.
@@ -1170,7 +1173,7 @@ function runMain(repoRoot = process.cwd()) {
   else if (verb === 'collect-minor') process.stdout.write(`${JSON.stringify(collectMinor({ stateDir, pr, headSha, ...JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'claim-reply') process.stdout.write(`${JSON.stringify(claimReply({ stateDir, pr, itemId: headSha }))}\n`);
   else if (verb === 'record-reply') process.stdout.write(`${JSON.stringify(recordReply({ stateDir, pr, itemId: headSha, record: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
-  else if (verb === 'claim-approve-prompt') process.stdout.write(`${JSON.stringify(claimApprovePrompt({ stateDir, pr, headSha, reviewerId: Number(argument) }))}\n`);
+  else if (verb === 'claim-approve-prompt') process.stdout.write(`${JSON.stringify(claimApprovePrompt({ stateDir, pr, headSha, reviewerId: Number(argument), itemId: process.argv[6] }))}\n`);
   else if (verb === 'find-reply') collector.findReply({ pr: prNumber(pr), itemId: validItem(headSha), graphql: collector.ghGraphql(repoRoot) }).then((result) => process.stdout.write(`${JSON.stringify(result)}\n`), fail);
   else if (verb === 'merge-ready') process.stdout.write(`${JSON.stringify(mergeReady({ stateDir, pr, headSha, evidence: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'self-feeding') { const [start, end] = process.argv.slice(6); process.stdout.write(`${JSON.stringify(selfFeeding({ repoRoot: worktreeRoot(repoRoot), stateDir, pr, headSha, file: argument, start: Number(start), end: Number(end === undefined ? start : end) }))}\n`); }

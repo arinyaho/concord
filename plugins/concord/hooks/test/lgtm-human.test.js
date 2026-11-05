@@ -620,9 +620,21 @@ test('claim-fix-round stdin that is not an object of item ids fails with a state
 test('the Approve prompt is sent once per reviewer and head', () => {
   const stateDir = temp();
   lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice'], github: github() });
-  assert.deepStrictEqual(lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: HEAD, reviewerId: 101 }), { claimed: true });
-  assert.deepStrictEqual(lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: HEAD, reviewerId: 101 }), { claimed: false, reason: 'approve-prompt-sent' });
-  assert.deepStrictEqual(lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: H2, reviewerId: 101 }), { claimed: true });
+  assert.deepStrictEqual(lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: HEAD, reviewerId: 101, itemId: ITEM }), { claimed: true });
+  assert.deepStrictEqual(lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: HEAD, reviewerId: 101, itemId: 'IC_76@2026-11-01T00:00:03Z' }), { claimed: false, reason: 'approve-prompt-sent' });
+  assert.deepStrictEqual(lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: H2, reviewerId: 101, itemId: ITEM }), { claimed: true });
+});
+
+test('a repeated Approve prompt claim for the same item resumes it', () => {
+  const stateDir = temp();
+  const { execFileSync } = require('node:child_process');
+  lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice'], github: github() });
+  const cli = (item) => JSON.parse(execFileSync('node', [path.join(__dirname, '..', 'review-lgtm-state.js'), 'claim-approve-prompt', String(PR), HEAD, '101', item], { encoding: 'utf8', env: { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir } }));
+  assert.deepStrictEqual(cli(ITEM), { claimed: true });
+  assert.deepStrictEqual(cli(ITEM), { claimed: true, resumed: true });
+  assert.deepStrictEqual(cli('IC_76@2026-11-01T00:00:03Z'), { claimed: false, reason: 'approve-prompt-sent' });
+  assert.throws(() => lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: H2, reviewerId: 101 }), /an item id is <node id>@<revision timestamp>/);
+  assert.ok(!fs.existsSync(path.join(stateDir, `pr-${PR}-${H2}.approve-prompt-${lgtmState.accountFileKey(101)}.json`)));
 });
 
 test('the Approve prompt needs a positive account id and writes nothing otherwise', () => {
@@ -648,20 +660,20 @@ test('a claim whose round reserved no slot owes no reply', () => {
 
 test('the Approve prompt goes only to a selected person who is not gone', () => {
   const stateDir = temp();
-  assert.deepStrictEqual(lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: HEAD, reviewerId: 101 }), { claimed: false, reason: 'not-selected' });
+  assert.deepStrictEqual(lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: HEAD, reviewerId: 101, itemId: ITEM }), { claimed: false, reason: 'not-selected' });
   lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice', 'copilot-pull-request-reviewer'], github: github() });
   const before = fs.readdirSync(stateDir).sort();
-  for (const reviewerId of [900, 202]) assert.deepStrictEqual(lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: HEAD, reviewerId }), { claimed: false, reason: 'not-selected' });
+  for (const reviewerId of [900, 202]) assert.deepStrictEqual(lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: HEAD, reviewerId, itemId: ITEM }), { claimed: false, reason: 'not-selected' });
   assert.deepStrictEqual(fs.readdirSync(stateDir).sort(), before);
   lgtmState.selectReviewers({ stateDir, pr: PR, logins: null, github: github({ alice: null }) });
-  assert.deepStrictEqual(lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: HEAD, reviewerId: 101 }), { claimed: false, reason: 'not-selected' });
+  assert.deepStrictEqual(lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: HEAD, reviewerId: 101, itemId: ITEM }), { claimed: false, reason: 'not-selected' });
 });
 
 test('status lists the selected reviewers with their Approve prompt for the head', () => {
   const stateDir = temp();
   assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reviewers, []);
   lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice', 'copilot-pull-request-reviewer'], github: github() });
-  lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: HEAD, reviewerId: 101 });
+  lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: HEAD, reviewerId: 101, itemId: ITEM });
   assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reviewers, [{ ...ACCOUNTS.alice, approvePrompted: true }, { login: 'copilot-pull-request-reviewer', id: 900, type: 'Bot', approvePrompted: false }]);
   assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).reviewers.map((r) => r.approvePrompted), [false, false]);
   lgtmState.selectReviewers({ stateDir, pr: PR, logins: null, github: github({ alice: null }) });
