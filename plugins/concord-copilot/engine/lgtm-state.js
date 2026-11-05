@@ -452,7 +452,7 @@ function owedReplies({ stateDir, pr }) {
   return [...owed.values()].sort((a, b) => a.itemId.localeCompare(b.itemId));
 }
 
-// Slotted fix rounds of other heads with no pushed marker: a crash after the push leaves one, and its items must not be fixed by a second round.
+// Slotted fix rounds of other heads with no pushed marker: a crash after the push leaves one; its items are back in the next head's batch, so the owner marks the round when its fix commit landed.
 function unpushedRounds({ stateDir, pr, headSha }) {
   const n = Number(pr);
   const head = headSha && String(headSha).toLowerCase();
@@ -682,8 +682,6 @@ function claimFixRound(input) {
       if (active.owner === owner) return { claimed: true, resumed: true, owner, round: slot.round, kind: slot.kind, budget: fixBudget({ stateDir, pr: key.pr }, slot.kind === 'human') };
       return { claimed: false, reason: 'fix-round-owned', humanRequired: true, owner: active.owner };
     }
-    const unpushed = unpushedRounds({ stateDir, ...key });
-    if (unpushed.length > 0) return { claimed: false, reason: 'unpushed-fix-round', humanRequired: true, unpushedRounds: unpushed };
     const records = activeReviewRecords({ stateDir, ...key });
     const findings = new Map(records.flatMap((record) => record.findings).filter((finding) => finding.itemId !== undefined).map((finding) => [finding.itemId, finding]));
     const human = ids.some((id) => findings.get(id)?.author?.type === 'User');

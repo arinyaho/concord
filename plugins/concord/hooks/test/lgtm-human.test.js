@@ -393,22 +393,27 @@ test('mark-fix-pushed refuses a non-owner and a malformed fix commit and writes 
   assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, []);
 });
 
-test('an unpushed fix round on an earlier head blocks a claim on the next head until it is marked pushed', () => {
+test('an unpushed round on an earlier head does not block a claim on the next head', () => {
   const stateDir = temp();
   const obs = humanObs('comment-70');
   lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
   lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, owner: 'w', itemIds: [itemOf(obs)] });
-  const next = { ...humanObs('comment-71'), commitId: H2 };
-  lgtmState.recordReview({ stateDir, pr: PR, headSha: H2, observation: next });
-  const unpushed = [{ headSha: HEAD, owner: 'w' }];
-  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).unpushedRounds, unpushed);
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: H2, observation: { ...obs, commitId: H2 } });
+  const s = lgtmState.status({ stateDir, pr: PR, headSha: H2 });
+  assert.deepStrictEqual([s.unpushedRounds, s.reconciliation.unansweredItemIds], [[{ headSha: HEAD, owner: 'w' }], [itemOf(obs)]]);
   assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).unpushedRounds, []);
-  assert.deepStrictEqual(lgtmState.claimFixRound({ stateDir, pr: PR, headSha: H2, owner: 'v', itemIds: [itemOf(next)] }), { claimed: false, reason: 'unpushed-fix-round', humanRequired: true, unpushedRounds: unpushed });
-  assert.ok(!fs.existsSync(path.join(stateDir, `pr-${PR}-${H2}.fix-round-claim.json`)));
-  assert.deepStrictEqual(lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, owner: 'w' }).resumed, true);
-  lgtmState.markFixPushed({ stateDir, pr: PR, headSha: HEAD, fixCommit: H2, owner: 'w' });
-  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).unpushedRounds, []);
-  assert.deepStrictEqual(lgtmState.claimFixRound({ stateDir, pr: PR, headSha: H2, owner: 'v', itemIds: [itemOf(next)] }).claimed, true);
+  assert.strictEqual(lgtmState.claimFixRound({ stateDir, pr: PR, headSha: H2, owner: 'v', itemIds: [itemOf(obs)] }).claimed, true);
+});
+
+test('status and claim agree while an earlier round is unpushed', () => {
+  const stateDir = temp();
+  const obs = humanObs('comment-70');
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
+  lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, owner: 'w', itemIds: [itemOf(obs)] });
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: H2, observation: { ...humanObs('comment-71'), commitId: H2 } });
+  const { reconciliation } = lgtmState.status({ stateDir, pr: PR, headSha: H2 });
+  assert.deepStrictEqual([reconciliation.action, reconciliation.humanRequired], ['verify-and-fix', false]);
+  assert.strictEqual(lgtmState.claimFixRound({ stateDir, pr: PR, headSha: H2, owner: 'v', itemIds: reconciliation.unansweredItemIds }).claimed, true);
 });
 
 test('an exhausted human cap stops for reconciliation', () => {
