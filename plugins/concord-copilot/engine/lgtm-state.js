@@ -474,7 +474,9 @@ function markFixPushed({ stateDir, pr, headSha, fixCommit, owner, now = Date.now
     if (latestFixOwnership({ stateDir, ...key }, slot).owner !== owner) return { marked: false, reason: 'owner-mismatch' };
     const file = pushedFile({ stateDir, ...key });
     const created = writeExclusive(file, { ...key, fixCommit: fixCommit.toLowerCase(), owner, pushedAtMs: now });
-    return { marked: true, ...(created ? {} : { existing: true }), pushed: readMarker(file) };
+    const pushed = readMarker(file);
+    if (!created && pushed?.fixCommit !== fixCommit.toLowerCase()) return { marked: false, reason: 'fix-commit-conflict', fixCommit: pushed?.fixCommit };
+    return { marked: true, ...(created ? {} : { existing: true }), pushed };
   }, { marked: false, reason: 'transition-busy' });
 }
 

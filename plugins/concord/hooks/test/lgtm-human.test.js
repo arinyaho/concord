@@ -393,6 +393,17 @@ test('mark-fix-pushed refuses a non-owner and a malformed fix commit and writes 
   assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, []);
 });
 
+test('a repeated mark-fix-pushed keeps the recorded commit and refuses a different one', () => {
+  const stateDir = temp();
+  const obs = humanObs('comment-70');
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
+  lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, owner: 'w', itemIds: [itemOf(obs)] });
+  const first = lgtmState.markFixPushed({ stateDir, pr: PR, headSha: HEAD, fixCommit: H2, owner: 'w', now: 1 });
+  assert.deepStrictEqual(lgtmState.markFixPushed({ stateDir, pr: PR, headSha: HEAD, fixCommit: H2, owner: 'w', now: 2 }), { ...first, existing: true });
+  assert.deepStrictEqual(lgtmState.markFixPushed({ stateDir, pr: PR, headSha: HEAD, fixCommit: 'f'.repeat(40), owner: 'w', now: 3 }), { marked: false, reason: 'fix-commit-conflict', fixCommit: H2 });
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, [{ itemId: itemOf(obs), headSha: HEAD, fixCommit: H2 }]);
+});
+
 test('an unpushed round on an earlier head does not block a claim on the next head', () => {
   const stateDir = temp();
   const obs = humanObs('comment-70');
