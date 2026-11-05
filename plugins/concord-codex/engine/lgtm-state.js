@@ -472,12 +472,12 @@ function markFixPushed({ stateDir, pr, headSha, fixCommit, owner, now = Date.now
     const slot = fixRoundForHead({ stateDir, ...key });
     if (!slot) return { marked: false, reason: 'no-fix-round' };
     if (latestFixOwnership({ stateDir, ...key }, slot).owner !== owner) return { marked: false, reason: 'owner-mismatch' };
-    // A later slotted round on another head that took any of this round's items supersedes it, so at most one pushed marker covers an item.
+    // A later slotted round on another head that took any of this round's items supersedes it, so at most one pushed marker covers an item. Rounds are ordered by claimedAtMs, then headSha, the order unpushedRounds lists them in, so of two such rounds exactly one is later.
     const own = readMarker(markerPath({ stateDir, ...key }, 'fix-round-claim'));
     const ownIds = own && Array.isArray(own.itemIds) ? own.itemIds : [];
     const slotted = slotHeads({ stateDir, pr: key.pr });
     const later = ownIds.length === 0 ? null : prFileNames(stateDir, (name) => name.startsWith(`pr-${key.pr}-`) && name.endsWith('.fix-round-claim.json')).map((claimFile) => readMarker(claimFile))
-      .find((claim) => claim && claim.headSha !== key.headSha && slotted.has(claim.headSha) && (claim.claimedAtMs || 0) > (own.claimedAtMs || 0) && Array.isArray(claim.itemIds) && claim.itemIds.some((id) => ownIds.includes(id)));
+      .find((claim) => claim && claim.headSha !== key.headSha && slotted.has(claim.headSha) && ((claim.claimedAtMs || 0) - (own.claimedAtMs || 0) || claim.headSha.localeCompare(key.headSha)) > 0 && Array.isArray(claim.itemIds) && claim.itemIds.some((id) => ownIds.includes(id)));
     if (later) return { marked: false, reason: 'superseded', by: later.headSha };
     const file = pushedFile({ stateDir, ...key });
     const created = writeExclusive(file, { ...key, fixCommit: fixCommit.toLowerCase(), owner, pushedAtMs: now });
