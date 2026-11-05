@@ -351,6 +351,16 @@ test('a human fix-budget waiver also lifts a terminal delivery', () => {
   assert.deepStrictEqual([claim.claimed, claim.kind], [true, 'human']);
 });
 
+test('a human round claimed after a human waiver lifted a delivery is resumed by its owner without item ids', () => {
+  const stateDir = temp();
+  const input = { stateDir, pr: PR, headSha: HEAD };
+  withHumanItem(stateDir);
+  lgtmState.recordDelivery({ ...input, now: 4000, packet: pr172Packet({ reviewIds: ['comment-70'] }) });
+  lgtmState.waiveFixBudget({ stateDir, pr: PR, person: 'someone', count: 1, human: true });
+  assert.strictEqual(lgtmState.claimFixRound({ ...input, now: 5000, owner: 'w', itemIds: [HUMAN_ITEM] }).claimed, true);
+  assert.deepStrictEqual(lgtmState.claimFixRound({ ...input, now: 6000, owner: 'w', itemIds: [] }), { claimed: true, resumed: true, owner: 'w', round: 1, kind: 'human', budget: { max: 6, spent: 1, remaining: 5 } });
+});
+
 test('a human fix-budget waiver leaves a bot-only claim delivery-terminal', () => {
   const stateDir = temp();
   const input = { stateDir, pr: PR, headSha: HEAD };

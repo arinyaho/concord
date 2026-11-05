@@ -638,6 +638,13 @@ function claimFixRound(input) {
   if (!Array.isArray(itemIds) || itemIds.some((id) => typeof id !== 'string')) throw new Error('review-lgtm-state: itemIds must be an array of item ids');
   const ids = [...new Set(itemIds)];
   return withTransitionLock({ stateDir, pr: key.pr }, () => {
+    // A slotted round is resumed or refused before anything else: a resume lists no item ids, and a delivery its own claim lifted does not end it.
+    const slot = fixRoundForHead({ stateDir, ...key });
+    if (slot) {
+      const active = latestFixOwnership({ stateDir, ...key }, slot);
+      if (active.owner === owner) return { claimed: true, resumed: true, owner, round: slot.round, kind: slot.kind, budget: fixBudget({ stateDir, pr: key.pr }, slot.kind === 'human') };
+      return { claimed: false, reason: 'fix-round-owned', humanRequired: true, owner: active.owner };
+    }
     const records = activeReviewRecords({ stateDir, ...key });
     const findings = new Map(records.flatMap((record) => record.findings).filter((finding) => finding.itemId !== undefined).map((finding) => [finding.itemId, finding]));
     const human = ids.some((id) => findings.get(id)?.author?.type === 'User');
@@ -645,12 +652,6 @@ function claimFixRound(input) {
     if (terminal) return terminal;
     if (records.length === 0) return { claimed: false, reason: 'no-findings' };
     if (ids.some((id) => !findings.has(id))) throw new Error('review-lgtm-state: itemIds must belong to the head\'s active findings');
-    const slot = fixRoundForHead({ stateDir, ...key });
-    if (slot) {
-      const active = latestFixOwnership({ stateDir, ...key }, slot);
-      if (active.owner === owner) return { claimed: true, resumed: true, owner, round: slot.round, kind: slot.kind, budget: fixBudget({ stateDir, pr: key.pr }, slot.kind === 'human') };
-      return { claimed: false, reason: 'fix-round-owned', humanRequired: true, owner: active.owner };
-    }
     // The round takes every unanswered item, so its cap is the one reconciliationPacket reports and no item is left without a round or a reply.
     const unanswered = unansweredFindings(records, answeredItemIds({ stateDir, pr: key.pr })).map((finding) => finding.itemId);
     if (ids.length !== unanswered.length || unanswered.some((id) => !ids.includes(id))) throw new Error('review-lgtm-state: itemIds must list exactly the head\'s unanswered feedback items');
