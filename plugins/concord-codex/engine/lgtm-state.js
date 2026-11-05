@@ -548,7 +548,8 @@ function reconciliationPacket({ stateDir, pr, headSha }) {
   const p1Count = findings.filter((finding) => finding.priority === 'P1').length;
   const p2Count = findings.filter((finding) => finding.priority === 'P2').length;
   const signals = [...new Set(findings.flatMap((finding) => finding.signals))].sort();
-  const botRecords = records.filter((record) => record.reviewerType !== 'User').length; // all human records are one batch
+  // A bot review counts once with its revision records; all human records are one batch.
+  const botRecords = new Set(records.filter((record) => record.reviewerType !== 'User').map((record) => String(record.reviewId).replace(REVISION, ''))).size;
   const classification = (p1Count > 0 || botRecords + (records.some((record) => record.reviewerType === 'User') ? 1 : 0) >= 2 || signals.length > 0) ? 'requires-architecture-review' : 'light-implementation-eligible';
   const claimed = !!fixRoundForHead({ stateDir, pr, headSha });
   const abandoned = !claimed && !!readMarker(markerPath({ stateDir, pr, headSha }, 'fix-round-claim'));

@@ -428,6 +428,15 @@ test('a rejected record does not reject the later revision of its item', () => {
   assert.strictEqual(lgtmState.rejectReviewBatch({ stateDir, pr: PR, headSha: HEAD, reviewIds: [review.id], reason: 'not a finding' }).rejected, true);
 });
 
+test('a bot record and its revision record on one head classify as one bot record', () => {
+  const stateDir = temp();
+  const bot = (revision) => { const obs = { ...edited('comment-73', revision), reviewer: 'vercel', reviewerId: 901, reviewerType: 'Bot' }; obs.findings[0].author = { login: 'vercel', id: 901, type: 'Bot' }; return obs; };
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: bot('2026-11-01T00:00:00Z') });
+  assert.strictEqual(lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: bot('2026-11-02T00:00:00Z') }).recorded, true);
+  const { reconciliation } = lgtmState.status({ stateDir, pr: PR, headSha: HEAD });
+  assert.deepStrictEqual([reconciliation.batchCount, reconciliation.classification], [2, 'light-implementation-eligible']);
+});
+
 test('a repeated revision is a duplicate', () => {
   const stateDir = temp();
   lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: humanObs('thread-9') });
