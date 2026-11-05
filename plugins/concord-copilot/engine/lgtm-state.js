@@ -350,14 +350,21 @@ function prFileNames(stateDir, test) {
   return names.filter(test).map((name) => path.join(stateDir, name));
 }
 
-// An item is answered once it has a handled record, a reply claim (a session is replying) or a place in a fix round's itemIds (any head).
+// Heads whose fix round reserved a slot (bot or human); a claim on any other head is abandoned.
+function slotHeads({ stateDir, pr }) {
+  const n = Number(pr);
+  return new Set(prFileNames(stateDir, (name) => new RegExp(`^pr-${n}\\.(?:human-)?fix-round-slot-\\d+\\.json$`).test(name)).map((file) => readMarker(file)?.headSha));
+}
+
+// An item is answered once it has a handled record, a reply claim (a session is replying) or a place in the itemIds of a fix round that reserved a slot (any head).
 function answeredParts({ stateDir, pr }) {
   const n = Number(pr);
   const ids = (test, pick) => prFileNames(stateDir, test).flatMap((file) => pick(readMarker(file)) || []);
+  const slotted = slotHeads({ stateDir, pr: n });
   return {
     feedback: ids((name) => name.startsWith(`pr-${n}.feedback-`) && name.endsWith('.json'), (marker) => marker && marker.itemId),
     claims: ids((name) => name.startsWith(`pr-${n}.reply-`) && name.endsWith('-claim.json'), (marker) => marker && marker.itemId),
-    fixed: ids((name) => name.startsWith(`pr-${n}-`) && name.endsWith('.fix-round-claim.json'), (marker) => marker && Array.isArray(marker.itemIds) && marker.itemIds),
+    fixed: ids((name) => name.startsWith(`pr-${n}-`) && name.endsWith('.fix-round-claim.json'), (marker) => marker && Array.isArray(marker.itemIds) && slotted.has(marker.headSha) && marker.itemIds),
   };
 }
 
@@ -425,11 +432,11 @@ function claimedReplies({ stateDir, pr }) {
 function owedReplies({ stateDir, pr, headSha }) {
   const n = Number(pr);
   const { feedback } = answeredParts({ stateDir, pr: n });
-  const slotHeads = new Set(prFileNames(stateDir, (name) => new RegExp(`^pr-${n}\\.(?:human-)?fix-round-slot-\\d+\\.json$`).test(name)).map((file) => readMarker(file)?.headSha));
+  const slotted = slotHeads({ stateDir, pr: n });
   const owed = new Map();
   for (const file of prFileNames(stateDir, (name) => name.startsWith(`pr-${n}-`) && name.endsWith('.fix-round-claim.json') && name !== `pr-${n}-${headSha}.fix-round-claim.json`)) {
     const marker = readMarker(file);
-    if (!marker || !Array.isArray(marker.itemIds) || !slotHeads.has(marker.headSha)) continue;
+    if (!marker || !Array.isArray(marker.itemIds) || !slotted.has(marker.headSha)) continue;
     for (const itemId of marker.itemIds) if (!feedback.includes(itemId) && !owed.has(itemId)) owed.set(itemId, { itemId, headSha: marker.headSha });
   }
   return [...owed.values()].sort((a, b) => a.itemId.localeCompare(b.itemId));
@@ -522,9 +529,9 @@ function compareReviewIds(a, b) {
 function reconciliationPacket({ stateDir, pr, headSha }) {
   const records = activeReviewRecords({ stateDir, pr, headSha })
     .sort((a, b) => a.recordedAtMs - b.recordedAtMs || compareReviewIds(a.reviewId, b.reviewId));
-  // The cap is chosen as claimFixRound chooses it: an unanswered item from a person takes the human cap.
+  // The cap is chosen as claimFixRound chooses it: the claim lists exactly the unanswered items, and one from a person takes the human cap.
   const answered = answeredItemIds({ stateDir, pr });
-  const human = records.some((record) => record.findings.some((finding) => finding.author?.type === 'User' && !answered.has(finding.itemId)));
+  const human = records.some((record) => record.findings.some((finding) => finding.itemId !== undefined && finding.author?.type === 'User' && !answered.has(finding.itemId)));
   const delivered = !fixRoundForHead({ stateDir, pr, headSha }) && deliveryTerminal({ stateDir, pr, headSha }, { fixCap: human ? 'human' : 'bot' });
   if (delivered) return { pr, headSha, reviews: records.map((record) => ({ id: record.reviewId, reviewer: record.reviewer || 'legacy/unknown', url: record.reviewUrl, findings: record.findings })), batchCount: records.length, classification: 'delivery-terminal', action: 'report-delivery', humanRequired: false, requires: `report the recorded ${delivered.classification} delivery disposition` };
   if (records.length === 0) return null;
@@ -636,9 +643,10 @@ function claimFixRound(input) {
       if (active.owner === owner) return { claimed: true, resumed: true, owner, round: slot.round, kind: slot.kind, budget: fixBudget({ stateDir, pr: key.pr }, slot.kind === 'human') };
       return { claimed: false, reason: 'fix-round-owned', humanRequired: true, owner: active.owner };
     }
-    // Without item ids a batch of unanswered feedback items would claim a bot slot and leave the human cap unspent.
+    // The round takes every unanswered item, so its cap is the one reconciliationPacket reports and no item is left without a round or a reply.
     const answered = answeredItemIds({ stateDir, pr: key.pr });
-    if (ids.length === 0 && [...findings.keys()].some((id) => !answered.has(id))) throw new Error('review-lgtm-state: itemIds are required when the head\'s batch holds feedback items');
+    const unanswered = [...findings.keys()].filter((id) => !answered.has(id));
+    if (ids.length !== unanswered.length || unanswered.some((id) => !ids.includes(id))) throw new Error('review-lgtm-state: itemIds must list exactly the head\'s unanswered feedback items');
     const kind = human ? 'human' : 'bot';
     const exhausted = human ? 'human-fix-round-budget-exhausted' : 'fix-round-budget-exhausted';
     const budget = fixBudget({ stateDir, pr: key.pr }, human);
