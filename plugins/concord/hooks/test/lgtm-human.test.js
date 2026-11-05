@@ -391,6 +391,15 @@ test('the CLI reads claim-fix-round item ids from stdin and waive-fix-budget --h
   assert.deepStrictEqual([claim.kind, claim.budget], ['human', { max: 6, spent: 1, remaining: 5 }]);
 });
 
+test('waive-fix-budget refuses an argument after the count other than --human and writes no waiver', () => {
+  const stateDir = temp();
+  const { execFileSync } = require('node:child_process');
+  for (const extra of [['--humans'], ['--human', 'x'], ['human']]) {
+    assert.throws(() => execFileSync('node', [path.join(__dirname, '..', 'review-lgtm-state.js'), 'waive-fix-budget', String(PR), 'maintainer', '1', ...extra], { encoding: 'utf8', stdio: 'pipe', env: { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir } }), (error) => /waive-fix-budget takes <pr> <person> <n> \[--human\]/.test(error.stderr), extra.join(' '));
+  }
+  assert.deepStrictEqual(fs.readdirSync(stateDir).filter((name) => name.includes('fix-waiver')), []);
+});
+
 const edited = (reviewId, revision) => { const obs = humanObs(reviewId); obs.findings[0].itemId = `N${reviewId}0@${revision}`; return obs; };
 
 test('an edited item on the same head is recorded as a revision and can be claimed by a fix round', () => {

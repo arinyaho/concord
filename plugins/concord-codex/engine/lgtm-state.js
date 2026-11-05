@@ -1139,7 +1139,11 @@ function runMain(repoRoot = process.cwd()) {
     process.stdout.write(`${JSON.stringify(claimFixRound({ stateDir, pr, headSha, itemIds: body.itemIds }))}\n`);
   }
   else if (verb === 'renew-fix-round') process.stdout.write(`${JSON.stringify(renewFixRound({ stateDir, pr, headSha, owner: argument }))}\n`);
-  else if (verb === 'waive-fix-budget') process.stdout.write(`${JSON.stringify(waiveFixBudget({ stateDir, pr, person: headSha, count: Number(argument), human: process.argv[6] === '--human' }))}\n`);
+  else if (verb === 'waive-fix-budget') {
+    const flags = process.argv.slice(6);
+    if (flags.length > 1 || (flags.length === 1 && flags[0] !== '--human')) throw new Error('review-lgtm-state: waive-fix-budget takes <pr> <person> <n> [--human]');
+    process.stdout.write(`${JSON.stringify(waiveFixBudget({ stateDir, pr, person: headSha, count: Number(argument), human: flags[0] === '--human' }))}\n`);
+  }
   else if (verb === 'collect-minor') process.stdout.write(`${JSON.stringify(collectMinor({ stateDir, pr, headSha, ...JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'claim-reply') process.stdout.write(`${JSON.stringify(claimReply({ stateDir, pr, itemId: headSha }))}\n`);
   else if (verb === 'record-reply') process.stdout.write(`${JSON.stringify(recordReply({ stateDir, pr, itemId: headSha, record: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
