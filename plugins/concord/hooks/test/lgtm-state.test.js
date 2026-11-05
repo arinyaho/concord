@@ -38,7 +38,7 @@ test('review-until-lgtm persists its monitoring window and request budget', () =
 
   // Simulates a process/session interruption: a new invocation reconstructs
   // the exact same deadline and cannot restart the bounded wait window.
-  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: 901000, requestEligibleAtMs: null, requestBudget: { max: 3, spent: 0, remaining: 3 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, waivers: [], humanFixBudget: { max: 5, spent: 0, remaining: 5 }, humanWaivers: [], minors: [], claimedReplies: [], owedReplies: [], reviewers: [], initialClaimed: false, initialClaimedAtMs: null, initialRecoveryClaimed: false, initialRequested: false, reconciliation: null, delivery: null });
+  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: 901000, requestEligibleAtMs: null, requestBudget: { max: 3, spent: 0, remaining: 3 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, waivers: [], humanFixBudget: { max: 5, spent: 0, remaining: 5 }, humanWaivers: [], minors: [], claimedReplies: [], owedReplies: [], unpushedRounds: [], reviewers: [], initialClaimed: false, initialClaimedAtMs: null, initialRecoveryClaimed: false, initialRequested: false, reconciliation: null, delivery: null });
   assert.deepStrictEqual(lgtmState.openWindow({ ...input, now: 2000, durationMs: 900000 }), { created: false, deadlineMs: 901000 });
 });
 
@@ -142,9 +142,9 @@ test('review requests distinguish a durable claim from a request that was sent',
   const input = { stateDir, pr: 116, headSha: '0123456789abcdef0123456789abcdef01234567' };
   lgtmState.claimInitialRequest({ ...input, now: 2000 });
   assert.strictEqual(lgtmState.claimInitialRequest({ ...input, now: 122000 }), true);
-  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, requestEligibleAtMs: 122000, requestBudget: { max: 3, spent: 1, remaining: 2 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, waivers: [], humanFixBudget: { max: 5, spent: 0, remaining: 5 }, humanWaivers: [], minors: [], claimedReplies: [], owedReplies: [], reviewers: [], initialClaimed: true, initialClaimedAtMs: 122000, initialRecoveryClaimed: false, initialRequested: false, reconciliation: null, delivery: null });
+  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, requestEligibleAtMs: 122000, requestBudget: { max: 3, spent: 1, remaining: 2 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, waivers: [], humanFixBudget: { max: 5, spent: 0, remaining: 5 }, humanWaivers: [], minors: [], claimedReplies: [], owedReplies: [], unpushedRounds: [], reviewers: [], initialClaimed: true, initialClaimedAtMs: 122000, initialRecoveryClaimed: false, initialRequested: false, reconciliation: null, delivery: null });
   assert.strictEqual(lgtmState.markInitialRequested(input), true);
-  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, requestEligibleAtMs: 122000, requestBudget: { max: 3, spent: 1, remaining: 2 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, waivers: [], humanFixBudget: { max: 5, spent: 0, remaining: 5 }, humanWaivers: [], minors: [], claimedReplies: [], owedReplies: [], reviewers: [], initialClaimed: true, initialClaimedAtMs: 122000, initialRecoveryClaimed: false, initialRequested: true, reconciliation: null, delivery: null });
+  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, requestEligibleAtMs: 122000, requestBudget: { max: 3, spent: 1, remaining: 2 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, waivers: [], humanFixBudget: { max: 5, spent: 0, remaining: 5 }, humanWaivers: [], minors: [], claimedReplies: [], owedReplies: [], unpushedRounds: [], reviewers: [], initialClaimed: true, initialClaimedAtMs: 122000, initialRecoveryClaimed: false, initialRequested: true, reconciliation: null, delivery: null });
 });
 
 test('status exposes a provider-specific sent request so resume can open its window', () => {
@@ -369,6 +369,7 @@ test('batch fixes share a cumulative three-round budget across PR heads', () => 
   for (const [index, headSha] of heads.entries()) {
     lgtmState.recordReview({ stateDir, pr: 159, headSha, now: 1000 + index, observation: observation({ reviewId: String(index + 1), commitId: headSha }) });
     const result = lgtmState.claimFixRound({ stateDir, pr: 159, headSha, now: 2000 + index, owner: `worker-${index}` });
+    if (result.claimed) lgtmState.markFixPushed({ stateDir, pr: 159, headSha, fixCommit: 'f'.repeat(40), owner: result.owner });
     if (index < 3) assert.deepStrictEqual(result, { claimed: true, owner: `worker-${index}`, round: index + 1, kind: 'bot', budget: { max: 3, spent: index + 1, remaining: 2 - index } });
     else assert.deepStrictEqual(result, { claimed: false, reason: 'fix-round-budget-exhausted', budget: { max: 3, spent: 3, remaining: 0 } });
   }
@@ -380,6 +381,7 @@ test('fix-budget exhaustion remains terminal after session replacement', () => {
   for (const [index, headSha] of heads.entries()) {
     lgtmState.recordReview({ stateDir, pr: 159, headSha, now: 1000 + index, observation: observation({ reviewId: String(index + 1), commitId: headSha }) });
     const result = lgtmState.claimFixRound({ stateDir, pr: 159, headSha, now: 2000 + index, owner: `worker-${index}` });
+    if (result.claimed) lgtmState.markFixPushed({ stateDir, pr: 159, headSha, fixCommit: 'f'.repeat(40), owner: result.owner });
     if (index === 3) {
       assert.deepStrictEqual(result, { claimed: false, reason: 'fix-round-budget-exhausted', budget: { max: 3, spent: 3, remaining: 0 } });
       assert.deepStrictEqual(lgtmState.claimFixRound({ stateDir, pr: 159, headSha, now: 3000 + index, owner: `replacement-${index}` }), result);
@@ -750,6 +752,7 @@ function claimRounds(stateDir, pr, count, first = 1) {
     const headSha = String(index).repeat(40);
     lgtmState.recordReview({ stateDir, pr, headSha, now: 1000 + index, observation: observation({ reviewId: String(index), commitId: headSha }) });
     results.push(lgtmState.claimFixRound({ stateDir, pr, headSha, now: 2000 + index, owner: `worker-${index}` }));
+    if (results.at(-1).claimed) lgtmState.markFixPushed({ stateDir, pr, headSha, fixCommit: 'f'.repeat(40), owner: `worker-${index}` });
   }
   return results;
 }
@@ -849,6 +852,7 @@ test('self-feeding uses the latest earlier round on the head ancestry and matche
   const claim = (headSha, now) => {
     lgtmState.recordReview({ stateDir, pr: 221, headSha, now, observation: observation({ reviewId: String(now), commitId: headSha }) });
     assert.strictEqual(lgtmState.claimFixRound({ stateDir, pr: 221, headSha, now, owner: `w-${now}` }).claimed, true);
+    lgtmState.markFixPushed({ stateDir, pr: 221, headSha, fixCommit: 'f'.repeat(40), owner: `w-${now}` });
   };
   claim(second, 1000);
   claim(side, 2000);
@@ -876,6 +880,7 @@ function selfFeedingRepo(prefix) {
 function claimFixHead(stateDir, headSha, now) {
   lgtmState.recordReview({ stateDir, pr: 221, headSha, now, observation: observation({ reviewId: String(now), commitId: headSha }) });
   assert.strictEqual(lgtmState.claimFixRound({ stateDir, pr: 221, headSha, now, owner: `w-${now}` }).claimed, true);
+  lgtmState.markFixPushed({ stateDir, pr: 221, headSha, fixCommit: 'f'.repeat(40), owner: `w-${now}` });
 }
 
 test('self-feeding ignores unchanged content of a renamed file', () => {
@@ -1246,7 +1251,7 @@ test('the design and the skill name revision record ids and take review ids from
 test('the design ledger lists every status field the human path adds', () => {
   const design = fs.readFileSync(path.join(__dirname, '..', '..', '..', '..', 'docs', 'design', 'review-until-lgtm-human-reviewers.md'), 'utf8');
   const paragraph = design.split('\n').find((line) => line.includes('`status` gains')) || '';
-  for (const field of ['reviewers', 'humanWait', 'claimedReplies', 'owedReplies', 'humanFixBudget', 'humanWaivers']) assert.ok(paragraph.includes(`\`${field}\``), field);
+  for (const field of ['reviewers', 'humanWait', 'claimedReplies', 'owedReplies', 'unpushedRounds', 'humanFixBudget', 'humanWaivers']) assert.ok(paragraph.includes(`\`${field}\``), field);
 });
 
 test('waivers add up: two waivers by one person with different counts grant their sum', () => {

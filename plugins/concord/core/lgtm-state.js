@@ -452,6 +452,17 @@ function owedReplies({ stateDir, pr }) {
   return [...owed.values()].sort((a, b) => a.itemId.localeCompare(b.itemId));
 }
 
+// Slotted fix rounds of other heads with no pushed marker: a crash after the push leaves one, and its items must not be fixed by a second round.
+function unpushedRounds({ stateDir, pr, headSha }) {
+  const n = Number(pr);
+  const head = headSha && String(headSha).toLowerCase();
+  return prFileNames(stateDir, (name) => new RegExp(`^pr-${n}\\.(?:human-)?fix-round-slot-\\d+\\.json$`).test(name))
+    .map((file) => readMarker(file))
+    .filter((slot) => slot && typeof slot.headSha === 'string' && FULL_SHA.test(slot.headSha) && slot.headSha !== head && !readMarker(pushedFile({ stateDir, pr: n, headSha: slot.headSha })))
+    .sort((a, b) => (a.claimedAtMs || 0) - (b.claimedAtMs || 0) || a.headSha.localeCompare(b.headSha))
+    .map((slot) => ({ headSha: slot.headSha, owner: latestFixOwnership({ stateDir, pr: n, headSha: slot.headSha }, slot).owner }));
+}
+
 // Written once the round's certified commit is pushed: from then on its items are answered on every head and their replies are owed.
 function markFixPushed({ stateDir, pr, headSha, fixCommit, owner, now = Date.now() }) {
   const key = validate({ pr, headSha });
@@ -652,7 +663,7 @@ function status(input) {
     }
   }
   const deadlines = [window, retryWindow].filter(Boolean).map((marker) => marker.deadlineMs);
-  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), waivers: fixWaivers({ stateDir, pr: key.pr }), humanFixBudget: humanFixBudget({ stateDir, pr: key.pr }), humanWaivers: fixWaivers({ stateDir, pr: key.pr }, true), minors: collectedMinors({ stateDir, pr: key.pr }), claimedReplies: claimedReplies({ stateDir, pr: key.pr }), owedReplies: owedReplies({ stateDir, pr: key.pr }), reviewers: (latestSelection({ stateDir, pr: key.pr })?.reviewers || []).map(({ login, id, type, gone }) => ({ login, id, type, ...(gone ? { gone: true } : {}), approvePrompted: !!readMarker(approvePromptFile({ stateDir, ...key }, id)) })), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested, reconciliation: reconciliationPacket({ stateDir, ...key }), delivery: deliveryStatus({ stateDir, ...key }) };
+  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), waivers: fixWaivers({ stateDir, pr: key.pr }), humanFixBudget: humanFixBudget({ stateDir, pr: key.pr }), humanWaivers: fixWaivers({ stateDir, pr: key.pr }, true), minors: collectedMinors({ stateDir, pr: key.pr }), claimedReplies: claimedReplies({ stateDir, pr: key.pr }), owedReplies: owedReplies({ stateDir, pr: key.pr }), unpushedRounds: unpushedRounds({ stateDir, ...key }), reviewers: (latestSelection({ stateDir, pr: key.pr })?.reviewers || []).map(({ login, id, type, gone }) => ({ login, id, type, ...(gone ? { gone: true } : {}), approvePrompted: !!readMarker(approvePromptFile({ stateDir, ...key }, id)) })), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested, reconciliation: reconciliationPacket({ stateDir, ...key }), delivery: deliveryStatus({ stateDir, ...key }) };
 }
 
 function claimFixRound(input) {
@@ -671,6 +682,8 @@ function claimFixRound(input) {
       if (active.owner === owner) return { claimed: true, resumed: true, owner, round: slot.round, kind: slot.kind, budget: fixBudget({ stateDir, pr: key.pr }, slot.kind === 'human') };
       return { claimed: false, reason: 'fix-round-owned', humanRequired: true, owner: active.owner };
     }
+    const unpushed = unpushedRounds({ stateDir, ...key });
+    if (unpushed.length > 0) return { claimed: false, reason: 'unpushed-fix-round', humanRequired: true, unpushedRounds: unpushed };
     const records = activeReviewRecords({ stateDir, ...key });
     const findings = new Map(records.flatMap((record) => record.findings).filter((finding) => finding.itemId !== undefined).map((finding) => [finding.itemId, finding]));
     const human = ids.some((id) => findings.get(id)?.author?.type === 'User');
