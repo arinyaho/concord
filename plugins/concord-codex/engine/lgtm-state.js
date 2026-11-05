@@ -443,7 +443,7 @@ function owedReplies({ stateDir, pr }) {
   const n = Number(pr);
   const { feedback } = answeredParts({ stateDir, pr: n });
   const owed = new Map();
-  for (const file of prFileNames(stateDir, (name) => name.startsWith(`pr-${n}-`) && name.endsWith('.fix-round-pushed.json'))) {
+  for (const file of prFileNames(stateDir, (name) => name.startsWith(`pr-${n}-`) && name.endsWith('.fix-round-pushed.json')).sort()) {
     const pushed = readMarker(file);
     const claim = pushed && FULL_SHA.test(String(pushed.headSha)) ? readMarker(markerPath({ stateDir, pr: n, headSha: pushed.headSha }, 'fix-round-claim')) : null;
     if (!claim || !Array.isArray(claim.itemIds)) continue;
@@ -472,6 +472,13 @@ function markFixPushed({ stateDir, pr, headSha, fixCommit, owner, now = Date.now
     const slot = fixRoundForHead({ stateDir, ...key });
     if (!slot) return { marked: false, reason: 'no-fix-round' };
     if (latestFixOwnership({ stateDir, ...key }, slot).owner !== owner) return { marked: false, reason: 'owner-mismatch' };
+    // A later slotted round on another head that took any of this round's items supersedes it, so at most one pushed marker covers an item.
+    const own = readMarker(markerPath({ stateDir, ...key }, 'fix-round-claim'));
+    const ownIds = own && Array.isArray(own.itemIds) ? own.itemIds : [];
+    const slotted = slotHeads({ stateDir, pr: key.pr });
+    const later = ownIds.length === 0 ? null : prFileNames(stateDir, (name) => name.startsWith(`pr-${key.pr}-`) && name.endsWith('.fix-round-claim.json')).map((claimFile) => readMarker(claimFile))
+      .find((claim) => claim && claim.headSha !== key.headSha && slotted.has(claim.headSha) && (claim.claimedAtMs || 0) > (own.claimedAtMs || 0) && Array.isArray(claim.itemIds) && claim.itemIds.some((id) => ownIds.includes(id)));
+    if (later) return { marked: false, reason: 'superseded', by: later.headSha };
     const file = pushedFile({ stateDir, ...key });
     const created = writeExclusive(file, { ...key, fixCommit: fixCommit.toLowerCase(), owner, pushedAtMs: now });
     const pushed = readMarker(file);

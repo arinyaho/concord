@@ -367,6 +367,20 @@ test('an unpushed fix round on an earlier head returns its items to the batch an
   assert.deepStrictEqual([s.reconciliation.unansweredItemIds, s.owedReplies], [[itemOf(obs)], []]);
 });
 
+test('a late mark of a round whose items a later round took is refused as superseded', () => {
+  const stateDir = temp();
+  const obs = humanObs('comment-70');
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
+  const early = lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(obs)], now: 1 });
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: H2, observation: { ...obs, commitId: H2 } });
+  const late = lgtmState.claimFixRound({ stateDir, pr: PR, headSha: H2, itemIds: [itemOf(obs)], now: 2 });
+  assert.strictEqual(late.claimed, true);
+  assert.deepStrictEqual(lgtmState.markFixPushed({ stateDir, pr: PR, headSha: HEAD, fixCommit: 'f'.repeat(40), owner: early.owner, now: 3 }), { marked: false, reason: 'superseded', by: H2 });
+  assert.strictEqual(fs.existsSync(lgtmState.markerPath({ stateDir, pr: PR, headSha: HEAD }, 'fix-round-pushed')), false);
+  assert.strictEqual(lgtmState.markFixPushed({ stateDir, pr: PR, headSha: H2, fixCommit: 'f'.repeat(40), owner: late.owner, now: 4 }).marked, true);
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, [{ itemId: itemOf(obs), headSha: H2, fixCommit: 'f'.repeat(40) }]);
+});
+
 test('a pushed fix round owes its replies with the fix commit and keeps its items out of the next batch', () => {
   const stateDir = temp();
   const { execFileSync } = require('node:child_process');
