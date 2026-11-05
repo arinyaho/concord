@@ -290,6 +290,7 @@ test('a resume of the empty selection answers nothing twice', async () => {
 
 const H2 = 'e'.repeat(40);
 const itemOf = (obs, i = 0) => obs.findings[i].itemId;
+const mismatch = (expected) => ({ claimed: false, reason: 'item-ids-mismatch', expected });
 
 test('a round with a human item spends the human cap', () => {
   const stateDir = temp();
@@ -373,10 +374,11 @@ test('a human waiver raises only the human cap', () => {
   assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).fixBudget.max, 5);
 });
 
-test('claim-fix-round rejects item ids outside the head\'s active findings', () => {
+test('claim-fix-round refuses item ids outside the head\'s active findings', () => {
   const stateDir = temp();
-  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: humanObs('comment-70') });
-  assert.throws(() => lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: ['other@2026-11-01T00:00:00Z'] }), /itemIds must belong/);
+  const obs = humanObs('comment-70');
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
+  assert.deepStrictEqual(lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: ['other@2026-11-01T00:00:00Z'] }), mismatch([itemOf(obs)]));
   assert.ok(!fs.existsSync(path.join(stateDir, `pr-${PR}-${HEAD}.fix-round-claim.json`)));
 });
 
@@ -410,7 +412,7 @@ test('an edited item on the same head is recorded as a revision and can be claim
   const hex = require('node:crypto').createHash('sha256').update(itemOf(later)).digest('hex').slice(0, 16);
   assert.ok(fs.existsSync(path.join(stateDir, `pr-${PR}-${HEAD}.comment-70~${hex}.json`)));
   assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reconciliation.reviews.map((r) => r.id), ['comment-70', `comment-70~${hex}`]);
-  assert.throws(() => lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(later), itemOf(humanObs('comment-70'))] }), /itemIds must list exactly the head's unanswered feedback items/);
+  assert.deepStrictEqual(lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(later), itemOf(humanObs('comment-70'))] }), mismatch([itemOf(later)]));
   assert.strictEqual(lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(later)] }).claimed, true);
 });
 
@@ -462,7 +464,7 @@ test('a claim that lists no item ids on a batch of feedback items is refused and
     lgtmState.recordReview({ stateDir, pr: PR, headSha: head, observation: obs });
     if (i < 5) lgtmState.claimFixRound({ stateDir, pr: PR, headSha: head, itemIds: [itemOf(obs)] });
   });
-  assert.throws(() => lgtmState.claimFixRound({ stateDir, pr: PR, headSha: heads[5] }), /^Error: review-lgtm-state: itemIds must list exactly the head's unanswered feedback items$/);
+  assert.deepStrictEqual(lgtmState.claimFixRound({ stateDir, pr: PR, headSha: heads[5] }), mismatch(['Ncomment-850@2026-11-01T00:00:00Z']));
   const s = lgtmState.status({ stateDir, pr: PR, headSha: heads[5] });
   assert.deepStrictEqual([s.fixBudget.spent, s.humanFixBudget.spent], [0, 5]);
   assert.ok(!fs.existsSync(path.join(stateDir, `pr-${PR}-${heads[5]}.fix-round-claim.json`)));
@@ -479,11 +481,11 @@ test('a head whose feedback items are all answered claims a bot round without it
   assert.strictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).humanFixBudget.spent, 0);
 });
 
-test('a claim that lists a subset of the head\'s unanswered items is refused and spends no slot', () => {
+test('a claim that lists a subset of the head\'s unanswered items is refused with the expected ids and spends no slot', () => {
   const stateDir = temp();
   const obs = humanObs('comment-70', 2);
   lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
-  assert.throws(() => lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(obs)] }), /^Error: review-lgtm-state: itemIds must list exactly the head's unanswered feedback items$/);
+  assert.deepStrictEqual(lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(obs)] }), mismatch([itemOf(obs), itemOf(obs, 1)].sort()));
   assert.ok(!fs.existsSync(path.join(stateDir, `pr-${PR}-${HEAD}.fix-round-claim.json`)));
   assert.strictEqual(lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(obs, 1), itemOf(obs), itemOf(obs)] }).kind, 'human');
 });
@@ -494,7 +496,7 @@ test('a claim that lists a reply-claimed or handled item is refused', () => {
   lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
   lgtmState.claimReply({ stateDir, pr: PR, itemId: itemOf(obs) });
   lgtmState.recordReply({ stateDir, pr: PR, itemId: itemOf(obs, 1), record: reply({ url: 'https://x/70/1', author: obs.findings[1].author }) });
-  for (const itemIds of [[itemOf(obs), itemOf(obs, 2)], [itemOf(obs, 1), itemOf(obs, 2)]]) assert.throws(() => lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds }), /itemIds must list exactly the head's unanswered feedback items/);
+  for (const itemIds of [[itemOf(obs), itemOf(obs, 2)], [itemOf(obs, 1), itemOf(obs, 2)]]) assert.deepStrictEqual(lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds }), mismatch([itemOf(obs, 2)]));
   assert.strictEqual(lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(obs, 2)] }).claimed, true);
 });
 
@@ -509,7 +511,7 @@ test('status and claim choose the bot cap when the person\'s item is reply-claim
   lgtmState.claimReply({ stateDir, pr: PR, itemId: itemOf(person) });
   const reconciliation = lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reconciliation;
   assert.deepStrictEqual([reconciliation.action, reconciliation.humanRequired], ['verify-and-fix', false]);
-  assert.throws(() => lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(person), itemOf(bot)] }), /itemIds must list exactly/);
+  assert.deepStrictEqual(lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(person), itemOf(bot)] }), mismatch([itemOf(bot)]));
   const claim = lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(bot)] });
   assert.deepStrictEqual([claim.claimed, claim.kind, claim.budget.spent], [true, 'bot', 1]);
 });
@@ -519,7 +521,7 @@ test('bot items with ids must be listed and spend the bot cap', () => {
   const obs = { ...humanObs('comment-73'), reviewer: 'vercel', reviewerId: 901, reviewerType: 'Bot' };
   obs.findings[0].author = { login: 'vercel', id: 901, type: 'Bot' };
   lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
-  assert.throws(() => lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [] }), /^Error: review-lgtm-state: itemIds must list exactly the head's unanswered feedback items$/);
+  assert.deepStrictEqual(lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [] }), mismatch([itemOf(obs)]));
   const claim = lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, itemIds: [itemOf(obs)] });
   assert.deepStrictEqual([claim.kind, claim.budget.spent, lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).humanFixBudget.spent], ['bot', 1, 0]);
 });

@@ -651,10 +651,9 @@ function claimFixRound(input) {
     const terminal = deliveryTerminal({ stateDir, ...key }, { fixCap: human ? 'human' : 'bot' });
     if (terminal) return terminal;
     if (records.length === 0) return { claimed: false, reason: 'no-findings' };
-    if (ids.some((id) => !findings.has(id))) throw new Error('review-lgtm-state: itemIds must belong to the head\'s active findings');
     // The round takes every unanswered item, so its cap is the one reconciliationPacket reports and no item is left without a round or a reply.
-    const unanswered = unansweredFindings(records, answeredItemIds({ stateDir, pr: key.pr })).map((finding) => finding.itemId);
-    if (ids.length !== unanswered.length || unanswered.some((id) => !ids.includes(id))) throw new Error('review-lgtm-state: itemIds must list exactly the head\'s unanswered feedback items');
+    const unanswered = unansweredFindings(records, answeredItemIds({ stateDir, pr: key.pr })).map((finding) => finding.itemId).sort();
+    if (ids.length !== unanswered.length || unanswered.some((id) => !ids.includes(id))) return { claimed: false, reason: 'item-ids-mismatch', expected: unanswered };
     const kind = human ? 'human' : 'bot';
     const exhausted = human ? 'human-fix-round-budget-exhausted' : 'fix-round-budget-exhausted';
     const budget = fixBudget({ stateDir, pr: key.pr }, human);
