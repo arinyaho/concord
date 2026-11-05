@@ -452,13 +452,23 @@ function owedReplies({ stateDir, pr }) {
   return [...owed.values()].sort((a, b) => a.itemId.localeCompare(b.itemId));
 }
 
-// Slotted fix rounds of other heads with no pushed marker: a crash after the push leaves one; its items are back in the next head's batch, so the owner marks the round when its fix commit landed.
+// A later slotted round on another head that took any of this head's round items supersedes it, so at most one pushed marker covers an item. Rounds are ordered by claimedAtMs, then headSha, the order unpushedRounds lists them in, so of two such rounds exactly one is later.
+function supersedingRound({ stateDir, pr, headSha }) {
+  const own = readMarker(markerPath({ stateDir, pr, headSha }, 'fix-round-claim'));
+  const ownIds = own && Array.isArray(own.itemIds) ? own.itemIds : [];
+  if (ownIds.length === 0) return null;
+  const slotted = slotHeads({ stateDir, pr });
+  return prFileNames(stateDir, (name) => name.startsWith(`pr-${pr}-`) && name.endsWith('.fix-round-claim.json')).map((claimFile) => readMarker(claimFile))
+    .find((claim) => claim && claim.headSha !== headSha && slotted.has(claim.headSha) && ((claim.claimedAtMs || 0) - (own.claimedAtMs || 0) || claim.headSha.localeCompare(headSha)) > 0 && Array.isArray(claim.itemIds) && claim.itemIds.some((id) => ownIds.includes(id))) || null;
+}
+
+// Slotted fix rounds of other heads with no pushed marker that no later round supersedes: a crash after the push leaves one; its items are back in the next head's batch, so the owner marks the round when its fix commit landed.
 function unpushedRounds({ stateDir, pr, headSha }) {
   const n = Number(pr);
   const head = headSha && String(headSha).toLowerCase();
   return prFileNames(stateDir, (name) => new RegExp(`^pr-${n}\\.(?:human-)?fix-round-slot-\\d+\\.json$`).test(name))
     .map((file) => readMarker(file))
-    .filter((slot) => slot && typeof slot.headSha === 'string' && FULL_SHA.test(slot.headSha) && slot.headSha !== head && !readMarker(pushedFile({ stateDir, pr: n, headSha: slot.headSha })))
+    .filter((slot) => slot && typeof slot.headSha === 'string' && FULL_SHA.test(slot.headSha) && slot.headSha !== head && !readMarker(pushedFile({ stateDir, pr: n, headSha: slot.headSha })) && !supersedingRound({ stateDir, pr: n, headSha: slot.headSha }))
     .sort((a, b) => (a.claimedAtMs || 0) - (b.claimedAtMs || 0) || a.headSha.localeCompare(b.headSha))
     .map((slot) => ({ headSha: slot.headSha, owner: latestFixOwnership({ stateDir, pr: n, headSha: slot.headSha }, slot).owner }));
 }
@@ -472,12 +482,7 @@ function markFixPushed({ stateDir, pr, headSha, fixCommit, owner, now = Date.now
     const slot = fixRoundForHead({ stateDir, ...key });
     if (!slot) return { marked: false, reason: 'no-fix-round' };
     if (latestFixOwnership({ stateDir, ...key }, slot).owner !== owner) return { marked: false, reason: 'owner-mismatch' };
-    // A later slotted round on another head that took any of this round's items supersedes it, so at most one pushed marker covers an item. Rounds are ordered by claimedAtMs, then headSha, the order unpushedRounds lists them in, so of two such rounds exactly one is later.
-    const own = readMarker(markerPath({ stateDir, ...key }, 'fix-round-claim'));
-    const ownIds = own && Array.isArray(own.itemIds) ? own.itemIds : [];
-    const slotted = slotHeads({ stateDir, pr: key.pr });
-    const later = ownIds.length === 0 ? null : prFileNames(stateDir, (name) => name.startsWith(`pr-${key.pr}-`) && name.endsWith('.fix-round-claim.json')).map((claimFile) => readMarker(claimFile))
-      .find((claim) => claim && claim.headSha !== key.headSha && slotted.has(claim.headSha) && ((claim.claimedAtMs || 0) - (own.claimedAtMs || 0) || claim.headSha.localeCompare(key.headSha)) > 0 && Array.isArray(claim.itemIds) && claim.itemIds.some((id) => ownIds.includes(id)));
+    const later = supersedingRound({ stateDir, ...key });
     if (later) return { marked: false, reason: 'superseded', by: later.headSha };
     const file = pushedFile({ stateDir, ...key });
     const created = writeExclusive(file, { ...key, fixCommit: fixCommit.toLowerCase(), owner, pushedAtMs: now });

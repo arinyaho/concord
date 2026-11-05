@@ -381,6 +381,16 @@ test('a late mark of a round whose items a later round took is refused as supers
   assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, [{ itemId: itemOf(obs), headSha: H2, fixCommit: 'f'.repeat(40) }]);
 });
 
+test('unpushedRounds omits a superseded round and still lists the round that superseded it', () => {
+  const stateDir = temp();
+  const obs = humanObs('comment-70');
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
+  lgtmState.claimFixRound({ stateDir, pr: PR, headSha: HEAD, owner: 'w', itemIds: [itemOf(obs)], now: 1 });
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: H2, observation: { ...obs, commitId: H2 } });
+  lgtmState.claimFixRound({ stateDir, pr: PR, headSha: H2, owner: 'v', itemIds: [itemOf(obs)], now: 2 });
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: 'd'.repeat(40) }).unpushedRounds, [{ headSha: H2, owner: 'v' }]);
+});
+
 test('of two rounds claimed at the same time on different heads, only the one whose head SHA sorts later can be marked pushed', () => {
   const stateDir = temp();
   const obs = humanObs('comment-70');
