@@ -69,13 +69,15 @@ An agent merges a PR only at the user's explicit request naming it, and only aft
   "baseSha": "<live PR baseRefOid>",
   "contractDigest": "<SHA-256 of the approved contract, computed again now>",
   "checks": [{"name": "test", "conclusion": "success"}],
-  "reviewers": [{"reviewer": "chatgpt-codex-connector[bot]", "terminal": true, "lgtm": true, "failure": "<optional provider failure or timeout>"}],
-  "expectedReviewers": ["chatgpt-codex-connector[bot]"]
+  "reviewers": [{"reviewer": "chatgpt-codex-connector[bot]", "type": "Bot", "terminal": true, "lgtm": true, "failure": "<optional provider failure or timeout>"}],
+  "expectedReviewers": ["chatgpt-codex-connector[bot]"],
+  "branchRules": {"mergeStateStatus": "CLEAN", "reviewDecision": "APPROVED"}
 }
 ```
 
 | Precondition | `blocked` reason when unmet |
 |---|---|
+| Live GitHub branch rules are satisfied | `branch-rules-unmet:<mergeStateStatus>:<reviewDecision>` |
 | The live head equals the head asked about | `head-mismatch:<live>` |
 | Every check on that head concluded `success` | `check:<name>:<conclusion>` |
 | With a named selection, an automated (`Bot`) reviewer is named or observed, and the delivery record is not `mergeable-without-review` | `no-automated-review` |

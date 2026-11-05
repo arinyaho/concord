@@ -546,3 +546,46 @@ test('every distribution states the reviewer-unavailable declaration', () => {
     assert.match(read(`${pkg}/skills/initiative-to-prs/references/stages.md`), /`mergeable-without-review` satisfy this condition/);
   }
 });
+
+
+const humanReview = (over = {}) => ({ branchRules: { mergeStateStatus: 'CLEAN', reviewDecision: 'APPROVED' }, reviewers: [{ login: 'alice', id: 101, type: 'User', status: 'approved', reviewId: '5470930001', commitId: HEAD }], unanswered: [], changesRequested: [], ...over });
+
+test('delivery copies human statuses and satisfied branch rules without requiring selected approval', () => {
+  const stateDir = temp();
+  const hr = humanReview({ branchRules: { mergeStateStatus: 'CLEAN', reviewDecision: null }, reviewers: [{ login: 'alice', id: 101, type: 'User', status: 'pending', reviewId: null, commitId: null }] });
+  const record = lgtmState.recordDelivery({ stateDir, pr: PR, headSha: HEAD, packet: pr172Packet({ findings: [], tickets: [], humanReview: hr }) });
+  assert.strictEqual(record.classification, 'mergeable-clean');
+  assert.deepStrictEqual(record.humanReview, hr);
+});
+
+test('human delivery blocks on branch rules, unanswered items and unanswered requests for changes', () => {
+  const hr = humanReview({ branchRules: { mergeStateStatus: 'BLOCKED', reviewDecision: 'REVIEW_REQUIRED' }, unanswered: ['IC_1@revision'], changesRequested: [{ login: 'bob', id: 202, selected: false, answered: false }] });
+  const result = lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...pr172Packet({ humanReview: hr }) });
+  assert.strictEqual(result.classification, 'blocked');
+  assert.deepStrictEqual(result.reasons, ['branch-rules-unmet:BLOCKED:REVIEW_REQUIRED', 'feedback-unanswered:IC_1@revision', 'changes-requested:bob']);
+});
+
+test('human delivery rejects malformed provenance and duplicate account or item ids', () => {
+  for (const hr of [null, [], {}, humanReview({ branchRules: {} }), humanReview({ reviewers: [{ login: 'a', id: NaN, type: 'User', status: 'approved', reviewId: null, commitId: null }] }), humanReview({ unanswered: ['a', 'a'] }), humanReview({ changesRequested: [{ login: 'a', id: 1, selected: true }] }), humanReview({ reviewers: [...humanReview().reviewers, ...humanReview().reviewers] })]) {
+    assert.throws(() => lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...pr172Packet({ humanReview: hr }) }), /humanReview/);
+  }
+});
+
+test('human delivery canonicalizes account and item order', () => {
+  const stateDir = temp();
+  const alice = humanReview().reviewers[0];
+  const bob = { ...alice, login: 'bob', id: 202, reviewId: '5470930002' };
+  const a = lgtmState.recordDelivery({ stateDir, pr: PR, headSha: HEAD, packet: pr172Packet({ findings: [], tickets: [], humanReview: humanReview({ reviewers: [bob, alice], unanswered: ['z', 'a'] }) }) });
+  const b = lgtmState.recordDelivery({ stateDir, pr: PR, headSha: HEAD, packet: pr172Packet({ findings: [], tickets: [], humanReview: humanReview({ reviewers: [alice, bob], unanswered: ['a', 'z'] }) }) });
+  assert.strictEqual(a.digest, b.digest);
+  assert.deepStrictEqual(a.humanReview.reviewers.map((r) => r.id), [101, 202]);
+  assert.deepStrictEqual(a.humanReview.unanswered, ['a', 'z']);
+});
+
+test('bot-only delivery keeps its pre-humanReview digest', () => {
+  const stateDir = temp();
+  withActiveReview(stateDir);
+  const record = lgtmState.recordDelivery({ stateDir, pr: PR, headSha: HEAD, packet: pr172Packet({ reviewIds: ['4192088400'] }) });
+  assert.strictEqual(record.humanReview, undefined);
+  assert.strictEqual(record.digest, 'd776dff01dab6f586eef71715ac526f617e94852f9412ad65850f5aef6de84ed');
+});

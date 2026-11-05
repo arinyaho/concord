@@ -201,7 +201,7 @@ Replies are idempotent. Before posting, the skill claims the item with `claim-re
 
 ### Request re-review
 
-After each push the skill asks each selected human to review the new head, once per reviewer per head, through GitHub's requested-reviewers API. `claim-human-request <pr> <head-sha> <reviewer-id>` writes a write-once claim; after GitHub accepts the request, `mark-human-requested` writes the sent marker. A claim without a sent marker is settled from the PR timeline: a review-request event for that reviewer by the acting account after the head appeared counts as sent; otherwise the request is sent once. On the first run, a selected human who is not already requested and has not reviewed the head gets the same single request. A request refused by GitHub (the account cannot be requested on this repository) is recorded in the `-refused.json` marker, reported once as `request-refused:<login>`, and not retried: the marker is read before any request.
+After each push the skill asks each selected human to review the new head, once per reviewer per head, through GitHub's requested-reviewers API. `claim-human-request <pr> <head-sha> <reviewer-id>` writes a write-once claim; after GitHub accepts the request, `mark-human-requested` writes the sent marker. A claim without a sent marker is settled from the PR timeline: a review-request event for that reviewer by the acting account after the head appeared counts as sent; otherwise the request is sent once. On the first run, a selected human who is not already requested and has not reviewed the head gets the same single request. A request refused by GitHub (the account cannot be requested on this repository) is recorded as `refused: true` in the `-request.json` marker, reported once as `request-refused:<login>`, and not retried: the marker is read before any request.
 
 On a draft PR no review request is sent; everything else runs, including the bot loop and the answering of human feedback. When the wait sees the PR leave draft (`ready`), the skill sends the requests owed for the live head, once each.
 
@@ -254,7 +254,7 @@ The end condition holds when, for the live head:
 - no fix round is open;
 - GitHub reports the branch rules satisfied (below).
 
-Branch rules alone decide merge-readiness; Concord requires no selected reviewer's approval. In a repository whose rules ask for nothing (a null review decision and a `CLEAN` merge state), the head is merge-ready as soon as the other three conditions hold, also when a selected reviewer has not responded. Then the session records the delivery with `record-delivery`. The packet gains an optional `humanReview` object, present only when the PR has a selected human or human feedback, so a bot-only packet and its digest stay unchanged:
+Branch rules alone decide merge-readiness; Concord requires no selected reviewer's approval. In a repository whose rules ask for nothing (a null review decision and a `CLEAN` merge state), the head is merge-ready as soon as the other three conditions hold, also when a selected reviewer has not responded. Then the session records the delivery with `record-delivery`. The packet gains an optional `humanReview` object, present in empty mode and when the PR has a selected human or human feedback, so a named-bots-only packet without human feedback and its digest stay unchanged:
 
 ```json
 {

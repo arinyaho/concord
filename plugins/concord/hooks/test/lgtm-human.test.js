@@ -748,10 +748,10 @@ test('status lists the selected reviewers with their Approve prompt for the head
   assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reviewers, []);
   lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice', 'copilot-pull-request-reviewer'], github: github() });
   lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: HEAD, reviewerId: 101, itemId: ITEM });
-  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reviewers, [{ ...ACCOUNTS.alice, approvePrompted: true }, { login: 'copilot-pull-request-reviewer', id: 900, type: 'Bot', approvePrompted: false }]);
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reviewers, [{ ...ACCOUNTS.alice, requested: false, refused: false, approvePrompted: true }, { login: 'copilot-pull-request-reviewer', id: 900, type: 'Bot', requested: false, refused: false, approvePrompted: false }]);
   assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).reviewers.map((r) => r.approvePrompted), [false, false]);
   lgtmState.selectReviewers({ stateDir, pr: PR, logins: null, github: github({ alice: null }) });
-  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reviewers[0], { ...ACCOUNTS.alice, gone: true, approvePrompted: true });
+  assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reviewers[0], { ...ACCOUNTS.alice, gone: true, requested: false, refused: false, approvePrompted: true });
 });
 
 test('a deleted author\'s item is claimed and recorded', () => {
@@ -846,4 +846,137 @@ test('the CLI claims and records a reply and requires an item id for the reply v
   for (const verb of ['claim-reply', 'record-reply', 'find-reply']) {
     for (const args of [[String(PR)], [String(PR), 'not-an-item']]) assert.throws(() => run([verb, ...args], '{}'), (error) => /an item id is <node id>@<revision timestamp>/.test(error.stderr), `${verb} ${args.join(' ')}`);
   }
+});
+
+
+test('a human wait defaults to 48 hours and a resume keeps its deadline', () => {
+  const stateDir = temp();
+  assert.deepStrictEqual(lgtmState.openHumanWait({ stateDir, pr: PR, headSha: HEAD, now: 1000 }), { created: true, startedAtMs: 1000, deadlineMs: 172801000, lengthMs: 172800000, sequence: 1 });
+  assert.deepStrictEqual(lgtmState.openHumanWait({ stateDir, pr: PR, headSha: HEAD, now: 5000 }), { created: false, startedAtMs: 1000, deadlineMs: 172801000, lengthMs: 172800000, sequence: 1 });
+});
+
+test('resuming a parked PR opens a new wait and later heads inherit the configured length', () => {
+  const stateDir = temp();
+  lgtmState.openHumanWait({ stateDir, pr: PR, headSha: HEAD, seconds: 10, now: 0 });
+  assert.deepStrictEqual(lgtmState.openHumanWait({ stateDir, pr: PR, headSha: HEAD, now: 20000 }), { created: true, sequence: 2, startedAtMs: 20000, deadlineMs: 30000, lengthMs: 10000 });
+  const moved = lgtmState.setHumanWait({ stateDir, pr: PR, headSha: HEAD, seconds: 86400, now: 21000 });
+  assert.strictEqual(moved.startedAtMs, 20000);
+  assert.strictEqual(moved.deadlineMs, 86420000);
+  assert.strictEqual(lgtmState.openHumanWait({ stateDir, pr: PR, headSha: H2, now: 50000 }).deadlineMs, 86450000);
+  assert.strictEqual(lgtmState.lastWaitHead({ stateDir, pr: PR }), H2);
+  assert.strictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).humanWait.deadlineMs, 86420000);
+});
+
+test('human wait records reject invalid lengths and preserve the existing record', () => {
+  const stateDir = temp();
+  for (const seconds of [0, -1, NaN, Infinity, 'bad', 0.0001]) assert.throws(() => lgtmState.openHumanWait({ stateDir, pr: PR, headSha: HEAD, seconds }), /wait.*positive|positive.*wait/);
+  assert.strictEqual(lgtmState.humanWaitStatus({ stateDir, pr: PR, headSha: HEAD }), null);
+});
+
+test('each push claims one request per selected human and spends no bot request', () => {
+  const stateDir = temp();
+  lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice', 'copilot-pull-request-reviewer'], github: github() });
+  for (const headSha of [HEAD, H2]) {
+    assert.deepStrictEqual(lgtmState.claimHumanRequest({ stateDir, pr: PR, headSha, reviewerId: 101 }), { claimed: true });
+    assert.deepStrictEqual(lgtmState.claimHumanRequest({ stateDir, pr: PR, headSha, reviewerId: 101 }), { claimed: false, reason: 'request-claimed' });
+    assert.deepStrictEqual(lgtmState.markHumanRequested({ stateDir, pr: PR, headSha, reviewerId: 101 }), { marked: true });
+    assert.deepStrictEqual(lgtmState.claimHumanRequest({ stateDir, pr: PR, headSha, reviewerId: 101 }), { claimed: false, reason: 'request-sent' });
+  }
+  assert.deepStrictEqual(lgtmState.claimHumanRequest({ stateDir, pr: PR, headSha: H2, reviewerId: 900 }), { claimed: false, reason: 'not-selected' });
+  const s = lgtmState.status({ stateDir, pr: PR, headSha: H2 });
+  assert.deepStrictEqual(s.requestBudget, { max: 3, spent: 0, remaining: 3 });
+  assert.deepStrictEqual(s.reviewers.map((r) => [r.login, r.requested, r.refused]), [['alice', true, false], ['copilot-pull-request-reviewer', false, false]]);
+});
+
+test('a refused human request is never retried on later heads and deleted people are not requested', () => {
+  const stateDir = temp();
+  lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice'], github: github() });
+  lgtmState.claimHumanRequest({ stateDir, pr: PR, headSha: HEAD, reviewerId: 101 });
+  lgtmState.markHumanRequested({ stateDir, pr: PR, headSha: HEAD, reviewerId: 101, refused: true });
+  assert.deepStrictEqual(lgtmState.claimHumanRequest({ stateDir, pr: PR, headSha: H2, reviewerId: 101 }), { claimed: false, reason: 'request-refused' });
+  assert.strictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).reviewers[0].refused, true);
+  const gone = temp();
+  lgtmState.selectReviewers({ stateDir: gone, pr: PR, logins: ['alice'], github: github() });
+  lgtmState.selectReviewers({ stateDir: gone, pr: PR, logins: null, github: github({ alice: null }) });
+  assert.deepStrictEqual(lgtmState.claimHumanRequest({ stateDir: gone, pr: PR, headSha: HEAD, reviewerId: 101 }), { claimed: false, reason: 'reviewer-gone' });
+});
+
+test('human request markers require a claim and invalid reviewer ids write nothing', () => {
+  const stateDir = temp();
+  assert.deepStrictEqual(lgtmState.markHumanRequested({ stateDir, pr: PR, headSha: HEAD, reviewerId: 101 }), { marked: false, reason: 'request-not-claimed' });
+  for (const reviewerId of [NaN, -1, 0, 1.2]) assert.throws(() => lgtmState.claimHumanRequest({ stateDir, pr: PR, headSha: HEAD, reviewerId }), /reviewer/);
+  assert.deepStrictEqual(fs.readdirSync(stateDir), []);
+});
+
+
+test('human wait and request CLI verbs persist the same ledger state', () => {
+  const { execFileSync } = require('node:child_process');
+  const stateDir = temp();
+  const run = (args) => JSON.parse(execFileSync(process.execPath, [path.join(__dirname, '..', 'review-lgtm-state.js'), ...args], { encoding: 'utf8', env: { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir } }));
+  assert.strictEqual(run(['open-human-wait', String(PR), HEAD, '60']).lengthMs, 60000);
+  const changed = run(['set-human-wait', String(PR), HEAD, '120']);
+  assert.strictEqual(changed.deadlineMs - changed.startedAtMs, 120000);
+  lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice'], github: github() });
+  assert.deepStrictEqual(run(['claim-human-request', String(PR), HEAD, '101']), { claimed: true });
+  assert.deepStrictEqual(run(['mark-human-requested', String(PR), HEAD, '101', '--refused']), { marked: true });
+  assert.strictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reviewers[0].refused, true);
+});
+
+
+// Exercise the real CLI adapters while replacing only gh's subprocess boundary.
+function ghCliHarness(stateDir, fixture) {
+  const { execFileSync } = require('node:child_process');
+  const dir = tempDir('lgtm-gh-cli-');
+  const preload = path.join(dir, 'fake-gh.cjs');
+  const dataFile = path.join(dir, 'data.json');
+  const calls = path.join(dir, 'calls.jsonl');
+  fs.writeFileSync(dataFile, JSON.stringify(fixture));
+  fs.writeFileSync(preload, `
+    const fs = require('node:fs');
+    const cp = require('node:child_process');
+    const original = cp.execFileSync;
+    cp.execFileSync = (command, args, options) => {
+      if (!/(?:^|[\\\\/])gh(?:\\.exe|\\.cmd)?$/.test(command)) return original(command, args, options);
+      fs.appendFileSync(process.env.TEST_GH_CALLS, JSON.stringify(args) + '\\n');
+      const data = JSON.parse(fs.readFileSync(process.env.TEST_GH_DATA, 'utf8'));
+      if (args.includes('graphql')) return JSON.stringify(args.some((arg) => arg.includes('updatedAt')) ? data.fingerprint : data.full);
+      if (args.includes('user')) return 'author\\n';
+      if (args.some((arg) => arg.includes('/timeline'))) return JSON.stringify(data.timeline);
+      throw new Error('unexpected gh call: ' + JSON.stringify(args));
+    };
+  `);
+  return {
+    run: (args) => JSON.parse(execFileSync(process.execPath, ['--require', preload, path.join(__dirname, '..', 'review-lgtm-state.js'), ...args], { encoding: 'utf8', env: { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir, TEST_GH_DATA: dataFile, TEST_GH_CALLS: calls } })),
+    calls: () => fs.readFileSync(calls, 'utf8').trim().split('\n').map(JSON.parse),
+  };
+}
+
+test('the wait-feedback CLI collects live feedback and persists the sidecar without ledger writes', () => {
+  const f = require('./fixtures/review-collector/human');
+  const stateDir = temp();
+  lgtmState.openHumanWait({ stateDir, pr: PR, headSha: f.HEAD });
+  const fingerprint = { data: { repository: { pullRequest: { headRefOid: f.HEAD, state: 'OPEN', isDraft: false, updatedAt: 't1', reviewDecision: 'REVIEW_REQUIRED', mergeStateStatus: 'BLOCKED', reviews: { nodes: [] }, comments: { nodes: [] }, reviewThreads: { nodes: [] } } } } };
+  const h = ghCliHarness(stateDir, { fingerprint, full: f.response({ comments: [f.prComment(90, f.BOB)] }) });
+  const before = fs.readdirSync(stateDir).sort();
+  assert.deepStrictEqual(h.run(['wait-feedback', String(PR), '--once']), { event: 'feedback', pr: PR, head: f.HEAD, items: ['IC_90@2026-11-01T00:00:02Z'] });
+  assert.deepStrictEqual(fs.readdirSync(stateDir).sort(), [...before, `pr-${PR}.wait.json`].sort());
+  const sidecar = JSON.parse(fs.readFileSync(path.join(stateDir, `pr-${PR}.wait.json`), 'utf8'));
+  assert.strictEqual(sidecar.previousHead, f.HEAD);
+  assert.strictEqual(sidecar.failures, 0);
+  assert.deepStrictEqual(h.calls().map((args) => args.slice(0, 2)), [['api', 'graphql'], ['api', 'graphql']]);
+});
+
+test('the settle-human-request CLI records only a matching timeline request after the head', () => {
+  const stateDir = temp();
+  lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice'], github: github() });
+  lgtmState.claimHumanRequest({ stateDir, pr: PR, headSha: HEAD, reviewerId: 101 });
+  const request = { event: 'review_requested', actor: { login: 'author' }, requested_reviewer: { id: 101 } };
+  const before = fs.readdirSync(stateDir).sort();
+  const old = ghCliHarness(stateDir, { timeline: [[request, { event: 'committed', sha: HEAD }]] });
+  assert.deepStrictEqual(old.run(['settle-human-request', String(PR), HEAD, '101']), { settled: 'unsent' });
+  assert.deepStrictEqual(fs.readdirSync(stateDir).sort(), before);
+  const sent = ghCliHarness(stateDir, { timeline: [[{ event: 'committed', sha: HEAD }], [request]] });
+  assert.deepStrictEqual(sent.run(['settle-human-request', String(PR), HEAD, '101']), { settled: 'sent' });
+  assert.strictEqual(lgtmState.status({ stateDir, pr: PR, headSha: HEAD }).reviewers[0].requested, true);
+  assert.deepStrictEqual(sent.calls(), [['api', '--paginate', '--slurp', `repos/{owner}/{repo}/issues/${PR}/timeline`], ['api', 'user', '--jq', '.login']]);
 });

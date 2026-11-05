@@ -13,6 +13,7 @@ const AUTO_REVIEW_GRACE_MS = 2 * 60 * 1000;
 const MAX_REQUESTS_PER_PR = 3;
 const MAX_FIX_ROUNDS_PER_PR = 3;
 const MAX_HUMAN_FIX_ROUNDS_PER_PR = 5;
+const DEFAULT_HUMAN_WAIT_SECONDS = 172800;
 
 const FULL_SHA = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/i;
 
@@ -268,7 +269,16 @@ function mergeReady({ stateDir, pr, headSha, evidence }) {
   const reviewers = list(evidence.reviewers, 'reviewers');
   const expected = list(evidence.expectedReviewers, 'expectedReviewers').map(text);
   if (reviewers.some((reviewer) => !text(reviewer?.reviewer))) throw new Error('review-lgtm-state: merge-ready reviewers need a reviewer identity each');
+  if (!evidence.branchRules || typeof evidence.branchRules !== 'object' || Array.isArray(evidence.branchRules)) throw new Error('review-lgtm-state: merge-ready evidence branchRules must be an object');
+  const selection = latestSelection({ stateDir, pr: key.pr })?.reviewers || [];
+  const empty = selection.length === 0;
+  const slug = (value) => text(value).toLowerCase().replace(/\[bot\]$/, '');
+  const selected = new Map(selection.map((r) => [slug(r.login), r]));
+  const human = (reviewer) => selected.get(slug(reviewer.reviewer))?.type === 'User' || (!selected.has(slug(reviewer.reviewer)) && reviewer.type === 'User');
+  const required = [...expected];
+  for (const bot of selection.filter((r) => r.type === 'Bot' && !r.gone)) if (!required.some((name) => slug(name) === slug(bot.login))) required.push(bot.login);
   const reasons = [];
+  if (!collector.branchRulesSatisfied(evidence.branchRules)) reasons.push(`branch-rules-unmet:${evidence.branchRules.mergeStateStatus}:${evidence.branchRules.reviewDecision}`);
   const lower = (value) => String(value || '').trim().toLowerCase();
   const live = lower(evidence.headSha);
   if (live !== key.headSha) reasons.push(`head-mismatch:${live}`);
@@ -276,13 +286,14 @@ function mergeReady({ stateDir, pr, headSha, evidence }) {
   const delivery = deliveryStatus({ stateDir, ...key });
   // A declared-unavailable reviewer covers the configured ones; the agent merges only at the user's explicit request.
   const declared = delivery?.classification === 'mergeable-without-review';
-  if (declared || (reviewers.length === 0 && expected.length === 0)) reasons.push('no-automated-review');
-  for (const name of declared ? [] : expected) if (!reviewers.some((reviewer) => text(reviewer.reviewer) === name)) reasons.push(`reviewer-missing:${name}`);
+  const noReview = declared || (!empty && selection.some((r) => r.type === 'Bot') && reviewers.length === 0 && expected.length === 0);
+  if (noReview) reasons.push('no-automated-review');
+  for (const name of noReview || empty ? [] : required.filter((name) => selected.get(slug(name))?.type !== 'User')) if (!reviewers.some((reviewer) => slug(reviewer.reviewer) === slug(name))) reasons.push(`reviewer-missing:${name}`);
   for (const reviewer of reviewers) {
     const name = text(reviewer?.reviewer);
     if (text(reviewer?.failure)) reasons.push(`reviewer-failure:${name}:${text(reviewer.failure)}`);
-    else if (reviewer?.terminal !== true) reasons.push(`reviewer-pending:${name}`);
-    else if (reviewer.lgtm !== true) reasons.push(`no-lgtm:${name}`);
+    else if (!empty && !human(reviewer) && reviewer?.terminal !== true) reasons.push(`reviewer-pending:${name}`);
+    else if (!empty && !human(reviewer) && reviewer.lgtm !== true) reasons.push(`no-lgtm:${name}`);
   }
   if (!delivery) reasons.push('no-delivery');
   else if (!delivery.current) reasons.push('delivery-stale');
@@ -662,6 +673,86 @@ function rejectReviewBatch(input) {
   }, { rejected: false, reason: 'transition-busy' });
 }
 
+// Wait records are append-only; opening a live wait never restarts its clock.
+function humanWaitRecords({ stateDir, pr, headSha = null }) {
+  const number = prNumber(pr);
+  const pattern = new RegExp(`^pr-${number}-([0-9a-f]{40}|[0-9a-f]{64})\\.human-wait-[0-9]{6}\\.json$`);
+  return prFileNames(stateDir, (name) => pattern.test(name)).map(readMarker)
+    .filter((r) => r && r.pr === number && (!headSha || r.headSha === headSha))
+    .sort((a, b) => a.recordedAtMs - b.recordedAtMs || a.sequence - b.sequence || a.headSha.localeCompare(b.headSha));
+}
+
+function humanWaitStatus(input) {
+  const key = validate(input);
+  const latest = humanWaitRecords({ stateDir: input.stateDir, ...key }).sort((a, b) => a.sequence - b.sequence).at(-1);
+  return latest ? { startedAtMs: latest.startedAtMs, deadlineMs: latest.deadlineMs, lengthMs: latest.lengthMs, sequence: latest.sequence } : null;
+}
+
+function lastWaitHead({ stateDir, pr }) {
+  return humanWaitRecords({ stateDir, pr }).sort((a, b) => a.startedAtMs - b.startedAtMs || a.sequence - b.sequence || a.headSha.localeCompare(b.headSha)).at(-1)?.headSha || null;
+}
+
+function writeHumanWait({ stateDir, pr, headSha, seconds = null, now = Date.now() }, replace) {
+  const key = validate({ pr, headSha });
+  const length = seconds === null ? null : Number(seconds) * 1000;
+  if ((length !== null && (!Number.isSafeInteger(length) || length <= 0)) || !Number.isSafeInteger(now) || now < 0) throw new Error('review-lgtm-state: human wait length must be positive whole milliseconds and time must be non-negative');
+  return withTransitionLock({ stateDir, ...key }, () => {
+    const current = humanWaitStatus({ stateDir, ...key });
+    if (!replace && current && current.deadlineMs > now) return { created: false, ...current };
+    const lengthMs = length ?? humanWaitRecords({ stateDir, pr: key.pr }).at(-1)?.lengthMs ?? DEFAULT_HUMAN_WAIT_SECONDS * 1000;
+    const startedAtMs = replace && current ? current.startedAtMs : now;
+    const deadlineMs = startedAtMs + lengthMs;
+    if (!Number.isSafeInteger(deadlineMs)) throw new Error('review-lgtm-state: human wait deadline exceeds safe integer time');
+    const sequence = (current?.sequence || 0) + 1;
+    const record = { ...key, startedAtMs, deadlineMs, lengthMs, sequence, recordedAtMs: now };
+    if (!writeExclusive(markerPath({ stateDir, ...key }, `human-wait-${String(sequence).padStart(6, '0')}`), record)) throw new Error('review-lgtm-state: human wait record collided; retry');
+    return { created: true, startedAtMs, deadlineMs, lengthMs, sequence };
+  }, { created: false, reason: 'transition-busy' });
+}
+
+function openHumanWait(input) { return writeHumanWait(input, false); }
+function setHumanWait(input) {
+  if (input.seconds == null) throw new Error('review-lgtm-state: human wait length must be positive');
+  return writeHumanWait(input, true);
+}
+
+function humanRequestFile(input, reviewerId, kind) {
+  return markerPath(input, `human-request-${accountFileKey(reviewerId)}-${kind}`);
+}
+
+function humanRequestRefused({ stateDir, pr }, reviewerId) {
+  const number = prNumber(pr);
+  const pattern = new RegExp(`^pr-${number}-[0-9a-f]{40}(?:[0-9a-f]{24})?\\.human-request-${accountFileKey(reviewerId)}-request\\.json$`);
+  return prFileNames(stateDir, (name) => pattern.test(name)).some((name) => {
+    const record = readMarker(name);
+    return record?.pr === number && record.reviewerId === reviewerId && record.refused === true;
+  });
+}
+
+function claimHumanRequest({ stateDir, pr, headSha, reviewerId, now = Date.now() }) {
+  const key = validate({ pr, headSha });
+  accountFileKey(reviewerId);
+  return withTransitionLock({ stateDir, ...key }, () => {
+    const reviewer = latestSelection({ stateDir, pr: key.pr })?.reviewers.find((r) => r.id === reviewerId && r.type === 'User');
+    if (!reviewer) return { claimed: false, reason: 'not-selected' };
+    if (reviewer.gone) return { claimed: false, reason: 'reviewer-gone' };
+    if (humanRequestRefused({ stateDir, pr: key.pr }, reviewerId)) return { claimed: false, reason: 'request-refused' };
+    if (readMarker(humanRequestFile({ stateDir, ...key }, reviewerId, 'request'))) return { claimed: false, reason: 'request-sent' };
+    const claimed = writeExclusive(humanRequestFile({ stateDir, ...key }, reviewerId, 'claim'), { ...key, reviewerId, claimedAtMs: now });
+    return claimed ? { claimed: true } : { claimed: false, reason: 'request-claimed' };
+  });
+}
+
+function markHumanRequested({ stateDir, pr, headSha, reviewerId, refused = false }) {
+  const key = validate({ pr, headSha });
+  accountFileKey(reviewerId);
+  if (typeof refused !== 'boolean') throw new Error('review-lgtm-state: human request refused must be a boolean');
+  return withTransitionLock({ stateDir, ...key }, () => {
+    if (!readMarker(humanRequestFile({ stateDir, ...key }, reviewerId, 'claim'))) return { marked: false, reason: 'request-not-claimed' };
+    return { marked: writeExclusive(humanRequestFile({ stateDir, ...key }, reviewerId, 'request'), { ...key, reviewerId, refused }) };
+  }, { marked: false, reason: 'transition-busy' });
+}
+
 function status(input) {
   const { stateDir } = input;
   const key = validate(input);
@@ -677,7 +768,7 @@ function status(input) {
     }
   }
   const deadlines = [window, retryWindow].filter(Boolean).map((marker) => marker.deadlineMs);
-  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), waivers: fixWaivers({ stateDir, pr: key.pr }), humanFixBudget: humanFixBudget({ stateDir, pr: key.pr }), humanWaivers: fixWaivers({ stateDir, pr: key.pr }, true), minors: collectedMinors({ stateDir, pr: key.pr }), claimedReplies: claimedReplies({ stateDir, pr: key.pr }), owedReplies: owedReplies({ stateDir, pr: key.pr }), unpushedRounds: unpushedRounds({ stateDir, ...key }), reviewers: (latestSelection({ stateDir, pr: key.pr })?.reviewers || []).map(({ login, id, type, gone }) => ({ login, id, type, ...(gone ? { gone: true } : {}), approvePrompted: !!readMarker(approvePromptFile({ stateDir, ...key }, id)) })), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested, reconciliation: reconciliationPacket({ stateDir, ...key }), delivery: deliveryStatus({ stateDir, ...key }) };
+  return { deadlineMs: deadlines.length > 0 ? Math.max(...deadlines) : null, requestEligibleAtMs: observed && Number.isSafeInteger(observed.eligibleAtMs) ? observed.eligibleAtMs : null, requestBudget: requestBudget({ stateDir, pr: key.pr }), fixBudget: fixBudget({ stateDir, pr: key.pr }), waivers: fixWaivers({ stateDir, pr: key.pr }), humanFixBudget: humanFixBudget({ stateDir, pr: key.pr }), humanWaivers: fixWaivers({ stateDir, pr: key.pr }, true), minors: collectedMinors({ stateDir, pr: key.pr }), claimedReplies: claimedReplies({ stateDir, pr: key.pr }), owedReplies: owedReplies({ stateDir, pr: key.pr }), unpushedRounds: unpushedRounds({ stateDir, ...key }), humanWait: humanWaitStatus({ stateDir, ...key }), reviewers: (latestSelection({ stateDir, pr: key.pr })?.reviewers || []).map(({ login, id, type, gone }) => ({ login, id, type, ...(gone ? { gone: true } : {}), requested: type === 'User' && !!readMarker(humanRequestFile({ stateDir, ...key }, id, 'request')) && !humanRequestRefused({ stateDir, pr: key.pr }, id), refused: type === 'User' && humanRequestRefused({ stateDir, pr: key.pr }, id), approvePrompted: !!readMarker(approvePromptFile({ stateDir, ...key }, id)) })), initialClaimed: !!initialClaim, initialClaimedAtMs: initialClaim && Number.isSafeInteger(initialClaim.claimedAtMs) ? initialClaim.claimedAtMs : null, initialRecoveryClaimed: !!initialRecovery, initialRequested, reconciliation: reconciliationPacket({ stateDir, ...key }), delivery: deliveryStatus({ stateDir, ...key }) };
 }
 
 function claimFixRound(input) {
@@ -811,8 +902,38 @@ const RELEASE_BLOCKING = new Set(['acceptance-criterion', 'required-check', 'ser
 const DISPOSITIONS = new Set(['fixed', 'follow-up', 'accepted', 'blocking']);
 const text = (value) => (typeof value === 'string' ? value.trim() : '');
 
+function validateHumanReview(value) {
+  const object = (v) => v && typeof v === 'object' && !Array.isArray(v);
+  const fail = () => { throw new Error('review-lgtm-state: delivery humanReview is malformed'); };
+  const account = (v) => object(v) && typeof v.login === 'string' && !!v.login.trim() && (v.id === null || (Number.isSafeInteger(v.id) && v.id > 0));
+  if (!object(value) || !object(value.branchRules) || typeof value.branchRules.mergeStateStatus !== 'string' || !value.branchRules.mergeStateStatus || !(value.branchRules.reviewDecision === null || (typeof value.branchRules.reviewDecision === 'string' && value.branchRules.reviewDecision))) fail();
+  if (!Array.isArray(value.reviewers) || !Array.isArray(value.unanswered) || !Array.isArray(value.changesRequested)) fail();
+  const statuses = new Set(['approved', 'changes-requested', 'commented', 'pending', 'stale-approval', 'gone']);
+  const reviewerIds = new Set();
+  for (const r of value.reviewers) {
+    if (!account(r) || r.id === null || r.type !== 'User' || !statuses.has(r.status) || !(r.reviewId === null || (typeof r.reviewId === 'string' && /^[1-9][0-9]*$/.test(r.reviewId))) || !(r.commitId === null || (typeof r.commitId === 'string' && FULL_SHA.test(r.commitId))) || reviewerIds.has(r.id)) fail();
+    reviewerIds.add(r.id);
+  }
+  if (value.unanswered.some((id) => typeof id !== 'string' || !id.trim() || id.length > 300) || new Set(value.unanswered).size !== value.unanswered.length) fail();
+  const requestedIds = new Set();
+  for (const r of value.changesRequested) {
+    if (!account(r) || typeof r.selected !== 'boolean' || typeof r.answered !== 'boolean' || requestedIds.has(r.id)) fail();
+    requestedIds.add(r.id);
+  }
+}
+
+function canonicalHumanReview(value) {
+  return {
+    branchRules: { mergeStateStatus: value.branchRules.mergeStateStatus, reviewDecision: value.branchRules.reviewDecision },
+    reviewers: value.reviewers.map(({ login, id, type, status, reviewId, commitId }) => ({ login, id, type, status, reviewId, commitId: commitId === null ? null : commitId.toLowerCase() })).sort((a, b) => a.id - b.id),
+    unanswered: [...value.unanswered].sort(),
+    changesRequested: value.changesRequested.map(({ login, id, selected, answered }) => ({ login, id, selected, answered })).sort((a, b) => (a.id ?? 0) - (b.id ?? 0)),
+  };
+}
+
 function validatePacket(packet) {
   if (!packet || typeof packet !== 'object') throw new Error('review-lgtm-state: delivery packet must be an object');
+  if (packet.humanReview !== undefined) validateHumanReview(packet.humanReview);
   if (!FULL_SHA.test(String(packet.baseSha))) throw new Error('review-lgtm-state: delivery baseSha must be a full SHA');
   if (!/^[0-9a-f]{64}$/i.test(String(packet.contractDigest))) throw new Error('review-lgtm-state: delivery contractDigest must be a SHA-256 hex digest');
   for (const field of ['reviewIds', 'acceptance', 'requiredChecks', 'openChoices', 'findings', 'droppedMinors', 'tickets']) {
@@ -865,6 +986,12 @@ function classifyDelivery(raw, minorIds = []) {
   validatePacket(raw);
   const input = canonicalPacket(raw);
   const reasons = [];
+  if (input.humanReview) {
+    const { branchRules, unanswered, changesRequested } = input.humanReview;
+    if (!collector.branchRulesSatisfied(branchRules)) reasons.push(`branch-rules-unmet:${branchRules.mergeStateStatus}:${branchRules.reviewDecision}`);
+    for (const itemId of unanswered) reasons.push(`feedback-unanswered:${itemId}`);
+    for (const reviewer of changesRequested) if (!reviewer.answered) reasons.push(`changes-requested:${reviewer.login}`);
+  }
   if (input.acceptance.length === 0) reasons.push('acceptance-missing');
   for (const ac of input.acceptance) if (ac.met !== true) reasons.push(`acceptance-unmet:${ac.id}`);
   for (const check of input.requiredChecks) if (check.conclusion !== 'success') reasons.push(`required-check:${check.name}:${check.conclusion}`);
@@ -923,13 +1050,14 @@ function classifyDelivery(raw, minorIds = []) {
     rootCause: finding.rootCause || null, releaseBlocking: finding.releaseBlocking, rationale: finding.rationale || null, acceptedBy: finding.acceptedBy || null,
     ticket: finding.disposition === 'follow-up' ? tickets.get(text(finding.rootCause))?.url || null : null,
   }));
-  return { pr: key.pr, headSha: key.headSha, baseSha: String(input.baseSha).toLowerCase(), contractDigest: String(input.contractDigest).toLowerCase(), classification, reasons, findings, droppedMinors: input.droppedMinors, groups, pending, requiredChecks: input.requiredChecks.map(({ name, conclusion }) => ({ name, conclusion })) };
+  return { pr: key.pr, headSha: key.headSha, baseSha: String(input.baseSha).toLowerCase(), contractDigest: String(input.contractDigest).toLowerCase(), classification, reasons, ...(input.humanReview ? { humanReview: input.humanReview } : {}), findings, droppedMinors: input.droppedMinors, groups, pending, requiredChecks: input.requiredChecks.map(({ name, conclusion }) => ({ name, conclusion })) };
 }
 
 // The digest covers only the fields the contract defines, in a fixed key
 // order, so key order, extra fields, SHA case and padding do not change it.
 function canonicalPacket(packet) {
   return {
+    ...(packet.humanReview !== undefined ? { humanReview: canonicalHumanReview(packet.humanReview) } : {}),
     baseSha: String(packet.baseSha).toLowerCase(),
     contractDigest: String(packet.contractDigest).toLowerCase(),
     reviewIds: [...new Set(packet.reviewIds.map((id) => normalizeReviewId(id)))].sort(compareReviewIds),
@@ -1173,10 +1301,63 @@ function fail(error) {
   process.exitCode = 1;
 }
 
+function ghApi(repoRoot, args) {
+  return execFileSync(crossPlatformCommand('gh', repoRoot), crossPlatformArgs(['api', ...args], needsDoubleEscape('gh', repoRoot)), crossPlatformOpts({ cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: GH_TIMEOUT_MS, maxBuffer: 32 << 20 }));
+}
+
+function runFeedbackWait(repoRoot, stateDir, pr, args) {
+  const number = prNumber(pr);
+  let once = false, maxWaitMs = Infinity;
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === '--once' && !once) once = true;
+    else if (args[i] === '--max-wait' && maxWaitMs === Infinity && args[i + 1] && Number.isFinite(Number(args[i + 1])) && Number(args[i + 1]) > 0 && Number.isFinite(Number(args[i + 1]) * 1000)) maxWaitMs = Number(args[++i]) * 1000;
+    else {
+      process.stderr.write('usage: review-lgtm-state wait-feedback <pr> [--max-wait <positive-seconds>] [--once]\n');
+      process.exitCode = 2;
+      return;
+    }
+  }
+  const file = path.join(stateDir, `pr-${number}.wait.json`);
+  const sidecar = {
+    read: () => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { return {}; } },
+    write: (value) => { try { fs.mkdirSync(stateDir, { recursive: true }); fs.writeFileSync(file, JSON.stringify(value)); } catch (_) { /* Non-authoritative; losing it only repeats a poll. */ } },
+  };
+  const state = {
+    selection: () => latestSelection({ stateDir, pr: number })?.reviewers || [],
+    answered: (headSha) => answeredItemIds({ stateDir, pr: number, headSha }),
+    lastWaitHead: () => lastWaitHead({ stateDir, pr: number }),
+    humanWait: (headSha) => humanWaitStatus({ stateDir, pr: number, headSha }),
+  };
+  require('./feedback-wait').waitFeedback({ pr: number, graphql: collector.ghGraphql(repoRoot), state, sidecar, once, maxWaitMs,
+    rateLimitResetMs: async () => Number(ghApi(repoRoot, ['rate_limit', '--jq', '.resources.graphql.reset'])) * 1000,
+  }).then((result) => { process.stdout.write(`${JSON.stringify(result)}\n`); if (result.event === 'error') process.exitCode = 1; }, (error) => { process.stdout.write(`${JSON.stringify({ event: 'error', pr: number, detail: error.message })}\n`); process.exitCode = 1; });
+}
+
 function runMain(repoRoot = process.cwd()) {
   const [verb, pr, headSha, argument] = process.argv.slice(2);
   const stateDir = defaultStateDir(repoRoot);
-  if (verb === 'status') process.stdout.write(`${JSON.stringify(status({ stateDir, pr, headSha }))}\n`);
+  if (verb === 'wait-feedback') runFeedbackWait(repoRoot, stateDir, pr, process.argv.slice(4));
+  else if (verb === 'open-human-wait' || verb === 'set-human-wait') process.stdout.write(`${JSON.stringify((verb === 'open-human-wait' ? openHumanWait : setHumanWait)({ stateDir, pr, headSha, seconds: argument === undefined ? null : Number(argument) }))}\n`);
+  else if (verb === 'claim-human-request') process.stdout.write(`${JSON.stringify(claimHumanRequest({ stateDir, pr, headSha, reviewerId: Number(argument) }))}\n`);
+  else if (verb === 'mark-human-requested') {
+    const flags = process.argv.slice(6);
+    if (flags.length > 1 || (flags.length && flags[0] !== '--refused')) throw new Error('review-lgtm-state: mark-human-requested takes <pr> <head-sha> <reviewer-id> [--refused]');
+    process.stdout.write(`${JSON.stringify(markHumanRequested({ stateDir, pr, headSha, reviewerId: Number(argument), refused: flags[0] === '--refused' }))}\n`);
+  }
+  else if (verb === 'settle-human-request') {
+    const key = validate({ pr, headSha });
+    const reviewerId = Number(argument);
+    accountFileKey(reviewerId);
+    const timeline = JSON.parse(ghApi(repoRoot, ['--paginate', '--slurp', `repos/{owner}/{repo}/issues/${key.pr}/timeline`])).flat();
+    const actorLogin = ghApi(repoRoot, ['user', '--jq', '.login']).trim();
+    const sent = collector.requestSettled(timeline, { actorLogin, reviewerId, headSha: key.headSha });
+    if (sent) {
+      const result = markHumanRequested({ stateDir, ...key, reviewerId });
+      if (!result.marked && result.reason) throw new Error(`review-lgtm-state: cannot settle human request: ${result.reason}`);
+    }
+    process.stdout.write(`${JSON.stringify({ settled: sent ? 'sent' : 'unsent' })}\n`);
+  }
+  else if (verb === 'status') process.stdout.write(`${JSON.stringify(status({ stateDir, pr, headSha }))}\n`);
   else if (verb === 'open-window') process.stdout.write(`${JSON.stringify(openWindow({ stateDir, pr, headSha, durationMs: Number(argument) * 1000 }))}\n`);
   else if (verb === 'claim-initial-request') process.stdout.write(`${JSON.stringify(claimResult(claimInitialRequest({ stateDir, pr, headSha, provider: argument })))}\n`);
   else if (verb === 'recover-initial-request') process.stdout.write(`${JSON.stringify(claimResult(recoverInitialRequest({ stateDir, pr, headSha, provider: argument })))}\n`);
@@ -1218,7 +1399,7 @@ function runMain(repoRoot = process.cwd()) {
       collector.watch({ pr, graphql, state, selection, write: (line) => process.stdout.write(`${line}\n`) }).catch(fail);
     }
   }
-  else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, mark-fix-pushed, waive-fix-budget, collect-minor, claim-reply, record-reply, find-reply, claim-approve-prompt, self-feeding, merge-ready, select-reviewers, collect, watch, record-review, reject-review-batch, or record-delivery');
+  else throw new Error('review-lgtm-state: use status, open-human-wait, set-human-wait, wait-feedback, claim-human-request, mark-human-requested, settle-human-request, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, mark-fix-pushed, waive-fix-budget, collect-minor, claim-reply, record-reply, find-reply, claim-approve-prompt, self-feeding, merge-ready, select-reviewers, collect, watch, record-review, reject-review-batch, or record-delivery');
 }
 
-module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, markFixPushed, waiveFixBudget, collectMinor, itemFileKey, accountFileKey, claimReply, recordReply, claimApprovePrompt, answeredItemIds, mergeReady, selfFeeding, recordReview, rejectReviewBatch, classifyDelivery, recordDelivery, selectReviewers, reviewerSelection, latestSelection, ghUsers, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, MAX_HUMAN_FIX_ROUNDS_PER_PR, humanFixBudget, runMain };
+module.exports = { openHumanWait, setHumanWait, humanWaitStatus, lastWaitHead, claimHumanRequest, markHumanRequested, DEFAULT_HUMAN_WAIT_SECONDS, defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, markFixPushed, waiveFixBudget, collectMinor, itemFileKey, accountFileKey, claimReply, recordReply, claimApprovePrompt, answeredItemIds, mergeReady, selfFeeding, recordReview, rejectReviewBatch, classifyDelivery, recordDelivery, selectReviewers, reviewerSelection, latestSelection, ghUsers, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, MAX_HUMAN_FIX_ROUNDS_PER_PR, humanFixBudget, runMain };

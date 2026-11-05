@@ -14,7 +14,7 @@ const HEAD_B = '0123456789abcdef0123456789abcdef01234567';
 const BASE = 'a00dc8c9eaee93a7462bb819bd4ac81320b22528';
 const CODEX = 'chatgpt-codex-connector[bot]';
 
-function temp() { return tempDir('merge-ready-'); }
+function temp() { const stateDir = tempDir('merge-ready-'); lgtmState.selectReviewers({ stateDir, pr: PR, logins: [CODEX], github: { userByLogin: () => ({ login: 'chatgpt-codex-connector', id: 900, type: 'Bot' }), userById: () => null, prAuthorId: () => 1 } }); return stateDir; }
 function cli(stateDir, args, input) {
   return JSON.parse(execFileSync('node', [CLI, ...args], { encoding: 'utf8', env: { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir }, input }));
 }
@@ -26,7 +26,7 @@ function deliver(stateDir, headSha, overrides = {}) {
 }
 const evidence = (headSha, overrides = {}) => ({
   headSha, baseSha: BASE, contractDigest: 'a'.repeat(64), checks: [{ name: 'plugin-tests', conclusion: 'success' }],
-  reviewers: [{ reviewer: CODEX, terminal: true, lgtm: true }], expectedReviewers: [CODEX], ...overrides,
+  reviewers: [{ reviewer: CODEX, terminal: true, lgtm: true }], expectedReviewers: [CODEX], branchRules: { mergeStateStatus: 'CLEAN', reviewDecision: null }, ...overrides,
 });
 const ready = (stateDir, headSha, ev) => cli(stateDir, ['merge-ready', String(PR), headSha], JSON.stringify(ev));
 
@@ -140,4 +140,35 @@ test('a mergeable-without-review record blocks merge-ready with no-automated-rev
   assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A, { reviewers: [], expectedReviewers: [CODEX] })), { result: 'blocked', reasons: ['no-automated-review'] });
   assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A)), { result: 'blocked', reasons: ['no-automated-review'] });
   assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A, { checks: [{ name: 'plugin-tests', conclusion: 'failure' }] })).reasons, ['check:plugin-tests:failure', 'no-automated-review']);
+});
+
+
+test('merge-ready reports branch rules while exempting a selected human from pending and LGTM', () => {
+  const stateDir = temp();
+  lgtmState.selectReviewers({ stateDir, pr: PR, logins: ['alice'], github: { userByLogin: () => ({ login: 'alice', id: 101, type: 'User' }), userById: () => null, prAuthorId: () => 1 } });
+  deliver(stateDir, HEAD_A);
+  assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A, { expectedReviewers: ['alice'], branchRules: { mergeStateStatus: 'BLOCKED', reviewDecision: 'REVIEW_REQUIRED' }, reviewers: [{ reviewer: 'alice', type: 'User', terminal: false, lgtm: false }] })), { result: 'blocked', reasons: ['branch-rules-unmet:BLOCKED:REVIEW_REQUIRED'] });
+  assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A, { expectedReviewers: ['alice'], reviewers: [] })), { result: 'ready', reasons: [] });
+});
+
+test('merge-ready in empty mode requires branch rules and delivery but awaits no account', () => {
+  const stateDir = tempDir('merge-ready-empty-');
+  deliver(stateDir, HEAD_A);
+  for (const reviewers of [[], [{ reviewer: 'vercel', terminal: false, lgtm: false }]]) assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A, { expectedReviewers: [], reviewers })), { result: 'ready', reasons: [] });
+  assert.throws(() => ready(stateDir, HEAD_A, evidence(HEAD_A, { branchRules: undefined })), /branchRules/);
+});
+
+
+test('a selected bot cannot be exempted by a caller labelling it User', () => {
+  const stateDir = temp();
+  deliver(stateDir, HEAD_A);
+  assert.deepStrictEqual(ready(stateDir, HEAD_A, evidence(HEAD_A, { reviewers: [{ reviewer: CODEX, type: 'User', terminal: false, lgtm: false }] })), { result: 'blocked', reasons: [`reviewer-pending:${CODEX}`] });
+});
+
+
+test('a caller cannot omit a selected bot from expected reviewers and replace it with a human', () => {
+  const stateDir = temp();
+  deliver(stateDir, HEAD_A);
+  const result = ready(stateDir, HEAD_A, evidence(HEAD_A, { expectedReviewers: [], reviewers: [{ reviewer: 'alice', type: 'User', terminal: false, lgtm: false }] }));
+  assert.deepStrictEqual(result, { result: 'blocked', reasons: ['reviewer-missing:chatgpt-codex-connector'] });
 });

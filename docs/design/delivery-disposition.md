@@ -24,7 +24,8 @@ The caller supplies one JSON evidence packet for the exact PR number and head SH
 | `contractDigest` | SHA-256 of the approved contract (ticket, design note or acceptance criteria) the PR is judged against |
 | `acceptance[]` | `{id, met}` for each approved acceptance criterion |
 | `requiredChecks[]` | `{name, conclusion}` for each required check on the exact head; only `success` passes. An empty list asserts that the repository requires no check on this head |
-| `reviewsTerminal` | Every configured reviewer finished for this head |
+| `reviewsTerminal` | Every named bot finished for this head, or the empty-selection collection window ended; human statuses follow the branch rules |
+| `humanReview` | Optional collector packet with branch rules, per-commit human reviewer statuses, unanswered item ids and requests for changes; always present in empty mode. Named-bots-only packets without human feedback omit it, preserving their digest. See the [human reviewers design](review-until-lgtm-human-reviewers.md) |
 | `reviewerUnavailable` | Optional; `true` declares the PR reviewer unavailable for this head. A packet that declares it with a review id is refused, and without `reviewsTerminal: true` the head stays `blocked` (`reviews-not-terminal`). Absent and `false` are equivalent; the digest includes the field only when `true` |
 | `openChoices[]` | Unsettled product, contract or architecture choices |
 | `findings[]` | Every accepted finding: `{id, url \| local, disposition, rootCause, releaseBlocking[], rationale, acceptedBy}`. A finding names exactly one reference: the review-thread `url`, or for a finding that exists only in a local review ledger `local: {file, span}` (a relative path and a possibly empty span, read against the record's head) |
@@ -39,6 +40,7 @@ Finding `disposition` is one of `fixed`, `follow-up`, `accepted` or `blocking`. 
 
 Each rule below adds a reason, and any reason makes the result `blocked`:
 
+- When `humanReview` is present: unmet GitHub branch rules (`branch-rules-unmet:<mergeStateStatus>:<reviewDecision>`), each unanswered feedback item (`feedback-unanswered:<item-id>`), or an unanswered request for changes (`changes-requested:<login>`). Reviewer statuses alone add no reason.
 - No acceptance criteria at all (`acceptance-missing`), an unmet acceptance criterion, a required check whose conclusion is not `success`, non-terminal reviews, or an open choice.
 - A finding that is unowned, marked `blocking`, release-blocking but not `fixed`, `follow-up` without a root cause or rationale, or `accepted` without `acceptedBy`. The classifier checks only that `acceptedBy` is present; it cannot verify that the named human holds that authorization. For that reason an acceptance never clears a release-blocking category: a release-blocking finding accepted with `acceptedBy` adds `accepted-release-blocker:<id>:<category>` instead of `release-blocker:<id>:<category>`, so a head whose only reasons are of that kind is blocked on a person's decision, not on outstanding work. That person either has the finding fixed (by the loop or with `record-fix`) or reclassifies it in the packet with an empty `releaseBlocking` and a rationale, which makes it follow-up eligible.
 - A follow-up root cause with no ticket. This is `rollover-pending`, and the result carries a ready-to-file packet for that group (its root cause, finding ids, URLs and rationales). Without tracker authorization or access, this is the outcome, and no ticket URL is invented.
