@@ -399,9 +399,12 @@ function validReply(record) {
   };
   const replyUrl = link('replyUrl', REPLY_URL_DISPOSITIONS.includes(disposition));
   const answerUrl = link('answerUrl', disposition === 'author-answered');
-  if ((disposition === 'blocker' || (disposition === 'minor' && r.author.type === 'User')) !== (r.fixCommit != null)) throw new Error(`review-lgtm-state: ${disposition} ${r.fixCommit != null ? 'takes no fixCommit' : 'needs a fixCommit'}`);
+  const fixable = disposition === 'blocker' || (disposition === 'minor' && r.author.type === 'User');
+  // A conceded item whose fix a stop rule holds back is answered without a fix commit and goes to the delivery disposition.
+  if (r.withheld != null && (typeof r.withheld !== 'boolean' || !fixable)) throw new Error('review-lgtm-state: withheld is a boolean, only for a blocker or a person\'s minor');
+  if ((fixable && !r.withheld) !== (r.fixCommit != null)) throw new Error(`review-lgtm-state: ${disposition}${r.withheld ? ' withheld' : ''} ${r.fixCommit != null ? 'takes no fixCommit' : 'needs a fixCommit'}`);
   if (r.fixCommit != null && (typeof r.fixCommit !== 'string' || !FULL_SHA.test(r.fixCommit))) throw new Error('review-lgtm-state: fixCommit is a full commit SHA');
-  return { kind: r.kind, url: r.url, author: { login: r.author.login, id: r.author.id, type: r.author.type }, originalCommitId: r.originalCommitId ?? null, disposition, reason: r.reason, ...replyUrl, ...answerUrl, ...(r.fixCommit != null ? { fixCommit: r.fixCommit.toLowerCase() } : {}) };
+  return { kind: r.kind, url: r.url, author: { login: r.author.login, id: r.author.id, type: r.author.type }, originalCommitId: r.originalCommitId ?? null, disposition, reason: r.reason, ...replyUrl, ...answerUrl, ...(r.fixCommit != null ? { fixCommit: r.fixCommit.toLowerCase() } : {}), ...(r.withheld ? { withheld: true } : {}) };
 }
 
 // Write-once per item revision: the handled record is what the next collection reads as answered.

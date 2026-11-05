@@ -187,7 +187,7 @@ Right after the certified push succeeds, `mark-fix-pushed <pr> <head-sha> <fix-c
 
 After the push, and after its checks support the response, the skill replies to every item of the batch that needs a reply, whatever its disposition:
 
-- `blocker` or human `minor`: the fix commit, and what changed;
+- `blocker` or human `minor`: the fix commit, and what changed; when a stop rule withholds the fix, the item is answered before the claim instead, with a reply that gives the verdict and says the fix is held back and goes to the delivery disposition, and a handled record with `withheld: true` and no fix commit, which `record-reply` accepts for these dispositions only when `withheld` is true;
 - bot `minor`: the verdict and reason, as now;
 - `rejected`: the evidence (a file and line, a test, a contract clause) for keeping the code as it is;
 - `clarify`: the question;
@@ -301,7 +301,7 @@ The human path adds these markers beside the bot loop's. Each is written with th
 | `pr-<n>-<head>.human-wait-<sequence>.json` | head | `startedAtMs`, `deadlineMs`; the latest sequence wins |
 | `pr-<n>-<head>.human-request-<reviewer>-claim.json`, `-request.json`, `-refused.json` | head and reviewer | Request claim, then the sent marker, or the refusal marker written when GitHub refuses the request; its presence ends retries and is what `status` reports as the refusal |
 | `pr-<n>.reply-<item>-claim.json` | PR, locked | Reply claim for one feedback item revision |
-| `pr-<n>.feedback-<item>.json` | PR | Handled record: item id and revision, kind, URL, author `{login, id, type}`, original commit, disposition (including `author-answered` and `no-action`), reason, reply or answer URL, fix commit |
+| `pr-<n>.feedback-<item>.json` | PR | Handled record: item id and revision, kind, URL, author `{login, id, type}`, original commit, disposition (including `author-answered` and `no-action`), reason, reply or answer URL, fix commit, or `withheld: true` for a blocker or a person's minor whose fix a stop rule holds back |
 | `pr-<n>-<head>.fix-round-claim.json` | head, locked | Existing claim; gains `itemIds`, the items the round takes that the unanswered test collects (human and bot in empty mode, human under a named selection) |
 | `pr-<n>-<head>.fix-round-pushed.json` | head, locked | `{pr, headSha, fixCommit, owner, pushedAtMs}`: the round's certified commit was pushed; its claim's items are answered on every head and owe a reply naming `fixCommit` |
 | `pr-<n>.human-fix-round-slot-<k>.json` | PR, locked | One slot of the human fix cap |

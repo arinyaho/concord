@@ -682,6 +682,18 @@ test('a fix commit is a full SHA of either length in any case and is stored lowe
   for (const sha of ['a'.repeat(39), 'g'.repeat(40), 40]) assert.throws(() => lgtmState.recordReply({ stateDir, pr: PR, itemId: 'G@2026-11-01T00:00:00Z', record: reply({ disposition: 'blocker', fixCommit: sha }) }), /fixCommit/);
 });
 
+test('a withheld blocker or person\'s minor is recorded without a fix commit, and only when withheld', () => {
+  const stateDir = temp();
+  const withheld = (disposition, extra = {}) => reply({ disposition, withheld: true, reason: 'held back by a stop rule; goes to the delivery disposition', ...extra });
+  assert.strictEqual(lgtmState.recordReply({ stateDir, pr: PR, itemId: 'W1@2026-11-01T00:00:00Z', record: withheld('blocker') }).feedback.withheld, true);
+  assert.strictEqual(lgtmState.recordReply({ stateDir, pr: PR, itemId: 'W2@2026-11-01T00:00:00Z', record: withheld('minor') }).feedback.withheld, true);
+  assert.throws(() => lgtmState.recordReply({ stateDir, pr: PR, itemId: 'W3@2026-11-01T00:00:00Z', record: withheld('blocker', { withheld: false }) }), /needs a fixCommit/);
+  assert.throws(() => lgtmState.recordReply({ stateDir, pr: PR, itemId: 'W4@2026-11-01T00:00:00Z', record: withheld('blocker', { fixCommit: H2 }) }), /takes no fixCommit/);
+  assert.throws(() => lgtmState.recordReply({ stateDir, pr: PR, itemId: 'W5@2026-11-01T00:00:00Z', record: withheld('blocker', { replyUrl: undefined }) }), /needs a replyUrl/);
+  for (const record of [withheld('rejected'), withheld('minor', { author: { login: 'bot', id: 9, type: 'Bot' } }), withheld('blocker', { withheld: 'yes' })]) assert.throws(() => lgtmState.recordReply({ stateDir, pr: PR, itemId: 'W6@2026-11-01T00:00:00Z', record }), /withheld is a boolean/);
+  assert.strictEqual(lgtmState.recordReply({ stateDir, pr: PR, itemId: 'W7@2026-11-01T00:00:00Z', record: reply({ disposition: 'blocker', withheld: false, fixCommit: H2 }) }).feedback.withheld, undefined);
+});
+
 test('reply and answer URLs are non-empty bounded strings', () => {
   const stateDir = temp();
   for (const bad of [1, {}, ['x'], '', '   ', 'x'.repeat(501)]) {
