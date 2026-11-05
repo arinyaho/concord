@@ -381,7 +381,7 @@ test('a late mark of a round whose items a later round took is refused as supers
   assert.deepStrictEqual(lgtmState.status({ stateDir, pr: PR, headSha: H2 }).owedReplies, [{ itemId: itemOf(obs), headSha: H2, fixCommit: 'f'.repeat(40) }]);
 });
 
-test('of two rounds claimed at the same time on different heads, only the one on the later head can be marked pushed', () => {
+test('of two rounds claimed at the same time on different heads, only the one whose head SHA sorts later can be marked pushed', () => {
   const stateDir = temp();
   const obs = humanObs('comment-70');
   lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, observation: obs });
