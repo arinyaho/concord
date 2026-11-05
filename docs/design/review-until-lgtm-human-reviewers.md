@@ -118,7 +118,7 @@ The collector already turns each review into one `record-review` observation tha
 
 | Field | Held by the bot path | Added for the human path |
 |---|---|---|
-| `reviewId` | GitHub review database id, decimal digits; the file key `review-<id>` | A thread reply belongs to the review GitHub created for it and joins that review's observation; a PR conversation comment is its own observation with id `comment-<databaseId>` and file key `comment-<databaseId>`, so the two id spaces cannot collide; a thread comment that GitHub reports without a containing review is its own observation with id and file key `thread-<databaseId>` and a null `reviewCommitId` |
+| `reviewId` | GitHub review database id, decimal digits; the file key `review-<id>` | A thread reply belongs to the review GitHub created for it and joins that review's observation; a PR conversation comment is its own observation with id `comment-<databaseId>` and file key `comment-<databaseId>`, so the two id spaces cannot collide; a thread comment that GitHub reports without a containing review is its own observation with id and file key `thread-<databaseId>` and a null `reviewCommitId`; a later revision of an item on the same head is recorded as a revision record with id `<id>~<16 hex of SHA-256 of its sorted new item ids>` (the ids joined with commas) and file key `<file key>~<same hex>`, holding only the items no record of that observation holds yet |
 | `reviewer` | Login without `[bot]`; required; `legacy/unknown` in status when a record lacks it | `reviewerId` (account id) and `reviewerType` (`User` or `Bot`) beside it |
 | `reviewUrl` | Review URL | A comment observation carries the comment URL |
 | `commitId` | Must equal the live head; the collector sets it to the head | Unchanged: the head at which the item is handled |
@@ -297,6 +297,7 @@ The human path adds these markers beside the bot loop's. Each is written with th
 
 | Marker | Scope | Content |
 |---|---|---|
+| `pr-<n>-<head>.<file key>~<hex>.json` | head | Revision record of a review or comment observation: id `<id>~<16 hex of SHA-256 of its sorted new item ids>`, holding the items edited on the same head after the observation's earlier records; it is listed, rejected and delivered by that id |
 | `pr-<n>.reviewers-<sequence>.json` | PR, locked | The selection: `[{login, id, type}]`, recorded time; the latest sequence wins |
 | `pr-<n>-<head>.human-wait-<sequence>.json` | head | `startedAtMs`, `deadlineMs`; the latest sequence wins |
 | `pr-<n>-<head>.human-request-<reviewer>-claim.json`, `-request.json`, `-refused.json` | head and reviewer | Request claim, then the sent marker, or the refusal marker written when GitHub refuses the request; its presence ends retries and is what `status` reports as the refusal |

@@ -1231,6 +1231,18 @@ test('review-until-lgtm stops on either exhausted fix cap and names both caps', 
   }
 });
 
+test('the design and the skill name revision record ids and take review ids from the reconciliation', () => {
+  const design = fs.readFileSync(path.join(__dirname, '..', '..', '..', '..', 'docs', 'design', 'review-until-lgtm-human-reviewers.md'), 'utf8');
+  const row = (name) => design.split('\n').find((line) => line.startsWith(`| ${name} |`)) || '';
+  assert.match(row('`reviewId`'), /revision record with id `<id>~<16 hex of SHA-256 of its sorted new item ids>`/);
+  assert.match(row('`pr-<n>-<head>.<file key>~<hex>.json`'), /id `<id>~<16 hex of SHA-256 of its sorted new item ids>`/);
+  for (const file of [CLAUDE_SKILL, CODEX_SKILL, COPILOT_SKILL]) {
+    const skill = fs.readFileSync(file, 'utf8');
+    assert.match(skill, /reject-review-batch <pr> <head-sha>` only when[^\n]*passing the exact review ids \(`status\.reconciliation\.reviews\[\]\.id`, revision records `<id>~<hex>` included\)/);
+    assert.match(skill, /`reviewIds` lists the ids of the active review batch the packet classifies \(`status\.reconciliation\.reviews\[\]\.id`, revision records included/);
+  }
+});
+
 test('waivers add up: two waivers by one person with different counts grant their sum', () => {
   const stateDir = temp();
   assert.deepStrictEqual(lgtmState.waiveFixBudget({ stateDir, pr: 221, person: 'someone', count: 1, now: 1000 }).budget, { max: 4, spent: 0, remaining: 4 });
