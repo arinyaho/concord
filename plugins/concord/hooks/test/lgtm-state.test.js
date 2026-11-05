@@ -1243,6 +1243,12 @@ test('the design and the skill name revision record ids and take review ids from
   }
 });
 
+test('the design ledger lists every status field the human path adds', () => {
+  const design = fs.readFileSync(path.join(__dirname, '..', '..', '..', '..', 'docs', 'design', 'review-until-lgtm-human-reviewers.md'), 'utf8');
+  const paragraph = design.split('\n').find((line) => line.includes('`status` gains')) || '';
+  for (const field of ['reviewers', 'humanWait', 'claimedReplies', 'owedReplies', 'humanFixBudget', 'humanWaivers']) assert.ok(paragraph.includes(`\`${field}\``), field);
+});
+
 test('waivers add up: two waivers by one person with different counts grant their sum', () => {
   const stateDir = temp();
   assert.deepStrictEqual(lgtmState.waiveFixBudget({ stateDir, pr: 221, person: 'someone', count: 1, now: 1000 }).budget, { max: 4, spent: 0, remaining: 4 });
