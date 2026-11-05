@@ -398,6 +398,13 @@ function recordReply({ stateDir, pr, itemId, record, now = Date.now() }) {
   }, { recorded: false, reason: 'transition-busy' });
 }
 
+// The comment-only LGTM Approve prompt is sent at most once per reviewer and head.
+function claimApprovePrompt({ stateDir, pr, headSha, reviewerId, now = Date.now() }) {
+  const key = validate({ pr, headSha });
+  const file = path.join(stateDir, `pr-${key.pr}-${key.headSha}.approve-prompt-${accountFileKey(reviewerId)}.json`);
+  return writeExclusive(file, { ...key, reviewerId, claimedAtMs: now }) ? { claimed: true } : { claimed: false, reason: 'approve-prompt-sent' };
+}
+
 // Reply claims whose handled record is not written yet: a session started replying and did not finish.
 function claimedReplies({ stateDir, pr }) {
   const { feedback, claims } = answeredParts({ stateDir, pr });
@@ -1102,6 +1109,8 @@ function runMain(repoRoot = process.cwd()) {
   else if (verb === 'collect-minor') process.stdout.write(`${JSON.stringify(collectMinor({ stateDir, pr, headSha, ...JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'claim-reply') process.stdout.write(`${JSON.stringify(claimReply({ stateDir, pr, itemId: headSha }))}\n`);
   else if (verb === 'record-reply') process.stdout.write(`${JSON.stringify(recordReply({ stateDir, pr, itemId: headSha, record: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
+  else if (verb === 'claim-approve-prompt') process.stdout.write(`${JSON.stringify(claimApprovePrompt({ stateDir, pr, headSha, reviewerId: Number(argument) }))}\n`);
+  else if (verb === 'find-reply') collector.findReply({ pr, graphql: collector.ghGraphql(repoRoot), itemId: headSha }).then((result) => process.stdout.write(`${JSON.stringify(result)}\n`), fail);
   else if (verb === 'merge-ready') process.stdout.write(`${JSON.stringify(mergeReady({ stateDir, pr, headSha, evidence: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
   else if (verb === 'self-feeding') { const [start, end] = process.argv.slice(6); process.stdout.write(`${JSON.stringify(selfFeeding({ repoRoot: worktreeRoot(repoRoot), stateDir, pr, headSha, file: argument, start: Number(start), end: Number(end === undefined ? start : end) }))}\n`); }
   else if (verb === 'record-review') process.stdout.write(`${JSON.stringify(recordReview({ stateDir, pr, headSha, observation: JSON.parse(fs.readFileSync(0, 'utf8')) }))}\n`);
@@ -1120,7 +1129,7 @@ function runMain(repoRoot = process.cwd()) {
       collector.watch({ pr, graphql, state, selection, write: (line) => process.stdout.write(`${line}\n`) }).catch(fail);
     }
   }
-  else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, waive-fix-budget, collect-minor, claim-reply, record-reply, self-feeding, merge-ready, select-reviewers, collect, watch, record-review, reject-review-batch, or record-delivery');
+  else throw new Error('review-lgtm-state: use status, open-window, claim-initial-request, recover-initial-request, mark-initial-requested, claim-fix-round, renew-fix-round, waive-fix-budget, collect-minor, claim-reply, record-reply, find-reply, claim-approve-prompt, self-feeding, merge-ready, select-reviewers, collect, watch, record-review, reject-review-batch, or record-delivery');
 }
 
-module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, waiveFixBudget, collectMinor, itemFileKey, accountFileKey, claimReply, recordReply, answeredItemIds, mergeReady, selfFeeding, recordReview, rejectReviewBatch, classifyDelivery, recordDelivery, selectReviewers, reviewerSelection, latestSelection, ghUsers, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, MAX_HUMAN_FIX_ROUNDS_PER_PR, humanFixBudget, runMain };
+module.exports = { defaultStateDir, markerPath, status, openWindow, claimInitialRequest, recoverInitialRequest, markInitialRequested, claimFixRound, renewFixRound, waiveFixBudget, collectMinor, itemFileKey, accountFileKey, claimReply, recordReply, claimApprovePrompt, answeredItemIds, mergeReady, selfFeeding, recordReview, rejectReviewBatch, classifyDelivery, recordDelivery, selectReviewers, reviewerSelection, latestSelection, ghUsers, INITIAL_CLAIM_LEASE_MS, AUTO_REVIEW_GRACE_MS, MAX_REQUESTS_PER_PR, MAX_FIX_ROUNDS_PER_PR, MAX_HUMAN_FIX_ROUNDS_PER_PR, humanFixBudget, runMain };

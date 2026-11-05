@@ -226,3 +226,14 @@ test('the watch reads the answered set for each packet', async () => {
   assert.deepStrictEqual(seen.slice(0, 2), [0, 1]);
   assert.deepStrictEqual(lines.filter((l) => l.event === 'packet').map((l) => l.observations.length), [1]);
 });
+
+test('an interrupted reply is found by its marker and not posted twice', async () => {
+  const item = 'IC_75@2026-11-01T00:00:02Z';
+  const data = f.response({ comments: [f.prComment(75, f.BOB), f.prComment(76, f.AUTHOR, { body: `<!-- concord-lgtm-reply: ${item} -->\nKept as is: a.js:3`, at: '2026-11-01T01:00:00Z' })] });
+  assert.deepStrictEqual(await collector.findReply({ pr: 7, graphql: f.graphqlOf(data), itemId: item }), { found: true, url: `${f.URL}#issuecomment-76` });
+});
+
+test('a reply claim with no post on GitHub posts once on resume', async () => {
+  const data = f.response({ comments: [f.prComment(77, f.BOB, { body: '<!-- concord-lgtm-reply: IC_75@2026-11-01T00:00:02Z -->' })] });
+  assert.deepStrictEqual(await collector.findReply({ pr: 7, graphql: f.graphqlOf(data), itemId: 'IC_75@2026-11-01T00:00:02Z' }), { found: false });
+});

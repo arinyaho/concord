@@ -451,3 +451,10 @@ test('claim-fix-round stdin that is not an object of item ids fails with a state
     assert.throws(() => execFileSync('node', [path.join(__dirname, '..', 'review-lgtm-state.js'), 'claim-fix-round', String(PR), HEAD], { encoding: 'utf8', stdio: 'pipe', env: { ...process.env, REVIEW_LGTM_STATE_DIR: stateDir }, input }), (error) => /^Error: review-lgtm-state: /m.test(error.stderr) && !/TypeError/.test(error.stderr), input);
   }
 });
+
+test('the Approve prompt is sent once per reviewer and head', () => {
+  const stateDir = temp();
+  assert.deepStrictEqual(lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: HEAD, reviewerId: 101 }), { claimed: true });
+  assert.deepStrictEqual(lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: HEAD, reviewerId: 101 }), { claimed: false, reason: 'approve-prompt-sent' });
+  assert.deepStrictEqual(lgtmState.claimApprovePrompt({ stateDir, pr: PR, headSha: H2, reviewerId: 101 }), { claimed: true });
+});

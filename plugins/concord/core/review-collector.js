@@ -143,6 +143,17 @@ async function read(graphql, pr, selection) {
   return response;
 }
 
+// An interrupted reply: a post by the acting account whose first line is the item's hidden marker, so a resumed session settles the claim without posting twice.
+async function findReply({ pr, graphql, itemId }) {
+  const response = await read(graphql, pr, []);
+  const pull = pullRequestOf(response);
+  const actorId = response.data.viewer.databaseId;
+  const marker = `<!-- concord-lgtm-reply: ${itemId} -->`;
+  const comments = [...pull.comments.nodes, ...pull.reviewThreads.nodes.flatMap((thread) => thread.comments.nodes)];
+  const hit = comments.find((node) => node.author && node.author.databaseId === actorId && String(node.body).split('\n')[0].trim() === marker);
+  return hit ? { found: true, url: hit.url } : { found: false };
+}
+
 // Every unanswered feedback item on the PR, wherever it was made, grouped into one observation per review or conversation comment.
 // `mode` 'all' (empty selection) takes every account; 'named' takes every person and leaves the bots to the bot path.
 // An item already in `answered` (replied to, claimed, or fixed in a round) is neither a finding nor an author answer.
@@ -361,4 +372,4 @@ function ghGraphql(cwd = process.cwd()) {
   return async (query, variables) => JSON.parse(execFileSync(gh, crossPlatformArgs(['api', 'graphql', ...(variables.pr === undefined ? [] : ['-F', 'owner={owner}', '-F', 'name={repo}', '-F', `pr=${variables.pr}`]), ...['id', 'cursor'].filter((key) => variables[key] !== undefined).flatMap((key) => ['-f', `${key}=${variables[key]}`]), '-f', `query=${query}`], needsDoubleEscape('gh', cwd)), crossPlatformOpts({ cwd, encoding: 'utf8', maxBuffer: 64 << 20 })));
 }
 
-module.exports = { QUERY, REVIEWS_PAGE_QUERY, PR_COMMENTS_PAGE_QUERY, THREADS_PAGE_QUERY, THREAD_COMMENTS_PAGE_QUERY, REACTIONS_QUERY, identityOf, reviewersFrom, MAX_BODY_CHARS, WINDOW_SECONDS, collect, watch, analyze, complete, formatPacketLine, ghGraphql };
+module.exports = { QUERY, REVIEWS_PAGE_QUERY, PR_COMMENTS_PAGE_QUERY, THREADS_PAGE_QUERY, THREAD_COMMENTS_PAGE_QUERY, REACTIONS_QUERY, identityOf, reviewersFrom, MAX_BODY_CHARS, WINDOW_SECONDS, collect, watch, analyze, complete, formatPacketLine, ghGraphql, findReply };
