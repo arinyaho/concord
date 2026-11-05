@@ -1222,6 +1222,15 @@ test('review-until-lgtm pins late reviews, adjudication records, minor triage, m
   assert.strictEqual(fs.readFileSync(CLAUDE_SKILL, 'utf8'), fs.readFileSync(COPILOT_SKILL, 'utf8'));
 });
 
+test('review-until-lgtm stops on either exhausted fix cap and names both caps', () => {
+  for (const file of [CLAUDE_SKILL, CODEX_SKILL, COPILOT_SKILL]) {
+    const skill = fs.readFileSync(file, 'utf8');
+    assert.match(skill, /On `fix-round-budget-exhausted` or `human-fix-round-budget-exhausted`, preserve the batch and stop for human reconciliation/);
+    assert.match(skill, /Also stop when the fix rounds of a cap \(three bot rounds, five human rounds\)/);
+    assert.doesNotMatch(skill, /stop when three fix rounds/);
+  }
+});
+
 test('waivers add up: two waivers by one person with different counts grant their sum', () => {
   const stateDir = temp();
   assert.deepStrictEqual(lgtmState.waiveFixBudget({ stateDir, pr: 221, person: 'someone', count: 1, now: 1000 }).budget, { max: 4, spent: 0, remaining: 4 });
