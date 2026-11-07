@@ -25,7 +25,7 @@ const THREAD_COMMENT_FIELDS = `${COMMENT_FIELDS} ${AUTHOR_FIELDS} createdAt last
 const THREAD_FIELDS = `id isResolved comments(first:100){pageInfo{hasNextPage endCursor} nodes{${THREAD_COMMENT_FIELDS}}}`;
 const REVIEW_FIELDS = `id databaseId url state submittedAt createdAt lastEditedAt body ${AUTHOR_FIELDS} commit{oid} comments(first:100){pageInfo{hasNextPage endCursor} nodes{${COMMENT_FIELDS}}}`;
 const PR_COMMENT_FIELDS = `id databaseId url body createdAt lastEditedAt ${AUTHOR_FIELDS}`;
-const QUERY = `query($owner:String!,$name:String!,$pr:Int!){viewer{login databaseId} repository(owner:$owner,name:$name){pullRequest(number:$pr){id headRefOid ${AUTHOR_FIELDS}
+const QUERY = `query($owner:String!,$name:String!,$pr:Int!){viewer{login databaseId} repository(owner:$owner,name:$name){pullRequest(number:$pr){id headRefOid mergeStateStatus reviewDecision ${AUTHOR_FIELDS}
 reviews(first:100){pageInfo{hasNextPage endCursor} nodes{${REVIEW_FIELDS}}}
 reviewThreads(first:100){pageInfo{hasNextPage endCursor} nodes{${THREAD_FIELDS}}}
 comments(first:100){pageInfo{hasNextPage endCursor} nodes{${PR_COMMENT_FIELDS}}}
@@ -143,9 +143,62 @@ async function read(graphql, pr, selection) {
   return response;
 }
 
+// An interrupted reply: a post by the acting account whose first line is the item's hidden marker, so a resumed session settles the claim without posting twice.
+async function findReply({ pr, graphql, itemId }) {
+  const response = await read(graphql, pr, []);
+  const pull = pullRequestOf(response);
+  const actorId = response.data.viewer.databaseId;
+  const marker = `<!-- concord-lgtm-reply: ${itemId} -->`;
+  const comments = [...pull.comments.nodes, ...pull.reviewThreads.nodes.flatMap((thread) => thread.comments.nodes)];
+  const hit = comments.find((node) => node.author && node.author.databaseId === actorId && String(node.body).split('\n')[0].trim() === marker);
+  return hit ? { found: true, url: hit.url } : { found: false };
+}
+
+// Timeline position, rather than timestamps, ties a recovered request to the live head's last commit event.
+function requestSettled(timeline, { actorLogin, reviewerId, headSha }) {
+  let start = 0;
+  timeline.forEach((event, i) => { if (event.event === 'committed' && event.sha === headSha) start = i + 1; });
+  return timeline.slice(start).some((event) => event.event === 'review_requested' && event.actor?.login === actorLogin && event.requested_reviewer?.id === reviewerId);
+}
+
+function branchRulesSatisfied({ mergeStateStatus, reviewDecision }) {
+  return ['CLEAN', 'HAS_HOOKS', 'UNSTABLE'].includes(mergeStateStatus) && (reviewDecision === 'APPROVED' || reviewDecision === null);
+}
+
+function submittedReviews(pull) {
+  return pull.reviews.nodes.filter((review) => !['PENDING', 'DISMISSED'].includes(review.state)).sort((a, b) => Date.parse(a.submittedAt) - Date.parse(b.submittedAt) || Number(a.databaseId) - Number(b.databaseId));
+}
+
+function reviewerStatuses(pull, { selection, head }) {
+  const reviews = submittedReviews(pull);
+  return selection.filter((account) => account.type === 'User').map((account) => {
+    const own = reviews.filter((review) => selectedOf(review.author, [account]));
+    const decisive = own.filter((review) => ['APPROVED', 'CHANGES_REQUESTED'].includes(review.state)).at(-1);
+    const review = decisive || own.filter((entry) => entry.state === 'COMMENTED').at(-1);
+    const status = account.gone ? 'gone' : decisive ? (decisive.state === 'CHANGES_REQUESTED' ? 'changes-requested' : oidOf(decisive.commit) === head ? 'approved' : 'stale-approval') : review ? 'commented' : 'pending';
+    return { login: account.login, id: account.id, type: 'User', status, reviewId: review ? String(review.databaseId) : null, commitId: review ? oidOf(review.commit) : null };
+  });
+}
+
+function humanReviewOf(pull, { selection, head, human }) {
+  const findings = human.observations.flatMap((observation) => observation.findings.map((item) => ({ ...item, group: observation.reviewId })));
+  if (selection.length > 0 && !selection.some((account) => account.type === 'User') && !human.hasHumanFeedback) return undefined;
+  const decisive = new Map();
+  for (const review of submittedReviews(pull)) {
+    const author = identityOf(review.author);
+    if (author.type === 'User' && ['APPROVED', 'CHANGES_REQUESTED'].includes(review.state)) decisive.set(author.id === null ? review.id : author.id, review);
+  }
+  const changesRequested = [...decisive.values()].filter((review) => review.state === 'CHANGES_REQUESTED').map((review) => {
+    const author = identityOf(review.author);
+    return { login: author.login, id: author.id, selected: !!selectedOf(review.author, selection), answered: !findings.some((item) => item.group === String(review.databaseId)) };
+  });
+  return { branchRules: { mergeStateStatus: pull.mergeStateStatus, reviewDecision: pull.reviewDecision }, reviewers: reviewerStatuses(pull, { selection, head }), unanswered: findings.map((item) => item.itemId), changesRequested };
+}
+
 // Every unanswered feedback item on the PR, wherever it was made, grouped into one observation per review or conversation comment.
 // `mode` 'all' (empty selection) takes every account; 'named' takes every person and leaves the bots to the bot path.
-function humanFeedback(pull, { head, mode, selection, prAuthorId, actorId }) {
+// An item already in `answered` (replied to, claimed, or fixed in a round) is neither a finding nor an author answer.
+function humanFeedback(pull, { head, mode, selection, prAuthorId, actorId, answered = new Set() }) {
   const byAnswerer = (node) => { const { id } = identityOf(node.author); return id !== null && (id === prAuthorId || id === actorId); };
   const eligible = ({ id, type }) => id === null || (id !== prAuthorId && id !== actorId && (type !== 'Bot' || mode === 'all'));
   // A review is made when it is submitted; its createdAt is when the pending draft was started.
@@ -158,9 +211,12 @@ function humanFeedback(pull, { head, mode, selection, prAuthorId, actorId }) {
     return (revision) => answers.find((node) => after(node, revision) && link.test(node.body || '')) || null;
   };
   const entries = [];
+  let hasHumanFeedback = reviews.some((review) => identityOf(review.author).type === 'User' && eligible(identityOf(review.author)) && ['APPROVED', 'CHANGES_REQUESTED'].includes(review.state));
   const add = (node, { kind, group, review, originalCommitId, answerOf, revision = node.lastEditedAt || node.createdAt }) => {
     const author = identityOf(node.author);
     if (!eligible(author)) return;
+    if (author.type === 'User') hasHumanFeedback = true;
+    if (answered.has(itemKey(node.id, revision))) return;
     const answer = answerOf(revision);
     const { body, truncated } = limited(node.body);
     const item = { itemId: itemKey(node.id, revision), kind, url: node.url, author, originalCommitId, group, reviewUrl: review.url, reviewCommitId: oidOf(review.commit), submittedAt: review.submittedAt, body, truncated, untrusted: true, answered: answer !== null };
@@ -179,23 +235,25 @@ function humanFeedback(pull, { head, mode, selection, prAuthorId, actorId }) {
   for (const comment of pull.comments.nodes) add(comment, { kind: 'comment', group: `comment-${comment.databaseId}`, review: { url: comment.url, commit: null, submittedAt: comment.createdAt }, originalCommitId: null, answerOf: linkAnswer(comment.url), revision: identityOf(comment.author).type === 'Bot' ? comment.createdAt : undefined });
   // A person's approval is the latest review GitHub's review decision reads (a comment-only review does not replace it), and only on the commit it is attached to.
   const latest = new Map();
-  for (const review of reviews) if (review.state !== 'COMMENTED') latest.set(identityOf(review.author).id, String(review.databaseId));
-  const observationOf = (author, { reviewUrl, reviewCommitId, submittedAt }, group, approved) => ({ reviewId: group, reviewer: author.login, reviewerId: author.id, reviewerType: author.type, reviewUrl, commitId: head, reviewCommitId, submittedAt, state: 'completed', lgtm: approved && author.type === 'User' && latest.get(author.id) === group, findings: [] });
+  const accountKey = (author, group) => `${author.type}:${author.id === null ? group : author.id}`;
+  for (const review of submittedReviews(pull)) if (['APPROVED', 'CHANGES_REQUESTED'].includes(review.state)) latest.set(accountKey(identityOf(review.author), String(review.databaseId)), String(review.databaseId));
+  const observationOf = (author, { reviewUrl, reviewCommitId, submittedAt }, group, approved) => ({ reviewId: group, reviewer: author.login, reviewerId: author.id, reviewerType: author.type, reviewUrl, commitId: head, reviewCommitId, submittedAt, state: 'completed', lgtm: approved && (author.type === 'User' || mode === 'all') && latest.get(accountKey(author, group)) === group, findings: [] });
   const groups = new Map();
   for (const { item, priority, suggestions, approved } of entries.filter((e) => !e.item.answered)) {
     if (!groups.has(item.group)) groups.set(item.group, observationOf(item.author, item, item.group, approved));
     groups.get(item.group).findings.push({ url: item.url, priority, signals: [], itemId: item.itemId, kind: item.kind, author: item.author, originalCommitId: item.originalCommitId, body: item.body, truncated: item.truncated, suggestions, untrusted: true });
   }
-  // A selected person's clean approval of the head is an observation without findings.
+  // Empty mode records every clean approval, but none is awaited.
   const people = selection.filter((account) => account.type === 'User');
   for (const review of reviews) {
     const group = String(review.databaseId);
-    if (groups.has(group) || !selectedOf(review.author, people)) continue;
+    if (groups.has(group) || (mode === 'all' ? !eligible(identityOf(review.author)) : !selectedOf(review.author, people))) continue;
     const observation = observationOf(identityOf(review.author), { reviewUrl: review.url, reviewCommitId: oidOf(review.commit), submittedAt: review.submittedAt }, group, review.state === 'APPROVED' && oidOf(review.commit) === head);
     if (observation.lgtm) groups.set(group, observation);
   }
   return {
     observations: [...groups.values()],
+    hasHumanFeedback,
     authorAnswered: entries.filter((e) => e.item.answered).map(({ item, answer }) => ({ itemId: item.itemId, url: item.url, answerUrl: answer.url, kind: item.kind, author: item.author, originalCommitId: item.originalCommitId })),
   };
 }
@@ -205,7 +263,7 @@ function humanFeedback(pull, { head, mode, selection, prAuthorId, actorId }) {
 // comment's current commit to every later head, so `commit` says nothing about
 // where the finding was made.
 // The bot path observes the selected Bots; the human result from the same read is carried beside it to `complete`, so the watch's activity and fingerprint stay bot-only.
-function analyze(response, head, selection) {
+function analyze(response, head, selection, answered = new Set()) {
   const pr = pullRequestOf(response);
   const live = pr.headRefOid.toLowerCase();
   if (live !== head) return { stale: true, head, liveHead: live };
@@ -230,6 +288,8 @@ function analyze(response, head, selection) {
   // A gone (deleted) account can no longer answer, so it is never pending.
   const pending = bots.filter((account) => !account.gone && (account === codex && summary ? summary.status !== 'completed' : !observed.has(account))).map((account) => account.login);
   const activity = observations.length > 0 || summary !== null;
+  const human = humanFeedback(pr, { head, mode: selection.length > 0 ? 'named' : 'all', selection, prAuthorId: identityOf(pr.author).id, actorId: response.data.viewer.databaseId, answered });
+  const humanReview = humanReviewOf(pr, { selection, head, human });
   return {
     stale: false,
     model: {
@@ -245,7 +305,8 @@ function analyze(response, head, selection) {
     },
     activity,
     summaryId: summary && summary.id,
-    human: humanFeedback(pr, { head, mode: selection.length > 0 ? 'named' : 'all', selection, prAuthorId: identityOf(pr.author).id, actorId: response.data.viewer.databaseId }),
+    human,
+    ...(humanReview === undefined ? {} : { humanReview }),
   };
 }
 
@@ -292,12 +353,12 @@ async function botPacket(analysis, { pr, graphql, selection }) {
 async function complete(analysis, options) {
   const packet = await botPacket(analysis, options);
   if (packet.stale) return packet;
-  return { ...packet, observations: [...packet.observations, ...analysis.human.observations], authorAnswered: analysis.human.authorAnswered };
+  return { ...packet, observations: [...packet.observations, ...analysis.human.observations], authorAnswered: analysis.human.authorAnswered, ...(analysis.humanReview === undefined ? {} : { humanReview: analysis.humanReview }) };
 }
 
-async function collect({ pr, head, graphql, selection = [] }) {
+async function collect({ pr, head, graphql, selection = [], answered = new Set() }) {
   const normalized = String(head).toLowerCase();
-  const analysis = analyze(await read(graphql, pr, selection), normalized, selection);
+  const analysis = analyze(await read(graphql, pr, selection), normalized, selection, answered);
   if (analysis.stale) return { stale: true, head: analysis.head, liveHead: analysis.liveHead };
   return complete(analysis, { pr, graphql, selection });
 }
@@ -329,7 +390,7 @@ async function watch({ pr, graphql, state, now = Date.now, sleep = (ms) => new P
     const response = await read(graphql, pr, selection);
     const head = pullRequestOf(response).headRefOid.toLowerCase();
     if (!since.has(head)) since.set(head, now());
-    const analysis = analyze(response, head, selection);
+    const analysis = analyze(response, head, selection, state.answered ? state.answered(head) : new Set()); // replies are recorded while the watch runs
     if ((analysis.activity || !named) && !windowed.has(head)) { state.openWindow(head); windowed.add(head); }
     const status = state.status(head);
     if (status.delivery && status.delivery.current === true) { write(JSON.stringify({ event: 'delivery', pr: Number(pr), head, classification: status.delivery.classification })); return 'delivery'; }
@@ -360,4 +421,4 @@ function ghGraphql(cwd = process.cwd()) {
   return async (query, variables) => JSON.parse(execFileSync(gh, crossPlatformArgs(['api', 'graphql', ...(variables.pr === undefined ? [] : ['-F', 'owner={owner}', '-F', 'name={repo}', '-F', `pr=${variables.pr}`]), ...['id', 'cursor'].filter((key) => variables[key] !== undefined).flatMap((key) => ['-f', `${key}=${variables[key]}`]), '-f', `query=${query}`], needsDoubleEscape('gh', cwd)), crossPlatformOpts({ cwd, encoding: 'utf8', maxBuffer: 64 << 20 })));
 }
 
-module.exports = { QUERY, REVIEWS_PAGE_QUERY, PR_COMMENTS_PAGE_QUERY, THREADS_PAGE_QUERY, THREAD_COMMENTS_PAGE_QUERY, REACTIONS_QUERY, identityOf, reviewersFrom, MAX_BODY_CHARS, WINDOW_SECONDS, collect, watch, analyze, complete, formatPacketLine, ghGraphql };
+module.exports = { QUERY, REVIEWS_PAGE_QUERY, PR_COMMENTS_PAGE_QUERY, THREADS_PAGE_QUERY, THREAD_COMMENTS_PAGE_QUERY, REACTIONS_QUERY, identityOf, reviewersFrom, MAX_BODY_CHARS, WINDOW_SECONDS, collect, watch, analyze, complete, formatPacketLine, ghGraphql, findReply, requestSettled, branchRulesSatisfied, reviewerStatuses };

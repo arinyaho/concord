@@ -38,7 +38,7 @@ test('review-until-lgtm persists its monitoring window and request budget', () =
 
   // Simulates a process/session interruption: a new invocation reconstructs
   // the exact same deadline and cannot restart the bounded wait window.
-  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: 901000, requestEligibleAtMs: null, requestBudget: { max: 3, spent: 0, remaining: 3 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, waivers: [], minors: [], initialClaimed: false, initialClaimedAtMs: null, initialRecoveryClaimed: false, initialRequested: false, reconciliation: null, delivery: null });
+  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: 901000, requestEligibleAtMs: null, requestBudget: { max: 3, spent: 0, remaining: 3 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, waivers: [], humanFixBudget: { max: 5, spent: 0, remaining: 5 }, humanWaivers: [], minors: [], claimedReplies: [], owedReplies: [], unpushedRounds: [], humanWait: null, reviewers: [], initialClaimed: false, initialClaimedAtMs: null, initialRecoveryClaimed: false, initialRequested: false, reconciliation: null, delivery: null });
   assert.deepStrictEqual(lgtmState.openWindow({ ...input, now: 2000, durationMs: 900000 }), { created: false, deadlineMs: 901000 });
 });
 
@@ -142,9 +142,9 @@ test('review requests distinguish a durable claim from a request that was sent',
   const input = { stateDir, pr: 116, headSha: '0123456789abcdef0123456789abcdef01234567' };
   lgtmState.claimInitialRequest({ ...input, now: 2000 });
   assert.strictEqual(lgtmState.claimInitialRequest({ ...input, now: 122000 }), true);
-  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, requestEligibleAtMs: 122000, requestBudget: { max: 3, spent: 1, remaining: 2 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, waivers: [], minors: [], initialClaimed: true, initialClaimedAtMs: 122000, initialRecoveryClaimed: false, initialRequested: false, reconciliation: null, delivery: null });
+  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, requestEligibleAtMs: 122000, requestBudget: { max: 3, spent: 1, remaining: 2 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, waivers: [], humanFixBudget: { max: 5, spent: 0, remaining: 5 }, humanWaivers: [], minors: [], claimedReplies: [], owedReplies: [], unpushedRounds: [], humanWait: null, reviewers: [], initialClaimed: true, initialClaimedAtMs: 122000, initialRecoveryClaimed: false, initialRequested: false, reconciliation: null, delivery: null });
   assert.strictEqual(lgtmState.markInitialRequested(input), true);
-  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, requestEligibleAtMs: 122000, requestBudget: { max: 3, spent: 1, remaining: 2 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, waivers: [], minors: [], initialClaimed: true, initialClaimedAtMs: 122000, initialRecoveryClaimed: false, initialRequested: true, reconciliation: null, delivery: null });
+  assert.deepStrictEqual(lgtmState.status(input), { deadlineMs: null, requestEligibleAtMs: 122000, requestBudget: { max: 3, spent: 1, remaining: 2 }, fixBudget: { max: 3, spent: 0, remaining: 3 }, waivers: [], humanFixBudget: { max: 5, spent: 0, remaining: 5 }, humanWaivers: [], minors: [], claimedReplies: [], owedReplies: [], unpushedRounds: [], humanWait: null, reviewers: [], initialClaimed: true, initialClaimedAtMs: 122000, initialRecoveryClaimed: false, initialRequested: true, reconciliation: null, delivery: null });
 });
 
 test('status exposes a provider-specific sent request so resume can open its window', () => {
@@ -288,6 +288,7 @@ test('an abandoned fix-round claim fails closed for human reconciliation', () =>
     headSha: HEAD_A,
     reviews: [{ id: '5332811440', reviewer: 'chatgpt-codex-connector[bot]', url: 'https://github.com/arinyaho/concord/pull/122#pullrequestreview-5332811440', findings: [inlineFinding()] }],
     batchCount: 1,
+    unansweredItemIds: [],
     p1Count: 1,
     p2Count: 0,
     signals: [],
@@ -329,6 +330,7 @@ test('a reserved fix-round keeps one immutable owner', () => {
     claimed: true,
     owner: 'worker-a',
     round: 1,
+    kind: 'bot',
     budget: { max: 3, spent: 1, remaining: 2 },
   });
   assert.deepStrictEqual(lgtmState.renewFixRound({ ...input, now: 800000, owner: 'worker-a' }), {
@@ -367,7 +369,8 @@ test('batch fixes share a cumulative three-round budget across PR heads', () => 
   for (const [index, headSha] of heads.entries()) {
     lgtmState.recordReview({ stateDir, pr: 159, headSha, now: 1000 + index, observation: observation({ reviewId: String(index + 1), commitId: headSha }) });
     const result = lgtmState.claimFixRound({ stateDir, pr: 159, headSha, now: 2000 + index, owner: `worker-${index}` });
-    if (index < 3) assert.deepStrictEqual(result, { claimed: true, owner: `worker-${index}`, round: index + 1, budget: { max: 3, spent: index + 1, remaining: 2 - index } });
+    if (result.claimed) lgtmState.markFixPushed({ stateDir, pr: 159, headSha, fixCommit: 'f'.repeat(40), owner: result.owner });
+    if (index < 3) assert.deepStrictEqual(result, { claimed: true, owner: `worker-${index}`, round: index + 1, kind: 'bot', budget: { max: 3, spent: index + 1, remaining: 2 - index } });
     else assert.deepStrictEqual(result, { claimed: false, reason: 'fix-round-budget-exhausted', budget: { max: 3, spent: 3, remaining: 0 } });
   }
 });
@@ -378,6 +381,7 @@ test('fix-budget exhaustion remains terminal after session replacement', () => {
   for (const [index, headSha] of heads.entries()) {
     lgtmState.recordReview({ stateDir, pr: 159, headSha, now: 1000 + index, observation: observation({ reviewId: String(index + 1), commitId: headSha }) });
     const result = lgtmState.claimFixRound({ stateDir, pr: 159, headSha, now: 2000 + index, owner: `worker-${index}` });
+    if (result.claimed) lgtmState.markFixPushed({ stateDir, pr: 159, headSha, fixCommit: 'f'.repeat(40), owner: result.owner });
     if (index === 3) {
       assert.deepStrictEqual(result, { claimed: false, reason: 'fix-round-budget-exhausted', budget: { max: 3, spent: 3, remaining: 0 } });
       assert.deepStrictEqual(lgtmState.claimFixRound({ stateDir, pr: 159, headSha, now: 3000 + index, owner: `replacement-${index}` }), result);
@@ -655,6 +659,7 @@ test('status.reconciliation is null when unmarked and a full packet once marked'
     headSha: HEAD_A,
     reviews: [{ id: '5332811440', reviewer: obs.reviewer, url: obs.reviewUrl, findings: [{ url: obs.findings[0].url, priority: 'P1', signals: ['lifecycle'] }] }],
     batchCount: 1,
+    unansweredItemIds: [],
     p1Count: 1,
     p2Count: 0,
     signals: ['lifecycle'],
@@ -721,7 +726,7 @@ test('Claude, Codex, and Copilot review-until-lgtm skills pin bounded batch fixe
     assert.match(skill, /Codex, Copilot, or another explicitly configured reviewer/);
     assert.match(skill, /Do not start fixing when the first review arrives/);
     assert.match(skill, /complete collected set.*one clean-context verifier/);
-    assert.match(skill, /partition every blocker into exactly one explicit root-cause group/);
+    assert.match(skill, /partition every blocker and every minor from a person \(the items the head's round fixes\) into exactly one explicit root-cause group/);
     assert.match(skill, /round-scoped transaction/);
     assert.match(skill, /independent certifier/);
     assert.match(skill, /three fix-and-push rounds are a PR-wide hard cap, not a quality guarantee/);
@@ -747,6 +752,7 @@ function claimRounds(stateDir, pr, count, first = 1) {
     const headSha = String(index).repeat(40);
     lgtmState.recordReview({ stateDir, pr, headSha, now: 1000 + index, observation: observation({ reviewId: String(index), commitId: headSha }) });
     results.push(lgtmState.claimFixRound({ stateDir, pr, headSha, now: 2000 + index, owner: `worker-${index}` }));
+    if (results.at(-1).claimed) lgtmState.markFixPushed({ stateDir, pr, headSha, fixCommit: 'f'.repeat(40), owner: `worker-${index}` });
   }
   return results;
 }
@@ -846,6 +852,7 @@ test('self-feeding uses the latest earlier round on the head ancestry and matche
   const claim = (headSha, now) => {
     lgtmState.recordReview({ stateDir, pr: 221, headSha, now, observation: observation({ reviewId: String(now), commitId: headSha }) });
     assert.strictEqual(lgtmState.claimFixRound({ stateDir, pr: 221, headSha, now, owner: `w-${now}` }).claimed, true);
+    lgtmState.markFixPushed({ stateDir, pr: 221, headSha, fixCommit: 'f'.repeat(40), owner: `w-${now}` });
   };
   claim(second, 1000);
   claim(side, 2000);
@@ -873,6 +880,7 @@ function selfFeedingRepo(prefix) {
 function claimFixHead(stateDir, headSha, now) {
   lgtmState.recordReview({ stateDir, pr: 221, headSha, now, observation: observation({ reviewId: String(now), commitId: headSha }) });
   assert.strictEqual(lgtmState.claimFixRound({ stateDir, pr: 221, headSha, now, owner: `w-${now}` }).claimed, true);
+  lgtmState.markFixPushed({ stateDir, pr: 221, headSha, fixCommit: 'f'.repeat(40), owner: `w-${now}` });
 }
 
 test('self-feeding ignores unchanged content of a renamed file', () => {
@@ -1188,6 +1196,17 @@ test('review-until-lgtm merges only on explicit request and a ready merge-ready 
   assert.strictEqual(fs.readFileSync(CLAUDE_SKILL, 'utf8'), fs.readFileSync(COPILOT_SKILL, 'utf8'));
 });
 
+test('review-until-lgtm names the answered-feedback ledger verbs', () => {
+  for (const file of [CLAUDE_SKILL, CODEX_SKILL, COPILOT_SKILL]) {
+    const skill = fs.readFileSync(file, 'utf8');
+    for (const token of ['claim-reply', 'record-reply', 'find-reply', 'owedReplies', '--human', 'claim-approve-prompt', 'record JSON on stdin', '`answerUrl` from the packet\'s `authorAnswered` entry', 'with that `url` as `replyUrl`', 'numeric GitHub account id', 'press Approve on GitHub', 'A bot\'s minor is never fixed during the loop', 'A minor from a person (`author.type` `User`) is fixed in the head\'s fix round, with a failing test first when the change alters behavior, and its reply names the fix commit; it takes no `collect-minor`', 'never resolves a person\'s review thread, also when the fix makes it outdated', '`{"itemIds":[]}`', 'never run it without a piped body', 'mark-fix-pushed <pr> <head-sha> <fix-commit> <owner>', '(`{itemId, headSha, fixCommit}`)', '`{"itemIds": <status.reconciliation.unansweredItemIds>}`', 'read from a fresh `status`', '`not-selected`', '`approvePrompted`']) assert.ok(skill.includes(token), `${path.basename(path.dirname(file))} lacks ${token}`);
+    assert.ok(skill.includes('Before posting one, check `git merge-base --is-ancestor <fixCommit> <live-head-sha>`; when the recorded fix commit is not in the live head\'s history'), `${path.basename(path.dirname(file))} posts an owed reply without checking its fix commit is on the live head`);
+    assert.ok(!skill.includes('git rev-list --first-parent --reverse'), `${path.basename(path.dirname(file))} still derives an owed reply's fix commit from history`);
+    assert.ok(!skill.includes('required when the head\'s active findings carry item ids'), `${path.basename(path.dirname(file))} describes claim-fix-round stdin as optional`);
+    assert.ok(!skill.includes('for a batch with only bot findings'), `${path.basename(path.dirname(file))} keys empty claim-fix-round stdin on bot findings`);
+  }
+});
+
 test('review-until-lgtm pins late reviews, adjudication records, minor triage, merge evidence, and waivers', () => {
   for (const file of [CLAUDE_SKILL, CODEX_SKILL, COPILOT_SKILL]) {
     const skill = fs.readFileSync(file, 'utf8');
@@ -1200,13 +1219,41 @@ test('review-until-lgtm pins late reviews, adjudication records, minor triage, m
     for (const token of ['"baseSha","contractDigest"', '"expectedReviewers"', '`base-changed`', '`contract-changed`', '`check-missing:<name>`', '`fix-round-open`', '`reviewer-missing:<login>`', 'gh pr merge <pr> --match-head-commit']) {
       assert.ok(skill.includes(token), `${path.basename(path.dirname(file))} lacks ${token}`);
     }
-    assert.match(skill, /no reviewer is configured and none was observed, the result is `no-automated-review`/);
+    assert.match(skill, /Empty mode awaits nobody and reports no `no-automated-review` reason solely for absent reviews/);
+    assert.doesNotMatch(skill, /no reviewer is configured and none was observed, the result is `no-automated-review`/);
     assert.match(skill, /waivers with different person and count pairs add up/);
     assert.match(skill, /prints the resulting `budget`/);
     assert.match(skill, /previous fix head missing from the head's history.*counts as absent/);
   }
   assert.strictEqual(fs.readFileSync(CLAUDE_SKILL, 'utf8'), fs.readFileSync(CODEX_SKILL, 'utf8'));
   assert.strictEqual(fs.readFileSync(CLAUDE_SKILL, 'utf8'), fs.readFileSync(COPILOT_SKILL, 'utf8'));
+});
+
+test('review-until-lgtm stops on either exhausted fix cap and names both caps', () => {
+  for (const file of [CLAUDE_SKILL, CODEX_SKILL, COPILOT_SKILL]) {
+    const skill = fs.readFileSync(file, 'utf8');
+    assert.match(skill, /On `fix-round-budget-exhausted` or `human-fix-round-budget-exhausted`, preserve the batch and stop for human reconciliation/);
+    assert.match(skill, /Also stop when the fix rounds of a cap \(three bot rounds, five human rounds\)/);
+    assert.doesNotMatch(skill, /stop when three fix rounds/);
+  }
+});
+
+test('the design and the skill name revision record ids and take review ids from the reconciliation', () => {
+  const design = fs.readFileSync(path.join(__dirname, '..', '..', '..', '..', 'docs', 'design', 'review-until-lgtm-human-reviewers.md'), 'utf8');
+  const row = (name) => design.split('\n').find((line) => line.startsWith(`| ${name} |`)) || '';
+  assert.match(row('`reviewId`'), /revision record with id `<id>~<16 hex of SHA-256 of its sorted new item ids>`/);
+  assert.match(row('`pr-<n>-<head>.<file key>~<hex>.json`'), /id `<id>~<16 hex of SHA-256 of its sorted new item ids>`/);
+  for (const file of [CLAUDE_SKILL, CODEX_SKILL, COPILOT_SKILL]) {
+    const skill = fs.readFileSync(file, 'utf8');
+    assert.match(skill, /reject-review-batch <pr> <head-sha>` only when[^\n]*passing the exact review ids \(`status\.reconciliation\.reviews\[\]\.id`, revision records `<id>~<hex>` included\)/);
+    assert.match(skill, /`reviewIds` lists the ids of the active review batch the packet classifies \(`status\.reconciliation\.reviews\[\]\.id`, revision records included/);
+  }
+});
+
+test('the design ledger lists every status field the human path adds', () => {
+  const design = fs.readFileSync(path.join(__dirname, '..', '..', '..', '..', 'docs', 'design', 'review-until-lgtm-human-reviewers.md'), 'utf8');
+  const paragraph = design.split('\n').find((line) => line.includes('`status` gains')) || '';
+  for (const field of ['reviewers', 'humanWait', 'claimedReplies', 'owedReplies', 'unpushedRounds', 'humanFixBudget', 'humanWaivers']) assert.ok(paragraph.includes(`\`${field}\``), field);
 });
 
 test('waivers add up: two waivers by one person with different counts grant their sum', () => {

@@ -327,6 +327,51 @@ test('a recorded fix-budget waiver lifts a terminal delivery so the waived round
   assert.strictEqual(claim.budget.max, 4);
 });
 
+const HUMAN_ITEM = 'IC_70@2026-11-01T00:00:00Z';
+function withHumanItem(stateDir) {
+  lgtmState.recordReview({ stateDir, pr: PR, headSha: HEAD, now: 2000, observation: {
+    reviewId: 'comment-70', reviewer: 'alice', reviewerId: 101, reviewerType: 'User', reviewUrl: 'https://github.com/arinyaho/concord/pull/172#issuecomment-70',
+    commitId: HEAD, state: 'completed', lgtm: false,
+    findings: [{ url: 'https://github.com/arinyaho/concord/pull/172#issuecomment-70', priority: null, signals: [], itemId: HUMAN_ITEM, kind: 'comment', author: { login: 'alice', id: 101, type: 'User' }, originalCommitId: null }],
+  } });
+}
+
+test('a human fix-budget waiver also lifts a terminal delivery', () => {
+  const stateDir = temp();
+  const input = { stateDir, pr: PR, headSha: HEAD };
+  withActiveReview(stateDir);
+  withHumanItem(stateDir);
+  const record = lgtmState.recordDelivery({ ...input, now: 4000, packet: pr172Packet({ reviewIds: ['4192088400', 'comment-70'] }) });
+  assert.deepStrictEqual(record.budgets.humanFix, { max: 5, spent: 0, remaining: 5 });
+  assert.strictEqual(lgtmState.claimFixRound({ ...input, now: 5000, itemIds: [HUMAN_ITEM] }).reason, 'delivery-terminal');
+  assert.strictEqual(lgtmState.status(input).reconciliation.action, 'report-delivery');
+  lgtmState.waiveFixBudget({ stateDir, pr: PR, person: 'someone', count: 1, human: true });
+  assert.strictEqual(lgtmState.status(input).reconciliation.action, 'verify-and-fix');
+  const claim = lgtmState.claimFixRound({ ...input, now: 6000, itemIds: [HUMAN_ITEM] });
+  assert.deepStrictEqual([claim.claimed, claim.kind], [true, 'human']);
+});
+
+test('a human round claimed after a human waiver lifted a delivery is resumed by its owner without item ids', () => {
+  const stateDir = temp();
+  const input = { stateDir, pr: PR, headSha: HEAD };
+  withHumanItem(stateDir);
+  lgtmState.recordDelivery({ ...input, now: 4000, packet: pr172Packet({ reviewIds: ['comment-70'] }) });
+  lgtmState.waiveFixBudget({ stateDir, pr: PR, person: 'someone', count: 1, human: true });
+  assert.strictEqual(lgtmState.claimFixRound({ ...input, now: 5000, owner: 'w', itemIds: [HUMAN_ITEM] }).claimed, true);
+  assert.deepStrictEqual(lgtmState.claimFixRound({ ...input, now: 6000, owner: 'w', itemIds: [] }), { claimed: true, resumed: true, owner: 'w', round: 1, kind: 'human', budget: { max: 6, spent: 1, remaining: 5 } });
+});
+
+test('a human fix-budget waiver leaves a bot-only claim delivery-terminal', () => {
+  const stateDir = temp();
+  const input = { stateDir, pr: PR, headSha: HEAD };
+  withActiveReview(stateDir);
+  lgtmState.recordDelivery({ ...input, now: 4000, packet: pr172Packet({ reviewIds: ['4192088400'] }) });
+  lgtmState.waiveFixBudget({ stateDir, pr: PR, person: 'someone', count: 1, human: true });
+  assert.strictEqual(lgtmState.claimFixRound({ ...input, now: 5000 }).reason, 'delivery-terminal');
+  assert.strictEqual(lgtmState.status(input).reconciliation.action, 'report-delivery');
+  assert.strictEqual(lgtmState.status(input).fixBudget.spent, 0);
+});
+
 test('a fix-budget waiver does not reopen review requests on a terminal delivery', () => {
   const stateDir = temp();
   withActiveReview(stateDir);
@@ -500,4 +545,47 @@ test('every distribution states the reviewer-unavailable declaration', () => {
     assert.match(read(`${pkg}/skills/initiative-to-prs/SKILL.md`), /`reviewerUnavailable`.*child packet/s);
     assert.match(read(`${pkg}/skills/initiative-to-prs/references/stages.md`), /`mergeable-without-review` satisfy this condition/);
   }
+});
+
+
+const humanReview = (over = {}) => ({ branchRules: { mergeStateStatus: 'CLEAN', reviewDecision: 'APPROVED' }, reviewers: [{ login: 'alice', id: 101, type: 'User', status: 'approved', reviewId: '5470930001', commitId: HEAD }], unanswered: [], changesRequested: [], ...over });
+
+test('delivery copies human statuses and satisfied branch rules without requiring selected approval', () => {
+  const stateDir = temp();
+  const hr = humanReview({ branchRules: { mergeStateStatus: 'CLEAN', reviewDecision: null }, reviewers: [{ login: 'alice', id: 101, type: 'User', status: 'pending', reviewId: null, commitId: null }] });
+  const record = lgtmState.recordDelivery({ stateDir, pr: PR, headSha: HEAD, packet: pr172Packet({ findings: [], tickets: [], humanReview: hr }) });
+  assert.strictEqual(record.classification, 'mergeable-clean');
+  assert.deepStrictEqual(record.humanReview, hr);
+});
+
+test('human delivery blocks on branch rules, unanswered items and unanswered requests for changes', () => {
+  const hr = humanReview({ branchRules: { mergeStateStatus: 'BLOCKED', reviewDecision: 'REVIEW_REQUIRED' }, unanswered: ['IC_1@revision'], changesRequested: [{ login: 'bob', id: 202, selected: false, answered: false }] });
+  const result = lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...pr172Packet({ humanReview: hr }) });
+  assert.strictEqual(result.classification, 'blocked');
+  assert.deepStrictEqual(result.reasons, ['branch-rules-unmet:BLOCKED:REVIEW_REQUIRED', 'feedback-unanswered:IC_1@revision', 'changes-requested:bob']);
+});
+
+test('human delivery rejects malformed provenance and duplicate account or item ids', () => {
+  for (const hr of [null, [], {}, humanReview({ branchRules: {} }), humanReview({ reviewers: [{ login: 'a', id: NaN, type: 'User', status: 'approved', reviewId: null, commitId: null }] }), humanReview({ unanswered: ['a', 'a'] }), humanReview({ changesRequested: [{ login: 'a', id: 1, selected: true }] }), humanReview({ reviewers: [...humanReview().reviewers, ...humanReview().reviewers] })]) {
+    assert.throws(() => lgtmState.classifyDelivery({ pr: PR, headSha: HEAD, ...pr172Packet({ humanReview: hr }) }), /humanReview/);
+  }
+});
+
+test('human delivery canonicalizes account and item order', () => {
+  const stateDir = temp();
+  const alice = humanReview().reviewers[0];
+  const bob = { ...alice, login: 'bob', id: 202, reviewId: '5470930002' };
+  const a = lgtmState.recordDelivery({ stateDir, pr: PR, headSha: HEAD, packet: pr172Packet({ findings: [], tickets: [], humanReview: humanReview({ reviewers: [bob, alice], unanswered: ['z', 'a'] }) }) });
+  const b = lgtmState.recordDelivery({ stateDir, pr: PR, headSha: HEAD, packet: pr172Packet({ findings: [], tickets: [], humanReview: humanReview({ reviewers: [alice, bob], unanswered: ['a', 'z'] }) }) });
+  assert.strictEqual(a.digest, b.digest);
+  assert.deepStrictEqual(a.humanReview.reviewers.map((r) => r.id), [101, 202]);
+  assert.deepStrictEqual(a.humanReview.unanswered, ['a', 'z']);
+});
+
+test('bot-only delivery keeps its pre-humanReview digest', () => {
+  const stateDir = temp();
+  withActiveReview(stateDir);
+  const record = lgtmState.recordDelivery({ stateDir, pr: PR, headSha: HEAD, packet: pr172Packet({ reviewIds: ['4192088400'] }) });
+  assert.strictEqual(record.humanReview, undefined);
+  assert.strictEqual(record.digest, 'd776dff01dab6f586eef71715ac526f617e94852f9412ad65850f5aef6de84ed');
 });
