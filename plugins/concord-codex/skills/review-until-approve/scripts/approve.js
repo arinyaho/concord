@@ -227,6 +227,7 @@ function settlePending(repo, pr, ledger, file, reviewer) {
   }
   delete ledger.pending;
   save(file, ledger);
+  if (!review && round) return head;
 }
 
 // The ledger is read under the lock, so a session that waited for it sees the other session's saved state.
@@ -236,8 +237,8 @@ function identify(repo, pr, args) {
   const file = ledgerFile(repo, pr, reviewer);
   lock(file);
   const ledger = load(file);
-  settlePending(repo, pr, ledger, file, reviewer);
-  return { reviewer, file, ledger, args };
+  const unpostedApprovalHead = settlePending(repo, pr, ledger, file, reviewer);
+  return { reviewer, file, ledger, args, unpostedApprovalHead };
 }
 
 const onPath = (name) => (process.env.PATH || '').split(path.delimiter).some((dir) => (process.platform === 'win32' ? (process.env.PATHEXT || '.EXE;.CMD').split(';') : ['']).some((ext) => { try { fs.accessSync(path.join(dir, name + ext), fs.constants.X_OK); return true; } catch (_) { return false; } }));
@@ -274,8 +275,14 @@ const newLedger = (repo, pr, reviewer, author) => ({ version: 1, repo, pr, revie
 const opt = (args, name) => { const i = args.indexOf(name); return i === -1 ? undefined : args[i + 1]; };
 const lastRound = (ledger) => ledger.rounds[ledger.rounds.length - 1];
 
+function authorReplies(repo, pr, ledger, author) {
+  const pullComments = ghJson(['api', '--paginate', '--slurp', `repos/${repo}/pulls/${pr}/comments`]).flat();
+  const issueComments = ghJson(['api', '--paginate', '--slurp', `repos/${repo}/issues/${pr}/comments`]).flat();
+  return lib.repliesSince(ledger, pullComments, issueComments, author);
+}
+
 function start(repo, pr, args) {
-  const { reviewer, file, ledger: found } = identify(repo, pr, args);
+  const { reviewer, file, ledger: found, unpostedApprovalHead } = identify(repo, pr, args);
   const snap = snapshot(repo, pr);
   if (snap.state !== 'OPEN') die(`the pull request is ${snap.state}`);
   if (snap.author === reviewer) die(`${reviewer} is the author; GitHub rejects self-approval`);
@@ -294,7 +301,12 @@ function start(repo, pr, args) {
   let action = 'watch';
   // A first round that failed on this head has no review to answer: like the watch, only a newer head asks for another.
   if (ledger.rounds.length === 0) { if (ledger.attempt?.head !== snap.head) action = 'round'; }
-  else if (snap.head !== lastRound(ledger).head || lib.descriptionEdited(ledger, snap)) action = 'round';
+  else if (unpostedApprovalHead === snap.head || lib.descriptionEdited(ledger, snap)) action = 'round';
+  else if (ledger.attempt?.head === snap.head) {
+    const failedAt = Date.parse(ledger.attempt.at);
+    if (authorReplies(repo, pr, ledger, snap.author).some((at) => Date.parse(at) > failedAt)) action = 'round';
+  }
+  else if (snap.head !== lastRound(ledger).head) action = 'round';
   else if (lib.evaluateApproval(ledger, snap, lastRound(ledger).head).approve) action = 'approve';
   outFor(ledger, { ledger: file, action, round: lib.reviewedCount(ledger) + 1, reviewer: provider, ...(ledger.model && { model: ledger.model }), ...(ledger.language && { language: ledger.language }), ...(ledger.effort && { effort: ledger.effort }), ...(warning && { warning }) });
 }
@@ -447,7 +459,7 @@ function baseMergeOnly(work, repo, pr, ledger, snap, prior, isAncestor) {
       const [sha, ...parents] = l.split(' ');
       return { sha, parents: parents.map((p) => ({ sha: p, inBase: isAncestor(p, snap.baseTip) })) };
     });
-    const replies = lib.repliesSince(ledger, ghJson(['api', '--paginate', '--slurp', `repos/${repo}/pulls/${pr}/comments`]).flat(), ghJson(['api', '--paginate', '--slurp', `repos/${repo}/issues/${pr}/comments`]).flat(), snap.author);
+    const replies = authorReplies(repo, pr, ledger, snap.author);
     return lib.baseMergeOnly({ prior, live: snap, ancestor: true, commits, before: fingerprint(work, prior.mergeBase, prior.head), after: fingerprint(work, snap.mergeBase, snap.head), replies });
   } catch (_) { return false; }
 }
