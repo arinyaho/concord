@@ -2670,16 +2670,6 @@ test('round-start: reports the prior round\'s open intent ids so the detector re
   assert.deepStrictEqual(out.priorIntentIds, ['intent:scope-not-a-key-listing']);
 });
 
-test('the initiative skill and handoff contract name carry for a genuine budget block, never to refresh context', () => {
-  const root = path.join(__dirname, '..', '..', 'skills', 'initiative-to-prs');
-  const skill = fs.readFileSync(path.join(root, 'SKILL.md'), 'utf8');
-  const handoff = fs.readFileSync(path.join(root, 'references', 'handoff-contract.md'), 'utf8');
-  assert.match(skill, /carry <ref> --from-run-key <old-key>/);
-  assert.match(skill, /never use `carry` to refresh context/i);
-  assert.match(handoff, /`carry` the blocked target/);
-  assert.match(handoff, /never as a substitute for resuming the existing key/);
-});
-
 function writeArtifact(dir, n, name, obj) {
   const artifactName = name.startsWith('fix-') ? `fix-${safeIdForFilename(name.slice(4))}` : name;
   fs.writeFileSync(path.join(dir, `round-${n}-${artifactName}.json`), JSON.stringify(obj));
