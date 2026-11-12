@@ -444,6 +444,24 @@ test('guard fails a release that also edits a description and a manifest that is
   assert.equal(guardPr(remote, tmp, '4', (dir) => fs.rmSync(path.join(dir, CODEX))).status, 1, 'manifest deleted');
 });
 
+test('guard fails a manifest that is a symlink, has a duplicated version key, is renamed away, or is not in the written form', () => {
+  const { tmp, remote } = makeOrigin();
+  // A symlink's blob is its target text: here it reads as a manifest with the unchanged version, while the file it points at says otherwise.
+  assert.equal(guardPr(remote, tmp, '1', (dir) => {
+    const manifest = path.join(dir, CLAUDE);
+    const unchanged = fs.readFileSync(manifest, 'utf8');
+    fs.rmSync(manifest);
+    const target = JSON.stringify({ version: JSON.parse(unchanged).version });
+    fs.symlinkSync(target, manifest);
+    fs.writeFileSync(path.join(path.dirname(manifest), target), unchanged.replace(/"version": "[^"]*"/, '"version": "99.0.0"'));
+  }).status, 1, 'symlink');
+  const before = (extra) => editFile(CLAUDE, (text) => text.replace(/(\n\s*)"version":/, `$1${extra},$1"version":`));
+  assert.equal(guardPr(remote, tmp, '2', before('"version": "99.0.0"')).status, 1, 'duplicated string version');
+  assert.equal(guardPr(remote, tmp, '3', before('"version": 9')).status, 1, 'duplicated non-string version');
+  assert.equal(guardPr(remote, tmp, '4', (dir) => fs.renameSync(path.join(dir, CODEX), path.join(dir, `${CODEX}.bak`))).status, 1, 'renamed away');
+  assert.equal(guardPr(remote, tmp, '5', editFile(CLAUDE, (text) => JSON.stringify(JSON.parse(text)))).status, 1, 'not in the written form');
+});
+
 test('push bumps a manifest whose description was edited by a merged pull request and changes only version fields', () => {
   const { tmp, remote } = makeOrigin();
   const dir = clone(remote, path.join(tmp, 'edit'));

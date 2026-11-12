@@ -289,7 +289,7 @@ test('maintained package metadata and docs advertise the shared capability set',
   for (const contents of files) assert.match(contents, /ticket-writing/i);
   for (const contents of files) assert.match(contents, /initiative-to-prs/i);
   for (const contents of files) assert.match(contents, /proposal-package-authoring/i);
-  // The two plugin.json files are version files that pull requests do not edit, so only the README and the marketplace are held to the current workflow set.
+  // Only the README and the marketplace are held to the current workflow set; the two plugin.json descriptions are checked when they are corrected.
   for (const contents of [files[0], files[3]]) {
     for (const name of ['review-and-fix', 'pr-to-merge', 'coordinate-sessions', 'review-until-approve']) assert.match(contents, new RegExp(name), name);
     assert.doesNotMatch(contents, /review-until-lgtm|review-until-green|project-manager|Copilot/i);
