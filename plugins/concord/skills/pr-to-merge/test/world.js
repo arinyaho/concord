@@ -54,7 +54,7 @@ else if (a[0] === 'api' && url === 'graphql') {
   const wrap = (pr) => ({ data: { repository: { defaultBranchRef: { name: repo.defaultBranch || 'main' }, ...pr } } });
   if (/pullRequests\\(/.test(q)) gqlPages(repo.prs.filter((x) => x.state === 'OPEN'), (nodes, pageInfo) => wrap({ pullRequests: { pageInfo, nodes: nodes.map(gqlPr) } }));
   else if (/reviews\\(first:100,after/.test(q)) gqlPages(p.reviews, (nodes, pageInfo) => wrap({ pullRequest: { reviews: { pageInfo, nodes: nodes.map((r) => ({ fullDatabaseId: String(r.id), lastEditedAt: r.lastEditedAt || null })) } } }));
-  else if (/reviewThreads/.test(q)) gqlPages(p.threads, (nodes, pageInfo) => wrap({ pullRequest: { reviewThreads: { pageInfo, nodes: nodes.map((t) => ({ isResolved: t.resolved, resolvedBy: t.resolved ? (t.resolvedBy === undefined ? { login: 'monalisa' } : t.resolvedBy) : null, comments: { nodes: [{ fullDatabaseId: String(t.root) }] } })) } } }));
+  else if (/reviewThreads/.test(q)) gqlPages(p.threads, (nodes, pageInfo) => wrap({ pullRequest: { reviewThreads: { pageInfo, nodes: nodes.map((t) => ({ isResolved: Boolean(t.resolved) })) } } }));
   else if (/statusCheckRollup/.test(q)) gqlPages(p.checks, (nodes, pageInfo) => wrap({ pullRequest: { commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { pageInfo, nodes: nodes.map((c) => c.context
     ? { __typename: 'StatusContext', context: c.context, state: c.state, isRequired: !!c.required, createdAt: c.at || '2026-01-01T00:00:00Z' }
     : { __typename: 'CheckRun', name: c.name, status: c.status || 'COMPLETED', conclusion: c.conclusion ?? 'SUCCESS', completedAt: c.at || '2026-01-01T00:00:00Z', isRequired: !!c.required, checkSuite: { workflowRun: c.runId ? { databaseId: c.runId } : null } }) } } } }] } } }));

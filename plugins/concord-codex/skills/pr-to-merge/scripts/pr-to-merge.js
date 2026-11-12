@@ -119,9 +119,9 @@ const shapePr = (repo, p) => ({
 
 function listOpen(repo) {
   const [owner, name] = repo.split('/');
-  return graphql(`query($owner:String!,$name:String!,$endCursor:String){repository(owner:$owner,name:$name){
-    pullRequests(states:OPEN,first:50,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{${PR_FIELDS}}}}}`, { owner, name }, true)
-    .flatMap((p) => p.data.repository.pullRequests.nodes).map((p) => shapePr(repo, p));
+  const pages = graphql(`query($owner:String!,$name:String!,$endCursor:String){repository(owner:$owner,name:$name){defaultBranchRef{name}
+    pullRequests(states:OPEN,first:50,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{${PR_FIELDS}}}}}`, { owner, name }, true);
+  return { defaultBranch: pages[0].data.repository.defaultBranchRef?.name, open: pages.flatMap((p) => p.data.repository.pullRequests.nodes).map((p) => shapePr(repo, p)) };
 }
 
 function onePr(repo, number) {
@@ -130,13 +130,12 @@ function onePr(repo, number) {
   return shapePr(repo, r.data.repository.pullRequest);
 }
 
-// Each thread with its first comment's id (as REST gives it) and who resolved it.
-function threadsOf(pr) {
+// How many review threads are unresolved, for the `merged` line.
+function unresolvedThreads(pr) {
   const [owner, name] = pr.repo.split('/');
   return graphql(`query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){
-    reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{isResolved resolvedBy{login} comments(first:1){nodes{fullDatabaseId}}}}}}}`, { owner, name, number: pr.number }, true)
-    .flatMap((p) => p.data.repository.pullRequest.reviewThreads.nodes)
-    .map((t) => ({ resolved: t.isResolved, resolver: t.resolvedBy && lower(t.resolvedBy.login), root: String(t.comments.nodes[0]?.fullDatabaseId) }));
+    reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{isResolved}}}}}`, { owner, name, number: pr.number }, true)
+    .flatMap((p) => p.data.repository.pullRequest.reviewThreads.nodes).filter((t) => !t.isResolved).length;
 }
 
 // When each review body was last edited; GraphQL has the edit time that REST lacks.
@@ -204,7 +203,9 @@ const safeUrl = (u) => (/^https:\/\/[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]+$/.test(
 const tag = (pr) => `${pr.repo}#${pr.number}`;
 const short = (sha) => clean(sha).slice(0, 8);
 const time = (s) => Date.parse(s || '') || 0;
-const timeOf = (c) => Math.max(time(c.created_at), time(c.updated_at)); // an edit to an older comment is new
+// The later of the publish and edit times. A review comment's `created_at` is when it was drafted; `updated_at` is when
+// it was published or last edited.
+const timeOf = (c) => Math.max(time(c.created_at), time(c.updated_at));
 const self = (user) => lower(user?.login) === opts.self;
 const isBot = (user) => user?.type === 'Bot';
 const hasBody = (r) => Boolean(String(r.body || '').trim());
@@ -299,11 +300,9 @@ function coverage(pr) {
 function details(pr) {
   return {
     comments: restPages(`repos/${pr.repo}/pulls/${pr.number}/comments?per_page=100`),
-    threads: threadsOf(pr),
     issueComments: restPages(`repos/${pr.repo}/issues/${pr.number}/comments?per_page=100`),
   };
 }
-const rootOf = (c) => String(c.in_reply_to_id || c.id);
 const who = (item) => clean(item.user?.login);
 
 // The user's own pull request: each review, review-thread comment and conversation comment from a counting account or
@@ -321,21 +320,14 @@ function activity(pr, reviews, d) {
   return lines;
 }
 
-// A thread stops holding when --self resolved it, or an account with write access that is not the pull request's author.
-function resolvedByEntitled(pr, t) {
-  if (!t?.resolved || !t.resolver) return false;
-  if (t.resolver === opts.self) return true;
-  return !isAuthor(pr, t.resolver) && canWrite(pr, t.resolver);
-}
-
 // What holds a pull request besides a request for changes: `thread` (a thread comment) and `comment` (a conversation
 // comment or a non-approving review body) from a counting account other than --self, newer than `cutoff`, the newest
-// approval that covers the head; and `label`. Earlier threads and comments do not hold, resolved or not.
+// approval that covers the head; and `label`. Only a counting approval given after such an item releases it: resolving
+// its thread does not. Earlier threads and comments do not hold, resolved or not.
 function holdsOf(pr, reviews, d, cutoff) {
   const holds = [];
   const later = (item, at) => at > cutoff && !self(item.user) && counts(pr, item);
-  const threadOf = new Map(d.threads.map((t) => [t.root, t]));
-  if (d.comments.some((c) => later(c, timeOf(c)) && !resolvedByEntitled(pr, threadOf.get(rootOf(c))))) holds.push('thread');
+  if (d.comments.some((c) => later(c, timeOf(c)))) holds.push('thread');
   const edits = reviews.some(hasBody) ? reviewEdits(pr) : new Map();
   const bodyHolds = (r) => r.state !== 'PENDING' && r.state !== 'APPROVED' && hasBody(r) && later(r, Math.max(time(r.submitted_at), time(edits.get(String(r.id)))));
   if (reviews.some(bodyHolds) || d.issueComments.some((c) => later(c, timeOf(c)))) holds.push('comment');
@@ -407,8 +399,14 @@ function evaluate(pr) {
 
   for (const [key, line] of reviewLines) notice(key, line);
   if (withdraw) {
-    for (const r of ownApprovals) gh(['api', '-X', 'PUT', `repos/${pr.repo}/pulls/${pr.number}/reviews/${r.id}/dismissals`, '-f', 'message=This head is not an automated change.', '-f', 'event=DISMISS']);
-    say('withdrawn', 'automated approval withdrawn');
+    try {
+      for (const r of ownApprovals) gh(['api', '-X', 'PUT', `repos/${pr.repo}/pulls/${pr.number}/reviews/${r.id}/dismissals`, '-f', 'message=This head is not an automated change.', '-f', 'event=DISMISS']);
+      say('withdrawn', 'automated approval withdrawn');
+    } catch (err) {
+      // Tried again on every scan; reported once per head.
+      warn(`${tag(pr)} dismissal`, err);
+      say('unwithdrawn', `automated approval could not be withdrawn: ${refusal(err)}`);
+    }
   }
   if (!covering.length && !automated) {
     if (approvals.length) say('stale', 'approved on an older head only');
@@ -420,7 +418,7 @@ function evaluate(pr) {
   if (changesRequested || holds.length || pr.mergeable !== 'MERGEABLE') return e;
   const checks = checksOf(pr);
   e.notPassed = checks.filter((c) => c.state !== 'pass').length;
-  e.unresolved = d.threads.filter((t) => !t.resolved).length;
+  e.unresolved = unresolvedThreads(pr);
   const needsApproval = automated && !reviews.some((r) => r.state === 'APPROVED' && self(r.user) && r.commit_id === pr.head);
   e.status = mergeStatus(pr, checks, needsApproval, say);
   return e;
@@ -496,12 +494,13 @@ const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function scanRepo(target) {
   const { repo } = target;
   // Every open pull request is listed, also for OWNER/REPO#N arguments: what is based on a branch decides whether it merges.
-  const open = listOpen(repo);
+  const { defaultBranch, open } = listOpen(repo);
   for (const n of target.numbers) {
     if (open.some((p) => p.number === n)) continue;
     try { if (onePr(repo, n).state === 'CLOSED') notice(`closed:${repo}#${n}`, `closed ${repo}#${n}`); } catch (e) { warn(`${repo}#${n}`, e); }
   }
-  const sameRepo = open.filter((p) => !p.cross);
+  // The default branch is never a stack parent, whatever pull request has it as its head.
+  const sameRepo = open.filter((p) => !p.cross && p.headRef !== defaultBranch);
   for (const pr of open.filter((p) => !p.draft && (target.whole || target.numbers.has(p.number)))) {
     try {
       const e = evaluate(pr);
@@ -510,7 +509,7 @@ function scanRepo(target) {
       // An automated head is approved in one scan and merged in a later one, once GitHub counts the approval.
       if (e.status === 'approve' && !opts.noMerge) { approve(pr); continue; }
       // A pull request waits while an open pull request from this repository, a draft included, is based on its branch.
-      const child = !pr.cross && sameRepo.find((p) => p.baseRef === pr.headRef && p.number !== pr.number);
+      const child = !pr.cross && pr.headRef !== defaultBranch && sameRepo.find((p) => p.baseRef === pr.headRef && p.number !== pr.number);
       if (child) notice(`stack:${tag(pr)}@${pr.head}`, `stack ${tag(pr)}: waits for #${child.number}`);
       else if (opts.noMerge) notice(`ready:${tag(pr)}@${pr.head}`, `ready ${tag(pr)} head ${short(pr.head)}`);
       else merge(e, sameRepo.some((p) => p.headRef === pr.baseRef));

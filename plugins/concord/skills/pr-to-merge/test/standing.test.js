@@ -14,7 +14,6 @@ test('an account whose access cannot be read makes every pull request its standi
   const cases = {
     'a request for changes': [approved(1, { reviews: [approve('monalisa', 'head1', 10), review('casey', 'CHANGES_REQUESTED', 'head1', 11)] }), merged(1)],
     'a thread after the approval': [approved(1, withThread('casey')), merged(1, 1)],
-    'a thread it resolved': [approved(1, withThread('monalisa', 20, { resolved: true, resolvedBy: { login: 'casey' } })), ['triage acme/app#1 head head1: held by thread']],
     'a comment after the approval': [approved(1, { issueComments: [comment('casey', 20)] }), merged(1)],
     'a review body after the approval': [approved(1, { reviews: [approve('monalisa', 'head1', 10), review('casey', 'COMMENTED', 'head1', 20, { body: 'rename x' })] }), merged(1)],
   };

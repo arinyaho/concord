@@ -11,7 +11,6 @@ const merged = [mergedLine(1)];
 const triage = (what, n = 1) => [`triage acme/app#${n} head head${n}: ${what}`];
 // A thread opened at `minute` (the approval is at minute 10); `thread` sets its resolution.
 const withThread = (login, minute = 20, thread = {}, over = {}) => { const c = threadComment(login, { created_at: T(minute), updated_at: T(minute), ...over }); return { threads: [{ resolved: false, root: c.id, ...thread }], comments: [c] }; };
-const resolvedBy = (login) => ({ resolved: true, resolvedBy: login ? { login } : null });
 
 test('merges when the required checks passed while others are still running, and counts those and the unresolved threads', () => {
   const checks = [{ name: 'build', required: true }, { name: 'e2e', required: false, status: 'IN_PROGRESS', conclusion: null }, { name: 'lint', required: false, conclusion: 'FAILURE' }];
@@ -30,7 +29,7 @@ test('checks on a later page are read, and a required check still running is wai
 test('an approval settles what came before it: earlier threads and comments do not hold, resolved or not', () => {
   const cases = {
     'an unresolved thread': [approved(1, withThread('octo-dev', 5)), 1],
-    'a thread the author resolved': [approved(1, withThread('octo-dev', 5, resolvedBy('hubot'))), 0],
+    'a resolved thread': [approved(1, withThread('octo-dev', 5, { resolved: true })), 0],
     'a comment and a review body': [approved(1, { issueComments: [comment('octo-dev', 5)], reviews: [review('octo-dev', 'COMMENTED', 'head1', 6, { body: 'nit' }), approve('monalisa', 'head1', 10)] }), 0],
   };
   for (const [name, [p, threads]] of Object.entries(cases)) assert.deepEqual(world(repo([p])).run(['acme/app']).lines, [mergedLine(1, { threads })], name);
@@ -40,7 +39,7 @@ test('what a counting account adds after the newest covering approval holds, rep
   const cases = {
     'a new thread': [approved(1, withThread('octo-dev')), 'held by thread'],
     'a new comment in an old thread': [(() => { const p = approved(1, withThread('octo-dev', 5)); p.comments.push(threadComment('octo-dev', { in_reply_to_id: p.comments[0].id, created_at: T(20), updated_at: T(20) })); return p; })(), 'held by thread'],
-    'an edited thread comment': [approved(1, withThread('octo-dev', 5, {}, { updated_at: T(30) })), 'held by thread'],
+    'a thread comment drafted before the approval and published or edited after it': [approved(1, withThread('octo-dev', 5, {}, { updated_at: T(30) })), 'held by thread'],
     'a conversation comment': [approved(1, { issueComments: [comment('octo-dev', 20)] }), 'held by comment'],
     'an edited conversation comment': [approved(1, { issueComments: [comment('octo-dev', 5, { updated_at: T(30) })] }), 'held by comment'],
     'a review body': [approved(1, { reviews: [approve('monalisa', 'head1', 10), review('octo-dev', 'COMMENTED', 'head1', 20, { body: 'please also rename x' })] }), 'held by comment'],
@@ -70,16 +69,19 @@ test('these never hold: automation accounts, --self, accounts without write acce
   for (const [name, [p, permissions, threads]] of Object.entries(cases)) assert.deepEqual(world(repo([p]), { permissions }).run(['acme/app']).lines, [mergedLine(1, { threads })], name);
 });
 
-test('a later thread is released by a writer other than the author resolving it, by --self, or by a new approval; not by the author', () => {
-  const cases = [
-    ['the author, with write access', resolvedBy('hubot'), { hubot: 'write' }, triage('held by thread')],
-    ['an account without write access', resolvedBy('member'), { member: 'read' }, triage('held by thread')],
-    ['no reported resolver', resolvedBy(null), {}, triage('held by thread')],
-    ['another writer', resolvedBy('monalisa'), {}, merged],
-    ['--self', resolvedBy('octocat'), {}, merged],
-  ];
-  for (const [name, thread, permissions, expected] of cases) {
-    assert.deepEqual(world(repo([approved(1, withThread('octo-dev', 20, thread))]), { permissions }).run(['acme/app']).lines, expected, name);
+test('only a new counting approval releases what was added after the approval; resolving its thread does not', () => {
+  const reply = (p) => { p.comments.push(threadComment('octo-dev', { in_reply_to_id: p.comments[0].id, created_at: T(20), updated_at: T(20) })); return p; };
+  const cases = {
+    'a new thread, resolved': approved(1, withThread('octo-dev', 20, { resolved: true })),
+    'a writer\'s reply in a resolved thread of a writer': reply(approved(1, withThread('monalisa', 5, { resolved: true }))),
+    'a writer\'s reply in a resolved thread of --self': reply(approved(1, withThread('octocat', 5, { resolved: true }))),
+    'a writer\'s reply in a resolved thread of the author': reply(approved(1, withThread('hubot', 5, { resolved: true }))),
+    'a writer\'s reply in an automated reviewer\'s resolved thread, on the user\'s own PR': reply(approved(1, { author: 'octocat', ...withThread('review-bot[bot]', 5, { resolved: true }) })),
+  };
+  for (const [name, p] of Object.entries(cases)) {
+    const r = world(repo([p]), { permissions: { hubot: 'read' } }).run(['acme/app']);
+    assert.deepEqual(r.lines, triage('held by thread'), name);
+    assert.deepEqual(r.writes, [], name);
   }
   const w = world(repo([approved(1, { issueComments: [comment('octo-dev', 21)], ...withThread('octo-dev') })]));
   assert.deepEqual(w.run(['acme/app']).lines, triage('held by thread, comment'));
@@ -87,6 +89,13 @@ test('a later thread is released by a writer other than the author resolving it,
   assert.deepEqual(w.run(['acme/app']).writes, [], 'an approval by --self releases nothing');
   w.update((x) => x.repos['acme/app'].prs[0].reviews.push(approve('octo-dev', 'head1', 31)));
   assert.deepEqual(w.run(['acme/app']).lines, [mergedLine(1, { threads: 1 })], 'a counting approval after it');
+});
+
+test('the default branch is never a stack parent: a PR whose head branch is the default branch changes nothing', () => {
+  const fromDefault = approved(9, { headRefName: 'main', baseRefName: 'release/1.2' });
+  const r = world(repo([approved(1), fromDefault])).run(['acme/app']);
+  assert.deepEqual(r.lines, [mergedLine(1), mergedLine(9, { base: 'release/1.2' })]);
+  assert.deepEqual(r.writes.map((c) => c[5]), ['--squash', '--squash']);
 });
 
 test('a PR in conflict, and one a branch rule blocks, are each reported once per head and not merged', () => {
@@ -243,6 +252,11 @@ test('the script withdraws its own approval when the head is not automated, and 
   assert.deepEqual(r.lines, triage('automated approval withdrawn'));
   assert.deepEqual(r.writes, [['api', '-X', 'PUT', `repos/acme/app/pulls/1/reviews/${mine.id}/dismissals`, '-f', 'message=This head is not an automated change.', '-f', 'event=DISMISS']]);
   assert.deepEqual(w.run([...AUTO, 'acme/app']).writes, []);
+  const refusedW = world(repo([bump(1, { files: [{ filename: 'src/main.js' }], reviews: [approve('octocat', 'old', 5)] })]), { writeError: { match: 'dismissals', message: 'HTTP 403: Resource not accessible' } });
+  assert.deepEqual(refusedW.run([...AUTO, 'acme/app']).lines, triage('automated approval could not be withdrawn: HTTP 403'));
+  const retry = refusedW.run([...AUTO, 'acme/app']);
+  assert.deepEqual(retry.lines, [], 'reported once per head');
+  assert.equal(retry.writes.length, 1, 'and tried again');
   const agent = approve('octocat', 'old', 5, { body: '<!-- concord-approve: old round:1 base:x -->\nApproved.' });
   assert.deepEqual(world(repo([bump(1, { files: [{ filename: 'src/main.js' }], reviews: [agent] })])).run([...AUTO, 'acme/app']).writes, [], 'an approval with a body is not the script\'s');
   const person = pr(1, { reviews: [approve('octocat', 'head1', 5)] });

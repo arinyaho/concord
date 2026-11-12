@@ -54,8 +54,10 @@ test('SKILL.md relays every report in one line, treats pull request content as d
   assert.match(skill, /gh run watch <id> --interval/);
 });
 
+const wrapper = skill.slice(skill.indexOf('```sh\n#!/bin/sh') + 6, skill.lastIndexOf('```'));
+
 test('the scheduled wrapper owns the loop, deletes the state file once, and gives the session the lines as data without the script\'s options', () => {
-  const wrapper = skill.slice(skill.indexOf('```sh\n#!/bin/sh'));
+  assert.ok(wrapper.indexOf('mkdir -p') < wrapper.indexOf('rm -f "$state"'));
   assert.ok(wrapper.indexOf('rm -f "$state"') < wrapper.indexOf('while '));
   assert.match(wrapper, /while .*; do\n  node \/path\/to\/pr-to-merge\.js/);
   const prompt = wrapper.match(/prompt="([^"]*)"/)[1];
@@ -63,4 +65,40 @@ test('the scheduled wrapper owns the loop, deletes the state file once, and give
   assert.doesNotMatch(prompt, /--self|--state|--deadline|run the script|running the script/);
   assert.match(wrapper, /claude -p "\$prompt"/);
   assert.match(wrapper, /codex exec "\$prompt"/);
+});
+
+// The wrapper from SKILL.md, run with sh against the fake gh and a stub agent: two seconds of night, short scans.
+function runWrapper(w, self = 'octocat') {
+  const { spawnSync } = require('node:child_process');
+  const { SCRIPT } = require('./world');
+  const state = path.join(w.stateDir, 'night', 'state.json');
+  const script = wrapper
+    .replace('"$HOME/.local/state/concord/pr-to-merge-nightly.json"', JSON.stringify(state))
+    .replace('/path/to/pr-to-merge.js', JSON.stringify(SCRIPT))
+    .replace('--self octocat', `--self ${self}`)
+    .replace('--checkout acme/app="$HOME/src/app" --deadline 1800', '--interval 0.1 --deadline 0.4')
+    .replace('8 * 3600', '2');
+  assert.ok(!/\$HOME|path\/to|1800|3600/.test(script), script);
+  fs.writeFileSync(path.join(w.dir, 'bin', 'claude'), `#!/bin/sh\nprintf '%s\\n' "$2" >> ${JSON.stringify(path.join(w.dir, 'sessions'))}\ncat ${JSON.stringify(`${state}.lines`)} >> ${JSON.stringify(path.join(w.dir, 'handed'))}\n`, { mode: 0o755 });
+  const started = Date.now();
+  const r = spawnSync('sh', ['-c', script], { encoding: 'utf8', timeout: 30000, env: { ...process.env, PATH: `${path.join(w.dir, 'bin')}${path.delimiter}${process.env.PATH}` } });
+  const read = (name) => (fs.existsSync(path.join(w.dir, name)) ? fs.readFileSync(path.join(w.dir, name), 'utf8') : '');
+  return { code: r.status, stderr: r.stderr, sessions: read('sessions').split('\n').filter(Boolean), handed: read('handed'), ms: Date.now() - started };
+}
+
+test('the wrapper terminates in each case: lines to act on, nothing until its deadline, and a script that fails to start', { skip: process.platform === 'win32' }, () => {
+  const { world, pr, approve } = require('./world');
+  const lines = runWrapper(world({ 'acme/app': { prs: [pr(1, { reviews: [approve('monalisa', 'head1')] })] } }));
+  assert.equal(lines.code, 0, lines.stderr);
+  assert.equal(lines.sessions.length, 1, 'one session for the one report');
+  assert.match(lines.handed, /^merged acme\/app#1 /);
+  const quiet = runWrapper(world({ 'acme/app': { prs: [pr(1)] } }));
+  assert.equal(quiet.code, 0, quiet.stderr);
+  assert.deepEqual(quiet.sessions, []);
+  assert.ok(quiet.ms >= 2000 && quiet.ms < 15000, `${quiet.ms} ms`);
+  const broken = runWrapper(world({ 'acme/app': { prs: [] } }), 'someone-else');
+  assert.equal(broken.code, 2);
+  assert.match(broken.stderr, /pr-to-merge exited with status 2; stopping/);
+  assert.ok(broken.ms < 5000, `${broken.ms} ms`);
+  assert.deepEqual(broken.sessions, []);
 });
