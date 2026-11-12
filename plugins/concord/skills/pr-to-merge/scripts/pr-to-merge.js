@@ -532,14 +532,15 @@ function rerun(pr, failed) {
 // ---- merging --------------------------------------------------------------------------------------------------------
 
 const BEHIND = /not up to date|out of date|behind/i;
+// What a refusal line says: the HTTP status, or `refused`. GitHub's message goes only to the log (warn).
+const refusal = (e) => (httpStatus(e) ? `HTTP ${httpStatus(e)}` : 'refused');
 function sync(pr) {
   try {
     gh(['api', '-X', 'PUT', `repos/${pr.repo}/pulls/${pr.number}/update-branch`, '-f', `expected_head_sha=${pr.head}`]);
     emit(`synced ${tag(pr)} head ${short(pr.head)}`);
   } catch (e) {
     warn(`${tag(pr)} update-branch`, e);
-    const msg = clean(e.detail || e.message);
-    notice(`syncfail:${tag(pr)}@${pr.head}:${msg}`, `sync failed ${tag(pr)} head ${short(pr.head)}: ${msg}`);
+    notice(`syncfail:${tag(pr)}@${pr.head}:${refusal(e)}`, `sync failed ${tag(pr)} head ${short(pr.head)}: ${refusal(e)}`);
   }
 }
 
@@ -548,7 +549,7 @@ function approve(pr) {
   emit(`approved ${tag(pr)} (automated)`);
 }
 
-const mergedLine = (a) => `merged ${a.repo}#${a.number} into ${clean(a.base)} (${a.squash ? 'squash' : 'merge commit'}) head ${short(a.head)}${a.late.length ? `; not passed: ${a.late.join(', ')}` : ''}`;
+const mergedLine = (a) => `merged ${a.repo}#${a.number} into ${clean(a.base)} (${a.squash ? 'squash' : 'merge commit'}) head ${short(a.head)}${a.late ? `; not passed: ${a.late}` : ''}`;
 
 // Merges one pull request into its base, naming the head it expects. `merged` is printed only when GitHub reports the
 // pull request merged. One that stays open is in a merge queue; it, and one whose state could not be read, is kept in
@@ -560,10 +561,9 @@ function merge(e, squash) {
   } catch (err) {
     if (BEHIND.test(err.detail || err.message)) return sync(pr);
     warn(`${tag(pr)} merge`, err);
-    const msg = clean(err.detail || err.message);
-    return notice(`mergefail:${tag(pr)}@${pr.head}:${msg}`, `merge failed ${tag(pr)} head ${short(pr.head)}: ${msg}`);
+    return notice(`mergefail:${tag(pr)}@${pr.head}:${refusal(err)}`, `merge failed ${tag(pr)} head ${short(pr.head)}: ${refusal(err)}`);
   }
-  const accepted = { repo: pr.repo, number: pr.number, head: pr.head, base: pr.baseRef, squash, late: (e.notPassed || []).map((c) => `${clean(c.name)} (${c.state === 'pending' ? 'pending' : clean(c.result)})`) };
+  const accepted = { repo: pr.repo, number: pr.number, head: pr.head, base: pr.baseRef, squash, late: (e.notPassed || []).length };
   let state;
   try { state = onePr(pr.repo, pr.number).pr.state; } catch (err) { warn(`${tag(pr)} state after the merge`, err); }
   if (state === 'MERGED') return emit(mergedLine(accepted));

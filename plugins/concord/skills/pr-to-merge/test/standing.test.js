@@ -45,7 +45,7 @@ test('a merge whose result cannot be read is reported merged by a later scan onc
   assert.equal(first.writes.length, 1);
   assert.match(first.stderr, /acme\/app#1 state after the merge: failed \(HTTP 502\)/);
   w.update((x) => { x.fail = []; });
-  assert.deepEqual(w.run(['acme/app']).lines, ['merged acme/app#1 into main (squash) head head1; not passed: e2e (pending)']);
+  assert.deepEqual(w.run(['acme/app']).lines, ['merged acme/app#1 into main (squash) head head1; not passed: 1']);
   assert.deepEqual(w.run(['acme/app']).lines, []);
 });
 

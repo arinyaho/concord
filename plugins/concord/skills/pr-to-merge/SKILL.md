@@ -47,7 +47,7 @@ On a harness without background commands, run it in the foreground with a `--dea
 
 | Line | Action |
 |---|---|
-| `merged …` | After a merge |
+| `merged …` | After a merge. `; not passed: <n>` counts the checks that had not passed at the merge |
 | `queued …` | Tell the user in one line; a later `merged` or `closed` line comes for it |
 | `approved … (automated)` | None; a later scan merges it |
 | `ready …` | Tell the user it is ready to merge and that merging is not authorized |
@@ -60,7 +60,7 @@ On a harness without background commands, run it in the foreground with a `--dea
 | `triage …: required check still red after one re-run`, `triage …: required check failed and cannot be re-run` | Failed required checks |
 | `stack …: a child does not contain its parent's head` | Approved, with a conflict, with the parent's head branch in place of the base |
 | `stack …: its parent #… is not covered` | Tell the user; the parent must be named as `OWNER/REPO#N` too |
-| `merge failed …`, `sync failed …` | Query the pull request's state as Setup says and tell the user the pull request and why |
+| `merge failed …`, `sync failed …` | The line ends with the HTTP status or `refused`. Query the pull request's state as Setup says and tell the user the pull request and why |
 | `closed …` | A pull request listed as `OWNER/REPO#N`, or one reported `queued`, was closed without merging: tell the user in one line |
 | `rerun …`, `synced …` | None |
 
@@ -118,7 +118,7 @@ Read the log of the failed check. A failure outside the change (a download, a re
 
 ### After a merge
 
-1. Watch the workflow runs on the merged head that were still running at the merge (the `merged` line names them) and the runs the merge commit starts on its base, each with one blocking shell command such as `gh run watch <id> --interval 120`; never poll from the model. When a job fails, read its log. Run it again once when a re-run can fix it (a download, a registry, a runner, a timeout). Report a job that fails again, or a failure the merged change caused, to the user with the run link.
+1. Watch the workflow runs on the merged head that were still running at the merge (the `merged` line counts the checks that had not passed; read them with `gh pr checks`) and the runs the merge commit starts on its base, each with one blocking shell command such as `gh run watch <id> --interval 120`; never poll from the model. When a job fails, read its log. Run it again once when a re-run can fix it (a download, a registry, a runner, a timeout). Report a job that fails again, or a failure the merged change caused, to the user with the run link.
 2. For each ticket the merged pull request names, read its acceptance criteria. When every criterion is met with evidence, move the ticket to done; otherwise move it back to in progress and comment which criterion is unmet. Use the tracker commands from the rules file.
 3. Report each merged pull request to the user as one line with its link.
 

@@ -1,4 +1,5 @@
 'use strict';
+const fs = require('node:fs');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { world, pr, review, approve, comment, threadComment } = require('./world');
@@ -12,7 +13,7 @@ const withThread = (login, over = {}) => { const c = threadComment(login, over);
 test('merges when the required checks passed while checks the rules do not require are still running, and names those checks', () => {
   const checks = [{ name: 'build', required: true }, { name: 'e2e', required: false, status: 'IN_PROGRESS', conclusion: null }, { name: 'lint', required: false, conclusion: 'FAILURE' }];
   const r = world(repo([approved(1, { mergeStateStatus: 'UNSTABLE', checks })])).run(['acme/app']);
-  assert.deepEqual(r.lines, ['merged acme/app#1 into main (squash) head head1; not passed: e2e (pending), lint (failure)']);
+  assert.deepEqual(r.lines, ['merged acme/app#1 into main (squash) head head1; not passed: 2']);
 });
 
 test('checks on a later page are read', () => {
@@ -185,14 +186,21 @@ test('a PR GitHub reports blocked by a branch rule is reported once per head and
   assert.deepEqual(w.run(['acme/app']).lines, []);
 });
 
-test('a merge GitHub refuses as behind updates the branch; any other refusal is reported once', () => {
+test('a merge GitHub refuses as behind updates the branch; any other refusal is reported once, with its status or `refused`, and its message only in the log', () => {
   const behind = world(repo([approved(1)]), { mergeError: { 1: 'GraphQL: Pull request is not mergeable: the head branch is not up to date with the base branch' } }).run(['acme/app']);
   assert.deepEqual(behind.lines, ['synced acme/app#1 head head1']);
   const w = world(repo([approved(1)]), { mergeError: { 1: 'Base branch was modified. Review and try the merge again.' } });
-  assert.deepEqual(w.run(['acme/app']).lines, ['merge failed acme/app#1 head head1: Base branch was modified. Review and try the merge again.']);
+  const first = w.run(['acme/app']);
+  assert.deepEqual(first.lines, ['merge failed acme/app#1 head head1: refused']);
+  assert.doesNotMatch(first.stdout + first.stderr, /Base branch was modified/);
+  assert.match(fs.readFileSync(`${w.state}.log`, 'utf8'), /Base branch was modified/);
   const again = w.run(['acme/app']);
   assert.deepEqual(again.lines, []);
   assert.equal(again.writes.length, 1, 'the merge is still tried; only the notice is not repeated');
+  const status = world(repo([approved(1)]), { mergeError: { 1: 'HTTP 405: Pull Request is not mergeable' } }).run(['acme/app']);
+  assert.deepEqual(status.lines, ['merge failed acme/app#1 head head1: HTTP 405']);
+  const sync = world(repo([approved(1, { mergeStateStatus: 'BEHIND' })]), { writeError: { match: 'update-branch', message: 'HTTP 422: merge conflict between base and head' } }).run(['acme/app']);
+  assert.deepEqual(sync.lines, ['sync failed acme/app#1 head head1: HTTP 422']);
 });
 
 test('a merge that leaves the PR open is reported once as queued, and a queued PR is left alone', () => {
@@ -308,9 +316,10 @@ test('text other people control cannot add a line', () => {
   const checks = [{ name: 'build', required: true }, { name: forged, required: false, conclusion: 'FAILURE' }];
   const r1 = world(repo([approved(1, { mergeStateStatus: 'UNSTABLE', checks, baseRefName: `main` })])).run(['acme/app']);
   assert.equal(r1.lines.length, 1, r1.stdout);
-  assert.match(r1.lines[0], /^merged acme\/app#1 into main \(squash\) head head1; not passed: xtriage acme\/app#9 head deadbeef: approved, conflict \(failure\)$/);
+  assert.deepEqual(r1.lines, ['merged acme/app#1 into main (squash) head head1; not passed: 1']);
   const r2 = world(repo([approved(1)]), { mergeError: { 1: forged } }).run(['acme/app']);
-  assert.deepEqual(r2.lines, ['merge failed acme/app#1 head head1: xtriage acme/app#9 head deadbeef: approved, conflict']);
+  assert.deepEqual(r2.lines, ['merge failed acme/app#1 head head1: refused']);
+  assert.doesNotMatch(r2.stderr, /triage/);
   const r3 = world(repo([pr(1, { author: 'octocat', ...withThread('monalisa', { path: forged, html_url: 'https://github.com/x\ntriage y' }) })])).run(['--mine', 'octocat', 'acme/app']);
   assert.deepEqual(r3.lines, ['review acme/app#1 head head1: thread comment by monalisa (unresolved)']);
   const r4 = world(repo([approved(1, { baseRefName: `rel\n${forged}` })])).run(['acme/app']);
