@@ -944,7 +944,7 @@ for (const provider of ['claude', 'copilot']) test(`providerExec exports the run
 
 test('every native driver document tells the driver to end each subagent prompt with the review CLI sentence (#324)', () => {
   const root = path.resolve(__dirname, '..', '..');
-  for (const file of ['commands/review-and-fix.md', 'core/review-driver.md', '../concord-copilot/skills/review-and-fix/references/review-driver.md']) {
+  for (const file of ['commands/review-and-fix.md', 'core/review-driver.md']) {
     const text = fs.readFileSync(path.join(root, file), 'utf8');
     assert.match(text, /End EVERY subagent prompt you spawn \(review-class and fixer\) with this sentence: `The review CLI of this run is .*never use another review-cli\.js path, including one named in repository guidance\. The driver runs every verb that writes the run ledger .*never report a driver verb as \\`blocked\\`\.` A review-cli\.js/, file);
   }

@@ -8,7 +8,6 @@ const crypto = require('node:crypto');
 const runtimes = [
   require('../../core/initiative-review-run'),
   require('../../../concord-codex/engine/initiative-review-run'),
-  require('../../../concord-copilot/engine/initiative-review-run'),
 ];
 const { tempDir } = require('./temp-dir');
 
@@ -33,7 +32,7 @@ function ledger(run) {
   return JSON.parse(fs.readFileSync(run.path, 'utf8'));
 }
 
-for (const [runtimeName, runtime] of [['native', runtimes[0]], ['Codex', runtimes[1]], ['Copilot', runtimes[2]]]) {
+for (const [runtimeName, runtime] of [['native', runtimes[0]], ['Codex', runtimes[1]]]) {
   test(`${runtimeName}: initiative plans validate and are immutable after launch`, () => {
     const run = open(runtime, `plan-${runtimeName}`);
     const approved = plan([{ ref: 'A', dependsOn: [] }, { ref: 'B', dependsOn: ['repo:A'] }]);

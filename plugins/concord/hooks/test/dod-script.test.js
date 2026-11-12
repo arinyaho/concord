@@ -22,14 +22,13 @@ async function runDod(results = { node: PASS }, platform) {
 
 test('dod: probes each CLI, then runs only the plugin-install e2e with the e2e flag', async () => {
   const r = await runDod();
-  assert.deepStrictEqual(r.calls.map((c) => [c.cmd, ...c.args]).slice(0, 3), [
+  assert.deepStrictEqual(r.calls.map((c) => [c.cmd, ...c.args]).slice(0, 2), [
     ['claude', '--version'],
     ['codex', '--version'],
-    ['copilot', '--version'],
   ]);
-  assert.strictEqual(r.calls.length, 4);
+  assert.strictEqual(r.calls.length, 3);
   const { E2E_FILES, E2E_NAME } = await import(path.join(REPO, 'scripts/dod.mjs'));
-  const test = r.calls[3];
+  const test = r.calls[2];
   assert.strictEqual(test.cmd, 'node');
   assert.deepStrictEqual(test.args, ['--test', '--test-reporter=tap', `--test-name-pattern=${E2E_NAME}`, ...E2E_FILES]);
   assert.strictEqual(test.opts.cwd, '/repo');

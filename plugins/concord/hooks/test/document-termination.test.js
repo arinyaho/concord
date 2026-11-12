@@ -4,7 +4,6 @@ const assert = require('node:assert/strict');
 const RUNTIMES = [
   ['core', require('../../core/review')],
   ['codex', require('../../../concord-codex/engine/review')],
-  ['copilot', require('../../../concord-copilot/engine/review')],
 ];
 const minor = (id = 'docreview:wording', extra = {}) => ({ id, gate: 'docreview', file: 'note.md', span: 'word', summary: 'cosmetic wording', releaseBlocking: [], rationale: 'The wording has no effect on the documented contract.', minorVerified: true, minorReason: 'Read the line independently; meaning and checks are unchanged.', ...extra });
 

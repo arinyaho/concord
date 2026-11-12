@@ -20,10 +20,10 @@ Run the focused test above; successful replacement must reach the real fixer bou
 
 ## Task 3: Consume durable evidence in every driver
 
-Modify `plugins/concord/core/codex-review-runner.js` to skip both completed and normalized pending roles and pass `retryArtifacts[role]` with the normal planner prompt. Update `plugins/concord/core/review-driver.md`, composed Claude/Copilot commands, and Codex command guidance to distinguish normalization from plan acceptance and describe the one semantic replacement. Regenerate Codex/Copilot bundles using their `bin/bundle.mjs` scripts.
+Modify `plugins/concord/core/codex-review-runner.js` to skip both completed and normalized pending roles and pass `retryArtifacts[role]` with the normal planner prompt. Update `plugins/concord/core/review-driver.md`, the composed Claude command, and Codex command guidance to distinguish normalization from plan acceptance and describe the one semantic replacement. Regenerate the Codex bundle using its `bin/bundle.mjs` script.
 
 Run focused regression and runner/CLI/initiative/telemetry/bundle suites; confirm pending-normalized interruption and repaired rejected plan coverage.
 
 ## Task 4: Verify and deliver
 
-Update `docs/design/review-artifact-contract.md` and `docs/design/review-ledger.md` to document the pending plan and semantic retry boundary. Sweep related operator instructions and record unchanged documents in the design note. Run plugin and agent-team CI commands under Node 22 plus `node scripts/dod.mjs`. Run the design and branch `review-and-fix` gates, correct accepted blockers, then create the PR against main and record its exact-head/base delivery disposition.
+Update `docs/design/review-artifact-contract.md` and `docs/design/review-ledger.md` to document the pending plan and semantic retry boundary. Sweep related operator instructions and record unchanged documents in the design note. Run the plugin CI command under Node 22 plus `node scripts/dod.mjs`. Run the design and branch `review-and-fix` gates, correct accepted blockers, then create the PR against main and record its exact-head/base delivery disposition.

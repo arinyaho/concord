@@ -8,7 +8,6 @@ const { tempDir } = require('./temp-dir');
 for (const [engine, initiative] of [
   ['core', require('../../core/initiative-review-run')],
   ['codex', require('../../../concord-codex/engine/initiative-review-run')],
-  ['copilot', require('../../../concord-copilot/engine/initiative-review-run')],
 ]) {
 const test = (name, fn) => nodeTest(`${engine}: ${name}`, fn);
 

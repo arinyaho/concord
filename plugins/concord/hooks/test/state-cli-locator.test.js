@@ -7,7 +7,7 @@ const { spawnSync } = require('node:child_process');
 const { tempDir } = require('./temp-dir');
 
 const PLUGINS = path.join(__dirname, '..', '..', '..');
-const SKILLS = ['concord', 'concord-codex', 'concord-copilot'].map((pkg) => path.join(PLUGINS, pkg, 'skills', 'review-until-lgtm', 'SKILL.md'));
+const SKILLS = ['concord', 'concord-codex'].map((pkg) => path.join(PLUGINS, pkg, 'skills', 'review-until-lgtm', 'SKILL.md'));
 
 // The script inside the skill's `node -e "..."` command. It contains no `"`, `$` or backtick, so running it with
 // `node -e` directly is what a POSIX shell, PowerShell or cmd.exe runs when the command is pasted as written.
@@ -34,11 +34,6 @@ function codexCopy(home, version) {
   return install(path.join(home, '.codex', 'plugins', 'cache', 'arinyaho-concord', 'concord', version), '.codex-plugin', 'concord', version, 'bin');
 }
 
-// Copilot's package keeps plugin.json at its root, not in a manifest directory.
-function copilotCopy(home, version) {
-  return install(path.join(home, '.copilot', 'installed-plugins', 'arinyaho-concord', 'concord'), '', 'concord', version, 'bin');
-}
-
 function locate(skillPath, home) {
   const env = { ...process.env, HOME: home, USERPROFILE: home };
   return spawnSync(process.execPath, ['-e', locatorScript(skillPath)], { env, encoding: 'utf8' });
@@ -54,15 +49,6 @@ for (const skillPath of SKILLS) {
     const result = locate(skillPath, home);
     assert.strictEqual(result.status, 0, result.stderr);
     assert.strictEqual(result.stdout.trim(), claude);
-  });
-
-  test(`${pkg}: the locator selects a newer Copilot copy, whose manifest sits at the package root`, () => {
-    const home = tempDir('state-cli-locator-');
-    const copilot = copilotCopy(home, '0.9.0-beta.26');
-    codexCopy(home, '0.9.0-beta.19');
-    const result = locate(skillPath, home);
-    assert.strictEqual(result.status, 0, result.stderr);
-    assert.strictEqual(result.stdout.trim(), copilot);
   });
 
   test(`${pkg}: the locator ranks a release above its own prereleases`, () => {
@@ -117,27 +103,19 @@ for (const skillPath of SKILLS) {
     assert.strictEqual(none.stdout, '');
   });
 
-  test(`${pkg}: the locator never selects a newer copy whose root plugin.json names another plugin`, () => {
-    const home = tempDir('state-cli-locator-');
-    const codex = codexCopy(home, '0.9.0-beta.19');
-    install(path.join(home, '.copilot', 'installed-plugins', 'other', 'impostor'), '', 'impostor', '9.9.9', 'bin');
-    const result = locate(skillPath, home);
-    assert.strictEqual(result.status, 0, result.stderr);
-    assert.strictEqual(result.stdout.trim(), codex);
-  });
-
   test(`${pkg}: the first manifest that parses decides a candidate`, () => {
     const home = tempDir('state-cli-locator-');
     const root = path.join(home, '.claude', 'plugins', 'cache', 'arinyaho-concord', 'concord', '9.9.9');
     install(root, '.claude-plugin', 'impostor', '9.9.9', 'hooks');
-    fs.writeFileSync(path.join(root, 'plugin.json'), JSON.stringify({ name: 'concord', version: '9.9.9' }));
+    fs.mkdirSync(path.join(root, '.codex-plugin'));
+    fs.writeFileSync(path.join(root, '.codex-plugin', 'plugin.json'), JSON.stringify({ name: 'concord', version: '9.9.9' }));
     const result = locate(skillPath, home);
     assert.strictEqual(result.status, 1);
     assert.strictEqual(result.stdout, '');
   });
 }
 
-test('the three packages ship the same locator command', () => {
+test('the two packages ship the same locator command', () => {
   const [claude, ...others] = SKILLS.map(locatorScript);
   for (const other of others) assert.strictEqual(other, claude);
 });

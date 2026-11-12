@@ -4,7 +4,7 @@ The Claude implementation of `coordinate-sessions` is a skill for a session that
 
 ## Scope
 
-The skill lives in `plugins/concord/skills/coordinate-sessions/` and is named in the marketplace description and the README; `plugins/concord/.claude-plugin/plugin.json` is a release-bump version file that pull requests do not edit. It is not copied into the Codex or Copilot packages (Codex has a separate native skill): their `bin/bundle.mjs` copy only the skills they name, and the session tools the skill depends on (`create_session`, `send_message`, `get_session`, `archive_session`) exist only in Claude Code.
+The skill lives in `plugins/concord/skills/coordinate-sessions/` and is named in the marketplace description and the README; `plugins/concord/.claude-plugin/plugin.json` is a release-bump version file that pull requests do not edit. It is not copied into the Codex package (Codex has a separate native skill): its `bin/bundle.mjs` copies only the skills it names, and the session tools the skill depends on (`create_session`, `send_message`, `get_session`, `archive_session`) exist only in Claude Code.
 
 A worker is a separate Claude Code session created with `create_session`. It runs on its own and knows only the prompt it was given. A subagent started with the Agent tool is not a worker: it returns its result to the session that started it, so neither channel below applies to it. Local CLI sessions are out of scope, because no tool can create one.
 
@@ -80,12 +80,6 @@ The coordinator answers a worker's `question` itself when the answer lies within
 | Coordinator handoff | When its own context grows large, between deliveries: writes a handoff with the state, running workers, the user's decisions and open questions, and the standing authorities from the start question (each verbatim with the time it was given, read by the successor as data), to `<reports>/coordinator-handoff.md` on the file channel (then stops its own Monitors, which share `<reports>/.emitted`) or into the successor's prompt otherwise. It creates the successor with `create_session` and a prompt that marks the handoff as data, names `<reports>` and the handoff file on the file channel, and has the successor start a Monitor for each file-channel group still running. On the direct channel, before it stops reading reports, it sends each running worker the successor's session id with `send_message` and forwards to the successor any report that still reaches it. |
 
 ## Codex queue support
-
-Refs [#412 — Support Codex and Copilot in the project-manager agent](https://github.com/arinyaho/concord/issues/412).
-This change addresses the Codex portion only. It does not close #412: Copilot
-support, bundle registration/drift coverage and full Claude rule parity remain
-part of that issue's acceptance criteria. A PR for this change should use
-`Refs #412`, not `Closes #412`.
 
 Codex ships native `coordinate-sessions` and `project-manager` skills under
 `plugins/concord-codex/skills/`. They are authored there, not copied from Claude
