@@ -1,6 +1,6 @@
 # State-and-event table in stateful design notes
 
-A stateful change has boundary combinations of state and event that prose does not enumerate, and a branch review finds them one at a time, each costing a review round. The "Stateful changes" section of the `ticket-to-pr` skill makes the design note list them up front as a transition table and makes stage 6 give each row evidence. That section is the only statement of the trigger, the row shape and the evidence rules; this note says why the rule has that shape and does not restate it.
+A stateful change has boundary combinations of state and event that prose does not enumerate, and a branch review finds them one at a time, each costing a review round. The "Stateful changes" section of the `ticket-to-pr` skill makes the unit list them up front as a transition table and makes stage 6 give each row evidence. The table, or for any other change the one-line statement that it is not stateful, is in the unit's design document when the unit wrote one, and in the unit's pull request body when it did not, as a unit of an initiative does not; the evidence is filled in the same place. That section is the only statement of the trigger, the row shape and the evidence rules; this note says why the rule has that shape and does not restate it.
 
 ## Decision
 
@@ -14,7 +14,7 @@ This change edits skill text, its test and this note only; under that section's 
 
 ## Cost and residual exposure
 
-The design note is longer for stateful changes.
+The design document, or the pull request body of a unit that wrote none, is longer for stateful changes.
 
 The rule does not enumerate on the author's behalf; a state or event the author does not think of is still found only by review, and the section's same-PR rule bounds that cost. Short definitions leave terms such as "event" to the reader's judgment; the example is what fixes their meaning.
 

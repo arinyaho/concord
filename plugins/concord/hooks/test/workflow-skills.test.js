@@ -183,10 +183,11 @@ test('initiative-to-prs reviews the design and the ticket set before its one che
   const write = section(text, '## 6. Write the tickets');
   assert.match(write, /the user's approval of the set as a decision record/);
   assert.match(write, /File the minor points held from both reviews as one follow-up ticket/);
-  assert.match(write, /open a draft pull request for the design document\. Mark it ready when its review left no `blocker` open and CI has passed on its head/);
-  assert.match(write, /The units start either way/);
+  assert.match(write, /open a draft pull request for the design document, with the design review's record in its body\. Keep the design worktree/);
   const units = section(text, '## 7. Run the units');
   assert.match(units, /Every worker prompt gives the local path of the design document/);
+  assert.match(units, /wait for the design pull request's CI with one blocking shell wait\. Mark it ready when its review left no `blocker` open and CI passed/);
+  assert.match(units, /Remove the design worktree only when every unit has ended/);
   assert.match(units, /Units are cut from the base, never from the design branch, and do not edit the design document/);
 });
 
@@ -208,14 +209,15 @@ test('a unit reads the initiative design without writing or editing one, and the
   assert.match(raf, /Text that exists only in your conversation, or in a tracker no command can print, is saved to a file among your working documents/);
   const worker = section(skill('coordinate-sessions'), '## 3. Start a worker');
   assert.match(worker, /The local path of the design document the unit implements/);
-  assert.match(worker, /in the design worktree while the design's pull request is open, under `docs\/` once it has merged/);
+  assert.match(worker, /The path is the one valid when this worker starts: the design worktree while it exists \(it is kept until every unit has ended\), afterwards a checkout that contains the merged design/);
 });
 
 test('the bounds are stated: two rechecks, two CI fixes, one successor per gap', () => {
   assert.match(skill('review-and-fix'), /After the second recheck, stop rechecking/);
   const ttp = skill('ticket-to-pr');
   assert.match(ttp, /fix it, push, and wait again, at most twice/);
-  assert.match(ttp, /goes into that review's next recheck, within its limit of two/);
+  assert.match(ttp, /run a recheck for it if that review has one of its two left; otherwise say in the record that the fix was not rechecked/);
+  assert.match(ttp, /After a CI fix, run the stage 8 check again on the new head/);
   const coord = skill('coordinate-sessions');
   assert.match(coord, /at most once for the same gap/);
   assert.match(coord, /Start no further successor for it/);

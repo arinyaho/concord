@@ -8,7 +8,7 @@ description: >-
 
 # Ticket to PR
 
-One ticket, one branch, one pull request that carries the design and the code together. The stages below are in the order the work happens, and each has an exit condition.
+One ticket, one branch, one pull request that carries the code together with the unit's design document, or with a link to the design it implements. The stages below are in the order the work happens, and each has an exit condition.
 
 - **State.** The design goes in the repository's `docs/`. The plan, progress, decisions, and the review record go on the ticket. The change, its checks, and the review summary are on the pull request. Keep nothing that matters anywhere else: a session with no memory of this work must be able to resume from the ticket and the pull request.
 - **Stopping.** Stop and ask only for a product decision (a choice that changes the acceptance criteria, the scope, or the design), for something only the user holds (a credential, hardware, an account, a human approval), or before a hard-to-reverse action the user has not authorized (a merge, a release, a deletion, a message to people outside the session). Give the options and a recommendation, and continue the work that does not depend on the answer. Record every other obstacle on the ticket and continue.
@@ -26,13 +26,13 @@ The unit is one coherent ticket outcome; keep its changes together. Split it onl
 | 0 | Branch | A dedicated branch (in a worktree when the rules file says so) is cut from the branch the pull request will target: the base, or for a stacked unit its prerequisite's branch |
 | 1 | Ticket | Every acceptance criterion names something an observer or a command can decide. The ticket has a review record. The ticket is in progress in the tracker |
 | 2 | Discriminating red | The harm the ticket names reproduces against the unchanged code, and the command and result are on the ticket |
-| 3 | Design document | Committed under `docs/`: the decision, what it costs, the residual exposure, and for a stateful change the table below. When your prompt names a design document, read it and write none |
+| 3 | Design document | Committed under `docs/`: the decision, what it costs, the residual exposure, and for a stateful change the table of "Stateful changes". When your prompt names a design document, read it and write none |
 | 4 | Review the design | `review-and-fix` on the design document you wrote; its record is on the ticket. Skipped when you wrote none |
 | 5 | Plan | On the ticket. Each task ends in something that can be run and rejected on its own |
 | 6 | Implement | A test that fails first for the right reason, in the environment CI uses; then the smallest change that makes it pass |
 | 7 | Review the change | `review-and-fix` on the change; its record is on the ticket and in the pull request body |
 | 8 | Discriminating green | The stage-2 check passes on the final head, and the full test suite has run once on that head |
-| 9 | Pull request | A draft pull request with design, documents, and code; marked ready when the work is done |
+| 9 | Pull request | A draft pull request with the code, the documents, and the design or a link to it; marked ready when the work is done |
 
 ### Stage 1: the ticket
 
@@ -77,7 +77,7 @@ If the review cannot run, write "review not run" and why on the ticket and in th
 1. Push the branch and open the pull request as a draft. It may be opened earlier, after the first push, so that CI runs.
 2. Write the body (see "The pull request body") and run the documentation sweep.
 3. Put the pull request link on the ticket and read it back.
-4. Wait for CI on the head commit with one blocking wait. When it fails for a reason the change caused, fix it, push, and wait again, at most twice. A CI fix that changed code the stage 7 review covered, not only tests or configuration, goes into that review's next recheck, within its limit of two. A failure that remains, or one outside the change (a download, a registry, a runner), is recorded on the ticket and in the body; the pull request stays a draft, and your report says so.
+4. Wait for CI on the head commit with one blocking wait. When it fails for a reason the change caused, fix it, push, and wait again, at most twice. After a CI fix, run the stage 8 check again on the new head. When the fix changed code the stage 7 review covered, not only tests or configuration, run a recheck for it if that review has one of its two left; otherwise say in the record that the fix was not rechecked. A failure that remains, or one outside the change (a download, a registry, a runner), is recorded on the ticket and in the body; the pull request stays a draft, and your report says so.
 5. Mark the pull request ready when all three hold: no `blocker` finding is open, CI passed on the head, and every acceptance criterion has its evidence on the ticket or in the body. Otherwise it stays a draft, and the body and the ticket list what is open.
 
 Do not merge. `pr-to-merge` carries the pull request from here, under the user's merge authorization.
@@ -93,9 +93,9 @@ When one set of acceptance criteria needs several repositories, keep one ticket 
 
 ## Stateful changes
 
-A change is stateful when it writes, reads, or branches on data that outlives one run or process (a stored record, a cache, a git ref, a tracker or pull request field), or when it adds or alters a retry, recovery, or replay path. Input the caller supplies each time is not state unless it carries state from an earlier interaction, such as a cursor. Any other change says in one line of its design document that it is not stateful.
+A change is stateful when it writes, reads, or branches on data that outlives one run or process (a stored record, a cache, a git ref, a tracker or pull request field), or when it adds or alters a retry, recovery, or replay path. Input the caller supplies each time is not state unless it carries state from an earlier interaction, such as a cursor. Any other change says so in one line.
 
-A stateful change carries a table in its design document: one row per combination of a state and an event the change can affect.
+A stateful change carries a table, and any other change its one line, in the unit's design document when the unit wrote one, and in the pull request body when it did not (a unit of an initiative). One row per combination of a state and an event the change can affect.
 
 | State | Event | Outcome | Kind | Evidence |
 |---|---|---|---|---|
@@ -109,7 +109,7 @@ A stateful change carries a table in its design document: one row per combinatio
 - **Events** include the first occurrence, a repeat or replay, two operations interleaved on the same state, an interruption between or during durable writes and external effects with the restart that recovers from it, a result that changes the outcome such as a decline or a timeout, and a state value or operation the change removes.
 - Combinations an invariant rules out go in one line under the table that names the invariant.
 
-Stage 6 fills the evidence column. An introduced or changed row has a test that fails before the change and passes after it, and that asserts the whole outcome. When no test can exercise a row, such as a crash between two durable writes, record the reason and an executable stand-in held to the same bar. An unchanged row cites an existing test or says "untested, because". A state or event found missing later, including in review, is added to the table in the same pull request with its evidence.
+Stage 6 fills the evidence column. An introduced or changed row has a test that fails before the change and passes after it, and that asserts the whole outcome. When no test can exercise a row, such as a crash between two durable writes, record the reason and an executable stand-in held to the same bar. An unchanged row cites an existing test or says "untested, because". A state or event found missing later, including in review, is added to the table, in the same place and the same pull request, with its evidence.
 
 ## Design work and applying a decision
 

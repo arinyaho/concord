@@ -45,7 +45,7 @@ The prompt contains, in this order:
 
 1. The skill to run (default `ticket-to-pr`) and the ticket, with where its acceptance criteria are and what is out of scope.
 2. The repository, the worktree path, the branch name, and the branch its pull request targets, which it is cut from.
-3. The local path of the design document the unit implements, when one exists: in the design worktree while the design's pull request is open, under `docs/` once it has merged. Also the design pull request's link.
+3. The local path of the design document the unit implements, when one exists, and the design pull request's link. The path is the one valid when this worker starts: the design worktree while it exists (it is kept until every unit has ended), afterwards a checkout that contains the merged design. For a unit in another repository, that is a checkout of the repository that owns the design.
 4. File ownership: the files this unit changes, and the files other units or people own.
 5. Related repositories and their local paths, with what connects each to the unit.
 6. The absolute path of `reports/<unit>/`.

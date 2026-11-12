@@ -76,10 +76,10 @@ test('ticket-to-pr defines the table and tests required for stateful changes', (
   assert.match(section, /^\| State \| Event \| Outcome \| Kind \| Evidence \|$/m);
   for (const pattern of [
     /retry, recovery, or replay path/,
-    /says in one line of its design document that it is not stateful/,
+    /in the unit's design document when the unit wrote one, and in the pull request body when it did not/,
     /resulting state/,
     /fails before the change and passes after it/,
-    /found missing later, including in review, is added to the table in the same pull request/,
+    /found missing later, including in review, is added to the table, in the same place and the same pull request/,
   ]) assert.match(section, pattern);
 });
 
