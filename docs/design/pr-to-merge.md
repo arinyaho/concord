@@ -36,7 +36,7 @@ The skill never uses an administrator override and never bypasses a branch rule.
 | `--mine <login>` | Pull requests authored by or assigned to this account are the user's own. A pull request given as `OWNER/REPO#N` is also the user's own |
 | `--automated <login>[:<title prefix>]` | Pull requests opened by this account, with this title prefix when one is given, are automated. May be repeated |
 | `--checkout OWNER/REPO=<path>` | A local clone of the repository, used to check the commits made after an approval |
-| `--hold-label <name>` | The label that keeps a pull request from merging. Default `merge-blocked` |
+| `--blocked-label <name>` | The label that keeps a pull request from merging. Default `blocked` |
 | `--no-merge` | Report a qualifying pull request as `ready` and do not merge or approve it |
 | `--state <file>` | The record of notices already printed |
 | `--interval <seconds>`, `--deadline <seconds>` | How often to scan and when to exit |
@@ -59,7 +59,7 @@ An approved pull request qualifies when all of these hold on its current head co
 1. The approval covers the head.
 2. GitHub allows the merge: the pull request has no conflict and the branch rules are satisfied, including the checks the rules require. Checks the rules do not require may still be running.
 3. It has no open point: no unresolved review thread, and no review or conversation comment written after the approval by someone other than `--self` that `--self` has not answered with a later comment.
-4. It does not carry the hold label.
+4. It does not carry the `blocked` label.
 
 An automated pull request qualifies when condition 2 holds apart from the missing approval, and conditions 3 and 4 hold. The script approves it and merges it.
 
@@ -94,7 +94,7 @@ The script prints one line per event.
 | `merge failed …`, `sync failed …` | GitHub refused, with its message. A branch rule that requires a particular reviewer appears here |
 | `closed <repo>#<n>` | One of the user's own pull requests was closed without merging |
 
-A `review`, `ready`, or `triage` line is printed once per item or head; the state file records that it was printed. Activity on a pull request that carries the hold label is reported as `triage … open points` again, so that the skill looks at the hold again. A failed API call does not end the run: the script reports it on standard error and scans again after the interval.
+A `review`, `ready`, or `triage` line is printed once per item or head; the state file records that it was printed. Activity on a pull request that carries the `blocked` label is reported as `triage … open points` again, so that the skill reads it again. A failed API call does not end the run: the script reports it on standard error and scans again after the interval.
 
 The script exits after a scan that printed any line other than `rerun` or `synced`, so that the skill acts on it before the next scan. Otherwise it exits when the deadline passes.
 
@@ -109,9 +109,9 @@ Read every unresolved thread, and every review and comment written after the app
 - **A point that is already handled.** Reply with the commit that handled it, and resolve the thread.
 - **Only minor points remain.** Collect the pull request's minor points into one GitHub issue, reply on each thread or comment with the issue link, and resolve the threads. The pull request then qualifies and the next scan merges it.
 - **A point blocks, and the pull request is the user's own.** Fix it and push, and reply with the commit. Then request review again from the people who approved, with one comment that mentions them and names the current commit.
-- **A point blocks, and the pull request is someone else's.** Add the hold label and post one comment that mentions the assignee, or the author when there is no assignee, names the blocking point, and asks for it to be resolved. Do not push to the branch. Do this once per point.
+- **A point blocks, and the pull request is someone else's.** Add the `blocked` label and post one comment that mentions the assignee, or the author when there is no assignee, names the blocking point, and asks for it to be resolved. Do not push to the branch. Do this once per point.
 
-When the script reports new activity on a held pull request, read it again. Remove the hold label when no blocking point remains.
+When the script reports new activity on a pull request that carries the `blocked` label, read it again. Remove the `blocked` label when no blocking point remains.
 
 ### Approved, with a conflict
 
@@ -119,7 +119,7 @@ Resolve the conflict by merging the base into the branch with a merge commit, on
 
 Do not request a new review for a conflict resolution. The merge commit is made by the `--self` account, so the approval still covers the head and the next scan merges the pull request.
 
-When both contributions cannot be kept, because they change the same behavior in incompatible ways, the choice is a product decision: add the hold label, comment with the two options and mention the assignee, and report it to the user.
+When both contributions cannot be kept, because they change the same behavior in incompatible ways, the choice is a product decision: add the `blocked` label, comment with the two options and mention the assignee, and report it to the user.
 
 ### Approval on an older head
 
@@ -162,13 +162,13 @@ The scheduled form runs in two steps on the machine that holds the repository cl
 
 **The merge happens when GitHub allows it.** The branch rules say which checks must pass before a merge. Waiting for the others delays every merge by the slowest job and, with many pull requests, keeps branches falling behind the base. The checks that were not waited for are watched after the merge.
 
-**A hold is a label on the pull request.** Whether a comment blocks is a judgment the skill makes once. The label records that judgment where the state of the work lives, so the script, a later session, and a person all see it, and removing it is one action.
+**A blocked pull request is marked with a label.** Whether a comment blocks is a judgment the skill makes once. The label records that judgment where the state of the work lives, so the script, a later session, and a person all see it, and removing it is one action.
 
 **A conflict resolution does not go back to the approver.** The approver read the pull request's contribution, and the base's contribution was reviewed when it merged. A resolution that keeps both adds nothing either reviewer has not seen. Asking for a new review for each one makes an approved pull request wait once more for every merge that lands ahead of it.
 
 **The script distinguishes its own merge commits from other commits after an approval.** Counting every later commit would merge changes no approver read. Counting none would send every synced or conflict-resolved branch back for approval. Clean merges of the base are checked by their tree, and conflict resolutions by the account that made them.
 
-**One script reads each pull request once for every purpose.** Merging, holding, and answering reviews depend on the same facts: the reviews, the threads, the comments, the checks, the head.
+**One script reads each pull request once for every purpose.** Merging, blocking, and answering reviews depend on the same facts: the reviews, the threads, the comments, the checks, the head.
 
 **Waiting costs no tokens.** Waiting for approvals and checks is most of the elapsed time from a ready pull request to its merge. A script waits; a model acts only when there is something to answer or decide.
 
@@ -177,7 +177,7 @@ The scheduled form runs in two steps on the machine that holds the repository cl
 - **Waiting until every check has passed.** A failing check that the branch rules do not require is then never merged unread. It also makes each merge wait for jobs the repository has decided are not required.
 - **Counting only approvals that satisfy GitHub's review decision.** The decision follows the requested and required reviewers, so an approval from another teammate would not count.
 - **Fixing a blocking point on someone else's pull request.** It gets the pull request merged sooner. It also changes a person's work under their approval without them, and the fix is unreviewed.
-- **A state file that records holds, fix rounds, and replies.** Everything it would record is readable from the pull request, and a record that disagrees with the pull request stops the run.
+- **A state file that records blocked pull requests, fix rounds, and replies.** Everything it would record is readable from the pull request, and a record that disagrees with the pull request stops the run.
 - **A script that judges comments by itself.** Whether a comment blocks depends on reading the code against it.
 - **An agent platform's scheduled task in place of the operating system's scheduler.** It needs no machine of the user's to be running. It starts a model session every night to do what the script does without one, and it has neither the local clones the approval check uses nor the user's GitHub login.
 
