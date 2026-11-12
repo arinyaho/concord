@@ -1,6 +1,6 @@
 # PR to merge
 
-`pr-to-merge` watches the open pull requests of one or more repositories and merges every pull request whose merge conditions hold exactly, as soon as GitHub allows the merge. It has two parts: a script that watches, merges, and reports everything it does not merge, without a model; and a skill that relays what the script reports to the user, answers reviews on the user's own pull requests, and runs the post-merge steps for them. It follows the rules in [workflow-state-and-stops.md](workflow-state-and-stops.md).
+`pr-to-merge` watches the open pull requests of one or more repositories and merges every pull request whose merge conditions hold exactly, as soon as GitHub allows the merge. It has two parts: a script that watches, merges, and reports everything it does not merge, without a model; and a skill that relays what the script reports to the user, answers reviews on the user's own pull requests, and runs the post-merge steps. It follows the rules in [workflow-state-and-stops.md](workflow-state-and-stops.md).
 
 It serves three uses with the same parts:
 
@@ -108,7 +108,7 @@ The script approves an automated head when conditions 2 and 3 hold, while GitHub
 
 ### Merging
 
-- A pull request merges into its own base, whatever branch that is, when it qualifies and no other open pull request is based on its branch. One that qualifies while an open pull request is based on its branch waits, and the script prints `stack <repo>#<n>: waits for #<m>` once per head. A chain of pull requests therefore merges from its last member down, one level per scan, and after each merge the pull request that received it waits for the required checks of its new head.
+- A pull request merges into its own base, whatever branch that is, when it qualifies and no open pull request from the same repository is based on its branch; a draft counts, and a pull request from a fork does not. One that qualifies while such a pull request is open waits, and the script prints `stack <repo>#<n>: waits for #<m>` once per head. A chain of pull requests therefore merges from its last member down, one level per scan, and after each merge the pull request that received it waits for the required checks of its new head.
 - The method is a squash when the base is not the head branch of an open pull request, and a merge commit when it is. When the repository does not allow that method, the script uses one it allows: squash, then merge commit, then rebase in the first case; merge commit, then squash, then rebase in the second. A squash or rebase into another pull request's branch adds commits that are not merges, so that pull request needs approval again.
 - Every merge names the head commit it expects (`--match-head-commit`), so a push between the check and the merge fails the merge instead of merging unreviewed commits.
 - `merged` is printed only when GitHub reports the pull request merged. When GitHub accepts the merge and does not report the pull request merged, the script prints `queued` once and leaves the pull request alone.
@@ -140,7 +140,7 @@ The script prints one line per event. Approved and automated pull requests get t
 | `triage <repo>#<n> …: automated approval withdrawn` | The script dismissed its own approval of a pull request that is not automated at its current head |
 | `triage <repo>#<n> …: behind its base`, `… required check failed` | With `--no-merge`, where the script would otherwise update the branch or run the failed jobs again |
 | `rerun <repo>#<n> …`, `synced <repo>#<n> …` | Failed jobs were run again; a branch was updated from its base |
-| `stack <repo>#<n>: waits for #<m>` | The pull request qualifies, and the open pull request `#<m>` is based on its branch |
+| `stack <repo>#<n>: waits for #<m>` | The pull request qualifies, and the open pull request `#<m>`, from the same repository, is based on its branch |
 | `merge failed …`, `sync failed …` | GitHub refused. The line gives the HTTP status when there is one and otherwise the word `refused`; GitHub's message goes to a log file next to the notice record, which the skill does not read |
 | `closed <repo>#<n>` | A pull request given as `OWNER/REPO#N` was closed without merging |
 
@@ -172,7 +172,7 @@ Read the items the `review` lines name, and nothing else on the pull request: no
 
 ### After a merge
 
-For a merged pull request that is not the user's own, the skill reports the `merged` line to the user and does nothing else. For the user's own:
+The first and third steps apply to every pull request the script merged; they are part of what merging authorizes. The second applies only to the user's own.
 
 1. Watch the workflow runs on the merged head that were still running at the merge, and the runs the merge commit starts on its base, each with one blocking shell wait that polls at a long interval; the model does not poll. When a job fails, read its log. Run it again once when the failure is external to the change (a download, a registry, a runner, a timeout). Report a job that fails again, and a failure caused by the merged change, to the user with the run link.
 2. For each ticket the merged pull request names, read the ticket's acceptance criteria. When every criterion is met with evidence, move the ticket to done. When one is not, move the ticket back to in progress and comment which criterion is unmet. The commands for the tracker come from the project's rules file.
@@ -238,12 +238,12 @@ The session needs the `gh` login of `--self` with push access to each repository
 - An account with write access is trusted, so a compromised or malicious one can approve a pull request and have it merged.
 - A thread or comment from before the approval does not hold, so a pull request can merge with a point the approver left open, and with an automated reviewer's findings unanswered. The `merged` line gives the number of unresolved threads.
 - A comment after the approval holds the merge until someone approves again, so any counting account can delay a merge with a comment.
-- Any account that can open a pull request can base one on an approved pull request's branch, and that pull request then waits. The `stack` line reports it.
+- An account that can push branches to the repository can open a pull request based on an approved pull request's branch, and that pull request then waits. The `stack` line reports it.
 - A long-lived branch that has its own open pull request into the default branch is treated like a stack parent, so pull requests into it land as merge commits.
-- On the user's own pull requests the session reads the items the `review` lines name, and after a merge the logs of failed jobs, while holding the user's `gh` login, which can push, label, approve, and merge. A session steered by that text can act outside the script: merge or approve directly, resolve a thread, remove a label, or create a merge through GitHub's API that the coverage rule then accepts as made by `--self`. What bounds it is the input: only items from counting accounts and automation accounts reach it, the script prints no other string as free text, the skill reads nothing on another person's pull request, and the session is told to treat all of it as data. These bound the input; they do not confine the session.
+- On the user's own pull requests the session reads the items the `review` lines name, and after any merge the logs of failed jobs, while holding the user's `gh` login, which can push, label, approve, and merge. A session steered by that text can act outside the script: merge or approve directly, resolve a thread, remove a label, or create a merge through GitHub's API that the coverage rule then accepts as made by `--self`. What bounds it is the input: only items from counting accounts and automation accounts reach it, the script prints no other string as free text, on another person's pull request the skill reads nothing but those logs, and the session is told to treat all of it as data. These bound the input; they do not confine the session.
 - Between a push to an automated pull request and the next scan, the script's approval of the earlier head stands on GitHub. A repository that does not dismiss approvals on a push lets an account with write access merge in that time. Any person's approval has the same exposure.
 - An automated pull request that moves a pin inside the allowed paths is approved whatever the pin's new target is, including a target no person has reviewed.
-- A pull request merged through a merge queue is reported as `queued`, and the post-merge steps do not run for it. They do not run for other people's pull requests either, so a check that fails after such a merge is seen only on GitHub.
+- A pull request merged through a merge queue is reported as `queued`, and the post-merge steps do not run for it.
 - A repository that dismisses approvals on a push loses the approval when the script updates a branch that is behind its base. The pull request then waits, unreported, for a new approval.
 - Only the checks the branch rules require hold a merge. A pull request can merge while another check is failing or still running, and in a repository whose rules require no checks, with no check finished.
 - When `--self` can bypass branch rules, the only guard is that the script does not merge while GitHub reports a rule blocking.
