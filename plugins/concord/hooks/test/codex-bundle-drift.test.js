@@ -61,6 +61,15 @@ test('codex review-until-approve is the shared skill without its tests and finds
   assert.strictEqual(typeof require(path.join(located.core, 'codex-review-runner')).runReviewUntilGreen, 'function');
 });
 
+test('codex pr-to-merge is the shared skill without its tests', () => {
+  const src = path.join(REPO, 'plugins/concord/skills/pr-to-merge');
+  const bundled = path.join(REPO, 'plugins/concord-codex/skills/pr-to-merge');
+  const list = (root) => fs.readdirSync(root, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => path.relative(root, path.join(e.parentPath, e.name))).filter((f) => !f.startsWith('test' + path.sep)).sort();
+  assert.deepStrictEqual(list(bundled), list(src));
+  for (const f of list(src)) assert.ok(fs.readFileSync(path.join(src, f)).equals(fs.readFileSync(path.join(bundled, f))), `${f} drifted — re-run node plugins/concord-codex/bin/bundle.mjs`);
+  assert.ok(!fs.existsSync(path.join(bundled, 'test')));
+});
+
 test('codex work-report package has the exact shared file set and bytes', () => {
   const src = path.join(REPO, 'plugins/concord/skills/work-report');
   const bundled = path.join(REPO, 'plugins/concord-codex/skills/work-report');

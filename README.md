@@ -40,6 +40,7 @@ Each workflow starts from one request. The examples below are what a user would 
 | `review-until-approve` | "Review https://github.com/acme/app/pull/57 until it is approvable." Findings are classed as blockers or minor follow-ups. The approving review lists the minors. A finding in a file the diff touches but outside a hunk becomes a file comment. Threads the skill started for fixed or addressed findings are answered and resolved, and a draft is watched until it is ready. |
 | `ticket-to-pr` | "Take issue #212 through design, implementation and a PR." |
 | `review-until-lgtm` | "Collect the Codex and Copilot reviews on PR 58, fix them, and tell me when the head has an LGTM." |
+| `pr-to-merge` | "Merge the approved PRs in acme/app as they become ready." A script watches without a model and merges each approved pull request once GitHub allows it; the skill clears open points and conflicts, answers reviews on your own pull requests, and checks each merge afterwards. Without your authorization to merge it only reports pull requests as ready. |
 
 ## Workflows
 
@@ -58,6 +59,7 @@ Each workflow starts from one request. The examples below are what a user would 
 | `coordinate-sessions` | Coordinates worker sessions, ownership, reports and delivery gates; Codex messages existing sessions through `codex queue` and, when the app creation tool is absent, creates workers through the supported CLI route. | Claude Code, Codex |
 | `project-manager` agent / skill | Runs multi-PR, multi-repository rollouts with ownership, merge gates and reusable evidence. Claude agent; Codex skill. | Claude Code, Codex |
 | `review-until-approve` | Reviews someone else's pull request in a loop and approves the reviewed head once a round is clean. | Claude Code, Codex |
+| `pr-to-merge` | Watches the open pull requests of named repositories and merges each approved one as soon as GitHub allows it; it also clears what stands between an approval and the merge and answers reviews on your own pull requests. | Claude Code, Codex |
 
 ## Review policy
 
