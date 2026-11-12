@@ -59,7 +59,7 @@ A Git round captures its patch and changed-path manifest from the same fixed com
 
 The versioned manifest is bound to the round, target identity and patch hash, with an integrity digest in the execution ledger. Artifact normalization and the verified fold use this saved manifest; neither reconstructs the scope from a moving checkout. Missing, mismatched or malformed scope evidence fails closed. A trusted round-start can regenerate inputs for a legacy round, but must invalidate completion evidence that lacks this binding. File targets retain their document contract without Git path inventory.
 
-Review-only runners protect the manifest alongside the patch, ledger and reviewer artifacts. An untrusted role cannot narrow the required examined set by changing the saved scope.
+Review-only runs of the engine protect the manifest alongside the patch, ledger and reviewer artifacts, so an untrusted role cannot narrow the required examined set by changing the saved scope. The runner of `review-until-approve` writes no manifest and no ledger: it keeps the changed-path list in memory, where no role can reach it, and seals the patch, the intent file and the reviewer artifacts.
 
 ### Reading untrusted state artifacts
 
