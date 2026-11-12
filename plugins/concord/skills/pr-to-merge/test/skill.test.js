@@ -21,7 +21,11 @@ test('SKILL.md says what to do with every kind of line the script prints', () =>
   const kinds = new Set([...script.matchAll(/emit\(`([a-z]+(?: failed)?) /g), ...script.matchAll(/notice\([^,]+, `([a-z]+(?: failed)?) /g)].map((m) => m[1]));
   assert.ok(kinds.size >= 10, [...kinds].join(','));
   for (const kind of kinds) assert.match(skill, new RegExp(`^\\|.*\`${kind} `, 'm'), kind);
-  for (const reason of script.matchAll(/head \$\{h\}: ([a-z][^`$]+)`/g)) assert.ok(skill.includes(reason[1]), reason[1]);
+  // Every triage reason the script can print, from its say(kind, text) calls, is a row of the table.
+  const reasons = [...script.matchAll(/\bsay\('[a-z]+', [`']([^`'$]+)/g)].map((m) => m[1].replace(/[: ]+$/, ''));
+  assert.ok(reasons.length >= 11, reasons.join(' | '));
+  const table = skill.split('\n').filter((l) => l.startsWith('|')).join('\n');
+  for (const reason of reasons) assert.ok(new RegExp(`\`triage …: ${reason}( …)?\``).test(table), reason);
 });
 
 test('SKILL.md has the sections the design keeps for the skill, and none of the removed ones', () => {
@@ -67,8 +71,9 @@ test('the scheduled wrapper owns the loop, deletes the state file once, and give
   assert.match(wrapper, /codex exec "\$prompt"/);
 });
 
-// The wrapper from SKILL.md, run with sh against the fake gh and a stub agent: two seconds of night, short scans.
+// The wrapper from SKILL.md, run with sh against the fake gh and a stub agent: five seconds of night, short scans.
 function runWrapper(w, self = 'octocat') {
+  // Returns what the wrapper did: its status, the sessions it started, the lines it handed over, and how often it started the script.
   const { spawnSync } = require('node:child_process');
   const { SCRIPT } = require('./world');
   const state = path.join(w.stateDir, 'night', 'state.json');
@@ -77,28 +82,34 @@ function runWrapper(w, self = 'octocat') {
     .replace('/path/to/pr-to-merge.js', JSON.stringify(SCRIPT))
     .replace('--self octocat', `--self ${self}`)
     .replace('--checkout acme/app="$HOME/src/app" --deadline 1800', '--interval 0.1 --deadline 0.4')
-    .replace('8 * 3600', '2');
+    .replace('8 * 3600', '5');
   assert.ok(!/\$HOME|path\/to|1800|3600/.test(script), script);
   fs.writeFileSync(path.join(w.dir, 'bin', 'claude'), `#!/bin/sh\nprintf '%s\\n' "$2" >> ${JSON.stringify(path.join(w.dir, 'sessions'))}\ncat ${JSON.stringify(`${state}.lines`)} >> ${JSON.stringify(path.join(w.dir, 'handed'))}\n`, { mode: 0o755 });
-  const started = Date.now();
-  const r = spawnSync('sh', ['-c', script], { encoding: 'utf8', timeout: 30000, env: { ...process.env, PATH: `${path.join(w.dir, 'bin')}${path.delimiter}${process.env.PATH}` } });
+  const r = spawnSync('sh', ['-c', script], { encoding: 'utf8', timeout: 30000, env: { ...process.env, PR_TO_MERGE_RETRY_WAIT: '0', PATH: `${path.join(w.dir, 'bin')}${path.delimiter}${process.env.PATH}` } });
   const read = (name) => (fs.existsSync(path.join(w.dir, name)) ? fs.readFileSync(path.join(w.dir, name), 'utf8') : '');
-  return { code: r.status, stderr: r.stderr, sessions: read('sessions').split('\n').filter(Boolean), handed: read('handed'), ms: Date.now() - started };
+  return { code: r.status, stderr: r.stderr, sessions: read('sessions').split('\n').filter(Boolean), handed: read('handed'), starts: read('calls.jsonl').split('\n').filter((l) => l === '["api","user"]').length };
 }
 
-test('the wrapper terminates in each case: lines to act on, nothing until its deadline, and a script that fails to start', { skip: process.platform === 'win32' }, () => {
+test('the wrapper acts on lines once, keeps running the script through a quiet night, stops on a usage error, and retries any other failure', { skip: process.platform === 'win32' }, () => {
   const { world, pr, approve } = require('./world');
-  const lines = runWrapper(world({ 'acme/app': { prs: [pr(1, { reviews: [approve('monalisa', 'head1')] })] } }));
+  const approvedPr = () => ({ 'acme/app': { prs: [pr(1, { reviews: [approve('monalisa', 'head1')] })] } });
+  const lines = runWrapper(world(approvedPr()));
   assert.equal(lines.code, 0, lines.stderr);
   assert.equal(lines.sessions.length, 1, 'one session for the one report');
-  assert.match(lines.handed, /^merged acme\/app#1 /);
+  assert.equal(lines.handed, 'merged acme/app#1 into main (squash) head head1; not passed: 0; unresolved threads: 0\n');
+  assert.ok(lines.starts >= 2, 'the script runs again after the session');
   const quiet = runWrapper(world({ 'acme/app': { prs: [pr(1)] } }));
   assert.equal(quiet.code, 0, quiet.stderr);
   assert.deepEqual(quiet.sessions, []);
-  assert.ok(quiet.ms >= 900 && quiet.ms < 15000, `${quiet.ms} ms`);
-  const broken = runWrapper(world({ 'acme/app': { prs: [] } }), 'someone-else');
-  assert.equal(broken.code, 2);
-  assert.match(broken.stderr, /pr-to-merge exited with status 2; stopping/);
-  assert.ok(broken.ms < 5000, `${broken.ms} ms`);
-  assert.deepEqual(broken.sessions, []);
+  assert.ok(quiet.starts >= 2, `the script was started ${quiet.starts} times`);
+  const usage = runWrapper(world({ 'acme/app': { prs: [] } }), 'someone-else');
+  assert.equal(usage.code, 2);
+  assert.match(usage.stderr, /pr-to-merge exited with status 2 \(usage error\); stopping/);
+  assert.equal(usage.starts, 1);
+  assert.deepEqual(usage.sessions, []);
+  const transient = runWrapper(world(approvedPr(), { fail: [{ match: '^api user$', times: 1 }] }));
+  assert.equal(transient.code, 0, transient.stderr);
+  assert.doesNotMatch(transient.stderr, /stopping/);
+  assert.ok(transient.starts >= 2);
+  assert.equal(transient.sessions.length, 1, 'the run after the failed one merged and reported');
 });

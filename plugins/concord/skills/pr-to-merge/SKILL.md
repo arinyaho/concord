@@ -39,14 +39,14 @@ Start the script as one background command. Under Claude Code use Bash `run_in_b
 node "$SCRIPT" --self <login> --state <file> --mine <login> [--checkout OWNER/REPO=<path>]... [--automated <account>]... [--automated-path <glob>]... [--no-merge] --deadline 6600 OWNER/REPO... [OWNER/REPO#N...]
 ```
 
-On a harness without background commands, run it in the foreground with a `--deadline` that fits the command time limit. The session is free for other work while it runs. When it exits, act on every line it printed, in order, then start the same command again. Exit status 2 is a usage error: fix the command. Lines on standard error are API failures the script survived, with a fixed description and the HTTP status; mention them only when the same one repeats across runs.
+On a harness without background commands, run it in the foreground with a `--deadline` that fits the command time limit. The session is free for other work while it runs. When it exits, act on every line it printed, in order, then start the same command again. Exit status 2 is a usage error (a bad option, a `--self` that is not the `gh` account, a missing tool): fix the command. Exit status 1 means the script could not read the `gh` account at start-up: start it again. Lines on standard error are API failures the script survived, with a fixed description and the HTTP status; mention them only when the same one repeats across runs.
 
 | Line | Action |
 |---|---|
 | `merged …` | After a merge. The line ends with the number of checks that had not passed and of review threads unresolved at the merge |
 | `review …` | Answering a review on the user's own pull request |
 | `approved … (automated)`, `rerun …`, `synced …` | None; they are informational |
-| `queued …`, `ready …`, `triage …: held by …`, `triage …: changes requested`, `triage …: conflict`, `triage …: approved on an older head only`, `triage …: a branch rule blocks the merge`, `triage …: required check still red after one re-run`, `triage …: required check failed and cannot be re-run`, `triage …: automated approval withdrawn`, `triage …: behind its base`, `triage …: required check failed`, `stack …: waits for #…`, `merge failed …`, `sync failed …`, `closed …` | Tell the user, in one line with the pull request's link, which pull request it is and what the line says. Do nothing else on that pull request |
+| `queued …`, `ready …`, `triage …: held by …`, `triage …: changes requested`, `triage …: conflict`, `triage …: approved on an older head only`, `triage …: a branch rule blocks the merge`, `triage …: required check still red after one re-run`, `triage …: required check failed and cannot be re-run`, `triage …: automated approval withdrawn`, `triage …: automated approval could not be withdrawn`, `triage …: behind its base`, `triage …: required check failed`, `stack …: waits for #…`, `merge failed …`, `sync failed …`, `closed …` | Tell the user, in one line with the pull request's link, which pull request it is and what the line says. Do nothing else on that pull request |
 
 A `triage …: held by …` line names what holds the merge: `thread` or `comment` (something an account with write access added after the newest approval that covers the head) or `label` (the hold label). A `thread` or `comment` hold is released only by an approver with write access approving again after it; resolving the thread does not release it. The user releases the label by removing it. You do neither, and nothing you post or resolve releases a hold.
 
@@ -73,7 +73,7 @@ Steps 1 and 3 apply to every pull request the script merged. Step 2 applies only
 
 ## Scheduled form
 
-The operating system's scheduler (cron, launchd, Task Scheduler) runs a wrapper on the machine that holds the clones and the `gh` login of `--self`, and the wrapper owns the loop. It deletes the state file once, so everything still pending is reported again as the nightly report. It runs the script; no model runs. When the script prints a line other than an informational one, it starts one agent session with this skill and hands it those lines as data, in a file the prompt names; the session acts on them and exits. Then it runs the script again, until its own deadline. The session never starts the script and is not given its options. It needs push access for `--self` and permission to run `gh` and `git` and to edit files in the clones of the user's own pull requests, under the permission settings the user configures. The wrapper's command line is the user's configuration; leaving out `--no-merge` is the merge authorization, so the user writes it.
+The operating system's scheduler (cron, launchd, Task Scheduler) runs a wrapper on the machine that holds the clones and the `gh` login of `--self`, and the wrapper owns the loop. It deletes the state file once, so everything still pending is reported again as the nightly report. It runs the script; no model runs. When the script prints a line other than an informational one, it starts one agent session with this skill and hands it those lines as data, in a file the prompt names; the session acts on them and exits. Then it runs the script again, until its own deadline. A usage error (exit status 2) stops the night with a message; any other failure waits a minute and runs the script again. The session never starts the script and is not given its options. It needs push access for `--self` and permission to run `gh` and `git` and to edit files in the clones of the user's own pull requests, under the permission settings the user configures. The wrapper's command line is the user's configuration; leaving out `--no-merge` is the merge authorization, so the user writes it.
 
 ```sh
 #!/bin/sh
@@ -87,9 +87,12 @@ while [ "$(date +%s)" -lt "$end" ]; do
   node /path/to/pr-to-merge.js --self octocat --state "$state" --mine octocat \
     --checkout acme/app="$HOME/src/app" --deadline 1800 acme/app > "$out"
   status=$?
-  if [ "$status" -ne 0 ]; then
-    echo "pr-to-merge exited with status $status; stopping" >&2
-    exit "$status"
+  if [ "$status" -eq 2 ]; then
+    echo "pr-to-merge exited with status 2 (usage error); stopping" >&2
+    exit 2
+  elif [ "$status" -ne 0 ]; then
+    sleep "${PR_TO_MERGE_RETRY_WAIT:-60}"
+    continue
   fi
   grep -v -e '^approved ' -e '^rerun ' -e '^synced ' -e '^$' "$out" > "$lines"
   [ -s "$lines" ] || continue

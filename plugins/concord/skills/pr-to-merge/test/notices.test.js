@@ -115,4 +115,7 @@ test('usage errors exit with status 2: a bad option, a missing --state, a --self
   assert.equal(other.code, 2);
   assert.match(other.stderr, /not the account gh is logged in as/);
   assert.equal(other.calls.length, 1);
+  const unread = world(repo([]), { fail: ['^api user$'] }).run(['acme/app']);
+  assert.equal(unread.code, 1, 'a failed read of the account is not a usage error');
+  assert.equal(unread.stderr, 'pr-to-merge: cannot read the account gh is logged in as (HTTP 502)\n');
 });

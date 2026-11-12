@@ -91,11 +91,34 @@ test('only a new counting approval releases what was added after the approval; r
   assert.deepEqual(w.run(['acme/app']).lines, [mergedLine(1, { threads: 1 })], 'a counting approval after it');
 });
 
-test('the default branch is never a stack parent: a PR whose head branch is the default branch changes nothing', () => {
-  const fromDefault = approved(9, { headRefName: 'main', baseRefName: 'release/1.2' });
-  const r = world(repo([approved(1), fromDefault])).run(['acme/app']);
-  assert.deepEqual(r.lines, [mergedLine(1), mergedLine(9, { base: 'release/1.2' })]);
-  assert.deepEqual(r.writes.map((c) => c[5]), ['--squash', '--squash']);
+test('the default branch is never a stack parent, but a PR from it is still a child of the branch it targets', () => {
+  const prs = [
+    approved(1),
+    approved(8, { headRefName: 'main', baseRefName: 'release' }),
+    approved(9, { headRefName: 'release', baseRefName: 'production' }),
+  ];
+  const r = world(repo(prs)).run(['acme/app']);
+  assert.deepEqual(r.lines, [mergedLine(1), mergedLine(8, { base: 'release', how: 'merge commit' }), 'stack acme/app#9: waits for #8']);
+  assert.deepEqual(r.writes.map((c) => [c[2], c[5]]), [['1', '--squash'], ['8', '--merge']]);
+  const alone = world(repo([approved(1), approved(8, { headRefName: 'main', baseRefName: 'release' })], { settings: { allow_merge_commit: false } })).run(['acme/app']);
+  assert.deepEqual(alone.writes.map((c) => c[5]), ['--squash', '--squash'], 'the usual fallback');
+});
+
+test('the inline comments of an approving review that covers the head are part of the approval', () => {
+  const second = '2026-01-01T00:10:01.000Z';
+  for (const at of [T(10), second]) {
+    const ok = approve('monalisa', 'head1', 10);
+    const inline = threadComment('monalisa', { pull_request_review_id: ok.id, created_at: T(9), updated_at: at });
+    const p = pr(1, { reviews: [ok], comments: [inline], threads: [{ resolved: false, root: inline.id }] });
+    assert.deepEqual(world(repo([p])).run(['acme/app']).lines, [mergedLine(1, { threads: 1 })], at);
+    const later = threadComment('monalisa', { created_at: second, updated_at: second });
+    const held = pr(1, { reviews: [ok], comments: [inline, later], threads: [{ resolved: false, root: inline.id }, { resolved: false, root: later.id }] });
+    assert.deepEqual(world(repo([held])).run(['acme/app']).lines, triage('held by thread'), `${at}: a separate comment`);
+  }
+  const stale = approve('monalisa', 'older', 10);
+  const onOld = threadComment('octo-dev', { pull_request_review_id: stale.id, created_at: T(20), updated_at: T(20) });
+  const p = pr(1, { reviews: [stale, approve('octo-dev', 'head1', 15)], comments: [onOld], threads: [{ resolved: false, root: onOld.id }] });
+  assert.deepEqual(world(repo([p])).run(['acme/app']).lines, triage('held by thread'), 'comments of an approval that does not cover the head hold');
 });
 
 test('a PR in conflict, and one a branch rule blocks, are each reported once per head and not merged', () => {

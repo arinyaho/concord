@@ -100,7 +100,11 @@ const httpStatus = (e) => /HTTP (\d{3})/.exec(String(e?.detail || e?.message || 
 try {
   const login = lower(gh(['api', 'user'])?.login);
   if (login !== opts.self) usage(`--self ${opts.self} is not the account gh is logged in as (${login.replace(/[^a-z0-9-]/g, '?')})`);
-} catch (e) { usage(`cannot read the account gh is logged in as${httpStatus(e) ? ` (HTTP ${httpStatus(e)})` : ''}`); }
+} catch (e) {
+  // Not a usage error: the read can fail for a moment, and a caller may run the script again.
+  process.stderr.write(`pr-to-merge: cannot read the account gh is logged in as${httpStatus(e) ? ` (HTTP ${httpStatus(e)})` : ''}\n`);
+  process.exit(1);
+}
 for (const [repo, dir] of opts.checkout) {
   try { git(dir, ['merge-tree', '--write-tree', 'HEAD', 'HEAD']); } catch (_) { usage(`--checkout ${repo}: ${dir} is not a clone, or git lacks merge-tree --write-tree (git 2.38 or later)`); }
 }
@@ -324,10 +328,12 @@ function activity(pr, reviews, d) {
 // comment or a non-approving review body) from a counting account other than --self, newer than `cutoff`, the newest
 // approval that covers the head; and `label`. Only a counting approval given after such an item releases it: resolving
 // its thread does not. Earlier threads and comments do not hold, resolved or not.
-function holdsOf(pr, reviews, d, cutoff) {
+function holdsOf(pr, reviews, d, cutoff, covering) {
   const holds = [];
   const later = (item, at) => at > cutoff && !self(item.user) && counts(pr, item);
-  if (d.comments.some((c) => later(c, timeOf(c)))) holds.push('thread');
+  // The inline comments of an approving review that covers the head are part of that approval.
+  const approvals = new Set(covering.map((a) => a.id));
+  if (d.comments.some((c) => !approvals.has(c.pull_request_review_id) && later(c, timeOf(c)))) holds.push('thread');
   const edits = reviews.some(hasBody) ? reviewEdits(pr) : new Map();
   const bodyHolds = (r) => r.state !== 'PENDING' && r.state !== 'APPROVED' && hasBody(r) && later(r, Math.max(time(r.submitted_at), time(edits.get(String(r.id)))));
   if (reviews.some(bodyHolds) || d.issueComments.some((c) => later(c, timeOf(c)))) holds.push('comment');
@@ -395,7 +401,7 @@ function evaluate(pr) {
   const d = own || covering.length || automated ? details(pr) : null;
   const reviewLines = own ? activity(pr, reviews, d) : [];
   // A comment holds until an approval that counts is given after it; an automated pull request has no approval to count from.
-  const holds = covering.length || automated ? holdsOf(pr, reviews, d, Math.max(0, ...covering.map((a) => time(a.submitted_at)))) : [];
+  const holds = covering.length || automated ? holdsOf(pr, reviews, d, Math.max(0, ...covering.map((a) => time(a.submitted_at))), covering) : [];
 
   for (const [key, line] of reviewLines) notice(key, line);
   if (withdraw) {
@@ -461,19 +467,19 @@ function approve(pr) {
 }
 
 const METHODS = { squash: ['--squash', 'squash', 'allow_squash_merge'], merge: ['--merge', 'merge commit', 'allow_merge_commit'], rebase: ['--rebase', 'rebase', 'allow_rebase_merge'] };
-// A squash into a branch of its own, a merge commit into another pull request's branch; when the repository does not
+// A squash into a branch of its own, a merge commit into another pull request's branch or from the default branch; when the repository does not
 // allow that method, the next one it allows.
-function mergeMethod(repo, intoPullRequest) {
+function mergeMethod(repo, mergeCommit) {
   const settings = gh(['api', `repos/${repo}`]);
-  const order = intoPullRequest ? ['merge', 'squash', 'rebase'] : ['squash', 'merge', 'rebase'];
+  const order = mergeCommit ? ['merge', 'squash', 'rebase'] : ['squash', 'merge', 'rebase'];
   return METHODS[order.find((m) => settings?.[METHODS[m][2]] !== false)] || METHODS[order[0]];
 }
 
 // Merges one pull request into its base, naming the head it expects. `merged` is printed only when GitHub reports the
 // pull request merged; otherwise (a merge queue, or a state that could not be read) `queued`, once per head.
-function merge(e, intoPullRequest) {
+function merge(e, mergeCommit) {
   const { pr } = e;
-  const [flag, word] = mergeMethod(pr.repo, intoPullRequest);
+  const [flag, word] = mergeMethod(pr.repo, mergeCommit);
   try {
     run('gh', ['pr', 'merge', String(pr.number), '--repo', pr.repo, flag, '--match-head-commit', pr.head]);
   } catch (err) {
@@ -499,8 +505,11 @@ function scanRepo(target) {
     if (open.some((p) => p.number === n)) continue;
     try { if (onePr(repo, n).state === 'CLOSED') notice(`closed:${repo}#${n}`, `closed ${repo}#${n}`); } catch (e) { warn(`${repo}#${n}`, e); }
   }
-  // The default branch is never a stack parent, whatever pull request has it as its head.
-  const sameRepo = open.filter((p) => !p.cross && p.headRef !== defaultBranch);
+  const sameRepo = open.filter((p) => !p.cross);
+  // The default branch is never a stack parent: a pull request from it does not wait for the pull requests into it,
+  // and those are not merges into another pull request's branch.
+  const fromDefault = (p) => !p.cross && p.headRef === defaultBranch;
+  const intoPullRequest = (p) => p.baseRef !== defaultBranch && sameRepo.some((q) => q.headRef === p.baseRef);
   for (const pr of open.filter((p) => !p.draft && (target.whole || target.numbers.has(p.number)))) {
     try {
       const e = evaluate(pr);
@@ -509,10 +518,11 @@ function scanRepo(target) {
       // An automated head is approved in one scan and merged in a later one, once GitHub counts the approval.
       if (e.status === 'approve' && !opts.noMerge) { approve(pr); continue; }
       // A pull request waits while an open pull request from this repository, a draft included, is based on its branch.
-      const child = !pr.cross && pr.headRef !== defaultBranch && sameRepo.find((p) => p.baseRef === pr.headRef && p.number !== pr.number);
+      const child = !pr.cross && !fromDefault(pr) && sameRepo.find((p) => p.baseRef === pr.headRef && p.number !== pr.number);
       if (child) notice(`stack:${tag(pr)}@${pr.head}`, `stack ${tag(pr)}: waits for #${child.number}`);
       else if (opts.noMerge) notice(`ready:${tag(pr)}@${pr.head}`, `ready ${tag(pr)} head ${short(pr.head)}`);
-      else merge(e, sameRepo.some((p) => p.headRef === pr.baseRef));
+      // One long-lived branch into another also lands as a merge commit, so that later promotions do not repeat its changes.
+      else merge(e, intoPullRequest(pr) || fromDefault(pr));
     } catch (e) {
       if (e instanceof UnknownStanding) process.stderr.write(`pr-to-merge: ${tag(pr)}: left for the next scan, an account's access is unknown\n`);
       else warn(tag(pr), e);
