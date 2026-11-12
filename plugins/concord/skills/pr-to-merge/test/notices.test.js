@@ -48,8 +48,8 @@ test('a listed PR closed without merging is reported once; a merged one is not',
   const w = world(repo([pr(1, { state: 'CLOSED' }), pr(2, { state: 'MERGED' })]));
   assert.deepEqual(w.run(['acme/app#1', 'acme/app#2']).lines, ['closed acme/app#1']);
   assert.deepEqual(w.run(['acme/app#1', 'acme/app#2']).lines, []);
-  const mine = world(repo([]), { closed: [{ number: 9 }] });
-  assert.deepEqual(mine.run(['--mine', 'octocat', 'acme/app']).lines, ['closed acme/app#9']);
+  const mine = world(repo([pr(1, { state: 'CLOSED', author: 'octocat' })]));
+  assert.deepEqual(mine.run(['--mine', 'octocat', 'acme/app']).lines, [], 'a --mine PR that closes stops appearing');
 });
 
 test('draft PRs are ignored, approved or not', () => {

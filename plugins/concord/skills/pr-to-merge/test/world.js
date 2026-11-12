@@ -63,8 +63,7 @@ if (a[0] === 'api' && url === 'graphql') {
   const [, name, rest] = /^repos\\/([^/]+\\/[^/]+)\\/(.*)$/.exec(url) || [];
   const repo = name && repoAt(name);
   let m;
-  if (/^search\\/issues/.test(url)) out([{ items: w.closed || [] }]);
-  else if ((m = /^pulls\\/(\\d+)\\/reviews/.exec(rest))) out(pages(prOf(repo, m[1]).reviews));
+  if ((m = /^pulls\\/(\\d+)\\/reviews/.exec(rest))) out(pages(prOf(repo, m[1]).reviews));
   else if ((m = /^pulls\\/(\\d+)\\/comments/.exec(rest))) out(pages(prOf(repo, m[1]).comments));
   else if ((m = /^issues\\/(\\d+)\\/comments/.exec(rest))) out(pages(prOf(repo, m[1]).issueComments));
   else if ((m = /^commits\\/(\\w+)$/.exec(rest))) { const c = (repo.commits || {})[m[1]] || {}; out({ sha: m[1], author: c.author ? { login: c.author } : null, parents: (c.parents || []).map((sha) => ({ sha })) }); }

@@ -38,6 +38,30 @@ test('an unresolved thread, an unanswered comment after the approval, or the blo
   assert.deepEqual(custom.writes, []);
 });
 
+test('only points a person raised hold the merge: bot comments and approving review bodies do not, a bot\'s unresolved thread does', () => {
+  const merged = ['merged acme/app#1 into main (squash) head head1'];
+  const bots = approved(1, { issueComments: [comment('codecov', 20, { user: { login: 'codecov', type: 'Bot' } }), comment('ci-bot[bot]', 21)] });
+  assert.deepEqual(world(repo([bots])).run(['acme/app']).lines, merged, 'bot comments');
+  const lgtm = approved(1, { reviews: [approve('monalisa', 'head1', 10), approve('octo-dev', 'head1', 20, { body: 'LGTM' })] });
+  assert.deepEqual(world(repo([lgtm])).run(['acme/app']).lines, merged, 'an approving review with a body');
+  const held = ['triage acme/app#1 head head1: approved, open points'];
+  const person = approved(1, { issueComments: [comment('octo-dev', 20, { user: { login: 'octo-dev', type: 'User' } })] });
+  assert.deepEqual(world(repo([person])).run(['acme/app']).lines, held, 'a person\'s comment');
+  const changes = approved(1, { reviews: [approve('monalisa', 'head1', 10), review('octo-dev', 'COMMENTED', 'head1', 20, { body: 'one more thing' })] });
+  assert.deepEqual(world(repo([changes])).run(['acme/app']).lines, held, 'a person\'s review body');
+  const botThread = approved(1, { threads: [{ resolved: false, path: 'a.js', line: 2, root: 7 }], comments: [{ id: 7, user: { login: 'review-bot[bot]', type: 'Bot' }, path: 'a.js', line: 2 }] });
+  assert.deepEqual(world(repo([botThread])).run(['acme/app']).lines, held, 'a bot\'s unresolved thread');
+});
+
+test('on a blocked PR, a bot comment or an approving review does not re-report it; a person\'s comment does', () => {
+  const w = world(repo([approved(1, { labels: ['blocked'] })]));
+  w.run(['acme/app']);
+  w.update((x) => { const p = x.repos['acme/app'].prs[0]; p.issueComments.push(comment('ci-bot[bot]', 30)); p.reviews.push(approve('octo-dev', 'head1', 31, { body: 'LGTM' })); });
+  assert.deepEqual(w.run(['acme/app']).lines, []);
+  w.update((x) => x.repos['acme/app'].prs[0].issueComments.push(comment('octo-dev', 32)));
+  assert.deepEqual(w.run(['acme/app']).lines, ['triage acme/app#1 head head1: approved, open points']);
+});
+
 test('new activity on a blocked PR is reported as open points again, once per item', () => {
   const w = world(repo([approved(1, { issueComments: [comment('monalisa', 20)] })]));
   assert.deepEqual(w.run(['acme/app']).lines, ['triage acme/app#1 head head1: approved, open points']);

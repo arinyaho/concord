@@ -59,6 +59,22 @@ test('an approval on an older head followed only by clean merges of the base cov
     return { approved };
   });
   assert.deepEqual(r.lines, [`merged acme/app#5 into main (squash) head ${g.head.slice(0, 8)}`]);
+  assert.ok(!r.calls.some((c) => c.some((x) => /\/commits\//.test(x))), 'a clean base merge needs no API call');
+});
+
+test('merge commits by --self cover the head whatever they merged: a stack bottom whose squash failed merges on the next scan', () => {
+  // The bottom PR was approved at A; the script then merged the child (based on A) into it, and the squash failed.
+  const g = gitPr(5, ({ edit, sh }) => {
+    sh('checkout', '-q', '-b', 'pr');
+    const approved = edit('ONE\ntwo\nthree\n', 'A');
+    sh('checkout', '-q', '-b', 'child'); edit('ONE\ntwo\nthree\nchild\n', 'X');
+    sh('checkout', '-q', 'pr'); sh('merge', '-q', '--no-ff', '--no-edit', 'child');
+    return { approved };
+  });
+  for (const [author, expected] of [['octocat', [`merged acme/app#5 into main (squash) head ${g.head.slice(0, 8)}`]], ['hubot', [`triage acme/app#5 head ${g.head.slice(0, 8)}: approved on an older head only`]]]) {
+    const w = world({ 'acme/app': { prs: [pr(5, { headRefName: 'pr', headRefOid: g.head, reviews: [approve('monalisa', g.approved)] })], commits: { [g.head]: { author } } } });
+    assert.deepEqual(w.run(['--checkout', `acme/app=${g.checkout}`, 'acme/app']).lines, expected, author);
+  }
 });
 
 function conflictMerge({ edit, sh, work }) {

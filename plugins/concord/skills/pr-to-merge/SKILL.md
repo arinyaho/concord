@@ -46,12 +46,12 @@ On a harness without background commands, run it in the foreground with a `--dea
 | `triage …: required check still red after one re-run`, `triage …: required check failed and cannot be re-run` | Failed required checks |
 | `stack …: a child does not contain its parent's head` | Merge the parent's head branch into the child with a merge commit and push, as for a conflict |
 | `merge failed …`, `sync failed …` | Tell the user the pull request and GitHub's message. A branch rule that requires a particular reviewer is the user's to settle |
-| `closed …` | Tell the user in one line |
+| `closed …` | A pull request listed as `OWNER/REPO#N` was closed without merging: tell the user in one line |
 | `rerun …`, `synced …` | None |
 
 ### Approved, with open points
 
-Read every unresolved thread, and every review and comment written after the approval. Verify each point against the code. A serious defect, a security problem, an unmet acceptance criterion, or a mismatch with a related repository blocks; anything else is minor. A comment that makes no point (thanks, a bot's status report) is answered with a one-line acknowledgement.
+Read every unresolved thread, and every review and comment written after the approval. Verify each point against the code. A serious defect, a security problem, an unmet acceptance criterion, or a mismatch with a related repository blocks; anything else is minor. The script counts a review body or conversation comment only when a person wrote it and it is not an approving review; an unresolved thread counts whoever opened it.
 
 - Already handled: reply with the commit that handled it and resolve the thread.
 - Only minor points remain: collect the pull request's minor points into one GitHub issue, reply on each thread or comment with the issue link, and resolve the threads. The next scan merges it.
