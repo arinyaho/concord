@@ -1,4 +1,4 @@
-# Protocol-v2 transactions in production runners and file targets
+# Protocol-v2 transactions in the packaged runner and file targets
 
 Protocol v2 plans root-cause groups, fixes each group, certifies the candidate and commits it. The packaged runner (`plugins/concord/core/codex-review-runner.js`) drives it, and native drivers follow `plugins/concord/core/review-driver.md`. This note fixes the gaps in #166 and #168: a legitimate no-edit fix ends in a harness failure, a file target can enter a round transaction it cannot certify, plan and certificate identities are not exact, structural evidence is bound only to a hash, and a certified file edit is recorded as `unresolved` in review history.
 
@@ -6,7 +6,7 @@ Protocol v2 plans root-cause groups, fixes each group, certifies the candidate a
 
 ### Transaction order
 
-When `round-start` applies the gate, the packaged runner spawns `gate` with `review` and `gate-verify` after `verify`, before `plan`; without them `plan-fixes` rejects round 1 for a missing gate artifact.
+When `round-start` applies the gate, the packaged runner runs `gate` together with `correctness`, then `gate-verify` together with `verify`, and starts `plan` only after both have finished; in `design-conformance` mode it runs no `gate-verify`. Without the gate artifacts `plan-fixes` rejects round 1 for a missing gate artifact.
 
 The runner follows two paths. A group-scoped plan completes `fix`, `certify` and `commit-fix` for one group before the next group's fixer starts. A round-scoped plan runs every member fixer, then one `certify` and one `commit-fix` for the plan id. The runner skips `commit-fix` for a file target.
 
