@@ -1,6 +1,6 @@
 # Bounded runner reads of subagent-written artifacts
 
-The runners read review artifacts that subagents write with `fs.readFileSync`, which has no size limit and blocks on a FIFO. A subagent that replaces its artifact with a FIFO or a very large file can stall or exhaust the runner before `review-cli` refuses the artifact (#339, source: item 1 of #304). The sites are `fixDeclaration` in `round-plan.js`, the verify branch of `services/agent-team/src/adapters/spawn_subagent.mjs`, and in `codex-review-runner.js` the `artifactList` reads (verify `examined`, declared fix files), the gate-panel lens read and the gate-panel vote verdict read.
+The runners read review artifacts that subagents write with `fs.readFileSync`, which has no size limit and blocks on a FIFO. A subagent that replaces its artifact with a FIFO or a very large file can stall or exhaust the runner before `review-cli` refuses the artifact (#339, source: item 1 of #304). The sites are `fixDeclaration` in `round-plan.js`, and in `codex-review-runner.js` the `artifactList` reads (verify `examined`, declared fix files), the gate-panel lens read and the gate-panel vote verdict read.
 
 ## Decision
 

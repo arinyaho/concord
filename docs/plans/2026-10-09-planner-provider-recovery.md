@@ -28,4 +28,4 @@ Correct every document identified in the design note sweep, including manual com
 
 ### Task 5: Verify, version and deliver
 
-Run CI plugin and agent-team suites and `node scripts/dod.mjs`. Use `node scripts/release-version.mjs 0.9.0-beta.6` to align release metadata, and verify version tests. Commit the combined result. Run independent branch review-and-fix from a clean isolated checkout, fix accepted findings, then create one PR against main. Record the exact-head/base delivery disposition and report remaining blockers without claiming green. Merge and publication remain separate actions.
+Run the CI plugin suite and `node scripts/dod.mjs`. Use `node scripts/release-version.mjs 0.9.0-beta.6` to align release metadata, and verify version tests. Commit the combined result. Run independent branch review-and-fix from a clean isolated checkout, fix accepted findings, then create one PR against main. Record the exact-head/base delivery disposition and report remaining blockers without claiming green. Merge and publication remain separate actions.

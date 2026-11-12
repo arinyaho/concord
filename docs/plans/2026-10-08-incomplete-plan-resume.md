@@ -26,4 +26,4 @@ Run focused regression and runner/CLI/initiative/telemetry/bundle suites; confir
 
 ## Task 4: Verify and deliver
 
-Update `docs/design/review-artifact-contract.md` and `docs/design/review-ledger.md` to document the pending plan and semantic retry boundary. Sweep related operator instructions and record unchanged documents in the design note. Run plugin and agent-team CI commands under Node 22 plus `node scripts/dod.mjs`. Run the design and branch `review-and-fix` gates, correct accepted blockers, then create the PR against main and record its exact-head/base delivery disposition.
+Update `docs/design/review-artifact-contract.md` and `docs/design/review-ledger.md` to document the pending plan and semantic retry boundary. Sweep related operator instructions and record unchanged documents in the design note. Run the plugin CI command under Node 22 plus `node scripts/dod.mjs`. Run the design and branch `review-and-fix` gates, correct accepted blockers, then create the PR against main and record its exact-head/base delivery disposition.

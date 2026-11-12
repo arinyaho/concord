@@ -28,16 +28,6 @@ Modify `plugins/concord/core/target.js`, `review-cli.js`, and `codex-review-runn
 4. Include the manifest in protected review inputs. Verify reviewer tampering stops reporting.
 5. Verify rename/delete and unusual filename handling, frozen scope after checkout movement, effective retry/reuse ranges, legacy regeneration and Git-free file-target behavior.
 
-## Task 2: Separate publication and settlement
-
-Modify `.github/workflows/pr-review.yml`, `services/pr-review/review-one.sh`, `scan.sh`, and their shell tests.
-
-1. Reproduce successful review publication followed by exhausted final-status retries; reproduce an error context beyond the first status page.
-2. Propagate a unique attempt identifier through dispatch and status descriptions. Add a trusted publication receipt without changing the existing first-line review marker.
-3. Keep cleanup aware of publication and status settlement separately. A failed settlement remains visible; publication is not repeated.
-4. Paginate statuses and reconcile a matching posted attempt before deciding whether to dispatch. Preserve newer attempts and skip safely when evidence cannot be read.
-5. Verify settlement recovery after an outage, old receipt versus newer requested attempt, timestamp ties, foreign or malformed receipts, manual-only recovery and stale-PR recovery.
-
 ## Task 3: Review and delivery
 
 Run focused changed-input and service regressions plus `node scripts/dod.mjs` locally. Inspect red/green evidence and mirrored-file consistency. Have Sol high review the final diff and Astra inspect the invariant boundaries. Commit and push to PR #195, let GitHub run the full suites and lint, then update the PR description and answer the three review threads with verified evidence. No merge is authorized.
