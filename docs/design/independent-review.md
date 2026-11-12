@@ -7,7 +7,7 @@ The first review of a target is broad: it checks the target against the design, 
 ## Roles
 
 - **The caller** is the session that wrote the target or is delivering it: a `ticket-to-pr` worker, a coordinating session, or the user's own session. It writes the review request, verifies each finding, and makes the fixes.
-- **The reviewer** is a subagent of the caller's harness, started in a fresh context from the reviewer agent definition that Concord ships. It runs in the caller's environment, so it reads every path the caller reads and runs the project's own commands. That is safe only for work the caller owns; a pull request by an author the user does not trust goes through `review-until-approve` instead. It does not edit files, commit, or post anything. It uses the most capable model class the harness offers, because one pass is all the target gets.
+- **The reviewer** is a subagent of the caller's harness, started in a fresh context from the reviewer agent definition that Concord ships. It runs in the caller's environment, so it reads every path the caller reads and runs the project's own commands. That is safe only for work the caller owns; a pull request by an author the user does not trust goes through `review-until-approve` instead. It does not edit files, commit, or post anything. It uses the most capable model class the harness offers, because one pass is all the target gets. The reviewer's instructions exist once, as a reference file inside the skill, and the agent definition carries the same text; on a harness whose plugins carry no agent definitions, the caller gives the reviewer that file as the start of its prompt.
 
 The reviewer receives the review request and nothing else. It does not receive the caller's reasoning or conversation.
 
