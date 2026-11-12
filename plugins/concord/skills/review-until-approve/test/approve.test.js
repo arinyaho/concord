@@ -1684,6 +1684,10 @@ test('a round whose runner fails records the head it attempted and leaves the ro
   const failed = w.ledger();
   assert.equal(failed.rounds.length, 1);
   assert.equal(failed.attempt.head, head2);
+  // The reason the round failed is kept with the attempt and is what the command printed.
+  assert.match(failed.attempt.reason, /harness-failure/);
+  assert.ok(round.stderr.includes(failed.attempt.reason));
+  assert.ok(Date.parse(failed.attempt.at) > 0);
   fs.rmSync(path.join(w.dir, 'fail-runner'));
   w.approve('round', 'o/r', '5');
   assert.equal(w.ledger().attempt, undefined);
