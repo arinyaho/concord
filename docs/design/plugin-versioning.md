@@ -1,12 +1,12 @@
 # Plugin versioning
 
-The Claude Code, Codex, and GitHub Copilot distributions are released as one Concord version. A release never exposes different version numbers across the three plugins or their versioned marketplace metadata.
+The Claude Code and Codex distributions are released as one Concord version. A release never exposes different version numbers across the two plugins.
 
 ## Single source of truth
 
 The repository-root `VERSION` file contains the only human-maintained release version. It holds one SemVer-compatible version string and a trailing newline.
 
-The three plugin manifests and the GitHub Copilot marketplace still contain required `version` fields, but those fields are derived release artifacts. Contributors do not update them directly.
+The two plugin manifests still contain required `version` fields, but those fields are derived release artifacts. Contributors do not update them directly.
 
 ## Release operation
 
@@ -15,10 +15,8 @@ The three plugin manifests and the GitHub Copilot marketplace still contain requ
 1. validates that `<version>` is a SemVer release or prerelease version;
 2. writes that value to `VERSION`;
 3. updates `plugins/concord/.claude-plugin/plugin.json`;
-4. updates `plugins/concord-codex/.codex-plugin/plugin.json`;
-5. updates `plugins/concord-copilot/plugin.json`;
-6. updates `.github/plugin/marketplace.json` metadata and `concord` entry versions; and
-7. preserves unrelated JSON fields.
+4. updates `plugins/concord-codex/.codex-plugin/plugin.json`; and
+5. preserves unrelated JSON fields.
 
 The script is idempotent: running it with the already-current version produces no file-content changes.
 
@@ -38,18 +36,18 @@ The rule costs one bot commit per merge, and `main` receives a push after each m
 
 A maintainer lands a stable version such as `0.9.0` through an ordinary human-authored pull request that runs `node scripts/release-version.mjs 0.9.0` and changes nothing else.
 
-- **Guard.** `version-guard` passes a pull request that edits version files only when every changed file is one the release script writes, `VERSION` is among them, the head `VERSION` is a stable `X.Y.Z` (no prerelease or build suffix) with higher SemVer precedence than `VERSION` on the base tip, and each of the five files at the head is byte-identical to what the base's `release-version.mjs` writes into the base's copy of that file for that version. A release pull request therefore changes no manifest field except `version`. The head `VERSION` is read with `git show` as data, and the check runs from the base branch like the rest of the guard. Any other change to a version file still fails, so an ordinary pull request cannot touch a version file, and a release pull request cannot carry code.
+- **Guard.** `version-guard` passes a pull request that edits version files only when every changed file is one the release script writes, `VERSION` is among them, the head `VERSION` is a stable `X.Y.Z` (no prerelease or build suffix) with higher SemVer precedence than `VERSION` on the base tip, and each of the three files at the head is byte-identical to what the base's `release-version.mjs` writes into the base's copy of that file for that version. A release pull request therefore changes no manifest field except `version`. The head `VERSION` is read with `git show` as data, and the check runs from the base branch like the rest of the guard. Any other change to a version file still fails, so an ordinary pull request cannot touch a version file, and a release pull request cannot carry code.
 - **Bump.** A first-parent commit is a boundary, and is not counted as a merge needing a bump, when its `VERSION` is stable and differs from its first parent's. The check reads file content because the squash-merge title is chosen at merge time. It does not repeat the guard's checks, so a stable `VERSION` change that reaches `main` without a guarded pull request (an administrator's direct push) also counts as a release. The first merge after the release is bumped to the next patch's first beta (`0.9.0` to `0.9.1-beta.1`). A merge between the last bump and the release commit ships inside the release and gets no bump.
 - **Patch and minor releases.** A patch release lands on `main` through the same release pull request: `0.9.1` ranks above `0.9.1-beta.N`, so the guard accepts it and the next bump moves to `0.9.2-beta.1`. A new minor or major is a release pull request that sets `0.10.0` (or `1.0.0`), which ranks above every `0.9.x-beta.N`; the bump after it starts at `0.10.1-beta.1`. No maintenance branch is needed.
 - **Cost.** The release pull request conflicts on `VERSION` whenever another bump lands, so it is rebased just before merge; the guard reruns on each push.
-- **Residual exposure.** A pull request that changes only version files can set any higher stable version, such as `99.0.0`. Only review stops that; a `CODEOWNERS` entry for the five version files would require a release owner and is left to the maintainers.
+- **Residual exposure.** A pull request that changes only version files can set any higher stable version, such as `99.0.0`. Only review stops that; a `CODEOWNERS` entry for the three version files would require a release owner and is left to the maintainers.
 
 ## Guardrail and tests
 
-A Node test reads `VERSION`, all three manifests, and both Copilot marketplace version fields, then asserts the six values are identical. The test uses the actual repository files, so a partial manual update fails the normal test suite.
+A Node test reads `VERSION` and both manifests, then asserts the three values are identical. The test uses the actual repository files, so a partial manual update fails the normal test suite.
 
 The test also runs the release script against an isolated release tree to prove that a single invocation updates every target without modifying unrelated fields and that a preflight failure leaves existing files unchanged.
 
 ## Scope
 
-This contract unifies version metadata and its release workflow. All harness marketplaces expose the shared plugin name `concord`, while their source directories and installation mechanisms remain independent.
+This contract unifies version metadata and its release workflow for the Claude Code and Codex distributions. Other distributions carry no version the release script writes. All harness marketplaces expose the shared plugin name `concord`, while their source directories and installation mechanisms remain independent.
