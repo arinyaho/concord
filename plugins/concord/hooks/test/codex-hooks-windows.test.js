@@ -7,8 +7,7 @@ const path = require('node:path');
 // plugins/concord-codex/hooks.json is the Codex CLI plugin's hook manifest.
 // Codex's own hook-handler schema (codex-rs/config/src/hook_config.rs,
 // HookHandlerConfig::Command) defines a `commandWindows` sibling field next
-// to `command` as the per-hook Windows override -- the same mechanism
-// concord-copilot's hooks.json already uses under the name "windows". The
+// to `command` as the per-hook Windows override. The
 // existing `command` value here is an `sh -c '...'` POSIX script, which has
 // no sh.exe on native Windows; every hook entry therefore needs a
 // `commandWindows` override that resolves node and the target script without

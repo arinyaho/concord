@@ -20,7 +20,7 @@ The caller supplies the budgets, both at open and at escalation. The core enforc
 
 In a keyed `round-start`, the review CLI reads the run's mode. In `lite` it launches `correctness`, `verify`, and a single `gate` reviewer whose prompt asks only for `gate:design-conformance:<slug>` findings and states that ac-coverage, cross-context, and silent-gap findings are not reported. There is no `gate-verify` reviewer and no gate panel, and the round's expected artifact set excludes `gate-verify`. `plan-fixes` rejects any lite gate finding whose class is not design-conformance. `round-start` in a lite run rejects `--broad`, `--no-broad`, and `--gate`, because each would change the reviewer set the mode defines; the rejection happens before any state is written.
 
-The Codex runner opens the run itself and passes the run key, state directory, budgets, and mode to every `round-start` it invokes; the Claude and Copilot drivers pass them explicitly. Both read the same mode from the same ledger. The lite gate prompt is built by `reviewerPrompt` with a `gateMode` option, and the copies embedded in the driver documents are kept in sync with it by `round-plan-sync.test.js`.
+The Codex runner opens the run itself and passes the run key, state directory, budgets, and mode to every `round-start` it invokes; the Claude driver passes them explicitly. Both read the same mode from the same ledger. The lite gate prompt is built by `reviewerPrompt` with a `gateMode` option, and the copies embedded in the driver documents are kept in sync with it by `round-plan-sync.test.js`.
 
 ## Escalation
 

@@ -20,4 +20,4 @@ A one-shell-command wait ends at its condition or deadline, so a wait that never
 
 Ticket #220 records the run that motivated the rule: 73 of 305 tool calls were `sleep` polls at about 108K tokens of context each, and the full plugin suite ran at least four times between the first implementation and the final head.
 
-The skill-content test in `plugins/concord/hooks/test/ticket-writing-skill.test.js` asserts the three rules as literal phrases in the three `ticket-to-pr` copies, the waiting phrases in the three `review-until-lgtm` copies and the four review-driver copies, and that the old polling wording is gone. Each package's `bundle.mjs` regenerates the Codex and Copilot copies.
+The skill-content test in `plugins/concord/hooks/test/ticket-writing-skill.test.js` asserts the three rules as literal phrases in the two `ticket-to-pr` copies, the waiting phrases in the two `review-until-lgtm` copies and the review-driver copies, and that the old polling wording is gone. The Codex package's `bundle.mjs` regenerates the Codex copies.

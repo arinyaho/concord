@@ -108,7 +108,7 @@ test('normal Codex completion proves started and provider prose cannot trigger r
 });
 
 test('mirrored provider engine modules preserve the same lifecycle decisions', () => {
-  for (const path of ['../../../concord-codex/engine/launch-lifecycle', '../../../concord-copilot/engine/launch-lifecycle']) {
+  for (const path of ['../../../concord-codex/engine/launch-lifecycle']) {
     const tracker = require(path).createLaunchLifecycle({ provider: 'codex', supportedSchema: true });
     tracker.spawned(); tracker.observe(error('sandbox_denied'));
     assert.equal(finish(tracker).lifecycle, 'not-started');

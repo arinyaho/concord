@@ -14,8 +14,8 @@ const path = require('node:path');
 
 const REPO = path.join(__dirname, '..', '..', '..', '..');
 const HANDOFF_CONTRACT = path.join(REPO, 'plugins/concord/skills/initiative-to-prs/references/handoff-contract.md');
-// concord-vs-codex and concord-vs-copilot byte-identity for this file are each guarded by
-// their own drift test (initiative-to-prs-skill.test.js and copilot-package.test.js); this
+// concord-vs-codex byte-identity for this file is guarded by
+// its own drift test (initiative-to-prs-skill.test.js); this
 // file only checks that the documented rule itself exists in the shared source.
 
 // A session touches the same document at each of these points while doing

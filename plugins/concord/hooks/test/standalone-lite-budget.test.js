@@ -4,7 +4,6 @@ const assert = require('node:assert/strict');
 for (const [name, R] of [
   ['native', require('../../core/review')],
   ['codex', require('../../../concord-codex/engine/review')],
-  ['copilot', require('../../../concord-copilot/engine/review')],
 ]) {
   test(`${name}: standalone lite stops after three progressive fix rounds`, () => {
     let ledger = { ...R.emptyLedger({ type: 'git', ref: 'feature/lite' }), reviewMode: 'standalone-lite', budget: { max_rounds: 3, spent: 0 } };

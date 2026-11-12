@@ -2693,7 +2693,6 @@ test('manual repair instructions run the CLI-built repair without launching a mo
   for (const rel of [
     ['core', 'review-driver.md'],
     ['commands', 'review-and-fix.md'],
-    ['..', 'concord-copilot', 'skills', 'review-and-fix', 'references', 'review-driver.md'],
   ]) {
     const md = fs.readFileSync(path.join(root, ...rel), 'utf8');
     assert.match(md, /artifact-repair-dispatch <ref> <role>.*builds the candidate from the snapshot without a model/i, rel.join('/'));

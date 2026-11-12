@@ -8,7 +8,7 @@ const review = require('../../core/review');
 const { runPath } = require('../../core/initiative-review-run');
 const { tempDir } = require('./temp-dir');
 const plugins = path.resolve(__dirname, '../../..');
-const providers = { claude: path.join(plugins, 'concord/hooks/review-cli.js'), copilot: path.join(plugins, 'concord-copilot/bin/review-cli.js') };
+const providers = { claude: path.join(plugins, 'concord/hooks/review-cli.js') };
 
 function setup(t, provider, keyed = true) {
   const root = tempDir('native-record-claim-');
