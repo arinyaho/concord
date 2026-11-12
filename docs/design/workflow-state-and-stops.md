@@ -16,11 +16,14 @@ The state of the work lives in three places, each of which exists without Concor
 
 Concord keeps no store of its own that decides anything. A workflow that needs to know what is done reads the ticket and the pull request again. A workflow that makes progress or receives a decision writes it to the ticket. A session that starts with no memory of the work resumes from the ticket and the pull request alone.
 
-Three kinds of local file are allowed, and none decides the state of the work:
+These kinds of local file are allowed. None records the state of the work, and each decides only what its entry says:
 
 - **Working documents.** A coordinating session keeps one state document (the user's standing authorizations with their words and dates, the list of work units and their pull requests, and lessons) and receives worker reports as files. They are plain Markdown, written and read by agents. The progress and decisions in them are also on the ticket. Deleting them loses convenience and the record of standing authorizations; a successor then asks the user again.
 - **Notice records.** A polling script may keep a file of the notices it has already printed, so that it does not print them twice. Deleting the file causes a repeated notice and nothing else. No script reads such a file to decide whether a pull request merges or a review passes.
-- **Locks.** A script may keep a lock file so that two runs do not work on the same thing at once; `review-until-approve` uses one so that only one round runs at a time on a machine. Deleting a lock changes no outcome, except that two runs may overlap.
+- **Locks.** A script may keep a lock file so that two runs do not work on the same thing at once. A lock decides only whether a run may start. Deleting one lets two runs overlap. `review-until-approve` uses one so that only one round runs at a time on a machine; an overlap there would also check one round's agents against another round, so its lock is taken over only when its holder is not running.
+- **Configuration the user writes.** For example the options of a scheduled run. It decides what the user wrote it to decide, which can include an authorization such as merging. No workflow writes it.
+- **Confinement records.** The file that names `review-until-approve`'s active round, written under its lock. It decides only what a confined agent may read and write.
+- **Logs.** Output kept for a person to read. The session does not read them, and they decide nothing.
 
 Minor points that a workflow does not fix are collected into one follow-up ticket in the project's tracker. `pr-to-merge` files a GitHub issue instead, because the pull request it works on is on GitHub.
 
@@ -79,6 +82,8 @@ The user can authorize a kind of action once for a run, such as "merge approved 
 
 The coordinating session also copies each authorization to the tracking ticket as a decision record, for people to read. No workflow reads a ticket or a comment back as an authorization, because other people can write there.
 
+A scheduled run has no conversation with the user. Its authorization is the configuration the user writes for it, which is the one other place an authorization is read from.
+
 An authorization covers the kind of action and the repositories the user named, and nothing wider.
 
 ## Harnesses
@@ -91,7 +96,7 @@ The workflows run on Claude Code and Codex. A workflow uses the harness's own ag
 
 **A rule that fails closed on procedure moves the cost to the user.** When a procedural failure ends the run, the user must return, read an error about Concord's internals, and authorize a continuation. Under a session goal this ends the goal. The stop rule keeps the user's attention for the three cases that need it.
 
-**An authorization is read only from a place that only the user's words reach.** The user's conversation with the coordinating session is the one channel other people cannot write to. The state document carries those words to a successor. A ticket and a pull request accept text from anyone with access, so an authorization read back from them could be one that no user gave.
+**An authorization is read only from a place that only the user's words reach.** The user's conversation with the coordinating session is the one channel other people cannot write to, and the state document carries those words to a successor. A scheduled run's configuration is the exception, and the user owns it: the user writes it, and it lives on the user's machine. A ticket and a pull request accept text from anyone with access, so an authorization read back from them could be one that no user gave.
 
 **Subagents keep the decision in one place.** Separate sessions are peers: each can defer to another, and an instruction that names one of them the coordinator does not bind the others. A subagent returns its result to the session that started it and ends, so there is one place where decisions are taken. The two things separate sessions offered are obtained otherwise: a `handoff` report carries work across a context limit, and worktrees separate parallel work.
 
