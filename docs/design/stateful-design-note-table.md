@@ -4,7 +4,7 @@ A stateful change has boundary combinations of state and event that prose does n
 
 ## Decision
 
-The rule lives in the skill because installed packages ship the skill and not this note; stage 3 points to it for the table and stage 6 for the evidence.
+The rule lives in the skill because installed packages ship the skill and not this note; stage 3 of the stage table points to it for the table, and the section says that stage 6 fills the evidence.
 
 The rule is principle-first: a short trigger, one row shape, the event classes authors most often miss, and one worked example, with enumeration left to the author. Rows cover the dimensions the change can affect rather than the product of every persisted value, because a full factorial produces rows nobody tests and buries the ones that matter. The example fixes the meaning of the terms instead of further definitions, because each added definition introduces terms that themselves need defining and the text never closes.
 
@@ -20,4 +20,4 @@ The rule does not enumerate on the author's behalf; a state or event the author 
 
 ## Evidence and executable gates
 
-The skill-content test in `plugins/concord/hooks/test/ticket-writing-skill.test.js` asserts the section, the stage pointers, the trigger, the row shape and the same-PR rule, and compares the shared and Codex copies; the Codex bundler regenerates the Codex copy.
+The skill-content test in `plugins/concord/hooks/test/ticket-writing-skill.test.js` asserts the section, the trigger, the row shape, the fail-before and pass-after rule and the same-pull-request rule, and compares the shared and Codex copies; the Codex bundler regenerates the Codex copy.

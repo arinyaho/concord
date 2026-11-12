@@ -14,8 +14,6 @@ const CLAUDE_TICKET_TO_PR = path.join(REPO, 'plugins/concord/skills/ticket-to-pr
 const CODEX_TICKET_TO_PR = path.join(REPO, 'plugins/concord-codex/skills/ticket-to-pr/SKILL.md');
 const CLAUDE_INITIATIVE_TO_PRS = path.join(REPO, 'plugins/concord/skills/initiative-to-prs/SKILL.md');
 const CODEX_INITIATIVE_TO_PRS = path.join(REPO, 'plugins/concord-codex/skills/initiative-to-prs/SKILL.md');
-const CLAUDE_REVIEW_UNTIL_LGTM = path.join(REPO, 'plugins/concord/skills/review-until-lgtm/SKILL.md');
-const CODEX_REVIEW_UNTIL_LGTM = path.join(REPO, 'plugins/concord-codex/skills/review-until-lgtm/SKILL.md');
 const PROPOSAL_SKILL_FILES = [
   'SKILL.md',
   'references/content-and-evidence.md',
@@ -38,90 +36,83 @@ test('Claude and Codex source packages ship the same ticket-to-pr skill', () => 
   assert.equal(read(CODEX_TICKET_TO_PR), read(CLAUDE_TICKET_TO_PR));
 });
 
+test('ticket-to-pr has the ten stages in order, and stages 4 and 7 are review-and-fix', () => {
+  const skill = read(CLAUDE_TICKET_TO_PR);
+  const rows = skill.split('\n').filter((l) => /^\| \d \|/.test(l));
+  assert.deepEqual(rows.map((l) => l.split('|')[1].trim()), ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']);
+  assert.match(rows[2], /Discriminating red/);
+  assert.match(rows[4], /`review-and-fix` on the design document/);
+  assert.match(rows[7], /`review-and-fix` on the change/);
+  assert.match(rows[8], /Discriminating green/);
+  assert.match(rows[9], /draft pull request.*marked ready when the work is done/i);
+  const review = skill.split('### Stages 4 and 7: review\n')[1]?.split('\n### ')[0] ?? '';
+  for (const row of ['Target', 'Must satisfy', 'Related repositories', 'Evidence']) assert.match(review, new RegExp(`^\\| ${row} \\|`, 'm'), row);
+  assert.match(review, /The ticket's acceptance criteria and plan, and the design document/);
+});
+
+test('ticket-to-pr keeps its state on the ticket and the pull request and stops only in the three cases', () => {
+  const skill = read(CLAUDE_TICKET_TO_PR);
+  assert.match(skill, /plan, progress, decisions, and the review record go on the ticket/);
+  assert.match(skill, /resume from the ticket and the pull request/);
+  assert.match(skill, /Stop and ask only for a product decision .*something only the user holds .*hard-to-reverse action the user has not authorized/s);
+  assert.match(skill, /Record every other obstacle on the ticket and continue/);
+  assert.match(skill, /come from the project's rules file/);
+});
+
+test('ticket-to-pr opens a draft and marks it ready on three conditions, and never merges', () => {
+  const skill = read(CLAUDE_TICKET_TO_PR);
+  const section = skill.split('### Stage 9: the pull request\n')[1]?.split('\n## ')[0] ?? '';
+  assert.match(section, /open the pull request as a draft/);
+  assert.match(section, /no `blocker` finding is open, CI passed on the head, and every acceptance criterion has its evidence/);
+  assert.match(section, /Otherwise it stays a draft/);
+  assert.match(section, /Do not merge\. `pr-to-merge` carries the pull request/);
+  assert.match(skill, /Never move a ticket to done/);
+});
+
 test('ticket-to-pr defines the table and tests required for stateful changes', () => {
   const skill = read(CLAUDE_TICKET_TO_PR);
-  assert.equal(read(CODEX_TICKET_TO_PR), skill);
-  const rows = Object.fromEntries(
-    skill.split('\n').filter((l) => /^\| \d \|/.test(l)).map((l) => [l.split('|')[1].trim(), l]),
-  );
-  assert.match(rows['3'], /"Stateful changes"/);
-  assert.match(rows['6'], /"Stateful changes"/);
   const section = skill.split('## Stateful changes\n')[1]?.split('\n## ')[0] ?? '';
   assert.ok(section, 'missing "Stateful changes" section');
+  assert.match(section, /^\| State \| Event \| Outcome \| Kind \| Evidence \|$/m);
   for (const pattern of [
-    /retry, recovery or replay path/,
-    /Any other change says in one line that it is not stateful/,
-    /columns outcome, kind and evidence/,
+    /retry, recovery, or replay path/,
+    /says in one line of its design document that it is not stateful/,
     /resulting state/,
-    /found missing at any later stage, including PR review, is added to the table in the same PR/,
-  ]) {
-    assert.match(section, pattern);
-  }
+    /fails before the change and passes after it/,
+    /found missing later, including in review, is added to the table in the same pull request/,
+  ]) assert.match(section, pattern);
 });
 
-test('ticket-to-pr delegates by the kind of work, not by importance', () => {
+test('ticket-to-pr requires a red that reproduces the harm before the design', () => {
   const skill = read(CLAUDE_TICKET_TO_PR);
-  assert.equal(read(CODEX_TICKET_TO_PR), skill);
-  const section = skill.split('## Delegation\n')[1]?.split('\n## ')[0] ?? '';
-  assert.ok(section, 'missing "Delegation" section');
-  assert.doesNotMatch(section, /material/);
-  for (const pattern of [
-    /decides what something should be/,
-    /applies a decision already made/,
-    /user-designated callable model may fill a required role when it meets that role's capability gate/is,
-    /Astra.*model the user restricts.*direct authorization from the user/is,
-    /ask the user once.*pending decision batch.*record.*policy.*request.*answer/is,
-    /pause only dependent work/i,
-    /do not create an extra specialist merely because.*(?:root|active agent).*model/i,
-    /substantive findings once per stage/i,
-    /separate deep-capability reviewer/,
-    /excluding the responsible agent's reasoning/,
-    /"Adjudicate and escalate" subsection of `review-until-lgtm`/,
-    /when a PR review raised it, in a thread or in a review body; when local review raised it, adjudicate the substantive findings once per stage using a callable model that meets the gate/,
-    /A finding in a review body has no thread, so the reply that subsection posts on a thread goes instead to a PR comment that quotes the finding's URL, with the same disposition/,
-  ]) {
-    assert.match(section, pattern);
-  }
-  assert.match(read(path.join(REPO, 'plugins/concord/skills/review-until-lgtm/SKILL.md')), /^### Adjudicate and escalate$/m);
+  const section = skill.split('### Stage 2: discriminating red\n')[1]?.split('\n### ')[0] ?? '';
+  for (const pattern of [/Reproduce the harm, not the mechanism/, /build one that can/, /Record what the run ran against/, /refuse to pass for the wrong reason/]) assert.match(section, pattern);
 });
 
-test('ticket-to-pr and the review waiters wait once, run the full suite once, and report long turns', () => {
+test('ticket-to-pr sorts work by design versus applying a decision, waits once, and hands off through the ticket', () => {
   const skill = read(CLAUDE_TICKET_TO_PR);
-  assert.equal(read(CODEX_TICKET_TO_PR), skill);
-  const section = skill.split('## Waiting and test scope\n')[1]?.split('\n## ')[0] ?? '';
-  assert.ok(section, 'missing "Waiting and test scope" section');
-  for (const pattern of [
-    /one blocking wait or a background notification/,
-    /never with repeated short sleeps/,
-    /the tests focused on the change/,
-    /full test suite once, on the final head/,
-    /together with the DoD/,
-    /CI still runs the full suite on the PR/,
-    /passes 30 minutes/,
-    /what is running and what the budget status is/,
-  ]) {
-    assert.match(section, pattern);
-  }
-  const waitPhrases = [
-    /one shell command that exits when/,
-    /a background watch where the host has one/,
-    /not by repeated model-level sleep or status calls/,
-  ];
-  const lgtm = read(path.join(REPO, 'plugins/concord/skills/review-until-lgtm/SKILL.md'));
-  assert.equal(read(CODEX_REVIEW_UNTIL_LGTM), lgtm);
-  assert.doesNotMatch(lgtm, /poll until `requestEligibleAtMs`/);
-  assert.doesNotMatch(lgtm, /before polling/);
-  assert.match(lgtm, /Claim reviewers with no matching activity \(step 4\) before waiting on step 3/);
-  for (const pattern of waitPhrases) assert.match(lgtm, pattern);
-  for (const file of [
-    'plugins/concord/core/review-driver.md',
-    'plugins/concord/commands/review-and-fix.md',
-    'plugins/concord-codex/skills/review-and-fix/SKILL.md',
-  ]) {
-    const text = read(path.join(REPO, file));
-    assert.doesNotMatch(text, /inspect that process and ledger and keep waiting/, file);
-    for (const pattern of waitPhrases) assert.match(text, pattern, file);
-  }
+  assert.match(skill, /decides what something should be or applies a decision already made/);
+  assert.match(skill, /A worker reports it and does not make it/);
+  assert.match(skill, /one blocking wait or a background notification, never with repeated short sleeps/);
+  assert.match(skill, /Run the full suite once, on the final head/);
+  const handoff = skill.split('## Past the context limit\n')[1]?.split('\n## ')[0] ?? '';
+  assert.match(handoff, /Stop at the next stage boundary/);
+  assert.match(handoff, /`handoff` report/);
+  assert.doesNotMatch(handoff, /\d{2,} (tokens|tool calls)/);
+});
+
+test('ticket-to-pr keeps one coherent outcome per unit and permits only justified boundaries', () => {
+  const skill = read(CLAUDE_TICKET_TO_PR);
+  for (const rule of [
+    /one coherent ticket outcome; keep its changes together/,
+    /deployed or reverted on its own/,
+    /prerequisite must merge first/,
+    /repository boundary/,
+    /ownership split the approved plan names/,
+    /frontend\/backend label or size alone is not a boundary/,
+    /Record the red for the whole outcome once, against the unchanged combined system/,
+    /A proposed version is not a pin/,
+  ]) assert.match(skill, rule);
 });
 
 test('Claude and Codex source packages ship the same initiative-to-prs skill', () => {
@@ -133,16 +124,6 @@ test('Claude and Codex source packages ship the same initiative-to-prs skill', (
   }
 });
 
-test('Claude and Codex source packages ship the same review-until-lgtm skill', () => {
-  assert.ok(fs.existsSync(CODEX_REVIEW_UNTIL_LGTM), 'Codex source package is missing review-until-lgtm');
-  assert.equal(read(CODEX_REVIEW_UNTIL_LGTM), read(CLAUDE_REVIEW_UNTIL_LGTM));
-  assert.match(read(CLAUDE_REVIEW_UNTIL_LGTM), /exact PR head SHA/);
-  assert.match(read(CLAUDE_REVIEW_UNTIL_LGTM), /not green/);
-  assert.match(read(CLAUDE_REVIEW_UNTIL_LGTM), /Record every review in the collection batch/);
-  assert.match(read(CLAUDE_REVIEW_UNTIL_LGTM), /three fix-and-push rounds are a PR-wide hard cap/);
-  assert.match(read(CLAUDE_REVIEW_UNTIL_LGTM), /one commit and one push/);
-});
-
 test('Claude and Codex source packages ship the same proposal-package-authoring skill', () => {
   for (const file of PROPOSAL_SKILL_FILES) {
     const claude = path.join(REPO, 'plugins/concord/skills/proposal-package-authoring', file);
@@ -150,48 +131,6 @@ test('Claude and Codex source packages ship the same proposal-package-authoring 
     assert.ok(fs.existsSync(codex), `Codex source package is missing ${file}`);
     assert.equal(read(codex), read(claude));
   }
-});
-
-test('ticket-to-pr keeps Notion lifecycle transitions bounded and unambiguous', () => {
-  const skill = read(CLAUDE_TICKET_TO_PR);
-  const entry = skill.indexOf('At pipeline entry');
-  const prCreation = skill.indexOf('After the PR URL exists');
-
-  assert.ok(entry >= 0, 'missing the Notion lifecycle entry transition');
-  assert.ok(prCreation > entry, 'the PR transition must follow the entry transition');
-  assert.match(skill, /one repository implementation unit, one branch, one PR/i);
-  assert.match(skill, /Record a discriminating outcome-level red.*unchanged combined system/is);
-  assert.match(skill, /narrowest executable check.*real consumer.*combined artifacts/is);
-  assert.match(skill, /final `review-and-fix` DoD.*same discriminating check.*exact final head.*dependencies.*environment/is);
-  assert.match(skill, /reuse that evidence.*do not run the check again/is);
-  assert.match(skill, /otherwise run the discriminating green once/is);
-  assert.match(skill, /For a repository unit.*contract consequence.*shared outcome-level red/is);
-  assert.match(skill, /do not move the outcome ticket to `READY FOR TEST` or `Done`/i);
-  assert.match(skill.slice(entry, prCreation), /exactly one editable status property.*one `In progress` and one `In review` option/s);
-  assert.match(skill.slice(entry, prCreation), /already `In review` or `Done`, preserve it/);
-  assert.match(skill.slice(entry, prCreation), /all other current statuses are blockers/);
-  assert.match(skill.slice(entry, prCreation), /cannot expose this standard lifecycle is a blocker/);
-  assert.match(skill.slice(prCreation), /exactly one eligible PR URL field is empty or already has the same URL/);
-  assert.match(skill.slice(prCreation), /otherwise append an idempotent labelled `PR:` link/);
-  assert.match(skill.slice(prCreation), /verify the exact PR URL before changing the status/);
-  assert.match(skill.slice(prCreation), /same status property.*only from `In progress` to `In review`/s);
-  assert.match(skill.slice(prCreation), /multi-repository outcome.*without overwriting another unit's URL/is);
-  assert.match(skill.slice(prCreation), /preserve its status until every required unit PR has been read back/is);
-  assert.match(skill.slice(prCreation), /Do not move the ticket to Done/);
-});
-
-test('ticket-to-pr plans one coherent outcome unit and permits only justified boundaries', () => {
-  const skill = read(CLAUDE_TICKET_TO_PR);
-  const scenarios = [
-    { name: 'one outcome with atomic changes', rule: /default unit is one coherent approved ticket outcome; keep its atomic changes together/is },
-    { name: 'independent deployment or revert boundary', rule: /independently deployable or revertible boundary/i },
-    { name: 'required merge prerequisite', rule: /prerequisite must merge first/i },
-    { name: 'multi-repository delivery boundary', rule: /multi-repository delivery boundary/i },
-    { name: 'approved ownership split', rule: /ownership split justified in the approved plan/i },
-    { name: 'frontend/backend labels alone do not justify a split', rule: /frontend\/backend label alone.*not a boundary/i },
-    { name: 'arbitrary size does not justify fragmentation', rule: /arbitrary size is not a boundary/i },
-  ];
-  for (const scenario of scenarios) assert.match(skill, scenario.rule, scenario.name);
 });
 
 pluginInstallE2ETest('plugin-install e2e: clean Claude and Codex installs discover the same shared skills', (t) => {
@@ -234,8 +173,6 @@ pluginInstallE2ETest('plugin-install e2e: clean Claude and Codex installs discov
       read(path.join(codexInstall.installedPath, 'skills/initiative-to-prs', file)),
     );
   }
-  const claudeReviewUntilLgtm = read(path.join(claudeInstall.installPath, 'skills/review-until-lgtm/SKILL.md'));
-  const codexReviewUntilLgtm = read(path.join(codexInstall.installedPath, 'skills/review-until-lgtm/SKILL.md'));
   const claudeProposal = read(path.join(claudeInstall.installPath, 'skills/proposal-package-authoring/SKILL.md'));
   const codexProposal = read(path.join(codexInstall.installedPath, 'skills/proposal-package-authoring/SKILL.md'));
   for (const file of PROPOSAL_SKILL_FILES.slice(1)) {
@@ -257,20 +194,32 @@ pluginInstallE2ETest('plugin-install e2e: clean Claude and Codex installs discov
   assert.equal(codex, claude);
   assert.equal(codexTicketToPr, claudeTicketToPr);
   assert.equal(codexInitiativeToPrs, claudeInitiativeToPrs);
-  assert.equal(codexReviewUntilLgtm, claudeReviewUntilLgtm);
+  for (const skill of ['review-and-fix', 'coordinate-sessions', 'pr-to-merge']) {
+    assert.equal(
+      read(path.join(codexInstall.installedPath, 'skills', skill, 'SKILL.md')),
+      read(path.join(claudeInstall.installPath, 'skills', skill, 'SKILL.md')),
+      skill,
+    );
+  }
+  assert.equal(
+    read(path.join(codexInstall.installedPath, 'skills/review-and-fix/references/reviewer.md')),
+    read(path.join(claudeInstall.installPath, 'skills/review-and-fix/references/reviewer.md')),
+  );
+  for (const agent of ['reviewer', 'implementer']) assert.ok(fs.existsSync(path.join(claudeInstall.installPath, 'agents', `${agent}.md`)), agent);
   assert.equal(codexProposal, claudeProposal);
   assert.ok(claudeSkills?.includes('concord:ticket-to-pr'));
   assert.ok(claudeSkills?.includes('concord:initiative-to-prs'));
-  assert.ok(claudeSkills?.includes('concord:review-until-lgtm'));
+  for (const skill of ['review-and-fix', 'coordinate-sessions', 'pr-to-merge']) assert.ok(claudeSkills?.includes(`concord:${skill}`), skill);
+  assert.ok(!claudeSkills?.includes('concord:review-until-lgtm'));
   assert.ok(claudeSkills?.includes('concord:proposal-package-authoring'));
   assert.match(codexSkills, /(?:^|\n)- concord:ticket-to-pr: /);
   assert.match(codexSkills, /(?:^|\n)- concord:initiative-to-prs: /);
-  assert.match(codexSkills, /(?:^|\n)- concord:review-until-lgtm: /);
+  for (const skill of ['review-and-fix', 'coordinate-sessions', 'pr-to-merge']) assert.match(codexSkills, new RegExp(`(?:^|\\n)- concord:${skill}: `), skill);
+  assert.doesNotMatch(codexSkills, /concord:review-until-(lgtm|green)|concord:project-manager/);
   assert.match(codexSkills, /(?:^|\n)- concord:proposal-package-authoring: /);
   assert.match(claude, /^---\nname: ticket-writing\ndescription: Use when /);
   assert.match(claudeTicketToPr, /^---\nname: ticket-to-pr\ndescription: >-/);
   assert.match(claudeInitiativeToPrs, /^---\nname: initiative-to-prs\ndescription: >-/);
-  assert.match(claudeReviewUntilLgtm, /^---\nname: review-until-lgtm\ndescription: Use when /);
   assert.match(claudeProposal, /^---\nname: proposal-package-authoring\ndescription: /);
   for (const provider of ['Notion', 'Jira', 'GitHub Issues']) assert.match(claude, new RegExp(provider));
 });
@@ -340,7 +289,11 @@ test('maintained package metadata and docs advertise the shared capability set',
   for (const contents of files) assert.match(contents, /ticket-writing/i);
   for (const contents of files) assert.match(contents, /initiative-to-prs/i);
   for (const contents of files) assert.match(contents, /proposal-package-authoring/i);
-  for (const contents of files) assert.match(contents, /review-until-lgtm/i);
+  // The two plugin.json files are version files that pull requests do not edit, so only the README and the marketplace are held to the current workflow set.
+  for (const contents of [files[0], files[3]]) {
+    for (const name of ['review-and-fix', 'pr-to-merge', 'coordinate-sessions', 'review-until-approve']) assert.match(contents, new RegExp(name), name);
+    assert.doesNotMatch(contents, /review-until-lgtm|review-until-green|project-manager|Copilot/i);
+  }
   assert.doesNotMatch(files[0], /Session-state and charter are Claude-Code-only/i);
 
   const claudeManifest = JSON.parse(files[1]);
@@ -350,7 +303,7 @@ test('maintained package metadata and docs advertise the shared capability set',
   assert.match(claudeManifest.description, /initiative-to-prs/);
   assert.match(codexManifest.description, /initiative-to-prs/);
 
-  for (const name of ['ticket-to-pr', 'initiative-to-prs']) {
+  for (const name of ['ticket-to-pr', 'initiative-to-prs', 'review-and-fix', 'pr-to-merge', 'coordinate-sessions', 'review-until-approve']) {
     assert.match(files[0], new RegExp(`^\\| \`${name}\` \\|`, 'm'));
   }
 
@@ -359,64 +312,4 @@ test('maintained package metadata and docs advertise the shared capability set',
   assert.doesNotMatch(adapter, /Status: \*\*partially implemented/i);
   assert.doesNotMatch(adapter, /lifecycle.*not implemented|transcript.*not implemented/i);
   assert.doesNotMatch(gaps, /Deferred: `lifecycle` and `transcript`/i);
-});
-
-const { THRESHOLDS, HARD_LIMITS } = require('../../core/session-handoff.js');
-const n = (value) => value.toLocaleString('en-US');
-
-test('the soft and hard handoff limits are stated in the design note and read from session-handoff.js', () => {
-  const note = read(path.join(REPO, 'docs/design/ticket-to-pr-session-handoff.md'));
-  for (const text of [note, read(CLAUDE_TICKET_TO_PR)]) {
-    for (const value of [`${n(THRESHOLDS.inputTokens)} tokens`, `${THRESHOLDS.toolCalls} tool calls`, `${n(HARD_LIMITS.inputTokens)} tokens`, `${HARD_LIMITS.toolCalls} tool calls`]) {
-      assert.ok(text.includes(value), value);
-    }
-  }
-  const initiative = read(CLAUDE_INITIATIVE_TO_PRS);
-  for (const value of [`${n(THRESHOLDS.inputTokens)} input tokens`, `${THRESHOLDS.toolCalls} tool calls`, `${THRESHOLDS.noProgressCalls} consecutive calls`]) {
-    assert.ok(initiative.includes(value), value);
-  }
-  assert.ok(HARD_LIMITS.inputTokens > THRESHOLDS.inputTokens && HARD_LIMITS.toolCalls > THRESHOLDS.toolCalls);
-});
-
-test('ticket-to-pr ends a standalone session at the delivery boundary and hands off a packet', () => {
-  const skill = read(CLAUDE_TICKET_TO_PR);
-  assert.equal(read(CODEX_TICKET_TO_PR), skill);
-  const section = skill.split('## Session handoff\n')[1]?.split('\n## ')[0] ?? '';
-  assert.ok(section, 'missing "Session handoff" section');
-  for (const pattern of [
-    /delivery disposition recorded for the exact PR head/,
-    new RegExp(`soft limit.*${n(THRESHOLDS.inputTokens)} tokens.*${THRESHOLDS.toolCalls} tool calls.*finish the stage in progress, start no new stage`, 'is'),
-    new RegExp(`hard limit.*${n(HARD_LIMITS.inputTokens)} tokens.*${HARD_LIMITS.toolCalls} tool calls.*stop at the next safe step`, 'is'),
-    /ticket, the PR, the exact head and base, the delivery record, open follow-ups, decisions made, and what the next PR needs/,
-    /A handoff before delivery also records the active stage and the last completed stage, the gate evidence so far/,
-    /the exact next action, and states each field that does not exist yet, such as the PR or the delivery record, as absent/,
-    /the exact next action, and states each field that does not exist yet.*?`reviewerUnavailable` declaration when the task carries one/s,
-    /finish the current stage step so no mutation is left half-done/,
-    /never from the previous transcript/,
-    /reads the current PR and ticket state again before acting/,
-    /`initiative-to-prs`, its session handoff policy and checkpoints govern/,
-  ]) {
-    assert.match(section, pattern);
-  }
-  assert.match(read(path.join(REPO, 'docs/design/ticket-to-pr-session-handoff.md')), /`reviewerUnavailable` declaration when the task carries one/);
-});
-
-test('initiative-to-prs delegation gates use the design-versus-apply rule, not importance', () => {
-  for (const file of [
-    'plugins/concord/skills/initiative-to-prs/references/model-routing.md',
-    'plugins/concord/skills/initiative-to-prs/references/stages.md',
-    'docs/design/initiative-delivery-modes.md',
-  ]) {
-    const text = read(path.join(REPO, file));
-    const gate = file.endsWith('stages.md') ? text.split('## 3. Execute each repository unit\n')[1].split('\n## ')[0] : text;
-    const withoutCheckpointMeaning = gate.replace(/[Mm]aterial decisions/g, '');
-    assert.doesNotMatch(withoutCheckpointMeaning, /\bmaterial\b/i, file);
-    if (!file.endsWith('stages.md')) assert.match(text, /decides what/, file);
-  }
-  const routing = read(path.join(REPO, 'plugins/concord/skills/initiative-to-prs/references/model-routing.md'));
-  assert.match(routing, /decides what something should be, the content or wording of a rule, contract, interface, schema, or architecture, is design work/);
-  assert.match(routing, /Applying a decision already made stays with the active agent/);
-  assert.doesNotMatch(routing, /costly to reverse/);
-  assert.match(routing, /Escalation is a separate rule from the architecture decision gate/);
-  assert.match(read(path.join(REPO, 'docs/design/delivery-disposition.md')), /no material ch/);
 });

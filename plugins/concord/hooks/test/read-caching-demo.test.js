@@ -3,7 +3,7 @@
 // a single session that needs the same document's content at several points
 // (evidence stage, design note, PR body) and either re-issues a Read each time
 // (the observed anti-pattern) or notes what it read once and reuses that note
-// (the read-once discipline documented in initiative-to-prs/references/handoff-contract.md).
+// (the read-once discipline documented in initiative-to-prs/references/context-discipline.md).
 //
 // This does not drive a real LLM; it models the two policies mechanically so the
 // before/after reduction in Read calls is deterministic and repo-local.
@@ -13,7 +13,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const REPO = path.join(__dirname, '..', '..', '..', '..');
-const HANDOFF_CONTRACT = path.join(REPO, 'plugins/concord/skills/initiative-to-prs/references/handoff-contract.md');
+const HANDOFF_CONTRACT = path.join(REPO, 'plugins/concord/skills/initiative-to-prs/references/context-discipline.md');
 // concord-vs-codex byte-identity for this file is guarded by
 // its own drift test (initiative-to-prs-skill.test.js); this
 // file only checks that the documented rule itself exists in the shared source.

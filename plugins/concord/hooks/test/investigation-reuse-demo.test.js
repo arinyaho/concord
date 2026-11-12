@@ -4,7 +4,7 @@
 // worktree and is relaunched or resumed. Without guidance, the resumed subagent has no
 // record of what the prior run already found and re-runs the same expensive sweep from
 // scratch. With the "Investigation reuse on relaunch" discipline in
-// initiative-to-prs/references/handoff-contract.md, the orchestrator hands the resumed
+// initiative-to-prs/references/context-discipline.md, the orchestrator hands the resumed
 // subagent the prior run's conclusion first, and the subagent only re-sweeps when that
 // conclusion is missing, stale, or contradicted.
 //
@@ -16,10 +16,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const REPO = path.join(__dirname, '..', '..', '..', '..');
-const HANDOFF_CONTRACT = path.join(REPO, 'plugins/concord/skills/initiative-to-prs/references/handoff-contract.md');
+const HANDOFF_CONTRACT = path.join(REPO, 'plugins/concord/skills/initiative-to-prs/references/context-discipline.md');
 const DELEGATE_VERBOSE_WORK = path.join(REPO, 'plugins/concord/skills/delegate-verbose-work/SKILL.md');
 
-// handoff-contract.md must stay byte-identical across concord/concord-codex
+// context-discipline.md must stay byte-identical across concord/concord-codex
 // (enforced elsewhere), and delegate-verbose-work is Claude-Code-only, so neither file can
 // cross-reference the other -- each carries its own full copy of this discipline instead.
 // That duplication needs its own guard so an edit to one copy can't silently desync the other.
@@ -74,12 +74,12 @@ test('the investigation-reuse discipline the demo models is actually documented'
   assert.match(handoff, /report what it already found.*before it redoes the sweep/s);
 });
 
-test('the shared resume-discipline text stays identical between handoff-contract.md and delegate-verbose-work/SKILL.md', () => {
+test('the shared resume-discipline text stays identical between context-discipline.md and delegate-verbose-work/SKILL.md', () => {
   const handoff = normalizeWhitespace(fs.readFileSync(HANDOFF_CONTRACT, 'utf8'));
   const delegateVerboseWork = normalizeWhitespace(fs.readFileSync(DELEGATE_VERBOSE_WORK, 'utf8'));
   for (const passage of SHARED_PASSAGES) {
     const normalized = normalizeWhitespace(passage);
-    assert.ok(handoff.includes(normalized), `handoff-contract.md is missing or has drifted from: ${normalized.slice(0, 60)}...`);
+    assert.ok(handoff.includes(normalized), `context-discipline.md is missing or has drifted from: ${normalized.slice(0, 60)}...`);
     assert.ok(
       delegateVerboseWork.includes(normalized),
       `delegate-verbose-work/SKILL.md is missing or has drifted from: ${normalized.slice(0, 60)}...`,
