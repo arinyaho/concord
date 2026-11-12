@@ -7,10 +7,10 @@
 
 concord is a plugin for Claude Code and Codex that reviews and fixes your branches, reviews pull requests until they can be approved, and takes tickets through to pull requests.
 
-- `/review-and-fix` has independent reviewer subagents review your branch, fixes what they find, and re-reviews until a deterministic CLI ends the loop within a fixed round budget. Only serious bugs, security issues, and unmet acceptance criteria block; minor findings are collected and ticketed once before merge.
-- `review-until-lgtm` collects the Codex and Copilot reviews on your pull request, fixes them in bounded batches, and pushes until the current head gets an explicit LGTM. It merges only when you ask.
-- `review-until-approve` (Claude Code and Codex) reviews someone else's pull request round by round, waits for the author to push or reply, and approves the reviewed head once a round is clean. It never requests changes, merges, or pushes.
-- The reviewer and the fixer can each be Claude, Codex, or Copilot, each with its own model.
+- `review-and-fix` has one independent reviewer, in a fresh context, review a design document, a ticket, or your change against its requirements and the repositories it depends on. You fix what it finds through the session, and a new reviewer rechecks the fixes.
+- `ticket-to-pr` and `initiative-to-prs` take a ticket, or a whole initiative, through design, implementation, review, and a pull request. Progress and decisions are written on the ticket and the pull request, so a new session can resume from them.
+- `pr-to-merge` merges approved pull requests as soon as GitHub allows it, when you have authorized merging.
+- `review-until-approve` reviews someone else's pull request round by round, waits for the author to push or reply, and approves the reviewed head once a round is clean. It never requests changes, merges, or pushes.
 
 For example, type this in Claude Code:
 
@@ -18,7 +18,7 @@ For example, type this in Claude Code:
 Take issue #212 through design, implementation and a PR.
 ```
 
-concord agrees acceptance criteria for the issue, records a check that fails, writes a design note, implements the change, reviews it, and gets the check to pass. It ends with the pull request URL and does not merge it.
+concord checks the issue's acceptance criteria, records a check that fails, writes and reviews a design document, implements the change, reviews it, and gets the check to pass. It opens a draft pull request, marks it ready when no blocking finding is open, CI is green, and every criterion has evidence, and does not merge it.
 
 Install it in Claude Code:
 
@@ -35,36 +35,36 @@ Each workflow starts from one request. The examples below are what a user would 
 
 | Workflow | Example request |
 |---|---|
-| `/review-and-fix` | `/review-and-fix feature/login origin/main` reviews the branch against `origin/main`. Add `--reviewer codex --fixer claude` to pick the provider for each role, and `--reviewer-model` or `--fixer-model` to pick the model. |
+| `review-and-fix` | "Review and fix this branch." or "Review docs/design/login.md against issue #212." One reviewer reads the target, what it must satisfy, and the related repositories; the findings are verified and fixed, and the fixes are rechecked once. The outcome is written on the ticket and in the pull request body. |
 | `review-until-approve` | "Review https://github.com/acme/app/pull/57 until it is approvable." Findings are classed as blockers or minor follow-ups. The approving review lists the minors. A finding in a file the diff touches but outside a hunk becomes a file comment. Threads the skill started for fixed or addressed findings are answered and resolved, and a draft is watched until it is ready. |
 | `ticket-to-pr` | "Take issue #212 through design, implementation and a PR." |
-| `review-until-lgtm` | "Collect the Codex and Copilot reviews on PR 58, fix them, and tell me when the head has an LGTM." |
+| `initiative-to-prs` | "Turn this brief into tickets and take them to PRs." It writes the design, proposes the tickets, asks you once to approve the set, then runs each ticket with a worker in its own worktree. |
 | `pr-to-merge` | "Merge the approved PRs in acme/app as they become ready." A script watches without a model, merges each approved pull request that nothing holds once GitHub allows it, and reports the rest; the skill relays those reports, answers reviews on your own pull requests, and checks each merge afterwards. Without your authorization to merge it only reports pull requests as ready. |
 
 ## Workflows
 
 | Workflow | What it does | Harnesses |
 |---|---|---|
-| `/review-and-fix` | Reviews a branch, PR, or file, fixes the findings, and re-reviews until a deterministic CLI decides to stop. | Claude Code, Codex |
-| `review-until-lgtm` | Fixes the automated GitHub PR reviews in bounded batches until the current head gets an explicit LGTM; it merges only at your explicit request. | Claude Code, Codex |
+| `review-and-fix` | Has one independent reviewer review a design document, a ticket, or a change of your own, fixes the verified findings, and has the fixes rechecked. | Claude Code, Codex |
 | `deep-review` | Runs one bounded review of a fixed base/head pair with independent reviewers and groups the verified findings by root cause. | Claude Code, Codex |
-| `ticket-to-pr` | Takes one ticket through acceptance criteria, a failing check, a design note, implementation, review, a passing check, and a pull request. | Claude Code, Codex |
-| `initiative-to-prs` | Turns a product brief, problem report, or set of incomplete tickets into implementation-ready tickets and drives each one to a verified PR. | Claude Code, Codex |
+| `ticket-to-pr` | Takes one ticket through acceptance criteria, a failing check, a reviewed design document, implementation, review, a passing check, and a draft pull request that is marked ready when the work is done. | Claude Code, Codex |
+| `initiative-to-prs` | Turns a product brief, problem report, or set of incomplete tickets into a design and implementation-ready tickets, asks once for approval of the ticket set, and runs each ticket to a pull request with workers. | Claude Code, Codex |
 | `ticket-writing` | Drafts or updates tickets in GitHub Issues, Jira, Notion, or another tracker so another agent can implement from them. | Claude Code, Codex |
 | `proposal-package-authoring` | Builds editable bid and proposal slide decks in Google Slides or PowerPoint from an RFP, source evidence, and reference decks. | Claude Code, Codex |
 | `/charter` | Stores the project goal and merged decisions and injects them into each new session. | Claude Code, Codex |
 | Session-state checkpoint | Saves per-session state from the transcript when a session stops and restores it on start, resume, or compaction. | Claude Code, Codex |
 | `delegate-verbose-work` | Sends broad repository-wide searches to a subagent and keeps only the conclusion in the main conversation. | Claude Code |
-| `coordinate-sessions` | Coordinates worker sessions, ownership, reports and delivery gates; Codex messages existing sessions through `codex queue` and, when the app creation tool is absent, creates workers through the supported CLI route. | Claude Code, Codex |
-| `project-manager` agent / skill | Runs multi-PR, multi-repository rollouts with ownership, merge gates and reusable evidence. Claude agent; Codex skill. | Claude Code, Codex |
+| `coordinate-sessions` | Hands units of work to worker subagents in their own worktrees, reads their report files, checks each delivery, and keeps a state document with your standing authorizations. | Claude Code, Codex |
 | `review-until-approve` | Reviews someone else's pull request in a loop and approves the reviewed head once a round is clean. | Claude Code, Codex |
 | `pr-to-merge` | Watches the open pull requests of named repositories, merges each approved one that nothing holds as soon as GitHub allows it, reports the rest, and answers reviews on your own pull requests. | Claude Code, Codex |
 
 ## Review policy
 
-Review blocks a pull request only for rollout blockers: serious bugs, security issues, and unmet acceptance criteria. Minor findings do not block. They are collected and triaged once, just before merge, and become tickets.
+A finding blocks only when it is a serious defect, a security problem, an unmet acceptance criterion, or a mismatch with a related repository. A pull request with an open blocking finding stays a draft. Minor findings do not block: small ones are fixed, and the rest go into one follow-up ticket.
 
-Concord does not try to prove a change free of defects, and it does not let review or test runs consume tokens without limit. Exhaustive static analysis and repeated full-diff review multiply cost for diminishing returns, and a loop of review and test runs that never ends spends tokens without moving the change forward. Review rounds have a budget, and the loop ends on a deterministic decision instead of running until no finding is left.
+`review-and-fix` runs one broad review and at most two rechecks of the fixes. It does not try to prove a change free of defects, and it never runs another broad review by itself; you can ask for one.
+
+The workflows stop and ask you only for a product decision, for something only you hold, or before a hard-to-reverse action you have not authorized. Anything else is recorded on the ticket and the work continues.
 
 ## Update
 
