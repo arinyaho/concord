@@ -32,7 +32,7 @@ The skill never uses an administrator override and never bypasses a branch rule.
 
 | Option | Meaning |
 |---|---|
-| `--self <login>` | The account the skill acts as. Its own reviews and comments are not review activity |
+| `--self <login>` | Required. The account the skill acts as. Its own reviews and comments are not review activity |
 | `--mine <login>` | Pull requests authored by or assigned to this account are the user's own. A pull request given as `OWNER/REPO#N` is also the user's own |
 | `--automated <login>[:<title prefix>]` | Pull requests opened by this account, with this title prefix when one is given, are automated. May be repeated |
 | `--checkout OWNER/REPO=<path>` | A local clone of the repository, used to check the commits made after an approval |
@@ -41,7 +41,7 @@ The skill never uses an administrator override and never bypasses a branch rule.
 | `--state <file>` | The record of notices already printed |
 | `--interval <seconds>`, `--deadline <seconds>` | How often to scan and when to exit |
 
-The base branch is each repository's default branch.
+A pull request.s base is the branch it targets: the repository.s default branch, or for a stack child its parent.s branch.
 
 ### When a pull request counts as approved
 
@@ -50,7 +50,7 @@ A pull request is approved when both hold:
 1. At least one person who is an owner, member, or collaborator of the repository, and is not the pull request's author, has approved it. The approver does not need to be one of the requested reviewers.
 2. No reviewer's latest review requests changes.
 
-The approval covers the current head when it was given on the head commit, or on an earlier commit followed only by merges of the base branch that are either clean or made by the `--self` account. A clean merge is a merge commit whose second parent is on the base branch and whose tree equals the tree git produces by merging its two parents without conflict. A merge made by the `--self` account is one the skill made to resolve a conflict (see Conflicts). Both checks need the local clone; without `--checkout` for a repository, only an approval on the current head covers it.
+The approval covers the current head when it was given on the head commit, or on an earlier commit followed only by merge commits that are either clean merges of the base or made by the `--self` account. A clean merge of the base is a merge commit whose second parent is on the pull request.s base branch or the default branch and whose tree equals the tree git produces by merging its two parents without conflict. A merge made by the `--self` account is one the skill made to resolve a conflict, or one the script made when it merged a stack child into its parent. Both checks need the local clone; without `--checkout` for a repository, only an approval on the current head covers it.
 
 ### When a pull request qualifies for merge
 
@@ -58,17 +58,17 @@ An approved pull request qualifies when all of these hold on its current head co
 
 1. The approval covers the head.
 2. GitHub allows the merge: the pull request has no conflict and the branch rules are satisfied, including the checks the rules require. Checks the rules do not require may still be running.
-3. It has no open point: no unresolved review thread, and no review or conversation comment written after the approval by someone other than `--self` that `--self` has not answered with a later comment.
+3. It has no open point. An open point is an unresolved review thread, whoever opened it, or a review body or conversation comment that a person other than `--self` wrote after the approval and that `--self` has not answered with a later conversation comment or review. An approving review is not an open point, and neither is a conversation comment or review body from an automation account; an automated reviewer.s findings count through its threads. With several approvals, "after the approval" is counted from the earliest one that covers the head.
 4. It does not carry the `blocked` label.
 
-An automated pull request qualifies when condition 2 holds apart from the missing approval, and conditions 3 and 4 hold. The script approves it and merges it.
+An automated pull request qualifies when condition 2 holds apart from the missing approval, conditions 3 and 4 hold, and no reviewer.s latest review requests changes. It has no approval to count from, so every comment on it that a person wrote counts under condition 3. The script approves it and merges it.
 
 ### Merging
 
 - A qualifying pull request based on the default branch is squash-merged, at once. The script does not wait for checks the branch rules do not require.
-- A stack is a chain of pull requests, each based on its parent's head branch, down to one based on the default branch. A stack merges only when every pull request in it qualifies and each child already contains its parent's head. The script merges each child into its parent with a merge commit, from the top down, and then squash-merges the bottom pull request. The whole stack merges in one scan or not at all.
+- A stack is a chain of pull requests, each based on its parent's head branch, down to one based on the default branch. A stack merges only when every pull request in it qualifies and each child already contains its parent's head. The script merges each child into its parent with a merge commit, from the top down, and then squash-merges the bottom pull request. If a merge partway down the stack fails, the script reports it and the next scan continues from the pull requests that remain: the merge commits the script made are its own, so the approvals of the remaining pull requests still cover their heads.
 - Every merge names the head commit it expects, so a push between the check and the merge fails the merge instead of merging unreviewed commits.
-- When GitHub refuses a merge because the branch is behind its base, the script updates the branch with a merge commit and merges in a later scan. The approval still covers the head.
+- When GitHub reports a qualifying branch as behind its base, the script updates the branch with a merge commit and merges in a later scan. The approval still covers the head.
 - When a check the branch rules require has failed on an approved pull request with no open point, the script runs the failed jobs again, once per head.
 
 ### Review activity on the user's own pull requests
@@ -89,10 +89,11 @@ The script prints one line per event.
 | `triage <repo>#<n> …: approved, conflict` | An approved pull request conflicts with its base |
 | `triage <repo>#<n> …: approved on an older head only` | Commits after the approval are neither clean merges of the base nor merges made by `--self` |
 | `triage <repo>#<n> …: required check still red after one re-run` | The second run of the failed jobs also failed |
+| `triage <repo>#<n> …: required check failed and cannot be re-run` | A required check that is not a workflow job failed |
 | `rerun <repo>#<n> …`, `synced <repo>#<n> …` | Failed jobs were run again; a branch was updated from its base |
 | `stack <repo>#<n>: a child does not contain its parent's head` | The stack needs its parent merged into the child |
 | `merge failed …`, `sync failed …` | GitHub refused, with its message. A branch rule that requires a particular reviewer appears here |
-| `closed <repo>#<n>` | One of the user's own pull requests was closed without merging |
+| `closed <repo>#<n>` | A pull request given as `OWNER/REPO#N` was closed without merging |
 
 A `review`, `ready`, or `triage` line is printed once per item or head; the state file records that it was printed. Activity on a pull request that carries the `blocked` label is reported as `triage … open points` again, so that the skill reads it again. A failed API call does not end the run: the script reports it on standard error and scans again after the interval.
 
