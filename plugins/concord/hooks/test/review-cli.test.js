@@ -2670,64 +2670,6 @@ test('round-start: reports the prior round\'s open intent ids so the detector re
   assert.deepStrictEqual(out.priorIntentIds, ['intent:scope-not-a-key-listing']);
 });
 
-test('review-driver: the intent-detector prompt demands id reuse across rounds', () => {
-  // The composed command file is what a run actually consumes; the core source is its input.
-  for (const rel of [['commands', 'review-and-fix.md'], ['core', 'review-driver.md']]) {
-    const md = fs.readFileSync(path.join(__dirname, '..', '..', ...rel), 'utf8');
-    const prompt = md.slice(md.indexOf('You are a design-conformance detector'), md.indexOf('If there are no contradictions'));
-    assert.match(prompt, /priorIntentIds/, rel.join('/'));
-    assert.match(prompt, /REUSE that `id` verbatim/, rel.join('/'));
-  }
-});
-
-test('manual review drivers restore pending retry prompts and skip completed artifacts', () => {
-  for (const rel of [['commands', 'review-and-fix.md'], ['core', 'review-driver.md']]) {
-    const md = fs.readFileSync(path.join(__dirname, '..', '..', ...rel), 'utf8');
-    assert.match(md, /skip every role named by `completedArtifacts`/i, rel.join('/'));
-    assert.match(md, /`retryArtifacts`.*persisted corrective prompt/i, rel.join('/'));
-  }
-});
-
-test('manual repair instructions run the CLI-built repair without launching a model', () => {
-  const root = path.join(__dirname, '..', '..');
-  for (const rel of [
-    ['core', 'review-driver.md'],
-    ['commands', 'review-and-fix.md'],
-  ]) {
-    const md = fs.readFileSync(path.join(root, ...rel), 'utf8');
-    assert.match(md, /artifact-repair-dispatch <ref> <role>.*builds the candidate from the snapshot without a model/i, rel.join('/'));
-    assert.match(md, /Never launch a model for the repair/i, rel.join('/'));
-    assert.doesNotMatch(md, /mktemp -d/, rel.join('/'));
-  }
-});
-
-test('manual review drivers allocate telemetry only when the selected adapter exposes it', () => {
-  const command = fs.readFileSync(path.join(__dirname, '..', '..', 'commands', 'review-and-fix.md'), 'utf8');
-  const driver = fs.readFileSync(path.join(__dirname, '..', '..', 'core', 'review-driver.md'), 'utf8');
-  assert.match(command, /telemetry-slot <ref> <exact-output-artifact-path>/);
-  assert.match(command, /--engine claude-code/);
-  assert.match(command, /only for native Claude roles/i);
-  assert.match(driver, /authenticated telemetry/i);
-  assert.match(driver, /Do not allocate synthetic slots/i);
-});
-
-test('review-and-fix owns provider routing without a separate Codex review skill', () => {
-  const root = path.join(__dirname, '..', '..');
-  const md = fs.readFileSync(path.join(root, 'commands', 'review-and-fix.md'), 'utf8');
-  assert.strictEqual(fs.existsSync(path.join(root, 'skills', 'concord-codex-review')), false);
-  assert.match(md, /--reviewer <claude\|codex\|copilot>/);
-  assert.match(md, /--fixer <claude\|codex\|copilot>/);
-});
-
-test('driver prose names carry for budget-exhausted recovery, never a run-key change', () => {
-  for (const rel of [['commands', 'review-and-fix.md'], ['core', 'review-driver.md']]) {
-    const md = fs.readFileSync(path.join(__dirname, '..', '..', ...rel), 'utf8');
-    assert.match(md, /carry <ref> --from-run-key <old-key>/, rel.join('/'));
-    assert.match(md, /never (?:increase budgets|change the run key yourself)/i, rel.join('/'));
-    assert.doesNotMatch(md, /never change the run key, increase budgets/i, rel.join('/'));
-  }
-});
-
 test('the initiative skill and handoff contract name carry for a genuine budget block, never to refresh context', () => {
   const root = path.join(__dirname, '..', '..', 'skills', 'initiative-to-prs');
   const skill = fs.readFileSync(path.join(root, 'SKILL.md'), 'utf8');

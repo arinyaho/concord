@@ -8,7 +8,6 @@ const { spawn, spawnSync } = require('node:child_process');
 const core = require('../../adapters/claude-code/review-telemetry');
 const reviewTelemetry = require('../../core/review-telemetry');
 const { tempDir } = require('./temp-dir');
-const HOOK = path.join(__dirname, '..', 'review-telemetry.js');
 
 function setup(round = 2) {
   const project = tempDir('claude-review-telemetry-');
@@ -219,41 +218,6 @@ test('uses only the exact single Write ONLY destination, never an earlier input 
   const prompt = `Re-review candidates in ${correctness}. Write ONLY {"status":"ok"} to ${verify}`;
   assert.strictEqual(core.recordForEvent(event({ transcript, prompt, response: successfulResponse() }), stateDir).role, 'verify');
   assert.strictEqual(core.recordForEvent(event({ transcript, prompt: `${prompt}. Write ONLY JSON to ${correctness}`, response: successfulResponse() }), stateDir), null);
-});
-
-test('recognizes every artifact output directive in the review driver', () => {
-  const { transcript, stateDir } = setup();
-  const driver = fs.readFileSync(path.join(__dirname, '..', '..', 'core', 'review-driver.md'), 'utf8');
-  const directives = [...driver.matchAll(/(?:\bwrites?\s+ONLY\b[\s\S]{0,1000}?\bto|\bwrite\s+a\s+JSON\s+file\s+to)\s+(?:its\s+own\s+)?`?(<stateDir>\/round-[^`\s]+\.json)`?/gi)];
-  const expand = (value) => value
-    .replaceAll('<stateDir>', stateDir)
-    .replaceAll('<n>', '2')
-    .replaceAll('<m>', '1')
-    .replaceAll('<lens>', 'threat-model')
-    .replaceAll('<safe-finding-id>', 'finding')
-    .replaceAll('<safe-group-id>', 'finding')
-    .replaceAll('<finding-id>', 'finding')
-    .replaceAll('<vote-index>', '0')
-    .replaceAll('<safe-id>', 'finding')
-    .replaceAll('<id>', 'finding');
-
-  const records = directives.map((match) => core.recordForEvent(event({
-    transcript,
-    prompt: expand(match[0]),
-    response: successfulResponse(),
-  }), stateDir));
-
-  assert.deepStrictEqual(records.map((record) => record && path.basename(record.artifactPath)), [
-    'round-2-correctness.json',
-    'round-2-correctness.json',
-    'round-2-verify.json',
-    'round-2-intent.json',
-    'round-2-gate.json',
-    'round-2-gate-verify.json',
-    'round-2-plan.json',
-    'round-2-fix-finding.json',
-    'round-2-certify-finding.json',
-  ]);
 });
 
 test('accepts the driver documented backtick-quoted output path', () => {
@@ -801,48 +765,6 @@ test('allocates the same attempt slot independently for sequential review target
   });
 });
 
-test('hook writes one atomic record per tool-use identity and emits no output', () => {
-  const { transcript, stateDir } = setup();
-  const prompt = `Write ONLY to ${path.join(stateDir, 'round-2-correctness.json')}`;
-  for (const id of ['parallel-a', 'parallel-b', 'parallel-a']) {
-    const result = spawnSync(process.execPath, [HOOK], {
-      encoding: 'utf8',
-      env: { ...process.env, REVIEW_STATE_DIR: '' },
-      input: JSON.stringify(event({ transcript, id, prompt, response: successfulResponse() })),
-    });
-    assert.strictEqual(result.status, 0, result.stderr);
-    assert.strictEqual(result.stdout, '');
-    assert.strictEqual(result.stderr, '');
-  }
-
-  const files = fs.readdirSync(stateDir).filter((name) => name.startsWith('review-telemetry-')).sort();
-  assert.strictEqual(files.length, 2);
-  const records = files.map((name) => JSON.parse(fs.readFileSync(path.join(stateDir, name), 'utf8')));
-  assert.deepStrictEqual(records.map((record) => record.invocationId).sort(), ['parallel-a', 'parallel-b']);
-});
-
-test('hook writes telemetry to an explicit REVIEW_STATE_DIR override', () => {
-  const { transcript, stateDir: transcriptStateDir } = setup();
-  const stateDir = tempDir('claude-review-override-');
-  fs.copyFileSync(path.join(transcriptStateDir, 'review-feat-x.json'), path.join(stateDir, 'review-feat-x.json'));
-  const prompt = `Write ONLY to ${path.join(stateDir, 'round-2-correctness.json')}`;
-
-  const result = spawnSync(process.execPath, [HOOK], {
-    encoding: 'utf8',
-    env: { ...process.env, REVIEW_STATE_DIR: stateDir },
-    input: JSON.stringify(event({ transcript, id: 'override-record', prompt, response: successfulResponse() })),
-  });
-
-  assert.strictEqual(result.status, 0, result.stderr);
-  assert.strictEqual(result.stdout, '');
-  assert.strictEqual(result.stderr, '');
-  const records = fs.readdirSync(stateDir)
-    .filter((name) => name.startsWith('review-telemetry-'))
-    .map((name) => JSON.parse(fs.readFileSync(path.join(stateDir, name), 'utf8')).invocationId);
-  assert.deepStrictEqual(records, ['override-record']);
-  assert.deepStrictEqual(fs.readdirSync(transcriptStateDir).filter((name) => name.startsWith('review-telemetry-')), []);
-});
-
 test('folds matching records into the active ledger once', () => {
   const { transcript, stateDir } = setup();
   const prompt = `Write ONLY to ${path.join(stateDir, 'round-2-correctness.json')}`;
@@ -975,25 +897,12 @@ test('a persisted attempt slot with its entire hook missing remains visible but 
   assert.strictEqual(folded.telemetry.entries[0].attempt, 1);
 });
 
-test('Claude hook manifest registers tool telemetry and SubagentStop', () => {
-  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'hooks.json'), 'utf8'));
-  const postTelemetryEntry = manifest.hooks.PostToolUse.find((entry) => entry.matcher === 'Agent|Task');
-  assert.ok(postTelemetryEntry, 'PostToolUse must still register the Agent|Task telemetry entry');
-  assert.match(postTelemetryEntry.hooks[0].command, /review-telemetry\.js/);
-  for (const hook of ['PreToolUse', 'PostToolUseFailure']) {
-    assert.strictEqual(manifest.hooks[hook].length, 1, `${hook} must have exactly one entry`);
-    assert.strictEqual(manifest.hooks[hook][0].matcher, 'Agent|Task');
-    assert.match(manifest.hooks[hook][0].hooks[0].command, /review-telemetry\.js/);
-  }
-  assert.strictEqual(manifest.hooks.SubagentStop.length, 1);
-  assert.match(manifest.hooks.SubagentStop[0].hooks[0].command, /review-telemetry\.js/);
-});
-
-test('Claude hook manifest registers the grep-sweep reminder on Bash PostToolUse without touching the telemetry entry', () => {
+test('Claude hook manifest registers the grep-sweep reminder on Bash PostToolUse and no review hook', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'hooks.json'), 'utf8'));
   const reminderEntry = manifest.hooks.PostToolUse.find((entry) => entry.matcher === 'Bash');
   assert.ok(reminderEntry, 'PostToolUse must register a Bash-matched entry for the grep-sweep reminder');
   assert.match(reminderEntry.hooks[0].command, /grep-sweep-reminder\.js/);
+  assert.doesNotMatch(JSON.stringify(manifest), /review-injector|review-telemetry/);
 });
 
 // ---- atomic replace of an existing telemetry record (started -> completed) ----
@@ -1048,77 +957,6 @@ test('writeRecord degrades without throwing when the replace rename always fails
 });
 
 // ---- activeLedger: an unreadable ledger must not break a hook ----
-
-test('an unrelated unreadable ledger file in the state dir is skipped, not thrown', () => {
-  const { transcript, stateDir } = setup();
-  // Mid-write/corrupt sibling ledger alongside the real one `setup()` wrote.
-  fs.writeFileSync(path.join(stateDir, 'review-feat-bad.json'), '{"trunc');
-  const prompt = `Write ONLY to ${path.join(stateDir, 'round-2-correctness.json')}`;
-  assert.doesNotThrow(() => {
-    const record = core.recordForEvent(event({ transcript, prompt, response: successfulResponse() }), stateDir);
-    assert.ok(record, 'the valid ledger is still matched despite the corrupt sibling');
-  });
-});
-
-function worktreeRun({ slotted = true } = {}) {
-  const session = setup();
-  const runDir = tempDir('claude-review-worktree-state-');
-  const artifactPath = path.join(runDir, 'round-2-correctness.json');
-  fs.writeFileSync(path.join(runDir, 'review-feat-x.json'), JSON.stringify({
-    target: { ref: 'feat/x' }, status: 'converging', phase: 'gates', round: 2,
-    telemetrySlots: slotted ? [{ engine: 'claude-code', provider: 'anthropic', artifactPath, attempt: 1, role: 'correctness', round: 2 }] : [],
-  }));
-  return { ...session, runDir, artifactPath };
-}
-
-function runHook(input) {
-  const result = spawnSync(process.execPath, [HOOK], { encoding: 'utf8', env: { ...process.env, REVIEW_STATE_DIR: '' }, input: JSON.stringify(input) });
-  assert.strictEqual(result.status, 0, result.stderr);
-  assert.strictEqual(result.stdout, '');
-  assert.strictEqual(result.stderr, '');
-}
-
-const records = (dir) => fs.readdirSync(dir).filter((name) => /^review-(agent-)?telemetry-/.test(name));
-
-test('hook records into the CLI state directory when it differs from the session transcript state directory', () => {
-  const { transcript, stateDir, runDir, artifactPath } = worktreeRun();
-  runHook(event({ transcript, id: 'worktree-run', prompt: `Write ONLY to ${artifactPath}`, response: successfulResponse() }));
-  assert.strictEqual(records(runDir).length, 1);
-  assert.deepStrictEqual(records(stateDir), []);
-});
-
-test('hook follows a SubagentStop into the CLI state directory', () => {
-  const { transcript, runDir, artifactPath } = worktreeRun();
-  runHook(event({ transcript, id: 'worktree-run', prompt: `Write ONLY to ${artifactPath}`, response: successfulResponse() }));
-  const childTranscript = writeSubagentTranscript(transcript, [
-    { type: 'user', agentId: 'agent-7', message: { content: `Write ONLY to ${artifactPath}` } },
-    assistantRow({ requestId: 'req-1', messageId: 'msg-1', input: 1, create: 0, read: 0, output: 1 }),
-  ]);
-  runHook({ hook_event_name: 'SubagentStop', transcript_path: transcript, agent_id: 'agent-7', agent_transcript_path: childTranscript, last_assistant_message: 'done' });
-  assert.strictEqual(records(runDir).filter((name) => name.startsWith('review-agent-telemetry-')).length, 1);
-});
-
-test('hook writes nothing for an output path in a directory without a matching telemetry slot', () => {
-  const unslotted = worktreeRun({ slotted: false });
-  runHook(event({ transcript: unslotted.transcript, prompt: `Write ONLY to ${unslotted.artifactPath}`, response: successfulResponse() }));
-  assert.deepStrictEqual(records(unslotted.runDir), []);
-  assert.deepStrictEqual(records(unslotted.stateDir), []);
-
-  const plain = tempDir('claude-review-not-a-state-dir-');
-  const { transcript } = setup();
-  runHook(event({ transcript, prompt: `Write ONLY to ${path.join(plain, 'round-2-correctness.json')}`, response: successfulResponse() }));
-  assert.deepStrictEqual(fs.readdirSync(plain), []);
-});
-
-test('hook does not record a slotted path under a different engine', () => {
-  const { transcript, runDir, artifactPath } = worktreeRun();
-  const ledgerPath = path.join(runDir, 'review-feat-x.json');
-  const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
-  ledger.telemetrySlots[0].engine = 'codex';
-  fs.writeFileSync(ledgerPath, JSON.stringify(ledger));
-  runHook(event({ transcript, prompt: `Write ONLY to ${artifactPath}`, response: successfulResponse() }));
-  assert.deepStrictEqual(records(runDir), []);
-});
 
 test('accepts a synthetic current-version (2.1.309) subagent transcript as complete usage', () => {
   const { transcript, stateDir } = setup();

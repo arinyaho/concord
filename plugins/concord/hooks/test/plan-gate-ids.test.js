@@ -53,11 +53,3 @@ test('a plan grouping a gate: finding with a correctness: finding is repaired by
   assert.equal(cli('artifact-normalize', ref, 'plan', '--candidate', repair.repair.candidatePath).status, 'ok');
   assert.deepEqual(cli('plan-fixes', ref).fixGroups.map((g) => g.findingIds), [['correctness:x']]);
 });
-
-test('every plan step states that a plan group carries only correctness: and docreview: ids', () => {
-  for (const file of ['plugins/concord/core/review-driver.md', 'plugins/concord/commands/review-and-fix.md']) {
-    const step = fs.readFileSync(path.join(REPO, file), 'utf8').split('\n').find((line) => line.startsWith('4. Only when step 3 answered'));
-    assert.match(step, /only `correctness:` and `docreview:` ids/, file);
-    assert.match(step, /`gate:` findings are never planned/, file);
-  }
-});

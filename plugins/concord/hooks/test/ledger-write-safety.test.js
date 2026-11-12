@@ -10,7 +10,6 @@ const { tempDir } = require('./temp-dir');
 
 const CORE = path.join(__dirname, '..', '..', 'core');
 const CLI = path.join(__dirname, '..', 'review-cli.js');
-const INJECTOR = path.join(__dirname, '..', 'review-injector.js');
 
 const tmp = () => tempDir('ledger-safety-');
 const tmpFiles = (dir) => fs.readdirSync(dir).filter((f) => f.endsWith('.tmp'));
@@ -154,15 +153,4 @@ test('reset and rerun preserve an unreadable ledger with unknown binding', () =>
     assert.match(result.stderr, /unreadable review ledger/);
     assert.strictEqual(fs.readFileSync(file, 'utf8'), '{"trunc', 'unknown binding and history must be preserved');
   }
-});
-
-test('SessionStart lists the valid ledger and names the corrupt one without throwing', () => {
-  const proj = tmp();
-  const stateDir = path.join(proj, 'state');
-  fs.mkdirSync(stateDir);
-  review.writeLedger(stateDir, review.targetSlug('feat/ok'), review.emptyLedger({ kind: 'local', ref: 'feat/ok' }));
-  fs.writeFileSync(path.join(stateDir, 'review-feat-bad.json'), '{"trunc');
-  const out = execFileSync('node', [INJECTOR], { input: JSON.stringify({ session_id: 'sess', transcript_path: path.join(proj, 'sess.jsonl'), source: 'startup' }), encoding: 'utf8' });
-  assert.match(out, /feat\/ok/);
-  assert.match(out, /review-feat-bad\.json/);
 });
