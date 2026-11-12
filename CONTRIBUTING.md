@@ -17,7 +17,6 @@ Run the tests with Node 22:
 
 ```sh
 find plugins -path '*/test/*.test.js' -type f -print0 | xargs -0 -r node --test
-(cd services/agent-team && npm ci && npm test)
 (cd services/code-index && uv sync --extra dev && uv run pytest -v)
 ```
 

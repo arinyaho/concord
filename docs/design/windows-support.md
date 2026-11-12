@@ -51,7 +51,6 @@ Drift tests assert that both `plugins/concord-codex/engine/` and `plugins/concor
 
 - Windows CI.
 - Rewriting Unix-only test fixtures: symlink and `sh`/`bash` spawn fixtures, executable-bit `chmodSync` fixtures, and the read-only-mode fixtures of the release-script test.
-- The Linux/Docker-only container isolation smoke check under `services/agent-team/`.
 - Rewriting user-authored shell commands in `review.config.json`.
 - `fs.chmodSync(stateDir, 0o700)` in the Copilot state directory adapter, which is a harmless no-op on Windows.
 
