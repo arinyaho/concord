@@ -14,7 +14,6 @@ test('coordinate-sessions has separate Claude and Codex skills', () => {
   const skill = fs.readFileSync(SKILL, 'utf8');
   assert.match(skill, /^---\nname: coordinate-sessions\n/);
   assert.ok(fs.existsSync(path.join(REPO, 'plugins/concord-codex/skills/coordinate-sessions/SKILL.md')));
-  assert.ok(!fs.existsSync(path.join(REPO, 'plugins/concord-copilot/skills/coordinate-sessions')));
   assert.match(read('.claude-plugin/marketplace.json'), /coordinate-sessions/);
   assert.doesNotMatch(read('plugins/concord/.claude-plugin/plugin.json'), /coordinate-sessions/, 'plugin.json is a release-bump version file; PRs do not edit it');
   assert.match(read('README.md'), /\| `coordinate-sessions` \|.*\| Claude Code, Codex \|/);

@@ -13,7 +13,6 @@ const REPO = path.resolve(__dirname, '../../../..');
 const drivers = {
   'review-driver.md': 'plugins/concord/core/review-driver.md',
   'commands/review-and-fix.md': 'plugins/concord/commands/review-and-fix.md',
-  'copilot review-driver.md': 'plugins/concord-copilot/skills/review-and-fix/references/review-driver.md',
 };
 const group = { groupId: 'g', findingIds: ['correctness:x'], rootCause: 'r', invariants: ['i'], changeClass: 'local', structuralEffects: [], action: 'fix' };
 

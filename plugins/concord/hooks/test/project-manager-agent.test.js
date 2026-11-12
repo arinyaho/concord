@@ -18,7 +18,7 @@ test('project-manager has a Claude agent and a native Codex skill', () => {
   assert.match(agent, /^model: sonnet$/m);
   assert.match(section(agent, 'Start'), /`concord:coordinate-sessions`/);
   assert.doesNotMatch(agent, /HPKE|concord-implementer|concord-architect/, 'the agent stays rollout-neutral and names only agents the plugin ships or the harness provides');
-  for (const pkg of ['concord-codex', 'concord-copilot']) {
+  for (const pkg of ['concord-codex']) {
     assert.ok(!fs.existsSync(path.join(REPO, 'plugins', pkg, 'agents', 'project-manager.md')));
   }
   assert.ok(fs.existsSync(path.join(REPO, 'plugins/concord-codex/skills/project-manager/SKILL.md')));

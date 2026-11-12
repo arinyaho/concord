@@ -8,7 +8,7 @@ A review run executes the code version it started with. The Codex updater remove
 
 Copying the whole `engine/` directory includes modules loaded lazily, such as `initiative-report`, without a list that could drift. The copy source is the driver's own plugin directory, never a path from the repository, the state directory or the environment. Files are written with `wx` and mode 0400, so nothing is overwritten and nothing is written in the repository.
 
-`nextStep.cliPath` and `carryCommand` are read by a person or a later session after the run has ended and its snapshot was deleted. They use `publicCliPath`, the plugin's own `bin/review-cli.js`. That path works until the next update and then fails with `MODULE_NOT_FOUND` without side effects; running the driver again snapshots the installed version. The Copilot package has no driver; it carries the same runner through `engine/`, and its CLI is driven one verb at a time by the skill.
+`nextStep.cliPath` and `carryCommand` are read by a person or a later session after the run has ended and its snapshot was deleted. They use `publicCliPath`, the plugin's own `bin/review-cli.js`. That path works until the next update and then fails with `MODULE_NOT_FOUND` without side effects; running the driver again snapshots the installed version.
 
 ## Path handed to reviewers
 
@@ -38,4 +38,4 @@ The reaper assumes one pid namespace per temp directory: it judges liveness by p
 
 ## Residual exposure
 
-A snapshot of a run killed by SIGKILL stays up to 24 hours and about 1 MB. The Claude driver (`plugins/concord/commands/review-and-fix.md`) and the Copilot skill keep calling the plugin directory: Claude Code retains old version directories (`.orphaned_at` marker and an `.in_use` registry of live processes), so the reported failure does not occur there, but whether its age-based cleanup can remove the directory of a long-running or detached run is not verified. A snapshot in the Claude driver would need a copy step and a temp path that the model carries across context compaction, which adds more failure modes than it removes. The environment passed to `node` (`NODE_OPTIONS` and similar) is trusted as before.
+A snapshot of a run killed by SIGKILL stays up to 24 hours and about 1 MB. The Claude driver (`plugins/concord/commands/review-and-fix.md`) keeps calling the plugin directory: Claude Code retains old version directories (`.orphaned_at` marker and an `.in_use` registry of live processes), so the reported failure does not occur there, but whether its age-based cleanup can remove the directory of a long-running or detached run is not verified. A snapshot in the Claude driver would need a copy step and a temp path that the model carries across context compaction, which adds more failure modes than it removes. The environment passed to `node` (`NODE_OPTIONS` and similar) is trusted as before.

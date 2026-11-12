@@ -189,7 +189,7 @@ test('reopening an unchanged head reuses the record; drift is recorded as new ev
 test('every distribution shares the delivery disposition contract', () => {
   const plugins = path.join(__dirname, '..', '..', '..');
   const read = (file) => fs.readFileSync(path.join(plugins, file), 'utf8');
-  for (const pkg of ['concord', 'concord-codex', 'concord-copilot']) {
+  for (const pkg of ['concord', 'concord-codex']) {
     const lgtm = read(`${pkg}/skills/review-until-lgtm/SKILL.md`);
     assert.match(lgtm, /record-delivery <pr> <head-sha>/);
     assert.match(lgtm, /"url" \| "local":\{"file","span"\}/);
@@ -208,10 +208,10 @@ test('every distribution shares the delivery disposition contract', () => {
     assert.match(read(`${pkg}/skills/initiative-to-prs/SKILL.md`), /each PR's delivery disposition/);
   }
   assert.match(fs.readFileSync(path.join(__dirname, '../../../../CONTRIBUTING.md'), 'utf8'), /After the merge, the coordinating session or the user who merges checks that every issue meant to close is closed/);
-  for (const file of ['concord/core/review-driver.md', 'concord/commands/review-and-fix.md', 'concord-codex/skills/review-and-fix/SKILL.md', 'concord-copilot/skills/review-and-fix/references/review-driver.md']) {
+  for (const file of ['concord/core/review-driver.md', 'concord/commands/review-and-fix.md', 'concord-codex/skills/review-and-fix/SKILL.md']) {
     assert.match(read(file), /A `clean` ledger means this loop's own rounds converged; it is not the PR's delivery disposition/, file);
   }
-  for (const pkg of ['concord-codex', 'concord-copilot']) {
+  for (const pkg of ['concord-codex']) {
     assert.strictEqual(read(`${pkg}/engine/lgtm-state.js`), read('concord/core/lgtm-state.js'));
   }
 });
@@ -534,7 +534,7 @@ test('a declared record is terminal for claims until recorded again without the 
 test('every distribution states the reviewer-unavailable declaration', () => {
   const plugins = path.join(__dirname, '..', '..', '..');
   const read = (file) => fs.readFileSync(path.join(plugins, file), 'utf8');
-  for (const pkg of ['concord', 'concord-codex', 'concord-copilot']) {
+  for (const pkg of ['concord', 'concord-codex']) {
     const lgtm = read(`${pkg}/skills/review-until-lgtm/SKILL.md`);
     assert.match(lgtm, /`reviewerUnavailable`.*request no review and start no wait loop or watch/s);
     assert.match(lgtm, /`"reviewerUnavailable": true`, `reviewsTerminal: true`/);

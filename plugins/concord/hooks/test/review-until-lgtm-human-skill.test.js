@@ -18,7 +18,7 @@ test('the wait commands per host are exact and Monitor is not used for the human
   assert.match(wait, /run_in_background/);
   assert.match(wait, /timeout: 7200000/);
   assert.match(wait, /node "\$STATE_CLI" wait-feedback <pr> --once/);
-  assert.match(wait, /Codex and Copilot/);
+  assert.match(wait, /Codex parks with the exact resume command/);
   assert.doesNotMatch(wait, /under `Monitor`|start it with `Monitor`/);
   assert.match(wait, /never .*Monitor/i);
 });
@@ -50,8 +50,8 @@ test('reviewers come only from the selection and the empty selection observes ev
   assert.doesNotMatch(skill, /only `chatgpt-codex-connector` is watched/);
 });
 
-test('the Codex and Copilot copies match the shared skill', () => {
-  for (const host of ['concord-codex', 'concord-copilot']) assert.strictEqual(read(`plugins/${host}/skills/review-until-lgtm/SKILL.md`), skill);
+test('the Codex copy matches the shared skill', () => {
+  assert.strictEqual(read('plugins/concord-codex/skills/review-until-lgtm/SKILL.md'), skill);
 });
 
 test('background collection preserves the complete stored human and bot selection', () => {

@@ -8,7 +8,7 @@ const { spawnSync, execFileSync } = require('node:child_process');
 const review = require('../../core/review');
 const { runPath } = require('../../core/initiative-review-run');
 const { tempDir } = require('./temp-dir');
-const providers = { canonical: path.resolve(__dirname, '../../hooks/review-cli.js'), copilot: path.resolve(__dirname, '../../../concord-copilot/bin/review-cli.js') };
+const providers = { canonical: path.resolve(__dirname, '../../hooks/review-cli.js') };
 const tmp = () => tempDir('rerun-durable-');
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 function fixture(provider, mode = 'base') {

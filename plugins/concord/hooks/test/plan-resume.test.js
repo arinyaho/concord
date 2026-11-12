@@ -273,7 +273,7 @@ test('rereading a rejected plan remains idempotent and does not finalise its key
   assert.deepEqual(h.plans[0].fixGroups[0].findingIds, ids);
 });
 
-for (const cliCopy of ['core', 'codex', 'copilot']) for (const replacementError of ['status', 'namespace']) {
+for (const cliCopy of ['core', 'codex']) for (const replacementError of ['status', 'namespace']) {
   test(`${cliCopy}: semantic replacement retains its own ${replacementError === 'namespace' ? 'status-and-namespace' : replacementError} repair allowance`, async (t) => {
     const h = fixture({ cliCopy, replacementError, repairInitialPlan: replacementError === 'namespace' });
     t.after(() => fs.rmSync(h.root, { recursive: true, force: true }));

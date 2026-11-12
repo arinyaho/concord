@@ -4,7 +4,7 @@
 
 ## Scope
 
-The skill runs on Claude Code and Codex. It lives in `plugins/concord/skills/review-until-approve/` and is bundled into the Codex package with `plugins/concord-codex/bin/bundle.mjs`, without its `test/` directory, whose helpers the Codex package does not carry. It is not in the Copilot package (tracked in #363). The review runner and the review CLI are found by `scripts/locate.js` in `core/` and `hooks/` (Claude Code) or `engine/` and `bin/` (Codex); `scripts/run-review.js` calls `runReviewUntilGreen` directly, so the Codex bin wrapper needs no `reviewOnly` entry point. It runs the review through `runReviewUntilGreen` in `plugins/concord/core/codex-review-runner.js` with `reviewOnly: true`, so there is no second reviewer implementation.
+The skill runs on Claude Code and Codex. It lives in `plugins/concord/skills/review-until-approve/` and is bundled into the Codex package with `plugins/concord-codex/bin/bundle.mjs`, without its `test/` directory, whose helpers the Codex package does not carry. The review runner and the review CLI are found by `scripts/locate.js` in `core/` and `hooks/` (Claude Code) or `engine/` and `bin/` (Codex); `scripts/run-review.js` calls `runReviewUntilGreen` directly, so the Codex bin wrapper needs no `reviewOnly` entry point. It runs the review through `runReviewUntilGreen` in `plugins/concord/core/codex-review-runner.js` with `reviewOnly: true`, so there is no second reviewer implementation.
 
 The decisions below are the conclusions of the Opus design pass.
 

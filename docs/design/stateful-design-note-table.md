@@ -20,4 +20,4 @@ The rule does not enumerate on the author's behalf; a state or event the author 
 
 ## Evidence and executable gates
 
-The skill-content test in `plugins/concord/hooks/test/ticket-writing-skill.test.js` asserts the section, the stage pointers, the trigger, the row shape and the same-PR rule, and compares the shared, Codex and Copilot copies, which each package's `bundle.mjs` regenerates.
+The skill-content test in `plugins/concord/hooks/test/ticket-writing-skill.test.js` asserts the section, the stage pointers, the trigger, the row shape and the same-PR rule, and compares the shared and Codex copies, which the Codex package's `bundle.mjs` regenerates.

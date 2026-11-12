@@ -11,7 +11,6 @@ const plugins = path.resolve(__dirname, '../../..');
 for (const [provider, cli] of [
   ['claude', 'concord/hooks/review-cli.js'],
   ['codex', 'concord-codex/bin/review-cli.js'],
-  ['copilot', 'concord-copilot/bin/review-cli.js'],
 ]) {
   test(`${provider}: rerun cannot silently skip a prior attempt's unfinished broad claim`, () => {
     const repo = tempDir('unfinished-broad-repo-');

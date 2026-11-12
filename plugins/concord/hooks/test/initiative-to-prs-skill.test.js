@@ -30,7 +30,7 @@ test('Claude and Codex ship the same initiative-to-prs skill', () => {
 
 test('all provider handoff contracts require a complete substantive reconciliation packet', () => {
   const canonical = read('concord', 'references/handoff-contract.md');
-  for (const provider of ['concord-codex', 'concord-copilot']) assert.equal(read(provider, 'references/handoff-contract.md'), canonical);
+  for (const provider of ['concord-codex']) assert.equal(read(provider, 'references/handoff-contract.md'), canonical);
   assert.match(canonical, /supporting evidence, every realistic option with its consequence, the recommendation and rationale, and the exact decision required/);
 });
 
@@ -175,20 +175,6 @@ test('initiative-to-prs routes models by task shape and bounds delegation', () =
   assert.match(skill, /independent review.*omit the implementer's handoff.*approved contract.*source evidence.*reviewed head and base.*verification commands/is);
 });
 
-test('Copilot packaged routing retains provider constraints with the shared user model policy', () => {
-  const packaged = read('concord-copilot', 'references/model-routing.md');
-  const override = fs.readFileSync(path.join(REPO, 'plugins/concord-copilot/overrides/initiative-model-routing.md'), 'utf8');
-  for (const text of [packaged, override]) {
-    assert.match(text, /user's explicit model choice and standing model restrictions/i);
-    assert.match(text, /Astra.*direct authorization from the user/is);
-    assert.match(text, /lowest-cost capable implementation model/i);
-  }
-  assert.match(packaged, /For cross-model review, the reviewer must resolve to a different model from the implementer/i);
-  assert.match(packaged, /current subscription or parent cost tier.*capability gap/i);
-  assert.match(packaged, /Request a specific available Copilot model when model selection is authorized/i);
-  assert.match(packaged, /Never silently substitute or override a user restriction/i);
-});
-
 test('initiative-to-prs handoffs carry evidence without copying session history', () => {
   const handoff = read('concord', 'references/handoff-contract.md');
 
@@ -258,7 +244,7 @@ test('initiative-to-prs parks dependent work on a confirmed contract finding and
 });
 
 test('all provider copies of the initiative-to-prs skill, stages and handoff contract match the canonical source', () => {
-  for (const provider of ['concord-codex', 'concord-copilot']) {
+  for (const provider of ['concord-codex']) {
     for (const file of ['SKILL.md', 'references/stages.md', 'references/handoff-contract.md']) assert.equal(read(provider, file), read('concord', file), `${provider}/${file}`);
   }
 });

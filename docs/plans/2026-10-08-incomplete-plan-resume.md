@@ -20,7 +20,7 @@ Run the focused test above; successful replacement must reach the real fixer bou
 
 ## Task 3: Consume durable evidence in every driver
 
-Modify `plugins/concord/core/codex-review-runner.js` to skip both completed and normalized pending roles and pass `retryArtifacts[role]` with the normal planner prompt. Update `plugins/concord/core/review-driver.md`, composed Claude/Copilot commands, and Codex command guidance to distinguish normalization from plan acceptance and describe the one semantic replacement. Regenerate Codex/Copilot bundles using their `bin/bundle.mjs` scripts.
+Modify `plugins/concord/core/codex-review-runner.js` to skip both completed and normalized pending roles and pass `retryArtifacts[role]` with the normal planner prompt. Update `plugins/concord/core/review-driver.md`, the composed Claude command, and Codex command guidance to distinguish normalization from plan acceptance and describe the one semantic replacement. Regenerate the Codex bundle using its `bin/bundle.mjs` script.
 
 Run focused regression and runner/CLI/initiative/telemetry/bundle suites; confirm pending-normalized interruption and repaired rejected plan coverage.
 

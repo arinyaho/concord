@@ -18,4 +18,4 @@ A task can mix both kinds, and the split is the reader's judgment; the question 
 
 ## Evidence and executable gates
 
-The skill-content test in `plugins/concord/hooks/test/ticket-writing-skill.test.js` asserts that the section does not contain the word "material" and does contain the design-versus-apply question, the separate-reviewer requirement and the pointer to the "Adjudicate and escalate" subsection as literal phrases, and compares the shared, Codex and Copilot copies, which each package's `bundle.mjs` regenerates.
+The skill-content test in `plugins/concord/hooks/test/ticket-writing-skill.test.js` asserts that the section does not contain the word "material" and does contain the design-versus-apply question, the separate-reviewer requirement and the pointer to the "Adjudicate and escalate" subsection as literal phrases, and compares the shared and Codex copies, which the Codex package's `bundle.mjs` regenerates.

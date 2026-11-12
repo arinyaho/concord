@@ -41,7 +41,6 @@ test('Claude and Codex source packages ship the same ticket-to-pr skill', () => 
 test('ticket-to-pr defines the table and tests required for stateful changes', () => {
   const skill = read(CLAUDE_TICKET_TO_PR);
   assert.equal(read(CODEX_TICKET_TO_PR), skill);
-  assert.equal(read(path.join(REPO, 'plugins/concord-copilot/skills/ticket-to-pr/SKILL.md')), skill);
   const rows = Object.fromEntries(
     skill.split('\n').filter((l) => /^\| \d \|/.test(l)).map((l) => [l.split('|')[1].trim(), l]),
   );
@@ -63,7 +62,6 @@ test('ticket-to-pr defines the table and tests required for stateful changes', (
 test('ticket-to-pr delegates by the kind of work, not by importance', () => {
   const skill = read(CLAUDE_TICKET_TO_PR);
   assert.equal(read(CODEX_TICKET_TO_PR), skill);
-  assert.equal(read(path.join(REPO, 'plugins/concord-copilot/skills/ticket-to-pr/SKILL.md')), skill);
   const section = skill.split('## Delegation\n')[1]?.split('\n## ')[0] ?? '';
   assert.ok(section, 'missing "Delegation" section');
   assert.doesNotMatch(section, /material/);
@@ -90,7 +88,6 @@ test('ticket-to-pr delegates by the kind of work, not by importance', () => {
 test('ticket-to-pr and the review waiters wait once, run the full suite once, and report long turns', () => {
   const skill = read(CLAUDE_TICKET_TO_PR);
   assert.equal(read(CODEX_TICKET_TO_PR), skill);
-  assert.equal(read(path.join(REPO, 'plugins/concord-copilot/skills/ticket-to-pr/SKILL.md')), skill);
   const section = skill.split('## Waiting and test scope\n')[1]?.split('\n## ')[0] ?? '';
   assert.ok(section, 'missing "Waiting and test scope" section');
   for (const pattern of [
@@ -112,7 +109,6 @@ test('ticket-to-pr and the review waiters wait once, run the full suite once, an
   ];
   const lgtm = read(path.join(REPO, 'plugins/concord/skills/review-until-lgtm/SKILL.md'));
   assert.equal(read(CODEX_REVIEW_UNTIL_LGTM), lgtm);
-  assert.equal(read(path.join(REPO, 'plugins/concord-copilot/skills/review-until-lgtm/SKILL.md')), lgtm);
   assert.doesNotMatch(lgtm, /poll until `requestEligibleAtMs`/);
   assert.doesNotMatch(lgtm, /before polling/);
   assert.match(lgtm, /Claim reviewers with no matching activity \(step 4\) before waiting on step 3/);
@@ -121,7 +117,6 @@ test('ticket-to-pr and the review waiters wait once, run the full suite once, an
     'plugins/concord/core/review-driver.md',
     'plugins/concord/commands/review-and-fix.md',
     'plugins/concord-codex/skills/review-and-fix/SKILL.md',
-    'plugins/concord-copilot/skills/review-and-fix/references/review-driver.md',
   ]) {
     const text = read(path.join(REPO, file));
     assert.doesNotMatch(text, /inspect that process and ledger and keep waiting/, file);
@@ -386,7 +381,6 @@ test('the soft and hard handoff limits are stated in the design note and read fr
 test('ticket-to-pr ends a standalone session at the delivery boundary and hands off a packet', () => {
   const skill = read(CLAUDE_TICKET_TO_PR);
   assert.equal(read(CODEX_TICKET_TO_PR), skill);
-  assert.equal(read(path.join(REPO, 'plugins/concord-copilot/skills/ticket-to-pr/SKILL.md')), skill);
   const section = skill.split('## Session handoff\n')[1]?.split('\n## ')[0] ?? '';
   assert.ok(section, 'missing "Session handoff" section');
   for (const pattern of [
@@ -411,7 +405,6 @@ test('initiative-to-prs delegation gates use the design-versus-apply rule, not i
   for (const file of [
     'plugins/concord/skills/initiative-to-prs/references/model-routing.md',
     'plugins/concord/skills/initiative-to-prs/references/stages.md',
-    'plugins/concord-copilot/overrides/initiative-model-routing.md',
     'docs/design/initiative-delivery-modes.md',
   ]) {
     const text = read(path.join(REPO, file));

@@ -3,15 +3,15 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 // Repo definition of done, invoked by review.config.json. Runs only what the
-// pull-request workflow cannot: the plugin-install e2e, which needs the claude,
-// codex and copilot CLIs. CI runs every other test, so repeating them here only
+// pull-request workflow cannot: the plugin-install e2e, which needs the claude
+// and codex CLIs. CI runs every other test, so repeating them here only
 // adds local time. Exit 78 (EX_CONFIG) means the environment could not be
 // prepared (a CLI is missing), not that a test failed.
 
 const EX_CONFIG = 78;
-const CLIS = ['claude', 'codex', 'copilot'];
+const CLIS = ['claude', 'codex'];
 // Test titles of the e2e start with this prefix; every other test in those files is CI's.
-export const E2E_FILES = ['plugins/concord/hooks/test/ticket-writing-skill.test.js', 'plugins/concord/hooks/test/copilot-package.test.js'];
+export const E2E_FILES = ['plugins/concord/hooks/test/ticket-writing-skill.test.js'];
 export const E2E_NAME = '^plugin-install e2e:';
 
 function defaultRun(cmd, args, opts) {
@@ -21,7 +21,7 @@ function defaultRun(cmd, args, opts) {
 
 export function main({ root, run = defaultRun, env = process.env, platform = process.platform, log = (s) => process.stderr.write(`${s}\n`) } = {}) {
   for (const cli of CLIS) {
-    // claude, codex and copilot may be .cmd shims on Windows, which spawn only resolves through a shell.
+    // claude and codex may be .cmd shims on Windows, which spawn only resolves through a shell.
     const probe = run(cli, ['--version'], { env, shell: platform === 'win32' });
     if (probe.status !== 0) {
       const why = probe.error ? probe.error.message : `exit ${probe.status}`;

@@ -125,7 +125,7 @@ for (const cliCopy of ['core', 'codex']) {
   }
 }
 
-for (const cliCopy of ['core', 'codex', 'copilot']) {
+for (const cliCopy of ['core', 'codex']) {
   test(`${cliCopy}: accepted transport recovery reviews a committed new HEAD with no prior-generation authority`, async (t) => {
     const h = fixture({ cliCopy, replacementResult: { status: 1, stderr: 'rate_limit_error' } });
     t.after(() => fs.rmSync(h.root, { recursive: true, force: true }));
@@ -173,7 +173,7 @@ for (const cliCopy of ['core', 'codex', 'copilot']) {
   });
 }
 
-for (const [cliCopy, corruption] of ['core', 'codex', 'copilot'].flatMap((copy) =>
+for (const [cliCopy, corruption] of ['core', 'codex'].flatMap((copy) =>
   ['changed', 'deleted', 'repair', 'manifest', 'diff', 'reviewer'].map((kind) => [copy, kind]))) {
   test(`${cliCopy}: ${corruption} accepted transport plan refuses resume durably without launching`, async (t) => {
     const h = fixture({ cliCopy, replacementResult: { status: 1, stderr: 'rate_limit_error' } });
@@ -219,7 +219,7 @@ for (const [cliCopy, corruption] of ['core', 'codex', 'copilot'].flatMap((copy) 
   });
 }
 
-for (const cliCopy of ['core', 'codex', 'copilot']) {
+for (const cliCopy of ['core', 'codex']) {
   for (const accepted of [false, true]) {
     for (const corruption of accepted ? ['manifest', 'diff'] : ['scope']) {
       test(`${cliCopy}: ${accepted ? 'accepted' : 'pending'} transport recovery refuses ${corruption} at a new HEAD durably`, async (t) => {
