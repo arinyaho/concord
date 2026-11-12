@@ -14,8 +14,6 @@ export const VERSION_FILES = [
   'VERSION',
   'plugins/concord/.claude-plugin/plugin.json',
   'plugins/concord-codex/.codex-plugin/plugin.json',
-  'plugins/concord-copilot/plugin.json',
-  '.github/plugin/marketplace.json',
 ];
 
 const NUM = '(0|[1-9]\\d*)';
@@ -52,7 +50,7 @@ function git(...args) {
   return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 }
 
-// The release is exactly what the base's release script writes for the head version: no other manifest field changes and all five files agree.
+// The release is exactly what the base's release script writes for the head version: no other manifest field changes and all three files agree.
 function matchesReleaseScript(baseRef, headRef, version) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'release-guard-'));
   try {

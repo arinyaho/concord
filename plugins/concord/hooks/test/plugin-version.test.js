@@ -17,15 +17,11 @@ function manifest(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
 
-test('VERSION and all plugin manifests use the same release version', () => {
+test('VERSION and the Claude and Codex plugin manifests use the same release version', () => {
   const shared = version(path.join(REPO, 'VERSION'));
 
   assert.equal(manifest(path.join(REPO, 'plugins/concord/.claude-plugin/plugin.json')).version, shared);
   assert.equal(manifest(path.join(REPO, 'plugins/concord-codex/.codex-plugin/plugin.json')).version, shared);
-  assert.equal(manifest(path.join(REPO, 'plugins/concord-copilot/plugin.json')).version, shared);
-  const marketplace = manifest(path.join(REPO, '.github/plugin/marketplace.json'));
-  assert.equal(marketplace.metadata.version, shared);
-  assert.equal(marketplace.plugins.find(({ name }) => name === 'concord').version, shared);
 });
 
 test('all harness packages and marketplaces expose the plugin as concord', () => {
@@ -49,29 +45,20 @@ test('docs/install.md installs the Codex marketplace and plugin source through s
   assert.match(readme, /codex plugin marketplace add arinyaho\/concord --ref main --sparse \.agents\/plugins --sparse plugins\/concord-codex/);
 });
 
-test('release script updates an isolated canonical version and all release metadata', () => {
+test('release script updates an isolated canonical version and all plugin manifests', () => {
   const root = tempDir('concord-version-');
   const claude = path.join(root, 'plugins/concord/.claude-plugin');
   const codex = path.join(root, 'plugins/concord-codex/.codex-plugin');
-  const copilot = path.join(root, 'plugins/concord-copilot');
-  const marketplaceDir = path.join(root, '.github/plugin');
   fs.mkdirSync(claude, { recursive: true });
   fs.mkdirSync(codex, { recursive: true });
-  fs.mkdirSync(copilot, { recursive: true });
-  fs.mkdirSync(marketplaceDir, { recursive: true });
   fs.writeFileSync(path.join(root, 'VERSION'), '0.1.0-alpha.1\n');
 
-  for (const [dir, name] of [[claude, 'concord'], [codex, 'concord'], [copilot, 'concord']]) {
+  for (const [dir, name] of [[claude, 'concord'], [codex, 'concord']]) {
     fs.writeFileSync(
       path.join(dir, 'plugin.json'),
       `${JSON.stringify({ name, version: '0.1.0-alpha.1', preserve: true }, null, 2)}\n`
     );
   }
-  const marketplaceFile = path.join(marketplaceDir, 'marketplace.json');
-  fs.writeFileSync(marketplaceFile, JSON.stringify({
-    metadata: { version: '0.1.0-alpha.1', preserve: true },
-    plugins: [{ name: 'concord', version: '0.1.0-alpha.1', preserve: true }],
-  }, null, 2));
 
   try {
     execFileSync(process.execPath, [SCRIPT, '0.9.0-alpha.2'], {
@@ -79,15 +66,10 @@ test('release script updates an isolated canonical version and all release metad
     });
 
     assert.equal(version(path.join(root, 'VERSION')), '0.9.0-alpha.2');
-    for (const file of [path.join(claude, 'plugin.json'), path.join(codex, 'plugin.json'), path.join(copilot, 'plugin.json')]) {
+    for (const file of [path.join(claude, 'plugin.json'), path.join(codex, 'plugin.json')]) {
       assert.equal(manifest(file).version, '0.9.0-alpha.2');
       assert.equal(manifest(file).preserve, true);
     }
-    const marketplace = manifest(marketplaceFile);
-    assert.equal(marketplace.metadata.version, '0.9.0-alpha.2');
-    assert.equal(marketplace.metadata.preserve, true);
-    assert.equal(marketplace.plugins[0].version, '0.9.0-alpha.2');
-    assert.equal(marketplace.plugins[0].preserve, true);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -128,16 +110,11 @@ test('release script leaves existing files unchanged when a later manifest is un
   const root = tempDir('concord-version-');
   const claude = path.join(root, 'plugins/concord/.claude-plugin');
   const codex = path.join(root, 'plugins/concord-codex/.codex-plugin');
-  const copilot = path.join(root, 'plugins/concord-copilot');
   const versionFile = path.join(root, 'VERSION');
   const claudeManifest = path.join(claude, 'plugin.json');
   const codexManifest = path.join(codex, 'plugin.json');
-  const copilotManifest = path.join(copilot, 'plugin.json');
-  const marketplaceDir = path.join(root, '.github/plugin');
   fs.mkdirSync(claude, { recursive: true });
   fs.mkdirSync(codex, { recursive: true });
-  fs.mkdirSync(copilot, { recursive: true });
-  fs.mkdirSync(marketplaceDir, { recursive: true });
   fs.writeFileSync(versionFile, '0.1.0-alpha.1\n');
   fs.writeFileSync(
     claudeManifest,
@@ -147,15 +124,7 @@ test('release script leaves existing files unchanged when a later manifest is un
     codexManifest,
     `${JSON.stringify({ name: 'concord', version: '0.1.0-alpha.1' }, null, 2)}\n`
   );
-  fs.writeFileSync(
-    copilotManifest,
-    `${JSON.stringify({ name: 'concord', version: '0.1.0-alpha.1' }, null, 2)}\n`
-  );
-  fs.writeFileSync(path.join(marketplaceDir, 'marketplace.json'), JSON.stringify({
-    metadata: { version: '0.1.0-alpha.1' },
-    plugins: [{ name: 'concord', version: '0.1.0-alpha.1' }],
-  }, null, 2));
-  fs.chmodSync(copilotManifest, 0o444);
+  fs.chmodSync(codexManifest, 0o444);
 
   try {
     assert.throws(() => {
@@ -172,7 +141,7 @@ test('release script leaves existing files unchanged when a later manifest is un
       preserve: true,
     });
   } finally {
-    fs.chmodSync(copilotManifest, 0o644);
+    fs.chmodSync(codexManifest, 0o644);
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
@@ -181,15 +150,10 @@ test('release script preserves manifest text except for the version value', () =
   const root = tempDir('concord-version-');
   const claude = path.join(root, 'plugins/concord/.claude-plugin');
   const codex = path.join(root, 'plugins/concord-codex/.codex-plugin');
-  const copilot = path.join(root, 'plugins/concord-copilot');
   const claudeManifest = path.join(claude, 'plugin.json');
   const codexManifest = path.join(codex, 'plugin.json');
-  const copilotManifest = path.join(copilot, 'plugin.json');
-  const marketplaceDir = path.join(root, '.github/plugin');
   fs.mkdirSync(claude, { recursive: true });
   fs.mkdirSync(codex, { recursive: true });
-  fs.mkdirSync(copilot, { recursive: true });
-  fs.mkdirSync(marketplaceDir, { recursive: true });
   fs.writeFileSync(path.join(root, 'VERSION'), '0.1.0-alpha.1\n');
 
   const contents = (name) => `{
@@ -198,15 +162,8 @@ test('release script preserves manifest text except for the version value', () =
 }\n`;
   const originalClaude = contents('concord');
   const originalCodex = contents('concord');
-  const originalCopilot = contents('concord');
   fs.writeFileSync(claudeManifest, originalClaude);
   fs.writeFileSync(codexManifest, originalCodex);
-  fs.writeFileSync(copilotManifest, originalCopilot);
-  fs.writeFileSync(path.join(marketplaceDir, 'marketplace.json'), JSON.stringify({
-    metadata: { version: '0.1.0-alpha.1' },
-    plugins: [{ name: 'concord', version: '0.1.0-alpha.1' }],
-  }, null, 2));
-
   try {
     execFileSync(process.execPath, [SCRIPT, '0.9.0-alpha.2'], {
       env: { ...process.env, CONCORD_VERSION_ROOT: root },
@@ -219,10 +176,6 @@ test('release script preserves manifest text except for the version value', () =
     assert.equal(
       fs.readFileSync(codexManifest, 'utf8'),
       originalCodex.replace('"0.1.0-alpha.1"', '"0.9.0-alpha.2"')
-    );
-    assert.equal(
-      fs.readFileSync(copilotManifest, 'utf8'),
-      originalCopilot.replace('"0.1.0-alpha.1"', '"0.9.0-alpha.2"')
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

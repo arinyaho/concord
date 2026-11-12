@@ -12,10 +12,8 @@ const REPO = path.join(__dirname, '..', '..', '..', '..');
 const BUMP = path.join(REPO, 'scripts/release-bump.mjs');
 const BOT_EMAIL = '41898282+github-actions[bot]@users.noreply.github.com';
 const RELEASE_FILES = [
-  '.github/plugin/marketplace.json',
   'VERSION',
   'plugins/concord-codex/.codex-plugin/plugin.json',
-  'plugins/concord-copilot/plugin.json',
   'plugins/concord/.claude-plugin/plugin.json',
 ];
 const COPIED = [...RELEASE_FILES, 'scripts/release-version.mjs', 'scripts/release-bump.mjs'];
@@ -332,8 +330,29 @@ test('guard still fails a release-shaped pull request that is not a plain stable
     fs.writeFileSync(target, change(fs.readFileSync(target, 'utf8')));
   };
   assert.equal(releasePr(remote, tmp, '5', '0.9.0', null, edit('plugins/concord/.claude-plugin/plugin.json', (text) => text.replace(/"name": "concord"/, '"name": "other"'))).status, 1, 'manifest field other than version');
-  assert.equal(releasePr(remote, tmp, '6', '0.9.0', null, edit('plugins/concord-copilot/plugin.json', (text) => text.replace(/"version": "0\.9\.0"/, '"version": "0.9.1"'))).status, 1, 'manifest version differing from VERSION');
+  assert.equal(releasePr(remote, tmp, '6', '0.9.0', null, edit('plugins/concord-codex/.codex-plugin/plugin.json', (text) => text.replace(/"version": "0\.9\.0"/, '"version": "0.9.1"'))).status, 1, 'manifest version differing from VERSION');
   assert.equal(releasePr(remote, tmp, '7', '0.9.0', null, (dir) => fs.rmSync(path.join(dir, 'VERSION'))).status, 1, 'VERSION deleted');
+});
+
+test('guard passes a pull request that deletes the Copilot manifest and marketplace file', () => {
+  const { tmp, remote } = makeOrigin();
+  const files = ['plugins/concord-copilot/plugin.json', '.github/plugin/marketplace.json'];
+  const base = clone(remote, path.join(tmp, 'base'));
+  for (const file of files) {
+    fs.mkdirSync(path.dirname(path.join(base, file)), { recursive: true });
+    fs.writeFileSync(path.join(base, file), '{"version": "0.9.0-beta.9"}\n');
+  }
+  git(base, 'add', '-A');
+  git(base, 'commit', '-q', '-m', 'add copilot files');
+  git(base, 'push', '-q', 'origin', 'HEAD:main');
+  const dir = clone(remote, path.join(tmp, 'pr-delete'));
+  git(dir, 'rm', '-q', ...files);
+  git(dir, 'commit', '-q', '-m', 'Delete Copilot');
+  git(dir, 'push', '-q', 'origin', 'HEAD:refs/pull/9/head');
+  const trusted = clone(remote, path.join(tmp, 'trusted-delete'));
+  git(trusted, 'fetch', '-q', '--no-tags', 'origin', 'refs/pull/9/head:refs/pr/head');
+  const result = runBump(trusted, 'guard', 'origin/main', 'refs/pr/head');
+  assert.equal(result.status, 0, result.stderr);
 });
 
 test('isStableUpgrade accepts only a stable version above the base by SemVer precedence', async () => {
