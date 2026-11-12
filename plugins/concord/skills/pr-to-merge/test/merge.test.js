@@ -7,8 +7,7 @@ const { world, pr, review, approve, comment, threadComment } = require('./world'
 const repo = (prs, extra = {}) => ({ 'acme/app': { prs, ...extra } });
 const approved = (n, over = {}) => pr(n, { reviews: [approve('monalisa', `head${n}`, 10)], ...over });
 const merged = ['merged acme/app#1 into main (squash) head head1'];
-const held = ['triage acme/app#1 head head1: approved, open points'];
-const withThread = (login, over = {}) => { const c = threadComment(login, over); return { threads: [{ resolved: false, root: c.id }], comments: [c] }; };
+const withThread = (login, thread = {}, over = {}) => { const c = threadComment(login, over); return { threads: [{ resolved: false, root: c.id, ...thread }], comments: [c] }; };
 
 test('merges when the required checks passed while checks the rules do not require are still running, and names those checks', () => {
   const checks = [{ name: 'build', required: true }, { name: 'e2e', required: false, status: 'IN_PROGRESS', conclusion: null }, { name: 'lint', required: false, conclusion: 'FAILURE' }];
@@ -29,89 +28,70 @@ test('waits silently while a required check is still running', () => {
   assert.deepEqual(r.writes, []);
 });
 
-test('an unresolved thread, an unanswered comment after the approval, or the blocked label in any case keeps a PR from merging', () => {
+const heldBy = (what) => [`triage acme/app#1 head head1: approved, held by ${what}`];
+
+test('an unresolved thread, a comment newer than the approval, or a hold label in any case holds the merge, reported once per head', () => {
   const cases = {
-    thread: approved(1, withThread('monalisa')),
-    comment: approved(1, { issueComments: [comment('monalisa', 20)] }),
-    review: approved(1, { reviews: [approve('monalisa', 'head1', 10), review('octo-dev', 'COMMENTED', 'head1', 20, { body: 'please also rename x' })] }),
-    edited: approved(1, { issueComments: [comment('monalisa', 5, { updated_at: '2026-01-01T00:30:00.000Z' })] }),
+    thread: [approved(1, withThread('monalisa')), 'thread'],
+    'a --self thread': [approved(1, withThread('octocat')), 'thread'],
+    'a bot thread': [approved(1, withThread('review-bot[bot]', {}, { author_association: 'NONE' })), 'thread'],
+    comment: [approved(1, { issueComments: [comment('monalisa', 20)] }), 'comment'],
+    review: [approved(1, { reviews: [approve('monalisa', 'head1', 10), review('octo-dev', 'COMMENTED', 'head1', 20, { body: 'please also rename x' })] }), 'comment'],
+    'a review body by the author': [approved(1, { reviews: [approve('monalisa', 'head1', 10), review('hubot', 'COMMENTED', 'head1', 20, { body: 'author note' })] }), 'comment'],
+    edited: [approved(1, { issueComments: [comment('monalisa', 5, { updated_at: '2026-01-01T00:30:00.000Z' })] }), 'comment'],
+    blocked: [approved(1, { labels: ['Blocked'] }), 'label'],
+    'review-blocked': [approved(1, { labels: ['Review-Blocked'] }), 'label'],
+    all: [approved(1, { labels: ['blocked'], issueComments: [comment('monalisa', 20)], ...withThread('monalisa') }), 'thread, comment, label'],
   };
-  for (const [name, p] of Object.entries(cases)) {
+  for (const [name, [p, what]] of Object.entries(cases)) {
     const w = world(repo([p]));
     const r = w.run(['acme/app']);
-    assert.deepEqual(r.lines, held, name);
+    assert.deepEqual(r.lines, heldBy(what), name);
     assert.deepEqual(r.writes, [], name);
-    assert.deepEqual(w.run(['acme/app']).lines, [], `${name}: reported once`);
+    w.update((x) => x.repos['acme/app'].prs[0].issueComments.push(comment('octo-dev', 40)));
+    assert.deepEqual(w.run(['acme/app']).lines, [], `${name}: once per head`);
   }
-  for (const label of ['blocked', 'Blocked', 'BLOCKED']) assert.deepEqual(world(repo([approved(1, { labels: [label] })])).run(['acme/app']).writes, [], label);
-  assert.deepEqual(world(repo([approved(1, { labels: ['On-Hold'] })])).run(['--blocked-label', 'on-hold', 'acme/app']).writes, []);
+  assert.deepEqual(world(repo([approved(1, { labels: ['on-hold'] })])).run(['--blocked-label', 'On-Hold', 'acme/app']).lines, heldBy('label'));
+  assert.deepEqual(world(repo([approved(1, { labels: ['blocked'] })])).run(['--blocked-label', 'on-hold', 'acme/app']).lines, merged, 'the default label is replaced');
 });
 
-test('only points a person raised hold the merge: bot comments and approving review bodies do not, a bot\'s unresolved thread does', () => {
-  const bots = approved(1, { issueComments: [comment('codecov', 20, { user: { login: 'codecov', type: 'Bot' } }), comment('ci-bot[bot]', 21)] });
-  assert.deepEqual(world(repo([bots])).run(['acme/app']).lines, merged, 'bot comments');
-  const lgtm = approved(1, { reviews: [approve('monalisa', 'head1', 10), approve('octo-dev', 'head1', 20, { body: 'LGTM' })] });
-  assert.deepEqual(world(repo([lgtm])).run(['acme/app']).lines, merged, 'an approving review with a body');
-  assert.deepEqual(world(repo([approved(1, { issueComments: [comment('octo-dev', 20)] })])).run(['acme/app']).lines, held, 'a person\'s comment');
-  assert.deepEqual(world(repo([approved(1, withThread('review-bot[bot]', { author_association: 'NONE' }))])).run(['acme/app']).lines, held, 'a bot\'s unresolved thread');
-});
-
-test('a comment, review or thread from an account without write access is ignored, an organization member included', () => {
+test('these do not hold: bot comments, approving review bodies, --self comments, comments before the approval, and accounts without write access', () => {
+  const cases = {
+    'bot comments': approved(1, { issueComments: [comment('codecov', 20, { user: { login: 'codecov', type: 'Bot' } }), comment('ci-bot[bot]', 21)] }),
+    'an approving review with a body': approved(1, { reviews: [approve('monalisa', 'head1', 10), approve('octo-dev', 'head1', 20, { body: 'LGTM' })] }),
+    'a --self comment and review body': approved(1, { issueComments: [comment('octocat', 20)], reviews: [approve('monalisa', 'head1', 10), review('octocat', 'COMMENTED', 'head1', 21, { body: 'note' })] }),
+    'a comment before the approval': approved(1, { issueComments: [comment('octo-dev', 5)] }),
+    'a resolved thread': approved(1, withThread('monalisa', { resolved: true, resolvedBy: { login: 'octo-dev' } })),
+  };
+  for (const [name, p] of Object.entries(cases)) assert.deepEqual(world(repo([p])).run(['acme/app']).lines, merged, name);
   for (const login of ['stranger', 'member']) {
     const p = approved(1, { issueComments: [comment(login, 20, { author_association: login === 'member' ? 'MEMBER' : 'NONE' })], ...withThread(login) });
     p.reviews.push(review(login, 'COMMENTED', 'head1', 21, { body: 'do this' }));
     assert.deepEqual(world(repo([p]), { permissions: { [login]: login === 'member' ? 'read' : 'none' } }).run(['acme/app']).lines, merged, login);
   }
-  const byAuthor = approved(1, { issueComments: [comment('hubot', 20, { author_association: 'CONTRIBUTOR' })] });
-  assert.deepEqual(world(repo([byAuthor]), { permissions: { hubot: 'read' } }).run(['acme/app']).lines, held, 'the pull request\'s author counts');
 });
 
-test('review-blocked holds a pull request in any case, and new activity on it is reported again', () => {
-  for (const label of ['review-blocked', 'Review-Blocked']) {
-    const w = world(repo([approved(1, { labels: [label] })]));
-    const r = w.run(['acme/app']);
-    assert.deepEqual(r.writes, [], label);
-    w.update((x) => x.repos['acme/app'].prs[0].issueComments.push(comment('hubot', 31)));
-    assert.deepEqual(w.run(['acme/app']).lines, held, label);
-  }
-  assert.deepEqual(world(repo([approved(1, { labels: ['review-blocked'] })])).run(['--blocked-label', 'hold', 'acme/app']).writes, [], 'not replaced by --blocked-label');
+test('a comment stops holding when a counting approver approves again after it', () => {
+  const p = approved(1, { issueComments: [comment('octo-dev', 20)] });
+  const w = world(repo([p]));
+  assert.deepEqual(w.run(['acme/app']).lines, heldBy('comment'));
+  w.update((x) => x.repos['acme/app'].prs[0].reviews.push(approve('octocat', 'head1', 30)));
+  assert.deepEqual(w.run(['acme/app']).writes, [], 'an approval by --self does not count');
+  w.update((x) => x.repos['acme/app'].prs[0].reviews.push(approve('octo-dev', 'head1', 31)));
+  assert.deepEqual(w.run(['acme/app']).lines, merged);
 });
 
-test('a point is answered only by a later --self comment that carries its marker', () => {
-  const point = comment('monalisa', 20);
-  const answer = (login, minute, ids) => comment(login, minute, { body: `Filed as #12.\n${ids.map((id) => `<!-- pr-to-merge:answered ${id} -->`).join('\n')}` });
+test('a thread is resolved for a hold only by --self, or by an account with write access that is not the author', () => {
   const cases = [
-    ['marker by --self', [point, answer('octocat', 25, [`comment:${point.id}`])], merged],
-    ['several markers in one comment', [point, answer('octocat', 25, ['comment:1', `comment:${point.id}`])], merged],
-    ['a later --self comment without a marker', [point, comment('octocat', 25, { body: 'Blocking: please fix the leak. @hubot' })], held],
-    ['a marker by someone else', [point, answer('monalisa', 25, [`comment:${point.id}`])], held],
-    ['a marker earlier than the point', [answer('octocat', 15, [`comment:${point.id}`]), point], held],
-    ['a marker for another item', [point, answer('octocat', 25, ['comment:1'])], held],
+    ['the author with write access', { login: 'hubot' }, { hubot: 'write' }, heldBy('thread')],
+    ['an account without write access', { login: 'stranger' }, { stranger: 'read' }, heldBy('thread')],
+    ['no reported resolver (as for an app)', null, {}, heldBy('thread')],
+    ['a reviewer with write access', { login: 'octo-dev' }, {}, merged],
+    ['--self', { login: 'octocat' }, {}, merged],
   ];
-  for (const [name, issueComments, expected] of cases) assert.deepEqual(world(repo([approved(1, { issueComments })])).run(['acme/app']).lines, expected, name);
-  const body = review('octo-dev', 'COMMENTED', 'head1', 20, { body: 'rename x' });
-  const answered = approved(1, { reviews: [approve('monalisa', 'head1', 10), body], issueComments: [answer('octocat', 25, [`review:${body.id}`])] });
-  assert.deepEqual(world(repo([answered])).run(['acme/app']).lines, merged, 'a review body');
-  const before = approved(1, { issueComments: [comment('octo-dev', 5)] });
-  assert.deepEqual(world(repo([before])).run(['acme/app']).lines, merged, 'a comment before the approval');
-});
-
-test('new points on a blocked PR, and a new approval of its head, are reported as open points again; bot comments are not', () => {
-  const w = world(repo([approved(1, { issueComments: [comment('monalisa', 20)] })]));
-  assert.deepEqual(w.run(['acme/app']).lines, held);
-  // The skill labels the PR and comments; neither is new activity.
-  w.update((x) => { const p = x.repos['acme/app'].prs[0]; p.labels.push('blocked'); p.issueComments.push(comment('octocat', 25)); });
-  assert.deepEqual(w.run(['acme/app']).lines, []);
-  w.update((x) => x.repos['acme/app'].prs[0].issueComments.push(comment('ci-bot[bot]', 30)));
-  assert.deepEqual(w.run(['acme/app']).lines, [], 'a bot comment');
-  w.update((x) => x.repos['acme/app'].prs[0].issueComments.push(comment('hubot', 31)));
-  assert.deepEqual(w.run(['acme/app']).lines, held, 'a person\'s comment');
-  assert.deepEqual(w.run(['acme/app']).lines, []);
-  w.update((x) => x.repos['acme/app'].prs[0].reviews.push(approve('octo-dev', 'head1', 32, { body: 'Fixed now, approving again.' })));
-  assert.deepEqual(w.run(['acme/app']).lines, held, 'a re-approval of the head');
-  assert.deepEqual(w.run(['acme/app']).lines, []);
-  w.update((x) => x.repos['acme/app'].prs[0].reviews.push(approve('octo-dev', 'older', 33)));
-  assert.deepEqual(w.run(['acme/app']).lines, [], 'an approval of an older head');
+  for (const [name, resolvedBy, permissions, expected] of cases) {
+    assert.deepEqual(world(repo([approved(1, withThread('monalisa', { resolved: true, resolvedBy }))]), { permissions }).run(['acme/app']).lines, expected, name);
+  }
 });
 
 test('an approved PR in conflict is reported once per head and not merged', () => {
@@ -224,10 +204,10 @@ test('a failed required check is run again once per head, then reported once as 
   assert.deepEqual(w.run(['acme/app']).lines, []);
 });
 
-test('a failed required check is not run again on a PR with an open point', () => {
+test('a failed required check is not run again on a held PR', () => {
   const checks = [{ name: 'build', required: true, conclusion: 'FAILURE', runId: 77 }];
   const r = world(repo([approved(1, { mergeStateStatus: 'BLOCKED', checks, issueComments: [comment('monalisa', 20)] })])).run(['acme/app']);
-  assert.deepEqual(r.lines, held);
+  assert.deepEqual(r.lines, heldBy('comment'));
   assert.deepEqual(r.writes, []);
 });
 
@@ -320,7 +300,7 @@ test('text other people control cannot add a line', () => {
   const r2 = world(repo([approved(1)]), { mergeError: { 1: forged } }).run(['acme/app']);
   assert.deepEqual(r2.lines, ['merge failed acme/app#1 head head1: refused']);
   assert.doesNotMatch(r2.stderr, /triage/);
-  const r3 = world(repo([pr(1, { author: 'octocat', ...withThread('monalisa', { path: forged, html_url: 'https://github.com/x\ntriage y' }) })])).run(['--mine', 'octocat', 'acme/app']);
+  const r3 = world(repo([pr(1, { author: 'octocat', ...withThread('monalisa', {}, { path: forged, html_url: 'https://github.com/x\ntriage y' }) })])).run(['--mine', 'octocat', 'acme/app']);
   assert.deepEqual(r3.lines, ['review acme/app#1 head head1: thread comment by monalisa (unresolved)']);
   const r4 = world(repo([approved(1, { baseRefName: `rel\n${forged}` })])).run(['acme/app']);
   assert.equal(r4.lines.length, 1, r4.stdout);
