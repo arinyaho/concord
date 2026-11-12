@@ -446,20 +446,25 @@ test('guard fails a release that also edits a description and a manifest that is
 
 test('guard fails a manifest that is a symlink, has a duplicated version key, is renamed away, or is not in the written form', () => {
   const { tmp, remote } = makeOrigin();
-  // A symlink's blob is its target text: here it reads as a manifest with the unchanged version, while the file it points at says otherwise.
-  assert.equal(guardPr(remote, tmp, '1', (dir) => {
+  // A symlink's blob is its target text. Here that text is the unchanged manifest in the written form, so only the file-type check can reject it.
+  const asSymlink = (dir) => {
     const manifest = path.join(dir, CLAUDE);
-    const unchanged = fs.readFileSync(manifest, 'utf8');
+    const text = fs.readFileSync(manifest, 'utf8');
     fs.rmSync(manifest);
-    const target = JSON.stringify({ version: JSON.parse(unchanged).version });
-    fs.symlinkSync(target, manifest);
-    fs.writeFileSync(path.join(path.dirname(manifest), target), unchanged.replace(/"version": "[^"]*"/, '"version": "99.0.0"'));
-  }).status, 1, 'symlink');
+    fs.symlinkSync(text, manifest);
+  };
+  const symlinked = guardPr(remote, tmp, '1', asSymlink);
+  assert.equal(symlinked.status, 1, 'symlink');
+  assert.match(symlinked.stderr, /plugin\.json: not a regular file/);
+  // A release whose manifest blob is byte-identical to the release script's output, but is a symlink, is not a release.
+  assert.equal(releasePr(remote, tmp, 'release-link', '0.9.0', null, asSymlink).status, 1, 'release with a symlinked manifest');
   const before = (extra) => editFile(CLAUDE, (text) => text.replace(/(\n\s*)"version":/, `$1${extra},$1"version":`));
   assert.equal(guardPr(remote, tmp, '2', before('"version": "99.0.0"')).status, 1, 'duplicated string version');
   assert.equal(guardPr(remote, tmp, '3', before('"version": 9')).status, 1, 'duplicated non-string version');
   assert.equal(guardPr(remote, tmp, '4', (dir) => fs.renameSync(path.join(dir, CODEX), path.join(dir, `${CODEX}.bak`))).status, 1, 'renamed away');
-  assert.equal(guardPr(remote, tmp, '5', editFile(CLAUDE, (text) => JSON.stringify(JSON.parse(text)))).status, 1, 'not in the written form');
+  const compact = guardPr(remote, tmp, '5', editFile(CLAUDE, (text) => JSON.stringify(JSON.parse(text))));
+  assert.equal(compact.status, 1, 'not in the written form');
+  assert.match(compact.stderr, /plugin\.json: not in the form the release script writes/);
 });
 
 test('push bumps a manifest whose description was edited by a merged pull request and changes only version fields', () => {
