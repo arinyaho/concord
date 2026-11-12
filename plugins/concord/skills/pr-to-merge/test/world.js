@@ -53,8 +53,8 @@ else if (a[0] === 'api' && url === 'graphql') {
   const p = field('number') && prOf(repo, field('number'));
   const wrap = (pr) => ({ data: { repository: { defaultBranchRef: { name: repo.defaultBranch || 'main' }, ...pr } } });
   if (/pullRequests\\(/.test(q)) gqlPages(repo.prs.filter((x) => x.state === 'OPEN'), (nodes, pageInfo) => wrap({ pullRequests: { pageInfo, nodes: nodes.map(gqlPr) } }));
-  else if (/reviews\\(first:100,after/.test(q)) gqlPages(p.reviews, (nodes, pageInfo) => wrap({ pullRequest: { reviews: { pageInfo, nodes: nodes.map((r) => ({ databaseId: r.id, lastEditedAt: r.lastEditedAt || null })) } } }));
-  else if (/reviewThreads/.test(q)) gqlPages(p.threads, (nodes, pageInfo) => wrap({ pullRequest: { reviewThreads: { pageInfo, nodes: nodes.map((t) => ({ isResolved: t.resolved, resolvedBy: t.resolved ? (t.resolvedBy === undefined ? { login: 'monalisa' } : t.resolvedBy) : null, comments: { nodes: [{ databaseId: t.root }] } })) } } }));
+  else if (/reviews\\(first:100,after/.test(q)) gqlPages(p.reviews, (nodes, pageInfo) => wrap({ pullRequest: { reviews: { pageInfo, nodes: nodes.map((r) => ({ fullDatabaseId: String(r.id), lastEditedAt: r.lastEditedAt || null })) } } }));
+  else if (/reviewThreads/.test(q)) gqlPages(p.threads, (nodes, pageInfo) => wrap({ pullRequest: { reviewThreads: { pageInfo, nodes: nodes.map((t) => ({ isResolved: t.resolved, resolvedBy: t.resolved ? (t.resolvedBy === undefined ? { login: 'monalisa' } : t.resolvedBy) : null, comments: { nodes: [{ fullDatabaseId: String(t.root) }] } })) } } }));
   else if (/statusCheckRollup/.test(q)) gqlPages(p.checks, (nodes, pageInfo) => wrap({ pullRequest: { commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { pageInfo, nodes: nodes.map((c) => c.context
     ? { __typename: 'StatusContext', context: c.context, state: c.state, isRequired: !!c.required, createdAt: c.at || '2026-01-01T00:00:00Z' }
     : { __typename: 'CheckRun', name: c.name, status: c.status || 'COMPLETED', conclusion: c.conclusion ?? 'SUCCESS', completedAt: c.at || '2026-01-01T00:00:00Z', isRequired: !!c.required, checkSuite: { workflowRun: c.runId ? { databaseId: c.runId } : null } }) } } } }] } } }));
@@ -76,6 +76,8 @@ else if (a[0] === 'api' && url === 'graphql') {
   save();
 } else if (a[0] === 'api' && a.includes('-X')) {
   if (w.writeError && new RegExp(w.writeError.match).test(url)) fail(w.writeError.message);
+  const dismiss = /^repos\\/([^/]+\\/[^/]+)\\/pulls\\/(\\d+)\\/reviews\\/(\\d+)\\/dismissals$/.exec(url);
+  if (dismiss) { prOf(repoAt(dismiss[1]), dismiss[2]).reviews.find((r) => String(r.id) === dismiss[3]).state = 'DISMISSED'; save(); }
   const approve = /^repos\\/([^/]+\\/[^/]+)\\/pulls\\/(\\d+)\\/reviews$/.exec(url);
   if (approve) {
     prOf(repoAt(approve[1]), approve[2]).reviews.push({ id: 5000 + a.length, user: { login: w.self || 'octocat', type: 'User' }, state: 'APPROVED', commit_id: field('commit_id'), submitted_at: new Date().toISOString(), body: '', author_association: 'MEMBER' });
@@ -86,15 +88,22 @@ else if (a[0] === 'api' && url === 'graphql') {
   const [, name, rest] = /^repos\\/([^/]+\\/[^/]+)\\/(.*)$/.exec(url) || [];
   const repo = name && repoAt(name);
   let m;
-  if ((m = /^pulls\\/(\\d+)\\/reviews/.exec(rest))) restPages(prOf(repo, m[1]).reviews);
+  if (!name && (m = /^repos\\/([^/]+\\/[^/]+)$/.exec(url))) out({ allow_squash_merge: true, allow_merge_commit: true, allow_rebase_merge: true, ...(repoAt(m[1]).settings || {}) });
+  else if ((m = /^pulls\\/(\\d+)\\/reviews/.exec(rest))) restPages(prOf(repo, m[1]).reviews);
   else if ((m = /^pulls\\/(\\d+)\\/comments/.exec(rest))) restPages(prOf(repo, m[1]).comments);
   else if ((m = /^issues\\/(\\d+)\\/comments/.exec(rest))) restPages(prOf(repo, m[1]).issueComments);
-  else if ((m = /^pulls\\/(\\d+)\\/files/.exec(rest))) restPages(prOf(repo, m[1]).files || []);
+  else if ((m = /^pulls\\/(\\d+)\\/files/.exec(rest))) {
+    const p = prOf(repo, m[1]);
+    restPages(p.files || []);
+    if (p.pushAfterFiles) { p.headRefOid = p.pushAfterFiles; delete p.pushAfterFiles; save(); }
+  }
   else if ((m = /^pulls\\?state=open&head=([^&]+)/.exec(rest))) {
     const head = decodeURIComponent(m[1]).split(':')[1];
     restPages(repo.prs.filter((x) => x.state === 'OPEN' && x.headRefName === head).map((x) => ({ number: x.number })));
   } else if ((m = /^collaborators\\/([^/]+)\\/permission$/.exec(rest))) {
-    const role = (w.permissions || {})[m[1]] || 'write';
+    // As GitHub answers: an app account has none, the placeholder ghost account reads, an unknown login is 404.
+    const role = (w.permissions || {})[m[1]] || (/\\[bot\\]$/.test(m[1]) ? 'none' : m[1] === 'ghost' ? 'read' : null);
+    if (!role) fail('HTTP 404: Not Found');
     if (role === 'error') fail('HTTP 403: Must have push access to view collaborator permission.');
     out({ permission: role === 'maintain' ? 'write' : role === 'triage' ? 'read' : role, role_name: role });
   } else if ((m = /^commits\\/(\\w+)$/.exec(rest))) {
@@ -125,14 +134,16 @@ const review = (login, state, commit, minute = 10, over = {}) => ({ id: nextId()
 const approve = (login, commit, minute, over) => review(login, 'APPROVED', commit, minute, over);
 const comment = (login, minute, over = {}) => ({ id: nextId(), user: user(login), created_at: T(minute), updated_at: T(minute), body: 'a point', author_association: 'MEMBER', html_url: `https://github.com/acme/app/pull/1#issuecomment-${ids}`, ...over });
 // A review-thread comment; a reply passes `in_reply_to_id`.
-const threadComment = (login, over = {}) => ({ id: nextId(), user: user(login), path: 'src/a.js', line: 3, author_association: 'MEMBER', html_url: `https://github.com/acme/app/pull/1#discussion_r${ids}`, created_at: T(20), ...over });
+const threadComment = (login, over = {}) => ({ id: nextId(), user: user(login), path: 'src/a.js', line: 3, author_association: 'MEMBER', html_url: `https://github.com/acme/app/pull/1#discussion_r${ids}`, created_at: T(20), updated_at: T(20), ...over });
 
 function world(repos, extra = {}) {
   const dir = tempDir('ptm-world-');
   fs.mkdirSync(path.join(dir, 'bin'));
   fs.writeFileSync(path.join(dir, 'bin', 'gh'), FAKE_GH(dir), { mode: 0o755 });
   const file = path.join(dir, 'world.json');
-  fs.writeFileSync(file, JSON.stringify({ repos, ...extra }));
+  // The accounts with write access in every fixture; a test names any other account's permission itself.
+  const permissions = { octocat: 'admin', monalisa: 'write', 'octo-dev': 'write', ...extra.permissions };
+  fs.writeFileSync(file, JSON.stringify({ repos, ...extra, permissions }));
   fs.writeFileSync(path.join(dir, 'calls.jsonl'), '');
   const calls = () => fs.readFileSync(path.join(dir, 'calls.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
   const stateDir = path.join(dir, 'state');
@@ -142,9 +153,9 @@ function world(repos, extra = {}) {
     dir, state, stateDir,
     get: () => JSON.parse(fs.readFileSync(file, 'utf8')),
     update(fn) { const w = this.get(); fn(w); fs.writeFileSync(file, JSON.stringify(w)); },
-    run(args, { self = 'octocat', deadline = '0', timeout = 30000 } = {}) {
+    run(args, { self = 'octocat', deadline = '0', timeout = 30000, noState = false } = {}) {
       const before = calls().length;
-      const r = spawnSync(process.execPath, [SCRIPT, '--self', self, '--state', state, '--deadline', deadline, ...args], {
+      const r = spawnSync(process.execPath, [SCRIPT, '--self', self, ...(noState ? [] : ['--state', state]), '--deadline', deadline, ...args], {
         encoding: 'utf8', timeout, env: { ...process.env, PATH: `${path.join(dir, 'bin')}${path.delimiter}${process.env.PATH}` },
       });
       const made = calls().slice(before);

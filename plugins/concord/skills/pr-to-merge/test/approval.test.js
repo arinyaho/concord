@@ -1,11 +1,11 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { world, pr, review, approve, gitPr } = require('./world');
+const { world, pr, review, approve, gitPr, sh } = require('./world');
 
 const repo = (...prs) => ({ 'acme/app': { prs } });
 const merges = (r) => r.writes.filter((c) => c[0] === 'pr');
-const merged = (n, head = `head${n}`) => [`merged acme/app#${n} into main (squash) head ${head.slice(0, 8)}`];
+const merged = (n, head = `head${n}`) => [`merged acme/app#${n} into main (squash) head ${head.slice(0, 8)}; not passed: 0; unresolved threads: 0`];
 
 test('an approval by any account with write access counts, requested or not, and the PR is squash-merged at its head', () => {
   for (const role of ['write', 'maintain', 'admin']) {
@@ -17,7 +17,9 @@ test('an approval by any account with write access counts, requested or not, and
 
 test('an approval by the author, by a read-only member, or by an account whose access cannot be read does not count', () => {
   for (const [reviews, permissions] of [
-    [[approve('hubot', 'head1')], {}],
+    [[approve('hubot', 'head1')], { hubot: 'write' }],
+    [[approve('nobody-here', 'head1')], {}],
+    [[approve('review-bot[bot]', 'head1')], {}],
     [[approve('monalisa', 'head1')], { monalisa: 'read' }],
     [[approve('monalisa', 'head1')], { monalisa: 'triage' }],
     [[approve('monalisa', 'head1')], { monalisa: 'error' }],
@@ -56,16 +58,31 @@ test('the write access of an approver is read once per scan', () => {
   assert.equal(r.calls.filter((c) => /permission$/.test(c[1] || '')).length, 1);
 });
 
-test('a reviewer whose latest review requests changes blocks, and a later comment-only review does not withdraw it', () => {
-  const blocked = [
+test('a counting account\'s latest review requesting changes holds with its own line; a comment-only review does not withdraw it', () => {
+  const changes = ['triage acme/app#1 head head1: changes requested'];
+  const held = [
     [approve('monalisa', 'head1', 10), review('octo-dev', 'CHANGES_REQUESTED', 'head1', 11)],
     [approve('monalisa', 'head1', 10), review('octo-dev', 'CHANGES_REQUESTED', 'head1', 11), review('octo-dev', 'COMMENTED', 'head1', 12)],
+    [review('octo-dev', 'CHANGES_REQUESTED', 'head1', 5), approve('monalisa', 'head1', 10)],
   ];
-  for (const reviews of blocked) assert.deepEqual(world(repo(pr(1, { reviews }))).run(['acme/app']).writes, []);
+  for (const reviews of held) {
+    const w = world(repo(pr(1, { reviews })));
+    const r = w.run(['acme/app']);
+    assert.deepEqual(r.lines, changes);
+    assert.deepEqual(r.writes, []);
+    assert.deepEqual(w.run(['acme/app']).lines, [], 'once per head');
+  }
   const cleared = [review('octo-dev', 'CHANGES_REQUESTED', 'head1', 9), approve('octo-dev', 'head1', 10)];
   assert.deepEqual(world(repo(pr(1, { reviews: cleared }))).run(['acme/app']).lines, merged(1));
-  const stranger = [approve('monalisa', 'head1', 10), review('member', 'CHANGES_REQUESTED', 'head1', 11)];
-  assert.deepEqual(world(repo(pr(1, { reviews: stranger })), { permissions: { member: 'read' } }).run(['acme/app']).lines, merged(1), 'a request for changes without write access is ignored');
+  const ignored = {
+    'an account without write access': [review('member', 'CHANGES_REQUESTED', 'head1', 11), { member: 'read' }],
+    'the author without write access': [review('hubot', 'CHANGES_REQUESTED', 'head1', 11), { hubot: 'read' }],
+    'an automation account': [review('review-bot[bot]', 'CHANGES_REQUESTED', 'head1', 11), {}],
+    '--self': [review('octocat', 'CHANGES_REQUESTED', 'head1', 11), {}],
+  };
+  for (const [name, [r, permissions]] of Object.entries(ignored)) {
+    assert.deepEqual(world(repo(pr(1, { reviews: [approve('monalisa', 'head1', 10), r] })), { permissions }).run(['acme/app']).lines, merged(1), name);
+  }
 });
 
 test('reviews on a later page are read', () => {
@@ -165,7 +182,7 @@ test('a clean merge counts only from the pull request\'s own base: the default b
     const g = gitPr(5, build(from));
     const w = world({ 'acme/app': { prs: [pr(5, { headRefName: 'pr', baseRefName: 'release', headRefOid: g.head, reviews: [approve('monalisa', g.approved)] })] } });
     const r = w.run(['--checkout', `acme/app=${g.checkout}`, 'acme/app']);
-    assert.deepEqual(r.lines, covers ? [`merged acme/app#5 into release (squash) head ${g.head.slice(0, 8)}`] : stale(g), from);
+    assert.deepEqual(r.lines, covers ? [`merged acme/app#5 into release (squash) head ${g.head.slice(0, 8)}; not passed: 0; unresolved threads: 0`] : stale(g), from);
   }
 });
 
@@ -179,4 +196,28 @@ test('a --checkout path that is not a clone is a usage error', () => {
   const r = w.run(['--checkout', `acme/app=${w.dir}`, 'acme/app']);
   assert.equal(r.code, 2);
   assert.match(r.stderr, /merge-tree --write-tree/);
+});
+
+test('end to end: a branch behind its base is updated, the approval covers the new head, and a later scan merges', () => {
+  const g = gitPr(5, ({ edit, sh: git }) => {
+    git('checkout', '-q', '-b', 'pr');
+    const approved = edit('ONE\ntwo\nthree\n', 'A');
+    git('checkout', '-q', 'main'); edit('one\ntwo\nTHREE\n', 'B');
+    git('checkout', '-q', 'pr');
+    return { approved };
+  });
+  const w = world({ 'acme/app': { prs: [pr(5, { headRefName: 'pr', headRefOid: g.head, mergeStateStatus: 'BEHIND', reviews: [approve('monalisa', g.approved)] })] } });
+  const args = ['--checkout', `acme/app=${g.checkout}`, 'acme/app'];
+  const first = w.run(args);
+  assert.deepEqual(first.lines, [`synced acme/app#5 head ${g.head.slice(0, 8)}`]);
+  assert.deepEqual(first.writes, [['api', '-X', 'PUT', 'repos/acme/app/pulls/5/update-branch', '-f', `expected_head_sha=${g.head}`]]);
+  // What GitHub does for the update: a merge of the base into the branch, committed by web-flow for --self.
+  sh(g.work, 'merge', '-q', '--no-edit', 'main');
+  const updated = sh(g.work, 'rev-parse', 'HEAD');
+  sh(g.work, 'push', '-q', g.bare, 'pr', `pr:refs/pull/5/head`);
+  w.update((x) => {
+    Object.assign(x.repos['acme/app'].prs[0], { headRefOid: updated, mergeStateStatus: 'CLEAN' });
+    x.repos['acme/app'].commits = { [updated]: { author: 'octocat', committer: 'web-flow', verified: true } };
+  });
+  assert.deepEqual(w.run(args).lines, merged(5, updated));
 });
