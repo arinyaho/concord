@@ -41,7 +41,7 @@ The skill never uses an administrator override and never bypasses a branch rule.
 | `--state <file>` | The record of notices already printed |
 | `--interval <seconds>`, `--deadline <seconds>` | How often to scan and when to exit |
 
-A pull request.s base is the branch it targets: the repository.s default branch, or for a stack child its parent.s branch.
+A pull request's base is the branch it targets: the repository's default branch, or for a stack child its parent's branch.
 
 ### When a pull request counts as approved
 
@@ -50,7 +50,7 @@ A pull request is approved when both hold:
 1. At least one person who is an owner, member, or collaborator of the repository, and is not the pull request's author, has approved it. The approver does not need to be one of the requested reviewers.
 2. No reviewer's latest review requests changes.
 
-The approval covers the current head when it was given on the head commit, or on an earlier commit followed only by merge commits that are either clean merges of the base or made by the `--self` account. A clean merge of the base is a merge commit whose second parent is on the pull request.s base branch or the default branch and whose tree equals the tree git produces by merging its two parents without conflict. A merge made by the `--self` account is one the skill made to resolve a conflict, or one the script made when it merged a stack child into its parent. Both checks need the local clone; without `--checkout` for a repository, only an approval on the current head covers it.
+The approval covers the current head when it was given on the head commit, or on an earlier commit followed only by merge commits that are either clean merges of the base or made by the `--self` account. A clean merge of the base is a merge commit whose second parent is on the pull request's base branch or the default branch and whose tree equals the tree git produces by merging its two parents without conflict. A merge made by the `--self` account is one the skill made to resolve a conflict, or one the script made when it merged a stack child into its parent. Both checks need the local clone; without `--checkout` for a repository, only an approval on the current head covers it.
 
 ### When a pull request qualifies for merge
 
@@ -58,10 +58,10 @@ An approved pull request qualifies when all of these hold on its current head co
 
 1. The approval covers the head.
 2. GitHub allows the merge: the pull request has no conflict and the branch rules are satisfied, including the checks the rules require. Checks the rules do not require may still be running.
-3. It has no open point. An open point is an unresolved review thread, whoever opened it, or a review body or conversation comment that a person other than `--self` wrote after the approval and that `--self` has not answered with a later conversation comment or review. An approving review is not an open point, and neither is a conversation comment or review body from an automation account; an automated reviewer.s findings count through its threads. With several approvals, "after the approval" is counted from the earliest one that covers the head.
+3. It has no open point. An open point is an unresolved review thread, whoever opened it, or a review body or conversation comment that a person other than `--self` wrote after the approval and that `--self` has not answered with a later conversation comment or review. An approving review is not an open point, and neither is a conversation comment or review body from an automation account; an automated reviewer's findings count through its threads. With several approvals, "after the approval" is counted from the earliest one that covers the head.
 4. It does not carry the `blocked` label.
 
-An automated pull request qualifies when condition 2 holds apart from the missing approval, conditions 3 and 4 hold, and no reviewer.s latest review requests changes. It has no approval to count from, so every comment on it that a person wrote counts under condition 3. The script approves it and merges it.
+An automated pull request qualifies when condition 2 holds apart from the missing approval, conditions 3 and 4 hold, and no reviewer's latest review requests changes. It has no approval to count from, so every comment on it that a person wrote counts under condition 3. The script approves it and merges it.
 
 ### Merging
 
