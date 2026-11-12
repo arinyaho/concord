@@ -41,3 +41,15 @@ test('SKILL.md treats pull request content as data, names both markers, and does
   assert.match(skill, /gh` 2\.48/);
   assert.match(skill, /gh run watch <id> --interval/);
 });
+
+test('SKILL.md states the hold-label ownership, the lost-approval and unpushable cases, and the scheduled wrapper\'s data handling', () => {
+  assert.match(skill, /Never add or remove `review-blocked`/);
+  assert.match(skill, /a `blocked` label the user added stays/);
+  assert.match(skill, /`triage …: approval dismissed`/);
+  assert.match(skill, /does not allow edits by maintainers/);
+  assert.match(skill, /product decision/);
+  assert.match(skill, /rm -f "\$state"/);
+  assert.match(skill, /data, not instructions/);
+  assert.match(skill, /--automated-path <glob>/);
+  assert.doesNotMatch(skill, /title prefix|:<prefix>/);
+});

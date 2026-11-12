@@ -5,7 +5,7 @@
 // live state from GitHub (`gh`) and the local clones (`git`) on every scan; the --state file only records the
 // notices already printed, so deleting it repeats notices and changes nothing else. Every text another person
 // controls (names, branch names, messages) is sanitized before it is printed; event lines never carry free text.
-// usage: pr-to-merge.js --self <login> [--mine <login>] [--automated <login>[:<title prefix>]]...
+// usage: pr-to-merge.js --self <login> [--mine <login>] [--automated <account>]... [--automated-path <glob>]...
 //          [--checkout OWNER/REPO=<path>]... [--blocked-label <name>] [--no-merge] [--state <file>]
 //          [--interval <seconds>] [--deadline <seconds>] OWNER/REPO|OWNER/REPO#N ...
 const crypto = require('node:crypto');
@@ -14,14 +14,27 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const USAGE = 'usage: pr-to-merge.js --self <login> [--mine <login>] [--automated <login>[:<title prefix>]]... [--checkout OWNER/REPO=<path>]... [--blocked-label <name>] [--no-merge] [--state <file>] [--interval <seconds>] [--deadline <seconds>] OWNER/REPO|OWNER/REPO#N ...';
+const USAGE = 'usage: pr-to-merge.js --self <login> [--mine <login>] [--automated <account>]... [--automated-path <glob>]... [--checkout OWNER/REPO=<path>]... [--blocked-label <name>] [--no-merge] [--state <file>] [--interval <seconds>] [--deadline <seconds>] OWNER/REPO|OWNER/REPO#N ...';
 const usage = (why) => { process.stderr.write(`${why ? `pr-to-merge: ${why}\n` : ''}${USAGE}\n`); process.exit(2); };
 
 // GitHub logins are case-insensitive.
 const lower = (login) => String(login || '').toLowerCase();
 
+// A path pattern: `*` and `?` stay within one path segment, `**` crosses segments (`**/` also matches no directory).
+function globRegex(glob) {
+  let re = '';
+  for (let i = 0; i < glob.length; i++) {
+    if (glob.startsWith('**/', i)) { re += '(?:.*/)?'; i += 2; }
+    else if (glob.startsWith('**', i)) { re += '.*'; i += 1; }
+    else if (glob[i] === '*') re += '[^/]*';
+    else if (glob[i] === '?') re += '[^/]';
+    else re += glob[i].replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp(`^${re}$`);
+}
+
 function parseArgs(argv) {
-  const o = { automated: [], checkout: new Map(), blockedLabel: 'blocked', noMerge: false, interval: 300, deadline: 3300, targets: new Map() };
+  const o = { automated: [], automatedPaths: [], checkout: new Map(), blockedLabel: 'blocked', noMerge: false, interval: 300, deadline: 3300, targets: new Map() };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const value = () => (i + 1 < argv.length ? argv[++i] : usage(`${a} needs a value`));
@@ -30,10 +43,12 @@ function parseArgs(argv) {
     else if (a === '--mine') o.mine = lower(value());
     else if (a === '--automated') {
       // `x[bot]` and `app/x` name the app account x, which GraphQL reports as a Bot with login x; a plain `x` names a user.
-      const [account, ...prefix] = value().split(':');
+      const account = value();
+      if (!/^[\w./[\]-]+$/.test(account)) usage(`--automated takes an account, not ${account}`);
       const app = /^app\/(.+)$/i.exec(account) || /^(.+)\[bot\]$/i.exec(account);
-      o.automated.push({ login: lower(app ? app[1] : account), bot: Boolean(app), prefix: prefix.length ? prefix.join(':') : null });
-    } else if (a === '--checkout') { const v = value(), at = v.indexOf('='); if (at < 1) usage('--checkout needs OWNER/REPO=<path>'); o.checkout.set(v.slice(0, at).toLowerCase(), path.resolve(v.slice(at + 1))); }
+      o.automated.push({ login: lower(app ? app[1] : account), bot: Boolean(app) });
+    } else if (a === '--automated-path') o.automatedPaths.push(globRegex(value()));
+    else if (a === '--checkout') { const v = value(), at = v.indexOf('='); if (at < 1) usage('--checkout needs OWNER/REPO=<path>'); o.checkout.set(v.slice(0, at).toLowerCase(), path.resolve(v.slice(at + 1))); }
     else if (a === '--blocked-label') o.blockedLabel = value();
     else if (a === '--no-merge') o.noMerge = true;
     else if (a === '--state') o.state = value();
@@ -47,6 +62,7 @@ function parseArgs(argv) {
     } else usage(`unknown argument ${a}`);
   }
   if (!o.self) usage('--self is required');
+  if (o.automated.length && !o.automatedPaths.length) usage('--automated needs at least one --automated-path');
   if (!o.targets.size) usage('name at least one OWNER/REPO or OWNER/REPO#N');
   return o;
 }
@@ -90,7 +106,8 @@ for (const [repo, dir] of opts.checkout) {
 // ---- reading GitHub ---------------------------------------------------------------------------------------------
 
 const PR_FIELDS = `number state isDraft title url createdAt author{login __typename} assignees(first:100){nodes{login}} labels(first:100){nodes{name}}
-  headRefName headRefOid isCrossRepository baseRefName mergeable mergeStateStatus isInMergeQueue approvals: reviews(states:APPROVED){totalCount}`;
+  headRefName headRefOid isCrossRepository baseRefName mergeable mergeStateStatus isInMergeQueue changedFiles
+  approvals: reviews(states:APPROVED){totalCount} dismissed: reviews(states:DISMISSED){totalCount}`;
 const shapePr = (repo, p) => {
   const bot = p.author?.__typename === 'Bot';
   return {
@@ -99,7 +116,8 @@ const shapePr = (repo, p) => {
     authorRest: bot ? `${lower(p.author?.login)}[bot]` : lower(p.author?.login),
     assignees: (p.assignees?.nodes || []).map((a) => lower(a.login)), labels: (p.labels?.nodes || []).map((l) => lower(l.name)),
     headRef: p.headRefName, head: p.headRefOid, cross: p.isCrossRepository, baseRef: p.baseRefName, mergeable: p.mergeable,
-    mergeState: p.mergeStateStatus, queued: p.isInMergeQueue, anyApproval: (p.approvals?.totalCount || 0) > 0,
+    mergeState: p.mergeStateStatus, queued: p.isInMergeQueue, changedFiles: p.changedFiles,
+    anyApproval: (p.approvals?.totalCount || 0) > 0, anyDismissed: (p.dismissed?.totalCount || 0) > 0,
   };
 };
 
@@ -185,9 +203,6 @@ const hasBody = (r) => Boolean(String(r.body || '').trim());
 
 // ---- the approval rule ----------------------------------------------------------------------------------------------
 
-const PEOPLE = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
-// Activity that counts: from an owner, member or collaborator, from the pull request's author, or from a bot.
-const counts = (pr, item) => PEOPLE.has(item.author_association) || lower(item.user?.login) === pr.authorRest || isBot(item.user);
 
 // Write access, read once per login per scan; an account whose access cannot be read does not approve.
 let permissions = new Map();
@@ -201,17 +216,20 @@ function canWrite(pr, login) {
   }
   return permissions.get(key);
 }
+// A counting account: write access, the pull request's author, or an automation (Bot) account.
+const counts = (pr, item) => isBot(item.user) || lower(item.user?.login) === pr.authorRest || canWrite(pr, lower(item.user?.login));
 
-// Approvals by an account with write access that is not the author (and, when `ignoreSelf`, not --self), and whether
-// a counted reviewer's latest review requests changes (a comment-only review does not withdraw it, as on GitHub).
-function approvalOf(pr, reviews, ignoreSelf) {
+// Approvals by an account with write access that is neither the author nor --self, whether a counting reviewer's
+// latest review requests changes (a comment-only review does not withdraw it, as on GitHub), and those latest reviews.
+function approvalOf(pr, reviews) {
   const submitted = reviews.filter((r) => r.state !== 'PENDING' && r.submitted_at).sort((a, b) => time(a.submitted_at) - time(b.submitted_at));
   const latest = new Map();
   for (const r of submitted.filter((x) => counts(pr, x))) if (['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(r.state)) latest.set(lower(r.user?.login), r);
-  const candidate = (r) => r.state === 'APPROVED' && lower(r.user?.login) !== pr.authorRest && !(ignoreSelf && self(r.user));
+  const candidate = (r) => r.state === 'APPROVED' && lower(r.user?.login) !== pr.authorRest && !self(r.user);
   return {
     approvals: submitted.filter(candidate).filter((r) => canWrite(pr, lower(r.user?.login))),
     changesRequested: [...latest.values()].some((r) => r.state === 'CHANGES_REQUESTED'),
+    latest: [...latest.values()],
   };
 }
 
@@ -219,17 +237,17 @@ function approvalOf(pr, reviews, ignoreSelf) {
 const mergeMarkers = (d) => new Set(d.issueComments.filter((c) => self(c.user)).flatMap((c) => [...String(c.body || '').matchAll(/<!-- pr-to-merge:merge ([0-9a-f]{40}) -->/g)].map((m) => m[1])));
 
 // Whether an approval given on `sha` covers the head: the head itself, or commits after it on the head's first-parent
-// line that are all merge commits, each either a clean merge of the base (second parent on the base or default branch,
-// tree equal to the one git produces merging the two parents) or made by --self, whatever it merged. A merge is
+// line that are all merge commits, each either a clean merge of the pull request's own base (second parent on that
+// branch, tree equal to the one git produces merging the two parents) or made by --self, whatever it merged. A merge is
 // --self's when GitHub made it for --self (verified, committed by web-flow, authored by --self) or when a --self
 // conversation comment names it. Needs the local clone; without one only the head counts.
-function coverage(pr, defaultBranch, markers) {
+function coverage(pr, markers) {
   const dir = opts.checkout.get(pr.repo.toLowerCase());
   const memo = new Map();
-  let bases = null;
+  let fetched = false;
   const exists = (rev) => git(dir, ['cat-file', '-e', `${rev}^{commit}`], [0, 1, 128]).status === 0;
   const isAncestor = (a, b) => git(dir, ['merge-base', '--is-ancestor', a, b], [0, 1]).status === 0;
-  const onBase = (c) => bases.some((b) => isAncestor(c, `refs/remotes/origin/${b}`));
+  const onBase = (c) => isAncestor(c, `refs/remotes/origin/${pr.baseRef}`);
   const tree = (rev) => git(dir, ['rev-parse', `${rev}^{tree}`]).out.trim();
   const cleanMerge = (c, p1, p2) => {
     const r = git(dir, ['merge-tree', '--write-tree', p1, p2], [0, 1]);
@@ -255,9 +273,9 @@ function coverage(pr, defaultBranch, markers) {
     if (sha === pr.head) return true;
     if (!dir || !sha) return false;
     if (!memo.has(sha)) {
-      if (!bases) {
-        bases = [...new Set([pr.baseRef, defaultBranch])];
-        git(dir, ['fetch', '-q', 'origin', ...bases.map((b) => `+refs/heads/${b}:refs/remotes/origin/${b}`), `refs/pull/${pr.number}/head`]);
+      if (!fetched) {
+        git(dir, ['fetch', '-q', 'origin', `+refs/heads/${pr.baseRef}:refs/remotes/origin/${pr.baseRef}`, `refs/pull/${pr.number}/head`]);
+        fetched = true;
       }
       const after = commitsAfter(sha);
       memo.set(sha, Boolean(after) && after.every(allowed));
@@ -283,7 +301,7 @@ const who = (item) => clean(item.user?.login);
 // Every review, review-thread comment and conversation comment that counts and is not written by --self (or by
 // `ignore`). `point` marks the items that re-report a blocked pull request: a person's review or comment, any thread comment.
 function activity(pr, reviews, d, ignore) {
-  const other = (item) => !self(item.user) && lower(item.user?.login) !== ignore && counts(pr, item);
+  const other = (item) => !self(item.user) && lower(item.user?.login) !== ignore && counts(pr, item); // the API last
   const threadOf = new Map(d.threads.map((t) => [t.root, t]));
   const items = [];
   for (const r of reviews) {
@@ -301,7 +319,7 @@ function activity(pr, reviews, d, ignore) {
   return items;
 }
 
-// Open points: each unresolved thread opened by an account that counts, bots included (keyed by its latest comment, so
+// Open points: each unresolved thread opened by a counting account, bots included (keyed by its latest comment, so
 // a new reply is a new point), and each point a person raised in a review body or conversation comment after `cutoff`
 // that no later --self conversation comment marks answered with `<!-- pr-to-merge:answered <id> -->`.
 function openPoints(pr, reviews, d, cutoff, ignore) {
@@ -317,7 +335,7 @@ function openPoints(pr, reviews, d, cutoff, ignore) {
   for (const c of d.issueComments.filter((x) => self(x.user))) {
     for (const m of String(c.body || '').matchAll(/<!-- pr-to-merge:answered ((?:review|comment):\d+) -->/g)) answeredAt.set(m[1], Math.max(answeredAt.get(m[1]) || 0, timeOf(c)));
   }
-  const open = (id, item, at) => !self(item.user) && lower(item.user?.login) !== ignore && counts(pr, item) && at > cutoff && !((answeredAt.get(id) || 0) > at);
+  const open = (id, item, at) => !self(item.user) && lower(item.user?.login) !== ignore && at > cutoff && !((answeredAt.get(id) || 0) > at) && counts(pr, item);
   for (const r of reviews) {
     const id = `review:${r.id}`;
     if (r.state !== 'PENDING' && hasBody(r) && raisedByPerson(r, 'review') && open(id, r, time(r.submitted_at))) points.push(id);
@@ -331,27 +349,33 @@ function openPoints(pr, reviews, d, cutoff, ignore) {
 
 // ---- evaluating one pull request ----------------------------------------------------------------------------------
 
-// An automated pull request: from a branch of the repository, opened by a named account of the named kind (app or user).
-const automatedRule = (pr) => !pr.cross && opts.automated.some((a) => a.login === pr.author && a.bot === pr.authorBot && (a.prefix === null || pr.title.startsWith(a.prefix)));
-const isOwn = (pr, listed) => listed || (opts.mine && (pr.author === opts.mine || pr.assignees.includes(opts.mine)));
+// An automated pull request: from a branch of the repository, opened by a named account of the named kind (app or user),
+// changing only files (including a renamed file's old path) that match an --automated-path pattern.
+const automatedAccount = (pr) => !pr.cross && opts.automated.some((a) => a.login === pr.author && a.bot === pr.authorBot);
+function changesOnlyAllowedPaths(pr) {
+  const files = restPages(`repos/${pr.repo}/pulls/${pr.number}/files?per_page=100`);
+  if (files.length < pr.changedFiles) return false; // GitHub lists at most 3000 files
+  return files.flatMap((f) => [f.filename, f.previous_filename].filter(Boolean)).every((name) => opts.automatedPaths.some((re) => re.test(name)));
+}
+const isOwn = (pr, listed) => listed || (opts.mine && pr.author === opts.mine && !pr.authorBot);
 
 // The approvals that cover the head, and the time open points are counted from: the earliest covering approval (the
 // earliest approval when none covers, for the triage report only).
-function coveringApproval(pr, approvals, defaultBranch, markers) {
-  const covered = coverage(pr, defaultBranch, markers);
+function coveringApproval(pr, approvals, markers) {
+  const covered = coverage(pr, markers);
   const covering = approvals.filter((a) => covered(a.commit_id));
   const from = covering.length ? covering : approvals;
   return { covering, cutoff: Math.min(...from.map((a) => time(a.submitted_at))) };
 }
 
-function reportApproved(pr, { covering, open, blocked, items }) {
+function reportApproved(pr, { covering, open, held, items }) {
   const h = short(pr.head);
   if (!covering.length) notice(`stale:${tag(pr)}@${pr.head}`, `triage ${tag(pr)} head ${h}: approved on an older head only`);
   if (pr.mergeable === 'CONFLICTING') notice(`conflict:${tag(pr)}@${pr.head}`, `triage ${tag(pr)} head ${h}: approved, conflict`);
-  // On a blocked pull request a new point or a new approval of the head is reported, so that the skill reads it again.
+  // On a held pull request a new point or a new approval of the head is reported, so that the skill can read it again.
   // Whatever the skill read for one report (the open points, the approvals and all activity so far) does not cause the next.
   const approvals = covering.map((a) => `approval:${a.id}`);
-  const watched = blocked ? [...items.filter((i) => i.point).map((i) => i.id), ...approvals] : open;
+  const watched = held ? [...items.filter((i) => i.point).map((i) => i.id), ...approvals] : open;
   if (!watched.some((i) => !seen.has(`open:${tag(pr)}:${i}`))) return;
   for (const i of [...open, ...approvals, ...items.map((x) => x.id)]) seen.add(`open:${tag(pr)}:${i}`);
   emit(`triage ${tag(pr)} head ${h}: approved, open points`);
@@ -374,19 +398,34 @@ function mergeStatus(pr, checks, approved, needsApproval) {
   return null;
 }
 
+// A pull request with no counting approval left whose counting reviewer's latest review is a dismissed approval: the
+// repository dismissed it on a push. Read from the dismissal events, which keep the review's earlier state.
+function reportDismissed(pr, latest) {
+  const dismissed = latest.filter((r) => r.state === 'DISMISSED' && !self(r.user) && lower(r.user?.login) !== pr.authorRest).map((r) => r.id);
+  if (!dismissed.length || seen.has(`dismissed:${tag(pr)}@${pr.head}`)) return;
+  const [owner, name] = pr.repo.split('/');
+  const approvals = new Set(graphql(`query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){
+    timelineItems(itemTypes:[REVIEW_DISMISSED_EVENT],first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{... on ReviewDismissedEvent{previousReviewState review{databaseId}}}}}}}`, { owner, name, number: pr.number }, true)
+    .flatMap((p) => p.data.repository.pullRequest.timelineItems.nodes).filter((n) => n.previousReviewState === 'APPROVED').map((n) => n.review?.databaseId));
+  if (dismissed.some((id) => approvals.has(id))) notice(`dismissed:${tag(pr)}@${pr.head}`, `triage ${tag(pr)} head ${short(pr.head)}: approval dismissed`);
+}
+
+const HOLD = 'review-blocked';
+
 // Returns the pull request with `status` from mergeStatus, null when it does not qualify.
-function evaluate(pr, defaultBranch, listed) {
+function evaluate(pr, listed) {
   const e = { pr, status: null };
   if (pr.queued) return e; // left alone while it waits in a merge queue
   const own = isOwn(pr, listed);
-  const automatedCandidate = automatedRule(pr);
-  // Neither approved, automated nor the user's own: left alone, its reviews not read.
-  if (!pr.anyApproval && !own && !automatedCandidate) return e;
+  const automatedCandidate = automatedAccount(pr);
+  // Neither approved (now or before a dismissal), automated nor the user's own: left alone, its reviews not read.
+  if (!pr.anyApproval && !pr.anyDismissed && !own && !automatedCandidate) return e;
   const reviews = restPages(`repos/${pr.repo}/pulls/${pr.number}/reviews?per_page=100`);
-  // On an automated pull request --self's approvals do not count: after the automation pushes, the new head is approved again.
-  const { approvals, changesRequested } = approvalOf(pr, reviews, automatedCandidate);
+  // --self's approvals never count, so each new head of an automated pull request is approved again.
+  const { approvals, changesRequested, latest } = approvalOf(pr, reviews);
   const approved = approvals.length > 0 && !changesRequested;
-  const automated = !approved && !changesRequested && automatedCandidate;
+  if (!approvals.length && pr.anyDismissed) reportDismissed(pr, latest);
+  const automated = !approved && !changesRequested && automatedCandidate && changesOnlyAllowedPaths(pr);
   if (!approved && !automated && !own) return e;
   const d = details(pr);
   const ignore = automated ? pr.authorRest : null;
@@ -397,12 +436,12 @@ function evaluate(pr, defaultBranch, listed) {
     return e;
   }
 
-  const blocked = pr.labels.includes(lower(opts.blockedLabel));
-  const { covering, cutoff } = approved ? coveringApproval(pr, approvals, defaultBranch, mergeMarkers(d)) : { covering: [true], cutoff: 0 };
+  const held = pr.labels.includes(lower(opts.blockedLabel)) || pr.labels.includes(HOLD);
+  const { covering, cutoff } = approved ? coveringApproval(pr, approvals, mergeMarkers(d)) : { covering: [true], cutoff: 0 };
   const open = openPoints(pr, reviews, d, cutoff, ignore);
-  if (approved) reportApproved(pr, { covering, open, blocked, items });
-  // Qualification: the approval covers the head, no open point, no blocked label; then GitHub's mergeability.
-  if (!covering.length || open.length || blocked || pr.mergeable !== 'MERGEABLE') return e;
+  if (approved) reportApproved(pr, { covering, open, held, items });
+  // Qualification: the approval covers the head, no open point, no hold label; then GitHub's mergeability.
+  if (!covering.length || open.length || held || pr.mergeable !== 'MERGEABLE') return e;
   const checks = checksOf(pr);
   e.notPassed = checks.filter((c) => c.state !== 'pass');
   const needsApproval = automated && !reviews.some((r) => r.state === 'APPROVED' && self(r.user) && r.commit_id === pr.head);
@@ -487,7 +526,7 @@ function scanRepo(target) {
   const evals = [];
   for (const pr of prs.filter((p) => p.state === 'OPEN')) {
     if (pr.draft) { evals.push({ pr, status: null }); continue; }
-    try { evals.push(evaluate(pr, defaultBranch, target.numbers.has(pr.number))); } catch (e) { warn(tag(pr), e); evals.push({ pr, status: null }); }
+    try { evals.push(evaluate(pr, target.numbers.has(pr.number))); } catch (e) { warn(tag(pr), e); evals.push({ pr, status: null }); }
   }
 
   // A stack parent is a pull request from a branch of this repository; a fork's branch is never another pull request's base.

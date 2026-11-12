@@ -55,13 +55,25 @@ test('only points a person raised hold the merge: bot comments and approving rev
   assert.deepEqual(world(repo([approved(1, withThread('review-bot[bot]', { author_association: 'NONE' }))])).run(['acme/app']).lines, held, 'a bot\'s unresolved thread');
 });
 
-test('a stranger\'s comment, review or thread is ignored', () => {
-  const none = { author_association: 'NONE' };
-  const p = approved(1, { issueComments: [comment('stranger', 20, none)], ...withThread('stranger', none) });
-  p.reviews.push(review('stranger', 'COMMENTED', 'head1', 21, { body: 'do this', ...none }));
-  assert.deepEqual(world(repo([p])).run(['acme/app']).lines, merged);
+test('a comment, review or thread from an account without write access is ignored, an organization member included', () => {
+  for (const login of ['stranger', 'member']) {
+    const p = approved(1, { issueComments: [comment(login, 20, { author_association: login === 'member' ? 'MEMBER' : 'NONE' })], ...withThread(login) });
+    p.reviews.push(review(login, 'COMMENTED', 'head1', 21, { body: 'do this' }));
+    assert.deepEqual(world(repo([p]), { permissions: { [login]: login === 'member' ? 'read' : 'none' } }).run(['acme/app']).lines, merged, login);
+  }
   const byAuthor = approved(1, { issueComments: [comment('hubot', 20, { author_association: 'CONTRIBUTOR' })] });
-  assert.deepEqual(world(repo([byAuthor])).run(['acme/app']).lines, held, 'the pull request\'s author counts');
+  assert.deepEqual(world(repo([byAuthor]), { permissions: { hubot: 'read' } }).run(['acme/app']).lines, held, 'the pull request\'s author counts');
+});
+
+test('review-blocked holds a pull request in any case, and new activity on it is reported again', () => {
+  for (const label of ['review-blocked', 'Review-Blocked']) {
+    const w = world(repo([approved(1, { labels: [label] })]));
+    const r = w.run(['acme/app']);
+    assert.deepEqual(r.writes, [], label);
+    w.update((x) => x.repos['acme/app'].prs[0].issueComments.push(comment('hubot', 31)));
+    assert.deepEqual(w.run(['acme/app']).lines, held, label);
+  }
+  assert.deepEqual(world(repo([approved(1, { labels: ['review-blocked'] })])).run(['--blocked-label', 'hold', 'acme/app']).writes, [], 'not replaced by --blocked-label');
 });
 
 test('a point is answered only by a later --self comment that carries its marker', () => {
@@ -211,22 +223,23 @@ test('a failed required check is not run again on a PR with an open point', () =
   assert.deepEqual(r.writes, []);
 });
 
-const bump = (n, over = {}) => pr(n, { author: 'pin-bot', authorType: 'Bot', title: 'chore(deps): pin core', mergeStateStatus: 'BLOCKED', ...over });
+const bump = (n, over = {}) => pr(n, { author: 'pin-bot', authorType: 'Bot', title: 'chore(deps): pin core', mergeStateStatus: 'BLOCKED', files: [{ filename: 'deps/core.pin' }], ...over });
+const PATHS = ['--automated-path', 'deps/*.pin', '--automated-path', '**/lock.json'];
 
 test('an automated PR is approved in one scan and merged in the next, once GitHub counts the approval', () => {
   const w = world(repo([bump(1)]));
-  const first = w.run(['--automated', 'pin-bot[bot]:chore(deps):', 'acme/app']);
+  const first = w.run(['--automated', 'pin-bot[bot]', ...PATHS, 'acme/app']);
   assert.deepEqual(first.lines, ['approved acme/app#1 (automated)']);
   assert.deepEqual(first.writes, [['api', '-X', 'POST', 'repos/acme/app/pulls/1/reviews', '-f', 'event=APPROVE', '-f', 'commit_id=head1']]);
   w.update((x) => { x.repos['acme/app'].prs[0].mergeStateStatus = 'CLEAN'; });
-  const second = w.run(['--automated', 'pin-bot[bot]:chore(deps):', 'acme/app']);
+  const second = w.run(['--automated', 'pin-bot[bot]', ...PATHS, 'acme/app']);
   assert.deepEqual(second.lines, merged);
   assert.deepEqual(second.writes, [['pr', 'merge', '1', '--repo', 'acme/app', '--squash', '--match-head-commit', 'head1']]);
 });
 
 test('an automated PR the automation rebased after --self approved it is approved again, not reported as approved on an older head', () => {
   const w = world(repo([bump(1, { reviews: [approve('octocat', 'old', 5)] })]));
-  assert.deepEqual(w.run(['--automated', 'app/pin-bot', 'acme/app']).lines, ['approved acme/app#1 (automated)']);
+  assert.deepEqual(w.run(['--automated', 'app/pin-bot', ...PATHS, 'acme/app']).lines, ['approved acme/app#1 (automated)']);
 });
 
 test('automated accounts match exactly: an app name matches only the app, a plain name only the user, and never a fork', () => {
@@ -236,20 +249,42 @@ test('automated accounts match exactly: an app name matches only the app, a plai
     ['pin-bot[bot]', bump(1, { authorType: 'User' }), false],
     ['pin-bot', bump(1), false],
     ['pin-bot', bump(1, { authorType: 'User' }), true],
-    ['pin-bot[bot]:chore(deps):', bump(1, { title: 'feat: something else' }), false],
     ['other-bot[bot]', bump(1), false],
     ['pin-bot[bot]', bump(1, { isCrossRepository: true }), false],
   ];
   for (const [flag, p, matches] of cases) {
-    const r = world(repo([p])).run(['--automated', flag, 'acme/app']);
-    assert.deepEqual(r.lines, matches ? ['approved acme/app#1 (automated)'] : [], `${flag} ${p.authorType} ${p.title} ${p.isCrossRepository}`);
+    const r = world(repo([p])).run(['--automated', flag, ...PATHS, 'acme/app']);
+    assert.deepEqual(r.lines, matches ? ['approved acme/app#1 (automated)'] : [], `${flag} ${p.authorType} ${p.isCrossRepository}`);
   }
+});
+
+test('an automated PR is approved only when every file it changes, a renamed file\'s old path included, matches a path pattern', () => {
+  const cases = [
+    ['inside', [{ filename: 'deps/core.pin' }, { filename: 'web/app/lock.json' }, { filename: 'lock.json' }], true],
+    ['a file outside', [{ filename: 'deps/core.pin' }, { filename: 'src/main.js' }], false],
+    ['a nested file under a one-segment pattern', [{ filename: 'deps/sub/core.pin' }], false],
+    ['a rename out of the allowed paths', [{ filename: 'deps/run.pin', previous_filename: 'scripts/run.sh' }], false],
+    ['a file on a later page', [{ filename: 'deps/a.pin' }, { filename: 'deps/b.pin' }, { filename: '.github/workflows/ci.yml' }], false],
+  ];
+  for (const [name, files, approves] of cases) {
+    const r = world(repo([bump(1, { files })])).run(['--automated', 'pin-bot[bot]', ...PATHS, 'acme/app']);
+    assert.deepEqual(r.lines, approves ? ['approved acme/app#1 (automated)'] : [], name);
+    if (!approves) assert.deepEqual(r.writes, [], name);
+  }
+  const truncated = world(repo([bump(1, { changedFiles: 3001 })])).run(['--automated', 'pin-bot[bot]', ...PATHS, 'acme/app']);
+  assert.deepEqual(truncated.lines, [], 'more files than GitHub lists');
+});
+
+test('--automated needs --automated-path, and takes no title prefix', () => {
+  const w = world(repo([]));
+  assert.equal(w.run(['--automated', 'pin-bot[bot]', 'acme/app']).code, 2);
+  assert.equal(w.run(['--automated', 'pin-bot[bot]:chore(deps):', ...PATHS, 'acme/app']).code, 2);
 });
 
 test('an automated PR is not approved while a required check fails or a person has an unanswered comment', () => {
   const failing = bump(1, { checks: [{ name: 'build', required: true, conclusion: 'FAILURE', runId: 5 }] });
   const commented = bump(2, { issueComments: [comment('monalisa', 5)] });
-  const r = world(repo([failing, commented])).run(['--automated', 'pin-bot[bot]', 'acme/app']);
+  const r = world(repo([failing, commented])).run(['--automated', 'pin-bot[bot]', ...PATHS, 'acme/app']);
   assert.deepEqual(r.lines, []);
   assert.deepEqual(r.writes, []);
 });
@@ -262,10 +297,10 @@ test('--no-merge reports a qualifying PR as ready once and writes nothing', () =
     approved(4, { mergeStateStatus: 'BLOCKED', checks: [{ name: 'build', required: true, conclusion: 'FAILURE', runId: 9 }] }),
   ];
   const w = world(repo(prs));
-  const r = w.run(['--no-merge', '--automated', 'pin-bot[bot]', 'acme/app']);
+  const r = w.run(['--no-merge', '--automated', 'pin-bot[bot]', ...PATHS, 'acme/app']);
   assert.deepEqual(r.lines, ['ready acme/app#1 head head1', 'ready acme/app#2 head head2']);
   assert.deepEqual(r.writes, []);
-  assert.deepEqual(w.run(['--no-merge', '--automated', 'pin-bot[bot]', 'acme/app']).lines, []);
+  assert.deepEqual(w.run(['--no-merge', '--automated', 'pin-bot[bot]', ...PATHS, 'acme/app']).lines, []);
 });
 
 test('text other people control cannot add a line', () => {

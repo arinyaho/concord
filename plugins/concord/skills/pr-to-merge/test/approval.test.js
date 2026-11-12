@@ -29,6 +29,31 @@ test('an approval by the author, by a read-only member, or by an account whose a
   }
 });
 
+test('an approval by --self never counts, alone or on an ordinary pull request', () => {
+  const r = world(repo(pr(1, { reviews: [approve('octocat', 'head1')] }))).run(['acme/app']);
+  assert.deepEqual(r.lines, []);
+  assert.deepEqual(r.writes, []);
+  const both = world(repo(pr(1, { reviews: [approve('octocat', 'head1'), approve('monalisa', 'older')] }))).run(['acme/app']);
+  assert.deepEqual(both.lines, ['triage acme/app#1 head head1: approved on an older head only'], 'only the other approval is judged');
+});
+
+test('a lost approval is reported once per head; one still standing, or one requested again, is not', () => {
+  const dismissed = review('monalisa', 'DISMISSED', 'older', 10);
+  const w = world(repo(pr(1, { reviews: [dismissed] })));
+  const r = w.run(['acme/app']);
+  assert.deepEqual(r.lines, ['triage acme/app#1 head head1: approval dismissed']);
+  assert.deepEqual(r.writes, []);
+  assert.deepEqual(w.run(['acme/app']).lines, []);
+  w.update((x) => { x.repos['acme/app'].prs[0].headRefOid = 'head1b'; });
+  assert.deepEqual(w.run(['acme/app']).lines, ['triage acme/app#1 head head1b: approval dismissed']);
+  const changes = review('monalisa', 'DISMISSED', 'older', 10, { previous: 'CHANGES_REQUESTED' });
+  assert.deepEqual(world(repo(pr(1, { reviews: [changes] }))).run(['acme/app']).lines, [], 'a dismissed request for changes');
+  const selfDismissed = review('octocat', 'DISMISSED', 'older', 10);
+  assert.deepEqual(world(repo(pr(1, { reviews: [selfDismissed] }))).run(['acme/app']).lines, [], '--self\'s dismissed approval');
+  const still = pr(1, { reviews: [review('octo-dev', 'DISMISSED', 'older', 5), approve('monalisa', 'head1', 10)] });
+  assert.deepEqual(world(repo(still)).run(['acme/app']).lines, merged(1), 'another approval still stands');
+});
+
 test('the write access of an approver is read once per scan', () => {
   const r = world(repo(pr(1, { reviews: [approve('monalisa', 'head1')] }), pr(2, { reviews: [approve('monalisa', 'head2')] }))).run(['acme/app']);
   assert.equal(r.calls.filter((c) => /permission$/.test(c[1] || '')).length, 1);
@@ -42,8 +67,8 @@ test('a reviewer whose latest review requests changes blocks, and a later commen
   for (const reviews of blocked) assert.deepEqual(world(repo(pr(1, { reviews }))).run(['acme/app']).writes, []);
   const cleared = [review('octo-dev', 'CHANGES_REQUESTED', 'head1', 9), approve('octo-dev', 'head1', 10)];
   assert.deepEqual(world(repo(pr(1, { reviews: cleared }))).run(['acme/app']).lines, merged(1));
-  const stranger = [approve('monalisa', 'head1', 10), review('stranger', 'CHANGES_REQUESTED', 'head1', 11, { author_association: 'NONE' })];
-  assert.deepEqual(world(repo(pr(1, { reviews: stranger }))).run(['acme/app']).lines, merged(1), 'a stranger\'s review is ignored');
+  const stranger = [approve('monalisa', 'head1', 10), review('member', 'CHANGES_REQUESTED', 'head1', 11)];
+  assert.deepEqual(world(repo(pr(1, { reviews: stranger })), { permissions: { member: 'read' } }).run(['acme/app']).lines, merged(1), 'a request for changes without write access is ignored');
 });
 
 test('reviews on a later page are read', () => {
@@ -132,6 +157,23 @@ test('any other commit after the approval leaves only an older head approved, re
   assert.deepEqual(r.lines, stale(g));
   assert.deepEqual(r.writes, []);
   assert.deepEqual(w.run(['--checkout', `acme/app=${g.checkout}`, 'acme/app']).lines, []);
+});
+
+test('a clean merge counts only from the pull request\'s own base: the default branch merged into a release-branch PR does not cover', () => {
+  const build = (mergeFrom) => ({ edit, sh }) => {
+    sh('checkout', '-q', '-b', 'release');
+    sh('checkout', '-q', '-b', 'pr');
+    const approved = edit('ONE\ntwo\nthree\n', 'A');
+    sh('checkout', '-q', mergeFrom); edit(mergeFrom === 'main' ? 'one\ntwo\nTHREE\n' : 'one\ntwo\nthree\nfix\n', 'B');
+    sh('checkout', '-q', 'pr'); sh('merge', '-q', '--no-edit', mergeFrom);
+    return { approved };
+  };
+  for (const [from, covers] of [['main', false], ['release', true]]) {
+    const g = gitPr(5, build(from));
+    const w = world({ 'acme/app': { prs: [pr(5, { headRefName: 'pr', baseRefName: 'release', headRefOid: g.head, reviews: [approve('monalisa', g.approved)] })] } });
+    const r = w.run(['--checkout', `acme/app=${g.checkout}`, 'acme/app']);
+    assert.deepEqual(r.lines, covers ? [`merged acme/app#5 into release (squash) head ${g.head.slice(0, 8)}`] : stale(g), from);
+  }
 });
 
 test('without --checkout only an approval on the current head covers it', () => {

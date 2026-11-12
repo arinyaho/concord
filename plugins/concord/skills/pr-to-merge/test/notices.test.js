@@ -23,8 +23,9 @@ test('review activity on the user\'s own unapproved PR is printed once per item,
     threads: [{ resolved: false, root: thread.id }],
     issueComments: [comment('ci-bot[bot]', 8, { author_association: 'NONE', html_url: 'https://github.com/acme/app/pull/1#issuecomment-3' }), comment('stranger', 9, { author_association: 'NONE' })],
   });
-  const assigned = pr(2, { assignees: ['octocat'], issueComments: [comment('monalisa', 9, { html_url: 'https://github.com/acme/app/pull/2#issuecomment-4' })] });
-  const w = world(repo([own, assigned]));
+  const second = pr(2, { author: 'octocat', issueComments: [comment('monalisa', 9, { html_url: 'https://github.com/acme/app/pull/2#issuecomment-4' })] });
+  const assigned = pr(3, { assignees: ['octocat'], issueComments: [comment('monalisa', 9)] });
+  const w = world(repo([own, second, assigned]), { permissions: { stranger: 'read' } });
   const r = w.run(['--mine', 'octocat', 'acme/app']);
   assert.deepEqual(r.lines, [
     'review acme/app#1 head head1: review changes requested by monalisa https://github.com/acme/app/pull/1#pullrequestreview-1',

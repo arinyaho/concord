@@ -44,7 +44,8 @@ const gqlPr = (p) => ({ number: p.number, state: p.state, isDraft: p.isDraft, ti
   author: { login: p.author, __typename: p.authorType }, assignees: { nodes: p.assignees.map((login) => ({ login })) },
   labels: { nodes: p.labels.map((name) => ({ name })) }, headRefName: p.headRefName, headRefOid: p.headRefOid, isCrossRepository: p.isCrossRepository,
   baseRefName: p.baseRefName, mergeable: p.mergeable, mergeStateStatus: p.mergeStateStatus, isInMergeQueue: Boolean(p.queued),
-  approvals: { totalCount: p.reviews.filter((r) => r.state === 'APPROVED').length } });
+  changedFiles: p.changedFiles ?? (p.files || []).length,
+  approvals: { totalCount: p.reviews.filter((r) => r.state === 'APPROVED').length }, dismissed: { totalCount: p.reviews.filter((r) => r.state === 'DISMISSED').length } });
 if (a[0] === 'api' && url === 'user') out({ login: w.self || 'octocat' });
 else if (a[0] === 'api' && url === 'graphql') {
   const q = field('query'), name = field('owner') + '/' + field('name'), repo = repoAt(name);
@@ -52,6 +53,7 @@ else if (a[0] === 'api' && url === 'graphql') {
   const p = field('number') && prOf(repo, field('number'));
   const wrap = (pr) => ({ data: { repository: { defaultBranchRef: { name: repo.defaultBranch || 'main' }, ...pr } } });
   if (/pullRequests\\(/.test(q)) gqlPages(repo.prs.filter((x) => x.state === 'OPEN'), (nodes, pageInfo) => wrap({ pullRequests: { pageInfo, nodes: nodes.map(gqlPr) } }));
+  else if (/timelineItems/.test(q)) gqlPages(p.reviews.filter((r) => r.state === 'DISMISSED'), (nodes, pageInfo) => wrap({ pullRequest: { timelineItems: { pageInfo, nodes: nodes.map((r) => ({ previousReviewState: r.previous || 'APPROVED', review: { databaseId: r.id } })) } } }));
   else if (/reviewThreads/.test(q)) gqlPages(p.threads, (nodes, pageInfo) => wrap({ pullRequest: { reviewThreads: { pageInfo, nodes: nodes.map((t) => ({ isResolved: t.resolved, comments: { nodes: [{ databaseId: t.root }] } })) } } }));
   else if (/statusCheckRollup/.test(q)) gqlPages(p.checks, (nodes, pageInfo) => wrap({ pullRequest: { commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { pageInfo, nodes: nodes.map((c) => c.context
     ? { __typename: 'StatusContext', context: c.context, state: c.state, isRequired: !!c.required, createdAt: c.at || '2026-01-01T00:00:00Z' }
@@ -87,6 +89,7 @@ else if (a[0] === 'api' && url === 'graphql') {
   if ((m = /^pulls\\/(\\d+)\\/reviews/.exec(rest))) restPages(prOf(repo, m[1]).reviews);
   else if ((m = /^pulls\\/(\\d+)\\/comments/.exec(rest))) restPages(prOf(repo, m[1]).comments);
   else if ((m = /^issues\\/(\\d+)\\/comments/.exec(rest))) restPages(prOf(repo, m[1]).issueComments);
+  else if ((m = /^pulls\\/(\\d+)\\/files/.exec(rest))) restPages(prOf(repo, m[1]).files || []);
   else if ((m = /^pulls\\?state=open&head=([^&]+)/.exec(rest))) {
     const head = decodeURIComponent(m[1]).split(':')[1];
     restPages(repo.prs.filter((x) => x.state === 'OPEN' && x.headRefName === head).map((x) => ({ number: x.number })));
