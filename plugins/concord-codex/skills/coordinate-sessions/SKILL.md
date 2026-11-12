@@ -37,21 +37,20 @@ Progress and decisions also go on the ticket; the state document is a convenienc
 
 Start one subagent per unit, in the background, in its own worktree created as the project's rules file says. Run units in parallel only when their file sets are disjoint and neither can change the other's contract; otherwise order them.
 
-- Where the `implementer` agent definition is available (Claude Code: agent type `concord:implementer`), start it. Otherwise begin the prompt with the content of `references/worker.md` next to this file. Use the harness's own subagent whenever it has one.
-- Under Codex, only when no subagent can be started, run a separate Codex process in the worktree: `codex exec --cd <worktree> --sandbox workspace-write --skip-git-repo-check "<prompt>"`. Without `--skip-git-repo-check` the process waits forever in a directory Codex does not trust.
+- Where the `implementer` agent definition is available (Claude Code: agent type `concord:implementer`), start it. Otherwise begin the prompt with the content of `references/worker.md` next to this file.
+- Under Codex, only when no subagent can be started, run a separate Codex process in the worktree, with these flags exactly: `codex exec --cd <worktree> --sandbox workspace-write --skip-git-repo-check "<prompt>"`.
 - Choose the model by the kind of work: a lower-cost model for a bounded ticket with clear acceptance criteria, a more capable one for ambiguous or cross-cutting work.
 
 The prompt contains, in this order:
 
 1. The skill to run (default `ticket-to-pr`) and the ticket, with where its acceptance criteria are and what is out of scope.
-2. The repository, the worktree path, the branch name, the branch to cut it from, and the base its pull request targets.
-3. The path of the design document the unit implements, when one exists.
+2. The repository, the worktree path, the branch name, and the branch its pull request targets, which it is cut from.
+3. The local path of the design document the unit implements, when one exists: in the design worktree while the design's pull request is open, under `docs/` once it has merged. Also the design pull request's link.
 4. File ownership: the files this unit changes, and the files other units or people own.
 5. Related repositories and their local paths, with what connects each to the unit.
 6. The absolute path of `reports/<unit>/`.
 7. The path of the project's rules file. Repository rules stay there, not in the prompt.
-8. What the worker may do without asking: create its branch, commit and push to it, open a draft pull request and mark it ready when the work is done, request the reviewers the rules file names, comment on its own ticket and move its status, and file one follow-up ticket for minor points. It never merges or closes anything and touches no other pull request.
-9. For a successor: the path of the report it resumes from, and your answer when it resumes from a `question`.
+8. For a successor: the path of the report it resumes from, and your answer when it resumes from a `question`.
 
 Record the unit in the state document.
 
@@ -67,7 +66,9 @@ A worker's final message is its report, and the same text is a file `NNN-<kind>.
 | `done` | Check it (step 5) |
 | `handoff` | Start a successor with the original prompt and the path of the handoff report |
 
-A worker that ended without a report file left its state on the ticket and the pull request: start a successor from those.
+A worker that ended without a report file left its state on the ticket and the pull request: start one successor from those. If that one also ends without a report, record it in the state document, tell the user, and go on with the other units.
+
+When a design document changes in its review after units started from it, tell the user which units were built against the earlier text. Do not restart them yourself.
 
 ## 5. Check a `done` report
 

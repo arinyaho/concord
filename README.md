@@ -35,7 +35,7 @@ Each workflow starts from one request. The examples below are what a user would 
 
 | Workflow | Example request |
 |---|---|
-| `review-and-fix` | "Review and fix this branch." or "Review docs/design/login.md against issue #212." One reviewer reads the target, what it must satisfy, and the related repositories; the findings are verified and fixed, and the fixes are rechecked once. The outcome is written on the ticket and in the pull request body. |
+| `review-and-fix` | "Review and fix this branch." or "Review docs/design/login.md against issue #212." One reviewer reads the target, what it must satisfy, and the related repositories; the findings are verified and fixed, and the fixes are rechecked, at most twice. The outcome is written on the ticket and in the pull request body. |
 | `review-until-approve` | "Review https://github.com/acme/app/pull/57 until it is approvable." Findings are classed as blockers or minor follow-ups. The approving review lists the minors. A finding in a file the diff touches but outside a hunk becomes a file comment. Threads the skill started for fixed or addressed findings are answered and resolved, and a draft is watched until it is ready. |
 | `ticket-to-pr` | "Take issue #212 through design, implementation and a PR." |
 | `initiative-to-prs` | "Turn this brief into tickets and take them to PRs." It writes the design, proposes the tickets, asks you once to approve the set, then runs each ticket with a worker in its own worktree. |

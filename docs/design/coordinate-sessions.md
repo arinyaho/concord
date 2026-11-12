@@ -36,9 +36,9 @@ A worker cannot wait for an answer. A `question` or `blocked` report ends the wo
 
 ## The worker prompt
 
-The prompt names the skill to run and the ticket, the repository, the worktree, the branch, the branch to cut it from and the base its pull request targets, the design document the unit implements, the files the unit owns and the files others own, the related repositories, the report directory, the project's rules file, and what the worker may do without asking: create its branch, commit and push to it, open a draft pull request and mark it ready when the work is done, request the reviewers the rules file names, comment on its own ticket and move its status, and file one follow-up ticket for minor points. Project rules stay in the rules file.
+The prompt names the skill to run and the ticket, the repository, the worktree, the branch, the branch its pull request targets, the local path of the design document the unit implements, the files the unit owns and the files others own, the related repositories, the report directory, the project's rules file, and for a successor the report it resumes from. What a worker may do without asking is in its instructions, not in each prompt: create its branch, commit and push to it, open a draft pull request and mark it ready when the work is done, request the reviewers the rules file names, edit its own ticket, and file one follow-up ticket for minor points. Project rules stay in the rules file.
 
-A unit of an initiative is cut from the design branch's head while the design's pull request is open, so that the worker can read the design, and from the base once that pull request has merged.
+A unit of an initiative reads the design by its local path: in the design branch's worktree while the design's pull request is open, and under `docs/` once it has merged. The unit is cut from the base like any other and never contains the design branch. When the design changes in its review after units started, the coordinating session tells the user which units were built against the earlier text and does not restart them by itself.
 
 ## Checking a delivery
 

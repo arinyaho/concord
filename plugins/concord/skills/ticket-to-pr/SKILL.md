@@ -13,7 +13,7 @@ One ticket, one branch, one pull request that carries the design and the code to
 - **State.** The design goes in the repository's `docs/`. The plan, progress, decisions, and the review record go on the ticket. The change, its checks, and the review summary are on the pull request. Keep nothing that matters anywhere else: a session with no memory of this work must be able to resume from the ticket and the pull request.
 - **Stopping.** Stop and ask only for a product decision (a choice that changes the acceptance criteria, the scope, or the design), for something only the user holds (a credential, hardware, an account, a human approval), or before a hard-to-reverse action the user has not authorized (a merge, a release, a deletion, a message to people outside the session). Give the options and a recommendation, and continue the work that does not depend on the answer. Record every other obstacle on the ticket and continue.
 - **Project rules.** Tracker commands, repository locations, the worktree directory, pull request conventions, and reviewers come from the project's rules file. Read it first.
-- **What this authorizes.** Creating the branch and worktree, commits and pushes to that branch, opening the draft pull request and marking it ready, requesting the reviewers the rules file names, comments and status moves on this ticket, and one follow-up ticket for minor points. Never merging, closing a pull request or a ticket, or anything on other pull requests.
+- **What this authorizes.** Creating the branch and worktree, commits and pushes to that branch, opening the draft pull request and marking it ready, requesting the reviewers the rules file names, edits to this ticket (body, comments, status), and one follow-up ticket for minor points. Never merging, closing a pull request or a ticket, or anything on other pull requests.
 
 ## The unit
 
@@ -23,11 +23,11 @@ The unit is one coherent ticket outcome; keep its changes together. Split it onl
 
 | # | Stage | Exit condition |
 |---|---|---|
-| 0 | Branch | A dedicated branch (in a worktree when the rules file says so) is cut from the branch your prompt names, otherwise from the base the pull request will target. Record two things on the ticket: the branch and commit it was cut from, and the base the pull request targets |
+| 0 | Branch | A dedicated branch (in a worktree when the rules file says so) is cut from the branch the pull request will target: the base, or for a stacked unit its prerequisite's branch |
 | 1 | Ticket | Every acceptance criterion names something an observer or a command can decide. The ticket has a review record. The ticket is in progress in the tracker |
 | 2 | Discriminating red | The harm the ticket names reproduces against the unchanged code, and the command and result are on the ticket |
-| 3 | Design document | Committed under `docs/`: the decision, what it costs, the residual exposure, and for a stateful change the table below. When a design document for the outcome exists, only what this unit decides is added to it |
-| 4 | Review the design | `review-and-fix` on the design document, or on what the unit added to it; its record is on the ticket |
+| 3 | Design document | Committed under `docs/`: the decision, what it costs, the residual exposure, and for a stateful change the table below. When your prompt names a design document, read it and write none |
+| 4 | Review the design | `review-and-fix` on the design document you wrote; its record is on the ticket. Skipped when you wrote none |
 | 5 | Plan | On the ticket. Each task ends in something that can be run and rejected on its own |
 | 6 | Implement | A test that fails first for the right reason, in the environment CI uses; then the smallest change that makes it pass |
 | 7 | Review the change | `review-and-fix` on the change; its record is on the ticket and in the pull request body |
@@ -55,20 +55,17 @@ If the red needs an image built or an environment stood up, build it. If the har
 
 ### Stage 3: the design document
 
-- **A design document for the outcome exists** (your prompt names it, or it is already under `docs/`): do not write another. Add to it, in a section of that document on your branch, only the decisions this unit itself makes. Stage 4 then reviews only what you added, and is skipped when you added nothing.
-- **No design document exists:** write one.
-
-When your branch was cut from an open design branch: merge the base in once the design pull request has merged, and merge the design branch in when the design changes in its review. Your pull request targets the base.
+- **Your prompt names a design document** (a unit of an initiative): read it at the path given. Do not write another and do not edit it. Record the decisions you make within it on the ticket and in the pull request body, link the design's pull request in the body, and skip stage 4. A decision that would change the design is a product decision: end with a `question` report.
+- **No design document exists** (a standalone ticket): write one.
 
 ### Stages 4 and 7: review
 
-Run the `review-and-fix` skill. Its review request names:
+Run the `review-and-fix` skill and fill its review request as it says. What is specific to each stage:
 
 | | Stage 4 | Stage 7 |
 |---|---|---|
-| Target | The design document's path; when the unit added to an existing one, the diff of that file against the branch it was cut from | The diff from the commit the branch was cut from (stage 0) to the head commit; after that branch or the base was merged into the unit, from the merge base with the branch it was cut from. The diff then holds this unit's changes and not the design document or a prerequisite's commits |
+| Target | The design document you wrote, at the head | The change, with the base as `review-and-fix` defines it |
 | Must satisfy | The ticket and its acceptance criteria, and the parent ticket or brief when there is one | The ticket's acceptance criteria and plan, and the design document's path |
-| Related repositories | The local path of each repository this unit depends on or that depends on it, with what connects it (a submodule pin, a package version, a shared format, an API); "unavailable" for one with no local checkout | The same list |
 | Evidence | The code and the red run the design rests on | The test commands, the commit they ran on, and the results |
 
 Review reads what is in front of it. When the design, the plan, the comments, and the diff share one false premise, review does not find it; the stage-2 run does. Two statements in the source that disagree are a reason to run the code, not to pick one.
@@ -80,7 +77,7 @@ If the review cannot run, write "review not run" and why on the ticket and in th
 1. Push the branch and open the pull request as a draft. It may be opened earlier, after the first push, so that CI runs.
 2. Write the body (see "The pull request body") and run the documentation sweep.
 3. Put the pull request link on the ticket and read it back.
-4. Wait for CI on the head commit with one blocking wait. When it fails for a reason the change caused, fix it, push, and wait again. A failure outside the change (a download, a registry, a runner) is recorded on the ticket and in the body, and the pull request stays a draft.
+4. Wait for CI on the head commit with one blocking wait. When it fails for a reason the change caused, fix it, push, and wait again, at most twice. A CI fix that changed code the stage 7 review covered, not only tests or configuration, goes into that review's next recheck, within its limit of two. A failure that remains, or one outside the change (a download, a registry, a runner), is recorded on the ticket and in the body; the pull request stays a draft, and your report says so.
 5. Mark the pull request ready when all three hold: no `blocker` finding is open, CI passed on the head, and every acceptance criterion has its evidence on the ticket or in the body. Otherwise it stays a draft, and the body and the ticket list what is open.
 
 Do not merge. `pr-to-merge` carries the pull request from here, under the user's merge authorization.
@@ -92,7 +89,6 @@ When one set of acceptance criteria needs several repositories, keep one ticket 
 - Record the red for the whole outcome once, against the unchanged combined system. A repository's green is not the outcome's green; say which one a result is.
 - A downstream unit records the exact upstream version or artifact it consumed. A proposed version is not a pin.
 - The ticket names one owner of the combined check and keeps the ordered list of units, pull requests, and checks.
-- A stacked unit is based on its prerequisite's branch, and its pull request targets that branch.
 - When the combined check cannot run yet (a release, a pin, or an environment is missing), record it on the ticket with its owner and what unblocks it. The unit pull requests proceed.
 
 ## Stateful changes

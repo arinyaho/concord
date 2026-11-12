@@ -15,7 +15,7 @@ Nothing here ends your run. When a reviewer cannot be started or returns nothing
 
 The reviewer runs the project's commands in your environment. Use this skill only for work you or the user own; a pull request by an author the user does not trust goes to `review-until-approve`.
 
-Invoking this skill authorizes: fixes in the target, commits on your own branch, the record on the ticket and the pull request, and one follow-up ticket for minor points. When the caller says follow-ups are to be returned, file nothing: list them in your result instead.
+Invoking this skill authorizes: fixes in the target, commits on your own branch, the record on the ticket and the pull request, and one follow-up ticket for minor points. When the caller asks for the outcome to be returned, write nothing to a ticket, a pull request, or the tracker: return the record and the follow-ups in your result.
 
 ## 1. Identify the target
 
@@ -25,11 +25,11 @@ Invoking this skill authorizes: fixes in the target, commits on your own branch,
 | A ticket URL or key | Ticket |
 | A branch, a pull request of your own, or nothing (the current branch) | Change |
 
-For a change, fix two commits now: the head, and the base it is reviewed against. The base is the commit the branch was cut from (named in your prompt, or recorded at `ticket-to-pr` stage 0), or, after that branch was merged in again, the merge base with it. This holds for a stacked unit and for a unit cut from a design branch too, so the diff holds only the change's own commits. Only when nothing says where the branch was cut from, use the merge base with the pull request's base branch. Fetch, and use the commit hashes from here on.
+For a change, fix two commits now: the head, and the base, which is the merge base of the head with the branch the pull request targets or will target. Fetch first, and use the commit hashes from here on.
 
 ## 2. Write the review request
 
-Give paths and commands. Never copy the target into another file, with one exception: when no command prints a ticket, save the ticket's text (for a change, its acceptance criteria and plan) to a file among your working documents and give that path. Fill every row, and write "none" or "unavailable" where that is the truth.
+Give paths and commands wherever they exist. Text that exists only in your conversation, or in a tracker no command can print, is saved to a file among your working documents, and you give that path. Copy nothing else. Fill every row, and write "none" or "unavailable" where that is the truth.
 
 ```
 Target kind: <design document | ticket | change>
@@ -50,8 +50,8 @@ Find the related repositories from the project's rules file, the repository's su
 Start one subagent of your own harness in a fresh context, on the most capable model class the harness offers, and wait for it with one blocking wait.
 
 - Where the `reviewer` agent definition is available (Claude Code: agent type `concord:reviewer`), start it with the review request as its whole prompt.
-- Otherwise the prompt is the content of `references/reviewer.md` next to this file, followed by the review request. Use the harness's own subagent whenever it has one.
-- Under Codex, only when no subagent can be started, run one separate Codex process in the same checkout: `codex exec --cd <checkout> --sandbox workspace-write --skip-git-repo-check "<prompt>"`. The reviewer needs the writable sandbox to run the project's checks and is still told not to edit; without `--skip-git-repo-check` the process waits forever in a directory Codex does not trust.
+- Otherwise the prompt is the content of `references/reviewer.md` next to this file, followed by the review request.
+- Under Codex, only when no subagent can be started, run one separate Codex process in the same checkout, with these flags exactly: `codex exec --cd <checkout> --sandbox workspace-write --skip-git-repo-check "<prompt>"`.
 - Never start another vendor's agent.
 
 The result has three parts: **Findings** (each with a severity of `blocker`, `should-fix`, or `minor`, a location, a reason, and evidence), **Unverified** (what it could not check and why), and **Covered** (what it read).
@@ -60,7 +60,7 @@ The result has three parts: **Findings** (each with a severity of `blocker`, `sh
 
 1. Check each finding against the code or the documents before acting on it. Reject a wrong finding and keep the evidence for the record.
 2. Fix every accepted `blocker` and `should-fix`. For a change, commit the fixes in ordinary commits.
-3. Fix a `minor` when the fix is small. Collect the other minors into one follow-up ticket in the project's tracker, or return them in your result when the caller asked for that.
+3. Fix a `minor` when the fix is small. Collect the other minors into one follow-up ticket in the project's tracker, or return them when the caller asked for the outcome to be returned.
 
 A finding that needs a choice changing the acceptance criteria, the scope, or the design is a product decision: put it to the user with the options and your recommendation, and go on with the findings that do not depend on it.
 
@@ -85,7 +85,7 @@ When a later merge of the base changes lines the review covered, ask for a reche
 
 ## 6. Record
 
-Write the outcome where the work's state lives. Nothing else is stored.
+Write the outcome where the work's state lives, or return it when the caller asked for that. Nothing else is stored.
 
 - **Ticket:** a comment with the reviewed commit (or the document and its commit), each finding with its severity and what was done about it, any fix that was not rechecked, each rejected finding with its evidence, and the unverified items. For a design document, the comment goes on the ticket the document belongs to.
 - **Pull request body**, when there is one: the same summary.

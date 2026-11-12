@@ -40,9 +40,9 @@ Keep these classes apart in what you write:
 
 ## 3. Write the design
 
-Write the design document under `docs/`, on a design branch of the repository that owns it: the behavior the initiative commits to, the decisions with what each costs, the alternatives rejected, and the residual exposure. Run the decisions `model-routing.md` names through a Deep model first. Commit it; do not push yet.
+Write the design document under `docs/`, on a design branch in its own worktree of the repository that owns it: the behavior the initiative commits to, the decisions with what each costs, the alternatives rejected, and the residual exposure. Run the decisions `model-routing.md` names through a Deep model first. Commit it; do not push yet.
 
-Review it with `review-and-fix` (target: the document; must satisfy: the brief; related repositories named). Ask for follow-ups to be returned, not filed: nothing is written to the tracker before the checkpoint. Keep the review's result and its minor points.
+Review it with `review-and-fix` (target: the document; must satisfy: the brief, saved to a working document when it exists only in the conversation). Ask for the outcome to be returned: nothing is written to the tracker before the checkpoint. Keep the record and the minor points.
 
 If current behavior already satisfies the objective, propose closing the initiative with that evidence instead of writing tickets.
 
@@ -61,7 +61,7 @@ When one set of acceptance criteria needs several repositories, propose one tick
 
 Check every acceptance criterion: rewrite any that no command or observation can decide. Do not prescribe file paths you have not traced.
 
-Then review the set with `review-and-fix` (target kind: ticket; target: the file; must satisfy: the design document; related repositories named), again with follow-ups returned. Fix what it finds in the file.
+Then review the set with `review-and-fix` (target kind: ticket; target: the file; must satisfy: the design document), again with the outcome returned. Fix what it finds in the file.
 
 ## 5. The checkpoint
 
@@ -79,7 +79,7 @@ With the approval, and without a second checkpoint:
 2. Write or update the parent issue: a checklist with one item per unit, in order, with each unit's dependencies; the user's approval of the set as a decision record; and the record of the design review.
 3. Read every ticket back and compare title, body, acceptance criteria, links, and status with what was approved. Fix a difference and read it again.
 4. File the minor points held from both reviews as one follow-up ticket.
-5. Push the design branch and open a pull request for the design document: ready for review when its review left no `blocker` open, otherwise a draft with the open finding listed in its body. It merges like any other pull request, through `pr-to-merge`. The units start either way.
+5. Push the design branch and open a draft pull request for the design document. Mark it ready when its review left no `blocker` open and CI has passed on its head; otherwise it stays a draft with the reason in its body. It merges like any other pull request, through `pr-to-merge`. The units start either way.
 
 A tracker field or transition the provider refuses is recorded on the ticket and in your report; the work continues.
 
@@ -87,9 +87,9 @@ A tracker field or transition the provider refuses is recorded on the ticket and
 
 Follow the `coordinate-sessions` skill: one worker per unit, each in its own worktree, each running `ticket-to-pr`, each reporting through its report directory.
 
-- Every worker prompt names the design document's path and the branch to cut from. While the design pull request is open, a unit's branch is cut from the design branch's head; once it has merged, from the base. A unit's pull request targets the base. When the design pull request merges, the unit merges the base in; when the design changes in its review, the unit merges the design branch in.
+- Every worker prompt gives the local path of the design document: in the design worktree while the design's pull request is open, under `docs/` once it has merged. Units are cut from the base, never from the design branch, and do not edit the design document.
 - Start the units whose dependencies are met. Run in parallel only units with disjoint files whose contracts cannot change each other.
-- A unit that depends on an unmerged prerequisite in the same repository is stacked: it branches from the prerequisite's head, its pull request targets the prerequisite's branch, and its review is against the prerequisite's head commit.
+- A unit that depends on an unmerged prerequisite in the same repository is stacked: it is cut from the prerequisite's branch, and its pull request targets that branch.
 - A failure in one unit leaves the others' evidence standing. A failed upstream contract holds every unit that depends on it.
 - A unit that needs a released package or a deployment waits until the released version can be read back. Releasing and deploying are not part of this workflow.
 - When a worker finds that the unchanged code already satisfies its ticket, it reports that with the evidence. Closing or superseding the ticket is the user's decision.

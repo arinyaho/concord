@@ -46,7 +46,7 @@ test('ticket-to-pr has the ten stages in order, and stages 4 and 7 are review-an
   assert.match(rows[8], /Discriminating green/);
   assert.match(rows[9], /draft pull request.*marked ready when the work is done/i);
   const review = skill.split('### Stages 4 and 7: review\n')[1]?.split('\n### ')[0] ?? '';
-  for (const row of ['Target', 'Must satisfy', 'Related repositories', 'Evidence']) assert.match(review, new RegExp(`^\\| ${row} \\|`, 'm'), row);
+  for (const row of ['Target', 'Must satisfy', 'Evidence']) assert.match(review, new RegExp(`^\\| ${row} \\|`, 'm'), row);
   assert.match(review, /The ticket's acceptance criteria and plan, and the design document/);
 });
 
