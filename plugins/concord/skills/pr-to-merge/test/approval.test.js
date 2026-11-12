@@ -1,29 +1,37 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { world, pr, review, approve, gitPr } = require('./world');
+const { world, pr, review, approve, comment, gitPr } = require('./world');
 
 const repo = (...prs) => ({ 'acme/app': { prs } });
 const merges = (r) => r.writes.filter((c) => c[0] === 'pr');
+const merged = (n, head = `head${n}`) => [`merged acme/app#${n} into main (squash) head ${head.slice(0, 8)}`];
 
-test('an approval by a collaborator who was not requested counts, and the PR is squash-merged at its head', () => {
-  const w = world(repo(pr(1, { reviews: [approve('monalisa', 'head1', 10, { author_association: 'COLLABORATOR' })] })));
-  const r = w.run(['acme/app']);
-  assert.deepEqual(r.lines, ['merged acme/app#1 into main (squash) head head1']);
-  assert.deepEqual(merges(r), [['pr', 'merge', '1', '--repo', 'acme/app', '--squash', '--match-head-commit', 'head1']]);
-  assert.equal(r.code, 0);
+test('an approval by any account with write access counts, requested or not, and the PR is squash-merged at its head', () => {
+  for (const role of ['write', 'maintain', 'admin']) {
+    const r = world(repo(pr(1, { reviews: [approve('monalisa', 'head1', 10, { author_association: 'CONTRIBUTOR' })] })), { permissions: { monalisa: role } }).run(['acme/app']);
+    assert.deepEqual(r.lines, merged(1), role);
+    assert.deepEqual(merges(r), [['pr', 'merge', '1', '--repo', 'acme/app', '--squash', '--match-head-commit', 'head1']], role);
+  }
 });
 
-test('an approval by the author or by someone outside the repository does not count', () => {
-  for (const reviews of [
-    [approve('hubot', 'head1')],
-    [approve('stranger', 'head1', 10, { author_association: 'CONTRIBUTOR' })],
-    [approve('stranger', 'head1', 10, { author_association: 'NONE' })],
+test('an approval by the author, by a read-only member, or by an account whose access cannot be read does not count', () => {
+  for (const [reviews, permissions] of [
+    [[approve('hubot', 'head1')], {}],
+    [[approve('monalisa', 'head1')], { monalisa: 'read' }],
+    [[approve('monalisa', 'head1')], { monalisa: 'triage' }],
+    [[approve('monalisa', 'head1')], { monalisa: 'error' }],
   ]) {
-    const r = world(repo(pr(1, { reviews }))).run(['acme/app']);
-    assert.deepEqual(r.lines, []);
+    const r = world(repo(pr(1, { reviews })), { permissions }).run(['acme/app']);
+    assert.deepEqual(r.lines, [], JSON.stringify(permissions));
     assert.deepEqual(r.writes, []);
+    if (permissions.monalisa === 'error') assert.match(r.stderr, /permission of monalisa/);
   }
+});
+
+test('the write access of an approver is read once per scan', () => {
+  const r = world(repo(pr(1, { reviews: [approve('monalisa', 'head1')] }), pr(2, { reviews: [approve('monalisa', 'head2')] }))).run(['acme/app']);
+  assert.equal(r.calls.filter((c) => /permission$/.test(c[1] || '')).length, 1);
 });
 
 test('a reviewer whose latest review requests changes blocks, and a later comment-only review does not withdraw it', () => {
@@ -33,23 +41,32 @@ test('a reviewer whose latest review requests changes blocks, and a later commen
   ];
   for (const reviews of blocked) assert.deepEqual(world(repo(pr(1, { reviews }))).run(['acme/app']).writes, []);
   const cleared = [review('octo-dev', 'CHANGES_REQUESTED', 'head1', 9), approve('octo-dev', 'head1', 10)];
-  assert.deepEqual(world(repo(pr(1, { reviews: cleared }))).run(['acme/app']).lines, ['merged acme/app#1 into main (squash) head head1']);
+  assert.deepEqual(world(repo(pr(1, { reviews: cleared }))).run(['acme/app']).lines, merged(1));
+  const stranger = [approve('monalisa', 'head1', 10), review('stranger', 'CHANGES_REQUESTED', 'head1', 11, { author_association: 'NONE' })];
+  assert.deepEqual(world(repo(pr(1, { reviews: stranger }))).run(['acme/app']).lines, merged(1), 'a stranger\'s review is ignored');
 });
 
 test('reviews on a later page are read', () => {
-  const reviews = [review('a', 'COMMENTED', 'head1', 1, { body: '' }), review('b', 'COMMENTED', 'head1', 2, { body: '' }), review('c', 'COMMENTED', 'head1', 3, { body: '' }), approve('monalisa', 'head1', 10)];
-  assert.deepEqual(world(repo(pr(1, { reviews }))).run(['acme/app']).lines, ['merged acme/app#1 into main (squash) head head1']);
+  const reviews = [review('a', 'COMMENTED', 'head1', 1), review('b', 'COMMENTED', 'head1', 2), review('c', 'COMMENTED', 'head1', 3), approve('monalisa', 'head1', 10)];
+  assert.deepEqual(world(repo(pr(1, { reviews }))).run(['acme/app']).lines, merged(1));
+});
+
+test('a review with no commit covers nothing and does not stop the scan', () => {
+  const r = world(repo(pr(1, { reviews: [approve('monalisa', null)] }))).run(['acme/app']);
+  assert.deepEqual(r.lines, ['triage acme/app#1 head head1: approved on an older head only']);
+  assert.equal(r.stderr, '');
 });
 
 // The git history: c0 on main; the PR commits A (approved); then what each case adds.
-function covered(build, commits = {}) {
+function run(build, { commits = {}, issueComments = [] } = {}) {
   const g = gitPr(5, build);
-  const w = world({ 'acme/app': { prs: [pr(5, { headRefName: 'pr', headRefOid: g.head, reviews: [approve('monalisa', g.approved)] })], commits } });
+  const w = world({ 'acme/app': { prs: [pr(5, { headRefName: 'pr', headRefOid: g.head, reviews: [approve('monalisa', g.approved)], issueComments: issueComments.map((c) => c(g)) })], commits: typeof commits === 'function' ? commits(g) : commits } });
   return { g, w, r: w.run(['--checkout', `acme/app=${g.checkout}`, 'acme/app']) };
 }
+const stale = (g) => [`triage acme/app#5 head ${g.head.slice(0, 8)}: approved on an older head only`];
 
-test('an approval on an older head followed only by clean merges of the base covers the head', () => {
-  const { g, r } = covered(({ edit, sh }) => {
+test('an approval on an older head followed only by clean merges of the base covers the head, with no API call', () => {
+  const { g, r } = run(({ edit, sh }) => {
     sh('checkout', '-q', '-b', 'pr');
     const approved = edit('ONE\ntwo\nthree\n', 'A');
     sh('checkout', '-q', 'main'); edit('one\ntwo\nTHREE\n', 'B');
@@ -58,23 +75,8 @@ test('an approval on an older head followed only by clean merges of the base cov
     sh('checkout', '-q', 'pr'); sh('merge', '-q', '--no-edit', 'main');
     return { approved };
   });
-  assert.deepEqual(r.lines, [`merged acme/app#5 into main (squash) head ${g.head.slice(0, 8)}`]);
+  assert.deepEqual(r.lines, merged(5, g.head));
   assert.ok(!r.calls.some((c) => c.some((x) => /\/commits\//.test(x))), 'a clean base merge needs no API call');
-});
-
-test('merge commits by --self cover the head whatever they merged: a stack bottom whose squash failed merges on the next scan', () => {
-  // The bottom PR was approved at A; the script then merged the child (based on A) into it, and the squash failed.
-  const g = gitPr(5, ({ edit, sh }) => {
-    sh('checkout', '-q', '-b', 'pr');
-    const approved = edit('ONE\ntwo\nthree\n', 'A');
-    sh('checkout', '-q', '-b', 'child'); edit('ONE\ntwo\nthree\nchild\n', 'X');
-    sh('checkout', '-q', 'pr'); sh('merge', '-q', '--no-ff', '--no-edit', 'child');
-    return { approved };
-  });
-  for (const [author, expected] of [['octocat', [`merged acme/app#5 into main (squash) head ${g.head.slice(0, 8)}`]], ['hubot', [`triage acme/app#5 head ${g.head.slice(0, 8)}: approved on an older head only`]]]) {
-    const w = world({ 'acme/app': { prs: [pr(5, { headRefName: 'pr', headRefOid: g.head, reviews: [approve('monalisa', g.approved)] })], commits: { [g.head]: { author } } } });
-    assert.deepEqual(w.run(['--checkout', `acme/app=${g.checkout}`, 'acme/app']).lines, expected, author);
-  }
 });
 
 function conflictMerge({ edit, sh, work }) {
@@ -88,22 +90,46 @@ function conflictMerge({ edit, sh, work }) {
   return { approved };
 }
 
-test('a conflict-resolution merge made by --self covers the head; one made by anyone else does not', () => {
-  const g = gitPr(5, conflictMerge);
-  for (const [author, expected] of [['octocat', [`merged acme/app#5 into main (squash) head ${g.head.slice(0, 8)}`]], ['hubot', [`triage acme/app#5 head ${g.head.slice(0, 8)}: approved on an older head only`]]]) {
-    const w = world({ 'acme/app': { prs: [pr(5, { headRefName: 'pr', headRefOid: g.head, reviews: [approve('monalisa', g.approved)] })], commits: { [g.head]: { author } } } });
-    assert.deepEqual(w.run(['--checkout', `acme/app=${g.checkout}`, 'acme/app']).lines, expected, author);
+test('a conflict merge counts as --self\'s only by GitHub\'s own record or a --self marker comment, never by the author field', () => {
+  const cases = [
+    ['forged author', { commits: (g) => ({ [g.head]: { author: 'octocat', committer: 'octocat', verified: false } }) }, false],
+    ['web-flow, unverified', { commits: (g) => ({ [g.head]: { author: 'octocat', committer: 'web-flow', verified: false } }) }, false],
+    ['web-flow merge by someone else', { commits: (g) => ({ [g.head]: { author: 'hubot', committer: 'web-flow', verified: true } }) }, false],
+    ['web-flow merge by --self', { commits: (g) => ({ [g.head]: { author: 'octocat', committer: 'web-flow', verified: true } }) }, true],
+    ['marker by --self', { issueComments: [(g) => comment('octocat', 30, { body: `Merged main, keeping both sides.\n<!-- pr-to-merge:merge ${g.head} -->` })] }, true],
+    ['marker by someone else', { issueComments: [(g) => comment('monalisa', 30, { body: `<!-- pr-to-merge:merge ${g.head} -->` })] }, false],
+    ['marker by --self naming a short sha', { issueComments: [(g) => comment('octocat', 30, { body: `<!-- pr-to-merge:merge ${g.head.slice(0, 12)} -->` })] }, false],
+  ];
+  for (const [name, setup, covers] of cases) {
+    const { g, r } = run(conflictMerge, setup);
+    if (covers) assert.deepEqual(r.lines, merged(5, g.head), name);
+    else assert.deepEqual(r.lines.filter((l) => l.startsWith('triage') && l.endsWith('older head only')), stale(g), name);
+    if (!covers) assert.deepEqual(r.writes, [], name);
   }
 });
 
+test('a merge commit GitHub made for --self covers the head whatever it merged: a stack bottom whose child was merged into it merges', () => {
+  const build = ({ edit, sh }) => {
+    sh('checkout', '-q', '-b', 'pr');
+    const approved = edit('ONE\ntwo\nthree\n', 'A');
+    sh('checkout', '-q', '-b', 'child'); edit('ONE\ntwo\nthree\nchild\n', 'X');
+    sh('checkout', '-q', 'pr'); sh('merge', '-q', '--no-ff', '--no-edit', 'child');
+    return { approved };
+  };
+  const self = run(build, { commits: (g) => ({ [g.head]: { author: 'octocat', committer: 'web-flow', verified: true } }) });
+  assert.deepEqual(self.r.lines, merged(5, self.g.head));
+  const forged = run(build, { commits: (g) => ({ [g.head]: { author: 'octocat', committer: 'octocat' } }) });
+  assert.deepEqual(forged.r.lines, stale(forged.g));
+});
+
 test('any other commit after the approval leaves only an older head approved, reported once per head', () => {
-  const { g, w, r } = covered(({ edit, sh }) => {
+  const { g, w, r } = run(({ edit, sh }) => {
     sh('checkout', '-q', '-b', 'pr');
     const approved = edit('ONE\ntwo\nthree\n', 'A');
     edit('ONE\nTWO\nthree\n', 'more work');
     return { approved };
   });
-  assert.deepEqual(r.lines, [`triage acme/app#5 head ${g.head.slice(0, 8)}: approved on an older head only`]);
+  assert.deepEqual(r.lines, stale(g));
   assert.deepEqual(r.writes, []);
   assert.deepEqual(w.run(['--checkout', `acme/app=${g.checkout}`, 'acme/app']).lines, []);
 });
@@ -111,4 +137,11 @@ test('any other commit after the approval leaves only an older head approved, re
 test('without --checkout only an approval on the current head covers it', () => {
   const r = world(repo(pr(1, { reviews: [approve('monalisa', 'older')] }))).run(['acme/app']);
   assert.deepEqual(r.lines, ['triage acme/app#1 head head1: approved on an older head only']);
+});
+
+test('a --checkout path that is not a clone is a usage error', () => {
+  const w = world(repo());
+  const r = w.run(['--checkout', `acme/app=${w.dir}`, 'acme/app']);
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /merge-tree --write-tree/);
 });
