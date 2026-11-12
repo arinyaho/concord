@@ -650,7 +650,7 @@ function attempt(repo, pr, ledger, file) {
     return { event: 'published', round: n, mode: range.broad ? 'broad' : 'diff', review: input.approve ? 'APPROVE' : 'COMMENT', new: fresh.length, fixed: fixedIds.length, ...(addressedIds.length && { addressed: addressedIds.length }), ...(addressedRejected.length && { addressedRejected }), stillOpen: openIds.length, open: openNow, ...(unreviewed.length && { unreviewed }), ...(verdictNow.approve ? {} : { notApproved: verdictNow.reason }), ...(held.length && { held, hint: 'These findings cannot be settled from the code; run waive <key> (or waive <id> when the id is unique) to dismiss one you accept, or reclass <key> minor --reason <line> if it should not block.' }) };
   } catch (error) {
     // Any failure after the head snapshot is recorded with the head it tried, so the watch waits for a newer head or reply; the ledger is read again because a pending approval marker may have been saved meanwhile.
-    save(file, { ...load(file), attempt: { head: snap.head, intent: snap.intent, at: new Date().toISOString(), reason: String(error.message).slice(0, 500) } });
+    save(file, { ...load(file), attempt: { head: snap.head, intent: snap.intent, at: new Date().toISOString() } });
     throw error;
   } finally { if (dir) fs.rmSync(dir, { recursive: true, force: true }); }
 }
