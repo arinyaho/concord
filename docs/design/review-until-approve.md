@@ -1,6 +1,6 @@
 # review-until-approve
 
-`review-until-approve` reviews a pull request the user did not write. It reviews the pull request, publishes the verified findings as one GitHub review per round, waits for the author to push or reply, reviews what changed, and approves the reviewed head once nothing blocks. What it changes is limited to that pull request: its reviews, its replies in the threads it started, the resolution of those threads, and its own `review-blocked` label. It never requests changes, merges, or pushes to the branch. It follows the rules in [workflow-state-and-stops.md](workflow-state-and-stops.md) and uses the review request and result of [independent-review.md](independent-review.md), adapted to a target the user does not trust.
+`review-until-approve` reviews a pull request the user did not write. It reviews the pull request, publishes the verified findings as one GitHub review per round, waits for the author to push or reply, reviews what changed, and approves the reviewed head once nothing blocks. What it changes is limited to that pull request: its reviews, its replies in the threads it started, the resolution of those threads, the conversation comments that record the user's decisions, and the `review-blocked` label, whose only owner is this skill. It never requests changes, merges, or pushes to the branch. It follows the rules in [workflow-state-and-stops.md](workflow-state-and-stops.md) and uses the review request and result of [independent-review.md](independent-review.md), adapted to a target the user does not trust.
 
 Invoking the skill on a pull request authorizes every review it posts there, the approval included, and every change it makes to its `review-blocked` label. Invoking it again on the same pull request resumes the work from the pull request alone.
 
@@ -50,9 +50,11 @@ A finding's key is `<round>.<index>`, for example `3.2`. The key is unique by co
 
 Only the user changes a published finding's class, and only the user waives one.
 
-**Reading.** The state is the state marker of the newest review the account submitted, with the decisions the account posted after it applied in order. To that the script adds from GitHub: each finding's thread (resolved or not, and its comments after the skill's last comment), the author's conversation comments, the live head, title, body, draft status, and whether the account already approved the live head. A dismissed approval of the live head counts as given, because a person withdrew it.
+**Reading.** The state is the state marker of the newest review the account submitted, with the decisions the account posted after it applied in order. To that the script adds from GitHub: each finding's thread (resolved or not, and its comments newer than the newest state review), the conversation comments newer than that review, the live head, title, body, draft status, and whether the account already approved the live head. A dismissed approval of the live head counts as given, because a person withdrew it.
 
-**Whose comments count.** A marker counts only at its fixed position, and only on a review or comment authored by the reviewing account. A marker anywhere else is ignored, and so is a marker that the pull request's author or anyone else writes. Two accounts that review the same pull request have separate states.
+**Whose comments count.** A review or comment is the skill's only when the reviewing account authored it and it carries the skill's marker at the fixed position. A marker anywhere else is ignored, and so is a marker that the pull request's author or anyone else writes. A comment by the reviewing account without the marker, such as one the user types or one another tool posts as the same account, is not the skill's: it changes no state and does not hide an earlier reply. Two accounts that review the same pull request have separate states.
+
+**What is pending.** A head is pending when it is not the reviewed head of the newest state review. A reply is pending when it is newer than the newest state review and its author is the pull request's author or an account with write access to the repository. A reply is a comment in a finding's thread or a conversation comment. Comments by other accounts are ignored. Every round publishes a state review, so a round covers every reply that was pending when it started.
 
 **Edited or deleted markers.** The skill never edits what it posted. A counting item that GitHub reports as edited (`lastEditedAt` is set) makes the state unreadable. So does a state marker that does not parse, or a decision that names an unknown key. With unreadable state the skill approves nothing. Its next round is a broad round with no prior findings, and that review says the earlier record was not used. A deleted finding comment loses only the thread: the finding is still in the state marker, and its later replies go into the review body. A submitted review cannot be deleted, so the state marker cannot be removed except by an edit, and an edit is detected.
 
@@ -71,9 +73,16 @@ A `decision` marker is written only by `decide`. `decide` takes the key, the dec
 
 ## The round
 
-The session runs a round when the pull request has no round yet, when the watch reports an event, and when the user invokes the skill on a pull request whose live head was not reviewed. An explicit invocation runs a round at once whenever the live head was not reviewed, or the last round on it failed.
+The session runs a round when the pull request has no round yet, when the watch reports an event, and when the user invokes the skill while a head, a reply, or a description change is pending. An explicit invocation runs a round exactly when something is pending, whatever the notice record holds. A failed round leaves nothing on the pull request, so its head or reply is still pending, and the next invocation retries it.
 
-1. **Lock.** `prepare` takes one lock for the machine, for any pull request and account. The lock is a file in the per-user state directory, created exclusively with owner-only permissions. It writes the active round's directory to the fixed file the hook reads. A lock whose holder is not running, or that is older than two hours, is stale and is taken over. While another round holds a live lock, `prepare --wait` waits, without a model call, until the lock frees, and then runs the round. Under Claude Code the session runs it as a background command. Under Codex, `prepare` reports `locked`, and the session tells the user and ends the turn.
+1. **Lock.** `prepare` takes one lock for the machine, for any pull request and account. The lock is a file in the per-user state directory, created exclusively with owner-only permissions. The lock bounds what the hook allows, so it is never taken over from a running holder:
+   - The holder is the session's own harness process, the ancestor process of the script that runs the session. The lock records that process's id and start time.
+   - The holder is not running when no process with that id and start time exists. Only then is the lock taken over. There is no age limit.
+   - A Claude Code subagent ends with its session. A Codex agent is a child of `review`, which ends it when `review` ends, and its profile is fixed when it starts. So no agent of an earlier round runs once its holder is gone.
+   - Only `prepare` writes the active-round file, and only while it holds the lock. The file names the active round's directory, and the round clears it when the round ends.
+   - A round that should not go on is ended by ending its holder; `prepare` never ends another round.
+
+   While another round holds the lock, `prepare --wait` waits without a model call until the lock frees, and then runs the round. Under Claude Code the session runs it as a background command. Under Codex, `prepare` reports `locked`, and the session tells the user and ends the turn.
 2. **Inputs.** `prepare` makes the round directory, a fresh directory with owner-only permissions, in the operating system's temporary directory. It records there which state review the round starts from. It writes:
    - the checkout at the exact head;
    - the diff from the base to the head;
@@ -125,7 +134,7 @@ The session runs a round when the pull request has no round yet, when the watch 
    `publish` prints the event, the review link, the counts of new, fixed, answered, and open findings by class, the rejected count, and the keys. A resolution or label change that GitHub refuses, as it does for an account without write access, is printed as a fixed code and not retried in later runs. The reply is still posted, and the finding's status is in the state marker.
 8. **Approval.** The review is `APPROVE` exactly when all of these hold at submission: the live head is the reviewed head; the pull request is open and not a draft; the account is not the author; the state the review records has no open `blocker`; every submodule change in the pull request diff is covered by a user decision; and the account has no approval of this head. Otherwise it is `COMMENT`. An approving review lists the open minors as follow-ups. CI results are evidence for the agents, not part of the condition: merge gating belongs to branch protection.
 
-The script removes the round directory and frees the lock when the round ends.
+When the round ends, on success or failure, the script clears the active-round file, removes the round directory, and then frees the lock.
 
 A head that only merges the base needs no agent. When the last reviewed head is an ancestor of the live head, and the pull request diff (merge base to head) has the same `git patch-id --verbatim` at both heads, the round skips steps 2 to 6. It publishes a review that carries the state forward and approves under the same condition.
 
@@ -137,9 +146,9 @@ The user may ask for the findings in a language. The state marker records the la
 
 ## Approvals and `pr-to-merge`
 
-The approval this skill posts is by the user's account, and it is the verdict of agents reading text the user does not trust. `pr-to-merge` never counts an approval made by its own `--self` account, whatever the review body contains. When the reviewing account is that account, a person's approval is still needed for an automatic merge.
+The approval this skill posts is by the user's account, and it is the verdict of agents reading text the user does not trust. `pr-to-merge` counts neither an approval made by its own `--self` account nor any approval whose review body carries this skill's state marker, whichever account posted it. A person's approval is still needed for an automatic merge. This skill's unresolved finding threads are open points there and hold a merge too.
 
-`pr-to-merge` treats a pull request that carries either `blocked` or `review-blocked` as held. Each label has one owner: this skill adds and removes only `review-blocked`, and `pr-to-merge` adds and removes only `blocked`. Neither skill can therefore lift the other's hold. `review-blocked` holds a merge that another person approved while this skill's state records an open blocker. This matters for a blocker published only in a review body, because `pr-to-merge` reads open threads but not a review body that its own account wrote.
+`pr-to-merge` treats a pull request that carries either `blocked` or `review-blocked` as held. `review-blocked` has one owner, this skill, which adds and removes it and never touches `blocked`. So `pr-to-merge` cannot lift this skill's hold, and this skill cannot lift any other. `review-blocked` holds a merge that another person approved while this skill's state records an open blocker. This matters for a blocker published only in a review body, because `pr-to-merge` reads open threads but not a review body that its own account wrote.
 
 ## Waiting
 
@@ -147,8 +156,8 @@ The approval this skill posts is by the user's account, and it is the verdict of
 
 | Line | When |
 |---|---|
-| `head <sha>` | The live head is not the last reviewed head and has not changed for five minutes |
-| `reply <keys>` | Someone other than the account commented in a finding's thread, or the author commented in the conversation, after the skill's latest comment there. No new comment has arrived for five minutes |
+| `head <sha>` | The head is pending and has not changed for five minutes |
+| `reply <keys>` | A reply is pending (see What is pending), and no new comment has arrived for five minutes |
 | `description` | The hash of the title and body differs from the one in the state marker. It has not changed for five minutes |
 | `ready` | The last review was clean and did not approve only because the pull request was a draft, the pull request is no longer a draft, and the head is unchanged |
 | `merged`, `closed` | The pull request reached that state |
@@ -174,7 +183,7 @@ No outcome needs the user unless it is one of the three stop cases. The pre-subm
 | Case | Behavior |
 |---|---|
 | Another round on this machine holds a live lock | `prepare --wait` waits until it frees and then runs the round. The waiting session does not depend on the watch printing the line again |
-| The lock's holder is not running, or the lock is older than two hours | Stale. This session takes it over and runs the round |
+| The lock's holder process no longer exists | This session takes the lock over and runs the round. A lock whose holder is running is never taken over, however old it is |
 | A session elsewhere published first | The pre-submit read finds the newer state review. `publish` posts nothing and prints `superseded`, and the session watches |
 | An agent cannot start (not installed, not logged in) | Nothing is posted. The session tells the user what is missing (a stop case: only the user holds it) |
 | An agent's output is missing or malformed, its final message is not `done`, or the verified list fails a mechanical check | That agent runs once more. If it fails again, the round is failed: nothing is posted, the session tells the user the round failed with the fixed reason, and the watch waits for the next event. Invoking the skill again runs the round again at once |
@@ -216,7 +225,7 @@ Each takes its input as arguments and files, prints one JSON line, and depends o
 
 **Markers have fixed positions, and agent text is escaped.** The account's own comments are what the state is read from, and what other bots on the repository obey. Writing markers only from fields the script controls, at positions agent text cannot reach, keeps an agent from forging state. Escaping keeps it from mentioning people or issuing commands under the user's name.
 
-**One round per machine binds each agent to its round.** The hook and the profile need to know which directory is the round's. One active round, named in one file, makes that a single exact path. Rounds take minutes and waiting for the author takes days, so running rounds one at a time costs little.
+**One round per machine binds each agent to its round.** The hook and the profile need to know which directory is the round's. One active round, named in one file, makes that a single exact path. A round is short next to the days spent waiting for the author, so running rounds one at a time costs little. The lock is what makes the active-round file true, which is why it is taken over only from a holder that no longer exists, never by age.
 
 **Nothing private goes where a public review can quote it.** An agent may quote anything it reads into a finding, and the finding is posted where the pull request's readers see it. A public pull request's readers include everyone. Same-owner material on a private pull request is the same audience the project already shares.
 
@@ -253,7 +262,7 @@ Each takes its input as arguments and files, prints one JSON line, and depends o
 ## Residual exposure
 
 - **The session's only inputs are the agents' final messages and the scripts' output.** The scripts' output is built from counts, keys, hashes, links, and a fixed vocabulary, so no text from the pull request passes through it. Under Claude Code, an agent's final message does reach the session. That it is `done` or `failed` is an instruction in the agent definition, not an enforced limit. A steered agent can return any text. The session's rule is to act on nothing but those two words, and that rule is itself an instruction the session follows.
-- **Text that steers both agents can still get a pull request approved.** It could make the reviewer omit a defect and the verifier confirm a wrong `fixed` or `answered`. The mechanical checks catch only what is exact: spans, keys, markers, and tokens. The reply in each thread is the record that the author and the user can contest. `pr-to-merge` does not merge on this approval alone when the reviewing account is its own `--self` account.
+- **Text that steers both agents can still get a pull request approved.** It could make the reviewer omit a defect and the verifier confirm a wrong `fixed` or `answered`. The mechanical checks catch only what is exact: spans, keys, markers, and tokens. The reply in each thread is the record that the author and the user can contest. `pr-to-merge` does not merge on this approval alone.
 - **Escaping stops markers, mentions, and line-start commands, not prose.** A steered agent can still post misleading or offensive text, a link, an issue reference that GitHub cross-links, or wording that asks a person to do something. Its readers see it as the reviewing account's.
 - Each round costs two agent runs, the reviewer and the verifier.
 - The reviewer misses defects that a second independent review would find, as in `independent-review.md`; the verifier checks the candidates and does not search for new ones.
@@ -262,7 +271,7 @@ Each takes its input as arguments and files, prints one JSON line, and depends o
 - The agents cannot run anything, so claims about runtime behavior rest on reading and on CI, and the result lists them as Unverified. Under Codex, a command an agent runs despite the request runs inside the profile, where the pull request's code can run but can reach no network, no home, and no credential.
 - On Claude Code, confinement depends on the hook. The log check stops a round in which the hook did not run. On a host with hooks off, an agent steered by a pull request written against this design could forge the log through its unrestricted `Write`.
 - **Two sessions on different machines can both run a round.** The pre-submit read makes the second post nothing unless both submit within the same few seconds. Inside that window, two reviews for the same round can appear. The next round reads the newer one, and the older one's comments remain as duplicates.
-- Rounds on one machine run one at a time, so a second pull request's round waits for the first to finish.
+- Rounds on one machine run one at a time, so a second pull request's round waits for the first to finish. A session that keeps the lock without finishing its round holds every other round on the machine until the session or the user ends it.
 - Rejected findings are not published, and the session sees only their count. A finding the verifier rejected wrongly is lost for that round unless the reviewer raises it again.
 - An account without write access cannot resolve threads or change the label. Its findings' state is then readable only from the state marker and the replies, and a body-only blocker does not hold a merge in `pr-to-merge`.
 - Where the harness cannot express a read allow-list for the Codex agents, the skill does not run on that harness; it does not fall back to a deny-list.
