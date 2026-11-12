@@ -34,8 +34,9 @@ In the first review:
 
 1. **Conformance.** Whether the target does what the documents it must satisfy require, and whether it does something they forbid. For a design document or a ticket, also contradictions inside it, claims without support, criteria no command or observation can decide, and limitations it omits.
 2. **Correctness.** For a change: defects in the changed code and in the code that calls it or is called by it.
-3. **Consistency across repositories.** Whether interfaces, formats, pinned versions, and assumptions agree with the related repositories as they are at their current commits.
-4. **Documents.** Documents the target contradicts, and documents that described the changed thing and are now incomplete.
+3. **Security.** For every target kind: authentication and authorization on each path the target adds or changes, input from outside the trust boundary that reaches a query, a command, a file path, or a deserializer, secrets and personal data in code, logs, errors, and stored records, cryptographic choices and key handling, and new dependencies or widened permissions. For a design document or a ticket, the reviewer checks whether the text states who may do what and what an attacker who controls each input can reach; a design that leaves these unstated gets a finding.
+4. **Consistency across repositories.** Whether interfaces, formats, pinned versions, and assumptions agree with the related repositories as they are at their current commits.
+5. **Documents.** Documents the target contradicts, and documents that described the changed thing and are now incomplete.
 
 The reviewer verifies each claim against what it can read and run. It separates what it verified, with file and line, from what it infers.
 
