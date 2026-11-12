@@ -163,7 +163,7 @@ Invariants:
 
 ## Rationale
 
-- Enforcing at evidence acceptance keeps native drivers on their host's own subagent mechanism. Spawning native reviewers from code, as the Codex runner does, would give a physical gate but replaces the host's subagent mechanism with a process runner and is a separate product. A Claude subagent hook does not see reviewers launched from a shell.
+- Enforcing at evidence acceptance keeps native drivers on their host's own subagent mechanism. Spawning native reviewers from code, as the Codex runner does, would give a physical gate but replaces the host's subagent mechanism with a process runner and is a separate product. A pre-launch hook does not work either: a Claude subagent hook does not see reviewers launched from a shell.
 - Reserving each launch of a fan-out individually would let concurrent lenses and votes deny each other on lock contention and could leave a fan-out half granted, so batches are reserved as a unit.
 - Keying the run ledger by revision pair keeps the terminal refusal a plain equality check and keeps budget accounting global per key, which is the bound the budget exists to enforce. The cost is weaker same-ref traceability, mitigated by recording the ref on every target and disposition.
 - Rejected for revision pairs: reopening the old target on a new revision (it erases the evidence that the earlier pair was reviewed and lets a terminal pair be reviewed again by changing nothing); keying only by ref and resetting on a revision change (the refusal would depend on mutable heads and would not survive a base change); making the per-ref target ledger per pair (verbs after `round-start` receive only the ref, so head and base would have to be threaded through every verb, and unkeyed behavior would change).

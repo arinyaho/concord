@@ -1,6 +1,7 @@
 'use strict';
-// Native Claude review CLI: keyed initiative budget, batch reservation,
-// and enforcement at evidence acceptance. Runs the scenarios against the CLI entry point.
+// Native review CLI (Claude and Codex): keyed initiative budget, batch reservation,
+// and enforcement at evidence acceptance. Runs the same scenarios against both
+// packages' CLI entry points.
 const { test } = require('node:test');
 const assert = require('node:assert');
 const crypto = require('node:crypto');
@@ -17,6 +18,7 @@ const { tempDir } = require('./temp-dir');
 const PLUGINS = path.join(__dirname, '..', '..', '..');
 const PROVIDERS = {
   claude: path.join(PLUGINS, 'concord', 'hooks', 'review-cli.js'),
+  codex: path.join(PLUGINS, 'concord-codex', 'bin', 'review-cli.js'),
 };
 
 const tmp = (p) => tempDir(p);
@@ -526,6 +528,26 @@ for (const provider of Object.keys(PROVIDERS)) {
     assert.strictEqual(fs.readdirSync(t.initDir).length, 0);
   });
 }
+
+test('cross-provider: the reserve verb answers identically (AC6)', () => {
+  const answers = Object.keys(PROVIDERS).map((provider) => {
+    const t = setup(provider, { maxLaunches: 2 });
+    t.start();
+    return ['correctness', 'lens', 'verify'].map((role) => {
+      const { token, reservationIds, ...rest } = t.ok(['reserve', 'feat/x', role]);
+      if (rest.status === 'granted') {
+        assert.strictEqual(reservationIds.length, rest.count);
+        assert.strictEqual(new Set(reservationIds).size, rest.count);
+        for (const id of reservationIds) {
+          assert.match(id, /^[0-9a-f]{32}:\d+$/);
+          assert.ok(!id.includes(token), 'accounting IDs must be independent of grant tokens');
+        }
+      } else assert.strictEqual(reservationIds, undefined);
+      return rest;
+    });
+  });
+  assert.deepStrictEqual(answers[0], answers[1]);
+});
 
 test('an interactive confirmation removes a stuck target lock; no answer or no leaves it (AC2)', () => {
   const { withTargetLock } = require('../../core/review-cli');

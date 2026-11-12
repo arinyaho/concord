@@ -334,6 +334,27 @@ test('guard still fails a release-shaped pull request that is not a plain stable
   assert.equal(releasePr(remote, tmp, '7', '0.9.0', null, (dir) => fs.rmSync(path.join(dir, 'VERSION'))).status, 1, 'VERSION deleted');
 });
 
+test('guard passes a pull request that deletes files outside the version-file set, even when they hold a version field', () => {
+  const { tmp, remote } = makeOrigin();
+  const files = ['tools/example/plugin.json', 'tools/example/marketplace.json'];
+  const base = clone(remote, path.join(tmp, 'base'));
+  for (const file of files) {
+    fs.mkdirSync(path.dirname(path.join(base, file)), { recursive: true });
+    fs.writeFileSync(path.join(base, file), '{"version": "0.9.0-beta.9"}\n');
+  }
+  git(base, 'add', '-A');
+  git(base, 'commit', '-q', '-m', 'add example files');
+  git(base, 'push', '-q', 'origin', 'HEAD:main');
+  const dir = clone(remote, path.join(tmp, 'pr-delete'));
+  git(dir, 'rm', '-q', ...files);
+  git(dir, 'commit', '-q', '-m', 'Delete example files');
+  git(dir, 'push', '-q', 'origin', 'HEAD:refs/pull/9/head');
+  const trusted = clone(remote, path.join(tmp, 'trusted-delete'));
+  git(trusted, 'fetch', '-q', '--no-tags', 'origin', 'refs/pull/9/head:refs/pr/head');
+  const result = runBump(trusted, 'guard', 'origin/main', 'refs/pr/head');
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('isStableUpgrade accepts only a stable version above the base by SemVer precedence', async () => {
   const { isStableUpgrade } = await loadBump();
   assert.equal(isStableUpgrade('0.9.0-beta.9', '0.9.0'), true);

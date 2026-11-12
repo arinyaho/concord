@@ -1,4 +1,4 @@
-# Install, update and remove
+# Install and update
 
 The Claude Code steps are in the [README](../README.md). This page covers Codex.
 

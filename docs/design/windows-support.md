@@ -44,7 +44,7 @@ Quoting does not stop cmd.exe from reading an embedded line break as a command s
 
 ## Bundle parity
 
-Drift tests assert that `plugins/concord-codex/engine/` stays byte-identical to the shared core files they vendor, including `spawn-cross-platform.js`.
+Drift tests assert that `plugins/concord-codex/engine/` stays byte-identical to the shared core files it vendors, including `spawn-cross-platform.js`.
 
 ## Non-goals
 
