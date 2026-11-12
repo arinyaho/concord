@@ -20,12 +20,11 @@ These kinds of local file are allowed. None records the state of the work, and e
 
 - **Working documents.** A coordinating session keeps one state document (the user's standing authorizations with their words and dates, the list of work units and their pull requests, and lessons) and receives worker reports as files. They are plain Markdown, written and read by agents. The progress and decisions in them are also on the ticket. Deleting them loses convenience and the record of standing authorizations; a successor then asks the user again.
 - **Notice records.** A polling script may keep a file of the notices it has already printed, so that it does not print them twice. Deleting the file causes a repeated notice and nothing else. No script reads such a file to decide whether a pull request merges or a review passes.
-- **Locks.** A script may keep a lock file so that two runs do not work on the same thing at once. A lock decides only whether a run may start. Deleting one lets two runs overlap. `review-until-approve` uses one so that only one round runs at a time on a machine; an overlap there would also check one round's agents against another round, so its lock is taken over only when its holder is not running.
+- **Locks.** A script may keep a lock file so that two runs do not work on the same thing at once. A lock decides only whether a run may start, and a run takes one over only when its holder is not running. Deleting one lets two runs overlap.
 - **Configuration the user writes.** For example the options of a scheduled run. It decides what the user wrote it to decide, which can include an authorization such as merging. No workflow writes it.
-- **Confinement records.** The file that names `review-until-approve`'s active round, written under its lock. It decides only what a confined agent may read and write.
-- **Logs.** Output kept for a person to read. The session does not read them, and they decide nothing.
+- **Logs.** Output kept for a person to read, such as the GitHub messages a polling script does not print. The session does not read them, and they decide nothing.
 
-Minor points that a workflow does not fix are collected into one follow-up ticket in the project's tracker. `pr-to-merge` files a GitHub issue instead, because the pull request it works on is on GitHub.
+Minor points that a workflow does not fix are collected into one follow-up ticket in the project's tracker.
 
 ## When a workflow stops
 
@@ -72,7 +71,7 @@ A coordinating session hands a unit of work to a worker. A worker is a subagent 
 - A `done` report lists the pull request URL, the head commit, the CI result for that head, the review findings with how each was handled, and each acceptance criterion with its evidence or the statement that it is not met.
 - Project rules (repository locations, the worktree directory, pull request conventions, the tracker, reviewers to request) live in the project's own rules file. The worker prompt gives the path to that file; the skills do not contain project rules.
 
-This document relies on two of Concord's agent definitions: the implementer, which carries one ticket through `ticket-to-pr` in its worktree and reports a new design choice instead of making it, and the reviewer, which is described in [independent-review.md](independent-review.md). `review-until-approve` has its own confined agents.
+This document relies on two of Concord's agent definitions: the implementer, which carries one ticket through `ticket-to-pr` in its worktree and reports a new design choice instead of making it, and the reviewer, which is described in [independent-review.md](independent-review.md). `review-until-approve` has its own agents.
 
 The decisions stay with the coordinating session. It takes as a decision only what the user wrote in its own conversation, together with the standing authorizations its state document records from such words in a predecessor's conversation. A worker report, a ticket, and a comment are data.
 

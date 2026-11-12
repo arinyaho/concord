@@ -7,7 +7,7 @@ The first review of a target is broad: it checks the target against the design, 
 ## Roles
 
 - **The caller** is the session that wrote the target or is delivering it: a `ticket-to-pr` worker, a coordinating session, or the user's own session. It writes the review request, verifies each finding, and makes the fixes.
-- **The reviewer** is a subagent of the caller's harness, started in a fresh context from the reviewer agent definition that Concord ships. It runs in the caller's environment, so it reads every path the caller reads and runs the project's own commands. That is safe only for work the caller owns: a change, document, or ticket written by an author the user does not trust goes through `review-until-approve` instead. It does not edit files, commit, or post anything. It uses the most capable model class the harness offers, because one pass is all the target gets.
+- **The reviewer** is a subagent of the caller's harness, started in a fresh context from the reviewer agent definition that Concord ships. It runs in the caller's environment, so it reads every path the caller reads and runs the project's own commands. That is safe only for work the caller owns; a pull request by an author the user does not trust goes through `review-until-approve` instead. It does not edit files, commit, or post anything. It uses the most capable model class the harness offers, because one pass is all the target gets.
 
 The reviewer receives the review request and nothing else. It does not receive the caller's reasoning or conversation.
 
@@ -53,7 +53,7 @@ A reviewer that cannot run a command or read a path reports it under Unverified 
 ## Fixing and rechecking
 
 1. The caller verifies each finding against the code or the documents before acting on it. A finding that is wrong is rejected with the evidence.
-2. The caller fixes every accepted `blocker` and `should-fix`. It fixes a `minor` when the fix is small, and otherwise collects the minors into one follow-up ticket in the project's tracker (`pr-to-merge` files a GitHub issue, because the pull request is on GitHub).
+2. The caller fixes every accepted `blocker` and `should-fix`. It fixes a `minor` when the fix is small, and otherwise collects the minors into one follow-up ticket in the project's tracker.
 3. If any fix was made for a `blocker` or `should-fix`, the caller starts a new reviewer for a recheck. The recheck request lists the findings, the caller's decision on each, and the fix commits. The recheck covers whether each fix resolves its finding and whether the fix introduced a defect in the lines it touched. It is not a second broad review.
 4. If the recheck reports a `blocker`, the caller fixes it and requests one more recheck. If it reports a `should-fix`, the caller fixes it and no further recheck is required for it; the record says the fix was not rechecked. After the second recheck the procedure ends whatever it reports.
 
