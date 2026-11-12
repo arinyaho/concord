@@ -47,7 +47,6 @@ function readReviewSource(repoRoot, file) {
   return null;
 }
 
-// True only when the path is provably absent inside the checkout: every
 // Changed paths the reviewer did not examine. A path whose bytes at the
 // reviewed head equal those of an examined changed path is covered: the
 // generated bundle copies are byte copies of their source, which bundle-drift
