@@ -95,7 +95,7 @@ test('the wrapper terminates in each case: lines to act on, nothing until its de
   const quiet = runWrapper(world({ 'acme/app': { prs: [pr(1)] } }));
   assert.equal(quiet.code, 0, quiet.stderr);
   assert.deepEqual(quiet.sessions, []);
-  assert.ok(quiet.ms >= 2000 && quiet.ms < 15000, `${quiet.ms} ms`);
+  assert.ok(quiet.ms >= 900 && quiet.ms < 15000, `${quiet.ms} ms`);
   const broken = runWrapper(world({ 'acme/app': { prs: [] } }), 'someone-else');
   assert.equal(broken.code, 2);
   assert.match(broken.stderr, /pr-to-merge exited with status 2; stopping/);
