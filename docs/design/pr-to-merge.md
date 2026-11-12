@@ -126,7 +126,7 @@ An automated pull request has no approval to cover. The script approves its head
 - An approved pull request whose base is not the head branch of an open pull request the run covers is squash-merged into that base, whatever branch it is.
 - A stack is a chain of pull requests, each based on its parent's head branch. It merges one level per scan, only when every pull request down the chain qualifies and each child contains its parent's head: the topmost pull request merges into its parent with a merge commit, and the next scan treats the parent as an ordinary pull request, which waits for the required checks of its new head. A child whose parent is an open pull request the run does not cover prints a `stack` line. A draft parent holds its children.
 - Every merge names the head commit it expects, so a push between the check and the merge fails the merge instead of merging unreviewed commits.
-- `merged` is printed only when GitHub reports the pull request merged. One that stays open is in a merge queue and is reported as `queued`; the script leaves a pull request in a merge queue alone.
+- `merged` is printed only when GitHub reports the pull request merged. One that stays open is in a merge queue and is reported as `queued`; the script leaves it alone and prints `merged` or `closed` for it in the scan in which GitHub reports that outcome. A merge whose result could not be read is reported the same way, in a later scan.
 - When GitHub reports a qualifying branch as behind its base, the script updates the branch at once with a merge commit and merges in a later scan.
 - When a required check has failed on an approved pull request with no open point, the script runs the failed jobs again, once per head. GitHub's run attempt number records whether it did. A failed check that is not a workflow job cannot be run again and is reported.
 
@@ -140,7 +140,7 @@ The script prints one line per event.
 
 | Line | Meaning |
 |---|---|
-| `merged <repo>#<n> into <base> …` | A pull request was merged, with the method and the head. The line lists any check that had not passed at the merge |
+| `merged <repo>#<n> into <base> …` | A pull request was merged, with the method and the head. The line gives the number of checks that had not passed at the merge |
 | `queued <repo>#<n> …` | GitHub accepted the merge into a merge queue |
 | `approved <repo>#<n> (automated)` | The script approved an automated pull request |
 | `ready <repo>#<n> …` | With `--no-merge`: the pull request meets every condition |
@@ -155,7 +155,7 @@ The script prints one line per event.
 | `rerun <repo>#<n> …`, `synced <repo>#<n> …` | Failed jobs were run again; a branch was updated from its base |
 | `stack <repo>#<n>: a child does not contain its parent's head` | The parent's head branch must be merged into the child |
 | `stack <repo>#<n>: its parent #<m> is not covered` | The parent is open and not one of the run's pull requests |
-| `merge failed …`, `sync failed …` | GitHub refused, with its message reduced to a safe character set |
+| `merge failed …`, `sync failed …` | GitHub refused. The line gives the HTTP status when there is one and otherwise the word `refused`; GitHub's message goes to a log file next to the state file, which the skill does not read |
 | `closed <repo>#<n>` | A pull request given as `OWNER/REPO#N` was closed without merging |
 
 A `review` line is printed once per item, and the other notices once per head (an open-points line once per new point) while the state file exists. Activity on a held pull request is reported as `triage … open points` again, so that the skill can read it again. A failed API call does not end the run: the script reports it on standard error and scans again after the interval.
