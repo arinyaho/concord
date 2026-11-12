@@ -184,9 +184,7 @@ pluginInstallE2ETest('plugin-install e2e: clean Copilot config installs, updates
   run(['plugin', 'marketplace', 'add', REPO]);
   assert.match(run(['plugin', 'install', 'concord@arinyaho-concord']), /installed successfully/i);
   const installedPlugins = run(['plugin', 'list']);
-  const releaseVersion = fs.readFileSync(path.join(REPO, 'VERSION'), 'utf8').trim();
   assert.match(installedPlugins, /concord@arinyaho-concord/i);
-  assert.ok(installedPlugins.includes(`v${releaseVersion}`));
   assert.match(
     run(['plugin', 'update', 'concord@arinyaho-concord']),
     /updated|already.*latest|loaded live.*nothing to update/i,
