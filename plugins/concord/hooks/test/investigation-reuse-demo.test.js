@@ -19,7 +19,7 @@ const REPO = path.join(__dirname, '..', '..', '..', '..');
 const HANDOFF_CONTRACT = path.join(REPO, 'plugins/concord/skills/initiative-to-prs/references/handoff-contract.md');
 const DELEGATE_VERBOSE_WORK = path.join(REPO, 'plugins/concord/skills/delegate-verbose-work/SKILL.md');
 
-// handoff-contract.md must stay byte-identical across concord/concord-codex/concord-copilot
+// handoff-contract.md must stay byte-identical across concord/concord-codex
 // (enforced elsewhere), and delegate-verbose-work is Claude-Code-only, so neither file can
 // cross-reference the other -- each carries its own full copy of this discipline instead.
 // That duplication needs its own guard so an edit to one copy can't silently desync the other.

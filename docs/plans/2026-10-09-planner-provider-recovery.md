@@ -6,7 +6,7 @@
 
 **Architecture:** A shared provider-failure module owns canonical diagnostics and continuation. The CLI owns durable transport dispatch and all existing semantic, evidence and budget invariants. The runner consumes that authority and packages it consistently.
 
-**Tech Stack:** Node.js, node:test, deterministic review CLI, provider subprocess seam, self-contained Codex/Copilot bundles.
+**Tech Stack:** Node.js, node:test, deterministic review CLI, provider subprocess seam, the self-contained Codex bundle.
 
 ---
 
@@ -24,8 +24,8 @@ Modify `plugins/concord/core/review-cli.js`: canonicalize failure records, autho
 
 ### Task 4: Document and package
 
-Correct every document identified in the design note sweep, including manual commands and Copilot output guidance. Regenerate with `node plugins/concord-codex/bin/bundle.mjs` and `node plugins/concord-copilot/bin/bundle.mjs`. Run recovery tests against the packaged engine, focused runner/CLI/initiative/telemetry and packaging checks. Run docs GAP/xref checks and inspect changed-file links.
+Correct every document identified in the design note sweep, including manual commands. Regenerate with `node plugins/concord-codex/bin/bundle.mjs`. Run recovery tests against the packaged engine, focused runner/CLI/initiative/telemetry and packaging checks. Run docs GAP/xref checks and inspect changed-file links.
 
 ### Task 5: Verify, version and deliver
 
-Run CI plugin and agent-team suites and `node scripts/dod.mjs`. Use `node scripts/release-version.mjs 0.9.0-beta.6` to align release metadata, and verify version tests. Commit the combined result. Run independent branch review-and-fix from a clean isolated checkout, fix accepted findings, then create one PR against main. Record the exact-head/base delivery disposition and report remaining blockers without claiming green. Merge and publication remain separate actions.
+Run the CI plugin suite and `node scripts/dod.mjs`. Use `node scripts/release-version.mjs 0.9.0-beta.6` to align release metadata, and verify version tests. Commit the combined result. Run independent branch review-and-fix from a clean isolated checkout, fix accepted findings, then create one PR against main. Record the exact-head/base delivery disposition and report remaining blockers without claiming green. Merge and publication remain separate actions.

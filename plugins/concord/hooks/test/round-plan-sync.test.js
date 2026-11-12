@@ -24,10 +24,6 @@ const driverText = fs.readFileSync(path.join(CORE, 'review-driver.md'), 'utf8');
 const composedCommandText = fs.readFileSync(path.join(__dirname, '..', '..', 'commands', 'review-and-fix.md'), 'utf8');
 const REPO = path.join(__dirname, '..', '..', '..', '..');
 const codexCommandText = fs.readFileSync(path.join(REPO, 'plugins/concord-codex/skills/review-and-fix/SKILL.md'), 'utf8');
-const copilotDriverText = fs.readFileSync(
-  path.join(REPO, 'plugins/concord-copilot/skills/review-and-fix/references/review-driver.md'),
-  'utf8',
-);
 
 test('finding-producing prompts require continuous verbatim spans and preserve source formatting', () => {
   const context = {
@@ -106,13 +102,13 @@ test('every gate verifier prompt embeds the namespace ownership clause byte-for-
   for (const prefix of allowedFindingPrefixes('correctness')) assert.ok(GATE_VERIFY_OWNERSHIP_CLAUSE.includes(`${prefix}*`));
   const generated = reviewerPrompt('gate-verify', { stateDir: '/state', round: 3, targetType: 'git', slug: 'feat-x' });
   assert.ok(generated.includes(GATE_VERIFY_OWNERSHIP_CLAUSE));
-  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText]]) {
     assert.ok(text.includes(GATE_VERIFY_OWNERSHIP_CLAUSE.trim()), `${name} gate-verify prompt has drifted from round-plan.js`);
   }
 });
 
 test('manual review drivers normalize gate-verify artifacts through the bounded retry contract', () => {
-  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText]]) {
     const boundary = text.match(/Immediately after every fail-closed reviewer[\s\S]*?(?:A failed, missing, or non-preserving candidate and any|A second retry response or any) `harness-failure` (?:is|are) terminal\.[^\n]*/)?.[0] || '';
     assert.match(boundary, /`gate-verify`/, `${name} does not normalize the gate-verify role`);
     assert.doesNotMatch(boundary, /Do not normalize `gate-verify`/, `${name} bypasses strict gate-verify normalization`);
@@ -125,7 +121,7 @@ test('codex-review-runner.js re-exports the exact same reviewerPrompt as round-p
 });
 
 test('all native review drivers document the :: reviewer-guidance boundary and prompt isolation', () => {
-  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText]]) {
     assert.match(text, /literal separator `::`/i, `${name} does not document the guidance separator`);
     assert.match(text, /Never read that text as the target ref or base/i, `${name} can still misparse guidance as a ref`);
     assert.match(text, /only in the correctness, gate-review, and gate-panel lens prompts/i, `${name} does not limit guidance to finder prompts`);
@@ -140,20 +136,8 @@ test('the vendored Codex engine copy of round-plan.js is byte-identical to core 
   assert.ok(fs.readFileSync(vendored).equals(src), 'plugins/concord-codex/engine/round-plan.js drifted -- re-run node plugins/concord-codex/bin/bundle.mjs');
 });
 
-test('the Copilot-vendored review-driver.md copy embeds GATE_SWEEP_CLAUSE byte-for-byte', () => {
-  // Unlike round-plan.js (a generic byte-identity test in copilot-package.test.js
-  // already covers its vendored copies), this file is produced by a plain
-  // fs.copyFileSync in plugins/concord-copilot/bin/bundle.mjs with no
-  // byte-identity guard of its own -- so it must be checked directly here,
-  // the same way core/review-driver.md and commands/review-and-fix.md are.
-  assert.ok(
-    copilotDriverText.includes(GATE_SWEEP_CLAUSE),
-    'plugins/concord-copilot/skills/review-and-fix/references/review-driver.md gate-review prompt has drifted from round-plan.js GATE_SWEEP_CLAUSE -- re-run node plugins/concord-copilot/bin/bundle.mjs',
-  );
-});
-
 test('review instructions do not terminalize foreground silence or a nested skill path', () => {
-  for (const text of [driverText, composedCommandText, codexCommandText, copilotDriverText]) {
+  for (const text of [driverText, composedCommandText, codexCommandText]) {
     assert.match(text, /30-second foreground wait or empty output is not a terminal result/);
     assert.match(text, /non-terminal ledger without a live driver is a stopped driver/);
     assert.match(text, /durable terminal disposition or the ledger's bounded no-progress decision/);
@@ -172,7 +156,7 @@ test('every review driver artifact embeds the lite design-conformance gate promp
   const prompt = reviewerPrompt('gate', { stateDir: '<stateDir>', round: '<n>', slug: '<slug>', gateMode: 'design-conformance', targetType: 'git', dodPassed: true }).replaceAll('\\', '/');
   const shared = prompt.slice(0, prompt.indexOf(' Write ONLY'));
   assert.match(shared, /design-conformance gaps only/);
-  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText]]) {
     assert.ok(text.includes(shared), `${name} lite gate prompt has drifted from round-plan.js`);
   }
 });
@@ -196,7 +180,7 @@ test('the composed Claude command preserves pending final DoD semantics', () => 
 });
 
 test('manual drivers certify every authorized transaction before commit', () => {
-  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText]]) {
     assert.match(text, /reserve one `fix` launch/i, name);
     assert.match(text, /independent `certify` launch/i, name);
     assert.match(text, /A partial or stale certificate never commits/, name);
@@ -218,7 +202,7 @@ test('every changeClass/action pair the plan prompt offers is accepted by the pl
     assert.doesNotThrow(() => normalizeArtifact('plan', JSON.stringify({ status: 'ok', protocolVersion: 2, groups: [group] })), `${changeClass}+${action} is offered by the plan prompt but rejected by the validator`);
   }
   assert.match(prompt, /local group[^.]*may also use action:"reconcile"/);
-  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot driver', copilotDriverText]]) {
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText]]) {
     assert.match(text, /local group[^.]*may also use `?action:"reconcile"`?/, `${name} plan step does not state that a local group may reconcile`);
   }
 });
@@ -243,13 +227,13 @@ test('every gate verifier prompt asks an added finding for its follow-up classif
   for (const word of ['acceptance-criterion', 'unproven-premise', 'stage-exit', 'rationale', 'approved outcome']) assert.ok(GATE_VERIFY_ADDED_CLAUSE.includes(word), `the verifier clause lacks ${word}`);
   const generated = reviewerPrompt('gate-verify', { stateDir: '/state', round: 3, targetType: 'git', slug: 'feat-x' });
   assert.ok(generated.includes(GATE_VERIFY_ADDED_CLAUSE));
-  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText]]) {
     assert.ok(text.includes(GATE_VERIFY_ADDED_CLAUSE.trim()), `${name} gate-verify prompt has drifted from round-plan.js`);
   }
 });
 
 test('every manual review driver hands verify the examined paths and certify the declared fix files', () => {
-  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText]]) {
     assert.match(text, /Paste the correctness artifact's `examined` array verbatim into the verify prompt/, `${name} does not hand verify the examined paths`);
     assert.match(text, /paste the `files` arrays of the group's fix declarations verbatim into its prompt/, `${name} does not hand certify the declared fix files`);
   }
@@ -260,7 +244,7 @@ test('every native driver copy and the packaged plan prompt state the structural
   assert.equal(typeof DESIGN_EVIDENCE_BINDING_CLAUSE, 'string');
   assert.match(DESIGN_EVIDENCE_BINDING_CLAUSE, /exactly `intent-<slug>\.md`/);
   assert.match(DESIGN_EVIDENCE_BINDING_CLAUSE, /verbatim/);
-  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText]]) {
     assert.ok(text.includes(DESIGN_EVIDENCE_BINDING_CLAUSE), `${name} step 4 does not state the structural evidence binding byte-for-byte`);
   }
   assert.ok(reviewerPrompt('plan', { stateDir: '/state', round: 1, slug: 'feat-x', intentHash: 'h' }).includes(DESIGN_EVIDENCE_BINDING_CLAUSE));
@@ -311,7 +295,7 @@ test('every manual driver copy carries the sandbox uid note for each probe role,
   for (const { label, roles } of sections) {
     const clause = ENV_CLAUSE_BY_ROLE[roles[0]];
     for (const role of roles) assert.equal(ENV_CLAUSE_BY_ROLE[role], clause, `${role} must share its note with ${roles[0]}`);
-    for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
+    for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText]]) {
       assert.ok(text.includes(`For ${label}:\n\n>${clause}`), `${name} sandbox note for ${label} has drifted from round-plan.js ENV_CLAUSE_BY_ROLE`);
     }
   }
@@ -360,7 +344,7 @@ test('every prompt that writes or cites finding ids states the id rule, and ever
     assert.ok(reviewerPrompt(role, { ...context, ...extra }).includes(FINDING_ID_RULE), `${role} prompt lacks the finding id rule`);
   }
   for (const role of ['fix', 'certify']) assert.ok(!reviewerPrompt(role, context).includes(FINDING_ID_RULE), `${role} prompt should not carry the id rule`);
-  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot driver', copilotDriverText]]) {
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText]]) {
     assert.ok(text.includes(FINDING_ID_RULE), `${name} lacks the finding id rule`);
   }
 });
@@ -368,14 +352,14 @@ test('every prompt that writes or cites finding ids states the id rule, and ever
 test('every driver copy spells the plan artifact envelope the validator requires, as round-plan.js does', () => {
   const envelope = '{"status":"ok","protocolVersion":2,"groups":[]}';
   assert.ok(reviewerPrompt('plan', { stateDir: '/state', round: 1, targetType: 'git', slug: 'feat-x' }).includes(envelope));
-  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText], ['copilot review-driver.md', copilotDriverText]]) {
+  for (const [name, text] of [['review-driver.md', driverText], ['commands/review-and-fix.md', composedCommandText]]) {
     assert.ok(text.includes('ONLY the v2 plan JSON `' + envelope + '`'), `${name} plan step must name ${envelope} so a planner does not omit "status"`);
   }
 });
 
 // #466: every native driver asks the CLI whether verify and plan run, and reserves neither before the answer.
 test('every driver runs verify-needed before reserving verify or plan', () => {
-  const files = ['plugins/concord/core/review-driver.md', 'plugins/concord/commands/review-and-fix.md', 'plugins/concord-copilot/skills/review-and-fix/references/review-driver.md'];
+  const files = ['plugins/concord/core/review-driver.md', 'plugins/concord/commands/review-and-fix.md'];
   for (const file of files) {
     const text = fs.readFileSync(path.join(__dirname, '..', '..', '..', '..', file), 'utf8');
     assert.match(text, /verify-needed <ref>/, file);

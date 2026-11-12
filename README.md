@@ -4,9 +4,8 @@
 [![License: MIT](https://img.shields.io/github/license/arinyaho/concord)](LICENSE)
 ![Claude Code](https://img.shields.io/badge/Claude_Code-supported-D97757)
 ![Codex](https://img.shields.io/badge/Codex-supported-black)
-![GitHub Copilot](https://img.shields.io/badge/GitHub_Copilot-supported-1F6FEB)
 
-concord is a plugin for Claude Code, Codex, and GitHub Copilot that reviews and fixes your branches, reviews pull requests until they can be approved, and takes tickets through to pull requests.
+concord is a plugin for Claude Code and Codex that reviews and fixes your branches, reviews pull requests until they can be approved, and takes tickets through to pull requests.
 
 - `/review-and-fix` has independent reviewer subagents review your branch, fixes what they find, and re-reviews until a deterministic CLI ends the loop within a fixed round budget. Only serious bugs, security issues, and unmet acceptance criteria block; minor findings are collected and ticketed once before merge.
 - `review-until-lgtm` collects the Codex and Copilot reviews on your pull request, fixes them in bounded batches, and pushes until the current head gets an explicit LGTM. It merges only when you ask.
@@ -28,7 +27,7 @@ Install it in Claude Code:
 /plugin install concord@arinyaho-concord
 ```
 
-Enabling the plugin registers its hooks automatically - no `settings.json` editing required. Codex and GitHub Copilot steps are in [docs/install.md](docs/install.md).
+Enabling the plugin registers its hooks automatically - no `settings.json` editing required. Codex steps are in [docs/install.md](docs/install.md).
 
 ## Usage
 
@@ -40,24 +39,26 @@ Each workflow starts from one request. The examples below are what a user would 
 | `review-until-approve` | "Review https://github.com/acme/app/pull/57 until it is approvable." Findings are classed as blockers or minor follow-ups. The approving review lists the minors. A finding in a file the diff touches but outside a hunk becomes a file comment. Threads the skill started for fixed or addressed findings are answered and resolved, and a draft is watched until it is ready. |
 | `ticket-to-pr` | "Take issue #212 through design, implementation and a PR." |
 | `review-until-lgtm` | "Collect the Codex and Copilot reviews on PR 58, fix them, and tell me when the head has an LGTM." |
+| `pr-to-merge` | "Merge the approved PRs in acme/app as they become ready." A script watches without a model, merges each approved pull request that nothing holds once GitHub allows it, and reports the rest; the skill relays those reports, answers reviews on your own pull requests, and checks each merge afterwards. Without your authorization to merge it only reports pull requests as ready. |
 
 ## Workflows
 
 | Workflow | What it does | Harnesses |
 |---|---|---|
-| `/review-and-fix` | Reviews a branch, PR, or file, fixes the findings, and re-reviews until a deterministic CLI decides to stop. | All three |
-| `review-until-lgtm` | Fixes the automated GitHub PR reviews in bounded batches until the current head gets an explicit LGTM; it merges only at your explicit request. | All three |
-| `deep-review` | Runs one bounded review of a fixed base/head pair with independent reviewers and groups the verified findings by root cause. | All three |
-| `ticket-to-pr` | Takes one ticket through acceptance criteria, a failing check, a design note, implementation, review, a passing check, and a pull request. | All three |
-| `initiative-to-prs` | Turns a product brief, problem report, or set of incomplete tickets into implementation-ready tickets and drives each one to a verified PR. | All three |
-| `ticket-writing` | Drafts or updates tickets in GitHub Issues, Jira, Notion, or another tracker so another agent can implement from them. | All three |
-| `proposal-package-authoring` | Builds editable bid and proposal slide decks in Google Slides or PowerPoint from an RFP, source evidence, and reference decks. | All three |
-| `/charter` | Stores the project goal and merged decisions and injects them into each new session. | All three |
+| `/review-and-fix` | Reviews a branch, PR, or file, fixes the findings, and re-reviews until a deterministic CLI decides to stop. | Claude Code, Codex |
+| `review-until-lgtm` | Fixes the automated GitHub PR reviews in bounded batches until the current head gets an explicit LGTM; it merges only at your explicit request. | Claude Code, Codex |
+| `deep-review` | Runs one bounded review of a fixed base/head pair with independent reviewers and groups the verified findings by root cause. | Claude Code, Codex |
+| `ticket-to-pr` | Takes one ticket through acceptance criteria, a failing check, a design note, implementation, review, a passing check, and a pull request. | Claude Code, Codex |
+| `initiative-to-prs` | Turns a product brief, problem report, or set of incomplete tickets into implementation-ready tickets and drives each one to a verified PR. | Claude Code, Codex |
+| `ticket-writing` | Drafts or updates tickets in GitHub Issues, Jira, Notion, or another tracker so another agent can implement from them. | Claude Code, Codex |
+| `proposal-package-authoring` | Builds editable bid and proposal slide decks in Google Slides or PowerPoint from an RFP, source evidence, and reference decks. | Claude Code, Codex |
+| `/charter` | Stores the project goal and merged decisions and injects them into each new session. | Claude Code, Codex |
 | Session-state checkpoint | Saves per-session state from the transcript when a session stops and restores it on start, resume, or compaction. | Claude Code, Codex |
 | `delegate-verbose-work` | Sends broad repository-wide searches to a subagent and keeps only the conclusion in the main conversation. | Claude Code |
 | `coordinate-sessions` | Coordinates worker sessions, ownership, reports and delivery gates; Codex messages existing sessions through `codex queue` and, when the app creation tool is absent, creates workers through the supported CLI route. | Claude Code, Codex |
 | `project-manager` agent / skill | Runs multi-PR, multi-repository rollouts with ownership, merge gates and reusable evidence. Claude agent; Codex skill. | Claude Code, Codex |
 | `review-until-approve` | Reviews someone else's pull request in a loop and approves the reviewed head once a round is clean. | Claude Code, Codex |
+| `pr-to-merge` | Watches the open pull requests of named repositories, merges each approved one that nothing holds as soon as GitHub allows it, reports the rest, and answers reviews on your own pull requests. | Claude Code, Codex |
 
 ## Review policy
 
@@ -74,7 +75,7 @@ Claude Code:
 /plugin install concord@arinyaho-concord
 ```
 
-Installing, updating, and removing on Codex and GitHub Copilot, and what each package contains, are in [docs/install.md](docs/install.md).
+Installing and updating on Codex, and what the package contains, are in [docs/install.md](docs/install.md).
 
 ## Contributing
 

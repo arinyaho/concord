@@ -12,7 +12,6 @@ const plugins = path.resolve(__dirname, '../../..');
 const runtimes = [
   ['native', require('../../core/initiative-review-run')],
   ['Codex', require('../../../concord-codex/engine/initiative-review-run')],
-  ['Copilot', require('../../../concord-copilot/engine/initiative-review-run')],
 ];
 
 function repository(prefix) {
@@ -33,7 +32,6 @@ function repository(prefix) {
 for (const [provider, cli] of [
   ['claude', 'concord/hooks/review-cli.js'],
   ['codex', 'concord-codex/bin/review-cli.js'],
-  ['copilot', 'concord-copilot/bin/review-cli.js'],
 ]) {
   test(`${provider}: a two-repository initiative runs file and diff reviews under one shared budget`, () => {
     const api = repository('multi-repo-api-');

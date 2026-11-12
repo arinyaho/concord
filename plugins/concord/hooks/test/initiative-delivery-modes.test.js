@@ -19,12 +19,10 @@ const PLUGINS = path.join(__dirname, '..', '..', '..');
 const RUNTIMES = [
   ['core', require('../../core/initiative-review-run')],
   ['codex', require('../../../concord-codex/engine/initiative-review-run')],
-  ['copilot', require('../../../concord-copilot/engine/initiative-review-run')],
 ];
 const CLIS = {
   claude: path.join(PLUGINS, 'concord', 'hooks', 'review-cli.js'),
   codex: path.join(PLUGINS, 'concord-codex', 'bin', 'review-cli.js'),
-  copilot: path.join(PLUGINS, 'concord-copilot', 'bin', 'review-cli.js'),
 };
 
 const tmp = (p) => tempDir(p);

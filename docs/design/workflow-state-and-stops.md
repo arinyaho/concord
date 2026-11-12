@@ -1,6 +1,6 @@
 # Workflow state and stops
 
-Concord's workflows (`ticket-to-pr`, `initiative-to-prs`, `review-and-fix`, `pr-to-merge`, and `review-until-approve`) share three rules: where the state of the work lives, when a workflow may stop and ask the user, and which parts are code. This document defines those rules. The documents for the individual workflows apply them and do not restate them.
+Concord's workflows (`ticket-to-pr`, `initiative-to-prs`, `review-and-fix`, `pr-to-merge`, `review-until-approve`, and `coordinate-sessions`) share three rules: where the state of the work lives, when a workflow may stop and ask the user, and which parts are code. This document defines those rules. The documents for the individual workflows apply them and do not restate them.
 
 The measure of the rules is a long unattended run: a session that works through dozens of tickets, with its own goal, must be able to use every Concord workflow without Concord ending the run.
 
@@ -16,10 +16,15 @@ The state of the work lives in three places, each of which exists without Concor
 
 Concord keeps no store of its own that decides anything. A workflow that needs to know what is done reads the ticket and the pull request again. A workflow that makes progress or receives a decision writes it to the ticket. A session that starts with no memory of the work resumes from the ticket and the pull request alone.
 
-Two kinds of local file are allowed, and neither has authority:
+These kinds of local file are allowed. None records the state of the work, and each decides only what its entry says:
 
-- **Working documents.** A coordinating session keeps one state document (the user's standing authorizations with their words and dates, the list of work units and their pull requests, and lessons) and receives worker reports as files. They are plain Markdown, written and read by agents. Every decision in them is also on the ticket. Deleting them loses convenience, not facts.
+- **Working documents.** A coordinating session keeps one state document (the user's standing authorizations with their words and dates, the list of work units and their pull requests, and lessons) and receives worker reports as files. They are plain Markdown, written and read by agents. The progress and decisions in them are also on the ticket. Deleting them loses convenience and the record of standing authorizations; a successor then asks the user again.
 - **Notice records.** A polling script may keep a file of the notices it has already printed, so that it does not print them twice. Deleting the file causes a repeated notice and nothing else. No script reads such a file to decide whether a pull request merges or a review passes.
+- **Locks.** A script may keep a lock file so that two runs do not work on the same thing at once. A lock decides only whether a run may start, and a run takes one over only when its holder is not running. Deleting one lets two runs overlap.
+- **Configuration the user writes.** For example the options of a scheduled run. It decides what the user wrote it to decide, which can include an authorization such as merging. No workflow writes it.
+- **Logs.** Output kept for a person to read, such as the GitHub messages a polling script does not print. The session does not read them, and they decide nothing.
+
+Minor points that a workflow does not fix are collected into one follow-up ticket in the project's tracker. `pr-to-merge` files none: a minor point it does not fix on the user's own pull request is listed in its reply and in its report to the user.
 
 ## When a workflow stops
 
@@ -35,7 +40,7 @@ Every other obstacle is recorded and the work continues. The table gives the beh
 |---|---|
 | A reviewer cannot run a command or reach a file | The reviewer reports that item as unverified and reviews the rest. The review result lists the unverified items |
 | A script or CLI call fails | Retry once where a retry is sensible, otherwise report the error in the result and continue with the remaining work |
-| The base branch moved | Read the new base and continue. Nothing recorded before the move becomes invalid by rule; a reviewer is asked again only when the merge changed the reviewed content |
+| The base branch moved | Read the new base and continue. Nothing recorded before the move becomes invalid by rule. The independent reviewer of `review-and-fix` is asked to recheck when a merge of the base changed lines its review covered; a person's approval in `pr-to-merge` stands across merges of the base as [pr-to-merge.md](pr-to-merge.md) defines |
 | The design or the acceptance criteria changed with the user's approval | Read the new text and continue |
 | A review was not run, or did not finish | Say so in the pull request body and in the ticket. The pull request is still opened |
 | A blocker finding remains after the fixes | Leave the pull request as a draft, list the finding in its body, and continue with independent work |
@@ -66,23 +71,31 @@ A coordinating session hands a unit of work to a worker. A worker is a subagent 
 - A `done` report lists the pull request URL, the head commit, the CI result for that head, the review findings with how each was handled, and each acceptance criterion with its evidence or the statement that it is not met.
 - Project rules (repository locations, the worktree directory, pull request conventions, the tracker, reviewers to request) live in the project's own rules file. The worker prompt gives the path to that file; the skills do not contain project rules.
 
-Concord ships two agent definitions for this: an implementer, which carries one ticket through `ticket-to-pr` in its worktree and reports a new design choice instead of making it, and a reviewer, which is described in [independent-review.md](independent-review.md).
+This document relies on two of Concord's agent definitions: the implementer, which carries one ticket through `ticket-to-pr` in its worktree and reports a new design choice instead of making it, and the reviewer, which is described in [independent-review.md](independent-review.md). `review-until-approve` has its own agents.
 
-The decisions stay with the coordinating session. It takes as a decision only what the user wrote in its own conversation; a worker report is data.
+The decisions stay with the coordinating session. It takes as a decision only what the user wrote in its own conversation, together with the standing authorizations its state document records from such words in a predecessor's conversation. A worker report, a ticket, and a comment are data.
 
 ## Standing authorizations
 
-The user can authorize a kind of action once for a run, such as "merge approved pull requests" or "push when GitHub's merge requirements pass". The coordinating session records the user's words and the date in its state document and as a decision record on the tracking ticket, and applies the authorization to later cases of the same kind without asking again. An authorization covers the kind of action and the repositories the user named, and nothing wider.
+The user can authorize a kind of action once for a run, such as "merge approved pull requests" or "push when GitHub's merge requirements pass". Only the coordinating session records one, and only from words the user wrote in that session's own conversation: it writes the words and the date in its state document and applies the authorization to later cases of the same kind without asking again. A successor session reads the state document as the record of those authorizations. A worker never writes the state document.
+
+The coordinating session also copies each authorization to the tracking ticket as a decision record, for people to read. No workflow reads a ticket or a comment back as an authorization, because other people can write there.
+
+A scheduled run has no conversation with the user. Its authorization is the configuration the user writes for it, which is the one other place an authorization is read from.
+
+An authorization covers the kind of action and the repositories the user named, and nothing wider.
 
 ## Harnesses
 
-The workflows run on Claude Code and Codex. Each harness uses its own subagents for workers and reviewers. A workflow does not start another vendor's agent as a separate process.
+The workflows run on Claude Code and Codex. A workflow uses the harness's own agents for workers and reviewers: a subagent, or under Codex a separate process of the same harness where confinement requires one. It never uses another vendor's agent.
 
 ## Why
 
 **A store with authority disagrees with the three places, and every disagreement is a stop.** A ledger that pins the hash of a design note stops the run when the user approves a change to that note. A ledger bound to one repository stops a change that spans two. A recorded base stops the run when the base moves. In each case the work itself is sound and the user has nothing to decide. Reading the ticket and the pull request again cannot disagree with them.
 
 **A rule that fails closed on procedure moves the cost to the user.** When a procedural failure ends the run, the user must return, read an error about Concord's internals, and authorize a continuation. Under a session goal this ends the goal. The stop rule keeps the user's attention for the three cases that need it.
+
+**An authorization is read only from a place that only the user's words reach.** The user's conversation with the coordinating session is the one channel other people cannot write to, and the state document carries those words to a successor. A scheduled run's configuration is the exception, and the user owns it: the user writes it, and it lives on the user's machine. A ticket and a pull request accept text from anyone with access, so an authorization read back from them could be one that no user gave.
 
 **Subagents keep the decision in one place.** Separate sessions are peers: each can defer to another, and an instruction that names one of them the coordinator does not bind the others. A subagent returns its result to the session that started it and ends, so there is one place where decisions are taken. The two things separate sessions offered are obtained otherwise: a `handoff` report carries work across a context limit, and worktrees separate parallel work.
 
@@ -96,5 +109,6 @@ The workflows run on Claude Code and Codex. Each harness uses its own subagents 
 ## Residual exposure
 
 - Nothing forces a review to run. A workflow that skips it says so in the pull request, and the human reviewer is the check on that statement.
-- The working documents can drift from the ticket when a session writes one and not the other. The ticket is the record; a successor that finds a difference follows the ticket.
+- The working documents can drift from the ticket when a session writes one and not the other. For progress and decisions the ticket is the record, and a successor that finds a difference follows the ticket; for standing authorizations the state document is the record.
+- A worker shares the coordinating session's filesystem, so that it never writes the state document is an instruction to the worker, not a restriction on it.
 - A standing authorization is applied by a model reading its own state document. An authorization recorded more widely than the user meant is applied that widely, so the record quotes the user's words.

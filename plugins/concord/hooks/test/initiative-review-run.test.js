@@ -8,7 +8,6 @@ const { tempDir } = require('./temp-dir');
 const RUNTIMES = [
   require('../../core/initiative-review-run'),
   require('../../../concord-codex/engine/initiative-review-run'),
-  require('../../../concord-copilot/engine/initiative-review-run'),
 ];
 
 function temp() { return tempDir('initiative-review-run-'); }
@@ -168,14 +167,13 @@ test('v2 initiative ledgers fail closed', () => {
   assert.throws(() => open({ stateDir: dir, key: 'legacy-v2', maxLaunches: 1, maxRounds: 1 }), /schemaVersion must be 5/);
 });
 
-test('Claude, Codex, and Copilot runtimes produce the same disposition packet', () => {
+test('Claude and Codex runtimes produce the same disposition packet', () => {
   const ledgers = RUNTIMES.map((runtime, index) => {
     const run = runtime.openInitiativeRun({ stateDir: temp(), key: `parity-${index}`, repository: '/repo', maxLaunches: 1, maxRounds: 1 });
     runtime.recordDisposition(run, { target: 'feature/x', revision: { ref: 'feature/x', base: 'main', head_sha: 'head' }, result: { decision: { converged: true } }, packet: { trigger: 'terminal', exit: { code: 0, signal: null }, dod: { status: 'passed' }, telemetry: { complete: true }, nextAction: 'replay' } });
     return JSON.parse(fs.readFileSync(run.path, 'utf8')).dispositions.map(({ at, ...disposition }) => disposition);
   });
   assert.deepStrictEqual(ledgers[1], ledgers[0]);
-  assert.deepStrictEqual(ledgers[2], ledgers[0]);
 });
 
 test('a keyed run cannot cross repository identities', () => {
