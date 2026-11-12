@@ -6,8 +6,6 @@ The runners read review artifacts that subagents write with `fs.readFileSync`, w
 
 `bounded-artifact.js` gains `readArtifactJson(file)`, which reads through `readArtifactBytes` (regular file, no symlink, at most 20 MiB, same inode throughout) and parses the result. A missing artifact, a missing state directory and malformed JSON return `null`; an artifact that is not a bounded regular file throws `harness-failure: unsafe or oversized review artifact`. Every site above calls it, so the runners treat a hostile artifact exactly as `review-cli` does and end the round with a harness failure, while the lenient behaviors stay (an empty `examined` list, a panel lens that counts as no findings, a vote that counts as refuted).
 
-The service adapter loads the helper through the `createRequire` path that loads `round-plan.js`. Its verify read falls back to an empty `examined` list on a missing or malformed artifact, as the packaged runner does.
-
 This change is not stateful: it adds no state and only narrows what an existing read accepts.
 
 ## Cost and residual exposure
