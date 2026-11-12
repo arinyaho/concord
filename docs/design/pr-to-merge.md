@@ -30,7 +30,7 @@ In each repository it is given, the skill works on three sets of open, non-draft
 | Automated | Pull requests from an automation account the user names that change only paths the user names, such as the ones that move a dependency pin | Approves and merges |
 | The user's own | Pull requests authored by the account the user names, and pull requests listed one by one | Before approval: answers reviews and pushes fixes |
 
-A pull request in none of the sets is left alone: the skill does not read its reviews, comment on it, or push to it.
+A pull request in none of the sets is left alone: the skill does not read its reviews, comment on it, or push to it. One case is read: a pull request whose only approvals were dismissed, so that an approval lost to the skill's own push is noticed (see "When the skill's push loses the approval or cannot be made").
 
 ## Authorization
 
@@ -149,6 +149,7 @@ The script prints one line per event.
 | `triage <repo>#<n> …: approved, a branch rule blocks the merge` | GitHub reports a branch rule blocking the merge |
 | `triage <repo>#<n> …: required check still red after one re-run` | The second run of the failed jobs also failed |
 | `triage <repo>#<n> …: required check failed and cannot be re-run` | A required check that is not a workflow job failed |
+| `triage <repo>#<n> …: approval dismissed` | No counting approval remains, and a counting account's latest approving review was dismissed |
 | `rerun <repo>#<n> …`, `synced <repo>#<n> …` | Failed jobs were run again; a branch was updated from its base |
 | `stack <repo>#<n>: a child does not contain its parent's head` | The parent's head branch must be merged into the child |
 | `stack <repo>#<n>: its parent #<m> is not covered` | The parent is open and not one of the run's pull requests |
@@ -182,7 +183,7 @@ When both contributions cannot be kept, because they change the same behavior in
 
 ### When the skill's push loses the approval or cannot be made
 
-Where the repository dismisses approvals on a push, a branch update or a conflict resolution drops the approval. The skill then requests review again from the people who approved, with one comment saying that the push was a merge of the base only.
+Where the repository dismisses approvals on a push, a branch update or a conflict resolution drops the approval. The script reports it as `approval dismissed`, once per head. The skill then requests review again from the people who approved, with one comment saying that the push was a merge of the base only.
 
 Where the skill cannot push to the head branch, because it is in a fork that does not allow edits by maintainers, the skill comments once per head asking the author to update the branch.
 
