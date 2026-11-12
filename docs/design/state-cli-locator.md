@@ -12,7 +12,7 @@ The newest version across the caches wins, whichever harness the session runs in
 
 The command is a single `node -e` line with no `"`, `$`, or backtick inside it, so it runs unchanged in a POSIX shell, PowerShell, and cmd.exe. It is identical in the two packages because `plugins/concord-codex/bin/bundle.mjs` copies the shared skill.
 
-The locator writes nothing; its state is the set of installed copies, and its only event is one run, so this change is not stateful.
+The locator writes nothing; its state is the set of installed copies.
 
 ## Why
 

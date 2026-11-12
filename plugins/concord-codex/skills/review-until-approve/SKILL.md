@@ -4,7 +4,7 @@ description: >-
   Use when the user names someone else's pull request and wants it reviewed in a loop: review it, publish the findings,
   wait for the author to push and reply (one small model call per two-hour window on Claude Code, resumable start checks on Codex), review what changed, and approve once a round is clean —
   "이 PR 승인될 때까지 리뷰해줘", "review this PR until it is approvable", "watch the PR and approve when clean".
-  Do NOT use for your own branch (use review-and-fix) or to collect other reviewers' comments on your own PR (use review-until-lgtm).
+  Do NOT use for your own branch (use review-and-fix) or to collect other reviewers' comments on your own PR (use pr-to-merge).
 ---
 
 # Review until approve
